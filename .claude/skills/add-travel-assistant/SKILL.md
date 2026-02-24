@@ -219,11 +219,16 @@ register_group(
   jid: "{{GROUP_JID}}",
   name: "{{TRIP_NAME}}",
   folder: "{{TRIP_FOLDER}}",
-  trigger: "@{{ASSISTANT_NAME}}",
-  skills: ["agent-browser", "travel-assistant"],
-  allow_web: true
+  trigger: "@{{ASSISTANT_NAME}}"
 )
 ```
+
+> **Note (platform hardening — not yet supported):** The `skills` and `allow_web` parameters for per-group skill filtering and web access control are not yet in the `register_group` MCP schema. Once the platform hardening task adds them, update this call to include:
+> ```
+> skills: ["agent-browser", "travel-assistant"],
+> allow_web: true
+> ```
+> Until then, all skills are mounted and web access follows the default policy.
 
 **Folder name validation:** The IPC handler enforces safe folder names via `isValidGroupFolder()`. The folder name must be lowercase with hyphens only — validate this during Phase 1 before attempting registration.
 
