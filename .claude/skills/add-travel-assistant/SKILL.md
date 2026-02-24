@@ -296,3 +296,52 @@ Send a test message to the group mentioning the trigger (e.g., "@Tars what's the
 - Identifies the correct city and date
 - Uses proper WhatsApp formatting
 - Cites weather sources
+
+## Phase 4: Advanced Features & Refinement
+
+This section documents the advanced features that the CLAUDE.md template already enables. Share this with the user so they know what the travel assistant can do.
+
+### 1. Emergency Handling
+
+When a delay is reported to the group:
+- The agent assesses impact on all downstream connections
+- Classifies risk per connection (green/yellow/red/black)
+- Sends an IPC alert to the group with situation summary, recommended actions, and Plan B
+- If a connection is missed: individual support for the affected traveler + self-reprogramming of all downstream tasks
+
+### 2. Self-Reprogramming
+
+The agent follows a 5-step process when plans change mid-trip:
+1. Acknowledge and document the change
+2. Cancel obsolete scheduled tasks
+3. Calculate the revised schedule
+4. Create new reminder tasks with corrected times
+5. Monitor for cascading impacts on downstream connections
+
+This is triggered automatically when travelers report delays, cancellations, weather changes, or plan modifications.
+
+### 3. Multi-Participant Tracking
+
+Different travelers can have different return itineraries:
+- Individual alerts sent to specific travelers via @mentions
+- Separate return routes tracked independently
+- Post-trip messages wait for the LAST traveler to arrive, not the first
+- Subset-of-group activities get targeted @mentions (only affected participants)
+
+### 4. Connection Risk Pre-Assessment
+
+At setup, the skill flags risky connections (<3h buffer). During the trip:
+- 24h before a risky leg, the agent sends a warning with Plan B options
+- The agent can search for real-time alternative flights if asked
+- Risk is re-assessed considering immigration time, peak hours, and airport size
+
+### 5. Refinement Tips
+
+Tell the user they can chat with the agent to:
+- Add restaurants and local tips to the itinerary
+- Update hotel details
+- Adjust reminder times
+- Add or remove activities
+- The agent will web-search for current info (routes, Maps links, POIs)
+
+The travel assistant learns from the group's CLAUDE.md and reference files — updating those files (via admin requests from the main channel) permanently changes the agent's behavior for this trip.
