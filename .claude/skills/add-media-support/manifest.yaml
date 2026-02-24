@@ -1,0 +1,16 @@
+skill: media-support
+version: 1.0.0
+description: "Download images, PDFs, and documents from WhatsApp messages"
+core_version: 0.1.0
+adds:
+  - src/media.ts
+modifies:
+  - src/channels/whatsapp.ts
+  - src/channels/whatsapp.test.ts
+structured:
+  npm_dependencies: {}
+  env_additions: []
+conflicts: []
+depends:
+  - voice-transcription
+test: "npx vitest run src/channels/whatsapp.test.ts"
