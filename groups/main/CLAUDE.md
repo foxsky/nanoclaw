@@ -119,25 +119,18 @@ sqlite3 /workspace/project/store/messages.db "
 
 ### Registered Groups Config
 
-Groups are registered in `/workspace/project/data/registered_groups.json`:
+Groups are registered in the SQLite database (`registered_groups` table). You can query them:
 
-```json
-{
-  "1234567890-1234567890@g.us": {
-    "name": "Family Chat",
-    "folder": "family-chat",
-    "trigger": "@Andy",
-    "added_at": "2024-01-31T12:00:00.000Z"
-  }
-}
+```bash
+sqlite3 /workspace/project/store/messages.db "SELECT jid, name, folder, trigger_pattern FROM registered_groups;"
 ```
 
 Fields:
-- **Key**: The WhatsApp JID (unique identifier for the chat)
+- **jid**: The WhatsApp JID (unique identifier for the chat)
 - **name**: Display name for the group
 - **folder**: Folder name under `groups/` for this group's files and memory
-- **trigger**: The trigger word (usually same as global, but could differ)
-- **requiresTrigger**: Whether `@trigger` prefix is needed (default: `true`). Set to `false` for solo/personal chats where all messages should be processed
+- **trigger_pattern**: The trigger word (usually same as global, but could differ)
+- **requires_trigger**: Whether `@trigger` prefix is needed (default: `true`). Set to `false` for solo/personal chats where all messages should be processed
 - **added_at**: ISO timestamp when registered
 
 ### Trigger Behavior
@@ -148,39 +141,31 @@ Fields:
 
 ### Adding a Group
 
-1. Query the database to find the group's JID
-2. Read `/workspace/project/data/registered_groups.json`
-3. Add the new group entry with `containerConfig` if needed
-4. Write the updated JSON back
-5. Create the group folder: `/workspace/project/groups/{folder-name}/`
-6. Optionally create an initial `CLAUDE.md` for the group
+Use the `register_group` MCP tool (registration is stored in SQLite, not a JSON file):
 
-Example folder name conventions:
-- "Family Chat" → `family-chat`
-- "Work Team" → `work-team`
-- Use lowercase, hyphens instead of spaces
+```
+register_group(jid: "{group-jid}", name: "{group-name}", folder: "{folder-name}", trigger: "@Andy")
+```
+
+1. Find the group's JID from `available_groups.json` or by querying the database
+2. Choose a folder name: lowercase, hyphens, no spaces (e.g., "Family Chat" → `family-chat`)
+3. Call `register_group` with the JID, name, folder, and trigger
+4. Create the group folder: `/workspace/project/groups/{folder-name}/`
+5. Optionally create an initial `CLAUDE.md` for the group
 
 #### Adding Additional Directories for a Group
 
-Groups can have extra directories mounted. Add `containerConfig` to their entry:
+Groups can have extra directories mounted. Update the database entry to add `containerConfig`:
 
 ```json
 {
-  "1234567890@g.us": {
-    "name": "Dev Team",
-    "folder": "dev-team",
-    "trigger": "@Andy",
-    "added_at": "2026-01-31T12:00:00Z",
-    "containerConfig": {
-      "additionalMounts": [
-        {
-          "hostPath": "~/projects/webapp",
-          "containerPath": "webapp",
-          "readonly": false
-        }
-      ]
+  "additionalMounts": [
+    {
+      "hostPath": "~/projects/webapp",
+      "containerPath": "webapp",
+      "readonly": false
     }
-  }
+  ]
 }
 ```
 
@@ -188,14 +173,21 @@ The directory will appear at `/workspace/extra/webapp` in that group's container
 
 ### Removing a Group
 
-1. Read `/workspace/project/data/registered_groups.json`
-2. Remove the entry for that group
-3. Write the updated JSON back
-4. The group folder and its files remain (don't delete them)
+Remove the group entry from the database:
+
+```bash
+sqlite3 /workspace/project/store/messages.db "DELETE FROM registered_groups WHERE jid = '{group-jid}';"
+```
+
+The group folder and its files remain (they are not deleted).
 
 ### Listing Groups
 
-Read `/workspace/project/data/registered_groups.json` and format it nicely.
+Query the database:
+
+```bash
+sqlite3 /workspace/project/store/messages.db "SELECT jid, name, folder FROM registered_groups;"
+```
 
 ---
 
@@ -207,7 +199,7 @@ You can read and write to `/workspace/project/groups/global/CLAUDE.md` for facts
 
 ## Scheduling for Other Groups
 
-When scheduling tasks for other groups, use the `target_group_jid` parameter with the group's JID from `registered_groups.json`:
+When scheduling tasks for other groups, use the `target_group_jid` parameter with the group's JID (from the `registered_groups` table):
 - `schedule_task(prompt: "...", schedule_type: "cron", schedule_value: "0 9 * * 1", target_group_jid: "120363336345536173@g.us")`
 
 The task will run in that group's context with access to their files and memory.

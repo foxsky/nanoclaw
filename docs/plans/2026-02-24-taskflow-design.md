@@ -41,8 +41,14 @@ groups/<group-name>/
 2. Container agent starts, reads `CLAUDE.md` (instructions)
 3. Agent reads `TASKS.json` (data) — instructed at top of CLAUDE.md
 4. Agent processes command, updates `TASKS.json`, responds in chat
-5. For individual notifications: `send_message` IPC to personal numbers
+5. Agent uses MCP `send_message` to send replies to the group chat
 6. Scheduled runners trigger via `schedule_task` IPC → same flow
+
+### IPC Authorization Constraint
+
+Non-main groups can only send messages to their own group chat. They **cannot** send to individual phone numbers (`[phone]@s.whatsapp.net`) — the IPC authorization at `src/ipc.ts:77-80` blocks this because phone JIDs are not registered groups. Additionally, the MCP `send_message` tool has no recipient parameter — it always sends to the current group JID.
+
+Consequence: **Individual DMs are not supported.** All runner output (standup, digest, review) goes to the group chat with per-person sections inline. Runners execute in the target group context (`context_mode: "group"` + `target_group_jid`) which gives them direct access to the group's TASKS.json. They do NOT need main group context since DMs are not used.
 
 ### Critical Constraint
 
@@ -61,7 +67,8 @@ The agent must explicitly read `TASKS.json` at the start of every interaction. T
     "runner_task_ids": {
       "standup": null,
       "digest": null,
-      "review": null
+      "review": null,
+      "dst_guard": null
     }
   },
   "people": [
@@ -78,6 +85,7 @@ The agent must explicitly read `TASKS.json` at the start of every interaction. T
       "id": "T-001",
       "type": "simple",
       "title": "Receber e instalar o novo filtro",
+      "description": "Receber o filtro do fornecedor e instalar no equipamento",
       "column": "in_progress",
       "assignee": "alexandre",
       "priority": "normal",
@@ -123,29 +131,33 @@ The group CLAUDE.md is a pure operating manual:
 
 1. **Identity** — who the agent is, who the manager is
 2. **Critical: Read TASKS.json first** — top-level instruction to load data on every interaction
-3. **Board rules** — 6 columns, transition rules, WIP enforcement
-4. **GTD rules** — quick capture, next_action always required, waiting_for required
-5. **Command parsing** — natural language command table (capture, move, conclude, etc.)
-6. **Runner behavior** — standup/digest/review output formats
-7. **IPC usage** — `send_message` and `schedule_task` patterns with rate limits
-8. **Config** — language, timezone, WIP default, cron schedules
+3. **Security** — prompt-injection guardrails, untrusted input handling
+4. **Board rules** — 6 columns, transition rules, WIP enforcement
+5. **GTD rules** — quick capture, next_action always required, waiting_for required
+6. **Command parsing** — natural language command table (capture, move, conclude, etc.)
+7. **Standup format** — board display format for group messages with per-person sections inline
+8. **IPC usage** — MCP tools for group messages (`send_message`) and scheduling (`schedule_task`)
+9. **Config** — language, timezone, WIP default, cron schedules
+
+Note: All runner prompts are self-contained (include full instructions). Runners execute in the target group context, not from main.
 
 ## Scheduled Runners
 
-### 1. Morning Standup (per task group, weekdays)
-- **Default cron**: `0 11 * * 1-5` (08:00 BRT)
-- **Behavior**: Reads TASKS.json → sends board summary to group → sends individual `send_message` to each person with personal board + WIP + asks for updates
-- **Also handles**: overdue detection, inbox reminder, 30-day archive cleanup
+### 1. Morning Standup (target group context, weekdays)
+- **Default cron**: `0 11 * * 1-5` (08:00 BRT, server TZ=UTC)
+- **Context**: Runs in target group context (`context_mode: "group"` + `target_group_jid`), which gives direct access to `/workspace/group/TASKS.json`
+- **Behavior**: Reads TASKS.json → sends board summary to group chat via `send_message` with per-person sections inline (personal board + WIP). Individual DMs not supported — `send_message` has no recipient parameter.
+- **Also handles**: overdue detection, inbox reminder, 30-day archive cleanup, history cap enforcement
 
-### 2. Manager Digest (main group, weekdays evening)
+### 2. Manager Digest (target group context, weekdays evening)
 - **Default cron**: `0 21 * * 1-5` (18:00 BRT)
-- **Behavior**: Reads TASKS.json from all registered task groups → consolidates executive summary → sends to main group
+- **Behavior**: Reads TASKS.json from the target group → produces executive summary → sends to group chat via `send_message`
 - **Sections**: overdue, next 48h, blocked/waiting, no updates, completed today
 
-### 3. Weekly Review (main group, Fridays)
+### 3. Weekly Review (target group context, Fridays)
 - **Default cron**: `0 14 * * 5` (11:00 BRT)
 - **Behavior**: Full GTD review — weekly metrics, aging tasks, bottlenecks, inbox cleanup, waiting follow-ups
-- **Format**: Executive summary with suggested actions + individual summaries via `send_message`
+- **Format**: Executive summary with suggested actions + per-person summaries inline in group message
 
 All runner prompts are self-contained (include full instructions so the agent knows what to do when triggered by the scheduler).
 
@@ -205,11 +217,20 @@ For each group:
 | Create project | "projeto para X: Y. Etapas: ..." |
 | Create recurring | "mensal para X: Y todo dia Z" |
 
+## Design Decisions
+
+- **Escalation runner dropped**: The original reference docs proposed a mid-day escalation runner (10:00/16:00). Dropped because: the morning standup already detects overdue tasks, the manager can request ad-hoc checks ("atrasadas"), and fewer runners means less message noise. Can be added later as an optional 4th runner.
+- **Clarify column dropped**: The 8-column reference model included `clarify` between inbox and next_action. Merged into the inbox→next_action processing flow — when the manager processes inbox items, they provide the missing info (assignee, deadline, next_action) in one step.
+- **Contexts field dropped**: GTD `@contexts` (e.g., `@phone`, `@computer`) omitted for simplicity with small teams. Can be added to TASKS.json schema later if needed.
+
 ## Technical Considerations
 
 - **TASKS.json size**: For teams of 3-5 people with ~20 active tasks, TASKS.json stays well under 50KB. The agent can read this easily.
 - **Archival**: Auto-archive after 30 days keeps TASKS.json lean. Standup runner handles this.
 - **Rate limiting**: `send_message` capped at 10/min, 5s spacing in batch sends.
-- **Timezone**: All cron expressions in UTC. Display times converted per config timezone.
+- **Timezone**: This server runs `TZ=UTC`. Cron expressions must be in UTC. Convert local times: e.g., 08:00 BRT (UTC-3) = `"0 11 * * 1-5"` in UTC. The SKILL.md Phase 1 must detect the server timezone to calculate the correct offset.
 - **Issue #293**: Idle containers can block scheduled tasks. Mitigate by reducing `IDLE_TIMEOUT` in `src/config.ts`.
-- **Cross-group access**: Digest and review runners need to read TASKS.json from multiple groups. They run from main group context which has project-level read access.
+- **Cross-group access**: Runners execute in the target group context (`target_group_jid`), which gives direct `/workspace/group/` access. Non-main groups do NOT get `/workspace/project/`.
+- **IPC authorization**: Non-main groups can only send messages to their own group chat. The MCP `send_message` tool has no recipient parameter — it always sends to the current chatJid. Individual DMs (`@s.whatsapp.net`) are not supported even from main, as user JIDs are not in `registeredGroups`.
+- **MCP tools**: Use `send_message(text, sender?)` for group messages, `schedule_task(...)` for scheduling, `cancel_task(taskId)` for cleanup. Do NOT write raw IPC JSON files from agent prompts.
+- **History growth**: Task `history[]` must be capped at 50 entries. When adding a new entry would exceed 50, remove the oldest first. During archival, truncate to 20. This prevents TASKS.json from growing unbounded for long-running projects.

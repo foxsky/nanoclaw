@@ -9,6 +9,9 @@ Added media download support. When a WhatsApp message contains an image or docum
 - Added: `isMediaMessage`, `getMediaType`, `downloadAndSaveMedia` from `../media.js`
 - Added: `GROUPS_DIR` to the existing `../config.js` import
 
+### Content extraction chain
+- Added: `msg.message?.documentMessage?.caption` to the content extraction chain so document captions are preserved
+
 ### messages.upsert handler (inside connectInternal)
 - Added: media handling block after the voice transcription block and before `this.opts.onMessage()`
 - Uses `isMediaMessage(msg)` to detect supported media types (images, PDFs, documents)
@@ -23,7 +26,7 @@ Added media download support. When a WhatsApp message contains an image or docum
 - Download failures are non-fatal and only affect annotation text.
 
 ## Must-keep sections
-- All existing message handling (conversation, extendedTextMessage, imageMessage caption, videoMessage caption) unchanged
+- All existing message handling (conversation, extendedTextMessage, imageMessage caption, videoMessage caption, documentMessage caption) unchanged
 - Voice transcription block (isVoiceMessage, transcribeAudioMessage) unchanged
 - Connection lifecycle (connect, reconnect, disconnect) unchanged
 - LID translation logic unchanged

@@ -177,6 +177,7 @@ export class WhatsAppChannel implements Channel {
             msg.message?.extendedTextMessage?.text ||
             msg.message?.imageMessage?.caption ||
             msg.message?.videoMessage?.caption ||
+            msg.message?.documentMessage?.caption ||
             '';
 
           const sender = msg.key.participant || msg.key.remoteJid || '';

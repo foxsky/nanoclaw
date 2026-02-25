@@ -109,6 +109,7 @@ vi.mock('@whiskeysockets/baileys', () => {
       timedOut: 408,
       restartRequired: 515,
     },
+    fetchLatestWaWebVersion: vi.fn().mockResolvedValue({ version: [2, 3000, 0] }),
     makeCacheableSignalKeyStore: vi.fn((keys: unknown) => keys),
     useMultiFileAuthState: vi.fn().mockResolvedValue({
       state: {
@@ -743,6 +744,46 @@ describe('WhatsAppChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
         expect.objectContaining({ content: 'Just text' }),
+      );
+    });
+
+    it('extracts caption from documentMessage', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'msg-doc-cap',
+            remoteJid: 'registered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: {
+            documentMessage: {
+              mimetype: 'application/pdf',
+              fileName: 'report.pdf',
+              caption: 'Here is the report',
+            },
+          },
+          pushName: 'Diana',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          content: expect.stringContaining('Here is the report'),
+        }),
+      );
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          content: expect.stringContaining('[Media: document at'),
+        }),
       );
     });
 

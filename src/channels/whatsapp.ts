@@ -200,6 +200,7 @@ export class WhatsAppChannel implements Channel {
             msg.message?.extendedTextMessage?.text ||
             msg.message?.imageMessage?.caption ||
             msg.message?.videoMessage?.caption ||
+            msg.message?.documentMessage?.caption ||
             '';
 
           // Skip protocol messages with no text content (encryption keys, read receipts, etc.)

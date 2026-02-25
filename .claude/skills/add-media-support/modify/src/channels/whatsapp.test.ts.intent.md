@@ -17,6 +17,7 @@ Added mock for the media module and 6 new test cases for media download handling
 - Added: "text-only messages are unaffected by media handling" — expects `downloadAndSaveMedia` NOT called
 - Added: "handles media download failure gracefully" — expects `[Media: image — download failed]`
 - Added: "voice notes (PTT audio) are NOT treated as media" — expects transcription, not media download
+- Added: "extracts caption from documentMessage" — expects both `[Media: document at ...]` annotation and caption text
 - Changed: "extracts caption from imageMessage" — now expects content containing caption (media annotation may be prepended)
 
 ## Invariants

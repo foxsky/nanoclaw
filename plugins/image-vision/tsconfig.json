@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../dist/plugins/image-vision",
+    "rootDir": "."
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules"]
+}

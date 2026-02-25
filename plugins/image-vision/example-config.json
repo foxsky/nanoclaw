@@ -1,0 +1,28 @@
+{
+  "120363424913709624@g.us": {
+    "name": "Eurotrip",
+    "folder": "eurotrip",
+    "trigger": "@Tars",
+    "added_at": "2026-02-18T00:00:00.000Z",
+    "plugins": {
+      "image-vision": {
+        "enabled": true,
+        "maxMediaAge": 7,
+        "maxFileSize": 10485760,
+        "comment": "Max file size is 10MB, media older than 7 days will be auto-deleted"
+      }
+    }
+  },
+  "120363337094598234@g.us": {
+    "name": "Main",
+    "folder": "main",
+    "trigger": "@Tars",
+    "added_at": "2026-01-01T00:00:00.000Z",
+    "plugins": {
+      "image-vision": {
+        "enabled": false,
+        "comment": "Plugin disabled for main group"
+      }
+    }
+  }
+}
