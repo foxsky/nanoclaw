@@ -1,0 +1,43 @@
+{
+  "meta": {
+    "schema_version": "1.0",
+    "language": "{{LANGUAGE}}",
+    "timezone": "{{TIMEZONE}}",
+    "manager": {
+      "name": "{{MANAGER_NAME}}",
+      "phone": "{{MANAGER_PHONE}}"
+    },
+    "attachment_policy": {
+      "allowed_formats": ["pdf", "jpg", "png"],
+      "max_size_bytes": 10485760
+    },
+    "wip_limit_default": {{WIP_LIMIT}},
+    "columns": ["inbox", "next_action", "in_progress", "waiting", "review", "done"],
+    "runner_task_ids": {
+      "standup": null,
+      "digest": null,
+      "review": null,
+      "dst_guard": null
+    },
+    "runner_crons_local": {
+      "standup": "{{STANDUP_CRON_LOCAL}}",
+      "digest": "{{DIGEST_CRON_LOCAL}}",
+      "review": "{{REVIEW_CRON_LOCAL}}"
+    },
+    "runner_crons_utc": {
+      "standup": "{{STANDUP_CRON}}",
+      "digest": "{{DIGEST_CRON}}",
+      "review": "{{REVIEW_CRON}}"
+    },
+    "dst_sync": {
+      "last_offset_minutes": null,
+      "last_synced_at": null,
+      "resync_count_24h": 0,
+      "resync_window_started_at": null
+    },
+    "attachment_audit_trail": []
+  },
+  "people": [],
+  "tasks": [],
+  "next_id": 1
+}

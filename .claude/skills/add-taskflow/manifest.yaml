@@ -1,0 +1,14 @@
+skill: taskflow
+version: 1.0.0
+description: "Kanban+GTD task management for team coordination via WhatsApp"
+core_version: 0.1.0
+adds: []
+modifies: []
+structured:
+  npm_dependencies: {}
+  env_additions: []
+conflicts: []
+depends: []
+tested_with:
+  - media-support
+test: "npx vitest run --config .claude/skills/vitest.config.ts .claude/skills/add-taskflow/tests/taskflow.test.ts"
