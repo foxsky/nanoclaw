@@ -1,0 +1,25 @@
+# Agent Swarm Configuration (optional reference)
+# Not read by NanoClaw runtime; host uses SWARM_REPOS_JSON from NanoClaw .env
+# You may copy to ~/.agent-swarm/config.yaml for manual ops notes
+
+repos:
+  project-a:
+    path: /home/dev/project-a
+    description: "SaaS backend (Node/TypeScript)"
+    default_model: codex
+    install_command: "npm ci"
+
+  project-b:
+    path: /home/dev/project-b
+    description: "SaaS frontend (Next.js)"
+    default_model: "claude-code:sonnet"
+    install_command: "pnpm install --frozen-lockfile"
+
+  project-c:
+    path: /home/dev/project-c
+    description: "API backend (Python/FastAPI)"
+    default_model: codex
+    install_command: "poetry install --no-interaction"
+
+max_concurrent: 4
+max_retries: 3
