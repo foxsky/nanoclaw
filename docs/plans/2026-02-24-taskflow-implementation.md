@@ -165,16 +165,15 @@ structured:
   npm_dependencies: {}
   env_additions: []
 conflicts: []
-depends:
-  - media-support  # Optional: attachment ingestion (PDF/JPG/PNG). Skill works without it but attachment import is disabled.
+depends: []
 tested_with:
   - media-support
-test: "npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts"
+test: "npx vitest run --config .claude/skills/vitest.config.ts .claude/skills/add-taskflow/tests/taskflow.test.ts"
 ```
 
 **Notes:**
 - `adds`/`modifies` are empty because this is a config-only skill — it generates runtime files (`groups/*/CLAUDE.md`, `TASKS.json`, `ARCHIVE.json`) via interactive setup, not via three-way merge.
-- `depends: [media-support]` is a soft dependency: the SKILL.md Phase 1 pre-flight checks for media-support availability and disables attachment import if absent.
+- `media-support` is optional integration coverage via `tested_with`; keeping `depends: []` ensures taskflow can be applied standalone while SKILL.md pre-flight can disable attachment import when media tooling is unavailable.
 - `test` points to the skill package test (written in Task 12b).
 
 **Step 2: Commit**
@@ -609,7 +608,7 @@ schedule_task(
 
 ```
 cancel_task(
-  taskId: "[TASK_ID]"
+  task_id: "[TASK_ID]"
 )
 ```
 
@@ -736,7 +735,7 @@ For each task group to create:
 
 Ask if the user has an existing WhatsApp group or wants to create a new one.
 
-- If existing: Find the JID from `/workspace/ipc/available_groups.json` or query the database
+- If existing: Find the JID from `data/ipc/main/available_groups.json` (host path used by the SKILL.md wizard). In container context, the same snapshot is visible at `/workspace/ipc/available_groups.json`.
 - If new: Tell the user to create the group in WhatsApp first, add the bot, then we'll register it
 
 ### 2. Create Group Directory
@@ -901,7 +900,7 @@ Create 4 scheduled tasks per task group from the **main channel** using the `sch
 ### Timezone Handling
 
 All cron expressions must be in the server's timezone. The `schedule_value` is interpreted by the host's `TZ` environment variable (this server uses `TZ=UTC`, so cron expressions are effectively in UTC). **If the server TZ changes, all cron expressions must be recalculated.** Convert using the configured timezone:
-- Read `TZ` from `.env` to determine the server timezone (expected: UTC)
+- Read runtime timezone from `process.env.TZ` (fallback: system timezone) to determine scheduler timezone; do not assume `.env` is the runtime source of truth
 - For DST zones, calculate offset by date and persist both local/UTC cron values in TASKS.json meta
 - Create an automatic DST guard runner that checks offset changes daily and reschedules runners without manual intervention
 - Example: 08:00 in America/Fortaleza (UTC-3) = 11:00 UTC
@@ -1328,7 +1327,7 @@ describe('taskflow skill package', () => {
 **Step 2: Verify tests pass**
 
 ```bash
-npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts
+npx vitest run --config .claude/skills/vitest.config.ts .claude/skills/add-taskflow/tests/taskflow.test.ts
 ```
 
 **Step 3: Commit**
@@ -1354,12 +1353,12 @@ git commit -m "feat: add skill package tests for taskflow"
 
 Read each file and verify:
 - SKILL.md has all 5 phases
-- manifest.yaml has correct metadata, dependency on media-support, test command
+- manifest.yaml has correct metadata, optional media integration (`tested_with: [media-support]`), and test command
 - CLAUDE.md.template has all sections (identity, data loading, board rules, GTD, commands, runners, IPC, config)
 - TASKS.json.template has correct JSON structure
 - ARCHIVE.json.template has correct JSON structure
 - All `{{PLACEHOLDER}}` names are consistent between SKILL.md and templates
-- Tests pass: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
+- Tests pass: `npx vitest run --config .claude/skills/vitest.config.ts .claude/skills/add-taskflow/tests/taskflow.test.ts`
 
 **Step 2: Verify file permissions**
 
@@ -1427,8 +1426,8 @@ These controls MUST pass before the skill can be merged:
 - [ ] Attachment-driven changes require `CONFIRM_IMPORT {import_action_id}` before write
 - [ ] `meta.attachment_audit_trail` records `source`, `filename`, `timestamp`, actor, and affected task IDs for each confirmed import
 - [ ] Attachment create/update permission model is enforced: manager-any, assignee-own-only, with per-task ownership checks at proposal and apply-time
-- [ ] `manifest.yaml` declares skill metadata, soft dependency on `media-support`, and test command per nanorepo architecture
-- [ ] Skill package tests pass: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
+- [ ] `manifest.yaml` declares skill metadata, optional media integration (`tested_with: [media-support]`), and test command per nanorepo architecture
+- [ ] Skill package tests pass: `npx vitest run --config .claude/skills/vitest.config.ts .claude/skills/add-taskflow/tests/taskflow.test.ts`
 
 ---
 
@@ -1457,5 +1456,5 @@ These controls MUST pass before the skill can be merged:
 | R19 | DST guard execution context unclear | Medium | Clarified that the DST guard works from target group context: `cancel_task` allows own-group task cancellation (`task.group_folder === sourceGroup`), and `schedule_task` schedules for the current chatJid (which is the target group). No main privileges needed. |
 | R20 | `schedule_value` TZ dependency undocumented | Low | Documented that cron expressions are interpreted in the host server's `TZ` (currently UTC). If server TZ changes, all cron math breaks. |
 | R21 | Design doc `runner_task_ids` missing `dst_guard` | Low | Added `dst_guard: null` to the example TASKS.json in the design doc to match the implementation template. |
-| R22 | Missing `manifest.yaml` per nanorepo architecture | Medium | Added Task 3b with manifest declaring skill metadata, soft dependency on `media-support`, and test command. Config-only skills have empty `adds`/`modifies` but still require a manifest for state tracking and replay. |
+| R22 | Missing `manifest.yaml` per nanorepo architecture | Medium | Added Task 3b with manifest declaring skill metadata, optional media integration via `tested_with: [media-support]` (no hard dependency), and test command. Config-only skills have empty `adds`/`modifies` but still require a manifest for state tracking and replay. |
 | R23 | Missing skill package tests per nanorepo architecture | Medium | Added Task 12b with vitest tests verifying: manifest validity, SKILL.md phases, template structure, JSON validity after substitution, CLAUDE.md sections, correct `send_message` signature, and placeholder consistency. Uses existing `.claude/skills/vitest.config.ts` runner. |
