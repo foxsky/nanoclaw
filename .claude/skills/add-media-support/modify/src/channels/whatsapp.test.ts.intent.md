@@ -1,6 +1,6 @@
 # Intent: src/channels/whatsapp.test.ts modifications
 
-## What changed
+## What this skill adds
 Added mock for the media module and 6 new test cases for media download handling.
 
 ## Key sections
@@ -19,7 +19,12 @@ Added mock for the media module and 6 new test cases for media download handling
 - Added: "voice notes (PTT audio) are NOT treated as media" — expects transcription, not media download
 - Changed: "extracts caption from imageMessage" — now expects content containing caption (media annotation may be prepended)
 
-## Invariants (must-keep)
+## Invariants
+- Media tests remain unit-level and rely on mocks, not network I/O.
+- Existing test helper flow (`connectChannel`, `triggerMessages`) remains unchanged.
+- Voice message behavior remains validated independently from media logic.
+
+## Must-keep sections
 - All existing test cases for text, extendedTextMessage, videoMessage unchanged
 - All voice transcription tests unchanged
 - All connection lifecycle tests unchanged

@@ -137,7 +137,7 @@ describe('media module', () => {
 
 **Step 2: Run test to verify it fails**
 
-Run: `npx vitest run .claude/skills/add-media-support/tests/media.test.ts`
+Run: `npx vitest run --config vitest.skills.config.ts .claude/skills/add-media-support/tests/media.test.ts`
 Expected: FAIL — module not found
 
 **Step 3: Write the media module**
@@ -359,7 +359,7 @@ export async function downloadAndSaveMedia(
 
 **Step 4: Run test to verify it passes**
 
-Run: `npx vitest run .claude/skills/add-media-support/tests/media.test.ts`
+Run: `npx vitest run --config vitest.skills.config.ts .claude/skills/add-media-support/tests/media.test.ts`
 Expected: PASS
 
 **Step 5: Commit**
@@ -514,7 +514,7 @@ Expected: all files exist
 **Step 2: Run media module tests**
 
 ```bash
-npx vitest run .claude/skills/add-media-support/tests/media.test.ts
+npx vitest run --config vitest.skills.config.ts .claude/skills/add-media-support/tests/media.test.ts
 ```
 
 Expected: all tests pass

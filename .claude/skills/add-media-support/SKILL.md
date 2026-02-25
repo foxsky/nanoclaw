@@ -23,6 +23,16 @@ Read `.nanoclaw/state.yaml`. If `voice-transcription` is NOT in `applied_skills`
 
 Media support's modify file depends on the `finalContent` pattern and the `!content` guard removal that voice-transcription introduces.
 
+### Validate merge-safety prerequisite
+
+Before applying, verify the voice-transcription modify file includes the WA Web version fetch safeguard:
+
+```bash
+grep -q 'fetchLatestWaWebVersion' .claude/skills/add-voice-transcription/modify/src/channels/whatsapp.ts && echo "OK" || echo "FAIL: update voice-transcription modify file first"
+```
+
+If this prints `FAIL`, stop and update the voice-transcription modify file first.
+
 ### Initialize skills system (if needed)
 
 If `.nanoclaw/` directory doesn't exist yet, initialize from the NanoClaw project root:
@@ -56,6 +66,7 @@ If the apply reports merge conflicts, read the intent files:
 ### Validate code changes
 
 ```bash
+npx vitest run --config vitest.skills.config.ts .claude/skills/add-media-support/tests/media.test.ts
 npx vitest run src/channels/whatsapp.test.ts
 npm run build
 ```

@@ -87,6 +87,7 @@ function getFileName(msg: WAMessage): string | undefined {
 const MAX_MEDIA_SIZE = 25 * 1024 * 1024; // 25MB — reject files larger than this
 const MAX_MEDIA_DIR_SIZE = 500 * 1024 * 1024; // 500MB — per-group media directory quota
 const DOWNLOAD_TIMEOUT_MS = 60_000; // 60 seconds — prevents hanging downloads
+const DEFAULT_MEDIA_RETENTION_DAYS = 30;
 
 // Recursive directory size to prevent quota bypass via subdirectories
 function getDirectorySize(dirPath: string): number {
@@ -102,6 +103,33 @@ function getDirectorySize(dirPath: string): number {
     // Deliberately skip symlinks
   }
   return total;
+}
+
+function getRetentionDays(): number {
+  const raw = process.env.MEDIA_RETENTION_DAYS;
+  if (!raw) return DEFAULT_MEDIA_RETENTION_DAYS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MEDIA_RETENTION_DAYS;
+  return Math.floor(parsed);
+}
+
+function cleanupExpiredMedia(mediaDir: string): void {
+  if (!fs.existsSync(mediaDir)) return;
+  const retentionMs = getRetentionDays() * 24 * 60 * 60 * 1000;
+  const cutoff = Date.now() - retentionMs;
+
+  for (const entry of fs.readdirSync(mediaDir, { withFileTypes: true })) {
+    const fullPath = path.join(mediaDir, entry.name);
+    if (entry.isFile()) {
+      const stat = fs.statSync(fullPath);
+      if (stat.mtimeMs < cutoff) {
+        fs.unlinkSync(fullPath);
+      }
+    } else if (entry.isDirectory()) {
+      cleanupExpiredMedia(fullPath);
+    }
+    // Deliberately skip symlinks
+  }
 }
 
 // NOTE: fileLength is sender-reported metadata (can be spoofed or a protobuf Long).
@@ -124,9 +152,12 @@ export async function downloadAndSaveMedia(
   sock: WASocket,
 ): Promise<string | null> {
   try {
+    // Retention cleanup is best-effort and runs before quota checks.
+    cleanupExpiredMedia(mediaDir);
+
     // Check per-group media directory quota to prevent disk exhaustion
     const currentDirSize = getDirectorySize(mediaDir);
-    if (currentDirSize > MAX_MEDIA_DIR_SIZE) {
+    if (currentDirSize >= MAX_MEDIA_DIR_SIZE) {
       console.warn(`Media directory quota exceeded (${currentDirSize} bytes), skipping download`);
       return null;
     }
@@ -135,6 +166,12 @@ export async function downloadAndSaveMedia(
     const fileLength = getFileLength(msg);
     if (fileLength && fileLength > MAX_MEDIA_SIZE) {
       console.warn(`Media file too large (${fileLength} bytes), skipping download`);
+      return null;
+    }
+    if (fileLength && currentDirSize + fileLength > MAX_MEDIA_DIR_SIZE) {
+      console.warn(
+        `Media directory would exceed quota (${currentDirSize + fileLength} bytes), skipping download`,
+      );
       return null;
     }
 
@@ -156,6 +193,12 @@ export async function downloadAndSaveMedia(
     // Post-download size check — this is the actual security enforcement
     if (buffer.length > MAX_MEDIA_SIZE) {
       console.warn(`Downloaded media exceeds size limit (${buffer.length} bytes), discarding`);
+      return null;
+    }
+    if (currentDirSize + buffer.length > MAX_MEDIA_DIR_SIZE) {
+      console.warn(
+        `Media directory would exceed quota (${currentDirSize + buffer.length} bytes), discarding`,
+      );
       return null;
     }
 
