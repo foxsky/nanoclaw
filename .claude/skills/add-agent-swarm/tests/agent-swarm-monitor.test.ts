@@ -194,6 +194,23 @@ describe('agent-swarm-monitor', () => {
     expect(actions).toHaveLength(0);
   });
 
+  it('notifies failed when critical comments exhaust retries', async () => {
+    const { checkAgents, readTaskRegistry } = await import('../add/src/agent-swarm.js');
+    const { evaluateAgents } = await import('../add/src/agent-swarm-monitor.js');
+
+    (readTaskRegistry as any).mockResolvedValue({
+      tasks: [{ id: 'feat-crit-max', status: 'reviewing', retries: 3, maxRetries: 3 }],
+    });
+    (checkAgents as any).mockResolvedValue([
+      { id: 'feat-crit-max', tmux_alive: false, pr_number: 90, ci_status: 'passing', review_status: 'changes_requested', critical_comments: 2, has_screenshots: false },
+    ]);
+
+    const actions = await evaluateAgents('dev@remote');
+    expect(actions).toHaveLength(1);
+    expect(actions[0].action).toBe('notify_failed');
+    expect(actions[0].reason).toContain('Critical review comments');
+  });
+
   it('produces no action for still-running agents even with PR and failing CI', async () => {
     const { checkAgents, readTaskRegistry } = await import('../add/src/agent-swarm.js');
     const { evaluateAgents } = await import('../add/src/agent-swarm-monitor.js');

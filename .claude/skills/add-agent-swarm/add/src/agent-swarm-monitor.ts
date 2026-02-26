@@ -103,6 +103,13 @@ export async function evaluateAgents(
             pr: status.pr_number,
             reason: `${status.critical_comments} critical review comments`,
           });
+        } else {
+          actions.push({
+            taskId: task.id,
+            action: 'notify_failed',
+            pr: status.pr_number,
+            reason: `Critical review comments after ${task.retries} retries`,
+          });
         }
         continue;
       }

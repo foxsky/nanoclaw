@@ -32,7 +32,7 @@ gh pr diff "$PR_NUM" > "$DIFF_FILE"
 # Truncate diff to ~100KB to avoid CLI arg/token limits.
 # Truncate at last complete line to avoid mid-line or mid-UTF8 cuts.
 if [ "$(wc -c < "$DIFF_FILE")" -gt 102400 ]; then
-  head -c 102400 "$DIFF_FILE" | head -n -0 > "$DIFF_FILE.tmp"
+  head -c 102400 "$DIFF_FILE" | head -n -1 > "$DIFF_FILE.tmp"
   echo -e "\n\n... [diff truncated at ~100KB] ..." >> "$DIFF_FILE.tmp"
   mv "$DIFF_FILE.tmp" "$DIFF_FILE"
 fi

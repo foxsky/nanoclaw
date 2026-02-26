@@ -426,7 +426,11 @@ export async function processTaskIpc(
         if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, 'Error: swarm is not configured (set SWARM_SSH_TARGET)');
         break;
       }
-      const repoConfig = SWARM_REPOS[data.repo!];
+      if (!data.repo || !data.branchName || !data.prompt || !data.model) {
+        if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, 'Error: missing required fields (repo, branchName, prompt, model)');
+        break;
+      }
+      const repoConfig = SWARM_REPOS[data.repo];
       if (!repoConfig) {
         logger.warn({ repo: data.repo }, 'Unknown repo in swarm_spawn');
         if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, `Error: unknown repo "${data.repo}"`);
@@ -434,11 +438,11 @@ export async function processTaskIpc(
       }
       try {
         const spawnedTaskId = await spawnAgent(SWARM_SSH_TARGET, {
-          repo: data.repo!,
+          repo: data.repo,
           repoPath: repoConfig.path,
-          branchName: data.branchName!,
-          prompt: data.prompt!,
-          model: data.model!,
+          branchName: data.branchName,
+          prompt: data.prompt,
+          model: data.model,
           priority: data.priority as any,
         });
         logger.info({ taskId: spawnedTaskId, repo: data.repo, model: data.model }, 'Swarm agent spawned');
@@ -481,7 +485,11 @@ export async function processTaskIpc(
         break;
       }
       try {
-        await redirectAgent(SWARM_SSH_TARGET, data.taskId!, data.message!);
+        if (!data.taskId || !data.message) {
+          if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, 'Error: missing required fields (taskId, message)');
+          break;
+        }
+        await redirectAgent(SWARM_SSH_TARGET, data.taskId, data.message);
         logger.info({ taskId: data.taskId }, 'Swarm agent redirected');
         if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, `Redirect sent to ${data.taskId}`);
       } catch (err) {
@@ -501,7 +509,11 @@ export async function processTaskIpc(
         break;
       }
       try {
-        await killAgent(SWARM_SSH_TARGET, data.taskId!, data.cleanup);
+        if (!data.taskId) {
+          if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, 'Error: missing required field (taskId)');
+          break;
+        }
+        await killAgent(SWARM_SSH_TARGET, data.taskId, data.cleanup ?? false);
         logger.info({ taskId: data.taskId, cleanup: data.cleanup }, 'Swarm agent killed');
         if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, `Killed agent ${data.taskId}${data.cleanup ? ' (cleaned up)' : ''}`);
       } catch (err) {
@@ -521,7 +533,11 @@ export async function processTaskIpc(
         break;
       }
       try {
-        const output = await readAgentLog(SWARM_SSH_TARGET, data.taskId!, data.lines);
+        if (!data.taskId) {
+          if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, 'Error: missing required field (taskId)');
+          break;
+        }
+        const output = await readAgentLog(SWARM_SSH_TARGET, data.taskId, data.lines);
         logger.info({ taskId: data.taskId }, 'Swarm agent output retrieved');
         if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, output);
       } catch (err) {
@@ -541,7 +557,11 @@ export async function processTaskIpc(
         break;
       }
       try {
-        await runReview(SWARM_SSH_TARGET, data.taskId!);
+        if (!data.taskId) {
+          if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, 'Error: missing required field (taskId)');
+          break;
+        }
+        await runReview(SWARM_SSH_TARGET, data.taskId);
         logger.info({ taskId: data.taskId }, 'Swarm PR review complete');
         if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, `Review complete for ${data.taskId}`);
       } catch (err) {
@@ -561,7 +581,11 @@ export async function processTaskIpc(
         break;
       }
       try {
-        await updateTaskStatus(SWARM_SSH_TARGET, data.taskId!, data.status as any);
+        if (!data.taskId || !data.status) {
+          if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, 'Error: missing required fields (taskId, status)');
+          break;
+        }
+        await updateTaskStatus(SWARM_SSH_TARGET, data.taskId, data.status as any);
         logger.info({ taskId: data.taskId, status: data.status }, 'Swarm task status updated');
         if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, `Updated ${data.taskId} to ${data.status}`);
       } catch (err) {
