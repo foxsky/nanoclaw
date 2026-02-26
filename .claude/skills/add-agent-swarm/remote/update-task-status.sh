@@ -7,6 +7,7 @@ TASK_ID="$1"
 NEW_STATUS="$2"
 SWARM_DIR="$HOME/.agent-swarm"
 REGISTRY="$SWARM_DIR/active-tasks.json"
+LOCK_FILE="$REGISTRY.lock"
 
 if [ ! -f "$REGISTRY" ]; then
   echo "Registry not found: $REGISTRY" >&2
@@ -21,13 +22,24 @@ case "$NEW_STATUS" in
     ;;
 esac
 
-jq --arg id "$TASK_ID" --arg status "$NEW_STATUS" \
-  '(.tasks[] | select(.id == $id)).status = $status |
-   (if $status == "merged" or $status == "failed" then
-      (.tasks[] | select(.id == $id)).completedAt = (now * 1000 | floor)
-    else
-      .
-    end)' \
-  "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
+source "$SWARM_DIR/lib-lock.sh"
+
+update_status() {
+  if ! jq -e --arg id "$TASK_ID" '.tasks[] | select(.id == $id)' "$REGISTRY" >/dev/null; then
+    echo "Task not found: $TASK_ID" >&2
+    return 1
+  fi
+
+  jq --arg id "$TASK_ID" --arg status "$NEW_STATUS" \
+    '(.tasks[] | select(.id == $id)).status = $status |
+     (if $status == "merged" or $status == "failed" then
+        (.tasks[] | select(.id == $id)).completedAt = (now * 1000 | floor)
+      else
+        .
+      end)' \
+    "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
+}
+
+with_registry_lock "$LOCK_FILE" update_status
 
 echo "Updated $TASK_ID status to $NEW_STATUS"

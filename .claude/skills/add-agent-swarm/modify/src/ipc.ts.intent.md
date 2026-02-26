@@ -24,6 +24,7 @@ Eight IPC handler cases for swarm operations (swarm_spawn, swarm_check, swarm_re
 - All swarm handlers return explicit IPC responses when blocked (`!isMain` or `!SWARM_ENABLED`) so MCP tools fail fast instead of timing out.
 - Errors are logged and written as response, never thrown.
 - Response files cleaned up by MCP tool's `waitForResponse` after reading.
+- `requestId` is validated with a safe-character allowlist before writing response files, preventing path traversal.
 
 ## Must-keep sections
 - All existing IPC cases (message, schedule_task, pause/resume/cancel_task, register_group, refresh_groups) unchanged

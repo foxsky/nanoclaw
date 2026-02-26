@@ -7,6 +7,7 @@ TASK_ID="$1"
 CLEANUP="${2:-keep}"
 SWARM_DIR="$HOME/.agent-swarm"
 REGISTRY="$SWARM_DIR/active-tasks.json"
+LOCK_FILE="$REGISTRY.lock"
 
 # Kill tmux session
 tmux kill-session -t "agent-$TASK_ID" 2>/dev/null || true
@@ -26,10 +27,16 @@ if [ "$CLEANUP" = "cleanup" ] && [ -f "$REGISTRY" ]; then
   fi
 
   # Update registry status — only overwrite if task was still active
-  jq --arg id "$TASK_ID" \
-    '(.tasks[] | select(.id == $id and (.status == "running" or .status == "pr_created" or .status == "reviewing"))).status = "failed" |
-     (.tasks[] | select(.id == $id and .completedAt == null)).completedAt = (now * 1000 | floor)' \
-    "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
+  source "$SWARM_DIR/lib-lock.sh"
+
+  mark_task_failed() {
+    jq --arg id "$TASK_ID" \
+      '(.tasks[] | select(.id == $id and (.status == "running" or .status == "pr_created" or .status == "reviewing"))).status = "failed" |
+       (.tasks[] | select(.id == $id and .completedAt == null)).completedAt = (now * 1000 | floor)' \
+      "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
+  }
+
+  with_registry_lock "$LOCK_FILE" mark_task_failed
 fi
 
 echo "Killed agent-$TASK_ID"

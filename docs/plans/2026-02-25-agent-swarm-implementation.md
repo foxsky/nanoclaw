@@ -12,6 +12,34 @@
 
 ---
 
+## 2026-02-26 Amendment: Residual Risk Closure
+
+These requirements are mandatory and override earlier draft snippets in this plan.
+
+1. **Registry writes must be serialized**
+   - Any script that mutates `~/.agent-swarm/active-tasks.json` must use a lock (`flock` with a mkdir fallback) before read/modify/write.
+   - Applies to: `spawn-agent.sh`, `update-task-status.sh`, `cleanup-worktrees.sh`, and `kill-agent.sh`.
+
+2. **CI status classification must avoid false-ready states**
+   - `check-agents.sh` must mark CI as:
+     - `failing` if any check is `FAILURE`, `CANCELLED`, `TIMED_OUT`, or `ACTION_REQUIRED`.
+     - `passing` only when **all** reported checks are `SUCCESS`.
+     - `pending` for mixed/non-terminal states.
+
+3. **IPC response writes must validate `requestId`**
+   - `writeIpcResponse` in `modify/src/ipc.ts` must enforce a strict allowlist for `requestId` (safe filename characters only).
+   - Unsafe IDs must be rejected/logged and must not create files.
+
+4. **Status update must fail when task does not exist**
+   - `update-task-status.sh` must exit non-zero if `task_id` is missing from the registry.
+   - Host IPC must return that failure to the MCP caller.
+
+5. **IPC tests must execute the real modified IPC module**
+   - Do not reimplement IPC logic in tests.
+   - `tests/agent-swarm-ipc.test.ts` must load `modify/src/ipc.ts` (via fixture stubs for local imports) and assert real handler behavior.
+
+---
+
 ### Task 1: SSH bridge module
 
 **Files:**
@@ -423,13 +451,24 @@ git commit -m "feat: add SSH bridge module for /add-agent-swarm skill"
 
 **Files:**
 - Create: `.claude/skills/add-agent-swarm/remote/spawn-agent.sh`
+- Create: `.claude/skills/add-agent-swarm/remote/run-agent.sh`
+- Create: `.claude/skills/add-agent-swarm/remote/write-prompt.sh`
 - Create: `.claude/skills/add-agent-swarm/remote/check-agents.sh`
+- Create: `.claude/skills/add-agent-swarm/remote/redirect-agent.sh`
+- Create: `.claude/skills/add-agent-swarm/remote/kill-agent.sh`
+- Create: `.claude/skills/add-agent-swarm/remote/update-task-status.sh`
 - Create: `.claude/skills/add-agent-swarm/remote/review-pr.sh`
 - Create: `.claude/skills/add-agent-swarm/remote/cleanup-worktrees.sh`
 - Create: `.claude/skills/add-agent-swarm/remote/config.yaml.template`
 - Create: `.claude/skills/add-agent-swarm/remote/setup-remote.sh`
 
 These scripts run on the remote dev machine, not in NanoClaw.
+
+**Hardening requirements (must implement in final scripts):**
+- All registry mutations are lock-protected.
+- CI state evaluation uses strict all-success logic before `passing`.
+- Missing task IDs in status update are treated as errors.
+- Prompt/message payloads are written via `write-prompt.sh` and passed by file path, not interpolated into shell command strings.
 
 **Step 1: Create `spawn-agent.sh`**
 
@@ -529,6 +568,8 @@ jq --arg id "$TASK_ID" \
 
 echo "Spawned agent-$TASK_ID in $WORKTREE_DIR"
 ```
+
+Implementation note: final code writes prompts via `write-prompt.sh` and uses `run-agent.sh` with prompt file paths to avoid shell-quoting risks. Keep this draft snippet only as a conceptual baseline.
 
 **Step 2: Create `check-agents.sh`**
 
@@ -853,7 +894,7 @@ git commit -m "feat: add remote shell scripts for agent swarm"
 
 **Step 1: Create the MCP tools modify file**
 
-Start from the current `container/agent-runner/src/ipc-mcp-stdio.ts` and add five new MCP tools after the existing tools. All five are restricted to main group only (the orchestrator group).
+Start from the current `container/agent-runner/src/ipc-mcp-stdio.ts` and add eight new MCP tools after the existing tools. All are restricted to main group only (the orchestrator group): `spawn_agent`, `check_agents`, `redirect_agent`, `kill_agent`, `get_agent_output`, `run_review`, `update_task_status`, and `run_cleanup`.
 
 **New tools to add:**
 
@@ -1084,9 +1125,13 @@ server.tool(
 );
 ```
 
+Implementation note: the final MCP modify file also includes `run_review`, `update_task_status`, and `run_cleanup`, with request/response polling via `requestId`.
+
 **Step 2: Create the IPC handler modify file**
 
-Start from the current `src/ipc.ts` and add a new section inside `processTaskIpc` for swarm operations. Add `import { executeRemote, spawnAgent, checkAgents, redirectAgent, killAgent, getAgentOutput, runReview } from '../agent-swarm.js';` and import `SWARM_SSH_TARGET, SWARM_REPOS` from `../config.js`.
+Start from the current `src/ipc.ts` and add a new section inside `processTaskIpc` for swarm operations. Import swarm helpers from `./agent-swarm.js` and import `SWARM_SSH_TARGET`, `SWARM_ENABLED`, and `SWARM_REPOS` from `./config.js`. Use IPC request/response files with `requestId` for tool acknowledgements.
+
+Before writing IPC responses, validate `requestId` with a safe-character allowlist and skip unsafe values.
 
 **New IPC cases to add (inside the `switch(data.type)` block):**
 
@@ -1173,18 +1218,20 @@ case 'swarm_output': {
 }
 ```
 
+Implementation note: the final IPC modify file also includes `swarm_review`, `swarm_update_status`, and `swarm_cleanup`. For `swarm_check` and `swarm_output`, responses are written to IPC response files (not group folder artifacts) so MCP tools can return inline results.
+
 **Step 3: Create intent files**
 
 Create `.claude/skills/add-agent-swarm/modify/container/agent-runner/src/ipc-mcp-stdio.ts.intent.md`:
-- **What this skill adds:** Five MCP tools for agent swarm management (spawn_agent, check_agents, redirect_agent, kill_agent, get_agent_output). All restricted to main group.
+- **What this skill adds:** Eight MCP tools for agent swarm management (spawn_agent, check_agents, redirect_agent, kill_agent, get_agent_output, run_review, update_task_status, run_cleanup). All restricted to main group.
 - **Key sections:** New tools added after existing tools. Each writes IPC files with `type: 'swarm_*'`.
 - **Invariants:** Existing tools unchanged. Authorization pattern matches existing `isMain` checks.
 - **Must-keep sections:** All existing tools (send_message, schedule_task, list_tasks, pause_task, resume_task, cancel_task, register_group, refresh_groups).
 
 Create `.claude/skills/add-agent-swarm/modify/src/ipc.ts.intent.md`:
-- **What this skill adds:** Five IPC handler cases for swarm operations. Each calls the SSH bridge module (`agent-swarm.ts`). Results written to group folder files for agent to read.
+- **What this skill adds:** Eight IPC handler cases for swarm operations. Each calls the SSH bridge module (`agent-swarm.ts`) and responds via IPC response files.
 - **Key sections:** New cases in `processTaskIpc` switch statement. New imports for swarm module and config.
-- **Invariants:** Existing IPC cases unchanged. Authorization via `isMain` check. Error handling follows existing pattern (log + break).
+- **Invariants:** Existing IPC cases unchanged. Authorization via `isMain` check. Error handling follows existing pattern (log + response write). `requestId` validation prevents unsafe response-path writes.
 - **Must-keep sections:** All existing IPC cases (message, schedule_task, pause/resume/cancel_task, register_group, refresh_groups).
 
 **Step 4: Commit**
@@ -1300,7 +1347,7 @@ describe('agent-swarm-monitor', () => {
       },
     ]);
 
-    const actions = await evaluateAgents('dev@remote', {});
+    const actions = await evaluateAgents('dev@remote');
     expect(actions).toContainEqual(
       expect.objectContaining({
         taskId: 'feat-x',
@@ -1341,7 +1388,7 @@ describe('agent-swarm-monitor', () => {
       },
     ]);
 
-    const actions = await evaluateAgents('dev@remote', {});
+    const actions = await evaluateAgents('dev@remote');
     expect(actions).toContainEqual(
       expect.objectContaining({
         taskId: 'fix-y',
@@ -1381,7 +1428,7 @@ describe('agent-swarm-monitor', () => {
       },
     ]);
 
-    const actions = await evaluateAgents('dev@remote', {});
+    const actions = await evaluateAgents('dev@remote');
     expect(actions).toContainEqual(
       expect.objectContaining({
         taskId: 'fix-z',
@@ -1424,7 +1471,6 @@ export interface MonitorAction {
 
 export async function evaluateAgents(
   sshTarget: string,
-  repoConfig: Record<string, { path: string }>,
 ): Promise<MonitorAction[]> {
   const registry = await readTaskRegistry(sshTarget);
   const statuses = await checkAgents(sshTarget);
@@ -1568,7 +1614,7 @@ structured:
     - SWARM_REPOS_JSON
 conflicts: []
 depends: []
-test: "npx vitest run src/ipc.test.ts"
+test: "npx vitest run --config .claude/skills/vitest.config.ts .claude/skills/add-agent-swarm/tests/"
 ```
 
 **Step 2: Create SKILL.md**
@@ -1620,7 +1666,12 @@ ls -la .claude/skills/add-agent-swarm/modify/src/ipc.ts.intent.md
 ls -la .claude/skills/add-agent-swarm/modify/src/config.ts
 ls -la .claude/skills/add-agent-swarm/modify/container/agent-runner/src/ipc-mcp-stdio.ts
 ls -la .claude/skills/add-agent-swarm/remote/spawn-agent.sh
+ls -la .claude/skills/add-agent-swarm/remote/run-agent.sh
+ls -la .claude/skills/add-agent-swarm/remote/write-prompt.sh
 ls -la .claude/skills/add-agent-swarm/remote/check-agents.sh
+ls -la .claude/skills/add-agent-swarm/remote/redirect-agent.sh
+ls -la .claude/skills/add-agent-swarm/remote/kill-agent.sh
+ls -la .claude/skills/add-agent-swarm/remote/update-task-status.sh
 ls -la .claude/skills/add-agent-swarm/remote/review-pr.sh
 ls -la .claude/skills/add-agent-swarm/remote/cleanup-worktrees.sh
 ls -la .claude/skills/add-agent-swarm/remote/setup-remote.sh
@@ -1634,6 +1685,9 @@ npx vitest run --config vitest.skills.config.ts .claude/skills/add-agent-swarm/t
 
 Expected: all tests pass
 
+Additional assertion:
+- `agent-swarm-ipc.test.ts` exercises real `modify/src/ipc.ts` handlers (no reimplemented guard logic).
+
 **Step 3: Run full test suite (no regressions)**
 
 ```bash
@@ -1646,7 +1700,12 @@ Expected: all existing tests pass (ignore pre-existing fetch-upstream failures)
 
 ```bash
 bash -n .claude/skills/add-agent-swarm/remote/spawn-agent.sh
+bash -n .claude/skills/add-agent-swarm/remote/run-agent.sh
+bash -n .claude/skills/add-agent-swarm/remote/write-prompt.sh
 bash -n .claude/skills/add-agent-swarm/remote/check-agents.sh
+bash -n .claude/skills/add-agent-swarm/remote/redirect-agent.sh
+bash -n .claude/skills/add-agent-swarm/remote/kill-agent.sh
+bash -n .claude/skills/add-agent-swarm/remote/update-task-status.sh
 bash -n .claude/skills/add-agent-swarm/remote/review-pr.sh
 bash -n .claude/skills/add-agent-swarm/remote/cleanup-worktrees.sh
 bash -n .claude/skills/add-agent-swarm/remote/setup-remote.sh

@@ -44,13 +44,17 @@ process_task() {
 
       # Check CI
       local ci_raw
-      ci_raw=$(gh pr checks "$pr_raw" --json state -q '.[].state' 2>/dev/null | sort -u || echo "")
-      if echo "$ci_raw" | grep -q "FAILURE"; then
+      ci_raw=$(gh pr checks "$pr_raw" --json state -q '.[].state' 2>/dev/null | sed '/^$/d' | sort -u || echo "")
+      if echo "$ci_raw" | grep -Eq "FAILURE|CANCELLED|TIMED_OUT|ACTION_REQUIRED"; then
         CI_STATUS='"failing"'
-      elif echo "$ci_raw" | grep -q "SUCCESS"; then
-        CI_STATUS='"passing"'
       elif [ -n "$ci_raw" ]; then
-        CI_STATUS='"pending"'
+        # Mark passing only when every check is SUCCESS. Mixed SUCCESS+PENDING
+        # (or neutral states) must remain pending.
+        if echo "$ci_raw" | grep -qv "^SUCCESS$"; then
+          CI_STATUS='"pending"'
+        else
+          CI_STATUS='"passing"'
+        fi
       fi
 
       # Check reviews

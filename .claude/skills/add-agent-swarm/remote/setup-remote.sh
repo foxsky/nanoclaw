@@ -14,7 +14,7 @@ fi
 chmod +x "$SWARM_DIR/spawn-agent.sh" "$SWARM_DIR/run-agent.sh" "$SWARM_DIR/write-prompt.sh" \
   "$SWARM_DIR/check-agents.sh" "$SWARM_DIR/redirect-agent.sh" \
   "$SWARM_DIR/kill-agent.sh" "$SWARM_DIR/update-task-status.sh" "$SWARM_DIR/review-pr.sh" \
-  "$SWARM_DIR/cleanup-worktrees.sh"
+  "$SWARM_DIR/cleanup-worktrees.sh" "$SWARM_DIR/lib-lock.sh"
 
 echo "Checking prerequisites..."
 command -v git >/dev/null || { echo "FAIL: git not installed"; exit 1; }

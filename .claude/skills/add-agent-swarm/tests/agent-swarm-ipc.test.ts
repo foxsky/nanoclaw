@@ -1,118 +1,147 @@
-/**
- * Tests for agent-swarm IPC handler logic.
- *
- * Since modify files use imports relative to their install target (e.g.,
- * ./config.js), we cannot import them directly. Instead, we test the
- * writeIpcResponse helper and guard logic by reimplementing the minimal
- * slice of code under test.
- */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
+import { pathToFileURL } from 'url';
 
-const TEST_DATA_DIR = '/tmp/nanoclaw-test-ipc';
+type ProcessTaskIpc = (typeof import('../modify/src/ipc.ts'))['processTaskIpc'];
 
-/**
- * Extracted from modify/src/ipc.ts — writeIpcResponse helper.
- * This is the exact same implementation the IPC handler uses.
- */
-function writeIpcResponse(dataDir: string, sourceGroup: string, requestId: string, result: string): void {
-  const responseDir = path.join(dataDir, 'ipc', sourceGroup, 'responses');
-  fs.mkdirSync(responseDir, { recursive: true });
-  const responsePath = path.join(responseDir, `${requestId}.json`);
-  fs.writeFileSync(responsePath, result);
+const IPC_SOURCE = path.resolve(
+  __dirname,
+  '../modify/src/ipc.ts',
+);
+
+let fixtureDir: string;
+let processTaskIpc: ProcessTaskIpc;
+
+function writeStub(filename: string, content: string): void {
+  fs.writeFileSync(path.join(fixtureDir, filename), content);
+}
+
+function responsePath(group: string, requestId: string): string {
+  return path.join(fixtureDir, 'ipc', group, 'responses', `${requestId}.json`);
+}
+
+beforeEach(async () => {
+  fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-ipc-test-'));
+  fs.copyFileSync(IPC_SOURCE, path.join(fixtureDir, 'ipc.ts'));
+
+  writeStub(
+    'config.js',
+    `
+export const DATA_DIR = ${JSON.stringify(fixtureDir)};
+export const IPC_POLL_INTERVAL = 1000;
+export const MAIN_GROUP_FOLDER = 'main';
+export const TIMEZONE = 'UTC';
+export const SWARM_SSH_TARGET = 'dev@remote';
+export const SWARM_ENABLED = false;
+export const SWARM_REPOS = {};
+`,
+  );
+
+  writeStub('container-runner.js', 'export const AvailableGroup = {};');
+  writeStub(
+    'db.js',
+    `
+export function createTask() {}
+export function deleteTask() {}
+export function getTaskById() { return null; }
+export function updateTask() {}
+`,
+  );
+  writeStub('group-folder.js', 'export function isValidGroupFolder() { return true; }');
+  writeStub(
+    'logger.js',
+    `
+export const logger = {
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+};
+`,
+  );
+  writeStub(
+    'agent-swarm.js',
+    `
+export async function spawnAgent() { throw new Error('not expected'); }
+export async function checkAgents() { return []; }
+export async function redirectAgent() { throw new Error('not expected'); }
+export async function killAgent() { throw new Error('not expected'); }
+export async function updateTaskStatus() { throw new Error('not expected'); }
+export async function readAgentLog() { return ''; }
+export async function runReview() { throw new Error('not expected'); }
+export async function runCleanup() { throw new Error('not expected'); }
+`,
+  );
+
+  const moduleUrl = `${pathToFileURL(path.join(fixtureDir, 'ipc.ts')).href}?t=${Date.now()}`;
+  const imported = await import(moduleUrl);
+  processTaskIpc = imported.processTaskIpc as ProcessTaskIpc;
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  fs.rmSync(fixtureDir, { recursive: true, force: true });
+});
+
+function baseDeps() {
+  return {
+    sendMessage: vi.fn(),
+    registeredGroups: () => ({}),
+    registerGroup: vi.fn(),
+    syncGroupMetadata: vi.fn(),
+    getAvailableGroups: () => [],
+    writeGroupsSnapshot: vi.fn(),
+  };
 }
 
 describe('agent-swarm IPC handlers', () => {
-  beforeEach(() => {
-    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
-    fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+  it('writes guard error for swarm_update_status when SWARM_ENABLED is false', async () => {
+    await processTaskIpc(
+      {
+        type: 'swarm_update_status',
+        requestId: 'req-1',
+        taskId: 'task-1',
+        status: 'ready_for_review',
+      },
+      'main',
+      true,
+      baseDeps(),
+    );
+
+    expect(fs.readFileSync(responsePath('main', 'req-1'), 'utf-8')).toContain(
+      'Error: swarm is not configured',
+    );
   });
 
-  afterEach(() => {
-    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  it('writes guard error for swarm_cleanup when caller is not main', async () => {
+    await processTaskIpc(
+      {
+        type: 'swarm_cleanup',
+        requestId: 'req-2',
+      },
+      'other-group',
+      false,
+      baseDeps(),
+    );
+
+    expect(
+      fs.readFileSync(responsePath('other-group', 'req-2'), 'utf-8'),
+    ).toContain('Error: only main group');
   });
 
-  function getResponsePath(sourceGroup: string, requestId: string): string {
-    return path.join(TEST_DATA_DIR, 'ipc', sourceGroup, 'responses', `${requestId}.json`);
-  }
+  it('drops unsafe request IDs instead of writing outside responses directory', async () => {
+    await processTaskIpc(
+      {
+        type: 'swarm_cleanup',
+        requestId: '../escape',
+      },
+      'main',
+      false,
+      baseDeps(),
+    );
 
-  describe('writeIpcResponse', () => {
-    it('creates response directory and writes file', () => {
-      writeIpcResponse(TEST_DATA_DIR, 'main', 'req-1', 'success');
-      const responsePath = getResponsePath('main', 'req-1');
-      expect(fs.existsSync(responsePath)).toBe(true);
-      expect(fs.readFileSync(responsePath, 'utf-8')).toBe('success');
-    });
-
-    it('creates nested directory structure for group', () => {
-      writeIpcResponse(TEST_DATA_DIR, 'other-group', 'req-2', 'error');
-      const responsePath = getResponsePath('other-group', 'req-2');
-      expect(fs.existsSync(responsePath)).toBe(true);
-      expect(fs.readFileSync(responsePath, 'utf-8')).toBe('error');
-    });
-  });
-
-  describe('swarm_update_status guard logic', () => {
-    it('writes error when SWARM_ENABLED is false', () => {
-      const SWARM_ENABLED = false;
-      const isMain = true;
-      const requestId = 'test-req-1';
-      const sourceGroup = 'main';
-
-      // Simulate the guard logic from modify/src/ipc.ts swarm_update_status case
-      if (!isMain) {
-        if (requestId) writeIpcResponse(TEST_DATA_DIR, sourceGroup, requestId, 'Error: only main group can update swarm task status');
-      } else if (!SWARM_ENABLED) {
-        if (requestId) writeIpcResponse(TEST_DATA_DIR, sourceGroup, requestId, 'Error: swarm is not configured (set SWARM_SSH_TARGET)');
-      }
-
-      const content = fs.readFileSync(getResponsePath(sourceGroup, requestId), 'utf-8');
-      expect(content).toContain('Error: swarm is not configured');
-    });
-
-    it('writes error when not main group', () => {
-      const isMain = false;
-      const requestId = 'test-req-2';
-      const sourceGroup = 'other-group';
-
-      if (!isMain) {
-        if (requestId) writeIpcResponse(TEST_DATA_DIR, sourceGroup, requestId, 'Error: only main group can update swarm task status');
-      }
-
-      const content = fs.readFileSync(getResponsePath(sourceGroup, requestId), 'utf-8');
-      expect(content).toContain('Error: only main group');
-    });
-  });
-
-  describe('swarm_cleanup guard logic', () => {
-    it('writes error when SWARM_ENABLED is false', () => {
-      const SWARM_ENABLED = false;
-      const isMain = true;
-      const requestId = 'test-req-3';
-      const sourceGroup = 'main';
-
-      if (!isMain) {
-        if (requestId) writeIpcResponse(TEST_DATA_DIR, sourceGroup, requestId, 'Error: only main group can run swarm cleanup');
-      } else if (!SWARM_ENABLED) {
-        if (requestId) writeIpcResponse(TEST_DATA_DIR, sourceGroup, requestId, 'Error: swarm is not configured (set SWARM_SSH_TARGET)');
-      }
-
-      const content = fs.readFileSync(getResponsePath(sourceGroup, requestId), 'utf-8');
-      expect(content).toContain('Error: swarm is not configured');
-    });
-
-    it('writes error when not main group', () => {
-      const isMain = false;
-      const requestId = 'test-req-4';
-      const sourceGroup = 'other-group';
-
-      if (!isMain) {
-        if (requestId) writeIpcResponse(TEST_DATA_DIR, sourceGroup, requestId, 'Error: only main group can run swarm cleanup');
-      }
-
-      const content = fs.readFileSync(getResponsePath(sourceGroup, requestId), 'utf-8');
-      expect(content).toContain('Error: only main group');
-    });
+    expect(fs.existsSync(responsePath('main', '../escape'))).toBe(false);
   });
 });

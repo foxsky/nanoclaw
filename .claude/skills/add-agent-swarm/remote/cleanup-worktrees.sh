@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-set -uo pipefail
+# set -e: fail fast on corrupt registry before pruning.
+# Cleanup operations in the while-loop subshell are best-effort and
+# do not propagate failures to the parent shell.
+set -euo pipefail
 
 SWARM_DIR="$HOME/.agent-swarm"
 REGISTRY="$SWARM_DIR/active-tasks.json"
+LOCK_FILE="$REGISTRY.lock"
 
 if [ ! -f "$REGISTRY" ]; then
   exit 0
@@ -31,10 +35,19 @@ jq -c '.tasks[] | select((.status == "merged" or .status == "failed") and (.comp
   rm -f "$SWARM_DIR/prompts/$TASK_ID.txt"
 done
 
-jq --argjson cutoff "$CUTOFF" \
-  '.tasks |= [.[] | select(
-    .status == "running" or .status == "pr_created" or .status == "reviewing" or .status == "ready_for_review" or
-    ((.completedAt == null) or ((.completedAt / 1000) >= $cutoff))
-  )]' "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
+source "$SWARM_DIR/lib-lock.sh"
+
+prune_registry() {
+  jq --argjson cutoff "$CUTOFF" \
+    '.tasks |= [.[] | select(
+      .status == "running" or .status == "pr_created" or .status == "reviewing" or .status == "ready_for_review" or
+      ((.completedAt == null) or ((.completedAt / 1000) >= $cutoff))
+    )]' "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
+}
+
+if ! with_registry_lock "$LOCK_FILE" prune_registry; then
+  echo "Cleanup failed: unable to prune registry safely" >&2
+  exit 1
+fi
 
 echo "Cleanup complete"

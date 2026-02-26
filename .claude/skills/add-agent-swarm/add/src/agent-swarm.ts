@@ -284,7 +284,15 @@ export async function spawnAgent(
     priority?: 'high' | 'normal' | 'low';
   },
 ): Promise<string> {
-  const taskId = opts.branchName.replace(/[^a-zA-Z0-9_-]/g, '-');
+  const baseTaskId =
+    opts.branchName
+      .replace(/[^a-zA-Z0-9_-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 48) || 'task';
+  const randomPart = Math.random().toString(36).slice(2, 6).padEnd(4, '0');
+  const uniqueSuffix = `${Date.now().toString(36)}-${randomPart}`;
+  const taskId = `${baseTaskId}-${uniqueSuffix}`;
 
   // Write prompt to file on remote (avoids shell quoting entirely)
   await writePromptFile(sshTarget, taskId, opts.prompt);

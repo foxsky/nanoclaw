@@ -28,6 +28,8 @@ import {
   runCleanup,
 } from './agent-swarm.js';
 
+const SAFE_REQUEST_ID = /^[a-zA-Z0-9_-]+$/;
+
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
@@ -43,6 +45,13 @@ export interface IpcDeps {
 }
 
 function writeIpcResponse(sourceGroup: string, requestId: string, result: string): void {
+  if (!SAFE_REQUEST_ID.test(requestId)) {
+    logger.warn(
+      { sourceGroup, requestId },
+      'IPC response skipped due to unsafe requestId',
+    );
+    return;
+  }
   const responseDir = path.join(DATA_DIR, 'ipc', sourceGroup, 'responses');
   fs.mkdirSync(responseDir, { recursive: true });
   const responsePath = path.join(responseDir, `${requestId}.json`);
@@ -430,6 +439,15 @@ export async function processTaskIpc(
         if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, 'Error: missing required fields (repo, branchName, prompt, model)');
         break;
       }
+      const VALID_MODELS = ['claude-code:opus', 'claude-code:sonnet', 'claude-code:haiku', 'codex'];
+      if (!VALID_MODELS.includes(data.model)) {
+        if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, `Error: unknown model "${data.model}". Valid: ${VALID_MODELS.join(', ')}`);
+        break;
+      }
+      if (data.priority && !['high', 'normal', 'low'].includes(data.priority)) {
+        if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, `Error: invalid priority "${data.priority}". Valid: high, normal, low`);
+        break;
+      }
       const repoConfig = SWARM_REPOS[data.repo];
       if (!repoConfig) {
         logger.warn({ repo: data.repo }, 'Unknown repo in swarm_spawn');
@@ -583,6 +601,11 @@ export async function processTaskIpc(
       try {
         if (!data.taskId || !data.status) {
           if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, 'Error: missing required fields (taskId, status)');
+          break;
+        }
+        const VALID_STATUSES = ['running', 'pr_created', 'reviewing', 'ready_for_review', 'merged', 'failed'];
+        if (!VALID_STATUSES.includes(data.status)) {
+          if (data.requestId) writeIpcResponse(sourceGroup, data.requestId, `Error: invalid status "${data.status}". Valid: ${VALID_STATUSES.join(', ')}`);
           break;
         }
         await updateTaskStatus(SWARM_SSH_TARGET, data.taskId, data.status as any);

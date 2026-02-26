@@ -93,6 +93,7 @@ Test by sending this to the orchestrator group:
 
 Then verify:
 1. `check_agents` returns the running task
-2. On the remote machine: `tmux list-sessions` shows `agent-test-hello-world`
-3. After the agent finishes: a PR is created on the repo
-4. Kill the test: `@<ASSISTANT_NAME> Kill agent test-hello-world with cleanup`
+2. Capture the returned task ID from the spawn response (for example: `test-hello-world-mtg4k2-ab12`)
+3. On the remote machine: `tmux list-sessions` shows `agent-<task-id>`
+4. After the agent finishes: a PR is created on the repo
+5. Kill the test: `@<ASSISTANT_NAME> Kill agent <task-id> with cleanup`

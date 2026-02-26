@@ -12,6 +12,7 @@ PRIORITY="${5:-normal}"
 
 SWARM_DIR="$HOME/.agent-swarm"
 REGISTRY="$SWARM_DIR/active-tasks.json"
+LOCK_FILE="$REGISTRY.lock"
 LOG_DIR="$SWARM_DIR/logs"
 PROMPT_FILE="$SWARM_DIR/prompts/$TASK_ID.txt"
 
@@ -68,31 +69,37 @@ if [ ! -f "$REGISTRY" ]; then
   echo '{"tasks":[]}' > "$REGISTRY"
 fi
 
-jq --arg id "$TASK_ID" \
-   --arg repo "$(basename "$REPO_PATH")" \
-   --arg branch "$BRANCH_NAME" \
-   --arg worktree "$WORKTREE_DIR" \
-   --arg model "$MODEL" \
-   --arg promptFile "$PROMPT_FILE" \
-   --arg started "$(date +%s)000" \
-   --arg priority "$PRIORITY" \
-   '.tasks += [{
-     id: $id,
-     repo: $repo,
-     branch: $branch,
-     worktree: $worktree,
-     tmuxSession: ("agent-" + $id),
-     model: $model,
-     promptFile: $promptFile,
-     status: "running",
-     priority: $priority,
-     startedAt: ($started | tonumber),
-     retries: 0,
-     maxRetries: 3,
-     pr: null,
-     checks: {ciPassed:false, codexReviewPassed:false, claudeReviewPassed:false, geminiReviewPassed:false, screenshotsIncluded:false},
-     completedAt: null,
-     notifyOnComplete: true
-   }]' "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
+source "$SWARM_DIR/lib-lock.sh"
+
+append_task() {
+  jq --arg id "$TASK_ID" \
+     --arg repo "$(basename "$REPO_PATH")" \
+     --arg branch "$BRANCH_NAME" \
+     --arg worktree "$WORKTREE_DIR" \
+     --arg model "$MODEL" \
+     --arg promptFile "$PROMPT_FILE" \
+     --arg started "$(date +%s)000" \
+     --arg priority "$PRIORITY" \
+     '.tasks += [{
+       id: $id,
+       repo: $repo,
+       branch: $branch,
+       worktree: $worktree,
+       tmuxSession: ("agent-" + $id),
+       model: $model,
+       promptFile: $promptFile,
+       status: "running",
+       priority: $priority,
+       startedAt: ($started | tonumber),
+       retries: 0,
+       maxRetries: 3,
+       pr: null,
+       checks: {ciPassed:false, codexReviewPassed:false, claudeReviewPassed:false, geminiReviewPassed:false, screenshotsIncluded:false},
+       completedAt: null,
+       notifyOnComplete: true
+     }]' "$REGISTRY" > "$REGISTRY.tmp" && mv "$REGISTRY.tmp" "$REGISTRY"
+}
+
+with_registry_lock "$LOCK_FILE" append_task
 
 echo "Spawned agent-$TASK_ID in $WORKTREE_DIR"
