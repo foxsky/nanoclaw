@@ -85,6 +85,7 @@ vi.mock('child_process', async () => {
   };
 });
 
+import { spawn } from 'child_process';
 import { runContainerAgent, ContainerOutput } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 
@@ -205,5 +206,95 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+});
+
+describe('container-runner taskflow mount behavior', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('mounts /workspace/taskflow when taskflowManaged=true (no hierarchy level required)', async () => {
+    const taskflowGroup: RegisteredGroup = {
+      name: 'TaskFlow Group',
+      folder: 'test-taskflow',
+      trigger: '@Tars',
+      added_at: new Date().toISOString(),
+      taskflowManaged: true,
+      // No taskflowHierarchyLevel — standard board
+    };
+
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      taskflowGroup,
+      {
+        prompt: 'quadro',
+        groupFolder: 'test-taskflow',
+        chatJid: 'test@g.us',
+        isMain: false,
+      },
+      () => {},
+      onOutput,
+    );
+
+    // Check that spawn was called with /workspace/taskflow mount
+    const spawnMock = vi.mocked(spawn);
+    const lastCall = spawnMock.mock.calls[spawnMock.mock.calls.length - 1];
+    const args = lastCall[1] as string[];
+    const taskflowMountArg = args.find(
+      (arg) => arg.includes('/workspace/taskflow') && !arg.includes('readonly'),
+    );
+    expect(taskflowMountArg).toBeDefined();
+    expect(taskflowMountArg).toContain('/workspace/taskflow');
+
+    // Clean up
+    emitOutputMarker(fakeProc, { status: 'success', result: 'ok' });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+  });
+
+  it('does NOT mount /workspace/taskflow when taskflowManaged is not set', async () => {
+    const regularGroup: RegisteredGroup = {
+      name: 'Regular Group',
+      folder: 'test-regular',
+      trigger: '@Andy',
+      added_at: new Date().toISOString(),
+      // No taskflowManaged
+    };
+
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      regularGroup,
+      {
+        prompt: 'hello',
+        groupFolder: 'test-regular',
+        chatJid: 'test@g.us',
+        isMain: false,
+      },
+      () => {},
+      onOutput,
+    );
+
+    const spawnMock = vi.mocked(spawn);
+    const lastCall = spawnMock.mock.calls[spawnMock.mock.calls.length - 1];
+    const args = lastCall[1] as string[];
+    const taskflowMountArg = args.find((arg) =>
+      arg.includes('/workspace/taskflow'),
+    );
+    expect(taskflowMountArg).toBeUndefined();
+
+    // Clean up
+    emitOutputMarker(fakeProc, { status: 'success', result: 'ok' });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
   });
 });
