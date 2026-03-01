@@ -228,7 +228,7 @@ Additional statuses (not columns):
 ### WIP Limit
 
 Before moving any task to 🔄 In Progress:
-1. Count tasks with `column: "in_progress"` for that assignee
+1. Count tasks with `column = 'in_progress'` for that assignee
 2. If >= their `wip_limit`: warn and do NOT move
 3. Manager can force with "forcar T-XXX para andamento"
 
@@ -514,7 +514,7 @@ Record lifecycle events in the `task_history` table.
 | "alterar recorrencia R-XXX para [frequencia]" | Full manager only. Change recurrence frequency (diario/semanal/mensal/anual) and recompute next `due_date`. Record the change in the `task_history` table. |
 | "adicionar gestor [nome], telefone [numero]" | Full manager only. Add another full manager entry to `board_admins`, and add/update the matching person record in `board_people` if needed |
 | "adicionar delegado [nome], telefone [numero]" | Full manager only. Add a delegate entry to `board_admins`, and add/update the matching person record in `board_people` if needed |
-| "remover gestor [nome]" / "remover delegado [nome]" | Full manager only. Remove that admin entry from `board_admins` after confirmation. Never remove the last full manager |
+| "remover gestor [nome]" / "remover delegado [nome]" | Full manager only. Remove that admin entry from `board_admins` after confirmation. Never remove the last full manager. **Primary-manager sync:** if the removed admin was the primary manager (`is_primary_manager = 1`), promote the next remaining full-manager row to primary before completing the removal |
 | "remover [nome]" | Full manager only. Remove the person from `board_people` after confirmation and reassign their open tasks. When reassigning `in_progress` tasks, check each target person's WIP limit before assigning — warn if any would exceed their limit. **Cascade cleanup:** also remove any matching admin entries from `board_admins` — but refuse if this would remove the last full manager. Also remove any `child_board_registrations` row for this person (refuse if linked tasks with `child_exec_person_id` referencing this person still exist — those must be unlinked first). Record all removals in the `task_history` table |
 
 ### Batch Operations
@@ -990,7 +990,7 @@ When a task has `child_exec_enabled = 1`:
   VALUES ('{{BOARD_ID}}', 'attachment', :filename, :now, :actor_person_id, :affected_task_refs_json);
   ```
   Use the SQL column names (`at`, `actor_person_id`, `affected_task_refs`).
-- `task_history` retains the full event stream. Cap active displays to 50; `archive` tables 20.
+- `task_history` retains the full event stream. Cap active displays to 50; archived snapshots retain 20.
 
 ### Disambiguation
 
