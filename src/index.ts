@@ -298,6 +298,9 @@ async function runAgent(
         groupFolder: group.folder,
         chatJid,
         isMain,
+        isTaskflowManaged: group.taskflowManaged === true,
+        taskflowHierarchyLevel: group.taskflowHierarchyLevel,
+        taskflowMaxDepth: group.taskflowMaxDepth,
         assistantName: ASSISTANT_NAME,
       },
       (proc, containerName) =>
@@ -496,19 +499,22 @@ async function main(): Promise<void> {
       if (text) await channel.sendMessage(jid, text);
     },
   });
-  startIpcWatcher({
-    sendMessage: (jid, text) => {
+  await startIpcWatcher({
+    sendMessage: (jid, text, sender) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text);
+      return channel.sendMessage(jid, text, sender);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroupMetadata: (force) =>
       whatsapp?.syncGroupMetadata(force) ?? Promise.resolve(),
     getAvailableGroups,
-    writeGroupsSnapshot: (gf, im, ag, rj) =>
-      writeGroupsSnapshot(gf, im, ag, rj),
+    writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
+    createGroup: (subject, participants) => {
+      if (!whatsapp) throw new Error('WhatsApp not connected');
+      return whatsapp.createGroup(subject, participants);
+    },
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();

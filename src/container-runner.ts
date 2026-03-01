@@ -36,6 +36,9 @@ export interface ContainerInput {
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
+  isTaskflowManaged?: boolean;
+  taskflowHierarchyLevel?: number;
+  taskflowMaxDepth?: number;
   isScheduledTask?: boolean;
   assistantName?: string;
   secrets?: Record<string, string>;
@@ -52,6 +55,26 @@ interface VolumeMount {
   hostPath: string;
   containerPath: string;
   readonly: boolean;
+}
+
+const CORE_AGENT_RUNNER_FILES = [
+  'index.ts',
+  'ipc-mcp-stdio.ts',
+  path.join('mcp-plugins', 'create-group.ts'),
+] as const;
+
+function syncCoreAgentRunnerFiles(
+  sourceRoot: string,
+  targetRoot: string,
+): void {
+  for (const relativePath of CORE_AGENT_RUNNER_FILES) {
+    const sourcePath = path.join(sourceRoot, relativePath);
+    if (!fs.existsSync(sourcePath)) continue;
+
+    const targetPath = path.join(targetRoot, relativePath);
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.copyFileSync(sourcePath, targetPath);
+  }
 }
 
 function buildVolumeMounts(
@@ -162,6 +185,29 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // TaskFlow groups get access to the shared TaskFlow database.
+  // Mount the directory (not the file) so SQLite WAL journal files
+  // (-wal, -shm) persist across container restarts.
+  if (group.taskflowManaged) {
+    const taskflowDir = path.join(DATA_DIR, 'taskflow');
+    fs.mkdirSync(taskflowDir, { recursive: true });
+    mounts.push({
+      hostPath: taskflowDir,
+      containerPath: '/workspace/taskflow',
+      readonly: false, // agents need write access for task mutations
+    });
+  }
+
+  // Per-group MCP plugins directory (read-only mount into container)
+  // Skills copy compiled .js plugin files here during setup.
+  const mcpPluginsDir = path.join(DATA_DIR, 'mcp-plugins', group.folder);
+  fs.mkdirSync(mcpPluginsDir, { recursive: true });
+  mounts.push({
+    hostPath: mcpPluginsDir,
+    containerPath: '/workspace/mcp-plugins',
+    readonly: true,
+  });
+
   // Copy agent-runner source into a per-group writable location so agents
   // can customize it (add tools, change behavior) without affecting other
   // groups. Recompiled on container startup via entrypoint.sh.
@@ -179,6 +225,9 @@ function buildVolumeMounts(
   );
   if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
     fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+  }
+  if (fs.existsSync(agentRunnerSrc)) {
+    syncCoreAgentRunnerFiles(agentRunnerSrc, groupAgentRunnerDir);
   }
   mounts.push({
     hostPath: groupAgentRunnerDir,

@@ -1,7 +1,23 @@
 {
   "meta": {
-    "schema_version": "1.0",
+    "schema_version": "2.0",
+    "language": "{{LANGUAGE}}",
+    "timezone": "{{TIMEZONE}}",
+    "manager": {
+      "name": "{{MANAGER_NAME}}",
+      "phone": "{{MANAGER_PHONE}}"
+    },
+    "managers": [
+      {
+        "name": "{{MANAGER_NAME}}",
+        "phone": "{{MANAGER_PHONE}}",
+        "role": "manager"
+      }
+    ],
+    "columns": ["inbox", "next_action", "in_progress", "waiting", "review", "done", "cancelled"],
     "note": "Archived tasks from {{GROUP_NAME}}. Tasks move here after 30 days in done or when cancelled."
   },
-  "tasks": []
+  "people": [],
+  "tasks": [],
+  "next_id": 1
 }

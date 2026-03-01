@@ -14,10 +14,13 @@ import makeWASocket, {
 import {
   ASSISTANT_HAS_OWN_NUMBER,
   ASSISTANT_NAME,
+  GROUPS_DIR,
   STORE_DIR,
 } from '../config.js';
 import { getLastGroupSync, setLastGroupSync, updateChatName } from '../db.js';
 import { logger } from '../logger.js';
+import { isMediaMessage, getMediaType, downloadAndSaveMedia } from '../media.js';
+import { isVoiceMessage, transcribeAudioMessage } from '../transcription.js';
 import {
   Channel,
   OnInboundMessage,
@@ -94,9 +97,7 @@ export class WhatsAppChannel implements Channel {
 
       if (connection === 'close') {
         this.connected = false;
-        const reason = (
-          lastDisconnect?.error as { output?: { statusCode?: number } }
-        )?.output?.statusCode;
+        const reason = (lastDisconnect?.error as any)?.output?.statusCode;
         const shouldReconnect = reason !== DisconnectReason.loggedOut;
         logger.info(
           {
@@ -126,9 +127,7 @@ export class WhatsAppChannel implements Channel {
         logger.info('Connected to WhatsApp');
 
         // Announce availability so WhatsApp relays subsequent presence updates (typing indicators)
-        this.sock.sendPresenceUpdate('available').catch((err) => {
-          logger.warn({ err }, 'Failed to send presence update');
-        });
+        this.sock.sendPresenceUpdate('available').catch(() => {});
 
         // Build LID to phone mapping from auth state for self-chat translation
         if (this.sock.user) {
@@ -203,9 +202,6 @@ export class WhatsAppChannel implements Channel {
             msg.message?.documentMessage?.caption ||
             '';
 
-          // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
-          if (!content) continue;
-
           const sender = msg.key.participant || msg.key.remoteJid || '';
           const senderName = msg.pushName || sender.split('@')[0];
 
@@ -218,12 +214,45 @@ export class WhatsAppChannel implements Channel {
             ? fromMe
             : content.startsWith(`${ASSISTANT_NAME}:`);
 
+          // Transcribe voice messages before storing
+          let finalContent = content;
+          if (isVoiceMessage(msg)) {
+            try {
+              const transcript = await transcribeAudioMessage(msg, this.sock);
+              if (transcript) {
+                finalContent = `[Voice: ${transcript}]`;
+                logger.info({ chatJid, length: transcript.length }, 'Transcribed voice message');
+              } else {
+                finalContent = '[Voice Message - transcription unavailable]';
+              }
+            } catch (err) {
+              logger.error({ err }, 'Voice transcription error');
+              finalContent = '[Voice Message - transcription failed]';
+            }
+          }
+
+          // Download media files (images, PDFs, documents)
+          if (isMediaMessage(msg)) {
+            const mediaType = getMediaType(msg);
+            const groupEntry = groups[chatJid];
+            const mediaDir = path.join(GROUPS_DIR, groupEntry.folder, 'media');
+            const savedPath = await downloadAndSaveMedia(msg, mediaDir, this.sock);
+            if (savedPath) {
+              const filename = path.basename(savedPath);
+              const annotation = `[Media: ${mediaType} at /workspace/group/media/${filename}]`;
+              finalContent = finalContent ? `${annotation}\n${finalContent}` : annotation;
+            } else {
+              const annotation = `[Media: ${mediaType} — download failed]`;
+              finalContent = finalContent ? `${annotation}\n${finalContent}` : annotation;
+            }
+          }
+
           this.opts.onMessage(chatJid, {
             id: msg.key.id || '',
             chat_jid: chatJid,
             sender,
             sender_name: senderName,
-            content,
+            content: finalContent,
             timestamp,
             is_from_me: fromMe,
             is_bot_message: isBotMessage,
@@ -233,14 +262,15 @@ export class WhatsAppChannel implements Channel {
     });
   }
 
-  async sendMessage(jid: string, text: string): Promise<void> {
+  async sendMessage(jid: string, text: string, sender?: string): Promise<void> {
     // Prefix bot messages with assistant name so users know who's speaking.
     // On a shared number, prefix is also needed in DMs (including self-chat)
     // to distinguish bot output from user messages.
     // Skip only when the assistant has its own dedicated phone number.
+    const displayName = sender?.trim() || ASSISTANT_NAME;
     const prefixed = ASSISTANT_HAS_OWN_NUMBER
       ? text
-      : `${ASSISTANT_NAME}: ${text}`;
+      : `${displayName}: ${text}`;
 
     if (!this.connected) {
       this.outgoingQueue.push({ jid, text: prefixed });
@@ -269,6 +299,11 @@ export class WhatsAppChannel implements Channel {
 
   ownsJid(jid: string): boolean {
     return jid.endsWith('@g.us') || jid.endsWith('@s.whatsapp.net');
+  }
+
+  async createGroup(subject: string, participants: string[]): Promise<{ jid: string; subject: string }> {
+    const result = await this.sock.groupCreate(subject, participants);
+    return { jid: result.id, subject: result.subject };
   }
 
   async disconnect(): Promise<void> {

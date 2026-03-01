@@ -363,6 +363,79 @@ describe('register_group authorization', () => {
 
     expect(groups['new@g.us']).toBeUndefined();
   });
+
+  it('main group can register TaskFlow metadata', async () => {
+    await processTaskIpc(
+      {
+        type: 'register_group',
+        jid: 'taskflow-child@g.us',
+        name: 'TaskFlow Child',
+        folder: 'taskflow-child',
+        trigger: '@Andy',
+        taskflowManaged: true,
+        taskflowHierarchyLevel: 2,
+        taskflowMaxDepth: 3,
+      },
+      'main',
+      true,
+      deps,
+    );
+
+    expect(groups['taskflow-child@g.us']).toMatchObject({
+      folder: 'taskflow-child',
+      taskflowManaged: true,
+      taskflowHierarchyLevel: 2,
+      taskflowMaxDepth: 3,
+    });
+    expect(getRegisteredGroup('taskflow-child@g.us')).toMatchObject({
+      folder: 'taskflow-child',
+      taskflowManaged: true,
+      taskflowHierarchyLevel: 2,
+      taskflowMaxDepth: 3,
+    });
+  });
+
+  it('rejects TaskFlow registration above max depth', async () => {
+    await processTaskIpc(
+      {
+        type: 'register_group',
+        jid: 'taskflow-too-deep@g.us',
+        name: 'TaskFlow Too Deep',
+        folder: 'taskflow-too-deep',
+        trigger: '@Andy',
+        taskflowManaged: true,
+        taskflowHierarchyLevel: 4,
+        taskflowMaxDepth: 3,
+      },
+      'main',
+      true,
+      deps,
+    );
+
+    expect(groups['taskflow-too-deep@g.us']).toBeUndefined();
+    expect(getRegisteredGroup('taskflow-too-deep@g.us')).toBeUndefined();
+  });
+
+  it('rejects TaskFlow registration with invalid hierarchy metadata', async () => {
+    await processTaskIpc(
+      {
+        type: 'register_group',
+        jid: 'taskflow-invalid@g.us',
+        name: 'TaskFlow Invalid',
+        folder: 'taskflow-invalid',
+        trigger: '@Andy',
+        taskflowManaged: true,
+        taskflowHierarchyLevel: 'not-a-number',
+        taskflowMaxDepth: 3,
+      },
+      'main',
+      true,
+      deps,
+    );
+
+    expect(groups['taskflow-invalid@g.us']).toBeUndefined();
+    expect(getRegisteredGroup('taskflow-invalid@g.us')).toBeUndefined();
+  });
 });
 
 // --- refresh_groups authorization ---
@@ -382,7 +455,7 @@ describe('refresh_groups authorization', () => {
 
 // --- IPC message authorization ---
 // Tests the authorization pattern from startIpcWatcher (ipc.ts).
-// The logic: isMain || (targetGroup && targetGroup.folder === sourceGroup)
+// The logic: targetGroup && (isMain || targetGroup.folder === sourceGroup)
 
 describe('IPC message authorization', () => {
   // Replicate the exact check from the IPC watcher
@@ -393,7 +466,7 @@ describe('IPC message authorization', () => {
     registeredGroups: Record<string, RegisteredGroup>,
   ): boolean {
     const targetGroup = registeredGroups[targetChatJid];
-    return isMain || (!!targetGroup && targetGroup.folder === sourceGroup);
+    return !!targetGroup && (isMain || targetGroup.folder === sourceGroup);
   }
 
   it('main group can send to any group', () => {
@@ -422,11 +495,9 @@ describe('IPC message authorization', () => {
     ).toBe(false);
   });
 
-  it('main group can send to unregistered JID', () => {
-    // Main is always authorized regardless of target
-    expect(isMessageAuthorized('main', true, 'unknown@g.us', groups)).toBe(
-      true,
-    );
+  it('main group cannot send to unregistered JID', () => {
+    // Main can cross-send, but only to registered groups.
+    expect(isMessageAuthorized('main', true, 'unknown@g.us', groups)).toBe(false);
   });
 });
 

@@ -39,6 +39,9 @@ export interface RegisteredGroup {
   added_at: string;
   containerConfig?: ContainerConfig;
   requiresTrigger?: boolean; // Default: true for groups, false for solo chats
+  taskflowManaged?: boolean; // Set for groups provisioned by the TaskFlow skill
+  taskflowHierarchyLevel?: number; // 0-based depth in the TaskFlow hierarchy
+  taskflowMaxDepth?: number; // Inclusive maximum depth allowed for descendants
 }
 
 export interface NewMessage {
@@ -81,12 +84,14 @@ export interface TaskRunLog {
 export interface Channel {
   name: string;
   connect(): Promise<void>;
-  sendMessage(jid: string, text: string): Promise<void>;
+  sendMessage(jid: string, text: string, sender?: string): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
   // Optional: typing indicator. Channels that support it implement it.
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
+  // Optional: group creation. Channels that support it implement it.
+  createGroup?(subject: string, participants: string[]): Promise<{ jid: string; subject: string }>;
 }
 
 // Callback type that channels use to deliver inbound messages
