@@ -144,7 +144,8 @@ Key columns:
 - `reminders` TEXT — JSON array of deadline reminder objects `{ "offset_days": N, "scheduled_task_id": "..." }`. Uses `schedule_task(schedule_type: "once")` to fire N days before `due_date`. Auto-reschedule when `due_date` changes; cancel when `due_date` removed.
 - `next_note_id` INTEGER — next numeric note ID to assign when creating a new structured note
 - `notes` TEXT — JSON array of note entries
-  - New notes must be stored as objects: `{ "id": 1, "text": "cliente pediu ajuste no item 3", "by": "alexandre", "created_at": "...", "updated_at": "..." }`
+  - New notes must be stored as objects: `{ "id": 1, "text": "cliente pediu ajuste no item 3", "by": "alexandre", "created_at": "2026-02-27T15:00:00.000Z", "updated_at": "2026-02-27T15:00:00.000Z" }`
+  - Legacy string notes from older boards remain valid and readable; do not silently convert them
   - Only structured note objects with `id` can be edited or removed
 - `created_at` TEXT — ISO-8601 UTC
 - `updated_at` TEXT — ISO-8601 UTC
@@ -163,12 +164,12 @@ Additional column:
 Additional columns:
 - `recurrence` TEXT — JSON object: `{ "frequency": "monthly", "day": 5 }`
   - `frequency`: `"daily"`, `"weekly"`, `"monthly"`, or `"yearly"`
-  - `day`: day of week 0-6 (weekly), or day of month 1-31 (monthly/yearly). Omit for daily.
-  - `month`: month 1-12. Required for yearly, omit for other frequencies.
+  - `recurrence.day`: day of week 0-6 (weekly), or day of month 1-31 (monthly/yearly). Omit for daily.
+  - `recurrence.month`: month 1-12. Required for yearly, omit for other frequencies.
 - `current_cycle` TEXT — JSON object: `{ "cycle": 1, "started_at": "..." }`
   - `cycle`: incremented each time the task is completed and recreated
   - `started_at`: when this cycle began
-- On completion: reset `column` to `'next_action'`, increment `cycle`, compute next `due_date` from `recurrence`, update `started_at`. Reset `blocked_by` to `'[]'`. Cancel all reminder scheduled tasks and clear `reminders` to `'[]'`. Clear `notes` to `'[]'` and reset `next_note_id` to `1` (notes are per-cycle operational context). Preserve `description` across cycles.
+- On completion: reset `column` to `next_action`, increment `cycle`, compute next `due_date` from `recurrence`, update `started_at`. Reset `blocked_by` to `[]`. Cancel all reminder scheduled tasks and clear `reminders` to `[]`. Clear `notes` to `[]` and reset `next_note_id` to `1` (notes are per-cycle operational context). Preserve `description` across cycles.
 
 ### History (`task_history` table)
 
@@ -244,7 +245,9 @@ Tasks in ⏳ Waiting do NOT count toward WIP.
 
 ### Archival
 
-During standup, check for tasks with `column = 'done'` where `updated_at` is older than 30 days. Move them to the `archive` table.
+During standup, check for tasks with `column = 'done'` where `updated_at` is older than 30 days. Move them to the `archive` table. Set `archive_reason = 'done'` (satisfies the NOT NULL constraint and lets the Rollup Engine distinguish done-archived tasks from cancelled ones).
+
+When a task is cancelled (Any → `cancelled`), move it immediately to the `archive` table. Set `archive_reason = 'cancelled'`. Before archiving, run the dependency resolution steps (see Task Dependencies) to remove the cancelled task's ID from any `blocked_by` arrays.
 
 ### Reopen and Restore
 

@@ -21,43 +21,27 @@ describe('taskflow skill package', () => {
     expect(skillMd).toContain('description:');
   });
 
-  it('SKILL.md top-level description distinguishes standard JSON mode from hierarchy mode', () => {
+  it('SKILL.md top-level description covers all topologies with SQLite', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
 
-    expect(skillMd).toContain('Standard boards run via CLAUDE.md + TASKS.json; hierarchy boards use the existing SQLite TaskFlow runtime support');
-    expect(skillMd).toContain('Standard / separate mode remains config-only.');
-    expect(skillMd).toContain('Hierarchy mode relies on already-implemented runtime support');
-    expect(skillMd).not.toContain('All via CLAUDE.md + TASKS.json, no source code changes.');
+    expect(skillMd).toContain('All board topologies (shared, separate, hierarchy) use SQLite as the single task store');
+    expect(skillMd).toContain('All topologies rely on already-implemented runtime support');
+    expect(skillMd).not.toContain('Standard boards run via CLAUDE.md + TASKS.json');
   });
 
-  it('SKILL.md makes the top-level DST/timezone storage policy mode-aware', () => {
+  it('SKILL.md DST timezone storage policy uses board_runtime_config for all topologies', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
 
-    expect(skillMd).toContain('store both local and UTC schedules in the correct board metadata store');
-    expect(skillMd).toContain('`TASKS.json` meta for standard / separate boards, `board_runtime_config` for hierarchy boards');
-    expect(skillMd).toContain('recreates runners using the same storage backend for that topology');
-    expect(skillMd).not.toContain('store both local and UTC schedules in TASKS.json meta.');
+    expect(skillMd).toContain('store both local and UTC schedules in `board_runtime_config`');
+    expect(skillMd).not.toContain('`TASKS.json` meta for standard / separate boards');
   });
 
-  it('SKILL.md explicitly initializes standard-board DST state after creating the DST guard', () => {
+  it('SKILL.md people registration uses board_people for all topologies', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
 
-    expect(skillMd).toContain('immediately persist the initial DST state in `groups/{{GROUP_FOLDER}}/TASKS.json`');
-    expect(skillMd).toContain("board.meta.runner_task_ids.dst_guard = enabled ? process.env.DST_ID : null;");
-    expect(skillMd).toContain('board.meta.dst_sync.last_offset_minutes = offsetMinutes;');
-    expect(skillMd).toContain('board.meta.dst_sync.last_synced_at = enabled ? now : null;');
-    expect(skillMd).toContain('board.meta.dst_sync.resync_count_24h = 0;');
-    expect(skillMd).toContain('board.meta.dst_sync.resync_window_started_at = enabled ? now : null;');
-  });
-
-  it('SKILL.md makes people registration mode-aware for hierarchy boards', () => {
-    const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
-
-    expect(skillMd).toContain('Always register the primary full manager in the active people store');
+    expect(skillMd).toContain('Always register the primary full manager in `board_people`');
     expect(skillMd).toContain('sender identification and admin authorization work');
-    expect(skillMd).toContain('### 2. Register People In The Active Board Store');
-    expect(skillMd).toContain('**Standard / separate boards:** read `groups/{{GROUP_FOLDER}}/TASKS.json`');
-    expect(skillMd).toContain('**Hierarchy boards:** do not update `TASKS.json`. Insert each person into `board_people`');
+    expect(skillMd).toContain('### 2. Register People in board_people');
     expect(skillMd).toContain('INSERT OR REPLACE INTO board_people');
     expect(skillMd).toContain('Inserted\', people.length, \'people into board_people');
     expect(skillMd).toContain('`board_people` is the source of truth for assignees, WIP overrides, and sender matching');
@@ -74,15 +58,6 @@ describe('taskflow skill package', () => {
     expect(skillMd).toContain('env DST_ID="$DST_ID" DST_GUARD_PROMPT="$DST_GUARD_PROMPT" DST_NEXT="$DST_NEXT" NOW="$NOW" node -e "');
   });
 
-  it('SKILL.md scopes schema-version migration to standard and separate boards only', () => {
-    const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
-
-    expect(skillMd).toContain('**Schema version boundary (standard / separate only):**');
-    expect(skillMd).toContain('existing standard/separate board with missing `schema_version`');
-    expect(skillMd).toContain('If an existing standard/separate board declares an unknown higher schema version');
-    expect(skillMd).toContain('Hierarchy boards do not use `meta.schema_version`');
-    expect(skillMd).toContain('their active data store is SQLite');
-  });
 
   it('has SKILL.md with all 5 phases', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
@@ -93,18 +68,18 @@ describe('taskflow skill package', () => {
     expect(skillMd).toContain('## Phase 5: Verification');
   });
 
-  it('SKILL.md documents the schema_version migration boundary', () => {
+  it('SKILL.md does not reference JSON schema_version migrations', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
-    expect(skillMd).toContain('TaskFlow board files now use `meta.schema_version: "2.0"` as a real migration boundary');
-    expect(skillMd).toContain('normalize it before any further mutation');
-    expect(skillMd).toContain('unknown higher schema version');
+    expect(skillMd).not.toContain('meta.schema_version');
+    expect(skillMd).not.toContain('TASKS.json');
+    // SKILL.md still uses placeholders generically in template generation
+    // but must not reference TASKS.json as a data store
+    expect(skillMd).toContain('board_runtime_config');
   });
 
   it('has all template files', () => {
     const templatesDir = path.join(skillDir, 'templates');
     expect(fs.existsSync(path.join(templatesDir, 'CLAUDE.md.template'))).toBe(true);
-    expect(fs.existsSync(path.join(templatesDir, 'TASKS.json.template'))).toBe(true);
-    expect(fs.existsSync(path.join(templatesDir, 'ARCHIVE.json.template'))).toBe(true);
   });
 
   it('TASKS.json.template is valid JSON after placeholder substitution', () => {
@@ -222,11 +197,11 @@ describe('taskflow skill package', () => {
     // Scope guard (token savings for off-topic queries)
     expect(content).toContain('Scope Guard');
     expect(content).toContain('task management assistant ONLY');
-    expect(content).toContain('Do NOT read any board data');
+    expect(content).toContain('Do NOT read the SQLite store for off-topic queries');
 
     // Identity and data loading
     expect(content).toContain('CRITICAL: Load Data First');
-    expect(content).toContain('TASKS.json');
+    expect(content).not.toContain('TASKS.json');
 
     // Security
     expect(content).toContain('Security');
@@ -237,7 +212,6 @@ describe('taskflow skill package', () => {
     // Authorization
     expect(content).toContain('Authorization Rules');
     expect(content).toContain('Full-manager-only');
-    expect(content).toContain('`meta.schema_version`: real migration boundary');
 
     // Board rules
     expect(content).toContain('The Kanban Board');
@@ -262,6 +236,9 @@ describe('taskflow skill package', () => {
     expect(content).toContain('send_message');
     expect(content).toContain('schedule_task');
     expect(content).toContain('cancel_task');
+
+    // Data schemas section
+    expect(content).toContain('## Data Schemas (SQLite)');
 
     // No individual DMs (architecture constraint)
     expect(content).toContain('Individual DMs are not supported');
@@ -331,7 +308,7 @@ describe('taskflow skill package', () => {
 
     expect(content).not.toContain('recreate reminders');
     expect(content).not.toContain('per-task reminder IDs');
-    expect(content).toContain('Update `due_date` and record the change in the active history store');
+    expect(content).toContain('Update `due_date` and record the change in the `task_history` table');
     expect(content).toContain('Use `cancel_task` only for scheduled runner jobs');
   });
 
@@ -353,73 +330,54 @@ describe('taskflow skill package', () => {
     );
 
     // Data Schemas section exists
-    expect(content).toContain('## Data Schemas');
+    expect(content).toContain('## Data Schemas (SQLite)');
     expect(content).toContain('ISO-8601 UTC');
-    expect(content).toContain('### Board Admin Roles (`meta`)');
-    expect(content).toContain('`meta.managers[]`: source of truth for admin roles on new boards');
-    expect(content).toContain('`meta.manager`: legacy compatibility alias for the primary full manager');
+    expect(content).toContain('### Board Admin Roles (`board_admins` table)');
+    expect(content).not.toContain('`meta.managers[]`');
+    expect(content).not.toContain('`meta.manager`');
 
     // Person schema with all fields
-    expect(content).toContain('### Person');
-    expect(content).toContain('"id": "alexandre"');
-    expect(content).toContain('"phone":');
-    expect(content).toContain('"role":');
-    expect(content).toContain('"wip_limit":');
+    expect(content).toContain('### Person (`board_people` table)');
+    expect(content).toContain('`person_id`');
+    expect(content).toContain('`phone`');
+    expect(content).toContain('`role`');
+    expect(content).toContain('`wip_limit`');
 
     // Task schemas for all 3 types with required fields
-    expect(content).toContain('### Task (simple');
-    expect(content).toContain('"type": "simple"');
-    expect(content).toContain('"column":');
-    expect(content).toContain('"assignee":');
-    expect(content).toContain('"next_action":');
-    expect(content).toContain('"waiting_for":');
-    expect(content).toContain('"due_date":');
-    expect(content).toContain('"priority": "normal"');
-    expect(content).toContain('"labels": []');
-    expect(content).toContain('"next_note_id": 1');
-    expect(content).toContain('"notes": []');
-    expect(content).toContain('"created_at":');
-    expect(content).toContain('"updated_at":');
-    expect(content).toContain('"history": []');
+    expect(content).toContain('### Task (`tasks` table');
+    expect(content).toContain('`type` TEXT');
+    expect(content).toContain('`column` TEXT');
+    expect(content).toContain('`assignee` TEXT');
+    expect(content).toContain('`next_action` TEXT');
+    expect(content).toContain('`waiting_for` TEXT');
+    expect(content).toContain('`due_date` TEXT');
+    expect(content).toContain('`priority` TEXT');
+    expect(content).toContain('`labels` TEXT');
+    expect(content).toContain('`next_note_id` INTEGER');
+    expect(content).toContain('`notes` TEXT');
+    expect(content).toContain('`created_at` TEXT');
+    expect(content).toContain('`updated_at` TEXT');
     expect(content).toContain('Always initialize `notes` as an empty array: `[]`');
     expect(content).toContain('Always initialize `next_note_id` as `1`');
 
     expect(content).toContain('### Task (project');
-    expect(content).toContain('"type": "project"');
-    expect(content).toContain('"subtasks":');
+    expect(content).toContain('`subtasks` TEXT');
     expect(content).toContain('"done": false');
-    expect(content).toContain('"priority": "high"');
-    expect(content).toContain('"labels": ["infra", "migracao"]');
 
     expect(content).toContain('### Task (recurring');
-    expect(content).toContain('"type": "recurring"');
-    expect(content).toContain('"recurrence":');
+    expect(content).toContain('`recurrence` TEXT');
     expect(content).toContain('"frequency": "monthly"');
-    expect(content).toContain('"current_cycle":');
+    expect(content).toContain('`current_cycle` TEXT');
     expect(content).toContain('"cycle": 1');
-    expect(content).toContain('"labels": ["financeiro"]');
 
-    // History entry schema
-    expect(content).toContain('### History Entry');
-    expect(content).toContain('"action": "moved"');
-    expect(content).toContain('"from":');
-    expect(content).toContain('"to":');
-    expect(content).toContain('"by":');
+    // History schema
+    expect(content).toContain('### History (`task_history` table)');
+    expect(content).toContain('`action` TEXT');
+    expect(content).toContain('`by` TEXT');
+    expect(content).toContain('`at` TEXT');
+    expect(content).toContain('`details` TEXT');
   });
 
-  it('CLAUDE.md.template scopes the top-level data schema examples to standard-mode JSON', () => {
-    const content = fs.readFileSync(
-      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
-      'utf-8',
-    );
-    const schemaSection =
-      content.match(/## Data Schemas[\s\S]*?## The Kanban Board/)?.[0] ?? '';
-
-    expect(schemaSection).toContain('## Data Schemas (Standard-Mode JSON Reference)');
-    expect(schemaSection).toContain('The JSON object shapes below describe the standard-board storage model');
-    expect(schemaSection).toContain('Hierarchy boards use the same logical task concepts, but persist them in SQLite tables instead of `TASKS.json` / `ARCHIVE.json`');
-    expect(schemaSection).toContain('use the hierarchy-mode section below for the authoritative hierarchy storage and access rules');
-  });
 
   it('SKILL.md uses deterministic runner prompt markers for ID reconciliation', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
@@ -448,10 +406,10 @@ describe('taskflow skill package', () => {
 
   it('SKILL.md runner prompts include skip-if-empty conditions', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
-    expect(skillMd).toMatch(/STANDUP_PROMPT.*tasks\[\] is empty/);
-    expect(skillMd).toMatch(/DIGEST_PROMPT.*tasks\[\] is empty/);
-    expect(skillMd).toMatch(/REVIEW_PROMPT.*tasks\[\] is empty/);
-    expect(skillMd).toContain('If tasks[] is empty, do NOT send any message — exit silently, even if there was archive activity this week.');
+    expect(skillMd).toMatch(/STANDUP_PROMPT.*no tasks exist/);
+    expect(skillMd).toMatch(/DIGEST_PROMPT.*no tasks exist/);
+    expect(skillMd).toMatch(/REVIEW_PROMPT.*no tasks exist/);
+    expect(skillMd).toContain('exit silently, even if there was archive activity this week');
   });
 
   it('SKILL.md documents automatic group creation via Baileys', () => {
@@ -469,8 +427,8 @@ describe('taskflow skill package', () => {
     expect(skillMd).toContain('manual fallback');
     // Passes GROUPS_JSON into the node snippet instead of relying on an unexported shell variable
     expect(skillMd).toContain('env GROUPS_JSON="$GROUPS_JSON" node -e "');
-    // Keeps hierarchy setup separate from standard multi-board JSON setup
-    expect(skillMd).toContain('If you create multiple groups for standard / separate mode');
+    // Keeps hierarchy setup separate from separate-mode multi-board setup
+    expect(skillMd).toContain('If you create multiple groups for separate mode');
     expect(skillMd).toContain('For hierarchy mode, create only the root board during initial setup');
   });
 
@@ -486,7 +444,7 @@ describe('taskflow skill package', () => {
     expect(scopeGuardPos).toBeLessThan(loadDataPos);
   });
 
-  it('CLAUDE.md.template scope guard blocks all board-data loads for off-topic queries', () => {
+  it('CLAUDE.md.template scope guard blocks SQLite reads for off-topic queries', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
@@ -494,11 +452,10 @@ describe('taskflow skill package', () => {
     const scopeSection =
       content.split('## Scope Guard')[1]?.split('## CRITICAL: Load Data First')[0] ?? '';
 
-    expect(scopeSection).toContain('Do NOT read any board data');
-    expect(scopeSection).toContain('neither `TASKS.json` nor the SQLite store');
+    expect(scopeSection).toContain('Do NOT read the SQLite store for off-topic queries');
   });
 
-  it('CLAUDE.md.template makes the initial data load mode-aware for hierarchy boards', () => {
+  it('CLAUDE.md.template Load Data First section queries SQLite directly', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
@@ -506,11 +463,13 @@ describe('taskflow skill package', () => {
 
     const loadSection = content.split('## CRITICAL: Load Data First')[1]?.split('## WhatsApp Formatting')[0] ?? '';
 
-    expect(loadSection).toContain("Check `{{BOARD_ROLE}}`");
-    expect(loadSection).toContain("If `{{BOARD_ROLE}}` is `hierarchy`, do **not** read `TASKS.json`");
-    expect(loadSection).toContain('jump to the hierarchy-mode SQLite load steps below');
-    expect(loadSection).toContain('After any standard-mode changes, write the updated TASKS.json back');
-    expect(loadSection).toContain('in hierarchy mode you must load SQLite first');
+    expect(loadSection).toContain('Query `board_people` for this board\'s people');
+    expect(loadSection).toContain('Query `board_admins` for this board\'s admins');
+    expect(loadSection).toContain('Query `board_config` for columns, WIP limits, next task number');
+    expect(loadSection).toContain('Query `board_runtime_config` for language, timezone, runner settings');
+    expect(loadSection).toContain('Query `tasks` WHERE `board_id');
+    expect(loadSection).toContain('Write updates via `write_query`');
+    expect(loadSection).not.toContain('TASKS.json');
   });
 
   it('SKILL.md documents per-group AI model configuration via settings.json', () => {
@@ -520,17 +479,22 @@ describe('taskflow skill package', () => {
     expect(skillMd).toContain('data/sessions/{{GROUP_FOLDER}}/.claude/settings.json');
   });
 
-  it('SKILL.md scope guard note is storage-mode aware', () => {
+  it('SKILL.md scope guard note references SQLite', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
-    expect(skillMd).toContain('without reading any board data');
-    expect(skillMd).toContain('TASKS.json` for standard boards or the SQLite store for hierarchy boards');
+    expect(skillMd).toContain('without reading any board data from SQLite');
   });
 
   it('SKILL.md uses valid hierarchy depth values in setup snippets', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
 
     expect(skillMd).toContain('taskflow_hierarchy_level, taskflow_max_depth) VALUES');
-    expect(skillMd).toContain('NULL, 1, 1, 0, {{MAX_DEPTH}}');
+    // Root board uses TASKFLOW_HIERARCHY_LEVEL and TASKFLOW_MAX_DEPTH placeholders
+    expect(skillMd).toContain('{{TASKFLOW_HIERARCHY_LEVEL}}');
+    expect(skillMd).toContain('{{TASKFLOW_MAX_DEPTH}}');
+    // Standard/separate boards use hierarchy_level=0, max_depth=1
+    expect(skillMd).toContain('taskflow_hierarchy_level=0');
+    expect(skillMd).toContain('taskflow_max_depth=1');
+    // Child board level computed dynamically from parent
     expect(skillMd).toContain('CHILD_BOARD_LEVEL=$((PARENT_BOARD_LEVEL + 1))');
     expect(skillMd).toContain('CHILD_RUNTIME_LEVEL=$((PARENT_RUNTIME_LEVEL + 1))');
     expect(skillMd).toContain('${CHILD_RUNTIME_LEVEL}');
@@ -538,59 +502,51 @@ describe('taskflow skill package', () => {
     expect(skillMd).not.toContain('{{PARENT_LEVEL + 1}}');
   });
 
-  it('SKILL.md skips TASKS.json and ARCHIVE.json generation for hierarchy boards', () => {
+  it('SKILL.md provisions SQLite for all topologies (no TASKS.json or ARCHIVE.json generation)', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
 
-    expect(skillMd).toContain('### 4. Generate TASKS.json (standard / separate only)');
-    expect(skillMd).toContain('If topology is `Hierarchy`, skip this step. Hierarchy boards use SQLite');
-    expect(skillMd).toContain('### 5. Generate ARCHIVE.json (standard / separate only)');
-    expect(skillMd).toContain('If topology is `Hierarchy`, skip this step. Hierarchy boards archive completed/cancelled tasks in the shared SQLite database');
-  });
-
-  it('SKILL.md makes runner setup mode-aware for hierarchy boards', () => {
-    const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
-
-    expect(skillMd).toContain('In hierarchy mode, the container still runs in the target group\'s folder, but the runner logic must use the SQLite-backed hierarchy flow');
-    expect(skillMd).toContain('### Runner Prompts (standard / separate only)');
-    expect(skillMd).toContain('For hierarchy boards, create equivalent runner prompts that follow the hierarchy-mode SQLite rules');
-    expect(skillMd).toContain('do not write runner IDs into `TASKS.json`. Persist them in `board_runtime_config` instead');
-    expect(skillMd).toContain('For hierarchy boards, use a SQLite-backed DST guard prompt instead');
-    expect(skillMd).toContain('Hierarchy boards: `board_runtime_config`');
+    expect(skillMd).toContain('All topologies provision SQLite');
+    expect(skillMd).not.toContain('### 4. Generate TASKS.json');
+    expect(skillMd).not.toContain('### 5. Generate ARCHIVE.json');
     expect(skillMd).toContain('runner_standup_task_id');
     expect(skillMd).toContain('runner_dst_guard_task_id');
+    expect(skillMd).toContain('Arbitrary file creation outside the SQLite task store is refused');
   });
 
-  it('SKILL.md makes verification and setup summary mode-aware for hierarchy boards', () => {
+  it('SKILL.md runner setup uses SQLite for all topologies', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
 
-    expect(skillMd).toContain('Standard / separate boards: read `TASKS.json`');
-    expect(skillMd).toContain('Hierarchy boards: load the board from SQLite (`/workspace/taskflow/taskflow.db`)');
-    expect(skillMd).toContain('Standard / separate boards only:');
-    expect(skillMd).toContain('groups/{{GROUP_FOLDER}}/TASKS.json (task data)');
-    expect(skillMd).toContain('Hierarchy boards only:');
+    expect(skillMd).toContain('All topologies use SQLite runner prompts');
+    expect(skillMd).not.toContain('### Runner Prompts (standard / separate only)');
+    expect(skillMd).toContain('board_runtime_config');
+    expect(skillMd).toContain('runner_standup_task_id');
+  });
+
+  it('SKILL.md verification uses SQLite for all topologies', () => {
+    const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
+
+    expect(skillMd).toContain('Load the board from SQLite (`/workspace/taskflow/taskflow.db`)');
     expect(skillMd).toContain('groups/{{GROUP_FOLDER}}/.mcp.json (SQLite MCP config)');
-    expect(skillMd).toContain('data/taskflow/taskflow.db (shared hierarchy database)');
+    expect(skillMd).toContain('data/taskflow/taskflow.db (shared TaskFlow database)');
+    expect(skillMd).not.toContain('groups/{{GROUP_FOLDER}}/TASKS.json (task data)');
   });
 
-  it('SKILL.md makes guardrails and lifecycle verification mode-aware for hierarchy boards', () => {
+  it('SKILL.md guardrails use SQLite for all topologies', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
 
-    expect(skillMd).toContain('Standard / separate boards: agent can mutate only `TASKS.json` and `ARCHIVE.json`');
-    expect(skillMd).toContain('Hierarchy boards: agent must mutate board data only through the SQLite task store');
-    expect(skillMd).toContain('Hierarchy boards: done/cancelled items are retained in the SQLite `archive` table');
-    expect(skillMd).toContain('Hierarchy boards: updating due dates persists the new `due_date` in the SQLite `tasks` table');
-    expect(skillMd).toContain('Hierarchy boards: successful imports append rows to `attachment_audit_log`');
-    expect(skillMd).toContain('board_runtime_config.dst_last_offset_minutes');
-    expect(skillMd).toContain('Arbitrary file creation outside the supported board data store is refused');
+    expect(skillMd).toContain('Agent must mutate board data only through the SQLite task store');
+    expect(skillMd).toContain('Done/cancelled items are retained in the `archive` table');
+    expect(skillMd).toContain('Updating due dates persists the new `due_date` in the `tasks` table');
+    expect(skillMd).toContain('Successful imports append rows to `attachment_audit_log`');
+    expect(skillMd).toContain('Arbitrary file creation outside the SQLite task store is refused');
   });
 
-  it('SKILL.md makes attachment verification mode-aware for hierarchy boards', () => {
+  it('SKILL.md attachment verification uses board_runtime_config for all topologies', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
 
-    expect(skillMd).toContain('Standard / separate boards: if `meta.attachment_policy.enabled=false`, refuse import and request manual text input');
-    expect(skillMd).toContain('Hierarchy boards: if `board_runtime_config.attachment_enabled=0`, refuse import and request manual text input');
-    expect(skillMd).toContain('Standard / separate boards: append an entry to `meta.attachment_audit_trail`');
-    expect(skillMd).toContain('Hierarchy boards: append a row to `attachment_audit_log`');
+    expect(skillMd).toContain('board_runtime_config.attachment_enabled=0');
+    expect(skillMd).not.toContain('meta.attachment_policy.enabled');
+    expect(skillMd).toContain('attachment_audit_log');
   });
 
   it('SKILL.md does not reference unsupported prompt helpers or reminder IDs', () => {
@@ -599,8 +555,8 @@ describe('taskflow skill package', () => {
     expect(skillMd).not.toContain('AskUserQuestion');
     expect(skillMd).not.toContain('reminder IDs');
     expect(skillMd).toContain('Ask the user directly to collect the following, one at a time:');
-    expect(skillMd).toContain('Cancelling a task moves it to archive after confirmation');
-    expect(skillMd).toContain('Standard / separate boards: updating due dates persists the new `due_date` in `TASKS.json`');
+    expect(skillMd).toContain('Cancelling a task moves it to `archive` after confirmation');
+    expect(skillMd).toContain('Updating due dates persists the new `due_date` in the `tasks` table');
   });
 
   it('SKILL.md does not imply mirrored multi-group views that are not implemented', () => {
@@ -640,36 +596,37 @@ describe('taskflow skill package', () => {
     expect(content).toContain('"2026-02-01T15:30:00.000Z"');
   });
 
-  it('CLAUDE.md.template MCP tool guidance is storage-mode aware for runners and normal task cancellation', () => {
+  it('CLAUDE.md.template MCP tool guidance uses read_query and write_query', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
+    // read_query and write_query appear in the Load Data First section and Data Schemas
+    expect(content).toContain('read_query');
+    expect(content).toContain('write_query');
+    expect(content).not.toContain('mcp__sqlite__read_query');
+    expect(content).not.toContain('mcp__sqlite__write_query');
+    // MCP Tool Usage section covers IPC tools; cancel_task is for runner jobs only
     const mcpSection =
       content.match(/## MCP Tool Usage \(Preferred\)[\s\S]*?## Statistics Display Format/)?.[0] ?? '';
-
-    expect(mcpSection).toContain('board data store (JSON for standard boards, SQLite for hierarchy boards)');
-    expect(mcpSection).toContain('runner metadata store');
-    expect(mcpSection).toContain('`meta.runner_task_ids` in standard mode, `board_runtime_config` in hierarchy mode');
+    expect(mcpSection).toContain('Use `cancel_task` only for scheduled runner jobs');
   });
 
-  it('CLAUDE.md.template statistics format is storage-mode aware', () => {
+  it('CLAUDE.md.template statistics format uses task_history and archive tables', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
     const statsSection =
-      content.match(/## Statistics Display Format[\s\S]*?## Hierarchy Mode/)?.[0] ?? '';
+      content.match(/## Statistics Display Format[\s\S]*?## Hierarchy/)?.[0] ?? '';
 
-    expect(statsSection).toContain('Read active tasks plus the archive store');
-    expect(statsSection).toContain('using completion records from the active history store for active tasks plus archived history snapshots from the archive store for archived tasks');
-    expect(statsSection).toContain('matching completion record in the active history store or archived history snapshots');
+    expect(statsSection).toContain('Read active tasks plus the `archive` table');
+    expect(statsSection).toContain('`task_history` table for active tasks plus archived history snapshots from the `archive` table');
+    expect(statsSection).toContain('`task_history` table or archived history snapshots');
     expect(statsSection).not.toContain('Read both `TASKS.json` and `ARCHIVE.json`');
-    expect(statsSection).not.toContain('from history entries');
-    expect(statsSection).not.toContain('the `moved` → `done` history entry');
   });
 
-  it('CLAUDE.md.template manager digest format is storage-mode aware', () => {
+  it('CLAUDE.md.template manager digest format reads from SQLite', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
@@ -677,9 +634,8 @@ describe('taskflow skill package', () => {
     const digestSection =
       content.match(/## Manager Digest Format \(Evening\)[\s\S]*?## Weekly Review Format/)?.[0] ?? '';
 
-    expect(digestSection).toContain('Read the current board data using the active storage mode and consolidate');
-    expect(digestSection).toContain('Standard boards: read `/workspace/group/TASKS.json`');
-    expect(digestSection).toContain('Hierarchy boards: read the SQLite board store');
+    expect(digestSection).toContain('Read the current board data from SQLite and consolidate');
+    expect(digestSection).not.toContain('Standard boards: read `/workspace/group/TASKS.json`');
     expect(digestSection).not.toContain('Read `/workspace/group/TASKS.json` and consolidate');
   });
 
@@ -728,22 +684,22 @@ describe('taskflow skill package', () => {
     expect(skillMd).toContain('Creating a project with steps produces dotted child IDs like `P-001.1`, `P-001.2`');
   });
 
-  it('CLAUDE.md.template has ID generation rules using next_id', () => {
+  it('CLAUDE.md.template has ID generation rules using next_task_number from board_config', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
 
     expect(content).toContain('### ID Generation');
-    expect(content).toContain('`next_id`');
+    expect(content).toContain('`next_task_number`');
     expect(content).toContain('zero-padded to 3 digits');
     expect(content).toContain('T-` + padded number');
     expect(content).toContain('P-` + padded number');
     expect(content).toContain('R-` + padded number');
-    expect(content).toContain('Increment `next_id` by 1');
+    expect(content).toContain('UPDATE board_config SET next_task_number = next_task_number + 1');
   });
 
-  it('CLAUDE.md.template ID generation is storage-mode aware', () => {
+  it('CLAUDE.md.template ID generation uses board_config counter for all topologies', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
@@ -751,30 +707,26 @@ describe('taskflow skill package', () => {
     const idSection =
       content.match(/### ID Generation[\s\S]*?## The Kanban Board/)?.[0] ?? '';
 
-    expect(idSection).toContain('Read `next_id` from the active board data store');
-    expect(idSection).toContain('`TASKS.json` root in standard mode, or the board metadata row in hierarchy mode');
-    expect(idSection).toContain('persist it back to the same active board data store');
+    expect(idSection).toContain('Read `next_task_number` from `board_config`');
+    expect(idSection).toContain('The counter is global across all types');
     expect(idSection).not.toContain('Read `next_id` from the root of TASKS.json');
-    expect(idSection).not.toContain('save to TASKS.json');
+    expect(idSection).not.toContain('TASKS.json');
   });
 
-  it('CLAUDE.md.template has sender identification rules', () => {
+  it('CLAUDE.md.template has sender identification rules using board_people and board_admins', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
 
     expect(content).toContain('## Sender Identification');
-    expect(content).toContain('Determine admin role from the active admin store');
-    expect(content).toContain('`meta.managers[]` in standard mode, `board_admins` in hierarchy mode');
-    expect(content).toContain('"role": "manager"');
-    expect(content).toContain('"role": "delegate"');
-    expect(content).toContain('sender name against the active people store');
-    expect(content).toContain('`people[]` in standard mode, `board_people` in hierarchy mode');
-    expect(content).toContain('legacy single-manager fields `meta.manager.phone` and `meta.manager.name`');
-    expect(content).toContain('`meta.manager.phone`');
-    expect(content).toContain('`meta.manager.name`');
+    expect(content).toContain('Determine admin role from the `board_admins` table');
+    expect(content).toContain("admin_role = 'manager'");
+    expect(content).toContain("admin_role = 'delegate'");
+    expect(content).toContain('Match the sender name against the `board_people` table');
     expect(content).toContain('task ownership');
+    expect(content).not.toContain('`meta.managers[]`');
+    expect(content).not.toContain('`meta.manager.phone`');
   });
 
   it('TaskFlow templates support multi-manager metadata for new boards', () => {
@@ -846,7 +798,7 @@ describe('taskflow skill package', () => {
     expect(content).toContain('"editar nota T-XXX #N: texto"');
     expect(content).toContain('"remover nota T-XXX #N"');
     expect(content).toContain('For any newly created task (simple, project, or recurring), always initialize `priority` as `"normal"`, `labels` as `[]`, `description` as `null`, `blocked_by` as `[]`, `reminders` as `[]`, `_last_mutation` as `null`, `next_note_id` as `1`, and `notes` as `[]`.');
-    expect(content).toContain('Use the active history store for lifecycle records (`history[]` in standard mode, `task_history` in hierarchy mode).');
+    expect(content).toContain('Record lifecycle events in the `task_history` table.');
   });
 
   it('CLAUDE.md.template documents note editing and admin-role management commands', () => {
@@ -857,10 +809,9 @@ describe('taskflow skill package', () => {
 
     expect(content).toContain('"editar nota T-XXX #N: texto" | Manager or assignee.');
     expect(content).toContain('"remover nota T-XXX #N" | Manager or assignee.');
-    expect(content).toContain('"adicionar gestor [nome], telefone [numero]" | Full manager only. Add another full manager entry to the active admin store');
-    expect(content).toContain('`meta.managers[]` in standard mode, `board_admins` in hierarchy mode');
-    expect(content).toContain('"adicionar delegado [nome], telefone [numero]" | Full manager only. Add a delegate entry to the active admin store');
-    expect(content).toContain('"remover gestor [nome]" / "remover delegado [nome]" | Full manager only. Remove that admin entry after confirmation.');
+    expect(content).toContain('"adicionar gestor [nome], telefone [numero]" | Full manager only. Add another full manager entry to `board_admins`');
+    expect(content).toContain('"adicionar delegado [nome], telefone [numero]" | Full manager only. Add a delegate entry to `board_admins`');
+    expect(content).toContain('"remover gestor [nome]" / "remover delegado [nome]" | Full manager only. Remove that admin entry from `board_admins` after confirmation.');
     expect(content).toContain('Never remove the last full manager');
   });
 
@@ -872,10 +823,10 @@ describe('taskflow skill package', () => {
     const commandSection =
       content.match(/### Queries & Management[\s\S]*?### Batch Operations/)?.[0] ?? '';
 
-    expect(commandSection).toContain('Add the person to the active people store (`people[]` in standard mode, `board_people` in hierarchy mode)');
-    expect(commandSection).toContain('Add another full manager entry to the active admin store (`meta.managers[]` in standard mode, `board_admins` in hierarchy mode)');
-    expect(commandSection).toContain('Add a delegate entry to the active admin store (`meta.managers[]` in standard mode, `board_admins` in hierarchy mode)');
-    expect(commandSection).toContain('Remove the person from the active people store after confirmation');
+    expect(commandSection).toContain('Add the person to `board_people`');
+    expect(commandSection).toContain('Add another full manager entry to `board_admins`');
+    expect(commandSection).toContain('Add a delegate entry to `board_admins`');
+    expect(commandSection).toContain('Remove the person from `board_people` after confirmation');
     expect(commandSection).not.toContain('| "cadastrar [nome], telefone [numero], [cargo]" | Full manager only. Add person to `people[]` |');
   });
 
@@ -909,19 +860,17 @@ describe('taskflow skill package', () => {
     const lifecycleSection =
       content.match(/## The Kanban Board[\s\S]*?## GTD Rules/)?.[0] ?? '';
 
-    expect(lifecycleSection).toContain('`cancelled` — moved to the archive store immediately');
-    expect(lifecycleSection).toContain('Any → `cancelled`: manager confirms, move to the archive store');
-    expect(lifecycleSection).toContain('Move them to the archive store.');
-    expect(lifecycleSection).toContain('append a reopen entry to the task history store');
-    expect(lifecycleSection).toContain('Look for the task in the archive store');
-    expect(lifecycleSection).toContain('restore it to the active board data store');
-    expect(lifecycleSection).toContain("Each task's active history must not exceed 50 entries");
-    expect(lifecycleSection).not.toContain('`cancelled` — moved to ARCHIVE.json immediately');
-    expect(lifecycleSection).not.toContain('Any → `cancelled`: manager confirms, move to ARCHIVE.json');
-    expect(lifecycleSection).not.toContain('Move them to ARCHIVE.json.');
+    expect(lifecycleSection).toContain('`cancelled` — moved to the `archive` table immediately');
+    expect(lifecycleSection).toContain('Any → `cancelled`: manager confirms, move to the `archive` table');
+    expect(lifecycleSection).toContain('Move them to the `archive` table.');
+    expect(lifecycleSection).toContain('INSERT a reopen entry into `task_history`');
+    expect(lifecycleSection).toContain('Look for the task in the `archive` table');
+    expect(lifecycleSection).toContain('INSERT it back into `tasks`');
+    expect(lifecycleSection).toContain('must not exceed 50 entries per task');
+    expect(lifecycleSection).not.toContain('ARCHIVE.json');
   });
 
-  it('CLAUDE.md.template standard-mode restore appends a restored history entry', () => {
+  it('CLAUDE.md.template restore appends a restored history entry to task_history', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
@@ -930,11 +879,9 @@ describe('taskflow skill package', () => {
       content.match(/### Reopen and Restore[\s\S]*?### History Cap/)?.[0] ?? '';
 
     // The reabrir (reopen) command records history — restore must too
-    expect(restoreSection).toContain('append a reopen entry to the task history store');
-    // Bug fix: restaurar must also record a "restored" history entry, matching
-    // the hierarchy-mode restore (Step 5) which explicitly INSERTs action='restored'
-    // into task_history. Without this, restored tasks have no audit trail.
-    expect(restoreSection).toContain('append a `"restored"` entry to the task history store');
+    expect(restoreSection).toContain('INSERT a reopen entry into `task_history`');
+    // Bug fix: restaurar must also record a "restored" history entry
+    expect(restoreSection).toContain('INSERT a `"restored"` entry into `task_history`');
   });
 
   it('CLAUDE.md.template uses structured notes and richer filtered queries', () => {
@@ -967,7 +914,7 @@ describe('taskflow skill package', () => {
     expect(content).toContain('"buscar rotulo [nome]" / "buscar rotulo: [nome]"');
   });
 
-  it('CLAUDE.md.template quick capture does not require inline history for hierarchy boards', () => {
+  it('CLAUDE.md.template quick capture records lifecycle entries in task_history', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
@@ -975,36 +922,36 @@ describe('taskflow skill package', () => {
     const gtdSection =
       content.match(/## GTD Rules[\s\S]*?### Processing Inbox/)?.[0] ?? '';
 
-    expect(gtdSection).toContain('Standard boards: initialize `history` as `[]`');
-    expect(gtdSection).toContain('Hierarchy boards: do not create inline `history`; record lifecycle entries in `task_history`');
+    expect(gtdSection).toContain('Record lifecycle entries in `task_history`');
+    expect(gtdSection).not.toContain('Standard boards: initialize `history` as `[]`');
     expect(gtdSection).not.toContain('- Always initialize `history` as `[]`');
   });
 
-  it('CLAUDE.md.template task creation init lists keep inline history only in the mode-aware GTD examples', () => {
+  it('CLAUDE.md.template task creation uses task_history for lifecycle records', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
 
-    // 1. Quick Capture section must initialize history (mode-aware)
+    // Quick Capture section must use task_history
     const quickCapture =
       content.match(/### Quick Capture \(Inbox\)[\s\S]*?(?=When the user provides assignee)/)?.[0] ?? '';
-    expect(quickCapture).toContain('initialize `history`');
+    expect(quickCapture).toContain('Record lifecycle entries in `task_history`');
 
-    // 2. Full creation (assignee+details) section must initialize history (mode-aware)
+    // Full creation section must use task_history
     const fullCreation =
       content.match(/When the user provides assignee and details from the start:[\s\S]*?### Processing Inbox/)?.[0] ?? '';
-    expect(fullCreation).toContain('initialize `history`');
+    expect(fullCreation).toContain('Record lifecycle entries in `task_history`');
 
-    // 3. General creation rule (Command Parsing summary) must use the shared active-history-store note
+    // General creation rule
     const generalRule =
       content.match(/For any newly created task \(simple, project, or recurring\), always initialize[^\n]*/)?.[0] ?? '';
     expect(generalRule).not.toContain('`history` as `[]`');
     expect(generalRule).toContain('`_last_mutation` as `null`');
-    expect(content).toContain('Use the active history store for lifecycle records (`history[]` in standard mode, `task_history` in hierarchy mode).');
+    expect(content).toContain('Record lifecycle events in the `task_history` table.');
   });
 
-  it('CLAUDE.md.template shared command mutations record to the active history store', () => {
+  it('CLAUDE.md.template shared command mutations record to task_history', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
@@ -1012,17 +959,14 @@ describe('taskflow skill package', () => {
     const commandSection =
       content.match(/## Command Parsing[\s\S]*?### Batch Operations/)?.[0] ?? '';
 
-    expect(commandSection).toContain('record the rework reason in the active history store');
-    expect(commandSection).toContain('record `due_date_changed` in the active history store');
-    expect(commandSection).toContain('record it in the active history store');
-    expect(commandSection).toContain('Record `bulk_reassigned` in the active history store for each transferred task');
-    expect(commandSection).toContain('Record `description_changed` in the active history store');
-    expect(commandSection).toContain('Record the change in the active history store.');
-    expect(commandSection).not.toContain('record `due_date_changed` in history');
-    expect(commandSection).not.toContain('Record `bulk_reassigned` in history for each task');
+    expect(commandSection).toContain('record the rework reason in the `task_history` table');
+    expect(commandSection).toContain('record `due_date_changed` in the `task_history` table');
+    expect(commandSection).toContain('record it in the `task_history` table');
+    expect(commandSection).toContain('Record `bulk_reassigned` in the `task_history` table for each transferred task');
+    expect(commandSection).toContain('Record `description_changed` in the `task_history` table');
   });
 
-  it('CLAUDE.md.template shared history-driven queries use the active history store', () => {
+  it('CLAUDE.md.template shared history-driven queries use task_history table', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
@@ -1030,17 +974,15 @@ describe('taskflow skill package', () => {
     const querySection =
       content.match(/### Queries & Management[\s\S]*?### Batch Operations/)?.[0] ?? '';
 
-    expect(querySection).toContain('the last 5 entries from the active history store');
-    expect(querySection).toContain('latest completion record in the active history store');
-    expect(querySection).toContain('completion records in the active history store for the current month');
-    expect(querySection).toContain('completion records in the active history store for the current week');
-    expect(querySection).toContain('Scan the active history store for entries with today\'s date');
-    expect(querySection).toContain('scan the active history store for entries since yesterday');
-    expect(querySection).toContain('scan the active history store for entries in the current week');
+    expect(querySection).toContain('the last 5 entries from the `task_history` table');
+    expect(querySection).toContain('latest completion record in the `task_history` table');
+    expect(querySection).toContain('completion records in the `task_history` table for the current month');
+    expect(querySection).toContain('completion records in the `task_history` table for the current week');
+    expect(querySection).toContain('Scan the `task_history` table for entries with today\'s date');
+    expect(querySection).toContain('scan the `task_history` table for entries since yesterday');
+    expect(querySection).toContain('scan the `task_history` table for entries in the current week');
     expect(querySection).not.toContain('Show tasks moved to Done during the current week');
-    expect(querySection).not.toContain('match by latest history entry with `action: "moved"`, `to: "done"` and today\'s date');
-    expect(querySection).not.toContain('match by history `moved` → `done` in current month');
-    expect(querySection).not.toContain('Scan all active task histories for entries with today\'s date');
+    expect(querySection).not.toContain('Scan all active task histories');
   });
 
   it('CLAUDE.md.template error handling covers reopen and restore failures', () => {
@@ -1063,8 +1005,8 @@ describe('taskflow skill package', () => {
       'utf-8',
     );
 
-    expect(content).toContain('`priority`: one of `"low"`, `"normal"`, `"high"`, `"urgent"`');
-    expect(content).toContain('`labels`: ordered list of short lowercase tags');
+    expect(content).toContain("`priority` TEXT — one of `'low'`, `'normal'`, `'high'`, `'urgent'`");
+    expect(content).toContain('`labels` TEXT — JSON array of short lowercase tags');
     expect(content).toContain('"priority_changed"');
     expect(content).toContain('"label_added"');
     expect(content).toContain('"label_removed"');
@@ -1101,7 +1043,7 @@ describe('taskflow skill package', () => {
       content.match(/### Error Handling[\s\S]*?## Standup Format/)?.[0] ?? '';
 
     expect(errorSection).toContain('Dependency target archived');
-    expect(errorSection).toContain('T-002 is already in the archive store');
+    expect(errorSection).toContain('T-002 is archived. Dependencies can only reference active tasks.');
     expect(errorSection).not.toContain('T-002 is in ARCHIVE.json');
   });
 
@@ -1158,10 +1100,10 @@ describe('taskflow skill package', () => {
         /Substitute all.*?Write the result to/s,
       )?.[0] ?? '';
 
-    // Extract all {{PLACEHOLDER}} names used in root board seeding (Phase 2 Step 8c)
+    // Extract all {{PLACEHOLDER}} names used in root board seeding (Phase 2 Step 6c)
     const seedingSection =
       skillMd.match(
-        /Root board\n.*?db\.close\(\)/s,
+        /#### 6c\. Seed Board Data[\s\S]*?db\.close\(\)/,
       )?.[0] ?? '';
 
     const seedingPlaceholders = new Set<string>();
@@ -1198,11 +1140,11 @@ describe('taskflow skill package', () => {
     expect(preFlightSection).toContain('{{PERSON_ROLE}}');
   });
 
-  it('SKILL.md uses {{BOARD_ID}} consistently in hierarchy root-board snippets', () => {
+  it('SKILL.md uses {{BOARD_ID}} consistently in root-board seeding snippets', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
 
     const rootSeedSection =
-      skillMd.match(/#### 8c\. Seed Root Board Data.*?#### 8e\./s)?.[0] ?? '';
+      skillMd.match(/#### 6c\. Seed Board Data[\s\S]*?#### 6d\./)?.[0] ?? '';
     expect(rootSeedSection).toContain("const boardId = '{{BOARD_ID}}';");
     expect(rootSeedSection).not.toContain(
       "const boardId = 'board-{{GROUP_FOLDER}}';",
@@ -1210,26 +1152,12 @@ describe('taskflow skill package', () => {
     expect(rootSeedSection).toContain('Primary manager must also exist in board_people');
     expect(rootSeedSection).toContain("db.prepare('INSERT INTO board_people");
 
-    const phase3HierarchyPeople =
-      (
-        skillMd.match(
-          /\*\*Hierarchy boards:\*\*.*?source of truth for assignees/s,
-        )?.[0]
-      ) ?? '';
-    expect(phase3HierarchyPeople).toContain("stmt.run('{{BOARD_ID}}'");
+    // Phase 3 people registration uses board_people for all topologies
+    const phase3Section =
+      skillMd.match(/### 2\. Register People in board_people[\s\S]*?### 3\. Confirm/)?.[0] ?? '';
+    expect(phase3Section).toContain("stmt.run('{{BOARD_ID}}'");
   });
 
-  it('SKILL.md keeps runner prompt env vars topology-aware', () => {
-    const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
-
-    expect(skillMd).toContain(
-      'Use the same environment variable names (`STANDUP_PROMPT`, `DIGEST_PROMPT`, `REVIEW_PROMPT`) for both topologies.',
-    );
-    expect(skillMd).toContain('do not reuse the JSON-mode prompt text');
-    expect(skillMd).toContain(
-      'using the prompt set that matches the selected topology',
-    );
-  });
 
   it('SKILL.md prompt-injection guardrails include create_group depth checks', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
@@ -1339,13 +1267,10 @@ describe('taskflow skill package', () => {
       content.match(/### Queries & Management[\s\S]*?### Batch Operations/)?.[0] ??
       '';
 
-    expect(querySection).toContain(
-      'all entries from `history[]` in standard mode, or all rows from `task_history` in hierarchy mode',
-    );
-    expect(querySection).toContain('the archive store');
-    expect(querySection).toContain('Read active tasks plus the archive store');
-    expect(querySection).not.toContain('Show the 20 most recently archived tasks from ARCHIVE.json');
-    expect(querySection).not.toContain('Search ARCHIVE.json');
+    expect(querySection).toContain('all rows from `task_history`');
+    expect(querySection).toContain('the `archive` table');
+    expect(querySection).toContain('Read active tasks plus the `archive` table');
+    expect(querySection).not.toContain('ARCHIVE.json');
   });
 
   it('CLAUDE.md.template has modify recurrence command', () => {
@@ -1375,10 +1300,10 @@ describe('taskflow skill package', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
 
     expect(skillMd).toContain('Manager as team member');
-    expect(skillMd).toContain('Always register the primary full manager in the active people store');
+    expect(skillMd).toContain('Always register the primary full manager in `board_people`');
     expect(skillMd).toContain('sender identification and admin authorization work');
-    expect(skillMd).toContain('`meta.managers[]` / `meta.manager`');
     expect(skillMd).toContain('`board_admins`');
+    expect(skillMd).not.toContain('`meta.managers[]`');
   });
 
   // ── New feature tests (F1–F15) ──────────────────────────────────────
@@ -1389,20 +1314,20 @@ describe('taskflow skill package', () => {
       'utf-8',
     );
 
-    // F15: description field in simple task schema
-    expect(content).toContain('"description": null');
+    // F15: description column in tasks table schema
+    expect(content).toContain('`description` TEXT');
     // F15: max 500 characters limit
     expect(content).toContain('max 500 characters');
     // F15: description initialized as null in init rules
     expect(content).toContain('Always initialize `description` as `null`');
 
-    // F11: blocked_by field in simple task schema
-    expect(content).toContain('"blocked_by": []');
+    // F11: blocked_by column in tasks table schema
+    expect(content).toContain('`blocked_by` TEXT');
     // F11: blocked_by initialized as empty array
     expect(content).toContain('Always initialize `blocked_by` as `[]`');
 
-    // F13: reminders field in simple task schema
-    expect(content).toContain('"reminders": []');
+    // F13: reminders column in tasks table schema
+    expect(content).toContain('`reminders` TEXT');
     // F13: reminders initialized as empty array
     expect(content).toContain('Always initialize `reminders` as `[]`');
     // F13: offset_days in reminder object
@@ -1410,8 +1335,8 @@ describe('taskflow skill package', () => {
     // F13: schedule_task(schedule_type: "once") for reminders
     expect(content).toContain('schedule_task(schedule_type: "once")');
 
-    // F9: _last_mutation field in simple task schema
-    expect(content).toContain('"_last_mutation": null');
+    // F9: _last_mutation column in tasks table schema
+    expect(content).toContain('`_last_mutation` TEXT');
     // F9: _last_mutation initialized as null
     expect(content).toContain('Always initialize `_last_mutation` as `null`');
   });
@@ -1653,9 +1578,9 @@ describe('taskflow skill package', () => {
       'utf-8',
     );
 
-    // Extract the recurring task schema section (between "### Task (recurring" and "### History Entry")
+    // Extract the recurring task schema section (between "### Task (recurring" and "### History")
     const recurringSection =
-      content.match(/### Task \(recurring.*?### History Entry/s)?.[0] ?? '';
+      content.match(/### Task \(recurring[\s\S]*?### History/s)?.[0] ?? '';
     expect(recurringSection.length).toBeGreaterThan(0);
 
     // The "On completion" rule must explicitly clear notes and reset next_note_id.
@@ -1697,31 +1622,17 @@ describe('taskflow skill package', () => {
     expect(userManual).toContain('os lembretes ativos também são cancelados antes do arquivamento');
   });
 
-  it('documents explicit 1.0 to 2.0 normalization and keeps archived plan examples aligned', () => {
-    const repoRoot = path.resolve(skillDir, '..', '..', '..');
+  it('CLAUDE.md.template does not reference JSON schema_version migrations (SQLite-only)', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    const archivedDesign = fs.readFileSync(
-      path.join(repoRoot, 'docs', 'plans', '2026-02-24-taskflow-design.md'),
-      'utf-8',
-    );
-    const archivedImplementation = fs.readFileSync(
-      path.join(repoRoot, 'docs', 'plans', '2026-02-24-taskflow-implementation.md'),
-      'utf-8',
-    );
-
-    expect(content).toContain('Normalization for legacy `"1.0"` before the first mutation:');
-    expect(content).toContain('If `meta.managers[]` is missing, synthesize it from `meta.manager`');
-    expect(content).toContain('For every active task, backfill missing fields:');
-    expect(content).toContain('If `next_note_id` is missing, set it to `max(structured note ids) + 1`');
-    expect(content).toContain('persist the board back as `meta.schema_version = "2.0"`');
-
-    expect(archivedDesign).toContain('"schema_version": "2.0"');
-    expect(archivedImplementation).toContain('"schema_version": "2.0"');
-    expect(archivedImplementation).toContain("expect(parsed.meta.schema_version).toBe('2.0');");
-    expect(archivedImplementation).toContain('Per-task reminders, when enabled later, are task-local entries in `reminders[]`');
+    // SQLite-unified template has no meta.schema_version or JSON normalization
+    expect(content).not.toContain('meta.schema_version');
+    expect(content).not.toContain('"schema_version": "2.0"');
+    expect(content).not.toContain('Normalization for legacy');
+    // The board_config table is used instead of JSON meta fields
+    expect(content).toContain('board_config');
   });
 
   // ── Hierarchy (bounded-recursive delegation) tests ─────────────────
@@ -1735,18 +1646,19 @@ describe('taskflow skill package', () => {
     expect(skillMd).toContain('taskflow_managed');
   });
 
-  it('SKILL.md has root board provisioning (Phase 2 Step 8)', () => {
+  it('SKILL.md has root board provisioning (Phase 2 Step 6)', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
     // DB init via CLI
     expect(skillMd).toContain('node dist/taskflow-db.js');
     // .mcp.json for SQLite MCP server
     expect(skillMd).toContain('.mcp.json');
     expect(skillMd).toContain('mcp-server-sqlite-npx');
-    // Root board seeding
+    // Board seeding for all topologies
     expect(skillMd).toContain("'hierarchy'");
     expect(skillMd).toContain('board_config');
     expect(skillMd).toContain('board_runtime_config');
     expect(skillMd).toContain('board_admins');
+    expect(skillMd).toContain('### 6. Database Provisioning');
   });
 
   it('SKILL.md has child board provisioning (Phase 6)', () => {
@@ -1786,11 +1698,12 @@ describe('taskflow skill package', () => {
 
   it('SKILL.md uses consistent admin_role "manager" for both root and child boards', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
-    // Root board admin (Phase 2 Step 8c)
-    const rootAdminMatch = skillMd.match(
-      /Root board.*?board_admins.*?'manager'/s,
-    );
-    expect(rootAdminMatch).not.toBeNull();
+    // Root board admin (Phase 2 Step 6c) — comment labels it "Board admin (primary manager)"
+    const rootAdminSection = skillMd.match(
+      /#### 6c\. Seed Board Data[\s\S]*?db\.close\(\)/,
+    )?.[0] ?? '';
+    expect(rootAdminSection).toContain('board_admins');
+    expect(rootAdminSection).toContain("'manager'");
     // Child board admin (Phase 6 Step 5) — must also be 'manager'
     const childAdminMatch = skillMd.match(
       /Child board.*?board_admins.*?'manager'/s,
@@ -1805,135 +1718,148 @@ describe('taskflow skill package', () => {
     }
   });
 
-  it('CLAUDE.md.template has hierarchy mode section with board identity', () => {
+  it('CLAUDE.md.template has hierarchy features section with board identity', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    expect(content).toContain('## Hierarchy Mode (SQLite-Backed Boards)');
+    // Unified template uses "Hierarchy Features" heading
+    expect(content).toContain('## Hierarchy Features (Multi-Level Boards)');
     expect(content).toContain('### Board Identity');
     expect(content).toContain('{{BOARD_ID}}');
-    expect(content).toContain('{{BOARD_ROLE}}');
     expect(content).toContain('{{HIERARCHY_LEVEL}}');
     expect(content).toContain('{{MAX_DEPTH}}');
     expect(content).toContain('{{PARENT_BOARD_ID}}');
+    // BOARD_ROLE appears in the Configuration footer but not as section heading
+    expect(content).toContain('{{BOARD_ROLE}}');
   });
 
-  it('CLAUDE.md.template hierarchy uses SQLite MCP tools, not TASKS.json', () => {
+  it('CLAUDE.md.template hierarchy uses read_query/write_query (no mcp__sqlite__ prefix)', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    // SQLite MCP tools documented
-    expect(content).toContain('mcp__sqlite__read_query');
-    expect(content).toContain('mcp__sqlite__write_query');
-    expect(content).toContain('mcp__sqlite__list_tables');
-    expect(content).toContain('mcp__sqlite__describe_table');
-    // Explicit exclusion of JSON files for hierarchy
-    expect(content).toContain(
-      'Do NOT use TASKS.json or ARCHIVE.json',
-    );
-    expect(content).toContain('hierarchy boards use SQLite exclusively');
+    // Unified template uses short tool names without the mcp__sqlite__ prefix
+    expect(content).toContain('read_query');
+    expect(content).toContain('write_query');
+    expect(content).not.toContain('mcp__sqlite__read_query');
+    expect(content).not.toContain('mcp__sqlite__write_query');
+    // No TASKS.json references anywhere
+    expect(content).not.toContain('TASKS.json');
+    expect(content).not.toContain('ARCHIVE.json');
   });
 
-  it('CLAUDE.md.template hierarchy has board_role gate to skip section for standard boards', () => {
+  it('CLAUDE.md.template hierarchy section is gated by MAX_DEPTH (not BOARD_ROLE)', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
+    // The unified template gates hierarchy features on MAX_DEPTH, not BOARD_ROLE
     expect(content).toContain(
+      "If `{{MAX_DEPTH}}` is `1` or not set, **skip this entire section**",
+    );
+    // BOARD_ROLE may appear in configuration footer but not as a gate for skipping
+    expect(content).not.toContain(
       "If `{{BOARD_ROLE}}` is `standard` or missing, **skip this entire section**",
     );
   });
 
-  it('CLAUDE.md.template hierarchy has ID generation using a single global board_config counter', () => {
+  it('CLAUDE.md.template hierarchy uses shared ID Generation section (global board_config counter)', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    expect(content).toContain('### ID Generation (Hierarchy)');
+    // Unified template has a single shared ### ID Generation section for all topologies
+    expect(content).toContain('### ID Generation');
     expect(content).toContain('next_task_number');
-    // Hierarchy mode must use a single global counter (next_task_number) for ALL
-    // task types (T/P/R), matching standard mode's global next_id invariant.
-    // Separate per-type counters (next_project_number, next_recurring_number) would
-    // let T-001 and P-001 coexist with the same number, violating the documented
-    // rule: "The counter is global across all types."
+    // Must NOT have per-type counters — the counter is global across all types
     expect(content).not.toContain('next_project_number');
     expect(content).not.toContain('next_recurring_number');
-    expect(content).toContain('Use `next_task_number` for ALL task types');
+    expect(content).toContain('The counter is global across all types');
+    // Shared section must cover all task types
+    expect(content).toContain('T-` + padded number');
+    expect(content).toContain('P-` + padded number');
+    expect(content).toContain('R-` + padded number');
   });
 
-  it('CLAUDE.md.template hierarchy has sender identification from board_people/board_admins', () => {
+  it('CLAUDE.md.template hierarchy uses shared Sender Identification section (board_people/board_admins)', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    expect(content).toContain('### Sender Identification (Hierarchy)');
-    expect(content).toContain('board_people.name');
-    expect(content).toContain("board_admins.admin_role");
-    expect(content).toContain("'manager'` = manager");
-    expect(content).toContain("'delegate'` = delegate");
+    // Unified template has a single shared Sender Identification section for all topologies
+    expect(content).toContain('## Sender Identification');
+    expect(content).toContain('board_people');
+    expect(content).toContain('board_admins');
+    expect(content).toContain("admin_role = 'manager'");
+    expect(content).toContain("admin_role = 'delegate'");
     expect(content).toContain('is_primary_manager = 1');
   });
 
-  it('CLAUDE.md.template hierarchy has WIP limits from board_people then board_config fallback', () => {
+  it('CLAUDE.md.template hierarchy uses shared WIP limit section (board_people then board_config fallback)', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    expect(content).toContain('### WIP Limits (Hierarchy)');
-    expect(content).toContain('board_people.wip_limit');
+    // Unified template has shared WIP Limit section; per-person override in board_people
+    expect(content).toContain('### WIP Limit');
+    // Per-person override via board_people.wip_limit, falls back to board_config.wip_limit
+    expect(content).toContain('board_people');
+    expect(content).toContain('wip_limit');
+    // board_config is used as the default
     expect(content).toContain('board_config.wip_limit');
+    // Interaction with hierarchy noted in v2 Features section
+    expect(content).toContain('Per-person WIP limits use `board_people.wip_limit` first, then `board_config.wip_limit`');
   });
 
-  it('CLAUDE.md.template hierarchy has archival and history via SQL', () => {
+  it('CLAUDE.md.template hierarchy uses shared archival and history sections via SQL', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    expect(content).toContain('### Archival (Hierarchy)');
+    // Unified template has shared archival section for all topologies
+    expect(content).toContain('### Archival');
     expect(content).toContain('archive');
-    expect(content).toContain('task_snapshot');
-    expect(content).toContain('### History (Hierarchy)');
     expect(content).toContain('task_history');
-    // History caps
-    expect(content).toContain('Cap at 50 active entries per task');
+    // History caps from shared ### History Cap section
+    expect(content).toContain('must not exceed 50 entries per task');
     expect(content).toContain('latest 20 history entries');
   });
 
-  it('CLAUDE.md.template hierarchy archival cleans up task_history (no orphaned rows)', () => {
+  it('CLAUDE.md.template archival retains only latest history entries and covers cancellation', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    const archivalSection =
-      content.match(/### Archival \(Hierarchy\).*?### History/s)?.[0] ?? '';
-    // Must instruct the agent to DELETE from task_history during archival
-    expect(archivalSection).toContain('DELETE from `task_history`');
-    // Must also cover cancellation cleanup
+    // Shared History Cap section: DELETE oldest task_history rows when cap is exceeded
+    const historyCapSection =
+      content.match(/### History Cap[\s\S]*?###/s)?.[0] ?? '';
+    expect(historyCapSection).toContain('DELETE');
+    expect(historyCapSection).toContain('task_history');
+    // Rollup Engine uses archive_reason = 'cancelled' to distinguish cancellation
     expect(content).toContain("archive_reason = 'cancelled'");
-    // The cancellation cleanup note must mention task_history
+    // task_history is referenced in the context of cancelled tasks
     const cancelCleanup = content.match(
-      /cancell.*?task.*?archive.*?task_history|task_history.*?cancel/is,
+      /cancell.*?archive|archive.*?cancel/is,
     );
     expect(cancelCleanup).not.toBeNull();
   });
 
-  it('CLAUDE.md.template hierarchy has restore (restaurar) flow with SQL queries', () => {
+  it('CLAUDE.md.template has restore (restaurar) flow in shared Reopen and Restore section', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    // Must have a dedicated Restore (Hierarchy) section
-    expect(content).toContain('### Restore (Hierarchy)');
-    // Must include SQL to query archive
+    // Unified template has shared ### Reopen and Restore section for all topologies
+    expect(content).toContain('### Reopen and Restore');
+    expect(content).toContain('restaurar T-XXX');
+    // Restore flow: query archive, DELETE from archive, INSERT back into tasks
     const restoreSection =
-      content.match(/### Restore \(Hierarchy\).*?###/s)?.[0] ?? '';
+      content.match(/### Reopen and Restore[\s\S]*?###/s)?.[0] ?? '';
     expect(restoreSection).toContain('archive');
-    // Must include INSERT back into tasks
     expect(restoreSection).toMatch(/INSERT.*tasks/i);
-    // Must include DELETE from archive after restore
     expect(restoreSection).toMatch(/DELETE.*archive/i);
+    expect(restoreSection).toContain('task_history');
   });
 
   it('CLAUDE.md.template review → in_progress transition checks WIP', () => {
@@ -2488,20 +2414,18 @@ describe('taskflow skill package', () => {
     expect(content).toContain('"T-XXX concluida" / "T-XXX feita" | Assignee or manager.');
   });
 
-  it('CLAUDE.md.template hierarchy archival specifies archive_reason for both done and cancelled paths', () => {
+  it('CLAUDE.md.template archival section specifies archive_reason for both done and cancelled paths', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
+    // Unified template's shared ### Archival section must specify archive_reason
+    // for both 30-day done archival and immediate cancellation archival.
+    // The archive table has archive_reason TEXT NOT NULL, so agents must always set it.
+    // The Rollup Engine relies on archive_reason = 'cancelled' to exclude done-archived
+    // tasks from cancelled_count.
     const archivalSection =
-      content.match(/### Archival \(Hierarchy\)[\s\S]*?### Restore \(Hierarchy\)/)?.[0] ?? '';
-
-    // The archive table has archive_reason TEXT NOT NULL, so every INSERT must
-    // specify a value. The cancel path already uses 'cancelled'. The done-task
-    // auto-archival (30-day cleanup) must explicitly specify 'done' so that:
-    //   1. The NOT NULL constraint is satisfied
-    //   2. The Rollup Engine's "archive_reason = 'cancelled'" filter correctly
-    //      excludes done-archived tasks from the cancelled_count
+      content.match(/### Archival[\s\S]*?### Reopen and Restore/)?.[0] ?? '';
     expect(archivalSection).toContain("archive_reason = 'done'");
     expect(archivalSection).toContain("archive_reason = 'cancelled'");
   });
@@ -2640,25 +2564,25 @@ describe('taskflow skill package', () => {
     expect(confirmSection).toContain('remover quadro');
   });
 
-  it('SKILL.md Step 8d UPDATE sets dst_sync_enabled and dst_last_offset_minutes alongside runner IDs', () => {
+  it('SKILL.md Step 6d UPDATE sets dst_sync_enabled and dst_last_offset_minutes alongside runner IDs', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
 
-    // Extract Phase 2 Step 8d section
-    const step8d =
-      skillMd.match(/#### 8d\. Runner Task IDs.*?#### 8e\./s)?.[0] ?? '';
-    expect(step8d).not.toBe('');
+    // Extract Phase 2 Step 6d section (was Step 8d before step renumbering)
+    const step6d =
+      skillMd.match(/#### 6d\. Runner Task IDs.*?#### 6e\./s)?.[0] ?? '';
+    expect(step6d).not.toBe('');
 
     // The UPDATE must set DST state columns, not just runner task IDs.
     // Without dst_sync_enabled, the DST guard thinks sync is disabled (column defaults to 0).
     // Without dst_last_offset_minutes, the first guard run cannot compare offsets (column defaults to NULL).
-    expect(step8d).toContain('dst_sync_enabled');
-    expect(step8d).toContain('dst_last_offset_minutes');
-    expect(step8d).toContain('dst_last_synced_at');
+    expect(step6d).toContain('dst_sync_enabled');
+    expect(step6d).toContain('dst_last_offset_minutes');
+    expect(step6d).toContain('dst_last_synced_at');
 
     // The UPDATE must pass DST_GUARD_ENABLED and TIMEZONE as env vars
     // so it can conditionally compute the current offset
-    expect(step8d).toContain('DST_GUARD_ENABLED');
-    expect(step8d).toContain('TIMEZONE');
+    expect(step6d).toContain('DST_GUARD_ENABLED');
+    expect(step6d).toContain('TIMEZONE');
   });
 
   it('SKILL.md Phase 6 Step 8 child runner UPDATE also sets DST state columns', () => {
@@ -2678,7 +2602,7 @@ describe('taskflow skill package', () => {
     expect(step8).toContain('TIMEZONE');
   });
 
-  it('CLAUDE.md.template Attachment Intake section is storage-mode aware for hierarchy boards', () => {
+  it('CLAUDE.md.template Attachment Intake section uses unified SQLite storage for all topologies', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
@@ -2691,43 +2615,22 @@ describe('taskflow skill package', () => {
       )?.[0] ?? '';
     expect(attachmentSection.length).toBeGreaterThan(0);
 
-    // Bug fix: The Attachment Intake section previously only referenced
-    // standard-mode TASKS.json fields (meta.attachment_policy.enabled) for the
-    // attachment policy gate and (meta.attachment_audit_trail) for the audit
-    // trail. In hierarchy mode, the agent never reads TASKS.json, so it would
-    // have no way to check attachment policy or record audit entries.
-    //
-    // The fix adds dual-mode instructions:
-    // - Policy gate: hierarchy boards check board_runtime_config.attachment_enabled
-    // - Audit trail: hierarchy boards INSERT into attachment_audit_log
-
-    // Policy gate must reference both standard and hierarchy paths
-    expect(attachmentSection).toContain(
-      'Standard / separate boards: check `meta.attachment_policy.enabled`',
-    );
+    // Unified template uses SQLite for all topologies
+    // Policy gate: board_runtime_config for all boards
     expect(attachmentSection).toContain('board_runtime_config');
     expect(attachmentSection).toContain('attachment_enabled');
     expect(attachmentSection).toContain('attachment_disabled_reason');
 
-    // Audit trail must have both standard and hierarchy paths
-    expect(attachmentSection).toContain(
-      'Standard / separate boards: on every confirmed attachment import',
-    );
-    expect(attachmentSection).toContain('meta.attachment_audit_trail');
-    expect(attachmentSection).toContain(
-      'Hierarchy boards: on every confirmed attachment import',
-    );
+    // Audit trail: attachment_audit_log INSERT for all boards
     expect(attachmentSection).toContain('INSERT');
     expect(attachmentSection).toContain('attachment_audit_log');
 
-    // Must NOT have the old standard-only policy gate
-    expect(attachmentSection).not.toMatch(
-      /^Before doing any attachment import logic, check `meta\.attachment_policy\.enabled`:/m,
-    );
-    // Must NOT have the old standard-only audit trail
-    expect(attachmentSection).not.toMatch(
-      /^- On every confirmed attachment import, append an entry to `meta\.attachment_audit_trail` in `TASKS\.json`:/m,
-    );
+    // Must NOT have old dual-mode or JSON file references
+    expect(attachmentSection).not.toContain('meta.attachment_policy');
+    expect(attachmentSection).not.toContain('meta.attachment_audit_trail');
+    expect(attachmentSection).not.toContain('TASKS.json');
+    expect(attachmentSection).not.toContain('Standard / separate boards: check');
+    expect(attachmentSection).not.toContain('Hierarchy boards: on every confirmed attachment import');
   });
 
   it('hierarchy mode uses a single global counter for all task types (no per-type counters)', () => {
@@ -2736,23 +2639,22 @@ describe('taskflow skill package', () => {
     // T-001 and P-001 coexist with the same number, violating the documented
     // rule: "The counter is global across all types."
 
-    // 1. CLAUDE.md.template hierarchy section must NOT reference per-type counters
+    // 1. Unified CLAUDE.md.template has a single shared ### ID Generation section
+    // that applies to all topologies including hierarchy.
     const claudeTemplate = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    const hierarchyIdSection =
+    // Extract the shared ID Generation section
+    const sharedIdSection =
       claudeTemplate.match(
-        /### ID Generation \(Hierarchy\)[\s\S]*?### Sender Identification/,
+        /### ID Generation[\s\S]*?## The Kanban Board/,
       )?.[0] ?? '';
-    expect(hierarchyIdSection).toContain('next_task_number');
-    expect(hierarchyIdSection).toContain(
-      'Use `next_task_number` for ALL task types',
-    );
-    expect(hierarchyIdSection).not.toContain('next_project_number');
-    expect(hierarchyIdSection).not.toContain('next_recurring_number');
+    expect(sharedIdSection).toContain('next_task_number');
+    expect(sharedIdSection).not.toContain('next_project_number');
+    expect(sharedIdSection).not.toContain('next_recurring_number');
     // Must state the counter is global, matching standard mode invariant
-    expect(hierarchyIdSection).toContain('global across all types');
+    expect(sharedIdSection).toContain('global across all types');
 
     // 2. taskflow-db.ts schema must NOT have per-type counter columns
     const dbSchema = fs.readFileSync(
@@ -2822,23 +2724,18 @@ describe('taskflow skill package', () => {
     );
   });
 
-  it('SKILL.md Phase 5 Step 8 scopes schema_version checks to standard/separate boards only', () => {
+  it('SKILL.md Phase 5 Step 8 archive and lifecycle checks use SQLite (no schema_version)', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
 
-    // The archive and lifecycle verification step must scope schema_version
-    // normalization to standard/separate boards only, since hierarchy boards
-    // do not use meta.schema_version (they use SQLite as their data store).
+    // SQLite-unified SKILL.md: all boards use SQLite, no meta.schema_version at all
     const archiveSection =
       skillMd.split('### 8. Archive and Lifecycle Checks')[1]?.split('### 9.')[0] ?? '';
 
-    // The schema_version bullet must be scoped to standard/separate boards
-    expect(archiveSection).toContain('Standard / separate boards only:');
-    expect(archiveSection).toContain('hierarchy boards do not use `meta.schema_version`');
-
-    // It must NOT have an unscoped schema_version check
-    expect(archiveSection).not.toMatch(
-      /^- Existing legacy/m,
-    );
+    // Must verify using archive table (SQLite)
+    expect(archiveSection).toContain('archive');
+    // Must NOT reference JSON-era schema_version
+    expect(archiveSection).not.toContain('schema_version');
+    expect(archiveSection).not.toContain('meta.schema_version');
   });
 
   it('CLAUDE.md.template undo checks WIP limit when restoring a task to in_progress', () => {
@@ -2872,13 +2769,14 @@ describe('taskflow skill package', () => {
     expect(removerLine).toBeDefined();
 
     // Bug fix: removing a person must also cascade-delete their admin entries
-    // (board_admins in hierarchy / meta.managers[] in standard) and their
-    // child_board_registrations row in hierarchy mode. Without this, orphaned
-    // admin rows and child board registrations persist because the schema has
-    // no ON DELETE CASCADE between board_people ↔ board_admins / child_board_registrations.
+    // (board_admins) and their child_board_registrations row in hierarchy mode.
+    // Without this, orphaned admin rows and child board registrations persist
+    // because the schema has no ON DELETE CASCADE between board_people ↔ board_admins
+    // / child_board_registrations. In the SQLite-unified template, meta.managers[] no
+    // longer exists; board_admins is used for all topologies.
     expect(removerLine!).toContain('board_admins');
-    expect(removerLine!).toContain('meta.managers[]');
     expect(removerLine!).toContain('child_board_registrations');
+    expect(removerLine!).not.toContain('meta.managers[]');
 
     // Must refuse if cascade would remove the last full manager
     expect(removerLine!).toContain('last full manager');
@@ -2947,71 +2845,55 @@ describe('taskflow skill package', () => {
     expect(content).toContain('desvincular T-001');
   });
 
-  it('CLAUDE.md.template has hierarchy-mode SQL for blocked_by dependency resolution on done and cancel', () => {
+  it('CLAUDE.md.template shared Task Dependencies section covers blocked_by resolution for done and cancel', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
 
-    // Bug: The hierarchy-mode section had no SQL guidance for resolving
-    // blocked_by references when a task moves to done or is cancelled.
-    // The general Task Dependencies section describes the logic in terms
-    // of blocked_by[] array manipulation (standard-mode TASKS.json), but
-    // hierarchy mode stores blocked_by as a TEXT column with a JSON string.
-    // Without explicit SQL steps, an agent would leave stale task IDs in
-    // other tasks' blocked_by arrays after completing or cancelling a
-    // blocking task in hierarchy mode.
+    // Unified template: all topologies use SQLite for blocked_by storage.
+    // The shared Task Dependencies section must cover both trigger situations.
 
-    // Must have a dedicated "Dependency Resolution (Hierarchy)" section
-    const hierSection = content.split('If `{{BOARD_ROLE}}` is `standard` or missing')[1] ?? '';
-    expect(hierSection).toContain('### Dependency Resolution (Hierarchy)');
-
-    // Must include SQL to find affected tasks by LIKE match on blocked_by
+    // Extract the shared Task Dependencies section
     const depSection =
-      hierSection.split('### Dependency Resolution (Hierarchy)')[1]?.split('###')[0] ?? '';
+      content.match(/### Task Dependencies[\s\S]*?### Deadline Reminders/)?.[0] ?? '';
     expect(depSection.length).toBeGreaterThan(0);
-    expect(depSection).toContain('blocked_by LIKE');
-    expect(depSection).toContain(':resolved_task_id');
 
-    // Must include SQL to update blocked_by with filtered JSON
-    expect(depSection).toContain('UPDATE tasks');
-    expect(depSection).toContain(':new_blocked_by_json');
-
-    // Must include SQL to record dependency_resolved in task_history
-    expect(depSection).toContain('dependency_resolved');
-    expect(depSection).toContain('INSERT INTO task_history');
-
-    // Must specify both trigger situations: done and cancelled
+    // Must cover dependency resolution when a blocking task moves to done
     expect(depSection).toContain('moves to `done`');
-    expect(depSection).toContain('cancelled');
+    expect(depSection).toContain('dependency_resolved');
+    expect(depSection).toContain('task_history');
 
-    // The hierarchy cancellation procedure must reference dependency resolution
+    // Must cover dependency resolution when a task is cancelled
+    expect(depSection).toContain('cancelar');
+    expect(depSection).toContain('blocked_by');
+
+    // The archival section must reference dependency resolution steps
     const archivalSection =
-      hierSection.split('### Archival (Hierarchy)')[1]?.split('### Restore')[0] ?? '';
-    expect(archivalSection).toContain('blocked_by');
-    expect(archivalSection).toContain('dependency_resolved');
-    expect(archivalSection).toContain('Dependency Resolution');
+      content.match(/### Archival[\s\S]*?### Reopen and Restore/)?.[0] ?? '';
+    expect(archivalSection).toContain('dependency resolution');
   });
 
-  it('SKILL.md hierarchy DST offset calculation has division inside Math.round (not outside)', () => {
+  it('SKILL.md Step 6d DST offset calculation has division inside Math.round (not outside)', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
 
-    // Phase 2 Step 8d: hierarchy board DST offset in board_runtime_config
+    // Phase 2 Step 6d (was Step 8d before renumbering): board DST offset in board_runtime_config
     // The division by 60000 must be INSIDE Math.round() to ensure an integer result.
     // Bug: `-Math.round(diff) / 60000` produces fractional minutes (e.g., 180.5)
     //       when the millisecond difference has sub-minute precision from toLocaleString.
     // Fix: `-Math.round(diff / 60000)` rounds after converting to minutes.
     //
-    // The Phase 4 Step 3 standard-board version already does this correctly:
+    // The Phase 4 Step 3 DST guard version already does this correctly:
     //   `-Math.round((... .getTime() - ... .getTime()) / 60000)`
-    // The hierarchy version must match.
-    const phase2Section =
-      skillMd.match(/#### 8d\. Runner Task IDs.*?#### 8e\./s)?.[0] ?? '';
+    // Step 6d must match.
+    const step6dSection =
+      skillMd.match(/#### 6d\. Runner Task IDs.*?#### 6e\./s)?.[0] ?? '';
+    expect(step6dSection).not.toBe('');
 
     // Must NOT have the buggy pattern: round first, then divide
     // Buggy:  -Math.round(new Date(...).getTime() - new Date(...).getTime()) / 60000
     //         This parses as (-Math.round(diff)) / 60000 — division is outside round
-    expect(phase2Section).not.toMatch(
+    expect(step6dSection).not.toMatch(
       /Math\.round\([^)]*getTime\(\)[^)]*getTime\(\)\)\s*\/\s*60000/,
     );
 
@@ -3019,7 +2901,7 @@ describe('taskflow skill package', () => {
     // Correct: -Math.round((new Date(...).getTime() - new Date(...).getTime()) / 60000)
     //          This ensures the result is always an integer.
     //          The outer Math.round(...) closes AFTER "/ 60000", wrapping the division.
-    expect(phase2Section).toMatch(
+    expect(step6dSection).toMatch(
       /Math\.round\(\(new Date.*?getTime\(\).*?\/\s*60000\)/,
     );
   });
