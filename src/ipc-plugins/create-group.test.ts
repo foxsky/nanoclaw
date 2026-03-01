@@ -91,7 +91,7 @@ describe('create_group IPC plugin', () => {
     ]);
   });
 
-  it('allows TaskFlow groups to create a valid group', async () => {
+  it('allows TaskFlow groups to create a valid group with TaskFlow suffix', async () => {
     await handler(
       {
         subject: 'Ops',
@@ -103,7 +103,24 @@ describe('create_group IPC plugin', () => {
     );
 
     expect(createGroup).toHaveBeenCalledOnce();
-    expect(createGroup).toHaveBeenCalledWith('Ops', [
+    expect(createGroup).toHaveBeenCalledWith('Ops - TaskFlow', [
+      '5585999998888@s.whatsapp.net',
+    ]);
+  });
+
+  it('does not double-append TaskFlow suffix', async () => {
+    await handler(
+      {
+        subject: 'Ops - TaskFlow',
+        participants: ['5585999998888@s.whatsapp.net'],
+      },
+      'taskflow-group',
+      false,
+      deps,
+    );
+
+    expect(createGroup).toHaveBeenCalledOnce();
+    expect(createGroup).toHaveBeenCalledWith('Ops - TaskFlow', [
       '5585999998888@s.whatsapp.net',
     ]);
   });
@@ -144,6 +161,26 @@ describe('create_group IPC plugin', () => {
     );
 
     expect(createGroup).toHaveBeenCalledOnce();
+    expect(createGroup).toHaveBeenCalledWith('Ops - TaskFlow', [
+      '5585999998888@s.whatsapp.net',
+    ]);
+  });
+
+  it('does not add TaskFlow suffix for main group', async () => {
+    await handler(
+      {
+        subject: 'Ops',
+        participants: ['5585999998888@s.whatsapp.net'],
+      },
+      'main',
+      true,
+      deps,
+    );
+
+    expect(createGroup).toHaveBeenCalledOnce();
+    expect(createGroup).toHaveBeenCalledWith('Ops', [
+      '5585999998888@s.whatsapp.net',
+    ]);
   });
 
   it('blocks non-main groups without the TaskFlow marker', async () => {

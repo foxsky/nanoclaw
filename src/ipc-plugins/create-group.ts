@@ -4,6 +4,7 @@ import { logger } from '../logger.js';
 const MAX_GROUP_SUBJECT_LENGTH = 100;
 const MAX_GROUP_PARTICIPANTS = 256;
 const PARTICIPANT_JID_PATTERN = /^\d{6,20}@s\.whatsapp\.net$/;
+const TASKFLOW_SUFFIX = ' - TaskFlow';
 
 function normalizeSubject(subject: unknown): string | null {
   if (typeof subject !== 'string') return null;
@@ -81,7 +82,8 @@ const handleCreateGroup: IpcHandler = async (
     logger.warn('create_group handler: no createGroup dep available');
     return;
   }
-  const subject = normalizeSubject(data.subject);
+  const isTaskflowSource = !isMain && canCreateGroupFromSource(sourceGroup, false, deps);
+  let subject = normalizeSubject(data.subject);
   const participants = normalizeParticipants(data.participants);
   if (!subject || !participants) {
     logger.warn(
@@ -96,6 +98,13 @@ const handleCreateGroup: IpcHandler = async (
     );
     return;
   }
+  if (isTaskflowSource && !subject.endsWith(TASKFLOW_SUFFIX)) {
+    const suffixed = subject + TASKFLOW_SUFFIX;
+    if (suffixed.length <= MAX_GROUP_SUBJECT_LENGTH) {
+      subject = suffixed;
+    }
+  }
+
   try {
     const result = await deps.createGroup(subject, participants);
     logger.info(
