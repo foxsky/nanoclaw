@@ -155,6 +155,25 @@ interface LegacyArchiveJson {
   tasks: LegacyTask[];
 }
 
+interface RegisteredGroupRow {
+  jid: string;
+  name: string;
+  folder: string;
+  trigger_pattern: string;
+}
+
+interface MigrateBoardOptions {
+  folder: string;
+  groupDir: string;
+  regGroup: RegisteredGroupRow;
+  tasksJson: LegacyTasksJson;
+  archiveJson: LegacyArchiveJson;
+  taskflowDb: Database.Database;
+  messagesDb: Database.Database;
+  template: string;
+  assistantName: string;
+}
+
 // --- SQLite-mode runner prompts ---
 
 const STANDUP_PROMPT =
@@ -180,6 +199,426 @@ function slugify(name: string): string {
 function log(msg: string): void {
   const prefix = DRY_RUN ? '[DRY RUN] ' : '';
   console.log(`${prefix}${msg}`);
+}
+
+function normalizeAdminRole(role?: string): 'manager' | 'delegate' {
+  return role === 'delegate' ? 'delegate' : 'manager';
+}
+
+function buildAdminRows(
+  meta: LegacyMeta,
+  personIdByPhone: Map<string, string>,
+): Array<{
+  person_id: string;
+  phone: string;
+  admin_role: 'manager' | 'delegate';
+  is_primary_manager: number;
+}> {
+  const rows: Array<{
+    person_id: string;
+    phone: string;
+    admin_role: 'manager' | 'delegate';
+    is_primary_manager: number;
+  }> = [];
+
+  const pushRow = (
+    name: string,
+    phone: string,
+    role: 'manager' | 'delegate',
+    isPrimary: number,
+  ) => {
+    const personId = personIdByPhone.get(phone) ?? slugify(name);
+    const existing = rows.find(
+      (row) => row.person_id === personId && row.admin_role === role,
+    );
+    if (existing) {
+      existing.phone = phone;
+      existing.is_primary_manager = Math.max(existing.is_primary_manager, isPrimary);
+      return;
+    }
+
+    rows.push({
+      person_id: personId,
+      phone,
+      admin_role: role,
+      is_primary_manager: isPrimary,
+    });
+  };
+
+  if (meta.managers && meta.managers.length > 0) {
+    let hasPrimaryManager = false;
+    for (const manager of meta.managers) {
+      const normalizedRole = normalizeAdminRole(manager.role);
+      const isPrimary =
+        normalizedRole === 'manager' && manager.phone === meta.manager.phone ? 1 : 0;
+      if (isPrimary === 1) hasPrimaryManager = true;
+      pushRow(manager.name, manager.phone, normalizedRole, isPrimary);
+    }
+
+    if (!hasPrimaryManager) {
+      pushRow(meta.manager.name, meta.manager.phone, 'manager', 1);
+    }
+  } else {
+    pushRow(meta.manager.name, meta.manager.phone, 'manager', 1);
+  }
+
+  return rows;
+}
+
+export function migrateBoard(options: MigrateBoardOptions): void {
+  const {
+    folder,
+    groupDir,
+    regGroup,
+    tasksJson,
+    archiveJson,
+    taskflowDb,
+    messagesDb,
+    template,
+    assistantName,
+  } = options;
+  const meta = tasksJson.meta;
+  const boardId = `board-${folder}`;
+  const managerId = slugify(meta.manager.name);
+
+  const insertBoard = taskflowDb.transaction(() => {
+    // boards
+    taskflowDb
+      .prepare(
+        `INSERT OR REPLACE INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id)
+         VALUES (?, ?, ?, 'standard', NULL, 1, NULL)`,
+      )
+      .run(boardId, regGroup.jid, folder);
+
+    // board_config
+    taskflowDb
+      .prepare(
+        `INSERT OR REPLACE INTO board_config (board_id, columns, wip_limit, next_task_number, next_note_id)
+         VALUES (?, ?, ?, ?, 1)`,
+      )
+      .run(
+        boardId,
+        JSON.stringify(meta.columns),
+        meta.wip_limit_default,
+        tasksJson.next_id,
+      );
+
+    // board_runtime_config
+    taskflowDb
+      .prepare(
+        `INSERT OR REPLACE INTO board_runtime_config (
+          board_id, language, timezone,
+          runner_standup_task_id, runner_digest_task_id, runner_review_task_id, runner_dst_guard_task_id,
+          standup_cron_local, digest_cron_local, review_cron_local,
+          standup_cron_utc, digest_cron_utc, review_cron_utc,
+          dst_sync_enabled, dst_last_offset_minutes, dst_last_synced_at,
+          dst_resync_count_24h, dst_resync_window_started_at,
+          attachment_enabled, attachment_disabled_reason,
+          attachment_allowed_formats, attachment_max_size_bytes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        boardId,
+        meta.language,
+        meta.timezone,
+        meta.runner_task_ids.standup,
+        meta.runner_task_ids.digest,
+        meta.runner_task_ids.review,
+        meta.runner_task_ids.dst_guard,
+        meta.runner_crons_local.standup,
+        meta.runner_crons_local.digest,
+        meta.runner_crons_local.review,
+        meta.runner_crons_utc.standup,
+        meta.runner_crons_utc.digest,
+        meta.runner_crons_utc.review,
+        meta.dst_sync.enabled ? 1 : 0,
+        meta.dst_sync.last_offset_minutes,
+        meta.dst_sync.last_synced_at,
+        meta.dst_sync.resync_count_24h,
+        meta.dst_sync.resync_window_started_at,
+        meta.attachment_policy.enabled ? 1 : 0,
+        meta.attachment_policy.disabled_reason,
+        JSON.stringify(meta.attachment_policy.allowed_formats),
+        meta.attachment_policy.max_size_bytes,
+      );
+
+    // board_people — from people[]
+    const insertPerson = taskflowDb.prepare(
+      `INSERT OR REPLACE INTO board_people (board_id, person_id, name, phone, role, wip_limit)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    const personIdByPhone = new Map<string, string>();
+    for (const person of tasksJson.people) {
+      insertPerson.run(
+        boardId,
+        person.id,
+        person.name,
+        person.phone,
+        person.role,
+        person.wip_limit,
+      );
+      personIdByPhone.set(person.phone, person.id);
+    }
+
+    // Ensure the manager is also in board_people (may be missing from legacy people[])
+    const managerInPeople = tasksJson.people.find(
+      (p) => p.phone === meta.manager.phone,
+    );
+    if (!managerInPeople) {
+      const matchingLegacyManager = meta.managers?.find(
+        (entry) => entry.phone === meta.manager.phone,
+      );
+      insertPerson.run(
+        boardId,
+        managerId,
+        meta.manager.name,
+        meta.manager.phone,
+        matchingLegacyManager?.role ?? 'manager',
+        null,
+      );
+      personIdByPhone.set(meta.manager.phone, managerId);
+    }
+
+    // board_admins — preserve legacy managers/delegates when available
+    const insertAdmin = taskflowDb.prepare(
+      `INSERT OR REPLACE INTO board_admins (board_id, person_id, phone, admin_role, is_primary_manager)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    for (const row of buildAdminRows(meta, personIdByPhone)) {
+      insertAdmin.run(
+        boardId,
+        row.person_id,
+        row.phone,
+        row.admin_role,
+        row.is_primary_manager,
+      );
+    }
+
+    // tasks — from tasks[]
+    const insertTask = taskflowDb.prepare(
+      `INSERT OR REPLACE INTO tasks (
+        id, board_id, type, title, assignee, next_action, waiting_for, column,
+        priority, due_date, description, labels, blocked_by, reminders,
+        next_note_id, notes, _last_mutation, created_at, updated_at,
+        subtasks, recurrence, current_cycle,
+        linked_parent_board_id, linked_parent_task_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const insertHistory = taskflowDb.prepare(
+      `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+
+    for (const task of tasksJson.tasks) {
+      insertTask.run(
+        task.id,
+        boardId,
+        task.type || 'simple',
+        task.title,
+        task.assignee || null,
+        task.next_action || null,
+        task.waiting_for || null,
+        task.column || 'inbox',
+        task.priority || null,
+        task.due_date || null,
+        task.description || null,
+        JSON.stringify(task.labels || []),
+        JSON.stringify(task.blocked_by || []),
+        JSON.stringify(task.reminders || []),
+        task.next_note_id || 1,
+        JSON.stringify(task.notes || []),
+        null,
+        task.created_at,
+        task.updated_at,
+        task.subtasks ? JSON.stringify(task.subtasks) : null,
+        task.recurrence ? JSON.stringify(task.recurrence) : null,
+        task.current_cycle ? JSON.stringify(task.current_cycle) : null,
+        task.linked_parent_board_id || null,
+        task.linked_parent_task_id || null,
+      );
+
+      const history = task.history || [];
+      const historyToMigrate =
+        history.length > 50 ? history.slice(history.length - 50) : history;
+      for (const entry of historyToMigrate) {
+        insertHistory.run(
+          boardId,
+          task.id,
+          entry.action,
+          entry.by || null,
+          entry.at,
+          entry.details || null,
+        );
+      }
+    }
+
+    // archive — from ARCHIVE.json tasks[]
+    const insertArchive = taskflowDb.prepare(
+      `INSERT OR REPLACE INTO archive (
+        board_id, task_id, type, title, assignee,
+        archive_reason, linked_parent_board_id, linked_parent_task_id,
+        archived_at, task_snapshot, history
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    for (const task of archiveJson.tasks) {
+      const history = task.history || [];
+      const latestAction =
+        history.length > 0 ? history[history.length - 1] : null;
+      const archiveReason =
+        latestAction?.action === 'cancelled' ? 'cancelled' : 'completed';
+      const archivedAt = latestAction?.at || task.updated_at;
+      const { history: _h, ...snapshotData } = task;
+      const taskSnapshot = JSON.stringify(snapshotData);
+      const archiveHistory =
+        history.length > 20 ? history.slice(history.length - 20) : history;
+
+      insertArchive.run(
+        boardId,
+        task.id,
+        task.type || 'simple',
+        task.title,
+        task.assignee || null,
+        archiveReason,
+        task.linked_parent_board_id || null,
+        task.linked_parent_task_id || null,
+        archivedAt,
+        taskSnapshot,
+        JSON.stringify(archiveHistory),
+      );
+    }
+
+    // attachment_audit_log — resolve actor from migrated board_people state
+    if (
+      meta.attachment_audit_trail &&
+      meta.attachment_audit_trail.length > 0
+    ) {
+      const insertAudit = taskflowDb.prepare(
+        `INSERT INTO attachment_audit_log (board_id, source, filename, at, actor_person_id, affected_task_refs)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      );
+
+      for (const entry of meta.attachment_audit_trail) {
+        const actorPersonId = personIdByPhone.get(entry.actor_phone) ?? null;
+        const affectedRefs = {
+          action: entry.action,
+          created_task_ids: entry.created_task_ids,
+          updated_task_ids: entry.updated_task_ids,
+          rejected_mutations: entry.rejected_mutations,
+        };
+
+        insertAudit.run(
+          boardId,
+          entry.source || 'attachment',
+          entry.filename,
+          entry.timestamp,
+          actorPersonId,
+          JSON.stringify(affectedRefs),
+        );
+      }
+    }
+  });
+
+  insertBoard();
+
+  // --- Create .mcp.json ---
+  const mcpConfig = {
+    mcpServers: {
+      sqlite: {
+        type: 'stdio',
+        command: 'npx',
+        args: ['-y', 'mcp-server-sqlite-npx', '/workspace/taskflow/taskflow.db'],
+      },
+    },
+  };
+  fs.writeFileSync(
+    path.join(groupDir, '.mcp.json'),
+    JSON.stringify(mcpConfig, null, 2) + '\n',
+  );
+
+  // --- Regenerate CLAUDE.md ---
+  const claudePath = path.join(groupDir, 'CLAUDE.md');
+  if (fs.existsSync(claudePath)) {
+    fs.copyFileSync(claudePath, path.join(groupDir, 'CLAUDE.md.pre-migration'));
+  }
+
+  let groupContext = regGroup.name;
+  if (fs.existsSync(claudePath)) {
+    const oldClaude = fs.readFileSync(claudePath, 'utf-8');
+    const contextMatch = oldClaude.match(
+      /You manage a Kanban\+GTD board for (.+)\./,
+    );
+    if (contextMatch) {
+      groupContext = contextMatch[1];
+    }
+  }
+
+  const placeholders: Record<string, string> = {
+    '{{ASSISTANT_NAME}}': assistantName,
+    '{{GROUP_NAME}}': regGroup.name,
+    '{{GROUP_FOLDER}}': folder,
+    '{{MANAGER_NAME}}': meta.manager.name,
+    '{{MANAGER_PHONE}}': meta.manager.phone,
+    '{{MANAGER_ID}}': managerId,
+    '{{GROUP_CONTEXT}}': groupContext,
+    '{{LANGUAGE}}': meta.language,
+    '{{TIMEZONE}}': meta.timezone,
+    '{{WIP_LIMIT}}': String(meta.wip_limit_default),
+    '{{STANDUP_CRON_LOCAL}}': meta.runner_crons_local.standup,
+    '{{DIGEST_CRON_LOCAL}}': meta.runner_crons_local.digest,
+    '{{REVIEW_CRON_LOCAL}}': meta.runner_crons_local.review,
+    '{{STANDUP_CRON}}': meta.runner_crons_utc.standup,
+    '{{DIGEST_CRON}}': meta.runner_crons_utc.digest,
+    '{{REVIEW_CRON}}': meta.runner_crons_utc.review,
+    '{{GROUP_JID}}': regGroup.jid,
+    '{{ATTACHMENT_IMPORT_ENABLED}}': meta.attachment_policy.enabled
+      ? 'true'
+      : 'false',
+    '{{ATTACHMENT_IMPORT_REASON}}': meta.attachment_policy.disabled_reason,
+    '{{DST_GUARD_ENABLED}}': meta.dst_sync.enabled ? 'true' : 'false',
+    '{{BOARD_ROLE}}': 'standard',
+    '{{BOARD_ID}}': boardId,
+    '{{HIERARCHY_LEVEL}}': '',
+    '{{HIERARCHY_LEVEL_SQL}}': 'null',
+    '{{MAX_DEPTH}}': '1',
+    '{{MAX_DEPTH_SQL}}': '1',
+    '{{PARENT_BOARD_ID}}': '',
+  };
+
+  let rendered = template;
+  for (const [placeholder, value] of Object.entries(placeholders)) {
+    rendered = rendered.split(placeholder).join(value);
+  }
+  fs.writeFileSync(claudePath, rendered);
+
+  // --- Update registered_groups ---
+  messagesDb
+    .prepare(
+      `UPDATE registered_groups
+       SET taskflow_managed = 1, taskflow_hierarchy_level = 0, taskflow_max_depth = 1
+       WHERE folder = ?`,
+    )
+    .run(folder);
+
+  // --- Update runner prompts in scheduled_tasks ---
+  const runnerUpdates: Array<{ id: string | null; prompt: string }> = [
+    { id: meta.runner_task_ids.standup, prompt: STANDUP_PROMPT },
+    { id: meta.runner_task_ids.digest, prompt: DIGEST_PROMPT },
+    { id: meta.runner_task_ids.review, prompt: REVIEW_PROMPT },
+  ];
+  const updatePrompt = messagesDb.prepare(
+    `UPDATE scheduled_tasks SET prompt = ? WHERE id = ?`,
+  );
+  for (const { id, prompt } of runnerUpdates) {
+    if (id) {
+      updatePrompt.run(prompt, id);
+    }
+  }
+
+  if (meta.runner_task_ids.dst_guard) {
+    const dstPrompt = `[TF-DST-GUARD] Check if UTC offset for timezone '${meta.timezone}' has changed. Query board_runtime_config for board_id='${boardId}'. Compare current UTC offset with dst_last_offset_minutes. If different: recompute UTC cron expressions from local crons, UPDATE board_runtime_config, then recreate the standup/digest/review scheduled_tasks with new cron values. Update dst_last_synced_at and dst_resync_count_24h.`;
+    updatePrompt.run(dstPrompt, meta.runner_task_ids.dst_guard);
+  }
 }
 
 // --- Main migration ---
@@ -218,32 +657,36 @@ function migrate(): void {
     console.error(`ERROR: messages.db not found at ${messagesDbPath}`);
     process.exit(1);
   }
-  const messagesDb = new Database(messagesDbPath);
+  const messagesDb = new Database(messagesDbPath, {
+    readonly: DRY_RUN,
+  });
 
-  // Ensure taskflow columns exist in registered_groups
-  try {
-    messagesDb.exec(
-      `ALTER TABLE registered_groups ADD COLUMN taskflow_managed INTEGER DEFAULT 0`,
-    );
-    log('Added taskflow_managed column to registered_groups');
-  } catch {
-    /* column already exists */
-  }
-  try {
-    messagesDb.exec(
-      `ALTER TABLE registered_groups ADD COLUMN taskflow_hierarchy_level INTEGER`,
-    );
-    log('Added taskflow_hierarchy_level column to registered_groups');
-  } catch {
-    /* column already exists */
-  }
-  try {
-    messagesDb.exec(
-      `ALTER TABLE registered_groups ADD COLUMN taskflow_max_depth INTEGER`,
-    );
-    log('Added taskflow_max_depth column to registered_groups');
-  } catch {
-    /* column already exists */
+  // Ensure taskflow columns exist in registered_groups (skip in dry-run)
+  if (!DRY_RUN) {
+    try {
+      messagesDb.exec(
+        `ALTER TABLE registered_groups ADD COLUMN taskflow_managed INTEGER DEFAULT 0`,
+      );
+      log('Added taskflow_managed column to registered_groups');
+    } catch {
+      /* column already exists */
+    }
+    try {
+      messagesDb.exec(
+        `ALTER TABLE registered_groups ADD COLUMN taskflow_hierarchy_level INTEGER`,
+      );
+      log('Added taskflow_hierarchy_level column to registered_groups');
+    } catch {
+      /* column already exists */
+    }
+    try {
+      messagesDb.exec(
+        `ALTER TABLE registered_groups ADD COLUMN taskflow_max_depth INTEGER`,
+      );
+      log('Added taskflow_max_depth column to registered_groups');
+    } catch {
+      /* column already exists */
+    }
   }
 
   // 4. Initialize taskflow.db
@@ -260,12 +703,7 @@ function migrate(): void {
   // 5. Get registered groups from messages.db
   const registeredGroups = messagesDb
     .prepare('SELECT jid, name, folder, trigger_pattern FROM registered_groups')
-    .all() as Array<{
-    jid: string;
-    name: string;
-    folder: string;
-    trigger_pattern: string;
-  }>;
+    .all() as RegisteredGroupRow[];
   const groupsByFolder = new Map(registeredGroups.map((g) => [g.folder, g]));
 
   // Read ASSISTANT_NAME from .env
@@ -307,8 +745,6 @@ function migrate(): void {
     }
 
     const boardId = `board-${folder}`;
-    const managerId = slugify(meta.manager.name);
-
     log(`  Board ID: ${boardId}`);
     log(`  Group JID: ${regGroup.jid}`);
     log(`  Manager: ${meta.manager.name} (${meta.manager.phone})`);
@@ -322,376 +758,22 @@ function migrate(): void {
       continue;
     }
 
-    // --- Insert into taskflow.db ---
-
-    const insertBoard = taskflowDb.transaction(() => {
-      // boards
-      taskflowDb
-        .prepare(
-          `INSERT OR REPLACE INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id)
-           VALUES (?, ?, ?, 'standard', NULL, 1, NULL)`,
-        )
-        .run(boardId, regGroup.jid, folder);
-
-      // board_config
-      taskflowDb
-        .prepare(
-          `INSERT OR REPLACE INTO board_config (board_id, columns, wip_limit, next_task_number, next_note_id)
-           VALUES (?, ?, ?, ?, 1)`,
-        )
-        .run(
-          boardId,
-          JSON.stringify(meta.columns),
-          meta.wip_limit_default,
-          tasksJson.next_id,
-        );
-
-      // board_runtime_config
-      taskflowDb
-        .prepare(
-          `INSERT OR REPLACE INTO board_runtime_config (
-            board_id, language, timezone,
-            runner_standup_task_id, runner_digest_task_id, runner_review_task_id, runner_dst_guard_task_id,
-            standup_cron_local, digest_cron_local, review_cron_local,
-            standup_cron_utc, digest_cron_utc, review_cron_utc,
-            dst_sync_enabled, dst_last_offset_minutes, dst_last_synced_at,
-            dst_resync_count_24h, dst_resync_window_started_at,
-            attachment_enabled, attachment_disabled_reason,
-            attachment_allowed_formats, attachment_max_size_bytes
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          boardId,
-          meta.language,
-          meta.timezone,
-          meta.runner_task_ids.standup,
-          meta.runner_task_ids.digest,
-          meta.runner_task_ids.review,
-          meta.runner_task_ids.dst_guard,
-          meta.runner_crons_local.standup,
-          meta.runner_crons_local.digest,
-          meta.runner_crons_local.review,
-          meta.runner_crons_utc.standup,
-          meta.runner_crons_utc.digest,
-          meta.runner_crons_utc.review,
-          meta.dst_sync.enabled ? 1 : 0,
-          meta.dst_sync.last_offset_minutes,
-          meta.dst_sync.last_synced_at,
-          meta.dst_sync.resync_count_24h,
-          meta.dst_sync.resync_window_started_at,
-          meta.attachment_policy.enabled ? 1 : 0,
-          meta.attachment_policy.disabled_reason,
-          JSON.stringify(meta.attachment_policy.allowed_formats),
-          meta.attachment_policy.max_size_bytes,
-        );
-
-      // board_people — from people[]
-      const insertPerson = taskflowDb.prepare(
-        `INSERT OR REPLACE INTO board_people (board_id, person_id, name, phone, role, wip_limit)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      );
-      for (const person of tasksJson.people) {
-        insertPerson.run(
-          boardId,
-          person.id,
-          person.name,
-          person.phone,
-          person.role,
-          person.wip_limit,
-        );
-      }
-
-      // Ensure the manager is also in board_people (may be missing from legacy people[])
-      const managerInPeople = tasksJson.people.find(
-        (p) => p.phone === meta.manager.phone,
-      );
-      if (!managerInPeople) {
-        insertPerson.run(
-          boardId,
-          managerId,
-          meta.manager.name,
-          meta.manager.phone,
-          'manager',
-          null,
-        );
-      }
-
-      // board_admins — manager as primary admin
-      taskflowDb
-        .prepare(
-          `INSERT OR REPLACE INTO board_admins (board_id, person_id, phone, admin_role, is_primary_manager)
-           VALUES (?, ?, ?, 'manager', 1)`,
-        )
-        .run(boardId, managerId, meta.manager.phone);
-
-      // tasks — from tasks[]
-      const insertTask = taskflowDb.prepare(
-        `INSERT OR REPLACE INTO tasks (
-          id, board_id, type, title, assignee, next_action, waiting_for, column,
-          priority, due_date, description, labels, blocked_by, reminders,
-          next_note_id, notes, _last_mutation, created_at, updated_at,
-          subtasks, recurrence, current_cycle,
-          linked_parent_board_id, linked_parent_task_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      );
-      const insertHistory = taskflowDb.prepare(
-        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      );
-
-      for (const task of tasksJson.tasks) {
-        insertTask.run(
-          task.id,
-          boardId,
-          task.type || 'simple',
-          task.title,
-          task.assignee || null,
-          task.next_action || null,
-          task.waiting_for || null,
-          task.column || 'inbox',
-          task.priority || null,
-          task.due_date || null,
-          task.description || null,
-          JSON.stringify(task.labels || []),
-          JSON.stringify(task.blocked_by || []),
-          JSON.stringify(task.reminders || []),
-          task.next_note_id || 1,
-          JSON.stringify(task.notes || []),
-          null,
-          task.created_at,
-          task.updated_at,
-          task.subtasks ? JSON.stringify(task.subtasks) : null,
-          task.recurrence ? JSON.stringify(task.recurrence) : null,
-          task.current_cycle ? JSON.stringify(task.current_cycle) : null,
-          task.linked_parent_board_id || null,
-          task.linked_parent_task_id || null,
-        );
-
-        // task_history — from task.history[]
-        const history = task.history || [];
-        // Cap at 50 entries (keep newest)
-        const historyToMigrate =
-          history.length > 50 ? history.slice(history.length - 50) : history;
-        for (const entry of historyToMigrate) {
-          insertHistory.run(
-            boardId,
-            task.id,
-            entry.action,
-            entry.by || null,
-            entry.at,
-            entry.details || null,
-          );
-        }
-      }
-
-      // archive — from ARCHIVE.json tasks[]
-      const insertArchive = taskflowDb.prepare(
-        `INSERT OR REPLACE INTO archive (
-          board_id, task_id, type, title, assignee,
-          archive_reason, linked_parent_board_id, linked_parent_task_id,
-          archived_at, task_snapshot, history
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      );
-
-      for (const task of archiveJson.tasks) {
-        const history = task.history || [];
-        const latestAction =
-          history.length > 0 ? history[history.length - 1] : null;
-        const archiveReason =
-          latestAction?.action === 'cancelled' ? 'cancelled' : 'completed';
-        const archivedAt = latestAction?.at || task.updated_at;
-
-        // Remove inline history from snapshot
-        const { history: _h, ...snapshotData } = task;
-        const taskSnapshot = JSON.stringify(snapshotData);
-
-        // Truncate history to 20 entries for archive
-        const archiveHistory =
-          history.length > 20 ? history.slice(history.length - 20) : history;
-
-        insertArchive.run(
-          boardId,
-          task.id,
-          task.type || 'simple',
-          task.title,
-          task.assignee || null,
-          archiveReason,
-          task.linked_parent_board_id || null,
-          task.linked_parent_task_id || null,
-          archivedAt,
-          taskSnapshot,
-          JSON.stringify(archiveHistory),
-        );
-      }
-
-      // attachment_audit_log — from meta.attachment_audit_trail[]
-      if (
-        meta.attachment_audit_trail &&
-        meta.attachment_audit_trail.length > 0
-      ) {
-        const insertAudit = taskflowDb.prepare(
-          `INSERT INTO attachment_audit_log (board_id, source, filename, at, actor_person_id, affected_task_refs)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-        );
-
-        for (const entry of meta.attachment_audit_trail) {
-          // Resolve actor_phone to person_id
-          const actorPerson = tasksJson.people.find(
-            (p) => p.phone === entry.actor_phone,
-          );
-          const actorPersonId = actorPerson?.id || null;
-
-          // Combine task refs
-          const affectedRefs = {
-            action: entry.action,
-            created_task_ids: entry.created_task_ids,
-            updated_task_ids: entry.updated_task_ids,
-            rejected_mutations: entry.rejected_mutations,
-          };
-
-          insertAudit.run(
-            boardId,
-            entry.source || 'attachment',
-            entry.filename,
-            entry.timestamp,
-            actorPersonId,
-            JSON.stringify(affectedRefs),
-          );
-        }
-      }
+    migrateBoard({
+      folder,
+      groupDir,
+      regGroup,
+      tasksJson,
+      archiveJson,
+      taskflowDb,
+      messagesDb,
+      template,
+      assistantName,
     });
-
-    insertBoard();
     log('  ✓ Inserted board data into taskflow.db');
-
-    // --- Create .mcp.json ---
-    const mcpConfig = {
-      mcpServers: {
-        sqlite: {
-          type: 'stdio',
-          command: 'npx',
-          args: [
-            '-y',
-            'mcp-server-sqlite-npx',
-            '/workspace/taskflow/taskflow.db',
-          ],
-        },
-      },
-    };
-    fs.writeFileSync(
-      path.join(groupDir, '.mcp.json'),
-      JSON.stringify(mcpConfig, null, 2) + '\n',
-    );
     log('  ✓ Created .mcp.json');
-
-    // --- Regenerate CLAUDE.md ---
-    // Back up old CLAUDE.md
-    const claudePath = path.join(groupDir, 'CLAUDE.md');
-    if (fs.existsSync(claudePath)) {
-      fs.copyFileSync(
-        claudePath,
-        path.join(groupDir, 'CLAUDE.md.pre-migration'),
-      );
-      log('  ✓ Backed up old CLAUDE.md → CLAUDE.md.pre-migration');
-    }
-
-    // Derive GROUP_CONTEXT from existing CLAUDE.md
-    let groupContext = regGroup.name;
-    if (fs.existsSync(claudePath)) {
-      const oldClaude = fs.readFileSync(claudePath, 'utf-8');
-      const contextMatch = oldClaude.match(
-        /You manage a Kanban\+GTD board for (.+)\./,
-      );
-      if (contextMatch) {
-        groupContext = contextMatch[1];
-      }
-    }
-
-    const placeholders: Record<string, string> = {
-      '{{ASSISTANT_NAME}}': assistantName,
-      '{{GROUP_NAME}}': regGroup.name,
-      '{{GROUP_FOLDER}}': folder,
-      '{{MANAGER_NAME}}': meta.manager.name,
-      '{{MANAGER_PHONE}}': meta.manager.phone,
-      '{{MANAGER_ID}}': managerId,
-      '{{GROUP_CONTEXT}}': groupContext,
-      '{{LANGUAGE}}': meta.language,
-      '{{TIMEZONE}}': meta.timezone,
-      '{{WIP_LIMIT}}': String(meta.wip_limit_default),
-      '{{STANDUP_CRON_LOCAL}}': meta.runner_crons_local.standup,
-      '{{DIGEST_CRON_LOCAL}}': meta.runner_crons_local.digest,
-      '{{REVIEW_CRON_LOCAL}}': meta.runner_crons_local.review,
-      '{{STANDUP_CRON}}': meta.runner_crons_utc.standup,
-      '{{DIGEST_CRON}}': meta.runner_crons_utc.digest,
-      '{{REVIEW_CRON}}': meta.runner_crons_utc.review,
-      '{{GROUP_JID}}': regGroup.jid,
-      '{{ATTACHMENT_IMPORT_ENABLED}}': meta.attachment_policy.enabled
-        ? 'true'
-        : 'false',
-      '{{ATTACHMENT_IMPORT_REASON}}': meta.attachment_policy.disabled_reason,
-      '{{DST_GUARD_ENABLED}}': meta.dst_sync.enabled ? 'true' : 'false',
-      '{{BOARD_ROLE}}': 'standard',
-      '{{BOARD_ID}}': boardId,
-      '{{HIERARCHY_LEVEL}}': '',
-      '{{HIERARCHY_LEVEL_SQL}}': 'null',
-      '{{MAX_DEPTH}}': '1',
-      '{{MAX_DEPTH_SQL}}': '1',
-      '{{PARENT_BOARD_ID}}': '',
-    };
-
-    let rendered = template;
-    for (const [placeholder, value] of Object.entries(placeholders)) {
-      rendered = rendered.split(placeholder).join(value);
-    }
-
-    fs.writeFileSync(claudePath, rendered);
     log('  ✓ Regenerated CLAUDE.md from template');
-
-    // --- Update registered_groups ---
-    messagesDb
-      .prepare(
-        `UPDATE registered_groups
-         SET taskflow_managed = 1, taskflow_hierarchy_level = 0, taskflow_max_depth = 1
-         WHERE folder = ?`,
-      )
-      .run(folder);
     log('  ✓ Updated registered_groups (taskflow_managed=1, level=0, depth=1)');
-
-    // --- Update runner prompts in scheduled_tasks ---
-    const runnerUpdates: Array<{ id: string | null; prompt: string }> = [
-      { id: meta.runner_task_ids.standup, prompt: STANDUP_PROMPT },
-      { id: meta.runner_task_ids.digest, prompt: DIGEST_PROMPT },
-      { id: meta.runner_task_ids.review, prompt: REVIEW_PROMPT },
-    ];
-
-    const updatePrompt = messagesDb.prepare(
-      `UPDATE scheduled_tasks SET prompt = ? WHERE id = ?`,
-    );
-
-    for (const { id, prompt } of runnerUpdates) {
-      if (id) {
-        const result = updatePrompt.run(prompt, id);
-        if (result.changes > 0) {
-          log(`  ✓ Updated runner prompt: ${id}`);
-        } else {
-          log(`  ⚠ Runner task not found: ${id}`);
-        }
-      }
-    }
-
-    // DST guard runner prompt (if present)
-    if (meta.runner_task_ids.dst_guard) {
-      const dstPrompt = `[TF-DST-GUARD] Check if UTC offset for timezone '${meta.timezone}' has changed. Query board_runtime_config for board_id='${boardId}'. Compare current UTC offset with dst_last_offset_minutes. If different: recompute UTC cron expressions from local crons, UPDATE board_runtime_config, then recreate the standup/digest/review scheduled_tasks with new cron values. Update dst_last_synced_at and dst_resync_count_24h.`;
-      const dstResult = updatePrompt.run(
-        dstPrompt,
-        meta.runner_task_ids.dst_guard,
-      );
-      if (dstResult.changes > 0) {
-        log(
-          `  ✓ Updated DST guard runner prompt: ${meta.runner_task_ids.dst_guard}`,
-        );
-      }
-    }
+    log('  ✓ Updated runner prompts in scheduled_tasks');
 
     log(`  ✓ Migration complete for ${folder}`);
   }

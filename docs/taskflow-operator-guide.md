@@ -185,7 +185,7 @@ Register the board by inserting into `registered_groups`:
 sqlite3 store/messages.db "INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, taskflow_managed, taskflow_hierarchy_level, taskflow_max_depth) VALUES ('{{GROUP_JID}}', '{{GROUP_NAME}}', '{{GROUP_FOLDER}}', '@{{ASSISTANT_NAME}}', '$(date -u +%Y-%m-%dT%H:%M:%S.000Z)', NULL, 1, 1, 0, 1);"
 ```
 
-For hierarchy boards, use `taskflow_hierarchy_level=1` and `taskflow_max_depth={{MAX_DEPTH}}` instead.
+For root hierarchy boards, use `taskflow_hierarchy_level=0` and `taskflow_max_depth={{MAX_DEPTH}}`. Child boards increment the runtime level from their parent.
 
 Notes:
 
@@ -379,10 +379,10 @@ The wizard:
 **Hierarchy registration SQL** (same columns as standard, different values):
 
 ```bash
-sqlite3 store/messages.db "INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, taskflow_managed, taskflow_hierarchy_level, taskflow_max_depth) VALUES ('{{GROUP_JID}}', '{{GROUP_NAME}}', '{{GROUP_FOLDER}}', '@{{ASSISTANT_NAME}}', '$(date -u +%Y-%m-%dT%H:%M:%S.000Z)', NULL, 1, 1, 1, {{MAX_DEPTH}});"
+sqlite3 store/messages.db "INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, taskflow_managed, taskflow_hierarchy_level, taskflow_max_depth) VALUES ('{{GROUP_JID}}', '{{GROUP_NAME}}', '{{GROUP_FOLDER}}', '@{{ASSISTANT_NAME}}', '$(date -u +%Y-%m-%dT%H:%M:%S.000Z)', NULL, 1, 1, 0, {{MAX_DEPTH}});"
 ```
 
-All TaskFlow boards use the same three columns (`taskflow_managed`, `taskflow_hierarchy_level`, `taskflow_max_depth`). Standard boards use `(1, 0, 1)`. Hierarchy boards use `(1, <level>, <max_depth>)`. These control:
+All TaskFlow boards use the same three columns (`taskflow_managed`, `taskflow_hierarchy_level`, `taskflow_max_depth`). `taskflow_hierarchy_level` is 0-based (root = 0). Standard boards use `(1, 0, 1)`. Hierarchy root boards use `(1, 0, <max_depth>)`. These control:
 - Whether the container gets the SQLite directory mounted (`taskflow_managed=1`)
 - Which hierarchy commands are available to the agent (`taskflow_hierarchy_level`)
 - Depth enforcement for child board creation (`taskflow_max_depth`)
@@ -391,7 +391,7 @@ All TaskFlow boards use the same three columns (`taskflow_managed`, `taskflow_hi
 
 Child boards are provisioned through the SKILL.md Phase 6 workflow. The process starts when a board owner requests `criar quadro para [pessoa]` — the agent emits a provisioning request, and the operator completes it:
 
-1. **Pre-flight**: Verify parent level < max_depth. Verify person doesn't already have a board in `child_board_registrations`.
+1. **Pre-flight**: Verify `parent_level + 1 < max_depth`. Verify person doesn't already have a board in `child_board_registrations`.
 2. **WhatsApp group**: Create via `create_group` IPC plugin (no service stop required) or manual fallback.
 3. **Registration**: INSERT into `registered_groups` with `taskflow_hierarchy_level = parent_level + 1` and `taskflow_max_depth = max_depth`.
 4. **Database seeding**: INSERT into 7 tables:
@@ -502,8 +502,8 @@ All TaskFlow boards use SQLite exclusively — no JSON files.
 ### Hierarchy Troubleshooting
 
 **Board owner cannot create child boards**
-- Check `hierarchy_level < max_depth` in the `boards` table
-- Leaf boards (`hierarchy_level == max_depth`) cannot create children
+- Check `hierarchy_level + 1 < max_depth` in the `boards` table
+- Leaf boards (`hierarchy_level + 1 >= max_depth`) cannot create children
 
 **Rollup shows stale data**
 - The agent refreshes rollup only when the user requests `atualizar status T-XXX`
