@@ -175,8 +175,12 @@ const isMain = process.argv[1]?.endsWith('taskflow-db.js');
 if (isMain) {
   const dbPath = process.argv[2];
   const db = initTaskflowDb(dbPath);
-  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as Array<{ name: string }>;
-  console.log(`TaskFlow DB initialized at ${dbPath ?? path.join(DATA_DIR, 'taskflow', 'taskflow.db')}`);
-  console.log(`Tables: ${tables.map(t => t.name).join(', ')}`);
+  const tables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+    .all() as Array<{ name: string }>;
+  console.log(
+    `TaskFlow DB initialized at ${dbPath ?? path.join(DATA_DIR, 'taskflow', 'taskflow.db')}`,
+  );
+  console.log(`Tables: ${tables.map((t) => t.name).join(', ')}`);
   db.close();
 }

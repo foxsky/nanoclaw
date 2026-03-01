@@ -27,7 +27,10 @@ export interface IpcDeps {
     availableGroups: AvailableGroup[],
     registeredJids: Set<string>,
   ) => void;
-  createGroup?: (subject: string, participants: string[]) => Promise<{ jid: string; subject: string }>;
+  createGroup?: (
+    subject: string,
+    participants: string[],
+  ) => Promise<{ jid: string; subject: string }>;
 }
 
 export type IpcHandler = (
@@ -58,7 +61,12 @@ export function registerIpcHandler(type: string, handler: IpcHandler): void {
 
 // --- Core handlers ---
 
-const handleScheduleTask: IpcHandler = async (data, sourceGroup, isMain, deps) => {
+const handleScheduleTask: IpcHandler = async (
+  data,
+  sourceGroup,
+  isMain,
+  deps,
+) => {
   const registeredGroups = deps.registeredGroups();
   if (
     data.prompt &&
@@ -92,9 +100,12 @@ const handleScheduleTask: IpcHandler = async (data, sourceGroup, isMain, deps) =
     let nextRun: string | null = null;
     if (scheduleType === 'cron') {
       try {
-        const interval = CronExpressionParser.parse(data.schedule_value as string, {
-          tz: TIMEZONE,
-        });
+        const interval = CronExpressionParser.parse(
+          data.schedule_value as string,
+          {
+            tz: TIMEZONE,
+          },
+        );
         nextRun = interval.next().toISOString();
       } catch {
         logger.warn(
@@ -106,10 +117,7 @@ const handleScheduleTask: IpcHandler = async (data, sourceGroup, isMain, deps) =
     } else if (scheduleType === 'interval') {
       const ms = parseInt(data.schedule_value as string, 10);
       if (isNaN(ms) || ms <= 0) {
-        logger.warn(
-          { scheduleValue: data.schedule_value },
-          'Invalid interval',
-        );
+        logger.warn({ scheduleValue: data.schedule_value }, 'Invalid interval');
         return;
       }
       nextRun = new Date(Date.now() + ms).toISOString();
@@ -154,10 +162,7 @@ const handlePauseTask: IpcHandler = async (data, sourceGroup, isMain) => {
     const task = getTaskById(data.taskId as string);
     if (task && (isMain || task.group_folder === sourceGroup)) {
       updateTask(data.taskId as string, { status: 'paused' });
-      logger.info(
-        { taskId: data.taskId, sourceGroup },
-        'Task paused via IPC',
-      );
+      logger.info({ taskId: data.taskId, sourceGroup }, 'Task paused via IPC');
     } else {
       logger.warn(
         { taskId: data.taskId, sourceGroup },
@@ -172,10 +177,7 @@ const handleResumeTask: IpcHandler = async (data, sourceGroup, isMain) => {
     const task = getTaskById(data.taskId as string);
     if (task && (isMain || task.group_folder === sourceGroup)) {
       updateTask(data.taskId as string, { status: 'active' });
-      logger.info(
-        { taskId: data.taskId, sourceGroup },
-        'Task resumed via IPC',
-      );
+      logger.info({ taskId: data.taskId, sourceGroup }, 'Task resumed via IPC');
     } else {
       logger.warn(
         { taskId: data.taskId, sourceGroup },
@@ -203,13 +205,15 @@ const handleCancelTask: IpcHandler = async (data, sourceGroup, isMain) => {
   }
 };
 
-const handleRefreshGroups: IpcHandler = async (data, sourceGroup, isMain, deps) => {
+const handleRefreshGroups: IpcHandler = async (
+  data,
+  sourceGroup,
+  isMain,
+  deps,
+) => {
   const registeredGroups = deps.registeredGroups();
   if (isMain) {
-    logger.info(
-      { sourceGroup },
-      'Group metadata refresh requested via IPC',
-    );
+    logger.info({ sourceGroup }, 'Group metadata refresh requested via IPC');
     await deps.syncGroupMetadata(true);
     const availableGroups = deps.getAvailableGroups();
     deps.writeGroupsSnapshot(
@@ -219,19 +223,18 @@ const handleRefreshGroups: IpcHandler = async (data, sourceGroup, isMain, deps) 
       new Set(Object.keys(registeredGroups)),
     );
   } else {
-    logger.warn(
-      { sourceGroup },
-      'Unauthorized refresh_groups attempt blocked',
-    );
+    logger.warn({ sourceGroup }, 'Unauthorized refresh_groups attempt blocked');
   }
 };
 
-const handleRegisterGroup: IpcHandler = async (data, sourceGroup, isMain, deps) => {
+const handleRegisterGroup: IpcHandler = async (
+  data,
+  sourceGroup,
+  isMain,
+  deps,
+) => {
   if (!isMain) {
-    logger.warn(
-      { sourceGroup },
-      'Unauthorized register_group attempt blocked',
-    );
+    logger.warn({ sourceGroup }, 'Unauthorized register_group attempt blocked');
     return;
   }
   if (data.jid && data.name && data.folder && data.trigger) {
@@ -292,13 +295,13 @@ const handleRegisterGroup: IpcHandler = async (data, sourceGroup, isMain, deps) 
       folder: data.folder as string,
       trigger: data.trigger as string,
       added_at: new Date().toISOString(),
-      containerConfig: data.containerConfig as RegisteredGroup['containerConfig'],
+      containerConfig:
+        data.containerConfig as RegisteredGroup['containerConfig'],
       requiresTrigger: data.requiresTrigger as boolean | undefined,
       taskflowManaged,
       taskflowHierarchyLevel:
         taskflowManaged === true ? taskflowHierarchyLevel : undefined,
-      taskflowMaxDepth:
-        taskflowManaged === true ? taskflowMaxDepth : undefined,
+      taskflowMaxDepth: taskflowManaged === true ? taskflowMaxDepth : undefined,
     });
   } else {
     logger.warn(
@@ -328,7 +331,9 @@ async function loadIpcPlugins(): Promise<void> {
       logger.warn({ file }, 'Skipping IPC plugin outside allowlist');
       continue;
     }
-    const plugin = await import(new URL(`./ipc-plugins/${file}`, import.meta.url).href);
+    const plugin = await import(
+      new URL(`./ipc-plugins/${file}`, import.meta.url).href
+    );
     if (typeof plugin.register === 'function') {
       plugin.register(registerIpcHandler);
       logger.info({ file }, 'Loaded IPC plugin');

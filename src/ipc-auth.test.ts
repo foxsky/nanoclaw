@@ -497,7 +497,9 @@ describe('IPC message authorization', () => {
 
   it('main group cannot send to unregistered JID', () => {
     // Main can cross-send, but only to registered groups.
-    expect(isMessageAuthorized('main', true, 'unknown@g.us', groups)).toBe(false);
+    expect(isMessageAuthorized('main', true, 'unknown@g.us', groups)).toBe(
+      false,
+    );
   });
 });
 

@@ -510,7 +510,8 @@ async function main(): Promise<void> {
     syncGroupMetadata: (force) =>
       whatsapp?.syncGroupMetadata(force) ?? Promise.resolve(),
     getAvailableGroups,
-    writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
+    writeGroupsSnapshot: (gf, im, ag, rj) =>
+      writeGroupsSnapshot(gf, im, ag, rj),
     createGroup: (subject, participants) => {
       if (!whatsapp) throw new Error('WhatsApp not connected');
       return whatsapp.createGroup(subject, participants);

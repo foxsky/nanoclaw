@@ -580,8 +580,10 @@ export function getRegisteredGroup(
     containerConfig: row.container_config
       ? JSON.parse(row.container_config)
       : undefined,
-    requiresTrigger: row.requires_trigger === null ? undefined : row.requires_trigger === 1,
-    taskflowManaged: row.taskflow_managed === null ? undefined : row.taskflow_managed === 1,
+    requiresTrigger:
+      row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+    taskflowManaged:
+      row.taskflow_managed === null ? undefined : row.taskflow_managed === 1,
     taskflowHierarchyLevel:
       row.taskflow_hierarchy_level === null
         ? undefined
@@ -606,11 +608,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.added_at,
     group.containerConfig ? JSON.stringify(group.containerConfig) : null,
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
-    group.taskflowManaged === undefined
-      ? null
-      : group.taskflowManaged
-        ? 1
-        : 0,
+    group.taskflowManaged === undefined ? null : group.taskflowManaged ? 1 : 0,
     group.taskflowHierarchyLevel ?? null,
     group.taskflowMaxDepth ?? null,
   );
@@ -646,8 +644,10 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       containerConfig: row.container_config
         ? JSON.parse(row.container_config)
         : undefined,
-      requiresTrigger: row.requires_trigger === null ? undefined : row.requires_trigger === 1,
-      taskflowManaged: row.taskflow_managed === null ? undefined : row.taskflow_managed === 1,
+      requiresTrigger:
+        row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+      taskflowManaged:
+        row.taskflow_managed === null ? undefined : row.taskflow_managed === 1,
       taskflowHierarchyLevel:
         row.taskflow_hierarchy_level === null
           ? undefined

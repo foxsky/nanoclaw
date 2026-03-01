@@ -31,7 +31,9 @@ vi.mock('../db.js', () => ({
 // Mock transcription
 vi.mock('../transcription.js', () => ({
   isVoiceMessage: vi.fn((msg: any) => msg.message?.audioMessage?.ptt === true),
-  transcribeAudioMessage: vi.fn().mockResolvedValue('Hello this is a voice message'),
+  transcribeAudioMessage: vi
+    .fn()
+    .mockResolvedValue('Hello this is a voice message'),
 }));
 
 // Mock media
@@ -39,7 +41,11 @@ vi.mock('../media.js', () => ({
   isMediaMessage: vi.fn((msg: any) => {
     const m = msg.message;
     if (!m) return false;
-    if (m.imageMessage?.mimetype === 'image/jpeg' || m.imageMessage?.mimetype === 'image/png') return true;
+    if (
+      m.imageMessage?.mimetype === 'image/jpeg' ||
+      m.imageMessage?.mimetype === 'image/png'
+    )
+      return true;
     if (m.documentMessage?.mimetype === 'application/pdf') return true;
     return false;
   }),
@@ -49,7 +55,11 @@ vi.mock('../media.js', () => ({
     if (m?.documentMessage) return 'document';
     return null;
   }),
-  downloadAndSaveMedia: vi.fn().mockResolvedValue('/tmp/nanoclaw-test-groups/test-group/media/msg-id.jpeg'),
+  downloadAndSaveMedia: vi
+    .fn()
+    .mockResolvedValue(
+      '/tmp/nanoclaw-test-groups/test-group/media/msg-id.jpeg',
+    ),
 }));
 
 // Mock fs
@@ -559,7 +569,9 @@ describe('WhatsAppChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledTimes(1);
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
-        expect.objectContaining({ content: '[Voice: Hello this is a voice message]' }),
+        expect.objectContaining({
+          content: '[Voice: Hello this is a voice message]',
+        }),
       );
     });
 
@@ -590,12 +602,16 @@ describe('WhatsAppChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledTimes(1);
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
-        expect.objectContaining({ content: '[Voice Message - transcription unavailable]' }),
+        expect.objectContaining({
+          content: '[Voice Message - transcription unavailable]',
+        }),
       );
     });
 
     it('falls back when transcription throws', async () => {
-      vi.mocked(transcribeAudioMessage).mockRejectedValueOnce(new Error('API error'));
+      vi.mocked(transcribeAudioMessage).mockRejectedValueOnce(
+        new Error('API error'),
+      );
 
       const opts = createTestOpts();
       const channel = new WhatsAppChannel(opts);
@@ -621,7 +637,9 @@ describe('WhatsAppChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledTimes(1);
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
-        expect.objectContaining({ content: '[Voice Message - transcription failed]' }),
+        expect.objectContaining({
+          content: '[Voice Message - transcription failed]',
+        }),
       );
     });
 
@@ -681,7 +699,10 @@ describe('WhatsAppChannel', () => {
             fromMe: false,
           },
           message: {
-            documentMessage: { mimetype: 'application/pdf', fileName: 'itinerary.pdf' },
+            documentMessage: {
+              mimetype: 'application/pdf',
+              fileName: 'itinerary.pdf',
+            },
           },
           pushName: 'Eve',
           messageTimestamp: Math.floor(Date.now() / 1000),
@@ -692,7 +713,8 @@ describe('WhatsAppChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
         expect.objectContaining({
-          content: '[Media: document at /workspace/group/media/msg-doc-itinerary.pdf]',
+          content:
+            '[Media: document at /workspace/group/media/msg-doc-itinerary.pdf]',
         }),
       );
     });
@@ -726,7 +748,8 @@ describe('WhatsAppChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
         expect.objectContaining({
-          content: '[Media: image at /workspace/group/media/msg-cap.jpeg]\nLook at this!',
+          content:
+            '[Media: image at /workspace/group/media/msg-cap.jpeg]\nLook at this!',
         }),
       );
     });

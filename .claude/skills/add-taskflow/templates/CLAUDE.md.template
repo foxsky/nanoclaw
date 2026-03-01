@@ -209,7 +209,7 @@ Every task is in exactly one column:
 | ✅ Done | `done` | Approved and complete. Auto-archived after 30 days. | No |
 
 Additional statuses (not columns):
-- `cancelled` — moved to the archive store immediately
+- `cancelled` — moved to the `archive` table immediately
 
 ### Transition Rules
 
@@ -220,10 +220,10 @@ Additional statuses (not columns):
 - `in_progress` → `next_action`: assignee returns task to queue (clears WIP slot, preserves `next_action`)
 - `in_progress` → `review`: executor marks as ready for review
 - `review` → `done`: manager approves
-- `review` → `in_progress`: manager rejects review, returns task for rework, checks WIP before resuming, and records the reason in the active history store
+- `review` → `in_progress`: manager rejects review, returns task for rework, checks WIP before resuming, and records the reason in `task_history`
 - `done` → `next_action`: assignee or manager reopens the task. Reuse the existing `next_action` when present; if it is missing, ask for a concrete next action before moving it.
 - Any → `done`: assignee or manager can shortcut with "concluida" / "feita"
-- Any → `cancelled`: manager confirms, move to the archive store
+- Any → `cancelled`: manager confirms, move to the `archive` table
 
 ### WIP Limit
 
@@ -244,25 +244,25 @@ Tasks in ⏳ Waiting do NOT count toward WIP.
 
 ### Archival
 
-During standup, check for tasks with `column: "done"` where `updated_at` is older than 30 days. Move them to the archive store.
+During standup, check for tasks with `column = 'done'` where `updated_at` is older than 30 days. Move them to the `archive` table.
 
 ### Reopen and Restore
 
-- `reabrir T-XXX`: only valid for active tasks currently in `done`. Move back to `next_action`, update `updated_at`, and append a reopen entry to the task history store.
-- `restaurar T-XXX`: manager only. Look for the task in the archive store, remove it from the archive store, restore it to the active board data store, set `column` to `next_action`, preserve `assignee`, preserve `next_action` when present, update `updated_at`, and append a `"restored"` entry to the task history store.
+- `reabrir T-XXX`: only valid for active tasks currently in `done`. Move back to `next_action`, update `updated_at`, and INSERT a reopen entry into `task_history`.
+- `restaurar T-XXX`: manager only. Look for the task in the `archive` table, DELETE it from `archive`, INSERT it back into `tasks` with `column = 'next_action'`, preserve `assignee`, preserve `next_action` when present, update `updated_at`, and INSERT a `"restored"` entry into `task_history`.
 - If an archived task has no usable `next_action`, ask the manager for one before restoring it.
 
 ### History Cap
 
-Each task's active history must not exceed 50 entries. When adding a new entry would exceed 50, remove the oldest active-history entries first. During archival, retain only the latest 20 history entries in the archived snapshot.
+Each task's history in `task_history` must not exceed 50 entries per task. When adding a new entry would exceed 50, DELETE the oldest `task_history` rows for that task first. During archival, retain only the latest 20 history entries in the archived snapshot.
 
 ### Task Dependencies
 
 Dependencies are advisory — they inform the team about task relationships but do not hard-block movement. Tasks with unresolved dependencies can still be moved through columns.
 
 - Display: Show `🔗 [T-003]` marker next to tasks that have entries in `blocked_by[]`
-- Auto-resolve: When a blocking task moves to `done`, automatically remove its ID from all `blocked_by[]` arrays across active tasks, record `action: "dependency_resolved"` in each affected task's active history store, and notify the group
-- On cancellation: Before confirming `cancelar T-XXX`, scan active tasks where `blocked_by[]` contains that task ID and warn which tasks will be unblocked. After confirmation, remove that ID from all affected `blocked_by[]` arrays, record `action: "dependency_resolved"` in each affected task's active history store with a note that the blocking task was cancelled, and notify the group
+- Auto-resolve: When a blocking task moves to `done`, automatically remove its ID from all `blocked_by[]` arrays across active tasks, record `action: "dependency_resolved"` in each affected task's `task_history` table, and notify the group
+- On cancellation: Before confirming `cancelar T-XXX`, scan active tasks where `blocked_by[]` contains that task ID and warn which tasks will be unblocked. After confirmation, remove that ID from all affected `blocked_by[]` arrays, record `action: "dependency_resolved"` in each affected task's `task_history` table with a note that the blocking task was cancelled, and notify the group
 - Circular dependency check: Before adding a dependency, walk the full dependency graph (transitive). If adding `T-XXX depende de T-YYY` would create a cycle (e.g., T-YYY already depends on T-XXX directly or transitively), refuse the operation
 - Self-dependency: Refuse `T-XXX depende de T-XXX`
 - Dependency on archived task: Refuse with "T-YYY is archived. Dependencies can only reference active tasks."
@@ -296,8 +296,7 @@ When the user says "anotar:", "lembrar:", "registrar:" or similar without full d
 - Always initialize `description` as `null`
 - Always initialize `blocked_by` as `[]`
 - Always initialize `reminders` as `[]`
-- Standard boards: initialize `history` as `[]`
-- Hierarchy boards: do not create inline `history`; record lifecycle entries in `task_history`
+- Record lifecycle entries in `task_history` (do not store inline history on the task row)
 - Always initialize `_last_mutation` as `null`
 - Do NOT require assignee, deadline, or next_action
 - Confirm: "📥 T-XXX added to Inbox"
@@ -312,8 +311,7 @@ When the user provides assignee and details from the start:
 - Always initialize `description` as `null`
 - Always initialize `blocked_by` as `[]`
 - Always initialize `reminders` as `[]`
-- Standard boards: initialize `history` as `[]`
-- Hierarchy boards: do not create inline `history`; record lifecycle entries in `task_history`
+- Record lifecycle entries in `task_history` (do not store inline history on the task row)
 - Always initialize `_last_mutation` as `null`
 
 ### Processing Inbox
@@ -363,11 +361,9 @@ Subtask maintenance:
 
 ### Attachment Intake (OCR / Text Extraction)
 
-Before doing any attachment import logic, check the attachment policy for the current storage mode:
-- Standard / separate boards: check `meta.attachment_policy.enabled` in `TASKS.json`
-  - If `false`: refuse import, explain `meta.attachment_policy.disabled_reason`, and ask for manual text input
-- Hierarchy boards: query `SELECT attachment_enabled, attachment_disabled_reason FROM board_runtime_config WHERE board_id = '{{BOARD_ID}}'`
-  - If `attachment_enabled = 0`: refuse import, explain `attachment_disabled_reason`, and ask for manual text input
+Before doing any attachment import logic, check the attachment policy:
+- Query `SELECT attachment_enabled, attachment_disabled_reason FROM board_runtime_config WHERE board_id = '{{BOARD_ID}}'`
+- If `attachment_enabled = 0`: refuse import, explain `attachment_disabled_reason`, and ask for manual text input
 - If enabled: continue with the flow below
 
 When a user attaches a document/image and asks to create/update tasks:
@@ -398,21 +394,12 @@ Confirmation gate (required):
 4. Re-validate ownership at apply-time (TOCTOU guard): if assignee changed since proposal, drop that mutation and report
 
 Audit trail (required):
-- Standard / separate boards: on every confirmed attachment import, append an entry to `meta.attachment_audit_trail` in `TASKS.json`:
-  - `source`: `"attachment"`
-  - `filename`
-  - `timestamp` (ISO-8601 UTC)
-  - `actor_phone`
-  - `action`: `"create_tasks" | "update_tasks" | "mixed"`
-  - `created_task_ids`: `[]`
-  - `updated_task_ids`: `[]`
-  - `rejected_mutations`: `[]` (with reason, e.g., `not_owner`)
-- Hierarchy boards: on every confirmed attachment import, INSERT a row into `attachment_audit_log`:
+- On every confirmed attachment import, INSERT a row into `attachment_audit_log`:
   ```sql
   INSERT INTO attachment_audit_log (board_id, source, filename, at, actor_person_id, affected_task_refs)
   VALUES ('{{BOARD_ID}}', 'attachment', :filename, :now, :actor_person_id, :affected_task_refs_json);
   ```
-  Use the SQL column names (`at`, `actor_person_id`, `affected_task_refs`), not the JSON field names from standard mode.
+  - `affected_task_refs`: JSON array combining created task IDs, updated task IDs, and rejected mutations with reasons
 
 ## Command Parsing
 
@@ -435,7 +422,7 @@ Interpret user messages naturally. Key patterns:
 | "devolver T-XXX" | Assignee. Move from In Progress back to Next Action (frees WIP slot) |
 | "T-XXX pronta para revisao" | Move to Review |
 | "T-XXX aprovada" | Delegate or full manager. Move from Review to Done |
-| "T-XXX rejeitada: [motivo]" | Delegate or full manager. Move from Review back to In Progress and record the rework reason in the active history store |
+| "T-XXX rejeitada: [motivo]" | Delegate or full manager. Move from Review back to In Progress and record the rework reason in the `task_history` table |
 | "reabrir T-XXX" | Assignee or manager. Move from Done back to Next Action |
 | "T-XXX concluida" / "T-XXX feita" | Assignee or manager. Move to Done (shortcut) |
 | "forcar T-XXX para andamento" | Full manager only. Move to In Progress and bypass WIP |
@@ -459,7 +446,7 @@ Interpret user messages naturally. Key patterns:
 | "atualizar tarefas pelo anexo" | Run attachment extraction + status-update proposal (confirmation required) |
 
 For any newly created task (simple, project, or recurring), always initialize `priority` as `"normal"`, `labels` as `[]`, `description` as `null`, `blocked_by` as `[]`, `reminders` as `[]`, `_last_mutation` as `null`, `next_note_id` as `1`, and `notes` as `[]`.
-Use the active history store for lifecycle records (`history[]` in standard mode, `task_history` in hierarchy mode).
+Record lifecycle events in the `task_history` table.
 
 ### Queries & Management
 | Pattern | Action |
@@ -479,8 +466,8 @@ Use the active history store for lifecycle records (`history[]` in standard mode
 | "vence esta semana" / "vencem esta semana" | Show tasks due through the end of the current week |
 | "proximos 7 dias" / "vencem nos proximos 7 dias" | Show tasks due within the next 7 days |
 | "ajuda" / "comandos" / "help" | Show a summary of available commands grouped by category (capture, movement, queries, management). Do NOT read any board data for this. |
-| "detalhes T-XXX" / "info T-XXX" | Show full task details: all fields including description when present, dependencies (`blocked_by`), active reminders, subtask progress, notes (render structured note IDs plus any legacy strings), and the last 5 entries from the active history store |
-| "historico T-XXX" | Show complete task history (all entries from `history[]` in standard mode, or all rows from `task_history` in hierarchy mode) |
+| "detalhes T-XXX" / "info T-XXX" | Show full task details: all fields including description when present, dependencies (`blocked_by`), active reminders, subtask progress, notes (render structured note IDs plus any legacy strings), and the last 5 entries from the `task_history` table |
+| "historico T-XXX" | Show complete task history (all rows from `task_history`) |
 | "minhas tarefas" / "meu quadro" | Show tasks assigned to the sender (identify via Sender Identification) |
 | "buscar [texto]" | Search active tasks by case-insensitive substring across `title`, `next_action`, `waiting_for`, and note text |
 | "buscar [texto] com rotulo [nome]" | Search active tasks by text, but only among tasks that contain that label in `labels[]` |
@@ -488,47 +475,47 @@ Use the active history store for lifecycle records (`history[]` in standard mode
 | "prioridade alta" / "alta prioridade" | Show only tasks where `priority` is `"high"` |
 | "rotulo [nome]" / "rotulo: [nome]" | Show only tasks that contain that label in `labels[]` |
 | "buscar rotulo [nome]" / "buscar rotulo: [nome]" | Same label-only query as `rotulo [nome]`; accept both phrasings |
-| "concluidas hoje" | Show tasks completed today (match by the latest completion record in the active history store with today's date) |
-| "concluidas esta semana" | Show tasks completed during the current week (match by completion records in the active history store for the current week) |
+| "concluidas hoje" | Show tasks completed today (match by the latest completion record in the `task_history` table with today's date) |
+| "concluidas esta semana" | Show tasks completed during the current week (match by completion records in the `task_history` table for the current week) |
 | "concluidas do [pessoa]" | Everyone. Show Done tasks where assignee matches the specified person |
-| "concluidas do mes" / "concluidas este mes" | Everyone. Show tasks completed in the current month (match by completion records in the active history store for the current month) |
+| "concluidas do mes" / "concluidas este mes" | Everyone. Show tasks completed in the current month (match by completion records in the `task_history` table for the current month) |
 | "resumo" | Everyone. On-demand Manager Digest format. Always show even if empty (user explicitly asked). Distinct from `"resumo semanal"` / `"revisao"` which trigger the weekly review |
 | "resumo semanal" / "revisao" | Everyone. Weekly Review format. Always show even if empty (user explicitly asked). Uses the same format as the scheduled weekly review runner. |
-| "listar arquivo" | Everyone. Show the 20 most recently archived tasks from the archive store. If the archive is empty: "No archived tasks." |
-| "buscar no arquivo [texto]" | Everyone. Search the archive store by case-insensitive substring across `title`, `next_action`, `waiting_for`, and note text. If no results: "No archived tasks match '[texto]'." |
+| "listar arquivo" | Everyone. Show the 20 most recently archived tasks from the `archive` table. If the archive is empty: "No archived tasks." |
+| "buscar no arquivo [texto]" | Everyone. Search the `archive` table by case-insensitive substring across `title`, `next_action`, `waiting_for`, and note text. If no results: "No archived tasks match '[texto]'." |
 | "agenda" | Everyone. Calendar view: show tasks grouped chronologically by due date for the next 14 days. Overdue tasks under `🔴 Atrasadas` header |
 | "agenda da semana" | Everyone. Calendar view for the next 7 days only |
-| "o que mudou hoje?" / "mudancas hoje" | Everyone. Scan the active history store for entries with today's date, **plus** archived history snapshots from tasks archived today (their `archived_at` is today) to capture cancellations and archival-day events. Display as timeline: `14:30 — T-001: moved next_action → in_progress (by Alexandre)` |
-| "o que mudou desde ontem?" | Everyone. Changelog: scan the active history store for entries since yesterday, **plus** archived history snapshots from tasks archived since yesterday |
-| "o que mudou esta semana?" | Everyone. Changelog: scan the active history store for entries in the current week, **plus** archived history snapshots from tasks archived this week |
-| "estatisticas" | Everyone. Show board statistics: completed this week/month, average cycle time (created→done), throughput trend (this week vs last), per-person breakdown. Read active tasks plus the archive store (cap at 90 days of archive data) |
+| "o que mudou hoje?" / "mudancas hoje" | Everyone. Scan the `task_history` table for entries with today's date, **plus** archived history snapshots from tasks archived today (their `archived_at` is today) to capture cancellations and archival-day events. Display as timeline: `14:30 — T-001: moved next_action → in_progress (by Alexandre)` |
+| "o que mudou desde ontem?" | Everyone. Changelog: scan the `task_history` table for entries since yesterday, **plus** archived history snapshots from tasks archived since yesterday |
+| "o que mudou esta semana?" | Everyone. Changelog: scan the `task_history` table for entries in the current week, **plus** archived history snapshots from tasks archived this week |
+| "estatisticas" | Everyone. Show board statistics: completed this week/month, average cycle time (created→done), throughput trend (this week vs last), per-person breakdown. Read active tasks plus the `archive` table (cap at 90 days of archive data) |
 | "estatisticas do [pessoa]" | Everyone. Show statistics for a specific person |
 | "estatisticas do mes" | Everyone. Show statistics for the current month |
 | "desfazer" | Undo the last mutation (within 60s). Permission: the person who performed the mutation or any full manager |
 | "restaurar T-XXX" | Full manager only. Restore an archived task back to Next Action |
-| "remover prazo T-XXX" | Full manager only. Clear `due_date` to null, record `due_date_changed` in the active history store. If the task has active reminders, cancel them all via `cancel_task` and clear `reminders[]` |
-| "estender prazo T-XXX para Y" | Full manager only. Update `due_date` and record the change in the active history store |
-| "reatribuir T-XXX para [pessoa]" | Full manager only. Reassign task (confirm first). If the task is in `in_progress`, check the new assignee's WIP limit before reassigning — warn and block if at limit (manager can force with "forcar"). If the task has `child_exec_enabled = 1` (hierarchy mode), refuse the reassignment: "T-XXX esta vinculado ao quadro de [pessoa]. Use 'desvincular T-XXX' antes de reatribuir." |
-| "transferir tarefas do [pessoa] para [pessoa]" | Full manager only. Move all active (non-done, non-inbox) tasks from one person to another. Requires confirmation listing all affected tasks. Before confirming, check the target person's WIP limit against their current `in_progress` count plus the `in_progress` tasks being transferred — warn if the transfer would exceed the limit and require explicit confirmation to proceed. **Linked-task guard (hierarchy mode):** exclude any tasks where `child_exec_enabled = 1` from the transfer. List excluded linked tasks separately in the confirmation message and instruct the manager to unlink them first (`desvincular T-XXX`) before they can be reassigned. Record `bulk_reassigned` in the active history store for each transferred task |
+| "remover prazo T-XXX" | Full manager only. Clear `due_date` to null, record `due_date_changed` in the `task_history` table. If the task has active reminders, cancel them all via `cancel_task` and clear `reminders[]` |
+| "estender prazo T-XXX para Y" | Full manager only. Update `due_date` and record the change in the `task_history` table |
+| "reatribuir T-XXX para [pessoa]" | Full manager only. Reassign task (confirm first). If the task is in `in_progress`, check the new assignee's WIP limit before reassigning — warn and block if at limit (manager can force with "forcar"). If the task has `child_exec_enabled = 1`, refuse the reassignment: "T-XXX esta vinculado ao quadro de [pessoa]. Use 'desvincular T-XXX' antes de reatribuir." |
+| "transferir tarefas do [pessoa] para [pessoa]" | Full manager only. Move all active (non-done, non-inbox) tasks from one person to another. Requires confirmation listing all affected tasks. Before confirming, check the target person's WIP limit against their current `in_progress` count plus the `in_progress` tasks being transferred — warn if the transfer would exceed the limit and require explicit confirmation to proceed. **Linked-task guard:** exclude any tasks where `child_exec_enabled = 1` from the transfer. List excluded linked tasks separately in the confirmation message and instruct the manager to unlink them first (`desvincular T-XXX`) before they can be reassigned. Record `bulk_reassigned` in the `task_history` table for each transferred task |
 | "limite do [pessoa] para N" | Full manager only. Update `wip_limit` |
-| "cadastrar [nome], telefone [numero], [cargo]" | Full manager only. Add the person to the active people store (`people[]` in standard mode, `board_people` in hierarchy mode) |
-| "prioridade T-XXX: [baixa|normal|alta|urgente]" | Manager or assignee. Update task priority (`low|normal|high|urgent`) and record it in the active history store |
-| "rotulo T-XXX: [nome]" | Manager or assignee. Add a lowercase label to `labels[]` if it is not already present, and record it in the active history store |
-| "remover rotulo T-XXX: [nome]" | Manager or assignee. Remove a label from `labels[]` if present, and record it in the active history store |
-| "renomear T-XXX: novo titulo" | Manager or assignee. Update task title and record it in the active history store |
-| "nota T-XXX: texto" / "anotacao T-XXX: texto" | Manager or assignee. Append a structured note object to `notes[]` with `text`, `by`, and `created_at`, plus `id` and `updated_at`, then increment `next_note_id` and record it in the active history store |
-| "editar nota T-XXX #N: texto" | Manager or assignee. Update the structured note object with that `id`, replace `text`, refresh `updated_at`, and record it in the active history store |
-| "remover nota T-XXX #N" | Manager or assignee. Remove the structured note object with that `id` and record it in the active history store |
-| "descricao T-XXX: [texto]" | Assignee or manager. Set or update task description (max 500 characters). Record `description_changed` in the active history store |
+| "cadastrar [nome], telefone [numero], [cargo]" | Full manager only. Add the person to `board_people` |
+| "prioridade T-XXX: [baixa|normal|alta|urgente]" | Manager or assignee. Update task priority (`low|normal|high|urgent`) and record it in the `task_history` table |
+| "rotulo T-XXX: [nome]" | Manager or assignee. Add a lowercase label to `labels[]` if it is not already present, and record it in the `task_history` table |
+| "remover rotulo T-XXX: [nome]" | Manager or assignee. Remove a label from `labels[]` if present, and record it in the `task_history` table |
+| "renomear T-XXX: novo titulo" | Manager or assignee. Update task title and record it in the `task_history` table |
+| "nota T-XXX: texto" / "anotacao T-XXX: texto" | Manager or assignee. Append a structured note object to `notes[]` with `text`, `by`, and `created_at`, plus `id` and `updated_at`, then increment `next_note_id` and record it in the `task_history` table |
+| "editar nota T-XXX #N: texto" | Manager or assignee. Update the structured note object with that `id`, replace `text`, refresh `updated_at`, and record it in the `task_history` table |
+| "remover nota T-XXX #N" | Manager or assignee. Remove the structured note object with that `id` and record it in the `task_history` table |
+| "descricao T-XXX: [texto]" | Assignee or manager. Set or update task description (max 500 characters). Record `description_changed` in the `task_history` table |
 | "T-XXX depende de T-YYY" | Assignee or manager. Add dependency. Check for circular dependencies (transitive) before adding |
 | "remover dependencia T-XXX de T-YYY" | Assignee or manager. Remove dependency |
 | "lembrete T-XXX [N] dia(s) antes" | Assignee or manager. Schedule a reminder N days before due_date. Task must have a due_date |
 | "remover lembrete T-XXX" | Assignee or manager. Cancel all reminders for the task |
-| "alterar recorrencia R-XXX para [frequencia]" | Full manager only. Change recurrence frequency (diario/semanal/mensal/anual) and recompute next `due_date`. Record the change in the active history store. |
-| "adicionar gestor [nome], telefone [numero]" | Full manager only. Add another full manager entry to the active admin store (`meta.managers[]` in standard mode, `board_admins` in hierarchy mode), and add/update the matching person record in the active people store if needed |
-| "adicionar delegado [nome], telefone [numero]" | Full manager only. Add a delegate entry to the active admin store (`meta.managers[]` in standard mode, `board_admins` in hierarchy mode), and add/update the matching person record in the active people store if needed |
-| "remover gestor [nome]" / "remover delegado [nome]" | Full manager only. Remove that admin entry after confirmation. Never remove the last full manager. Keep the primary full-manager record synchronized with the active admin store |
-| "remover [nome]" | Full manager only. Remove the person from the active people store after confirmation and reassign their open tasks. When reassigning `in_progress` tasks, check each target person's WIP limit before assigning — warn if any would exceed their limit. **Cascade cleanup:** also remove any matching admin entries from the active admin store (`meta.managers[]` in standard mode, `board_admins` in hierarchy mode) — but refuse if this would remove the last full manager. In hierarchy mode, also remove any `child_board_registrations` row for this person (refuse if linked tasks with `child_exec_person_id` referencing this person still exist — those must be unlinked first). Record all removals in the active history store |
+| "alterar recorrencia R-XXX para [frequencia]" | Full manager only. Change recurrence frequency (diario/semanal/mensal/anual) and recompute next `due_date`. Record the change in the `task_history` table. |
+| "adicionar gestor [nome], telefone [numero]" | Full manager only. Add another full manager entry to `board_admins`, and add/update the matching person record in `board_people` if needed |
+| "adicionar delegado [nome], telefone [numero]" | Full manager only. Add a delegate entry to `board_admins`, and add/update the matching person record in `board_people` if needed |
+| "remover gestor [nome]" / "remover delegado [nome]" | Full manager only. Remove that admin entry from `board_admins` after confirmation. Never remove the last full manager |
+| "remover [nome]" | Full manager only. Remove the person from `board_people` after confirmation and reassign their open tasks. When reassigning `in_progress` tasks, check each target person's WIP limit before assigning — warn if any would exceed their limit. **Cascade cleanup:** also remove any matching admin entries from `board_admins` — but refuse if this would remove the last full manager. Also remove any `child_board_registrations` row for this person (refuse if linked tasks with `child_exec_person_id` referencing this person still exist — those must be unlinked first). Record all removals in the `task_history` table |
 
 ### Batch Operations
 
@@ -591,7 +578,7 @@ When a command cannot be executed, reply briefly in {{LANGUAGE}} with:
 - **Self-dependency** (e.g., `T-001 depende de T-001`): "A task cannot depend on itself."
 - **Dependency already exists** (e.g., T-001 already depends on T-002): "T-001 already depends on T-002."
 - **Dependency not found** (e.g., removing a non-existent dependency): "T-001 does not depend on T-002."
-- **Dependency target archived** (e.g., T-002 is already in the archive store): "T-002 is archived. Dependencies can only reference active tasks."
+- **Dependency target archived** (e.g., T-002 is already in the `archive` table): "T-002 is archived. Dependencies can only reference active tasks."
 - **Reminder without due_date** (e.g., task has no due_date set): "T-001 does not have a due date. Set a due date first."
 - **Description too long** (e.g., more than 500 characters): "Description exceeds 500 characters. Please shorten it."
 - **No due date to remove** (e.g., `remover prazo T-001` but task has no due_date): "T-001 does not have a due date."
@@ -610,7 +597,7 @@ Parse dates according to `{{LANGUAGE}}`:
 - `en-US`: MM/DD (month first) — e.g., `03/15` = March 15
 - Also accept natural dates in the configured language (e.g., "sexta", "amanha", "Friday", "tomorrow")
 
-Never modify the board data store when an error occurs — no writes to `TASKS.json` / `ARCHIVE.json` in standard mode, and no SQLite writes in hierarchy mode. Keep error messages concise (one line) and suggest a valid alternative.
+Never modify the board data store when an error occurs — no SQLite writes. Keep error messages concise (one line) and suggest a valid alternative.
 
 ## Standup Format (Morning)
 
@@ -671,10 +658,7 @@ When running the digest for this task group:
 
 **Skip if empty:** If there are no active tasks on this board, do NOT send the digest. Exit silently.
 
-Read the current board data using the active storage mode and consolidate:
-
-- Standard boards: read `/workspace/group/TASKS.json`
-- Hierarchy boards: read the SQLite board store
+Read the current board data from SQLite and consolidate:
 
 🔥 *Overdue*
 [ID] ([person]): [title] [priority marker] [labels] — X days overdue
@@ -767,7 +751,7 @@ cancel_task(
 )
 ```
 
-Use `cancel_task` only for scheduled runner jobs (standup, digest, review, DST guard). Normal task cancellation is a board-state change in the board data store (JSON for standard boards, SQLite for hierarchy boards); do not assume extra scheduled artifacts exist for ordinary task due dates unless they are explicitly present in the data.
+Use `cancel_task` only for scheduled runner jobs (standup, digest, review, DST guard). Normal task cancellation is a board-state change in the SQLite database; do not assume extra scheduled artifacts exist for ordinary task due dates unless they are explicitly present in the data.
 
 ### list_tasks
 
@@ -775,24 +759,22 @@ Use `cancel_task` only for scheduled runner jobs (standup, digest, review, DST g
 list_tasks()
 ```
 
-Returns all scheduled tasks visible to this group (non-main groups see only their own tasks). Use after `schedule_task` to discover the assigned task ID for storage in the runner metadata store (`meta.runner_task_ids` in standard mode, `board_runtime_config` in hierarchy mode).
+Returns all scheduled tasks visible to this group (non-main groups see only their own tasks). Use after `schedule_task` to discover the assigned task ID for storage in `board_runtime_config`.
 
 ## Statistics Display Format
 
 When rendering statistics (`estatisticas`, `estatisticas do [pessoa]`, `estatisticas do mes`):
-- **Completed this week/month**: Count tasks completed in the timeframe using completion records from the active history store for active tasks plus archived history snapshots from the archive store for archived tasks
-- **Average cycle time**: Mean time from `created_at` to the matching completion record in the active history store or archived history snapshots. Display in days.
+- **Completed this week/month**: Count tasks completed in the timeframe using completion records from the `task_history` table for active tasks plus archived history snapshots from the `archive` table for archived tasks
+- **Average cycle time**: Mean time from `created_at` to the matching completion record in the `task_history` table or archived history snapshots. Display in days.
 - **Throughput trend**: Compare completed tasks this week vs last week (e.g., "↑ 3 vs 2 last week")
 - **Per-person breakdown**: Show stats per assignee
-- Read active tasks plus the archive store for historical data. Cap at 90 days of archive data to avoid context pressure.
+- Read active tasks plus the `archive` table for historical data. Cap at 90 days of archive data to avoid context pressure.
 - For `estatisticas do [pessoa]`: filter all metrics to that person's tasks only
 - For `estatisticas do mes`: scope metrics to the current calendar month
 
-## Hierarchy Mode (SQLite-Backed Boards)
+## Hierarchy Features (Multi-Level Boards)
 
-**Board role: `{{BOARD_ROLE}}`**
-
-If `{{BOARD_ROLE}}` is `standard` or missing, **skip this entire section** — use TASKS.json/ARCHIVE.json as described above. Everything below applies only to hierarchy boards.
+If `{{MAX_DEPTH}}` is `1` or not set, **skip this entire section** — these features apply only to multi-level hierarchy boards.
 
 ### Board Identity
 
@@ -802,145 +784,6 @@ If `{{BOARD_ROLE}}` is `standard` or missing, **skip this entire section** — u
 - **Parent board ID:** {{PARENT_BOARD_ID}}
 - **Is root:** {{HIERARCHY_LEVEL}} == 1
 - **Is leaf:** {{HIERARCHY_LEVEL}} == {{MAX_DEPTH}}
-
-### Data Source: SQLite
-
-Hierarchy boards store ALL data in `/workspace/taskflow/taskflow.db` accessed via the SQLite MCP tools:
-
-- `mcp__sqlite__read_query` — SELECT queries
-- `mcp__sqlite__write_query` — INSERT, UPDATE, DELETE
-- `mcp__sqlite__list_tables` — list all tables
-- `mcp__sqlite__describe_table` — get table schema
-
-**On EVERY interaction, BEFORE responding, you MUST:**
-
-1. Query your board's people: `SELECT * FROM board_people WHERE board_id = '{{BOARD_ID}}'`
-2. Query your board's admins: `SELECT * FROM board_admins WHERE board_id = '{{BOARD_ID}}'`
-3. Query your board's config: `SELECT * FROM board_config WHERE board_id = '{{BOARD_ID}}'`
-4. Query active tasks: `SELECT * FROM tasks WHERE board_id = '{{BOARD_ID}}' ORDER BY created_at`
-5. Then process the user's request
-6. After any changes, write updates via `write_query`
-
-**Do NOT use TASKS.json or ARCHIVE.json** — hierarchy boards use SQLite exclusively.
-
-### ID Generation (Hierarchy)
-
-Task IDs use the same T-NNN / P-NNN / R-NNN format. The counter is global across all types, stored in `board_config.next_task_number`:
-
-1. Read `SELECT next_task_number FROM board_config WHERE board_id = '{{BOARD_ID}}'`
-2. Format the ID with the type prefix (T- / P- / R-) and zero-pad to 3 digits
-3. `UPDATE board_config SET next_task_number = next_task_number + 1 WHERE board_id = '{{BOARD_ID}}'`
-
-Use `next_task_number` for ALL task types (simple, project, and recurring). Example sequence: T-001, P-002, T-003, R-004.
-
-### Sender Identification (Hierarchy)
-
-Same rules as standard mode, but read people from `board_people` and admins from `board_admins` instead of TASKS.json:
-
-- Match sender name against `board_people.name` (case-insensitive)
-- Determine admin role from `board_admins.admin_role` (`'manager'` = manager, `'delegate'` = delegate)
-- Primary manager: `board_admins.is_primary_manager = 1`
-
-### WIP Limits (Hierarchy)
-
-Check `board_people.wip_limit` for the assignee first. If NULL, fall back to `board_config.wip_limit`.
-
-### Archival (Hierarchy)
-
-During standup, check for tasks with `column = 'done'` where `updated_at` is older than 30 days:
-
-```sql
-SELECT * FROM tasks WHERE board_id = '{{BOARD_ID}}' AND "column" = 'done'
-  AND updated_at < datetime('now', '-30 days');
-```
-
-Move to the `archive` table via `write_query`:
-- INSERT into `archive` with `archive_reason = 'done'` and `task_snapshot` = full JSON of the task row
-- Store only the latest 20 history entries from `task_history` in `archive.history`
-- DELETE from `task_history` for this task (`WHERE board_id = '{{BOARD_ID}}' AND task_id = :task_id`)
-- DELETE from `tasks`
-
-The same cleanup applies when cancelling a task in hierarchy mode: resolve `blocked_by` references first (see Dependency Resolution below — scan for tasks whose `blocked_by` contains the cancelled task ID, remove it, record `dependency_resolved` history with a note that the blocking task was cancelled), then INSERT into `archive` (with `archive_reason = 'cancelled'`), DELETE from `task_history`, DELETE from `tasks`. Without the `task_history` cleanup, orphaned rows accumulate since the table has no ON DELETE CASCADE.
-
-### Restore (Hierarchy)
-
-To restore an archived task (`restaurar T-XXX`), manager only:
-
-1. **Query the archive table:**
-```sql
-SELECT * FROM archive WHERE board_id = '{{BOARD_ID}}' AND task_id = :task_id;
-```
-If no row is returned, reply with the error: "Task T-XXX is not in the archive."
-
-2. **Reconstruct the task row:** Parse `task_snapshot` JSON from the archive row. INSERT back into `tasks` with:
-   - `column = 'next_action'`
-   - Preserve `assignee` from the snapshot
-   - Preserve `next_action` from the snapshot when present
-   - Set `updated_at` to the current timestamp
-
-3. **Restore history:** Parse `archive.history` JSON (array of history entries). INSERT each entry back into `task_history`:
-```sql
-INSERT INTO task_history (board_id, task_id, action, by, at, details)
-VALUES ('{{BOARD_ID}}', :task_id, :action, :by, :at, :details_json);
-```
-
-4. **Delete from archive:**
-```sql
-DELETE FROM archive WHERE board_id = '{{BOARD_ID}}' AND task_id = :task_id;
-```
-
-5. **Record restore in history:**
-```sql
-INSERT INTO task_history (board_id, task_id, action, by, at, details)
-VALUES ('{{BOARD_ID}}', :task_id, 'restored', :manager_id, :now, NULL);
-```
-
-### History (Hierarchy)
-
-All history entries are stored in `task_history` instead of inline `history[]`:
-
-```sql
-INSERT INTO task_history (board_id, task_id, action, by, at, details)
-VALUES ('{{BOARD_ID}}', :task_id, :action, :person_id, :now, :details_json);
-```
-
-Cap at 50 active entries per task. Remove oldest when exceeding.
-
-### Dependency Resolution (Hierarchy)
-
-In hierarchy mode, `blocked_by` is a TEXT column containing a JSON array (e.g., `'["T-001","T-003"]'`). When a blocking task moves to `done` or is cancelled, you must remove its ID from all other active tasks' `blocked_by` arrays on the same board.
-
-**Step 1 — Find affected tasks:**
-
-```sql
-SELECT id, blocked_by FROM tasks
-WHERE board_id = '{{BOARD_ID}}'
-  AND blocked_by LIKE '%":resolved_task_id"%';
-```
-
-**Step 2 — For each affected task**, parse the `blocked_by` JSON array, remove `:resolved_task_id`, and write back:
-
-```sql
-UPDATE tasks
-SET blocked_by = :new_blocked_by_json,
-    updated_at = :now
-WHERE board_id = '{{BOARD_ID}}' AND id = :affected_task_id;
-```
-
-Where `:new_blocked_by_json` is the original array with the resolved ID filtered out (e.g., `'["T-003"]'` after removing `T-001`). If the array becomes empty, write `'[]'`.
-
-**Step 3 — Record history for each affected task:**
-
-```sql
-INSERT INTO task_history (board_id, task_id, action, by, at, details)
-VALUES ('{{BOARD_ID}}', :affected_task_id, 'dependency_resolved', :person_id, :now, :details_json);
-```
-
-Where `:details_json` includes the resolved task ID and, for cancellations, a note that the blocking task was cancelled.
-
-This resolution must happen in two situations:
-1. **Task moves to `done`** — resolve immediately as part of the column-move operation
-2. **Task is cancelled** — resolve as part of the cancellation flow, before archiving (see Archival below)
 
 ### Child Board Registrations
 
@@ -1146,8 +989,8 @@ When a task has `child_exec_enabled = 1`:
   INSERT INTO attachment_audit_log (board_id, source, filename, at, actor_person_id, affected_task_refs)
   VALUES ('{{BOARD_ID}}', 'attachment', :filename, :now, :actor_person_id, :affected_task_refs_json);
   ```
-  Note: the standard-mode audit trail uses JSON field names (`timestamp`, `actor_phone`, `action`, etc.) that differ from the SQLite column names above. In hierarchy mode, always use the SQL column names (`at`, `actor_person_id`, `affected_task_refs`).
-- `task_history` retains the full event stream. Cap active displays to 50; archive stores 20.
+  Use the SQL column names (`at`, `actor_person_id`, `affected_task_refs`).
+- `task_history` retains the full event stream. Cap active displays to 50; `archive` tables 20.
 
 ### Disambiguation
 

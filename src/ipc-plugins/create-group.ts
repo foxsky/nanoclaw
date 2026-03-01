@@ -14,7 +14,10 @@ function normalizeSubject(subject: unknown): string | null {
 
 function normalizeParticipants(participants: unknown): string[] | null {
   if (!Array.isArray(participants)) return null;
-  if (participants.length === 0 || participants.length > MAX_GROUP_PARTICIPANTS) {
+  if (
+    participants.length === 0 ||
+    participants.length > MAX_GROUP_PARTICIPANTS
+  ) {
     return null;
   }
 
@@ -56,13 +59,20 @@ function canCreateGroupFromSource(
     // Runtime levels are 0-based while maxDepth is the board depth ceiling.
     // A group may create one more level only if the next runtime level still
     // fits under the configured maximum depth.
-    return sourceEntry.taskflowHierarchyLevel + 1 < sourceEntry.taskflowMaxDepth;
+    return (
+      sourceEntry.taskflowHierarchyLevel + 1 < sourceEntry.taskflowMaxDepth
+    );
   }
 
   return false;
 }
 
-const handleCreateGroup: IpcHandler = async (data, sourceGroup, isMain, deps) => {
+const handleCreateGroup: IpcHandler = async (
+  data,
+  sourceGroup,
+  isMain,
+  deps,
+) => {
   if (!canCreateGroupFromSource(sourceGroup, isMain, deps)) {
     logger.warn({ sourceGroup }, 'Unauthorized create_group attempt blocked');
     return;
@@ -94,12 +104,18 @@ const handleCreateGroup: IpcHandler = async (data, sourceGroup, isMain, deps) =>
     );
   } catch (err) {
     logger.error(
-      { err, subjectLength: subject.length, participantCount: participants.length },
+      {
+        err,
+        subjectLength: subject.length,
+        participantCount: participants.length,
+      },
       'Failed to create group via IPC',
     );
   }
 };
 
-export function register(reg: (type: string, handler: IpcHandler) => void): void {
+export function register(
+  reg: (type: string, handler: IpcHandler) => void,
+): void {
   reg('create_group', handleCreateGroup);
 }

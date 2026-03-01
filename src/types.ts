@@ -91,7 +91,10 @@ export interface Channel {
   // Optional: typing indicator. Channels that support it implement it.
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: group creation. Channels that support it implement it.
-  createGroup?(subject: string, participants: string[]): Promise<{ jid: string; subject: string }>;
+  createGroup?(
+    subject: string,
+    participants: string[],
+  ): Promise<{ jid: string; subject: string }>;
 }
 
 // Callback type that channels use to deliver inbound messages

@@ -24,14 +24,20 @@ const MEDIA_TYPES = [
   // by the agent and carry the same prompt injection risk as chat messages,
   // but via a file that the agent may treat with higher authority.
   { mime: 'application/pdf', ext: 'pdf' },
-  { mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', ext: 'docx' },
+  {
+    mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ext: 'docx',
+  },
   { mime: 'application/msword', ext: 'doc' },
-  { mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ext: 'xlsx' },
+  {
+    mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ext: 'xlsx',
+  },
 ] as const;
 
-const ALLOWED_MIME_TYPES: Set<string> = new Set(MEDIA_TYPES.map(t => t.mime));
+const ALLOWED_MIME_TYPES: Set<string> = new Set(MEDIA_TYPES.map((t) => t.mime));
 const MIME_TO_EXT: Record<string, string> = Object.fromEntries(
-  MEDIA_TYPES.map(t => [t.mime, t.ext]),
+  MEDIA_TYPES.map((t) => [t.mime, t.ext]),
 );
 
 // SECURITY: normalizeMessageContent() unwraps viewOnce, ephemeral,
@@ -109,7 +115,8 @@ function getRetentionDays(): number {
   const raw = process.env.MEDIA_RETENTION_DAYS;
   if (!raw) return DEFAULT_MEDIA_RETENTION_DAYS;
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MEDIA_RETENTION_DAYS;
+  if (!Number.isFinite(parsed) || parsed <= 0)
+    return DEFAULT_MEDIA_RETENTION_DAYS;
   return Math.floor(parsed);
 }
 
@@ -138,11 +145,11 @@ function cleanupExpiredMedia(mediaDir: string): void {
 function getFileLength(msg: WAMessage): number | undefined {
   const content = normalizeMessageContent(msg.message);
   const len =
-    content?.imageMessage?.fileLength ||
-    content?.documentMessage?.fileLength;
+    content?.imageMessage?.fileLength || content?.documentMessage?.fileLength;
   if (!len) return undefined;
   // Handle protobuf Long type: use toNumber() if available, else Number()
-  const size = typeof len === 'number' ? len : (len as any).toNumber?.() ?? Number(len);
+  const size =
+    typeof len === 'number' ? len : ((len as any).toNumber?.() ?? Number(len));
   return Number.isFinite(size) ? size : undefined;
 }
 
@@ -158,14 +165,18 @@ export async function downloadAndSaveMedia(
     // Check per-group media directory quota to prevent disk exhaustion
     const currentDirSize = getDirectorySize(mediaDir);
     if (currentDirSize >= MAX_MEDIA_DIR_SIZE) {
-      console.warn(`Media directory quota exceeded (${currentDirSize} bytes), skipping download`);
+      console.warn(
+        `Media directory quota exceeded (${currentDirSize} bytes), skipping download`,
+      );
       return null;
     }
 
     // Fast-reject optimization (sender-reported, not trustworthy — see getFileLength comment)
     const fileLength = getFileLength(msg);
     if (fileLength && fileLength > MAX_MEDIA_SIZE) {
-      console.warn(`Media file too large (${fileLength} bytes), skipping download`);
+      console.warn(
+        `Media file too large (${fileLength} bytes), skipping download`,
+      );
       return null;
     }
     if (fileLength && currentDirSize + fileLength > MAX_MEDIA_DIR_SIZE) {
@@ -186,13 +197,18 @@ export async function downloadAndSaveMedia(
       },
     ) as Promise<Buffer>;
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Media download timeout')), DOWNLOAD_TIMEOUT_MS),
+      setTimeout(
+        () => reject(new Error('Media download timeout')),
+        DOWNLOAD_TIMEOUT_MS,
+      ),
     );
     const buffer = await Promise.race([downloadPromise, timeoutPromise]);
 
     // Post-download size check — this is the actual security enforcement
     if (buffer.length > MAX_MEDIA_SIZE) {
-      console.warn(`Downloaded media exceeds size limit (${buffer.length} bytes), discarding`);
+      console.warn(
+        `Downloaded media exceeds size limit (${buffer.length} bytes), discarding`,
+      );
       return null;
     }
     if (currentDirSize + buffer.length > MAX_MEDIA_DIR_SIZE) {
@@ -218,7 +234,10 @@ export async function downloadAndSaveMedia(
       return null;
     }
     // Sanitize msgId — sender-provided, could contain path separators
-    const msgId = (msg.key.id || `media-${Date.now()}`).replace(/[^\w.\-]/g, '_');
+    const msgId = (msg.key.id || `media-${Date.now()}`).replace(
+      /[^\w.\-]/g,
+      '_',
+    );
 
     // Use original filename for documents, msgId for others
     const originalName = getFileName(msg);
