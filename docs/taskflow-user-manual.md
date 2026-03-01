@@ -394,7 +394,7 @@ Revisão GTD completa às sextas. Inclui:
 
 > Se o ajuste automático de horário de verão estiver ativado, o TaskFlow mantém o mesmo horário local das automações mesmo quando o fuso muda.
 
-> As automações só enviam mensagens quando há tarefas no quadro. Se `tasks[]` estiver vazio no grupo (nenhuma tarefa no quadro), a rotina executa silenciosamente.
+> As automações só enviam mensagens quando há tarefas no quadro. Se não houver tarefas no quadro, a rotina executa silenciosamente.
 
 ---
 

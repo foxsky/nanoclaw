@@ -1,5 +1,7 @@
 # NanoClaw Task Manager (Kanban + GTD) — Guia de Implementação (WhatsApp-first)
 
+> **LEGACY DOCUMENT (2026-03-01):** This was the original brainstorm/implementation guide. TaskFlow storage has been unified to SQLite for all topologies. References to `TASKS.json` and `ARCHIVE.json` in this document are outdated. See [taskflow-operator-guide.md](../taskflow-operator-guide.md) for the current operator reference.
+
 Este documento consolida tudo o que definimos: um **sistema de gestão de relacionamento + tarefas + projetos + recorrentes** via **WhatsApp**, usando **NanoClaw** e **sem alterar o código-fonte** do NanoClaw (somente arquivos de configuração, prompts e “skill” de instruções).
 
 > **Ideia central:** usar o **scheduler nativo** do NanoClaw como “motor de lembretes/cobranças” (standups, digest, escalonamentos e reviews) e manter as **tarefas humanas** em arquivos `TASKS.json` por chat/grupo (Kanban + GTD).

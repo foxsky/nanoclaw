@@ -9,7 +9,7 @@ This document is for the system operator or team admin. End users should use [ta
 TaskFlow is a config-driven skill package. It does not add new core runtime code. It uses existing NanoClaw capabilities:
 
 - Group-local `CLAUDE.md` prompts
-- Group-local `TASKS.json` and `ARCHIVE.json`
+- Shared SQLite database at `data/taskflow/taskflow.db`
 - Per-group `settings.json`
 - SQLite-backed `registered_groups` and `scheduled_tasks`
 - Existing MCP/IPC tools such as `send_message`, `schedule_task`, `cancel_task`, and `list_tasks`
@@ -30,10 +30,10 @@ Before provisioning a TaskFlow board:
 For each TaskFlow board/group, the operator provisions:
 
 - `groups/<folder>/CLAUDE.md`
-- `groups/<folder>/TASKS.json`
-- `groups/<folder>/ARCHIVE.json`
+- `groups/<folder>/.mcp.json` (SQLite MCP server config)
 - `data/sessions/<folder>/.claude/settings.json`
-- One row in `registered_groups`
+- Board data in `data/taskflow/taskflow.db` (tables: `boards`, `board_config`, `board_runtime_config`, `board_people`, `board_admins`)
+- One row in `registered_groups` (with `taskflow_managed=1`)
 - Three scheduled runners in `scheduled_tasks`
 - Optional fourth scheduled runner for DST guard
 
@@ -51,11 +51,11 @@ Optional runner:
 
 TaskFlow supports three operator-facing deployment models:
 
-1. **Shared group**: one WhatsApp group, one board, one `TASKS.json`.
-2. **Separate groups**: multiple independent boards, each with its own files and runners.
-3. **Hierarchy (Delegation)**: bounded-recursive boards backed by a shared SQLite database. One root board at level 1, with optional child boards per person at deeper levels up to `max_depth`.
+1. **Shared group**: one WhatsApp group, one board.
+2. **Separate groups**: multiple independent boards, each with its own runners.
+3. **Hierarchy (Delegation)**: bounded-recursive boards. One root board at level 1, with optional child boards per person at deeper levels up to `max_depth`.
 
-Standard and Separate topologies use JSON files (`TASKS.json`, `ARCHIVE.json`). Hierarchy topology uses SQLite exclusively.
+All topologies use the shared SQLite database at `data/taskflow/taskflow.db`. Standard/Separate boards get `board_role='standard'`, `max_depth=1`. Hierarchy boards get `board_role='hierarchy'` with `max_depth >= 2`.
 
 There is no mirrored “shared board + private per-user view” mode, and there is no automatic cross-group sync for standard/separate boards.
 
@@ -123,46 +123,32 @@ If automatic creation is not practical:
 
 ## Files and Data
 
-### `TASKS.json`
+### SQLite Database
 
-`TASKS.json` stores:
+All board data is stored in `data/taskflow/taskflow.db`. The database is created by `src/taskflow-db.ts` and contains 10 tables (see the Database Schema section below).
 
-- Board metadata (including `meta.managers[]` as the source of truth for admin roles, with legacy `meta.manager` kept as a compatibility alias for the primary full manager)
-- Team members
-- Active tasks
-- Runner IDs
-- Runner cron values
-- DST sync state
-- Attachment audit trail
+Key data stored per board:
+
+- Board metadata in `boards`, `board_config`, `board_runtime_config`
+- Team members in `board_people`
+- Admin/manager roles in `board_admins`
+- Active tasks in `tasks`
+- Task event history in `task_history`
+- Completed/cancelled tasks in `archive`
+- Runner IDs and cron schedules in `board_runtime_config`
+- DST sync state in `board_runtime_config`
+- Attachment audit trail in `attachment_audit_log`
 
 Important implications:
 
-- Due dates are stored in task data only.
-- Tasks now track `next_note_id` plus structured note objects (`id`, `text`, `by`, `created_at`, `updated_at`). Legacy string notes may still exist on older boards and remain readable, but only structured note objects can be edited or removed.
-- Tasks can now track per-task reminders in `reminders[]`, with one-time scheduler jobs stored as reminder entries on the task itself.
-- If you update a due date, the authoritative state is the updated `due_date` in `TASKS.json`.
-- Treat `meta.schema_version` as a real migration boundary: new boards now write `2.0`, legacy `1.0` boards must be normalized before mutation, and unknown higher versions should be treated as read-only until the skill is upgraded.
+- Due dates are stored in the `tasks.due_date` column.
+- Tasks track structured notes via `notes` column (JSON), with `next_note_id` in `board_config`.
+- Tasks can track per-task reminders in the `reminders` column (JSON).
+- If you update a due date, the authoritative state is the `due_date` column in the `tasks` table.
 
-When upgrading a legacy `1.0` board:
+### Archive
 
-1. Detect `meta.schema_version` as missing or `1.0`.
-2. Backfill `meta.managers[]` from the legacy `meta.manager` record if needed.
-3. For each active task, backfill missing fields:
-   - `priority: "normal"`
-   - `labels: []`
-   - `description: null`
-   - `blocked_by: []`
-   - `reminders: []`
-   - `_last_mutation: null`
-   - `notes: []` if missing
-4. Preserve legacy string notes as-is; do not rewrite them into structured note objects.
-5. Set `next_note_id` to `max(structured note ids) + 1`, or `1` if there are no structured notes.
-6. Rewrite the board as `meta.schema_version: "2.0"` before applying any new mutation.
-7. If the board declares an unknown higher schema version, do not mutate it; stop and upgrade the skill first.
-
-### `ARCHIVE.json`
-
-`ARCHIVE.json` stores:
+The `archive` table stores:
 
 - Completed tasks moved out of the active board
 - Cancelled tasks
@@ -196,14 +182,17 @@ If you change it later and need to guarantee the new model is picked up, restart
 Register the board by inserting into `registered_groups`:
 
 ```bash
-sqlite3 store/messages.db "INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger) VALUES ('{{GROUP_JID}}', '{{GROUP_NAME}}', '{{GROUP_FOLDER}}', '@{{ASSISTANT_NAME}}', '$(date -u +%Y-%m-%dT%H:%M:%S.000Z)', NULL, 1);"
+sqlite3 store/messages.db "INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, taskflow_managed, taskflow_hierarchy_level, taskflow_max_depth) VALUES ('{{GROUP_JID}}', '{{GROUP_NAME}}', '{{GROUP_FOLDER}}', '@{{ASSISTANT_NAME}}', '$(date -u +%Y-%m-%dT%H:%M:%S.000Z)', NULL, 1, 1, 0, 1);"
 ```
+
+For hierarchy boards, use `taskflow_hierarchy_level=1` and `taskflow_max_depth={{MAX_DEPTH}}` instead.
 
 Notes:
 
 - `registered_groups` is loaded into memory on process startup.
 - After registration changes, restart NanoClaw once to reload the group cache.
 - Keep folder names lowercase with hyphens for this skill.
+- The `taskflow_managed=1` flag causes the container runner to mount `/workspace/taskflow/` for the group.
 
 ## Scheduling
 
@@ -219,7 +208,7 @@ Important runtime rules:
 
 - Cron expressions run in the server timezone.
 - Resolve the scheduler timezone from the running service environment (`process.env.TZ` if set, otherwise the host system timezone). Do not assume UTC unless the service is actually configured that way.
-- Store both local and UTC cron values in `TASKS.json`.
+- Store both local and UTC cron values in `board_runtime_config`.
 - `once` timestamps may use any format the host parser accepts when using `schedule_task` (for example a local timestamp or a `Z`-suffixed ISO timestamp).
 - Manually inserted TaskFlow runners must use `context_mode: 'group'`, not the schema default, so they execute with access to the target board files.
 - Manually inserted TaskFlow runners must include a valid non-null `next_run`, or the scheduler will never pick them up.
@@ -236,18 +225,18 @@ Task IDs follow the normal NanoClaw pattern:
 - Posts the board to the group
 - Includes per-person sections inline
 - Performs housekeeping such as archival/history cap
-- Skips sending if `tasks[]` is empty
+- Skips sending if the `tasks` table is empty for the board
 
 ### Digest
 
 - Summarizes overdue, near-due, waiting, stale, and completed-today items
-- Skips sending if `tasks[]` is empty
+- Skips sending if the `tasks` table is empty for the board
 
 ### Weekly Review
 
 - Summarizes weekly board state
 - Includes inbox, waiting, overdue, stale, and next-week preview
-- Skips sending if `tasks[]` is empty, even if there was archive activity that week
+- Skips sending if the `tasks` table is empty for the board, even if there was archive activity that week
 
 ### DST Guard
 
@@ -256,7 +245,7 @@ If enabled:
 - Checks for timezone offset changes
 - Recomputes UTC cron values from stored local schedules
 - Replaces the core runners if the offset changed
-- Updates `meta.dst_sync`
+- Updates DST sync state in `board_runtime_config`
 
 ## Task Semantics
 
@@ -266,13 +255,13 @@ Operator-relevant task rules:
 - Project subtasks use dotted child IDs like `P-001.1`, `P-001.2`.
 - Recurring tasks create the next cycle immediately when a cycle is completed.
 - `cancel_task` is for scheduled runner jobs, not normal board task cancellation.
-- Normal task cancellation is a board mutation in `TASKS.json` / `ARCHIVE.json`.
+- Normal task cancellation is a board mutation in the `tasks` and `archive` tables.
 
 ### Important Distinction: Two Kinds of "Task"
 
 TaskFlow uses two separate layers:
 
-- Board tasks: user-facing items in `TASKS.json` such as `T-001`, `P-001`, and `R-001`
+- Board tasks: user-facing items in the `tasks` table such as `T-001`, `P-001`, and `R-001`
 - Scheduler tasks: operator/runtime rows in `scheduled_tasks` used for standup, digest, review, and optional DST guard
 
 These are not interchangeable:
@@ -311,7 +300,7 @@ Non-main groups do not get:
 
 ### Add or Update Team Members
 
-Update `people[]` in `TASKS.json` through the TaskFlow commands or by operator-controlled edits if recovering from prompt failure.
+Update `board_people` via SQLite through the TaskFlow commands or by operator-controlled SQL edits if recovering from prompt failure.
 
 ### Change the Model
 
@@ -321,14 +310,14 @@ Update `people[]` in `TASKS.json` through the TaskFlow commands or by operator-c
 
 ### Change the Schedule
 
-1. Update local and UTC cron metadata in `TASKS.json`
+1. Update local and UTC cron values in `board_runtime_config`
 2. Cancel the existing runner rows
 3. Create replacement rows in `scheduled_tasks`
-4. Persist new runner IDs in `meta.runner_task_ids`
+4. Persist new runner IDs in `board_runtime_config` (`runner_standup_task_id`, `runner_digest_task_id`, `runner_review_task_id`, `runner_dst_guard_task_id`)
 
 ### Pause or Remove Runners
 
-Use task-level operations on the runner IDs stored in `meta.runner_task_ids`.
+Use task-level operations on the runner IDs stored in `board_runtime_config`.
 
 Do not confuse runner tasks with normal board tasks.
 
@@ -339,8 +328,8 @@ After provisioning a board:
 1. Send `@<assistant> quadro` in the target group.
 2. Confirm the group responds with TaskFlow behavior.
 3. Create a quick capture item.
-4. Confirm `TASKS.json` updates.
-5. Confirm runner IDs are stored in `meta.runner_task_ids`.
+4. Confirm the task appears in the `tasks` table.
+5. Confirm runner IDs are stored in `board_runtime_config`.
 6. If attachment import is enabled, verify the proposal flow requires the exact `CONFIRM_IMPORT` token.
 7. If DST guard is enabled, test in staging before relying on it in production.
 
@@ -387,16 +376,16 @@ The wizard:
 4. Stores runner scheduled task IDs in `board_runtime_config` (columns: `runner_standup_task_id`, `runner_digest_task_id`, `runner_review_task_id`, `runner_dst_guard_task_id`).
 5. Registers the group in `registered_groups` with TaskFlow metadata.
 
-**Hierarchy registration SQL** (differs from standard boards):
+**Hierarchy registration SQL** (same columns as standard, different values):
 
 ```bash
 sqlite3 store/messages.db "INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, taskflow_managed, taskflow_hierarchy_level, taskflow_max_depth) VALUES ('{{GROUP_JID}}', '{{GROUP_NAME}}', '{{GROUP_FOLDER}}', '@{{ASSISTANT_NAME}}', '$(date -u +%Y-%m-%dT%H:%M:%S.000Z)', NULL, 1, 1, 1, {{MAX_DEPTH}});"
 ```
 
-The three extra columns (`taskflow_managed`, `taskflow_hierarchy_level`, `taskflow_max_depth`) control:
-- Whether the container gets the SQLite directory mounted
-- Which hierarchy commands are available to the agent
-- Depth enforcement for child board creation
+All TaskFlow boards use the same three columns (`taskflow_managed`, `taskflow_hierarchy_level`, `taskflow_max_depth`). Standard boards use `(1, 0, 1)`. Hierarchy boards use `(1, <level>, <max_depth>)`. These control:
+- Whether the container gets the SQLite directory mounted (`taskflow_managed=1`)
+- Which hierarchy commands are available to the agent (`taskflow_hierarchy_level`)
+- Depth enforcement for child board creation (`taskflow_max_depth`)
 
 ### Child Board Provisioning
 
@@ -455,11 +444,11 @@ All hierarchy boards share a single database at `data/taskflow/taskflow.db`.
 
 **Backup**: Back up the entire `data/taskflow/` directory (including `taskflow.db`, `taskflow.db-wal`, `taskflow.db-shm`). For a consistent backup, use `sqlite3 data/taskflow/taskflow.db ".backup backup.db"`.
 
-**Conditional mount**: Only hierarchy groups (those with `taskflowHierarchyLevel` metadata) get the taskflow directory mounted. Standard/Separate topology groups continue using JSON files without the SQLite mount.
+**Conditional mount**: All TaskFlow groups (those with `taskflowManaged=1`) get the taskflow directory mounted. The container runner mounts `data/taskflow/` → `/workspace/taskflow/` for any group with `taskflowManaged` set.
 
 ### MCP Server Configuration
 
-Each hierarchy group has a `.mcp.json` at `groups/<folder>/.mcp.json`:
+Each TaskFlow group has a `.mcp.json` at `groups/<folder>/.mcp.json`:
 
 ```json
 {
@@ -508,7 +497,7 @@ For each hierarchy board/group, the operator provisions:
 | `data/sessions/<folder>/.claude/settings.json` | Per-group AI model |
 | `data/taskflow/taskflow.db` | Shared SQLite database (all boards) |
 
-No `TASKS.json` or `ARCHIVE.json` — hierarchy boards use SQLite exclusively.
+All TaskFlow boards use SQLite exclusively — no JSON files.
 
 ### Hierarchy Troubleshooting
 
@@ -526,10 +515,6 @@ No `TASKS.json` or `ARCHIVE.json` — hierarchy boards use SQLite exclusively.
 - Check `registered_groups` has the correct `taskflow_hierarchy_level` and `taskflow_max_depth`
 - Restart NanoClaw to reload group cache
 - Verify `.mcp.json` exists in the group folder
-
-**Standard boards accidentally getting SQLite mount**
-- Only groups with `taskflowHierarchyLevel` metadata get the mount
-- Legacy `taskflowManaged` alone is not sufficient — the container runner checks for hierarchy metadata specifically
 
 ## Change Control
 

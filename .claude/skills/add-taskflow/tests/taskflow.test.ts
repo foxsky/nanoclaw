@@ -1474,7 +1474,7 @@ describe('taskflow skill package', () => {
     expect(completionLine!).toContain('reset `next_note_id` to `1`');
   });
 
-  it('operator guide and user manual reflect reminders, cancellation cleanup, and schema migration boundary', () => {
+  it('operator guide and user manual reflect SQLite-only storage', () => {
     const repoRoot = path.resolve(skillDir, '..', '..', '..');
     const operatorGuide = fs.readFileSync(
       path.join(repoRoot, 'docs', 'taskflow-operator-guide.md'),
@@ -1485,10 +1485,13 @@ describe('taskflow skill package', () => {
       'utf-8',
     );
 
-    expect(operatorGuide).toContain('Tasks can now track per-task reminders in `reminders[]`');
-    expect(operatorGuide).toContain('Treat `meta.schema_version` as a real migration boundary');
-    expect(operatorGuide).toContain('When upgrading a legacy `1.0` board:');
-    expect(operatorGuide).toContain('Rewrite the board as `meta.schema_version: "2.0"`');
+    // Operator guide uses SQLite-only references
+    expect(operatorGuide).toContain('data/taskflow/taskflow.db');
+    expect(operatorGuide).toContain('board_runtime_config');
+    expect(operatorGuide).toContain('taskflow_managed=1');
+    expect(operatorGuide).not.toContain('TASKS.json');
+    expect(operatorGuide).not.toContain('ARCHIVE.json');
+    // User manual still has relevant content
     expect(userManual).toContain('avisa antes da confirmação quais tarefas serão destravadas');
     expect(userManual).toContain('os lembretes ativos também são cancelados antes do arquivamento');
   });

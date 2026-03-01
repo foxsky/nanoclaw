@@ -161,10 +161,10 @@ const STANDUP_PROMPT =
   "[TF-STANDUP] You are running the morning standup for this group. Query the board from /workspace/taskflow/taskflow.db using the SQLite MCP tools — SELECT from tasks, board_people, board_config for your board_id. If no tasks exist, do NOT send any message — just perform housekeeping (archival) silently and exit. Otherwise: 1) Send the Kanban board to this group via send_message (grouped by column, show overdue with 🔴). 2) Include per-person sections in the group message with their personal board, WIP status (X/Y), and prompt for updates. 3) Check for tasks with column = 'done' and updated_at older than 30 days — INSERT them into archive and DELETE from tasks. 4) List any inbox items that need processing. Note: send_message sends to this group only — individual DMs are not supported.";
 
 const DIGEST_PROMPT =
-  "[TF-DIGEST] You are generating the manager digest for this task group. Query the board from /workspace/taskflow/taskflow.db using the SQLite MCP tools — SELECT from tasks for your board_id. If no tasks exist, do NOT send any message — exit silently. Otherwise consolidate: 🔥 Overdue tasks, ⏳ Tasks due in next 48h, 🚧 Waiting/blocked tasks, 💤 Tasks with no update in 24h+, ✅ Tasks completed today. Format as a concise executive summary and suggest 3 specific follow-up actions with task IDs. Send the digest to this group via send_message. Note: send_message sends to this group only — individual DMs are not supported.";
+  '[TF-DIGEST] You are generating the manager digest for this task group. Query the board from /workspace/taskflow/taskflow.db using the SQLite MCP tools — SELECT from tasks for your board_id. If no tasks exist, do NOT send any message — exit silently. Otherwise consolidate: 🔥 Overdue tasks, ⏳ Tasks due in next 48h, 🚧 Waiting/blocked tasks, 💤 Tasks with no update in 24h+, ✅ Tasks completed today. Format as a concise executive summary and suggest 3 specific follow-up actions with task IDs. Send the digest to this group via send_message. Note: send_message sends to this group only — individual DMs are not supported.';
 
 const REVIEW_PROMPT =
-  "[TF-REVIEW] You are running the weekly GTD review for this task group. Query the board from /workspace/taskflow/taskflow.db using the SQLite MCP tools — SELECT from tasks and archive for your board_id. If no tasks exist, do NOT send any message — exit silently, even if there was archive activity this week. Otherwise produce: 1) Summary: completed, created, overdue this week. 2) Inbox items pending processing. 3) Waiting tasks older than 5 days (suggest follow-up). 4) Overdue tasks (suggest action). 5) In Progress tasks with no update in 3+ days. 6) Next week preview (deadlines and recurrences). 7) Per-person weekly summaries inline. Send the full review to this group via send_message. Note: send_message sends to this group only — individual DMs are not supported.";
+  '[TF-REVIEW] You are running the weekly GTD review for this task group. Query the board from /workspace/taskflow/taskflow.db using the SQLite MCP tools — SELECT from tasks and archive for your board_id. If no tasks exist, do NOT send any message — exit silently, even if there was archive activity this week. Otherwise produce: 1) Summary: completed, created, overdue this week. 2) Inbox items pending processing. 3) Waiting tasks older than 5 days (suggest follow-up). 4) Overdue tasks (suggest action). 5) In Progress tasks with no update in 3+ days. 6) Next week preview (deadlines and recurrences). 7) Per-person weekly summaries inline. Send the full review to this group via send_message. Note: send_message sends to this group only — individual DMs are not supported.';
 
 // --- Helper functions ---
 
@@ -201,7 +201,9 @@ function migrate(): void {
     return;
   }
 
-  log(`Found ${boardFolders.length} board(s) to migrate: ${boardFolders.join(', ')}\n`);
+  log(
+    `Found ${boardFolders.length} board(s) to migrate: ${boardFolders.join(', ')}\n`,
+  );
 
   // 2. Read template
   if (!fs.existsSync(TEMPLATE_PATH)) {
@@ -298,7 +300,9 @@ function migrate(): void {
     // Get registered group info
     const regGroup = groupsByFolder.get(folder);
     if (!regGroup) {
-      console.error(`  WARNING: No registered group found for folder '${folder}'. Skipping.`);
+      console.error(
+        `  WARNING: No registered group found for folder '${folder}'. Skipping.`,
+      );
       continue;
     }
 
@@ -309,7 +313,9 @@ function migrate(): void {
     log(`  Group JID: ${regGroup.jid}`);
     log(`  Manager: ${meta.manager.name} (${meta.manager.phone})`);
     log(`  People: ${tasksJson.people.map((p) => p.name).join(', ')}`);
-    log(`  Tasks: ${tasksJson.tasks.length}, Archived: ${archiveJson.tasks.length}`);
+    log(
+      `  Tasks: ${tasksJson.tasks.length}, Archived: ${archiveJson.tasks.length}`,
+    );
 
     if (DRY_RUN) {
       log('  [Skipping writes in dry-run mode]');
@@ -519,7 +525,10 @@ function migrate(): void {
       }
 
       // attachment_audit_log — from meta.attachment_audit_trail[]
-      if (meta.attachment_audit_trail && meta.attachment_audit_trail.length > 0) {
+      if (
+        meta.attachment_audit_trail &&
+        meta.attachment_audit_trail.length > 0
+      ) {
         const insertAudit = taskflowDb.prepare(
           `INSERT INTO attachment_audit_log (board_id, source, filename, at, actor_person_id, affected_task_refs)
            VALUES (?, ?, ?, ?, ?, ?)`,
@@ -561,7 +570,11 @@ function migrate(): void {
         sqlite: {
           type: 'stdio',
           command: 'npx',
-          args: ['-y', 'mcp-server-sqlite-npx', '/workspace/taskflow/taskflow.db'],
+          args: [
+            '-y',
+            'mcp-server-sqlite-npx',
+            '/workspace/taskflow/taskflow.db',
+          ],
         },
       },
     };
@@ -575,7 +588,10 @@ function migrate(): void {
     // Back up old CLAUDE.md
     const claudePath = path.join(groupDir, 'CLAUDE.md');
     if (fs.existsSync(claudePath)) {
-      fs.copyFileSync(claudePath, path.join(groupDir, 'CLAUDE.md.pre-migration'));
+      fs.copyFileSync(
+        claudePath,
+        path.join(groupDir, 'CLAUDE.md.pre-migration'),
+      );
       log('  ✓ Backed up old CLAUDE.md → CLAUDE.md.pre-migration');
     }
 
@@ -671,7 +687,9 @@ function migrate(): void {
         meta.runner_task_ids.dst_guard,
       );
       if (dstResult.changes > 0) {
-        log(`  ✓ Updated DST guard runner prompt: ${meta.runner_task_ids.dst_guard}`);
+        log(
+          `  ✓ Updated DST guard runner prompt: ${meta.runner_task_ids.dst_guard}`,
+        );
       }
     }
 
@@ -687,7 +705,9 @@ function migrate(): void {
   log(`TaskFlow DB: ${DRY_RUN ? '(in-memory, dry run)' : taskflowDbPath}`);
   log('\nNext steps:');
   log('  1. Verify: sqlite3 data/taskflow/taskflow.db "SELECT * FROM boards;"');
-  log('  2. Verify: sqlite3 store/messages.db "SELECT folder, taskflow_managed FROM registered_groups WHERE taskflow_managed = 1;"');
+  log(
+    '  2. Verify: sqlite3 store/messages.db "SELECT folder, taskflow_managed FROM registered_groups WHERE taskflow_managed = 1;"',
+  );
   log('  3. Restart: systemctl restart nanoclaw');
   log('  4. Keep old TASKS.json/ARCHIVE.json as backups');
 }
