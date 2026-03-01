@@ -24,6 +24,7 @@ interface GroupState {
   containerName: string | null;
   groupFolder: string | null;
   retryCount: number;
+  retryTimer: ReturnType<typeof setTimeout> | null;
 }
 
 export class GroupQueue {
@@ -47,6 +48,7 @@ export class GroupQueue {
         containerName: null,
         groupFolder: null,
         retryCount: 0,
+        retryTimer: null,
       };
       this.groups.set(groupJid, state);
     }
@@ -196,6 +198,11 @@ export class GroupQueue {
     state.idleWaiting = false;
     state.isTaskContainer = false;
     state.pendingMessages = false;
+    // Cancel any pending retry timer — this run supersedes it
+    if (state.retryTimer !== null) {
+      clearTimeout(state.retryTimer);
+      state.retryTimer = null;
+    }
     this.activeCount++;
 
     logger.debug(
@@ -268,8 +275,11 @@ export class GroupQueue {
       { groupJid, retryCount: state.retryCount, delayMs },
       'Scheduling retry with backoff',
     );
-    setTimeout(() => {
-      if (!this.shuttingDown) {
+    const expectedRetryCount = state.retryCount;
+    state.retryTimer = setTimeout(() => {
+      state.retryTimer = null;
+      // Skip if a successful drain already reset retryCount (stale timer guard)
+      if (!this.shuttingDown && state.retryCount === expectedRetryCount) {
         this.enqueueMessageCheck(groupJid);
       }
     }, delayMs);

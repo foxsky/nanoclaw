@@ -18,17 +18,11 @@ import fs from 'fs';
 import path from 'path';
 import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
-
-interface ContainerInput {
-  prompt: string;
-  sessionId?: string;
-  groupFolder: string;
-  chatJid: string;
-  isMain: boolean;
-  isScheduledTask?: boolean;
-  assistantName?: string;
-  secrets?: Record<string, string>;
-}
+import {
+  buildNanoclawMcpEnv,
+  ContainerInput,
+  NANOCLAW_ALLOWED_TOOLS,
+} from './runtime-config.js';
 
 interface ContainerOutput {
   status: 'success' | 'error';
@@ -424,16 +418,7 @@ async function runQuery(
       systemPrompt: globalClaudeMd
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
         : undefined,
-      allowedTools: [
-        'Bash',
-        'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
-        'Task', 'TaskOutput', 'TaskStop',
-        'TeamCreate', 'TeamDelete', 'SendMessage',
-        'TodoWrite', 'ToolSearch', 'Skill',
-        'NotebookEdit',
-        'mcp__nanoclaw__*'
-      ],
+      allowedTools: [...NANOCLAW_ALLOWED_TOOLS],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
@@ -442,11 +427,7 @@ async function runQuery(
         nanoclaw: {
           command: 'node',
           args: [mcpServerPath],
-          env: {
-            NANOCLAW_CHAT_JID: containerInput.chatJid,
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-          },
+          env: buildNanoclawMcpEnv(containerInput),
         },
       },
       hooks: {

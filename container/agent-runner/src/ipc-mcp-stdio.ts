@@ -10,6 +10,10 @@ import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
+import {
+  canUseCreateGroup,
+  normalizeCreateGroupRequest,
+} from './ipc-tooling.js';
 
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
@@ -19,6 +23,15 @@ const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
 const isMain = process.env.NANOCLAW_IS_MAIN === '1';
+const isTaskflowManaged = process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1';
+const taskflowHierarchyLevel =
+  process.env.NANOCLAW_TASKFLOW_HIERARCHY_LEVEL !== undefined
+    ? Number.parseInt(process.env.NANOCLAW_TASKFLOW_HIERARCHY_LEVEL, 10)
+    : undefined;
+const taskflowMaxDepth =
+  process.env.NANOCLAW_TASKFLOW_MAX_DEPTH !== undefined
+    ? Number.parseInt(process.env.NANOCLAW_TASKFLOW_MAX_DEPTH, 10)
+    : undefined;
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -81,14 +94,14 @@ MESSAGING BEHAVIOR - The task agent's output is sent to the user or group. It ca
 \u2022 Only send a message when there's something to report (e.g., "notify me if...")
 \u2022 Never send a message (background maintenance tasks)
 
-SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
+SCHEDULE VALUE FORMAT:
 \u2022 cron: Standard cron expression (e.g., "*/5 * * * *" for every 5 minutes, "0 9 * * *" for daily at 9am LOCAL time)
 \u2022 interval: Milliseconds between runs (e.g., "300000" for 5 minutes, "3600000" for 1 hour)
-\u2022 once: Local time WITHOUT "Z" suffix (e.g., "2026-02-01T15:30:00"). Do NOT use UTC/Z suffix.`,
+\u2022 once: Any timestamp the host parser accepts (e.g., "2026-02-01T15:30:00" for local time or "2026-02-01T15:30:00Z" for UTC).`,
   {
     prompt: z.string().describe('What the agent should do when the task runs. For isolated mode, include all necessary context here.'),
     schedule_type: z.enum(['cron', 'interval', 'once']).describe('cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time'),
-    schedule_value: z.string().describe('cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)'),
+    schedule_value: z.string().describe('cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: timestamp like "2026-02-01T15:30:00" or "2026-02-01T15:30:00Z"'),
     context_mode: z.enum(['group', 'isolated']).default('group').describe('group=runs with chat history and memory, isolated=fresh session (include context in prompt)'),
     target_group_jid: z.string().optional().describe('(Main group only) JID of the group to schedule the task for. Defaults to the current group.'),
   },
@@ -112,16 +125,10 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
         };
       }
     } else if (args.schedule_type === 'once') {
-      if (/[Zz]$/.test(args.schedule_value) || /[+-]\d{2}:\d{2}$/.test(args.schedule_value)) {
-        return {
-          content: [{ type: 'text' as const, text: `Timestamp must be local time without timezone suffix. Got "${args.schedule_value}" — use format like "2026-02-01T15:30:00".` }],
-          isError: true,
-        };
-      }
       const date = new Date(args.schedule_value);
       if (isNaN(date.getTime())) {
         return {
-          content: [{ type: 'text' as const, text: `Invalid timestamp: "${args.schedule_value}". Use local time format like "2026-02-01T15:30:00".` }],
+          content: [{ type: 'text' as const, text: `Invalid timestamp: "${args.schedule_value}". Use a valid timestamp like "2026-02-01T15:30:00" or "2026-02-01T15:30:00Z".` }],
           isError: true,
         };
       }
@@ -254,11 +261,39 @@ Use available_groups.json to find the JID for a group. The folder name should be
     name: z.string().describe('Display name for the group'),
     folder: z.string().describe('Folder name for group files (lowercase, hyphens, e.g., "family-chat")'),
     trigger: z.string().describe('Trigger word (e.g., "@Andy")'),
+    taskflow_managed: z.boolean().optional().describe('Set true for TaskFlow-provisioned groups. When true, hierarchy metadata is also required.'),
+    taskflow_hierarchy_level: z.number().int().min(0).optional().describe('0-based TaskFlow runtime level. Required when taskflow_managed=true.'),
+    taskflow_max_depth: z.number().int().min(0).optional().describe('TaskFlow maximum depth. Required when taskflow_managed=true.'),
   },
   async (args) => {
     if (!isMain) {
       return {
         content: [{ type: 'text' as const, text: 'Only the main group can register new groups.' }],
+        isError: true,
+      };
+    }
+
+    if (
+      args.taskflow_managed === true &&
+      (
+        args.taskflow_hierarchy_level === undefined ||
+        args.taskflow_max_depth === undefined
+      )
+    ) {
+      return {
+        content: [{ type: 'text' as const, text: 'TaskFlow groups require taskflow_hierarchy_level and taskflow_max_depth.' }],
+        isError: true,
+      };
+    }
+
+    if (
+      args.taskflow_managed === true &&
+      args.taskflow_hierarchy_level !== undefined &&
+      args.taskflow_max_depth !== undefined &&
+      args.taskflow_hierarchy_level > args.taskflow_max_depth
+    ) {
+      return {
+        content: [{ type: 'text' as const, text: 'TaskFlow hierarchy level cannot exceed taskflow_max_depth.' }],
         isError: true,
       };
     }
@@ -269,6 +304,9 @@ Use available_groups.json to find the JID for a group. The folder name should be
       name: args.name,
       folder: args.folder,
       trigger: args.trigger,
+      taskflowManaged: args.taskflow_managed,
+      taskflowHierarchyLevel: args.taskflow_hierarchy_level,
+      taskflowMaxDepth: args.taskflow_max_depth,
       timestamp: new Date().toISOString(),
     };
 
@@ -276,6 +314,74 @@ Use available_groups.json to find the JID for a group. The folder name should be
 
     return {
       content: [{ type: 'text' as const, text: `Group "${args.name}" registered. It will start receiving messages immediately.` }],
+    };
+  },
+);
+
+server.tool(
+  'create_group',
+  `Create a new WhatsApp group. Main can create any group. TaskFlow-managed groups can create child groups only when their next runtime level still fits under taskflow_max_depth. The host creates the group asynchronously, so this tool confirms the request was queued, not the final group JID.`,
+  {
+    subject: z.string().describe('Group subject/name'),
+    participants: z
+      .array(z.string())
+      .describe(
+        'WhatsApp user JIDs to add (e.g. "5585999998888@s.whatsapp.net")',
+      ),
+  },
+  async (args) => {
+    const createGroupContext = {
+      isMain,
+      isTaskflowManaged,
+      taskflowHierarchyLevel,
+      taskflowMaxDepth,
+    };
+
+    if (!canUseCreateGroup(createGroupContext)) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'This group is not allowed to create new groups.',
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const normalized = normalizeCreateGroupRequest(
+      args.subject,
+      args.participants,
+      !isMain,
+    );
+    if (!normalized) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Invalid create_group request. Use a non-empty subject (max 100 chars) and 1-256 unique WhatsApp user JIDs.',
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    writeIpcFile(TASKS_DIR, {
+      type: 'create_group',
+      subject: normalized.subject,
+      participants: normalized.participants,
+      groupFolder,
+      isMain,
+      timestamp: new Date().toISOString(),
+    });
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'Group creation requested. The host will create it asynchronously.',
+        },
+      ],
     };
   },
 );

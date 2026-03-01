@@ -109,11 +109,26 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
-  // Add channel and is_group columns if they don't exist (migration for existing DBs)
+  // Add channel and is_group columns if they don't exist (migration for existing DBs).
+  // Each ALTER TABLE is wrapped in its own try/catch so that if one column already
+  // exists (e.g. from a partially-completed previous migration) the other still gets added.
+  let channelAdded = false;
+  let isGroupAdded = false;
   try {
     database.exec(`ALTER TABLE chats ADD COLUMN channel TEXT`);
+    channelAdded = true;
+  } catch {
+    /* column already exists */
+  }
+  try {
     database.exec(`ALTER TABLE chats ADD COLUMN is_group INTEGER DEFAULT 0`);
-    // Backfill from JID patterns
+    isGroupAdded = true;
+  } catch {
+    /* column already exists */
+  }
+
+  // Backfill only when at least one new column was added
+  if (channelAdded || isGroupAdded) {
     database.exec(
       `UPDATE chats SET channel = 'whatsapp', is_group = 1 WHERE jid LIKE '%@g.us'`,
     );
@@ -126,8 +141,6 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `UPDATE chats SET channel = 'telegram', is_group = 1 WHERE jid LIKE 'tg:%'`,
     );
-  } catch {
-    /* columns already exist */
   }
 
   // Add taskflow_managed column if it doesn't exist

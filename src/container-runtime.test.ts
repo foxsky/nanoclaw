@@ -44,6 +44,29 @@ describe('stopContainer', () => {
       `${CONTAINER_RUNTIME_BIN} stop nanoclaw-test-123`,
     );
   });
+
+  it('accepts valid Docker container names', () => {
+    // Names with dots, underscores, leading slash
+    expect(stopContainer('my_container.name')).toBe(
+      `${CONTAINER_RUNTIME_BIN} stop my_container.name`,
+    );
+    expect(stopContainer('/nanoclaw-abc')).toBe(
+      `${CONTAINER_RUNTIME_BIN} stop /nanoclaw-abc`,
+    );
+  });
+
+  it('rejects names containing shell metacharacters (command injection)', () => {
+    expect(() => stopContainer('foo; rm -rf /')).toThrow('Invalid container name');
+    expect(() => stopContainer('foo$(whoami)')).toThrow('Invalid container name');
+    expect(() => stopContainer('foo`id`')).toThrow('Invalid container name');
+    expect(() => stopContainer('foo | cat /etc/passwd')).toThrow('Invalid container name');
+    expect(() => stopContainer('foo\nbar')).toThrow('Invalid container name');
+  });
+
+  it('rejects empty or whitespace-only names', () => {
+    expect(() => stopContainer('')).toThrow('Invalid container name');
+    expect(() => stopContainer(' ')).toThrow('Invalid container name');
+  });
 });
 
 // --- ensureContainerRuntimeRunning ---

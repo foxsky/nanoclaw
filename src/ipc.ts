@@ -95,7 +95,16 @@ const handleScheduleTask: IpcHandler = async (
       return;
     }
 
-    const scheduleType = data.schedule_type as 'cron' | 'interval' | 'once';
+    const VALID_SCHEDULE_TYPES = new Set(['cron', 'interval', 'once']);
+    const rawScheduleType = data.schedule_type as string;
+    if (!VALID_SCHEDULE_TYPES.has(rawScheduleType)) {
+      logger.warn(
+        { scheduleType: rawScheduleType },
+        'Invalid schedule_type in schedule_task',
+      );
+      return;
+    }
+    const scheduleType = rawScheduleType as 'cron' | 'interval' | 'once';
 
     let nextRun: string | null = null;
     if (scheduleType === 'cron') {

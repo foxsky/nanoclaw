@@ -27,12 +27,19 @@
 
 import Database from 'better-sqlite3';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 import { initTaskflowDb } from './taskflow-db.js';
 
+export function resolveDefaultProjectRoot(moduleUrl = import.meta.url): string {
+  const modulePath = fileURLToPath(moduleUrl);
+  return path.resolve(path.dirname(modulePath), '..');
+}
+
 // Paths relative to project root
-const PROJECT_ROOT = process.cwd();
+const PROJECT_ROOT = resolveDefaultProjectRoot();
 const GROUPS_DIR = path.join(PROJECT_ROOT, 'groups');
 const STORE_DIR = path.join(PROJECT_ROOT, 'store');
 const DATA_DIR = path.join(PROJECT_ROOT, 'data');
@@ -174,6 +181,23 @@ interface MigrateBoardOptions {
   assistantName: string;
 }
 
+interface MigrationRunOptions {
+  projectRoot?: string;
+  groupsDir?: string;
+  storeDir?: string;
+  dataDir?: string;
+  templatePath?: string;
+  dryRun?: boolean;
+  assistantName?: string;
+}
+
+interface MigrationSummary {
+  discoveredCount: number;
+  migratedCount: number;
+  skippedCount: number;
+  dryRun: boolean;
+}
+
 // --- SQLite-mode runner prompts ---
 
 const STANDUP_PROMPT =
@@ -196,9 +220,118 @@ function slugify(name: string): string {
     .replace(/^-|-$/g, '');
 }
 
-function log(msg: string): void {
-  const prefix = DRY_RUN ? '[DRY RUN] ' : '';
+function log(msg: string, dryRun = DRY_RUN): void {
+  const prefix = dryRun ? '[DRY RUN] ' : '';
   console.log(`${prefix}${msg}`);
+}
+
+function ensureTaskflowColumns(messagesDb: Database.Database, dryRun: boolean): void {
+  try {
+    messagesDb.exec(
+      `ALTER TABLE registered_groups ADD COLUMN taskflow_managed INTEGER DEFAULT 0`,
+    );
+    log('Added taskflow_managed column to registered_groups', dryRun);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    messagesDb.exec(
+      `ALTER TABLE registered_groups ADD COLUMN taskflow_hierarchy_level INTEGER`,
+    );
+    log('Added taskflow_hierarchy_level column to registered_groups', dryRun);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    messagesDb.exec(
+      `ALTER TABLE registered_groups ADD COLUMN taskflow_max_depth INTEGER`,
+    );
+    log('Added taskflow_max_depth column to registered_groups', dryRun);
+  } catch {
+    /* column already exists */
+  }
+}
+
+function loadAssistantName(projectRoot: string, fallback: string): string {
+  const envPath = path.join(projectRoot, '.env');
+  if (!fs.existsSync(envPath)) {
+    return fallback;
+  }
+
+  const envContent = fs.readFileSync(envPath, 'utf-8');
+  const match = envContent.match(/^ASSISTANT_NAME=(.+)$/m);
+  return match ? match[1].trim() : fallback;
+}
+
+function collectRejectedMutationTaskIds(rejectedMutations: unknown[]): string[] {
+  const refs = new Set<string>();
+
+  const collect = (value: unknown): void => {
+    if (typeof value === 'string') {
+      if (/^[A-Z]-\d+/.test(value) || /^[A-Z]-\d+\.\d+/.test(value)) {
+        refs.add(value);
+      }
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (const entry of value) collect(entry);
+      return;
+    }
+
+    if (!value || typeof value !== 'object') {
+      return;
+    }
+
+    for (const [key, nested] of Object.entries(
+      value as Record<string, unknown>,
+    )) {
+      if (
+        (key === 'task_id' || key === 'taskId' || key === 'id') &&
+        typeof nested === 'string'
+      ) {
+        refs.add(nested);
+        continue;
+      }
+
+      if (
+        (key === 'task_ids' || key === 'taskIds') &&
+        Array.isArray(nested)
+      ) {
+        for (const entry of nested) collect(entry);
+        continue;
+      }
+
+      collect(nested);
+    }
+  };
+
+  collect(rejectedMutations);
+  return Array.from(refs);
+}
+
+function prepareTempMessagesDb(
+  messagesDbPath: string,
+): { db: Database.Database; tempRoot: string } {
+  const tempRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'taskflow-migrate-dry-run-'),
+  );
+  const tempMessagesDbPath = path.join(tempRoot, 'messages.db');
+  fs.copyFileSync(messagesDbPath, tempMessagesDbPath);
+  return {
+    db: new Database(tempMessagesDbPath),
+    tempRoot,
+  };
+}
+
+function copyGroupDirForDryRun(
+  sourceGroupDir: string,
+  tempGroupsRoot: string,
+  folder: string,
+): string {
+  const targetGroupDir = path.join(tempGroupsRoot, folder);
+  fs.cpSync(sourceGroupDir, targetGroupDir, { recursive: true });
+  return targetGroupDir;
 }
 
 function normalizeAdminRole(role?: string): 'manager' | 'delegate' {
@@ -233,7 +366,10 @@ function buildAdminRows(
     );
     if (existing) {
       existing.phone = phone;
-      existing.is_primary_manager = Math.max(existing.is_primary_manager, isPrimary);
+      existing.is_primary_manager = Math.max(
+        existing.is_primary_manager,
+        isPrimary,
+      );
       return;
     }
 
@@ -250,7 +386,9 @@ function buildAdminRows(
     for (const manager of meta.managers) {
       const normalizedRole = normalizeAdminRole(manager.role);
       const isPrimary =
-        normalizedRole === 'manager' && manager.phone === meta.manager.phone ? 1 : 0;
+        normalizedRole === 'manager' && manager.phone === meta.manager.phone
+          ? 1
+          : 0;
       if (isPrimary === 1) hasPrimaryManager = true;
       pushRow(manager.name, manager.phone, normalizedRole, isPrimary);
     }
@@ -279,9 +417,32 @@ export function migrateBoard(options: MigrateBoardOptions): void {
   } = options;
   const meta = tasksJson.meta;
   const boardId = `board-${folder}`;
-  const managerId = slugify(meta.manager.name);
+  const managerSlug = slugify(meta.manager.name);
+  let resolvedManagerId = managerSlug;
 
   const insertBoard = taskflowDb.transaction(() => {
+    // Clear all board-scoped rows so re-running the migration stays
+    // idempotent — especially for AUTOINCREMENT tables (task_history,
+    // attachment_audit_log) that can't use INSERT OR REPLACE.
+    taskflowDb
+      .prepare(`DELETE FROM attachment_audit_log WHERE board_id = ?`)
+      .run(boardId);
+    taskflowDb
+      .prepare(`DELETE FROM task_history WHERE board_id = ?`)
+      .run(boardId);
+    taskflowDb
+      .prepare(`DELETE FROM archive WHERE board_id = ?`)
+      .run(boardId);
+    taskflowDb
+      .prepare(`DELETE FROM tasks WHERE board_id = ?`)
+      .run(boardId);
+    taskflowDb
+      .prepare(`DELETE FROM board_admins WHERE board_id = ?`)
+      .run(boardId);
+    taskflowDb
+      .prepare(`DELETE FROM board_people WHERE board_id = ?`)
+      .run(boardId);
+
     // boards
     taskflowDb
       .prepare(
@@ -364,20 +525,22 @@ export function migrateBoard(options: MigrateBoardOptions): void {
     const managerInPeople = tasksJson.people.find(
       (p) => p.phone === meta.manager.phone,
     );
-    if (!managerInPeople) {
-      const matchingLegacyManager = meta.managers?.find(
-        (entry) => entry.phone === meta.manager.phone,
-      );
-      insertPerson.run(
-        boardId,
-        managerId,
-        meta.manager.name,
-        meta.manager.phone,
-        matchingLegacyManager?.role ?? 'manager',
-        null,
-      );
-      personIdByPhone.set(meta.manager.phone, managerId);
-    }
+    const matchingLegacyManager = meta.managers?.find(
+      (entry) => entry.phone === meta.manager.phone,
+    );
+    insertPerson.run(
+      boardId,
+      managerInPeople?.id ?? managerSlug,
+      meta.manager.name,
+      meta.manager.phone,
+      matchingLegacyManager?.role ?? managerInPeople?.role ?? 'manager',
+      managerInPeople?.wip_limit ?? null,
+    );
+    personIdByPhone.set(
+      meta.manager.phone,
+      managerInPeople?.id ?? managerSlug,
+    );
+    resolvedManagerId = personIdByPhone.get(meta.manager.phone) ?? managerSlug;
 
     // board_admins — preserve legacy managers/delegates when available
     const insertAdmin = taskflowDb.prepare(
@@ -489,18 +652,26 @@ export function migrateBoard(options: MigrateBoardOptions): void {
     }
 
     // attachment_audit_log — resolve actor from migrated board_people state
-    if (
-      meta.attachment_audit_trail &&
-      meta.attachment_audit_trail.length > 0
-    ) {
+    if (meta.attachment_audit_trail && meta.attachment_audit_trail.length > 0) {
       const insertAudit = taskflowDb.prepare(
         `INSERT INTO attachment_audit_log (board_id, source, filename, at, actor_person_id, affected_task_refs)
          VALUES (?, ?, ?, ?, ?, ?)`,
       );
 
       for (const entry of meta.attachment_audit_trail) {
+        const rejectedTaskIds = collectRejectedMutationTaskIds(
+          entry.rejected_mutations,
+        );
+        const taskIds = Array.from(
+          new Set([
+            ...entry.created_task_ids,
+            ...entry.updated_task_ids,
+            ...rejectedTaskIds,
+          ]),
+        );
         const actorPersonId = personIdByPhone.get(entry.actor_phone) ?? null;
         const affectedRefs = {
+          task_ids: taskIds,
           action: entry.action,
           created_task_ids: entry.created_task_ids,
           updated_task_ids: entry.updated_task_ids,
@@ -527,7 +698,11 @@ export function migrateBoard(options: MigrateBoardOptions): void {
       sqlite: {
         type: 'stdio',
         command: 'npx',
-        args: ['-y', 'mcp-server-sqlite-npx', '/workspace/taskflow/taskflow.db'],
+        args: [
+          '-y',
+          'mcp-server-sqlite-npx',
+          '/workspace/taskflow/taskflow.db',
+        ],
       },
     },
   };
@@ -559,7 +734,7 @@ export function migrateBoard(options: MigrateBoardOptions): void {
     '{{GROUP_FOLDER}}': folder,
     '{{MANAGER_NAME}}': meta.manager.name,
     '{{MANAGER_PHONE}}': meta.manager.phone,
-    '{{MANAGER_ID}}': managerId,
+    '{{MANAGER_ID}}': resolvedManagerId,
     '{{GROUP_CONTEXT}}': groupContext,
     '{{LANGUAGE}}': meta.language,
     '{{TIMEZONE}}': meta.timezone,
@@ -623,77 +798,75 @@ export function migrateBoard(options: MigrateBoardOptions): void {
 
 // --- Main migration ---
 
-function migrate(): void {
-  log('=== TaskFlow JSON → SQLite Migration ===\n');
+function migrateWithConfig(options: MigrationRunOptions = {}): MigrationSummary {
+  const projectRoot = options.projectRoot ?? PROJECT_ROOT;
+  const groupsDir = options.groupsDir ?? path.join(projectRoot, 'groups');
+  const storeDir = options.storeDir ?? path.join(projectRoot, 'store');
+  const dataDir = options.dataDir ?? path.join(projectRoot, 'data');
+  const templatePath =
+    options.templatePath ??
+    path.join(
+      projectRoot,
+      '.claude/skills/add-taskflow/templates/CLAUDE.md.template',
+    );
+  const dryRun = options.dryRun ?? DRY_RUN;
+
+  log('=== TaskFlow JSON → SQLite Migration ===\n', dryRun);
 
   // 1. Discover boards to migrate
   const boardFolders: string[] = [];
-  for (const entry of fs.readdirSync(GROUPS_DIR)) {
-    const tasksPath = path.join(GROUPS_DIR, entry, 'TASKS.json');
+  for (const entry of fs.readdirSync(groupsDir)) {
+    const tasksPath = path.join(groupsDir, entry, 'TASKS.json');
     if (fs.existsSync(tasksPath)) {
       boardFolders.push(entry);
     }
   }
 
   if (boardFolders.length === 0) {
-    log('No TASKS.json files found in groups/. Nothing to migrate.');
-    return;
+    log('No TASKS.json files found in groups/. Nothing to migrate.', dryRun);
+    return {
+      discoveredCount: 0,
+      migratedCount: 0,
+      skippedCount: 0,
+      dryRun,
+    };
   }
 
   log(
     `Found ${boardFolders.length} board(s) to migrate: ${boardFolders.join(', ')}\n`,
+    dryRun,
   );
 
   // 2. Read template
-  if (!fs.existsSync(TEMPLATE_PATH)) {
-    console.error(`ERROR: Template not found at ${TEMPLATE_PATH}`);
+  if (!fs.existsSync(templatePath)) {
+    console.error(`ERROR: Template not found at ${templatePath}`);
     process.exit(1);
   }
-  const template = fs.readFileSync(TEMPLATE_PATH, 'utf-8');
+  const template = fs.readFileSync(templatePath, 'utf-8');
 
   // 3. Open messages.db
-  const messagesDbPath = path.join(STORE_DIR, 'messages.db');
+  const messagesDbPath = path.join(storeDir, 'messages.db');
   if (!fs.existsSync(messagesDbPath)) {
     console.error(`ERROR: messages.db not found at ${messagesDbPath}`);
     process.exit(1);
   }
-  const messagesDb = new Database(messagesDbPath, {
-    readonly: DRY_RUN,
-  });
-
-  // Ensure taskflow columns exist in registered_groups (skip in dry-run)
-  if (!DRY_RUN) {
-    try {
-      messagesDb.exec(
-        `ALTER TABLE registered_groups ADD COLUMN taskflow_managed INTEGER DEFAULT 0`,
-      );
-      log('Added taskflow_managed column to registered_groups');
-    } catch {
-      /* column already exists */
-    }
-    try {
-      messagesDb.exec(
-        `ALTER TABLE registered_groups ADD COLUMN taskflow_hierarchy_level INTEGER`,
-      );
-      log('Added taskflow_hierarchy_level column to registered_groups');
-    } catch {
-      /* column already exists */
-    }
-    try {
-      messagesDb.exec(
-        `ALTER TABLE registered_groups ADD COLUMN taskflow_max_depth INTEGER`,
-      );
-      log('Added taskflow_max_depth column to registered_groups');
-    } catch {
-      /* column already exists */
-    }
+  const cleanupPaths: string[] = [];
+  const messagesDbBundle = dryRun
+    ? prepareTempMessagesDb(messagesDbPath)
+    : null;
+  if (messagesDbBundle) {
+    cleanupPaths.push(messagesDbBundle.tempRoot);
   }
+  const messagesDb = messagesDbBundle?.db ?? new Database(messagesDbPath);
+
+  // Ensure taskflow columns exist in registered_groups
+  ensureTaskflowColumns(messagesDb, dryRun);
 
   // 4. Initialize taskflow.db
-  const taskflowDbPath = path.join(DATA_DIR, 'taskflow', 'taskflow.db');
-  log(`Initializing TaskFlow DB at ${taskflowDbPath}`);
+  const taskflowDbPath = path.join(dataDir, 'taskflow', 'taskflow.db');
+  log(`Initializing TaskFlow DB at ${taskflowDbPath}`, dryRun);
   let taskflowDb: Database.Database;
-  if (!DRY_RUN) {
+  if (!dryRun) {
     taskflowDb = initTaskflowDb(taskflowDbPath);
   } else {
     // In dry-run mode, use in-memory DB to validate SQL
@@ -707,91 +880,125 @@ function migrate(): void {
   const groupsByFolder = new Map(registeredGroups.map((g) => [g.folder, g]));
 
   // Read ASSISTANT_NAME from .env
-  let assistantName = 'Tars';
-  const envPath = path.join(PROJECT_ROOT, '.env');
-  if (fs.existsSync(envPath)) {
-    const envContent = fs.readFileSync(envPath, 'utf-8');
-    const match = envContent.match(/^ASSISTANT_NAME=(.+)$/m);
-    if (match) assistantName = match[1].trim();
+  const assistantName = loadAssistantName(
+    projectRoot,
+    options.assistantName ?? 'Tars',
+  );
+
+  const dryRunGroupsRoot = dryRun
+    ? fs.mkdtempSync(path.join(os.tmpdir(), 'taskflow-groups-dry-run-'))
+    : null;
+  if (dryRunGroupsRoot) {
+    cleanupPaths.push(dryRunGroupsRoot);
   }
 
+  let migratedCount = 0;
+  let skippedCount = 0;
+
   // 6. Migrate each board
-  for (const folder of boardFolders) {
-    log(`\n--- Migrating: ${folder} ---`);
+  try {
+    for (const folder of boardFolders) {
+      log(`\n--- Migrating: ${folder} ---`, dryRun);
 
-    const groupDir = path.join(GROUPS_DIR, folder);
-    const tasksPath = path.join(groupDir, 'TASKS.json');
-    const archivePath = path.join(groupDir, 'ARCHIVE.json');
+      const sourceGroupDir = path.join(groupsDir, folder);
+      const groupDir =
+        dryRun && dryRunGroupsRoot
+          ? copyGroupDirForDryRun(sourceGroupDir, dryRunGroupsRoot, folder)
+          : sourceGroupDir;
+      const tasksPath = path.join(groupDir, 'TASKS.json');
+      const archivePath = path.join(groupDir, 'ARCHIVE.json');
 
-    // Read TASKS.json
-    const tasksJson: LegacyTasksJson = JSON.parse(
-      fs.readFileSync(tasksPath, 'utf-8'),
-    );
-    const meta = tasksJson.meta;
-
-    // Read ARCHIVE.json (may not exist)
-    let archiveJson: LegacyArchiveJson = { tasks: [] };
-    if (fs.existsSync(archivePath)) {
-      archiveJson = JSON.parse(fs.readFileSync(archivePath, 'utf-8'));
-    }
-
-    // Get registered group info
-    const regGroup = groupsByFolder.get(folder);
-    if (!regGroup) {
-      console.error(
-        `  WARNING: No registered group found for folder '${folder}'. Skipping.`,
+      // Read TASKS.json
+      const tasksJson: LegacyTasksJson = JSON.parse(
+        fs.readFileSync(tasksPath, 'utf-8'),
       );
-      continue;
+      const meta = tasksJson.meta;
+
+      // Read ARCHIVE.json (may not exist)
+      let archiveJson: LegacyArchiveJson = { tasks: [] };
+      if (fs.existsSync(archivePath)) {
+        archiveJson = JSON.parse(fs.readFileSync(archivePath, 'utf-8'));
+      }
+
+      // Get registered group info
+      const regGroup = groupsByFolder.get(folder);
+      if (!regGroup) {
+        console.error(
+          `  WARNING: No registered group found for folder '${folder}'. Skipping.`,
+        );
+        skippedCount += 1;
+        continue;
+      }
+
+      const boardId = `board-${folder}`;
+      log(`  Board ID: ${boardId}`, dryRun);
+      log(`  Group JID: ${regGroup.jid}`, dryRun);
+      log(`  Manager: ${meta.manager.name} (${meta.manager.phone})`, dryRun);
+      log(`  People: ${tasksJson.people.map((p) => p.name).join(', ')}`, dryRun);
+      log(
+        `  Tasks: ${tasksJson.tasks.length}, Archived: ${archiveJson.tasks.length}`,
+        dryRun,
+      );
+
+      migrateBoard({
+        folder,
+        groupDir,
+        regGroup,
+        tasksJson,
+        archiveJson,
+        taskflowDb,
+        messagesDb,
+        template,
+        assistantName,
+      });
+      log('  ✓ Inserted board data into taskflow.db', dryRun);
+      log('  ✓ Created .mcp.json', dryRun);
+      log('  ✓ Regenerated CLAUDE.md from template', dryRun);
+      log(
+        '  ✓ Updated registered_groups (taskflow_managed=1, level=0, depth=1)',
+        dryRun,
+      );
+      log('  ✓ Updated runner prompts in scheduled_tasks', dryRun);
+      if (dryRun) {
+        log('  ✓ Validated migration against temporary targets', dryRun);
+      }
+
+      migratedCount += 1;
+      log(`  ✓ Migration complete for ${folder}`, dryRun);
     }
-
-    const boardId = `board-${folder}`;
-    log(`  Board ID: ${boardId}`);
-    log(`  Group JID: ${regGroup.jid}`);
-    log(`  Manager: ${meta.manager.name} (${meta.manager.phone})`);
-    log(`  People: ${tasksJson.people.map((p) => p.name).join(', ')}`);
-    log(
-      `  Tasks: ${tasksJson.tasks.length}, Archived: ${archiveJson.tasks.length}`,
-    );
-
-    if (DRY_RUN) {
-      log('  [Skipping writes in dry-run mode]');
-      continue;
+  } finally {
+    taskflowDb.close();
+    messagesDb.close();
+    for (const cleanupPath of cleanupPaths) {
+      fs.rmSync(cleanupPath, { recursive: true, force: true });
     }
-
-    migrateBoard({
-      folder,
-      groupDir,
-      regGroup,
-      tasksJson,
-      archiveJson,
-      taskflowDb,
-      messagesDb,
-      template,
-      assistantName,
-    });
-    log('  ✓ Inserted board data into taskflow.db');
-    log('  ✓ Created .mcp.json');
-    log('  ✓ Regenerated CLAUDE.md from template');
-    log('  ✓ Updated registered_groups (taskflow_managed=1, level=0, depth=1)');
-    log('  ✓ Updated runner prompts in scheduled_tasks');
-
-    log(`  ✓ Migration complete for ${folder}`);
   }
 
   // 7. Summary
-  taskflowDb!.close();
-  messagesDb.close();
-
-  log('\n=== Migration Summary ===');
-  log(`Boards migrated: ${boardFolders.length}`);
-  log(`TaskFlow DB: ${DRY_RUN ? '(in-memory, dry run)' : taskflowDbPath}`);
-  log('\nNext steps:');
-  log('  1. Verify: sqlite3 data/taskflow/taskflow.db "SELECT * FROM boards;"');
+  log('\n=== Migration Summary ===', dryRun);
+  log(`Boards discovered: ${boardFolders.length}`, dryRun);
+  log(`Boards migrated: ${migratedCount}`, dryRun);
+  log(`Boards skipped: ${skippedCount}`, dryRun);
+  log(`TaskFlow DB: ${dryRun ? '(in-memory, dry run)' : taskflowDbPath}`, dryRun);
+  log('\nNext steps:', dryRun);
+  log('  1. Verify: sqlite3 data/taskflow/taskflow.db "SELECT * FROM boards;"', dryRun);
   log(
     '  2. Verify: sqlite3 store/messages.db "SELECT folder, taskflow_managed FROM registered_groups WHERE taskflow_managed = 1;"',
+    dryRun,
   );
-  log('  3. Restart: systemctl restart nanoclaw');
-  log('  4. Keep old TASKS.json/ARCHIVE.json as backups');
+  log('  3. Restart: systemctl restart nanoclaw', dryRun);
+  log('  4. Keep old TASKS.json/ARCHIVE.json as backups', dryRun);
+
+  return {
+    discoveredCount: boardFolders.length,
+    migratedCount,
+    skippedCount,
+    dryRun,
+  };
+}
+
+function migrate(): void {
+  migrateWithConfig();
 }
 
 // CLI entry point
@@ -801,3 +1008,5 @@ if (isMain) {
 }
 
 export { migrate };
+export { migrateWithConfig };
+export type { MigrationSummary };

@@ -5,6 +5,7 @@
 import { ChildProcess, exec, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 import {
   CONTAINER_IMAGE,
@@ -29,6 +30,13 @@ import { RegisteredGroup } from './types.js';
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+
+export function resolveProjectRoot(moduleUrl = import.meta.url): string {
+  const modulePath = fileURLToPath(moduleUrl);
+  return path.resolve(path.dirname(modulePath), '..');
+}
+
+const PROJECT_ROOT = resolveProjectRoot();
 
 export interface ContainerInput {
   prompt: string;
@@ -60,6 +68,8 @@ interface VolumeMount {
 const CORE_AGENT_RUNNER_FILES = [
   'index.ts',
   'ipc-mcp-stdio.ts',
+  'ipc-tooling.ts',
+  'runtime-config.ts',
   path.join('mcp-plugins', 'create-group.ts'),
 ] as const;
 
@@ -82,7 +92,6 @@ function buildVolumeMounts(
   isMain: boolean,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
-  const projectRoot = process.cwd();
   const groupDir = resolveGroupFolderPath(group.folder);
 
   if (isMain) {
@@ -92,7 +101,7 @@ function buildVolumeMounts(
     // (src/, dist/, package.json, etc.) which would bypass the sandbox
     // entirely on next restart.
     mounts.push({
-      hostPath: projectRoot,
+      hostPath: PROJECT_ROOT,
       containerPath: '/workspace/project',
       readonly: true,
     });
@@ -157,7 +166,7 @@ function buildVolumeMounts(
   }
 
   // Sync skills from container/skills/ into each group's .claude/skills/
-  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
+  const skillsSrc = path.join(PROJECT_ROOT, 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');
   if (fs.existsSync(skillsSrc)) {
     for (const skillDir of fs.readdirSync(skillsSrc)) {
@@ -212,7 +221,7 @@ function buildVolumeMounts(
   // can customize it (add tools, change behavior) without affecting other
   // groups. Recompiled on container startup via entrypoint.sh.
   const agentRunnerSrc = path.join(
-    projectRoot,
+    PROJECT_ROOT,
     'container',
     'agent-runner',
     'src',
@@ -608,9 +617,15 @@ export async function runContainerAgent(
 
       // Legacy mode: parse the last output marker pair from accumulated stdout
       try {
-        // Extract JSON between sentinel markers for robust parsing
-        const startIdx = stdout.indexOf(OUTPUT_START_MARKER);
-        const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
+        // Extract JSON between sentinel markers for robust parsing.
+        // Use lastIndexOf so that when multiple marker pairs exist (e.g.
+        // progress updates followed by a final result), we parse the last
+        // (most recent) one rather than the first.
+        const startIdx = stdout.lastIndexOf(OUTPUT_START_MARKER);
+        const endIdx =
+          startIdx !== -1
+            ? stdout.indexOf(OUTPUT_END_MARKER, startIdx)
+            : -1;
 
         let jsonLine: string;
         if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {

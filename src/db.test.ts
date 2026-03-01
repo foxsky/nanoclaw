@@ -327,6 +327,63 @@ describe('storeChatMetadata', () => {
     const chats = getAllChats();
     expect(chats[0].last_message_time).toBe('2024-01-01T00:00:05.000Z');
   });
+
+  it('stores and retrieves channel and is_group fields', () => {
+    storeChatMetadata(
+      'group@g.us',
+      '2024-01-01T00:00:00.000Z',
+      'My Group',
+      'whatsapp',
+      true,
+    );
+    storeChatMetadata(
+      'user@s.whatsapp.net',
+      '2024-01-01T00:00:01.000Z',
+      'Alice',
+      'whatsapp',
+      false,
+    );
+    storeChatMetadata(
+      'dc:12345',
+      '2024-01-01T00:00:02.000Z',
+      'Discord Channel',
+      'discord',
+      true,
+    );
+
+    const chats = getAllChats();
+    expect(chats).toHaveLength(3);
+
+    const group = chats.find((c) => c.jid === 'group@g.us')!;
+    expect(group.channel).toBe('whatsapp');
+    expect(group.is_group).toBe(1);
+
+    const user = chats.find((c) => c.jid === 'user@s.whatsapp.net')!;
+    expect(user.channel).toBe('whatsapp');
+    expect(user.is_group).toBe(0);
+
+    const discord = chats.find((c) => c.jid === 'dc:12345')!;
+    expect(discord.channel).toBe('discord');
+    expect(discord.is_group).toBe(1);
+  });
+
+  it('preserves channel/is_group when updating without them', () => {
+    storeChatMetadata(
+      'group@g.us',
+      '2024-01-01T00:00:00.000Z',
+      'My Group',
+      'whatsapp',
+      true,
+    );
+    // Update without channel/isGroup — should preserve existing values
+    storeChatMetadata('group@g.us', '2024-01-01T00:00:01.000Z', 'Renamed');
+
+    const chats = getAllChats();
+    expect(chats).toHaveLength(1);
+    expect(chats[0].name).toBe('Renamed');
+    expect(chats[0].channel).toBe('whatsapp');
+    expect(chats[0].is_group).toBe(1);
+  });
 });
 
 // --- Task CRUD ---

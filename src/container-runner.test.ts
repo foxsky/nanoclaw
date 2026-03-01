@@ -86,7 +86,11 @@ vi.mock('child_process', async () => {
 });
 
 import { spawn } from 'child_process';
-import { runContainerAgent, ContainerOutput } from './container-runner.js';
+import {
+  runContainerAgent,
+  ContainerOutput,
+  resolveProjectRoot,
+} from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 
 const testGroup: RegisteredGroup = {
@@ -209,6 +213,17 @@ describe('container-runner timeout behavior', () => {
   });
 });
 
+describe('container-runner path resolution', () => {
+  it('resolves the project root from the module path instead of cwd', () => {
+    expect(
+      resolveProjectRoot('file:///tmp/example/dist/container-runner.js'),
+    ).toBe('/tmp/example');
+    expect(
+      resolveProjectRoot('file:///tmp/example/src/container-runner.ts'),
+    ).toBe('/tmp/example');
+  });
+});
+
 describe('container-runner taskflow mount behavior', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -296,5 +311,85 @@ describe('container-runner taskflow mount behavior', () => {
     fakeProc.emit('close', 0);
     await vi.advanceTimersByTimeAsync(10);
     await resultPromise;
+  });
+});
+
+describe('container-runner legacy mode output parsing', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('parses the last marker pair when multiple exist (legacy mode)', async () => {
+    // Legacy mode = no onOutput callback
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      // no onOutput — triggers legacy parsing path
+    );
+
+    // Emit two marker pairs: an earlier partial result and a final result.
+    const earlyOutput: ContainerOutput = {
+      status: 'success',
+      result: 'Progress update',
+      newSessionId: 'session-old',
+    };
+    const finalOutput: ContainerOutput = {
+      status: 'success',
+      result: 'Final answer',
+      newSessionId: 'session-new',
+    };
+
+    const earlyJson = JSON.stringify(earlyOutput);
+    const finalJson = JSON.stringify(finalOutput);
+    fakeProc.stdout.push(
+      `${OUTPUT_START_MARKER}\n${earlyJson}\n${OUTPUT_END_MARKER}\n` +
+        `some debug noise\n` +
+        `${OUTPUT_START_MARKER}\n${finalJson}\n${OUTPUT_END_MARKER}\n`,
+    );
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Normal exit
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+    // Must parse the LAST marker pair, not the first
+    expect(result.result).toBe('Final answer');
+    expect(result.newSessionId).toBe('session-new');
+  });
+
+  it('parses single marker pair correctly (legacy mode)', async () => {
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+    );
+
+    const output: ContainerOutput = {
+      status: 'success',
+      result: 'Only result',
+      newSessionId: 'session-solo',
+    };
+    const json = JSON.stringify(output);
+    fakeProc.stdout.push(
+      `${OUTPUT_START_MARKER}\n${json}\n${OUTPUT_END_MARKER}\n`,
+    );
+
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+    expect(result.result).toBe('Only result');
+    expect(result.newSessionId).toBe('session-solo');
   });
 });

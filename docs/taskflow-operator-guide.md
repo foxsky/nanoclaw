@@ -391,7 +391,7 @@ All TaskFlow boards use the same three columns (`taskflow_managed`, `taskflow_hi
 
 Child boards are provisioned through the SKILL.md Phase 6 workflow. The process starts when a board owner requests `criar quadro para [pessoa]` — the agent emits a provisioning request, and the operator completes it:
 
-1. **Pre-flight**: Verify `parent_level + 1 < max_depth`. Verify person doesn't already have a board in `child_board_registrations`.
+1. **Pre-flight**: Verify `registered_groups.taskflow_hierarchy_level + 1 < registered_groups.taskflow_max_depth` for the source group. Use the `boards` row only as a consistency check after registration data is confirmed. Verify the person doesn't already have a board in `child_board_registrations`.
 2. **WhatsApp group**: Create via `create_group` IPC plugin (no service stop required) or manual fallback.
 3. **Registration**: INSERT into `registered_groups` with `taskflow_hierarchy_level = parent_level + 1` and `taskflow_max_depth = max_depth`.
 4. **Database seeding**: INSERT into 7 tables:
@@ -502,8 +502,9 @@ All TaskFlow boards use SQLite exclusively — no JSON files.
 ### Hierarchy Troubleshooting
 
 **Board owner cannot create child boards**
-- Check `hierarchy_level + 1 < max_depth` in the `boards` table
-- Leaf boards (`hierarchy_level + 1 >= max_depth`) cannot create children
+- Check `registered_groups.taskflow_hierarchy_level + 1 < taskflow_max_depth` for the source group
+- Treat `boards.hierarchy_level` / `boards.max_depth` as a consistency check only; `registered_groups` is the runtime authorization source of truth
+- Leaf boards (`taskflow_hierarchy_level + 1 >= taskflow_max_depth`) cannot create children
 
 **Rollup shows stale data**
 - The agent refreshes rollup only when the user requests `atualizar status T-XXX`

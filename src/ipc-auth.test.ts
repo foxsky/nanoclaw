@@ -622,6 +622,23 @@ describe('schedule_task schedule types', () => {
 
     expect(getAllTasks()).toHaveLength(0);
   });
+
+  it('rejects unrecognized schedule_type', async () => {
+    await processTaskIpc(
+      {
+        type: 'schedule_task',
+        prompt: 'bad type',
+        schedule_type: 'daily',
+        schedule_value: '86400000',
+        targetJid: 'other@g.us',
+      },
+      'main',
+      true,
+      deps,
+    );
+
+    expect(getAllTasks()).toHaveLength(0);
+  });
 });
 
 // --- context_mode defaulting ---

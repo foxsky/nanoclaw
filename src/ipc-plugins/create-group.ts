@@ -82,7 +82,8 @@ const handleCreateGroup: IpcHandler = async (
     logger.warn('create_group handler: no createGroup dep available');
     return;
   }
-  const isTaskflowSource = !isMain && canCreateGroupFromSource(sourceGroup, false, deps);
+  const isTaskflowSource =
+    !isMain && canCreateGroupFromSource(sourceGroup, false, deps);
   let subject = normalizeSubject(data.subject);
   const participants = normalizeParticipants(data.participants);
   if (!subject || !participants) {

@@ -5,7 +5,11 @@ import os from 'os';
 import path from 'path';
 
 import { initTaskflowDb } from './taskflow-db.js';
-import { migrateBoard } from './migrate-to-sqlite.js';
+import {
+  migrateBoard,
+  migrateWithConfig,
+  resolveDefaultProjectRoot,
+} from './migrate-to-sqlite.js';
 
 /**
  * Integration tests for the JSON → SQLite migration logic.
@@ -117,7 +121,7 @@ function runMigration(opts: {
   const template =
     '# {{ASSISTANT_NAME}} — TaskFlow ({{GROUP_NAME}})\n' +
     'You are {{ASSISTANT_NAME}}, the task management assistant for {{MANAGER_NAME}}. You manage a Kanban+GTD board for {{GROUP_CONTEXT}}.\n' +
-    'Board {{BOARD_ID}} for {{GROUP_JID}}.\n';
+    'Board {{BOARD_ID}} for {{GROUP_JID}} managed by {{MANAGER_ID}}.\n';
   try {
     migrateBoard({
       folder,
@@ -140,12 +144,147 @@ function runMigration(opts: {
     expect(fs.existsSync(mcpPath)).toBe(true);
     const claudePath = path.join(groupDir, 'CLAUDE.md');
     expect(fs.existsSync(claudePath)).toBe(true);
+    expect(fs.readFileSync(claudePath, 'utf-8')).not.toContain('{{MANAGER_ID}}');
     expect(fs.existsSync(path.join(groupDir, 'CLAUDE.md.pre-migration'))).toBe(
       true,
     );
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+}
+
+function createTempProject(opts?: {
+  folder?: string;
+  groupJid?: string;
+  groupName?: string;
+  tasksJson?: ReturnType<typeof sampleTasksJson>;
+  archiveJson?: ReturnType<typeof sampleArchiveJson>;
+}): {
+  tempRoot: string;
+  folder: string;
+  groupJid: string;
+  groupName: string;
+  groupDir: string;
+  messagesDbPath: string;
+  taskflowDbPath: string;
+  cleanup: () => void;
+} {
+  const folder = opts?.folder ?? 'test-taskflow';
+  const groupJid = opts?.groupJid ?? '120363000000@g.us';
+  const groupName = opts?.groupName ?? 'Test TaskFlow';
+  const tasksJson = opts?.tasksJson ?? sampleTasksJson();
+  const archiveJson = opts?.archiveJson ?? sampleArchiveJson();
+
+  const tempRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'taskflow-migrate-project-'),
+  );
+  const groupsDir = path.join(tempRoot, 'groups');
+  const groupDir = path.join(groupsDir, folder);
+  const storeDir = path.join(tempRoot, 'store');
+  const dataTaskflowDir = path.join(tempRoot, 'data', 'taskflow');
+  const templateDir = path.join(
+    tempRoot,
+    '.claude',
+    'skills',
+    'add-taskflow',
+    'templates',
+  );
+
+  fs.mkdirSync(groupDir, { recursive: true });
+  fs.mkdirSync(storeDir, { recursive: true });
+  fs.mkdirSync(dataTaskflowDir, { recursive: true });
+  fs.mkdirSync(templateDir, { recursive: true });
+
+  fs.writeFileSync(
+    path.join(groupDir, 'TASKS.json'),
+    JSON.stringify(tasksJson, null, 2) + '\n',
+  );
+  fs.writeFileSync(
+    path.join(groupDir, 'ARCHIVE.json'),
+    JSON.stringify(archiveJson, null, 2) + '\n',
+  );
+  fs.writeFileSync(
+    path.join(groupDir, 'CLAUDE.md'),
+    'You are Tars, the task management assistant for Miguel. You manage a Kanban+GTD board for the temp project board.\n',
+  );
+  fs.writeFileSync(
+    path.join(templateDir, 'CLAUDE.md.template'),
+    [
+      '# {{ASSISTANT_NAME}} — TaskFlow ({{GROUP_NAME}})',
+      'You are {{ASSISTANT_NAME}}, the task management assistant for {{MANAGER_NAME}}. You manage a Kanban+GTD board for {{GROUP_CONTEXT}}.',
+      'Board {{BOARD_ID}} for {{GROUP_JID}} managed by {{MANAGER_ID}}.',
+      '',
+    ].join('\n'),
+  );
+
+  const messagesDbPath = path.join(storeDir, 'messages.db');
+  const messagesDb = new Database(messagesDbPath);
+  messagesDb.exec(`
+    CREATE TABLE registered_groups (
+      jid TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      folder TEXT NOT NULL UNIQUE,
+      trigger_pattern TEXT NOT NULL,
+      added_at TEXT NOT NULL,
+      container_config TEXT,
+      requires_trigger INTEGER DEFAULT 1
+    );
+    CREATE TABLE scheduled_tasks (
+      id TEXT PRIMARY KEY,
+      group_folder TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      schedule_type TEXT NOT NULL,
+      schedule_value TEXT NOT NULL,
+      context_mode TEXT DEFAULT 'isolated',
+      next_run TEXT,
+      last_run TEXT,
+      last_result TEXT,
+      status TEXT DEFAULT 'active',
+      created_at TEXT NOT NULL
+    );
+  `);
+  messagesDb
+    .prepare(
+      `INSERT INTO registered_groups (jid, name, folder, trigger_pattern, added_at)
+       VALUES (?, ?, ?, '@Tars', ?)`,
+    )
+    .run(groupJid, groupName, folder, new Date().toISOString());
+
+  const runnerIds = [
+    tasksJson.meta.runner_task_ids.standup,
+    tasksJson.meta.runner_task_ids.digest,
+    tasksJson.meta.runner_task_ids.review,
+    tasksJson.meta.runner_task_ids.dst_guard,
+  ].filter((value): value is string => Boolean(value));
+  for (const runnerId of runnerIds) {
+    messagesDb
+      .prepare(
+        `INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, status, created_at)
+         VALUES (?, ?, ?, ?, 'cron', '0 11 * * 1-5', 'active', ?)`,
+      )
+      .run(
+        runnerId,
+        folder,
+        groupJid,
+        'Read /workspace/group/TASKS.json...',
+        new Date().toISOString(),
+      );
+  }
+  messagesDb.close();
+
+  fs.writeFileSync(path.join(tempRoot, '.env'), 'ASSISTANT_NAME=Tars\n');
+
+  return {
+    tempRoot,
+    folder,
+    groupJid,
+    groupName,
+    groupDir,
+    messagesDbPath,
+    taskflowDbPath: path.join(dataTaskflowDir, 'taskflow.db'),
+    cleanup: () => fs.rmSync(tempRoot, { recursive: true, force: true }),
+  };
 }
 
 describe('migrate-to-sqlite', () => {
@@ -191,6 +330,17 @@ describe('migrate-to-sqlite', () => {
   afterEach(() => {
     taskflowDb?.close();
     messagesDb?.close();
+  });
+
+  it('resolves the default project root from the script location, not cwd', () => {
+    expect(
+      resolveDefaultProjectRoot('file:///tmp/example/dist/migrate-to-sqlite.js'),
+    ).toBe('/tmp/example');
+    expect(
+      resolveDefaultProjectRoot(
+        'file:///tmp/example/src/migrate-to-sqlite.ts',
+      ),
+    ).toBe('/tmp/example');
   });
 
   function seedRegisteredGroup(folder: string, jid: string, name: string) {
@@ -448,6 +598,78 @@ describe('migrate-to-sqlite', () => {
         is_primary_manager: 0,
       },
     ]);
+  });
+
+  it('uses the migrated manager person_id in CLAUDE placeholders', () => {
+    const folder = 'test-taskflow';
+    const jid = '120363000000@g.us';
+    seedRegisteredGroup(folder, jid, 'Test TaskFlow');
+
+    runMigration({
+      tasksJson: sampleTasksJson({
+        people: [
+          {
+            id: 'miguel-custom',
+            name: 'Miguel',
+            phone: '558699916064',
+            role: 'Diretor',
+            wip_limit: 3,
+          },
+        ],
+      }),
+      archiveJson: sampleArchiveJson(),
+      taskflowDb,
+      messagesDb,
+      folder,
+      groupJid: jid,
+      groupName: 'Test TaskFlow',
+    });
+
+    // `runMigration()` already asserted the file was rendered.
+    // This helper test validates the per-board rendering path separately.
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'taskflow-migrate-placeholder-'),
+    );
+    const groupDir = path.join(tempRoot, folder);
+    fs.mkdirSync(groupDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(groupDir, 'CLAUDE.md'),
+      'You manage a Kanban+GTD board for placeholder test.\n',
+    );
+    try {
+      migrateBoard({
+        folder,
+        groupDir,
+        regGroup: {
+          jid,
+          name: 'Test TaskFlow',
+          folder,
+          trigger_pattern: '@Tars',
+        },
+        tasksJson: sampleTasksJson({
+          people: [
+            {
+              id: 'miguel-custom',
+              name: 'Miguel',
+              phone: '558699916064',
+              role: 'Diretor',
+              wip_limit: 3,
+            },
+          ],
+        }),
+        archiveJson: sampleArchiveJson(),
+        taskflowDb,
+        messagesDb,
+        template:
+          '# {{ASSISTANT_NAME}}\nManager {{MANAGER_ID}}\nBoard {{BOARD_ID}}\n',
+        assistantName: 'Tars',
+      });
+
+      const rendered = fs.readFileSync(path.join(groupDir, 'CLAUDE.md'), 'utf-8');
+      expect(rendered).toContain('Manager miguel-custom');
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it('migrates tasks with history', () => {
@@ -808,10 +1030,173 @@ describe('migrate-to-sqlite', () => {
     });
 
     const auditLog = taskflowDb
-      .prepare('SELECT actor_person_id FROM attachment_audit_log WHERE board_id = ?')
+      .prepare(
+        'SELECT actor_person_id FROM attachment_audit_log WHERE board_id = ?',
+      )
       .get(`board-${folder}`) as { actor_person_id: string | null };
 
     expect(auditLog.actor_person_id).toBe('miguel');
+  });
+
+  it('is idempotent: re-running migration does not duplicate task_history or attachment_audit_log', () => {
+    const folder = 'test-taskflow';
+    const jid = '120363000000@g.us';
+    seedRegisteredGroup(folder, jid, 'Test TaskFlow');
+
+    const migrationOpts = {
+      tasksJson: sampleTasksJson({
+        tasks: [
+          {
+            id: 'T-001',
+            type: 'simple',
+            title: 'Test task',
+            assignee: 'giovanni',
+            column: 'in_progress',
+            created_at: '2026-02-28T10:00:00.000Z',
+            updated_at: '2026-02-28T12:00:00.000Z',
+            history: [
+              {
+                action: 'created',
+                by: 'miguel',
+                at: '2026-02-28T10:00:00.000Z',
+              },
+              {
+                action: 'moved_to_in_progress',
+                by: 'giovanni',
+                at: '2026-02-28T12:00:00.000Z',
+              },
+            ],
+          },
+        ],
+        attachment_audit_trail: [
+          {
+            source: 'attachment',
+            filename: 'tasks.pdf',
+            timestamp: '2026-02-28T15:00:00.000Z',
+            actor_phone: '558688983914',
+            action: 'create_tasks',
+            created_task_ids: ['T-001'],
+            updated_task_ids: [],
+            rejected_mutations: [],
+          },
+        ],
+      }),
+      archiveJson: sampleArchiveJson(),
+      taskflowDb,
+      messagesDb,
+      folder,
+      groupJid: jid,
+      groupName: 'Test TaskFlow',
+    };
+
+    // Run migration twice
+    runMigration(migrationOpts);
+    runMigration(migrationOpts);
+
+    const boardId = `board-${folder}`;
+
+    // task_history should have exactly 2 entries (not 4)
+    const historyCount = (
+      taskflowDb
+        .prepare(
+          'SELECT COUNT(*) as count FROM task_history WHERE board_id = ?',
+        )
+        .get(boardId) as { count: number }
+    ).count;
+    expect(historyCount).toBe(2);
+
+    // attachment_audit_log should have exactly 1 entry (not 2)
+    const auditCount = (
+      taskflowDb
+        .prepare(
+          'SELECT COUNT(*) as count FROM attachment_audit_log WHERE board_id = ?',
+        )
+        .get(boardId) as { count: number }
+    ).count;
+    expect(auditCount).toBe(1);
+
+    // tasks should still have exactly 1 entry (INSERT OR REPLACE is already idempotent)
+    const taskCount = (
+      taskflowDb
+        .prepare('SELECT COUNT(*) as count FROM tasks WHERE board_id = ?')
+        .get(boardId) as { count: number }
+    ).count;
+    expect(taskCount).toBe(1);
+  });
+
+  it('prunes stale board-scoped rows when the legacy source changes before a rerun', () => {
+    const folder = 'test-taskflow';
+    const jid = '120363000000@g.us';
+    seedRegisteredGroup(folder, jid, 'Test TaskFlow');
+
+    runMigration({
+      tasksJson: sampleTasksJson({
+        people: [
+          {
+            id: 'giovanni',
+            name: 'Giovanni',
+            phone: '558688983914',
+            role: 'Tecnico',
+            wip_limit: 3,
+          },
+          {
+            id: 'alexandre',
+            name: 'Alexandre',
+            phone: '558698300049',
+            role: 'Tecnico',
+            wip_limit: 5,
+          },
+        ],
+        managers: [
+          { name: 'Miguel', phone: '558699916064', role: 'manager' },
+          { name: 'Alexandre', phone: '558698300049', role: 'delegate' },
+        ],
+      }),
+      archiveJson: sampleArchiveJson(),
+      taskflowDb,
+      messagesDb,
+      folder,
+      groupJid: jid,
+      groupName: 'Test TaskFlow',
+    });
+
+    runMigration({
+      tasksJson: sampleTasksJson({
+        people: [
+          {
+            id: 'giovanni',
+            name: 'Giovanni',
+            phone: '558688983914',
+            role: 'Tecnico',
+            wip_limit: 3,
+          },
+        ],
+        managers: [{ name: 'Miguel', phone: '558699916064', role: 'manager' }],
+      }),
+      archiveJson: sampleArchiveJson(),
+      taskflowDb,
+      messagesDb,
+      folder,
+      groupJid: jid,
+      groupName: 'Test TaskFlow',
+    });
+
+    const boardId = `board-${folder}`;
+    const people = taskflowDb
+      .prepare(
+        'SELECT person_id FROM board_people WHERE board_id = ? ORDER BY person_id',
+      )
+      .all(boardId) as Array<{ person_id: string }>;
+    expect(people.map((row) => row.person_id)).toEqual(['giovanni', 'miguel']);
+
+    const admins = taskflowDb
+      .prepare(
+        'SELECT person_id, admin_role FROM board_admins WHERE board_id = ? ORDER BY person_id, admin_role',
+      )
+      .all(boardId) as Array<{ person_id: string; admin_role: string }>;
+    expect(admins).toEqual([
+      { person_id: 'miguel', admin_role: 'manager' },
+    ]);
   });
 
   it('rewrites DST guard prompt when runner_dst_guard_task_id is present', () => {
@@ -876,5 +1261,104 @@ describe('migrate-to-sqlite', () => {
       .get('task-standup-1') as { prompt: string };
     expect(standupRunner.prompt).not.toContain('TASKS.json');
     expect(standupRunner.prompt).toContain('/workspace/taskflow/taskflow.db');
+  });
+
+  it('runs the real top-level migration path against project files', () => {
+    const project = createTempProject();
+
+    try {
+      const summary = migrateWithConfig({
+        projectRoot: project.tempRoot,
+        dryRun: false,
+      });
+
+      expect(summary.discoveredCount).toBe(1);
+      expect(summary.migratedCount).toBe(1);
+      expect(summary.skippedCount).toBe(0);
+      expect(fs.existsSync(path.join(project.groupDir, '.mcp.json'))).toBe(true);
+      expect(
+        fs.existsSync(path.join(project.groupDir, 'CLAUDE.md.pre-migration')),
+      ).toBe(true);
+      expect(fs.existsSync(project.taskflowDbPath)).toBe(true);
+
+      const migratedTaskflowDb = new Database(project.taskflowDbPath, {
+        readonly: true,
+      });
+      const board = migratedTaskflowDb
+        .prepare('SELECT id FROM boards WHERE id = ?')
+        .get(`board-${project.folder}`) as { id: string };
+      expect(board.id).toBe(`board-${project.folder}`);
+      migratedTaskflowDb.close();
+
+      const migratedMessagesDb = new Database(project.messagesDbPath, {
+        readonly: true,
+      });
+      const reg = migratedMessagesDb
+        .prepare(
+          'SELECT taskflow_managed, taskflow_hierarchy_level, taskflow_max_depth FROM registered_groups WHERE folder = ?',
+        )
+        .get(project.folder) as {
+        taskflow_managed: number;
+        taskflow_hierarchy_level: number;
+        taskflow_max_depth: number;
+      };
+      expect(reg.taskflow_managed).toBe(1);
+      expect(reg.taskflow_hierarchy_level).toBe(0);
+      expect(reg.taskflow_max_depth).toBe(1);
+      migratedMessagesDb.close();
+    } finally {
+      project.cleanup();
+    }
+  });
+
+  it('keeps real files untouched in dry-run while still exercising the top-level path', () => {
+    const tasksJson = sampleTasksJson({
+      managers: [{ name: 'Miguel', phone: '558699916064', role: 'manager' }],
+    });
+    tasksJson.meta.runner_task_ids.dst_guard = 'task-dst-guard-1';
+    tasksJson.meta.dst_sync.enabled = true;
+
+    const project = createTempProject({
+      tasksJson,
+    });
+    const originalClaude = fs.readFileSync(
+      path.join(project.groupDir, 'CLAUDE.md'),
+      'utf-8',
+    );
+
+    try {
+      const summary = migrateWithConfig({
+        projectRoot: project.tempRoot,
+        dryRun: true,
+      });
+
+      expect(summary.discoveredCount).toBe(1);
+      expect(summary.migratedCount).toBe(1);
+      expect(summary.dryRun).toBe(true);
+
+      expect(fs.existsSync(path.join(project.groupDir, '.mcp.json'))).toBe(false);
+      expect(
+        fs.readFileSync(path.join(project.groupDir, 'CLAUDE.md'), 'utf-8'),
+      ).toBe(originalClaude);
+
+      const messagesDb = new Database(project.messagesDbPath, { readonly: true });
+      const columns = messagesDb
+        .prepare(`PRAGMA table_info(registered_groups)`)
+        .all() as Array<{ name: string }>;
+      expect(columns.some((column) => column.name === 'taskflow_managed')).toBe(
+        false,
+      );
+      const prompt = (
+        messagesDb
+          .prepare('SELECT prompt FROM scheduled_tasks WHERE id = ?')
+          .get('task-standup-1') as { prompt: string }
+      ).prompt;
+      expect(prompt).toContain('TASKS.json');
+      messagesDb.close();
+
+      expect(fs.existsSync(project.taskflowDbPath)).toBe(false);
+    } finally {
+      project.cleanup();
+    }
   });
 });
