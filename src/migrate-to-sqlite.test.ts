@@ -1,10 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import os from 'os';
 import path from 'path';
 
 import { initTaskflowDb } from './taskflow-db.js';
+
+function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
 
 /**
  * Integration tests for the JSON → SQLite migration logic.
@@ -105,7 +112,7 @@ function runMigration(opts: {
   } = opts;
   const meta = tasksJson.meta;
   const boardId = `board-${folder}`;
-  const managerId = meta.manager.name.toLowerCase();
+  const managerId = slugify(meta.manager.name);
 
   // boards
   taskflowDb
@@ -190,9 +197,9 @@ function runMigration(opts: {
   }
 
   // Ensure manager in board_people
-  const managerInPeople = (
-    tasksJson.people as Array<{ phone: string }>
-  ).find((p) => p.phone === meta.manager.phone);
+  const managerInPeople = (tasksJson.people as Array<{ phone: string }>).find(
+    (p) => p.phone === meta.manager.phone,
+  );
   if (!managerInPeople) {
     insertPerson.run(
       boardId,
@@ -342,10 +349,7 @@ function runMigration(opts: {
   }
 
   // attachment_audit_log
-  if (
-    meta.attachment_audit_trail &&
-    meta.attachment_audit_trail.length > 0
-  ) {
+  if (meta.attachment_audit_trail && meta.attachment_audit_trail.length > 0) {
     for (const entry of meta.attachment_audit_trail as Array<{
       source?: string;
       filename: string;
@@ -410,6 +414,13 @@ function runMigration(opts: {
   if (meta.runner_task_ids.review) {
     updatePrompt.run(REVIEW_PROMPT, meta.runner_task_ids.review);
   }
+
+  // DST guard runner prompt (if present)
+  if (meta.runner_task_ids.dst_guard) {
+    const boardId = `board-${folder}`;
+    const dstPrompt = `[TF-DST-GUARD] Check if UTC offset for timezone '${meta.timezone}' has changed. Query board_runtime_config for board_id='${boardId}'.`;
+    updatePrompt.run(dstPrompt, meta.runner_task_ids.dst_guard);
+  }
 }
 
 describe('migrate-to-sqlite', () => {
@@ -466,7 +477,12 @@ describe('migrate-to-sqlite', () => {
       .run(jid, name, folder, new Date().toISOString());
   }
 
-  function seedScheduledTask(id: string, folder: string, jid: string, prompt: string) {
+  function seedScheduledTask(
+    id: string,
+    folder: string,
+    jid: string,
+    prompt: string,
+  ) {
     messagesDb
       .prepare(
         `INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, status, created_at)
@@ -527,7 +543,10 @@ describe('migrate-to-sqlite', () => {
 
     const config = taskflowDb
       .prepare('SELECT * FROM board_config WHERE board_id = ?')
-      .get(`board-${folder}`) as { wip_limit: number; next_task_number: number };
+      .get(`board-${folder}`) as {
+      wip_limit: number;
+      next_task_number: number;
+    };
 
     expect(config.wip_limit).toBe(3);
     expect(config.next_task_number).toBe(42);
@@ -598,7 +617,9 @@ describe('migrate-to-sqlite', () => {
     });
 
     const people = taskflowDb
-      .prepare('SELECT * FROM board_people WHERE board_id = ? ORDER BY person_id')
+      .prepare(
+        'SELECT * FROM board_people WHERE board_id = ? ORDER BY person_id',
+      )
       .all(`board-${folder}`) as Array<{
       person_id: string;
       name: string;
@@ -765,7 +786,9 @@ describe('migrate-to-sqlite', () => {
 
     // Verify before migration
     const before = messagesDb
-      .prepare('SELECT taskflow_managed FROM registered_groups WHERE folder = ?')
+      .prepare(
+        'SELECT taskflow_managed FROM registered_groups WHERE folder = ?',
+      )
       .get(folder) as { taskflow_managed: number };
     expect(before.taskflow_managed).toBe(0);
 
@@ -949,9 +972,7 @@ describe('migrate-to-sqlite', () => {
     });
 
     const auditLog = taskflowDb
-      .prepare(
-        'SELECT * FROM attachment_audit_log WHERE board_id = ?',
-      )
+      .prepare('SELECT * FROM attachment_audit_log WHERE board_id = ?')
       .all(`board-${folder}`) as Array<{
       source: string;
       filename: string;
@@ -967,5 +988,69 @@ describe('migrate-to-sqlite', () => {
     const refs = JSON.parse(auditLog[0].affected_task_refs);
     expect(refs.action).toBe('create_tasks');
     expect(refs.created_task_ids).toContain('T-001');
+  });
+
+  it('rewrites DST guard prompt when runner_dst_guard_task_id is present', () => {
+    const folder = 'test-taskflow';
+    const jid = '120363000000@g.us';
+    seedRegisteredGroup(folder, jid, 'Test TaskFlow');
+
+    // Seed old JSON-mode runner prompts including DST guard
+    seedScheduledTask(
+      'task-standup-1',
+      folder,
+      jid,
+      'Read /workspace/group/TASKS.json...',
+    );
+    seedScheduledTask(
+      'task-digest-1',
+      folder,
+      jid,
+      'Read /workspace/group/TASKS.json...',
+    );
+    seedScheduledTask(
+      'task-review-1',
+      folder,
+      jid,
+      'Read /workspace/group/TASKS.json...',
+    );
+    seedScheduledTask(
+      'task-dst-guard-1',
+      folder,
+      jid,
+      '[TF-DST-GUARD] Read /workspace/group/TASKS.json meta.dst_sync...',
+    );
+
+    // Create TASKS.json with dst_guard runner ID set
+    const tasksJson = sampleTasksJson();
+    tasksJson.meta.runner_task_ids.dst_guard = 'task-dst-guard-1';
+    tasksJson.meta.dst_sync.enabled = true;
+
+    runMigration({
+      tasksJson,
+      archiveJson: sampleArchiveJson(),
+      taskflowDb,
+      messagesDb,
+      folder,
+      groupJid: jid,
+      groupName: 'Test TaskFlow',
+    });
+
+    // Verify DST guard prompt was rewritten
+    const dstRunner = messagesDb
+      .prepare('SELECT prompt FROM scheduled_tasks WHERE id = ?')
+      .get('task-dst-guard-1') as { prompt: string };
+
+    expect(dstRunner.prompt).not.toContain('TASKS.json');
+    expect(dstRunner.prompt).toContain('[TF-DST-GUARD]');
+    expect(dstRunner.prompt).toContain('board_runtime_config');
+    expect(dstRunner.prompt).toContain(`board-${folder}`);
+
+    // Verify the other runners were also rewritten
+    const standupRunner = messagesDb
+      .prepare('SELECT prompt FROM scheduled_tasks WHERE id = ?')
+      .get('task-standup-1') as { prompt: string };
+    expect(standupRunner.prompt).not.toContain('TASKS.json');
+    expect(standupRunner.prompt).toContain('/workspace/taskflow/taskflow.db');
   });
 });
