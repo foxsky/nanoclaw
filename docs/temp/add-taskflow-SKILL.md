@@ -1,3 +1,5 @@
+> **DEPRECATED** — Early Portuguese draft. Superseded by `.claude/skills/add-taskflow/SKILL.md` which uses Baileys `groupCreate` for automatic group creation and direct DB access for registration/scheduling.
+
 ---
 name: add-taskflow
 description: "Adiciona sistema de gestão de tarefas Kanban+GTD para equipe via WhatsApp. Quadro com colunas (Inbox, Próxima Ação, Em Andamento, Aguardando, Concluído), limite de WIP, captura rápida, revisão semanal. Usa tools IPC nativas schedule_task e send_message. Tudo via CLAUDE.md, sem alterar código-fonte. Use quando o usuário quer gerenciar equipe, acompanhar tarefas, cobrar subordinados, ou monitorar execução via WhatsApp."

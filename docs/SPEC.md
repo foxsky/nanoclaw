@@ -101,7 +101,9 @@ nanoclaw/
 │   ├── index.ts                   # Orchestrator: state, message loop, agent invocation
 │   ├── channels/
 │   │   └── whatsapp.ts            # WhatsApp connection, auth, send/receive
-│   ├── ipc.ts                     # IPC watcher and task processing
+│   ├── ipc.ts                     # IPC handler registry, plugin loader, watcher
+│   ├── ipc-plugins/               # Host-side IPC plugins (auto-loaded at startup)
+│   │   └── create-group.ts         # Creates WhatsApp groups via IPC
 │   ├── router.ts                  # Message formatting and outbound routing
 │   ├── config.ts                  # Configuration constants
 │   ├── types.ts                   # TypeScript interfaces (includes Channel)
@@ -121,7 +123,9 @@ nanoclaw/
 │   │   ├── tsconfig.json
 │   │   └── src/
 │   │       ├── index.ts           # Entry point (query loop, IPC polling, session resume)
-│   │       └── ipc-mcp-stdio.ts   # Stdio-based MCP server for host communication
+│   │       ├── ipc-mcp-stdio.ts   # Stdio-based MCP server for host communication
+│   │       └── mcp-plugins/       # Container-side MCP plugin templates
+│   │           └── create-group.ts # create_group MCP tool
 │   └── skills/
 │       └── agent-browser.md       # Browser automation skill
 │
@@ -463,7 +467,7 @@ From main channel:
 
 The `nanoclaw` MCP server is created dynamically per agent call with the current group's context.
 
-**Available Tools:**
+**Core Tools:**
 | Tool | Purpose |
 |------|---------|
 | `schedule_task` | Schedule a recurring or one-time task |
@@ -474,6 +478,92 @@ The `nanoclaw` MCP server is created dynamically per agent call with the current
 | `resume_task` | Resume a paused task |
 | `cancel_task` | Delete a task |
 | `send_message` | Send a WhatsApp message to the group |
+| `register_group` | Register a new group (main only) |
+
+**Plugin Tools** (loaded from `/workspace/mcp-plugins/`):
+| Tool | Purpose |
+|------|---------|
+| `create_group` | Create a new WhatsApp group (main + TaskFlow groups) |
+
+Additional MCP tools can be added by dropping compiled `.js` files into `data/mcp-plugins/{group}/`. See [IPC Plugin Mechanism](#ipc-plugin-mechanism) below.
+
+---
+
+## IPC Plugin Mechanism
+
+The IPC system is extensible via plugins. Both the host-side IPC handler and the container-side MCP server support loading plugins from directories at startup.
+
+### Architecture
+
+```
+Host (src/ipc.ts)                          Container (ipc-mcp-stdio.ts)
+┌──────────────────────┐                   ┌──────────────────────┐
+│  Handler Registry    │                   │  MCP Server          │
+│  Map<type, handler>  │                   │                      │
+│                      │  ◀── IPC file ──  │  Core tools          │
+│  Core handlers       │                   │  (send_message, etc) │
+│  (schedule_task,     │                   │                      │
+│   pause_task, etc)   │                   │  Plugin tools         │
+│                      │                   │  (loaded from         │
+│  Plugin handlers     │                   │   /workspace/         │
+│  (loaded from        │                   │   mcp-plugins/)       │
+│   dist/ipc-plugins/) │                   │                      │
+└──────────────────────┘                   └──────────────────────┘
+```
+
+### Host-Side Plugins (`src/ipc-plugins/*.ts`)
+
+Compiled to `dist/ipc-plugins/*.js` and loaded at startup by `loadIpcPlugins()`. Each plugin exports a `register` function:
+
+```typescript
+import type { IpcHandler } from '../ipc.js';
+
+const myHandler: IpcHandler = async (data, sourceGroup, isMain, deps) => {
+  // Handle the IPC task
+};
+
+export function register(reg: (type: string, handler: IpcHandler) => void): void {
+  reg('my_type', myHandler);
+}
+```
+
+The `IpcHandler` signature provides:
+- `data` — parsed JSON from the IPC file (`Record<string, unknown>`)
+- `sourceGroup` — verified group folder identity (from directory path)
+- `isMain` — whether the source is the main group
+- `deps` — host services (`sendMessage`, `registeredGroups`, `createGroup`, etc.)
+
+### Container-Side Plugins (`data/mcp-plugins/{group}/*.js`)
+
+Mounted read-only at `/workspace/mcp-plugins/` in the container. Each plugin exports a `register` function:
+
+```typescript
+export function register(server, ctx) {
+  // ctx: { chatJid, groupFolder, isMain, writeIpcFile, TASKS_DIR, MESSAGES_DIR }
+  server.tool('my_tool', 'Description', schema, handler);
+}
+```
+
+The `mcp__nanoclaw__*` wildcard in the agent runner's `allowedTools` automatically matches any tool registered on the server — no changes needed in `index.ts`.
+
+### Deploying a Plugin
+
+1. Write the host-side handler in `src/ipc-plugins/my-plugin.ts`
+2. Write the container-side MCP tool in `container/agent-runner/src/mcp-plugins/my-plugin.ts`
+3. Add the filename to the allowlists in `src/ipc.ts` (`ALLOWED_IPC_PLUGIN_FILES`) and `container/agent-runner/src/ipc-mcp-stdio.ts` (`ALLOWED_MCP_PLUGIN_FILES`)
+4. Run `npm run build` to compile the host plugin to `dist/ipc-plugins/`
+5. Compile the MCP plugin separately and copy to `data/mcp-plugins/{group}/`
+6. Restart NanoClaw — plugins load automatically
+
+### Security
+
+- **Allowlists** — Both host and container plugin loaders use hardcoded allowlists (`ALLOWED_IPC_PLUGIN_FILES`, `ALLOWED_MCP_PLUGIN_FILES`). Only reviewed plugins may run. Adding a new plugin requires updating the allowlist in the respective core file. This is a deliberate trade-off: true drop-in extensibility is sacrificed for the guarantee that only explicitly approved code runs in the host process.
+- **Dual authorization** — Container-side plugins perform a best-effort authorization check for fast user feedback. The host-side plugin is the sole authority. If the checks diverge, the host silently drops the request.
+- Host plugins run in the main process with full access to `IpcDeps`
+- Container plugins are mounted **read-only** — agents cannot modify them
+- Authorization is the plugin's responsibility (check `isMain`, `sourceGroup`)
+- Plugin filenames are validated with `path.basename()` to prevent traversal
+- Duplicate handler registrations log a warning before overwriting
 
 ---
 

@@ -58,11 +58,18 @@ Messages and task operations are verified against group identity:
 | Operation | Main Group | Non-Main Group |
 |-----------|------------|----------------|
 | Send message to own chat | ✓ | ✓ |
-| Send message to other chats | ✓ | ✗ |
+| Send message to other chats | ✓ (registered only) | ✗ |
 | Schedule task for self | ✓ | ✓ |
 | Schedule task for others | ✓ | ✗ |
 | View all tasks | ✓ | Own only |
 | Manage other groups | ✓ | ✗ |
+| Create WhatsApp groups | ✓ | TaskFlow groups only |
+
+**IPC Plugin Security:**
+- Host-side plugins (`dist/ipc-plugins/`) run in the main process and must enforce their own authorization (check `isMain`, `sourceGroup`)
+- Container-side plugins (`data/mcp-plugins/{group}/`) are mounted **read-only** — agents cannot tamper with plugin code
+- Plugin filenames validated with `path.basename()` to prevent path traversal
+- Duplicate handler type registrations produce a warning log
 
 ### 5. Credential Handling
 
@@ -89,9 +96,10 @@ const allowedVars = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'];
 | Project root access | `/workspace/project` (ro) | None |
 | Group folder | `/workspace/group` (rw) | `/workspace/group` (rw) |
 | Global memory | Implicit via project | `/workspace/global` (ro) |
+| MCP plugins | `/workspace/mcp-plugins` (ro) | `/workspace/mcp-plugins` (ro) |
 | Additional mounts | Configurable | Read-only unless allowed |
 | Network access | Unrestricted | Unrestricted |
-| MCP tools | All | All |
+| MCP tools | All (core + plugins) | All (core + plugins) |
 
 ## Security Architecture Diagram
 

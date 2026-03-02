@@ -1,7 +1,0 @@
-{
-  "meta": {
-    "schema_version": "1.0",
-    "note": "Archived tasks from {{GROUP_NAME}}. Tasks move here after 30 days in done or when cancelled."
-  },
-  "tasks": []
-}

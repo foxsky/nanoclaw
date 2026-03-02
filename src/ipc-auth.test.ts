@@ -73,7 +73,7 @@ describe('schedule_task authorization', () => {
         type: 'schedule_task',
         prompt: 'do something',
         schedule_type: 'once',
-        schedule_value: '2025-06-01T00:00:00.000Z',
+        schedule_value: '2099-06-01T00:00:00.000Z',
         targetJid: 'other@g.us',
       },
       'main',
@@ -93,7 +93,7 @@ describe('schedule_task authorization', () => {
         type: 'schedule_task',
         prompt: 'self task',
         schedule_type: 'once',
-        schedule_value: '2025-06-01T00:00:00.000Z',
+        schedule_value: '2099-06-01T00:00:00.000Z',
         targetJid: 'other@g.us',
       },
       'other-group',
@@ -112,7 +112,7 @@ describe('schedule_task authorization', () => {
         type: 'schedule_task',
         prompt: 'unauthorized',
         schedule_type: 'once',
-        schedule_value: '2025-06-01T00:00:00.000Z',
+        schedule_value: '2099-06-01T00:00:00.000Z',
         targetJid: 'main@g.us',
       },
       'other-group',
@@ -130,7 +130,7 @@ describe('schedule_task authorization', () => {
         type: 'schedule_task',
         prompt: 'no target',
         schedule_type: 'once',
-        schedule_value: '2025-06-01T00:00:00.000Z',
+        schedule_value: '2099-06-01T00:00:00.000Z',
         targetJid: 'unknown@g.us',
       },
       'main',
@@ -153,9 +153,9 @@ describe('pause_task authorization', () => {
       chat_jid: 'main@g.us',
       prompt: 'main task',
       schedule_type: 'once',
-      schedule_value: '2025-06-01T00:00:00.000Z',
+      schedule_value: '2099-06-01T00:00:00.000Z',
       context_mode: 'isolated',
-      next_run: '2025-06-01T00:00:00.000Z',
+      next_run: '2099-06-01T00:00:00.000Z',
       status: 'active',
       created_at: '2024-01-01T00:00:00.000Z',
     });
@@ -165,9 +165,9 @@ describe('pause_task authorization', () => {
       chat_jid: 'other@g.us',
       prompt: 'other task',
       schedule_type: 'once',
-      schedule_value: '2025-06-01T00:00:00.000Z',
+      schedule_value: '2099-06-01T00:00:00.000Z',
       context_mode: 'isolated',
-      next_run: '2025-06-01T00:00:00.000Z',
+      next_run: '2099-06-01T00:00:00.000Z',
       status: 'active',
       created_at: '2024-01-01T00:00:00.000Z',
     });
@@ -214,9 +214,9 @@ describe('resume_task authorization', () => {
       chat_jid: 'other@g.us',
       prompt: 'paused task',
       schedule_type: 'once',
-      schedule_value: '2025-06-01T00:00:00.000Z',
+      schedule_value: '2099-06-01T00:00:00.000Z',
       context_mode: 'isolated',
-      next_run: '2025-06-01T00:00:00.000Z',
+      next_run: '2099-06-01T00:00:00.000Z',
       status: 'paused',
       created_at: '2024-01-01T00:00:00.000Z',
     });
@@ -263,7 +263,7 @@ describe('cancel_task authorization', () => {
       chat_jid: 'other@g.us',
       prompt: 'cancel me',
       schedule_type: 'once',
-      schedule_value: '2025-06-01T00:00:00.000Z',
+      schedule_value: '2099-06-01T00:00:00.000Z',
       context_mode: 'isolated',
       next_run: null,
       status: 'active',
@@ -286,7 +286,7 @@ describe('cancel_task authorization', () => {
       chat_jid: 'other@g.us',
       prompt: 'my task',
       schedule_type: 'once',
-      schedule_value: '2025-06-01T00:00:00.000Z',
+      schedule_value: '2099-06-01T00:00:00.000Z',
       context_mode: 'isolated',
       next_run: null,
       status: 'active',
@@ -309,7 +309,7 @@ describe('cancel_task authorization', () => {
       chat_jid: 'main@g.us',
       prompt: 'not yours',
       schedule_type: 'once',
-      schedule_value: '2025-06-01T00:00:00.000Z',
+      schedule_value: '2099-06-01T00:00:00.000Z',
       context_mode: 'isolated',
       next_run: null,
       status: 'active',
@@ -363,6 +363,100 @@ describe('register_group authorization', () => {
 
     expect(groups['new@g.us']).toBeUndefined();
   });
+
+  it('main group can register TaskFlow metadata', async () => {
+    await processTaskIpc(
+      {
+        type: 'register_group',
+        jid: 'taskflow-child@g.us',
+        name: 'TaskFlow Child',
+        folder: 'taskflow-child',
+        trigger: '@Andy',
+        taskflowManaged: true,
+        taskflowHierarchyLevel: 2,
+        taskflowMaxDepth: 3,
+      },
+      'main',
+      true,
+      deps,
+    );
+
+    expect(groups['taskflow-child@g.us']).toMatchObject({
+      folder: 'taskflow-child',
+      taskflowManaged: true,
+      taskflowHierarchyLevel: 2,
+      taskflowMaxDepth: 3,
+    });
+    expect(getRegisteredGroup('taskflow-child@g.us')).toMatchObject({
+      folder: 'taskflow-child',
+      taskflowManaged: true,
+      taskflowHierarchyLevel: 2,
+      taskflowMaxDepth: 3,
+    });
+  });
+
+  it('rejects TaskFlow registration above max depth', async () => {
+    await processTaskIpc(
+      {
+        type: 'register_group',
+        jid: 'taskflow-too-deep@g.us',
+        name: 'TaskFlow Too Deep',
+        folder: 'taskflow-too-deep',
+        trigger: '@Andy',
+        taskflowManaged: true,
+        taskflowHierarchyLevel: 4,
+        taskflowMaxDepth: 3,
+      },
+      'main',
+      true,
+      deps,
+    );
+
+    expect(groups['taskflow-too-deep@g.us']).toBeUndefined();
+    expect(getRegisteredGroup('taskflow-too-deep@g.us')).toBeUndefined();
+  });
+
+  it('rejects TaskFlow registration at the max depth boundary', async () => {
+    await processTaskIpc(
+      {
+        type: 'register_group',
+        jid: 'taskflow-at-boundary@g.us',
+        name: 'TaskFlow At Boundary',
+        folder: 'taskflow-at-boundary',
+        trigger: '@Andy',
+        taskflowManaged: true,
+        taskflowHierarchyLevel: 3,
+        taskflowMaxDepth: 3,
+      },
+      'main',
+      true,
+      deps,
+    );
+
+    expect(groups['taskflow-at-boundary@g.us']).toBeUndefined();
+    expect(getRegisteredGroup('taskflow-at-boundary@g.us')).toBeUndefined();
+  });
+
+  it('rejects TaskFlow registration with invalid hierarchy metadata', async () => {
+    await processTaskIpc(
+      {
+        type: 'register_group',
+        jid: 'taskflow-invalid@g.us',
+        name: 'TaskFlow Invalid',
+        folder: 'taskflow-invalid',
+        trigger: '@Andy',
+        taskflowManaged: true,
+        taskflowHierarchyLevel: 'not-a-number',
+        taskflowMaxDepth: 3,
+      },
+      'main',
+      true,
+      deps,
+    );
+
+    expect(groups['taskflow-invalid@g.us']).toBeUndefined();
+    expect(getRegisteredGroup('taskflow-invalid@g.us')).toBeUndefined();
+  });
 });
 
 // --- refresh_groups authorization ---
@@ -382,7 +476,7 @@ describe('refresh_groups authorization', () => {
 
 // --- IPC message authorization ---
 // Tests the authorization pattern from startIpcWatcher (ipc.ts).
-// The logic: isMain || (targetGroup && targetGroup.folder === sourceGroup)
+// The logic: targetGroup && (isMain || targetGroup.folder === sourceGroup)
 
 describe('IPC message authorization', () => {
   // Replicate the exact check from the IPC watcher
@@ -393,7 +487,7 @@ describe('IPC message authorization', () => {
     registeredGroups: Record<string, RegisteredGroup>,
   ): boolean {
     const targetGroup = registeredGroups[targetChatJid];
-    return isMain || (!!targetGroup && targetGroup.folder === sourceGroup);
+    return !!targetGroup && (isMain || targetGroup.folder === sourceGroup);
   }
 
   it('main group can send to any group', () => {
@@ -422,11 +516,9 @@ describe('IPC message authorization', () => {
     ).toBe(false);
   });
 
-  it('main group can send to unregistered JID', () => {
-    // Main is always authorized regardless of target
-    expect(isMessageAuthorized('main', true, 'unknown@g.us', groups)).toBe(
-      true,
-    );
+  it('main group cannot send to unregistered JID', () => {
+    // Main can cross-send, but only to registered groups.
+    expect(isMessageAuthorized('main', true, 'unknown@g.us', groups)).toBe(false);
   });
 });
 
@@ -549,6 +641,23 @@ describe('schedule_task schedule types', () => {
 
     expect(getAllTasks()).toHaveLength(0);
   });
+
+  it('rejects unrecognized schedule_type', async () => {
+    await processTaskIpc(
+      {
+        type: 'schedule_task',
+        prompt: 'bad type',
+        schedule_type: 'daily',
+        schedule_value: '86400000',
+        targetJid: 'other@g.us',
+      },
+      'main',
+      true,
+      deps,
+    );
+
+    expect(getAllTasks()).toHaveLength(0);
+  });
 });
 
 // --- context_mode defaulting ---
@@ -560,7 +669,7 @@ describe('schedule_task context_mode', () => {
         type: 'schedule_task',
         prompt: 'group context',
         schedule_type: 'once',
-        schedule_value: '2025-06-01T00:00:00.000Z',
+        schedule_value: '2099-06-01T00:00:00.000Z',
         context_mode: 'group',
         targetJid: 'other@g.us',
       },
@@ -579,7 +688,7 @@ describe('schedule_task context_mode', () => {
         type: 'schedule_task',
         prompt: 'isolated context',
         schedule_type: 'once',
-        schedule_value: '2025-06-01T00:00:00.000Z',
+        schedule_value: '2099-06-01T00:00:00.000Z',
         context_mode: 'isolated',
         targetJid: 'other@g.us',
       },
@@ -598,7 +707,7 @@ describe('schedule_task context_mode', () => {
         type: 'schedule_task',
         prompt: 'bad context',
         schedule_type: 'once',
-        schedule_value: '2025-06-01T00:00:00.000Z',
+        schedule_value: '2099-06-01T00:00:00.000Z',
         context_mode: 'bogus' as any,
         targetJid: 'other@g.us',
       },
@@ -617,7 +726,7 @@ describe('schedule_task context_mode', () => {
         type: 'schedule_task',
         prompt: 'no context mode',
         schedule_type: 'once',
-        schedule_value: '2025-06-01T00:00:00.000Z',
+        schedule_value: '2099-06-01T00:00:00.000Z',
         targetJid: 'other@g.us',
       },
       'main',

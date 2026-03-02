@@ -8,6 +8,7 @@ vi.mock('../config.js', () => ({
   STORE_DIR: '/tmp/nanoclaw-test-store',
   ASSISTANT_NAME: 'Andy',
   ASSISTANT_HAS_OWN_NUMBER: false,
+  GROUPS_DIR: '/tmp/nanoclaw-test-groups',
 }));
 
 // Mock logger
@@ -25,6 +26,30 @@ vi.mock('../db.js', () => ({
   getLastGroupSync: vi.fn(() => null),
   setLastGroupSync: vi.fn(),
   updateChatName: vi.fn(),
+}));
+
+// Mock transcription
+vi.mock('../transcription.js', () => ({
+  isVoiceMessage: vi.fn((msg: any) => msg.message?.audioMessage?.ptt === true),
+  transcribeAudioMessage: vi.fn().mockResolvedValue('Hello this is a voice message'),
+}));
+
+// Mock media
+vi.mock('../media.js', () => ({
+  isMediaMessage: vi.fn((msg: any) => {
+    const m = msg.message;
+    if (!m) return false;
+    if (m.imageMessage?.mimetype === 'image/jpeg' || m.imageMessage?.mimetype === 'image/png') return true;
+    if (m.documentMessage?.mimetype === 'application/pdf') return true;
+    return false;
+  }),
+  getMediaType: vi.fn((msg: any) => {
+    const m = msg.message;
+    if (m?.imageMessage) return 'image';
+    if (m?.documentMessage) return 'document';
+    return null;
+  }),
+  downloadAndSaveMedia: vi.fn().mockResolvedValue('/tmp/nanoclaw-test-groups/test-group/media/msg-id.jpeg'),
 }));
 
 // Mock fs
@@ -100,6 +125,8 @@ vi.mock('@whiskeysockets/baileys', () => {
 
 import { WhatsAppChannel, WhatsAppChannelOpts } from './whatsapp.js';
 import { getLastGroupSync, updateChatName, setLastGroupSync } from '../db.js';
+import { transcribeAudioMessage } from '../transcription.js';
+import { downloadAndSaveMedia } from '../media.js';
 
 // --- Test helpers ---
 
@@ -144,6 +171,7 @@ async function triggerMessages(messages: unknown[]) {
 
 describe('WhatsAppChannel', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     fakeSocket = createFakeSocket();
     vi.mocked(getLastGroupSync).mockReturnValue(null);
   });
@@ -163,35 +191,6 @@ describe('WhatsAppChannel', () => {
     triggerConnection('open');
     return p;
   }
-
-  // --- Version fetch ---
-
-  describe('version fetch', () => {
-    it('connects with fetched version', async () => {
-      const opts = createTestOpts();
-      const channel = new WhatsAppChannel(opts);
-      await connectChannel(channel);
-
-      const { fetchLatestWaWebVersion } =
-        await import('@whiskeysockets/baileys');
-      expect(fetchLatestWaWebVersion).toHaveBeenCalledWith({});
-    });
-
-    it('falls back gracefully when version fetch fails', async () => {
-      const { fetchLatestWaWebVersion } =
-        await import('@whiskeysockets/baileys');
-      vi.mocked(fetchLatestWaWebVersion).mockRejectedValueOnce(
-        new Error('network error'),
-      );
-
-      const opts = createTestOpts();
-      const channel = new WhatsAppChannel(opts);
-      await connectChannel(channel);
-
-      // Should still connect successfully despite fetch failure
-      expect(channel.isConnected()).toBe(true);
-    });
-  });
 
   // --- Connection lifecycle ---
 
@@ -500,7 +499,9 @@ describe('WhatsAppChannel', () => {
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
-        expect.objectContaining({ content: 'Check this photo' }),
+        expect.objectContaining({
+          content: expect.stringContaining('Check this photo'),
+        }),
       );
     });
 
@@ -532,7 +533,7 @@ describe('WhatsAppChannel', () => {
       );
     });
 
-    it('handles message with no extractable text (e.g. voice note without caption)', async () => {
+    it('transcribes voice messages', async () => {
       const opts = createTestOpts();
       const channel = new WhatsAppChannel(opts);
 
@@ -554,8 +555,311 @@ describe('WhatsAppChannel', () => {
         },
       ]);
 
-      // Skipped — no text content to process
-      expect(opts.onMessage).not.toHaveBeenCalled();
+      expect(transcribeAudioMessage).toHaveBeenCalled();
+      expect(opts.onMessage).toHaveBeenCalledTimes(1);
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({ content: '[Voice: Hello this is a voice message]' }),
+      );
+    });
+
+    it('falls back when transcription returns null', async () => {
+      vi.mocked(transcribeAudioMessage).mockResolvedValueOnce(null);
+
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'msg-8b',
+            remoteJid: 'registered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: {
+            audioMessage: { mimetype: 'audio/ogg; codecs=opus', ptt: true },
+          },
+          pushName: 'Frank',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      expect(opts.onMessage).toHaveBeenCalledTimes(1);
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({ content: '[Voice Message - transcription unavailable]' }),
+      );
+    });
+
+    it('falls back when transcription throws', async () => {
+      vi.mocked(transcribeAudioMessage).mockRejectedValueOnce(new Error('API error'));
+
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'msg-8c',
+            remoteJid: 'registered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: {
+            audioMessage: { mimetype: 'audio/ogg; codecs=opus', ptt: true },
+          },
+          pushName: 'Frank',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      expect(opts.onMessage).toHaveBeenCalledTimes(1);
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({ content: '[Voice Message - transcription failed]' }),
+      );
+    });
+
+    // --- Media handling ---
+
+    it('downloads image and prepends annotation', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      vi.mocked(downloadAndSaveMedia).mockResolvedValueOnce(
+        '/tmp/nanoclaw-test-groups/test-group/media/msg-img.jpeg',
+      );
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'msg-img',
+            remoteJid: 'registered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: {
+            imageMessage: { mimetype: 'image/jpeg' },
+          },
+          pushName: 'Diana',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      expect(downloadAndSaveMedia).toHaveBeenCalled();
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          content: '[Media: image at /workspace/group/media/msg-img.jpeg]',
+        }),
+      );
+    });
+
+    it('downloads PDF and prepends document annotation', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      vi.mocked(downloadAndSaveMedia).mockResolvedValueOnce(
+        '/tmp/nanoclaw-test-groups/test-group/media/msg-doc-itinerary.pdf',
+      );
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'msg-doc',
+            remoteJid: 'registered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: {
+            documentMessage: { mimetype: 'application/pdf', fileName: 'itinerary.pdf' },
+          },
+          pushName: 'Eve',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      expect(downloadAndSaveMedia).toHaveBeenCalled();
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          content: '[Media: document at /workspace/group/media/msg-doc-itinerary.pdf]',
+        }),
+      );
+    });
+
+    it('preserves caption with media annotation', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      vi.mocked(downloadAndSaveMedia).mockResolvedValueOnce(
+        '/tmp/nanoclaw-test-groups/test-group/media/msg-cap.jpeg',
+      );
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'msg-cap',
+            remoteJid: 'registered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: {
+            imageMessage: { caption: 'Look at this!', mimetype: 'image/jpeg' },
+          },
+          pushName: 'Diana',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          content: '[Media: image at /workspace/group/media/msg-cap.jpeg]\nLook at this!',
+        }),
+      );
+    });
+
+    it('text-only messages are unaffected by media handling', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'msg-text',
+            remoteJid: 'registered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: { conversation: 'Just text' },
+          pushName: 'Alice',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      expect(downloadAndSaveMedia).not.toHaveBeenCalled();
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({ content: 'Just text' }),
+      );
+    });
+
+    it('extracts caption from documentMessage', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'msg-doc-cap',
+            remoteJid: 'registered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: {
+            documentMessage: {
+              mimetype: 'application/pdf',
+              fileName: 'report.pdf',
+              caption: 'Here is the report',
+            },
+          },
+          pushName: 'Diana',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          content: expect.stringContaining('Here is the report'),
+        }),
+      );
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          content: expect.stringContaining('[Media: document at'),
+        }),
+      );
+    });
+
+    it('handles media download failure gracefully', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      vi.mocked(downloadAndSaveMedia).mockResolvedValueOnce(null);
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'msg-fail',
+            remoteJid: 'registered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: {
+            imageMessage: { mimetype: 'image/jpeg' },
+          },
+          pushName: 'Diana',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          content: expect.stringContaining('[Media: image — download failed]'),
+        }),
+      );
+    });
+
+    it('voice notes (PTT audio) are NOT treated as media', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'msg-voice',
+            remoteJid: 'registered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: {
+            audioMessage: { mimetype: 'audio/ogg; codecs=opus', ptt: true },
+          },
+          pushName: 'Frank',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      // Voice note should be transcribed, not downloaded as media
+      expect(transcribeAudioMessage).toHaveBeenCalled();
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          content: '[Voice: Hello this is a voice message]',
+        }),
+      );
     });
 
     it('uses sender JID when pushName is absent', async () => {

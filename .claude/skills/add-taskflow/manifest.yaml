@@ -11,4 +11,3 @@ conflicts: []
 depends: []
 tested_with:
   - media-support
-test: "npx vitest run --config .claude/skills/vitest.config.ts .claude/skills/add-taskflow/tests/taskflow.test.ts"

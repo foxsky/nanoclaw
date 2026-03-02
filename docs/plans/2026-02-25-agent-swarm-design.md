@@ -1,6 +1,6 @@
 # Agent Swarm Design — `/add-agent-swarm`
 
-> NanoClaw skill that turns the orchestrator group into a dev team manager, spawning and monitoring Claude Code / Codex / Gemini agents on a remote machine via SSH.
+> NanoClaw skill that turns the orchestrator group into a dev team manager, spawning and monitoring Claude Code / Codex agents on a remote machine via SSH (with Gemini Code Assist signals in review).
 
 ## Problem
 
@@ -15,7 +15,8 @@ NanoClaw Server
 ├── Orchestrator Group ("Zoe")
 │   ├── CLAUDE.md (business context, learnings, project rules)
 │   ├── MCP Tools: spawn_agent, check_agents, redirect_agent,
-│   │              kill_agent, get_agent_output, run_review
+│   │              kill_agent, get_agent_output, run_review,
+│   │              update_task_status, run_cleanup
 │   └── Scheduled Tasks:
 │       ├── monitor_agents (every 10 min)
 │       └── cleanup_worktrees (daily)
@@ -23,11 +24,12 @@ NanoClaw Server
     ↕ SSH
 Remote Dev Machine
 ├── ~/.agent-swarm/
-│   ├── config.yaml            (repos, models, SSH-local env)
+│   ├── config.yaml            (optional human-readable mirror of repo mapping)
 │   ├── active-tasks.json      (task registry)
 │   ├── check-agents.sh        (deterministic status checker)
 │   ├── spawn-agent.sh         (worktree + tmux launcher)
 │   ├── review-pr.sh           (multi-model PR review)
+│   ├── update-task-status.sh  (persist lifecycle transitions)
 │   ├── cleanup-worktrees.sh   (daily orphan cleanup)
 │   └── logs/                  (per-agent tmux output)
 │
@@ -46,7 +48,7 @@ Creates a git worktree, installs deps, launches the agent CLI in a tmux session 
 
 - `repo`: one of the configured repo names (e.g., `"project-a"`)
 - `branch_name`: branch to create (e.g., `"feat/custom-templates"`)
-- `model`: one of `claude-code:opus`, `claude-code:sonnet`, `claude-code:haiku`, `codex`, `gemini`
+- `model`: one of `claude-code:opus`, `claude-code:sonnet`, `claude-code:haiku`, `codex`
 - `priority`: optional `"high"` | `"normal"` | `"low"` — affects retry behavior
 
 Implementation:
@@ -64,7 +66,7 @@ tmux new-session -d -s "agent-$BRANCH_NAME" \
 # claude-code:opus  → claude --model claude-opus-4-6 -p "$PROMPT"
 # claude-code:sonnet → claude --model claude-sonnet-4-6 -p "$PROMPT"
 # codex             → codex --model gpt-5.3-codex -c "model_reasoning_effort=high" "$PROMPT"
-# gemini            → (gemini CLI or API call for design, then hand off to claude)
+# gemini coding CLI deferred; use Gemini for design specs, then hand off to claude-code
 ```
 
 Writes entry to `active-tasks.json` and returns the task ID.
@@ -104,6 +106,14 @@ Tails the tmux log file. Defaults to last 100 lines. Lets the orchestrator inspe
 ### `run_review(task_id)`
 
 Triggers the multi-model PR review pipeline for a task's PR. Can be called manually or auto-triggered by the monitor loop.
+
+### `update_task_status(task_id, status)`
+
+Persists task lifecycle transitions in `active-tasks.json` (for example `reviewing`, `ready_for_review`, `failed`) so monitor loops and notifications remain idempotent.
+
+### `run_cleanup()`
+
+Runs `cleanup-worktrees.sh` on the remote machine to remove old merged/failed worktrees and logs.
 
 ## Task Registry (`active-tasks.json`)
 
@@ -149,14 +159,15 @@ A NanoClaw scheduled task runs every 10 minutes in the orchestrator group:
 
 | Condition | Action |
 |-----------|--------|
-| tmux dead + no PR | Mark failed. If retries < max, respawn with failure context. |
-| tmux dead + PR created | Trigger review pipeline. |
+| tmux dead + no PR | If retries < max, respawn with failure context. Otherwise call `update_task_status(task_id, failed)` and notify. |
+| tmux dead + PR created | Trigger review pipeline, then call `update_task_status(task_id, reviewing)`. |
 | PR + CI failing | Read CI logs. Respawn agent with fix context if retries left. |
-| PR + CI pass + reviews pass + no critical comments | Mark `ready_for_review`. Notify user on WhatsApp. |
+| PR + CI pass + no critical comments | Call `update_task_status(task_id, ready_for_review)`. Notify user on WhatsApp. (`reviewDecision` may still be pending for bot reviewers.) |
 | PR + critical review comments | Read comments. Respawn agent with review feedback. |
 | Already `ready_for_review` | Skip. |
 
-3. On respawn, the orchestrator uses its business context and learnings to write a better prompt — not just "retry", but "here's what went wrong, here's the context you were missing."
+3. Persist lifecycle transitions via `update_task_status()` before notifying.
+4. On respawn, the orchestrator uses its business context and learnings to write a better prompt — not just "retry", but "here's what went wrong, here's the context you were missing."
 
 ## Code Review Pipeline
 
@@ -275,7 +286,7 @@ The orchestrator picks the model based on `## Model Routing Rules` in its CLAUDE
 1. Creates `~/.agent-swarm/` directory structure
 2. Copies shell scripts (spawn, check, review, cleanup)
 3. Prompts for API keys → writes to `~/.agent-swarm/.env`
-4. Creates `config.yaml` with repo paths
+4. Optionally creates `config.yaml` as local notes; NanoClaw host routing uses `SWARM_REPOS_JSON` in `.env`
 5. Sets up tmux logging: `set -g history-limit 50000`
 6. Verifies: SSH works, git access works, CLIs authenticated
 
@@ -303,6 +314,7 @@ NanoClaw never stores or proxies these keys. Agents talk directly to their provi
 │   ├── spawn-agent.sh
 │   ├── check-agents.sh
 │   ├── review-pr.sh
+│   ├── update-task-status.sh
 │   ├── cleanup-worktrees.sh
 │   └── config.yaml.template
 ├── modify/

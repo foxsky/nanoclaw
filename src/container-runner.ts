@@ -5,6 +5,7 @@
 import { ChildProcess, exec, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 import {
   CONTAINER_IMAGE,
@@ -24,6 +25,7 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { validateAdditionalMounts } from './mount-security.js';
+import { initTaskflowDb } from './taskflow-db.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -36,6 +38,9 @@ export interface ContainerInput {
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
+  isTaskflowManaged?: boolean;
+  taskflowHierarchyLevel?: number;
+  taskflowMaxDepth?: number;
   isScheduledTask?: boolean;
   assistantName?: string;
   secrets?: Record<string, string>;
@@ -54,12 +59,38 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+const CORE_AGENT_RUNNER_FILES = [
+  'index.ts',
+  'ipc-mcp-stdio.ts',
+  path.join('mcp-plugins', 'create-group.ts'),
+] as const;
+
+function resolveProjectRoot(): string {
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  const isDistDir = path.basename(currentDir) === 'dist';
+  return isDistDir ? path.dirname(currentDir) : path.dirname(currentDir);
+}
+
+function syncCoreAgentRunnerFiles(
+  sourceRoot: string,
+  targetRoot: string,
+): void {
+  for (const relativePath of CORE_AGENT_RUNNER_FILES) {
+    const sourcePath = path.join(sourceRoot, relativePath);
+    if (!fs.existsSync(sourcePath)) continue;
+
+    const targetPath = path.join(targetRoot, relativePath);
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.copyFileSync(sourcePath, targetPath);
+  }
+}
+
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
-  const projectRoot = process.cwd();
+  const projectRoot = resolveProjectRoot();
   const groupDir = resolveGroupFolderPath(group.folder);
 
   if (isMain) {
@@ -134,7 +165,7 @@ function buildVolumeMounts(
   }
 
   // Sync skills from container/skills/ into each group's .claude/skills/
-  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
+  const skillsSrc = path.join(projectRoot, 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');
   if (fs.existsSync(skillsSrc)) {
     for (const skillDir of fs.readdirSync(skillsSrc)) {
@@ -162,6 +193,32 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // TaskFlow groups get access to the shared TaskFlow database.
+  // Mount the directory (not the file) so SQLite WAL journal files
+  // (-wal, -shm) persist across container restarts.
+  if (group.taskflowManaged) {
+    const taskflowDir = path.join(DATA_DIR, 'taskflow');
+    fs.mkdirSync(taskflowDir, { recursive: true });
+    // Ensure the DB file exists with the correct schema before mounting.
+    // initTaskflowDb is idempotent — safe to call on every container start.
+    initTaskflowDb(path.join(taskflowDir, 'taskflow.db'));
+    mounts.push({
+      hostPath: taskflowDir,
+      containerPath: '/workspace/taskflow',
+      readonly: false, // agents need write access for task mutations
+    });
+  }
+
+  // Per-group MCP plugins directory (read-only mount into container)
+  // Skills copy compiled .js plugin files here during setup.
+  const mcpPluginsDir = path.join(DATA_DIR, 'mcp-plugins', group.folder);
+  fs.mkdirSync(mcpPluginsDir, { recursive: true });
+  mounts.push({
+    hostPath: mcpPluginsDir,
+    containerPath: '/workspace/mcp-plugins',
+    readonly: true,
+  });
+
   // Copy agent-runner source into a per-group writable location so agents
   // can customize it (add tools, change behavior) without affecting other
   // groups. Recompiled on container startup via entrypoint.sh.
@@ -179,6 +236,9 @@ function buildVolumeMounts(
   );
   if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
     fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+  }
+  if (fs.existsSync(agentRunnerSrc)) {
+    syncCoreAgentRunnerFiles(agentRunnerSrc, groupAgentRunnerDir);
   }
   mounts.push({
     hostPath: groupAgentRunnerDir,

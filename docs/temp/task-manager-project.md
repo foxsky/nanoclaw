@@ -1,3 +1,5 @@
+> **DEPRECATED** — Early project spec. Superseded by `docs/plans/2026-02-24-taskflow-design.md` and `.claude/skills/add-taskflow/SKILL.md`.
+
 # TaskFlow — Sistema de Gestão de Tarefas via WhatsApp para NanoClaw
 ## Kanban + GTD para Gestão de Equipe
 

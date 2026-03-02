@@ -36,6 +36,7 @@ This section guides Claude Code through interactive Q&A:
 2. **Trip basics:** Use `AskUserQuestion` to ask:
    - Trip name (used for group folder name, e.g., "italy-2026")
    - Start and end dates
+   - **Home timezone** (e.g., `America/Sao_Paulo`) — used for post-trip mode and timezone conversion. Detect from `TZ` env var first; ask user as fallback.
    - Language preference (ask explicitly, then auto-detect from pasted content to confirm)
 3. **Destinations:** Ask for cities with date ranges. Accept free-form text — Claude Code parses naturally.
 4. **Travelers:** Ask for names, optional WhatsApp JIDs for @mentions, roles, any separate return routes.
@@ -95,6 +96,9 @@ The template sections:
 - Decision tree: check current time vs departure/arrival times
 - Phase detection: hotel -> in transit -> connection airport -> destination
 - Pure transit days: NO daily briefing, only flight/transport reminders
+- **Connection airport timezone rule (CRITICAL):** Each leg of a multi-leg journey may cross timezones. The agent MUST resolve the correct timezone for the current phase — not just departure and arrival cities, but also connection airports. Read the timezone for each airport/station from `/workspace/group/transportes.md` (which lists timezone per leg endpoint). When composing messages during a connection, use the **connection airport's local time**, not the departure or destination timezone.
+  - Example: São Paulo (BRT, UTC-3) → Lisbon (WET, UTC+0) → Paris (CET, UTC+1). If the traveler is at Lisbon airport during a 3h layover, all times in messages must be WET — not BRT (departure) or CET (final destination).
+  - The agent must re-check the timezone on each phase transition (departure → in-flight → connection → in-flight → arrival) by consulting `transportes.md`.
 
 **Section 5: Return Day Rules** (critical — most complex scenario)
 - Explicit hour-by-hour timeline for the return day with example messages per time window:
@@ -170,13 +174,73 @@ The template sections:
 - Format: "Fonte: {Source Name} ({url})" — plain text, NOT markdown link syntax
 - **Violation example:** Agent cited "Sources:" with markdown links `[Source Name](url)`. Correct format is WhatsApp-compatible plain text: `Fonte: AccuWeather (https://accuweather.com)`
 
+**Section 12b: Public Transport Directions & Google Maps Links**
+- When a traveler asks "how do I get to X?", "como chegar em X?", or any route/directions question, the agent MUST:
+  1. Read `/workspace/group/roteiro-completo.md` to determine the traveler's current city
+  2. Read `/workspace/group/fontes-transporte-publico.md` for the city's transit system (operator, lines, payment method, quirks)
+  3. Compose step-by-step transit directions (e.g., "Pegue a linha 1 do metrô em Châtelet, desça em La Défense, 4 paradas, ~12 min")
+  4. Generate a Google Maps Directions link using this format:
+     `https://www.google.com/maps/dir/?api=1&origin={ORIGIN_URL_ENCODED}&destination={DESTINATION_URL_ENCODED}&travelmode=transit`
+     - `travelmode=transit` ensures public transport is selected (metro, bus, tram)
+     - URL-encode origin and destination (spaces → `+`, accents preserved)
+     - If the traveler's current location is known (hotel, attraction from roteiro), use it as origin. Otherwise use the city's main train station as default origin.
+  5. Send the link as plain text (NOT markdown link syntax — WhatsApp renders URLs automatically):
+     `Google Maps: https://www.google.com/maps/dir/?api=1&origin=...&destination=...&travelmode=transit`
+- **Proactive directions:** In city arrival alerts (Section 3) and daily briefings, include a Google Maps transit link from the hotel to the first activity of the day.
+- **Caching in reference files:** After generating a route, save it to `/workspace/group/rotas-diarias.md` under the current city section, so repeated queries for the same route don't require re-generation. Check `rotas-diarias.md` first before composing a new route.
+- **Example interaction:**
+  - Traveler: "Como chego no Louvre saindo do hotel?"
+  - Agent reads roteiro → current city is Paris, hotel is "Hôtel des Arts, Rue de Rivoli"
+  - Agent reads `fontes-transporte-publico.md` → Paris uses RATP (metrô + RER)
+  - Agent responds:
+    ```
+    🚇 *Hotel → Musée du Louvre*
+
+    Metrô linha 1 (direção La Défense)
+    Embarque: Châtelet (5 min a pé do hotel)
+    Desembarque: Palais Royal - Musée du Louvre
+    Tempo: ~8 min (2 paradas)
+    Preço: €2,15 (ticket t+, compre pelo app Île-de-France Mobilités)
+
+    Google Maps: https://www.google.com/maps/dir/?api=1&origin=Hôtel+des+Arts+Rue+de+Rivoli+Paris&destination=Musée+du+Louvre+Paris&travelmode=transit
+    ```
+
 **Section 13: Available Files Reference**
-- List all generated files with descriptions and container paths (`/workspace/group/...`)
+- List ALL generated files with descriptions and container paths (`/workspace/group/...`), including:
+  - `roteiro-completo.md` — day-by-day itinerary (read-only during normal operation)
+  - `participantes.md` — traveler names, JIDs, roles (read-only, contains PII)
+  - `fontes-clima.md` — weather sources per country (read-only)
+  - `fontes-transporte-publico.md` — per-city transit system reference (operator, lines, payment, quirks)
+  - `transportes.md` — transport legs with timezones, baggage rules, operator details
+  - `hoteis.md` — hotel info per city
+  - `informacoes-paises.md` — country info (tax refund, tipping, plugs, emergencies)
+  - `rotas-diarias.md` — cached transit routes with Google Maps links (agent-writable, see Section 12b)
+  - `links-google-maps.md` — POI links per city
+  - `mapas-completos.md` — city overview maps
 - Instruct agent to ALWAYS consult these files before responding
 
 **Section 14: Interaction Examples**
 - Good examples (read roteiro first, consult routes, concise)
 - Bad examples (asking which city, too verbose, no source citation)
+
+**Section 15: Trip Lifecycle & Post-Trip Mode** (CRITICAL — missing from original plan, discovered via eurotrip production incident)
+
+The agent CANNOT modify its own CLAUDE.md (Section 8 rule, confirmed by eurotrip: container mount is read-only for CLAUDE.md). Therefore, the agent must detect trip phase from the current date vs trip dates in the roteiro, and adapt behavior automatically:
+
+- **Trip phase detection:** On every invocation, determine the current date from system time (`new Date()`) and compare against `{{TRIP_END_DATE}}`:
+  - If current date ≤ `{{TRIP_END_DATE}}`: **Active trip mode** — full briefings, reminders, emergency handling
+  - If current date > `{{TRIP_END_DATE}}` and ≤ `{{TRIP_END_DATE}}` + 7 days: **Wind-down mode** — no briefings/reminders, respond to questions as historical consultant, remind admin to run Phase 5 decommission
+  - If current date > `{{TRIP_END_DATE}}` + 7 days: **Archive mode** — respond only if directly addressed, suggest admin decommission the group
+
+- **Post-trip behavior rules:**
+  - NEVER send daily briefings or transport alerts after `{{TRIP_END_DATE}}`
+  - NEVER search for weather at destination cities after return
+  - Switch timezone context to `{{HOME_TIMEZONE}}` (collected in Phase 1)
+  - When asked about the trip, respond from historical knowledge (roteiro, logs) — do NOT web-search for current conditions
+  - If a scheduled task fires after the trip end date, respond with: "A viagem já terminou. Este lembrete é obsoleto. Peça ao administrador para executar a desativação do grupo (Phase 5)."
+  - **Violation example (from eurotrip production, 2026-02-26):** Agent continued sending daily briefings with European weather 3 days after all travelers returned to Brazil. Wrong timezone caused duplicate/wrong-time reminders. Agent could not fix this because CLAUDE.md was read-only — had to create `EUROTRIP-UPDATE-NEEDED.md` workaround document.
+
+- **Self-diagnostic on stale tasks:** If the agent detects it's in wind-down or archive mode, it should use `list_tasks` to check for any remaining active tasks (both `cron` and unfired `once`) and warn the admin: "Existem X tarefas agendadas ativas para este grupo após o fim da viagem. Execute Phase 5 para cancelá-las."
 
 **Step 2: Add Phase 2 to SKILL.md**
 
@@ -184,7 +248,7 @@ The SKILL.md Phase 2 instructs Claude Code to:
 
 1. **Create group directory:** `groups/{trip-name}/`, `groups/{trip-name}/conversations/`, `groups/{trip-name}/logs/`
 
-2. **Generate `CLAUDE.md`** — Read the template from `.claude/skills/add-travel-assistant/templates/CLAUDE.md.template`, substitute `{{PLACEHOLDER}}` variables with trip data collected in Phase 1, write to `groups/{trip-name}/CLAUDE.md`
+2. **Generate `CLAUDE.md`** — Read the template from `.claude/skills/add-travel-assistant/templates/CLAUDE.md.template`, substitute `{{PLACEHOLDER}}` variables with trip data collected in Phase 1, write to `groups/{trip-name}/CLAUDE.md`. Key placeholders include: `{{TRIP_NAME}}`, `{{LANGUAGE}}`, `{{BRIEFING_TIME}}`, `{{TRIP_END_DATE}}` (ISO date, e.g., `2026-02-23`), `{{HOME_TIMEZONE}}` (e.g., `America/Sao_Paulo`), `{{JID}}`, plus destination/traveler-specific variables.
 
 3. **Generate `roteiro-completo.md`** — Parse from user's itinerary input. Day-by-day with times, activities, reservations. If user didn't provide full itinerary, create skeleton with dates and cities for each destination.
 
@@ -207,12 +271,15 @@ The SKILL.md Phase 2 instructs Claude Code to:
 
 8. **Generate `hoteis.md`** — From itinerary or empty template per city: name, address, phone, check-in/out, directions from station/airport, Google Maps link.
 
-9. **Generate `transportes.md`** — Per transport leg: departure/arrival times, station/airport, documentation (passport?), baggage rules, liquid policies. Include connection risk flags for legs with <3h buffer. Also generate **per-operator reference sections** when specific services are used — these should be detailed and operator-specific, not generic. Examples from the eurotrip battle-test:
+9. **Generate `transportes.md`** — Per transport leg: departure/arrival times, station/airport, **timezone of each endpoint** (IANA format, e.g., `Europe/Lisbon`), documentation (passport?), baggage rules, liquid policies. Include connection risk flags for legs with <3h buffer. For multi-leg journeys with connections, each leg must list its own departure and arrival timezones — even if the connection airport is in a third timezone different from both origin and destination. Also generate **per-operator reference sections** when specific services are used — these should be detailed and operator-specific, not generic. Examples from the eurotrip battle-test:
    - Eurostar: arrive 90min early for customs+immigration, 2 bags max 23kg each, no knife/scissors in carry-on, duty-free alcohol rules differ EU→UK vs UK→EU
    - TGV: arrive 30min before, tickets on SNCF app, no passport needed
    - Airlines: check-in window, online check-in availability, hand baggage dimensions specific to the carrier
 
-10. **Generate skeleton files** — `rotas-diarias.md`, `mapas-completos.md`, `links-google-maps.md` with structure per city but marked `<!-- Agent: fill via web search -->` for the agent to populate later.
+10. **Generate skeleton files:**
+    - **`rotas-diarias.md`** — Per city, with sections for common routes. Pre-populate with hotel-to-first-activity routes for each day (using Google Maps Directions URLs with `travelmode=transit`). Include step-by-step transit instructions (line, direction, stops, time, price). The agent appends new routes here as travelers ask for directions during the trip (see Section 12b).
+    - **`links-google-maps.md`** — Per city, with Google Maps links to key POIs (hotel, attractions, restaurants, stations). Use search links: `https://www.google.com/maps/search/?api=1&query={QUERY_URL_ENCODED}` (the Google Maps URLs API does not support a `/place/` action — use the search action instead).
+    - **`mapas-completos.md`** — Per city, overview maps and neighborhood references. Marked `<!-- Agent: fill via web search -->` for the agent to populate later.
 
 **Step 3: Commit**
 
@@ -267,11 +334,14 @@ Instructions for registering the group and creating scheduled tasks:
 
    **CRITICAL — Timezone handling for multi-timezone trips:**
    `new Date("2026-02-08T08:00:00")` (without Z) is parsed in the **host server's timezone** (configured via `TZ` env var or system default, see `src/config.ts:68`). For trips spanning multiple timezones, the SKILL.md must:
-   - During Phase 1, detect the host server's timezone from the `TZ` environment variable (read from `.env` or run `echo $TZ`). If not set, ask the user
+   - During Phase 1, detect the host server's timezone from the same runtime used by the scheduler (`TIMEZONE = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone`, see `src/config.ts:68`). Practical check order:
+     1) Run `echo $TZ` in the host shell
+     2) If empty, run `node -e "console.log(Intl.DateTimeFormat().resolvedOptions().timeZone)"`
+     3) Use that detected value as the host timezone baseline for all conversions (do NOT ask travelers to provide the server timezone)
    - For each scheduled task, convert the desired **local destination time** to the equivalent **host server time** before passing to `schedule_value`
    - Example: if the server is in `America/Sao_Paulo` (UTC-3) and the trip is in Paris (CET, UTC+1), an 8:00 Paris briefing = 4:00 São Paulo time → `schedule_value: "2026-02-08T04:00:00"`
    - Document this conversion in the generated `roteiro-completo.md` so the agent can verify correctness
-   - For transit days that cross timezones, each task after the timezone change must use the new offset
+   - For transit days that cross timezones, each task after the timezone change must use the new offset. **This includes connection airports** — if a connection is in a third timezone (e.g., Lisbon WET between São Paulo BRT and Paris CET), the connection reminder task must be scheduled using the connection airport's timezone offset, not the departure or arrival timezone
    - **DST edge case:** If the trip spans a DST transition (e.g., European summer time starts last Sunday of March), the UTC offset changes mid-trip. Calculate offsets per-date, not once at setup time. Use `Intl.DateTimeFormat` or equivalent to resolve the correct offset for each specific date.
 
    MCP tool call format (from main channel):
@@ -305,6 +375,10 @@ Instructions for registering the group and creating scheduled tasks:
    g. **Return day timeline** — Instead of a daily briefing, create a `once` task for early morning of the return day. Prompt: "Today is the return day. Do NOT send a regular briefing. Instead, send an hour-by-hour timeline from /workspace/group/transportes.md. Track each traveler's route separately if they have different return paths (check /workspace/group/participantes.md)."
 
    h. **Welcome-back message** — `once` task timed after the LAST traveler's estimated arrival (not the first). Prompt: "All travelers should have arrived. Send a welcome-back message to the group."
+
+   i. **Post-trip admin reminder** — `once` task scheduled for `{{TRIP_END_DATE}}` + 2 days at 10:00 host-local time. Prompt: "The trip ended 2 days ago. Check if any active tasks remain (both cron and unfired once) using `list_tasks`. Send a message to the group: 'A viagem terminou! Este grupo continuará disponível para consultas sobre a viagem, mas lembretes diários foram desativados. O administrador pode executar Phase 5 para desativar completamente o grupo.' List any remaining active tasks in the message so the admin can review them."
+
+   > **Why `once` tasks, not `cron`:** The plan uses `once` tasks exclusively for all scheduled items. This is intentional — `cron` tasks persist indefinitely and require explicit cancellation after the trip ends. The eurotrip production incident showed that `cron` tasks (daily briefings at 07:00, afternoon updates at 13:00) kept firing after the trip ended, causing stale reminders in the wrong timezone. `once` tasks are fire-and-forget: one per trip day, no cleanup needed. If the agent self-reprograms and creates `cron` tasks during the trip, Section 15 (Trip Lifecycle) instructs it to detect post-trip state and warn the admin.
 
 3. **Verify setup** — Send test message to the group, confirm agent responds correctly by reading the roteiro.
 
@@ -352,6 +426,36 @@ This section documents the advanced features that the CLAUDE.md template already
    - Add/remove activities
    - The agent will web-search for current info (routes, Maps links, POIs)
 
+6. **Phase 5: Trip Decommissioning** (admin-run, post-trip)
+
+   > **Context (from eurotrip production, 2026-02-26):** The eurotrip agent could NOT update its own CLAUDE.md because the container mounts it read-only. After the trip ended, daily briefings kept firing with European weather, timezone was wrong (CET instead of BRT), and the agent created a workaround document (`EUROTRIP-UPDATE-NEEDED.md`) asking the admin to apply changes manually. Phase 5 prevents this by giving the admin a structured decommission process.
+
+   Phase 5 runs from the **host** (Claude Code SKILL.md context, NOT inside the container), which HAS write access to `groups/{trip-name}/CLAUDE.md`. The SKILL.md instructs Claude Code to:
+
+   a. **Cancel all remaining scheduled tasks** for this group. Since `list_tasks`/`cancel_task` are container MCP tools (not available on the host), use one of these approaches:
+      - **Preferred:** Instruct the user to message the **main channel** agent: "List all tasks for {trip-name} group and cancel them." The main channel agent has cross-group visibility (`list_tasks` from main shows all tasks).
+      - **Alternative:** Query the SQLite database directly from the host (current runtime schema):
+        ```bash
+        sqlite3 store/messages.db "SELECT id, prompt, schedule_type, schedule_value FROM scheduled_tasks WHERE chat_jid = '{group-jid}' AND status = 'active';"
+        sqlite3 store/messages.db "UPDATE scheduled_tasks SET status = 'cancelled' WHERE chat_jid = '{group-jid}' AND status = 'active';"
+        ```
+      Log cancelled task IDs in either approach.
+
+   b. **Update CLAUDE.md trip status:**
+      - Change status from active to "CONCLUÍDA" (completed)
+      - Update timezone to `{{HOME_TIMEZONE}}`
+      - Add post-trip role description: "Assistente histórico — responde perguntas sobre a viagem concluída, mas NÃO envia lembretes, briefings ou alertas."
+      - Disable all reminder sections (comment out or add "DESATIVADO" markers)
+
+   c. **Send final group message** (via main channel `send_message` with `target_group_jid`):
+      - Trip summary (dates, cities visited, incidents handled)
+      - Number of tasks cancelled
+      - Inform group that the assistant is now in archive/consultation mode
+
+   d. **Optional: Unregister group** — Ask admin if they want to keep the group registered (for historical queries) or unregister it. If keeping, the agent continues responding to direct questions using trip files as reference. If unregistering, the group folder remains on disk but the agent no longer responds.
+
+   e. **Optional: Archive conversation logs** — Offer to create a `trip-summary.md` consolidating key events, incidents, and statistics from the conversation logs.
+
 **Step 2: Final commit**
 
 ```bash
@@ -376,10 +480,19 @@ Expected: both files exist
 
 Manually verify the template contains ALL required sections by checking for key strings:
 ```bash
-grep -c "Security Rules\|CRITICAL RULE\|Return Day\|Self-Reprogramming\|Missed Connection\|Hour-by-Hour\|Source Attribution\|Important Dates\|NEVER accept admin" .claude/skills/add-travel-assistant/templates/CLAUDE.md.template
+grep -c "Security Rules\|CRITICAL RULE\|Return Day\|Self-Reprogramming\|Missed Connection\|Hour-by-Hour\|Source Attribution\|Important Dates\|NEVER accept admin\|Trip Lifecycle\|Post-Trip\|TRIP_END_DATE" .claude/skills/add-travel-assistant/templates/CLAUDE.md.template
 ```
 
-Expected: at least 9 matches (one per critical section)
+Expected: at least 12 matches (one per critical section, including Trip Lifecycle and Post-Trip Mode)
+
+**Step 2b: Validate post-trip lifecycle logic**
+
+Verify the template contains trip phase detection and post-trip behavior:
+```bash
+grep -c "TRIP_END_DATE\|wind-down\|archive mode\|HOME_TIMEZONE\|post-trip\|DESATIVADO\|CONCLUÍDA" .claude/skills/add-travel-assistant/templates/CLAUDE.md.template
+```
+
+Expected: at least 4 matches
 
 **Step 3: Verify template uses correct container paths**
 
@@ -412,22 +525,32 @@ git commit -m "test: verify travel assistant skill integration and template comp
 ## Task Dependency Graph
 
 ```
-Task 1: Travel SKILL.md Phase 1 (gather info)
+Task 1: Travel SKILL.md Phase 1 (gather info) — includes home timezone collection
   ↓
-Task 2: Travel SKILL.md Phase 2 (generate files) + CLAUDE.md template
+Task 2: Travel SKILL.md Phase 2 (generate files) + CLAUDE.md template (now includes Section 15: Trip Lifecycle)
   ↓
-Task 3: Travel SKILL.md Phase 3 (register + tasks with context_mode: "group")
+Task 3: Travel SKILL.md Phase 3 (register + tasks with context_mode: "group") — includes post-trip admin reminder task
   ↓
-Task 4: Travel SKILL.md Phase 4 (advanced features docs)
+Task 4: Travel SKILL.md Phase 4 (advanced features docs) + Phase 5 (trip decommissioning)
   ↓
-Task 5: Integration verification (structure, template validation)
+Task 5: Integration verification (structure, template validation, post-trip lifecycle check)
 ```
 
 ---
 
 ## Security Acceptance Criteria (REQUIRED)
 
-These controls MUST pass before the skill can be merged:
+These controls are split into two gates:
+
+- **Skill merge gate (this plan's scope):** Must pass before merging this skill plan's implementation artifacts (SKILL.md + template).
+- **Production rollout gate (platform hardening scope):** Required before enabling this skill in production environments.
+
+**Skill merge gate (must pass now):**
+
+- [ ] Adversarial validation (Step 4 in Task 5) passes: injection refusal, privilege escalation blocked, secret exfil blocked
+- [ ] CLAUDE.md Section 8 security rules include all 8 prohibitions
+
+**Production rollout gate (platform prerequisites, tracked separately):**
 
 - [ ] Agent runs with `permissionMode: 'acceptEdits'` (NOT `bypassPermissions`)
 - [ ] Non-main groups use restricted tool allowlist (no WebSearch/WebFetch unless `allowWeb`)
@@ -438,8 +561,6 @@ These controls MUST pass before the skill can be merged:
 - [ ] Task count capped (50 per non-main group) — host-enforced
 - [ ] Prompt length limited (10K chars) on `schedule_task`
 - [ ] Web/media content wrapped with untrusted-data markers
-- [ ] Adversarial validation (Step 4 in Task 5) passes: injection refusal, privilege escalation blocked, secret exfil blocked
-- [ ] CLAUDE.md Section 8 security rules include all 8 prohibitions
 
 | # | Criteria | Resolution |
 |---|----------|------------|
@@ -519,3 +640,13 @@ These controls MUST pass before the skill can be merged:
 | R10-P3 | **PLATFORM:** Scheduled task prompts are prompt injection relay — soft guardrails only | Critical | **Not a plan issue — requires core platform code change.** Add host-side task count limits, disable `schedule_task` for scheduled task invocations, add content filtering |
 | R10-P4 | **PLATFORM:** No host-enforced task count limit per group | Important | **Not a plan issue — requires core platform code change.** Add max task count check in `processTaskIpc` |
 | R10-P5 | **PLATFORM:** No rate limiting on `send_message` IPC | Important | **Not a plan issue — requires core platform code change.** Add per-group message rate limits in `ipc.ts` |
+| EP-1 | **PRODUCTION:** No post-trip lifecycle management — agent can't transition to completed state | Critical | Added Section 15 (Trip Lifecycle & Post-Trip Mode) to CLAUDE.md template: agent auto-detects trip phase from current date vs `{{TRIP_END_DATE}}`, switches behavior accordingly. Added Phase 5 (admin-run decommission) to Task 4. Added post-trip admin reminder task to Task 3. |
+| EP-2 | **PRODUCTION:** CLAUDE.md immutability blocks post-trip updates (timezone, status, reminders) | Critical | By design — Section 8 correctly prohibits CLAUDE.md self-modification. Resolution: agent detects post-trip state from dates (Section 15), admin runs Phase 5 from host to update CLAUDE.md with write access. |
+| EP-3 | **PRODUCTION:** Cron tasks persist after trip ends, causing stale reminders | Important | Plan already uses `once` tasks exclusively (not `cron`). Added explicit note explaining why. Section 15 instructs agent to detect stale tasks and warn admin. Phase 5 cancels all remaining tasks. |
+| EP-4 | **PRODUCTION:** Wrong timezone after return — European weather sent to travelers in Brazil | Important | Added `{{HOME_TIMEZONE}}` placeholder (collected in Phase 1). Section 15 instructs agent to switch to home timezone after `{{TRIP_END_DATE}}`. Phase 5 updates CLAUDE.md timezone. |
+| EP-5 | **PRODUCTION:** Agent created workaround document (`EUROTRIP-UPDATE-NEEDED.md`) because it couldn't fix itself | Important | Expected behavior given CLAUDE.md immutability. Section 15 now gives the agent proper post-trip behavior rules so workaround documents are unnecessary — the agent knows to shift modes automatically. |
+| EP-6 | Connection airport timezone not explicitly handled — agent could use wrong timezone during layovers | Important | Added connection airport timezone rule to Section 4 (template), timezone per endpoint to `transportes.md` generation (Task 2 item 9), and connection-aware offset note to Task 3 scheduling section. |
+| EP-7 | No on-demand public transport directions with Google Maps links | Important | Added Section 12b to CLAUDE.md template: agent provides step-by-step transit directions with Google Maps Directions URLs (`travelmode=transit`) when travelers ask for routes. Routes cached in `rotas-diarias.md`. Proactive directions in daily briefings. Expanded skeleton file specs (Task 2 item 10) with structured `rotas-diarias.md` and `links-google-maps.md` formats. |
+| R12-C1 | Phase 5 SQLite fallback points to wrong DB/table/column names | Critical | Fixed Phase 5 SQL commands to use current runtime schema: `store/messages.db`, `scheduled_tasks`, and `chat_jid`. |
+| R12-C2 | Security acceptance criteria were unsatisfiable for merge (platform-pending controls marked as immediate merge blockers) | Critical | Split criteria into two gates: skill merge gate (must pass now) and production rollout gate (platform hardening prerequisites). |
+| R12-I1 | Host timezone detection fallback asked user for server timezone, risking wrong schedules | Important | Replaced with runtime-derived detection flow matching `TIMEZONE = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone`; explicitly avoid traveler-provided server timezone. |

@@ -20,6 +20,7 @@ import {
   ensureContainerRuntimeRunning,
 } from './container-runtime.js';
 import {
+  deleteRegisteredGroup,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -89,11 +90,39 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
     return;
   }
 
-  registeredGroups[jid] = group;
-  setRegisteredGroup(jid, group);
+  const previousGroup = registeredGroups[jid];
+  let persisted = false;
 
-  // Create group folder
-  fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
+  try {
+    setRegisteredGroup(jid, group);
+    persisted = true;
+
+    // Create group folder
+    fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
+
+    registeredGroups[jid] = group;
+  } catch (err) {
+    if (persisted) {
+      try {
+        if (previousGroup) {
+          setRegisteredGroup(jid, previousGroup);
+        } else {
+          deleteRegisteredGroup(jid);
+        }
+      } catch (rollbackErr) {
+        logger.error(
+          { jid, folder: group.folder, rollbackErr },
+          'Failed to roll back group registration after provisioning error',
+        );
+      }
+    }
+
+    logger.error(
+      { jid, name: group.name, folder: group.folder, err },
+      'Failed to register group',
+    );
+    return;
+  }
 
   logger.info(
     { jid, name: group.name, folder: group.folder },
@@ -298,6 +327,9 @@ async function runAgent(
         groupFolder: group.folder,
         chatJid,
         isMain,
+        isTaskflowManaged: group.taskflowManaged === true,
+        taskflowHierarchyLevel: group.taskflowHierarchyLevel,
+        taskflowMaxDepth: group.taskflowMaxDepth,
         assistantName: ASSISTANT_NAME,
       },
       (proc, containerName) =>
@@ -496,19 +528,22 @@ async function main(): Promise<void> {
       if (text) await channel.sendMessage(jid, text);
     },
   });
-  startIpcWatcher({
-    sendMessage: (jid, text) => {
+  await startIpcWatcher({
+    sendMessage: (jid, text, sender) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text);
+      return channel.sendMessage(jid, text, sender);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroupMetadata: (force) =>
       whatsapp?.syncGroupMetadata(force) ?? Promise.resolve(),
     getAvailableGroups,
-    writeGroupsSnapshot: (gf, im, ag, rj) =>
-      writeGroupsSnapshot(gf, im, ag, rj),
+    writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
+    createGroup: (subject, participants) => {
+      if (!whatsapp) throw new Error('WhatsApp not connected');
+      return whatsapp.createGroup(subject, participants);
+    },
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();

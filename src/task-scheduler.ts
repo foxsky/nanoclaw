@@ -141,6 +141,9 @@ async function runTask(
         groupFolder: task.group_folder,
         chatJid: task.chat_jid,
         isMain,
+        isTaskflowManaged: group.taskflowManaged === true,
+        taskflowHierarchyLevel: group.taskflowHierarchyLevel,
+        taskflowMaxDepth: group.taskflowMaxDepth,
         isScheduledTask: true,
         assistantName: ASSISTANT_NAME,
       },
@@ -149,8 +152,11 @@ async function runTask(
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
-          // Forward result to user (sendMessage handles formatting)
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          // TaskFlow runner prompts send chat output explicitly via the MCP
+          // send_message tool. Avoid duplicating that output here.
+          if (group.taskflowManaged !== true) {
+            await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          }
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
@@ -158,6 +164,13 @@ async function runTask(
         }
         if (streamedOutput.status === 'error') {
           error = streamedOutput.error || 'Unknown error';
+          // Notify group about TaskFlow runner failures so they don't go silent
+          if (group.taskflowManaged === true) {
+            await deps.sendMessage(
+              task.chat_jid,
+              `⚠️ TaskFlow runner error: ${error.slice(0, 200)}`,
+            );
+          }
         }
       },
     );
@@ -193,16 +206,36 @@ async function runTask(
   });
 
   let nextRun: string | null = null;
-  if (task.schedule_type === 'cron') {
-    const interval = CronExpressionParser.parse(task.schedule_value, {
-      tz: TIMEZONE,
-    });
-    nextRun = interval.next().toISOString();
-  } else if (task.schedule_type === 'interval') {
-    const ms = parseInt(task.schedule_value, 10);
-    nextRun = new Date(Date.now() + ms).toISOString();
+  try {
+    if (task.schedule_type === 'cron') {
+      const interval = CronExpressionParser.parse(task.schedule_value, {
+        tz: TIMEZONE,
+      });
+      nextRun = interval.next().toISOString();
+    } else if (task.schedule_type === 'interval') {
+      const ms = parseInt(task.schedule_value, 10);
+      nextRun = new Date(Date.now() + ms).toISOString();
+    }
+    // 'once' tasks have no next run
+  } catch (parseErr) {
+    const parseError =
+      parseErr instanceof Error ? parseErr.message : String(parseErr);
+    logger.error(
+      {
+        taskId: task.id,
+        scheduleValue: task.schedule_value,
+        error: parseError,
+      },
+      'Invalid cron/schedule value — pausing task to prevent infinite re-fire',
+    );
+    updateTask(task.id, { status: 'paused' });
+    updateTaskAfterRun(
+      task.id,
+      null,
+      `Paused: invalid schedule "${task.schedule_value}": ${parseError}`,
+    );
+    return;
   }
-  // 'once' tasks have no next run
 
   const resultSummary = error
     ? `Error: ${error}`
@@ -212,6 +245,7 @@ async function runTask(
   updateTaskAfterRun(task.id, nextRun, resultSummary);
 }
 
+const inFlightTaskIds = new Set<string>();
 let schedulerRunning = false;
 
 export function startSchedulerLoop(deps: SchedulerDependencies): void {
@@ -230,15 +264,25 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
       }
 
       for (const task of dueTasks) {
+        // Skip tasks already in flight (prevents duplicate execution on slow containers)
+        if (inFlightTaskIds.has(task.id)) {
+          continue;
+        }
+
         // Re-check task status in case it was paused/cancelled
         const currentTask = getTaskById(task.id);
         if (!currentTask || currentTask.status !== 'active') {
           continue;
         }
 
-        deps.queue.enqueueTask(currentTask.chat_jid, currentTask.id, () =>
-          runTask(currentTask, deps),
-        );
+        inFlightTaskIds.add(currentTask.id);
+        deps.queue.enqueueTask(currentTask.chat_jid, currentTask.id, async () => {
+          try {
+            await runTask(currentTask, deps);
+          } finally {
+            inFlightTaskIds.delete(currentTask.id);
+          }
+        });
       }
     } catch (err) {
       logger.error({ err }, 'Error in scheduler loop');

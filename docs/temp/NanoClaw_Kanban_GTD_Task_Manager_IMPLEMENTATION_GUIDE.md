@@ -1,3 +1,5 @@
+> **DEPRECATED** — Early implementation guide. Superseded by `docs/plans/2026-02-24-taskflow-design.md` and `.claude/skills/add-taskflow/SKILL.md`.
+
 # NanoClaw Task Manager (Kanban + GTD) — Guia de Implementação (WhatsApp-first)
 
 Este documento consolida tudo o que definimos: um **sistema de gestão de relacionamento + tarefas + projetos + recorrentes** via **WhatsApp**, usando **NanoClaw** e **sem alterar o código-fonte** do NanoClaw (somente arquivos de configuração, prompts e “skill” de instruções).

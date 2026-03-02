@@ -41,7 +41,12 @@ Use `AskUserQuestion` to collect:
 
 - **Trip name** — Used for the group folder name. Must be lowercase with hyphens, no spaces or special characters (e.g., "italy-2026", "eurotrip-summer"). If the user provides an invalid name, sanitize it (lowercase, replace spaces/special chars with hyphens) and confirm with them.
 - **Start and end dates** — Full trip date range.
+- **Home timezone** — e.g., `America/Sao_Paulo`. Used for post-trip mode and timezone conversion. Detect from `TZ` env var first; ask user as fallback.
 - **Language preference** — Ask explicitly which language to use for all agent output. If the user pastes itinerary content later, auto-detect the language from it and confirm it matches their preference.
+
+For home timezone detection:
+1. Check host `TZ` environment variable first.
+2. If unset/empty, ask the user to confirm their home timezone explicitly.
 
 ### 3. Destinations
 
@@ -98,6 +103,8 @@ Key substitutions:
 - `{{TRIP_NAME}}` — Trip name from Phase 1
 - `{{TRIP_FOLDER}}` — Sanitized folder name
 - `{{START_DATE}}`, `{{END_DATE}}` — Trip date range
+- `{{TRIP_END_DATE}}` — End date in ISO format (e.g., `2026-02-23`)
+- `{{HOME_TIMEZONE}}` — Home timezone (e.g., `America/Sao_Paulo`)
 - `{{DESTINATIONS_SUMMARY}}` — Formatted list of cities with dates
 - `{{TRAVELERS_SUMMARY}}` — Formatted list of traveler names
 - `{{LANGUAGE}}` — Language preference
@@ -169,9 +176,12 @@ From itinerary or empty template per city:
 
 Per transport leg:
 - Departure/arrival times, station/airport
+- Timezone of each endpoint (IANA format, e.g., `Europe/Lisbon`)
 - Documentation (passport needed?)
 - Baggage rules, liquid policies
 - Connection risk flags for legs with <3h buffer
+
+For multi-leg journeys with connections, each leg must list its own departure and arrival timezones — even when the connection airport uses a third timezone different from both origin and final destination.
 
 Include **per-operator reference sections** when specific services are used. Examples:
 - Eurostar: arrive 90min early for customs+immigration, 2 bags max 23kg each, no knife/scissors in carry-on, duty-free rules differ EU→UK vs UK→EU
@@ -180,11 +190,12 @@ Include **per-operator reference sections** when specific services are used. Exa
 
 ### 10. Generate Skeleton Files
 
-Create these files with structure per city, marked for the agent to populate via web search:
+Create these files with structure per city:
 
-- `rotas-diarias.md` — Daily routes with Google Maps links
-- `mapas-completos.md` — Complete maps per city with all POIs
-- `links-google-maps.md` — Individual Google Maps links per attraction
+- `rotas-diarias.md` — Per city, common routes with step-by-step transit instructions and Google Maps Directions links (`travelmode=transit`). Pre-populate with hotel-to-first-activity routes.
+- `links-google-maps.md` — Per city, links to key POIs (hotel, attractions, restaurants, stations) using Google Maps search URLs:
+  `https://www.google.com/maps/search/?api=1&query={QUERY_URL_ENCODED}`
+- `mapas-completos.md` — City overview maps and neighborhood references, marked `<!-- Agent: fill via web search -->` where needed.
 
 ## Phase 3: Register Group & Create Scheduled Tasks
 
@@ -242,12 +253,16 @@ ALL tasks use `context_mode: "group"` so the agent has access to the group's CLA
 
 `new Date("2026-02-08T08:00:00")` (without Z) is parsed in the **host server's timezone** (configured via `TZ` env var or system default, see `src/config.ts:68`). For trips spanning multiple timezones:
 
-1. **Detect host server timezone:** Read the `TZ` environment variable from `.env` or run `echo $TZ`. If not set, ask the user.
+1. **Detect host server timezone from runtime behavior:** Use the same logic as scheduler runtime (`TIMEZONE = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone`).
+   - Run `echo $TZ` in the host shell.
+   - If empty, run `node -e "console.log(Intl.DateTimeFormat().resolvedOptions().timeZone)"`.
+   - Use that detected value as the host baseline for all conversions (do NOT ask travelers to provide the server timezone).
 
 2. **Convert destination-local times to host-server times** before passing to `schedule_value`:
    - Example: if the server is in `America/Sao_Paulo` (UTC-3) and the trip is in Paris (CET, UTC+1), an 8:00 Paris briefing = 4:00 Sao Paulo time → `schedule_value: "2026-02-08T04:00:00"`
+   - Document each conversion in `roteiro-completo.md` so the agent can verify planned-vs-scheduled times later.
 
-3. **Per-leg offsets:** For transit days that cross timezones, each task after the timezone change must use the new offset.
+3. **Per-leg offsets:** For transit days that cross timezones, each task after the timezone change must use the new offset. This includes connection airports in a third timezone.
 
 4. **DST edge case:** If the trip spans a DST transition (e.g., European summer time starts last Sunday of March), the UTC offset changes mid-trip. Calculate offsets per-date, not once at setup time. Use `Intl.DateTimeFormat` or equivalent to resolve the correct offset for each specific date.
 
@@ -282,7 +297,7 @@ Prompt: "Check updated weather for this evening's activities and send a brief af
 
 **d. City arrival alerts** — One `once` task per city arrival (timed ~15 minutes after estimated arrival).
 
-Prompt: "Send timezone change info (if any), hotel details from /workspace/group/hoteis.md, first transport tips from /workspace/group/fontes-transporte-publico.md."
+Prompt: "Send timezone change info (if any), hotel details from /workspace/group/hoteis.md, first transport tips from /workspace/group/fontes-transporte-publico.md, and 1-2 practical local DICA tips for the arriving city."
 
 **e. Connection risk warnings** — One `once` task 24h before each risky leg (connections with <3h buffer).
 
@@ -299,6 +314,12 @@ Prompt: "Today is the return day. Do NOT send a regular briefing. Instead, send 
 **h. Welcome-back message** — `once` task timed after the LAST traveler's estimated arrival (not the first).
 
 Prompt: "All travelers should have arrived. Send a welcome-back message to the group."
+
+**i. Post-trip admin reminder** — `once` task scheduled for `{{TRIP_END_DATE}} + 2 days` at 10:00 host-local time.
+
+Prompt: "The trip ended 2 days ago. Check if any active tasks remain (both cron and unfired once) using `list_tasks`. Send a message to the group: 'A viagem terminou! Este grupo continuará disponível para consultas sobre a viagem, mas lembretes diários foram desativados. O administrador pode executar Phase 5 para desativar completamente o grupo.' List any remaining active tasks in the message so the admin can review them."
+
+> **Why `once` tasks, not `cron`:** Use `once` tasks for trip reminders by default. `cron` tasks persist indefinitely and can continue firing after the trip ends unless explicitly canceled.
 
 ### 3. Verify Setup
 
@@ -356,3 +377,31 @@ Tell the user they can chat with the agent to:
 - The agent will web-search for current info (routes, Maps links, POIs)
 
 The travel assistant learns from the group's CLAUDE.md and reference files — updating those files (via admin requests from the main channel) permanently changes the agent's behavior for this trip.
+
+### 6. Phase 5: Trip Decommissioning (admin-run, post-trip)
+
+Phase 5 runs from the **host** (Claude Code SKILL.md context, not inside the container), which has write access to `groups/{{TRIP_FOLDER}}/CLAUDE.md`.
+
+a. **Cancel all remaining scheduled tasks** for this group:
+- **Preferred:** Ask the user to message the **main channel** agent: "List all tasks for {{TRIP_NAME}} group and cancel them."
+- **Alternative:** Query SQLite directly from host (runtime schema):
+  ```bash
+  sqlite3 store/messages.db "SELECT id, prompt, schedule_type, schedule_value FROM scheduled_tasks WHERE chat_jid = '{{GROUP_JID}}' AND status = 'active';"
+  sqlite3 store/messages.db "UPDATE scheduled_tasks SET status = 'cancelled' WHERE chat_jid = '{{GROUP_JID}}' AND status = 'active';"
+  ```
+- Log canceled task IDs.
+
+b. **Update `groups/{{TRIP_FOLDER}}/CLAUDE.md` trip status:**
+- Change status to "CONCLUÍDA"
+- Update timezone to `{{HOME_TIMEZONE}}`
+- Add post-trip role: historical consultant only (no reminders/briefings/alerts)
+- Mark reminder sections as disabled (`DESATIVADO`)
+
+c. **Send final group message** via main channel `send_message` with `target_group_jid`:
+- Trip summary
+- Number of tasks canceled
+- Notify assistant is now in archive/consultation mode
+
+d. **Optional: Unregister group** — Ask admin whether to keep it for historical queries or unregister it.
+
+e. **Optional: Archive logs** — Offer creation of `trip-summary.md` with key events/incidents/statistics.

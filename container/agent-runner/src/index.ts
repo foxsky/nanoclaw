@@ -25,6 +25,9 @@ interface ContainerInput {
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
+  isTaskflowManaged?: boolean;
+  taskflowHierarchyLevel?: number;
+  taskflowMaxDepth?: number;
   isScheduledTask?: boolean;
   assistantName?: string;
   secrets?: Record<string, string>;
@@ -432,7 +435,8 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        'mcp__sqlite__*'
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -446,6 +450,15 @@ async function runQuery(
             NANOCLAW_CHAT_JID: containerInput.chatJid,
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+            NANOCLAW_IS_TASKFLOW_MANAGED: containerInput.isTaskflowManaged ? '1' : '0',
+            NANOCLAW_TASKFLOW_HIERARCHY_LEVEL:
+              containerInput.taskflowHierarchyLevel !== undefined
+                ? String(containerInput.taskflowHierarchyLevel)
+                : '',
+            NANOCLAW_TASKFLOW_MAX_DEPTH:
+              containerInput.taskflowMaxDepth !== undefined
+                ? String(containerInput.taskflowMaxDepth)
+                : '',
           },
         },
       },
