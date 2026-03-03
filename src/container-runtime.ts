@@ -17,8 +17,21 @@ export function readonlyMountArgs(
   return ['-v', `${hostPath}:${containerPath}:ro`];
 }
 
-/** Returns the shell command to stop a container by name. */
+/**
+ * Valid Docker container name pattern.
+ * Docker allows: [a-zA-Z0-9][a-zA-Z0-9_.-]
+ * We also allow the leading slash that `docker inspect` sometimes includes.
+ */
+const VALID_CONTAINER_NAME = /^\/?[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
+
+/** Returns the shell command to stop a container by name.
+ *  Validates the name to prevent shell command injection. */
 export function stopContainer(name: string): string {
+  if (!VALID_CONTAINER_NAME.test(name)) {
+    throw new Error(
+      `Invalid container name: "${name}" — must match ${VALID_CONTAINER_NAME}`,
+    );
+  }
   return `${CONTAINER_RUNTIME_BIN} stop ${name}`;
 }
 

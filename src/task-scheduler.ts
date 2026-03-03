@@ -39,6 +39,25 @@ export interface SchedulerDependencies {
   sendMessage: (jid: string, text: string) => Promise<void>;
 }
 
+/**
+ * Compute the next run time for a task based on its schedule type.
+ * Returns null for 'once' tasks (no recurrence).
+ * Exported for testing.
+ */
+export function computeNextRun(task: ScheduledTask): string | null {
+  if (task.schedule_type === 'cron') {
+    const interval = CronExpressionParser.parse(task.schedule_value, {
+      tz: TIMEZONE,
+    });
+    return interval.next().toISOString();
+  } else if (task.schedule_type === 'interval') {
+    const ms = parseInt(task.schedule_value, 10);
+    return new Date(Date.now() + ms).toISOString();
+  }
+  // 'once' tasks have no next run
+  return null;
+}
+
 async function runTask(
   task: ScheduledTask,
   deps: SchedulerDependencies,
@@ -91,6 +110,15 @@ async function runTask(
       error: `Group not found: ${task.group_folder}`,
     });
     return;
+  }
+
+  // Advance next_run BEFORE executing so the scheduler loop won't
+  // re-enqueue this task while it's still running. For 'once' tasks
+  // next_run becomes null and status flips to 'completed' via
+  // updateTaskAfterRun after the run finishes.
+  const precomputedNextRun = computeNextRun(task);
+  if (precomputedNextRun) {
+    updateTask(task.id, { next_run: precomputedNextRun });
   }
 
   // Update tasks snapshot for container to read (filtered by group)
@@ -205,37 +233,9 @@ async function runTask(
     error,
   });
 
-  let nextRun: string | null = null;
-  try {
-    if (task.schedule_type === 'cron') {
-      const interval = CronExpressionParser.parse(task.schedule_value, {
-        tz: TIMEZONE,
-      });
-      nextRun = interval.next().toISOString();
-    } else if (task.schedule_type === 'interval') {
-      const ms = parseInt(task.schedule_value, 10);
-      nextRun = new Date(Date.now() + ms).toISOString();
-    }
-    // 'once' tasks have no next run
-  } catch (parseErr) {
-    const parseError =
-      parseErr instanceof Error ? parseErr.message : String(parseErr);
-    logger.error(
-      {
-        taskId: task.id,
-        scheduleValue: task.schedule_value,
-        error: parseError,
-      },
-      'Invalid cron/schedule value — pausing task to prevent infinite re-fire',
-    );
-    updateTask(task.id, { status: 'paused' });
-    updateTaskAfterRun(
-      task.id,
-      null,
-      `Paused: invalid schedule "${task.schedule_value}": ${parseError}`,
-    );
-    return;
-  }
+  // Recompute next_run after execution so it's based on post-run time.
+  // (The pre-execution advancement was just to prevent double-pickup.)
+  const nextRun = computeNextRun(task);
 
   const resultSummary = error
     ? `Error: ${error}`

@@ -371,6 +371,52 @@ describe('GroupQueue', () => {
     await vi.advanceTimersByTimeAsync(10);
   });
 
+  it('cancels stale retry timer when drain processes messages for the same group', async () => {
+    let callCount = 0;
+    // Use a fresh queue to avoid timer leaks from prior test state
+    queue = new GroupQueue();
+
+    let resolveFirst: () => void;
+    const processMessages = vi.fn(async () => {
+      callCount++;
+      if (callCount === 1) {
+        // Block so we can enqueue a message while active
+        await new Promise<void>((resolve) => {
+          resolveFirst = resolve;
+        });
+        return false; // Fail — triggers scheduleRetry with 5s delay
+      }
+      // Second call (via drain) succeeds
+      return true;
+    });
+
+    queue.setProcessMessagesFn(processMessages);
+
+    // Start first run (blocks)
+    queue.enqueueMessageCheck('group1@g.us');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(callCount).toBe(1);
+
+    // While active, a new message arrives — sets pendingMessages=true
+    queue.enqueueMessageCheck('group1@g.us');
+
+    // Release first run — it returns false, scheduleRetry creates 5s timer.
+    // Then finally block runs drainGroup, which sees pendingMessages=true
+    // and immediately starts runForGroup('drain'), which succeeds.
+    resolveFirst!();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(callCount).toBe(2); // Drain run already completed
+
+    // The drain run succeeded, resetting retryCount to 0.
+    // The stale retry timer guard (retryCount mismatch) prevents spurious runs.
+    const countAfterDrain = callCount;
+    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Should NOT have made another call — the retry timer was guarded
+    expect(callCount).toBe(countAfterDrain);
+  });
+
   it('sendMessage returns false for task containers so user messages queue up', async () => {
     let resolveTask: () => void;
 

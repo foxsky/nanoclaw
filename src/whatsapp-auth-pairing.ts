@@ -38,7 +38,9 @@ async function authenticate(): Promise<void> {
 
   if (state.creds.registered) {
     console.log('✓ Already authenticated with WhatsApp');
-    console.log('  To re-authenticate, delete the store/auth folder and run again.');
+    console.log(
+      '  To re-authenticate, delete the store/auth folder and run again.',
+    );
     rl.close();
     process.exit(0);
   }
@@ -51,7 +53,9 @@ async function authenticate(): Promise<void> {
     phoneNumber = process.argv[2];
     console.log(`Using phone number from argument: ${phoneNumber}`);
   } else {
-    phoneNumber = await question('Enter your phone number (with country code, e.g., 14155551234): ');
+    phoneNumber = await question(
+      'Enter your phone number (with country code, e.g., 14155551234): ',
+    );
   }
   const cleanNumber = phoneNumber.replace(/[^0-9]/g, '');
 

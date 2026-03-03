@@ -41,7 +41,7 @@ export interface RegisteredGroup {
   requiresTrigger?: boolean; // Default: true for groups, false for solo chats
   taskflowManaged?: boolean; // Set for groups provisioned by the TaskFlow skill
   taskflowHierarchyLevel?: number; // 0-based depth in the TaskFlow hierarchy
-  taskflowMaxDepth?: number; // Strict upper bound for valid TaskFlow levels (levels must remain < max depth)
+  taskflowMaxDepth?: number; // Inclusive maximum depth allowed for descendants
 }
 
 export interface NewMessage {
@@ -91,7 +91,10 @@ export interface Channel {
   // Optional: typing indicator. Channels that support it implement it.
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: group creation. Channels that support it implement it.
-  createGroup?(subject: string, participants: string[]): Promise<{ jid: string; subject: string }>;
+  createGroup?(
+    subject: string,
+    participants: string[],
+  ): Promise<{ jid: string; subject: string }>;
 }
 
 // Callback type that channels use to deliver inbound messages

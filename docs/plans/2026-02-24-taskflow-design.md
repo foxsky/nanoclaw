@@ -154,7 +154,7 @@ All timestamps use ISO-8601 UTC: `"2026-02-27T14:30:00.000Z"`
 
 ### Task Schemas
 
-The canonical persisted structure is the shared SQLite TaskFlow schema (`boards`, `board_people`, `board_admins`, `tasks`, `task_history`, `archive`, `board_runtime_config`, `attachment_audit_log`, `board_config`). The legacy `TASKS.json` shape above is migration reference only. The group `CLAUDE.md` template defines the allowed task types, ID patterns, transitions, and mutation rules that operate on the SQLite-backed board state.
+The canonical persisted structure is the `TASKS.json` template. The group `CLAUDE.md` template defines the allowed task types, ID patterns, transitions, and mutation rules that operate on that structure.
 
 ### Task Fields
 
@@ -202,12 +202,12 @@ The active archive store is the SQLite `archive` table. The legacy `ARCHIVE.json
 The group CLAUDE.md is a pure operating manual:
 
 1. **Identity** — who the agent is, who the manager is
-2. **Scope Guard** — refuses off-topic queries without reading board data (token savings)
-3. **Critical: Read the SQLite board state first** — top-level instruction to load data on every interaction
+2. **Scope Guard** — refuses off-topic queries without reading TASKS.json (token savings)
+3. **Critical: Read TASKS.json first** — top-level instruction to load data on every interaction
 4. **Security** — prompt-injection guardrails, untrusted input handling, self-modification protection
-5. **Sender Identification** — board-local lookup via `board_people` and `board_admins`, with legacy JSON manager data synthesized during migration when older boards are converted. The primary full manager must also exist in the active people store (or be synthesized there during migration) even if that person should not receive normal day-to-day assignments, because sender identification and authorization depend on the people store as well as the admin-role store.
+5. **Sender Identification** — multi-manager/delegate lookup via `meta.managers[]` with role-based permissions, legacy `meta.manager` fallback. The primary full manager must also exist in the active people store (or be synthesized there during migration) even if that person should not receive normal day-to-day assignments, because sender identification and authorization depend on the people store as well as the admin-role store.
 6. **Authorization rules** — full-manager-only, delegate-or-manager, assignee-only, assignee-or-manager, and everyone permissions
-7. **Data schemas** — SQLite-backed board/task/history structure, with legacy JSON migration reference retained for older boards
+7. **Data schemas** — Board admin roles (`meta.managers[]`), person, task (simple/project/recurring), and history entry schemas
 8. **Task structure rules** — task types, ID patterns, required fields, history handling, recurring-cycle behavior
 9. **Board rules** — 6 columns, transition rules, WIP enforcement, archival, history cap
 10. **GTD rules** — quick capture, next_action always required, waiting_for required, attachment intake

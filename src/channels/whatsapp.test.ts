@@ -31,7 +31,9 @@ vi.mock('../db.js', () => ({
 // Mock transcription
 vi.mock('../transcription.js', () => ({
   isVoiceMessage: vi.fn((msg: any) => msg.message?.audioMessage?.ptt === true),
-  transcribeAudioMessage: vi.fn().mockResolvedValue('Hello this is a voice message'),
+  transcribeAudioMessage: vi
+    .fn()
+    .mockResolvedValue('Hello this is a voice message'),
 }));
 
 // Mock media
@@ -39,7 +41,11 @@ vi.mock('../media.js', () => ({
   isMediaMessage: vi.fn((msg: any) => {
     const m = msg.message;
     if (!m) return false;
-    if (m.imageMessage?.mimetype === 'image/jpeg' || m.imageMessage?.mimetype === 'image/png') return true;
+    if (
+      m.imageMessage?.mimetype === 'image/jpeg' ||
+      m.imageMessage?.mimetype === 'image/png'
+    )
+      return true;
     if (m.documentMessage?.mimetype === 'application/pdf') return true;
     return false;
   }),
@@ -49,7 +55,11 @@ vi.mock('../media.js', () => ({
     if (m?.documentMessage) return 'document';
     return null;
   }),
-  downloadAndSaveMedia: vi.fn().mockResolvedValue('/tmp/nanoclaw-test-groups/test-group/media/msg-id.jpeg'),
+  downloadAndSaveMedia: vi
+    .fn()
+    .mockResolvedValue(
+      '/tmp/nanoclaw-test-groups/test-group/media/msg-id.jpeg',
+    ),
 }));
 
 // Mock fs
@@ -559,7 +569,9 @@ describe('WhatsAppChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledTimes(1);
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
-        expect.objectContaining({ content: '[Voice: Hello this is a voice message]' }),
+        expect.objectContaining({
+          content: '[Voice: Hello this is a voice message]',
+        }),
       );
     });
 
@@ -590,12 +602,16 @@ describe('WhatsAppChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledTimes(1);
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
-        expect.objectContaining({ content: '[Voice Message - transcription unavailable]' }),
+        expect.objectContaining({
+          content: '[Voice Message - transcription unavailable]',
+        }),
       );
     });
 
     it('falls back when transcription throws', async () => {
-      vi.mocked(transcribeAudioMessage).mockRejectedValueOnce(new Error('API error'));
+      vi.mocked(transcribeAudioMessage).mockRejectedValueOnce(
+        new Error('API error'),
+      );
 
       const opts = createTestOpts();
       const channel = new WhatsAppChannel(opts);
@@ -621,7 +637,9 @@ describe('WhatsAppChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledTimes(1);
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
-        expect.objectContaining({ content: '[Voice Message - transcription failed]' }),
+        expect.objectContaining({
+          content: '[Voice Message - transcription failed]',
+        }),
       );
     });
 
@@ -681,7 +699,10 @@ describe('WhatsAppChannel', () => {
             fromMe: false,
           },
           message: {
-            documentMessage: { mimetype: 'application/pdf', fileName: 'itinerary.pdf' },
+            documentMessage: {
+              mimetype: 'application/pdf',
+              fileName: 'itinerary.pdf',
+            },
           },
           pushName: 'Eve',
           messageTimestamp: Math.floor(Date.now() / 1000),
@@ -692,7 +713,8 @@ describe('WhatsAppChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
         expect.objectContaining({
-          content: '[Media: document at /workspace/group/media/msg-doc-itinerary.pdf]',
+          content:
+            '[Media: document at /workspace/group/media/msg-doc-itinerary.pdf]',
         }),
       );
     });
@@ -726,7 +748,8 @@ describe('WhatsAppChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
         expect.objectContaining({
-          content: '[Media: image at /workspace/group/media/msg-cap.jpeg]\nLook at this!',
+          content:
+            '[Media: image at /workspace/group/media/msg-cap.jpeg]\nLook at this!',
         }),
       );
     });
@@ -1043,6 +1066,43 @@ describe('WhatsAppChannel', () => {
 
       // Should not throw, message queued for retry
       // The queue should have the message
+    });
+
+    it('retains unsent messages in queue when flush fails mid-way', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      // Queue three messages while disconnected
+      await channel.sendMessage('test@g.us', 'First');
+      await channel.sendMessage('test@g.us', 'Second');
+      await channel.sendMessage('test@g.us', 'Third');
+
+      // Make the second send fail during flush
+      fakeSocket.sendMessage
+        .mockResolvedValueOnce(undefined) // First succeeds
+        .mockRejectedValueOnce(new Error('Network error')) // Second fails
+        .mockResolvedValueOnce(undefined); // Third would succeed but won't be reached
+
+      // Connect — flush happens automatically on open
+      await connectChannel(channel);
+
+      // Give the async flush time to complete
+      await new Promise((r) => setTimeout(r, 50));
+
+      // sendMessage was called twice: first succeeded, second threw
+      expect(fakeSocket.sendMessage).toHaveBeenCalledTimes(2);
+      expect(fakeSocket.sendMessage).toHaveBeenNthCalledWith(1, 'test@g.us', {
+        text: 'Andy: First',
+      });
+      expect(fakeSocket.sendMessage).toHaveBeenNthCalledWith(2, 'test@g.us', {
+        text: 'Andy: Second',
+      });
+
+      // The remaining two messages should still be in the queue
+      const queue = (channel as any).outgoingQueue;
+      expect(queue).toHaveLength(2);
+      expect(queue[0].text).toBe('Andy: Second');
+      expect(queue[1].text).toBe('Andy: Third');
     });
 
     it('flushes multiple queued messages in order', async () => {

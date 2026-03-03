@@ -109,11 +109,26 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
-  // Add channel and is_group columns if they don't exist (migration for existing DBs)
+  // Add channel and is_group columns if they don't exist (migration for existing DBs).
+  // Each ALTER TABLE is wrapped in its own try/catch so that if one column already
+  // exists (e.g. from a partially-completed previous migration) the other still gets added.
+  let channelAdded = false;
+  let isGroupAdded = false;
   try {
     database.exec(`ALTER TABLE chats ADD COLUMN channel TEXT`);
+    channelAdded = true;
+  } catch {
+    /* column already exists */
+  }
+  try {
     database.exec(`ALTER TABLE chats ADD COLUMN is_group INTEGER DEFAULT 0`);
-    // Backfill from JID patterns
+    isGroupAdded = true;
+  } catch {
+    /* column already exists */
+  }
+
+  // Backfill only when at least one new column was added
+  if (channelAdded || isGroupAdded) {
     database.exec(
       `UPDATE chats SET channel = 'whatsapp', is_group = 1 WHERE jid LIKE '%@g.us'`,
     );
@@ -126,8 +141,31 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `UPDATE chats SET channel = 'telegram', is_group = 1 WHERE jid LIKE 'tg:%'`,
     );
+  }
+
+  // Add taskflow_managed column if it doesn't exist
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN taskflow_managed INTEGER DEFAULT 0`,
+    );
   } catch {
-    /* columns already exist */
+    /* column already exists */
+  }
+
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN taskflow_hierarchy_level INTEGER`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN taskflow_max_depth INTEGER`,
+    );
+  } catch {
+    /* column already exists */
   }
 
   // Add taskflow_managed column if it doesn't exist
@@ -580,8 +618,10 @@ export function getRegisteredGroup(
     containerConfig: row.container_config
       ? JSON.parse(row.container_config)
       : undefined,
-    requiresTrigger: row.requires_trigger === null ? undefined : row.requires_trigger === 1,
-    taskflowManaged: row.taskflow_managed === null ? undefined : row.taskflow_managed === 1,
+    requiresTrigger:
+      row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+    taskflowManaged:
+      row.taskflow_managed === null ? undefined : row.taskflow_managed === 1,
     taskflowHierarchyLevel:
       row.taskflow_hierarchy_level === null
         ? undefined
@@ -606,11 +646,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.added_at,
     group.containerConfig ? JSON.stringify(group.containerConfig) : null,
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
-    group.taskflowManaged === undefined
-      ? null
-      : group.taskflowManaged
-        ? 1
-        : 0,
+    group.taskflowManaged === undefined ? null : group.taskflowManaged ? 1 : 0,
     group.taskflowHierarchyLevel ?? null,
     group.taskflowMaxDepth ?? null,
   );
@@ -650,8 +686,10 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       containerConfig: row.container_config
         ? JSON.parse(row.container_config)
         : undefined,
-      requiresTrigger: row.requires_trigger === null ? undefined : row.requires_trigger === 1,
-      taskflowManaged: row.taskflow_managed === null ? undefined : row.taskflow_managed === 1,
+      requiresTrigger:
+        row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+      taskflowManaged:
+        row.taskflow_managed === null ? undefined : row.taskflow_managed === 1,
       taskflowHierarchyLevel:
         row.taskflow_hierarchy_level === null
           ? undefined

@@ -98,6 +98,13 @@ describe('formatMessages', () => {
     );
   });
 
+  it('escapes special characters in timestamp', () => {
+    const result = formatMessages([
+      makeMsg({ timestamp: 'bad"&<>timestamp' }),
+    ]);
+    expect(result).toContain('time="bad&quot;&amp;&lt;&gt;timestamp"');
+  });
+
   it('handles empty array', () => {
     const result = formatMessages([]);
     expect(result).toBe('<messages>\n\n</messages>');

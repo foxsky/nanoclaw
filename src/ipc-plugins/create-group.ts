@@ -4,6 +4,7 @@ import { logger } from '../logger.js';
 const MAX_GROUP_SUBJECT_LENGTH = 100;
 const MAX_GROUP_PARTICIPANTS = 256;
 const PARTICIPANT_JID_PATTERN = /^\d{6,20}@s\.whatsapp\.net$/;
+const TASKFLOW_SUFFIX = ' - TaskFlow';
 
 function normalizeSubject(subject: unknown): string | null {
   if (typeof subject !== 'string') return null;
@@ -14,7 +15,10 @@ function normalizeSubject(subject: unknown): string | null {
 
 function normalizeParticipants(participants: unknown): string[] | null {
   if (!Array.isArray(participants)) return null;
-  if (participants.length === 0 || participants.length > MAX_GROUP_PARTICIPANTS) {
+  if (
+    participants.length === 0 ||
+    participants.length > MAX_GROUP_PARTICIPANTS
+  ) {
     return null;
   }
 
@@ -53,15 +57,23 @@ function canCreateGroupFromSource(
     sourceEntry.taskflowHierarchyLevel !== undefined &&
     sourceEntry.taskflowMaxDepth !== undefined
   ) {
-    // Runtime levels are 0-based; maxDepth is a 1-based depth count
-    // (e.g., maxDepth 2 = root + one child). Leaf boards are at level == maxDepth - 1.
-    return sourceEntry.taskflowHierarchyLevel + 1 < sourceEntry.taskflowMaxDepth;
+    // Runtime levels are 0-based while maxDepth is the board depth ceiling.
+    // A group may create one more level only if the next runtime level still
+    // fits under the configured maximum depth.
+    return (
+      sourceEntry.taskflowHierarchyLevel + 1 < sourceEntry.taskflowMaxDepth
+    );
   }
 
   return false;
 }
 
-const handleCreateGroup: IpcHandler = async (data, sourceGroup, isMain, deps) => {
+const handleCreateGroup: IpcHandler = async (
+  data,
+  sourceGroup,
+  isMain,
+  deps,
+) => {
   if (!canCreateGroupFromSource(sourceGroup, isMain, deps)) {
     logger.warn({ sourceGroup }, 'Unauthorized create_group attempt blocked');
     return;
@@ -70,7 +82,9 @@ const handleCreateGroup: IpcHandler = async (data, sourceGroup, isMain, deps) =>
     logger.warn('create_group handler: no createGroup dep available');
     return;
   }
-  const subject = normalizeSubject(data.subject);
+  const isTaskflowSource =
+    !isMain && canCreateGroupFromSource(sourceGroup, false, deps);
+  let subject = normalizeSubject(data.subject);
   const participants = normalizeParticipants(data.participants);
   if (!subject || !participants) {
     logger.warn(
@@ -85,6 +99,13 @@ const handleCreateGroup: IpcHandler = async (data, sourceGroup, isMain, deps) =>
     );
     return;
   }
+  if (isTaskflowSource && !subject.endsWith(TASKFLOW_SUFFIX)) {
+    const suffixed = subject + TASKFLOW_SUFFIX;
+    if (suffixed.length <= MAX_GROUP_SUBJECT_LENGTH) {
+      subject = suffixed;
+    }
+  }
+
   try {
     const result = await deps.createGroup(subject, participants);
     logger.info(
@@ -93,12 +114,18 @@ const handleCreateGroup: IpcHandler = async (data, sourceGroup, isMain, deps) =>
     );
   } catch (err) {
     logger.error(
-      { err, subjectLength: subject.length, participantCount: participants.length },
+      {
+        err,
+        subjectLength: subject.length,
+        participantCount: participants.length,
+      },
       'Failed to create group via IPC',
     );
   }
 };
 
-export function register(reg: (type: string, handler: IpcHandler) => void): void {
+export function register(
+  reg: (type: string, handler: IpcHandler) => void,
+): void {
   reg('create_group', handleCreateGroup);
 }

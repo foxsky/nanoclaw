@@ -6,13 +6,13 @@ Guia de uso do TaskFlow, o assistente de gestão de tarefas via WhatsApp.
 
 O TaskFlow gerencia suas tarefas usando um quadro Kanban com 6 colunas. Toda interação acontece pelo WhatsApp — basta enviar mensagens no grupo.
 
-**Para acionar o assistente**, comece a mensagem com `@Case` (ou o nome configurado do assistente).
+**Para acionar o assistente**, comece a mensagem com `@Tars` (ou o nome configurado do assistente).
 
 ## Configuração Inicial
 
 Na instalação, o gestor define:
 
-- O nome de ativação do assistente (ex.: `@Case`)
+- O nome de ativação do assistente (ex.: `@Tars`)
 - O idioma das respostas
 - O fuso horário usado pelas automações
 - O modelo de IA usado pelo assistente do grupo
@@ -32,26 +32,6 @@ O TaskFlow pode ser usado de duas formas:
 - **Grupos separados**: cada grupo tem seu próprio quadro, com tarefas, automações e histórico independentes
 
 Se houver mais de um grupo, **não existe sincronização automática entre eles**. Cada grupo é tratado como um quadro separado.
-
-### Grupo de Controle (Opcional)
-
-Ao usar um grupo compartilhado, o gestor pode optar por criar um **grupo de controle privado**. Nesse modo:
-
-- O gestor opera a partir do seu próprio grupo (apenas ele e o assistente)
-- A equipe trabalha normalmente no grupo compartilhado
-- **Ambos os grupos compartilham o mesmo quadro** — mesmas tarefas, pessoas e histórico
-- Comandos executados no grupo de controle afetam o quadro compartilhado
-- Mensagens enviadas pelo assistente vão apenas para o grupo em que o comando foi dado — não há envio cruzado entre grupos
-
-O gestor pode escolher para onde cada automação é enviada:
-
-| Automação | Padrão | Opções |
-|-----------|--------|--------|
-| Standup matinal | Grupo da equipe | Grupo de controle / Ambos |
-| Resumo noturno | Grupo de controle | Grupo da equipe / Ambos |
-| Revisão semanal | Ambos | Grupo da equipe / Grupo de controle |
-
-Isso permite manter o grupo da equipe focado no trabalho, enquanto o gestor processa inbox, reatribui tarefas e consulta estatísticas em privado.
 
 ## O Quadro
 
@@ -74,7 +54,7 @@ Cada tarefa está em exatamente uma coluna:
 
 Cada pessoa tem um limite de tarefas simultâneas em "Em Andamento" (padrão: 3). Se o limite for atingido, o assistente avisa e não permite mover mais tarefas para andamento até que uma seja concluída ou mova para aguardando.
 
-O gestor pode forçar com: `@Case forcar T-XXX para andamento`
+O gestor pode forçar com: `@Tars forcar T-XXX para andamento`
 
 ### Tipos de Tarefa
 
@@ -95,9 +75,9 @@ Toda tarefa nova nasce com prioridade `normal` e sem rótulos. Depois, o gestor 
 Quando você quer registrar algo rapidamente, sem detalhes:
 
 ```
-@Case anotar: revisar contrato do fornecedor
-@Case lembrar: ligar para o cliente amanhã
-@Case registrar: comprar material de escritório
+@Tars anotar: revisar contrato do fornecedor
+@Tars lembrar: ligar para o cliente amanhã
+@Tars registrar: comprar material de escritório
 ```
 
 O assistente cria a tarefa no Inbox e responde: `📥 T-001 adicionada ao Inbox`
@@ -109,29 +89,29 @@ Se já tem responsável e prazo, a tarefa vai direto para Próxima Ação:
 Somente um gestor pode usar os comandos de criação completa (`tarefa`, `projeto`, `diario`, `semanal`, `mensal`, `anual`).
 
 ```
-@Case tarefa para Alexandre: revisar contrato ate sexta
-@Case tarefa para Rafael: configurar servidor ate 15/03
+@Tars tarefa para Alexandre: revisar contrato ate sexta
+@Tars tarefa para Rafael: configurar servidor ate 15/03
 ```
 
 ### Criar Projeto (com etapas)
 
 ```
-@Case projeto para Alexandre: migração do servidor. Etapas: 1. backup dos dados, 2. instalar novo SO, 3. migrar serviços, 4. testes
+@Tars projeto para Alexandre: migração do servidor. Etapas: 1. backup dos dados, 2. instalar novo SO, 3. migrar serviços, 4. testes
 ```
 
 Projetos também podem ser recorrentes. As etapas são reiniciadas automaticamente a cada ciclo:
 
 ```
-@Case projeto recorrente para Alexandre: revisão de infraestrutura. Etapas: 1. backup, 2. atualização, 3. testes. todo mensal
+@Tars projeto recorrente para Alexandre: revisão de infraestrutura. Etapas: 1. backup, 2. atualização, 3. testes. todo mensal
 ```
 
 ### Criar Tarefa Recorrente
 
 ```
-@Case diario para Alexandre: verificar emails
-@Case semanal para Rafael: backup do servidor toda segunda
-@Case mensal para Laizes: relatório financeiro todo dia 5
-@Case anual para Alexandre: renovar licenças todo dia 15/01
+@Tars diario para Alexandre: verificar emails
+@Tars semanal para Rafael: backup do servidor toda segunda
+@Tars mensal para Laizes: relatório financeiro todo dia 5
+@Tars anual para Alexandre: renovar licenças todo dia 15/01
 ```
 
 ---
@@ -140,33 +120,33 @@ Projetos também podem ser recorrentes. As etapas são reiniciadas automaticamen
 
 | Comando | O que faz |
 |---------|-----------|
-| `@Case comecando T-001` | Move para Em Andamento (verifica WIP) |
-| `@Case iniciando T-001` | Mesmo que acima |
-| `@Case T-001 aguardando resposta do fornecedor` | Move para Aguardando |
-| `@Case T-001 retomada` | Volta para Em Andamento (verifica WIP) |
-| `@Case devolver T-001` | Devolve de Em Andamento para Próxima Ação (libera WIP) |
-| `@Case T-001 pronta para revisao` | Move para Revisão |
-| `@Case T-001 aprovada` | Move de Revisão para Concluída (gestor ou delegado) |
-| `@Case T-001 rejeitada: ajustar item X` | Devolve de Revisão para Em Andamento com motivo de retrabalho (gestor ou delegado) |
-| `@Case reabrir T-001` | Reabre uma tarefa concluída e devolve para Próxima Ação |
-| `@Case T-001 concluida` | Atalho: move direto para Concluída (responsável ou gestor) |
-| `@Case T-001 feita` | Mesmo que acima |
-| `@Case forcar T-001 para andamento` | Move para Em Andamento ignorando limite WIP (gestor) |
-| `@Case adicionar etapa P-001: validar rollback` | Adiciona uma nova sub-etapa ao final do projeto |
-| `@Case renomear etapa P-001.2: instalar SO atualizado` | Renomeia uma sub-etapa específica do projeto |
-| `@Case reabrir etapa P-001.2` | Reabre uma sub-etapa concluída e recalcula a próxima ação |
-| `@Case P-001.1 concluida` | Marca sub-etapa do projeto como feita e avança a próxima ação |
-| `@Case reatribuir T-001 para Rafael` | Muda o responsável da tarefa (gestor, pede confirmação) |
-| `@Case cancelar T-001` | Cancela e arquiva (gestor, pede confirmação) |
-| `@Case restaurar T-001` | Restaura uma tarefa arquivada para Próxima Ação (gestor) |
+| `@Tars comecando T-001` | Move para Em Andamento (verifica WIP) |
+| `@Tars iniciando T-001` | Mesmo que acima |
+| `@Tars T-001 aguardando resposta do fornecedor` | Move para Aguardando |
+| `@Tars T-001 retomada` | Volta para Em Andamento (verifica WIP) |
+| `@Tars devolver T-001` | Devolve de Em Andamento para Próxima Ação (libera WIP) |
+| `@Tars T-001 pronta para revisao` | Move para Revisão |
+| `@Tars T-001 aprovada` | Move de Revisão para Concluída (gestor ou delegado) |
+| `@Tars T-001 rejeitada: ajustar item X` | Devolve de Revisão para Em Andamento com motivo de retrabalho (gestor ou delegado) |
+| `@Tars reabrir T-001` | Reabre uma tarefa concluída e devolve para Próxima Ação |
+| `@Tars T-001 concluida` | Atalho: move direto para Concluída (responsável ou gestor) |
+| `@Tars T-001 feita` | Mesmo que acima |
+| `@Tars forcar T-001 para andamento` | Move para Em Andamento ignorando limite WIP (gestor) |
+| `@Tars adicionar etapa P-001: validar rollback` | Adiciona uma nova sub-etapa ao final do projeto |
+| `@Tars renomear etapa P-001.2: instalar SO atualizado` | Renomeia uma sub-etapa específica do projeto |
+| `@Tars reabrir etapa P-001.2` | Reabre uma sub-etapa concluída e recalcula a próxima ação |
+| `@Tars P-001.1 concluida` | Marca sub-etapa do projeto como feita e avança a próxima ação |
+| `@Tars reatribuir T-001 para Rafael` | Muda o responsável da tarefa (gestor, pede confirmação) |
+| `@Tars cancelar T-001` | Cancela e arquiva (gestor, pede confirmação) |
+| `@Tars restaurar T-001` | Restaura uma tarefa arquivada para Próxima Ação (gestor) |
 
 ### Operações em Lote
 
 Você pode aplicar ações a várias tarefas de uma vez usando IDs separados por vírgula:
 
 ```
-@Case T-005, T-006, T-007 aprovadas
-@Case aprovar T-005, T-006, T-007
+@Tars T-005, T-006, T-007 aprovadas
+@Tars aprovar T-005, T-006, T-007
 ```
 
 Funciona com: aprovar, rejeitar, concluir, cancelar. Cada tarefa é processada individualmente (mesma permissão e validação). O resultado mostra o status de cada uma.
@@ -176,7 +156,7 @@ Funciona com: aprovar, rejeitar, concluir, cancelar. Cada tarefa é processada i
 Desfaça a última ação em até 60 segundos:
 
 ```
-@Case desfazer
+@Tars desfazer
 ```
 
 Limitações: não desfaz criação (use `cancelar`), arquivamento, avanço de recorrência ou operações em lote. Apenas um nível de desfazer (sem cadeia). Efeitos cascata (dependências resolvidas, lembretes cancelados) não são revertidos.
@@ -184,12 +164,12 @@ Limitações: não desfaz criação (use `cancelar`), arquivamento, avanço de r
 ### Fluxo Típico
 
 ```
-1. Gestor cria tarefa     → @Case tarefa para Alexandre: revisar contrato ate sexta
-2. Responsável começa     → @Case comecando T-001
-3. Fica bloqueado         → @Case T-001 aguardando aprovação jurídica
-4. Desbloqueou            → @Case T-001 retomada
-5. Finalizou              → @Case T-001 pronta para revisao
-6. Gestor aprova          → @Case T-001 aprovada
+1. Gestor cria tarefa     → @Tars tarefa para Alexandre: revisar contrato ate sexta
+2. Responsável começa     → @Tars comecando T-001
+3. Fica bloqueado         → @Tars T-001 aguardando aprovação jurídica
+4. Desbloqueou            → @Tars T-001 retomada
+5. Finalizou              → @Tars T-001 pronta para revisao
+6. Gestor aprova          → @Tars T-001 aprovada
 ```
 
 ---
@@ -198,58 +178,56 @@ Limitações: não desfaz criação (use `cancelar`), arquivamento, avanço de r
 
 | Comando | O que mostra |
 |---------|-------------|
-| `@Case quadro` | Quadro completo com todas as colunas |
-| `@Case status` | Mesmo que quadro |
-| `@Case como esta?` | Mesmo que quadro |
-| `@Case quadro do Alexandre` | Tarefas de uma pessoa específica |
-| `@Case inbox` | Somente itens no Inbox |
-| `@Case revisao` | Somente tarefas em Revisão |
-| `@Case revisao do Alexandre` | Somente tarefas em Revisão de uma pessoa |
-| `@Case proxima acao` | Somente tarefas em Próxima Ação |
-| `@Case em andamento` | Somente tarefas em Em Andamento |
-| `@Case minhas tarefas` | Suas próprias tarefas (identifica pelo remetente) |
-| `@Case detalhes T-001` | Todos os campos da tarefa, notas e últimas 5 ações do histórico |
-| `@Case historico T-001` | Histórico completo da tarefa |
-| `@Case atrasadas` | Tarefas com prazo vencido |
-| `@Case vencem hoje` | Tarefas com prazo para hoje |
-| `@Case vencem amanha` | Tarefas com prazo para amanhã |
-| `@Case vencem esta semana` | Tarefas com prazo até o fim da semana atual |
-| `@Case proximos 7 dias` | Tarefas com prazo nos próximos 7 dias |
-| `@Case buscar contrato` | Busca texto em título, próxima ação, aguardando e notas |
-| `@Case buscar contrato com rotulo financeiro` | Busca texto, mas somente em tarefas com um rótulo específico |
-| `@Case urgentes` | Somente tarefas com prioridade urgente |
-| `@Case prioridade alta` | Somente tarefas com prioridade alta |
-| `@Case rotulo financeiro` | Somente tarefas com um rótulo específico |
-| `@Case buscar rotulo financeiro` | Mesmo filtro por rótulo, com uma forma mais explícita |
-| `@Case concluidas hoje` | Tarefas concluídas hoje |
-| `@Case concluidas esta semana` | Tarefas concluídas na semana atual |
-| `@Case o que esta aguardando?` | Tarefas bloqueadas |
-| `@Case aguardando do Alexandre` | Somente tarefas bloqueadas de uma pessoa |
-| `@Case concluidas do Alexandre` | Tarefas concluídas de uma pessoa específica |
-| `@Case concluidas do mes` / `concluidas este mes` | Tarefas concluídas no mês atual |
-| `@Case resumo` | Resumo sob demanda (formato do resumo do gestor) |
-| `@Case resumo semanal` | Revisão semanal sob demanda (formato da revisão de sexta) |
-| `@Case listar arquivo` | 20 tarefas arquivadas mais recentes |
-| `@Case buscar no arquivo contrato` | Busca no arquivo por texto |
-| `@Case agenda` | Agenda dos próximos 14 dias por prazo |
-| `@Case agenda da semana` | Agenda dos próximos 7 dias |
-| `@Case o que mudou hoje?` | Mudanças feitas hoje (timeline) |
-| `@Case o que mudou desde ontem?` | Mudanças desde ontem |
-| `@Case o que mudou esta semana?` | Mudanças da semana atual |
-| `@Case estatisticas` | Estatísticas do quadro (concluídas, tempo médio, tendência) |
-| `@Case estatisticas do Alexandre` | Estatísticas de uma pessoa |
-| `@Case estatisticas do mes` | Estatísticas do mês atual |
-| `@Case ajuda` | Lista de comandos disponíveis |
-| `@Case manual` | Manual completo do TaskFlow |
+| `@Tars quadro` | Quadro completo com todas as colunas |
+| `@Tars status` | Mesmo que quadro |
+| `@Tars como esta?` | Mesmo que quadro |
+| `@Tars quadro do Alexandre` | Tarefas de uma pessoa específica |
+| `@Tars inbox` | Somente itens no Inbox |
+| `@Tars revisao` | Somente tarefas em Revisão |
+| `@Tars revisao do Alexandre` | Somente tarefas em Revisão de uma pessoa |
+| `@Tars proxima acao` | Somente tarefas em Próxima Ação |
+| `@Tars em andamento` | Somente tarefas em Em Andamento |
+| `@Tars minhas tarefas` | Suas próprias tarefas (identifica pelo remetente) |
+| `@Tars detalhes T-001` | Todos os campos da tarefa, notas e últimas 5 ações do histórico |
+| `@Tars historico T-001` | Histórico completo da tarefa |
+| `@Tars atrasadas` | Tarefas com prazo vencido |
+| `@Tars vencem hoje` | Tarefas com prazo para hoje |
+| `@Tars vencem amanha` | Tarefas com prazo para amanhã |
+| `@Tars vencem esta semana` | Tarefas com prazo até o fim da semana atual |
+| `@Tars proximos 7 dias` | Tarefas com prazo nos próximos 7 dias |
+| `@Tars buscar contrato` | Busca texto em título, próxima ação, aguardando e notas |
+| `@Tars buscar contrato com rotulo financeiro` | Busca texto, mas somente em tarefas com um rótulo específico |
+| `@Tars urgentes` | Somente tarefas com prioridade urgente |
+| `@Tars prioridade alta` | Somente tarefas com prioridade alta |
+| `@Tars rotulo financeiro` | Somente tarefas com um rótulo específico |
+| `@Tars buscar rotulo financeiro` | Mesmo filtro por rótulo, com uma forma mais explícita |
+| `@Tars concluidas hoje` | Tarefas concluídas hoje |
+| `@Tars concluidas esta semana` | Tarefas concluídas na semana atual |
+| `@Tars o que esta aguardando?` | Tarefas bloqueadas |
+| `@Tars aguardando do Alexandre` | Somente tarefas bloqueadas de uma pessoa |
+| `@Tars concluidas do Alexandre` | Tarefas concluídas de uma pessoa específica |
+| `@Tars concluidas do mes` / `concluidas este mes` | Tarefas concluídas no mês atual |
+| `@Tars resumo` | Resumo sob demanda (formato do resumo do gestor) |
+| `@Tars listar arquivo` | 20 tarefas arquivadas mais recentes |
+| `@Tars buscar no arquivo contrato` | Busca no arquivo por texto |
+| `@Tars agenda` | Agenda dos próximos 14 dias por prazo |
+| `@Tars agenda da semana` | Agenda dos próximos 7 dias |
+| `@Tars o que mudou hoje?` | Mudanças feitas hoje (timeline) |
+| `@Tars o que mudou desde ontem?` | Mudanças desde ontem |
+| `@Tars o que mudou esta semana?` | Mudanças da semana atual |
+| `@Tars estatisticas` | Estatísticas do quadro (concluídas, tempo médio, tendência) |
+| `@Tars estatisticas do Alexandre` | Estatísticas de uma pessoa |
+| `@Tars estatisticas do mes` | Estatísticas do mês atual |
+| `@Tars ajuda` | Lista de comandos disponíveis |
 
 ### Estatísticas
 
 Veja métricas do quadro:
 
 ```
-@Case estatisticas
-@Case estatisticas do Alexandre
-@Case estatisticas do mes
+@Tars estatisticas
+@Tars estatisticas do Alexandre
+@Tars estatisticas do mes
 ```
 
 Inclui: concluídas na semana/mês, tempo médio de ciclo (criação→conclusão), tendência de produtividade (esta semana vs anterior) e detalhamento por pessoa. Usa dados do quadro ativo e do arquivo (até 90 dias).
@@ -261,7 +239,7 @@ Inclui: concluídas na semana/mês, tempo médio de ciclo (criação→conclusã
 Um gestor ou delegado pode processar itens pendentes no Inbox:
 
 ```
-@Case processar inbox
+@Tars processar inbox
 ```
 
 O assistente lista cada item e pergunta: responsável, prazo e próxima ação. Após preencher, a tarefa vai para Próxima Ação.
@@ -269,21 +247,21 @@ O assistente lista cada item e pergunta: responsável, prazo e próxima ação. 
 Também pode processar um item específico (gestor ou delegado):
 
 ```
-@Case T-001 para Alexandre, prazo sexta
+@Tars T-001 para Alexandre, prazo sexta
 ```
 
 ### Atualizar Tarefa
 
 ```
-@Case proxima acao T-001: enviar email para o cliente
-@Case renomear T-001: título corrigido
-@Case prioridade T-001: alta
-@Case rotulo T-001: financeiro
-@Case remover rotulo T-001: financeiro
-@Case nota T-001: cliente pediu ajuste no item 3
-@Case editar nota T-001 #1: cliente pediu ajuste no item 4
-@Case remover nota T-001 #1
-@Case descricao T-001: texto da descrição
+@Tars proxima acao T-001: enviar email para o cliente
+@Tars renomear T-001: título corrigido
+@Tars prioridade T-001: alta
+@Tars rotulo T-001: financeiro
+@Tars remover rotulo T-001: financeiro
+@Tars nota T-001: cliente pediu ajuste no item 3
+@Tars editar nota T-001 #1: cliente pediu ajuste no item 4
+@Tars remover nota T-001 #1
+@Tars descricao T-001: texto da descrição
 ```
 
 A descrição é um texto livre de até 500 caracteres que detalha o escopo da tarefa. Diferente das notas, cada tarefa tem apenas uma descrição. Para alterar, envie o comando novamente com o novo texto.
@@ -292,8 +270,8 @@ As notas funcionam como comentários da tarefa: o assistente registra automatica
 
 Notas novas podem ser editadas e removidas pelo gestor ou pelo responsável:
 
-- `@Case editar nota T-001 #2: novo texto`
-- `@Case remover nota T-001 #2`
+- `@Tars editar nota T-001 #2: novo texto`
+- `@Tars remover nota T-001 #2`
 
 Notas antigas de quadros muito antigos podem aparecer sem ID. Elas continuam visíveis, mas não podem ser editadas.
 
@@ -307,8 +285,8 @@ Você pode marcar que uma tarefa depende de outra. As dependências são informa
 
 | Comando | O que faz |
 |---------|-----------|
-| `@Case T-001 depende de T-002` | Marca que T-001 depende de T-002 |
-| `@Case remover dependencia T-001 de T-002` | Remove a dependência |
+| `@Tars T-001 depende de T-002` | Marca que T-001 depende de T-002 |
+| `@Tars remover dependencia T-001 de T-002` | Remove a dependência |
 
 Quando uma tarefa bloqueadora é concluída, a dependência é removida automaticamente e o grupo é notificado.
 
@@ -322,8 +300,8 @@ Crie lembretes para receber uma notificação N dias antes do prazo:
 
 | Comando | O que faz |
 |---------|-----------|
-| `@Case lembrete T-001 3 dias antes` | Cria lembrete 3 dias antes do prazo |
-| `@Case remover lembrete T-001` | Remove todos os lembretes da tarefa |
+| `@Tars lembrete T-001 3 dias antes` | Cria lembrete 3 dias antes do prazo |
+| `@Tars remover lembrete T-001` | Remove todos os lembretes da tarefa |
 
 A tarefa precisa ter um prazo definido. Se o prazo mudar, os lembretes são reagendados automaticamente. Se o prazo for removido, os lembretes são cancelados.
 Se a tarefa for cancelada, os lembretes ativos também são cancelados antes do arquivamento.
@@ -334,17 +312,17 @@ Se a tarefa for cancelada, os lembretes ativos também são cancelados antes do 
 
 | Comando | O que faz |
 |---------|-----------|
-| `@Case estender prazo T-001 para 20/03` | Altera prazo (gestor) |
-| `@Case limite do Alexandre para 4` | Altera limite WIP da pessoa (gestor) |
-| `@Case cadastrar João, telefone 5586999990004, Analista` | Adiciona pessoa (gestor) |
-| `@Case remover João` | Remove pessoa (gestor, pede confirmação, reatribui tarefas abertas) |
-| `@Case reatribuir T-001 para Rafael` | Muda responsável da tarefa (gestor, pede confirmação) |
-| `@Case alterar recorrencia R-001 para semanal` | Altera frequência de tarefa recorrente (gestor) |
-| `@Case adicionar gestor Maria, telefone 5586999990010` | Adiciona outro gestor com poderes completos (gestor) |
-| `@Case adicionar delegado Rafael, telefone 5586999990002` | Adiciona um delegado (gestor) |
-| `@Case remover gestor Maria` | Remove um gestor ou delegado (gestor, pede confirmação; o último gestor não pode ser removido) |
-| `@Case remover prazo T-001` | Remove prazo da tarefa (gestor) |
-| `@Case transferir tarefas do Alexandre para Rafael` | Transfere todas as tarefas ativas de uma pessoa para outra (gestor, pede confirmação) |
+| `@Tars estender prazo T-001 para 20/03` | Altera prazo (gestor) |
+| `@Tars limite do Alexandre para 4` | Altera limite WIP da pessoa (gestor) |
+| `@Tars cadastrar João, telefone 5586999990004, Analista` | Adiciona pessoa (gestor) |
+| `@Tars remover João` | Remove pessoa (gestor, pede confirmação, reatribui tarefas abertas) |
+| `@Tars reatribuir T-001 para Rafael` | Muda responsável da tarefa (gestor, pede confirmação) |
+| `@Tars alterar recorrencia R-001 para semanal` | Altera frequência de tarefa recorrente (gestor) |
+| `@Tars adicionar gestor Maria, telefone 5586999990010` | Adiciona outro gestor com poderes completos (gestor) |
+| `@Tars adicionar delegado Rafael, telefone 5586999990002` | Adiciona um delegado (gestor) |
+| `@Tars remover gestor Maria` | Remove um gestor ou delegado (gestor, pede confirmação; o último gestor não pode ser removido) |
+| `@Tars remover prazo T-001` | Remove prazo da tarefa (gestor) |
+| `@Tars transferir tarefas do Alexandre para Rafael` | Transfere todas as tarefas ativas de uma pessoa para outra (gestor, pede confirmação) |
 
 ---
 
@@ -355,13 +333,13 @@ Se a funcionalidade de mídia estiver ativada, você pode criar ou atualizar tar
 **Criar tarefas a partir de um anexo:**
 ```
 [Enviar PDF/JPG/PNG]
-@Case importar anexo
+@Tars importar anexo
 ```
 
 **Atualizar tarefas com base em um anexo:**
 ```
 [Enviar PDF/JPG/PNG]
-@Case atualizar tarefas pelo anexo
+@Tars atualizar tarefas pelo anexo
 ```
 
 O assistente extrai o texto, mostra uma prévia das mudanças propostas, e só aplica após o comando exato de confirmação:
@@ -412,13 +390,11 @@ Revisão GTD completa às sextas. Inclui:
 - Prévia da próxima semana (prazos e recorrências)
 - Resumo por pessoa na semana
 
-> Quando o grupo de controle está ativado, cada automação pode ser direcionada para o grupo da equipe, o grupo de controle ou ambos (configurado na instalação). Veja a seção [Grupo de Controle](#grupo-de-controle-opcional) para os padrões de roteamento.
-
 > As automações seguem o fuso horário configurado na instalação. Os horários padrão podem ser ajustados pelo gestor durante a configuração.
 
 > Se o ajuste automático de horário de verão estiver ativado, o TaskFlow mantém o mesmo horário local das automações mesmo quando o fuso muda.
 
-> As automações só enviam mensagens quando há tarefas no quadro. Se `tasks[]` estiver vazio no grupo (nenhuma tarefa no quadro), a rotina executa silenciosamente.
+> As automações só enviam mensagens quando há tarefas no quadro. Se não houver tarefas no quadro, a rotina executa silenciosamente.
 
 ---
 
@@ -487,7 +463,7 @@ Revisão GTD completa às sextas. Inclui:
 - Não responde perguntas fora do escopo de gestão de tarefas
 - Não executa comandos do sistema ou código
 - Não modifica suas próprias configurações
-- Não envia mensagens privadas diretas — tudo vai para o grupo em que o comando foi dado
+- Não envia mensagens individuais (tudo vai para o grupo)
 - Não acessa arquivos de outros grupos nem o código do sistema
 
 Se você pedir algo fora do escopo, ele responde brevemente que só gerencia tarefas e sugere comandos válidos.
@@ -498,127 +474,124 @@ Se você pedir algo fora do escopo, ele responde brevemente que só gerencia tar
 
 ```
 CAPTURA RÁPIDA
-  @Case anotar: [descrição]
-  @Case lembrar: [descrição]
+  @Tars anotar: [descrição]
 
 CRIAR TAREFA (gestor)
-  @Case tarefa para [pessoa]: [descrição] ate [data]
-  @Case projeto para [pessoa]: [descrição]. Etapas: 1. ..., 2. ...
-  @Case diario para [pessoa]: [descrição]
-  @Case semanal para [pessoa]: [descrição] toda [dia da semana]
-  @Case mensal para [pessoa]: [descrição] todo dia [N]
-  @Case anual para [pessoa]: [descrição] todo dia [D/M]
-  @Case projeto recorrente para [pessoa]: [descrição]. Etapas: ... todo [freq]
+  @Tars tarefa para [pessoa]: [descrição] ate [data]
+  @Tars projeto para [pessoa]: [descrição]. Etapas: 1. ..., 2. ...
+  @Tars diario para [pessoa]: [descrição]
+  @Tars semanal para [pessoa]: [descrição] toda [dia da semana]
+  @Tars mensal para [pessoa]: [descrição] todo dia [N]
+  @Tars anual para [pessoa]: [descrição] todo dia [D/M]
+  @Tars projeto recorrente para [pessoa]: [descrição]. Etapas: ... todo [freq]
 
 VER QUADRO
-  @Case quadro
-  @Case quadro do [pessoa]
-  @Case inbox
-  @Case revisao
-  @Case revisao do [pessoa]
-  @Case proxima acao
-  @Case em andamento
+  @Tars quadro
+  @Tars quadro do [pessoa]
+  @Tars inbox
+  @Tars revisao
+  @Tars revisao do [pessoa]
+  @Tars proxima acao
+  @Tars em andamento
 
 MOVER TAREFA
-  @Case comecando T-XXX
-  @Case T-XXX aguardando [motivo]
-  @Case T-XXX retomada
-  @Case devolver T-XXX
-  @Case T-XXX pronta para revisao
-  @Case T-XXX aprovada
-  @Case T-XXX rejeitada: [motivo]
-  @Case reabrir T-XXX
-  @Case T-XXX concluida
-  @Case adicionar etapa P-XXX: [título]
-  @Case renomear etapa P-XXX.N: [novo título]
-  @Case reabrir etapa P-XXX.N
-  @Case P-XXX.N concluida                (sub-etapa de projeto)
-  @Case forcar T-XXX para andamento
-  @Case T-XXX, T-YYY, T-ZZZ aprovadas  (operações em lote)
-  @Case desfazer
+  @Tars comecando T-XXX
+  @Tars T-XXX aguardando [motivo]
+  @Tars T-XXX retomada
+  @Tars devolver T-XXX
+  @Tars T-XXX pronta para revisao
+  @Tars T-XXX aprovada
+  @Tars T-XXX rejeitada: [motivo]
+  @Tars reabrir T-XXX
+  @Tars T-XXX concluida
+  @Tars adicionar etapa P-XXX: [título]
+  @Tars renomear etapa P-XXX.N: [novo título]
+  @Tars reabrir etapa P-XXX.N
+  @Tars P-XXX.N concluida                (sub-etapa de projeto)
+  @Tars forcar T-XXX para andamento
+  @Tars T-XXX, T-YYY, T-ZZZ aprovadas  (operações em lote)
+  @Tars desfazer
 
 ATUALIZAR TAREFA
-  @Case proxima acao T-XXX: [nova ação]
-  @Case renomear T-XXX: [novo título]
-  @Case prioridade T-XXX: [baixa|normal|alta|urgente]
-  @Case rotulo T-XXX: [nome]
-  @Case remover rotulo T-XXX: [nome]
-  @Case nota T-XXX: [texto]
-  @Case editar nota T-XXX #[N]: [novo texto]
-  @Case remover nota T-XXX #[N]
-  @Case descricao T-XXX: [texto]
-  @Case T-XXX depende de T-YYY
-  @Case remover dependencia T-XXX de T-YYY
-  @Case lembrete T-XXX [N] dia(s) antes
-  @Case remover lembrete T-XXX
+  @Tars proxima acao T-XXX: [nova ação]
+  @Tars renomear T-XXX: [novo título]
+  @Tars prioridade T-XXX: [baixa|normal|alta|urgente]
+  @Tars rotulo T-XXX: [nome]
+  @Tars remover rotulo T-XXX: [nome]
+  @Tars nota T-XXX: [texto]
+  @Tars editar nota T-XXX #[N]: [novo texto]
+  @Tars remover nota T-XXX #[N]
+  @Tars descricao T-XXX: [texto]
+  @Tars T-XXX depende de T-YYY
+  @Tars remover dependencia T-XXX de T-YYY
+  @Tars lembrete T-XXX [N] dia(s) antes
+  @Tars remover lembrete T-XXX
 
 CONSULTAS
-  @Case ajuda
-  @Case manual
-  @Case minhas tarefas
-  @Case detalhes T-XXX
-  @Case historico T-XXX
-  @Case buscar [texto]
-  @Case buscar [texto] com rotulo [nome]
-  @Case urgentes
-  @Case prioridade alta
-  @Case rotulo [nome]
-  @Case buscar rotulo [nome]
-  @Case atrasadas
-  @Case concluidas hoje
-  @Case concluidas esta semana
-  @Case vencem hoje
-  @Case vencem amanha
-  @Case vencem esta semana
-  @Case proximos 7 dias
-  @Case o que esta aguardando?
-  @Case aguardando do [pessoa]
-  @Case concluidas do [pessoa]
-  @Case concluidas do mes
-  @Case resumo
-  @Case resumo semanal
-  @Case listar arquivo
-  @Case buscar no arquivo [texto]
-  @Case agenda
-  @Case agenda da semana
-  @Case o que mudou hoje?
-  @Case o que mudou esta semana?
-  @Case estatisticas
-  @Case estatisticas do [pessoa]
-  @Case estatisticas do mes
+  @Tars ajuda
+  @Tars minhas tarefas
+  @Tars detalhes T-XXX
+  @Tars historico T-XXX
+  @Tars buscar [texto]
+  @Tars buscar [texto] com rotulo [nome]
+  @Tars urgentes
+  @Tars prioridade alta
+  @Tars rotulo [nome]
+  @Tars buscar rotulo [nome]
+  @Tars atrasadas
+  @Tars concluidas hoje
+  @Tars concluidas esta semana
+  @Tars vencem hoje
+  @Tars vencem amanha
+  @Tars vencem esta semana
+  @Tars proximos 7 dias
+  @Tars o que esta aguardando?
+  @Tars aguardando do [pessoa]
+  @Tars concluidas do [pessoa]
+  @Tars concluidas do mes
+  @Tars resumo
+  @Tars listar arquivo
+  @Tars buscar no arquivo [texto]
+  @Tars agenda
+  @Tars agenda da semana
+  @Tars o que mudou hoje?
+  @Tars o que mudou esta semana?
+  @Tars estatisticas
+  @Tars estatisticas do [pessoa]
+  @Tars estatisticas do mes
 
 INBOX (gestor ou delegado)
-  @Case processar inbox
-  @Case T-XXX para [pessoa], prazo [data]
+  @Tars processar inbox
+  @Tars T-XXX para [pessoa], prazo [data]
 
 GESTÃO (gestor)
-  @Case estender prazo T-XXX para [data]
-  @Case reatribuir T-XXX para [pessoa]
-  @Case cancelar T-XXX
-  @Case restaurar T-XXX
-  @Case limite do [pessoa] para [N]
-  @Case cadastrar [nome], telefone [numero], [cargo]
-  @Case remover [nome]
-  @Case alterar recorrencia R-XXX para [frequencia]
-  @Case adicionar gestor [nome], telefone [numero]
-  @Case adicionar delegado [nome], telefone [numero]
-  @Case remover gestor [nome]
-  @Case remover prazo T-XXX
-  @Case transferir tarefas do [pessoa] para [pessoa]
+  @Tars estender prazo T-XXX para [data]
+  @Tars reatribuir T-XXX para [pessoa]
+  @Tars cancelar T-XXX
+  @Tars restaurar T-XXX
+  @Tars limite do [pessoa] para [N]
+  @Tars cadastrar [nome], telefone [numero], [cargo]
+  @Tars remover [nome]
+  @Tars alterar recorrencia R-XXX para [frequencia]
+  @Tars adicionar gestor [nome], telefone [numero]
+  @Tars adicionar delegado [nome], telefone [numero]
+  @Tars remover gestor [nome]
+  @Tars remover prazo T-XXX
+  @Tars transferir tarefas do [pessoa] para [pessoa]
 
 ANEXOS (com mídia ativada)
-  @Case importar anexo
-  @Case atualizar tarefas pelo anexo
+  @Tars importar anexo
+  @Tars atualizar tarefas pelo anexo
   CONFIRM_IMPORT [import_action_id]
 
 HIERARQUIA (modo hierárquico)
-  @Case criar quadro para [pessoa]
-  @Case remover quadro do [pessoa]
-  @Case vincular T-XXX ao quadro do [pessoa]
-  @Case desvincular T-XXX
-  @Case atualizar status T-XXX
-  @Case resumo de execucao T-XXX
-  @Case ligar tarefa ao pai T-XXX
+  @Tars criar quadro para [pessoa]
+  @Tars remover quadro do [pessoa]
+  @Tars vincular T-XXX ao quadro do [pessoa]
+  @Tars desvincular T-XXX
+  @Tars atualizar status T-XXX
+  @Tars resumo de execucao T-XXX
+  @Tars ligar tarefa ao pai T-XXX
 ```
 
 ---
@@ -629,13 +602,13 @@ HIERARQUIA (modo hierárquico)
 Não. Apenas o responsável pode mover suas próprias tarefas. O gestor pode reatribuir ou forçar movimentações.
 
 **O que acontece se eu tentar começar uma tarefa e estiver no limite WIP?**
-O assistente avisa que o limite foi atingido e não move a tarefa. Você precisa concluir ou mover uma tarefa para Aguardando antes de começar outra. O gestor pode forçar com `@Case forcar T-XXX para andamento`.
+O assistente avisa que o limite foi atingido e não move a tarefa. Você precisa concluir ou mover uma tarefa para Aguardando antes de começar outra. O gestor pode forçar com `@Tars forcar T-XXX para andamento`.
 
 **Posso pular etapas no quadro (ex: de Inbox direto para Concluída)?**
-Sim. O comando `@Case T-XXX concluida` move direto para Concluída de qualquer coluna, mas só pode ser usado pelo responsável da tarefa ou pelo gestor.
+Sim. O comando `@Tars T-XXX concluida` move direto para Concluída de qualquer coluna, mas só pode ser usado pelo responsável da tarefa ou pelo gestor.
 
 **Posso reabrir uma tarefa concluída?**
-Sim. Use `@Case reabrir T-001`. O gestor ou o responsável da tarefa podem devolver uma tarefa concluída para Próxima Ação. Se ela já tiver sido arquivada, o gestor usa `@Case restaurar T-001`.
+Sim. Use `@Tars reabrir T-001`. O gestor ou o responsável da tarefa podem devolver uma tarefa concluída para Próxima Ação. Se ela já tiver sido arquivada, o gestor usa `@Tars restaurar T-001`.
 
 **O que acontece com tarefas recorrentes quando são concluídas?**
 Uma nova instância é criada automaticamente com o próximo prazo, baseado na frequência configurada.
@@ -646,9 +619,6 @@ O TaskFlow tem pelo menos um gestor de referência (o primeiro gestor registrado
 **Posso ter mais de um quadro do TaskFlow?**
 Sim. Você pode usar um grupo único para toda a equipe ou criar grupos separados. Quando há vários grupos, cada grupo tem seu próprio quadro e suas próprias automações.
 
-**Posso gerenciar o quadro de um grupo privado?**
-Sim. Na instalação, o gestor pode ativar um grupo de controle privado. Ele e o assistente ficam sozinhos nesse grupo, mas operam sobre o mesmo quadro da equipe. Comandos como processar inbox, reatribuir e estatísticas funcionam normalmente — a diferença é que as mensagens ficam no grupo de controle e não aparecem para a equipe.
-
 **Os horários das automações podem mudar?**
 Sim. Standup, resumo do gestor e revisão semanal são definidos na instalação e podem ser configurados para outros horários conforme o fuso escolhido.
 
@@ -656,52 +626,49 @@ Sim. Standup, resumo do gestor e revisão semanal são definidos na instalação
 Não. As automações do TaskFlow já são configuradas pelo gestor na instalação e funcionam como parte do próprio TaskFlow. Para o usuário, elas aparecem apenas como mensagens automáticas no grupo.
 
 **Como marco uma sub-etapa de projeto como feita?**
-Use `@Case P-001.1 concluida` com o ID da sub-etapa (formato pontilhado). O assistente atualiza automaticamente a próxima ação do projeto. Quando todas as sub-etapas forem concluídas, o projeto move para Revisão.
+Use `@Tars P-001.1 concluida` com o ID da sub-etapa (formato pontilhado). O assistente atualiza automaticamente a próxima ação do projeto. Quando todas as sub-etapas forem concluídas, o projeto move para Revisão.
 
 **Posso ajustar as etapas de um projeto depois de criar?**
-Sim. Você pode usar `@Case adicionar etapa P-001: ...`, `@Case renomear etapa P-001.2: ...` e `@Case reabrir etapa P-001.2`.
+Sim. Você pode usar `@Tars adicionar etapa P-001: ...`, `@Tars renomear etapa P-001.2: ...` e `@Tars reabrir etapa P-001.2`.
 
 **Posso criar tarefas recorrentes semanais ou diárias?**
-Sim. Use `diario`, `semanal`, `mensal` ou `anual` ao criar a tarefa recorrente. Exemplo: `@Case semanal para Rafael: backup do servidor toda segunda`.
+Sim. Use `diario`, `semanal`, `mensal` ou `anual` ao criar a tarefa recorrente. Exemplo: `@Tars semanal para Rafael: backup do servidor toda segunda`.
 
 **Posso renomear uma tarefa após criá-la?**
-Sim. Use `@Case renomear T-001: novo título`. O gestor ou o responsável pela tarefa podem renomear.
+Sim. Use `@Tars renomear T-001: novo título`. O gestor ou o responsável pela tarefa podem renomear.
 
 **Posso editar ou apagar um comentário da tarefa?**
-Sim. Use `@Case editar nota T-001 #2: novo texto` ou `@Case remover nota T-001 #2`. Isso vale para notas novas com ID.
+Sim. Use `@Tars editar nota T-001 #2: novo texto` ou `@Tars remover nota T-001 #2`. Isso vale para notas novas com ID.
 
 **Comecei uma tarefa mas quero devolver para a fila, como faço?**
-Use `@Case devolver T-001`. A tarefa volta para Próxima Ação e libera uma vaga no seu limite WIP.
+Use `@Tars devolver T-001`. A tarefa volta para Próxima Ação e libera uma vaga no seu limite WIP.
 
 **Posso ver as tarefas concluídas?**
-Sim. Use `@Case concluidas hoje` ou `@Case concluidas esta semana` para ver tarefas finalizadas recentemente.
+Sim. Use `@Tars concluidas hoje` ou `@Tars concluidas esta semana` para ver tarefas finalizadas recentemente.
 
 **Posso buscar uma tarefa por palavra?**
-Sim. Use `@Case buscar contrato` (ou qualquer outro texto). O assistente procura em título, próxima ação, aguardando e notas.
+Sim. Use `@Tars buscar contrato` (ou qualquer outro texto). O assistente procura em título, próxima ação, aguardando e notas.
 
 **Posso combinar filtros por pessoa ou rótulo?**
-Sim. Você pode usar `@Case revisao do Alexandre`, `@Case aguardando do Alexandre`, `@Case buscar rotulo financeiro` e `@Case buscar contrato com rotulo financeiro`.
+Sim. Você pode usar `@Tars revisao do Alexandre`, `@Tars aguardando do Alexandre`, `@Tars buscar rotulo financeiro` e `@Tars buscar contrato com rotulo financeiro`.
 
 **Posso marcar tarefas urgentes ou separar por categoria?**
-Sim. Use `@Case prioridade T-001: urgente` para destacar urgência e `@Case rotulo T-001: financeiro` para agrupar por tema. Depois você pode consultar com `@Case urgentes`, `@Case prioridade alta` ou `@Case rotulo financeiro`.
+Sim. Use `@Tars prioridade T-001: urgente` para destacar urgência e `@Tars rotulo T-001: financeiro` para agrupar por tema. Depois você pode consultar com `@Tars urgentes`, `@Tars prioridade alta` ou `@Tars rotulo financeiro`.
 
 **Posso alterar a frequência de uma tarefa recorrente?**
-Sim. Um gestor pode usar `@Case alterar recorrencia R-001 para semanal` (aceita: diario, semanal, mensal, anual).
+Sim. Um gestor pode usar `@Tars alterar recorrencia R-001 para semanal` (aceita: diario, semanal, mensal, anual).
 
 **Como vejo os comandos disponíveis?**
-Envie `@Case ajuda` para ver uma lista organizada de todos os comandos.
-
-**Como recebo o manual completo?**
-Envie `@Case manual` no grupo para receber o manual completo do TaskFlow.
+Envie `@Tars ajuda` para ver uma lista organizada de todos os comandos.
 
 **Posso desfazer uma ação?**
-Sim, use `@Case desfazer` em até 60 segundos. Não funciona para criação, arquivamento ou operações em lote.
+Sim, use `@Tars desfazer` em até 60 segundos. Não funciona para criação, arquivamento ou operações em lote.
 
 **Posso ver tarefas arquivadas?**
-Sim. Use `@Case listar arquivo` ou `@Case buscar no arquivo [texto]`.
+Sim. Use `@Tars listar arquivo` ou `@Tars buscar no arquivo [texto]`.
 
 **Posso ver estatísticas do quadro?**
-Sim. Use `@Case estatisticas` para métricas gerais, `@Case estatisticas do Alexandre` para uma pessoa, ou `@Case estatisticas do mes`.
+Sim. Use `@Tars estatisticas` para métricas gerais, `@Tars estatisticas do Alexandre` para uma pessoa, ou `@Tars estatisticas do mes`.
 
 **Posso usar o assistente em mensagem privada?**
 Não. Toda interação acontece no grupo do WhatsApp.
@@ -716,7 +683,7 @@ Sim. A profundidade é definida pelo operador durante a instalação (mínimo 2 
 Ele funciona como um quadro normal do TaskFlow — todos os comandos padrão estão disponíveis. A única diferença é que não pode criar sub-quadros nem vincular tarefas para baixo. Pode usar `ligar tarefa ao pai T-XXX` para marcar trabalho como parte de uma entrega do nível acima.
 
 **Posso desvincular uma tarefa que está sendo controlada pelo rollup?**
-Sim. O gestor usa `@Case desvincular T-XXX`. A tarefa volta a aceitar movimentação manual normal.
+Sim. O gestor usa `@Tars desvincular T-XXX`. A tarefa volta a aceitar movimentação manual normal.
 
 ---
 
@@ -745,7 +712,7 @@ Nível 1: Quadro do CEO (quadro raiz)
 
 ### Criar Quadros Filhos
 
-Quando o gestor de um quadro pede `@Case criar quadro para [pessoa]`, o assistente gera uma solicitação de provisionamento. O operador do sistema então completa a criação:
+Quando o gestor de um quadro pede `@Tars criar quadro para [pessoa]`, o assistente gera uma solicitação de provisionamento. O operador do sistema então completa a criação:
 
 1. Cria o grupo no WhatsApp
 2. Registra o grupo no sistema
@@ -769,7 +736,7 @@ Quando uma tarefa é vinculada ao quadro de uma pessoa, o quadro pai recebe atua
 
 O rollup é sempre entre níveis adjacentes — o nível 1 consulta o nível 2, o nível 2 consulta o nível 3. Nenhum nível acessa quadros mais distantes.
 
-Para atualizar o rollup: `@Case atualizar status T-XXX`
+Para atualizar o rollup: `@Tars atualizar status T-XXX`
 
 ### Comandos de Hierarquia
 
@@ -777,18 +744,18 @@ Para atualizar o rollup: `@Case atualizar status T-XXX`
 
 | Comando | O que faz |
 |---------|-----------|
-| `@Case criar quadro para [pessoa]` | Solicita criação de quadro para a pessoa |
-| `@Case remover quadro do [pessoa]` | Remove registro do quadro filho |
-| `@Case vincular T-XXX ao quadro do [pessoa]` | Vincula tarefa ao quadro filho |
-| `@Case desvincular T-XXX` | Remove vínculo com quadro filho |
-| `@Case atualizar status T-XXX` | Atualiza rollup do quadro filho |
-| `@Case resumo de execucao T-XXX` | Mostra resumo do rollup |
+| `@Tars criar quadro para [pessoa]` | Solicita criação de quadro para a pessoa |
+| `@Tars remover quadro do [pessoa]` | Remove registro do quadro filho |
+| `@Tars vincular T-XXX ao quadro do [pessoa]` | Vincula tarefa ao quadro filho |
+| `@Tars desvincular T-XXX` | Remove vínculo com quadro filho |
+| `@Tars atualizar status T-XXX` | Atualiza rollup do quadro filho |
+| `@Tars resumo de execucao T-XXX` | Mostra resumo do rollup |
 
 #### Comandos no quadro filho
 
 | Comando | O que faz |
 |---------|-----------|
-| `@Case ligar tarefa ao pai T-XXX` | Marca tarefa local como parte de uma entrega do nível acima |
+| `@Tars ligar tarefa ao pai T-XXX` | Marca tarefa local como parte de uma entrega do nível acima |
 
 Além desses, todos os comandos normais do TaskFlow continuam funcionando em qualquer quadro da hierarquia: captura rápida, projetos, recorrentes, notas, prioridades, rótulos, dependências, lembretes, etc.
 

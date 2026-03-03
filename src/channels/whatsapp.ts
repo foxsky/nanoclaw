@@ -22,6 +22,12 @@ import { logger } from '../logger.js';
 import { isMediaMessage, getMediaType, downloadAndSaveMedia } from '../media.js';
 import { isVoiceMessage, transcribeAudioMessage } from '../transcription.js';
 import {
+  isMediaMessage,
+  getMediaType,
+  downloadAndSaveMedia,
+} from '../media.js';
+import { isVoiceMessage, transcribeAudioMessage } from '../transcription.js';
+import {
   Channel,
   OnInboundMessage,
   OnChatMetadata,
@@ -221,7 +227,10 @@ export class WhatsAppChannel implements Channel {
               const transcript = await transcribeAudioMessage(msg, this.sock);
               if (transcript) {
                 finalContent = `[Voice: ${transcript}]`;
-                logger.info({ chatJid, length: transcript.length }, 'Transcribed voice message');
+                logger.info(
+                  { chatJid, length: transcript.length },
+                  'Transcribed voice message',
+                );
               } else {
                 finalContent = '[Voice Message - transcription unavailable]';
               }
@@ -236,14 +245,22 @@ export class WhatsAppChannel implements Channel {
             const mediaType = getMediaType(msg);
             const groupEntry = groups[chatJid];
             const mediaDir = path.join(GROUPS_DIR, groupEntry.folder, 'media');
-            const savedPath = await downloadAndSaveMedia(msg, mediaDir, this.sock);
+            const savedPath = await downloadAndSaveMedia(
+              msg,
+              mediaDir,
+              this.sock,
+            );
             if (savedPath) {
               const filename = path.basename(savedPath);
               const annotation = `[Media: ${mediaType} at /workspace/group/media/${filename}]`;
-              finalContent = finalContent ? `${annotation}\n${finalContent}` : annotation;
+              finalContent = finalContent
+                ? `${annotation}\n${finalContent}`
+                : annotation;
             } else {
               const annotation = `[Media: ${mediaType} — download failed]`;
-              finalContent = finalContent ? `${annotation}\n${finalContent}` : annotation;
+              finalContent = finalContent
+                ? `${annotation}\n${finalContent}`
+                : annotation;
             }
           }
 
@@ -301,7 +318,10 @@ export class WhatsAppChannel implements Channel {
     return jid.endsWith('@g.us') || jid.endsWith('@s.whatsapp.net');
   }
 
-  async createGroup(subject: string, participants: string[]): Promise<{ jid: string; subject: string }> {
+  async createGroup(
+    subject: string,
+    participants: string[],
+  ): Promise<{ jid: string; subject: string }> {
     const result = await this.sock.groupCreate(subject, participants);
     return { jid: result.id, subject: result.subject };
   }
@@ -399,13 +419,24 @@ export class WhatsAppChannel implements Channel {
         'Flushing outgoing message queue',
       );
       while (this.outgoingQueue.length > 0) {
-        const item = this.outgoingQueue.shift()!;
-        // Send directly — queued items are already prefixed by sendMessage
-        await this.sock.sendMessage(item.jid, { text: item.text });
-        logger.info(
-          { jid: item.jid, length: item.text.length },
-          'Queued message sent',
-        );
+        const item = this.outgoingQueue[0];
+        try {
+          // Send directly — queued items are already prefixed by sendMessage
+          await this.sock.sendMessage(item.jid, { text: item.text });
+          // Only remove from queue after successful send
+          this.outgoingQueue.shift();
+          logger.info(
+            { jid: item.jid, length: item.text.length },
+            'Queued message sent',
+          );
+        } catch (err) {
+          // Stop flushing on first failure — messages stay in queue for next reconnect
+          logger.warn(
+            { jid: item.jid, err, remaining: this.outgoingQueue.length },
+            'Failed to send queued message, will retry on next reconnect',
+          );
+          break;
+        }
       }
     } finally {
       this.flushing = false;

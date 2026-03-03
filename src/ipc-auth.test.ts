@@ -416,27 +416,6 @@ describe('register_group authorization', () => {
     expect(getRegisteredGroup('taskflow-too-deep@g.us')).toBeUndefined();
   });
 
-  it('rejects TaskFlow registration at the max depth boundary', async () => {
-    await processTaskIpc(
-      {
-        type: 'register_group',
-        jid: 'taskflow-at-boundary@g.us',
-        name: 'TaskFlow At Boundary',
-        folder: 'taskflow-at-boundary',
-        trigger: '@Andy',
-        taskflowManaged: true,
-        taskflowHierarchyLevel: 3,
-        taskflowMaxDepth: 3,
-      },
-      'main',
-      true,
-      deps,
-    );
-
-    expect(groups['taskflow-at-boundary@g.us']).toBeUndefined();
-    expect(getRegisteredGroup('taskflow-at-boundary@g.us')).toBeUndefined();
-  });
-
   it('rejects TaskFlow registration with invalid hierarchy metadata', async () => {
     await processTaskIpc(
       {
@@ -518,7 +497,9 @@ describe('IPC message authorization', () => {
 
   it('main group cannot send to unregistered JID', () => {
     // Main can cross-send, but only to registered groups.
-    expect(isMessageAuthorized('main', true, 'unknown@g.us', groups)).toBe(false);
+    expect(isMessageAuthorized('main', true, 'unknown@g.us', groups)).toBe(
+      false,
+    );
   });
 });
 

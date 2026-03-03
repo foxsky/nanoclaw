@@ -131,15 +131,7 @@ CREATE TABLE IF NOT EXISTS board_runtime_config (
   attachment_enabled INTEGER DEFAULT 1,
   attachment_disabled_reason TEXT DEFAULT '',
   attachment_allowed_formats TEXT DEFAULT '["pdf","jpg","png"]',
-  attachment_max_size_bytes INTEGER DEFAULT 10485760,
-  -- Control group runner routing (wizard always overrides these when control group is enabled)
-  standup_target TEXT DEFAULT 'team',
-  digest_target TEXT DEFAULT 'team',
-  review_target TEXT DEFAULT 'team',
-  runner_standup_secondary_task_id TEXT,
-  runner_digest_secondary_task_id TEXT,
-  runner_review_secondary_task_id TEXT,
-  welcome_sent INTEGER DEFAULT 0
+  attachment_max_size_bytes INTEGER DEFAULT 10485760
 );
 
 CREATE TABLE IF NOT EXISTS attachment_audit_log (
@@ -152,19 +144,12 @@ CREATE TABLE IF NOT EXISTS attachment_audit_log (
   affected_task_refs TEXT DEFAULT '[]'
 );
 
-CREATE TABLE IF NOT EXISTS board_groups (
-  board_id TEXT NOT NULL REFERENCES boards(id),
-  group_jid TEXT NOT NULL,
-  group_folder TEXT NOT NULL,
-  group_role TEXT NOT NULL DEFAULT 'team',
-  PRIMARY KEY (board_id, group_jid)
-);
-
 CREATE TABLE IF NOT EXISTS board_config (
   board_id TEXT PRIMARY KEY REFERENCES boards(id),
   columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]',
   wip_limit INTEGER DEFAULT 5,
-  next_task_number INTEGER DEFAULT 1
+  next_task_number INTEGER DEFAULT 1,
+  next_note_id INTEGER DEFAULT 1
 );
 `;
 
@@ -182,32 +167,6 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   db.pragma('foreign_keys = ON');
   db.exec(TASKFLOW_SCHEMA);
 
-  // Add control-group routing columns if they don't exist (migration for existing DBs)
-  const controlGroupMigrations = [
-    `ALTER TABLE board_runtime_config ADD COLUMN standup_target TEXT DEFAULT 'team'`,
-    `ALTER TABLE board_runtime_config ADD COLUMN digest_target TEXT DEFAULT 'team'`,
-    `ALTER TABLE board_runtime_config ADD COLUMN review_target TEXT DEFAULT 'team'`,
-    `ALTER TABLE board_runtime_config ADD COLUMN runner_standup_secondary_task_id TEXT`,
-    `ALTER TABLE board_runtime_config ADD COLUMN runner_digest_secondary_task_id TEXT`,
-    `ALTER TABLE board_runtime_config ADD COLUMN runner_review_secondary_task_id TEXT`,
-  ];
-  for (const sql of controlGroupMigrations) {
-    try {
-      db.exec(sql);
-    } catch {
-      /* column already exists */
-    }
-  }
-
-  // Welcome message flag
-  try {
-    db.exec(`ALTER TABLE board_runtime_config ADD COLUMN welcome_sent INTEGER DEFAULT 0`);
-    // Mark existing boards as already welcomed — only new boards should get the welcome
-    db.exec(`UPDATE board_runtime_config SET welcome_sent = 1 WHERE welcome_sent = 0`);
-  } catch {
-    /* column already exists */
-  }
-
   return db;
 }
 
@@ -216,8 +175,12 @@ const isMain = process.argv[1]?.endsWith('taskflow-db.js');
 if (isMain) {
   const dbPath = process.argv[2];
   const db = initTaskflowDb(dbPath);
-  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as Array<{ name: string }>;
-  console.log(`TaskFlow DB initialized at ${dbPath ?? path.join(DATA_DIR, 'taskflow', 'taskflow.db')}`);
-  console.log(`Tables: ${tables.map(t => t.name).join(', ')}`);
+  const tables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+    .all() as Array<{ name: string }>;
+  console.log(
+    `TaskFlow DB initialized at ${dbPath ?? path.join(DATA_DIR, 'taskflow', 'taskflow.db')}`,
+  );
+  console.log(`Tables: ${tables.map((t) => t.name).join(', ')}`);
   db.close();
 }
