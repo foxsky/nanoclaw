@@ -94,6 +94,100 @@ Each incoming message includes the sender's WhatsApp display name in the metadat
   - if a message matches a known command but the sender lacks permission, refuse briefly, explain who can run it, and do NOT modify the board data store (SQLite)
 - If sender identity is unavailable, refuse state-changing commands and request manager confirmation from the main channel
 
+## Notification System
+
+After ANY state-changing operation on a task, check if a notification should be sent.
+
+**Notification Rules:**
+
+1. **Inbox Processing → Assignment**
+   - Task moved from `inbox` to any other column
+   - AND task has an assignee
+   - → Send notification to assignee about new task assignment
+
+2. **Modification by Non-Assignee**
+   - Any task property changed (column, assignee, deadline, priority, next_action, notes, description)
+   - AND modifier ≠ current assignee
+   - AND task is not in `inbox` (inbox tasks don't have owners yet)
+   - AND assignee is not null
+   - → Send notification to assignee about the change
+
+3. **No Notification When:**
+   - Modifier = assignee (self-updates)
+   - Task has no assignee
+   - Task is in `inbox` and not being assigned
+
+**Notification Format:**
+
+For new assignment (inbox → processed):
+```
+🔔 *Nova tarefa atribuída a você*
+
+*Task:* T-XXX - [título]
+*Atribuído por:* [nome do modificador]
+*Coluna:* [coluna_destino_pt]
+
+*Detalhes:*
+• Prazo: [deadline ou "sem prazo"]
+• Prioridade: [priority]
+[• Projeto: [project_name] — only if task belongs to a project]
+
+Digite `T-XXX` para ver detalhes completos.
+```
+
+For modification by other person:
+```
+🔔 *Atualização na sua tarefa*
+
+*Task:* T-XXX - [título]
+*Modificado por:* [nome do modificador]
+*Alteração:* [descrição específica da mudança]
+
+*Detalhes:*
+• Status: [coluna_atual_pt]
+• Prazo: [deadline ou "sem prazo"]
+• Prioridade: [priority]
+
+Digite `T-XXX` para ver detalhes completos.
+```
+
+**Change Descriptions (pt-BR):**
+- Column change:
+  - inbox → "Da caixa de entrada para [new_column_pt]"
+  - next_action → "De próximas ações para [new_column_pt]"
+  - in_progress → "De em andamento para [new_column_pt]"
+  - waiting → "De aguardando para [new_column_pt]"
+  - review → "De revisão para [new_column_pt]"
+  - done → "De concluídas para [new_column_pt]"
+- Assignee change: "Reatribuída de [old_person] para você"
+- Deadline add: "Prazo definido: [new_date]"
+- Deadline change: "Prazo alterado de [old_date] para [new_date]"
+- Deadline remove: "Prazo removido (era [old_date])"
+- Priority change: "Prioridade alterada de [old] para [new]"
+- Next action update: "Próxima ação atualizada"
+- Note added: "Novo comentário adicionado"
+- Description update: "Descrição atualizada"
+- Title change: "Título alterado"
+- Multiple changes in one operation: "Múltiplas alterações realizadas"
+
+**How to Send:**
+Use `send_message` with the formatted notification text. The notification is sent to the group (not individual DM).
+
+**Implementation Flow:**
+1. Before executing the command, snapshot the task's current state (assignee, column, deadline, priority, etc.)
+2. Execute the command and update SQLite
+3. Compare old state vs new state
+4. Check notification rules above
+5. If notification needed: format message and call `send_message`
+6. Then send success confirmation to user
+
+**Important:**
+- DO NOT send notification if modifier = assignee (self-updates never trigger notifications)
+- DO NOT send notification for tasks without an assignee
+- Keep notifications concise and actionable
+- Notifications are informative only — they don't require response
+- If multiple properties changed in one operation, describe the most important change or use "Múltiplas alterações realizadas"
+
 ## File Paths
 
 All group-local files are at `/workspace/group/`. Do NOT use `/workspace/project/` — non-main groups do not have the project root mounted.
