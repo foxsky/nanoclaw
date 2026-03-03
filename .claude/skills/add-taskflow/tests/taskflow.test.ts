@@ -1033,7 +1033,7 @@ describe('taskflow skill package', () => {
   it('SKILL.md prompt-injection guardrails include create_group depth checks', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
     const guardrails =
-      skillMd.match(/### 5\. Prompt-Injection Guardrails.*?### 6\./s)?.[0] ??
+      skillMd.match(/### 6\. Prompt-Injection Guardrails.*?### 7\./s)?.[0] ??
       '';
 
     expect(guardrails).toContain('`create_group` is privileged too');
