@@ -18,7 +18,11 @@ export function formatMessages(messages: NewMessage[]): string {
 }
 
 export function stripInternalTags(text: string): string {
-  return text.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+  // Strip properly closed <internal>...</internal> blocks
+  let result = text.replace(/<internal>[\s\S]*?<\/internal>/g, '');
+  // Strip unclosed <internal> tags (model hallucinated wrong closing tag)
+  result = result.replace(/<internal>[\s\S]*/g, '');
+  return result.trim();
 }
 
 export function formatOutbound(rawText: string): string {

@@ -455,7 +455,8 @@ describe('refresh_groups authorization', () => {
 
 // --- IPC message authorization ---
 // Tests the authorization pattern from startIpcWatcher (ipc.ts).
-// The logic: targetGroup && (isMain || targetGroup.folder === sourceGroup)
+// The logic: targetGroup && (isMain || targetGroup.folder === sourceGroup ||
+// (isTaskflow && targetGroup.taskflowManaged))
 
 describe('IPC message authorization', () => {
   // Replicate the exact check from the IPC watcher
@@ -465,8 +466,15 @@ describe('IPC message authorization', () => {
     targetChatJid: string,
     registeredGroups: Record<string, RegisteredGroup>,
   ): boolean {
+    const sourceGroupEntry = Object.values(registeredGroups).find(
+      (group) => group.folder === sourceGroup,
+    );
+    const isTaskflow = sourceGroupEntry?.taskflowManaged === true;
     const targetGroup = registeredGroups[targetChatJid];
-    return !!targetGroup && (isMain || targetGroup.folder === sourceGroup);
+    return !!targetGroup &&
+      (isMain ||
+        targetGroup.folder === sourceGroup ||
+        (isTaskflow && targetGroup.taskflowManaged === true));
   }
 
   it('main group can send to any group', () => {
@@ -500,6 +508,39 @@ describe('IPC message authorization', () => {
     expect(isMessageAuthorized('main', true, 'unknown@g.us', groups)).toBe(
       false,
     );
+  });
+
+  it('TaskFlow groups can send to other TaskFlow groups', () => {
+    groups['taskflow-a@g.us'] = {
+      name: 'TaskFlow A',
+      folder: 'taskflow-a',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+      taskflowManaged: true,
+    };
+    groups['taskflow-b@g.us'] = {
+      name: 'TaskFlow B',
+      folder: 'taskflow-b',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+      taskflowManaged: true,
+    };
+
+    expect(isMessageAuthorized('taskflow-a', false, 'taskflow-b@g.us', groups))
+      .toBe(true);
+  });
+
+  it('TaskFlow groups cannot send to non-TaskFlow groups', () => {
+    groups['taskflow-a@g.us'] = {
+      name: 'TaskFlow A',
+      folder: 'taskflow-a',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+      taskflowManaged: true,
+    };
+
+    expect(isMessageAuthorized('taskflow-a', false, 'other@g.us', groups))
+      .toBe(false);
   });
 });
 

@@ -159,4 +159,30 @@ Comandos como `processar inbox`, `reatribuir`, `cancelar` e `estatisticas` funci
 - Descricao: `@Case descricao T-XXX: escopo detalhado da tarefa`
 - Lembretes: `@Case lembrete T-XXX 3 dias antes`
 
+---
+
+## Hierarquia (Delegacao)
+
+O TaskFlow pode organizar quadros em niveis. O gestor raiz delega para pessoas que gerenciam seus proprios quadros.
+
+### Criar quadros filhos
+
+Quadros filhos sao criados automaticamente:
+
+- **Ao cadastrar**: `@Case cadastrar Joao, telefone 5585999990000, desenvolvedor` — em quadros nao-folha, cria o quadro filho automaticamente.
+- **Ao atribuir a pessoa desconhecida**: `@Case tarefa para Joao: revisar contrato` — o assistente oferece cadastrar. Se o gestor confirmar com telefone e cargo, o cadastro e o quadro sao criados, e a tarefa e atribuida em seguida.
+- **Solicitacao explicita**: `@Case criar quadro para [pessoa]`
+
+### Comandos de hierarquia
+
+| Comando | O que faz |
+|---------|-----------|
+| `@Case vincular T-XXX ao quadro do [pessoa]` | Vincula tarefa ao quadro filho |
+| `@Case desvincular T-XXX` | Remove vinculo |
+| `@Case atualizar status T-XXX` | Atualiza rollup do quadro filho |
+| `@Case resumo de execucao T-XXX` | Mostra resumo do rollup |
+| `@Case ligar tarefa ao pai T-XXX` | Marca tarefa como parte de entrega do nivel acima |
+
+Tarefas vinculadas aparecem com 🔗 no quadro. O rollup mostra o status agregado do quadro filho (ativo, bloqueado, em risco, pronto para revisao).
+
 Para o manual completo, envie `@Case manual` no grupo.

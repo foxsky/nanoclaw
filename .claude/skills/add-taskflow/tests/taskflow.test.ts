@@ -103,7 +103,7 @@ describe('taskflow skill package', () => {
     // Security
     expect(content).toContain('Security');
     expect(content).toContain('untrusted data');
-    expect(content).toContain('cross-group operation');
+    expect(content).toContain('cross-group scheduling are main-channel-only');
     expect(content).toContain('Group-local `schedule_task`/`cancel_task` operations are allowed');
 
     // Authorization
@@ -326,7 +326,7 @@ describe('taskflow skill package', () => {
     expect(skillMd).toContain('env GROUPS_JSON="$GROUPS_JSON" node -e "');
     // Keeps hierarchy setup separate from separate-mode multi-board setup
     expect(skillMd).toContain('If you create multiple groups for separate mode');
-    expect(skillMd).toContain('For hierarchy mode, create only the root board during initial setup');
+    expect(skillMd).toContain('For hierarchy mode, create the initial chain during setup');
   });
 
   it('CLAUDE.md.template scope guard appears before data loading', () => {
@@ -1029,6 +1029,72 @@ describe('taskflow skill package', () => {
     expect(phase3Section).toContain("stmt.run('{{BOARD_ID}}'");
   });
 
+  it('SKILL.md documents distinct control-root and team-board IDs for control-group hierarchy', () => {
+    const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
+
+    const placeholderList =
+      skillMd.match(/Substitute all `\{\{PLACEHOLDER\}\}` variables:[\s\S]*?The control and team prompts must point to different board IDs in this topology\./)?.[0] ?? '';
+
+    expect(placeholderList).toContain('{{ROOT_BOARD_ID}}');
+    expect(placeholderList).toContain('{{TEAM_GROUP_FOLDER}}');
+    expect(placeholderList).toContain('{{CONTROL_GROUP_FOLDER}}');
+    expect(placeholderList).toContain('render the template twice');
+    expect(placeholderList).toContain('bind `{{BOARD_ID}}` = `{{ROOT_BOARD_ID}}`');
+    expect(placeholderList).toContain('different board IDs');
+    expect(placeholderList).not.toContain('board-sec-taskflow');
+    expect(placeholderList).not.toContain('board-secti-taskflow');
+  });
+
+  it('SKILL.md avoids person-specific setup examples in generic instructions', () => {
+    const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
+
+    expect(skillMd).not.toContain('"Miguel"');
+    expect(skillMd).not.toContain('"Alexandre"');
+    expect(skillMd).not.toContain('"Rafael"');
+    expect(skillMd).not.toContain('"Laizes"');
+    expect(skillMd).not.toContain('"Maria Jose"');
+    expect(skillMd).not.toContain('"José"');
+    expect(skillMd).not.toContain('"João"');
+    expect(skillMd).not.toContain('"5586999990000"');
+    expect(skillMd).not.toContain('"5586XXXXXXXXX@s.whatsapp.net"');
+  });
+
+  it('SKILL.md root-board seeding creates synthetic control root and child team boards', () => {
+    const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
+
+    const rootSeedSection =
+      skillMd.match(/#### 6c\. Seed Board Data[\s\S]*?#### 6d\./)?.[0] ?? '';
+
+    expect(rootSeedSection).toContain('do **not** mix the control group\'s folder with the team group\'s JID');
+    expect(rootSeedSection).toContain('const hasControlGroup = \'{{HAS_CONTROL_GROUP}}\' === \'true\';');
+    expect(rootSeedSection).toContain('const rootBoardId = hasControlGroup ? \'{{ROOT_BOARD_ID}}\' : boardId;');
+    expect(rootSeedSection).toContain('function seedBoard');
+    expect(rootSeedSection).toContain('{{TEAM_GROUP_JID}}');
+    expect(rootSeedSection).toContain('{{TEAM_GROUP_FOLDER}}');
+    expect(rootSeedSection).toContain('{{CONTROL_GROUP_JID}}');
+    expect(rootSeedSection).toContain('{{CONTROL_GROUP_FOLDER}}');
+    expect(rootSeedSection).toContain("groupRole: 'control'");
+    expect(rootSeedSection).toContain("groupRole: 'team'");
+    expect(rootSeedSection).toContain('parentBoardId: rootBoardId');
+    expect(rootSeedSection).toContain("groupRole === 'control' ? 'control' : 'team'");
+  });
+
+  it('SKILL.md runner setup and verification distinguish control root board from child team board', () => {
+    const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
+
+    const phase4 =
+      skillMd.match(/## Phase 4: Runner Setup[\s\S]*?## Phase 5:/)?.[0] ?? '';
+    expect(phase4).toContain('the control root group (`{{CONTROL_GROUP_FOLDER}}`) with runners bound to `{{ROOT_BOARD_ID}}`');
+    expect(phase4).toContain('the team child group (`{{TEAM_GROUP_FOLDER}}`) with runners bound to `{{BOARD_ID}}`');
+    expect(phase4).toContain('persist the control group\'s runner IDs into `{{ROOT_BOARD_ID}}`');
+
+    const phase5 =
+      skillMd.match(/## Phase 5: Verification[\s\S]*?### 4\. Test Attachment Import/)?.[0] ?? '';
+    expect(phase5).toContain('should **not** automatically show that same task');
+    expect(phase5).toContain('synthetic-root split is working');
+    expect(phase5).not.toContain('show the same board state as the team group');
+  });
+
 
   it('SKILL.md prompt-injection guardrails include create_group depth checks', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
@@ -1496,6 +1562,44 @@ describe('taskflow skill package', () => {
     expect(userManual).toContain('os lembretes ativos também são cancelados antes do arquivamento');
   });
 
+  it('skill and TaskFlow docs describe linked tasks as actionable on the receiving board', () => {
+    const repoRoot = path.resolve(skillDir, '..', '..', '..');
+    const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
+    const operatorGuide = fs.readFileSync(
+      path.join(repoRoot, 'docs', 'taskflow-operator-guide.md'),
+      'utf-8',
+    );
+    const userManual = fs.readFileSync(
+      path.join(repoRoot, 'docs', 'taskflow-user-manual.md'),
+      'utf-8',
+    );
+    const design = fs.readFileSync(
+      path.join(
+        repoRoot,
+        'docs',
+        'plans',
+        '2026-02-28-taskflow-hierarchical-delegation-design.md',
+      ),
+      'utf-8',
+    );
+    const implementation = fs.readFileSync(
+      path.join(
+        repoRoot,
+        'docs',
+        'plans',
+        '2026-02-28-taskflow-hierarchical-delegation-implementation.md',
+      ),
+      'utf-8',
+    );
+
+    expect(skillMd).toContain('may move the linked task through the normal GTD phases');
+    expect(operatorGuide).toContain('Receiving boards can still move linked tasks directly');
+    expect(userManual).toContain('ela continua acionável');
+    expect(userManual).toContain('Tarefas marcadas com `🔗` continuam acionáveis');
+    expect(design).toContain('the assignee and board owner may move the linked task');
+    expect(implementation).toContain('the receiving board may move the task directly');
+  });
+
   it('CLAUDE.md.template does not reference JSON schema_version migrations (SQLite-only)', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
@@ -1579,8 +1683,10 @@ describe('taskflow skill package', () => {
     expect(rootAdminSection).toContain('board_admins');
     expect(rootAdminSection).toContain("'manager'");
     // Child board admin (Phase 6 Step 5) — must also be 'manager'
-    const childAdminMatch = skillMd.match(
-      /Child board.*?board_admins.*?'manager'/s,
+    const childPhaseSection =
+      skillMd.match(/### 5\. Seed Child Board in TaskFlow DB[\s\S]*?### 6\./)?.[0] ?? '';
+    const childAdminMatch = childPhaseSection.match(
+      /INSERT INTO board_admins.*?'manager'/s,
     );
     expect(childAdminMatch).not.toBeNull();
     // All board_admins INSERTs must use 'manager', not 'full'
@@ -1857,7 +1963,7 @@ describe('taskflow skill package', () => {
     );
     expect(content).toContain('### Auto-Link on Assignment');
     expect(content).toContain(
-      'tem um quadro registrado. Vincular T-XXX automaticamente?',
+      'T-XXX vinculada automaticamente ao quadro de',
     );
   });
 
@@ -1868,9 +1974,9 @@ describe('taskflow skill package', () => {
     );
     expect(content).toContain('### Authority While Linked');
     expect(content).toContain('child_exec_enabled = 1');
-    expect(content).toContain('column` is rollup-managed');
-    expect(content).toContain('normal assignee movement is disabled');
-    expect(content).toContain('board owner must unlink first');
+    expect(content).toContain('column` stays directly actionable');
+    expect(content).toContain('may move the linked task through the normal GTD phases');
+    expect(content).toContain('NOT required for normal execution updates on the current board');
   });
 
   it('CLAUDE.md.template hierarchy has reassignment rules while linked', () => {
@@ -1915,6 +2021,7 @@ describe('taskflow skill package', () => {
     expect(content).toContain('🔗 T-004');
     // Standup format
     expect(content).toContain('🔗 Alexandre');
+    expect(content).toContain('not a read-only task');
     // Stale rollup warning
     expect(content).toContain('rollup desatualizado');
   });
@@ -1999,7 +2106,7 @@ describe('taskflow skill package', () => {
     expect(content).toContain('description` does not roll up');
     // _last_mutation excluded from rollup
     expect(content).toContain(
-      'Rollup-driven column changes are NOT captured in `_last_mutation`',
+      'Rollup-driven column changes coming from an immediate child board are NOT captured in `_last_mutation`',
     );
     // attachment policy
     expect(content).toContain('board_runtime_config.attachment_');
@@ -2246,10 +2353,10 @@ describe('taskflow skill package', () => {
       '';
 
     expect(section).toContain(
-      'Do NOT assume this board can send cross-group messages',
+      'notification_group_jid',
     );
     expect(section).toContain(
-      'Only the main group can use cross-group `send_message`',
+      'cross-group notification to the child board',
     );
     expect(section).toContain('notify the child board manually');
   });

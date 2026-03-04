@@ -47,7 +47,7 @@ The feature is complete when all of the following are true:
 - A SQLite MCP server provides `read_query` and `write_query` tools to agents.
 - Any non-leaf board can register child boards in `child_board_registrations`.
 - Tasks at any non-leaf level can link to registered child boards via `child_exec_*` columns.
-- While linked, rollup-managed tasks stop accepting ordinary assignee column moves.
+- While linked, the receiving board can still move the task directly unless it is explicitly pulling rollup from its own immediate child board.
 - Rollup runs only across adjacent levels via SQL queries (each board refreshes independently).
 - Leaf boards (`hierarchy_level == max_depth`) cannot have child boards or downward link commands.
 - The same commands, data model, and rollup engine work at every level.
@@ -58,10 +58,9 @@ The feature is complete when all of the following are true:
 ## Non-Goals
 
 - No unbounded recursion (depth is always capped by `max_depth`)
-- No automatic or implicit board creation during ordinary task execution
 - No non-adjacent rollup (no grandchild reads)
 - No dedicated assistant board in the base rollout
-- No mirrored task trees across levels
+- No mirrored task trees across levels (child boards see parent tasks via `child_exec_board_id` reference, not copies)
 - No custom MCP server — use `mcp-server-sqlite-npx` (Node.js port of the official reference server)
 - No code-level access control per board (authorization is prompt-enforced)
 
@@ -148,6 +147,7 @@ CREATE TABLE board_people (
   phone TEXT,
   role TEXT DEFAULT 'member',
   wip_limit INTEGER,
+  notification_group_jid TEXT,
   PRIMARY KEY (board_id, person_id)
 );
 
@@ -422,8 +422,12 @@ INSERT INTO board_admins VALUES (
 
 -- Add the person as manager on their own board
 INSERT INTO board_people VALUES (
-  :child_board_id, :person_id, :person_name, :phone, 'manager', :wip_limit
+  :child_board_id, :person_id, :person_name, :phone, 'manager', :wip_limit, NULL
 );
+
+-- Update the parent board's board_people row for cross-group notifications
+UPDATE board_people SET notification_group_jid = :child_group_jid
+WHERE board_id = :parent_board_id AND person_id = :person_id;
 ```
 
 4. The authorized provisioning flow generates the child group's CLAUDE.md from the hierarchy template.
@@ -528,6 +532,8 @@ Standalone single-board TaskFlow installs and non-hierarchical boards must conti
 
 Extend `.claude/skills/add-taskflow/templates/CLAUDE.md.template` so hierarchy boards understand:
 
+- `{{MANAGER_NAME}}` identifies the board owner — the person the assistant serves on that board. For child boards, this is the person who owns the board (e.g., "Giovanni"), not the parent manager. The assistant addresses this person by name.
+
 - How to detect `board_role = 'hierarchy'` (from the board's configuration in `taskflow.db`)
 - How to treat missing or unknown `board_role` as `standard` and preserve current single-board behavior
 - How to determine the board's position from `hierarchy_level` and `max_depth`:
@@ -575,21 +581,23 @@ Extend `.claude/skills/add-taskflow/templates/CLAUDE.md.template` so hierarchy b
 
 #### Board provisioning:
 
-- **Create child board**: Refuse if `hierarchy_level == max_depth` (leaf). Refuse if the person already has a registered child board. Collect the target person and subordinate group information, then emit an authorized provisioning request. The approved setup/operator flow (or another explicitly authorized provisioning context) creates the WhatsApp group via the `create_group` IPC plugin (recommended — no service stop) or direct Baileys API, writes the `registered_groups` row with explicit TaskFlow metadata (`taskflow_managed = true`, `taskflow_hierarchy_level = parent_runtime_level + 1`, `taskflow_max_depth = max_depth`) using the same direct SQLite setup pattern as standard TaskFlow, inserts `boards` with `hierarchy_level = parent_board_level + 1`, then inserts `child_board_registrations`, `board_config`, `board_runtime_config`, `board_admins`, and `board_people`, generates `CLAUDE.md`, schedules the board runners, and records `child_board_created` after the provisioning completes. Missing or invalid depth metadata must fail provisioning; it must never be treated as unlimited depth.
+- **Create child board**: Refuse if `hierarchy_level == max_depth` (leaf). Refuse if the person already has a registered child board. The agent calls the `provision_child_board` MCP tool which writes an IPC file. The host-side `provision-child-board.ts` plugin handles the full lifecycle asynchronously: creates the WhatsApp group via `deps.createGroup()`, registers it via `deps.registerGroup()` with TaskFlow metadata (`taskflow_managed = true`, `taskflow_hierarchy_level = parent_runtime_level + 1`, `taskflow_max_depth = max_depth`), seeds `taskflow.db` (boards, child_board_registrations, board_config, board_runtime_config, board_admins, board_people), generates `CLAUDE.md` from template, schedules runners, fixes ownership, and sends confirmation. Missing or invalid depth metadata must fail provisioning; it must never be treated as unlimited depth.
+- **Auto-provisioning on `cadastrar`**: When a person is registered via `cadastrar` on a non-leaf hierarchy board, the agent automatically calls `provision_child_board` after inserting into `board_people`. The provisioning is fire-and-forget from the container's perspective — the host processes it asynchronously.
 - **Remove child board**: Refuse if the person has active linked tasks (must unlink first). DELETE from `child_board_registrations`. Do not change `board_role` or storage backend. Treat the child board as a detached hierarchy board that must be explicitly re-parented or decommissioned by a separate operator workflow before any new upward linkage is used. Record `child_board_removed` history action.
 - **No board yet**: When a link command targets a person without a registered child board, suggest: `[pessoa] nao tem um quadro registrado. Use "criar quadro para [pessoa]" para provisionar.`
 
 #### Task hierarchy:
 
-- **Auto-link**: When a task is assigned to a person with a registered child board, the board should offer auto-link: `[pessoa] tem um quadro registrado. Vincular T-XXX automaticamente? (sim/nao)`. Default is to link. The board owner can always unlink later.
+- **Auto-link**: When a task is assigned to a person with a registered child board, the board automatically links it (if the sender is a full manager and the task is not a recurring task). The `vincular` UPDATE is performed immediately after assignment. The manager is informed: `T-XXX vinculada automaticamente ao quadro de [pessoa].` The board owner can always unlink later.
 - **Link validation**: Linking succeeds only if the task assignee matches a person in `child_board_registrations` and that person has a registered entry.
-- **Link effect**: Sets `child_exec_enabled = 1` and populates `child_exec_board_id`, `child_exec_person_id` on the task.
+- **Link effect**: Sets `child_exec_enabled = 1` and populates `child_exec_board_id`, `child_exec_person_id` on the task. The task remains on the parent board — the child board sees it via the `child_exec_board_id` reference (no copy is created).
 - **Leaf restriction**: Linking must be refused if `hierarchy_level == max_depth` (leaf board).
 - **Task type restriction**: Linking is allowed on simple tasks (T-XXX) and projects (P-XXX). Recurring tasks (R-XXX) cannot be linked because cycle resets would break the linkage contract. Error: `Tarefas recorrentes nao podem ser vinculadas a quadros. Crie uma tarefa simples para cada ciclo.`
 - **Multiple parents**: Multiple parent tasks may be linked to the same child board simultaneously. Each parent task's rollup considers only child-board tasks tagged to that specific parent task (matched by `linked_parent_task_id`).
-- **Refresh**: Queries the child board's tasks via SQL and recomputes rollup fields.
+- **Receiving-board authority**: Once linked, the receiving board may move the task directly through the normal GTD phases. The `🔗` marker indicates cross-board routing only; it does not make the task read-only there.
+- **Refresh**: Queries the child board's tasks via SQL and recomputes rollup fields. This is for parent boards that have delegated the same deliverable further down, not for ordinary direct execution on the current board.
 - **View**: Shows only summarized status, not the full child-board task list.
-- **Unlink**: Sets `child_exec_enabled = 0` (preserves `child_exec_*` fields for audit), keeps the task's current `column`, records `child_board_unlinked` with the last known `rollup_status`, and re-enables normal assignee column moves.
+- **Unlink**: Sets `child_exec_enabled = 0` (preserves `child_exec_*` fields for audit), keeps the task's current `column`, records `child_board_unlinked` with the last known `rollup_status`, and re-enables normal assignee column moves. The child board will no longer see this task.
 - **Upward tagging**: Sets `linked_parent_board_id` and `linked_parent_task_id` on the local task. The command accepts the parent task ID only because the board already knows its `parent_board_id`; the stored reference is always fully qualified.
 - **Root restriction**: Upward tagging must be refused on root boards (`parent_board_id IS NULL`).
 - **Disambiguation**: `"resumo"` alone triggers the v2 ad-hoc digest. `"resumo de execucao T-XXX"` triggers the rollup view. The task ID suffix disambiguates.
@@ -600,18 +608,38 @@ Extend `.claude/skills/add-taskflow/templates/CLAUDE.md.template` so hierarchy b
 
 When `child_exec_enabled = 1`:
 
-- `column` becomes rollup-managed
-- Normal assignee movement on that task is disabled
+- On the receiving board, `column` stays directly actionable through the normal GTD commands
+- Normal assignee movement on that task remains allowed on the receiving board
 - The board owner still controls due date, priority, labels, and final approval
-- If the board owner wants direct manual workflow again, they must unlink first
+- If this board later delegates the same deliverable to an immediate child board, `atualizar status T-XXX` / `sincronizar T-XXX` pulls that child progress back into the current task
+- If the board owner wants to remove cross-board visibility entirely, they must unlink first
 
-This rule must be explicit in the prompt so the runtime does not oscillate between manual moves and rollup moves.
+This rule must be explicit in the prompt so the runtime distinguishes ordinary direct execution on the current board from explicit rollup pulls from an immediate child board.
 
-### 3.5 Interaction with TaskFlow v2 Features
+### 3.5 Reference-Based Task Visibility
+
+Tasks exist as a single row on the parent board. Child boards see delegated tasks via a reference, not copies.
+
+Each board loads its tasks with:
+
+```sql
+SELECT * FROM tasks
+WHERE board_id = :my_board_id
+   OR (child_exec_board_id = :my_board_id AND child_exec_enabled = 1)
+ORDER BY created_at
+```
+
+This returns own tasks (`board_id` match) plus tasks delegated from parent boards (`child_exec_board_id` match). The single-row design ensures:
+- No sync issues between parent and child views
+- Updates from either board apply to the same row
+- Clean delegation semantics for direct execution plus standup/digest/review
+- Unlinking (`child_exec_enabled = 0`) immediately removes visibility from the child board
+
+### 3.6 Interaction with TaskFlow v2 Features
 
 The prompt must enforce these interaction rules when a task has `child_exec_enabled = 1`:
 
-- Rollup-driven column changes must not be captured in `_last_mutation` and cannot be undone via `desfazer`. To reverse a rollup column change, unlink the task first.
+- Rollup-driven column changes caused by `atualizar status T-XXX` / `sincronizar T-XXX` must not be captured in `_last_mutation` and cannot be undone via `desfazer`. Ordinary direct moves on the current board still follow the normal mutation/undo rules.
 - `blocked_by` references must be validated as board-local only. Cross-board task IDs are not valid dependency targets. Cross-board blocking is expressed through `rollup_status = 'blocked'`.
 - `reminders` continue to fire on the board-owner-managed `due_date` regardless of linkage state.
 - `description` does not roll up. Parent and child descriptions are independent.
@@ -861,7 +889,7 @@ Extend `.claude/skills/add-taskflow/tests/taskflow.test.ts` with coverage for:
 - All 9 history actions documented and recorded when expected
 - Initial rollup state for "linked but no tagged work yet"
 - Rollup distinguishes "no tagged work yet" from "all tagged work done"
-- Auto-link prompt when assigning to a person with a registered child board
+- Automatic auto-link when assigning to a person with a registered child board
 - Recurring tasks (R-XXX) cannot be linked to child boards
 - Multiple parent tasks can link to the same child board with independent rollup
 - Board display shows `🔗` marker on linked tasks
@@ -950,8 +978,10 @@ Before shipping, verify:
 - [x] No level performs non-adjacent rollup
 - [x] Assistant tasks work directly on the root board without forcing a separate tier
 - [x] Adding a new level requires only `max_depth` change and provisioning, not template changes
-- [x] Board owners can request child boards from their own group via `criar quadro para [pessoa]`; the flow uses `create_group`, then completes the `registered_groups` write from an authorized provisioning context
+- [x] Board owners can request child boards from their own group via `criar quadro para [pessoa]`; the `provision_child_board` IPC plugin handles the full lifecycle
+- [x] Auto-provisioning on `cadastrar`: registering a person on a non-leaf board automatically provisions their child board
 - [x] Board creation is refused on leaf boards
+- [x] Child boards see delegated tasks via `child_exec_board_id` reference (no task copies)
 - [x] Standard (non-hierarchy) boards continue working with JSON files unchanged
 - [x] Docs, templates, and tests agree on the same bounded-recursive SQLite-based model
 
@@ -972,6 +1002,25 @@ Key decisions made during implementation:
 6. **Missing history actions in template**: The template originally had `child_board_created`, `child_board_removed`, and `child_board_unlinked` but was missing `child_board_linked` and the 4 rollup-specific actions (`child_rollup_blocked`, `child_rollup_at_risk`, `child_rollup_completed`, `child_rollup_cancelled`). Added all to match the design doc's 9 history actions.
 
 7. **`ANTHROPIC_AUTH_TOKEN` in secret env vars**: Linter flagged this missing from both `container-runner.ts` and `container/agent-runner/src/index.ts`. Added to `SECRET_ENV_VARS` / `readSecrets` in both files.
+
+8. **Cross-group notifications for hierarchy**: Added `notification_group_jid TEXT` column to `board_people` to store the WhatsApp group JID where a person receives notifications. Added `target_chat_jid` optional parameter to the `send_message` MCP tool. Updated IPC authorization in `src/ipc.ts` to allow TaskFlow-managed groups to send to other TaskFlow-managed groups. During child board provisioning, the parent board's `board_people.notification_group_jid` is updated with the child group's JID. The notification system in CLAUDE.md template queries this field and passes it as `target_chat_jid` when sending notifications.
+
+9. **Auto-provisioning via IPC plugin**: Added `src/ipc-plugins/provision-child-board.ts` (host-side) and `provision_child_board` MCP tool in `ipc-mcp-stdio.ts` (container-side). When a person is registered via `cadastrar` on a non-leaf hierarchy board, the agent calls `provision_child_board` which writes an IPC file. The host plugin handles the full lifecycle: WhatsApp group creation, DB registration, taskflow.db seeding, CLAUDE.md generation from template, runner scheduling, ownership fix, and confirmation message. Fire-and-forget from the container's perspective. Added to `ALLOWED_IPC_PLUGIN_FILES` in `src/ipc.ts`.
+
+10. **Reference-based task visibility (no copies)**: The original plan left child-board task visibility implicit. An initial implementation used task copies (INSERT on child board when linking), but this was replaced with a reference-based design: tasks exist once on the parent board, and child boards see them via `child_exec_board_id`. The task query uses `WHERE board_id = :id OR (child_exec_board_id = :id AND child_exec_enabled = 1)`. This eliminates sync issues and maintains a single source of truth. The `vincular` command is a single UPDATE (no INSERT copy), and `desvincular` is a single UPDATE (no DELETE copy).
+
+11. **Per-group sender name (dual response fix)**: Groups with custom trigger patterns (e.g., `@Case`) were producing dual responses — one via `send_message` MCP tool ("Case: ...") and one via the host's streaming output callback ("Tars: ..."). Root cause: the CLAUDE.md instructed the agent to "always pass `sender: 'Case'` on every `send_message` call", while the streaming callback defaulted to the global `ASSISTANT_NAME` ("Tars"). Three changes:
+    - `src/index.ts`: `processGroupMessages()` now derives the sender from `group.trigger` (stripping `@` prefix) and passes it to `channel.sendMessage()`. `runAgent()` passes the group-specific name as `assistantName` to the container.
+    - CLAUDE.md template + all 4 group files: `send_message` section updated — agents must NOT use it for regular responses (output is auto-sent by host). Only use for cross-group notifications (`target_chat_jid`) and scheduled task output.
+    - Session transcripts cleared so agents pick up new instructions immediately.
+
+12. **`getGroupSenderName` utility**: Extracted the repeated `trigger?.replace(/^@/, '') || ASSISTANT_NAME` pattern into `getGroupSenderName(trigger?)` in `src/config.ts`. Applied in `src/index.ts` (streaming callback + container assistantName), `src/task-scheduler.ts` (bug fix — was using global `ASSISTANT_NAME` for scheduled tasks), and `src/ipc-plugins/provision-child-board.ts`.
+
+13. **`stripInternalTags` reuse in streaming path**: The inline `<internal>` regex in `src/index.ts` was replaced with the shared `stripInternalTags()` from `src/router.ts`, which also handles unclosed `<internal>` tags (model hallucinating wrong closing tags).
+
+14. **`computeNextRun` deduplication**: Removed the local `computeNextRun` from `src/ipc-plugins/provision-child-board.ts` (along with its `cron-parser` and `TIMEZONE` imports). Now delegates to the shared `computeNextRun` exported from `src/task-scheduler.ts` via a thin `nextCronRun()` wrapper.
+
+15. **Unknown person → offer registration**: Updated error handling in CLAUDE.md template + all 4 group files. When a task is assigned to an unknown person, instead of a dead-end error, the agent now offers to register them (requesting phone and role). On non-leaf hierarchy boards, this triggers auto-provisioning of a child board. After registration, the original assignment is retried.
 
 ## Deferred Work
 

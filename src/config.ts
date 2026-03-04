@@ -17,7 +17,7 @@ export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
 // Absolute paths needed for container mounts
-const PROJECT_ROOT = process.cwd();
+export const PROJECT_ROOT = process.cwd();
 const HOME_DIR = process.env.HOME || os.homedir();
 
 // Mount security: allowlist stored OUTSIDE project root, never mounted into containers
@@ -62,3 +62,11 @@ export const TRIGGER_PATTERN = new RegExp(
 // Uses system timezone by default
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+/**
+ * Derive the display name for outbound messages from a group's trigger pattern.
+ * "@Case" → "Case", undefined → ASSISTANT_NAME ("Tars").
+ */
+export function getGroupSenderName(trigger?: string): string {
+  return trigger?.replace(/^@/, '') || ASSISTANT_NAME;
+}

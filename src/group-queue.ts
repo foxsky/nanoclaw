@@ -100,8 +100,17 @@ export class GroupQueue {
 
     if (state.active) {
       state.pendingTasks.push({ id: taskId, groupJid, fn });
-      if (state.idleWaiting) {
+      if (!state.isTaskContainer) {
+        logger.debug(
+          { groupJid, taskId, idleWaiting: state.idleWaiting },
+          'Preempting active group container so queued task can run next',
+        );
         this.closeStdin(groupJid);
+      } else {
+        logger.debug(
+          { groupJid, taskId },
+          'Task container active, queued task will wait for drain',
+        );
       }
       logger.debug({ groupJid, taskId }, 'Container active, task queued');
       return;

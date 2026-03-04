@@ -56,9 +56,13 @@ data/taskflow/
 
 ### IPC Authorization Constraint
 
-Non-main groups can only send messages to their own group chat. They **cannot** send to individual phone numbers (`[phone]@s.whatsapp.net`) — the IPC authorization at `src/ipc.ts:77-80` blocks this because phone JIDs are not registered groups. Additionally, the MCP `send_message` tool has no recipient parameter — it always sends to the current group JID.
+Non-main, non-TaskFlow groups can only send messages to their own group chat. They **cannot** send to individual phone numbers (`[phone]@s.whatsapp.net`) — the IPC authorization at `src/ipc.ts` blocks this because phone JIDs are not registered groups.
 
-Consequence: **Individual DMs are not supported.** All runner output (standup, digest, review) goes to the group chat with per-person sections inline. Runners execute in the target group context (`context_mode: "group"` + `target_group_jid`) which gives them direct access to the board's SQLite-backed data store. They do NOT need main group context since DMs are not used.
+The MCP `send_message` tool accepts an optional `target_chat_jid` parameter for cross-group messaging. Main and TaskFlow-managed groups (`taskflowManaged=1`) can use this to send to other registered groups. Non-TaskFlow groups always send to their own group JID.
+
+**Cross-group notification model (hierarchy):** TaskFlow groups can send to other TaskFlow groups. Each person's notification group JID is stored in `board_people.notification_group_jid`. When sending a notification, the agent queries this field and passes it as `target_chat_jid` to `send_message`.
+
+Consequence: **Individual DMs are not supported.** All runner output (standup, digest, review) goes to the group chat with per-person sections inline. Runners execute in the target group context (`context_mode: "group"` + `target_group_jid`) which gives them direct access to the board's SQLite-backed data store. They do NOT need main group context since DMs are not used. Cross-group notifications (e.g., notifying an assignee in their child group) use `target_chat_jid`.
 
 ### Critical Constraint
 
@@ -391,8 +395,8 @@ If using Option B (direct Baileys), service stays stopped through Phases 2–3 (
 - **Timezone**: Cron expressions run in the host scheduler timezone (`process.env.TZ` when set, otherwise the host system timezone). Convert from the chosen local business time to the scheduler timezone at setup time. Example: 08:00 America/Fortaleza (UTC-3, no DST) = `"0 11 * * 1-5"` when the scheduler is running in UTC.
 - **Issue #293**: Idle containers can block scheduled tasks. Mitigate by reducing `IDLE_TIMEOUT` in `src/config.ts`.
 - **Cross-group access**: Runners execute in the target group context (`target_group_jid`), which gives direct `/workspace/group/` access. Non-main groups do not get project-root access, and may also receive a read-only `/workspace/global/` mount when that shared directory exists.
-- **IPC authorization**: Non-main groups can only send messages to their own group chat. The MCP `send_message` tool has no recipient parameter — it always sends to the current chatJid. Individual DMs (`@s.whatsapp.net`) are not supported even from main, as user JIDs are not in `registeredGroups`.
-- **MCP tools (runtime)**: Use `send_message(text, sender?)` for group messages, `schedule_task(...)` for scheduling, and `cancel_task(taskId)` only for runner maintenance. Do NOT write raw IPC JSON files from agent prompts.
+- **IPC authorization**: Non-main, non-TaskFlow groups can only send messages to their own group chat. The MCP `send_message` tool accepts an optional `target_chat_jid` for cross-group messaging (main and TaskFlow groups only). Individual DMs (`@s.whatsapp.net`) are not supported even from main, as user JIDs are not in `registeredGroups`.
+- **MCP tools (runtime)**: Use `send_message(text, sender?, target_chat_jid?)` for group messages, `schedule_task(...)` for scheduling, and `cancel_task(taskId)` only for runner maintenance. The `target_chat_jid` parameter is only effective for main and TaskFlow-managed groups. Do NOT write raw IPC JSON files from agent prompts.
 - **Wizard DB access (setup-time)**: The SKILL.md wizard runs on the host (Claude Code) with direct SQLite access via `better-sqlite3`. It bypasses MCP privileges to register groups (`INSERT INTO registered_groups`) and create scheduled tasks (`INSERT INTO scheduled_tasks`) without manual WhatsApp messages. The scheduler picks up new tasks on its next poll tick; registered groups require a service restart to reload the in-memory cache.
 - **Group creation**: Two options are available:
   - **IPC plugin (recommended):** The `create_group` IPC plugin (`src/ipc-plugins/create-group.ts`) allows group creation at runtime without stopping the service. The wizard writes `{ "type": "create_group", "subject": "...", "participants": [...] }` to the IPC tasks directory. The host process creates the group via Baileys and logs the resulting JID. Main group only for standard TaskFlow setup. Hierarchy mode may additionally allow eligible TaskFlow-managed groups, but only when creating one more child would still stay within the configured limit (`current runtime level + 1 < taskflow_max_depth`). See `docs/SPEC.md` § IPC Plugin Mechanism.

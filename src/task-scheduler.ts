@@ -3,7 +3,7 @@ import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
 import {
-  ASSISTANT_NAME,
+  getGroupSenderName,
   MAIN_GROUP_FOLDER,
   SCHEDULER_POLL_INTERVAL,
   TIMEZONE,
@@ -173,7 +173,7 @@ async function runTask(
         taskflowHierarchyLevel: group.taskflowHierarchyLevel,
         taskflowMaxDepth: group.taskflowMaxDepth,
         isScheduledTask: true,
-        assistantName: ASSISTANT_NAME,
+        assistantName: getGroupSenderName(group.trigger),
       },
       (proc, containerName) =>
         deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
@@ -266,15 +266,30 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
       for (const task of dueTasks) {
         // Skip tasks already in flight (prevents duplicate execution on slow containers)
         if (inFlightTaskIds.has(task.id)) {
+          logger.debug({ taskId: task.id }, 'Skipping due task already in flight');
           continue;
         }
 
         // Re-check task status in case it was paused/cancelled
         const currentTask = getTaskById(task.id);
         if (!currentTask || currentTask.status !== 'active') {
+          logger.debug(
+            { taskId: task.id, exists: !!currentTask, status: currentTask?.status },
+            'Skipping due task after status re-check',
+          );
           continue;
         }
 
+        logger.info(
+          {
+            taskId: currentTask.id,
+            group: currentTask.group_folder,
+            scheduleType: currentTask.schedule_type,
+            nextRun: currentTask.next_run,
+            contextMode: currentTask.context_mode,
+          },
+          'Queueing due task',
+        );
         inFlightTaskIds.add(currentTask.id);
         deps.queue.enqueueTask(currentTask.chat_jid, currentTask.id, async () => {
           try {

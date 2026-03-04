@@ -103,8 +103,7 @@ Optional later expansion:
 ## Non-Goals
 
 - No unbounded recursion (depth is always capped by `max_depth`)
-- No automatic or implicit board creation (boards are created only via explicit operator-assisted provisioning commands)
-- No mirrored child task lists across levels
+- No mirrored child task lists across levels (child boards see parent tasks via `child_exec_board_id` reference, not copies)
 - No automatic shared admin rights across levels
 - No skipping levels in normal workflow
 - No custom MCP server — use `mcp-server-sqlite-npx` (existing Node.js package)
@@ -136,25 +135,54 @@ Each board has its own:
 - Standup/digest/review runners (+ optional DST guard), with scheduled task IDs and cron config stored in SQLite
 - Data in the shared `taskflow.db`
 
+### Board Owner Identity (`MANAGER_NAME`)
+
+The `{{MANAGER_NAME}}` template variable identifies the board owner — the person the assistant serves on that board. For child boards, this is the person who owns the board (e.g., "Giovanni"), not the parent manager who provisioned it. The assistant addresses this person by name and treats them as the primary authority on the board.
+
+- Root board: `MANAGER_NAME` = the top-level manager (set during initial setup)
+- Child boards: `MANAGER_NAME` = the person registered on the parent board who received the child board (set automatically by the `provision_child_board` plugin)
+
 ### Provisioning Model
 
-Boards are provisioned through the existing TaskFlow setup/operator workflow, even in hierarchy mode:
+Child boards are provisioned automatically when a person is registered on a non-leaf hierarchy board via `cadastrar`. The `provision_child_board` IPC plugin handles the full lifecycle without operator intervention.
 
 1. **Root board**: created during initial setup (operator runs `/add-taskflow` with hierarchy mode). This creates the database, configures the MCP server, generates the root board's `CLAUDE.md`, registers the group, and schedules the runners.
-2. **Child-board request**: a board owner may request `criar quadro para [pessoa]` from their own board, but this is a provisioning request, not an unrestricted cross-group mutation.
-3. **Operator/main-context completion**: the actual child-board provisioning is completed by the setup/operator flow (or equivalent main-context automation). Group creation uses the `create_group` IPC plugin (no service stop required) or the direct Baileys approach. Group registration, CLAUDE generation, and scheduler writes use the approved TaskFlow setup path.
-4. **Deeper levels**: the same request + operator completion pattern repeats at each level down to `max_depth`.
+2. **Auto-provisioning on `cadastrar`**: when a manager registers a person on a non-leaf board, the agent calls the `provision_child_board` MCP tool. This writes an IPC file that the host-side `provision-child-board.ts` plugin processes asynchronously — creating the WhatsApp group, registering it, seeding the database, generating CLAUDE.md, scheduling runners, and sending a confirmation message. No operator intervention required.
+3. **Manual provisioning**: a board owner may also request `criar quadro para [pessoa]` explicitly. The same `provision_child_board` flow handles it.
+4. **Deeper levels**: the same auto-provisioning pattern repeats at each level down to `max_depth`.
 
-This preserves the original TaskFlow operational constraints while still allowing hierarchy growth on demand.
+#### Auto-provisioning flow
 
-#### Board creation flow
+```
+Container Agent                    Host Process
+─────────────────                  ─────────────────
+cadastrar [nome]
+  → INSERT board_people
+  → calls provision_child_board
+  → writes IPC file ──────────────→ IPC watcher picks up
+    {type: provision_child_board}     → provision-child-board.ts handler
+  → responds: "provisionado"           → deps.createGroup() → Baileys
+                                        → deps.registerGroup() → DB + memory
+                                        → seed taskflow.db
+                                        → generate CLAUDE.md from template
+                                        → write .mcp.json
+                                        → create scheduled runners
+                                        → fix ownership
+                                        → send confirmation message
+```
 
-1. The board owner requests `criar quadro para [pessoa]` from their own board (or the operator chooses to provision directly).
-2. The setup/operator flow creates the subordinate's WhatsApp group via the `create_group` IPC plugin (recommended — no service stop) or direct Baileys API, then performs the required group registration using the same setup-time permissions as standard TaskFlow.
-3. The setup/operator flow writes the new group's `registered_groups` row with explicit TaskFlow metadata using the same direct SQLite setup pattern as standard TaskFlow: `taskflow_managed = true`, `taskflow_hierarchy_level = parent_runtime_level + 1`, and `taskflow_max_depth = max_depth`. Equivalent approved operator automation may wrap this write, but the persisted row is the source of truth. Runtime authorization is stricter than a simple `level < max_depth` check: child creation is allowed only when creating one more level would still stay inside the configured tree (`current runtime level + 1 < taskflow_max_depth`). Missing or invalid depth metadata must fail provisioning, not fall back to unlimited depth.
-4. The setup/operator flow INSERTs into `boards`, `child_board_registrations`, `board_config`, `board_runtime_config`, `board_admins`, and `board_people`. The child board owner must always have a `board_people` row on their own board even if they will only act as a manager there, because sender identification and admin authorization read from the active people store as well as the admin store.
-5. The setup/operator flow generates the `CLAUDE.md` for the new group from the hierarchy template.
-6. The setup/operator flow schedules standup/digest/review runners (and optional DST guard), then stores their scheduled task IDs in `board_runtime_config`.
+#### Board creation steps (host-side plugin)
+
+1. Validate source group: `taskflowManaged === true` and `taskflowHierarchyLevel + 1 < taskflowMaxDepth`. Missing or invalid depth metadata fails provisioning.
+2. Read parent board config from `taskflow.db`.
+3. Check person not already registered in `child_board_registrations`.
+4. Create WhatsApp group via `deps.createGroup()`.
+5. Register group via `deps.registerGroup()` with TaskFlow metadata: `taskflow_managed = true`, `taskflow_hierarchy_level = parent_runtime_level + 1`, `taskflow_max_depth = max_depth`.
+6. Seed child board in `taskflow.db` (single transaction): INSERT `boards`, `child_board_registrations`, `board_config`, `board_runtime_config`, `board_admins`, `board_people`. UPDATE parent `board_people.notification_group_jid`. INSERT `task_history` recording `child_board_created`.
+7. Generate `CLAUDE.md` from template with inherited and computed values.
+8. Schedule standup/digest/review runners, store task IDs in `board_runtime_config`.
+9. Fix filesystem ownership (`chown -R nanoclaw:nanoclaw`).
+10. Send confirmation to source group.
 
 The child board becomes operational only after registration, template generation, and runner scheduling are complete.
 Legacy TaskFlow groups that were only detected from old board files must be backfilled by updating their existing `registered_groups` row with explicit `taskflow_hierarchy_level` and `taskflow_max_depth` metadata before they may create further descendants.
@@ -189,6 +217,7 @@ CREATE TABLE board_people (
   phone TEXT,
   role TEXT DEFAULT 'member',
   wip_limit INTEGER,
+  notification_group_jid TEXT,
   PRIMARY KEY (board_id, person_id)
 );
 
@@ -323,6 +352,7 @@ CREATE TABLE board_config (
 - `_last_mutation` stores a JSON snapshot of the task before the last mutation (for undo).
 - `next_action`, `waiting_for`, `next_note_id`, and `updated_at` remain first-class task fields so hierarchy boards preserve the current TaskFlow command surface.
 - `board_people.wip_limit` preserves the existing per-person WIP override model. `board_config.wip_limit` remains the board default fallback.
+- `board_people.notification_group_jid` stores the WhatsApp group JID where notifications for this person should be sent. NULL means notify in the current group. Used by the `send_message` MCP tool's `target_chat_jid` parameter for cross-group notifications in hierarchy setups.
 - `board_admins` preserves the existing manager/delegate authorization model in SQL form; `is_primary_manager = 1` is the hierarchy equivalent of the legacy single-manager fallback.
 - The primary full-manager row in `board_admins` must always have a matching `board_people` row, even if that person should not receive routine assignments. During migration from legacy JSON boards, synthesize that `board_people` row from `meta.manager` / `meta.managers[]` when it is missing from `people[]`.
 - `child_exec_*` columns on the tasks table hold the hierarchy linkage. No separate table needed because each task has at most one child execution link.
@@ -502,9 +532,9 @@ Board-owner-managed fields:
 
 Rule:
 
-- normal board users must not manually move the task across work columns while `child_exec_enabled`
-- the normal source of `column` changes is rollup refresh
-- if the board owner wants full manual control back, they must explicitly unlink first
+- on the receiving board, the assignee and board owner may move the linked task across normal GTD work columns while `child_exec_enabled`
+- `atualizar status T-XXX` / `sincronizar T-XXX` is only for pulling progress from an immediate child board after this board delegates the same deliverable further down
+- if the board owner wants to remove cross-board visibility entirely, they must explicitly unlink first
 
 ## Commands
 
@@ -549,7 +579,8 @@ Permission: board owner only.
 Effect:
 
 - resolve the person's child board from `child_board_registrations`
-- set `child_exec_enabled = 1` and populate `child_exec_*` fields
+- set `child_exec_enabled = 1` and populate `child_exec_board_id`, `child_exec_person_id`
+- the task remains on the parent board — the child board sees it via `child_exec_board_id` reference (no copy)
 - record `child_board_linked` history action
 
 #### Refresh Rollup
@@ -603,13 +634,39 @@ Leaf boards use standard TaskFlow commands plus upward tagging (`ligar tarefa ao
 
 ## Auto-Link on Assignment
 
-When a task is assigned to a person who has a registered child board:
+When a task is assigned to a person who has a registered child board, the board automatically links it (if the sender is a full manager and the task is not a recurring task). The `vincular` SQL update is performed immediately after assignment. The manager is informed:
 
-- The board should offer to link automatically: `[pessoa] tem um quadro registrado. Vincular T-XXX automaticamente? (sim/nao)`
-- Default: link automatically unless the board owner declines
-- The board owner can always unlink later
+> T-XXX vinculada automaticamente ao quadro de [pessoa].
+
+The board owner can always unlink later with `desvincular T-XXX`.
 
 If the person has no registered child board, the task remains a normal board-local task.
+
+## Reference-Based Task Visibility
+
+Tasks exist as a single row on the parent board. Child boards see delegated tasks via a reference — no copies are created.
+
+### Query Pattern
+
+Each board loads its tasks with:
+
+```sql
+SELECT * FROM tasks
+WHERE board_id = :my_board_id
+   OR (child_exec_board_id = :my_board_id AND child_exec_enabled = 1)
+ORDER BY created_at
+```
+
+This returns:
+- **Own tasks**: tasks created directly on this board (`board_id` match)
+- **Delegated tasks**: tasks from a parent board that have been linked to this board via `vincular` (`child_exec_board_id` match)
+
+### Design Rationale
+
+- **Single source of truth**: each task has exactly one row. Updates from either board apply to the same row.
+- **No sync issues**: no copies to keep in sync, no stale duplicates.
+- **Clean delegation**: the parent board owns the task; the child board sees it as a delegated item for direct execution plus standup/digest/review.
+- **Rollup integrity**: rollup queries work against `linked_parent_task_id` (upward tagging from child's own tasks), while task visibility works against `child_exec_board_id` (downward delegation from parent).
 
 ## Task Type Restrictions
 
@@ -681,6 +738,7 @@ Both are operator-time operations.
 - **Statistics (F14)**: Benefit from SQL — `SELECT` queries replace in-prompt JSON parsing.
 - **Attachments**: Hierarchy boards continue to enforce attachment policy (`enabled`, disabled reason, allowed formats, max size) and record confirmed imports in `attachment_audit_log`.
 - **Runners / DST guard**: Hierarchy boards continue using `send_message`, `schedule_task`, `cancel_task`, and `list_tasks` for standup/digest/review, optional DST guard, and due-date reminders. Only task/board state storage moves from JSON files to SQLite.
+- **Cross-group notifications**: The `send_message` MCP tool accepts an optional `target_chat_jid` parameter. TaskFlow-managed groups can send to other TaskFlow-managed groups (e.g., notifying an assignee in their child group when a task is assigned on the parent board). The IPC authorization layer permits TaskFlow-to-TaskFlow messaging. Each person's notification group JID is stored in `board_people.notification_group_jid` and populated during child board provisioning. **Important:** `send_message` must only be used for cross-group notifications and scheduled task output — regular responses are sent automatically via the host's streaming output callback with the correct per-group sender prefix.
 - **History retention**: `task_history` keeps the full event stream, but user-facing history views should still cap active-task displays to the latest 50 entries. When archiving, store only the latest 20 history entries in `archive.history`, matching the original TaskFlow retention behavior.
 
 ## Failure and Edge Cases
@@ -784,5 +842,10 @@ The following refinements were made during implementation:
 - **Conditional mount**: Only hierarchy groups (with `taskflowHierarchyLevel` metadata) get the SQLite mount. Standard TaskFlow groups continue with JSON.
 - **Source changes required**: Despite the original "zero source code changes" goal, a small support layer was needed: `src/taskflow-db.ts` (schema initialization), `mcp-server-sqlite-npx` in `container/agent-runner/package.json`, `mcp__sqlite__*` in `allowedTools`, and conditional directory mount in `container-runner.ts`. The hierarchy logic itself remains template-only.
 - **`admin_role = 'manager'`**: Both standard (JSON) and hierarchy (SQLite) modes use the same `'manager'` / `'delegate'` vocabulary for consistency.
+- **Cross-group notifications**: Added `notification_group_jid` column to `board_people` and `target_chat_jid` parameter to `send_message` MCP tool. IPC authorization updated to allow TaskFlow-to-TaskFlow cross-group messaging. During child board provisioning, the parent board's `board_people.notification_group_jid` is set to the child group's JID so notifications reach people in their working group.
+- **Auto-provisioning**: Added `provision_child_board` IPC plugin (`src/ipc-plugins/provision-child-board.ts`) and matching MCP tool in `ipc-mcp-stdio.ts`. When a person is registered via `cadastrar` on a non-leaf hierarchy board, the agent fires the `provision_child_board` IPC call. The host-side plugin handles the full lifecycle (WhatsApp group creation, DB seeding, CLAUDE.md generation, runner scheduling) asynchronously. The original "no automatic board creation" non-goal was removed — auto-provisioning is now the default for hierarchy boards.
+- **Reference-based task visibility**: Child boards see delegated tasks via `child_exec_board_id` reference instead of task copies. The task query uses `WHERE board_id = :id OR (child_exec_board_id = :id AND child_exec_enabled = 1)`. This eliminates sync issues and maintains a single source of truth per task.
+- **Per-group sender name (dual response fix)**: Each group's `trigger_pattern` (e.g., `@Case`) is used to derive the outbound message sender name. The shared `getGroupSenderName(trigger?)` utility in `src/config.ts` centralizes the `trigger?.replace(/^@/, '') || ASSISTANT_NAME` pattern. Used in the streaming output callback, container `assistantName`, and scheduled task sender. The CLAUDE.md template instructs agents NOT to use `send_message` for regular responses (only for cross-group notifications and scheduled task output), preventing duplicate messages.
+- **Unknown person → offer registration**: When a task is assigned to an unregistered person, the agent offers to register them (requesting phone and role) instead of a dead-end error. On non-leaf hierarchy boards, registration triggers auto-provisioning of a child board. The original assignment is retried after registration completes.
 
 See `docs/plans/2026-02-28-taskflow-hierarchical-delegation-implementation.md` for full implementation details.

@@ -12,7 +12,7 @@ TaskFlow is a config-driven skill package. It does not add new core runtime code
 - Shared SQLite database at `data/taskflow/taskflow.db`
 - Per-group `settings.json`
 - SQLite-backed `registered_groups` and `scheduled_tasks`
-- Existing MCP/IPC tools such as `send_message`, `schedule_task`, `cancel_task`, and `list_tasks`
+- Existing MCP/IPC tools such as `send_message` (with optional `target_chat_jid` for cross-group), `schedule_task`, `cancel_task`, and `list_tasks`
 
 Each TaskFlow group is its own board. If you provision multiple groups, they do not sync automatically.
 
@@ -296,6 +296,8 @@ Non-main groups do not get:
 - Other groups’ files
 - Cross-group registration/scheduling privileges
 
+**Exception — TaskFlow cross-group messaging:** Groups with `taskflowManaged=1` can send messages to other TaskFlow-managed groups using the `target_chat_jid` parameter on `send_message`. This is used for cross-group notifications in hierarchy setups (e.g., notifying an assignee in their child group when a task is assigned on the parent board). The IPC authorization layer permits TaskFlow-to-TaskFlow messaging; non-TaskFlow groups remain restricted to their own group.
+
 ## Day-2 Operations
 
 ### Add or Update Team Members
@@ -389,7 +391,13 @@ All TaskFlow boards use the same three columns (`taskflow_managed`, `taskflow_hi
 
 ### Child Board Provisioning
 
-Child boards are provisioned through the SKILL.md Phase 6 workflow. The process starts when a board owner requests `criar quadro para [pessoa]` — the agent emits a provisioning request, and the operator completes it:
+Child boards are provisioned **automatically** via the `provision_child_board` IPC plugin. Provisioning is triggered when:
+
+- A person is registered via `cadastrar` on a non-leaf hierarchy board
+- A manager assigns a task to an unknown person and confirms registration (the agent asks for phone and role, then runs the `cadastrar` flow)
+- A board owner explicitly requests `criar quadro para [pessoa]`
+
+The host-side plugin handles the full lifecycle asynchronously — no operator intervention required. The steps below document what the plugin does (and serve as a manual fallback for troubleshooting):
 
 1. **Pre-flight**: Verify `registered_groups.taskflow_hierarchy_level + 1 < registered_groups.taskflow_max_depth` for the source group. Use the `boards` row only as a consistency check after registration data is confirmed. Verify the person doesn't already have a board in `child_board_registrations`.
 2. **WhatsApp group**: Create via `create_group` IPC plugin (no service stop required) or manual fallback.
@@ -400,14 +408,15 @@ Child boards are provisioned through the SKILL.md Phase 6 workflow. The process 
    - `board_config` — columns, WIP limit, ID counters
    - `board_runtime_config` — language, timezone, cron schedules, runner task IDs, attachment policy
    - `board_admins` — person as `admin_role = 'manager'`, `is_primary_manager = 1`
-   - `board_people` — person as member with WIP limit
+   - `board_people` — person as member with WIP limit and `notification_group_jid`
    - `task_history` — `child_board_created` event on the parent board
+   - **Parent board UPDATE**: set `notification_group_jid` on the parent's `board_people` row for the person to point to the child group's JID (enables cross-group notifications)
 5. **CLAUDE.md generation**: From the hierarchy template with board-specific placeholders (`BOARD_ID`, `HIERARCHY_LEVEL`, `MAX_DEPTH`, `PARENT_BOARD_ID`, `BOARD_ROLE`).
 6. **`.mcp.json`**: Same as root board, pointing to `/workspace/taskflow/taskflow.db`.
 7. **Runner scheduling**: Standup, digest, review (and optional DST guard). Store task IDs in `board_runtime_config`.
 8. **Service restart**: To pick up the new group registration.
 
-The child board becomes operational only after all 8 steps are complete.
+The child board becomes operational after all 8 steps are complete. With auto-provisioning, these steps happen within seconds of the `cadastrar` command.
 
 ### Adding or Removing Levels
 
@@ -470,7 +479,7 @@ The SQLite database contains 10 tables. Created by `src/taskflow-db.ts` via `nod
 | Table | Purpose |
 |-------|---------|
 | `boards` | Board identity, hierarchy level, max_depth, parent_board_id |
-| `board_people` | Team members per board, with per-person WIP limits |
+| `board_people` | Team members per board, with per-person WIP limits and `notification_group_jid` for cross-group notifications |
 | `board_admins` | Manager/delegate authorization (`admin_role`: `'manager'` or `'delegate'`) |
 | `child_board_registrations` | Links parent board to child board via person_id |
 | `tasks` | Active tasks with hierarchy columns (`child_exec_*`, `linked_parent_*`) |
@@ -485,6 +494,53 @@ Key hierarchy columns on `tasks`:
 - `child_exec_board_id` — which child board handles execution
 - `child_exec_rollup_status` — current rollup status (`active`, `blocked`, `at_risk`, `ready_for_review`, `no_work_yet`, `cancelled_needs_decision`)
 - `linked_parent_board_id` + `linked_parent_task_id` — upward reference to parent deliverable
+
+### Cross-Group Notifications
+
+In hierarchy setups, notifications need to reach people in their working group, not just the board where the task lives. For example, if Giovanni is assigned a task on the SEC-SECTI parent board, but his working group is SECI-SECTI, the notification should go to SECI-SECTI.
+
+**How it works:**
+
+1. Each person in `board_people` has an optional `notification_group_jid` column. When set, notifications for that person are sent to the specified group JID instead of the current group.
+
+2. The `send_message` MCP tool accepts an optional `target_chat_jid` parameter. When a TaskFlow agent sends a notification, it queries `notification_group_jid` for the assignee and passes it as `target_chat_jid`.
+
+3. The IPC authorization layer allows TaskFlow groups (`taskflowManaged=1`) to send to other TaskFlow groups. Non-TaskFlow groups remain restricted.
+
+**Setting up cross-group notifications:**
+
+During child board provisioning (Phase 3 Step 6 of SKILL.md), after creating the child WhatsApp group, the parent board's `board_people` row for that person is updated:
+
+```sql
+UPDATE board_people SET notification_group_jid = '{{CHILD_GROUP_JID}}'
+WHERE board_id = '{{PARENT_BOARD_ID}}' AND person_id = '{{PERSON_ID}}';
+```
+
+For existing boards, populate manually:
+
+```sql
+-- Find person-to-group mappings
+SELECT cbr.person_id, cbr.child_board_id, bp.name
+FROM child_board_registrations cbr
+JOIN board_people bp ON bp.board_id = cbr.parent_board_id AND bp.person_id = cbr.person_id;
+
+-- Cross-reference with registered_groups to get JIDs
+SELECT rg.jid, rg.folder FROM registered_groups WHERE folder = '{{CHILD_FOLDER}}';
+
+-- Update
+UPDATE board_people SET notification_group_jid = '{{CHILD_GROUP_JID}}'
+WHERE board_id = '{{PARENT_BOARD_ID}}' AND person_id = '{{PERSON_ID}}';
+```
+
+**Authorization model:**
+
+| Source | Target | Allowed |
+|--------|--------|---------|
+| Main | Any registered group | Yes |
+| TaskFlow group | Another TaskFlow group | Yes |
+| TaskFlow group | Non-TaskFlow group | No |
+| Non-TaskFlow group | Any other group | No |
+| Any group | Same group (self) | Yes |
 
 ### Hierarchy Files Summary
 
@@ -507,7 +563,8 @@ All TaskFlow boards use SQLite exclusively — no JSON files.
 - Leaf boards (`taskflow_hierarchy_level + 1 >= taskflow_max_depth`) cannot create children
 
 **Rollup shows stale data**
-- The agent refreshes rollup only when the user requests `atualizar status T-XXX`
+- The agent refreshes rollup only when the user requests `atualizar status T-XXX` on a board that has delegated the same deliverable further down
+- Receiving boards can still move linked tasks directly through normal GTD phases; refresh is for pulling child-board progress, not for normal worker updates
 - There is no automatic background refresh
 - The digest and weekly review flag stale rollup (>24h) with `⚠️`
 

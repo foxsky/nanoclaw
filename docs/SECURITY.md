@@ -55,15 +55,16 @@ Each group has isolated Claude sessions at `data/sessions/{group}/.claude/`:
 
 Messages and task operations are verified against group identity:
 
-| Operation | Main Group | Non-Main Group |
-|-----------|------------|----------------|
-| Send message to own chat | ✓ | ✓ |
-| Send message to other chats | ✓ (registered only) | ✗ |
-| Schedule task for self | ✓ | ✓ |
-| Schedule task for others | ✓ | ✗ |
-| View all tasks | ✓ | Own only |
-| Manage other groups | ✓ | ✗ |
-| Create WhatsApp groups | ✓ | TaskFlow groups only |
+| Operation | Main Group | TaskFlow Group | Other Non-Main Group |
+|-----------|------------|----------------|----------------------|
+| Send message to own chat | ✓ | ✓ | ✓ |
+| Send message to other TaskFlow chats | ✓ | ✓ (via `target_chat_jid`) | ✗ |
+| Send message to non-TaskFlow chats | ✓ (registered only) | ✗ | ✗ |
+| Schedule task for self | ✓ | ✓ | ✓ |
+| Schedule task for others | ✓ | ✗ | ✗ |
+| View all tasks | ✓ | Own only | Own only |
+| Manage other groups | ✓ | ✗ | ✗ |
+| Create WhatsApp groups | ✓ | Depth-limited | ✗ |
 
 **IPC Plugin Security:**
 - Host-side plugins (`dist/ipc-plugins/`) run in the main process and must enforce their own authorization (check `isMain`, `sourceGroup`)

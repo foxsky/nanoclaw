@@ -15,7 +15,7 @@ All topologies rely on already-implemented runtime support (SQLite DB, IPC auth,
 
 ### 1. Pre-flight Checks
 
-TaskFlow boards default to `ASSISTANT_NAME` = **"Case"**. Ask the user if they want to keep "Case" or use a different name. This will be used as the trigger prefix (e.g., `@Case`).
+TaskFlow boards default to `ASSISTANT_NAME` = **"Case"**. Ask the user if they want to keep "Case" or use a different name. This will be used as the trigger prefix (e.g., `@Case`). The host derives the outbound message sender name from the group's `trigger_pattern` (stripping the `@` prefix), so the agent's streaming output is automatically prefixed with the correct name (e.g., "Case: ...") — no need for the agent to call `send_message` for regular responses.
 
 Check whether media-support skill/tooling is available for attachment ingestion:
 - If available: set `ATTACHMENT_IMPORT_ENABLED=true` and `ATTACHMENT_IMPORT_REASON=` (empty raw value, no quotes)
@@ -25,9 +25,9 @@ Check whether media-support skill/tooling is available for attachment ingestion:
 
 Ask the user directly to collect the following, one at a time:
 
-1. **Manager name** — Who is the team manager? (e.g., "Miguel")
+1. **Manager name** — Who is the team manager? (e.g., use the same display name that should appear in TaskFlow)
 
-2. **Manager phone/JID base** — WhatsApp number for manager authorization (digits only, e.g., "5586999990000")
+2. **Manager phone/JID base** — WhatsApp number for manager authorization (digits only, e.g., `{{MANAGER_PHONE}}`)
 
 3. **Language** — Which language for all agent output?
    - Options: "pt-BR (Recommended)", "en-US", "es-ES"
@@ -40,7 +40,7 @@ Ask the user directly to collect the following, one at a time:
 5. **Board topology** — How should boards be organized?
    - "Shared group (Recommended)" — One WhatsApp group, one shared board. Fully specified by this skill.
    - "Separate groups (Advanced)" — Create more than one TaskFlow group, but each group is an independent board with its own runners and archive.
-   - "Hierarchy (Delegation)" — One root board with bounded delegation depth. Each level gets its own WhatsApp group and board, sharing a single SQLite database (`data/taskflow/taskflow.db`). Child boards are provisioned on demand after initial setup. See `docs/plans/2026-02-28-taskflow-hierarchical-delegation-design.md`.
+   - "Hierarchy (Delegation)" — One bounded delegation chain in a shared SQLite database (`data/taskflow/taskflow.db`). When a dedicated control group is enabled, the wizard creates a synthetic root control board (`{{ROOT_BOARD_ID}}`) plus an initial child team board (`{{BOARD_ID}}`) during setup; deeper child boards are provisioned on demand later. See `docs/plans/2026-02-28-taskflow-hierarchical-delegation-design.md`.
    - There is no automatic cross-group state sync or mirrored "private view" mode in this version. If the user wants one shared board, use a single shared group.
 
 6. **Hierarchy depth** (only if topology = "Hierarchy") — Maximum delegation depth? (default: 2, minimum: 2). Depth 1 is the root board; depth 2 means the root can create child boards but children cannot delegate further. Higher values allow deeper chains.
@@ -90,8 +90,8 @@ Ask if the user has an existing WhatsApp group or wants to create a new one.
 - **If new (automatic — recommended):** Create the group programmatically via Baileys `groupCreate` API. The service must be stopped first (Step 0 above).
 
   Baileys API: `sock.groupCreate(subject: string, participants: string[]) → Promise<GroupMetadata>`
-  - `subject`: Group display name (e.g., "SECTI - TaskFlow")
-  - `participants`: Array of JIDs to add (format: `"5586XXXXXXXXX@s.whatsapp.net"`)
+  - `subject`: Group display name (e.g., `{{GROUP_NAME}}`)
+  - `participants`: Array of JIDs to add (format: `"{{PHONE}}@s.whatsapp.net"`)
   - Returns `GroupMetadata` with `id` (the group JID, e.g., `"120363XXXXX@g.us"`)
   - The bot is automatically added as superadmin (creator)
 
@@ -100,7 +100,7 @@ Ask if the user has an existing WhatsApp group or wants to create a new one.
   - Dedicated per-person board: `[manager_phone + "@s.whatsapp.net", person_phone + "@s.whatsapp.net"]`
 
   If you create multiple groups for separate mode, treat each as a separate TaskFlow board with its own folder, SQLite board row, and scheduled runners.
-  For hierarchy mode, create only the root board during initial setup; child groups are provisioned later through Phase 6.
+  For hierarchy mode, create the initial chain during setup. If a dedicated control group is enabled, create both the control-root group and the first child team group now; deeper child groups are provisioned later through Phase 6.
 
   **Batching:** If creating multiple independent boards, create them all in a single Baileys connection to minimize connect/disconnect overhead. Collect all group specs first, then run one script.
 
@@ -170,10 +170,11 @@ Ask if the user has an existing WhatsApp group or wants to create a new one.
   The `GROUPS_JSON` environment variable is a JSON array of group specs:
   ```json
   [
-    { "subject": "SECTI - TaskFlow", "participants": ["558699916064@s.whatsapp.net"], "folder": "secti-taskflow" },
-    { "subject": "SECI - TaskFlow", "participants": ["558699916064@s.whatsapp.net", "558688983914@s.whatsapp.net"], "folder": "seci-taskflow" }
+    { "subject": "{{GROUP_NAME}}", "participants": ["{{MANAGER_PHONE}}@s.whatsapp.net"], "folder": "{{GROUP_FOLDER}}" }
   ]
   ```
+
+  Repeat with one object per group you want to create in that Baileys pass.
 
   Parse the JSON output to extract JIDs for each group. Each entry has an `error` field — null on success, error message on failure. Handle partial successes: groups with a JID were created, groups with `error` need manual creation or retry.
 
@@ -210,18 +211,32 @@ mkdir -p groups/{{CONTROL_GROUP_FOLDER}}/conversations groups/{{CONTROL_GROUP_FO
 
 The folder name must be lowercase with hyphens, no spaces or special characters.
 
+For hierarchy roots with a dedicated control group, keep four identities separate:
+- the **control group** (`{{CONTROL_GROUP_FOLDER}}` / `{{CONTROL_GROUP_JID}}`) owns the synthetic root control board `{{ROOT_BOARD_ID}}`
+- the **team group** (`{{TEAM_GROUP_FOLDER}}` / `{{TEAM_GROUP_JID}}`) owns the first child team board `{{BOARD_ID}}`
+- deeper person boards hang from `{{BOARD_ID}}`, not directly from `{{ROOT_BOARD_ID}}`
+- the control and team prompts do **not** share a board ID
+
+Do not derive the root or team board IDs implicitly from whichever group is being processed at the moment. Choose `{{ROOT_BOARD_ID}}` and `{{BOARD_ID}}` once and reuse them consistently in SQLite, generated prompts, runner bindings, and child-board references.
+
 ### 3. Generate CLAUDE.md
 
 Read the template from `.claude/skills/add-taskflow/templates/CLAUDE.md.template`.
+
+For hierarchy boards, the generated prompt must treat linked tasks as directly actionable on the receiving board. The `🔗` marker indicates cross-board routing only; it does not make the task read-only. On the receiving board, the assignee and board owner may move the linked task through the normal GTD phases. `atualizar status T-XXX` / `sincronizar T-XXX` is reserved for pulling rollup from an immediate child board only after this board delegates the same deliverable further down.
 
 Substitute all `{{PLACEHOLDER}}` variables:
 - `{{ASSISTANT_NAME}}` — TaskFlow agent name (default: "Case")
 - `{{GROUP_NAME}}` — Display name for the group
 - `{{GROUP_FOLDER}}` — Lowercase filesystem folder for this group (used under `groups/` and `data/sessions/`)
-- `{{MANAGER_NAME}}` — From Phase 1
+- `{{HAS_CONTROL_GROUP}}` — `true` only for hierarchy roots that attach an extra private control group; otherwise `false`
+- `{{ROOT_BOARD_ID}}` — Synthetic root board identifier for hierarchy roots with a dedicated control group. For all other topologies, this may be the same as `{{BOARD_ID}}`.
+- `{{TEAM_GROUP_NAME}}` / `{{TEAM_GROUP_FOLDER}}` / `{{TEAM_GROUP_JID}}` — Hierarchy-root team group identity (same values as `{{GROUP_*}}` when there is no separate control group)
+- `{{CONTROL_GROUP_NAME}}` / `{{CONTROL_GROUP_FOLDER}}` / `{{CONTROL_GROUP_JID}}` — Optional hierarchy-root private management group identity
+- `{{MANAGER_NAME}}` — The board owner's name. For root/team boards this is the manager from Phase 1. For child boards provisioned via Phase 6, this is the person who owns that board (e.g., "Giovanni"), NOT the parent manager.
 - `{{MANAGER_PHONE}}` — From Phase 1 (digits only)
-- `{{MANAGER_ID}}` — Lowercase slug derived from `{{MANAGER_NAME}}` (e.g., "Alexandre" → "alexandre"). Must match the `person_id` convention used in `board_people` / `board_admins`.
-- `{{GROUP_CONTEXT}}` — Brief description (e.g., "the operations team", "Alexandre's tasks")
+- `{{MANAGER_ID}}` — Lowercase slug derived from `{{MANAGER_NAME}}` (e.g., "Manager Name" → "manager-name"). Must match the `person_id` convention used in `board_people` / `board_admins`.
+- `{{GROUP_CONTEXT}}` — Brief description (e.g., "the operations team", "an individual contributor's tasks")
 - `{{LANGUAGE}}` — From Phase 1
 - `{{TIMEZONE}}` — From Phase 1
 - `{{WIP_LIMIT}}` — From Phase 1
@@ -236,14 +251,22 @@ Substitute all `{{PLACEHOLDER}}` variables:
 - `{{ATTACHMENT_IMPORT_REASON}}` — Empty string when enabled, otherwise a short reason
 - `{{DST_GUARD_ENABLED}}` — `true` or `false` based on whether DST auto-resync runner is enabled
 - `{{BOARD_ROLE}}` — `hierarchy` for hierarchy boards, `standard` for standard/separate boards
-- `{{BOARD_ID}}` — Board identifier (e.g., `board-{{GROUP_FOLDER}}`)
+- `{{BOARD_ID}}` — Board identifier for the current group prompt. Standard/separate boards and child boards can use `board-{{GROUP_FOLDER}}`. Hierarchy roots with a dedicated control group use `{{BOARD_ID}}` for the team board while `{{ROOT_BOARD_ID}}` names the synthetic control-root board.
 - `{{HIERARCHY_LEVEL}}` — Numeric level (1 = root). Empty for standard/separate boards.
 - `{{HIERARCHY_LEVEL_SQL}}` — SQL literal for hierarchy level: `null` for standard/separate, `1` for hierarchy root.
 - `{{MAX_DEPTH}}` — Maximum hierarchy depth. `1` for standard/separate boards, `≥2` for hierarchy boards.
 - `{{MAX_DEPTH_SQL}}` — SQL literal for max depth: `1` for standard/separate, the configured depth for hierarchy.
 - `{{PARENT_BOARD_ID}}` — Parent board ID. `none` for root boards. Empty for standard/separate boards.
 
-Write the result to `groups/{{GROUP_FOLDER}}/CLAUDE.md`. For the team group (or single-group setups), set `{{CONTROL_GROUP_HINT}}` to an empty string.
+Write the result to `groups/{{GROUP_FOLDER}}/CLAUDE.md`.
+
+For standard/separate boards and child boards, that is the only generated prompt.
+
+For a hierarchy root with `{{HAS_CONTROL_GROUP}} = true`, render the template twice:
+- Team prompt: write to `groups/{{TEAM_GROUP_FOLDER}}/CLAUDE.md`, bind `{{GROUP_*}}` to the team group values, keep `{{BOARD_ID}}` = the team board ID, set `{{HIERARCHY_LEVEL}} = 2`, set `{{PARENT_BOARD_ID}} = {{ROOT_BOARD_ID}}`, and set `{{CONTROL_GROUP_HINT}}` to an empty string
+- Control prompt: write to `groups/{{CONTROL_GROUP_FOLDER}}/CLAUDE.md`, bind `{{GROUP_*}}` to the control group values, bind `{{BOARD_ID}}` = `{{ROOT_BOARD_ID}}`, set `{{HIERARCHY_LEVEL}} = 1`, set `{{PARENT_BOARD_ID}} = none`, and set `{{CONTROL_GROUP_HINT}}` to the root-board management note ("the team group is a child board of this root")
+
+The control and team prompts must point to different board IDs in this topology.
 
 **Scope Guard:** The template includes a "Scope Guard" section before "Load Data First". This instructs the agent to refuse off-topic queries (not related to task management) with a short one-liner in `{{LANGUAGE}}` without reading any board data from SQLite. This minimizes token usage for non-taskflow messages (~500 tokens vs ~5000+ for a full board query).
 
@@ -254,6 +277,8 @@ Each group has a per-group `settings.json` at `data/sessions/{{GROUP_FOLDER}}/.c
 ```bash
 mkdir -p data/sessions/{{GROUP_FOLDER}}/.claude
 ```
+
+If `{{HAS_CONTROL_GROUP}} = true`, also pre-create `data/sessions/{{CONTROL_GROUP_FOLDER}}/.claude` and write the same `settings.json` there so the control group uses the same model.
 
 Write `data/sessions/{{GROUP_FOLDER}}/.claude/settings.json`:
 
@@ -289,6 +314,12 @@ sqlite3 store/messages.db "INSERT OR REPLACE INTO registered_groups (jid, name, 
 Where:
 - Standard/separate: `{{TASKFLOW_HIERARCHY_LEVEL}}=0`, `{{TASKFLOW_MAX_DEPTH}}=1`
 - Hierarchy: `{{TASKFLOW_HIERARCHY_LEVEL}}=0` (root), `{{TASKFLOW_MAX_DEPTH}}={{MAX_DEPTH}}`
+
+For a hierarchy root with `{{HAS_CONTROL_GROUP}} = true`, insert **two** `registered_groups` rows with distinct hierarchy levels:
+- one for the control root group (`{{CONTROL_GROUP_JID}}`, `{{CONTROL_GROUP_FOLDER}}`) with `taskflow_hierarchy_level=0`
+- one for the first child team group (`{{TEAM_GROUP_JID}}`, `{{TEAM_GROUP_FOLDER}}`) with `taskflow_hierarchy_level=1`
+
+Both rows must be `taskflow_managed=1`, but they do not represent the same board. The control group operates `{{ROOT_BOARD_ID}}`, while the team group operates `{{BOARD_ID}}`.
 
 **Important:** The in-memory `registeredGroups` cache in the running process is only loaded at startup (`index.ts:65`). After all group registrations are complete, a single `systemctl restart nanoclaw` is required to reload the cache. Batch all registrations before restarting.
 
@@ -329,9 +360,20 @@ Write the Claude Code MCP server config to the group folder so the container age
 }
 ```
 
+If `{{HAS_CONTROL_GROUP}} = true`, write the same `.mcp.json` to `groups/{{CONTROL_GROUP_FOLDER}}/.mcp.json` as well.
+
 #### 6c. Seed Board Data
 
-Generate a board ID (e.g., `board-{{GROUP_FOLDER}}`) and insert the board with its configuration:
+Generate the board rows and insert their configuration.
+
+For standard/separate boards and child boards, `{{BOARD_ID}}` can simply be `board-{{GROUP_FOLDER}}`.
+
+For a hierarchy root with `{{HAS_CONTROL_GROUP}} = true`:
+- choose `{{ROOT_BOARD_ID}}` (for the control root) and `{{BOARD_ID}}` (for the team child) explicitly once and reuse them everywhere
+- seed two boards during initial setup: the control root at level 1, then the team child at level 2 with `parent_board_id = {{ROOT_BOARD_ID}}`
+- the control group's primary attachment is `{{ROOT_BOARD_ID}}`; the team group's primary attachment is `{{BOARD_ID}}`
+- deeper person boards created later in Phase 6 use `{{BOARD_ID}}` as their immediate parent
+- do **not** mix the control group's folder with the team group's JID (or vice versa)
 
 ```bash
 node -e "
@@ -339,38 +381,80 @@ const Database = require('better-sqlite3');
 const db = new Database('data/taskflow/taskflow.db');
 
 const boardId = '{{BOARD_ID}}';
+const hasControlGroup = '{{HAS_CONTROL_GROUP}}' === 'true';
+const rootBoardId = hasControlGroup ? '{{ROOT_BOARD_ID}}' : boardId;
 const now = new Date().toISOString();
 
 db.exec('BEGIN');
 
-// Board row — standard/separate: board_role='standard', hierarchy_level=NULL, max_depth=1
-// Hierarchy: board_role='hierarchy', hierarchy_level=1 (root), max_depth={{MAX_DEPTH}}
-db.prepare('INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
-  .run(boardId, '{{GROUP_JID}}', '{{GROUP_FOLDER}}', '{{BOARD_ROLE}}', {{HIERARCHY_LEVEL_SQL}}, {{MAX_DEPTH_SQL}}, null);
+function seedBoard({
+  seedBoardId,
+  groupJid,
+  groupFolder,
+  hierarchyLevel,
+  parentBoardId,
+  groupRole,
+}) {
+  db.prepare('INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(seedBoardId, groupJid, groupFolder, '{{BOARD_ROLE}}', hierarchyLevel, {{MAX_DEPTH_SQL}}, parentBoardId);
 
-// Board config with defaults
-db.prepare('INSERT INTO board_config (board_id, wip_limit) VALUES (?, ?)')
-  .run(boardId, {{WIP_LIMIT}});
+  db.prepare('INSERT INTO board_groups (board_id, group_jid, group_folder, group_role) VALUES (?, ?, ?, ?)')
+    .run(seedBoardId, groupJid, groupFolder, groupRole);
 
-// Board runtime config
-db.prepare(\`INSERT INTO board_runtime_config (
-  board_id, language, timezone,
-  standup_cron_local, digest_cron_local, review_cron_local,
-  standup_cron_utc, digest_cron_utc, review_cron_utc,
-  attachment_enabled, attachment_disabled_reason
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\`)
-  .run(boardId, '{{LANGUAGE}}', '{{TIMEZONE}}',
-    '{{STANDUP_CRON_LOCAL}}', '{{DIGEST_CRON_LOCAL}}', '{{REVIEW_CRON_LOCAL}}',
-    '{{STANDUP_CRON}}', '{{DIGEST_CRON}}', '{{REVIEW_CRON}}',
-    {{ATTACHMENT_IMPORT_ENABLED}} ? 1 : 0, '{{ATTACHMENT_IMPORT_REASON}}');
+  db.prepare('INSERT INTO board_config (board_id, wip_limit) VALUES (?, ?)')
+    .run(seedBoardId, {{WIP_LIMIT}});
 
-// Board admin (primary manager)
-db.prepare('INSERT INTO board_admins (board_id, person_id, phone, admin_role, is_primary_manager) VALUES (?, ?, ?, ?, ?)')
-  .run(boardId, '{{MANAGER_ID}}', '{{MANAGER_PHONE}}', 'manager', 1);
+  db.prepare(\`INSERT INTO board_runtime_config (
+    board_id, language, timezone,
+    standup_cron_local, digest_cron_local, review_cron_local,
+    standup_cron_utc, digest_cron_utc, review_cron_utc,
+    attachment_enabled, attachment_disabled_reason,
+    standup_target, digest_target, review_target
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\`)
+    .run(seedBoardId, '{{LANGUAGE}}', '{{TIMEZONE}}',
+      '{{STANDUP_CRON_LOCAL}}', '{{DIGEST_CRON_LOCAL}}', '{{REVIEW_CRON_LOCAL}}',
+      '{{STANDUP_CRON}}', '{{DIGEST_CRON}}', '{{REVIEW_CRON}}',
+      {{ATTACHMENT_IMPORT_ENABLED}} ? 1 : 0, '{{ATTACHMENT_IMPORT_REASON}}',
+      groupRole === 'control' ? 'control' : 'team',
+      groupRole === 'control' ? 'control' : 'team',
+      groupRole === 'control' ? 'control' : 'team');
 
-// Primary manager must also exist in board_people for sender matching / authorization
-db.prepare('INSERT INTO board_people (board_id, person_id, name, phone, role, wip_limit) VALUES (?, ?, ?, ?, ?, ?)')
-  .run(boardId, '{{MANAGER_ID}}', '{{MANAGER_NAME}}', '{{MANAGER_PHONE}}', 'Manager', {{WIP_LIMIT}});
+  db.prepare('INSERT INTO board_admins (board_id, person_id, phone, admin_role, is_primary_manager) VALUES (?, ?, ?, ?, ?)')
+    .run(seedBoardId, '{{MANAGER_ID}}', '{{MANAGER_PHONE}}', 'manager', 1);
+
+  // Primary manager must also exist in board_people for sender matching / authorization
+  db.prepare('INSERT INTO board_people (board_id, person_id, name, phone, role, wip_limit, notification_group_jid) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(seedBoardId, '{{MANAGER_ID}}', '{{MANAGER_NAME}}', '{{MANAGER_PHONE}}', 'Manager', {{WIP_LIMIT}}, null);
+}
+
+if (hasControlGroup) {
+  seedBoard({
+    seedBoardId: rootBoardId,
+    groupJid: '{{CONTROL_GROUP_JID}}',
+    groupFolder: '{{CONTROL_GROUP_FOLDER}}',
+    hierarchyLevel: 1,
+    parentBoardId: null,
+    groupRole: 'control',
+  });
+
+  seedBoard({
+    seedBoardId: boardId,
+    groupJid: '{{TEAM_GROUP_JID}}',
+    groupFolder: '{{TEAM_GROUP_FOLDER}}',
+    hierarchyLevel: 2,
+    parentBoardId: rootBoardId,
+    groupRole: 'team',
+  });
+} else {
+  seedBoard({
+    seedBoardId: boardId,
+    groupJid: '{{GROUP_JID}}',
+    groupFolder: '{{GROUP_FOLDER}}',
+    hierarchyLevel: {{HIERARCHY_LEVEL_SQL}},
+    parentBoardId: null,
+    groupRole: 'team',
+  });
+}
 
 db.exec('COMMIT');
 console.log('Board seeded:', boardId);
@@ -381,6 +465,7 @@ db.close();
 Where:
 - Standard/separate: `{{BOARD_ROLE}}='standard'`, `{{HIERARCHY_LEVEL_SQL}}=null`, `{{MAX_DEPTH_SQL}}=1`
 - Hierarchy root: `{{BOARD_ROLE}}='hierarchy'`, `{{HIERARCHY_LEVEL_SQL}}=1`, `{{MAX_DEPTH_SQL}}={{MAX_DEPTH}}`
+- Hierarchy root with control group: `{{ROOT_BOARD_ID}}` is seeded at level 1, `{{BOARD_ID}}` is seeded at level 2 with `parent_board_id = {{ROOT_BOARD_ID}}`
 
 **Board people** are added in Phase 3 (People Registration). The primary full manager is seeded above so authorization works immediately. After collecting the rest of the team, INSERT or update them in `board_people`:
 
@@ -391,9 +476,9 @@ const db = new Database('data/taskflow/taskflow.db');
 const boardId = '{{BOARD_ID}}';
 // For each person collected in Phase 3:
 const people = JSON.parse(process.env.PEOPLE_JSON);
-const stmt = db.prepare('INSERT OR REPLACE INTO board_people (board_id, person_id, name, phone, role, wip_limit) VALUES (?, ?, ?, ?, ?, ?)');
+const stmt = db.prepare('INSERT OR REPLACE INTO board_people (board_id, person_id, name, phone, role, wip_limit, notification_group_jid) VALUES (?, ?, ?, ?, ?, ?, ?)');
 for (const p of people) {
-  stmt.run(boardId, p.id, p.name, p.phone, p.role, p.wip_limit);
+  stmt.run(boardId, p.id, p.name, p.phone, p.role, p.wip_limit, p.notification_group_jid || null);
 }
 db.close();
 console.log('Inserted', people.length, 'people into board_people');
@@ -402,7 +487,7 @@ console.log('Inserted', people.length, 'people into board_people');
 
 Set `PEOPLE_JSON` with the same array from Phase 3 Step 2, e.g.:
 ```json
-[{"id": "alexandre", "name": "Alexandre", "phone": "5586999990001", "role": "Tecnico", "wip_limit": 3}]
+[{"id": "person-1", "name": "Person One", "phone": "COUNTRYCODEPHONENUMBER", "role": "Role", "wip_limit": 3}]
 ```
 
 #### 6d. Runner Task IDs and DST State in board_runtime_config
@@ -454,9 +539,9 @@ Ask the user for team members, one at a time or in batch.
 **Manager as team member:** Always register the primary full manager in `board_people` so sender identification and admin authorization work. Ask whether they should also receive normal day-to-day task assignments; if not, keep the record anyway and simply avoid assigning regular work to them unless the user explicitly wants that. Admin roles are stored in `board_admins`, but the manager must also exist in `board_people`.
 
 For each person:
-- **Name** — Display name (e.g., "Alexandre")
-- **Phone** — Full number with country code, no spaces (e.g., "5586999990001")
-- **Role** — Job title or function (e.g., "Tecnico", "Administrativo")
+- **Name** — Display name (e.g., "Person Name")
+- **Phone** — Full number with country code, no spaces (e.g., `COUNTRYCODEPHONENUMBER`)
+- **Role** — Job title or function (e.g., "Implementation", "Operations")
 - **WIP limit** — Override default? (optional, default: use global WIP limit)
 
 ### 2. Register People in board_people
@@ -467,25 +552,25 @@ Insert each person into `board_people` for the current board:
 env PEOPLE_JSON="$PEOPLE_JSON" node -e "
 const Database = require('better-sqlite3');
 const db = new Database('data/taskflow/taskflow.db');
-const stmt = db.prepare('INSERT OR REPLACE INTO board_people (board_id, person_id, name, phone, role, wip_limit) VALUES (?, ?, ?, ?, ?, ?)');
+const stmt = db.prepare('INSERT OR REPLACE INTO board_people (board_id, person_id, name, phone, role, wip_limit, notification_group_jid) VALUES (?, ?, ?, ?, ?, ?, ?)');
 const people = JSON.parse(process.env.PEOPLE_JSON);
 for (const person of people) {
-  stmt.run('{{BOARD_ID}}', person.id, person.name, person.phone, person.role, person.wip_limit);
+  stmt.run('{{BOARD_ID}}', person.id, person.name, person.phone, person.role, person.wip_limit, person.notification_group_jid || null);
 }
 db.close();
 console.log('Inserted', people.length, 'people into board_people');
 "
 ```
 
-The `person_id` is the name lowercased with special characters removed (e.g., "Alexandre" → "alexandre", "Maria Jose" → "maria-jose").
+The `person_id` is the name lowercased with special characters removed (e.g., "Person Name" → "person-name", "Field Ops" → "field-ops").
 
 **Input sanitization:**
 - Strip newlines and control characters from names
 - Limit names to 50 characters
-- Strip all non-digit characters from phone before validation (e.g., "+55 86 99999-0001" → "5586999990001")
+- Strip all non-digit characters from phone before validation (e.g., `+CC AA NNNNN-NNNN` → `CCAANNNNNNNNN`)
 - Validate phone matches pattern `^[0-9]+$` (digits only, after stripping)
-- Derive `person_id` from the name lowercased with accented characters transliterated to ASCII (e.g., "José" → "jose", "João" → "joao") and spaces replaced with hyphens (e.g., "Maria Jose" → "maria-jose"). Remove all remaining non-alphanumeric, non-hyphen characters
-- Check for `person_id` collisions with existing `board_people` rows before inserting. If a collision is detected, append a numeric suffix (e.g., "jose-2")
+- Derive `person_id` from the name lowercased with accented characters transliterated to ASCII (e.g., "Ação" → "acao", "Gestão" → "gestao") and spaces replaced with hyphens (e.g., "Field Ops" → "field-ops"). Remove all remaining non-alphanumeric, non-hyphen characters
+- Check for `person_id` collisions with existing `board_people` rows before inserting. If a collision is detected, append a numeric suffix (e.g., "field-ops-2")
 
 `board_people` is the source of truth for assignees, WIP overrides, and sender matching. Because the primary full manager was already seeded in Phase 2 Step 6c, use `INSERT OR REPLACE` (or omit that manager from `PEOPLE_JSON`) so setup never fails on a duplicate row.
 
@@ -495,14 +580,20 @@ Show the user the registered team:
 
 ```
 Team registered:
-- Alexandre (5586999990001) — Tecnico, WIP: 3
-- Rafael (5586999990002) — TI/Redes, WIP: 3
-- Laizes (5586999990003) — Administrativo, WIP: 3
+- Person One (PHONE_1) — Implementation, WIP: 3
+- Person Two (PHONE_2) — Operations, WIP: 3
+- Person Three (PHONE_3) — Support, WIP: 3
 ```
 
 ## Phase 4: Runner Setup
 
 Create 3 scheduled tasks per task group by inserting directly into the `scheduled_tasks` table with `context_mode: 'group'`. The container runs in the target group's folder with access to `/workspace/taskflow/taskflow.db` via the SQLite MCP tools. Optionally add a 4th DST guard runner. No manual WhatsApp messages needed.
+
+For hierarchy roots with a dedicated control group, the initial setup has **two** task groups from day one:
+- the control root group (`{{CONTROL_GROUP_FOLDER}}`) with runners bound to `{{ROOT_BOARD_ID}}`
+- the team child group (`{{TEAM_GROUP_FOLDER}}`) with runners bound to `{{BOARD_ID}}`
+
+Do not collapse both groups into one `board_runtime_config` row. Each task group gets its own runner set and its own board row.
 
 **Direct DB insertion:** The wizard runs on the host with full database access. Scheduled tasks are inserted directly into SQLite, bypassing the MCP privilege model (which only applies to container agents). The scheduler reads from the DB on each poll tick, so new tasks are picked up automatically — no restart needed for scheduled tasks (only for registered groups).
 
@@ -615,6 +706,8 @@ Since the wizard generates the task IDs, they are known immediately — no need 
 
 Persist runner IDs in `board_runtime_config` (same pattern as Phase 2 Step 6d). This allows managing runners later (pause, cancel, update).
 
+Run this once per task group. For hierarchy roots with `{{HAS_CONTROL_GROUP}} = true`, persist the control group's runner IDs into `{{ROOT_BOARD_ID}}` and the team group's runner IDs into `{{BOARD_ID}}`; never overwrite one row with the other.
+
 ### 3. DST Guard Runner (optional, fully automatic)
 
 If `DST_GUARD_ENABLED=true`, create one additional daily runner via direct DB insert (same pattern as core runners).
@@ -704,7 +797,7 @@ If `{{HAS_CONTROL_GROUP}}` is `true`, tell the user to send the following from t
 @{{ASSISTANT_NAME}} quadro
 ```
 
-The agent should show the same board state as the team group (including T-001 created in step 2). This confirms both groups share the same SQLite database and board.
+The agent should show the control-root board, not the same board as the team group. If step 2 created T-001 in the team group, the control group should **not** automatically show that same task unless it was explicitly created on the root board too. This confirms the synthetic-root split is working: shared SQLite database, separate board rows, and a parent/child relationship.
 
 If `{{HAS_CONTROL_GROUP}}` is `false`, skip this step.
 
@@ -830,9 +923,25 @@ Expected:
 
 This phase applies only when topology = "Hierarchy". It describes how child boards are created on demand after the root board is operational.
 
-### 1. Provisioning Trigger
+### Auto-Provisioning (Default)
 
-Board owners request child boards from their own WhatsApp group: `criar quadro para [pessoa]`. The agent emits a provisioning request. The operator (or approved automation) completes the provisioning using the steps below.
+Child boards are provisioned **automatically** when a person is registered via `cadastrar` on a non-leaf hierarchy board. This also happens when a manager assigns a task to an unknown person — the agent offers to register them (requesting phone and role), and on confirmation runs the `cadastrar` flow which triggers auto-provisioning. The agent calls the `provision_child_board` MCP tool, which writes an IPC file. The host-side `provision-child-board.ts` plugin handles the full lifecycle asynchronously:
+
+1. Validates source group (TaskFlow-managed, non-leaf)
+2. Creates WhatsApp group via Baileys
+3. Registers group in `registered_groups` with TaskFlow metadata
+4. Seeds `taskflow.db` (boards, child_board_registrations, board_config, board_runtime_config, board_admins, board_people)
+5. Generates `CLAUDE.md` from template — `{{MANAGER_NAME}}` is set to the **person's name** (the board owner), not the parent manager
+6. Writes `.mcp.json`
+7. Schedules standup/digest/review runners
+8. Fixes filesystem ownership
+9. Sends confirmation to source group
+
+No operator intervention required. The steps below document the manual equivalent for reference or troubleshooting.
+
+### 1. Provisioning Trigger (Manual)
+
+Board owners can also explicitly request child boards: `criar quadro para [pessoa]`. The agent calls the same `provision_child_board` IPC flow. The manual steps below are the equivalent of what the plugin does automatically.
 
 ### 2. Pre-Flight Checks
 
@@ -915,8 +1024,12 @@ db.prepare('INSERT INTO board_admins (board_id, person_id, phone, admin_role, is
   .run(childBoardId, personId, '{{PERSON_PHONE}}', 'manager', 1);
 
 // Person as member on their own board
-db.prepare('INSERT INTO board_people (board_id, person_id, name, phone, role, wip_limit) VALUES (?, ?, ?, ?, ?, ?)')
-  .run(childBoardId, personId, '{{PERSON_NAME}}', '{{PERSON_PHONE}}', '{{PERSON_ROLE}}', {{WIP_LIMIT}});
+db.prepare('INSERT INTO board_people (board_id, person_id, name, phone, role, wip_limit, notification_group_jid) VALUES (?, ?, ?, ?, ?, ?, ?)')
+  .run(childBoardId, personId, '{{PERSON_NAME}}', '{{PERSON_PHONE}}', '{{PERSON_ROLE}}', {{WIP_LIMIT}}, null);
+
+// Set notification_group_jid on parent board so cross-group notifications reach this person's group
+db.prepare('UPDATE board_people SET notification_group_jid = ? WHERE board_id = ? AND person_id = ?')
+  .run('{{CHILD_GROUP_JID}}', parentBoardId, personId);
 
 // Record history on parent board
 db.prepare('INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES (?, ?, ?, ?, ?, ?)')

@@ -43,7 +43,10 @@ export type IpcHandler = (
 const handlers = new Map<string, IpcHandler>();
 // Allowlist: only reviewed plugins may run in the host process.
 // Adding a new plugin requires adding its filename here.
-const ALLOWED_IPC_PLUGIN_FILES = new Set(['create-group.js']);
+const ALLOWED_IPC_PLUGIN_FILES = new Set([
+  'create-group.js',
+  'provision-child-board.js',
+]);
 
 function parseOptionalNonNegativeInteger(value: unknown): number | undefined {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
@@ -381,9 +384,14 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
     }
 
     const registeredGroups = deps.registeredGroups();
+    const groupByFolder = new Map(
+      Object.values(registeredGroups).map((g) => [g.folder, g]),
+    );
 
     for (const sourceGroup of groupFolders) {
       const isMain = sourceGroup === MAIN_GROUP_FOLDER;
+      const sourceGroupEntry = groupByFolder.get(sourceGroup);
+      const isTaskflow = sourceGroupEntry?.taskflowManaged === true;
       const messagesDir = path.join(ipcBaseDir, sourceGroup, 'messages');
       const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
 
@@ -399,10 +407,15 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               if (data.type === 'message' && data.chatJid && data.text) {
                 // Authorization: verify this group can send to this chatJid
+                // - Main can send to any registered group
+                // - TaskFlow groups can send to other TaskFlow groups (cross-group notifications)
+                // - Other groups can only send to themselves
                 const targetGroup = registeredGroups[data.chatJid];
                 if (
                   targetGroup &&
-                  (isMain || targetGroup.folder === sourceGroup)
+                  (isMain ||
+                    targetGroup.folder === sourceGroup ||
+                    (isTaskflow && targetGroup.taskflowManaged))
                 ) {
                   const sender =
                     typeof data.sender === 'string' ? data.sender : undefined;

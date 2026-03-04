@@ -463,7 +463,7 @@ Revisão GTD completa às sextas. Inclui:
 - Não responde perguntas fora do escopo de gestão de tarefas
 - Não executa comandos do sistema ou código
 - Não modifica suas próprias configurações
-- Não envia mensagens individuais (tudo vai para o grupo)
+- Não envia mensagens individuais (tudo vai para o grupo ou o grupo da pessoa, no modo hierárquico)
 - Não acessa arquivos de outros grupos nem o código do sistema
 
 Se você pedir algo fora do escopo, ele responde brevemente que só gerencia tarefas e sugere comandos válidos.
@@ -712,14 +712,15 @@ Nível 1: Quadro do CEO (quadro raiz)
 
 ### Criar Quadros Filhos
 
-Quando o gestor de um quadro pede `@Tars criar quadro para [pessoa]`, o assistente gera uma solicitação de provisionamento. O operador do sistema então completa a criação:
+Quadros filhos são criados automaticamente de duas formas:
 
-1. Cria o grupo no WhatsApp
-2. Registra o grupo no sistema
-3. Configura o banco de dados e as automações
-4. Reinicia o serviço
+1. **Cadastro de nova pessoa**: Quando o gestor usa `@Tars cadastrar [nome], telefone [numero], [cargo]` em um quadro não-folha, o quadro filho é provisionado automaticamente.
 
-A pessoa recebe um quadro próprio no nível seguinte, com standup, resumo e revisão semanal configurados automaticamente.
+2. **Atribuição a pessoa desconhecida**: Quando o gestor atribui uma tarefa a alguém que não está cadastrado (ex: `@Tars tarefa para João: revisar contrato`), o assistente oferece cadastrar a pessoa. Se o gestor confirmar e fornecer telefone e cargo, o cadastro é feito e o quadro filho é provisionado automaticamente. A tarefa original é atribuída em seguida.
+
+3. **Solicitação explícita**: O gestor pode pedir `@Tars criar quadro para [pessoa]`.
+
+Em todos os casos, a pessoa recebe um quadro próprio no nível seguinte, com standup, resumo e revisão semanal configurados automaticamente. Nenhuma intervenção do operador é necessária.
 
 ### Resumo Agregado (Rollup)
 
@@ -736,7 +737,9 @@ Quando uma tarefa é vinculada ao quadro de uma pessoa, o quadro pai recebe atua
 
 O rollup é sempre entre níveis adjacentes — o nível 1 consulta o nível 2, o nível 2 consulta o nível 3. Nenhum nível acessa quadros mais distantes.
 
-Para atualizar o rollup: `@Tars atualizar status T-XXX`
+No quadro que recebe a tarefa vinculada, ela continua acionável: a pessoa pode usar os comandos normais (`T-XXX em andamento`, `T-XXX concluida`, etc.) para tocar o trabalho.
+
+Use `@Tars atualizar status T-XXX` apenas quando esse mesmo quadro tiver delegado a entrega para um quadro filho e precisar puxar o progresso agregado de volta.
 
 ### Comandos de Hierarquia
 
@@ -757,15 +760,21 @@ Para atualizar o rollup: `@Tars atualizar status T-XXX`
 |---------|-----------|
 | `@Tars ligar tarefa ao pai T-XXX` | Marca tarefa local como parte de uma entrega do nível acima |
 
+Tarefas marcadas com `🔗` continuam acionáveis no quadro que as recebeu. Use os comandos normais de fluxo (`T-XXX em andamento`, `T-XXX aguardando`, `T-XXX concluida`, etc.) para avançá-las.
+
 Além desses, todos os comandos normais do TaskFlow continuam funcionando em qualquer quadro da hierarquia: captura rápida, projetos, recorrentes, notas, prioridades, rótulos, dependências, lembretes, etc.
+
+### Notificações entre Grupos
+
+No modo hierárquico, quando uma tarefa é atribuída a uma pessoa no quadro pai, a notificação é enviada para o grupo de trabalho dessa pessoa (o quadro filho), não apenas para o grupo do quadro pai. Isso garante que a pessoa veja a notificação no grupo certo.
 
 ### Vínculo Automático
 
-Quando o gestor atribui uma tarefa a uma pessoa que tem quadro registrado, o assistente oferece vincular automaticamente:
+Quando o gestor atribui uma tarefa a uma pessoa que tem quadro registrado, o assistente vincula automaticamente ao quadro dessa pessoa e informa:
 
-> Alexandre tem um quadro registrado. Vincular T-004 automaticamente? (sim/nao)
+> T-004 vinculada automaticamente ao quadro de Alexandre.
 
-O gestor pode desvincular a qualquer momento.
+O gestor pode desvincular a qualquer momento com `desvincular T-XXX`.
 
 ### Regras Importantes
 

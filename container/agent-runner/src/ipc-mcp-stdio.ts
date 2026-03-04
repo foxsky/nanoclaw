@@ -59,15 +59,43 @@ const server = new McpServer({
 
 server.tool(
   'send_message',
-  "Send a message to the user or group immediately while you're still running. Use this for progress updates or to send multiple messages. You can call this multiple times. Note: when running as a scheduled task, your final output is NOT sent to the user — use this tool if you need to communicate with the user or group.",
+  "Queue a message for the user or group while you're still running. Use this for progress updates or to send multiple messages. You can call this multiple times. Note: when running as a scheduled task, your final output is NOT sent to the user — use this tool if you need to communicate with the user or group.",
   {
     text: z.string().describe('The message text to send'),
     sender: z.string().optional().describe('Optional role/identity label to use as the visible sender name. Channels that do not support separate bot identities will fall back to a text prefix.'),
+    target_chat_jid: z.string().optional().describe('(Main and TaskFlow groups only) Send to a different group by JID. Use for cross-group notifications. The target group must be registered.'),
   },
   async (args) => {
+    const isCrossGroupAttempt =
+      args.target_chat_jid !== undefined && args.target_chat_jid !== chatJid;
+    if (isCrossGroupAttempt && !isMain && !isTaskflowManaged) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Only the main group and TaskFlow-managed groups can target a different group.',
+          },
+        ],
+        isError: true,
+      };
+    }
+    if (args.target_chat_jid && !args.target_chat_jid.endsWith('@g.us')) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'target_chat_jid must be a WhatsApp group JID ending in "@g.us".',
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const targetJid = args.target_chat_jid ?? chatJid;
+
     const data: Record<string, string | undefined> = {
       type: 'message',
-      chatJid,
+      chatJid: targetJid,
       text: args.text,
       sender: args.sender || undefined,
       groupFolder,
@@ -76,7 +104,16 @@ server.tool(
 
     writeIpcFile(MESSAGES_DIR, data);
 
-    return { content: [{ type: 'text' as const, text: 'Message sent.' }] };
+    const targetDescription =
+      targetJid === chatJid ? 'this group' : targetJid;
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Message queued for delivery to ${targetDescription}. Delivery will be skipped if the target group is not registered or not authorized.`,
+        },
+      ],
+    };
   },
 );
 
@@ -357,7 +394,6 @@ server.tool(
     const normalized = normalizeCreateGroupRequest(
       args.subject,
       args.participants,
-      !isMain,
     );
     if (!normalized) {
       return {
@@ -385,6 +421,75 @@ server.tool(
         {
           type: 'text' as const,
           text: 'Group creation requested. The host will create it asynchronously.',
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'provision_child_board',
+  'Provision a child board for a person on a hierarchy board. Creates a WhatsApp group, registers it, seeds the board database, generates CLAUDE.md, and schedules runners. Only non-leaf TaskFlow boards can provision children. The host processes this asynchronously.',
+  {
+    person_id: z
+      .string()
+      .describe('The person_id from board_people (e.g., "joao")'),
+    person_name: z.string().describe('Display name (e.g., "João")'),
+    person_phone: z
+      .string()
+      .describe('Phone number, digits only (e.g., "5585999990000")'),
+    person_role: z.string().describe('Job role (e.g., "desenvolvedor")'),
+    group_name: z
+      .string()
+      .optional()
+      .describe(
+        'WhatsApp group name override. Auto-generated as "[name] - TaskFlow" if omitted.',
+      ),
+    group_folder: z
+      .string()
+      .optional()
+      .describe(
+        'Folder name override. Auto-generated from person_id if omitted.',
+      ),
+  },
+  async (args) => {
+    if (
+      !canUseCreateGroup({
+        isMain: false,
+        isTaskflowManaged,
+        taskflowHierarchyLevel,
+        taskflowMaxDepth,
+      })
+    ) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Only non-leaf TaskFlow-managed groups can provision child boards.',
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    writeIpcFile(TASKS_DIR, {
+      type: 'provision_child_board',
+      person_id: args.person_id,
+      person_name: args.person_name,
+      person_phone: args.person_phone,
+      person_role: args.person_role,
+      group_name: args.group_name,
+      group_folder: args.group_folder,
+      groupFolder,
+      isMain,
+      timestamp: new Date().toISOString(),
+    });
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'Child board provisioning requested. The host will create the WhatsApp group, register it, seed the database, generate CLAUDE.md, and schedule runners asynchronously.',
         },
       ],
     };

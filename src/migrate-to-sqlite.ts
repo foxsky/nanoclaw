@@ -505,8 +505,8 @@ export function migrateBoard(options: MigrateBoardOptions): void {
 
     // board_people — from people[]
     const insertPerson = taskflowDb.prepare(
-      `INSERT OR REPLACE INTO board_people (board_id, person_id, name, phone, role, wip_limit)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO board_people (board_id, person_id, name, phone, role, wip_limit, notification_group_jid)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
     const personIdByPhone = new Map<string, string>();
     for (const person of tasksJson.people) {
@@ -517,6 +517,7 @@ export function migrateBoard(options: MigrateBoardOptions): void {
         person.phone,
         person.role,
         person.wip_limit,
+        null,
       );
       personIdByPhone.set(person.phone, person.id);
     }
@@ -535,6 +536,7 @@ export function migrateBoard(options: MigrateBoardOptions): void {
       meta.manager.phone,
       matchingLegacyManager?.role ?? managerInPeople?.role ?? 'manager',
       managerInPeople?.wip_limit ?? null,
+      null,
     );
     personIdByPhone.set(
       meta.manager.phone,

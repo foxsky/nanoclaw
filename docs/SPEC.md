@@ -477,7 +477,7 @@ The `nanoclaw` MCP server is created dynamically per agent call with the current
 | `pause_task` | Pause a task |
 | `resume_task` | Resume a paused task |
 | `cancel_task` | Delete a task |
-| `send_message` | Send a WhatsApp message to the group |
+| `send_message` | Send a WhatsApp message to the group (optional `target_chat_jid` for cross-group, main/TaskFlow only) |
 | `register_group` | Register a new group (main only) |
 
 **Plugin Tools** (loaded from `/workspace/mcp-plugins/`):

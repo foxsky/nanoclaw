@@ -22,12 +22,6 @@ import { logger } from '../logger.js';
 import { isMediaMessage, getMediaType, downloadAndSaveMedia } from '../media.js';
 import { isVoiceMessage, transcribeAudioMessage } from '../transcription.js';
 import {
-  isMediaMessage,
-  getMediaType,
-  downloadAndSaveMedia,
-} from '../media.js';
-import { isVoiceMessage, transcribeAudioMessage } from '../transcription.js';
-import {
   Channel,
   OnInboundMessage,
   OnChatMetadata,
@@ -51,6 +45,8 @@ export class WhatsAppChannel implements Channel {
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
   private groupSyncTimerStarted = false;
+  /** IDs of messages we sent — used to detect bot messages with custom sender prefixes */
+  private sentBotMessageIds = new Set<string>();
 
   private opts: WhatsAppChannelOpts;
 
@@ -216,9 +212,13 @@ export class WhatsAppChannel implements Channel {
           // since only the bot sends from that number.
           // With shared number, bot messages carry the assistant name prefix
           // (even in DMs/self-chat) so we check for that.
+          // Also check sentBotMessageIds for messages sent with custom sender
+          // prefixes (e.g. cross-group notifications using sender="Case").
+          const msgId = msg.key.id || '';
           const isBotMessage = ASSISTANT_HAS_OWN_NUMBER
             ? fromMe
-            : content.startsWith(`${ASSISTANT_NAME}:`);
+            : content.startsWith(`${ASSISTANT_NAME}:`) ||
+              this.sentBotMessageIds.delete(msgId);
 
           // Transcribe voice messages before storing
           let finalContent = content;
@@ -298,7 +298,15 @@ export class WhatsAppChannel implements Channel {
       return;
     }
     try {
-      await this.sock.sendMessage(jid, { text: prefixed });
+      const sent = await this.sock.sendMessage(jid, { text: prefixed });
+      if (sent?.key?.id) {
+        this.sentBotMessageIds.add(sent.key.id);
+        // Prevent unbounded growth — IDs are only needed until the echo arrives
+        if (this.sentBotMessageIds.size > 1000) {
+          const oldest = this.sentBotMessageIds.values().next().value;
+          if (oldest) this.sentBotMessageIds.delete(oldest);
+        }
+      }
       logger.info({ jid, length: prefixed.length }, 'Message sent');
     } catch (err) {
       // If send fails, queue it for retry on reconnect

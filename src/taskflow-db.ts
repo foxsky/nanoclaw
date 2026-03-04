@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS board_people (
   phone TEXT,
   role TEXT DEFAULT 'member',
   wip_limit INTEGER,
+  notification_group_jid TEXT,
   PRIMARY KEY (board_id, person_id)
 );
 
@@ -166,6 +167,11 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(TASKFLOW_SCHEMA);
+  try {
+    db.exec(`ALTER TABLE board_people ADD COLUMN notification_group_jid TEXT`);
+  } catch {
+    // Existing DBs may already have the column.
+  }
 
   return db;
 }

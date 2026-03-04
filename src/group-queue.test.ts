@@ -245,7 +245,7 @@ describe('GroupQueue', () => {
 
   // --- Idle preemption ---
 
-  it('does NOT preempt active container when not idle', async () => {
+  it('preempts active message container when a task is enqueued even before idle', async () => {
     const fs = await import('fs');
     let resolveProcess: () => void;
 
@@ -274,12 +274,12 @@ describe('GroupQueue', () => {
     const taskFn = vi.fn(async () => {});
     queue.enqueueTask('group1@g.us', 'task-1', taskFn);
 
-    // _close should NOT have been written (container is working, not idle)
+    // _close SHOULD be written so the message container winds down promptly
     const writeFileSync = vi.mocked(fs.default.writeFileSync);
     const closeWrites = writeFileSync.mock.calls.filter(
       (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
     );
-    expect(closeWrites).toHaveLength(0);
+    expect(closeWrites).toHaveLength(1);
 
     resolveProcess!();
     await vi.advanceTimersByTimeAsync(10);
@@ -328,7 +328,7 @@ describe('GroupQueue', () => {
     await vi.advanceTimersByTimeAsync(10);
   });
 
-  it('sendMessage resets idleWaiting so a subsequent task enqueue does not preempt', async () => {
+  it('sendMessage resets idleWaiting but a subsequent task enqueue still preempts the active message container', async () => {
     const fs = await import('fs');
     let resolveProcess: () => void;
 
@@ -355,7 +355,7 @@ describe('GroupQueue', () => {
     // A new user message arrives — resets idleWaiting
     queue.sendMessage('group1@g.us', 'hello');
 
-    // Task enqueued after message reset — should NOT preempt (agent is working)
+    // Task enqueued after message reset still preempts under the new rule
     const writeFileSync = vi.mocked(fs.default.writeFileSync);
     writeFileSync.mockClear();
 
@@ -365,7 +365,7 @@ describe('GroupQueue', () => {
     const closeWrites = writeFileSync.mock.calls.filter(
       (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
     );
-    expect(closeWrites).toHaveLength(0);
+    expect(closeWrites).toHaveLength(1);
 
     resolveProcess!();
     await vi.advanceTimersByTimeAsync(10);
@@ -444,6 +444,40 @@ describe('GroupQueue', () => {
     await vi.advanceTimersByTimeAsync(10);
   });
 
+  it('does NOT preempt an active task container when another task is enqueued', async () => {
+    const fs = await import('fs');
+    let resolveFirstTask: () => void;
+
+    const firstTask = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        resolveFirstTask = resolve;
+      });
+    });
+
+    queue.enqueueTask('group1@g.us', 'task-1', firstTask);
+    await vi.advanceTimersByTimeAsync(10);
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'container-1',
+      'test-group',
+    );
+
+    const writeFileSync = vi.mocked(fs.default.writeFileSync);
+    writeFileSync.mockClear();
+
+    const secondTask = vi.fn(async () => {});
+    queue.enqueueTask('group1@g.us', 'task-2', secondTask);
+
+    const closeWrites = writeFileSync.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
+    );
+    expect(closeWrites).toHaveLength(0);
+
+    resolveFirstTask!();
+    await vi.advanceTimersByTimeAsync(10);
+  });
+
   it('preempts when idle arrives with pending tasks', async () => {
     const fs = await import('fs');
     let resolveProcess: () => void;
@@ -461,7 +495,7 @@ describe('GroupQueue', () => {
     queue.enqueueMessageCheck('group1@g.us');
     await vi.advanceTimersByTimeAsync(10);
 
-    // Register process and enqueue a task (no idle yet — no preemption)
+    // Register process and enqueue a task (preemption now happens immediately)
     queue.registerProcess(
       'group1@g.us',
       {} as any,
@@ -478,7 +512,7 @@ describe('GroupQueue', () => {
     let closeWrites = writeFileSync.mock.calls.filter(
       (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
     );
-    expect(closeWrites).toHaveLength(0);
+    expect(closeWrites).toHaveLength(1);
 
     // Now container becomes idle — should preempt because task is pending
     writeFileSync.mockClear();
