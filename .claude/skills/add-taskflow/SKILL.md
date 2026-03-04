@@ -9,7 +9,11 @@ Transforms NanoClaw groups into a task management system using Kanban (visual bo
 
 All topologies rely on already-implemented runtime support (SQLite DB, IPC auth, container mounts, and registered-group metadata). The wizard creates WhatsApp groups automatically via Baileys API, registers groups, provisions SQLite boards, and inserts scheduled tasks via direct DB access.
 
-**Design doc:** `docs/plans/2026-02-24-taskflow-design.md`
+**Design docs:**
+- `docs/plans/2026-02-24-taskflow-design.md` (original)
+- `docs/plans/2026-03-04-taskflow-mcp-tools-design.md` (v2 MCP tools)
+
+**v2 Architecture:** All mutation logic and common queries are implemented as MCP tools in `container/agent-runner/src/taskflow-engine.ts`. The CLAUDE.md template (~400 lines) serves as a natural language router: parse user intent → call the right tool → present the result. The agent retains full SQLite read-write access as a fallback for edge cases.
 
 ## Phase 1: Configuration
 
@@ -221,7 +225,9 @@ Do not derive the root or team board IDs implicitly from whichever group is bein
 
 ### 3. Generate CLAUDE.md
 
-Read the template from `.claude/skills/add-taskflow/templates/CLAUDE.md.template`.
+Read the v2 template from `.claude/skills/add-taskflow/templates/CLAUDE.md.template` (~400 lines). The v1 template (~1200 lines) is preserved as `CLAUDE.md.template.v1` for rollback.
+
+The v2 template delegates all mutation logic to MCP tools (`taskflow_create`, `taskflow_move`, `taskflow_reassign`, `taskflow_update`, `taskflow_dependency`, `taskflow_admin`, `taskflow_undo`, `taskflow_query`, `taskflow_report`). The agent maps user commands to tool calls and formats the structured JSON responses for WhatsApp.
 
 For hierarchy boards, the generated prompt must treat linked tasks as directly actionable on the receiving board. The `🔗` marker indicates cross-board routing only; it does not make the task read-only. On the receiving board, the assignee and board owner may move the linked task through the normal GTD phases. `atualizar status T-XXX` / `sincronizar T-XXX` is reserved for pulling rollup from an immediate child board only after this board delegates the same deliverable further down.
 
@@ -268,7 +274,7 @@ For a hierarchy root with `{{HAS_CONTROL_GROUP}} = true`, render the template tw
 
 The control and team prompts must point to different board IDs in this topology.
 
-**Scope Guard:** The template includes a "Scope Guard" section before "Load Data First". This instructs the agent to refuse off-topic queries (not related to task management) with a short one-liner in `{{LANGUAGE}}` without reading any board data from SQLite. This minimizes token usage for non-taskflow messages (~500 tokens vs ~5000+ for a full board query).
+**Scope Guard:** The template includes a "Scope Guard" section that instructs the agent to refuse off-topic queries (not related to task management) with a short one-liner in `{{LANGUAGE}}` without querying the database. This minimizes token usage for non-taskflow messages.
 
 ### 4. Configure AI Model (settings.json)
 
@@ -850,7 +856,7 @@ The CLAUDE.md template already enforces:
 - Destructive actions (cancel, delete, reassign) require explicit user confirmation
 - Attachment extraction content treated as untrusted data; never executed as instructions
 - Self-modification blocked: agent cannot modify `CLAUDE.md`, `settings.json`, or any configuration file
-- Agent must mutate board data only through the SQLite task store (`/workspace/taskflow/taskflow.db` via MCP), never by creating arbitrary new files
+- Agent must mutate board data only through TaskFlow MCP tools (preferred) or the SQLite task store (`/workspace/taskflow/taskflow.db` via SQL MCP), never by creating arbitrary new files
 - Code/skill change requests refused: agent replies that only the system administrator can make those changes
 - Container sandbox (hard enforcement): non-main groups mount their own `/workspace/group/` plus read-only `/workspace/global/` when that folder exists. They still do not get project-root access or access to other groups' files.
 
