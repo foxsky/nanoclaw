@@ -32,6 +32,15 @@ This gives:
 - no task duplication across boards
 - simple updates for assignee, column, due date, notes, reminders
 
+Current runtime behavior on top of that storage:
+
+- when a task is linked to another board via `child_exec_*`, the receiving board
+  can still move that same task directly through the normal GTD phases
+- the `🔗` marker indicates cross-board routing, not a read-only mirror
+- `atualizar status T-XXX` / `sincronizar T-XXX` is reserved for pulling
+  rollup from an immediate child board only after the current board delegates
+  the same deliverable further down
+
 But it also creates a structural limit:
 
 - a child board can view a delegated parent task
@@ -97,6 +106,9 @@ Benefits:
 - deep hierarchies become easier to represent
 - child/grandchild relationships become queryable without overloading `tasks`
 - future tooling can reason about board relationships from one table
+- the current "linked tasks stay actionable on the receiving board" behavior can
+  remain intact while delegation and visibility become explicit data instead of
+  being split across task columns
 
 Most important: this solves the current limitation where a board can see a task
 from its parent but cannot safely re-delegate the same row further down because
