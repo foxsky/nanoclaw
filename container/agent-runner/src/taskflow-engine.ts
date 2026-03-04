@@ -171,6 +171,38 @@ export interface AdminResult extends TaskflowResult {
   tasks?: any[];
 }
 
+export interface ReportParams {
+  board_id: string;
+  type: 'standup' | 'digest' | 'weekly';
+}
+
+export interface ReportResult extends TaskflowResult {
+  data?: {
+    date: string;
+    overdue: Array<{ id: string; title: string; assignee_name: string | null; due_date: string }>;
+    in_progress: Array<{ id: string; title: string; assignee_name: string | null }>;
+    review: Array<{ id: string; title: string; assignee_name: string | null }>;
+    due_today: Array<{ id: string; title: string; assignee_name: string | null }>;
+    waiting: Array<{ id: string; title: string; assignee_name: string | null; waiting_for: string | null }>;
+    blocked: Array<{ id: string; title: string; assignee_name: string | null; blocked_by: string[] }>;
+    completed_today: Array<{ id: string; title: string; assignee_name: string | null }>;
+    changes_today_count: number;
+    per_person: Array<{
+      name: string;
+      in_progress: number;
+      waiting: number;
+      completed_today?: number;
+      completed_week?: number;
+    }>;
+    stats?: {
+      total_active: number;
+      completed_week: number;
+      created_week: number;
+      trend: 'up' | 'down' | 'same';
+    };
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -212,6 +244,24 @@ function sevenDaysFromNow(): string {
 function monthStart(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+}
+
+/** Monday of the previous ISO week. */
+function lastWeekStart(): string {
+  const d = new Date();
+  const day = d.getDay();
+  const diff = day === 0 ? 6 : day - 1;
+  d.setDate(d.getDate() - diff - 7);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Sunday of the previous ISO week. */
+function lastWeekEnd(): string {
+  const d = new Date();
+  const day = d.getDay();
+  const diff = day === 0 ? 6 : day - 1;
+  d.setDate(d.getDate() - diff - 1);
+  return d.toISOString().slice(0, 10);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2615,6 +2665,320 @@ export class TaskflowEngine {
         default:
           return { success: false, error: `Unknown admin action: ${(params as any).action}` };
       }
+    } catch (err: any) {
+      return { success: false, error: err.message ?? String(err) };
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  report — taskflow_report                                         */
+  /* ---------------------------------------------------------------- */
+
+  report(params: ReportParams): ReportResult {
+    try {
+      const todayStr = today();
+      const isDigestOrWeekly = params.type === 'digest' || params.type === 'weekly';
+      const isWeekly = params.type === 'weekly';
+
+      /* --- Build person lookup map (person_id → name) --- */
+      const people = this.db
+        .prepare(`SELECT person_id, name FROM board_people WHERE board_id = ?`)
+        .all(this.boardId) as Array<{ person_id: string; name: string }>;
+      const personMap = new Map(people.map((p) => [p.person_id, p.name]));
+      const resolveName = (personId: string | null): string | null =>
+        personId ? personMap.get(personId) ?? null : null;
+
+      /* --- Overdue tasks --- */
+      const overdue = this.db
+        .prepare(
+          `SELECT id, title, assignee, due_date FROM tasks
+           WHERE board_id = ? AND due_date < ? AND column != 'done'
+           ORDER BY due_date, id`,
+        )
+        .all(this.boardId, todayStr) as Array<{ id: string; title: string; assignee: string | null; due_date: string }>;
+
+      /* --- In-progress tasks --- */
+      const inProgress = this.db
+        .prepare(
+          `SELECT id, title, assignee FROM tasks
+           WHERE board_id = ? AND column = 'in_progress'
+           ORDER BY id`,
+        )
+        .all(this.boardId) as Array<{ id: string; title: string; assignee: string | null }>;
+
+      /* --- Review tasks --- */
+      const review = this.db
+        .prepare(
+          `SELECT id, title, assignee FROM tasks
+           WHERE board_id = ? AND column = 'review'
+           ORDER BY id`,
+        )
+        .all(this.boardId) as Array<{ id: string; title: string; assignee: string | null }>;
+
+      /* --- Due today --- */
+      const dueToday = this.db
+        .prepare(
+          `SELECT id, title, assignee FROM tasks
+           WHERE board_id = ? AND due_date = ? AND column != 'done'
+           ORDER BY id`,
+        )
+        .all(this.boardId, todayStr) as Array<{ id: string; title: string; assignee: string | null }>;
+
+      /* --- Waiting tasks --- */
+      const waiting = this.db
+        .prepare(
+          `SELECT id, title, assignee, waiting_for FROM tasks
+           WHERE board_id = ? AND column = 'waiting'
+           ORDER BY id`,
+        )
+        .all(this.boardId) as Array<{ id: string; title: string; assignee: string | null; waiting_for: string | null }>;
+
+      /* --- Blocked tasks (digest + weekly) --- */
+      let blocked: Array<{ id: string; title: string; assignee: string | null; blocked_by_raw: string }> = [];
+      if (isDigestOrWeekly) {
+        blocked = this.db
+          .prepare(
+            `SELECT id, title, assignee, blocked_by AS blocked_by_raw FROM tasks
+             WHERE board_id = ? AND column != 'done' AND blocked_by != '[]'
+             ORDER BY id`,
+          )
+          .all(this.boardId) as any[];
+      }
+
+      /* --- Completed today (digest + weekly) --- */
+      let completedToday: Array<{ task_id: string }> = [];
+      if (isDigestOrWeekly) {
+        completedToday = this.db
+          .prepare(
+            `SELECT DISTINCT task_id FROM task_history
+             WHERE board_id = ? AND action = 'moved'
+               AND details LIKE '%"to_column":"done"%'
+               AND at LIKE ?
+             ORDER BY task_id`,
+          )
+          .all(this.boardId, `${todayStr}%`) as Array<{ task_id: string }>;
+      }
+
+      /* --- Changes today count (digest + weekly) --- */
+      let changesTodayCount = 0;
+      if (isDigestOrWeekly) {
+        const row = this.db
+          .prepare(
+            `SELECT COUNT(*) AS cnt FROM task_history
+             WHERE board_id = ? AND at LIKE ?`,
+          )
+          .get(this.boardId, `${todayStr}%`) as { cnt: number };
+        changesTodayCount = row.cnt;
+      }
+
+      /* --- Resolve completed_today task details --- */
+      const completedTodayTasks: Array<{ id: string; title: string; assignee: string | null }> = [];
+      if (isDigestOrWeekly) {
+        for (const { task_id } of completedToday) {
+          // First check active tasks
+          const task = this.db
+            .prepare(`SELECT id, title, assignee FROM tasks WHERE board_id = ? AND id = ?`)
+            .get(this.boardId, task_id) as { id: string; title: string; assignee: string | null } | undefined;
+          if (task) {
+            completedTodayTasks.push(task);
+          } else {
+            // Check archive
+            const archived = this.db
+              .prepare(`SELECT task_id AS id, title, assignee FROM archive WHERE board_id = ? AND task_id = ?`)
+              .get(this.boardId, task_id) as { id: string; title: string; assignee: string | null } | undefined;
+            if (archived) completedTodayTasks.push(archived);
+          }
+        }
+      }
+
+      /* --- Per-person summary --- */
+      const perPerson: Array<{
+        name: string;
+        in_progress: number;
+        waiting: number;
+        completed_today?: number;
+        completed_week?: number;
+      }> = [];
+
+      // Count per-person completed today (digest + weekly)
+      const completedTodayByPerson = new Map<string, number>();
+      if (isDigestOrWeekly) {
+        for (const t of completedTodayTasks) {
+          if (t.assignee) {
+            completedTodayByPerson.set(
+              t.assignee,
+              (completedTodayByPerson.get(t.assignee) ?? 0) + 1,
+            );
+          }
+        }
+      }
+
+      // Count per-person completed this week (weekly only)
+      const completedWeekByPerson = new Map<string, number>();
+      if (isWeekly) {
+        const ws = weekStart();
+        const completedWeekRows = this.db
+          .prepare(
+            `SELECT th.task_id, t.assignee FROM task_history th
+             LEFT JOIN tasks t ON t.board_id = th.board_id AND t.id = th.task_id
+             WHERE th.board_id = ? AND th.action = 'moved'
+               AND th.details LIKE '%"to_column":"done"%'
+               AND th.at >= ?
+             UNION
+             SELECT th.task_id, a.assignee FROM task_history th
+             LEFT JOIN archive a ON a.board_id = th.board_id AND a.task_id = th.task_id
+             WHERE th.board_id = ? AND th.action = 'moved'
+               AND th.details LIKE '%"to_column":"done"%'
+               AND th.at >= ?
+               AND th.task_id NOT IN (SELECT id FROM tasks WHERE board_id = ?)`,
+          )
+          .all(this.boardId, ws, this.boardId, ws, this.boardId) as Array<{ task_id: string; assignee: string | null }>;
+
+        for (const row of completedWeekRows) {
+          if (row.assignee) {
+            completedWeekByPerson.set(
+              row.assignee,
+              (completedWeekByPerson.get(row.assignee) ?? 0) + 1,
+            );
+          }
+        }
+      }
+
+      for (const person of people) {
+        const ipCount = inProgress.filter((t) => t.assignee === person.person_id).length;
+        const wCount = waiting.filter((t) => t.assignee === person.person_id).length;
+        const entry: typeof perPerson[number] = {
+          name: person.name,
+          in_progress: ipCount,
+          waiting: wCount,
+        };
+        if (isDigestOrWeekly) {
+          entry.completed_today = completedTodayByPerson.get(person.person_id) ?? 0;
+        }
+        if (isWeekly) {
+          entry.completed_week = completedWeekByPerson.get(person.person_id) ?? 0;
+        }
+        perPerson.push(entry);
+      }
+
+      /* --- Weekly stats --- */
+      let stats: ReportResult['data'] extends undefined ? never : NonNullable<ReportResult['data']>['stats'] = undefined;
+      if (isWeekly) {
+        const ws = weekStart();
+        const lws = lastWeekStart();
+        const lwe = lastWeekEnd();
+
+        // Total active tasks (not in done, not cancelled)
+        const activeRow = this.db
+          .prepare(
+            `SELECT COUNT(*) AS cnt FROM tasks
+             WHERE board_id = ? AND column != 'done'`,
+          )
+          .get(this.boardId) as { cnt: number };
+
+        // Completed this week
+        const completedWeekRow = this.db
+          .prepare(
+            `SELECT COUNT(DISTINCT task_id) AS cnt FROM task_history
+             WHERE board_id = ? AND action = 'moved'
+               AND details LIKE '%"to_column":"done"%'
+               AND at >= ?`,
+          )
+          .get(this.boardId, ws) as { cnt: number };
+
+        // Created this week
+        const createdWeekRow = this.db
+          .prepare(
+            `SELECT COUNT(*) AS cnt FROM task_history
+             WHERE board_id = ? AND action = 'created' AND at >= ?`,
+          )
+          .get(this.boardId, ws) as { cnt: number };
+
+        // Completed last week (for trend)
+        const completedLastWeekRow = this.db
+          .prepare(
+            `SELECT COUNT(DISTINCT task_id) AS cnt FROM task_history
+             WHERE board_id = ? AND action = 'moved'
+               AND details LIKE '%"to_column":"done"%'
+               AND at >= ? AND at < ?`,
+          )
+          .get(this.boardId, lws, ws) as { cnt: number };
+
+        const completedWeek = completedWeekRow.cnt;
+        const completedLastWeek = completedLastWeekRow.cnt;
+        const trend: 'up' | 'down' | 'same' =
+          completedWeek > completedLastWeek
+            ? 'up'
+            : completedWeek < completedLastWeek
+              ? 'down'
+              : 'same';
+
+        stats = {
+          total_active: activeRow.cnt,
+          completed_week: completedWeek,
+          created_week: createdWeekRow.cnt,
+          trend,
+        };
+      }
+
+      /* --- Assemble result --- */
+      return {
+        success: true,
+        data: {
+          date: todayStr,
+          overdue: overdue.map((t) => ({
+            id: t.id,
+            title: t.title,
+            assignee_name: resolveName(t.assignee),
+            due_date: t.due_date,
+          })),
+          in_progress: inProgress.map((t) => ({
+            id: t.id,
+            title: t.title,
+            assignee_name: resolveName(t.assignee),
+          })),
+          review: review.map((t) => ({
+            id: t.id,
+            title: t.title,
+            assignee_name: resolveName(t.assignee),
+          })),
+          due_today: dueToday.map((t) => ({
+            id: t.id,
+            title: t.title,
+            assignee_name: resolveName(t.assignee),
+          })),
+          waiting: waiting.map((t) => ({
+            id: t.id,
+            title: t.title,
+            assignee_name: resolveName(t.assignee),
+            waiting_for: t.waiting_for,
+          })),
+          blocked: isDigestOrWeekly
+            ? blocked.map((t) => {
+                let blockedByIds: string[] = [];
+                try {
+                  blockedByIds = JSON.parse(t.blocked_by_raw);
+                } catch {}
+                return {
+                  id: t.id,
+                  title: t.title,
+                  assignee_name: resolveName(t.assignee),
+                  blocked_by: blockedByIds,
+                };
+              })
+            : [],
+          completed_today: isDigestOrWeekly
+            ? completedTodayTasks.map((t) => ({
+                id: t.id,
+                title: t.title,
+                assignee_name: resolveName(t.assignee),
+              }))
+            : [],
+          changes_today_count: isDigestOrWeekly ? changesTodayCount : 0,
+          per_person: perPerson,
+          ...(isWeekly && stats ? { stats } : {}),
+        },
+      };
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }

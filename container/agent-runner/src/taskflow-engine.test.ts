@@ -2421,4 +2421,185 @@ describe('TaskflowEngine', () => {
       expect(task.column).toBe('next_action');
     });
   });
+
+  /* ---------------------------------------------------------------- */
+  /*  report                                                           */
+  /* ---------------------------------------------------------------- */
+
+  describe('report', () => {
+    it('standup returns correct sections', () => {
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yStr = yesterday.toISOString().slice(0, 10);
+
+      // Make T-001 overdue (in_progress with past due_date)
+      db.exec(
+        `UPDATE tasks SET due_date = '${yStr}' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+
+      // T-001 is already in_progress, assigned to person-1 (Alexandre)
+      const r = engine.report({ board_id: BOARD_ID, type: 'standup' });
+      expect(r.success).toBe(true);
+      expect(r.data).toBeTruthy();
+      expect(r.data!.date).toBe(todayStr);
+
+      // Overdue: T-001
+      expect(r.data!.overdue).toHaveLength(1);
+      expect(r.data!.overdue[0].id).toBe('T-001');
+      expect(r.data!.overdue[0].assignee_name).toBe('Alexandre');
+      expect(r.data!.overdue[0].due_date).toBe(yStr);
+
+      // In-progress: T-001
+      expect(r.data!.in_progress).toHaveLength(1);
+      expect(r.data!.in_progress[0].id).toBe('T-001');
+
+      // Per-person: should have entries for Alexandre and Giovanni
+      expect(r.data!.per_person).toHaveLength(2);
+      const alex = r.data!.per_person.find((p) => p.name === 'Alexandre');
+      expect(alex).toBeTruthy();
+      expect(alex!.in_progress).toBe(1);
+      expect(alex!.waiting).toBe(0);
+
+      const gio = r.data!.per_person.find((p) => p.name === 'Giovanni');
+      expect(gio).toBeTruthy();
+      expect(gio!.in_progress).toBe(0);
+
+      // Standup should NOT have stats
+      expect(r.data!.stats).toBeUndefined();
+
+      // Standup: blocked / completed_today / changes_today_count are empty/zero
+      expect(r.data!.blocked).toEqual([]);
+      expect(r.data!.completed_today).toEqual([]);
+      expect(r.data!.changes_today_count).toBe(0);
+    });
+
+    it('digest includes completed_today and blocked', () => {
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const now = new Date().toISOString();
+
+      // Move T-001 to done today (via history)
+      db.exec(
+        `UPDATE tasks SET column = 'done' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+         VALUES ('${BOARD_ID}', 'T-001', 'moved', 'person-1', '${now}', '${JSON.stringify({ from_column: 'in_progress', to_column: 'done' })}')`,
+      );
+
+      // Make T-002 blocked
+      db.exec(
+        `UPDATE tasks SET blocked_by = '["T-003"]' WHERE board_id = '${BOARD_ID}' AND id = 'T-002'`,
+      );
+
+      // Add another history entry today
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+         VALUES ('${BOARD_ID}', 'T-002', 'updated', 'person-2', '${now}', 'added blocker')`,
+      );
+
+      const r = engine.report({ board_id: BOARD_ID, type: 'digest' });
+      expect(r.success).toBe(true);
+
+      // Completed today: T-001
+      expect(r.data!.completed_today).toHaveLength(1);
+      expect(r.data!.completed_today[0].id).toBe('T-001');
+      expect(r.data!.completed_today[0].assignee_name).toBe('Alexandre');
+
+      // Blocked: T-002
+      expect(r.data!.blocked).toHaveLength(1);
+      expect(r.data!.blocked[0].id).toBe('T-002');
+      expect(r.data!.blocked[0].blocked_by).toEqual(['T-003']);
+
+      // Changes today count: 2 history entries
+      expect(r.data!.changes_today_count).toBe(2);
+
+      // Per-person should have completed_today counts
+      const alex = r.data!.per_person.find((p) => p.name === 'Alexandre');
+      expect(alex!.completed_today).toBe(1);
+
+      // Should NOT have weekly stats
+      expect(r.data!.stats).toBeUndefined();
+    });
+
+    it('weekly includes stats and trend', () => {
+      const now = new Date().toISOString();
+      const todayStr = new Date().toISOString().slice(0, 10);
+
+      // Create some history entries this week
+      // T-001 moved to done this week
+      db.exec(
+        `UPDATE tasks SET column = 'done' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+         VALUES ('${BOARD_ID}', 'T-001', 'moved', 'person-1', '${now}', '${JSON.stringify({ from_column: 'in_progress', to_column: 'done' })}')`,
+      );
+
+      // T-003 created this week
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+         VALUES ('${BOARD_ID}', 'T-003', 'created', 'person-1', '${now}', 'task created')`,
+      );
+
+      // Add a "completed last week" entry for trend comparison
+      const lastWeekDate = new Date();
+      const day = lastWeekDate.getDay();
+      const diff = day === 0 ? 6 : day - 1;
+      lastWeekDate.setDate(lastWeekDate.getDate() - diff - 3); // mid last week
+      const lwStr = lastWeekDate.toISOString();
+
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+         VALUES ('${BOARD_ID}', 'T-002', 'moved', 'person-2', '${lwStr}', '${JSON.stringify({ from_column: 'in_progress', to_column: 'done' })}')`,
+      );
+
+      const r = engine.report({ board_id: BOARD_ID, type: 'weekly' });
+      expect(r.success).toBe(true);
+
+      // Should have stats
+      expect(r.data!.stats).toBeTruthy();
+      expect(r.data!.stats!.completed_week).toBe(1); // T-001 done this week
+      expect(r.data!.stats!.created_week).toBe(1);   // T-003 created this week
+      expect(r.data!.stats!.total_active).toBe(2);    // T-002 and T-003 (T-001 is done)
+      expect(r.data!.stats!.trend).toBe('same');       // 1 this week, 1 last week
+
+      // Per-person should have completed_week
+      const alex = r.data!.per_person.find((p) => p.name === 'Alexandre');
+      expect(alex!.completed_week).toBeDefined();
+
+      // Also has digest fields
+      expect(r.data!.completed_today).toBeDefined();
+      expect(r.data!.blocked).toBeDefined();
+      expect(r.data!.changes_today_count).toBeGreaterThanOrEqual(0);
+    });
+
+    it('empty board returns valid structure', () => {
+      // Delete all tasks
+      db.exec(`DELETE FROM tasks WHERE board_id = '${BOARD_ID}'`);
+      // Delete all people too
+      db.exec(`DELETE FROM board_people WHERE board_id = '${BOARD_ID}'`);
+
+      const r = engine.report({ board_id: BOARD_ID, type: 'standup' });
+      expect(r.success).toBe(true);
+      expect(r.data!.overdue).toEqual([]);
+      expect(r.data!.in_progress).toEqual([]);
+      expect(r.data!.review).toEqual([]);
+      expect(r.data!.due_today).toEqual([]);
+      expect(r.data!.waiting).toEqual([]);
+      expect(r.data!.blocked).toEqual([]);
+      expect(r.data!.completed_today).toEqual([]);
+      expect(r.data!.changes_today_count).toBe(0);
+      expect(r.data!.per_person).toEqual([]);
+
+      // Weekly on empty board
+      const rw = engine.report({ board_id: BOARD_ID, type: 'weekly' });
+      expect(rw.success).toBe(true);
+      expect(rw.data!.stats).toBeTruthy();
+      expect(rw.data!.stats!.total_active).toBe(0);
+      expect(rw.data!.stats!.completed_week).toBe(0);
+      expect(rw.data!.stats!.created_week).toBe(0);
+      expect(rw.data!.stats!.trend).toBe('same');
+    });
+  });
 });
