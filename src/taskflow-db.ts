@@ -51,6 +51,14 @@ CREATE TABLE IF NOT EXISTS child_board_registrations (
   PRIMARY KEY (parent_board_id, person_id)
 );
 
+CREATE TABLE IF NOT EXISTS board_groups (
+  board_id TEXT REFERENCES boards(id),
+  group_jid TEXT NOT NULL,
+  group_folder TEXT NOT NULL,
+  group_role TEXT DEFAULT 'team',
+  PRIMARY KEY (board_id, group_jid)
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT NOT NULL,
   board_id TEXT NOT NULL REFERENCES boards(id),
@@ -132,7 +140,14 @@ CREATE TABLE IF NOT EXISTS board_runtime_config (
   attachment_enabled INTEGER DEFAULT 1,
   attachment_disabled_reason TEXT DEFAULT '',
   attachment_allowed_formats TEXT DEFAULT '["pdf","jpg","png"]',
-  attachment_max_size_bytes INTEGER DEFAULT 10485760
+  attachment_max_size_bytes INTEGER DEFAULT 10485760,
+  welcome_sent INTEGER DEFAULT 0,
+  standup_target TEXT DEFAULT 'team',
+  digest_target TEXT DEFAULT 'team',
+  review_target TEXT DEFAULT 'team',
+  runner_standup_secondary_task_id TEXT,
+  runner_digest_secondary_task_id TEXT,
+  runner_review_secondary_task_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS attachment_audit_log (
