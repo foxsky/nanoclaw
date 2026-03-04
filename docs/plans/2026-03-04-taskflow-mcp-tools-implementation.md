@@ -91,14 +91,14 @@ Note: Use `better-sqlite3@^11.8.1` to match the host's existing version in the r
 cd /root/nanoclaw && ./container/build.sh
 ```
 
-Expected: Build succeeds. `better-sqlite3` is a native C++ addon that requires `python3`, `make`, and `g++` for `node-gyp`. If the build fails with compilation errors:
+Expected: Build will fail without build tools. `better-sqlite3` is a native C++ addon that requires `python3`, `make`, and `g++` for `node-gyp`. The `node:22-slim` base image has `python3` (pulled in by Chromium deps) but lacks `make` and `g++`. Add to the Dockerfile **before** `RUN npm install`:
 
 ```dockerfile
-# Add to Dockerfile before RUN npm install:
-RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
+# Build tools for native modules (better-sqlite3)
+RUN apt-get update && apt-get install -y make g++ && rm -rf /var/lib/apt/lists/*
 ```
 
-The `node:22-slim` image may already include these — verify during this step.
+After adding this line, re-run `./container/build.sh` — it should succeed.
 
 **Step 3: Commit**
 
@@ -904,9 +904,9 @@ test: "cd container/agent-runner && npx vitest run src/taskflow-engine.test.ts"
 
 Update the setup wizard to:
 1. Run `npx tsx scripts/apply-skill.ts .claude/skills/add-taskflow` to install the engine
-2. Pass `NANOCLAW_TASKFLOW_BOARD_ID` and `NANOCLAW_TASKFLOW_DB_PATH` to the container
+2. `NANOCLAW_TASKFLOW_BOARD_ID` is auto-derived from the group folder (no manual config needed)
 3. Generate the new ~400-line CLAUDE.md template
-4. Remove the SQLite MCP server from `.mcp.json` (no longer needed for mutations, only for ad-hoc queries — keep it for now)
+4. Keep the SQLite MCP server in `.mcp.json` (needed for ad-hoc SQL fallback queries)
 
 **Commit.**
 

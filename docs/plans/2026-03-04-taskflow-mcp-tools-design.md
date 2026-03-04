@@ -634,13 +634,13 @@ tfDb.pragma('busy_timeout = 5000');  // wait up to 5s for write lock
 
 ### Native module build tools
 
-`better-sqlite3` is a C++ native addon compiled via `node-gyp`. The Dockerfile's `node:22-slim` base image includes `python3` and `make` but may lack `g++`. If the container build fails at `npm install`, add to the Dockerfile:
+`better-sqlite3` is a C++ native addon compiled via `node-gyp`. The Dockerfile's `node:22-slim` base image has `python3` (from Chromium deps) but lacks `make` and `g++`. The Dockerfile must be updated to add build tools **before** `RUN npm install`:
 
 ```dockerfile
-RUN apt-get update && apt-get install -y g++ && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y make g++ && rm -rf /var/lib/apt/lists/*
 ```
 
-This should be verified during Task 1 (dependency installation).
+This is a required change in Task 1.
 
 ### Implementation location
 
