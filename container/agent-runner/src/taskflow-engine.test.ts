@@ -1191,4 +1191,270 @@ describe('TaskflowEngine', () => {
       expect(task.current_cycle).toBe('1');
     });
   });
+
+  /* ---------------------------------------------------------------- */
+  /*  reassign                                                         */
+  /* ---------------------------------------------------------------- */
+
+  describe('reassign', () => {
+    it('reassign single task (confirmed)', () => {
+      // T-001 is in_progress, assigned to person-1 (Alexandre)
+      // Alexandre (manager) reassigns to Giovanni
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        target_person: 'Giovanni',
+        sender_name: 'Alexandre',
+        confirmed: true,
+      });
+      expect(r.success).toBe(true);
+      expect(r.tasks_affected).toHaveLength(1);
+      expect(r.tasks_affected![0].task_id).toBe('T-001');
+      expect(r.tasks_affected![0].title).toBe('Fix login bug');
+      expect(r.tasks_affected![0].was_linked).toBe(false);
+
+      // Verify in DB
+      const task = engine.getTask('T-001');
+      expect(task.assignee).toBe('person-2');
+
+      // Verify history was recorded
+      const history = db
+        .prepare(
+          `SELECT * FROM task_history WHERE board_id = ? AND task_id = 'T-001' AND action = 'reassigned'`,
+        )
+        .all(BOARD_ID) as any[];
+      expect(history).toHaveLength(1);
+      expect(history[0].by).toBe('Alexandre');
+      const details = JSON.parse(history[0].details);
+      expect(details.from_assignee).toBe('person-1');
+      expect(details.to_assignee).toBe('person-2');
+    });
+
+    it('reassign dry run', () => {
+      // confirmed=false: returns requires_confirmation, no DB changes
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        target_person: 'Giovanni',
+        sender_name: 'Alexandre',
+        confirmed: false,
+      });
+      expect(r.success).toBe(true);
+      expect(r.requires_confirmation).toBeTruthy();
+      expect(r.requires_confirmation).toContain('T-001');
+      expect(r.requires_confirmation).toContain('Giovanni');
+      expect(r.tasks_affected).toHaveLength(1);
+
+      // DB should NOT have changed
+      const task = engine.getTask('T-001');
+      expect(task.assignee).toBe('person-1'); // still the original assignee
+    });
+
+    it('unknown target person → offer_register', () => {
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        target_person: 'Rafael',
+        sender_name: 'Alexandre',
+        confirmed: true,
+      });
+      expect(r.success).toBe(false);
+      expect(r.offer_register).toBeTruthy();
+      expect(r.offer_register!.name).toBe('Rafael');
+      expect(r.offer_register!.message).toContain('Rafael not registered');
+      expect(r.offer_register!.message).toContain('Alexandre');
+      expect(r.offer_register!.message).toContain('Giovanni');
+    });
+
+    it('reassign linked task → auto-relinks', () => {
+      const now = new Date().toISOString();
+      // Set up T-001 with child_exec_enabled=1
+      db.exec(
+        `UPDATE tasks SET child_exec_enabled = 1, child_exec_board_id = 'child-board-1', child_exec_person_id = 'person-1'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      // Register a child board for person-2 (Giovanni)
+      db.exec(
+        `INSERT INTO child_board_registrations VALUES ('${BOARD_ID}', 'person-2', 'child-board-2')`,
+      );
+
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        target_person: 'Giovanni',
+        sender_name: 'Alexandre',
+        confirmed: true,
+      });
+      expect(r.success).toBe(true);
+      expect(r.tasks_affected).toHaveLength(1);
+      expect(r.tasks_affected![0].was_linked).toBe(true);
+      expect(r.tasks_affected![0].relinked_to).toBe('child-board-2');
+
+      // Verify DB
+      const task = engine.getTask('T-001');
+      expect(task.assignee).toBe('person-2');
+      expect(task.child_exec_enabled).toBe(1);
+      expect(task.child_exec_board_id).toBe('child-board-2');
+      expect(task.child_exec_person_id).toBe('person-2');
+    });
+
+    it('reassign linked task to person without child board → unlinks', () => {
+      // Set up T-001 with child_exec_enabled=1
+      db.exec(
+        `UPDATE tasks SET child_exec_enabled = 1, child_exec_board_id = 'child-board-1', child_exec_person_id = 'person-1'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      // person-2 (Giovanni) has NO child_board_registrations entry
+
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        target_person: 'Giovanni',
+        sender_name: 'Alexandre',
+        confirmed: true,
+      });
+      expect(r.success).toBe(true);
+      expect(r.tasks_affected![0].was_linked).toBe(true);
+      expect(r.tasks_affected![0].relinked_to).toBeUndefined();
+
+      // Verify DB: unlinked
+      const task = engine.getTask('T-001');
+      expect(task.child_exec_enabled).toBe(0);
+      expect(task.child_exec_board_id).toBeNull();
+      expect(task.child_exec_person_id).toBeNull();
+    });
+
+    it('bulk transfer all tasks', () => {
+      // person-1 (Alexandre) has T-001 (in_progress); add another active task
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at)
+         VALUES ('T-050', '${BOARD_ID}', 'simple', 'Bulk task', 'person-1', 'next_action', '${now}', '${now}')`,
+      );
+
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        source_person: 'Alexandre',
+        target_person: 'Giovanni',
+        sender_name: 'Alexandre',
+        confirmed: true,
+      });
+      expect(r.success).toBe(true);
+      expect(r.tasks_affected).toHaveLength(2);
+      expect(r.tasks_affected!.map((t) => t.task_id).sort()).toEqual(['T-001', 'T-050']);
+
+      // Verify DB
+      const t1 = engine.getTask('T-001');
+      const t50 = engine.getTask('T-050');
+      expect(t1.assignee).toBe('person-2');
+      expect(t50.assignee).toBe('person-2');
+    });
+
+    it('bulk transfer: no active tasks → error', () => {
+      // Add a third person with no tasks
+      db.exec(
+        `INSERT INTO board_people VALUES ('${BOARD_ID}', 'person-3', 'Carlos', '5585999990003', 'Dev', 3, NULL)`,
+      );
+
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        source_person: 'Carlos',
+        target_person: 'Giovanni',
+        sender_name: 'Alexandre',
+        confirmed: true,
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('No active tasks');
+      expect(r.error).toContain('Carlos');
+    });
+
+    it('bulk transfer: same person → error', () => {
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        source_person: 'Giovanni',
+        target_person: 'Giovanni',
+        sender_name: 'Alexandre',
+        confirmed: true,
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('same person');
+    });
+
+    it('permission: assignee can reassign own task', () => {
+      // T-002 is assigned to person-2 (Giovanni); Giovanni reassigns it
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        target_person: 'Alexandre',
+        sender_name: 'Giovanni', // assignee, not manager
+        confirmed: true,
+      });
+      expect(r.success).toBe(true);
+      expect(r.tasks_affected).toHaveLength(1);
+
+      const task = engine.getTask('T-002');
+      expect(task.assignee).toBe('person-1');
+    });
+
+    it('permission: manager can reassign any task', () => {
+      // T-002 is assigned to person-2 (Giovanni); Alexandre (manager) reassigns it
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        target_person: 'Alexandre',
+        sender_name: 'Alexandre', // manager
+        confirmed: true,
+      });
+      expect(r.success).toBe(true);
+      expect(r.tasks_affected).toHaveLength(1);
+
+      const task = engine.getTask('T-002');
+      expect(task.assignee).toBe('person-1');
+    });
+
+    it('permission: non-owner/non-manager → denied', () => {
+      // T-001 is assigned to person-1 (Alexandre); Giovanni (not manager) tries to reassign it
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        target_person: 'Giovanni',
+        sender_name: 'Giovanni', // not assignee, not manager
+        confirmed: true,
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('Permission denied');
+    });
+
+    it('no WIP check on reassignment', () => {
+      // person-2 (Giovanni) has wip_limit=3; put 3 tasks in_progress for them
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at)
+         VALUES ('T-010', '${BOARD_ID}', 'simple', 'WIP1', 'person-2', 'in_progress', '${now}', '${now}')`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at)
+         VALUES ('T-011', '${BOARD_ID}', 'simple', 'WIP2', 'person-2', 'in_progress', '${now}', '${now}')`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at)
+         VALUES ('T-012', '${BOARD_ID}', 'simple', 'WIP3', 'person-2', 'in_progress', '${now}', '${now}')`,
+      );
+
+      // Reassign T-001 (in_progress, assigned to person-1) to person-2 who is at WIP limit
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        target_person: 'Giovanni',
+        sender_name: 'Alexandre',
+        confirmed: true,
+      });
+      // Should succeed despite WIP limit — by design
+      expect(r.success).toBe(true);
+      expect(r.tasks_affected).toHaveLength(1);
+
+      const task = engine.getTask('T-001');
+      expect(task.assignee).toBe('person-2');
+    });
+  });
 });

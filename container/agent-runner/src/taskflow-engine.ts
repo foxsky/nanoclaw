@@ -78,6 +78,27 @@ export interface MoveResult extends TaskflowResult {
   notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
 }
 
+export interface ReassignParams {
+  board_id: string;
+  task_id?: string;           // single task reassignment
+  source_person?: string;     // bulk transfer: transfer all from this person
+  target_person: string;      // person name
+  sender_name: string;
+  confirmed: boolean;         // false = dry run
+}
+
+export interface ReassignResult extends TaskflowResult {
+  tasks_affected?: Array<{
+    task_id: string;
+    title: string;
+    was_linked: boolean;
+    relinked_to?: string;
+  }>;
+  offer_register?: { name: string; message: string };
+  requires_confirmation?: string;  // human-readable summary for dry run
+  notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -812,6 +833,227 @@ export class TaskflowEngine {
       if (notifications.length > 0) result.notifications = notifications;
       if (projectUpdate) result.project_update = projectUpdate;
       if (recurringCycle) result.recurring_cycle = recurringCycle;
+
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err.message ?? String(err) };
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  reassign — taskflow_reassign                                     */
+  /* ---------------------------------------------------------------- */
+
+  reassign(params: ReassignParams): ReassignResult {
+    try {
+      /* --- Must specify either task_id or source_person --- */
+      if (!params.task_id && !params.source_person) {
+        return { success: false, error: 'Must provide either task_id (single) or source_person (bulk transfer).' };
+      }
+
+      /* --- Resolve target person --- */
+      const targetPerson = this.resolvePerson(params.target_person);
+      if (!targetPerson) {
+        const teamNames = this.listTeamNames();
+        return {
+          success: false,
+          offer_register: {
+            name: params.target_person,
+            message: `${params.target_person} not registered. Current team: ${teamNames.join(', ')}`,
+          },
+        };
+      }
+
+      /* --- Collect tasks to reassign --- */
+      let tasksToReassign: any[];
+
+      if (params.task_id) {
+        /* --- Single task reassignment --- */
+        const task = this.getTask(params.task_id);
+        if (!task) {
+          return { success: false, error: `Task not found: ${params.task_id}` };
+        }
+        if (task.column === 'done') {
+          return { success: false, error: `Cannot reassign completed task ${params.task_id}.` };
+        }
+
+        /* --- Permission: sender must be assignee or manager --- */
+        const sender = this.resolvePerson(params.sender_name);
+        const senderPersonId = sender?.person_id ?? null;
+        const isAssignee = senderPersonId != null && task.assignee === senderPersonId;
+        const isMgr = this.isManager(params.sender_name);
+        if (!isAssignee && !isMgr) {
+          return { success: false, error: `Permission denied: "${params.sender_name}" is neither the assignee nor a manager.` };
+        }
+
+        tasksToReassign = [task];
+      } else {
+        /* --- Bulk transfer --- */
+        const sourcePerson = this.resolvePerson(params.source_person!);
+        if (!sourcePerson) {
+          return { success: false, error: `Source person not found: ${params.source_person}` };
+        }
+
+        /* --- Same person check --- */
+        if (sourcePerson.person_id === targetPerson.person_id) {
+          return { success: false, error: `Source and target are the same person: ${sourcePerson.name}.` };
+        }
+
+        /* --- Permission: sender must be the source person or a manager --- */
+        const sender = this.resolvePerson(params.sender_name);
+        const senderPersonId = sender?.person_id ?? null;
+        const isSelf = senderPersonId != null && sourcePerson.person_id === senderPersonId;
+        const isMgr = this.isManager(params.sender_name);
+        if (!isSelf && !isMgr) {
+          return { success: false, error: `Permission denied: "${params.sender_name}" is neither the source person nor a manager.` };
+        }
+
+        /* --- Find active tasks for source person --- */
+        tasksToReassign = this.db
+          .prepare(
+            `SELECT * FROM tasks
+             WHERE board_id = ? AND assignee = ? AND column != 'done'
+             ORDER BY id`,
+          )
+          .all(this.boardId, sourcePerson.person_id);
+
+        if (tasksToReassign.length === 0) {
+          return { success: false, error: `No active tasks found for ${sourcePerson.name}.` };
+        }
+      }
+
+      /* --- Build affected tasks list with relink info --- */
+      const tasksAffected: ReassignResult['tasks_affected'] = [];
+      for (const task of tasksToReassign) {
+        const wasLinked = task.child_exec_enabled === 1;
+        let relinkedTo: string | undefined;
+
+        if (wasLinked) {
+          const reg = this.getChildBoardRegistration(targetPerson.person_id);
+          if (reg) {
+            relinkedTo = reg.child_board_id;
+          }
+        }
+
+        tasksAffected.push({
+          task_id: task.id,
+          title: task.title,
+          was_linked: wasLinked,
+          ...(relinkedTo ? { relinked_to: relinkedTo } : {}),
+        });
+      }
+
+      /* --- Dry run: return confirmation summary --- */
+      if (!params.confirmed) {
+        const taskList = tasksAffected.map((t) => {
+          let desc = `  - ${t.task_id} "${t.title}"`;
+          if (t.was_linked) {
+            desc += t.relinked_to
+              ? ` (will relink to board ${t.relinked_to})`
+              : ' (will unlink — target has no child board)';
+          }
+          return desc;
+        }).join('\n');
+
+        const summary = `Reassign ${tasksAffected.length} task(s) to ${targetPerson.name}:\n${taskList}\n\nCall again with confirmed=true to execute.`;
+
+        return {
+          success: true,
+          requires_confirmation: summary,
+          tasks_affected: tasksAffected,
+        };
+      }
+
+      /* --- Execute reassignment --- */
+      const now = new Date().toISOString();
+      const senderPerson = this.resolvePerson(params.sender_name);
+      const senderPersonId = senderPerson?.person_id ?? params.sender_name;
+      const notifications: ReassignResult['notifications'] = [];
+
+      for (const task of tasksToReassign) {
+        const wasLinked = task.child_exec_enabled === 1;
+
+        /* --- Undo snapshot --- */
+        const snapshot = JSON.stringify({
+          assignee: task.assignee,
+          child_exec_enabled: task.child_exec_enabled,
+          child_exec_board_id: task.child_exec_board_id,
+          child_exec_person_id: task.child_exec_person_id,
+          updated_at: task.updated_at,
+        });
+
+        /* --- Auto-relink logic --- */
+        let newChildExecEnabled = task.child_exec_enabled;
+        let newChildExecBoardId = task.child_exec_board_id;
+        let newChildExecPersonId = task.child_exec_person_id;
+
+        if (wasLinked) {
+          const reg = this.getChildBoardRegistration(targetPerson.person_id);
+          if (reg) {
+            newChildExecBoardId = reg.child_board_id;
+            newChildExecPersonId = targetPerson.person_id;
+          } else {
+            newChildExecEnabled = 0;
+            newChildExecBoardId = null;
+            newChildExecPersonId = null;
+          }
+        }
+
+        /* --- Update task --- */
+        this.db
+          .prepare(
+            `UPDATE tasks SET assignee = ?, child_exec_enabled = ?, child_exec_board_id = ?,
+             child_exec_person_id = ?, _last_mutation = ?, updated_at = ?
+             WHERE board_id = ? AND id = ?`,
+          )
+          .run(
+            targetPerson.person_id,
+            newChildExecEnabled,
+            newChildExecBoardId,
+            newChildExecPersonId,
+            snapshot,
+            now,
+            this.boardId,
+            task.id,
+          );
+
+        /* --- Record history --- */
+        const details: Record<string, any> = {
+          from_assignee: task.assignee,
+          to_assignee: targetPerson.person_id,
+        };
+        if (wasLinked) {
+          details.was_linked = true;
+          details.relinked_to = newChildExecBoardId ?? null;
+        }
+        this.recordHistory(task.id, 'reassigned', params.sender_name, JSON.stringify(details));
+
+        /* --- Notification for new assignee --- */
+        if (targetPerson.person_id !== senderPersonId) {
+          const person = this.db
+            .prepare(
+              `SELECT name, notification_group_jid FROM board_people
+               WHERE board_id = ? AND person_id = ?`,
+            )
+            .get(this.boardId, targetPerson.person_id) as
+            | { name: string; notification_group_jid: string | null }
+            | undefined;
+          if (person) {
+            notifications.push({
+              target_person_id: targetPerson.person_id,
+              notification_group_jid: person.notification_group_jid ?? null,
+              message: `${task.id} "${task.title}" was reassigned to you.`,
+            });
+          }
+        }
+      }
+
+      /* --- Build result --- */
+      const result: ReassignResult = {
+        success: true,
+        tasks_affected: tasksAffected,
+      };
+      if (notifications.length > 0) result.notifications = notifications;
 
       return result;
     } catch (err: any) {
