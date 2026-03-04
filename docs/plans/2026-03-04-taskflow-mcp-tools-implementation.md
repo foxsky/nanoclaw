@@ -4,7 +4,7 @@
 
 **Goal:** Move TaskFlow procedural logic from CLAUDE.md (~1200 lines) into TypeScript MCP tools, reducing the template to ~400 lines while improving reliability.
 
-**Architecture:** 9 MCP tools implemented in `container/agent-runner/src/taskflow-engine.ts`, registered conditionally in `ipc-mcp-stdio.ts` when `NANOCLAW_IS_TASKFLOW_MANAGED=1`. Board ID derived from folder name (`board-${folder}`). Tools access `taskflow.db` directly via `better-sqlite3` for synchronous responses. The agent becomes a natural language router that parses intent, calls tools, and formats results. Mutation tools return `notifications` arrays that the agent dispatches via `send_message`.
+**Architecture:** 9 MCP tools implemented in `container/agent-runner/src/taskflow-engine.ts`, registered conditionally in `ipc-mcp-stdio.ts` when `NANOCLAW_IS_TASKFLOW_MANAGED=1`. The canonical board ID is passed explicitly from the host/runtime (`NANOCLAW_TASKFLOW_BOARD_ID`) and must not be inferred from the group folder because control groups and `board_groups` can map multiple groups to one board. Tools access `taskflow.db` directly via `better-sqlite3` for synchronous responses. The agent becomes a natural language router that parses intent, calls tools, and formats results. Mutation tools return `notifications` arrays that the agent dispatches via `send_message`.
 
 **Tech Stack:** TypeScript, better-sqlite3, zod (validation), vitest (tests), MCP SDK
 
@@ -127,9 +127,10 @@ import { TaskflowEngine } from './taskflow-engine.js';
 
 /**
  * Creates all TaskFlow tables in an in-memory DB.
- * IMPORTANT: This schema MUST match the canonical TASKFLOW_SCHEMA in src/taskflow-db.ts.
- * If you add columns/tables to taskflow-db.ts, update this seed too.
- * TODO: Consider extracting schema to a shared constant to prevent drift.
+ * IMPORTANT: Prefer importing the canonical TASKFLOW_SCHEMA in src/taskflow-db.ts
+ * (or a shared schema helper) rather than hardcoding DDL here.
+ * If you temporarily duplicate DDL for an initial spike, replace that
+ * duplication before shipping the engine so tests cannot drift from runtime.
  */
 function seedTestDb(db: Database.Database, boardId: string) {
   db.exec(`
@@ -253,16 +254,29 @@ export class TaskflowEngine {
     return row || null;
   }
 
-  private getTask(taskId: string): any {
+  private getVisibleTask(taskId: string): any {
     return this.db.prepare(
-      `SELECT * FROM tasks WHERE board_id = ? AND id = ?`,
-    ).get(this.boardId, taskId);
+      `SELECT tasks.*, tasks.board_id AS owning_board_id
+         FROM tasks
+        WHERE (tasks.board_id = ? OR (tasks.child_exec_board_id = ? AND tasks.child_exec_enabled = 1))
+          AND tasks.id = ?`,
+    ).get(this.boardId, this.boardId, taskId);
   }
 
   private getAllActiveTasks(): any[] {
     return this.db.prepare(
       `SELECT * FROM tasks WHERE board_id = ? OR (child_exec_board_id = ? AND child_exec_enabled = 1) ORDER BY created_at`,
     ).all(this.boardId, this.boardId) as any[];
+  }
+
+  private getVisibleTasksForPerson(personId: string): any[] {
+    return this.db.prepare(
+      `SELECT *
+         FROM tasks
+        WHERE (board_id = ? OR (child_exec_board_id = ? AND child_exec_enabled = 1))
+          AND assignee = ?
+        ORDER BY created_at`,
+    ).all(this.boardId, this.boardId, personId) as any[];
   }
 
   query(params: QueryParams): TaskflowResult {
@@ -281,20 +295,18 @@ export class TaskflowEngine {
       }
 
       case 'task_details': {
-        const task = this.getTask(params.task_id!);
+        const task = this.getVisibleTask(params.task_id!);
         if (!task) return { success: false, error: `Task ${params.task_id} not found.` };
         const history = this.db.prepare(
           `SELECT * FROM task_history WHERE board_id = ? AND task_id = ? ORDER BY at DESC LIMIT 5`,
-        ).all(this.boardId, params.task_id);
+        ).all(task.owning_board_id, params.task_id);
         return { success: true, data: { ...task, recent_history: history } };
       }
 
       case 'person_tasks': {
         const person = this.resolvePerson(params.person_name!);
         if (!person) return { success: false, error: `Person '${params.person_name}' not found.` };
-        const tasks = this.db.prepare(
-          `SELECT * FROM tasks WHERE board_id = ? AND assignee = ? ORDER BY created_at`,
-        ).all(this.boardId, person.person_id);
+        const tasks = this.getVisibleTasksForPerson(person.person_id);
         return { success: true, data: tasks };
       }
 
@@ -389,17 +401,27 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
 }
 ```
 
-**Step 3: Pass board_id as environment variable and update file sync**
+**Step 3: Pass canonical `board_id` as environment variable and update file sync**
 
 Modify `container/agent-runner/src/runtime-config.ts` — add to `buildNanoclawMcpEnv()`:
 ```typescript
-// Derive board ID from folder name (convention: 'board-{folder}')
-if (containerInput.isTaskflowManaged) {
-  env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-' + containerInput.groupFolder;
+// Pass the canonical board ID resolved by the host runtime.
+// Do NOT derive this from groupFolder because multiple groups can map to one board.
+if (containerInput.isTaskflowManaged && containerInput.taskflowBoardId) {
+  env.NANOCLAW_TASKFLOW_BOARD_ID = containerInput.taskflowBoardId;
 }
 ```
 
-No changes needed to `ContainerInput` or `RegisteredGroup` — the board ID is derived from the existing `groupFolder` field using the established `board-${folder}` convention (see `provision-child-board.ts:239`, `migrate-to-sqlite.ts:419`).
+This requires a small host-side resolution step before container launch:
+
+- add `taskflowBoardId` to `ContainerInput`
+- resolve it from the canonical TaskFlow mapping, in this order:
+  1. explicit board ID already known by the caller
+  2. `boards.group_folder = group.folder`
+  3. `board_groups.group_folder = group.folder`
+- fail fast for TaskFlow-managed groups if no canonical board can be resolved
+
+Do not assume `board-${folder}`. That convention is not reliable once control groups and shared-board mappings exist.
 
 Modify `src/container-runner.ts` — add `taskflow-engine.ts` to `CORE_AGENT_RUNNER_FILES`:
 ```typescript
@@ -425,7 +447,7 @@ const CORE_AGENT_RUNNER_FILES = [
 
 ```bash
 git add container/agent-runner/src/ipc-mcp-stdio.ts container/agent-runner/src/runtime-config.ts src/container-runner.ts
-git commit -m "feat: register TaskFlow query tool, pass board_id env, sync engine to groups"
+git commit -m "feat: register TaskFlow query tool and pass canonical board_id"
 ```
 
 ---
@@ -856,9 +878,15 @@ systemctl restart nanoclaw
 ### Task 15: Update manifest.yaml and skill structure
 
 **Files:**
+- Modify: `src/taskflow-db.ts` (schema alignment from Phase 0)
+- Modify: `container/Dockerfile` (native build tools from Phase 1)
 - Modify: `.claude/skills/add-taskflow/manifest.yaml`
 - Create: `.claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts`
 - Create: `.claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.test.ts`
+- Create: `.claude/skills/add-taskflow/modify/src/taskflow-db.ts`
+- Create: `.claude/skills/add-taskflow/modify/src/taskflow-db.ts.intent.md`
+- Create: `.claude/skills/add-taskflow/modify/container/Dockerfile`
+- Create: `.claude/skills/add-taskflow/modify/container/Dockerfile.intent.md`
 - Create: `.claude/skills/add-taskflow/modify/container/agent-runner/src/ipc-mcp-stdio.ts`
 - Create: `.claude/skills/add-taskflow/modify/container/agent-runner/src/ipc-mcp-stdio.ts.intent.md`
 - Create: `.claude/skills/add-taskflow/modify/container/agent-runner/src/runtime-config.ts`
@@ -877,6 +905,8 @@ adds:
   - container/agent-runner/src/taskflow-engine.ts
   - container/agent-runner/src/taskflow-engine.test.ts
 modifies:
+  - src/taskflow-db.ts
+  - container/Dockerfile
   - container/agent-runner/src/ipc-mcp-stdio.ts
   - container/agent-runner/src/runtime-config.ts
   - src/container-runner.ts                       # CORE_AGENT_RUNNER_FILES + env var
@@ -904,7 +934,7 @@ test: "cd container/agent-runner && npx vitest run src/taskflow-engine.test.ts"
 
 Update the setup wizard to:
 1. Run `npx tsx scripts/apply-skill.ts .claude/skills/add-taskflow` to install the engine
-2. `NANOCLAW_TASKFLOW_BOARD_ID` is auto-derived from the group folder (no manual config needed)
+2. `NANOCLAW_TASKFLOW_BOARD_ID` is resolved from the canonical TaskFlow board mapping (no folder-name derivation)
 3. Generate the new ~400-line CLAUDE.md template
 4. Keep the SQLite MCP server in `.mcp.json` (needed for ad-hoc SQL fallback queries)
 
@@ -915,6 +945,7 @@ Update the setup wizard to:
 ### Task 17: Rollout to all boards
 
 **Files:**
+- Modify: `groups/sec-secti/CLAUDE.md`
 - Modify: `groups/tec-taskflow/CLAUDE.md` (already done in Task 14)
 - Modify: `groups/seci-taskflow/CLAUDE.md`
 - Modify: `groups/secti-taskflow/CLAUDE.md`

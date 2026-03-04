@@ -59,6 +59,11 @@ The CLAUDE.md gives the agent a **decision framework**: "Use tools for standard 
 
 ## MCP Tools
 
+All tool signatures below show the logical board scope of the operation. In the
+actual MCP registration, the tool is bound to the current board via
+`NANOCLAW_TASKFLOW_BOARD_ID`; the agent should not derive or pass a board ID
+from the group folder at call time.
+
 ### 1. `taskflow_create`
 
 Creates any task type: simple (T), project (P), recurring (R), or inbox capture.
@@ -359,7 +364,6 @@ Pre-built queries returning structured data.
 
 ```typescript
 taskflow_query({
-  board_id: string,
   query: 'board' | 'inbox' | 'review' | 'in_progress' | 'next_action' | 'waiting' |
          'my_tasks' | 'overdue' | 'due_today' | 'due_tomorrow' | 'due_this_week' |
          'next_7_days' | 'search' | 'urgent' | 'high_priority' | 'by_label' |
@@ -389,6 +393,16 @@ taskflow_query({
 ```
 
 The `formatted` field provides a ready-to-send WhatsApp message for standard queries. The agent can use it directly or format the raw `data` differently if needed (ad-hoc questions).
+
+For hierarchy boards, query results must treat linked tasks as visible in the
+current board scope. `task_details`, person-scoped queries, and other
+task-specific lookups must resolve both:
+- tasks owned by the current board
+- tasks linked into the current board via `child_exec_board_id` with
+  `child_exec_enabled = 1`
+
+When a query needs history for a linked task, it must read `task_history` from
+the task's owning board, not assume `board_id = current board`.
 
 ---
 
@@ -654,15 +668,23 @@ This module is:
 
 ### Board ID derivation
 
-The board ID follows the convention `board-${folder}` (e.g., folder `secti-taskflow` → `board-secti-taskflow`). This is confirmed in `provision-child-board.ts:239` and `migrate-to-sqlite.ts:419`.
+The canonical board ID must be resolved by the host runtime and passed into the
+container as `NANOCLAW_TASKFLOW_BOARD_ID`. It must not be inferred from the
+group folder because TaskFlow can map multiple groups to one board (for example,
+control groups attached via `board_groups`).
 
 The board ID is passed to the container via environment variable:
-1. `container-runner.ts` derives it: `const boardId = 'board-' + group.folder`
-2. Passes it in `ContainerInput` (no new field needed — derive at call site)
+1. `container-runner.ts` resolves the canonical board ID for the group
+2. Passes it in `ContainerInput` as explicit runtime metadata
 3. `buildNanoclawMcpEnv()` in `runtime-config.ts` adds `NANOCLAW_TASKFLOW_BOARD_ID` to the env
 4. `ipc-mcp-stdio.ts` reads `process.env.NANOCLAW_TASKFLOW_BOARD_ID`
 
-No changes to `RegisteredGroup` are needed — the board ID is derived from the existing `folder` field.
+Resolution order should be:
+1. explicit board ID already known by the caller
+2. `boards.group_folder = group.folder`
+3. `board_groups.group_folder = group.folder`
+
+TaskFlow-managed groups must fail fast if no canonical board can be resolved.
 
 ### File sync to per-group directories
 
