@@ -646,15 +646,16 @@ Structure (from design doc):
 3. WhatsApp formatting (10 lines)
 4. Sender identification (15 lines)
 5. Authorization matrix (25 lines)
-6. Command → tool mapping table (80 lines)
-7. Tool response handling (30 lines)
-8. Report templates (40 lines)
-9. Notification rules (25 lines)
-10. Schema reference for ad-hoc queries (20 lines)
-11. Hierarchy overview — conditional (25 lines)
-12. Batch operations (10 lines)
-13. Error presentation (15 lines)
-14. Configuration (15 lines)
+6. Tool vs. direct SQL decision framework (20 lines)
+7. Command → tool mapping table (80 lines)
+8. Tool response handling (30 lines)
+9. Report templates (40 lines)
+10. Notification rules (25 lines)
+11. Schema reference for ad-hoc SQL (30 lines) — full table/column reference so agent can write correct SQL when needed
+12. Hierarchy overview — conditional (25 lines)
+13. Batch operations (10 lines)
+14. Error presentation (15 lines)
+15. Configuration (15 lines)
 
 **Key section — Command → Tool Mapping (excerpt):**
 
@@ -692,20 +693,31 @@ When the user sends a command, call the matching MCP tool. The tool handles all 
 | ... | ... |
 ```
 
-**Key section — Tool Response Handling:**
+**Key section — Tool vs. Direct SQL:**
 
 ```markdown
+## Tool vs. Direct SQL
+
+Tools are the preferred path for standard commands — they handle validation, side effects, history, and undo snapshots automatically.
+
+For anything the tools don't cover (ad-hoc questions, compound operations, one-off bulk changes, or when a tool error doesn't match the situation), fall back to direct SQL via `mcp__sqlite__read_query` / `mcp__sqlite__write_query`.
+
+When writing mutations via SQL, always:
+1. Record the action in `task_history`
+2. Update `updated_at` on affected tasks
+3. Set `_last_mutation` snapshot for undo support
+4. Respect the authorization matrix
+5. If unsure, ask the user before executing
+
 ## Tool Response Handling
 
 Every tool returns JSON with `success`, `data`, and optionally `error`.
 
 - **`success: true`** → format `data` for WhatsApp and send
-- **`success: false`** → present `error` in {{LANGUAGE}}
+- **`success: false`** → present `error` in {{LANGUAGE}}. If the error doesn't match the user's situation (edge case or tool limitation), you may fall back to direct SQL — explain what you're doing and why.
 - **`offer_register`** → "[name] não está cadastrado. Membros atuais: [list]. Quer cadastrar? Preciso do telefone e cargo."
 - **`requires_confirmation`** → present the confirmation summary, wait for explicit "sim"
 - **`wip_warning`** → "[person] já tem N tarefas em andamento (limite: M). Use 'forcar' para ultrapassar."
-
-NEVER add your own validation on top of tool responses. The tool already validated everything. Just present the result.
 ```
 
 **Step 3: Commit**

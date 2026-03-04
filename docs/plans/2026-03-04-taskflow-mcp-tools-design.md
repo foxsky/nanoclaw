@@ -30,10 +30,22 @@ send_message → WhatsApp
 
 ### Key change
 
-Today the agent runs raw SQL queries guided by 1200 lines of instructions. After this change, the agent calls typed MCP tools that handle all validation, transitions, and side effects in TypeScript. The agent only needs to:
-1. Parse user intent from natural language
-2. Call the right tool with the right parameters
-3. Format the response for WhatsApp
+Today the agent runs raw SQL queries guided by 1200 lines of instructions. After this change, the agent calls typed MCP tools for standard operations while retaining full read-write SQLite access for edge cases. The agent:
+1. Parses user intent from natural language
+2. For standard commands: calls the matching MCP tool (handles validation + side effects)
+3. For edge cases, compound operations, or ambiguous requests: uses direct SQL via the SQLite MCP server
+4. Formats the response for WhatsApp
+
+### Agent flexibility principle
+
+Tools are the **preferred path**, not a cage. The agent keeps full SQLite read-write access (`mcp__sqlite__read_query` and `mcp__sqlite__write_query`) and can fall back to direct SQL when:
+- The user's request doesn't map cleanly to a single tool call
+- A tool returns an error but the agent knows a valid workaround
+- The request involves combining data from multiple queries in a novel way
+- The manager asks for a one-off bulk operation not covered by the tools
+- The situation requires judgment that code can't anticipate
+
+The CLAUDE.md gives the agent a **decision framework**: "Use tools for standard operations. Use SQL for anything the tools don't cover. Never invent business rules — if unsure, ask the user."
 
 ## MCP Tools
 
@@ -413,6 +425,15 @@ taskflow_report({
 - Delegate: process inbox, approve/reject review
 - Manager: all operations
 
+## Tool vs. Direct SQL Decision Framework                            [20 lines]
+- Standard commands → use the matching MCP tool (preferred path)
+- Ad-hoc questions, compound queries, novel combinations → use SQL
+- Tool returned an error but you see a valid path → use SQL carefully
+- One-off manager requests not covered by tools → use SQL
+- When writing SQL: follow the schema reference, record history,
+  respect authorization matrix. If unsure whether a mutation is safe,
+  ask the user before executing.
+
 ## Command → Tool Mapping                                            [80 lines]
 Table mapping user commands to tool calls:
 | User says | Tool call |
@@ -425,10 +446,14 @@ Table mapping user commands to tool calls:
 | ... | ... |
 
 ## Tool Response Handling                                            [30 lines]
-- When tool returns `error`: present in pt-BR
-- When tool returns `offer_register`: ask manager for phone+role
-- When tool returns `requires_confirmation`: ask "are you sure?"
-- When tool returns `wip_warning`: explain WIP limit
+- `success: true` → format `data` for WhatsApp and send
+- `success: false` → present `error` in configured language
+- `offer_register` → ask manager for phone+role, then retry
+- `requires_confirmation` → present summary, wait for "sim"
+- `wip_warning` → explain WIP limit, suggest "forcar"
+- If a tool error doesn't match the user's situation (tool bug or
+  edge case), you may fall back to direct SQL. Explain what you're
+  doing and why.
 
 ## Report Templates                                                  [40 lines]
 ### Standup (Morning)
@@ -444,11 +469,22 @@ Format template using `taskflow_report` structured data
 - When to send cross-group notifications
 - Format for each notification type
 
-## Schema Reference (read-only queries)                              [20 lines]
-Key tables and columns for ad-hoc SELECT queries:
-- tasks: id, title, column, assignee, due_date, priority, labels
-- board_people: id, name, phone, role, wip_limit
-- task_history: task_id, action, changed_by, changed_at
+## Schema Reference (for ad-hoc SQL)                                 [30 lines]
+Full table list with key columns and types.
+Agent uses this for direct SQL queries when tools don't cover the need:
+- tasks: id, board_id, type, title, assignee, column, priority,
+  due_date, labels (JSON), blocked_by (JSON), notes (JSON),
+  child_exec_enabled, child_exec_board_id, ...
+- board_people: person_id, name, phone, role, wip_limit
+- board_admins: person_id, admin_role, is_primary_manager
+- task_history: task_id, action, by, at, details
+- archive: task_id, archive_reason, task_snapshot (JSON)
+- board_config: next_task_number, wip_limit
+- child_board_registrations: person_id, child_board_id
+When writing mutations via SQL, always:
+  1. Record history in task_history
+  2. Update task updated_at
+  3. Set _last_mutation snapshot for undo support
 
 ## Hierarchy Overview (conditional)                                  [25 lines]
 - Board identity and level
@@ -465,7 +501,7 @@ Key tables and columns for ad-hoc SELECT queries:
 ## Configuration                                                     [15 lines]
 Board-specific variables
 
-TOTAL: ~350 lines (with room for ~50 lines buffer)
+TOTAL: ~375 lines (with room for buffer)
 ```
 
 ## Skill Restructuring
@@ -564,6 +600,33 @@ This module is:
 |------|------------|
 | Tool bugs harder to fix than CLAUDE.md edits | Comprehensive test suite, gradual rollout |
 | Agent misroutes commands to wrong tool | Command→tool mapping table with examples |
-| Loss of agent flexibility for edge cases | Keep read-only SQL access for ad-hoc queries |
+| Loss of agent flexibility for edge cases | Agent keeps full read-write SQLite access as fallback (see below) |
 | Container rebuild required for tool changes | Acceptable — already rebuilding for agent-runner updates |
 | Report formatting too rigid | Tools return structured data, agent formats per CLAUDE.md template |
+| Agent over-relies on SQL fallback, bypassing tool guarantees | CLAUDE.md decision framework: "Use tools first. SQL is a fallback, not the default." |
+
+## Agent Flexibility: Tools + SQL Fallback
+
+The tools handle the **90% common case** with guaranteed correctness. For the remaining 10%, the agent retains full SQLite read-write access via `mcp__sqlite__read_query` and `mcp__sqlite__write_query`.
+
+**When to use tools (preferred):**
+- Any standard command that maps to the command→tool table
+- All state transitions (move, reassign, create, update)
+- Queries with known types (board, search, statistics, etc.)
+
+**When to use direct SQL (fallback):**
+- Ad-hoc questions: "quantas tarefas o Alexandre concluiu nos últimos 3 meses?"
+- Compound operations: "mova todas as tarefas atrasadas do Alexandre para revisão"
+- Data exploration: "qual tarefa ficou mais tempo em aguardando?"
+- Tool returned an unexpected error for a valid operation
+- Manager requests a one-off operation the tools don't cover
+- Cross-referencing data across tables in ways tools can't
+
+**When using SQL for mutations, the agent must:**
+1. Record the action in `task_history`
+2. Update `updated_at` on affected tasks
+3. Set `_last_mutation` snapshot for undo support
+4. Respect the authorization matrix (verify sender permissions)
+5. If unsure whether a mutation is safe, ask the user first
+
+This hybrid approach means the agent is never "stuck" — tools provide reliability for standard flows, and SQL provides escape hatches for everything else.
