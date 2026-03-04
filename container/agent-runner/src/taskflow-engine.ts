@@ -58,6 +58,26 @@ export interface CreateResult extends TaskflowResult {
   }>;
 }
 
+export interface MoveParams {
+  board_id: string;
+  task_id: string;
+  action: 'start' | 'wait' | 'resume' | 'return' | 'review' | 'approve' | 'reject' | 'conclude' | 'reopen' | 'force_start';
+  sender_name: string;
+  reason?: string;
+  subtask_id?: string;
+}
+
+export interface MoveResult extends TaskflowResult {
+  task_id?: string;
+  from_column?: string;
+  to_column?: string;
+  wip_warning?: { person: string; current: number; limit: number };
+  project_update?: { completed_subtask: string; next_subtask?: string; all_complete: boolean };
+  recurring_cycle?: { new_due_date: string; cycle_number: number };
+  archive_triggered?: boolean;
+  notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -463,6 +483,337 @@ export class TaskflowEngine {
         column,
         ...(notifications.length > 0 ? { notifications } : {}),
       };
+    } catch (err: any) {
+      return { success: false, error: err.message ?? String(err) };
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  move helpers                                                     */
+  /* ---------------------------------------------------------------- */
+
+  /** Check WIP limit for a person. Returns ok=true if under limit or no limit set. */
+  private checkWipLimit(personId: string): { ok: boolean; current: number; limit: number; person_name: string } {
+    const row = this.db
+      .prepare(
+        `SELECT name, wip_limit FROM board_people
+         WHERE board_id = ? AND person_id = ?`,
+      )
+      .get(this.boardId, personId) as { name: string; wip_limit: number | null } | undefined;
+
+    const wipLimit = row?.wip_limit ?? null;
+    const personName = row?.name ?? personId;
+
+    const countRow = this.db
+      .prepare(
+        `SELECT COUNT(*) as cnt FROM tasks
+         WHERE board_id = ? AND assignee = ? AND column = 'in_progress'`,
+      )
+      .get(this.boardId, personId) as { cnt: number };
+
+    const current = countRow.cnt;
+    if (wipLimit === null) {
+      return { ok: true, current, limit: 0, person_name: personName };
+    }
+    return { ok: current < wipLimit, current, limit: wipLimit, person_name: personName };
+  }
+
+  /** Check if sender has manager or delegate role in board_admins. */
+  private isManagerOrDelegate(senderName: string): boolean {
+    const person = this.resolvePerson(senderName);
+    if (!person) return false;
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM board_admins
+         WHERE board_id = ? AND person_id = ? AND admin_role IN ('manager', 'delegate')`,
+      )
+      .get(this.boardId, person.person_id);
+    return !!row;
+  }
+
+  /** Remove taskId from other tasks' blocked_by arrays when it completes. */
+  private resolveDependencies(taskId: string): void {
+    const tasks = this.db
+      .prepare(
+        `SELECT id, blocked_by FROM tasks
+         WHERE board_id = ? AND blocked_by LIKE ?`,
+      )
+      .all(this.boardId, `%"${taskId}"%`) as Array<{ id: string; blocked_by: string }>;
+
+    for (const t of tasks) {
+      try {
+        const blockedBy: string[] = JSON.parse(t.blocked_by ?? '[]');
+        const updated = blockedBy.filter((id) => id !== taskId);
+        this.db
+          .prepare(
+            `UPDATE tasks SET blocked_by = ?, updated_at = ?
+             WHERE board_id = ? AND id = ?`,
+          )
+          .run(JSON.stringify(updated), new Date().toISOString(), this.boardId, t.id);
+      } catch {
+        // skip malformed JSON
+      }
+    }
+  }
+
+  /** Advance a recurring task: calculate next due_date and increment cycle. */
+  private advanceRecurringTask(task: any): { new_due_date: string; cycle_number: number } {
+    const recurrence = task.recurrence as string;
+    const anchor = task.due_date ? new Date(task.due_date) : new Date();
+    const currentCycle = parseInt(task.current_cycle ?? '0', 10);
+    const nextCycle = currentCycle + 1;
+
+    switch (recurrence) {
+      case 'daily':
+        anchor.setDate(anchor.getDate() + 1);
+        break;
+      case 'weekly':
+        anchor.setDate(anchor.getDate() + 7);
+        break;
+      case 'monthly':
+        anchor.setMonth(anchor.getMonth() + 1);
+        break;
+      case 'yearly':
+        anchor.setFullYear(anchor.getFullYear() + 1);
+        break;
+    }
+
+    const newDueDate = anchor.toISOString().slice(0, 10);
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE tasks SET column = 'next_action', due_date = ?, current_cycle = ?, updated_at = ?
+         WHERE board_id = ? AND id = ?`,
+      )
+      .run(newDueDate, String(nextCycle), now, this.boardId, task.id);
+
+    return { new_due_date: newDueDate, cycle_number: nextCycle };
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  move — taskflow_move                                             */
+  /* ---------------------------------------------------------------- */
+
+  move(params: MoveParams): MoveResult {
+    try {
+      const now = new Date().toISOString();
+
+      /* --- Resolve sender --- */
+      const sender = this.resolvePerson(params.sender_name);
+      const senderPersonId = sender?.person_id ?? null;
+
+      /* --- Fetch task --- */
+      const task = this.requireTask(params.task_id);
+      const fromColumn: string = task.column;
+
+      /* --- Define valid transitions --- */
+      const transitions: Record<string, { from: string[]; to: string }> = {
+        start:       { from: ['next_action'], to: 'in_progress' },
+        force_start: { from: ['next_action'], to: 'in_progress' },
+        wait:        { from: ['in_progress'], to: 'waiting' },
+        resume:      { from: ['waiting'], to: 'in_progress' },
+        return:      { from: ['in_progress'], to: 'next_action' },
+        review:      { from: ['in_progress'], to: 'review' },
+        approve:     { from: ['review'], to: 'done' },
+        reject:      { from: ['review'], to: 'in_progress' },
+        conclude:    { from: ['inbox', 'next_action', 'in_progress', 'waiting', 'review'], to: 'done' },
+        reopen:      { from: ['done'], to: 'next_action' },
+      };
+
+      const transition = transitions[params.action];
+      if (!transition) {
+        return { success: false, error: `Unknown action: ${params.action}` };
+      }
+
+      /* --- Validate from column --- */
+      if (!transition.from.includes(fromColumn)) {
+        return {
+          success: false,
+          error: `Cannot "${params.action}" task ${params.task_id}: task is in "${fromColumn}", expected one of [${transition.from.join(', ')}].`,
+        };
+      }
+
+      const toColumn = transition.to;
+
+      /* --- Permission checks --- */
+      const isAssignee = senderPersonId != null && task.assignee === senderPersonId;
+      const isMgr = this.isManager(params.sender_name);
+      const isMgrOrDelegate = this.isManagerOrDelegate(params.sender_name);
+
+      switch (params.action) {
+        case 'start':
+        case 'wait':
+        case 'resume':
+        case 'return':
+        case 'review':
+          if (!isAssignee && !isMgr) {
+            return { success: false, error: `Permission denied: "${params.sender_name}" is neither the assignee nor a manager.` };
+          }
+          break;
+        case 'approve':
+          if (!isMgrOrDelegate) {
+            return { success: false, error: `Permission denied: "${params.sender_name}" is not a manager or delegate.` };
+          }
+          if (isAssignee) {
+            return { success: false, error: `Self-approval is not allowed: "${params.sender_name}" is the assignee.` };
+          }
+          break;
+        case 'reject':
+          if (!isMgrOrDelegate) {
+            return { success: false, error: `Permission denied: "${params.sender_name}" is not a manager or delegate.` };
+          }
+          break;
+        case 'conclude':
+          if (!isAssignee && !isMgr) {
+            return { success: false, error: `Permission denied: "${params.sender_name}" is neither the assignee nor a manager.` };
+          }
+          break;
+        case 'reopen':
+          if (!isMgr) {
+            return { success: false, error: `Permission denied: only managers can reopen tasks.` };
+          }
+          break;
+        case 'force_start':
+          if (!isMgr) {
+            return { success: false, error: `Permission denied: only managers can force_start tasks.` };
+          }
+          break;
+      }
+
+      /* --- WIP limit check (start, resume, reject — NOT force_start) --- */
+      if (['start', 'resume', 'reject'].includes(params.action) && task.assignee) {
+        const wip = this.checkWipLimit(task.assignee);
+        if (!wip.ok) {
+          return {
+            success: false,
+            error: `WIP limit exceeded for ${wip.person_name}: ${wip.current} in progress (limit: ${wip.limit}).`,
+            wip_warning: { person: wip.person_name, current: wip.current, limit: wip.limit },
+          };
+        }
+      }
+
+      /* --- Snapshot before mutation --- */
+      const snapshot = JSON.stringify({
+        column: fromColumn,
+        assignee: task.assignee,
+        due_date: task.due_date,
+        updated_at: task.updated_at,
+      });
+
+      /* --- Project subtask completion --- */
+      let projectUpdate: MoveResult['project_update'];
+      if (params.subtask_id && task.subtasks) {
+        try {
+          const subtasks: Array<{ id: string; title: string; status: string }> = JSON.parse(task.subtasks);
+          let found = false;
+          let nextSubtask: string | undefined;
+          let foundIndex = -1;
+          for (let i = 0; i < subtasks.length; i++) {
+            if (subtasks[i].id === params.subtask_id) {
+              subtasks[i].status = 'done';
+              found = true;
+              foundIndex = i;
+            }
+          }
+          if (found) {
+            // Find the next pending subtask
+            for (let i = foundIndex + 1; i < subtasks.length; i++) {
+              if (subtasks[i].status === 'pending') {
+                nextSubtask = subtasks[i].id;
+                break;
+              }
+            }
+            // If none found after, check from the beginning
+            if (!nextSubtask) {
+              for (let i = 0; i < foundIndex; i++) {
+                if (subtasks[i].status === 'pending') {
+                  nextSubtask = subtasks[i].id;
+                  break;
+                }
+              }
+            }
+            const allComplete = subtasks.every((s) => s.status === 'done');
+            this.db
+              .prepare(
+                `UPDATE tasks SET subtasks = ?, updated_at = ?
+                 WHERE board_id = ? AND id = ?`,
+              )
+              .run(JSON.stringify(subtasks), now, this.boardId, task.id);
+            projectUpdate = {
+              completed_subtask: params.subtask_id,
+              next_subtask: nextSubtask,
+              all_complete: allComplete,
+            };
+          }
+        } catch {
+          // skip malformed subtasks JSON
+        }
+      }
+
+      /* --- Update task column, _last_mutation, updated_at --- */
+      const detailsObj: Record<string, any> = { from: fromColumn, to: toColumn };
+      if (params.reason) detailsObj.reason = params.reason;
+      if (params.subtask_id) detailsObj.subtask_id = params.subtask_id;
+
+      this.db
+        .prepare(
+          `UPDATE tasks SET column = ?, _last_mutation = ?, updated_at = ?
+           WHERE board_id = ? AND id = ?`,
+        )
+        .run(toColumn, snapshot, now, this.boardId, task.id);
+
+      /* --- If waiting, store reason in waiting_for --- */
+      if (params.action === 'wait' && params.reason) {
+        this.db
+          .prepare(
+            `UPDATE tasks SET waiting_for = ? WHERE board_id = ? AND id = ?`,
+          )
+          .run(params.reason, this.boardId, task.id);
+      }
+
+      /* --- Record history --- */
+      this.recordHistory(
+        task.id,
+        params.action,
+        params.sender_name,
+        JSON.stringify(detailsObj),
+      );
+
+      /* --- Side effects on completion (approve / conclude) --- */
+      let recurringCycle: MoveResult['recurring_cycle'];
+      if (toColumn === 'done') {
+        // Dependency resolution
+        this.resolveDependencies(task.id);
+
+        // Recurring cycle advance
+        if (task.recurrence) {
+          recurringCycle = this.advanceRecurringTask(task);
+        }
+      }
+
+      /* --- Notifications --- */
+      const notifications: MoveResult['notifications'] = [];
+      if (senderPersonId) {
+        const notif = this.buildNotification(
+          { id: task.id, title: task.title, assignee: task.assignee },
+          params.action,
+          senderPersonId,
+        );
+        if (notif) notifications.push(notif);
+      }
+
+      /* --- Build result --- */
+      const result: MoveResult = {
+        success: true,
+        task_id: task.id,
+        from_column: fromColumn,
+        to_column: toColumn,
+      };
+      if (notifications.length > 0) result.notifications = notifications;
+      if (projectUpdate) result.project_update = projectUpdate;
+      if (recurringCycle) result.recurring_cycle = recurringCycle;
+
+      return result;
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }

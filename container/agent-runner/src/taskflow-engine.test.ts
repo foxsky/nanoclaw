@@ -827,4 +827,368 @@ describe('TaskflowEngine', () => {
       expect(config.next_task_number).toBe(6);
     });
   });
+
+  /* ---------------------------------------------------------------- */
+  /*  move                                                             */
+  /* ---------------------------------------------------------------- */
+
+  describe('move', () => {
+    it('start: next_action -> in_progress', () => {
+      // T-002 is in next_action, assigned to person-2 (Giovanni)
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        action: 'start',
+        sender_name: 'Alexandre', // manager
+      });
+      expect(r.success).toBe(true);
+      expect(r.from_column).toBe('next_action');
+      expect(r.to_column).toBe('in_progress');
+
+      const task = engine.getTask('T-002');
+      expect(task.column).toBe('in_progress');
+    });
+
+    it('start: WIP exceeded -> error with wip_warning', () => {
+      // person-2 (Giovanni) has wip_limit=3; put 3 tasks in_progress for them
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at)
+         VALUES ('T-010', '${BOARD_ID}', 'simple', 'WIP1', 'person-2', 'in_progress', '${now}', '${now}')`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at)
+         VALUES ('T-011', '${BOARD_ID}', 'simple', 'WIP2', 'person-2', 'in_progress', '${now}', '${now}')`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at)
+         VALUES ('T-012', '${BOARD_ID}', 'simple', 'WIP3', 'person-2', 'in_progress', '${now}', '${now}')`,
+      );
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        action: 'start',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('WIP limit');
+      expect(r.wip_warning).toBeTruthy();
+      expect(r.wip_warning!.person).toBe('Giovanni');
+      expect(r.wip_warning!.current).toBe(3);
+      expect(r.wip_warning!.limit).toBe(3);
+    });
+
+    it('force_start: WIP exceeded -> succeeds (manager only)', () => {
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at)
+         VALUES ('T-010', '${BOARD_ID}', 'simple', 'WIP1', 'person-2', 'in_progress', '${now}', '${now}')`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at)
+         VALUES ('T-011', '${BOARD_ID}', 'simple', 'WIP2', 'person-2', 'in_progress', '${now}', '${now}')`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at)
+         VALUES ('T-012', '${BOARD_ID}', 'simple', 'WIP3', 'person-2', 'in_progress', '${now}', '${now}')`,
+      );
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        action: 'force_start',
+        sender_name: 'Alexandre', // manager
+      });
+      expect(r.success).toBe(true);
+      expect(r.to_column).toBe('in_progress');
+    });
+
+    it('force_start: non-manager -> permission denied', () => {
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        action: 'force_start',
+        sender_name: 'Giovanni', // not a manager
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('Permission denied');
+      expect(r.error).toContain('manager');
+    });
+
+    it('wait: in_progress -> waiting with reason', () => {
+      // T-001 is in_progress, assigned to person-1 (Alexandre)
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'wait',
+        sender_name: 'Alexandre',
+        reason: 'Waiting for client response',
+      });
+      expect(r.success).toBe(true);
+      expect(r.from_column).toBe('in_progress');
+      expect(r.to_column).toBe('waiting');
+
+      const task = engine.getTask('T-001');
+      expect(task.column).toBe('waiting');
+      expect(task.waiting_for).toBe('Waiting for client response');
+    });
+
+    it('resume: waiting -> in_progress', () => {
+      // First move T-001 to waiting
+      db.exec(
+        `UPDATE tasks SET column = 'waiting' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'resume',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.from_column).toBe('waiting');
+      expect(r.to_column).toBe('in_progress');
+
+      const task = engine.getTask('T-001');
+      expect(task.column).toBe('in_progress');
+    });
+
+    it('return: in_progress -> next_action', () => {
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'return',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.from_column).toBe('in_progress');
+      expect(r.to_column).toBe('next_action');
+
+      const task = engine.getTask('T-001');
+      expect(task.column).toBe('next_action');
+    });
+
+    it('review: in_progress -> review', () => {
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'review',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.from_column).toBe('in_progress');
+      expect(r.to_column).toBe('review');
+
+      const task = engine.getTask('T-001');
+      expect(task.column).toBe('review');
+    });
+
+    it('approve: review -> done (manager, not self)', () => {
+      // Move T-002 (assigned to person-2) to review
+      db.exec(
+        `UPDATE tasks SET column = 'review' WHERE board_id = '${BOARD_ID}' AND id = 'T-002'`,
+      );
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        action: 'approve',
+        sender_name: 'Alexandre', // manager, not the assignee (person-2)
+      });
+      expect(r.success).toBe(true);
+      expect(r.from_column).toBe('review');
+      expect(r.to_column).toBe('done');
+
+      const task = engine.getTask('T-002');
+      expect(task.column).toBe('done');
+    });
+
+    it('approve: self-approve -> denied', () => {
+      // Move T-001 (assigned to person-1 Alexandre) to review
+      db.exec(
+        `UPDATE tasks SET column = 'review' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'approve',
+        sender_name: 'Alexandre', // manager but also the assignee
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('Self-approval');
+    });
+
+    it('reject: review -> in_progress with reason', () => {
+      // Move T-002 to review
+      db.exec(
+        `UPDATE tasks SET column = 'review' WHERE board_id = '${BOARD_ID}' AND id = 'T-002'`,
+      );
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        action: 'reject',
+        sender_name: 'Alexandre',
+        reason: 'Missing tests',
+      });
+      expect(r.success).toBe(true);
+      expect(r.from_column).toBe('review');
+      expect(r.to_column).toBe('in_progress');
+
+      const task = engine.getTask('T-002');
+      expect(task.column).toBe('in_progress');
+    });
+
+    it('conclude: any -> done', () => {
+      // T-002 is in next_action; conclude should work from any non-done column
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        action: 'conclude',
+        sender_name: 'Alexandre', // manager
+      });
+      expect(r.success).toBe(true);
+      expect(r.from_column).toBe('next_action');
+      expect(r.to_column).toBe('done');
+    });
+
+    it('reopen: done -> next_action', () => {
+      // Move T-001 to done first
+      db.exec(
+        `UPDATE tasks SET column = 'done' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'reopen',
+        sender_name: 'Alexandre', // manager
+      });
+      expect(r.success).toBe(true);
+      expect(r.from_column).toBe('done');
+      expect(r.to_column).toBe('next_action');
+
+      const task = engine.getTask('T-001');
+      expect(task.column).toBe('next_action');
+    });
+
+    it('invalid transition -> error (start from waiting)', () => {
+      // T-001 is in_progress; move to waiting first
+      db.exec(
+        `UPDATE tasks SET column = 'waiting' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'start',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('Cannot "start"');
+      expect(r.error).toContain('waiting');
+    });
+
+    it('records history on move', () => {
+      engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'review',
+        sender_name: 'Alexandre',
+      });
+
+      const history = db
+        .prepare(
+          `SELECT * FROM task_history WHERE board_id = ? AND task_id = 'T-001'`,
+        )
+        .all(BOARD_ID) as any[];
+      expect(history.length).toBeGreaterThanOrEqual(1);
+      const entry = history[history.length - 1];
+      expect(entry.action).toBe('review');
+      expect(entry.by).toBe('Alexandre');
+      const details = JSON.parse(entry.details);
+      expect(details.from).toBe('in_progress');
+      expect(details.to).toBe('review');
+    });
+
+    it('notification: move by non-assignee returns notification', () => {
+      // T-002 assigned to person-2 (Giovanni), moved by Alexandre (person-1)
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        action: 'start',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.notifications).toHaveLength(1);
+      expect(r.notifications![0].target_person_id).toBe('person-2');
+      expect(r.notifications![0].message).toContain('T-002');
+    });
+
+    it('notification: self-move returns no notification', () => {
+      // T-001 assigned to person-1 (Alexandre), moved by Alexandre
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'review',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.notifications).toBeUndefined();
+    });
+
+    it('dependency resolution on approve', () => {
+      // T-002 blocked by T-001
+      db.exec(
+        `UPDATE tasks SET blocked_by = '["T-001"]' WHERE board_id = '${BOARD_ID}' AND id = 'T-002'`,
+      );
+      // Move T-001 to review, then approve
+      db.exec(
+        `UPDATE tasks SET column = 'review' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      // Add a delegate so we can approve (Alexandre is assignee so can't self-approve)
+      db.exec(
+        `INSERT INTO board_admins VALUES ('${BOARD_ID}', 'person-2', '5585999990002', 'delegate', 0)`,
+      );
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'approve',
+        sender_name: 'Giovanni', // delegate, not assignee
+      });
+      expect(r.success).toBe(true);
+
+      // T-002's blocked_by should now be empty
+      const t2 = engine.getTask('T-002');
+      const blockedBy = JSON.parse(t2.blocked_by);
+      expect(blockedBy).toEqual([]);
+    });
+
+    it('recurring task cycles on conclude', () => {
+      // Create a recurring task
+      const now = new Date().toISOString();
+      const dueDate = new Date().toISOString().slice(0, 10);
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, recurrence, due_date, current_cycle, created_at, updated_at)
+         VALUES ('R-020', '${BOARD_ID}', 'recurring', 'Weekly check', 'person-1', 'in_progress', 'weekly', '${dueDate}', '0', '${now}', '${now}')`,
+      );
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'R-020',
+        action: 'conclude',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.recurring_cycle).toBeTruthy();
+      expect(r.recurring_cycle!.cycle_number).toBe(1);
+      // The task should have been reopened to next_action by advanceRecurringTask
+      const task = engine.getTask('R-020');
+      expect(task.column).toBe('next_action');
+      expect(task.current_cycle).toBe('1');
+    });
+  });
 });
