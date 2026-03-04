@@ -1991,4 +1991,281 @@ describe('TaskflowEngine', () => {
       expect(reminders).toEqual([]);
     });
   });
+
+  /* ---------------------------------------------------------------- */
+  /*  admin                                                            */
+  /* ---------------------------------------------------------------- */
+
+  describe('admin', () => {
+    it('register person', () => {
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'register_person',
+        sender_name: 'Alexandre',
+        person_name: 'Carlos Silva',
+        phone: '5585999990003',
+        role: 'Dev',
+      });
+      expect(r.success).toBe(true);
+      expect(r.person_id).toBe('carlos-silva');
+      expect(r.data.name).toBe('Carlos Silva');
+
+      // Verify in DB
+      const person = engine.resolvePerson('Carlos Silva');
+      expect(person).toBeTruthy();
+      expect(person!.person_id).toBe('carlos-silva');
+    });
+
+    it('remove person → lists tasks to reassign', () => {
+      // person-1 (Alexandre) has T-001 in in_progress
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'remove_person',
+        sender_name: 'Alexandre',
+        person_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.tasks_to_reassign).toBeTruthy();
+      expect(r.tasks_to_reassign!.length).toBeGreaterThanOrEqual(1);
+      expect(r.tasks_to_reassign!.some((t) => t.task_id === 'T-001')).toBe(true);
+
+      // Person should still be in DB (not removed yet, because tasks need reassignment)
+      const person = engine.resolvePerson('Alexandre');
+      expect(person).toBeTruthy();
+    });
+
+    it('remove person with force → unassigns tasks', () => {
+      // person-2 (Giovanni) has T-002 in next_action
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'remove_person',
+        sender_name: 'Alexandre',
+        person_name: 'Giovanni',
+        force: true,
+      });
+      expect(r.success).toBe(true);
+      expect(r.data.removed).toBe('Giovanni');
+      expect(r.data.tasks_unassigned).toBeGreaterThanOrEqual(1);
+
+      // Verify person removed
+      const person = engine.resolvePerson('Giovanni');
+      expect(person).toBeNull();
+
+      // Verify task unassigned
+      const task = engine.getTask('T-002');
+      expect(task.assignee).toBeNull();
+    });
+
+    it('remove last manager → error', () => {
+      // There's only one manager (person-1, Alexandre). Try to remove admin.
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'remove_admin',
+        sender_name: 'Alexandre',
+        person_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('last manager');
+    });
+
+    it('add manager', () => {
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'add_manager',
+        sender_name: 'Alexandre',
+        person_name: 'Giovanni',
+      });
+      expect(r.success).toBe(true);
+      expect(r.person_id).toBe('person-2');
+      expect(r.data.role).toBe('manager');
+
+      // Verify in DB
+      const row = db
+        .prepare(
+          `SELECT * FROM board_admins WHERE board_id = ? AND person_id = 'person-2' AND admin_role = 'manager'`,
+        )
+        .get(BOARD_ID);
+      expect(row).toBeTruthy();
+    });
+
+    it('add delegate', () => {
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'add_delegate',
+        sender_name: 'Alexandre',
+        person_name: 'Giovanni',
+      });
+      expect(r.success).toBe(true);
+      expect(r.person_id).toBe('person-2');
+      expect(r.data.role).toBe('delegate');
+
+      // Verify in DB
+      const row = db
+        .prepare(
+          `SELECT * FROM board_admins WHERE board_id = ? AND person_id = 'person-2' AND admin_role = 'delegate'`,
+        )
+        .get(BOARD_ID);
+      expect(row).toBeTruthy();
+    });
+
+    it('remove admin (not last manager)', () => {
+      // First add Giovanni as a second manager
+      engine.admin({
+        board_id: BOARD_ID,
+        action: 'add_manager',
+        sender_name: 'Alexandre',
+        person_name: 'Giovanni',
+      });
+
+      // Now remove Alexandre as admin — should succeed since Giovanni is also a manager
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'remove_admin',
+        sender_name: 'Giovanni', // Giovanni is now a manager too
+        person_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.data.removed_admin).toBe('Alexandre');
+
+      // Verify Alexandre is no longer in board_admins
+      const row = db
+        .prepare(
+          `SELECT * FROM board_admins WHERE board_id = ? AND person_id = 'person-1'`,
+        )
+        .get(BOARD_ID);
+      expect(row).toBeFalsy();
+    });
+
+    it('set WIP limit', () => {
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'set_wip_limit',
+        sender_name: 'Alexandre',
+        person_name: 'Giovanni',
+        wip_limit: 5,
+      });
+      expect(r.success).toBe(true);
+      expect(r.data.person).toBe('Giovanni');
+      expect(r.data.wip_limit).toBe(5);
+
+      // Verify in DB
+      const row = db
+        .prepare(
+          `SELECT wip_limit FROM board_people WHERE board_id = ? AND person_id = 'person-2'`,
+        )
+        .get(BOARD_ID) as { wip_limit: number };
+      expect(row.wip_limit).toBe(5);
+    });
+
+    it('cancel task → moves to archive', () => {
+      // Record some history first
+      engine.recordHistory('T-001', 'created', 'Alexandre', 'initial');
+
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'cancel_task',
+        sender_name: 'Alexandre',
+        task_id: 'T-001',
+      });
+      expect(r.success).toBe(true);
+      expect(r.data.cancelled).toBe('T-001');
+      expect(r.data.title).toBe('Fix login bug');
+
+      // Task should be gone from tasks table
+      const task = engine.getTask('T-001');
+      expect(task).toBeNull();
+
+      // Task should be in archive
+      const archived = db
+        .prepare(
+          `SELECT * FROM archive WHERE board_id = ? AND task_id = 'T-001'`,
+        )
+        .get(BOARD_ID) as any;
+      expect(archived).toBeTruthy();
+      expect(archived.archive_reason).toBe('cancelled');
+      expect(archived.title).toBe('Fix login bug');
+
+      // Verify snapshot contains the full task
+      const snapshot = JSON.parse(archived.task_snapshot);
+      expect(snapshot.title).toBe('Fix login bug');
+      expect(snapshot.column).toBe('in_progress');
+
+      // Verify history was saved
+      const history = JSON.parse(archived.history);
+      expect(history.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('restore task from archive', () => {
+      // First cancel a task to create an archive entry
+      engine.admin({
+        board_id: BOARD_ID,
+        action: 'cancel_task',
+        sender_name: 'Alexandre',
+        task_id: 'T-002',
+      });
+
+      // Verify it's archived
+      expect(engine.getTask('T-002')).toBeNull();
+
+      // Now restore it
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'restore_task',
+        sender_name: 'Alexandre',
+        task_id: 'T-002',
+      });
+      expect(r.success).toBe(true);
+      expect(r.data.restored).toBe('T-002');
+      expect(r.data.title).toBe('Update docs');
+
+      // Task should be back in tasks table
+      const task = engine.getTask('T-002');
+      expect(task).toBeTruthy();
+      expect(task.title).toBe('Update docs');
+
+      // Archive entry should be gone
+      const archived = db
+        .prepare(
+          `SELECT * FROM archive WHERE board_id = ? AND task_id = 'T-002'`,
+        )
+        .get(BOARD_ID);
+      expect(archived).toBeFalsy();
+    });
+
+    it('restore non-existent archive → error', () => {
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'restore_task',
+        sender_name: 'Alexandre',
+        task_id: 'T-999',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('Archived task not found');
+    });
+
+    it('process inbox → returns inbox items', () => {
+      // T-003 is in inbox
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'process_inbox',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.tasks).toBeTruthy();
+      expect(r.tasks!.length).toBeGreaterThanOrEqual(1);
+      expect(r.tasks!.some((t: any) => t.id === 'T-003')).toBe(true);
+      expect(r.data.count).toBeGreaterThanOrEqual(1);
+    });
+
+    it('non-manager → permission denied', () => {
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'process_inbox',
+        sender_name: 'Giovanni', // not a manager
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('Permission denied');
+      expect(r.error).toContain('Giovanni');
+    });
+  });
 });

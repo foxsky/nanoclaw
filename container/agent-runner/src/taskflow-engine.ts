@@ -141,6 +141,25 @@ export interface DependencyResult extends TaskflowResult {
   change?: string;           // human-readable description of what changed
 }
 
+export interface AdminParams {
+  board_id: string;
+  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox';
+  sender_name: string;
+  person_name?: string;
+  phone?: string;
+  role?: string;
+  wip_limit?: number;
+  task_id?: string;
+  confirmed?: boolean;
+  force?: boolean;
+}
+
+export interface AdminResult extends TaskflowResult {
+  person_id?: string;
+  tasks_to_reassign?: Array<{ task_id: string; title: string }>;
+  tasks?: any[];
+}
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -2026,6 +2045,406 @@ export class TaskflowEngine {
             success: false,
             error: `Unknown query type: ${params.query}`,
           };
+      }
+    } catch (err: any) {
+      return { success: false, error: err.message ?? String(err) };
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  admin — taskflow_admin                                           */
+  /* ---------------------------------------------------------------- */
+
+  admin(params: AdminParams): AdminResult {
+    try {
+      /* --- Permission check: all admin actions require manager --- */
+      if (!this.isManager(params.sender_name)) {
+        return {
+          success: false,
+          error: `Permission denied: "${params.sender_name}" is not a manager.`,
+        };
+      }
+
+      switch (params.action) {
+        /* ---- register_person ---- */
+        case 'register_person': {
+          if (!params.person_name) {
+            return { success: false, error: 'Missing required parameter: person_name' };
+          }
+
+          /* Slugify name to create person_id */
+          const personId = params.person_name
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-|-$/g, '');
+
+          /* Check for duplicate */
+          const existing = this.db
+            .prepare(
+              `SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?`,
+            )
+            .get(this.boardId, personId);
+          if (existing) {
+            return { success: false, error: `Person "${params.person_name}" (${personId}) already exists on this board.` };
+          }
+
+          this.db
+            .prepare(
+              `INSERT INTO board_people (board_id, person_id, name, phone, role, wip_limit)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              this.boardId,
+              personId,
+              params.person_name,
+              params.phone ?? null,
+              params.role ?? 'member',
+              params.wip_limit ?? null,
+            );
+
+          return {
+            success: true,
+            person_id: personId,
+            data: { name: params.person_name, person_id: personId },
+          };
+        }
+
+        /* ---- remove_person ---- */
+        case 'remove_person': {
+          const person = this.requirePerson(params.person_name, 'person_name');
+
+          /* Check for active tasks */
+          const activeTasks = this.db
+            .prepare(
+              `SELECT id, title FROM tasks
+               WHERE board_id = ? AND assignee = ? AND column != 'done'
+               ORDER BY id`,
+            )
+            .all(this.boardId, person.person_id) as Array<{ id: string; title: string }>;
+
+          if (activeTasks.length > 0 && !params.force) {
+            return {
+              success: true,
+              tasks_to_reassign: activeTasks.map((t) => ({ task_id: t.id, title: t.title })),
+              data: {
+                message: `${person.name} has ${activeTasks.length} active task(s). Use force=true to unassign them, or reassign first.`,
+              },
+            };
+          }
+
+          /* If force, unassign active tasks */
+          if (activeTasks.length > 0 && params.force) {
+            const now = new Date().toISOString();
+            this.db
+              .prepare(
+                `UPDATE tasks SET assignee = NULL, updated_at = ?
+                 WHERE board_id = ? AND assignee = ? AND column != 'done'`,
+              )
+              .run(now, this.boardId, person.person_id);
+          }
+
+          /* Delete from board_admins first (FK-like cleanup) */
+          this.db
+            .prepare(
+              `DELETE FROM board_admins WHERE board_id = ? AND person_id = ?`,
+            )
+            .run(this.boardId, person.person_id);
+
+          /* Delete from board_people */
+          this.db
+            .prepare(
+              `DELETE FROM board_people WHERE board_id = ? AND person_id = ?`,
+            )
+            .run(this.boardId, person.person_id);
+
+          return {
+            success: true,
+            data: { removed: person.name, tasks_unassigned: params.force ? activeTasks.length : 0 },
+          };
+        }
+
+        /* ---- add_manager ---- */
+        case 'add_manager': {
+          const person = this.requirePerson(params.person_name, 'person_name');
+
+          /* Check if already a manager */
+          const existing = this.db
+            .prepare(
+              `SELECT 1 FROM board_admins
+               WHERE board_id = ? AND person_id = ? AND admin_role = 'manager'`,
+            )
+            .get(this.boardId, person.person_id);
+          if (existing) {
+            return { success: false, error: `${person.name} is already a manager.` };
+          }
+
+          /* Get phone from board_people */
+          const personRow = this.db
+            .prepare(
+              `SELECT phone FROM board_people WHERE board_id = ? AND person_id = ?`,
+            )
+            .get(this.boardId, person.person_id) as { phone: string | null } | undefined;
+
+          this.db
+            .prepare(
+              `INSERT INTO board_admins (board_id, person_id, phone, admin_role)
+               VALUES (?, ?, ?, 'manager')`,
+            )
+            .run(this.boardId, person.person_id, personRow?.phone ?? params.phone ?? '');
+
+          return {
+            success: true,
+            person_id: person.person_id,
+            data: { name: person.name, role: 'manager' },
+          };
+        }
+
+        /* ---- add_delegate ---- */
+        case 'add_delegate': {
+          const person = this.requirePerson(params.person_name, 'person_name');
+
+          /* Check if already a delegate */
+          const existing = this.db
+            .prepare(
+              `SELECT 1 FROM board_admins
+               WHERE board_id = ? AND person_id = ? AND admin_role = 'delegate'`,
+            )
+            .get(this.boardId, person.person_id);
+          if (existing) {
+            return { success: false, error: `${person.name} is already a delegate.` };
+          }
+
+          /* Get phone from board_people */
+          const personRow = this.db
+            .prepare(
+              `SELECT phone FROM board_people WHERE board_id = ? AND person_id = ?`,
+            )
+            .get(this.boardId, person.person_id) as { phone: string | null } | undefined;
+
+          this.db
+            .prepare(
+              `INSERT INTO board_admins (board_id, person_id, phone, admin_role)
+               VALUES (?, ?, ?, 'delegate')`,
+            )
+            .run(this.boardId, person.person_id, personRow?.phone ?? params.phone ?? '');
+
+          return {
+            success: true,
+            person_id: person.person_id,
+            data: { name: person.name, role: 'delegate' },
+          };
+        }
+
+        /* ---- remove_admin ---- */
+        case 'remove_admin': {
+          const person = this.requirePerson(params.person_name, 'person_name');
+
+          /* Count remaining managers (excluding the person being removed) */
+          const managerCount = this.db
+            .prepare(
+              `SELECT COUNT(*) as cnt FROM board_admins
+               WHERE board_id = ? AND admin_role = 'manager' AND person_id != ?`,
+            )
+            .get(this.boardId, person.person_id) as { cnt: number };
+
+          /* Check if person is a manager */
+          const isPersonManager = this.db
+            .prepare(
+              `SELECT 1 FROM board_admins
+               WHERE board_id = ? AND person_id = ? AND admin_role = 'manager'`,
+            )
+            .get(this.boardId, person.person_id);
+
+          if (isPersonManager && managerCount.cnt === 0) {
+            return {
+              success: false,
+              error: `Cannot remove ${person.name}: they are the last manager. Add another manager first.`,
+            };
+          }
+
+          const changes = this.db
+            .prepare(
+              `DELETE FROM board_admins WHERE board_id = ? AND person_id = ?`,
+            )
+            .run(this.boardId, person.person_id);
+
+          if (changes.changes === 0) {
+            return { success: false, error: `${person.name} has no admin roles to remove.` };
+          }
+
+          return {
+            success: true,
+            data: { removed_admin: person.name },
+          };
+        }
+
+        /* ---- set_wip_limit ---- */
+        case 'set_wip_limit': {
+          const person = this.requirePerson(params.person_name, 'person_name');
+
+          if (params.wip_limit == null || params.wip_limit < 0) {
+            return { success: false, error: 'Missing or invalid parameter: wip_limit (must be >= 0).' };
+          }
+
+          this.db
+            .prepare(
+              `UPDATE board_people SET wip_limit = ?
+               WHERE board_id = ? AND person_id = ?`,
+            )
+            .run(params.wip_limit, this.boardId, person.person_id);
+
+          return {
+            success: true,
+            data: { person: person.name, wip_limit: params.wip_limit },
+          };
+        }
+
+        /* ---- cancel_task ---- */
+        case 'cancel_task': {
+          const task = this.requireTask(params.task_id);
+          const now = new Date().toISOString();
+
+          /* Gather history for the task */
+          const history = this.getHistory(task.id);
+
+          /* Save snapshot to archive */
+          this.db
+            .prepare(
+              `INSERT INTO archive (board_id, task_id, type, title, assignee, archive_reason,
+               linked_parent_board_id, linked_parent_task_id, archived_at, task_snapshot, history)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              this.boardId,
+              task.id,
+              task.type,
+              task.title,
+              task.assignee,
+              'cancelled',
+              task.linked_parent_board_id ?? null,
+              task.linked_parent_task_id ?? null,
+              now,
+              JSON.stringify(task),
+              JSON.stringify(history),
+            );
+
+          /* If task was linked, clear the link */
+          if (task.child_exec_enabled === 1) {
+            /* No cross-board cleanup needed here — just archive locally */
+          }
+
+          /* Delete from tasks */
+          this.db
+            .prepare(
+              `DELETE FROM tasks WHERE board_id = ? AND id = ?`,
+            )
+            .run(this.boardId, task.id);
+
+          /* Record history (on the archive entry for reference) */
+          this.recordHistory(task.id, 'cancelled', params.sender_name);
+
+          return {
+            success: true,
+            data: { cancelled: task.id, title: task.title },
+          };
+        }
+
+        /* ---- restore_task ---- */
+        case 'restore_task': {
+          if (!params.task_id) {
+            return { success: false, error: 'Missing required parameter: task_id' };
+          }
+
+          const archived = this.db
+            .prepare(
+              `SELECT * FROM archive WHERE board_id = ? AND task_id = ?`,
+            )
+            .get(this.boardId, params.task_id) as any;
+
+          if (!archived) {
+            return { success: false, error: `Archived task not found: ${params.task_id}` };
+          }
+
+          /* Parse snapshot and restore */
+          const snapshot = JSON.parse(archived.task_snapshot);
+          const now = new Date().toISOString();
+
+          this.db
+            .prepare(
+              `INSERT INTO tasks (
+                id, board_id, type, title, assignee, next_action, waiting_for,
+                column, priority, due_date, description, labels, blocked_by,
+                reminders, next_note_id, notes, _last_mutation, created_at, updated_at,
+                child_exec_enabled, child_exec_board_id, child_exec_person_id,
+                child_exec_rollup_status, child_exec_last_rollup_at,
+                child_exec_last_rollup_summary,
+                linked_parent_board_id, linked_parent_task_id,
+                subtasks, recurrence, current_cycle
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              snapshot.id ?? archived.task_id,
+              this.boardId,
+              snapshot.type ?? archived.type,
+              snapshot.title ?? archived.title,
+              snapshot.assignee ?? archived.assignee ?? null,
+              snapshot.next_action ?? null,
+              snapshot.waiting_for ?? null,
+              snapshot.column ?? 'inbox',
+              snapshot.priority ?? null,
+              snapshot.due_date ?? null,
+              snapshot.description ?? null,
+              snapshot.labels ?? '[]',
+              snapshot.blocked_by ?? '[]',
+              snapshot.reminders ?? '[]',
+              snapshot.next_note_id ?? 1,
+              snapshot.notes ?? '[]',
+              snapshot._last_mutation ?? null,
+              snapshot.created_at ?? now,
+              now,
+              snapshot.child_exec_enabled ?? 0,
+              snapshot.child_exec_board_id ?? null,
+              snapshot.child_exec_person_id ?? null,
+              snapshot.child_exec_rollup_status ?? null,
+              snapshot.child_exec_last_rollup_at ?? null,
+              snapshot.child_exec_last_rollup_summary ?? null,
+              snapshot.linked_parent_board_id ?? null,
+              snapshot.linked_parent_task_id ?? null,
+              snapshot.subtasks ?? null,
+              snapshot.recurrence ?? null,
+              snapshot.current_cycle ?? null,
+            );
+
+          /* Delete from archive */
+          this.db
+            .prepare(
+              `DELETE FROM archive WHERE board_id = ? AND task_id = ?`,
+            )
+            .run(this.boardId, params.task_id);
+
+          /* Record history */
+          this.recordHistory(params.task_id, 'restored', params.sender_name);
+
+          return {
+            success: true,
+            data: { restored: params.task_id, title: archived.title, column: snapshot.column ?? 'inbox' },
+          };
+        }
+
+        /* ---- process_inbox ---- */
+        case 'process_inbox': {
+          const inboxTasks = this.getTasksByColumn('inbox');
+          return {
+            success: true,
+            tasks: inboxTasks,
+            data: { count: inboxTasks.length },
+          };
+        }
+
+        default:
+          return { success: false, error: `Unknown admin action: ${(params as any).action}` };
       }
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
