@@ -1,9 +1,10 @@
 /**
- * TaskflowEngine — read-only query engine for TaskFlow boards.
+ * TaskflowEngine — query + mutation engine for TaskFlow boards.
  *
  * All methods are SYNCHRONOUS (better-sqlite3 is sync by design).
  * Provides 36 query types covering board views, task details, search,
- * statistics, person queries, and change history.
+ * statistics, person queries, and change history, plus mutation methods
+ * for creating, updating, and managing tasks.
  */
 import Database from 'better-sqlite3';
 
@@ -27,6 +28,34 @@ export interface TaskflowResult {
   formatted?: string;
   error?: string;
   [key: string]: any;
+}
+
+export interface CreateParams {
+  board_id: string;
+  type: 'simple' | 'project' | 'recurring' | 'inbox';
+  title: string;
+  assignee?: string;
+  due_date?: string;
+  priority?: 'low' | 'normal' | 'high' | 'urgent';
+  labels?: string[];
+  subtasks?: string[];
+  recurrence?: 'daily' | 'weekly' | 'monthly' | 'yearly';
+  recurrence_anchor?: string;
+  sender_name: string;
+}
+
+export interface CreateResult extends TaskflowResult {
+  task_id?: string;
+  column?: string;
+  offer_register?: {
+    name: string;
+    message: string;
+  };
+  notifications?: Array<{
+    target_person_id: string;
+    notification_group_jid: string | null;
+    message: string;
+  }>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -173,6 +202,270 @@ export class TaskflowEngine {
       throw new Error(`Task not found: ${taskId}`);
     }
     return task;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  Mutation helpers (shared across create/move/update/etc.)          */
+  /* ---------------------------------------------------------------- */
+
+  /** Check if a sender is in board_admins with admin_role = 'manager'. */
+  private isManager(senderName: string): boolean {
+    const person = this.resolvePerson(senderName);
+    if (!person) return false;
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM board_admins
+         WHERE board_id = ? AND person_id = ? AND admin_role = 'manager'`,
+      )
+      .get(this.boardId, person.person_id);
+    return !!row;
+  }
+
+  /** Read next_task_number from board_config, increment it, return the old value. */
+  private getNextTaskNumber(): number {
+    const row = this.db
+      .prepare(`SELECT next_task_number FROM board_config WHERE board_id = ?`)
+      .get(this.boardId) as { next_task_number: number } | undefined;
+    const num = row?.next_task_number ?? 1;
+    this.db
+      .prepare(
+        `UPDATE board_config SET next_task_number = ? WHERE board_id = ?`,
+      )
+      .run(num + 1, this.boardId);
+    return num;
+  }
+
+  /** Insert a row into task_history. */
+  recordHistory(taskId: string, action: string, by: string, details?: string): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(this.boardId, taskId, action, by, now, details ?? null);
+  }
+
+  /** Build a notification object if assignee differs from the modifier. */
+  private buildNotification(
+    task: { id: string; title: string; assignee: string },
+    action: string,
+    modifierPersonId: string,
+  ): { target_person_id: string; notification_group_jid: string | null; message: string } | null {
+    if (!task.assignee || task.assignee === modifierPersonId) return null;
+    const person = this.db
+      .prepare(
+        `SELECT name, notification_group_jid FROM board_people
+         WHERE board_id = ? AND person_id = ?`,
+      )
+      .get(this.boardId, task.assignee) as
+      | { name: string; notification_group_jid: string | null }
+      | undefined;
+    if (!person) return null;
+    return {
+      target_person_id: task.assignee,
+      notification_group_jid: person.notification_group_jid ?? null,
+      message: `${task.id} "${task.title}" was ${action} and assigned to you.`,
+    };
+  }
+
+  /** List all team member names for the current board. */
+  private listTeamNames(): string[] {
+    const rows = this.db
+      .prepare(`SELECT name FROM board_people WHERE board_id = ? ORDER BY name`)
+      .all(this.boardId) as Array<{ name: string }>;
+    return rows.map((r) => r.name);
+  }
+
+  /** Check if an assignee has a child board registered. */
+  private getChildBoardRegistration(
+    personId: string,
+  ): { child_board_id: string } | null {
+    const row = this.db
+      .prepare(
+        `SELECT child_board_id FROM child_board_registrations
+         WHERE parent_board_id = ? AND person_id = ?`,
+      )
+      .get(this.boardId, personId) as { child_board_id: string } | undefined;
+    return row ?? null;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  create — taskflow_create                                         */
+  /* ---------------------------------------------------------------- */
+
+  create(params: CreateParams): CreateResult {
+    try {
+      const now = new Date().toISOString();
+
+      /* --- Permission check --- */
+      if (params.type !== 'inbox' && params.assignee) {
+        if (!this.isManager(params.sender_name)) {
+          return {
+            success: false,
+            error: `Only managers can create assigned tasks. "${params.sender_name}" is not a manager.`,
+          };
+        }
+      }
+
+      /* --- Assignee resolution --- */
+      let assigneePersonId: string | null = null;
+      if (params.assignee) {
+        const person = this.resolvePerson(params.assignee);
+        if (!person) {
+          const teamNames = this.listTeamNames();
+          return {
+            success: false,
+            offer_register: {
+              name: params.assignee,
+              message: `${params.assignee} not registered. Current team: ${teamNames.join(', ')}`,
+            },
+          };
+        }
+        assigneePersonId = person.person_id;
+      }
+
+      /* --- ID generation --- */
+      const num = this.getNextTaskNumber();
+      const prefix =
+        params.type === 'project'
+          ? 'P'
+          : params.type === 'recurring'
+            ? 'R'
+            : 'T';
+      const taskId = `${prefix}-${String(num).padStart(3, '0')}`;
+
+      /* --- Column placement --- */
+      const column = params.type === 'inbox' || !assigneePersonId ? 'inbox' : 'next_action';
+
+      /* --- Type mapping (inbox → simple for storage) --- */
+      const storedType = params.type === 'inbox' ? 'simple' : params.type;
+
+      /* --- Subtasks for projects --- */
+      let subtasksJson: string | null = null;
+      if (params.type === 'project' && params.subtasks && params.subtasks.length > 0) {
+        subtasksJson = JSON.stringify(
+          params.subtasks.map((title, idx) => ({
+            id: `${taskId}.${idx + 1}`,
+            title,
+            status: 'pending',
+          })),
+        );
+      }
+
+      /* --- Recurrence --- */
+      let recurrence: string | null = null;
+      let dueDate: string | null = params.due_date ?? null;
+      if (params.type === 'recurring' && params.recurrence) {
+        recurrence = params.recurrence;
+        if (!dueDate) {
+          // Calculate initial due date based on recurrence type
+          const d = new Date();
+          switch (params.recurrence) {
+            case 'daily':
+              d.setDate(d.getDate() + 1);
+              break;
+            case 'weekly':
+              d.setDate(d.getDate() + 7);
+              break;
+            case 'monthly':
+              d.setMonth(d.getMonth() + 1);
+              break;
+            case 'yearly':
+              d.setFullYear(d.getFullYear() + 1);
+              break;
+          }
+          dueDate = d.toISOString().slice(0, 10);
+        }
+      }
+
+      /* --- Child board auto-link --- */
+      let childExecEnabled = 0;
+      let childExecBoardId: string | null = null;
+      let childExecPersonId: string | null = null;
+      if (assigneePersonId) {
+        const reg = this.getChildBoardRegistration(assigneePersonId);
+        if (reg) {
+          childExecEnabled = 1;
+          childExecBoardId = reg.child_board_id;
+          childExecPersonId = assigneePersonId;
+        }
+      }
+
+      /* --- Undo snapshot --- */
+      const lastMutation = JSON.stringify({
+        action: 'created',
+        by: params.sender_name,
+        at: now,
+      });
+
+      /* --- INSERT task --- */
+      this.db
+        .prepare(
+          `INSERT INTO tasks (
+            id, board_id, type, title, assignee, column,
+            priority, due_date, labels, subtasks, recurrence,
+            child_exec_enabled, child_exec_board_id, child_exec_person_id,
+            _last_mutation, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          taskId,
+          this.boardId,
+          storedType,
+          params.title,
+          assigneePersonId,
+          column,
+          params.priority ?? null,
+          dueDate,
+          params.labels ? JSON.stringify(params.labels) : '[]',
+          subtasksJson,
+          recurrence,
+          childExecEnabled,
+          childExecBoardId,
+          childExecPersonId,
+          lastMutation,
+          now,
+          now,
+        );
+
+      /* --- History --- */
+      const detailsSummary: Record<string, any> = {
+        type: params.type,
+        title: params.title,
+        column,
+      };
+      if (assigneePersonId) detailsSummary.assignee = assigneePersonId;
+      if (params.priority) detailsSummary.priority = params.priority;
+      if (dueDate) detailsSummary.due_date = dueDate;
+      if (params.labels?.length) detailsSummary.labels = params.labels;
+      if (subtasksJson) detailsSummary.subtasks_count = params.subtasks!.length;
+      if (recurrence) detailsSummary.recurrence = recurrence;
+
+      this.recordHistory(taskId, 'created', params.sender_name, JSON.stringify(detailsSummary));
+
+      /* --- Notification --- */
+      const notifications: CreateResult['notifications'] = [];
+      if (assigneePersonId) {
+        const senderPerson = this.resolvePerson(params.sender_name);
+        const senderPersonId = senderPerson?.person_id ?? params.sender_name;
+        const notif = this.buildNotification(
+          { id: taskId, title: params.title, assignee: assigneePersonId },
+          'created',
+          senderPersonId,
+        );
+        if (notif) notifications.push(notif);
+      }
+
+      return {
+        success: true,
+        task_id: taskId,
+        column,
+        ...(notifications.length > 0 ? { notifications } : {}),
+      };
+    } catch (err: any) {
+      return { success: false, error: err.message ?? String(err) };
+    }
   }
 
   /* ---------------------------------------------------------------- */

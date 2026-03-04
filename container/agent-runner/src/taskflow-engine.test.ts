@@ -667,4 +667,164 @@ describe('TaskflowEngine', () => {
       expect(r.error).toMatch(/Unknown query type/);
     });
   });
+
+  /* ---------------------------------------------------------------- */
+  /*  create                                                           */
+  /* ---------------------------------------------------------------- */
+
+  describe('create', () => {
+    it('creates inbox capture', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'inbox',
+        title: 'Buy supplies',
+        sender_name: 'Giovanni',
+      });
+      expect(r.success).toBe(true);
+      expect(r.task_id).toBe('T-004');
+      expect(r.column).toBe('inbox');
+
+      // Verify task in DB
+      const task = engine.getTask('T-004');
+      expect(task).toBeTruthy();
+      expect(task.title).toBe('Buy supplies');
+      expect(task.type).toBe('simple'); // inbox stored as simple
+      expect(task.column).toBe('inbox');
+      expect(task.assignee).toBeNull();
+    });
+
+    it('creates assigned task', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Deploy v2',
+        assignee: 'Giovanni',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.task_id).toBe('T-004');
+      expect(r.column).toBe('next_action');
+
+      // Verify task in DB
+      const task = engine.getTask('T-004');
+      expect(task.title).toBe('Deploy v2');
+      expect(task.assignee).toBe('person-2');
+      expect(task.column).toBe('next_action');
+
+      // Notification: sender (Alexandre/person-1) != assignee (Giovanni/person-2)
+      expect(r.notifications).toHaveLength(1);
+      expect(r.notifications![0].target_person_id).toBe('person-2');
+      expect(r.notifications![0].message).toContain('T-004');
+    });
+
+    it('returns offer_register for unknown assignee', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Some task',
+        assignee: 'Rafael',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.offer_register).toBeTruthy();
+      expect(r.offer_register!.name).toBe('Rafael');
+      expect(r.offer_register!.message).toContain('Rafael not registered');
+      expect(r.offer_register!.message).toContain('Alexandre');
+      expect(r.offer_register!.message).toContain('Giovanni');
+    });
+
+    it('creates project with subtasks', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'project',
+        title: 'Redesign homepage',
+        subtasks: ['Design', 'Implement', 'Test'],
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.task_id).toBe('P-004');
+      expect(r.column).toBe('inbox'); // no assignee → inbox
+
+      const task = engine.getTask('P-004');
+      expect(task.type).toBe('project');
+      const subtasks = JSON.parse(task.subtasks);
+      expect(subtasks).toHaveLength(3);
+      expect(subtasks[0]).toEqual({ id: 'P-004.1', title: 'Design', status: 'pending' });
+      expect(subtasks[1]).toEqual({ id: 'P-004.2', title: 'Implement', status: 'pending' });
+      expect(subtasks[2]).toEqual({ id: 'P-004.3', title: 'Test', status: 'pending' });
+    });
+
+    it('creates recurring task', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'recurring',
+        title: 'Weekly standup',
+        recurrence: 'weekly',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.task_id).toBe('R-004');
+
+      const task = engine.getTask('R-004');
+      expect(task.type).toBe('recurring');
+      expect(task.recurrence).toBe('weekly');
+      expect(task.due_date).toBeTruthy(); // auto-calculated
+    });
+
+    it('non-manager cannot create assigned task', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Should fail',
+        assignee: 'Alexandre',
+        sender_name: 'Giovanni', // not a manager
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('Only managers');
+      expect(r.error).toContain('Giovanni');
+    });
+
+    it('records history', () => {
+      engine.create({
+        board_id: BOARD_ID,
+        type: 'inbox',
+        title: 'History test',
+        sender_name: 'Alexandre',
+      });
+
+      const history = db
+        .prepare(
+          `SELECT * FROM task_history WHERE board_id = ? AND task_id = 'T-004'`,
+        )
+        .all(BOARD_ID) as any[];
+      expect(history).toHaveLength(1);
+      expect(history[0].action).toBe('created');
+      expect(history[0].by).toBe('Alexandre');
+      const details = JSON.parse(history[0].details);
+      expect(details.title).toBe('History test');
+    });
+
+    it('increments task number', () => {
+      const r1 = engine.create({
+        board_id: BOARD_ID,
+        type: 'inbox',
+        title: 'First',
+        sender_name: 'Alexandre',
+      });
+      const r2 = engine.create({
+        board_id: BOARD_ID,
+        type: 'inbox',
+        title: 'Second',
+        sender_name: 'Alexandre',
+      });
+      expect(r1.task_id).toBe('T-004');
+      expect(r2.task_id).toBe('T-005');
+
+      // Verify next_task_number in DB is now 6
+      const config = db
+        .prepare(`SELECT next_task_number FROM board_config WHERE board_id = ?`)
+        .get(BOARD_ID) as { next_task_number: number };
+      expect(config.next_task_number).toBe(6);
+    });
+  });
 });
