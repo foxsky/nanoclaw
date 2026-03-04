@@ -146,7 +146,7 @@ function seedTestDb(db: Database.Database, boardId: string) {
     CREATE TABLE board_groups (board_id TEXT, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, group_role TEXT DEFAULT 'team', PRIMARY KEY (board_id, group_jid));
   `);
   db.exec(`INSERT INTO boards VALUES ('${boardId}', 'test@g.us', 'test', 'standard', 0, 1, NULL)`);
-  db.exec(`INSERT INTO board_config VALUES ('${boardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 4)`);
+  db.exec(`INSERT INTO board_config VALUES ('${boardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 4, 1)`);
   db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${boardId}')`);
   db.exec(`INSERT INTO board_admins VALUES ('${boardId}', 'person-1', '5585999990001', 'manager', 1)`);
   db.exec(`INSERT INTO board_people VALUES ('${boardId}', 'person-1', 'Alexandre', '5585999990001', 'Gestor', 3, NULL)`);
@@ -175,7 +175,7 @@ describe('TaskflowEngine', () => {
 
   describe('query', () => {
     it('returns full board view', async () => {
-      const result = await engine.query({ query: 'board' });
+      const result = engine.query({ query: 'board' });
       expect(result.success).toBe(true);
       expect(result.data.in_progress).toHaveLength(1);
       expect(result.data.next_action).toHaveLength(1);
@@ -183,20 +183,20 @@ describe('TaskflowEngine', () => {
     });
 
     it('returns person tasks', async () => {
-      const result = await engine.query({ query: 'person_tasks', person_name: 'Alexandre' });
+      const result = engine.query({ query: 'person_tasks', person_name: 'Alexandre' });
       expect(result.success).toBe(true);
       expect(result.data).toHaveLength(1);
       expect(result.data[0].id).toBe('T-001');
     });
 
     it('returns task details', async () => {
-      const result = await engine.query({ query: 'task_details', task_id: 'T-001' });
+      const result = engine.query({ query: 'task_details', task_id: 'T-001' });
       expect(result.success).toBe(true);
       expect(result.data.title).toBe('Fix login bug');
     });
 
     it('returns error for unknown task', async () => {
-      const result = await engine.query({ query: 'task_details', task_id: 'T-999' });
+      const result = engine.query({ query: 'task_details', task_id: 'T-999' });
       expect(result.success).toBe(false);
       expect(result.error).toContain('T-999');
     });
@@ -265,7 +265,7 @@ export class TaskflowEngine {
     ).all(this.boardId, this.boardId) as any[];
   }
 
-  async query(params: QueryParams): Promise<TaskflowResult> {
+  query(params: QueryParams): TaskflowResult {
     const { query } = params;
 
     switch (query) {
@@ -376,7 +376,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         since: z.string().optional().describe('ISO date for changes_since'),
       },
       async (args) => {
-        const result = await engine.query(args);
+        const result = engine.query(args);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
           isError: !result.success,
