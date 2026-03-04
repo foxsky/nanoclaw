@@ -1,13 +1,24 @@
 skill: taskflow
-version: 1.0.0
-description: "Kanban+GTD task management for team coordination via WhatsApp"
+version: 2.0.0
+description: "Kanban+GTD task management with MCP tool engine"
 core_version: 0.1.0
-adds: []
-modifies: []
+adds:
+  - container/agent-runner/src/taskflow-engine.ts
+  - container/agent-runner/src/taskflow-engine.test.ts
+modifies:
+  - src/taskflow-db.ts
+  - container/Dockerfile
+  - container/agent-runner/src/ipc-mcp-stdio.ts
+  - container/agent-runner/src/runtime-config.ts
+  - src/container-runner.ts
 structured:
-  npm_dependencies: {}
-  env_additions: []
-conflicts: []
+  npm_dependencies:
+    better-sqlite3: "^12.6.2"
+  npm_dev_dependencies:
+    "@types/better-sqlite3": "^7.6.13"
+    vitest: "^4.0.18"
 depends: []
-tested_with:
-  - media-support
+post_apply:
+  - "cd container/agent-runner && npm install"
+  - "./container/build.sh"
+test: "cd container/agent-runner && npx vitest run src/taskflow-engine.test.ts"
