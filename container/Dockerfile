@@ -38,6 +38,9 @@ WORKDIR /app
 # Copy package files first for better caching
 COPY agent-runner/package*.json ./
 
+# Build tools for native modules (better-sqlite3)
+RUN apt-get update && apt-get install -y make g++ && rm -rf /var/lib/apt/lists/*
+
 # Install dependencies
 RUN npm install
 
