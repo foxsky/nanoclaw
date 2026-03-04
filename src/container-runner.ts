@@ -71,6 +71,7 @@ const CORE_AGENT_RUNNER_FILES = [
   'ipc-mcp-stdio.ts',
   'ipc-tooling.ts',
   'runtime-config.ts',
+  'taskflow-engine.ts',
   path.join('mcp-plugins', 'create-group.ts'),
 ] as const;
 

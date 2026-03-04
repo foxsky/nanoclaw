@@ -10,10 +10,12 @@ import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
+import Database from 'better-sqlite3';
 import {
   canUseCreateGroup,
   normalizeCreateGroupRequest,
 } from './ipc-tooling.js';
+import { TaskflowEngine } from './taskflow-engine.js';
 
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
@@ -495,6 +497,44 @@ server.tool(
     };
   },
 );
+
+// Register TaskFlow tools only for TaskFlow-managed groups
+if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
+  const dbPath = '/workspace/taskflow/taskflow.db';
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+
+  if (boardId) {
+    const tfDb = new Database(dbPath);
+    const engine = new TaskflowEngine(tfDb, boardId);
+
+    server.tool(
+      'taskflow_query',
+      'Query the TaskFlow board. Returns structured data for board views, task details, search, statistics, etc.',
+      {
+        query: z.enum(['board', 'inbox', 'review', 'in_progress', 'next_action', 'waiting',
+          'my_tasks', 'overdue', 'due_today', 'due_tomorrow', 'due_this_week', 'next_7_days',
+          'search', 'urgent', 'high_priority', 'by_label', 'completed_today', 'completed_this_week',
+          'completed_this_month', 'person_tasks', 'person_waiting', 'person_completed', 'person_review',
+          'task_details', 'task_history', 'archive', 'archive_search', 'agenda', 'agenda_week',
+          'changes_today', 'changes_since', 'changes_this_week', 'statistics', 'person_statistics',
+          'month_statistics', 'summary']).describe('Query type'),
+        sender_name: z.string().optional().describe('Sender name for my_tasks'),
+        person_name: z.string().optional().describe('Person name for person_* queries'),
+        task_id: z.string().optional().describe('Task ID for task_details/history'),
+        search_text: z.string().optional().describe('Search text'),
+        label: z.string().optional().describe('Label filter'),
+        since: z.string().optional().describe('ISO date for changes_since'),
+      },
+      async (args) => {
+        const result = engine.query(args);
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          isError: !result.success,
+        };
+      },
+    );
+  }
+}
 
 // Start the stdio transport
 const transport = new StdioServerTransport();

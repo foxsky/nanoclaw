@@ -45,6 +45,11 @@ export function buildNanoclawMcpEnv(
     NANOCLAW_IS_TASKFLOW_MANAGED: containerInput.isTaskflowManaged ? '1' : '0',
   };
 
+  // Derive board ID from folder name (convention: 'board-{folder}')
+  if (containerInput.isTaskflowManaged) {
+    env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-' + containerInput.groupFolder;
+  }
+
   if (containerInput.taskflowHierarchyLevel !== undefined) {
     env.NANOCLAW_TASKFLOW_HIERARCHY_LEVEL = String(
       containerInput.taskflowHierarchyLevel,
