@@ -4,7 +4,7 @@
 
 **Goal:** Move TaskFlow procedural logic from CLAUDE.md (~1200 lines) into TypeScript MCP tools, reducing the template to ~400 lines while improving reliability.
 
-**Architecture:** 9 MCP tools implemented in `container/agent-runner/src/taskflow-engine.ts`, registered conditionally in `ipc-mcp-stdio.ts` when `NANOCLAW_IS_TASKFLOW_MANAGED=1`. Tools access `taskflow.db` directly via `better-sqlite3` for synchronous responses. The agent becomes a natural language router that parses intent, calls tools, and formats results.
+**Architecture:** 9 MCP tools implemented in `container/agent-runner/src/taskflow-engine.ts`, registered conditionally in `ipc-mcp-stdio.ts` when `NANOCLAW_IS_TASKFLOW_MANAGED=1`. Board ID derived from folder name (`board-${folder}`). Tools access `taskflow.db` directly via `better-sqlite3` for synchronous responses. The agent becomes a natural language router that parses intent, calls tools, and formats results. Mutation tools return `notifications` arrays that the agent dispatches via `send_message`.
 
 **Tech Stack:** TypeScript, better-sqlite3, zod (validation), vitest (tests), MCP SDK
 
@@ -12,19 +12,78 @@
 
 ---
 
+## Phase 0: Schema Alignment
+
+### Task 0: Sync `taskflow-db.ts` schema with live database
+
+The live database has tables and columns not present in the canonical schema at `src/taskflow-db.ts`. The engine tests will use this schema, so it must match reality.
+
+**Files:**
+- Modify: `src/taskflow-db.ts`
+- Modify: `src/taskflow-db.test.ts` (if schema-dependent assertions exist)
+
+**Step 1: Add `board_groups` table to `TASKFLOW_SCHEMA`**
+
+Add after the `child_board_registrations` CREATE TABLE:
+```sql
+CREATE TABLE IF NOT EXISTS board_groups (
+  board_id TEXT REFERENCES boards(id),
+  group_jid TEXT NOT NULL,
+  group_folder TEXT NOT NULL,
+  group_role TEXT DEFAULT 'team',
+  PRIMARY KEY (board_id, group_jid)
+);
+```
+
+**Step 2: Add missing columns to `board_runtime_config`**
+
+Add these columns to the existing `board_runtime_config` CREATE TABLE:
+```sql
+  welcome_sent INTEGER DEFAULT 0,
+  standup_target TEXT DEFAULT 'team',
+  digest_target TEXT DEFAULT 'team',
+  review_target TEXT DEFAULT 'team',
+  runner_standup_secondary_task_id TEXT,
+  runner_digest_secondary_task_id TEXT,
+  runner_review_secondary_task_id TEXT,
+```
+
+**Step 3: Remove the `ALTER TABLE` migration for `notification_group_jid`**
+
+This column is already in the CREATE TABLE statement, so the try/catch ALTER TABLE block (lines 170-174) is no longer needed for fresh databases. Keep it for backward compatibility with existing DBs that were created before it was added to the schema, OR remove it if all live DBs already have the column.
+
+**Step 4: Run existing tests**
+
+```bash
+cd /root/nanoclaw && npm test
+```
+
+Expected: All existing tests pass with the updated schema.
+
+**Step 5: Commit**
+
+```bash
+git add src/taskflow-db.ts
+git commit -m "fix: sync taskflow-db.ts schema with live database"
+```
+
+---
+
 ## Phase 1: Foundation
 
-### Task 1: Add better-sqlite3 dependency
+### Task 1: Add better-sqlite3 and vitest dependencies
 
 **Files:**
 - Modify: `container/agent-runner/package.json`
 - Modify: `container/Dockerfile` (if native module needs build tools)
 
-**Step 1: Add dependency**
+**Step 1: Add dependencies**
 
 ```bash
-cd container/agent-runner && npm install better-sqlite3 && npm install -D @types/better-sqlite3
+cd container/agent-runner && npm install better-sqlite3 && npm install -D @types/better-sqlite3 vitest
 ```
+
+Note: Use `better-sqlite3@^11.8.1` to match the host's existing version in the root `package.json`.
 
 **Step 2: Verify container builds**
 
@@ -32,13 +91,20 @@ cd container/agent-runner && npm install better-sqlite3 && npm install -D @types
 cd /root/nanoclaw && ./container/build.sh
 ```
 
-Expected: Build succeeds. `better-sqlite3` is a native module — the Dockerfile's build stage should already have `python3` and `make` for node-gyp.
+Expected: Build succeeds. `better-sqlite3` is a native C++ addon that requires `python3`, `make`, and `g++` for `node-gyp`. If the build fails with compilation errors:
+
+```dockerfile
+# Add to Dockerfile before RUN npm install:
+RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
+```
+
+The `node:22-slim` image may already include these — verify during this step.
 
 **Step 3: Commit**
 
 ```bash
 git add container/agent-runner/package.json container/agent-runner/package-lock.json
-git commit -m "chore: add better-sqlite3 to agent-runner for TaskFlow engine"
+git commit -m "chore: add better-sqlite3 and vitest to agent-runner"
 ```
 
 ---
@@ -59,19 +125,25 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { TaskflowEngine } from './taskflow-engine.js';
 
+/**
+ * Creates all TaskFlow tables in an in-memory DB.
+ * IMPORTANT: This schema MUST match the canonical TASKFLOW_SCHEMA in src/taskflow-db.ts.
+ * If you add columns/tables to taskflow-db.ts, update this seed too.
+ * TODO: Consider extracting schema to a shared constant to prevent drift.
+ */
 function seedTestDb(db: Database.Database, boardId: string) {
-  // Create all TaskFlow tables (copy from taskflow-db.ts schema)
   db.exec(`
-    CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT, group_folder TEXT, board_role TEXT, hierarchy_level INTEGER, max_depth INTEGER, parent_board_id TEXT);
-    CREATE TABLE board_people (board_id TEXT, person_id TEXT, name TEXT, phone TEXT, role TEXT, wip_limit INTEGER, notification_group_jid TEXT, PRIMARY KEY (board_id, person_id));
-    CREATE TABLE board_admins (board_id TEXT, person_id TEXT, phone TEXT, admin_role TEXT, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
-    CREATE TABLE board_config (board_id TEXT PRIMARY KEY, columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]', wip_limit INTEGER DEFAULT 5, next_task_number INTEGER DEFAULT 1);
-    CREATE TABLE tasks (id TEXT, board_id TEXT, type TEXT DEFAULT 'simple', title TEXT, assignee TEXT, next_action TEXT, waiting_for TEXT, column TEXT DEFAULT 'inbox', priority TEXT, due_date TEXT, description TEXT, labels TEXT DEFAULT '[]', blocked_by TEXT DEFAULT '[]', reminders TEXT DEFAULT '[]', next_note_id INTEGER DEFAULT 1, notes TEXT DEFAULT '[]', _last_mutation TEXT, created_at TEXT, updated_at TEXT, child_exec_enabled INTEGER DEFAULT 0, child_exec_board_id TEXT, child_exec_person_id TEXT, child_exec_rollup_status TEXT, child_exec_last_rollup_at TEXT, child_exec_last_rollup_summary TEXT, linked_parent_board_id TEXT, linked_parent_task_id TEXT, subtasks TEXT, recurrence TEXT, current_cycle TEXT, PRIMARY KEY (board_id, id));
-    CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT, task_id TEXT, action TEXT, by TEXT, at TEXT, details TEXT);
-    CREATE TABLE archive (board_id TEXT, task_id TEXT, type TEXT, title TEXT, assignee TEXT, archive_reason TEXT, linked_parent_board_id TEXT, linked_parent_task_id TEXT, archived_at TEXT, task_snapshot TEXT, history TEXT, PRIMARY KEY (board_id, task_id));
-    CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, language TEXT DEFAULT 'pt-BR', timezone TEXT DEFAULT 'America/Fortaleza', welcome_sent INTEGER DEFAULT 1, attachment_enabled INTEGER DEFAULT 1, attachment_disabled_reason TEXT DEFAULT '', attachment_allowed_formats TEXT DEFAULT '["pdf","jpg","png"]', attachment_max_size_bytes INTEGER DEFAULT 10485760);
-    CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
-    CREATE TABLE board_groups (board_id TEXT, group_jid TEXT, group_folder TEXT, group_role TEXT DEFAULT 'team', PRIMARY KEY (board_id, group_jid));
+    CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, board_role TEXT DEFAULT 'standard', hierarchy_level INTEGER, max_depth INTEGER, parent_board_id TEXT);
+    CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT NULL, phone TEXT, role TEXT DEFAULT 'member', wip_limit INTEGER, notification_group_jid TEXT, PRIMARY KEY (board_id, person_id));
+    CREATE TABLE board_admins (board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL, admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
+    CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
+    CREATE TABLE tasks (id TEXT NOT NULL, board_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'simple', title TEXT NOT NULL, assignee TEXT, next_action TEXT, waiting_for TEXT, column TEXT DEFAULT 'inbox', priority TEXT, due_date TEXT, description TEXT, labels TEXT DEFAULT '[]', blocked_by TEXT DEFAULT '[]', reminders TEXT DEFAULT '[]', next_note_id INTEGER DEFAULT 1, notes TEXT DEFAULT '[]', _last_mutation TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, child_exec_enabled INTEGER DEFAULT 0, child_exec_board_id TEXT, child_exec_person_id TEXT, child_exec_rollup_status TEXT, child_exec_last_rollup_at TEXT, child_exec_last_rollup_summary TEXT, linked_parent_board_id TEXT, linked_parent_task_id TEXT, subtasks TEXT, recurrence TEXT, current_cycle TEXT, PRIMARY KEY (board_id, id));
+    CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, task_id TEXT NOT NULL, action TEXT NOT NULL, by TEXT, at TEXT NOT NULL, details TEXT);
+    CREATE TABLE archive (board_id TEXT NOT NULL, task_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, assignee TEXT, archive_reason TEXT NOT NULL, linked_parent_board_id TEXT, linked_parent_task_id TEXT, archived_at TEXT NOT NULL, task_snapshot TEXT NOT NULL, history TEXT, PRIMARY KEY (board_id, task_id));
+    CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, language TEXT NOT NULL DEFAULT 'pt-BR', timezone TEXT NOT NULL DEFAULT 'America/Fortaleza', runner_standup_task_id TEXT, runner_digest_task_id TEXT, runner_review_task_id TEXT, runner_dst_guard_task_id TEXT, standup_cron_local TEXT, digest_cron_local TEXT, review_cron_local TEXT, standup_cron_utc TEXT, digest_cron_utc TEXT, review_cron_utc TEXT, dst_sync_enabled INTEGER DEFAULT 0, dst_last_offset_minutes INTEGER, dst_last_synced_at TEXT, dst_resync_count_24h INTEGER DEFAULT 0, dst_resync_window_started_at TEXT, attachment_enabled INTEGER DEFAULT 1, attachment_disabled_reason TEXT DEFAULT '', attachment_allowed_formats TEXT DEFAULT '["pdf","jpg","png"]', attachment_max_size_bytes INTEGER DEFAULT 10485760, welcome_sent INTEGER DEFAULT 0, standup_target TEXT DEFAULT 'team', digest_target TEXT DEFAULT 'team', review_target TEXT DEFAULT 'team', runner_standup_secondary_task_id TEXT, runner_digest_secondary_task_id TEXT, runner_review_secondary_task_id TEXT);
+    CREATE TABLE attachment_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, source TEXT NOT NULL, filename TEXT NOT NULL, at TEXT NOT NULL, actor_person_id TEXT, affected_task_refs TEXT DEFAULT '[]');
+    CREATE TABLE board_config (board_id TEXT PRIMARY KEY, columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]', wip_limit INTEGER DEFAULT 5, next_task_number INTEGER DEFAULT 1, next_note_id INTEGER DEFAULT 1);
+    CREATE TABLE board_groups (board_id TEXT, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, group_role TEXT DEFAULT 'team', PRIMARY KEY (board_id, group_jid));
   `);
   db.exec(`INSERT INTO boards VALUES ('${boardId}', 'test@g.us', 'test', 'standard', 0, 1, NULL)`);
   db.exec(`INSERT INTO board_config VALUES ('${boardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 4)`);
@@ -169,7 +241,10 @@ export class TaskflowEngine {
   constructor(
     private db: Database.Database,
     private boardId: string,
-  ) {}
+  ) {
+    // Prevent SQLITE_BUSY when multiple containers access the same DB
+    this.db.pragma('busy_timeout = 5000');
+  }
 
   private resolvePerson(name: string): { person_id: string; name: string } | null {
     const row = this.db.prepare(
@@ -270,13 +345,13 @@ Add to the existing test file or create a new one verifying that TaskFlow tools 
 At the end of `ipc-mcp-stdio.ts`, after existing tool registrations:
 
 ```typescript
+import Database from 'better-sqlite3';
 import { TaskflowEngine } from './taskflow-engine.js';
-import { z } from 'zod';
 
 // Register TaskFlow tools only for TaskFlow-managed groups
 if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
-  const dbPath = process.env.NANOCLAW_TASKFLOW_DB_PATH || '/workspace/taskflow/taskflow.db';
-  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  const dbPath = '/workspace/taskflow/taskflow.db';
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;  // 'board-{folder}'
 
   if (boardId) {
     const tfDb = new Database(dbPath);
@@ -314,15 +389,31 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
 }
 ```
 
-**Step 3: Pass board_id and db_path as environment variables**
+**Step 3: Pass board_id as environment variable and update file sync**
 
-Modify `container/agent-runner/src/runtime-config.ts` to include:
+Modify `container/agent-runner/src/runtime-config.ts` — add to `buildNanoclawMcpEnv()`:
 ```typescript
-NANOCLAW_TASKFLOW_BOARD_ID: group.taskflowBoardId,
-NANOCLAW_TASKFLOW_DB_PATH: '/workspace/taskflow/taskflow.db',
+// Derive board ID from folder name (convention: 'board-{folder}')
+if (containerInput.isTaskflowManaged) {
+  env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-' + containerInput.groupFolder;
+}
 ```
 
-And modify `src/container-runner.ts` to pass these env vars when spawning the container.
+No changes needed to `ContainerInput` or `RegisteredGroup` — the board ID is derived from the existing `groupFolder` field using the established `board-${folder}` convention (see `provision-child-board.ts:239`, `migrate-to-sqlite.ts:419`).
+
+Modify `src/container-runner.ts` — add `taskflow-engine.ts` to `CORE_AGENT_RUNNER_FILES`:
+```typescript
+const CORE_AGENT_RUNNER_FILES = [
+  'index.ts',
+  'ipc-mcp-stdio.ts',
+  'ipc-tooling.ts',
+  'runtime-config.ts',
+  'taskflow-engine.ts',           // ← NEW: TaskFlow MCP tool engine
+  path.join('mcp-plugins', 'create-group.ts'),
+] as const;
+```
+
+**This is critical** — without it, `taskflow-engine.ts` won't be synced to per-group agent-runner-src directories, and the container will fail to compile `ipc-mcp-stdio.ts`.
 
 **Step 4: Rebuild container and test**
 
@@ -334,7 +425,7 @@ And modify `src/container-runner.ts` to pass these env vars when spawning the co
 
 ```bash
 git add container/agent-runner/src/ipc-mcp-stdio.ts container/agent-runner/src/runtime-config.ts src/container-runner.ts
-git commit -m "feat: register TaskFlow MCP tools conditionally for managed groups"
+git commit -m "feat: register TaskFlow query tool, pass board_id env, sync engine to groups"
 ```
 
 ---
@@ -419,6 +510,10 @@ force_start: ignores WIP (manager only)
 - conclude recurring → creates new cycle
 - project subtask completion → advances next_action
 - permission denied for non-owner operations
+- notification: move by non-assignee → returns notification for assignee
+- notification: self-move → no notification
+- notification: task without assignee → no notification
+- notification: assignee has notification_group_jid → notification uses it
 
 **Commit after all tests pass.**
 
@@ -498,8 +593,8 @@ force_start: ignores WIP (manager only)
 **Key logic:**
 - Add dependency: check circular (transitive), check both tasks exist and active
 - Remove dependency: check it exists
-- Add reminder: check task has due_date, schedule via IPC
-- Remove reminder: cancel all via IPC
+- Add reminder: check task has due_date, store in task's `reminders` JSON column, write IPC file to `/workspace/ipc/tasks/` with `schedule_type: 'once'` (same mechanism as `schedule_task` MCP tool — no new host-side handler needed)
+- Remove reminder: remove from `reminders` JSON, write IPC cancel file
 
 **Tests:**
 - Add dependency happy path
@@ -641,7 +736,7 @@ cp .claude/skills/add-taskflow/templates/CLAUDE.md.template .claude/skills/add-t
 **Step 2:** Write the new ~400-line template
 
 Structure (from design doc):
-1. Identity & scope guard (15 lines)
+1. Identity & scope guard + welcome check (15 lines)
 2. Security (20 lines)
 3. WhatsApp formatting (10 lines)
 4. Sender identification (15 lines)
@@ -650,7 +745,7 @@ Structure (from design doc):
 7. Command → tool mapping table (80 lines)
 8. Tool response handling (30 lines)
 9. Report templates (40 lines)
-10. Notification rules (25 lines)
+10. Notification dispatch (15 lines) — tools return `notifications` array, agent sends each via `send_message`
 11. Schema reference for ad-hoc SQL (30 lines) — full table/column reference so agent can write correct SQL when needed
 12. Hierarchy overview — conditional (25 lines)
 13. Batch operations (10 lines)
@@ -763,8 +858,11 @@ systemctl restart nanoclaw
 **Files:**
 - Modify: `.claude/skills/add-taskflow/manifest.yaml`
 - Create: `.claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts`
+- Create: `.claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.test.ts`
 - Create: `.claude/skills/add-taskflow/modify/container/agent-runner/src/ipc-mcp-stdio.ts`
 - Create: `.claude/skills/add-taskflow/modify/container/agent-runner/src/ipc-mcp-stdio.ts.intent.md`
+- Create: `.claude/skills/add-taskflow/modify/container/agent-runner/src/runtime-config.ts`
+- Create: `.claude/skills/add-taskflow/modify/container/agent-runner/src/runtime-config.ts.intent.md`
 - Create: `.claude/skills/add-taskflow/modify/src/container-runner.ts`
 - Create: `.claude/skills/add-taskflow/modify/src/container-runner.ts.intent.md`
 
@@ -781,10 +879,13 @@ adds:
 modifies:
   - container/agent-runner/src/ipc-mcp-stdio.ts
   - container/agent-runner/src/runtime-config.ts
-  - src/container-runner.ts
+  - src/container-runner.ts                       # CORE_AGENT_RUNNER_FILES + env var
 structured:
   npm_dependencies:
-    better-sqlite3: "^11.0.0"
+    better-sqlite3: "^11.8.1"
+  npm_dev_dependencies:
+    "@types/better-sqlite3": "^7.6.0"
+    vitest: "^3.0.0"
 depends: []
 post_apply:
   - "cd container/agent-runner && npm install"
@@ -835,6 +936,11 @@ tail -f /root/nanoclaw/logs/nanoclaw.log
 
 **Step 4:** Commit final CLAUDE.md files.
 
+**Rollback procedure (if regressions occur):**
+1. **Per-board:** Replace the board's `CLAUDE.md` with the v1 backup (`.template.v1`), substituting the board's variables. The MCP tools remain registered but are harmless — the v1 template uses raw SQL and never calls `taskflow_*` tools.
+2. **Full rollback:** Restore all boards to v1 templates, revert `ipc-mcp-stdio.ts` to remove the tool registration block, rebuild container.
+3. **Data compatibility:** Both old and new templates write to the same SQLite schema — no data migration needed for rollback.
+
 ---
 
 ## Estimated Size
@@ -850,7 +956,10 @@ tail -f /root/nanoclaw/logs/nanoclaw.log
 
 ## Risk Mitigation
 
-- **v1 template preserved** as `.template.v1` for quick rollback
+- **v1 template preserved** as `.template.v1` for quick rollback (see rollback procedure in Task 17)
 - **Gradual rollout**: tec-taskflow first (lowest risk), then seci, then secti
 - **SQLite MCP kept**: agent can still run ad-hoc SQL queries as fallback
 - **Comprehensive tests**: every mutation path tested before deployment
+- **Schema alignment**: Task 0 syncs canonical schema with live DB before engine development
+- **Concurrent write safety**: `busy_timeout = 5000` pragma on all engine DB connections
+- **Native module build**: Dockerfile verified to have build tools in Task 1

@@ -8,6 +8,16 @@ The TaskFlow CLAUDE.md template is ~1200 lines, with ~60% procedural logic (stat
 
 Move all mutation logic and common queries into **TypeScript IPC plugins** exposed as **MCP tools**. The CLAUDE.md shrinks from ~1200 to ~400 lines, becoming a natural language router: parse user intent → call the right tool → present the result.
 
+## Prerequisites
+
+Before implementing the tools, the canonical schema in `src/taskflow-db.ts` must be synced with the live database. The live DB has two additions not in the schema file:
+
+1. **`board_groups` table** — exists in the live DB (added via migration), missing from `TASKFLOW_SCHEMA`
+2. **`welcome_sent` column** on `board_runtime_config` — exists in the live DB (column 28, added via ALTER TABLE), missing from `TASKFLOW_SCHEMA`
+3. **Additional columns** on `board_runtime_config`: `standup_target`, `digest_target`, `review_target`, `runner_standup_secondary_task_id`, `runner_digest_secondary_task_id`, `runner_review_secondary_task_id` — all present in the live DB but not in the canonical schema
+
+These must be added to `TASKFLOW_SCHEMA` in `src/taskflow-db.ts` so the test seed can import the schema rather than hardcoding it, preventing drift.
+
 ## Architecture
 
 ```
@@ -80,6 +90,11 @@ taskflow_create({
     name: string,
     message: string,         // "João not registered. Current team: ..."
   },
+  notifications?: Array<{
+    target_person_id: string,
+    notification_group_jid: string | null,
+    message: string,
+  }>,
 }
 ```
 
@@ -132,6 +147,11 @@ taskflow_move({
     cycle_number: number,
   },
   archive_triggered?: boolean,
+  notifications?: Array<{
+    target_person_id: string,
+    notification_group_jid: string | null,
+    message: string,
+  }>,
 }
 ```
 
@@ -183,6 +203,11 @@ taskflow_reassign({
   error?: string,
   offer_register?: { name: string, message: string },
   requires_confirmation?: string,  // human-readable summary for confirm prompt
+  notifications?: Array<{
+    target_person_id: string,
+    notification_group_jid: string | null,
+    message: string,
+  }>,
 }
 ```
 
@@ -232,6 +257,11 @@ taskflow_update({
   task_id: string,
   changes: string[],         // human-readable list of what changed
   error?: string,
+  notifications?: Array<{
+    target_person_id: string,
+    notification_group_jid: string | null,
+    message: string,
+  }>,
 }
 ```
 
@@ -405,7 +435,9 @@ taskflow_report({
 ## Identity & Scope Guard                                            [15 lines]
 - You are a task management assistant ONLY
 - Reject off-topic messages
-- Load data check (welcome_sent)
+- Welcome check: query `welcome_sent` from `board_runtime_config` on every
+  interaction. If 0, send welcome message then SET welcome_sent = 1.
+  (Stays in CLAUDE.md — simple SQL, not worth a tool)
 
 ## Security                                                          [20 lines]
 - Confirmation before destructive actions
@@ -465,9 +497,11 @@ Format template using `taskflow_report` structured data
 ### Weekly Review (Friday)
 Format template using `taskflow_report` structured data
 
-## Notification Rules                                                [25 lines]
-- When to send cross-group notifications
-- Format for each notification type
+## Notification Dispatch                                              [15 lines]
+- After any successful mutation with `notifications` in the result,
+  send each notification via `send_message` with the given target_chat_jid
+- Do NOT modify the notification text — the tool pre-formats it
+- If send_message fails, log but do not retry
 
 ## Schema Reference (for ad-hoc SQL)                                 [30 lines]
 Full table list with key columns and types.
@@ -501,7 +535,7 @@ When writing mutations via SQL, always:
 ## Configuration                                                     [15 lines]
 Board-specific variables
 
-TOTAL: ~375 lines (with room for buffer)
+TOTAL: ~370 lines (with room for buffer to ~400)
 ```
 
 ## Skill Restructuring
@@ -522,25 +556,56 @@ TOTAL: ~375 lines (with room for buffer)
 .claude/skills/add-taskflow/
 ├── manifest.yaml
 │   adds:
-│     - src/ipc-plugins/taskflow-engine.ts      # All 9 tool handlers
-│     - src/ipc-plugins/taskflow-engine.test.ts  # Tests
+│     - container/agent-runner/src/taskflow-engine.ts       # All 9 tool handlers
+│     - container/agent-runner/src/taskflow-engine.test.ts  # Tests
 │   modifies:
 │     - container/agent-runner/src/ipc-mcp-stdio.ts  # Register 9 new tools
-│     - src/ipc.ts                                    # Allowlist new plugin
+│     - src/container-runner.ts                       # Add to CORE_AGENT_RUNNER_FILES + env vars
+│     - container/agent-runner/src/runtime-config.ts  # Add board_id to MCP env
 ├── SKILL.md                                    # Updated setup wizard
 ├── add/
-│   ├── src/ipc-plugins/taskflow-engine.ts      # ~2000 lines TypeScript
-│   └── src/ipc-plugins/taskflow-engine.test.ts
+│   ├── container/agent-runner/src/taskflow-engine.ts       # ~2000 lines TypeScript
+│   └── container/agent-runner/src/taskflow-engine.test.ts
 ├── modify/
 │   ├── container/agent-runner/src/ipc-mcp-stdio.ts
 │   ├── container/agent-runner/src/ipc-mcp-stdio.ts.intent.md
-│   ├── src/ipc.ts
-│   └── src/ipc.ts.intent.md
+│   ├── src/container-runner.ts
+│   └── src/container-runner.ts.intent.md
 ├── templates/
 │   └── CLAUDE.md.template   (~400 lines)
 └── tests/
     └── taskflow.test.ts     (updated)
 ```
+
+## Notification System
+
+Notifications are cross-group messages sent after state-changing operations (~107 lines in the current CLAUDE.md). The MCP tools handle mutations but do NOT send notifications directly — they return a `notifications` array in the result, and the agent dispatches them.
+
+**Why agent-side dispatch:** Notifications use `send_message` (an MCP tool the agent already has). Sending from inside the engine would require the engine to call back into the MCP server, creating a circular dependency. Instead:
+
+1. Each mutation tool that can trigger notifications returns:
+   ```typescript
+   notifications?: Array<{
+     target_person_id: string,
+     notification_group_jid: string | null,  // from board_people
+     message: string,                         // pre-formatted pt-BR
+   }>
+   ```
+2. The CLAUDE.md instructs the agent: "After a successful mutation, if `notifications` is present, send each one via `send_message` with the given `target_chat_jid`."
+3. The notification message templates are generated by the engine (it knows the old/new state), so the agent just dispatches them.
+
+This keeps the engine pure (no side effects beyond SQLite) while eliminating the 107 lines of notification logic from the CLAUDE.md.
+
+## Reminder Mechanism
+
+The `taskflow_dependency` tool's `add_reminder` / `remove_reminder` actions work through the existing `schedule_task` IPC mechanism:
+
+1. Reminders are stored in the task's `reminders` JSON column
+2. When adding a reminder, the engine writes an IPC file to `/workspace/ipc/tasks/` with `schedule_type: 'once'` and the calculated reminder date
+3. When removing a reminder, the engine writes an IPC cancel file
+4. The host's task scheduler picks up these IPC files (same mechanism as `schedule_task` MCP tool)
+
+No new host-side IPC handler is needed.
 
 ## Implementation: Where tools run
 
@@ -558,6 +623,25 @@ TOTAL: ~375 lines (with room for buffer)
 
 **Decision: Option B** — Container-side MCP tools. The agent already has read-write SQLite access. The tools are TypeScript functions that validate inputs, run SQL, and return structured results. They run in the same process as the agent, so responses are synchronous.
 
+### SQLite concurrency
+
+Multiple containers may access `taskflow.db` simultaneously (e.g., two groups with active conversations). The database uses WAL mode, which handles concurrent readers well. For writers, the engine must set `busy_timeout` to avoid `SQLITE_BUSY` errors:
+
+```typescript
+const tfDb = new Database(dbPath);
+tfDb.pragma('busy_timeout = 5000');  // wait up to 5s for write lock
+```
+
+### Native module build tools
+
+`better-sqlite3` is a C++ native addon compiled via `node-gyp`. The Dockerfile's `node:22-slim` base image includes `python3` and `make` but may lack `g++`. If the container build fails at `npm install`, add to the Dockerfile:
+
+```dockerfile
+RUN apt-get update && apt-get install -y g++ && rm -rf /var/lib/apt/lists/*
+```
+
+This should be verified during Task 1 (dependency installation).
+
 ### Implementation location
 
 All 9 tools implemented in a single module: `container/agent-runner/src/taskflow-engine.ts`
@@ -567,6 +651,33 @@ This module is:
 - Has direct access to the SQLite database (same connection)
 - Runs inside the container (isolated per group)
 - Fully testable in isolation
+
+### Board ID derivation
+
+The board ID follows the convention `board-${folder}` (e.g., folder `secti-taskflow` → `board-secti-taskflow`). This is confirmed in `provision-child-board.ts:239` and `migrate-to-sqlite.ts:419`.
+
+The board ID is passed to the container via environment variable:
+1. `container-runner.ts` derives it: `const boardId = 'board-' + group.folder`
+2. Passes it in `ContainerInput` (no new field needed — derive at call site)
+3. `buildNanoclawMcpEnv()` in `runtime-config.ts` adds `NANOCLAW_TASKFLOW_BOARD_ID` to the env
+4. `ipc-mcp-stdio.ts` reads `process.env.NANOCLAW_TASKFLOW_BOARD_ID`
+
+No changes to `RegisteredGroup` are needed — the board ID is derived from the existing `folder` field.
+
+### File sync to per-group directories
+
+The `CORE_AGENT_RUNNER_FILES` array in `container-runner.ts:69-75` controls which source files are synced to per-group agent-runner directories. `taskflow-engine.ts` MUST be added to this list, or the container will fail to compile when `ipc-mcp-stdio.ts` tries to import it:
+
+```typescript
+const CORE_AGENT_RUNNER_FILES = [
+  'index.ts',
+  'ipc-mcp-stdio.ts',
+  'ipc-tooling.ts',
+  'runtime-config.ts',
+  'taskflow-engine.ts',           // ← ADD
+  path.join('mcp-plugins', 'create-group.ts'),
+] as const;
+```
 
 ## Migration Plan
 
@@ -604,6 +715,10 @@ This module is:
 | Container rebuild required for tool changes | Acceptable — already rebuilding for agent-runner updates |
 | Report formatting too rigid | Tools return structured data, agent formats per CLAUDE.md template |
 | Agent over-relies on SQL fallback, bypassing tool guarantees | CLAUDE.md decision framework: "Use tools first. SQL is a fallback, not the default." |
+| Schema drift between `taskflow-db.ts` and engine test seed | Prerequisite task syncs schema; add schema comparison test |
+| Concurrent writes cause SQLITE_BUSY | `busy_timeout = 5000` pragma on engine DB connection |
+| `node:22-slim` lacks build tools for native modules | Verify during Task 1; add `g++` to Dockerfile if needed |
+| Rollback from new to old template | v1 template preserved; rollback procedure documented in Phase 4 |
 
 ## Agent Flexibility: Tools + SQL Fallback
 
@@ -630,3 +745,15 @@ The tools handle the **90% common case** with guaranteed correctness. For the re
 5. If unsure whether a mutation is safe, ask the user first
 
 This hybrid approach means the agent is never "stuck" — tools provide reliability for standard flows, and SQL provides escape hatches for everything else.
+
+## Rollback Procedure
+
+If the new ~400-line template causes regressions on a board:
+
+1. **Per-board rollback:** Replace the board's `CLAUDE.md` with the v1 backup (`.template.v1`), substituting the board's variables. The MCP tools remain registered but are harmless — the old template simply won't call them.
+
+2. **Full rollback:** Restore all boards to v1 templates and revert `ipc-mcp-stdio.ts` to remove the tool registration block. Rebuild container.
+
+3. **Why the tools don't interfere:** Tool registration is passive — tools only execute when the agent calls them. The v1 CLAUDE.md uses raw SQL and never references `taskflow_*` tools, so they sit idle.
+
+4. **Data compatibility:** Both old and new templates write to the same SQLite schema. No data migration is needed for rollback.
