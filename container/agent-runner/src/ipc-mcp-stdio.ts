@@ -533,6 +533,173 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         };
       },
     );
+
+    server.tool(
+      'taskflow_create',
+      'Create a new task on the TaskFlow board.',
+      {
+        type: z.enum(['simple', 'project', 'recurring', 'inbox']).describe('Task type'),
+        title: z.string().describe('Task title'),
+        assignee: z.string().optional().describe('Person to assign the task to'),
+        due_date: z.string().optional().describe('Due date (ISO format)'),
+        priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('Task priority'),
+        labels: z.array(z.string()).optional().describe('Labels to attach'),
+        subtasks: z.array(z.string()).optional().describe('Subtask titles to create'),
+        recurrence: z.enum(['daily', 'weekly', 'monthly', 'yearly']).optional().describe('Recurrence pattern (for recurring type)'),
+        recurrence_anchor: z.string().optional().describe('Recurrence anchor date (ISO format)'),
+        sender_name: z.string().describe('Name of the person creating the task'),
+      },
+      async (args) => {
+        const result = engine.create({ ...args, board_id: boardId });
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          isError: !result.success,
+        };
+      },
+    );
+
+    server.tool(
+      'taskflow_move',
+      'Move a task through workflow stages (start, wait, resume, review, approve, reject, conclude, reopen, etc.).',
+      {
+        task_id: z.string().describe('Task ID to move'),
+        action: z.enum(['start', 'wait', 'resume', 'return', 'review', 'approve', 'reject', 'conclude', 'reopen', 'force_start']).describe('Workflow action'),
+        sender_name: z.string().describe('Name of the person performing the action'),
+        reason: z.string().optional().describe('Reason for the action (e.g., wait/reject reason)'),
+        subtask_id: z.string().optional().describe('Subtask ID for subtask-specific actions'),
+      },
+      async (args) => {
+        const result = engine.move({ ...args, board_id: boardId });
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          isError: !result.success,
+        };
+      },
+    );
+
+    server.tool(
+      'taskflow_reassign',
+      'Reassign a task or all tasks from one person to another.',
+      {
+        task_id: z.string().optional().describe('Specific task ID to reassign'),
+        source_person: z.string().optional().describe('Reassign all tasks from this person'),
+        target_person: z.string().describe('Person to assign to'),
+        sender_name: z.string().describe('Name of the person performing the reassignment'),
+        confirmed: z.boolean().describe('Must be true to confirm the reassignment'),
+      },
+      async (args) => {
+        const result = engine.reassign({ ...args, board_id: boardId });
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          isError: !result.success,
+        };
+      },
+    );
+
+    server.tool(
+      'taskflow_update',
+      'Update task fields: title, priority, due date, description, next action, labels, notes, subtasks, recurrence.',
+      {
+        task_id: z.string().describe('Task ID to update'),
+        sender_name: z.string().describe('Name of the person making the update'),
+        updates: z.object({
+          title: z.string().optional().describe('New title'),
+          priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('New priority'),
+          due_date: z.string().nullable().optional().describe('New due date (ISO) or null to clear'),
+          description: z.string().optional().describe('New description'),
+          next_action: z.string().optional().describe('New next action text'),
+          add_label: z.string().optional().describe('Label to add'),
+          remove_label: z.string().optional().describe('Label to remove'),
+          add_note: z.string().optional().describe('Note text to add'),
+          edit_note: z.object({ id: z.number(), text: z.string() }).optional().describe('Edit an existing note by ID'),
+          remove_note: z.number().optional().describe('Note ID to remove'),
+          add_subtask: z.string().optional().describe('Subtask title to add'),
+          rename_subtask: z.object({ id: z.string(), title: z.string() }).optional().describe('Rename a subtask'),
+          reopen_subtask: z.string().optional().describe('Subtask ID to reopen'),
+          recurrence: z.string().optional().describe('New recurrence pattern'),
+        }).describe('Fields to update'),
+      },
+      async (args) => {
+        const result = engine.update({ ...args, board_id: boardId });
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          isError: !result.success,
+        };
+      },
+    );
+
+    server.tool(
+      'taskflow_dependency',
+      'Manage task dependencies and reminders. Add/remove blocking dependencies or due-date reminders.',
+      {
+        action: z.enum(['add_dep', 'remove_dep', 'add_reminder', 'remove_reminder']).describe('Dependency action'),
+        task_id: z.string().describe('Source task ID'),
+        target_task_id: z.string().optional().describe('Target task ID (for add_dep/remove_dep)'),
+        reminder_days: z.number().optional().describe('Days before due date to send reminder (for add_reminder)'),
+        sender_name: z.string().describe('Name of the person managing dependencies'),
+      },
+      async (args) => {
+        const result = engine.dependency({ ...args, board_id: boardId });
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          isError: !result.success,
+        };
+      },
+    );
+
+    server.tool(
+      'taskflow_admin',
+      'Board administration: register/remove people, manage roles, set WIP limits, cancel/restore tasks, process inbox.',
+      {
+        action: z.enum(['register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin', 'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox']).describe('Admin action'),
+        sender_name: z.string().describe('Name of the person performing the admin action'),
+        person_name: z.string().optional().describe('Person name (for person-related actions)'),
+        phone: z.string().optional().describe('Phone number (for register_person)'),
+        role: z.string().optional().describe('Role (for register_person, add_manager, add_delegate)'),
+        wip_limit: z.number().optional().describe('WIP limit (for set_wip_limit)'),
+        task_id: z.string().optional().describe('Task ID (for cancel_task, restore_task)'),
+        confirmed: z.boolean().optional().describe('Confirmation flag (for destructive actions)'),
+        force: z.boolean().optional().describe('Force flag (bypasses safety checks)'),
+      },
+      async (args) => {
+        const result = engine.admin({ ...args, board_id: boardId });
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          isError: !result.success,
+        };
+      },
+    );
+
+    server.tool(
+      'taskflow_undo',
+      'Undo the last mutation on the board. Can only undo the most recent action.',
+      {
+        sender_name: z.string().describe('Name of the person requesting the undo'),
+        force: z.boolean().optional().describe('Force undo even if action was by a different person'),
+      },
+      async (args) => {
+        const result = engine.undo({ ...args, board_id: boardId });
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          isError: !result.success,
+        };
+      },
+    );
+
+    server.tool(
+      'taskflow_report',
+      'Generate a TaskFlow report: standup (daily summary), digest (detailed overview), or weekly (week summary).',
+      {
+        type: z.enum(['standup', 'digest', 'weekly']).describe('Report type'),
+      },
+      async (args) => {
+        const result = engine.report({ ...args, board_id: boardId });
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          isError: !result.success,
+        };
+      },
+    );
   }
 }
 
