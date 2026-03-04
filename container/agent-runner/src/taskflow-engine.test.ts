@@ -1762,4 +1762,233 @@ describe('TaskflowEngine', () => {
       expect(r.notifications).toBeUndefined();
     });
   });
+
+  /* ---------------------------------------------------------------- */
+  /*  dependency                                                       */
+  /* ---------------------------------------------------------------- */
+
+  describe('dependency', () => {
+    it('add dependency happy path', () => {
+      // T-001 depends on T-002
+      const r = engine.dependency({
+        board_id: BOARD_ID,
+        action: 'add_dep',
+        task_id: 'T-001',
+        target_task_id: 'T-002',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.task_id).toBe('T-001');
+      expect(r.change).toContain('blocked by T-002');
+
+      // Verify in DB
+      const task = engine.getTask('T-001');
+      const blockedBy = JSON.parse(task.blocked_by);
+      expect(blockedBy).toContain('T-002');
+
+      // Verify history recorded
+      const history = db
+        .prepare(
+          `SELECT * FROM task_history WHERE board_id = ? AND task_id = 'T-001' AND action = 'dep_added'`,
+        )
+        .all(BOARD_ID) as any[];
+      expect(history).toHaveLength(1);
+      expect(history[0].by).toBe('Alexandre');
+    });
+
+    it('circular dependency detection (A→B→A)', () => {
+      // First: T-001 depends on T-002 (T-001 blocked by T-002)
+      const r1 = engine.dependency({
+        board_id: BOARD_ID,
+        action: 'add_dep',
+        task_id: 'T-001',
+        target_task_id: 'T-002',
+        sender_name: 'Alexandre',
+      });
+      expect(r1.success).toBe(true);
+
+      // Now try: T-002 depends on T-001 (T-002 blocked by T-001) → should fail (cycle)
+      const r2 = engine.dependency({
+        board_id: BOARD_ID,
+        action: 'add_dep',
+        task_id: 'T-002',
+        target_task_id: 'T-001',
+        sender_name: 'Alexandre',
+      });
+      expect(r2.success).toBe(false);
+      expect(r2.error).toContain('Circular dependency');
+    });
+
+    it('transitive circular dependency detection (A→B→C→A)', () => {
+      // T-001 blocked by T-002
+      engine.dependency({
+        board_id: BOARD_ID,
+        action: 'add_dep',
+        task_id: 'T-001',
+        target_task_id: 'T-002',
+        sender_name: 'Alexandre',
+      });
+      // T-002 blocked by T-003
+      engine.dependency({
+        board_id: BOARD_ID,
+        action: 'add_dep',
+        task_id: 'T-002',
+        target_task_id: 'T-003',
+        sender_name: 'Alexandre',
+      });
+      // Now try: T-003 blocked by T-001 → should fail (cycle: T-003→T-001→T-002→T-003)
+      const r = engine.dependency({
+        board_id: BOARD_ID,
+        action: 'add_dep',
+        task_id: 'T-003',
+        target_task_id: 'T-001',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('Circular dependency');
+    });
+
+    it('self-dependency → error', () => {
+      const r = engine.dependency({
+        board_id: BOARD_ID,
+        action: 'add_dep',
+        task_id: 'T-001',
+        target_task_id: 'T-001',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('cannot depend on itself');
+    });
+
+    it('duplicate dependency → error', () => {
+      engine.dependency({
+        board_id: BOARD_ID,
+        action: 'add_dep',
+        task_id: 'T-001',
+        target_task_id: 'T-002',
+        sender_name: 'Alexandre',
+      });
+      const r = engine.dependency({
+        board_id: BOARD_ID,
+        action: 'add_dep',
+        task_id: 'T-001',
+        target_task_id: 'T-002',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('Duplicate dependency');
+    });
+
+    it('remove dependency happy path', () => {
+      // First add
+      engine.dependency({
+        board_id: BOARD_ID,
+        action: 'add_dep',
+        task_id: 'T-001',
+        target_task_id: 'T-002',
+        sender_name: 'Alexandre',
+      });
+
+      // Then remove
+      const r = engine.dependency({
+        board_id: BOARD_ID,
+        action: 'remove_dep',
+        task_id: 'T-001',
+        target_task_id: 'T-002',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.change).toContain('no longer blocked by T-002');
+
+      // Verify in DB
+      const task = engine.getTask('T-001');
+      const blockedBy = JSON.parse(task.blocked_by);
+      expect(blockedBy).not.toContain('T-002');
+    });
+
+    it('remove non-existent dependency → error', () => {
+      const r = engine.dependency({
+        board_id: BOARD_ID,
+        action: 'remove_dep',
+        task_id: 'T-001',
+        target_task_id: 'T-002',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('Dependency not found');
+    });
+
+    it('add reminder happy path', () => {
+      // First set a due date on T-001
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { due_date: '2026-04-15' },
+      });
+
+      const r = engine.dependency({
+        board_id: BOARD_ID,
+        action: 'add_reminder',
+        task_id: 'T-001',
+        reminder_days: 3,
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.change).toContain('3 day(s) before due date');
+      expect(r.change).toContain('2026-04-12');
+
+      // Verify stored in DB
+      const task = engine.getTask('T-001');
+      const reminders = JSON.parse(task.reminders);
+      expect(reminders).toHaveLength(1);
+      expect(reminders[0].days).toBe(3);
+      expect(reminders[0].date).toBe('2026-04-12');
+    });
+
+    it('reminder without due_date → error', () => {
+      // T-003 has no due_date
+      const r = engine.dependency({
+        board_id: BOARD_ID,
+        action: 'add_reminder',
+        task_id: 'T-003',
+        reminder_days: 2,
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('no due date');
+    });
+
+    it('remove reminder', () => {
+      // Set due date and add a reminder first
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { due_date: '2026-04-15' },
+      });
+      engine.dependency({
+        board_id: BOARD_ID,
+        action: 'add_reminder',
+        task_id: 'T-001',
+        reminder_days: 3,
+        sender_name: 'Alexandre',
+      });
+
+      // Now remove all reminders
+      const r = engine.dependency({
+        board_id: BOARD_ID,
+        action: 'remove_reminder',
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.change).toContain('All reminders removed');
+
+      // Verify in DB
+      const task = engine.getTask('T-001');
+      const reminders = JSON.parse(task.reminders);
+      expect(reminders).toEqual([]);
+    });
+  });
 });

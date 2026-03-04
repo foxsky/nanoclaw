@@ -127,6 +127,20 @@ export interface UpdateResult extends TaskflowResult {
   notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
 }
 
+export interface DependencyParams {
+  board_id: string;
+  action: 'add_dep' | 'remove_dep' | 'add_reminder' | 'remove_reminder';
+  task_id: string;
+  target_task_id?: string;   // for dependencies
+  reminder_days?: number;    // for reminders
+  sender_name: string;
+}
+
+export interface DependencyResult extends TaskflowResult {
+  task_id?: string;
+  change?: string;           // human-readable description of what changed
+}
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -1356,6 +1370,154 @@ export class TaskflowEngine {
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  dependency — taskflow_dependency                                  */
+  /* ---------------------------------------------------------------- */
+
+  dependency(params: DependencyParams): DependencyResult {
+    try {
+      const now = new Date().toISOString();
+
+      /* --- Fetch task --- */
+      const task = this.requireTask(params.task_id);
+
+      /* --- Save undo snapshot (before any mutation) --- */
+      const snapshot = JSON.stringify({
+        blocked_by: task.blocked_by,
+        reminders: task.reminders,
+        updated_at: task.updated_at,
+      });
+
+      let change: string;
+
+      switch (params.action) {
+        /* ---- add_dep ---- */
+        case 'add_dep': {
+          if (!params.target_task_id) {
+            return { success: false, error: 'Missing required parameter: target_task_id' };
+          }
+          if (params.task_id === params.target_task_id) {
+            return { success: false, error: 'A task cannot depend on itself.' };
+          }
+          const target = this.getTask(params.target_task_id);
+          if (!target) {
+            return { success: false, error: `Target task not found: ${params.target_task_id}` };
+          }
+
+          const blockedBy: string[] = JSON.parse(task.blocked_by ?? '[]');
+          if (blockedBy.includes(params.target_task_id)) {
+            return { success: false, error: `Duplicate dependency: ${params.task_id} already depends on ${params.target_task_id}.` };
+          }
+
+          /* Circular dependency detection (BFS through blocked_by chains) */
+          if (this.hasCircularDep(params.task_id, params.target_task_id)) {
+            return { success: false, error: `Circular dependency detected: adding this dependency would create a cycle.` };
+          }
+
+          blockedBy.push(params.target_task_id);
+          this.db
+            .prepare(`UPDATE tasks SET blocked_by = ?, updated_at = ?, _last_mutation = ? WHERE board_id = ? AND id = ?`)
+            .run(JSON.stringify(blockedBy), now, snapshot, this.boardId, task.id);
+
+          change = `Dependency added: ${params.task_id} now blocked by ${params.target_task_id}`;
+          this.recordHistory(task.id, 'dep_added', params.sender_name, JSON.stringify({ target: params.target_task_id }));
+          break;
+        }
+
+        /* ---- remove_dep ---- */
+        case 'remove_dep': {
+          if (!params.target_task_id) {
+            return { success: false, error: 'Missing required parameter: target_task_id' };
+          }
+          const blockedBy: string[] = JSON.parse(task.blocked_by ?? '[]');
+          const idx = blockedBy.indexOf(params.target_task_id);
+          if (idx < 0) {
+            return { success: false, error: `Dependency not found: ${params.task_id} does not depend on ${params.target_task_id}.` };
+          }
+          blockedBy.splice(idx, 1);
+          this.db
+            .prepare(`UPDATE tasks SET blocked_by = ?, updated_at = ?, _last_mutation = ? WHERE board_id = ? AND id = ?`)
+            .run(JSON.stringify(blockedBy), now, snapshot, this.boardId, task.id);
+
+          change = `Dependency removed: ${params.task_id} no longer blocked by ${params.target_task_id}`;
+          this.recordHistory(task.id, 'dep_removed', params.sender_name, JSON.stringify({ target: params.target_task_id }));
+          break;
+        }
+
+        /* ---- add_reminder ---- */
+        case 'add_reminder': {
+          if (!task.due_date) {
+            return { success: false, error: 'Cannot add reminder: task has no due date.' };
+          }
+          if (params.reminder_days == null || params.reminder_days < 0) {
+            return { success: false, error: 'Missing or invalid parameter: reminder_days (must be >= 0).' };
+          }
+          const dueDate = new Date(task.due_date + 'T00:00:00Z');
+          dueDate.setUTCDate(dueDate.getUTCDate() - params.reminder_days);
+          const reminderDate = dueDate.toISOString().slice(0, 10);
+
+          const reminders: Array<{ days: number; date: string }> = JSON.parse(task.reminders ?? '[]');
+          reminders.push({ days: params.reminder_days, date: reminderDate });
+          this.db
+            .prepare(`UPDATE tasks SET reminders = ?, updated_at = ?, _last_mutation = ? WHERE board_id = ? AND id = ?`)
+            .run(JSON.stringify(reminders), now, snapshot, this.boardId, task.id);
+
+          change = `Reminder added: ${params.reminder_days} day(s) before due date (${reminderDate})`;
+          this.recordHistory(task.id, 'reminder_added', params.sender_name, JSON.stringify({ days: params.reminder_days, date: reminderDate }));
+          break;
+        }
+
+        /* ---- remove_reminder ---- */
+        case 'remove_reminder': {
+          this.db
+            .prepare(`UPDATE tasks SET reminders = '[]', updated_at = ?, _last_mutation = ? WHERE board_id = ? AND id = ?`)
+            .run(now, snapshot, this.boardId, task.id);
+
+          change = `All reminders removed from ${params.task_id}`;
+          this.recordHistory(task.id, 'reminder_removed', params.sender_name);
+          break;
+        }
+
+        default:
+          return { success: false, error: `Unknown dependency action: ${(params as any).action}` };
+      }
+
+      return {
+        success: true,
+        task_id: task.id,
+        change,
+      };
+    } catch (err: any) {
+      return { success: false, error: err.message ?? String(err) };
+    }
+  }
+
+  /**
+   * BFS-based circular dependency detection.
+   * Returns true if adding a dependency from taskId → targetId would create a cycle.
+   * We walk the blocked_by chain starting from targetId; if we reach taskId, it's a cycle.
+   */
+  private hasCircularDep(taskId: string, targetId: string): boolean {
+    const visited = new Set<string>();
+    const queue = [targetId];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (current === taskId) return true;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      const currentTask = this.getTask(current);
+      if (currentTask?.blocked_by) {
+        try {
+          const deps: string[] = JSON.parse(currentTask.blocked_by);
+          queue.push(...deps);
+        } catch {
+          // ignore malformed JSON
+        }
+      }
+    }
+    return false;
   }
 
   /* ---------------------------------------------------------------- */
