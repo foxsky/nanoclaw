@@ -447,7 +447,7 @@ export interface MediaDownloadResult {
 
 ## Fluxo de Dados
 
-### Cenário: Usuário envia imagem com caption "@Tars what is this?"
+### Cenário: Usuário envia imagem com caption "@Case what is this?"
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -553,7 +553,7 @@ import path from 'path';
   "120363424913709624@g.us": {
     "name": "Eurotrip",
     "folder": "eurotrip",
-    "trigger": "@Tars",
+    "trigger": "@Case",
     "plugins": {
       "image-vision": {
         "enabled": true,
@@ -748,7 +748,7 @@ npm run build
 grep -r "initImageVisionPlugin" src/
 
 # 3. Testar envio de imagem
-# Enviar imagem no grupo com caption "@Tars test"
+# Enviar imagem no grupo com caption "@Case test"
 
 # 4. Verificar arquivo salvo
 ls -lh /workspace/project/groups/eurotrip/media/
@@ -1129,7 +1129,7 @@ describe('Integration: processMessageMedia', () => {
       message: {
         imageMessage: {
           mimetype: 'image/jpeg',
-          caption: '@Tars test'
+          caption: '@Case test'
         }
       }
     };
@@ -1166,7 +1166,7 @@ describe('Integration: processMessageMedia', () => {
 # 1. Habilitar plugin no grupo
 vim /workspace/project/data/registered_groups.json
 
-# 2. Enviar imagem no WhatsApp com caption "@Tars test"
+# 2. Enviar imagem no WhatsApp com caption "@Case test"
 
 # 3. Verificar arquivo salvo
 ls -lh /workspace/project/groups/eurotrip/media/
@@ -1237,7 +1237,7 @@ npm test -- downloader.test.ts
    ```
 
 2. **Caption contém trigger?**
-   - Caption deve ter `@Tars` (case-insensitive, qualquer posição)
+   - Caption deve ter `@Case` (case-insensitive, qualquer posição)
 
 3. **Verificar logs:**
    ```bash
@@ -1340,7 +1340,7 @@ npm test -- downloader.test.ts
 
 ### Caso 1: Extrair Dados de Ticket de Voo
 
-**Input:** Usuário envia foto de ticket com caption "@Tars atualize as informações"
+**Input:** Usuário envia foto de ticket com caption "@Case atualize as informações"
 
 **Processamento:**
 1. Plugin baixa imagem → `groups/eurotrip/media/1708689234567-ABCD1234.jpg`
@@ -1366,7 +1366,7 @@ Vou atualizar o roteiro com essas informações!
 
 ### Caso 2: Identificar Monumento em Foto
 
-**Input:** Usuário envia foto sem caption, apenas "@Tars o que é isso?"
+**Input:** Usuário envia foto sem caption, apenas "@Case o que é isso?"
 
 **Processamento:**
 1. Plugin baixa imagem
@@ -1388,7 +1388,7 @@ Vocês têm uma vista incrível! A foto parece ter sido tirada do Trocadéro. �
 
 ### Caso 3: Ler Cardápio de Restaurante
 
-**Input:** Foto de menu em francês + "@Tars o que recomenda?"
+**Input:** Foto de menu em francês + "@Case o que recomenda?"
 
 **Processamento:**
 1. OCR extrai texto do cardápio
@@ -1415,7 +1415,7 @@ Todos são clássicos da culinária francesa. Bon appétit! 🍷
 
 ### Caso 4: Processar Documento (Tax Refund)
 
-**Input:** Foto de formulário de tax refund + "@Tars está correto?"
+**Input:** Foto de formulário de tax refund + "@Case está correto?"
 
 **Processamento:**
 1. OCR extrai campos do formulário
@@ -1439,7 +1439,7 @@ Por favor, completar o endereço e assinar antes de validar no aeroporto!
 
 ### Caso 5: Verificar Informações Visuais de Hotel
 
-**Input:** Foto da fachada do hotel + "@Tars é esse o hotel?"
+**Input:** Foto da fachada do hotel + "@Case é esse o hotel?"
 
 **Processamento:**
 1. Claude Vision analisa fachada

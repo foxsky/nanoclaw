@@ -11,7 +11,7 @@ Edit `/workspace/project/data/registered_groups.json`:
   "120363424913709624@g.us": {
     "name": "Eurotrip",
     "folder": "eurotrip",
-    "trigger": "@Tars",
+    "trigger": "@Case",
     "added_at": "2026-02-18T00:00:00Z",
     "plugins": {
       "image-vision": {
@@ -159,7 +159,7 @@ async function main() {
 ## Testing
 
 1. Enable plugin in group config
-2. Send an image with caption "@Tars what is this?"
+2. Send an image with caption "@Case what is this?"
 3. Check `/workspace/project/groups/eurotrip/media/` for saved file
 4. Verify agent receives image in prompt
 

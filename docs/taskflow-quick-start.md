@@ -98,12 +98,17 @@ Gestor aprova            →  @Case T-001 aprovada
 @Case mensal para [pessoa]: [descricao] todo dia [N]
 ```
 
+### Reatribuir (responsavel ou gestor)
+
+| Comando | O que faz |
+|---------|-----------|
+| `@Case reatribuir T-XXX para [pessoa]` | Muda responsavel (pede confirmacao) |
+
 ### Gestao (gestor)
 
 | Comando | O que faz |
 |---------|-----------|
 | `@Case processar inbox` | Processa itens pendentes |
-| `@Case reatribuir T-XXX para [pessoa]` | Muda responsavel |
 | `@Case estender prazo T-XXX para [data]` | Altera prazo |
 | `@Case cancelar T-XXX` | Cancela e arquiva |
 | `@Case T-005, T-006, T-007 aprovadas` | Operacoes em lote |
@@ -143,9 +148,9 @@ Comandos como `processar inbox`, `reatribuir`, `cancelar` e `estatisticas` funci
 | Quem | O que pode |
 |------|-----------|
 | **Todos** | Captura rapida, consultas, busca, ajuda |
-| **Responsavel** | Mover suas tarefas, adicionar notas |
+| **Responsavel** | Mover suas tarefas, adicionar notas, reatribuir suas tarefas |
 | **Delegado** | Processar inbox, aprovar/rejeitar revisao |
-| **Gestor** | Tudo: criar, cancelar, reatribuir, configurar equipe |
+| **Gestor** | Tudo: criar, cancelar, reatribuir qualquer tarefa, configurar equipe |
 
 ---
 
@@ -184,5 +189,7 @@ Quadros filhos sao criados automaticamente:
 | `@Case ligar tarefa ao pai T-XXX` | Marca tarefa como parte de entrega do nivel acima |
 
 Tarefas vinculadas aparecem com 🔗 no quadro. O rollup mostra o status agregado do quadro filho (ativo, bloqueado, em risco, pronto para revisao).
+
+Atribuir e vincular sao a mesma operacao — ao reatribuir uma tarefa vinculada, o vinculo e transferido automaticamente para o quadro da nova pessoa.
 
 Para o manual completo, envie `@Case manual` no grupo.

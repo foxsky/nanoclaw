@@ -47,7 +47,7 @@ data/taskflow/
 
 ### Runtime Flow
 
-1. User sends message to task group (e.g. `@Tars anotar: verificar ar condicionado`)
+1. User sends message to task group (e.g. `@Case anotar: verificar ar condicionado`)
 2. Container agent starts, reads `CLAUDE.md` (instructions)
 3. Agent reads the board data store via the shared SQLite MCP tools — instructed at top of CLAUDE.md
 4. Agent processes command, updates the SQLite-backed board data store, responds in chat

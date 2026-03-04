@@ -23,7 +23,7 @@ This plugin adds image processing capabilities to NanoClaw, allowing Claude to a
      "120363424913709624@g.us": {
        "name": "Eurotrip",
        "folder": "eurotrip",
-       "trigger": "@Tars",
+       "trigger": "@Case",
        "plugins": {
          "image-vision": {
            "enabled": true,
@@ -43,10 +43,10 @@ This plugin adds image processing capabilities to NanoClaw, allowing Claude to a
 
 ## Usage
 
-Users can send images with captions containing `@Tars`:
-- "✅ @Tars what monument is this?"
-- "✅ Extract the flight info from this ticket @Tars"
-- "✅ Read this menu @Tars"
+Users can send images with captions containing `@Case`:
+- "✅ @Case what monument is this?"
+- "✅ Extract the flight info from this ticket @Case"
+- "✅ Read this menu @Case"
 
 ## Technical Details
 

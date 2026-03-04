@@ -276,7 +276,8 @@ The generated prompt enforces:
 
 - Full-manager-only creation of complete tasks (`tarefa`, `projeto`, `diario`, `semanal`, `mensal`, `anual`)
 - Delegate-or-manager inbox processing and review approval/rejection
-- Full-manager-only admin actions (reassign, WIP overrides, people changes, manager/delegate changes, cancel)
+- Assignee-or-manager reassignment (no WIP check on reassign; auto-relinks in hierarchy mode)
+- Full-manager-only admin actions (WIP overrides, people changes, manager/delegate changes, cancel, bulk reassign)
 - Assignee-only movement into work states
 - Assignee-or-manager updates of `next_action`, title, priority, labels, and task notes (including edit/remove of structured notes)
 - Exact attachment confirmation command: `CONFIRM_IMPORT {import_action_id}`

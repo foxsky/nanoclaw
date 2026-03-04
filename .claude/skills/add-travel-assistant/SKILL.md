@@ -108,7 +108,7 @@ Key substitutions:
 - `{{DESTINATIONS_SUMMARY}}` — Formatted list of cities with dates
 - `{{TRAVELERS_SUMMARY}}` — Formatted list of traveler names
 - `{{LANGUAGE}}` — Language preference
-- `{{TRIGGER}}` — Trigger pattern (e.g., "@Tars")
+- `{{TRIGGER}}` — Trigger pattern (e.g., "@Case")
 - `{{BRIEFING_TIME}}` — Morning briefing time (default: "8:00")
 - `{{TRAVELER_JIDS}}` — Formatted list of traveler names and JIDs
 - `{{TRANSPORT_LEGS}}` — Formatted list of all transport legs with times
@@ -323,7 +323,7 @@ Prompt: "The trip ended 2 days ago. Check if any active tasks remain (both cron 
 
 ### 3. Verify Setup
 
-Send a test message to the group mentioning the trigger (e.g., "@Tars what's the plan for tomorrow?"). Confirm the agent:
+Send a test message to the group mentioning the trigger (e.g., "@Case what's the plan for tomorrow?"). Confirm the agent:
 - Responds correctly by reading roteiro-completo.md
 - Identifies the correct city and date
 - Uses proper WhatsApp formatting

@@ -66,11 +66,11 @@ See `INTEGRATION.md` for detailed instructions.
 ## 📊 Use Cases Enabled
 
 Once integrated, users can:
-- ✅ "**@Tars extract the flight info from this ticket**" (OCR)
-- ✅ "**@Tars what monument is this?**" (Image recognition)
-- ✅ "**@Tars read this menu**" (Text extraction)
-- ✅ "**@Tars what does this sign say?**" (Translation + OCR)
-- ✅ "**@Tars is this the right hotel?**" (Visual verification)
+- ✅ "**@Case extract the flight info from this ticket**" (OCR)
+- ✅ "**@Case what monument is this?**" (Image recognition)
+- ✅ "**@Case read this menu**" (Text extraction)
+- ✅ "**@Case what does this sign say?**" (Translation + OCR)
+- ✅ "**@Case is this the right hotel?**" (Visual verification)
 
 ## 🎁 Benefits
 
@@ -114,7 +114,7 @@ To activate the plugin:
 
 4. **Test:**
    ```bash
-   # Send image with caption "@Tars what is this?"
+   # Send image with caption "@Case what is this?"
    # Check groups/eurotrip/media/ for saved file
    ```
 
