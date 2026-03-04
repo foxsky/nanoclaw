@@ -1,0 +1,670 @@
+import Database from 'better-sqlite3';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { TaskflowEngine } from './taskflow-engine.js';
+
+const BOARD_ID = 'board-test-001';
+
+const SCHEMA = `
+CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, board_role TEXT DEFAULT 'standard', hierarchy_level INTEGER, max_depth INTEGER, parent_board_id TEXT);
+CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT NULL, phone TEXT, role TEXT DEFAULT 'member', wip_limit INTEGER, notification_group_jid TEXT, PRIMARY KEY (board_id, person_id));
+CREATE TABLE board_admins (board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL, admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
+CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
+CREATE TABLE board_groups (board_id TEXT, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, group_role TEXT DEFAULT 'team', PRIMARY KEY (board_id, group_jid));
+CREATE TABLE tasks (id TEXT NOT NULL, board_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'simple', title TEXT NOT NULL, assignee TEXT, next_action TEXT, waiting_for TEXT, column TEXT DEFAULT 'inbox', priority TEXT, due_date TEXT, description TEXT, labels TEXT DEFAULT '[]', blocked_by TEXT DEFAULT '[]', reminders TEXT DEFAULT '[]', next_note_id INTEGER DEFAULT 1, notes TEXT DEFAULT '[]', _last_mutation TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, child_exec_enabled INTEGER DEFAULT 0, child_exec_board_id TEXT, child_exec_person_id TEXT, child_exec_rollup_status TEXT, child_exec_last_rollup_at TEXT, child_exec_last_rollup_summary TEXT, linked_parent_board_id TEXT, linked_parent_task_id TEXT, subtasks TEXT, recurrence TEXT, current_cycle TEXT, PRIMARY KEY (board_id, id));
+CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, task_id TEXT NOT NULL, action TEXT NOT NULL, by TEXT, at TEXT NOT NULL, details TEXT);
+CREATE TABLE archive (board_id TEXT NOT NULL, task_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, assignee TEXT, archive_reason TEXT NOT NULL, linked_parent_board_id TEXT, linked_parent_task_id TEXT, archived_at TEXT NOT NULL, task_snapshot TEXT NOT NULL, history TEXT, PRIMARY KEY (board_id, task_id));
+CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, language TEXT NOT NULL DEFAULT 'pt-BR', timezone TEXT NOT NULL DEFAULT 'America/Fortaleza', runner_standup_task_id TEXT, runner_digest_task_id TEXT, runner_review_task_id TEXT, runner_dst_guard_task_id TEXT, standup_cron_local TEXT, digest_cron_local TEXT, review_cron_local TEXT, standup_cron_utc TEXT, digest_cron_utc TEXT, review_cron_utc TEXT, dst_sync_enabled INTEGER DEFAULT 0, dst_last_offset_minutes INTEGER, dst_last_synced_at TEXT, dst_resync_count_24h INTEGER DEFAULT 0, dst_resync_window_started_at TEXT, attachment_enabled INTEGER DEFAULT 1, attachment_disabled_reason TEXT DEFAULT '', attachment_allowed_formats TEXT DEFAULT '["pdf","jpg","png"]', attachment_max_size_bytes INTEGER DEFAULT 10485760, welcome_sent INTEGER DEFAULT 0, standup_target TEXT DEFAULT 'team', digest_target TEXT DEFAULT 'team', review_target TEXT DEFAULT 'team', runner_standup_secondary_task_id TEXT, runner_digest_secondary_task_id TEXT, runner_review_secondary_task_id TEXT);
+CREATE TABLE attachment_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, source TEXT NOT NULL, filename TEXT NOT NULL, at TEXT NOT NULL, actor_person_id TEXT, affected_task_refs TEXT DEFAULT '[]');
+CREATE TABLE board_config (board_id TEXT PRIMARY KEY, columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]', wip_limit INTEGER DEFAULT 5, next_task_number INTEGER DEFAULT 1, next_note_id INTEGER DEFAULT 1);
+`;
+
+function seedTestDb(db: Database.Database, boardId: string) {
+  db.exec(SCHEMA);
+
+  db.exec(
+    `INSERT INTO boards VALUES ('${boardId}', 'test@g.us', 'test', 'standard', 0, 1, NULL)`,
+  );
+  db.exec(
+    `INSERT INTO board_config VALUES ('${boardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 4, 1)`,
+  );
+  db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${boardId}')`);
+  db.exec(
+    `INSERT INTO board_admins VALUES ('${boardId}', 'person-1', '5585999990001', 'manager', 1)`,
+  );
+  db.exec(
+    `INSERT INTO board_people VALUES ('${boardId}', 'person-1', 'Alexandre', '5585999990001', 'Gestor', 3, NULL)`,
+  );
+  db.exec(
+    `INSERT INTO board_people VALUES ('${boardId}', 'person-2', 'Giovanni', '5585999990002', 'Dev', 3, NULL)`,
+  );
+
+  const now = new Date().toISOString();
+  db.exec(
+    `INSERT INTO tasks (id, board_id, type, title, assignee, column, priority, created_at, updated_at)
+     VALUES ('T-001', '${boardId}', 'simple', 'Fix login bug', 'person-1', 'in_progress', 'high', '${now}', '${now}')`,
+  );
+  db.exec(
+    `INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at)
+     VALUES ('T-002', '${boardId}', 'simple', 'Update docs', 'person-2', 'next_action', '${now}', '${now}')`,
+  );
+  db.exec(
+    `INSERT INTO tasks (id, board_id, type, title, column, created_at, updated_at)
+     VALUES ('T-003', '${boardId}', 'simple', 'Review PR', 'inbox', '${now}', '${now}')`,
+  );
+}
+
+describe('TaskflowEngine', () => {
+  let db: Database.Database;
+  let engine: TaskflowEngine;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    seedTestDb(db, BOARD_ID);
+    engine = new TaskflowEngine(db, BOARD_ID);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  resolvePerson                                                    */
+  /* ---------------------------------------------------------------- */
+
+  describe('resolvePerson', () => {
+    it('finds a person by exact name', () => {
+      const p = engine.resolvePerson('Alexandre');
+      expect(p).toEqual({ person_id: 'person-1', name: 'Alexandre' });
+    });
+
+    it('finds a person case-insensitively', () => {
+      const p = engine.resolvePerson('giovanni');
+      expect(p).toEqual({ person_id: 'person-2', name: 'Giovanni' });
+    });
+
+    it('returns null for unknown name', () => {
+      expect(engine.resolvePerson('Nobody')).toBeNull();
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  getTask                                                          */
+  /* ---------------------------------------------------------------- */
+
+  describe('getTask', () => {
+    it('returns a task by id', () => {
+      const t = engine.getTask('T-001');
+      expect(t).toBeTruthy();
+      expect(t.title).toBe('Fix login bug');
+    });
+
+    it('returns null for missing task', () => {
+      expect(engine.getTask('T-999')).toBeNull();
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: board                                                     */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: board', () => {
+    it('returns tasks grouped by column', () => {
+      const result = engine.query({ query: 'board' });
+      expect(result.success).toBe(true);
+      const cols = result.data.columns;
+      expect(cols.in_progress).toHaveLength(1);
+      expect(cols.in_progress[0].id).toBe('T-001');
+      expect(cols.next_action).toHaveLength(1);
+      expect(cols.inbox).toHaveLength(1);
+    });
+
+    it('includes linked_tasks key (even if empty)', () => {
+      const result = engine.query({ query: 'board' });
+      expect(result.data.linked_tasks).toEqual([]);
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: column views                                              */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: column views', () => {
+    it('inbox returns inbox tasks', () => {
+      const r = engine.query({ query: 'inbox' });
+      expect(r.success).toBe(true);
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].id).toBe('T-003');
+    });
+
+    it('in_progress returns in_progress tasks', () => {
+      const r = engine.query({ query: 'in_progress' });
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].id).toBe('T-001');
+    });
+
+    it('next_action returns next_action tasks', () => {
+      const r = engine.query({ query: 'next_action' });
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].id).toBe('T-002');
+    });
+
+    it('waiting returns empty when no waiting tasks', () => {
+      const r = engine.query({ query: 'waiting' });
+      expect(r.data).toHaveLength(0);
+    });
+
+    it('review returns empty when no review tasks', () => {
+      const r = engine.query({ query: 'review' });
+      expect(r.data).toHaveLength(0);
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: person_tasks                                              */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: person_tasks', () => {
+    it('returns all tasks for a named person', () => {
+      const r = engine.query({ query: 'person_tasks', person_name: 'Alexandre' });
+      expect(r.success).toBe(true);
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].id).toBe('T-001');
+    });
+
+    it('errors for unknown person', () => {
+      const r = engine.query({ query: 'person_tasks', person_name: 'Unknown' });
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/Person not found/);
+    });
+
+    it('errors when person_name is missing', () => {
+      const r = engine.query({ query: 'person_tasks' });
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/Missing required parameter/);
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: my_tasks                                                  */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: my_tasks', () => {
+    it('returns tasks for sender_name', () => {
+      const r = engine.query({ query: 'my_tasks', sender_name: 'Giovanni' });
+      expect(r.success).toBe(true);
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].id).toBe('T-002');
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: task_details                                              */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: task_details', () => {
+    it('returns task with recent history', () => {
+      // Insert some history entries
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+         VALUES ('${BOARD_ID}', 'T-001', 'created', 'person-1', '${now}', 'task created')`,
+      );
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+         VALUES ('${BOARD_ID}', 'T-001', 'moved', 'person-1', '${now}', 'inbox -> in_progress')`,
+      );
+
+      const r = engine.query({ query: 'task_details', task_id: 'T-001' });
+      expect(r.success).toBe(true);
+      expect(r.data.task.title).toBe('Fix login bug');
+      expect(r.data.recent_history).toHaveLength(2);
+    });
+
+    it('errors for unknown task_id', () => {
+      const r = engine.query({ query: 'task_details', task_id: 'T-999' });
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/Task not found/);
+    });
+
+    it('errors when task_id is missing', () => {
+      const r = engine.query({ query: 'task_details' });
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/Missing required parameter/);
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: task_history                                              */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: task_history', () => {
+    it('returns full history for a task', () => {
+      const now = new Date().toISOString();
+      for (let i = 0; i < 8; i++) {
+        db.exec(
+          `INSERT INTO task_history (board_id, task_id, action, by, at)
+           VALUES ('${BOARD_ID}', 'T-002', 'action-${i}', 'person-2', '${now}')`,
+        );
+      }
+      const r = engine.query({ query: 'task_history', task_id: 'T-002' });
+      expect(r.success).toBe(true);
+      expect(r.data).toHaveLength(8);
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: overdue                                                   */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: overdue', () => {
+    it('returns tasks with past due_date', () => {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yStr = yesterday.toISOString().slice(0, 10);
+      db.exec(
+        `UPDATE tasks SET due_date = '${yStr}' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+
+      const r = engine.query({ query: 'overdue' });
+      expect(r.success).toBe(true);
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].id).toBe('T-001');
+    });
+
+    it('excludes tasks in done column', () => {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yStr = yesterday.toISOString().slice(0, 10);
+      db.exec(
+        `UPDATE tasks SET due_date = '${yStr}', column = 'done'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+
+      const r = engine.query({ query: 'overdue' });
+      expect(r.data).toHaveLength(0);
+    });
+
+    it('returns empty when no tasks are overdue', () => {
+      const r = engine.query({ query: 'overdue' });
+      expect(r.data).toHaveLength(0);
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: due_today / due_tomorrow                                  */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: due_today', () => {
+    it('finds tasks due today', () => {
+      const t = new Date().toISOString().slice(0, 10);
+      db.exec(
+        `UPDATE tasks SET due_date = '${t}' WHERE board_id = '${BOARD_ID}' AND id = 'T-002'`,
+      );
+      const r = engine.query({ query: 'due_today' });
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].id).toBe('T-002');
+    });
+  });
+
+  describe('query: due_tomorrow', () => {
+    it('finds tasks due tomorrow', () => {
+      const d = new Date();
+      d.setDate(d.getDate() + 1);
+      const tStr = d.toISOString().slice(0, 10);
+      db.exec(
+        `UPDATE tasks SET due_date = '${tStr}' WHERE board_id = '${BOARD_ID}' AND id = 'T-003'`,
+      );
+      const r = engine.query({ query: 'due_tomorrow' });
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].id).toBe('T-003');
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: search                                                    */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: search', () => {
+    it('matches on title', () => {
+      const r = engine.query({ query: 'search', search_text: 'login' });
+      expect(r.success).toBe(true);
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].id).toBe('T-001');
+    });
+
+    it('matches on description', () => {
+      db.exec(
+        `UPDATE tasks SET description = 'This relates to the auth system'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-002'`,
+      );
+      const r = engine.query({ query: 'search', search_text: 'auth' });
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].id).toBe('T-002');
+    });
+
+    it('returns empty for no matches', () => {
+      const r = engine.query({ query: 'search', search_text: 'zzzzz' });
+      expect(r.data).toHaveLength(0);
+    });
+
+    it('errors when search_text is missing', () => {
+      const r = engine.query({ query: 'search' });
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/search_text/);
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: priority filters                                          */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: urgent / high_priority', () => {
+    it('urgent returns only urgent tasks', () => {
+      db.exec(
+        `UPDATE tasks SET priority = 'urgent'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-003'`,
+      );
+      const r = engine.query({ query: 'urgent' });
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].id).toBe('T-003');
+    });
+
+    it('high_priority returns urgent + high tasks', () => {
+      const r = engine.query({ query: 'high_priority' });
+      // T-001 has priority='high'
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].id).toBe('T-001');
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: by_label                                                  */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: by_label', () => {
+    it('finds tasks with a matching label', () => {
+      db.exec(
+        `UPDATE tasks SET labels = '["frontend","urgent-fix"]'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      const r = engine.query({ query: 'by_label', label: 'frontend' });
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].id).toBe('T-001');
+    });
+
+    it('returns empty when no tasks match', () => {
+      const r = engine.query({ query: 'by_label', label: 'nonexistent' });
+      expect(r.data).toHaveLength(0);
+    });
+
+    it('errors when label is missing', () => {
+      const r = engine.query({ query: 'by_label' });
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/label/);
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: statistics                                                */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: statistics', () => {
+    it('returns board-level stats', () => {
+      const r = engine.query({ query: 'statistics' });
+      expect(r.success).toBe(true);
+      expect(r.data.total_active).toBe(3);
+      expect(r.data.by_column.in_progress).toBe(1);
+      expect(r.data.by_column.next_action).toBe(1);
+      expect(r.data.by_column.inbox).toBe(1);
+      expect(r.data.overdue).toBe(0);
+      // 2 assignees: person-1 and person-2; T-003 has no assignee
+      expect(r.data.avg_tasks_per_person).toBe(1.5);
+    });
+
+    it('counts overdue correctly in statistics', () => {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yStr = yesterday.toISOString().slice(0, 10);
+      db.exec(
+        `UPDATE tasks SET due_date = '${yStr}'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      const r = engine.query({ query: 'statistics' });
+      expect(r.data.overdue).toBe(1);
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: person_statistics                                         */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: person_statistics', () => {
+    it('returns per-person stats', () => {
+      const r = engine.query({
+        query: 'person_statistics',
+        person_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.data.person).toBe('Alexandre');
+      expect(r.data.total_active).toBe(1);
+      expect(r.data.by_column.in_progress).toBe(1);
+      expect(r.data.completed).toBe(0);
+      expect(r.data.completion_rate).toBe(0);
+    });
+
+    it('accounts for archived tasks in completion rate', () => {
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO archive (board_id, task_id, type, title, assignee, archive_reason, archived_at, task_snapshot)
+         VALUES ('${BOARD_ID}', 'T-OLD', 'simple', 'Old task', 'person-1', 'done', '${now}', '{}')`,
+      );
+      const r = engine.query({
+        query: 'person_statistics',
+        person_name: 'Alexandre',
+      });
+      // 1 active + 1 completed = 2 total; completion rate = 50%
+      expect(r.data.completed).toBe(1);
+      expect(r.data.completion_rate).toBe(50);
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: month_statistics                                          */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: month_statistics', () => {
+    it('returns monthly created / completed counts', () => {
+      const r = engine.query({ query: 'month_statistics' });
+      expect(r.success).toBe(true);
+      // All 3 tasks were created "now" (this month)
+      expect(r.data.created).toBe(3);
+      expect(r.data.completed).toBe(0);
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: summary                                                   */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: summary', () => {
+    it('returns board summary', () => {
+      const r = engine.query({ query: 'summary' });
+      expect(r.success).toBe(true);
+      expect(r.data.total_tasks).toBe(3);
+      expect(r.data.in_progress).toBe(1);
+      expect(r.data.overdue).toBe(0);
+      expect(r.data.blocked).toBe(0);
+    });
+
+    it('detects blocked tasks', () => {
+      db.exec(
+        `UPDATE tasks SET blocked_by = '["T-001"]'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-002'`,
+      );
+      const r = engine.query({ query: 'summary' });
+      expect(r.data.blocked).toBe(1);
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: archive                                                   */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: archive', () => {
+    it('returns archived tasks most recent first', () => {
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO archive (board_id, task_id, type, title, archive_reason, archived_at, task_snapshot)
+         VALUES ('${BOARD_ID}', 'A-001', 'simple', 'Old task 1', 'done', '2025-01-01T10:00:00Z', '{}')`,
+      );
+      db.exec(
+        `INSERT INTO archive (board_id, task_id, type, title, archive_reason, archived_at, task_snapshot)
+         VALUES ('${BOARD_ID}', 'A-002', 'simple', 'Old task 2', 'done', '${now}', '{}')`,
+      );
+      const r = engine.query({ query: 'archive' });
+      expect(r.success).toBe(true);
+      expect(r.data).toHaveLength(2);
+      // Most recent first
+      expect(r.data[0].task_id).toBe('A-002');
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: archive_search                                            */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: archive_search', () => {
+    it('searches archived tasks by title', () => {
+      db.exec(
+        `INSERT INTO archive (board_id, task_id, type, title, archive_reason, archived_at, task_snapshot)
+         VALUES ('${BOARD_ID}', 'A-003', 'simple', 'Deploy pipeline fix', 'done', '2025-06-01', '{}')`,
+      );
+      const r = engine.query({ query: 'archive_search', search_text: 'pipeline' });
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].task_id).toBe('A-003');
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: agenda                                                    */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: agenda', () => {
+    it('returns overdue + due_today + in_progress', () => {
+      const t = new Date().toISOString().slice(0, 10);
+      db.exec(
+        `UPDATE tasks SET due_date = '${t}'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-003'`,
+      );
+      const r = engine.query({ query: 'agenda' });
+      expect(r.success).toBe(true);
+      expect(r.data.overdue).toHaveLength(0);
+      expect(r.data.due_today).toHaveLength(1);
+      expect(r.data.due_today[0].id).toBe('T-003');
+      expect(r.data.in_progress).toHaveLength(1);
+      expect(r.data.in_progress[0].id).toBe('T-001');
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: changes_today                                             */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: changes_today', () => {
+    it('returns history entries from today', () => {
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at)
+         VALUES ('${BOARD_ID}', 'T-001', 'moved', 'person-1', '${now}')`,
+      );
+      // Insert old entry that should NOT appear
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at)
+         VALUES ('${BOARD_ID}', 'T-001', 'created', 'person-1', '2020-01-01T00:00:00Z')`,
+      );
+      const r = engine.query({ query: 'changes_today' });
+      expect(r.success).toBe(true);
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].action).toBe('moved');
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: changes_since                                             */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: changes_since', () => {
+    it('returns history since a given date', () => {
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at)
+         VALUES ('${BOARD_ID}', 'T-001', 'created', 'person-1', '2025-06-01T10:00:00Z')`,
+      );
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at)
+         VALUES ('${BOARD_ID}', 'T-002', 'moved', 'person-2', '2025-07-15T10:00:00Z')`,
+      );
+      const r = engine.query({ query: 'changes_since', since: '2025-07-01' });
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].task_id).toBe('T-002');
+    });
+
+    it('errors when since is missing', () => {
+      const r = engine.query({ query: 'changes_since' });
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/since/);
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  query: person_waiting / person_review / person_completed         */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: person_waiting', () => {
+    it('returns waiting tasks for a person', () => {
+      db.exec(
+        `UPDATE tasks SET column = 'waiting', assignee = 'person-1'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-003'`,
+      );
+      const r = engine.query({ query: 'person_waiting', person_name: 'Alexandre' });
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].id).toBe('T-003');
+    });
+  });
+
+  describe('query: person_review', () => {
+    it('returns review tasks for a person', () => {
+      db.exec(
+        `UPDATE tasks SET column = 'review', assignee = 'person-2'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-003'`,
+      );
+      const r = engine.query({ query: 'person_review', person_name: 'Giovanni' });
+      expect(r.data).toHaveLength(1);
+    });
+  });
+
+  describe('query: person_completed', () => {
+    it('returns archived tasks for a person', () => {
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO archive (board_id, task_id, type, title, assignee, archive_reason, archived_at, task_snapshot)
+         VALUES ('${BOARD_ID}', 'A-010', 'simple', 'Done task', 'person-1', 'done', '${now}', '{}')`,
+      );
+      const r = engine.query({ query: 'person_completed', person_name: 'Alexandre' });
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].task_id).toBe('A-010');
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  Unknown query type                                               */
+  /* ---------------------------------------------------------------- */
+
+  describe('unknown query type', () => {
+    it('returns error for unrecognized query', () => {
+      const r = engine.query({ query: 'nonexistent_query' });
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/Unknown query type/);
+    });
+  });
+});
