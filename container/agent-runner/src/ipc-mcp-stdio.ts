@@ -505,6 +505,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
 
   if (boardId) {
     const tfDb = new Database(dbPath);
+    process.on('exit', () => tfDb.close());
     const engine = new TaskflowEngine(tfDb, boardId);
 
     server.tool(

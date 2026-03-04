@@ -264,6 +264,25 @@ function lastWeekEnd(): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** Advance a date by a recurrence interval and return the ISO date string. */
+function advanceDateByRecurrence(d: Date, recurrence: 'daily' | 'weekly' | 'monthly' | 'yearly'): string {
+  switch (recurrence) {
+    case 'daily':
+      d.setDate(d.getDate() + 1);
+      break;
+    case 'weekly':
+      d.setDate(d.getDate() + 7);
+      break;
+    case 'monthly':
+      d.setMonth(d.getMonth() + 1);
+      break;
+    case 'yearly':
+      d.setFullYear(d.getFullYear() + 1);
+      break;
+  }
+  return d.toISOString().slice(0, 10);
+}
+
 /* ------------------------------------------------------------------ */
 /*  TaskflowEngine                                                     */
 /* ------------------------------------------------------------------ */
@@ -459,6 +478,7 @@ export class TaskflowEngine {
 
   create(params: CreateParams): CreateResult {
     try {
+      return this.db.transaction(() => {
       const now = new Date().toISOString();
 
       /* --- Permission check --- */
@@ -522,23 +542,7 @@ export class TaskflowEngine {
       if (params.type === 'recurring' && params.recurrence) {
         recurrence = params.recurrence;
         if (!dueDate) {
-          // Calculate initial due date based on recurrence type
-          const d = new Date();
-          switch (params.recurrence) {
-            case 'daily':
-              d.setDate(d.getDate() + 1);
-              break;
-            case 'weekly':
-              d.setDate(d.getDate() + 7);
-              break;
-            case 'monthly':
-              d.setMonth(d.getMonth() + 1);
-              break;
-            case 'yearly':
-              d.setFullYear(d.getFullYear() + 1);
-              break;
-          }
-          dueDate = d.toISOString().slice(0, 10);
+          dueDate = advanceDateByRecurrence(new Date(), params.recurrence);
         }
       }
 
@@ -626,6 +630,7 @@ export class TaskflowEngine {
         column,
         ...(notifications.length > 0 ? { notifications } : {}),
       };
+      })(); // end transaction
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }
@@ -701,27 +706,12 @@ export class TaskflowEngine {
 
   /** Advance a recurring task: calculate next due_date and increment cycle. */
   private advanceRecurringTask(task: any): { new_due_date: string; cycle_number: number } {
-    const recurrence = task.recurrence as string;
+    const recurrence = task.recurrence as 'daily' | 'weekly' | 'monthly' | 'yearly';
     const anchor = task.due_date ? new Date(task.due_date) : new Date();
     const currentCycle = parseInt(task.current_cycle ?? '0', 10);
     const nextCycle = currentCycle + 1;
 
-    switch (recurrence) {
-      case 'daily':
-        anchor.setDate(anchor.getDate() + 1);
-        break;
-      case 'weekly':
-        anchor.setDate(anchor.getDate() + 7);
-        break;
-      case 'monthly':
-        anchor.setMonth(anchor.getMonth() + 1);
-        break;
-      case 'yearly':
-        anchor.setFullYear(anchor.getFullYear() + 1);
-        break;
-    }
-
-    const newDueDate = anchor.toISOString().slice(0, 10);
+    const newDueDate = advanceDateByRecurrence(anchor, recurrence);
     const now = new Date().toISOString();
     this.db
       .prepare(
@@ -739,6 +729,7 @@ export class TaskflowEngine {
 
   move(params: MoveParams): MoveResult {
     try {
+      return this.db.transaction(() => {
       const now = new Date().toISOString();
 
       /* --- Resolve sender --- */
@@ -962,6 +953,7 @@ export class TaskflowEngine {
       if (recurringCycle) result.recurring_cycle = recurringCycle;
 
       return result;
+      })(); // end transaction
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }
@@ -973,6 +965,7 @@ export class TaskflowEngine {
 
   reassign(params: ReassignParams): ReassignResult {
     try {
+      return this.db.transaction(() => {
       /* --- Must specify either task_id or source_person --- */
       if (!params.task_id && !params.source_person) {
         return { success: false, error: 'Must provide either task_id (single) or source_person (bulk transfer).' };
@@ -1049,18 +1042,14 @@ export class TaskflowEngine {
         }
       }
 
+      /* --- Pre-fetch target's child board registration (avoid N+1) --- */
+      const targetChildReg = this.getChildBoardRegistration(targetPerson.person_id);
+
       /* --- Build affected tasks list with relink info --- */
       const tasksAffected: ReassignResult['tasks_affected'] = [];
       for (const task of tasksToReassign) {
         const wasLinked = task.child_exec_enabled === 1;
-        let relinkedTo: string | undefined;
-
-        if (wasLinked) {
-          const reg = this.getChildBoardRegistration(targetPerson.person_id);
-          if (reg) {
-            relinkedTo = reg.child_board_id;
-          }
-        }
+        const relinkedTo = wasLinked && targetChildReg ? targetChildReg.child_board_id : undefined;
 
         tasksAffected.push({
           task_id: task.id,
@@ -1097,6 +1086,18 @@ export class TaskflowEngine {
       const senderPersonId = senderPerson?.person_id ?? params.sender_name;
       const notifications: ReassignResult['notifications'] = [];
 
+      /* Pre-fetch target person notification info (avoid N+1 in loop) */
+      const targetNotifInfo = targetPerson.person_id !== senderPersonId
+        ? this.db
+            .prepare(
+              `SELECT name, notification_group_jid FROM board_people
+               WHERE board_id = ? AND person_id = ?`,
+            )
+            .get(this.boardId, targetPerson.person_id) as
+            | { name: string; notification_group_jid: string | null }
+            | undefined
+        : undefined;
+
       for (const task of tasksToReassign) {
         const wasLinked = task.child_exec_enabled === 1;
 
@@ -1114,15 +1115,14 @@ export class TaskflowEngine {
           },
         });
 
-        /* --- Auto-relink logic --- */
+        /* --- Auto-relink logic (uses pre-fetched targetChildReg) --- */
         let newChildExecEnabled = task.child_exec_enabled;
         let newChildExecBoardId = task.child_exec_board_id;
         let newChildExecPersonId = task.child_exec_person_id;
 
         if (wasLinked) {
-          const reg = this.getChildBoardRegistration(targetPerson.person_id);
-          if (reg) {
-            newChildExecBoardId = reg.child_board_id;
+          if (targetChildReg) {
+            newChildExecBoardId = targetChildReg.child_board_id;
             newChildExecPersonId = targetPerson.person_id;
           } else {
             newChildExecEnabled = 0;
@@ -1160,23 +1160,13 @@ export class TaskflowEngine {
         }
         this.recordHistory(task.id, 'reassigned', params.sender_name, JSON.stringify(details));
 
-        /* --- Notification for new assignee --- */
-        if (targetPerson.person_id !== senderPersonId) {
-          const person = this.db
-            .prepare(
-              `SELECT name, notification_group_jid FROM board_people
-               WHERE board_id = ? AND person_id = ?`,
-            )
-            .get(this.boardId, targetPerson.person_id) as
-            | { name: string; notification_group_jid: string | null }
-            | undefined;
-          if (person) {
-            notifications.push({
-              target_person_id: targetPerson.person_id,
-              notification_group_jid: person.notification_group_jid ?? null,
-              message: `${task.id} "${task.title}" was reassigned to you.`,
-            });
-          }
+        /* --- Notification for new assignee (uses pre-fetched targetNotifInfo) --- */
+        if (targetNotifInfo) {
+          notifications.push({
+            target_person_id: targetPerson.person_id,
+            notification_group_jid: targetNotifInfo.notification_group_jid ?? null,
+            message: `${task.id} "${task.title}" was reassigned to you.`,
+          });
         }
       }
 
@@ -1188,6 +1178,7 @@ export class TaskflowEngine {
       if (notifications.length > 0) result.notifications = notifications;
 
       return result;
+      })(); // end transaction
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }
@@ -1199,6 +1190,7 @@ export class TaskflowEngine {
 
   update(params: UpdateParams): UpdateResult {
     try {
+      return this.db.transaction(() => {
       const now = new Date().toISOString();
       const { updates } = params;
 
@@ -1462,6 +1454,7 @@ export class TaskflowEngine {
       if (notifications.length > 0) result.notifications = notifications;
 
       return result;
+      })(); // end transaction
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }
@@ -1473,6 +1466,7 @@ export class TaskflowEngine {
 
   dependency(params: DependencyParams): DependencyResult {
     try {
+      return this.db.transaction(() => {
       const now = new Date().toISOString();
 
       /* --- Fetch task --- */
@@ -1589,6 +1583,7 @@ export class TaskflowEngine {
         task_id: task.id,
         change,
       };
+      })(); // end transaction
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }
@@ -2138,37 +2133,27 @@ export class TaskflowEngine {
 
   undo(params: UndoParams): UndoResult {
     try {
+      return this.db.transaction(() => {
       const now = new Date().toISOString();
 
       /* --- 1. Find the most recently mutated task --- */
-      const rows = this.db
+      const latestRow = this.db
         .prepare(
           `SELECT id, _last_mutation FROM tasks
-           WHERE board_id = ? AND _last_mutation IS NOT NULL`,
+           WHERE board_id = ? AND _last_mutation IS NOT NULL
+             AND json_valid(_last_mutation) = 1
+           ORDER BY json_extract(_last_mutation, '$.at') DESC LIMIT 1`,
         )
-        .all(this.boardId) as Array<{ id: string; _last_mutation: string }>;
+        .get(this.boardId) as { id: string; _last_mutation: string } | undefined;
 
-      if (rows.length === 0) {
+      if (!latestRow) {
         return { success: false, error: 'Nothing to undo: no recent mutations found.' };
       }
 
-      /* Parse and find the one with the most recent `at` timestamp */
-      let latestTask: { id: string; mutation: any } | null = null;
-      let latestAt = '';
-
-      for (const row of rows) {
-        try {
-          const mutation = JSON.parse(row._last_mutation);
-          if (mutation.at && mutation.at > latestAt) {
-            latestAt = mutation.at;
-            latestTask = { id: row.id, mutation };
-          }
-        } catch {
-          // skip malformed JSON
-        }
-      }
-
-      if (!latestTask) {
+      let latestTask: { id: string; mutation: any };
+      try {
+        latestTask = { id: latestRow.id, mutation: JSON.parse(latestRow._last_mutation) };
+      } catch {
         return { success: false, error: 'Nothing to undo: no valid mutations found.' };
       }
 
@@ -2265,6 +2250,7 @@ export class TaskflowEngine {
         task_id: taskId,
         undone_action: action,
       };
+      })(); // end transaction
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }
@@ -2276,6 +2262,7 @@ export class TaskflowEngine {
 
   admin(params: AdminParams): AdminResult {
     try {
+      return this.db.transaction(() => {
       /* --- Permission check: all admin actions require manager --- */
       if (!this.isManager(params.sender_name)) {
         return {
@@ -2665,6 +2652,7 @@ export class TaskflowEngine {
         default:
           return { success: false, error: `Unknown admin action: ${(params as any).action}` };
       }
+      })(); // end transaction
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }
