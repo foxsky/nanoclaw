@@ -3,6 +3,7 @@
  * Spawns agent execution in containers and handles IPC
  */
 import { ChildProcess, exec, spawn } from 'child_process';
+import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -25,7 +26,6 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { validateAdditionalMounts } from './mount-security.js';
-import { initTaskflowDb } from './taskflow-db.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -46,6 +46,7 @@ export interface ContainerInput {
   chatJid: string;
   isMain: boolean;
   isTaskflowManaged?: boolean;
+  taskflowBoardId?: string;
   taskflowHierarchyLevel?: number;
   taskflowMaxDepth?: number;
   isScheduledTask?: boolean;
@@ -267,6 +268,39 @@ function readSecrets(): Record<string, string> {
   return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
 }
 
+function resolveTaskflowBoardId(
+  group: RegisteredGroup,
+  explicitBoardId?: string,
+): string | undefined {
+  if (explicitBoardId) return explicitBoardId;
+  if (group.taskflowManaged !== true) return undefined;
+
+  const dbPath = path.join(DATA_DIR, 'taskflow', 'taskflow.db');
+  if (!fs.existsSync(dbPath)) {
+    return undefined;
+  }
+
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    db.pragma('busy_timeout = 5000');
+
+    const direct = db
+      .prepare(`SELECT id FROM boards WHERE group_folder = ? LIMIT 1`)
+      .get(group.folder) as { id: string } | undefined;
+    if (direct?.id) {
+      return direct.id;
+    }
+
+    const mapped = db
+      .prepare(`SELECT board_id FROM board_groups WHERE group_folder = ? LIMIT 1`)
+      .get(group.folder) as { board_id: string } | undefined;
+    return mapped?.board_id;
+  } finally {
+    db?.close();
+  }
+}
+
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
@@ -306,6 +340,17 @@ export async function runContainerAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
+
+  if (group.taskflowManaged === true) {
+    input.taskflowBoardId = resolveTaskflowBoardId(group, input.taskflowBoardId);
+    if (!input.taskflowBoardId) {
+      return {
+        status: 'error',
+        result: null,
+        error: `TaskFlow board mapping not found for group ${group.folder}`,
+      };
+    }
+  }
 
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });

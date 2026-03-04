@@ -54,6 +54,35 @@ function seedTestDb(db: Database.Database, boardId: string) {
   );
 }
 
+function seedLinkedTask(
+  db: Database.Database,
+  visibleBoardId: string,
+  overrides?: Partial<{
+    ownerBoardId: string;
+    taskId: string;
+    assignee: string;
+    column: string;
+    title: string;
+  }>,
+) {
+  const ownerBoardId = overrides?.ownerBoardId ?? 'board-parent';
+  const taskId = overrides?.taskId ?? 'T-900';
+  const assignee = overrides?.assignee ?? 'person-2';
+  const column = overrides?.column ?? 'next_action';
+  const title = overrides?.title ?? 'Linked task';
+  const now = new Date().toISOString();
+
+  db.exec(
+    `INSERT INTO boards VALUES ('${ownerBoardId}', 'parent@g.us', 'parent-group', 'standard', 0, 1, NULL)`,
+  );
+  db.exec(
+    `INSERT INTO tasks (id, board_id, type, title, assignee, column, child_exec_enabled, child_exec_board_id, child_exec_person_id, created_at, updated_at)
+     VALUES ('${taskId}', '${ownerBoardId}', 'simple', '${title}', '${assignee}', '${column}', 1, '${visibleBoardId}', '${assignee}', '${now}', '${now}')`,
+  );
+
+  return { ownerBoardId, taskId };
+}
+
 describe('TaskflowEngine', () => {
   let db: Database.Database;
   let engine: TaskflowEngine;
@@ -123,6 +152,15 @@ describe('TaskflowEngine', () => {
       const result = engine.query({ query: 'board' });
       expect(result.data.linked_tasks).toEqual([]);
     });
+
+    it('includes linked tasks in the visible board columns and linked_tasks list', () => {
+      seedLinkedTask(db, BOARD_ID, { taskId: 'T-901', column: 'next_action' });
+
+      const result = engine.query({ query: 'board' });
+      expect(result.success).toBe(true);
+      expect(result.data.columns.next_action.some((t: any) => t.id === 'T-901')).toBe(true);
+      expect(result.data.linked_tasks.some((t: any) => t.id === 'T-901')).toBe(true);
+    });
   });
 
   /* ---------------------------------------------------------------- */
@@ -183,6 +221,14 @@ describe('TaskflowEngine', () => {
       expect(r.success).toBe(false);
       expect(r.error).toMatch(/Missing required parameter/);
     });
+
+    it('includes linked tasks assigned to that person in the current board scope', () => {
+      seedLinkedTask(db, BOARD_ID, { taskId: 'T-902', assignee: 'person-1' });
+
+      const r = engine.query({ query: 'person_tasks', person_name: 'Alexandre' });
+      expect(r.success).toBe(true);
+      expect(r.data.some((t: any) => t.id === 'T-902')).toBe(true);
+    });
   });
 
   /* ---------------------------------------------------------------- */
@@ -231,6 +277,21 @@ describe('TaskflowEngine', () => {
       const r = engine.query({ query: 'task_details' });
       expect(r.success).toBe(false);
       expect(r.error).toMatch(/Missing required parameter/);
+    });
+
+    it('loads linked-task history from the owning board', () => {
+      const { ownerBoardId, taskId } = seedLinkedTask(db, BOARD_ID, { taskId: 'T-903' });
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+         VALUES ('${ownerBoardId}', '${taskId}', 'moved', 'person-2', '${now}', 'linked history')`,
+      );
+
+      const r = engine.query({ query: 'task_details', task_id: taskId });
+      expect(r.success).toBe(true);
+      expect(r.data.task.id).toBe(taskId);
+      expect(r.data.recent_history).toHaveLength(1);
+      expect(r.data.recent_history[0].board_id).toBe(ownerBoardId);
     });
   });
 
@@ -847,6 +908,38 @@ describe('TaskflowEngine', () => {
 
       const task = engine.getTask('T-002');
       expect(task.column).toBe('in_progress');
+    });
+
+    it('moves a linked task and writes back to the owning board row', () => {
+      const { ownerBoardId, taskId } = seedLinkedTask(db, BOARD_ID, {
+        taskId: 'T-904',
+        assignee: 'person-2',
+        column: 'next_action',
+      });
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: taskId,
+        action: 'start',
+        sender_name: 'Giovanni',
+      });
+
+      expect(r.success).toBe(true);
+      expect(r.to_column).toBe('in_progress');
+
+      const ownerRow = db
+        .prepare(`SELECT board_id, "column" FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(ownerBoardId, taskId) as { board_id: string; column: string };
+      expect(ownerRow.board_id).toBe(ownerBoardId);
+      expect(ownerRow.column).toBe('in_progress');
+
+      const historyRow = db
+        .prepare(
+          `SELECT board_id, action FROM task_history WHERE board_id = ? AND task_id = ? ORDER BY id DESC LIMIT 1`,
+        )
+        .get(ownerBoardId, taskId) as { board_id: string; action: string };
+      expect(historyRow.board_id).toBe(ownerBoardId);
+      expect(historyRow.action).toBe('start');
     });
 
     it('start: WIP exceeded -> error with wip_warning', () => {

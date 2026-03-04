@@ -252,6 +252,8 @@ describe('container-runner taskflow mount behavior', () => {
         groupFolder: 'test-taskflow',
         chatJid: 'test@g.us',
         isMain: false,
+        isTaskflowManaged: true,
+        taskflowBoardId: 'board-test-taskflow',
       },
       () => {},
       onOutput,

@@ -18,6 +18,7 @@ describe('agent-runner runtime config', () => {
         chatJid: '123@g.us',
         isMain: false,
         isTaskflowManaged: true,
+        taskflowBoardId: 'board-taskflow-root',
         taskflowHierarchyLevel: 0,
         taskflowMaxDepth: 3,
       }),
@@ -26,6 +27,7 @@ describe('agent-runner runtime config', () => {
       NANOCLAW_GROUP_FOLDER: 'taskflow-root',
       NANOCLAW_IS_MAIN: '0',
       NANOCLAW_IS_TASKFLOW_MANAGED: '1',
+      NANOCLAW_TASKFLOW_BOARD_ID: 'board-taskflow-root',
       NANOCLAW_TASKFLOW_HIERARCHY_LEVEL: '0',
       NANOCLAW_TASKFLOW_MAX_DEPTH: '3',
     });

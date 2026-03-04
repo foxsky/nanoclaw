@@ -15,6 +15,14 @@ All topologies rely on already-implemented runtime support (SQLite DB, IPC auth,
 
 **v2 Architecture:** All mutation logic and common queries are implemented as MCP tools in `container/agent-runner/src/taskflow-engine.ts`. The CLAUDE.md template (~400 lines) serves as a natural language router: parse user intent → call the right tool → present the result. The agent retains full SQLite read-write access as a fallback for edge cases.
 
+Before provisioning or regenerating TaskFlow boards, apply the bundled runtime changes:
+
+```bash
+npx tsx scripts/apply-skill.ts .claude/skills/add-taskflow
+```
+
+This installs the TaskFlow engine, updates the container runtime wiring, and keeps the SQLite MCP fallback available. `NANOCLAW_TASKFLOW_BOARD_ID` is resolved from the canonical TaskFlow board mapping at runtime; it must not be inferred from the group folder name.
+
 ## Phase 1: Configuration
 
 ### 1. Pre-flight Checks
