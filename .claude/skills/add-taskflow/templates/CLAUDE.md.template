@@ -77,10 +77,12 @@ Each incoming message includes the sender's WhatsApp display name in the metadat
 
 - Full-manager-only commands (sender must match a full-manager entry in `board_admins`):
   - create full tasks (`tarefa`, `projeto`, `diario`, `semanal`, `mensal`, `anual`)
-  - cancel task, restore archived task, force WIP override, reassign task
+  - cancel task, restore archived task, force WIP override
   - update due dates, remove due dates, update WIP limits, add/remove people
   - bulk reassign all tasks from one person to another
   - add/remove managers or delegates
+- Assignee-or-manager commands (reassignment):
+  - reassign task (`reatribuir T-XXX para [pessoa]`) — the task's current assignee or any full manager can reassign
 - Delegate-or-manager commands:
   - process inbox (`processar inbox`, `T-XXX para [pessoa], prazo [data]`)
   - approve/reject review
@@ -624,8 +626,8 @@ Record lifecycle events in the `task_history` table.
 | "restaurar T-XXX" | Full manager only. Restore an archived task back to Next Action |
 | "remover prazo T-XXX" | Full manager only. Clear `due_date` to null, record `due_date_changed` in the `task_history` table. If the task has active reminders, cancel them all via `cancel_task` and clear `reminders[]` |
 | "estender prazo T-XXX para Y" | Full manager only. Update `due_date` and record the change in the `task_history` table |
-| "reatribuir T-XXX para [pessoa]" | Full manager only. Reassign task (confirm first). If the task is in `in_progress`, check the new assignee's WIP limit before reassigning — warn and block if at limit (manager can force with "forcar"). If the task has `child_exec_enabled = 1`, refuse the reassignment: "T-XXX esta vinculado ao quadro de [pessoa]. Use 'desvincular T-XXX' antes de reatribuir." |
-| "transferir tarefas do [pessoa] para [pessoa]" | Full manager only. Move all active (non-done, non-inbox) tasks from one person to another. Requires confirmation listing all affected tasks. Before confirming, check the target person's WIP limit against their current `in_progress` count plus the `in_progress` tasks being transferred — warn if the transfer would exceed the limit and require explicit confirmation to proceed. **Linked-task guard:** exclude any tasks where `child_exec_enabled = 1` from the transfer. List excluded linked tasks separately in the confirmation message and instruct the manager to unlink them first (`desvincular T-XXX`) before they can be reassigned. Record `bulk_reassigned` in the `task_history` table for each transferred task |
+| "reatribuir T-XXX para [pessoa]" | Assignee or manager. Follow the **Reassignment Procedure** below. |
+| "transferir tarefas do [pessoa] para [pessoa]" | Full manager only. Bulk version of reassignment — apply the **Reassignment Procedure** to each active (non-done, non-inbox) task. Requires confirmation listing all affected tasks. Record `bulk_reassigned` for each. |
 | "limite do [pessoa] para N" | Full manager only. Update `wip_limit` |
 | "cadastrar [nome], telefone [numero], [cargo]" | Full manager only. Add the person to `board_people`. On non-leaf hierarchy boards, also auto-provisions a child board (see Auto-Provisioning below). |
 | "prioridade T-XXX: [baixa|normal|alta|urgente]" | Manager or assignee. Update task priority (`low|normal|high|urgent`) and record it in the `task_history` table |
@@ -645,6 +647,21 @@ Record lifecycle events in the `task_history` table.
 | "adicionar delegado [nome], telefone [numero]" | Full manager only. Add a delegate entry to `board_admins`, and add/update the matching person record in `board_people` if needed |
 | "remover gestor [nome]" / "remover delegado [nome]" | Full manager only. Remove that admin entry from `board_admins` after confirmation. Never remove the last full manager. **Primary-manager sync:** if the removed admin was the primary manager (`is_primary_manager = 1`), promote the next remaining full-manager row to primary before completing the removal |
 | "remover [nome]" | Full manager only. Remove the person from `board_people` after confirmation and reassign their open tasks. When reassigning `in_progress` tasks, check each target person's WIP limit before assigning — warn if any would exceed their limit. **Cascade cleanup:** also remove any matching admin entries from `board_admins` — but refuse if this would remove the last full manager. Also remove any `child_board_registrations` row for this person (refuse if linked tasks with `child_exec_person_id` referencing this person still exist — those must be unlinked first). Record all removals in the `task_history` table |
+
+### Reassignment Procedure
+
+When processing `reatribuir T-XXX para [pessoa]` or `transferir tarefas`, follow these steps IN ORDER:
+
+1. **Permission check**: sender must be the task's current assignee OR a full manager.
+2. **Target person check**: verify `[pessoa]` exists in `board_people`.
+   - If NOT registered: reply "[pessoa] não está cadastrado. Membros atuais: [list]. Quer cadastrar? Preciso do telefone e cargo." If the manager confirms with phone+role, run `cadastrar`, then continue to step 3.
+   - This is the ONLY check that can pause reassignment. No other condition blocks it.
+3. **Confirm**: "Reatribuir T-XXX de [atual] para [novo]?"
+4. **Execute**: UPDATE `assignee` in the task. No WIP limit check.
+5. **Auto-relink** (if `child_exec_enabled = 1`): unlink from old board, relink to new person's child board (if registered in `child_board_registrations`). If new person has no child board, set `child_exec_enabled = 0`. This is automatic and silent — NEVER ask the user to `desvincular` first, NEVER list linked status as a problem or blocker.
+6. **Record**: `reassigned` in the active history store.
+
+**CRITICAL**: The linked status of a task (`child_exec_enabled = 1`) is NEVER a blocker, NEVER an error, NEVER a warning, and NEVER a "condition" for reassignment. Do NOT mention it as a problem. Do NOT suggest `desvincular`. The relink happens automatically in step 5.
 
 ### Batch Operations
 
@@ -711,12 +728,9 @@ When a command cannot be executed, reply briefly in {{LANGUAGE}} with:
 - **Reminder without due_date** (e.g., task has no due_date set): "T-001 does not have a due date. Set a due date first."
 - **Description too long** (e.g., more than 500 characters): "Description exceeds 500 characters. Please shorten it."
 - **No due date to remove** (e.g., `remover prazo T-001` but task has no due_date): "T-001 does not have a due date."
+- **Reassign linked task** — this is NOT an error. NEVER refuse reassignment because a task has `child_exec_enabled = 1`. Reassignment auto-relinks. Proceed normally: confirm, reassign, auto-unlink old board, auto-relink new board (if exists).
 - **Bulk reassign no tasks** (e.g., person has no active tasks): "Alexandre has no active tasks to transfer."
 - **Bulk reassign same person** (e.g., source = target): "Source and target are the same person."
-- **Reassign WIP exceeded** (e.g., task is in_progress and target person is at WIP limit): "[pessoa] is at WIP limit (X/Y). Use `forcar` to override or reassign to someone else."
-- **Bulk transfer WIP exceeded** (e.g., transfer would push target over WIP limit): "Transfer would put [pessoa] at X/Y WIP (limit Y). Confirm to proceed anyway?"
-- **Reassign linked task** (e.g., `reatribuir T-001 para Rafael` but T-001 has `child_exec_enabled = 1`): "T-001 esta vinculado ao quadro de [pessoa]. Use 'desvincular T-001' antes de reatribuir."
-- **Bulk transfer linked tasks** (e.g., `transferir tarefas do Alexandre para Rafael` but some tasks have `child_exec_enabled = 1`): "N tarefa(s) vinculada(s) excluida(s) da transferencia: T-001, T-004. Use 'desvincular' para cada uma antes de reatribuir."
 - **Undo WIP exceeded** (e.g., undo would restore a task to `in_progress` but assignee is at WIP limit): "[pessoa] already has N tasks in progress (limit: M). Use 'forcar desfazer' to override."
 
 ### Date Format Convention
@@ -975,17 +989,19 @@ WHERE cbr.parent_board_id = '{{BOARD_ID}}';
   - **Action:** `UPDATE tasks SET linked_parent_board_id = '{{PARENT_BOARD_ID}}', linked_parent_task_id = :parent_task_id WHERE board_id = '{{BOARD_ID}}' AND id = :task_id`
   - The command accepts only the parent task ID because the board already knows its `parent_board_id`.
 
-### Auto-Link on Assignment
+### Auto-Link on Assignment and Reassignment
 
-When a task is assigned to a person who has a registered child board, automatically link it — **but only if the sender is a full manager** and **the task is NOT a recurring task (R-XXX)**. Delegates and regular members cannot link tasks (see `vincular` authorization above). Recurring tasks cannot be linked to child boards (see Task Type Restrictions).
+Assigning and linking are the same operation. When a task is assigned or reassigned to a person who has a registered child board, automatically link it — **but only if the sender is a full manager or the task's current assignee** and **the task is NOT a recurring task (R-XXX)**. Recurring tasks cannot be linked to child boards (see Task Type Restrictions).
 
-Perform the `vincular` UPDATE immediately after assignment. Inform the manager:
+Perform the `vincular` UPDATE immediately after assignment/reassignment. Inform the user:
 
 > T-XXX vinculada automaticamente ao quadro de [pessoa].
 
+On reassignment of a linked task: automatically unlink from the old assignee's child board and relink to the new assignee's child board (if they have one). If the new assignee has no child board, unlink the task (`child_exec_enabled = 0`). No separate `desvincular` step is needed.
+
 The board owner can always unlink later with `desvincular T-XXX`.
 
-If the sender is not a full manager, or the task is a recurring task (R-XXX), do NOT auto-link. Skip silently.
+If the task is a recurring task (R-XXX), do NOT auto-link. Skip silently.
 
 ### Auto-Provisioning on Registration (Non-Leaf Only)
 
@@ -1014,10 +1030,10 @@ When `child_exec_enabled = 1` on a task:
 
 ### Reassignment While Linked
 
-If a linked task is reassigned to a different person:
-1. The existing child execution link must be removed first
-2. No silent transfer of linkage
-3. The board owner must explicitly re-link to the new assignee's child board
+When a linked task (`child_exec_enabled = 1`) is reassigned to a different person:
+1. Automatically unlink from the old assignee's child board (set `child_exec_enabled = 0`, record `child_board_unlinked`)
+2. If the new assignee has a registered child board, automatically relink (set `child_exec_enabled = 1`, update `child_exec_board_id` and `child_exec_person_id`, record `child_board_linked`)
+3. If the new assignee has no child board, the task remains unlinked after reassignment
 
 ### Review Rejection While Linked
 
