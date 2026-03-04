@@ -2268,4 +2268,157 @@ describe('TaskflowEngine', () => {
       expect(r.error).toContain('Giovanni');
     });
   });
+
+  /* ---------------------------------------------------------------- */
+  /*  undo                                                             */
+  /* ---------------------------------------------------------------- */
+
+  describe('undo', () => {
+    it('undo happy path (within 60s)', () => {
+      // Move T-001 from in_progress to review (this sets _last_mutation)
+      const moveResult = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'review',
+        sender_name: 'Alexandre',
+      });
+      expect(moveResult.success).toBe(true);
+      expect(moveResult.to_column).toBe('review');
+
+      // Verify task is now in review
+      let task = engine.getTask('T-001');
+      expect(task.column).toBe('review');
+
+      // Undo the move
+      const undoResult = engine.undo({
+        board_id: BOARD_ID,
+        sender_name: 'Alexandre',
+      });
+      expect(undoResult.success).toBe(true);
+      expect(undoResult.task_id).toBe('T-001');
+      expect(undoResult.undone_action).toBe('review');
+
+      // Verify task is restored to in_progress
+      task = engine.getTask('T-001');
+      expect(task.column).toBe('in_progress');
+
+      // Verify _last_mutation was cleared
+      expect(task._last_mutation).toBeNull();
+
+      // Verify history records the undo
+      const history = db
+        .prepare(
+          `SELECT * FROM task_history WHERE board_id = ? AND task_id = 'T-001' AND action = 'undone'`,
+        )
+        .all(BOARD_ID) as any[];
+      expect(history).toHaveLength(1);
+      expect(history[0].by).toBe('Alexandre');
+    });
+
+    it('undo expired (>60s) → error', () => {
+      // Move T-001, then manually set _last_mutation.at to 2 minutes ago
+      engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'review',
+        sender_name: 'Alexandre',
+      });
+
+      // Override _last_mutation with a timestamp 2 minutes in the past
+      const twoMinutesAgo = new Date(Date.now() - 120_000).toISOString();
+      const expiredMutation = JSON.stringify({
+        action: 'review',
+        by: 'Alexandre',
+        at: twoMinutesAgo,
+        snapshot: { column: 'in_progress', assignee: 'person-1', due_date: null, updated_at: twoMinutesAgo },
+      });
+      db.exec(
+        `UPDATE tasks SET _last_mutation = '${expiredMutation}' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+
+      const r = engine.undo({
+        board_id: BOARD_ID,
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('expired');
+    });
+
+    it('undo creation → error (suggest cancelar)', () => {
+      // Create a task (sets _last_mutation with action='created')
+      const createResult = engine.create({
+        board_id: BOARD_ID,
+        type: 'inbox',
+        title: 'New task to undo',
+        sender_name: 'Alexandre',
+      });
+      expect(createResult.success).toBe(true);
+
+      // Clear _last_mutation on other tasks so only the newly created one has it
+      db.exec(
+        `UPDATE tasks SET _last_mutation = NULL WHERE board_id = '${BOARD_ID}' AND id != '${createResult.task_id}'`,
+      );
+
+      const r = engine.undo({
+        board_id: BOARD_ID,
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('cancelar');
+    });
+
+    it('no mutation to undo → error', () => {
+      // Clear all _last_mutation values
+      db.exec(
+        `UPDATE tasks SET _last_mutation = NULL WHERE board_id = '${BOARD_ID}'`,
+      );
+
+      const r = engine.undo({
+        board_id: BOARD_ID,
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('no recent mutations');
+    });
+
+    it('permission: only mutation author or manager', () => {
+      // Giovanni moves T-002 (he is assignee, which is allowed for start)
+      engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        action: 'start',
+        sender_name: 'Giovanni',
+      });
+
+      // Clear _last_mutation on other tasks so only T-002 has it
+      db.exec(
+        `UPDATE tasks SET _last_mutation = NULL WHERE board_id = '${BOARD_ID}' AND id != 'T-002'`,
+      );
+
+      // Register a third person (non-manager) who tries to undo Giovanni's action
+      db.exec(
+        `INSERT INTO board_people VALUES ('${BOARD_ID}', 'person-3', 'Carlos', '5585999990003', 'Dev', 3, NULL)`,
+      );
+
+      const r = engine.undo({
+        board_id: BOARD_ID,
+        sender_name: 'Carlos', // not the author, not a manager
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('Permission denied');
+      expect(r.error).toContain('Giovanni'); // the mutation author
+
+      // Manager (Alexandre) CAN undo Giovanni's action
+      const r2 = engine.undo({
+        board_id: BOARD_ID,
+        sender_name: 'Alexandre', // manager
+      });
+      expect(r2.success).toBe(true);
+      expect(r2.task_id).toBe('T-002');
+
+      // Verify task is back in next_action
+      const task = engine.getTask('T-002');
+      expect(task.column).toBe('next_action');
+    });
+  });
 });

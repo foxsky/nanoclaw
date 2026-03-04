@@ -141,6 +141,17 @@ export interface DependencyResult extends TaskflowResult {
   change?: string;           // human-readable description of what changed
 }
 
+export interface UndoParams {
+  board_id: string;
+  sender_name: string;
+  force?: boolean;  // override WIP guard
+}
+
+export interface UndoResult extends TaskflowResult {
+  task_id?: string;
+  undone_action?: string;
+}
+
 export interface AdminParams {
   board_id: string;
   action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox';
@@ -776,10 +787,15 @@ export class TaskflowEngine {
 
       /* --- Snapshot before mutation --- */
       const snapshot = JSON.stringify({
-        column: fromColumn,
-        assignee: task.assignee,
-        due_date: task.due_date,
-        updated_at: task.updated_at,
+        action: params.action,
+        by: params.sender_name,
+        at: now,
+        snapshot: {
+          column: fromColumn,
+          assignee: task.assignee,
+          due_date: task.due_date,
+          updated_at: task.updated_at,
+        },
       });
 
       /* --- Project subtask completion --- */
@@ -1036,11 +1052,16 @@ export class TaskflowEngine {
 
         /* --- Undo snapshot --- */
         const snapshot = JSON.stringify({
-          assignee: task.assignee,
-          child_exec_enabled: task.child_exec_enabled,
-          child_exec_board_id: task.child_exec_board_id,
-          child_exec_person_id: task.child_exec_person_id,
-          updated_at: task.updated_at,
+          action: 'reassigned',
+          by: params.sender_name,
+          at: now,
+          snapshot: {
+            assignee: task.assignee,
+            child_exec_enabled: task.child_exec_enabled,
+            child_exec_board_id: task.child_exec_board_id,
+            child_exec_person_id: task.child_exec_person_id,
+            updated_at: task.updated_at,
+          },
         });
 
         /* --- Auto-relink logic --- */
@@ -1153,17 +1174,22 @@ export class TaskflowEngine {
 
       /* --- Save undo snapshot --- */
       const snapshot = JSON.stringify({
-        title: task.title,
-        priority: task.priority,
-        due_date: task.due_date,
-        description: task.description,
-        next_action: task.next_action,
-        labels: task.labels,
-        notes: task.notes,
-        next_note_id: task.next_note_id,
-        subtasks: task.subtasks,
-        recurrence: task.recurrence,
-        updated_at: task.updated_at,
+        action: 'updated',
+        by: params.sender_name,
+        at: now,
+        snapshot: {
+          title: task.title,
+          priority: task.priority,
+          due_date: task.due_date,
+          description: task.description,
+          next_action: task.next_action,
+          labels: task.labels,
+          notes: task.notes,
+          next_note_id: task.next_note_id,
+          subtasks: task.subtasks,
+          recurrence: task.recurrence,
+          updated_at: task.updated_at,
+        },
       });
 
       /* --- Process each update field --- */
@@ -1404,9 +1430,14 @@ export class TaskflowEngine {
 
       /* --- Save undo snapshot (before any mutation) --- */
       const snapshot = JSON.stringify({
-        blocked_by: task.blocked_by,
-        reminders: task.reminders,
-        updated_at: task.updated_at,
+        action: params.action,
+        by: params.sender_name,
+        at: now,
+        snapshot: {
+          blocked_by: task.blocked_by,
+          reminders: task.reminders,
+          updated_at: task.updated_at,
+        },
       });
 
       let change: string;
@@ -2046,6 +2077,144 @@ export class TaskflowEngine {
             error: `Unknown query type: ${params.query}`,
           };
       }
+    } catch (err: any) {
+      return { success: false, error: err.message ?? String(err) };
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  undo — taskflow_undo                                             */
+  /* ---------------------------------------------------------------- */
+
+  undo(params: UndoParams): UndoResult {
+    try {
+      const now = new Date().toISOString();
+
+      /* --- 1. Find the most recently mutated task --- */
+      const rows = this.db
+        .prepare(
+          `SELECT id, _last_mutation FROM tasks
+           WHERE board_id = ? AND _last_mutation IS NOT NULL`,
+        )
+        .all(this.boardId) as Array<{ id: string; _last_mutation: string }>;
+
+      if (rows.length === 0) {
+        return { success: false, error: 'Nothing to undo: no recent mutations found.' };
+      }
+
+      /* Parse and find the one with the most recent `at` timestamp */
+      let latestTask: { id: string; mutation: any } | null = null;
+      let latestAt = '';
+
+      for (const row of rows) {
+        try {
+          const mutation = JSON.parse(row._last_mutation);
+          if (mutation.at && mutation.at > latestAt) {
+            latestAt = mutation.at;
+            latestTask = { id: row.id, mutation };
+          }
+        } catch {
+          // skip malformed JSON
+        }
+      }
+
+      if (!latestTask) {
+        return { success: false, error: 'Nothing to undo: no valid mutations found.' };
+      }
+
+      const { id: taskId, mutation } = latestTask;
+      const { action, by, at, snapshot } = mutation;
+
+      /* --- 2. Time check: 60 seconds --- */
+      const mutationTime = new Date(at).getTime();
+      const nowTime = new Date(now).getTime();
+      if (nowTime - mutationTime > 60_000) {
+        return { success: false, error: 'Undo expired: mutation was more than 60 seconds ago.' };
+      }
+
+      /* --- 3. Permission: only the mutation author or a manager --- */
+      const isMgr = this.isManager(params.sender_name);
+      if (by !== params.sender_name && !isMgr) {
+        return {
+          success: false,
+          error: `Permission denied: only "${by}" (mutation author) or a manager can undo.`,
+        };
+      }
+
+      /* --- 4. Check if it was a creation --- */
+      if (action === 'created') {
+        return {
+          success: false,
+          error: 'Cannot undo creation. Use cancelar (admin cancel_task) instead.',
+        };
+      }
+
+      /* --- 5. WIP guard: if restoring to in_progress, check WIP limit --- */
+      if (snapshot?.column === 'in_progress') {
+        const task = this.getTask(taskId);
+        if (task?.assignee) {
+          const wip = this.checkWipLimit(task.assignee);
+          if (!wip.ok) {
+            if (!params.force) {
+              return {
+                success: false,
+                error: `WIP limit exceeded for ${wip.person_name}: ${wip.current} in progress (limit: ${wip.limit}). Use force (forcar) to override.`,
+              };
+            }
+            /* force=true requires manager */
+            if (!isMgr) {
+              return {
+                success: false,
+                error: 'Permission denied: only managers can force undo past WIP limit.',
+              };
+            }
+          }
+        }
+      }
+
+      /* --- 6. Restore: replace task fields with snapshot values --- */
+      if (snapshot && typeof snapshot === 'object') {
+        const fields = Object.keys(snapshot);
+        if (fields.length > 0) {
+          const setClauses = fields.map((f) => `${f} = ?`).join(', ');
+          const values = fields.map((f) => {
+            const val = snapshot[f];
+            /* JSON columns stored as strings */
+            return val;
+          });
+          this.db
+            .prepare(
+              `UPDATE tasks SET ${setClauses}, _last_mutation = NULL, updated_at = ?
+               WHERE board_id = ? AND id = ?`,
+            )
+            .run(...values, now, this.boardId, taskId);
+        } else {
+          /* No snapshot fields, just clear _last_mutation */
+          this.db
+            .prepare(
+              `UPDATE tasks SET _last_mutation = NULL, updated_at = ?
+               WHERE board_id = ? AND id = ?`,
+            )
+            .run(now, this.boardId, taskId);
+        }
+      } else {
+        /* No snapshot object, just clear _last_mutation */
+        this.db
+          .prepare(
+            `UPDATE tasks SET _last_mutation = NULL, updated_at = ?
+             WHERE board_id = ? AND id = ?`,
+          )
+          .run(now, this.boardId, taskId);
+      }
+
+      /* --- Record history --- */
+      this.recordHistory(taskId, 'undone', params.sender_name, JSON.stringify({ undone_action: action }));
+
+      return {
+        success: true,
+        task_id: taskId,
+        undone_action: action,
+      };
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }
