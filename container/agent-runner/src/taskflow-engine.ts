@@ -99,6 +99,34 @@ export interface ReassignResult extends TaskflowResult {
   notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
 }
 
+export interface UpdateParams {
+  board_id: string;
+  task_id: string;
+  sender_name: string;
+  updates: {
+    title?: string;
+    priority?: 'low' | 'normal' | 'high' | 'urgent';
+    due_date?: string | null;   // null = remove
+    description?: string;
+    next_action?: string;
+    add_label?: string;
+    remove_label?: string;
+    add_note?: string;
+    edit_note?: { id: number; text: string };
+    remove_note?: number;
+    add_subtask?: string;         // project only
+    rename_subtask?: { id: string; title: string };
+    reopen_subtask?: string;      // subtask ID
+    recurrence?: string;          // change frequency
+  };
+}
+
+export interface UpdateResult extends TaskflowResult {
+  task_id?: string;
+  changes?: string[];      // human-readable list of what changed
+  notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -1052,6 +1080,275 @@ export class TaskflowEngine {
       const result: ReassignResult = {
         success: true,
         tasks_affected: tasksAffected,
+      };
+      if (notifications.length > 0) result.notifications = notifications;
+
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err.message ?? String(err) };
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  update — taskflow_update                                         */
+  /* ---------------------------------------------------------------- */
+
+  update(params: UpdateParams): UpdateResult {
+    try {
+      const now = new Date().toISOString();
+      const { updates } = params;
+
+      /* --- Resolve sender --- */
+      const sender = this.resolvePerson(params.sender_name);
+      const senderPersonId = sender?.person_id ?? null;
+
+      /* --- Fetch task --- */
+      const task = this.requireTask(params.task_id);
+
+      /* --- Check task is active (not archived / done is still active in tasks table) --- */
+      // Tasks only leave the tasks table when archived; if it's here, it's active.
+
+      /* --- Permission: sender must be assignee or manager --- */
+      const isAssignee = senderPersonId != null && task.assignee === senderPersonId;
+      const isMgr = this.isManager(params.sender_name);
+      if (!isAssignee && !isMgr) {
+        return {
+          success: false,
+          error: `Permission denied: "${params.sender_name}" is neither the assignee nor a manager.`,
+        };
+      }
+
+      /* --- Save undo snapshot --- */
+      const snapshot = JSON.stringify({
+        title: task.title,
+        priority: task.priority,
+        due_date: task.due_date,
+        description: task.description,
+        next_action: task.next_action,
+        labels: task.labels,
+        notes: task.notes,
+        next_note_id: task.next_note_id,
+        subtasks: task.subtasks,
+        recurrence: task.recurrence,
+        updated_at: task.updated_at,
+      });
+
+      /* --- Process each update field --- */
+      const changes: string[] = [];
+
+      /* Title */
+      if (updates.title !== undefined) {
+        if (!updates.title || updates.title.trim() === '') {
+          return { success: false, error: 'Title cannot be empty.' };
+        }
+        this.db
+          .prepare(`UPDATE tasks SET title = ? WHERE board_id = ? AND id = ?`)
+          .run(updates.title, this.boardId, task.id);
+        changes.push(`Title changed to "${updates.title}"`);
+      }
+
+      /* Priority */
+      if (updates.priority !== undefined) {
+        const validPriorities = ['low', 'normal', 'high', 'urgent'];
+        if (!validPriorities.includes(updates.priority)) {
+          return { success: false, error: `Invalid priority "${updates.priority}". Must be one of: ${validPriorities.join(', ')}.` };
+        }
+        this.db
+          .prepare(`UPDATE tasks SET priority = ? WHERE board_id = ? AND id = ?`)
+          .run(updates.priority, this.boardId, task.id);
+        changes.push(`Priority set to ${updates.priority}`);
+      }
+
+      /* Due date */
+      if (updates.due_date !== undefined) {
+        if (updates.due_date === null) {
+          this.db
+            .prepare(`UPDATE tasks SET due_date = NULL WHERE board_id = ? AND id = ?`)
+            .run(this.boardId, task.id);
+          changes.push('Due date removed');
+        } else {
+          this.db
+            .prepare(`UPDATE tasks SET due_date = ? WHERE board_id = ? AND id = ?`)
+            .run(updates.due_date, this.boardId, task.id);
+          changes.push(`Due date set to ${updates.due_date}`);
+        }
+      }
+
+      /* Description */
+      if (updates.description !== undefined) {
+        if (updates.description.length > 500) {
+          return { success: false, error: 'Description exceeds 500 character limit.' };
+        }
+        this.db
+          .prepare(`UPDATE tasks SET description = ? WHERE board_id = ? AND id = ?`)
+          .run(updates.description, this.boardId, task.id);
+        changes.push('Description updated');
+      }
+
+      /* Next action */
+      if (updates.next_action !== undefined) {
+        this.db
+          .prepare(`UPDATE tasks SET next_action = ? WHERE board_id = ? AND id = ?`)
+          .run(updates.next_action, this.boardId, task.id);
+        changes.push(`Next action set to "${updates.next_action}"`);
+      }
+
+      /* Add label */
+      if (updates.add_label !== undefined) {
+        const labels: string[] = JSON.parse(task.labels ?? '[]');
+        if (!labels.includes(updates.add_label)) {
+          labels.push(updates.add_label);
+          this.db
+            .prepare(`UPDATE tasks SET labels = ? WHERE board_id = ? AND id = ?`)
+            .run(JSON.stringify(labels), this.boardId, task.id);
+          changes.push(`Label "${updates.add_label}" added`);
+        }
+        // idempotent: no error if already present, but no change entry either
+      }
+
+      /* Remove label */
+      if (updates.remove_label !== undefined) {
+        const labels: string[] = JSON.parse(task.labels ?? '[]');
+        const idx = labels.indexOf(updates.remove_label);
+        if (idx >= 0) {
+          labels.splice(idx, 1);
+          this.db
+            .prepare(`UPDATE tasks SET labels = ? WHERE board_id = ? AND id = ?`)
+            .run(JSON.stringify(labels), this.boardId, task.id);
+          changes.push(`Label "${updates.remove_label}" removed`);
+        }
+      }
+
+      /* Add note */
+      if (updates.add_note !== undefined) {
+        const notes: Array<{ id: number; text: string; at: string; by: string }> = JSON.parse(task.notes ?? '[]');
+        const noteId = task.next_note_id ?? 1;
+        notes.push({ id: noteId, text: updates.add_note, at: now, by: params.sender_name });
+        this.db
+          .prepare(`UPDATE tasks SET notes = ?, next_note_id = ? WHERE board_id = ? AND id = ?`)
+          .run(JSON.stringify(notes), noteId + 1, this.boardId, task.id);
+        changes.push(`Note #${noteId} added`);
+      }
+
+      /* Edit note */
+      if (updates.edit_note !== undefined) {
+        const notes: Array<{ id: number; text: string; at: string; by: string }> = JSON.parse(task.notes ?? '[]');
+        const note = notes.find((n) => n.id === updates.edit_note!.id);
+        if (!note) {
+          return { success: false, error: `Note #${updates.edit_note.id} not found.` };
+        }
+        note.text = updates.edit_note.text;
+        this.db
+          .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
+          .run(JSON.stringify(notes), this.boardId, task.id);
+        changes.push(`Note #${updates.edit_note.id} edited`);
+      }
+
+      /* Remove note */
+      if (updates.remove_note !== undefined) {
+        const notes: Array<{ id: number; text: string; at: string; by: string }> = JSON.parse(task.notes ?? '[]');
+        const idx = notes.findIndex((n) => n.id === updates.remove_note);
+        if (idx < 0) {
+          return { success: false, error: `Note #${updates.remove_note} not found.` };
+        }
+        notes.splice(idx, 1);
+        this.db
+          .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
+          .run(JSON.stringify(notes), this.boardId, task.id);
+        changes.push(`Note #${updates.remove_note} removed`);
+      }
+
+      /* Add subtask (project only) */
+      if (updates.add_subtask !== undefined) {
+        if (task.type !== 'project') {
+          return { success: false, error: 'Subtasks can only be added to project tasks.' };
+        }
+        const subtasks: Array<{ id: string; title: string; status: string }> = JSON.parse(task.subtasks ?? '[]');
+        const nextNum = subtasks.length + 1;
+        const subtaskId = `${task.id}.${nextNum}`;
+        subtasks.push({ id: subtaskId, title: updates.add_subtask, status: 'pending' });
+        this.db
+          .prepare(`UPDATE tasks SET subtasks = ? WHERE board_id = ? AND id = ?`)
+          .run(JSON.stringify(subtasks), this.boardId, task.id);
+        changes.push(`Subtask ${subtaskId} "${updates.add_subtask}" added`);
+      }
+
+      /* Rename subtask (project only) */
+      if (updates.rename_subtask !== undefined) {
+        if (task.type !== 'project') {
+          return { success: false, error: 'Subtasks can only be modified on project tasks.' };
+        }
+        const subtasks: Array<{ id: string; title: string; status: string }> = JSON.parse(task.subtasks ?? '[]');
+        const sub = subtasks.find((s) => s.id === updates.rename_subtask!.id);
+        if (!sub) {
+          return { success: false, error: `Subtask ${updates.rename_subtask.id} not found.` };
+        }
+        sub.title = updates.rename_subtask.title;
+        this.db
+          .prepare(`UPDATE tasks SET subtasks = ? WHERE board_id = ? AND id = ?`)
+          .run(JSON.stringify(subtasks), this.boardId, task.id);
+        changes.push(`Subtask ${updates.rename_subtask.id} renamed to "${updates.rename_subtask.title}"`);
+      }
+
+      /* Reopen subtask (project only) */
+      if (updates.reopen_subtask !== undefined) {
+        if (task.type !== 'project') {
+          return { success: false, error: 'Subtasks can only be modified on project tasks.' };
+        }
+        const subtasks: Array<{ id: string; title: string; status: string }> = JSON.parse(task.subtasks ?? '[]');
+        const sub = subtasks.find((s) => s.id === updates.reopen_subtask);
+        if (!sub) {
+          return { success: false, error: `Subtask ${updates.reopen_subtask} not found.` };
+        }
+        sub.status = 'pending';
+        this.db
+          .prepare(`UPDATE tasks SET subtasks = ? WHERE board_id = ? AND id = ?`)
+          .run(JSON.stringify(subtasks), this.boardId, task.id);
+        changes.push(`Subtask ${updates.reopen_subtask} reopened`);
+      }
+
+      /* Recurrence (recurring only) */
+      if (updates.recurrence !== undefined) {
+        if (task.type !== 'recurring') {
+          return { success: false, error: 'Recurrence can only be changed on recurring tasks.' };
+        }
+        this.db
+          .prepare(`UPDATE tasks SET recurrence = ? WHERE board_id = ? AND id = ?`)
+          .run(updates.recurrence, this.boardId, task.id);
+        changes.push(`Recurrence changed to ${updates.recurrence}`);
+      }
+
+      /* --- After all updates: set updated_at, _last_mutation, record history --- */
+      this.db
+        .prepare(
+          `UPDATE tasks SET _last_mutation = ?, updated_at = ?
+           WHERE board_id = ? AND id = ?`,
+        )
+        .run(snapshot, now, this.boardId, task.id);
+
+      this.recordHistory(
+        task.id,
+        'updated',
+        params.sender_name,
+        JSON.stringify({ changes }),
+      );
+
+      /* --- Notification --- */
+      const notifications: UpdateResult['notifications'] = [];
+      if (senderPersonId) {
+        const notif = this.buildNotification(
+          { id: task.id, title: task.title, assignee: task.assignee },
+          'updated',
+          senderPersonId,
+        );
+        if (notif) notifications.push(notif);
+      }
+
+      /* --- Build result --- */
+      const result: UpdateResult = {
+        success: true,
+        task_id: task.id,
+        changes,
       };
       if (notifications.length > 0) result.notifications = notifications;
 

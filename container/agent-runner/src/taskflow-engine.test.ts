@@ -1457,4 +1457,309 @@ describe('TaskflowEngine', () => {
       expect(task.assignee).toBe('person-2');
     });
   });
+
+  /* ---------------------------------------------------------------- */
+  /*  update                                                           */
+  /* ---------------------------------------------------------------- */
+
+  describe('update', () => {
+    it('update title', () => {
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre', // assignee (person-1)
+        updates: { title: 'Fix login bug v2' },
+      });
+      expect(r.success).toBe(true);
+      expect(r.task_id).toBe('T-001');
+      expect(r.changes).toContain('Title changed to "Fix login bug v2"');
+
+      const task = engine.getTask('T-001');
+      expect(task.title).toBe('Fix login bug v2');
+    });
+
+    it('update priority', () => {
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { priority: 'urgent' },
+      });
+      expect(r.success).toBe(true);
+      expect(r.changes).toContain('Priority set to urgent');
+
+      const task = engine.getTask('T-001');
+      expect(task.priority).toBe('urgent');
+    });
+
+    it('invalid priority -> error', () => {
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { priority: 'critical' as any },
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('Invalid priority');
+      expect(r.error).toContain('critical');
+    });
+
+    it('set due_date', () => {
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { due_date: '2026-12-31' },
+      });
+      expect(r.success).toBe(true);
+      expect(r.changes).toContain('Due date set to 2026-12-31');
+
+      const task = engine.getTask('T-001');
+      expect(task.due_date).toBe('2026-12-31');
+    });
+
+    it('remove due_date (null)', () => {
+      // First set a due_date
+      db.exec(
+        `UPDATE tasks SET due_date = '2026-06-15' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { due_date: null },
+      });
+      expect(r.success).toBe(true);
+      expect(r.changes).toContain('Due date removed');
+
+      const task = engine.getTask('T-001');
+      expect(task.due_date).toBeNull();
+    });
+
+    it('add label (idempotent)', () => {
+      const r1 = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { add_label: 'frontend' },
+      });
+      expect(r1.success).toBe(true);
+      expect(r1.changes).toContain('Label "frontend" added');
+
+      // Add same label again — should be idempotent, no duplicate
+      const r2 = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { add_label: 'frontend' },
+      });
+      expect(r2.success).toBe(true);
+      // No "added" change since it was already present
+      expect(r2.changes!.some((c) => c.includes('frontend'))).toBe(false);
+
+      const task = engine.getTask('T-001');
+      const labels = JSON.parse(task.labels);
+      // Only one instance of 'frontend'
+      expect(labels.filter((l: string) => l === 'frontend')).toHaveLength(1);
+    });
+
+    it('remove label', () => {
+      // Set up labels
+      db.exec(
+        `UPDATE tasks SET labels = '["frontend","backend"]' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { remove_label: 'frontend' },
+      });
+      expect(r.success).toBe(true);
+      expect(r.changes).toContain('Label "frontend" removed');
+
+      const task = engine.getTask('T-001');
+      const labels = JSON.parse(task.labels);
+      expect(labels).toEqual(['backend']);
+    });
+
+    it('add note (auto-increment ID)', () => {
+      const r1 = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { add_note: 'First note' },
+      });
+      expect(r1.success).toBe(true);
+      expect(r1.changes).toContain('Note #1 added');
+
+      const r2 = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Second note' },
+      });
+      expect(r2.success).toBe(true);
+      expect(r2.changes).toContain('Note #2 added');
+
+      const task = engine.getTask('T-001');
+      const notes = JSON.parse(task.notes);
+      expect(notes).toHaveLength(2);
+      expect(notes[0].id).toBe(1);
+      expect(notes[0].text).toBe('First note');
+      expect(notes[0].by).toBe('Alexandre');
+      expect(notes[1].id).toBe(2);
+      expect(notes[1].text).toBe('Second note');
+      expect(task.next_note_id).toBe(3);
+    });
+
+    it('edit note by ID', () => {
+      // Seed a note
+      db.exec(
+        `UPDATE tasks SET notes = '[{"id":1,"text":"Original","at":"2026-01-01","by":"Alexandre"}]', next_note_id = 2
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { edit_note: { id: 1, text: 'Edited text' } },
+      });
+      expect(r.success).toBe(true);
+      expect(r.changes).toContain('Note #1 edited');
+
+      const task = engine.getTask('T-001');
+      const notes = JSON.parse(task.notes);
+      expect(notes[0].text).toBe('Edited text');
+    });
+
+    it('remove note by ID', () => {
+      // Seed two notes
+      db.exec(
+        `UPDATE tasks SET notes = '[{"id":1,"text":"Keep","at":"2026-01-01","by":"Alexandre"},{"id":2,"text":"Remove","at":"2026-01-01","by":"Alexandre"}]', next_note_id = 3
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { remove_note: 2 },
+      });
+      expect(r.success).toBe(true);
+      expect(r.changes).toContain('Note #2 removed');
+
+      const task = engine.getTask('T-001');
+      const notes = JSON.parse(task.notes);
+      expect(notes).toHaveLength(1);
+      expect(notes[0].id).toBe(1);
+    });
+
+    it('note not found -> error', () => {
+      // edit_note on a task with no notes
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { edit_note: { id: 99, text: 'nope' } },
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('Note #99 not found');
+    });
+
+    it('description max 500 chars -> error', () => {
+      const longDesc = 'x'.repeat(501);
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { description: longDesc },
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('500 character limit');
+    });
+
+    it('permission: assignee can update', () => {
+      // T-002 assigned to person-2 (Giovanni); Giovanni updates it
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        sender_name: 'Giovanni',
+        updates: { title: 'Updated by assignee' },
+      });
+      expect(r.success).toBe(true);
+      expect(r.changes).toContain('Title changed to "Updated by assignee"');
+    });
+
+    it('permission: manager can update any task', () => {
+      // T-002 assigned to person-2 (Giovanni); Alexandre (manager) updates it
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        sender_name: 'Alexandre',
+        updates: { priority: 'high' },
+      });
+      expect(r.success).toBe(true);
+      expect(r.changes).toContain('Priority set to high');
+    });
+
+    it('permission: non-owner/non-manager -> denied', () => {
+      // T-001 assigned to person-1 (Alexandre); Giovanni (not manager) tries to update
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Giovanni',
+        updates: { title: 'Should fail' },
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('Permission denied');
+    });
+
+    it('records history', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { title: 'History test' },
+      });
+
+      const history = db
+        .prepare(
+          `SELECT * FROM task_history WHERE board_id = ? AND task_id = 'T-001' AND action = 'updated'`,
+        )
+        .all(BOARD_ID) as any[];
+      expect(history).toHaveLength(1);
+      expect(history[0].by).toBe('Alexandre');
+      const details = JSON.parse(history[0].details);
+      expect(details.changes).toContain('Title changed to "History test"');
+    });
+
+    it('notification: update by non-assignee returns notification', () => {
+      // T-002 assigned to person-2 (Giovanni), updated by Alexandre (person-1)
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        sender_name: 'Alexandre',
+        updates: { priority: 'urgent' },
+      });
+      expect(r.success).toBe(true);
+      expect(r.notifications).toHaveLength(1);
+      expect(r.notifications![0].target_person_id).toBe('person-2');
+      expect(r.notifications![0].message).toContain('T-002');
+    });
+
+    it('notification: self-update returns no notification', () => {
+      // T-001 assigned to person-1 (Alexandre), updated by Alexandre
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { priority: 'low' },
+      });
+      expect(r.success).toBe(true);
+      expect(r.notifications).toBeUndefined();
+    });
+  });
 });
