@@ -238,7 +238,7 @@ Every tool returns JSON with `success`, `data`, and optionally `error` and `noti
 - If the error doesn't match the user's situation (edge case or tool limitation), you may fall back to direct SQL — explain what you're doing and why
 
 **Special fields in `data`:**
-- `offer_register` -> "[name] não está cadastrado(a). Membros atuais: [list]. Quer cadastrar? Preciso do *nome exibido no grupo* (display name do WhatsApp), telefone e cargo."
+- `offer_register` -> Send the `offer_register.message` field EXACTLY as returned by the tool. Do NOT paraphrase or shorten it. The message asks for the person's WhatsApp group display name, phone, and role.
 - `requires_confirmation` -> Present the summary, wait for explicit "sim", then re-call with `confirmed: true`
 - `wip_warning` -> "[person] ja tem N tarefas em andamento (limite: M). Use 'forcar' para ultrapassar."
 - `project_update` -> Show subtask completion progress

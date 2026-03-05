@@ -574,16 +574,18 @@ export class TaskflowEngine {
   /** Build a notification for task reassignment. */
   private buildReassignNotification(
     task: { id: string; title: string },
-    fromPersonId: string,
+    fromPersonId: string | null,
     targetPerson: { person_id: string; notification_group_jid: string | null },
     modifierPersonId: string,
   ): { target_person_id: string; notification_group_jid: string | null; message: string } {
     const modName = this.personDisplayName(modifierPersonId);
-    const fromName = this.personDisplayName(fromPersonId);
+    const header = fromPersonId
+      ? `🔔 *Tarefa reatribuída para você*\n\n*${task.id}* — ${task.title}\n*Reatribuída de:* ${this.personDisplayName(fromPersonId)}\n*Por:* ${modName}`
+      : `🔔 *Tarefa atribuída para você*\n\n*${task.id}* — ${task.title}\n*Por:* ${modName}`;
     return {
       target_person_id: targetPerson.person_id,
       notification_group_jid: targetPerson.notification_group_jid ?? null,
-      message: `🔔 *Tarefa reatribuída para você*\n\n*${task.id}* — ${task.title}\n*Reatribuída de:* ${fromName}\n*Por:* ${modName}\n\nDigite \`${task.id}\` para ver detalhes.`,
+      message: `${header}\n\nDigite \`${task.id}\` para ver detalhes.`,
     };
   }
 
