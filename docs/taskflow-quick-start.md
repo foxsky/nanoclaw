@@ -42,11 +42,11 @@ O fluxo tipico:
 
 ```
 Gestor cria tarefa       →  @Case tarefa para Alexandre: X ate sexta
-Responsavel comeca       →  @Case comecando T-001
-Fica bloqueado           →  @Case T-001 aguardando aprovacao juridica
-Desbloqueou              →  @Case T-001 retomada
-Finalizou                →  @Case T-001 pronta para revisao
-Gestor aprova            →  @Case T-001 aprovada
+Responsavel comeca       →  @Case comecando T001
+Fica bloqueado           →  @Case T001 aguardando aprovacao juridica
+Desbloqueou              →  @Case T001 retomada
+Finalizou                →  @Case T001 pronta para revisao
+Gestor aprova            →  @Case T001 aprovada
 ```
 
 ---
@@ -64,14 +64,14 @@ Gestor aprova            →  @Case T-001 aprovada
 
 | Comando | O que faz |
 |---------|-----------|
-| `@Case comecando T-XXX` | Comeca a trabalhar (verifica limite WIP) |
-| `@Case T-XXX aguardando [motivo]` | Marca como bloqueada |
-| `@Case T-XXX retomada` | Volta a trabalhar |
-| `@Case T-XXX pronta para revisao` | Envia para revisao do gestor |
-| `@Case T-XXX aprovada` | Aprova e conclui (gestor) |
-| `@Case devolver T-XXX` | Devolve para Proxima Acao (libera WIP) |
-| `@Case T-XXX concluida` | Atalho direto para concluida |
-| `@Case reabrir T-XXX` | Reabre uma tarefa concluida |
+| `@Case comecando TXXX` | Comeca a trabalhar (verifica limite WIP) |
+| `@Case TXXX aguardando [motivo]` | Marca como bloqueada |
+| `@Case TXXX retomada` | Volta a trabalhar |
+| `@Case TXXX pronta para revisao` | Envia para revisao do gestor |
+| `@Case TXXX aprovada` | Aprova e conclui (gestor) |
+| `@Case devolver TXXX` | Devolve para Proxima Acao (libera WIP) |
+| `@Case TXXX concluida` | Atalho direto para concluida |
+| `@Case reabrir TXXX` | Reabre uma tarefa concluida |
 | `@Case desfazer` | Desfaz ultima acao (ate 60s) |
 
 ### Consultas
@@ -102,16 +102,16 @@ Gestor aprova            →  @Case T-001 aprovada
 
 | Comando | O que faz |
 |---------|-----------|
-| `@Case reatribuir T-XXX para [pessoa]` | Muda responsavel (pede confirmacao) |
+| `@Case reatribuir TXXX para [pessoa]` | Muda responsavel (pede confirmacao) |
 
 ### Gestao (gestor)
 
 | Comando | O que faz |
 |---------|-----------|
 | `@Case processar inbox` | Processa itens pendentes |
-| `@Case estender prazo T-XXX para [data]` | Altera prazo |
-| `@Case cancelar T-XXX` | Cancela e arquiva |
-| `@Case T-005, T-006, T-007 aprovadas` | Operacoes em lote |
+| `@Case estender prazo TXXX para [data]` | Altera prazo |
+| `@Case cancelar TXXX` | Cancela e arquiva |
+| `@Case T005, T006, T007 aprovadas` | Operacoes em lote |
 
 ---
 
@@ -137,9 +137,9 @@ Comandos como `processar inbox`, `reatribuir`, `cancelar` e `estatisticas` funci
 
 ## Tipos de Tarefa
 
-- **T-NNN** — Tarefa simples
-- **P-NNN** — Projeto com sub-etapas (P-001.1, P-001.2, ...)
-- **R-NNN** — Recorrente (gera nova instancia ao concluir)
+- **TN** — Tarefa simples
+- **PN** — Projeto com sub-etapas (P1.1, P1.2, ...)
+- **RN** — Recorrente (gera nova instancia ao concluir)
 
 ---
 
@@ -157,12 +157,12 @@ Comandos como `processar inbox`, `reatribuir`, `cancelar` e `estatisticas` funci
 ## Dicas
 
 - Datas: use `hoje`, `amanha`, `sexta`, `15/03` ou `proxima segunda`
-- Prioridade: `@Case prioridade T-XXX: urgente` (baixa, normal, alta, urgente)
-- Rotulos: `@Case rotulo T-XXX: financeiro` para agrupar tarefas
-- Notas: `@Case nota T-XXX: cliente pediu ajuste` para comentar
-- Dependencias: `@Case T-001 depende de T-002`
-- Descricao: `@Case descricao T-XXX: escopo detalhado da tarefa`
-- Lembretes: `@Case lembrete T-XXX 3 dias antes`
+- Prioridade: `@Case prioridade TXXX: urgente` (baixa, normal, alta, urgente)
+- Rotulos: `@Case rotulo TXXX: financeiro` para agrupar tarefas
+- Notas: `@Case nota TXXX: cliente pediu ajuste` para comentar
+- Dependencias: `@Case T001 depende de T002`
+- Descricao: `@Case descricao TXXX: escopo detalhado da tarefa`
+- Lembretes: `@Case lembrete TXXX 3 dias antes`
 
 ---
 
@@ -182,11 +182,11 @@ Quadros filhos sao criados automaticamente:
 
 | Comando | O que faz |
 |---------|-----------|
-| `@Case vincular T-XXX ao quadro do [pessoa]` | Vincula tarefa ao quadro filho |
-| `@Case desvincular T-XXX` | Remove vinculo |
-| `@Case atualizar status T-XXX` | Atualiza rollup do quadro filho |
-| `@Case resumo de execucao T-XXX` | Mostra resumo do rollup |
-| `@Case ligar tarefa ao pai T-XXX` | Marca tarefa como parte de entrega do nivel acima |
+| `@Case vincular TXXX ao quadro do [pessoa]` | Vincula tarefa ao quadro filho |
+| `@Case desvincular TXXX` | Remove vinculo |
+| `@Case atualizar status TXXX` | Atualiza rollup do quadro filho |
+| `@Case resumo de execucao TXXX` | Mostra resumo do rollup |
+| `@Case ligar tarefa ao pai TXXX` | Marca tarefa como parte de entrega do nivel acima |
 
 Tarefas vinculadas aparecem com 🔗 no quadro. O rollup mostra o status agregado do quadro filho (ativo, bloqueado, em risco, pronto para revisao).
 

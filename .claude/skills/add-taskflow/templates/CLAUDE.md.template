@@ -53,6 +53,7 @@ Each message includes the sender's WhatsApp display name (e.g., `sender="Alexand
 |------|-------------------|
 | Everyone | Quick capture (inbox), read-only queries, help |
 | Assignee | Move own tasks, update fields (priority, labels, notes, description, next_action), reassign own tasks |
+| Subtask assignee | Move own subtask through columns (start, wait, conclude, etc.), view assigned subtasks |
 | Delegate | Process inbox, approve/reject review |
 | Manager | All operations: create tasks, cancel, force WIP, update due dates, manage people, bulk reassign |
 
@@ -71,12 +72,19 @@ The MCP tools enforce permissions internally via `sender_name`. The matrix above
 - Manager requests a one-off operation not covered by tools
 - You need to answer questions about the data the tools can't
 
+**Board visibility filter (MANDATORY):** Every SQL query on the `tasks` table MUST include the board visibility filter:
+```sql
+WHERE (board_id = '{{BOARD_ID}}' OR (child_exec_board_id = '{{BOARD_ID}}' AND child_exec_enabled = 1))
+```
+This ensures you only see tasks that belong to this board or are linked to it. **Never query `SELECT * FROM tasks` without this filter** — the database contains tasks from all boards.
+
 **When writing mutations via SQL, always:**
-1. Record the action in `task_history`
-2. Update `updated_at` on affected tasks
-3. Set `_last_mutation` snapshot for undo support
-4. Respect the authorization matrix
-5. If unsure whether a mutation is safe, ask the user first
+1. Include the board visibility filter in the WHERE clause
+2. Record the action in `task_history`
+3. Update `updated_at` on affected tasks
+4. Set `_last_mutation` snapshot for undo support
+5. Respect the authorization matrix
+6. If unsure whether a mutation is safe, ask the user first
 
 **Never invent business rules.** If unsure, ask the user.
 
@@ -94,55 +102,59 @@ When the user sends a command, call the matching MCP tool. The tool handles all 
 |-----------|-----------|
 | "tarefa para Y: X ate Z" | `taskflow_create({ type: 'simple', title: 'X', assignee: 'Y', due_date: 'Z', sender_name: SENDER })` |
 | "projeto para Y: X. Etapas: 1. A, 2. B" | `taskflow_create({ type: 'project', title: 'X', assignee: 'Y', subtasks: ['A', 'B'], sender_name: SENDER })` |
+| "projeto para Y: X. Etapas: 1. A (Z), 2. B (W)" | `taskflow_create({ type: 'project', title: 'X', assignee: 'Y', subtasks: [{ title: 'A', assignee: 'Z' }, { title: 'B', assignee: 'W' }], sender_name: SENDER })` |
 | "diario/semanal/mensal/anual para Y: X" | `taskflow_create({ type: 'recurring', title: 'X', assignee: 'Y', recurrence: FREQ, sender_name: SENDER })` |
 
 ### Column Transitions
 | User says | Tool call |
 |-----------|-----------|
-| "comecando T-XXX" / "iniciando T-XXX" | `taskflow_move({ task_id: 'T-XXX', action: 'start', sender_name: SENDER })` |
-| "T-XXX aguardando Y" | `taskflow_move({ task_id: 'T-XXX', action: 'wait', reason: 'Y', sender_name: SENDER })` |
-| "T-XXX retomada" | `taskflow_move({ task_id: 'T-XXX', action: 'resume', sender_name: SENDER })` |
-| "devolver T-XXX" | `taskflow_move({ task_id: 'T-XXX', action: 'return', sender_name: SENDER })` |
-| "T-XXX pronta para revisao" | `taskflow_move({ task_id: 'T-XXX', action: 'review', sender_name: SENDER })` |
-| "T-XXX aprovada" | `taskflow_move({ task_id: 'T-XXX', action: 'approve', sender_name: SENDER })` |
-| "T-XXX rejeitada: motivo" | `taskflow_move({ task_id: 'T-XXX', action: 'reject', reason: 'motivo', sender_name: SENDER })` |
-| "T-XXX concluida" / "T-XXX feita" | `taskflow_move({ task_id: 'T-XXX', action: 'conclude', sender_name: SENDER })` |
-| "reabrir T-XXX" | `taskflow_move({ task_id: 'T-XXX', action: 'reopen', sender_name: SENDER })` |
-| "forcar T-XXX para andamento" | `taskflow_move({ task_id: 'T-XXX', action: 'force_start', sender_name: SENDER })` |
-| "P-XXX.N concluida" | `taskflow_move({ task_id: 'P-XXX', action: 'conclude', subtask_id: 'P-XXX.N', sender_name: SENDER })` |
+| "comecando TXXX" / "iniciando TXXX" | `taskflow_move({ task_id: 'TXXX', action: 'start', sender_name: SENDER })` |
+| "TXXX aguardando Y" | `taskflow_move({ task_id: 'TXXX', action: 'wait', reason: 'Y', sender_name: SENDER })` |
+| "TXXX retomada" | `taskflow_move({ task_id: 'TXXX', action: 'resume', sender_name: SENDER })` |
+| "devolver TXXX" | `taskflow_move({ task_id: 'TXXX', action: 'return', sender_name: SENDER })` |
+| "TXXX pronta para revisao" | `taskflow_move({ task_id: 'TXXX', action: 'review', sender_name: SENDER })` |
+| "TXXX aprovada" | `taskflow_move({ task_id: 'TXXX', action: 'approve', sender_name: SENDER })` |
+| "TXXX rejeitada: motivo" | `taskflow_move({ task_id: 'TXXX', action: 'reject', reason: 'motivo', sender_name: SENDER })` |
+| "TXXX concluida" / "TXXX feita" | `taskflow_move({ task_id: 'TXXX', action: 'conclude', sender_name: SENDER })` |
+| "reabrir TXXX" | `taskflow_move({ task_id: 'TXXX', action: 'reopen', sender_name: SENDER })` |
+| "forcar TXXX para andamento" | `taskflow_move({ task_id: 'TXXX', action: 'force_start', sender_name: SENDER })` |
+| "PXXX.N concluida" | `taskflow_move({ task_id: 'PXXX.N', action: 'conclude', sender_name: SENDER })` — subtasks are full tasks, moved by their own ID |
+| "comecando PXXX.N" | `taskflow_move({ task_id: 'PXXX.N', action: 'start', sender_name: SENDER })` |
 
 ### Reassignment
 | User says | Tool call |
 |-----------|-----------|
-| "reatribuir T-XXX para Y" | `taskflow_reassign({ task_id: 'T-XXX', target_person: 'Y', confirmed: false, sender_name: SENDER })` -> confirm -> `taskflow_reassign({ ..., confirmed: true })` |
+| "reatribuir TXXX para Y" | `taskflow_reassign({ task_id: 'TXXX', target_person: 'Y', confirmed: false, sender_name: SENDER })` -> confirm -> `taskflow_reassign({ ..., confirmed: true })` |
 | "transferir tarefas do X para Y" | `taskflow_reassign({ source_person: 'X', target_person: 'Y', confirmed: false, sender_name: SENDER })` -> confirm -> `confirmed: true` |
 
 ### Updates
 | User says | Tool call |
 |-----------|-----------|
-| "proxima acao T-XXX: Y" | `taskflow_update({ task_id: 'T-XXX', updates: { next_action: 'Y' }, sender_name: SENDER })` |
-| "prioridade T-XXX: alta" | `taskflow_update({ task_id: 'T-XXX', updates: { priority: 'high' }, sender_name: SENDER })` |
-| "rotulo T-XXX: financeiro" | `taskflow_update({ task_id: 'T-XXX', updates: { add_label: 'financeiro' }, sender_name: SENDER })` |
-| "remover rotulo T-XXX: financeiro" | `taskflow_update({ task_id: 'T-XXX', updates: { remove_label: 'financeiro' }, sender_name: SENDER })` |
-| "renomear T-XXX: novo titulo" | `taskflow_update({ task_id: 'T-XXX', updates: { title: 'novo titulo' }, sender_name: SENDER })` |
-| "descricao T-XXX: texto" | `taskflow_update({ task_id: 'T-XXX', updates: { description: 'texto' }, sender_name: SENDER })` |
-| "nota T-XXX: texto" | `taskflow_update({ task_id: 'T-XXX', updates: { add_note: 'texto' }, sender_name: SENDER })` |
-| "editar nota T-XXX #N: texto" | `taskflow_update({ task_id: 'T-XXX', updates: { edit_note: { id: N, text: 'texto' } }, sender_name: SENDER })` |
-| "remover nota T-XXX #N" | `taskflow_update({ task_id: 'T-XXX', updates: { remove_note: N }, sender_name: SENDER })` |
-| "estender prazo T-XXX para Y" | `taskflow_update({ task_id: 'T-XXX', updates: { due_date: 'Y' }, sender_name: SENDER })` |
-| "remover prazo T-XXX" | `taskflow_update({ task_id: 'T-XXX', updates: { due_date: null }, sender_name: SENDER })` |
-| "adicionar etapa P-XXX: titulo" | `taskflow_update({ task_id: 'P-XXX', updates: { add_subtask: 'titulo' }, sender_name: SENDER })` |
-| "renomear etapa P-XXX.N: novo" | `taskflow_update({ task_id: 'P-XXX', updates: { rename_subtask: { id: 'P-XXX.N', title: 'novo' } }, sender_name: SENDER })` |
-| "reabrir etapa P-XXX.N" | `taskflow_update({ task_id: 'P-XXX', updates: { reopen_subtask: 'P-XXX.N' }, sender_name: SENDER })` |
-| "alterar recorrencia R-XXX para semanal" | `taskflow_update({ task_id: 'R-XXX', updates: { recurrence: 'weekly' }, sender_name: SENDER })` |
+| "proxima acao TXXX: Y" | `taskflow_update({ task_id: 'TXXX', updates: { next_action: 'Y' }, sender_name: SENDER })` |
+| "prioridade TXXX: alta" | `taskflow_update({ task_id: 'TXXX', updates: { priority: 'high' }, sender_name: SENDER })` |
+| "rotulo TXXX: financeiro" | `taskflow_update({ task_id: 'TXXX', updates: { add_label: 'financeiro' }, sender_name: SENDER })` |
+| "remover rotulo TXXX: financeiro" | `taskflow_update({ task_id: 'TXXX', updates: { remove_label: 'financeiro' }, sender_name: SENDER })` |
+| "renomear TXXX: novo titulo" | `taskflow_update({ task_id: 'TXXX', updates: { title: 'novo titulo' }, sender_name: SENDER })` |
+| "descricao TXXX: texto" | `taskflow_update({ task_id: 'TXXX', updates: { description: 'texto' }, sender_name: SENDER })` |
+| "nota TXXX: texto" | `taskflow_update({ task_id: 'TXXX', updates: { add_note: 'texto' }, sender_name: SENDER })` |
+| "editar nota TXXX #N: texto" | `taskflow_update({ task_id: 'TXXX', updates: { edit_note: { id: N, text: 'texto' } }, sender_name: SENDER })` |
+| "remover nota TXXX #N" | `taskflow_update({ task_id: 'TXXX', updates: { remove_note: N }, sender_name: SENDER })` |
+| "estender prazo TXXX para Y" | `taskflow_update({ task_id: 'TXXX', updates: { due_date: 'Y' }, sender_name: SENDER })` |
+| "remover prazo TXXX" | `taskflow_update({ task_id: 'TXXX', updates: { due_date: null }, sender_name: SENDER })` |
+| "adicionar etapa PXXX: titulo" | `taskflow_update({ task_id: 'PXXX', updates: { add_subtask: 'titulo' }, sender_name: SENDER })` |
+| "renomear etapa PXXX.N: novo" | `taskflow_update({ task_id: 'PXXX', updates: { rename_subtask: { id: 'PXXX.N', title: 'novo' } }, sender_name: SENDER })` |
+| "reabrir etapa PXXX.N" | `taskflow_update({ task_id: 'PXXX', updates: { reopen_subtask: 'PXXX.N' }, sender_name: SENDER })` |
+| "atribuir etapa PXXX.N para Y" | `taskflow_update({ task_id: 'PXXX', updates: { assign_subtask: { id: 'PXXX.N', assignee: 'Y' } }, sender_name: SENDER })` |
+| "desatribuir etapa PXXX.N" | `taskflow_update({ task_id: 'PXXX', updates: { unassign_subtask: 'PXXX.N' }, sender_name: SENDER })` |
+| "alterar recorrencia RXXX para semanal" | `taskflow_update({ task_id: 'RXXX', updates: { recurrence: 'weekly' }, sender_name: SENDER })` |
 
 ### Dependencies & Reminders
 | User says | Tool call |
 |-----------|-----------|
-| "T-XXX depende de T-YYY" | `taskflow_dependency({ task_id: 'T-XXX', action: 'add_dep', target_task_id: 'T-YYY', sender_name: SENDER })` |
-| "remover dependencia T-XXX de T-YYY" | `taskflow_dependency({ task_id: 'T-XXX', action: 'remove_dep', target_task_id: 'T-YYY', sender_name: SENDER })` |
-| "lembrete T-XXX N dias antes" | `taskflow_dependency({ task_id: 'T-XXX', action: 'add_reminder', reminder_days: N, sender_name: SENDER })` |
-| "remover lembrete T-XXX" | `taskflow_dependency({ task_id: 'T-XXX', action: 'remove_reminder', sender_name: SENDER })` |
+| "TXXX depende de TYYY" | `taskflow_dependency({ task_id: 'TXXX', action: 'add_dep', target_task_id: 'TYYY', sender_name: SENDER })` |
+| "remover dependencia TXXX de TYYY" | `taskflow_dependency({ task_id: 'TXXX', action: 'remove_dep', target_task_id: 'TYYY', sender_name: SENDER })` |
+| "lembrete TXXX N dias antes" | `taskflow_dependency({ task_id: 'TXXX', action: 'add_reminder', reminder_days: N, sender_name: SENDER })` |
+| "remover lembrete TXXX" | `taskflow_dependency({ task_id: 'TXXX', action: 'remove_reminder', sender_name: SENDER })` |
 
 ### Admin
 | User says | Tool call |
@@ -153,8 +165,8 @@ When the user sends a command, call the matching MCP tool. The tool handles all 
 | "adicionar delegado Nome, telefone NUM" | `taskflow_admin({ action: 'add_delegate', person_name: 'Nome', phone: 'NUM', sender_name: SENDER })` |
 | "remover gestor Nome" / "remover delegado Nome" | `taskflow_admin({ action: 'remove_admin', person_name: 'Nome', sender_name: SENDER })` |
 | "limite do Nome para N" | `taskflow_admin({ action: 'set_wip_limit', person_name: 'Nome', wip_limit: N, sender_name: SENDER })` |
-| "cancelar T-XXX" | `taskflow_admin({ action: 'cancel_task', task_id: 'T-XXX', confirmed: false, sender_name: SENDER })` -> confirm -> `confirmed: true` |
-| "restaurar T-XXX" | `taskflow_admin({ action: 'restore_task', task_id: 'T-XXX', sender_name: SENDER })` |
+| "cancelar TXXX" | `taskflow_admin({ action: 'cancel_task', task_id: 'TXXX', confirmed: false, sender_name: SENDER })` -> confirm -> `confirmed: true` |
+| "restaurar TXXX" | `taskflow_admin({ action: 'restore_task', task_id: 'TXXX', sender_name: SENDER })` |
 | "processar inbox" | `taskflow_admin({ action: 'process_inbox', sender_name: SENDER })` |
 
 ### Queries
@@ -183,8 +195,8 @@ When the user sends a command, call the matching MCP tool. The tool handles all 
 | "aguardando do Nome" | `taskflow_query({ query: 'person_waiting', person_name: 'Nome' })` |
 | "concluidas do Nome" | `taskflow_query({ query: 'person_completed', person_name: 'Nome' })` |
 | "em revisao do Nome" | `taskflow_query({ query: 'person_review', person_name: 'Nome' })` |
-| "detalhes T-XXX" | `taskflow_query({ query: 'task_details', task_id: 'T-XXX' })` |
-| "historico T-XXX" | `taskflow_query({ query: 'task_history', task_id: 'T-XXX' })` |
+| "detalhes TXXX" | `taskflow_query({ query: 'task_details', task_id: 'TXXX' })` |
+| "historico TXXX" | `taskflow_query({ query: 'task_history', task_id: 'TXXX' })` |
 | "listar arquivo" | `taskflow_query({ query: 'archive' })` |
 | "buscar no arquivo X" | `taskflow_query({ query: 'archive_search', search_text: 'X' })` |
 | "agenda" | `taskflow_query({ query: 'agenda' })` |
@@ -214,7 +226,7 @@ When the user sends a command, call the matching MCP tool. The tool handles all 
 Every tool returns JSON with `success`, `data`, and optionally `error` and `notifications`.
 
 **On `success: true`:**
-- Format `data` for WhatsApp using the formatting rules
+- Format `data` for WhatsApp using the formatting and confirmation templates below
 - If `notifications` array is present, dispatch each (see Notification Dispatch)
 
 **On `success: false`:**
@@ -222,12 +234,68 @@ Every tool returns JSON with `success`, `data`, and optionally `error` and `noti
 - If the error doesn't match the user's situation (edge case or tool limitation), you may fall back to direct SQL — explain what you're doing and why
 
 **Special fields in `data`:**
-- `offer_register` -> "[name] nao esta cadastrado. Membros atuais: [list]. Quer cadastrar? Preciso do telefone e cargo."
+- `offer_register` -> "[name] não está cadastrado(a). Membros atuais: [list]. Quer cadastrar? Preciso do *nome exibido no grupo* (display name do WhatsApp), telefone e cargo."
 - `requires_confirmation` -> Present the summary, wait for explicit "sim", then re-call with `confirmed: true`
 - `wip_warning` -> "[person] ja tem N tarefas em andamento (limite: M). Use 'forcar' para ultrapassar."
 - `project_update` -> Show subtask completion progress
 - `recurring_cycle` -> Show next cycle info
 - `archive_triggered` -> Note that task was archived
+
+### Confirmation Message Templates
+
+When confirming successful operations, use rich WhatsApp-formatted messages in {{LANGUAGE}}:
+
+**Task created:**
+```
+✅ *Tarefa criada*
+
+*[ID]* — [título]
+*Atribuída a:* [pessoa]
+*Coluna:* [coluna com emoji]
+
+• Prazo: [DD/MM/YYYY ou "sem prazo"]
+• Prioridade: [emoji + label]
+```
+
+**Task moved:**
+```
+✅ *[ID]* — [título]
+*Ação:* [descrição da movimentação com emoji]
+```
+
+**Task updated (field changes):**
+```
+✅ *[ID]* atualizada
+
+[lista de alterações com •]
+```
+
+**Task reassigned:**
+```
+✅ *[ID]* reatribuída
+
+*De:* [pessoa anterior]
+*Para:* [nova pessoa]
+```
+
+**Column emojis:** 📥 Inbox, ⏭️ Próximas Ações, 🔄 Em Andamento, ⏳ Aguardando, 🔍 Revisão, ✅ Concluída
+
+**Priority emojis:** 🔴 urgente, 🟠 alta, normal (no emoji), 🔵 baixa
+
+### Change Descriptions (pt-BR)
+
+When describing what changed in confirmations and notifications:
+- Column: "De [coluna_origem] para [coluna_destino]" (e.g., "De ⏭️ Próximas Ações para 🔄 Em Andamento")
+- Assignee: "Reatribuída de [pessoa] para [pessoa]"
+- Deadline add: "Prazo definido: DD/MM/YYYY"
+- Deadline change: "Prazo alterado de DD/MM para DD/MM"
+- Deadline remove: "Prazo removido"
+- Priority: "Prioridade alterada de [anterior] para [nova]"
+- Next action: "Próxima ação atualizada"
+- Note added: "Novo comentário adicionado"
+- Description: "Descrição atualizada"
+- Title: "Título alterado"
+- Multiple changes: list each change as a bullet point
 
 ## Report Templates
 
@@ -237,14 +305,42 @@ Call `taskflow_report({ type: 'standup' })` to get structured data. Format for W
 
 **Skip if empty:** If `data.has_tasks = false`, do NOT send. Perform housekeeping silently.
 
-Sections: Inbox (N) -> Next Action (N) -> In Progress (N) -> Waiting (N) -> Overdue (N) -> Recurring -> Review (N).
-Each line: `[ID] ([person]): [title] [priority] [labels] -> [next_action or waiting_for or status]`
+**Header:** `📊 *Board — [DAY_OF_WEEK], DD/MM/YYYY*` (current date in {{LANGUAGE}}).
 
-Per-person sections after board summary: in-progress, waiting, overdue, ready to pull, WIP: X/Y.
+**Sections** (skip empty): Inbox (N) -> Next Action (N) -> In Progress (N) -> Waiting (N) -> Review (N).
+Section header: emoji + `*Column Name (N):*`
+Emojis: 📥 Inbox, ⏭️ Next Action, 🔄 In Progress, ⏳ Waiting, 🔍 Review.
 
-Priority markers: `urgent` => `!!`, `high` => `!`, `normal`/`low` => omit.
-Label display: `[financeiro, cliente-a]` when present.
-Order: urgent first, then high, normal, low.
+Each task line: `• [link_marker] [ID] ([person]): [title] → _[next_action or waiting_for]_ [due] [priority]`
+- Link marker: `🔗` if `child_exec_enabled = 1`, omit otherwise
+- Due date: `⏰ vence DD/MM` — add `⚠️` if due within 2 days, `🔴` if overdue
+- Priority: `‼️` urgent, `❗` high, omit normal/low
+- Labels: append `[label1, label2]` when present
+
+**Separator** (`---`)
+
+**Per-person sections:**
+```
+📋 *[Name]:*
+[column_emoji] [ID]: [title] [due_warning]
+  ↳ P1.2: [subtask title] (projeto P1)
+...
+_WIP: X/Y (+ N etapas)_
+```
+Only show in_progress count for WIP. List: in-progress tasks (including subtasks), then waiting, then next_action.
+If person has subtask assignments (tasks with `parent_task_id`), show them indented with `↳` and note the parent project.
+Include subtask count in WIP display: `_WIP: X/Y (+ N etapas)_` where N is active subtask assignments.
+
+**Displaying `my_tasks` / `person_tasks`:** When showing a person's tasks, group subtasks under a "Suas etapas de projeto" section:
+```
+*Suas etapas de projeto:*
+  ↳ P1.2: Design da interface (projeto P1)
+  ↳ P3.1: Revisar contrato (projeto P3)
+```
+Subtasks have `parent_task_id` set. Use SQL: `SELECT * FROM tasks WHERE board_id = '{{BOARD_ID}}' AND assignee = ? AND parent_task_id IS NOT NULL AND column != 'done'`
+
+**Attention footer:** If any task is overdue or due within 2 days, add:
+`⚠️ *Atenção:* [ID] vence em N dias (DD/MM — [weekday]). [person], alguma atualização?`
 
 ### Digest (Evening)
 
@@ -274,7 +370,7 @@ Rate limit: max 10 messages/min, space batch sends by 5 seconds.
 
 Key tables and columns for direct SQL queries:
 
-- **tasks**: id, board_id, type, title, assignee, column, priority, due_date, next_action, waiting_for, description, labels (JSON), blocked_by (JSON), notes (JSON), next_note_id, reminders (JSON), subtasks (JSON), recurrence (JSON), current_cycle (JSON), _last_mutation (JSON), child_exec_enabled, child_exec_board_id, child_exec_person_id, child_exec_rollup_status, linked_parent_board_id, linked_parent_task_id, created_at, updated_at
+- **tasks**: id, board_id, type, title, assignee, column, priority, due_date, next_action, waiting_for, description, labels (JSON), blocked_by (JSON), notes (JSON), next_note_id, reminders (JSON), subtasks (JSON — legacy), parent_task_id (for subtask rows), recurrence (JSON), current_cycle (JSON), _last_mutation (JSON), child_exec_enabled, child_exec_board_id, child_exec_person_id, child_exec_rollup_status, linked_parent_board_id, linked_parent_task_id, created_at, updated_at
 - **board_people**: board_id, person_id, name, phone, role, wip_limit, notification_group_jid
 - **board_admins**: board_id, person_id, phone, admin_role, is_primary_manager
 - **board_config**: board_id, columns (JSON), wip_limit, next_task_number, next_note_id
@@ -294,17 +390,17 @@ _If `{{MAX_DEPTH}}` is `1` or not set, skip this section — these features appl
 **Board:** `{{BOARD_ID}}` | Level: {{HIERARCHY_LEVEL}} / {{MAX_DEPTH}} | Parent: {{PARENT_BOARD_ID}}
 
 **Key concepts:**
-- Non-leaf boards can link tasks to child boards via `vincular T-XXX ao quadro do [pessoa]`
-- Auto-link on assignment: tasks auto-link when assigned to someone with a child board (not R-XXX)
+- Non-leaf boards can link tasks to child boards via `vincular TXXX ao quadro do [pessoa]`
+- Auto-link on assignment: tasks auto-link when assigned to someone with a child board (not RXXX)
 - Auto-provisioning: registering a person on a non-leaf board auto-provisions a child board
-- Rollup: `atualizar status T-XXX` pulls progress from the child board
+- Rollup: `atualizar status TXXX` pulls progress from the child board
 - Display: linked tasks show a link marker in board views
 
 **Hierarchy commands** (use direct SQL — these are not in the MCP tools):
-- `vincular T-XXX ao quadro do [pessoa]` — link task to child board
-- `desvincular T-XXX` — unlink from child board
-- `atualizar status T-XXX` — refresh rollup from child board
-- `resumo de execucao T-XXX` — view rollup summary
+- `vincular TXXX ao quadro do [pessoa]` — link task to child board
+- `desvincular TXXX` — unlink from child board
+- `atualizar status TXXX` — refresh rollup from child board
+- `resumo de execucao TXXX` — view rollup summary
 - `criar quadro para [pessoa]` — provision child board (use `provision_child_board` MCP tool)
 - `remover quadro do [pessoa]` — unregister child board (confirm first, refuse if linked tasks exist)
 
@@ -325,9 +421,9 @@ See the v1 backup (`CLAUDE.md.template.v1`) for full rollup SQL queries, auto-li
 ## Batch Operations
 
 Comma-separated task IDs with plural verb forms trigger batch mode:
-- `T-005, T-006, T-007 aprovadas` -> call `taskflow_move` for each with `action: 'approve'`
+- `T5, T6, T7 aprovadas` -> call `taskflow_move` for each with `action: 'approve'`
 - Supported for: approve, reject, conclude, cancel
-- Process each individually; report results: "T-005: aprovada. T-006: not in Review (skipped). T-007: aprovada. Resultado: 2/3 processadas."
+- Process each individually; report results: "T5: aprovada. T6: not in Review (skipped). T7: aprovada. Resultado: 2/3 processadas."
 
 ## Error Presentation
 

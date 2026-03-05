@@ -154,9 +154,9 @@ function seedTestDb(db: Database.Database, boardId: string) {
   db.exec(`INSERT INTO board_people VALUES ('${boardId}', 'person-2', 'Giovanni', '5585999990002', 'Dev', 3, NULL)`);
   // Seed some tasks
   const now = new Date().toISOString();
-  db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at) VALUES ('T-001', '${boardId}', 'simple', 'Fix login bug', 'person-1', 'in_progress', '${now}', '${now}')`);
-  db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at) VALUES ('T-002', '${boardId}', 'simple', 'Update docs', 'person-2', 'next_action', '${now}', '${now}')`);
-  db.exec(`INSERT INTO tasks (id, board_id, type, title, column, created_at, updated_at) VALUES ('T-003', '${boardId}', 'simple', 'Review PR', 'inbox', '${now}', '${now}')`);
+  db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at) VALUES ('T001', '${boardId}', 'simple', 'Fix login bug', 'person-1', 'in_progress', '${now}', '${now}')`);
+  db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at) VALUES ('T002', '${boardId}', 'simple', 'Update docs', 'person-2', 'next_action', '${now}', '${now}')`);
+  db.exec(`INSERT INTO tasks (id, board_id, type, title, column, created_at, updated_at) VALUES ('T003', '${boardId}', 'simple', 'Review PR', 'inbox', '${now}', '${now}')`);
 }
 
 describe('TaskflowEngine', () => {
@@ -187,19 +187,19 @@ describe('TaskflowEngine', () => {
       const result = engine.query({ query: 'person_tasks', person_name: 'Alexandre' });
       expect(result.success).toBe(true);
       expect(result.data).toHaveLength(1);
-      expect(result.data[0].id).toBe('T-001');
+      expect(result.data[0].id).toBe('T001');
     });
 
     it('returns task details', async () => {
-      const result = engine.query({ query: 'task_details', task_id: 'T-001' });
+      const result = engine.query({ query: 'task_details', task_id: 'T001' });
       expect(result.success).toBe(true);
       expect(result.data.title).toBe('Fix login bug');
     });
 
     it('returns error for unknown task', async () => {
-      const result = engine.query({ query: 'task_details', task_id: 'T-999' });
+      const result = engine.query({ query: 'task_details', task_id: 'T999' });
       expect(result.success).toBe(false);
-      expect(result.error).toContain('T-999');
+      expect(result.error).toContain('T999');
     });
   });
 });
@@ -461,7 +461,7 @@ git commit -m "feat: register TaskFlow query tool and pass canonical board_id"
 - Modify: `container/agent-runner/src/taskflow-engine.test.ts`
 
 **Key logic to implement:**
-- ID generation (read `next_task_number` from `board_config`, format as `T-NNN`/`P-NNN`/`R-NNN`, increment)
+- ID generation (read `next_task_number` from `board_config`, format as `TN`/`PN`/`RN`, increment)
 - Assignee resolution (name → person_id, offer_register if unknown)
 - Column placement (inbox for captures, next_action for assigned tasks)
 - Project subtask initialization
@@ -474,7 +474,9 @@ git commit -m "feat: register TaskFlow query tool and pass canonical board_id"
 - Create inbox capture → goes to inbox, no assignee
 - Create assigned task → goes to next_action
 - Create task with unknown assignee → returns offer_register
-- Create project with subtasks → subtasks[] populated
+- Create project with subtasks → subtask rows created with `parent_task_id`
+- Create project with assignable subtasks → each subtask assigned to specified person
+- Create project with unknown subtask assignee → returns offer_register
 - Create recurring → recurrence and due_date set
 - Create task for person with child board → auto-links
 - Permission check: non-manager can't create assigned tasks
@@ -580,7 +582,7 @@ force_start: ignores WIP (manager only)
 - Modify: `container/agent-runner/src/taskflow-engine.ts`
 - Modify: `container/agent-runner/src/taskflow-engine.test.ts`
 
-**Supported updates:** title, priority, due_date (set/remove), description, next_action, add_label, remove_label, add_note, edit_note, remove_note, add_subtask, rename_subtask, reopen_subtask, recurrence change.
+**Supported updates:** title, priority, due_date (set/remove), description, next_action, add_label, remove_label, add_note, edit_note, remove_note, add_subtask, rename_subtask, reopen_subtask, assign_subtask, unassign_subtask, recurrence change.
 
 **Tests:**
 - Update title
@@ -599,8 +601,11 @@ force_start: ignores WIP (manager only)
 - Rename subtask
 - Reopen completed subtask
 - Subtask command on non-project → error
+- Assign subtask to team member → updates assignee, sends notification
+- Assign subtask to unknown person → returns offer_register
+- Unassign subtask → clears assignee
 - Recurrence change on non-recurring → error
-- Permission: assignee or manager only
+- Permission: assignee or manager only (subtask assign/unassign: project owner or manager)
 
 **Commit after all tests pass.**
 
@@ -796,9 +801,9 @@ When the user sends a command, call the matching MCP tool. The tool handles all 
 ### Column Transitions
 | User says | Tool call |
 |-----------|-----------|
-| "comecando T-XXX" | `taskflow_move({ task_id: 'T-XXX', action: 'start', sender_name: SENDER })` |
-| "T-XXX aguardando Y" | `taskflow_move({ task_id: 'T-XXX', action: 'wait', reason: 'Y', sender_name: SENDER })` |
-| "T-XXX retomada" | `taskflow_move({ task_id: 'T-XXX', action: 'resume', sender_name: SENDER })` |
+| "comecando TXXX" | `taskflow_move({ task_id: 'TXXX', action: 'start', sender_name: SENDER })` |
+| "TXXX aguardando Y" | `taskflow_move({ task_id: 'TXXX', action: 'wait', reason: 'Y', sender_name: SENDER })` |
+| "TXXX retomada" | `taskflow_move({ task_id: 'TXXX', action: 'resume', sender_name: SENDER })` |
 | ... | ... |
 
 ### Queries
@@ -863,9 +868,9 @@ systemctl restart nanoclaw
 **Step 3:** Test all command categories via WhatsApp:
 - Quick capture: `@Case anotar: teste`
 - Create task: `@Case tarefa para [pessoa]: teste ate sexta`
-- Move: `@Case comecando T-XXX`
+- Move: `@Case comecando TXXX`
 - Query: `@Case quadro`
-- Reassign: `@Case reatribuir T-XXX para [pessoa]`
+- Reassign: `@Case reatribuir TXXX para [pessoa]`
 - Statistics: `@Case estatisticas`
 - Undo: `@Case desfazer`
 
@@ -994,3 +999,63 @@ tail -f /root/nanoclaw/logs/nanoclaw.log
 - **Schema alignment**: Task 0 syncs canonical schema with live DB before engine development
 - **Concurrent write safety**: `busy_timeout = 5000` pragma on all engine DB connections
 - **Native module build**: Dockerfile verified to have build tools in Task 1
+
+## Implementation Notes (Post-Review)
+
+The following refinements were made during code review of the implemented engine:
+
+- **`resolveNotifTarget` simplified** — returns only `{ target_person_id, notification_group_jid }` (no `name` field). It queries only `notification_group_jid` from `board_people`; display names are resolved separately via `personDisplayName()`.
+- **`buildMoveNotification` task parameter simplified** — accepts `task: { id, title, assignee }` only. The `column`, `due_date`, and `priority` fields were removed (dead code — move notifications only use the action label, not those fields).
+- **`moveActionLabels` extracted to static class property** — `TaskflowEngine.moveActionLabels` is a `private static readonly` property instead of being recreated inside `buildMoveNotification` on every call.
+- **Redundant `resolvePerson` removed from reassign loop** — the sender person ID computed before the bulk reassignment loop is reused inside the loop instead of re-querying on each iteration.
+- **Skill copy uses `buildReassignNotification`** — the skill copy's reassign handler uses the same rich pt-BR `buildReassignNotification` builder as the runtime engine. No inline English notification strings remain.
+- **All notification builders produce rich pt-BR messages** — `buildCreateNotification`, `buildMoveNotification`, `buildReassignNotification`, `buildUpdateNotification`, and `buildSubtaskAssignNotification` all generate formatted pt-BR messages with emoji markers and task details.
+
+## Assignable Subtask Feature (Post-Implementation)
+
+Project subtasks were migrated from JSON blobs to real task rows in the `tasks` table with `parent_task_id`. This enables:
+
+### Storage Model
+- Subtasks are regular `tasks` rows with `parent_task_id` set to the parent project ID
+- Subtask IDs use dotted notation: `P4.1`, `P4.2` (parent prefix + sequential number)
+- A partial index `idx_tasks_parent` accelerates subtask lookups
+- The `subtasks` JSON column on the parent task is no longer used for new subtasks
+
+### Assignable Subtasks
+- `taskflow_create` accepts `subtasks` as `Array<string | { title: string; assignee?: string }>` — each subtask can optionally specify a different assignee
+- `taskflow_update` adds `assign_subtask: { id: string; assignee: string }` and `unassign_subtask: string` operations
+- Only project owner or manager can assign/unassign subtasks
+- Subtask assignee can mark their own subtask as done (`conclude` action)
+- Assigned subtasks trigger notification to the assignee via `buildSubtaskAssignNotification`
+
+### WIP Limit Extension
+- Pending subtask rows assigned to a person (where the parent project is `in_progress` and the person is NOT the project owner) count toward the person's WIP limit
+- This prevents over-assignment while avoiding double-counting for project owners
+
+### Query Extensions
+- `my_tasks` and `person_tasks` include `subtask_assignments` array
+- Standup/report `per_person` includes `subtask_assignments` count
+- Board column views filter out subtask rows (shown under parent project)
+
+### Extracted Helpers (Simplify Review)
+Code review and simplification extracted several helpers to reduce duplication:
+- `buildOfferRegisterError(name)` — unified offer_register error builder (replaced 4 inline copies)
+- `insertSubtaskRow(opts)` — shared subtask row insertion (replaced 2 copies)
+- `buildSubtaskAssignNotification(subtask, project, assigneeId, modifierId)` — subtask assignment notification (replaced 2 copies)
+- `requireProjectSubtask(parentTask, subtaskId)` — validation guard for subtask operations (replaced 4 copies)
+- `offer_register` added to `UpdateResult` interface (removed `as any` cast)
+- `subtask_assignments` added to `ReportResult` interface
+- `columnLabels` extracted to `private static readonly` (like `moveActionLabels`)
+
+### Registration Prompt Update
+The `offer_register` message now asks for the person's **WhatsApp group display name** (`nome exibido no grupo`) for accurate sender matching:
+```
+[name] não está cadastrado(a). Membros atuais: [list].
+Quer cadastrar? Preciso do *nome exibido no grupo* (display name do WhatsApp), telefone e cargo.
+```
+
+### Skill Structure
+All changes are packaged in the skill:
+- Engine and test files in `add/container/agent-runner/src/`
+- Core file changes documented as `.intent.md` files in `modify/` (whatsapp.ts, config.ts, index.ts, ipc.ts, create-group.ts, provision-child-board.ts)
+- MCP tool schemas updated in `modify/container/agent-runner/src/ipc-mcp-stdio.ts`

@@ -37,7 +37,7 @@ Current runtime behavior on top of that storage:
 - when a task is linked to another board via `child_exec_*`, the receiving board
   can still move that same task directly through the normal GTD phases
 - the `🔗` marker indicates cross-board routing, not a read-only mirror
-- `atualizar status T-XXX` / `sincronizar T-XXX` is reserved for pulling
+- `atualizar status TXXX` / `sincronizar TXXX` is reserved for pulling
   rollup from an immediate child board only after the current board delegates
   the same deliverable further down
 

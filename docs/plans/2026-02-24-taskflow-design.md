@@ -60,7 +60,7 @@ Non-main, non-TaskFlow groups can only send messages to their own group chat. Th
 
 The MCP `send_message` tool accepts an optional `target_chat_jid` parameter for cross-group messaging. Main and TaskFlow-managed groups (`taskflowManaged=1`) can use this to send to other registered groups. Non-TaskFlow groups always send to their own group JID.
 
-**Cross-group notification model (hierarchy):** TaskFlow groups can send to other TaskFlow groups. Each person's notification group JID is stored in `board_people.notification_group_jid`. When sending a notification, the agent queries this field and passes it as `target_chat_jid` to `send_message`.
+**Cross-group notification model (hierarchy):** TaskFlow groups can send to other TaskFlow groups. Each person's notification group JID is stored in `board_people.notification_group_jid`. With the v2 MCP tools, notification target resolution is handled by the engine's `resolveNotifTarget()` — it queries only `notification_group_jid` from `board_people` and returns `{ target_person_id, notification_group_jid }`. The engine's notification builders produce rich pt-BR messages in the `notifications` array; the agent dispatches each one via `send_message` with the provided `target_chat_jid`.
 
 Consequence: **Individual DMs are not supported.** All runner output (standup, digest, review) goes to the group chat with per-person sections inline. Runners execute in the target group context (`context_mode: "group"` + `target_group_jid`) which gives them direct access to the board's SQLite-backed data store. They do NOT need main group context since DMs are not used. Cross-group notifications (e.g., notifying an assignee in their child group) use `target_chat_jid`.
 
@@ -131,7 +131,7 @@ All timestamps use ISO-8601 UTC: `"2026-02-27T14:30:00.000Z"`
   ],
   "tasks": [
     {
-      "id": "T-001",
+      "id": "T1",
       "type": "simple",
       "title": "Receber e instalar o novo filtro",
       "column": "in_progress",
@@ -182,9 +182,9 @@ All task types share these common fields:
 
 | Type | ID Pattern | Description |
 |------|-----------|-------------|
-| `simple` | `T-NNN` | Single action |
-| `project` | `P-NNN` | Has `subtasks[]` array, `next_action` derived from first pending subtask |
-| `recurring` | `R-NNN` | Has `recurrence{}` and `current_cycle{}` |
+| `simple` | `TN` | Single action |
+| `project` | `PN` | Has `subtasks[]` array, `next_action` derived from first pending subtask |
+| `recurring` | `RN` | Has `recurrence{}` and `current_cycle{}` |
 
 ### Columns (6)
 
@@ -289,35 +289,35 @@ If using Option B (direct Baileys), service stays stopped through Phases 2–3 (
 | Intent | Examples | Permission |
 |--------|----------|------------|
 | Quick capture | "anotar: X", "lembrar: X", "registrar: X" → inbox | Everyone |
-| Process inbox | "processar inbox", "T-001 para Alexandre, prazo sexta" | Delegate or full manager |
+| Process inbox | "processar inbox", "T001 para Alexandre, prazo sexta" | Delegate or full manager |
 | Create complete | "tarefa para X: Y ate Z" → next_action | Full manager |
 | Create project | "projeto para X: Y. Etapas: ..." | Full manager |
 | Create recurring | "diario/semanal/mensal/anual para X: Y ..." | Full manager |
-| Pull (start) | "comecando T-001", "iniciando T-001" → in_progress (check WIP) | Assignee |
-| Waiting | "T-001 aguardando X" → waiting | Assignee |
-| Resume | "T-001 retomada" → in_progress (check WIP) | Assignee |
-| Return to queue | "devolver T-001" → next_action (frees WIP) | Assignee |
-| Submit for review | "T-001 pronta para revisao" → review | Assignee |
-| Approve | "T-001 aprovada" → done | Delegate or full manager |
-| Reject review | "T-001 rejeitada: [motivo]" → in_progress (rework) | Delegate or full manager |
-| Conclude | "T-001 concluida" / "T-001 feita" → done (shortcut) | Assignee or manager |
-| Reopen | "reabrir T-001" → done to next_action | Assignee or manager |
-| Force WIP | "forcar T-001 para andamento" → in_progress (bypass WIP) | Full manager |
-| Subtask done | "P-001.1 concluida" / "P-001.1 feita" / "P-001.1 pronta" | Assignee or manager |
-| Add subtask | "adicionar etapa P-001: validar rollback" | Assignee or manager |
-| Rename subtask | "renomear etapa P-001.2: instalar SO atualizado" | Assignee or manager |
-| Reopen subtask | "reabrir etapa P-001.2" | Assignee or manager |
-| Cancel | "cancelar T-001" → archive (confirm first) | Full manager |
-| Restore archived | "restaurar T-001" → next_action | Full manager |
-| Reassign | "reatribuir T-001 para Rafael" (confirm first) | Full manager |
-| Update next action | "proxima acao T-001: Y" | Assignee or manager |
-| Rename task | "renomear T-001: novo titulo" | Assignee or manager |
-| Add note | "nota T-001: texto" / "anotacao T-001: texto" | Assignee or manager |
-| Edit note | "editar nota T-001 #N: texto" | Assignee or manager |
-| Remove note | "remover nota T-001 #N" | Assignee or manager |
-| Update priority | "prioridade T-001: alta" (baixa/normal/alta/urgente) | Assignee or manager |
-| Add label | "rotulo T-001: financeiro" | Assignee or manager |
-| Remove label | "remover rotulo T-001: financeiro" | Assignee or manager |
+| Pull (start) | "comecando T001", "iniciando T001" → in_progress (check WIP) | Assignee |
+| Waiting | "T001 aguardando X" → waiting | Assignee |
+| Resume | "T001 retomada" → in_progress (check WIP) | Assignee |
+| Return to queue | "devolver T001" → next_action (frees WIP) | Assignee |
+| Submit for review | "T001 pronta para revisao" → review | Assignee |
+| Approve | "T001 aprovada" → done | Delegate or full manager |
+| Reject review | "T001 rejeitada: [motivo]" → in_progress (rework) | Delegate or full manager |
+| Conclude | "T001 concluida" / "T001 feita" → done (shortcut) | Assignee or manager |
+| Reopen | "reabrir T001" → done to next_action | Assignee or manager |
+| Force WIP | "forcar T001 para andamento" → in_progress (bypass WIP) | Full manager |
+| Subtask done | "P001.1 concluida" / "P001.1 feita" / "P001.1 pronta" | Assignee or manager |
+| Add subtask | "adicionar etapa P001: validar rollback" | Assignee or manager |
+| Rename subtask | "renomear etapa P001.2: instalar SO atualizado" | Assignee or manager |
+| Reopen subtask | "reabrir etapa P001.2" | Assignee or manager |
+| Cancel | "cancelar T001" → archive (confirm first) | Full manager |
+| Restore archived | "restaurar T001" → next_action | Full manager |
+| Reassign | "reatribuir T001 para Rafael" (confirm first) | Full manager |
+| Update next action | "proxima acao T001: Y" | Assignee or manager |
+| Rename task | "renomear T001: novo titulo" | Assignee or manager |
+| Add note | "nota T001: texto" / "anotacao T001: texto" | Assignee or manager |
+| Edit note | "editar nota T001 #N: texto" | Assignee or manager |
+| Remove note | "remover nota T001 #N" | Assignee or manager |
+| Update priority | "prioridade T001: alta" (baixa/normal/alta/urgente) | Assignee or manager |
+| Add label | "rotulo T001: financeiro" | Assignee or manager |
+| Remove label | "remover rotulo T001: financeiro" | Assignee or manager |
 | View board | "quadro", "status", "como esta?" | Everyone |
 | Person view | "quadro do Alexandre" | Everyone |
 | My tasks | "minhas tarefas", "meu quadro" | Everyone |
@@ -326,8 +326,8 @@ If using Option B (direct Baileys), service stays stopped through Phases 2–3 (
 | Show person's review | "revisao do Alexandre", "em revisao do Alexandre" | Everyone |
 | Show next action | "proxima acao", "proximas acoes" | Everyone |
 | Show in progress | "em andamento" | Everyone |
-| Task details | "detalhes T-001", "info T-001" | Everyone |
-| Task history | "historico T-001" | Everyone |
+| Task details | "detalhes T001", "info T001" | Everyone |
+| Task history | "historico T001" | Everyone |
 | Search | "buscar contrato" (across title, next_action, waiting_for, notes) | Everyone |
 | Search with label | "buscar contrato com rotulo financeiro" | Everyone |
 | Show urgent | "urgentes", "prioridade urgente" | Everyone |
@@ -343,32 +343,32 @@ If using Option B (direct Baileys), service stays stopped through Phases 2–3 (
 | Help | "ajuda", "comandos", "help" | Everyone |
 | Completed today | "concluidas hoje" | Everyone |
 | Completed this week | "concluidas esta semana" | Everyone |
-| Change deadline | "estender prazo T-001 para 30/03" | Full manager |
+| Change deadline | "estender prazo T001 para 30/03" | Full manager |
 | Change WIP | "limite do Alexandre para 4" | Full manager |
 | Add person | "cadastrar João, telefone 5586999990004, Analista" | Full manager |
 | Remove person | "remover João" (confirm first, reassign tasks) | Full manager |
 | Add manager | "adicionar gestor João, telefone 5586999990004" | Full manager |
 | Add delegate | "adicionar delegado Rafael, telefone 5586999990005" | Full manager |
 | Remove manager/delegate | "remover gestor João" / "remover delegado Rafael" (confirm first) | Full manager |
-| Modify recurrence | "alterar recorrencia R-001 para semanal" | Full manager |
+| Modify recurrence | "alterar recorrencia R001 para semanal" | Full manager |
 | Import from attachment | "importar anexo" (CONFIRM_IMPORT required) | Full manager |
 | Update from attachment | "atualizar tarefas pelo anexo" (CONFIRM_IMPORT required) | Full manager or assignee (own tasks) |
-| Remove due date | "remover prazo T-001" | Full manager |
+| Remove due date | "remover prazo T001" | Full manager |
 | Completed by person | "concluidas do Alexandre" | Everyone |
 | Completed this month | "concluidas do mes", "concluidas este mes" | Everyone |
 | Ad-hoc digest | "resumo" (distinct from "resumo semanal"/"revisao") | Everyone |
 | Archive browse | "listar arquivo" (20 most recent) | Everyone |
 | Archive search | "buscar no arquivo [texto]" | Everyone |
-| Batch operations | "T-005, T-006, T-007 aprovadas" (approve, reject, conclude, cancel) | Same as individual |
+| Batch operations | "T005, T006, T007 aprovadas" (approve, reject, conclude, cancel) | Same as individual |
 | Calendar view | "agenda" (14 days), "agenda da semana" (7 days) | Everyone |
 | Bulk reassign | "transferir tarefas do [pessoa] para [pessoa]" (confirm first) | Full manager |
 | Undo | "desfazer" (within 60s) | Mutation actor or full manager |
 | Changelog | "o que mudou hoje?", "mudancas hoje", "o que mudou desde ontem?", "o que mudou esta semana?" | Everyone |
-| Update description | "descricao T-001: [texto]" (max 500 chars) | Assignee or manager |
-| Add dependency | "T-XXX depende de T-YYY" | Assignee or manager |
-| Remove dependency | "remover dependencia T-XXX de T-YYY" | Assignee or manager |
-| Add reminder | "lembrete T-XXX [N] dia(s) antes" | Assignee or manager |
-| Remove reminder | "remover lembrete T-XXX" | Assignee or manager |
+| Update description | "descricao T001: [texto]" (max 500 chars) | Assignee or manager |
+| Add dependency | "TXXX depende de TYYY" | Assignee or manager |
+| Remove dependency | "remover dependencia TXXX de TYYY" | Assignee or manager |
+| Add reminder | "lembrete TXXX [N] dia(s) antes" | Assignee or manager |
+| Remove reminder | "remover lembrete TXXX" | Assignee or manager |
 | Recurring project | "projeto recorrente para X: Y. Etapas: ... todo [freq]" | Full manager |
 | Statistics | "estatisticas", "estatisticas do [pessoa]", "estatisticas do mes" | Everyone |
 
@@ -382,7 +382,7 @@ If using Option B (direct Baileys), service stays stopped through Phases 2–3 (
 - **Explicit structure rules**: The persisted structure is defined by the JSON templates, and the CLAUDE.md template defines the allowed task types, ID patterns, transitions, and mutation rules. This keeps behavior deterministic across sessions without depending on a separate schema appendix in the prompt.
 - **Attachment import with confirmation gate**: Attachment-driven task creation/update uses a mandatory `CONFIRM_IMPORT {import_action_id}` token — generic replies like "ok" or "confirmado" are rejected. This prevents accidental mutations from extracted text. Audit trail entries are appended to `meta.attachment_audit_trail` on every confirmed import.
 - **Multi-manager/delegate roles**: Boards support multiple admins via `meta.managers[]`, each with a `role` of `"manager"` (full access) or `"delegate"` (can process inbox and approve/reject reviews, but cannot create tasks, cancel, restore, reassign, or manage people/admins). The legacy `meta.manager` field is kept as a compatibility alias for the first full manager. The primary full manager must also have a matching people-store entry even if they are not intended to carry regular task assignments. This allows managers to delegate triage without granting full board control while preserving sender identification and authorization.
-- **Editable structured notes**: Notes evolved from plain strings to objects with `id`, `text`, `by`, `created_at`, and `updated_at`. A `next_note_id` counter on each task assigns sequential IDs. Users can edit or remove notes by ID (`editar nota T-XXX #N`, `remover nota T-XXX #N`). Legacy string notes remain readable but immutable.
+- **Editable structured notes**: Notes evolved from plain strings to objects with `id`, `text`, `by`, `created_at`, and `updated_at`. A `next_note_id` counter on each task assigns sequential IDs. Users can edit or remove notes by ID (`editar nota TXXX #N`, `remover nota TXXX #N`). Legacy string notes remain readable but immutable.
 - **DST guard runner**: Optional 4th runner (daily at 02:17 UTC) that detects timezone offset changes and recomputes UTC cron expressions for the 3 core runners. Anti-loop guard limits resyncs to 2 per 24h window. Only relevant for DST-observing timezones; disabled by default for fixed-offset zones like America/Fortaleza.
 - **TaskFlow v2 features**: 15 additional features added: task description, task dependencies (advisory), deadline reminders, remove due date, completed by person, completed this month, ad-hoc digest, archive browsing, batch operations, calendar view, bulk reassign, undo (60s window), changelog view, recurring projects, and statistics/metrics. All template-only — no source code changes.
   - Statistics and metrics must use completion history from active tasks plus archived history snapshots for archived tasks; otherwise completed counts and cycle-time calculations undercount older completed work.

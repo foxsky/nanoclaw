@@ -326,6 +326,15 @@ export class WhatsAppChannel implements Channel {
     return jid.endsWith('@g.us') || jid.endsWith('@s.whatsapp.net');
   }
 
+  async resolvePhoneJid(phone: string): Promise<string> {
+    const results = await this.sock.onWhatsApp(phone);
+    if (results?.length && results[0].exists) {
+      return results[0].jid;
+    }
+    // Fallback: use raw digits
+    return phone.replace(/\D/g, '') + '@s.whatsapp.net';
+  }
+
   async createGroup(
     subject: string,
     participants: string[],

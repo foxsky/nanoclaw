@@ -237,7 +237,7 @@ Read the v2 template from `.claude/skills/add-taskflow/templates/CLAUDE.md.templ
 
 The v2 template delegates all mutation logic to MCP tools (`taskflow_create`, `taskflow_move`, `taskflow_reassign`, `taskflow_update`, `taskflow_dependency`, `taskflow_admin`, `taskflow_undo`, `taskflow_query`, `taskflow_report`). The agent maps user commands to tool calls and formats the structured JSON responses for WhatsApp.
 
-For hierarchy boards, the generated prompt must treat linked tasks as directly actionable on the receiving board. The `🔗` marker indicates cross-board routing only; it does not make the task read-only. On the receiving board, the assignee and board owner may move the linked task through the normal GTD phases. `atualizar status T-XXX` / `sincronizar T-XXX` is reserved for pulling rollup from an immediate child board only after this board delegates the same deliverable further down.
+For hierarchy boards, the generated prompt must treat linked tasks as directly actionable on the receiving board. The `🔗` marker indicates cross-board routing only; it does not make the task read-only. On the receiving board, the assignee and board owner may move the linked task through the normal GTD phases. `atualizar status TXXX` / `sincronizar TXXX` is reserved for pulling rollup from an immediate child board only after this board delegates the same deliverable further down.
 
 Substitute all `{{PLACEHOLDER}}` variables:
 - `{{ASSISTANT_NAME}}` — TaskFlow agent name (default: "Case")
@@ -896,7 +896,7 @@ Verify:
 - Cancelling a task moves it to `archive` after confirmation
 - Updating due dates persists the new `due_date` in the `tasks` table
 - Completing a recurring task creates the next cycle in the same recurring series
-- Creating a project with steps produces dotted child IDs like `P-001.1`, `P-001.2`
+- Creating a project with steps produces dotted child IDs like `P001.1`, `P001.2`
 
 ### 9. Attachment Failure Handling
 

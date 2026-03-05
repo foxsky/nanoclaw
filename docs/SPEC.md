@@ -255,8 +255,10 @@ ASSISTANT_NAME=Bot npm start
 ```
 
 Or edit the default in `src/config.ts`. This changes:
-- The trigger pattern (messages must start with `@YourName`)
+- The default trigger pattern (messages must start with `@YourName`)
 - The response prefix (`YourName:` added automatically)
+
+Groups can have their own trigger via the `trigger_pattern` column in `registered_groups` (e.g. `@Case`). When a per-group trigger is set, it takes precedence over the global `ASSISTANT_NAME` for that group.
 
 ### Placeholder Values in launchd
 
@@ -332,7 +334,7 @@ Sessions enable conversation continuity - Claude remembers what you talked about
    ▼
 5. Router checks:
    ├── Is chat_jid in registered groups (SQLite)? → No: ignore
-   └── Does message match trigger pattern? → No: store but don't process
+   └── Does message match group's trigger pattern? → No: store but don't process
    │
    ▼
 6. Router catches up conversation:
@@ -366,6 +368,8 @@ Messages must start with the trigger pattern (default: `@Andy`):
 - `@andy help me` → ✅ Triggers (case insensitive)
 - `Hey @Andy` → ❌ Ignored (trigger not at start)
 - `What's up?` → ❌ Ignored (no trigger)
+
+Each group can override the trigger via `trigger_pattern` in `registered_groups`. The per-group trigger is used for matching when set; otherwise the global `ASSISTANT_NAME` applies.
 
 ### Conversation Catch-Up
 
@@ -483,7 +487,7 @@ The `nanoclaw` MCP server is created dynamically per agent call with the current
 **Plugin Tools** (loaded from `/workspace/mcp-plugins/`):
 | Tool | Purpose |
 |------|---------|
-| `create_group` | Create a new WhatsApp group (main + TaskFlow groups) |
+| `create_group` | Create a new WhatsApp group (main + TaskFlow groups). Participant phone numbers are resolved to WhatsApp JIDs via `onWhatsApp()` before creation. |
 
 Additional MCP tools can be added by dropping compiled `.js` files into `data/mcp-plugins/{group}/`. See [IPC Plugin Mechanism](#ipc-plugin-mechanism) below.
 
@@ -531,7 +535,7 @@ The `IpcHandler` signature provides:
 - `data` — parsed JSON from the IPC file (`Record<string, unknown>`)
 - `sourceGroup` — verified group folder identity (from directory path)
 - `isMain` — whether the source is the main group
-- `deps` — host services (`sendMessage`, `registeredGroups`, `createGroup`, etc.)
+- `deps` — host services (`sendMessage`, `registeredGroups`, `createGroup`, `resolvePhoneJid`, etc.)
 
 ### Container-Side Plugins (`data/mcp-plugins/{group}/*.js`)
 

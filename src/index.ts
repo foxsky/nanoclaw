@@ -3,6 +3,7 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  buildTriggerPattern,
   getGroupSenderName,
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
@@ -183,8 +184,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
+    const pattern = group.trigger
+      ? buildTriggerPattern(group.trigger)
+      : TRIGGER_PATTERN;
     const hasTrigger = missedMessages.some((m) =>
-      TRIGGER_PATTERN.test(m.content.trim()),
+      pattern.test(m.content.trim()),
     );
     if (!hasTrigger) return true;
   }
@@ -414,8 +418,11 @@ async function startMessageLoop(): Promise<void> {
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
           if (needsTrigger) {
+            const pattern = group.trigger
+              ? buildTriggerPattern(group.trigger)
+              : TRIGGER_PATTERN;
             const hasTrigger = groupMessages.some((m) =>
-              TRIGGER_PATTERN.test(m.content.trim()),
+              pattern.test(m.content.trim()),
             );
             if (!hasTrigger) continue;
           }
@@ -552,6 +559,10 @@ async function main(): Promise<void> {
     createGroup: (subject, participants) => {
       if (!whatsapp) throw new Error('WhatsApp not connected');
       return whatsapp.createGroup(subject, participants);
+    },
+    resolvePhoneJid: (phone) => {
+      if (!whatsapp) throw new Error('WhatsApp not connected');
+      return whatsapp.resolvePhoneJid(phone);
     },
   });
   queue.setProcessMessagesFn(processGroupMessages);

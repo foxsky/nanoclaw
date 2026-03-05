@@ -65,6 +65,7 @@ Messages and task operations are verified against group identity:
 | View all tasks | ✓ | Own only | Own only |
 | Manage other groups | ✓ | ✗ | ✗ |
 | Create WhatsApp groups | ✓ | Depth-limited | ✗ |
+| Resolve phone → JID | ✓ | ✓ | ✓ |
 
 **IPC Plugin Security:**
 - Host-side plugins (`dist/ipc-plugins/`) run in the main process and must enforce their own authorization (check `isMain`, `sourceGroup`)

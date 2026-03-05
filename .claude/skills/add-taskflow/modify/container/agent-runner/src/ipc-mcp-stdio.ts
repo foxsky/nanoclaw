@@ -505,6 +505,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
 
   if (boardId) {
     const tfDb = new Database(dbPath);
+    process.on('exit', () => tfDb.close());
     const engine = new TaskflowEngine(tfDb, boardId);
 
     server.tool(
@@ -544,7 +545,10 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         due_date: z.string().optional().describe('Due date (ISO format)'),
         priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('Task priority'),
         labels: z.array(z.string()).optional().describe('Labels to attach'),
-        subtasks: z.array(z.string()).optional().describe('Subtask titles to create'),
+        subtasks: z.array(z.union([
+          z.string(),
+          z.object({ title: z.string(), assignee: z.string().optional() }),
+        ])).optional().describe('Subtask titles (strings) or objects with title and optional assignee'),
         recurrence: z.enum(['daily', 'weekly', 'monthly', 'yearly']).optional().describe('Recurrence pattern (for recurring type)'),
         recurrence_anchor: z.string().optional().describe('Recurrence anchor date (ISO format)'),
         sender_name: z.string().describe('Name of the person creating the task'),
@@ -616,6 +620,8 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           add_subtask: z.string().optional().describe('Subtask title to add'),
           rename_subtask: z.object({ id: z.string(), title: z.string() }).optional().describe('Rename a subtask'),
           reopen_subtask: z.string().optional().describe('Subtask ID to reopen'),
+          assign_subtask: z.object({ id: z.string(), assignee: z.string() }).optional().describe('Assign a person to a project subtask'),
+          unassign_subtask: z.string().optional().describe('Subtask ID to unassign'),
           recurrence: z.string().optional().describe('New recurrence pattern'),
         }).describe('Fields to update'),
       },

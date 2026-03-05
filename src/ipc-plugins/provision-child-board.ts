@@ -238,12 +238,13 @@ const handleProvisionChildBoard: IpcHandler = async (
 
     const childBoardId = 'board-' + childGroupFolder;
 
-    // --- 6. Create WhatsApp group ---
+    // --- 6. Resolve phone JID and create WhatsApp group ---
     let childGroupJid: string;
     try {
-      const result = await deps.createGroup(childGroupName, [
-        personPhone + '@s.whatsapp.net',
-      ]);
+      const participantJid = deps.resolvePhoneJid
+        ? await deps.resolvePhoneJid(personPhone)
+        : personPhone + '@s.whatsapp.net';
+      const result = await deps.createGroup(childGroupName, [participantJid]);
       childGroupJid = result.jid;
       logger.info(
         { jid: childGroupJid, subject: result.subject },

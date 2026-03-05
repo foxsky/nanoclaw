@@ -161,7 +161,7 @@ describe('taskflow skill package', () => {
     );
 
     expect(content).toContain('create full tasks (`tarefa`, `projeto`, `diario`, `semanal`, `mensal`, `anual`)');
-    expect(content).toContain('process inbox (`processar inbox`, `T-XXX para [pessoa], prazo [data]`)');
+    expect(content).toContain('process inbox (`processar inbox`, `TXXX para [pessoa], prazo [data]`)');
     expect(content).toContain('Full-manager-only commands');
     expect(content).toContain('Delegate-or-manager commands:');
     expect(content).toContain('"processar inbox" / "o que tem no inbox?" | Delegate or full manager.');
@@ -180,10 +180,10 @@ describe('taskflow skill package', () => {
       'utf-8',
     );
 
-    expect(content).toContain('"forcar T-XXX para andamento" | Full manager only.');
-    expect(content).toContain('"reatribuir T-XXX para [pessoa]" | Full manager only.');
+    expect(content).toContain('"forcar TXXX para andamento" | Full manager only.');
+    expect(content).toContain('"reatribuir TXXX para [pessoa]" | Full manager only.');
     expect(content).toContain('"remover [nome]" | Full manager only.');
-    expect(content).toContain('"T-XXX rejeitada: [motivo]" | Delegate or full manager.');
+    expect(content).toContain('"TXXX rejeitada: [motivo]" | Delegate or full manager.');
     expect(content).toContain('Assignee or manager. Move to Done (shortcut)');
   });
 
@@ -216,7 +216,7 @@ describe('taskflow skill package', () => {
     );
 
     expect(content).toContain('Subtasks use dotted IDs under the parent task');
-    expect(content).toContain('`P-001.1`, `P-001.2`, `P-001.3`');
+    expect(content).toContain('`P001.1`, `P001.2`, `P001.3`');
     expect(content).toContain('When a recurring task is completed, immediately create the next cycle');
   });
 
@@ -578,7 +578,7 @@ describe('taskflow skill package', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
 
     expect(skillMd).toContain('Completing a recurring task creates the next cycle in the same recurring series');
-    expect(skillMd).toContain('Creating a project with steps produces dotted child IDs like `P-001.1`, `P-001.2`');
+    expect(skillMd).toContain('Creating a project with steps produces dotted child IDs like `P001.1`, `P001.2`');
   });
 
   it('CLAUDE.md.template has ID generation rules using next_task_number from board_config', () => {
@@ -589,10 +589,10 @@ describe('taskflow skill package', () => {
 
     expect(content).toContain('### ID Generation');
     expect(content).toContain('`next_task_number`');
-    expect(content).toContain('zero-padded to 3 digits');
-    expect(content).toContain('T-` + padded number');
-    expect(content).toContain('P-` + padded number');
-    expect(content).toContain('R-` + padded number');
+    expect(content).toContain('no zero-padding');
+    expect(content).toContain('T` + number');
+    expect(content).toContain('P` + number');
+    expect(content).toContain('R` + number');
     expect(content).toContain('UPDATE board_config SET next_task_number = next_task_number + 1');
   });
 
@@ -634,16 +634,16 @@ describe('taskflow skill package', () => {
 
     // Review rejection flow
     expect(content).toContain('`review` → `in_progress`');
-    expect(content).toContain('"T-XXX rejeitada: [motivo]" | Delegate or full manager.');
+    expect(content).toContain('"TXXX rejeitada: [motivo]" | Delegate or full manager.');
     expect(content).toContain('Task not in review');
 
     // GTD Rules section
     expect(content).toContain('Subtask completion:');
-    expect(content).toContain('P-001.1 concluida');
+    expect(content).toContain('P001.1 concluida');
     expect(content).toContain('Auto-update `next_action`');
 
     // Command Parsing table
-    expect(content).toContain('"P-XXX.N concluida" / "P-XXX.N feita" / "P-XXX.N pronta"');
+    expect(content).toContain('"PXXX.N concluida" / "PXXX.N feita" / "PXXX.N pronta"');
   });
 
   it('CLAUDE.md.template has all recurrence frequency commands', () => {
@@ -664,20 +664,20 @@ describe('taskflow skill package', () => {
       'utf-8',
     );
 
-    expect(content).toContain('"detalhes T-XXX" / "info T-XXX"');
-    expect(content).toContain('"historico T-XXX"');
+    expect(content).toContain('"detalhes TXXX" / "info TXXX"');
+    expect(content).toContain('"historico TXXX"');
     expect(content).toContain('"minhas tarefas" / "meu quadro"');
     expect(content).toContain('"vence hoje" / "vencem hoje"');
     expect(content).toContain('"vence amanha" / "vencem amanha"');
     expect(content).toContain('"vence esta semana" / "vencem esta semana"');
     expect(content).toContain('"proximos 7 dias" / "vencem nos proximos 7 dias"');
-    expect(content).toContain('"renomear T-XXX: novo titulo"');
-    expect(content).toContain('"prioridade T-XXX: [baixa|normal|alta|urgente]"');
-    expect(content).toContain('"rotulo T-XXX: [nome]"');
-    expect(content).toContain('"remover rotulo T-XXX: [nome]"');
-    expect(content).toContain('"nota T-XXX: texto" / "anotacao T-XXX: texto"');
-    expect(content).toContain('"editar nota T-XXX #N: texto"');
-    expect(content).toContain('"remover nota T-XXX #N"');
+    expect(content).toContain('"renomear TXXX: novo titulo"');
+    expect(content).toContain('"prioridade TXXX: [baixa|normal|alta|urgente]"');
+    expect(content).toContain('"rotulo TXXX: [nome]"');
+    expect(content).toContain('"remover rotulo TXXX: [nome]"');
+    expect(content).toContain('"nota TXXX: texto" / "anotacao TXXX: texto"');
+    expect(content).toContain('"editar nota TXXX #N: texto"');
+    expect(content).toContain('"remover nota TXXX #N"');
     expect(content).toContain('For any newly created task (simple, project, or recurring), always initialize `priority` as `"normal"`, `labels` as `[]`, `description` as `null`, `blocked_by` as `[]`, `reminders` as `[]`, `_last_mutation` as `null`, `next_note_id` as `1`, and `notes` as `[]`.');
     expect(content).toContain('Record lifecycle events in the `task_history` table.');
   });
@@ -688,8 +688,8 @@ describe('taskflow skill package', () => {
       'utf-8',
     );
 
-    expect(content).toContain('"editar nota T-XXX #N: texto" | Manager or assignee.');
-    expect(content).toContain('"remover nota T-XXX #N" | Manager or assignee.');
+    expect(content).toContain('"editar nota TXXX #N: texto" | Manager or assignee.');
+    expect(content).toContain('"remover nota TXXX #N" | Manager or assignee.');
     expect(content).toContain('"adicionar gestor [nome], telefone [numero]" | Full manager only. Add another full manager entry to `board_admins`');
     expect(content).toContain('"adicionar delegado [nome], telefone [numero]" | Full manager only. Add a delegate entry to `board_admins`');
     expect(content).toContain('"remover gestor [nome]" / "remover delegado [nome]" | Full manager only. Remove that admin entry from `board_admins` after confirmation.');
@@ -720,17 +720,64 @@ describe('taskflow skill package', () => {
     expect(content).toContain('restore archived task');
     expect(content).toContain('`done` → `next_action`: assignee or manager reopens the task');
     expect(content).toContain('### Reopen and Restore');
-    expect(content).toContain('`reabrir T-XXX`: only valid for active tasks currently in `done`');
-    expect(content).toContain('`restaurar T-XXX`: manager only.');
-    expect(content).toContain('"reabrir T-XXX" | Assignee or manager. Move from Done back to Next Action');
+    expect(content).toContain('`reabrir TXXX`: only valid for active tasks currently in `done`');
+    expect(content).toContain('`restaurar TXXX`: manager only.');
+    expect(content).toContain('"reabrir TXXX" | Assignee or manager. Move from Done back to Next Action');
 
     expect(content).toContain('Subtask maintenance:');
-    expect(content).toContain('`adicionar etapa P-001: validar rollback`');
-    expect(content).toContain('`renomear etapa P-001.2: instalar SO atualizado`');
-    expect(content).toContain('`reabrir etapa P-001.2`');
-    expect(content).toContain('"adicionar etapa P-XXX: [titulo]" | Assignee or manager.');
-    expect(content).toContain('"renomear etapa P-XXX.N: [novo titulo]" | Assignee or manager.');
-    expect(content).toContain('"reabrir etapa P-XXX.N" | Assignee or manager.');
+    expect(content).toContain('`adicionar etapa P001: validar rollback`');
+    expect(content).toContain('`renomear etapa P001.2: instalar SO atualizado`');
+    expect(content).toContain('`reabrir etapa P001.2`');
+    expect(content).toContain('"adicionar etapa PXXX: [titulo]" | Assignee or manager.');
+    expect(content).toContain('"renomear etapa PXXX.N: [novo titulo]" | Assignee or manager.');
+    expect(content).toContain('"reabrir etapa PXXX.N" | Assignee or manager.');
+  });
+
+  it('CLAUDE.md.template v2 has subtask assignee commands and display sections', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+
+    // Subtask assignee authorization
+    expect(content).toContain('Subtask assignee');
+
+    // Subtask assignment commands
+    expect(content).toContain('atribuir etapa PXXX.N');
+    expect(content).toContain('desatribuir etapa PXXX.N');
+
+    // Per-person subtask display
+    expect(content).toContain('Suas etapas de projeto');
+
+    // Schema has parent_task_id
+    expect(content).toContain('parent_task_id');
+
+    // Subtask assignee at project creation
+    expect(content).toContain('assign_subtask');
+    expect(content).toContain('unassign_subtask');
+
+    // offer_register mentions group display name
+    expect(content).toContain('nome exibido no grupo');
+  });
+
+  it('CLAUDE.md.template v1 has subtask assignee commands', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template.v1'),
+      'utf-8',
+    );
+
+    // Subtask assignee authorization
+    expect(content).toContain('Subtask-assignee');
+
+    // Subtask assignment commands
+    expect(content).toContain('atribuir etapa PXXX.N');
+    expect(content).toContain('desatribuir etapa PXXX.N');
+
+    // Schema has parent_task_id
+    expect(content).toContain('parent_task_id');
+
+    // offer_register mentions group display name
+    expect(content).toContain('nome exibido no grupo');
   });
 
   it('CLAUDE.md.template shared lifecycle rules are storage-mode aware', () => {
@@ -924,8 +971,8 @@ describe('taskflow skill package', () => {
       content.match(/### Error Handling[\s\S]*?## Standup Format/)?.[0] ?? '';
 
     expect(errorSection).toContain('Dependency target archived');
-    expect(errorSection).toContain('T-002 is archived. Dependencies can only reference active tasks.');
-    expect(errorSection).not.toContain('T-002 is in ARCHIVE.json');
+    expect(errorSection).toContain('T002 is archived. Dependencies can only reference active tasks.');
+    expect(errorSection).not.toContain('T002 is in ARCHIVE.json');
   });
 
   it('CLAUDE.md.template has project progress display in board format', () => {
@@ -935,7 +982,7 @@ describe('taskflow skill package', () => {
     );
 
     expect(content).toContain('subtask progress');
-    expect(content).toContain('P-001 (2/4)');
+    expect(content).toContain('P001 (2/4)');
   });
 
   it('SKILL.md documents ATTACHMENT_IMPORT_REASON as raw text (no quotes)', () => {
@@ -1179,7 +1226,7 @@ describe('taskflow skill package', () => {
     // Transition rule
     expect(content).toContain('`in_progress` → `next_action`');
     // Command in Board Movement table
-    expect(content).toContain('"devolver T-XXX"');
+    expect(content).toContain('"devolver TXXX"');
     expect(content).toContain('Move from In Progress back to Next Action');
     // In assignee permissions
     expect(content).toContain('`in_progress -> next_action` (devolver)');
@@ -1216,7 +1263,7 @@ describe('taskflow skill package', () => {
       'utf-8',
     );
 
-    expect(content).toContain('"alterar recorrencia R-XXX para [frequencia]"');
+    expect(content).toContain('"alterar recorrencia RXXX para [frequencia]"');
     expect(content).toContain('Change recurrence frequency');
     expect(content).toContain('"recurrence_changed"');
   });
@@ -1306,7 +1353,7 @@ describe('taskflow skill package', () => {
     );
 
     // F1: Remove due date command
-    expect(content).toContain('"remover prazo T-XXX"');
+    expect(content).toContain('"remover prazo TXXX"');
 
     // F2: Completed by person
     expect(content).toContain('"concluidas do [pessoa]"');
@@ -1347,15 +1394,15 @@ describe('taskflow skill package', () => {
     expect(content).toContain('"o que mudou esta semana?"');
 
     // F11: Dependency commands
-    expect(content).toContain('"T-XXX depende de T-YYY"');
-    expect(content).toContain('"remover dependencia T-XXX de T-YYY"');
+    expect(content).toContain('"TXXX depende de TYYY"');
+    expect(content).toContain('"remover dependencia TXXX de TYYY"');
 
     // F13: Reminder commands
-    expect(content).toContain('"lembrete T-XXX [N] dia(s) antes"');
-    expect(content).toContain('"remover lembrete T-XXX"');
+    expect(content).toContain('"lembrete TXXX [N] dia(s) antes"');
+    expect(content).toContain('"remover lembrete TXXX"');
 
     // F15: Description command
-    expect(content).toContain('"descricao T-XXX: [texto]"');
+    expect(content).toContain('"descricao TXXX: [texto]"');
     // F15: Description in task creation syntax
     expect(content).toContain('Descricao:');
   });
@@ -1757,9 +1804,9 @@ describe('taskflow skill package', () => {
     expect(content).not.toContain('next_recurring_number');
     expect(content).toContain('The counter is global across all types');
     // Shared section must cover all task types
-    expect(content).toContain('T-` + padded number');
-    expect(content).toContain('P-` + padded number');
-    expect(content).toContain('R-` + padded number');
+    expect(content).toContain('T` + padded number');
+    expect(content).toContain('P` + padded number');
+    expect(content).toContain('R` + padded number');
   });
 
   it('CLAUDE.md.template hierarchy uses shared Sender Identification section (board_people/board_admins)', () => {
@@ -1832,7 +1879,7 @@ describe('taskflow skill package', () => {
     );
     // Unified template has shared ### Reopen and Restore section for all topologies
     expect(content).toContain('### Reopen and Restore');
-    expect(content).toContain('restaurar T-XXX');
+    expect(content).toContain('restaurar TXXX');
     // Restore flow: query archive, DELETE from archive, INSERT back into tasks
     const restoreSection =
       content.match(/### Reopen and Restore[\s\S]*?###/s)?.[0] ?? '';
@@ -1914,15 +1961,15 @@ describe('taskflow skill package', () => {
       'utf-8',
     );
     // Link
-    expect(content).toContain('vincular T-XXX ao quadro do [pessoa]');
-    expect(content).toContain('usar equipe de [pessoa] para T-XXX');
+    expect(content).toContain('vincular TXXX ao quadro do [pessoa]');
+    expect(content).toContain('usar equipe de [pessoa] para TXXX');
     // Unlink
-    expect(content).toContain('desvincular T-XXX');
+    expect(content).toContain('desvincular TXXX');
     // Refresh
-    expect(content).toContain('atualizar status T-XXX');
-    expect(content).toContain('sincronizar T-XXX');
+    expect(content).toContain('atualizar status TXXX');
+    expect(content).toContain('sincronizar TXXX');
     // View
-    expect(content).toContain('resumo de execucao T-XXX');
+    expect(content).toContain('resumo de execucao TXXX');
     // History actions
     expect(content).toContain('child_board_linked');
     expect(content).toContain('child_board_unlinked');
@@ -1934,7 +1981,7 @@ describe('taskflow skill package', () => {
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    expect(content).toContain('ligar tarefa ao pai T-XXX');
+    expect(content).toContain('ligar tarefa ao pai TXXX');
     expect(content).toContain('linked_parent_board_id');
     expect(content).toContain('linked_parent_task_id');
     // Root board restriction
@@ -1963,7 +2010,7 @@ describe('taskflow skill package', () => {
     );
     expect(content).toContain('### Auto-Link on Assignment');
     expect(content).toContain(
-      'T-XXX vinculada automaticamente ao quadro de',
+      'TXXX vinculada automaticamente ao quadro de',
     );
   });
 
@@ -1997,14 +2044,14 @@ describe('taskflow skill package', () => {
     expect(content).toContain("rollup_status` resets to `active");
   });
 
-  it('CLAUDE.md.template hierarchy has task type restrictions (R-XXX cannot be linked)', () => {
+  it('CLAUDE.md.template hierarchy has task type restrictions (RXXX cannot be linked)', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
     expect(content).toContain('### Task Type Restrictions');
     expect(content).toContain(
-      'Recurring tasks (R-XXX): Cannot be linked',
+      'Recurring tasks (RXXX): Cannot be linked',
     );
     expect(content).toContain(
       'Tarefas recorrentes nao podem ser vinculadas a quadros',
@@ -2018,7 +2065,7 @@ describe('taskflow skill package', () => {
     );
     expect(content).toContain('### Display Markers');
     // Board view marker
-    expect(content).toContain('🔗 T-004');
+    expect(content).toContain('🔗 T004');
     // Standup format
     expect(content).toContain('🔗 Alexandre');
     expect(content).toContain('not a read-only task');
@@ -2123,7 +2170,7 @@ describe('taskflow skill package', () => {
       '`"resumo"` alone',
     );
     expect(content).toContain(
-      '`"resumo de execucao T-XXX"`',
+      '`"resumo de execucao TXXX"`',
     );
     expect(content).toContain('task ID suffix disambiguates');
   });
@@ -2237,7 +2284,7 @@ describe('taskflow skill package', () => {
       'utf-8',
     );
     expect(content).toContain(
-      'Recurring tasks (R-XXX): Cannot be linked',
+      'Recurring tasks (RXXX): Cannot be linked',
     );
   });
 
@@ -2392,7 +2439,7 @@ describe('taskflow skill package', () => {
     // Cross-check: Transition Rules say "assignee or manager"
     expect(content).toContain('Any → `done`: assignee or manager can shortcut');
     // Cross-check: Command Parsing table says "Assignee or manager"
-    expect(content).toContain('"T-XXX concluida" / "T-XXX feita" | Assignee or manager.');
+    expect(content).toContain('"TXXX concluida" / "TXXX feita" | Assignee or manager.');
   });
 
   it('CLAUDE.md.template archival section specifies archive_reason for both done and cancelled paths', () => {
@@ -2489,7 +2536,7 @@ describe('taskflow skill package', () => {
     // Single reassignment must check WIP on the new assignee when task is in_progress
     const reatribuirLine = content
       .split('\n')
-      .find((l) => l.includes('reatribuir T-XXX para [pessoa]'));
+      .find((l) => l.includes('reatribuir TXXX para [pessoa]'));
     expect(reatribuirLine).toBeDefined();
     expect(reatribuirLine!.toLowerCase()).toContain('wip');
     expect(reatribuirLine).toContain('in_progress');
@@ -2617,7 +2664,7 @@ describe('taskflow skill package', () => {
   it('hierarchy mode uses a single global counter for all task types (no per-type counters)', () => {
     // REGRESSION: hierarchy mode previously used separate counters
     // (next_task_number, next_project_number, next_recurring_number) which let
-    // T-001 and P-001 coexist with the same number, violating the documented
+    // T001 and P001 coexist with the same number, violating the documented
     // rule: "The counter is global across all types."
 
     // 1. Unified CLAUDE.md.template has a single shared ### ID Generation section
@@ -2797,7 +2844,7 @@ describe('taskflow skill package', () => {
     );
 
     // Bug: bulk transfer ("transferir tarefas do [pessoa] para [pessoa]") and
-    // single reassign ("reatribuir T-XXX para [pessoa]") did not check for
+    // single reassign ("reatribuir TXXX para [pessoa]") did not check for
     // child_exec_enabled linked tasks. The "Reassignment While Linked" section
     // requires unlinking before reassignment, but neither command enforced it.
     // This could silently break the child execution invariant where
@@ -2806,7 +2853,7 @@ describe('taskflow skill package', () => {
     // Single reassign must refuse when the task has child_exec_enabled = 1
     const reatribuirLine = content
       .split('\n')
-      .find((l) => l.includes('reatribuir T-XXX para [pessoa]'));
+      .find((l) => l.includes('reatribuir TXXX para [pessoa]'));
     expect(reatribuirLine).toBeDefined();
     expect(reatribuirLine!).toContain('child_exec_enabled');
     expect(reatribuirLine!).toContain('desvincular');
@@ -2823,7 +2870,7 @@ describe('taskflow skill package', () => {
     // Error messages must cover both reassignment and bulk transfer linked-task cases
     expect(content).toContain('Reassign linked task');
     expect(content).toContain('Bulk transfer linked tasks');
-    expect(content).toContain('desvincular T-001');
+    expect(content).toContain('desvincular T001');
   });
 
   it('CLAUDE.md.template shared Task Dependencies section covers blocked_by resolution for done and cancel', () => {
@@ -2926,7 +2973,7 @@ describe('taskflow skill package', () => {
     expect(recurringProjectSection.length).toBeGreaterThan(0);
 
     // The "On completion" rule for recurring projects must explicitly clear notes
-    // and reset next_note_id, matching the behavior of recurring simple tasks (R-NNN).
+    // and reset next_note_id, matching the behavior of recurring simple tasks (RNNN).
     // Notes are per-cycle operational context. Without this, recurring projects
     // would carry stale notes from one cycle into the next, while recurring simple
     // tasks would correctly clear them — an inconsistency across recurring types

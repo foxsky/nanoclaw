@@ -89,7 +89,7 @@ A personal Claude assistant accessible via WhatsApp, with minimal custom code.
 ### Message Routing
 - A router listens to WhatsApp and routes messages based on configuration
 - Only messages from registered groups are processed
-- Trigger: `@Andy` prefix (case insensitive), configurable via `ASSISTANT_NAME` env var
+- Trigger: `@Andy` prefix (case insensitive), configurable via `ASSISTANT_NAME` env var. Groups can override this with a per-group `trigger_pattern` in `registered_groups`.
 - Unregistered groups are ignored completely
 
 ### Memory System
@@ -140,6 +140,7 @@ A personal Claude assistant accessible via WhatsApp, with minimal custom code.
 - Using baileys library for WhatsApp Web connection
 - Messages stored in SQLite, polled by router
 - QR code authentication during setup
+- Phone numbers are resolved to WhatsApp JIDs via `onWhatsApp()` before group creation, handling format differences (e.g. Brazilian 9th-digit prefix)
 
 ### Scheduler
 - Built-in scheduler runs on the host, spawns containers for task execution

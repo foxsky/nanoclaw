@@ -352,7 +352,7 @@ CREATE TABLE board_config (
 - `_last_mutation` stores a JSON snapshot of the task before the last mutation (for undo).
 - `next_action`, `waiting_for`, `next_note_id`, and `updated_at` remain first-class task fields so hierarchy boards preserve the current TaskFlow command surface.
 - `board_people.wip_limit` preserves the existing per-person WIP override model. `board_config.wip_limit` remains the board default fallback.
-- `board_people.notification_group_jid` stores the WhatsApp group JID where notifications for this person should be sent. NULL means notify in the current group. Used by the `send_message` MCP tool's `target_chat_jid` parameter for cross-group notifications in hierarchy setups.
+- `board_people.notification_group_jid` stores the WhatsApp group JID where notifications for this person should be sent. NULL means notify in the current group. With the v2 MCP tools, the engine's `resolveNotifTarget()` queries this field and includes it in the `notifications` array returned to the agent, which dispatches each notification via `send_message` with the provided `target_chat_jid`.
 - `board_admins` preserves the existing manager/delegate authorization model in SQL form; `is_primary_manager = 1` is the hierarchy equivalent of the legacy single-manager fallback.
 - The primary full-manager row in `board_admins` must always have a matching `board_people` row, even if that person should not receive routine assignments. During migration from legacy JSON boards, synthesize that `board_people` row from `meta.manager` / `meta.managers[]` when it is missing from `people[]`.
 - `child_exec_*` columns on the tasks table hold the hierarchy linkage. No separate table needed because each task has at most one child execution link.
@@ -360,7 +360,7 @@ CREATE TABLE board_config (
 - `archive.task_snapshot` stores the archived task payload (including parent linkage, but excluding the separately retained history slice), while `archive.history` stores only the latest 20 history entries and `archive_reason` distinguishes cancelled work from other archive reasons.
 - `board_runtime_config` preserves language, timezone, runner IDs, cron schedules, DST guard state, and attachment policy so hierarchy boards keep the same runner + attachment behavior as standard TaskFlow boards.
 - `attachment_audit_log` preserves the existing attachment audit trail for confirmed imports on hierarchy boards.
-- Board-local task IDs (T-001, P-001, R-001) are scoped by `board_id` in the primary key.
+- Board-local task IDs (T1, P1, R1) are scoped by `board_id` in the primary key.
 
 ## Rollup Model
 
@@ -370,7 +370,7 @@ Each board queries only its direct children. A VP board queries manager boards. 
 
 ### Rollup Query
 
-When board X refreshes rollup for task T-004 linked to child board Y:
+When board X refreshes rollup for task T004 linked to child board Y:
 
 ```sql
 SELECT
@@ -533,7 +533,7 @@ Board-owner-managed fields:
 Rule:
 
 - on the receiving board, the assignee and board owner may move the linked task across normal GTD work columns while `child_exec_enabled`
-- `atualizar status T-XXX` / `sincronizar T-XXX` is only for pulling progress from an immediate child board after this board delegates the same deliverable further down
+- `atualizar status TXXX` / `sincronizar TXXX` is only for pulling progress from an immediate child board after this board delegates the same deliverable further down
 - if the board owner wants to remove cross-board visibility entirely, they must explicitly unlink first
 
 ## Commands
@@ -573,8 +573,8 @@ Permission: board owner only.
 
 #### Link a Task to a Child Board
 
-- `vincular T-XXX ao quadro do [pessoa]`
-- `usar equipe de [pessoa] para T-XXX`
+- `vincular TXXX ao quadro do [pessoa]`
+- `usar equipe de [pessoa] para TXXX`
 
 Effect:
 
@@ -585,8 +585,8 @@ Effect:
 
 #### Refresh Rollup
 
-- `atualizar status T-XXX`
-- `sincronizar T-XXX`
+- `atualizar status TXXX`
+- `sincronizar TXXX`
 
 Effect:
 
@@ -596,17 +596,17 @@ Effect:
 
 #### View Rollup
 
-- `resumo de execucao T-XXX`
+- `resumo de execucao TXXX`
 
 Effect:
 
 - show summarized rollup for that task
 
-Disambiguation: `"resumo"` alone triggers the v2 ad-hoc digest. `"resumo de execucao T-XXX"` triggers the rollup view. The task ID suffix disambiguates.
+Disambiguation: `"resumo"` alone triggers the v2 ad-hoc digest. `"resumo de execucao TXXX"` triggers the rollup view. The task ID suffix disambiguates.
 
 #### Unlink Child Execution
 
-- `desvincular T-XXX`
+- `desvincular TXXX`
 
 Effect:
 
@@ -619,7 +619,7 @@ Effect:
 
 #### Tag Local Work to Parent Task
 
-- `ligar tarefa ao pai T-XXX`
+- `ligar tarefa ao pai TXXX`
 
 Effect:
 
@@ -630,15 +630,15 @@ Effect:
 
 ### Leaf-Level Commands
 
-Leaf boards use standard TaskFlow commands plus upward tagging (`ligar tarefa ao pai T-XXX`) because they still have a parent board. They do not expose downward link/unlink/refresh/view commands because they have no child boards.
+Leaf boards use standard TaskFlow commands plus upward tagging (`ligar tarefa ao pai TXXX`) because they still have a parent board. They do not expose downward link/unlink/refresh/view commands because they have no child boards.
 
 ## Auto-Link on Assignment
 
 When a task is assigned to a person who has a registered child board, the board automatically links it (if the sender is a full manager and the task is not a recurring task). The `vincular` SQL update is performed immediately after assignment. The manager is informed:
 
-> T-XXX vinculada automaticamente ao quadro de [pessoa].
+> TXXX vinculada automaticamente ao quadro de [pessoa].
 
-The board owner can always unlink later with `desvincular T-XXX`.
+The board owner can always unlink later with `desvincular TXXX`.
 
 If the person has no registered child board, the task remains a normal board-local task.
 
@@ -670,30 +670,30 @@ This returns:
 
 ## Task Type Restrictions
 
-- **Simple tasks (T-XXX)**: Can be linked to child boards. Primary use case.
-- **Projects (P-XXX)**: Can be linked to child boards. The project's subtasks remain on the parent board. The child board creates its own independent breakdown.
-- **Recurring tasks (R-XXX)**: Cannot be linked. Cycle resets would break the linkage contract.
+- **Simple tasks (TXXX)**: Can be linked to child boards. Primary use case.
+- **Projects (PXXX)**: Can be linked to child boards. The project's subtasks remain on the parent board. The child board creates its own independent breakdown.
+- **Recurring tasks (RXXX)**: Cannot be linked. Cycle resets would break the linkage contract.
 
 ## Board Display and Runner Interactions
 
 ### Board View (`quadro`)
 
 Linked tasks show a `🔗` marker and rollup status:
-- `🔗 T-004 Entregar infraestrutura (Alexandre) [active]`
+- `🔗 T004 Entregar infraestrutura (Alexandre) [active]`
 
-### Task Details (`detalhes T-XXX`)
+### Task Details (`detalhes TXXX`)
 
 Include rollup section: child board, rollup status, last refresh time, summary.
 
 ### Morning Standup
 
 Linked tasks show rollup summary:
-- `T-004 — 🔗 Alexandre: 4 itens ativos, 1 em risco (atualizado 16:00)`
+- `T004 — 🔗 Alexandre: 4 itens ativos, 1 em risco (atualizado 16:00)`
 
 ### Evening Digest
 
 Include linked tasks with rollup status. Flag stale rollup (>24h):
-- `T-004 — 🔗 active (⚠️ rollup desatualizado — ultimo refresh ha 36h)`
+- `T004 — 🔗 active (⚠️ rollup desatualizado — ultimo refresh ha 36h)`
 
 ### Weekly Review
 
@@ -842,7 +842,7 @@ The following refinements were made during implementation:
 - **Conditional mount**: Only hierarchy groups (with `taskflowHierarchyLevel` metadata) get the SQLite mount. Standard TaskFlow groups continue with JSON.
 - **Source changes required**: Despite the original "zero source code changes" goal, a small support layer was needed: `src/taskflow-db.ts` (schema initialization), `mcp-server-sqlite-npx` in `container/agent-runner/package.json`, `mcp__sqlite__*` in `allowedTools`, and conditional directory mount in `container-runner.ts`. The hierarchy logic itself remains template-only.
 - **`admin_role = 'manager'`**: Both standard (JSON) and hierarchy (SQLite) modes use the same `'manager'` / `'delegate'` vocabulary for consistency.
-- **Cross-group notifications**: Added `notification_group_jid` column to `board_people` and `target_chat_jid` parameter to `send_message` MCP tool. IPC authorization updated to allow TaskFlow-to-TaskFlow cross-group messaging. During child board provisioning, the parent board's `board_people.notification_group_jid` is set to the child group's JID so notifications reach people in their working group.
+- **Cross-group notifications**: Added `notification_group_jid` column to `board_people` and `target_chat_jid` parameter to `send_message` MCP tool. IPC authorization updated to allow TaskFlow-to-TaskFlow cross-group messaging. During child board provisioning, the parent board's `board_people.notification_group_jid` is set to the child group's JID so notifications reach people in their working group. With the v2 MCP tools, notification resolution is handled by `resolveNotifTarget()` inside the engine — it queries only `notification_group_jid` from `board_people` and returns `{ target_person_id, notification_group_jid }`. The engine's notification builders (`buildCreateNotification`, `buildMoveNotification`, `buildReassignNotification`, `buildUpdateNotification`) produce rich pt-BR formatted messages; the agent dispatches them via `send_message`.
 - **Auto-provisioning**: Added `provision_child_board` IPC plugin (`src/ipc-plugins/provision-child-board.ts`) and matching MCP tool in `ipc-mcp-stdio.ts`. When a person is registered via `cadastrar` on a non-leaf hierarchy board, the agent fires the `provision_child_board` IPC call. The host-side plugin handles the full lifecycle (WhatsApp group creation, DB seeding, CLAUDE.md generation, runner scheduling) asynchronously. The original "no automatic board creation" non-goal was removed — auto-provisioning is now the default for hierarchy boards.
 - **Reference-based task visibility**: Child boards see delegated tasks via `child_exec_board_id` reference instead of task copies. The task query uses `WHERE board_id = :id OR (child_exec_board_id = :id AND child_exec_enabled = 1)`. This eliminates sync issues and maintains a single source of truth per task.
 - **Per-group sender name (dual response fix)**: Each group's `trigger_pattern` (e.g., `@Case`) is used to derive the outbound message sender name. The shared `getGroupSenderName(trigger?)` utility in `src/config.ts` centralizes the `trigger?.replace(/^@/, '') || ASSISTANT_NAME` pattern. Used in the streaming output callback, container `assistantName`, and scheduled task sender. The CLAUDE.md template instructs agents NOT to use `send_message` for regular responses (only for cross-group notifications and scheduled task output), preventing duplicate messages.

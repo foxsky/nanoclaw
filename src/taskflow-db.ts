@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   child_exec_last_rollup_summary TEXT,
   linked_parent_board_id TEXT,
   linked_parent_task_id TEXT,
+  parent_task_id TEXT,
   subtasks TEXT,
   recurrence TEXT,
   current_cycle TEXT,
@@ -187,6 +188,12 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   } catch {
     // Existing DBs may already have the column.
   }
+  try {
+    db.exec(`ALTER TABLE tasks ADD COLUMN parent_task_id TEXT`);
+  } catch {
+    // Existing DBs may already have the column.
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(board_id, parent_task_id) WHERE parent_task_id IS NOT NULL`);
 
   return db;
 }

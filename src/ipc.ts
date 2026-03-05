@@ -31,6 +31,7 @@ export interface IpcDeps {
     subject: string,
     participants: string[],
   ) => Promise<{ jid: string; subject: string }>;
+  resolvePhoneJid?: (phone: string) => Promise<string>;
 }
 
 export type IpcHandler = (

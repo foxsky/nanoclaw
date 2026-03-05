@@ -38,7 +38,7 @@ export interface CreateParams {
   due_date?: string;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
   labels?: string[];
-  subtasks?: string[];
+  subtasks?: Array<string | { title: string; assignee?: string }>;
   recurrence?: 'daily' | 'weekly' | 'monthly' | 'yearly';
   recurrence_anchor?: string;
   sender_name: string;
@@ -117,6 +117,8 @@ export interface UpdateParams {
     add_subtask?: string;         // project only
     rename_subtask?: { id: string; title: string };
     reopen_subtask?: string;      // subtask ID
+    assign_subtask?: { id: string; assignee: string };   // assign person to subtask
+    unassign_subtask?: string;    // subtask ID to unassign
     recurrence?: string;          // change frequency
   };
 }
@@ -124,6 +126,7 @@ export interface UpdateParams {
 export interface UpdateResult extends TaskflowResult {
   task_id?: string;
   changes?: string[];      // human-readable list of what changed
+  offer_register?: { name: string; message: string };
   notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
 }
 
@@ -191,6 +194,7 @@ export interface ReportResult extends TaskflowResult {
       name: string;
       in_progress: number;
       waiting: number;
+      subtask_assignments?: number;
       completed_today?: number;
       completed_week?: number;
     }>;
@@ -288,6 +292,19 @@ function advanceDateByRecurrence(d: Date, recurrence: 'daily' | 'weekly' | 'mont
 /* ------------------------------------------------------------------ */
 
 export class TaskflowEngine {
+  private static readonly moveActionLabels: Record<MoveParams['action'], string> = {
+    start: 'movida para 🔄 Em Andamento',
+    wait: 'movida para ⏳ Aguardando',
+    resume: 'retomada → 🔄 Em Andamento',
+    return: 'devolvida → ⏭️ Próximas Ações',
+    review: 'enviada para 🔍 Revisão',
+    approve: '✅ aprovada',
+    reject: '↩️ rejeitada — retrabalho necessário',
+    conclude: '✅ concluída',
+    reopen: 'reaberta → ⏭️ Próximas Ações',
+    force_start: 'forçada para 🔄 Em Andamento',
+  };
+
   constructor(
     private db: Database.Database,
     private boardId: string,
@@ -362,6 +379,14 @@ export class TaskflowEngine {
         `SELECT * FROM tasks WHERE ${this.visibleTaskScope()} AND assignee = ? ORDER BY id`,
       )
       .all(...this.visibleTaskParams(), personId);
+  }
+
+  private getSubtaskRows(parentTaskId: string): any[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM tasks WHERE board_id = ? AND parent_task_id = ? ORDER BY id`,
+      )
+      .all(this.boardId, parentTaskId);
   }
 
   private getLinkedTasks(): any[] {
@@ -453,26 +478,128 @@ export class TaskflowEngine {
       .run(boardId, taskId, action, by, now, details ?? null);
   }
 
-  /** Build a notification object if assignee differs from the modifier. */
-  private buildNotification(
-    task: { id: string; title: string; assignee: string },
-    action: string,
+  /** Resolve assignee person info for notifications. Returns null if self-update or missing. */
+  private resolveNotifTarget(
+    assigneePersonId: string | null,
     modifierPersonId: string,
-  ): { target_person_id: string; notification_group_jid: string | null; message: string } | null {
-    if (!task.assignee || task.assignee === modifierPersonId) return null;
+  ): { target_person_id: string; notification_group_jid: string | null } | null {
+    if (!assigneePersonId || assigneePersonId === modifierPersonId) return null;
     const person = this.db
       .prepare(
-        `SELECT name, notification_group_jid FROM board_people
+        `SELECT notification_group_jid FROM board_people
          WHERE board_id = ? AND person_id = ?`,
       )
-      .get(this.boardId, task.assignee) as
-      | { name: string; notification_group_jid: string | null }
+      .get(this.boardId, assigneePersonId) as
+      | { notification_group_jid: string | null }
       | undefined;
     if (!person) return null;
     return {
-      target_person_id: task.assignee,
+      target_person_id: assigneePersonId,
       notification_group_jid: person.notification_group_jid ?? null,
-      message: `${task.id} "${task.title}" was ${action} and assigned to you.`,
+    };
+  }
+
+  /** Resolve display name for a person_id. */
+  private personDisplayName(personId: string): string {
+    const row = this.db
+      .prepare(`SELECT name FROM board_people WHERE board_id = ? AND person_id = ?`)
+      .get(this.boardId, personId) as { name: string } | undefined;
+    return row?.name ?? personId;
+  }
+
+  /** Format a due date for display. */
+  private static formatDue(dueDate: string | null): string {
+    if (!dueDate) return 'sem prazo';
+    const d = new Date(dueDate);
+    return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+  }
+
+  /** Format priority for display. */
+  private static formatPriority(priority: string | null): string {
+    switch (priority) {
+      case 'urgent': return '🔴 urgente';
+      case 'high': return '🟠 alta';
+      case 'low': return '🔵 baixa';
+      default: return 'normal';
+    }
+  }
+
+  private static readonly columnLabels: Record<string, string> = {
+    inbox: '📥 Inbox',
+    next_action: '⏭️ Próximas Ações',
+    in_progress: '🔄 Em Andamento',
+    waiting: '⏳ Aguardando',
+    review: '🔍 Revisão',
+    done: '✅ Concluída',
+  };
+
+  /** Column name in pt-BR. */
+  private static columnLabel(col: string): string {
+    return TaskflowEngine.columnLabels[col] ?? col;
+  }
+
+  /** Build a notification for new task assignment. */
+  private buildCreateNotification(
+    task: { id: string; title: string; assignee: string; due_date?: string | null; priority?: string | null; column?: string },
+    modifierPersonId: string,
+  ): { target_person_id: string; notification_group_jid: string | null; message: string } | null {
+    const target = this.resolveNotifTarget(task.assignee, modifierPersonId);
+    if (!target) return null;
+    const modName = this.personDisplayName(modifierPersonId);
+    const col = TaskflowEngine.columnLabel(task.column ?? 'next_action');
+    const due = TaskflowEngine.formatDue(task.due_date ?? null);
+    const pri = TaskflowEngine.formatPriority(task.priority ?? null);
+    return {
+      ...target,
+      message: `🔔 *Nova tarefa atribuída a você*\n\n*${task.id}* — ${task.title}\n*Atribuído por:* ${modName}\n*Coluna:* ${col}\n\n• Prazo: ${due}\n• Prioridade: ${pri}\n\nDigite \`${task.id}\` para ver detalhes.`,
+    };
+  }
+
+  /** Build a notification for task column transition. */
+  private buildMoveNotification(
+    task: { id: string; title: string; assignee: string },
+    action: MoveParams['action'],
+    modifierPersonId: string,
+  ): { target_person_id: string; notification_group_jid: string | null; message: string } | null {
+    const target = this.resolveNotifTarget(task.assignee, modifierPersonId);
+    if (!target) return null;
+    const modName = this.personDisplayName(modifierPersonId);
+    const desc = TaskflowEngine.moveActionLabels[action] ?? action;
+    return {
+      ...target,
+      message: `🔔 *Atualização na sua tarefa*\n\n*${task.id}* — ${task.title}\n*Por:* ${modName}\n*Ação:* ${desc}\n\nDigite \`${task.id}\` para ver detalhes.`,
+    };
+  }
+
+  /** Build a notification for task reassignment. */
+  private buildReassignNotification(
+    task: { id: string; title: string },
+    fromPersonId: string,
+    targetPerson: { person_id: string; notification_group_jid: string | null },
+    modifierPersonId: string,
+  ): { target_person_id: string; notification_group_jid: string | null; message: string } {
+    const modName = this.personDisplayName(modifierPersonId);
+    const fromName = this.personDisplayName(fromPersonId);
+    return {
+      target_person_id: targetPerson.person_id,
+      notification_group_jid: targetPerson.notification_group_jid ?? null,
+      message: `🔔 *Tarefa reatribuída para você*\n\n*${task.id}* — ${task.title}\n*Reatribuída de:* ${fromName}\n*Por:* ${modName}\n\nDigite \`${task.id}\` para ver detalhes.`,
+    };
+  }
+
+  /** Build a notification for task field updates (priority, due date, etc.). */
+  private buildUpdateNotification(
+    task: { id: string; title: string; assignee: string },
+    changes: string[],
+    modifierPersonId: string,
+  ): { target_person_id: string; notification_group_jid: string | null; message: string } | null {
+    const target = this.resolveNotifTarget(task.assignee, modifierPersonId);
+    if (!target) return null;
+    const modName = this.personDisplayName(modifierPersonId);
+    const changeList = changes.map(c => `• ${c}`).join('\n');
+    return {
+      ...target,
+      message: `🔔 *Atualização na sua tarefa*\n\n*${task.id}* — ${task.title}\n*Modificado por:* ${modName}\n\n${changeList}\n\nDigite \`${task.id}\` para ver detalhes.`,
     };
   }
 
@@ -482,6 +609,70 @@ export class TaskflowEngine {
       .prepare(`SELECT name FROM board_people WHERE board_id = ? ORDER BY name`)
       .all(this.boardId) as Array<{ name: string }>;
     return rows.map((r) => r.name);
+  }
+
+  /** Build an offer_register error when a person isn't registered. */
+  private buildOfferRegisterError(name: string): { success: false; offer_register: { name: string; message: string } } {
+    const teamNames = this.listTeamNames();
+    return {
+      success: false,
+      offer_register: {
+        name,
+        message: `${name} não está cadastrado(a). Membros atuais: ${teamNames.join(', ')}. Quer cadastrar? Preciso do *nome exibido no grupo* (display name do WhatsApp), telefone e cargo.`,
+      },
+    };
+  }
+
+  /** Insert a subtask row linked to a parent project. */
+  private insertSubtaskRow(opts: {
+    subtaskId: string; title: string; assignee: string | null;
+    column: string; parentTaskId: string; priority: string | null;
+    senderName: string; now: string;
+  }): void {
+    const subMutation = JSON.stringify({ action: 'created', by: opts.senderName, at: opts.now });
+    this.db
+      .prepare(
+        `INSERT INTO tasks (
+          id, board_id, type, title, assignee, column,
+          parent_task_id, priority, labels,
+          _last_mutation, created_at, updated_at
+        ) VALUES (?, ?, 'simple', ?, ?, ?, ?, ?, '[]', ?, ?, ?)`,
+      )
+      .run(opts.subtaskId, this.boardId, opts.title, opts.assignee, opts.column,
+        opts.parentTaskId, opts.priority, subMutation, opts.now, opts.now);
+    this.recordHistory(opts.subtaskId, 'created', opts.senderName,
+      JSON.stringify({ type: 'subtask', parent: opts.parentTaskId, title: opts.title, assignee: opts.assignee }));
+  }
+
+  /** Build a notification for subtask assignment. */
+  private buildSubtaskAssignNotification(
+    subtask: { id: string; title: string },
+    project: { id: string; title: string },
+    assigneePersonId: string,
+    modifierPersonId: string,
+  ): { target_person_id: string; notification_group_jid: string | null; message: string } | null {
+    const target = this.resolveNotifTarget(assigneePersonId, modifierPersonId);
+    if (!target) return null;
+    const modName = this.personDisplayName(modifierPersonId);
+    return {
+      ...target,
+      message: `🔔 *Etapa atribuída para você*\n*${subtask.id}* — ${subtask.title}\n*Projeto:* ${project.id} — ${project.title}\n*Por:* ${modName}`,
+    };
+  }
+
+  /** Validate that the parent task is a project and the subtask belongs to it. */
+  private requireProjectSubtask(
+    parentTask: { id: string; type: string },
+    subtaskId: string,
+  ): { success: false; error: string } | { success: true; subTask: any } {
+    if (parentTask.type !== 'project') {
+      return { success: false, error: 'Subtasks can only be modified on project tasks.' };
+    }
+    const subTask = this.getTask(subtaskId);
+    if (!subTask || subTask.parent_task_id !== parentTask.id) {
+      return { success: false, error: `Subtask ${subtaskId} not found.` };
+    }
+    return { success: true, subTask };
   }
 
   /** Check if an assignee has a child board registered. */
@@ -520,16 +711,7 @@ export class TaskflowEngine {
       let assigneePersonId: string | null = null;
       if (params.assignee) {
         const person = this.resolvePerson(params.assignee);
-        if (!person) {
-          const teamNames = this.listTeamNames();
-          return {
-            success: false,
-            offer_register: {
-              name: params.assignee,
-              message: `${params.assignee} not registered. Current team: ${teamNames.join(', ')}`,
-            },
-          };
-        }
+        if (!person) return this.buildOfferRegisterError(params.assignee);
         assigneePersonId = person.person_id;
       }
 
@@ -541,7 +723,7 @@ export class TaskflowEngine {
           : params.type === 'recurring'
             ? 'R'
             : 'T';
-      const taskId = `${prefix}-${String(num).padStart(3, '0')}`;
+      const taskId = `${prefix}${num}`;
 
       /* --- Column placement --- */
       const column = params.type === 'inbox' || !assigneePersonId ? 'inbox' : 'next_action';
@@ -549,16 +731,19 @@ export class TaskflowEngine {
       /* --- Type mapping (inbox → simple for storage) --- */
       const storedType = params.type === 'inbox' ? 'simple' : params.type;
 
-      /* --- Subtasks for projects --- */
-      let subtasksJson: string | null = null;
+      /* --- Subtask definitions for projects (parsed but inserted after parent) --- */
+      const subtaskDefs: Array<{ title: string; assigneePersonId: string | null }> = [];
       if (params.type === 'project' && params.subtasks && params.subtasks.length > 0) {
-        subtasksJson = JSON.stringify(
-          params.subtasks.map((title, idx) => ({
-            id: `${taskId}.${idx + 1}`,
-            title,
-            status: 'pending',
-          })),
-        );
+        for (const sub of params.subtasks) {
+          const title = typeof sub === 'string' ? sub : sub.title;
+          let subAssigneePersonId: string | null = null;
+          if (typeof sub !== 'string' && sub.assignee) {
+            const subPerson = this.resolvePerson(sub.assignee);
+            if (!subPerson) return this.buildOfferRegisterError(sub.assignee);
+            subAssigneePersonId = subPerson.person_id;
+          }
+          subtaskDefs.push({ title, assigneePersonId: subAssigneePersonId });
+        }
       }
 
       /* --- Recurrence --- */
@@ -591,15 +776,15 @@ export class TaskflowEngine {
         at: now,
       });
 
-      /* --- INSERT task --- */
+      /* --- INSERT parent task --- */
       this.db
         .prepare(
           `INSERT INTO tasks (
             id, board_id, type, title, assignee, column,
-            priority, due_date, labels, subtasks, recurrence,
+            priority, due_date, labels, recurrence,
             child_exec_enabled, child_exec_board_id, child_exec_person_id,
             _last_mutation, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           taskId,
@@ -611,7 +796,6 @@ export class TaskflowEngine {
           params.priority ?? null,
           dueDate,
           params.labels ? JSON.stringify(params.labels) : '[]',
-          subtasksJson,
           recurrence,
           childExecEnabled,
           childExecBoardId,
@@ -620,6 +804,20 @@ export class TaskflowEngine {
           now,
           now,
         );
+
+      /* --- Create subtask rows (project only) --- */
+      const createdSubtasks: Array<{ id: string; title: string; assignee: string | null }> = [];
+      for (let i = 0; i < subtaskDefs.length; i++) {
+        const sub = subtaskDefs[i];
+        const subtaskId = `${taskId}.${i + 1}`;
+        const subColumn = sub.assigneePersonId ? 'next_action' : (assigneePersonId ? 'next_action' : 'inbox');
+        const subAssignee = sub.assigneePersonId ?? assigneePersonId;
+        this.insertSubtaskRow({
+          subtaskId, title: sub.title, assignee: subAssignee, column: subColumn,
+          parentTaskId: taskId, priority: params.priority ?? null, senderName: params.sender_name, now,
+        });
+        createdSubtasks.push({ id: subtaskId, title: sub.title, assignee: subAssignee });
+      }
 
       /* --- History --- */
       const detailsSummary: Record<string, any> = {
@@ -631,22 +829,37 @@ export class TaskflowEngine {
       if (params.priority) detailsSummary.priority = params.priority;
       if (dueDate) detailsSummary.due_date = dueDate;
       if (params.labels?.length) detailsSummary.labels = params.labels;
-      if (subtasksJson) detailsSummary.subtasks_count = params.subtasks!.length;
+      if (subtaskDefs.length > 0) detailsSummary.subtasks_count = subtaskDefs.length;
       if (recurrence) detailsSummary.recurrence = recurrence;
 
       this.recordHistory(taskId, 'created', params.sender_name, JSON.stringify(detailsSummary));
 
-      /* --- Notification --- */
+      /* --- Notifications --- */
       const notifications: CreateResult['notifications'] = [];
+      const senderPerson = this.resolvePerson(params.sender_name);
+      const senderPersonId = senderPerson?.person_id ?? params.sender_name;
+
+      // Notify project assignee
       if (assigneePersonId) {
-        const senderPerson = this.resolvePerson(params.sender_name);
-        const senderPersonId = senderPerson?.person_id ?? params.sender_name;
-        const notif = this.buildNotification(
-          { id: taskId, title: params.title, assignee: assigneePersonId },
-          'created',
+        const notif = this.buildCreateNotification(
+          { id: taskId, title: params.title, assignee: assigneePersonId, due_date: dueDate, priority: params.priority, column },
           senderPersonId,
         );
         if (notif) notifications.push(notif);
+      }
+
+      // Notify each subtask assignee (if different from project assignee and sender)
+      const notifiedSubtaskAssignees = new Set<string>();
+      for (const sub of createdSubtasks) {
+        if (sub.assignee && sub.assignee !== assigneePersonId && !notifiedSubtaskAssignees.has(sub.assignee)) {
+          notifiedSubtaskAssignees.add(sub.assignee);
+          const notif = this.buildSubtaskAssignNotification(
+            { id: sub.id, title: sub.title },
+            { id: taskId, title: params.title },
+            sub.assignee, senderPersonId,
+          );
+          if (notif) notifications.push(notif);
+        }
       }
 
       return {
@@ -840,6 +1053,24 @@ export class TaskflowEngine {
           break;
       }
 
+      /* --- Project conclude guard: all subtask rows must be done --- */
+      if ((params.action === 'conclude' || params.action === 'approve') && task.type === 'project') {
+        const pendingSubs = this.db
+          .prepare(
+            `SELECT id, title, column FROM tasks
+             WHERE board_id = ? AND parent_task_id = ? AND column != 'done'
+             ORDER BY id`,
+          )
+          .all(this.boardId, task.id) as Array<{ id: string; title: string; column: string }>;
+        if (pendingSubs.length > 0) {
+          const list = pendingSubs.map((s) => `${s.id} (${s.column})`).join(', ');
+          return {
+            success: false,
+            error: `Cannot conclude project ${task.id}: ${pendingSubs.length} subtask(s) not done: ${list}`,
+          };
+        }
+      }
+
       /* --- WIP limit check (start, resume, reject — NOT force_start) --- */
       if (['start', 'resume', 'reject'].includes(params.action) && task.assignee) {
         const wip = this.checkWipLimit(task.assignee);
@@ -865,8 +1096,34 @@ export class TaskflowEngine {
         },
       });
 
-      /* --- Project subtask completion --- */
+      /* --- Project subtask completion (real task rows) --- */
       let projectUpdate: MoveResult['project_update'];
+      if (toColumn === 'done' && task.parent_task_id) {
+        // This is a subtask being concluded — check sibling subtasks
+        const siblings = this.getSubtaskRows(task.parent_task_id);
+        // Find next pending sibling (not in done)
+        let nextSubtask: string | undefined;
+        const taskIndex = siblings.findIndex((s: any) => s.id === task.id);
+        // Search after current
+        for (let i = taskIndex + 1; i < siblings.length; i++) {
+          if (siblings[i].column !== 'done') { nextSubtask = siblings[i].id; break; }
+        }
+        // Search before current
+        if (!nextSubtask) {
+          for (let i = 0; i < taskIndex; i++) {
+            if (siblings[i].column !== 'done') { nextSubtask = siblings[i].id; break; }
+          }
+        }
+        // All complete = all siblings (including this one, which we're about to move to done) are done
+        const allComplete = siblings.every((s: any) => s.id === task.id || s.column === 'done');
+        projectUpdate = {
+          completed_subtask: task.id,
+          next_subtask: nextSubtask,
+          all_complete: allComplete,
+        };
+      }
+
+      /* --- Legacy JSON subtask completion (backward compat) --- */
       if (params.subtask_id && task.subtasks) {
         try {
           const subtasks: Array<{ id: string; title: string; status: string }> = JSON.parse(task.subtasks);
@@ -881,28 +1138,17 @@ export class TaskflowEngine {
             }
           }
           if (found) {
-            // Find the next pending subtask
             for (let i = foundIndex + 1; i < subtasks.length; i++) {
-              if (subtasks[i].status === 'pending') {
-                nextSubtask = subtasks[i].id;
-                break;
-              }
+              if (subtasks[i].status === 'pending') { nextSubtask = subtasks[i].id; break; }
             }
-            // If none found after, check from the beginning
             if (!nextSubtask) {
               for (let i = 0; i < foundIndex; i++) {
-                if (subtasks[i].status === 'pending') {
-                  nextSubtask = subtasks[i].id;
-                  break;
-                }
+                if (subtasks[i].status === 'pending') { nextSubtask = subtasks[i].id; break; }
               }
             }
             const allComplete = subtasks.every((s) => s.status === 'done');
             this.db
-              .prepare(
-                `UPDATE tasks SET subtasks = ?, updated_at = ?
-                 WHERE board_id = ? AND id = ?`,
-              )
+              .prepare(`UPDATE tasks SET subtasks = ?, updated_at = ? WHERE board_id = ? AND id = ?`)
               .run(JSON.stringify(subtasks), now, taskBoardId, task.id);
             projectUpdate = {
               completed_subtask: params.subtask_id,
@@ -960,8 +1206,8 @@ export class TaskflowEngine {
       /* --- Notifications --- */
       const notifications: MoveResult['notifications'] = [];
       if (senderPersonId) {
-        const notif = this.buildNotification(
-          { id: task.id, title: task.title, assignee: task.assignee },
+        const notif = this.buildMoveNotification(
+          task,
           params.action,
           senderPersonId,
         );
@@ -1000,16 +1246,7 @@ export class TaskflowEngine {
 
       /* --- Resolve target person --- */
       const targetPerson = this.resolvePerson(params.target_person);
-      if (!targetPerson) {
-        const teamNames = this.listTeamNames();
-        return {
-          success: false,
-          offer_register: {
-            name: params.target_person,
-            message: `${params.target_person} not registered. Current team: ${teamNames.join(', ')}`,
-          },
-        };
-      }
+      if (!targetPerson) return this.buildOfferRegisterError(params.target_person);
 
       /* --- Collect tasks to reassign --- */
       let tasksToReassign: any[];
@@ -1195,11 +1432,12 @@ export class TaskflowEngine {
 
         /* --- Notification for new assignee (uses pre-fetched targetNotifInfo) --- */
         if (targetNotifInfo) {
-          notifications.push({
-            target_person_id: targetPerson.person_id,
-            notification_group_jid: targetNotifInfo.notification_group_jid ?? null,
-            message: `${task.id} "${task.title}" was reassigned to you.`,
-          });
+          notifications.push(this.buildReassignNotification(
+            task,
+            task.assignee,
+            { person_id: targetPerson.person_id, notification_group_jid: targetNotifInfo.notification_group_jid ?? null },
+            senderPersonId,
+          ));
         }
       }
 
@@ -1270,6 +1508,7 @@ export class TaskflowEngine {
 
       /* --- Process each update field --- */
       const changes: string[] = [];
+      const notifications: UpdateResult['notifications'] = [];
 
       /* Title */
       if (updates.title !== undefined) {
@@ -1393,53 +1632,80 @@ export class TaskflowEngine {
         changes.push(`Note #${updates.remove_note} removed`);
       }
 
-      /* Add subtask (project only) */
+      /* Add subtask (project only) — creates a real task row */
       if (updates.add_subtask !== undefined) {
         if (task.type !== 'project') {
           return { success: false, error: 'Subtasks can only be added to project tasks.' };
         }
-        const subtasks: Array<{ id: string; title: string; status: string }> = JSON.parse(task.subtasks ?? '[]');
-        const nextNum = subtasks.length + 1;
+        const existingSubtasks = this.getSubtaskRows(task.id);
+        const nextNum = existingSubtasks.length + 1;
         const subtaskId = `${task.id}.${nextNum}`;
-        subtasks.push({ id: subtaskId, title: updates.add_subtask, status: 'pending' });
-        this.db
-          .prepare(`UPDATE tasks SET subtasks = ? WHERE board_id = ? AND id = ?`)
-          .run(JSON.stringify(subtasks), taskBoardId, task.id);
+        const subColumn = task.assignee ? 'next_action' : 'inbox';
+        this.insertSubtaskRow({
+          subtaskId, title: updates.add_subtask, assignee: task.assignee, column: subColumn,
+          parentTaskId: task.id, priority: task.priority ?? null, senderName: params.sender_name, now,
+        });
         changes.push(`Subtask ${subtaskId} "${updates.add_subtask}" added`);
       }
 
-      /* Rename subtask (project only) */
+      /* Rename subtask (project only) — operates on subtask task row */
       if (updates.rename_subtask !== undefined) {
-        if (task.type !== 'project') {
-          return { success: false, error: 'Subtasks can only be modified on project tasks.' };
-        }
-        const subtasks: Array<{ id: string; title: string; status: string }> = JSON.parse(task.subtasks ?? '[]');
-        const sub = subtasks.find((s) => s.id === updates.rename_subtask!.id);
-        if (!sub) {
-          return { success: false, error: `Subtask ${updates.rename_subtask.id} not found.` };
-        }
-        sub.title = updates.rename_subtask.title;
+        const check = this.requireProjectSubtask(task, updates.rename_subtask.id);
+        if (!check.success) return check;
         this.db
-          .prepare(`UPDATE tasks SET subtasks = ? WHERE board_id = ? AND id = ?`)
-          .run(JSON.stringify(subtasks), taskBoardId, task.id);
+          .prepare(`UPDATE tasks SET title = ?, updated_at = ? WHERE board_id = ? AND id = ?`)
+          .run(updates.rename_subtask.title, now, this.boardId, updates.rename_subtask.id);
         changes.push(`Subtask ${updates.rename_subtask.id} renamed to "${updates.rename_subtask.title}"`);
       }
 
-      /* Reopen subtask (project only) */
+      /* Reopen subtask (project only) — moves subtask task row back to next_action */
       if (updates.reopen_subtask !== undefined) {
-        if (task.type !== 'project') {
-          return { success: false, error: 'Subtasks can only be modified on project tasks.' };
+        const check = this.requireProjectSubtask(task, updates.reopen_subtask);
+        if (!check.success) return check;
+        if (check.subTask.column !== 'done') {
+          return { success: false, error: `Subtask ${updates.reopen_subtask} is not done (current: ${check.subTask.column}).` };
         }
-        const subtasks: Array<{ id: string; title: string; status: string }> = JSON.parse(task.subtasks ?? '[]');
-        const sub = subtasks.find((s) => s.id === updates.reopen_subtask);
-        if (!sub) {
-          return { success: false, error: `Subtask ${updates.reopen_subtask} not found.` };
-        }
-        sub.status = 'pending';
         this.db
-          .prepare(`UPDATE tasks SET subtasks = ? WHERE board_id = ? AND id = ?`)
-          .run(JSON.stringify(subtasks), taskBoardId, task.id);
+          .prepare(`UPDATE tasks SET column = 'next_action', updated_at = ? WHERE board_id = ? AND id = ?`)
+          .run(now, this.boardId, updates.reopen_subtask);
+        this.recordHistory(updates.reopen_subtask, 'reopened', params.sender_name, undefined);
         changes.push(`Subtask ${updates.reopen_subtask} reopened`);
+      }
+
+      /* Assign subtask (project only) — reassigns a subtask to a different person */
+      if (updates.assign_subtask !== undefined) {
+        const check = this.requireProjectSubtask(task, updates.assign_subtask.id);
+        if (!check.success) return check;
+        const subPerson = this.resolvePerson(updates.assign_subtask.assignee);
+        if (!subPerson) return this.buildOfferRegisterError(updates.assign_subtask.assignee);
+        this.db
+          .prepare(`UPDATE tasks SET assignee = ?, column = CASE WHEN column = 'inbox' THEN 'next_action' ELSE column END, updated_at = ? WHERE board_id = ? AND id = ?`)
+          .run(subPerson.person_id, now, this.boardId, updates.assign_subtask.id);
+        this.recordHistory(updates.assign_subtask.id, 'reassigned', params.sender_name,
+          JSON.stringify({ from_assignee: check.subTask.assignee, to_assignee: subPerson.person_id }));
+        changes.push(`Subtask ${updates.assign_subtask.id} assigned to ${subPerson.name}`);
+
+        // Notify subtask assignee
+        if (senderPersonId) {
+          const notif = this.buildSubtaskAssignNotification(
+            { id: updates.assign_subtask.id, title: check.subTask.title },
+            { id: task.id, title: task.title },
+            subPerson.person_id, senderPersonId,
+          );
+          if (notif) notifications.push(notif);
+        }
+      }
+
+      /* Unassign subtask (project only) — remove assignee from subtask */
+      if (updates.unassign_subtask !== undefined) {
+        const check = this.requireProjectSubtask(task, updates.unassign_subtask);
+        if (!check.success) return check;
+        this.db
+          .prepare(`UPDATE tasks SET assignee = NULL, updated_at = ? WHERE board_id = ? AND id = ?`)
+          .run(now, this.boardId, updates.unassign_subtask);
+        this.recordHistory(updates.unassign_subtask, 'unassigned', params.sender_name,
+          JSON.stringify({ from_assignee: check.subTask.assignee }));
+        changes.push(`Subtask ${updates.unassign_subtask} unassigned`);
       }
 
       /* Recurrence (recurring only) */
@@ -1469,12 +1735,11 @@ export class TaskflowEngine {
         taskBoardId,
       );
 
-      /* --- Notification --- */
-      const notifications: UpdateResult['notifications'] = [];
-      if (senderPersonId) {
-        const notif = this.buildNotification(
+      /* --- Notification for task owner --- */
+      if (senderPersonId && changes.length > 0) {
+        const notif = this.buildUpdateNotification(
           { id: task.id, title: task.title, assignee: task.assignee },
-          'updated',
+          changes,
           senderPersonId,
         );
         if (notif) notifications.push(notif);
@@ -1872,7 +2137,19 @@ export class TaskflowEngine {
         case 'task_details': {
           const task = this.requireTask(params.task_id);
           const history = this.getHistory(params.task_id!, 5, this.taskBoardId(task));
-          return { success: true, data: { task, recent_history: history } };
+          const data: any = { task, recent_history: history };
+          // Include subtask rows for project tasks
+          if (task.type === 'project') {
+            data.subtask_rows = this.getSubtaskRows(task.id);
+          }
+          // Include parent project info for subtasks
+          if (task.parent_task_id) {
+            const parent = this.getTask(task.parent_task_id);
+            if (parent) {
+              data.parent_project = { id: parent.id, title: parent.title, column: parent.column };
+            }
+          }
+          return { success: true, data };
         }
 
         case 'task_history': {
@@ -2594,7 +2871,12 @@ export class TaskflowEngine {
             /* No cross-board cleanup needed here — just archive locally */
           }
 
-          /* Delete from tasks */
+          /* Delete from tasks (and any subtask rows if project) */
+          if (task.type === 'project') {
+            this.db
+              .prepare(`DELETE FROM tasks WHERE board_id = ? AND parent_task_id = ?`)
+              .run(this.boardId, task.id);
+          }
           this.db
             .prepare(
               `DELETE FROM tasks WHERE board_id = ? AND id = ?`,
@@ -2837,11 +3119,25 @@ export class TaskflowEngine {
         }
       }
 
+      /* --- Per-person subtask assignments (active, not done) --- */
+      const subtaskCountByPerson = new Map<string, number>();
+      const subtaskRows = this.db
+        .prepare(
+          `SELECT assignee, COUNT(*) AS cnt FROM tasks
+           WHERE board_id = ? AND parent_task_id IS NOT NULL AND column != 'done' AND assignee IS NOT NULL
+           GROUP BY assignee`,
+        )
+        .all(this.boardId) as Array<{ assignee: string; cnt: number }>;
+      for (const row of subtaskRows) {
+        subtaskCountByPerson.set(row.assignee, row.cnt);
+      }
+
       /* --- Per-person summary --- */
       const perPerson: Array<{
         name: string;
         in_progress: number;
         waiting: number;
+        subtask_assignments?: number;
         completed_today?: number;
         completed_week?: number;
       }> = [];
@@ -2893,10 +3189,12 @@ export class TaskflowEngine {
       for (const person of people) {
         const ipCount = inProgress.filter((t) => t.assignee === person.person_id).length;
         const wCount = waiting.filter((t) => t.assignee === person.person_id).length;
+        const subCount = subtaskCountByPerson.get(person.person_id) ?? 0;
         const entry: typeof perPerson[number] = {
           name: person.name,
           in_progress: ipCount,
           waiting: wCount,
+          subtask_assignments: subCount,
         };
         if (isDigestOrWeekly) {
           entry.completed_today = completedTodayByPerson.get(person.person_id) ?? 0;

@@ -107,7 +107,18 @@ const handleCreateGroup: IpcHandler = async (
   }
 
   try {
-    const result = await deps.createGroup(subject, participants);
+    // Resolve participant JIDs via WhatsApp lookup when available
+    let resolvedParticipants = participants;
+    if (deps.resolvePhoneJid) {
+      resolvedParticipants = await Promise.all(
+        participants.map(async (jid) => {
+          const phone = jid.replace(/@s\.whatsapp\.net$/, '');
+          return deps.resolvePhoneJid!(phone);
+        }),
+      );
+    }
+
+    const result = await deps.createGroup(subject, resolvedParticipants);
     logger.info(
       { jid: result.jid, participantCount: participants.length },
       'Group created via IPC',

@@ -77,7 +77,7 @@ taskflow_create({
   due_date?: string,          // ISO-8601 or natural language date
   priority?: 'low' | 'normal' | 'high' | 'urgent',
   labels?: string[],
-  subtasks?: string[],        // for projects: ordered list of subtask titles
+  subtasks?: Array<string | { title: string; assignee?: string }>,  // for projects: subtask titles with optional assignees
   recurrence?: 'daily' | 'weekly' | 'monthly' | 'yearly',
   recurrence_anchor?: string, // "toda segunda", "todo dia 5"
   sender_name: string,        // for permission check
@@ -88,12 +88,12 @@ taskflow_create({
 ```typescript
 {
   success: boolean,
-  task_id: string,           // e.g. "T-003", "P-001", "R-002"
+  task_id: string,           // e.g. "T3", "P1", "R2"
   column: string,            // 'inbox' or 'next_action'
   error?: string,            // permission denied, invalid assignee, etc.
   offer_register?: {         // if assignee unknown
     name: string,
-    message: string,         // "João not registered. Current team: ..."
+    message: string,         // "[name] não está cadastrado(a). Membros atuais: ... Quer cadastrar? Preciso do *nome exibido no grupo* (display name do WhatsApp), telefone e cargo."
   },
   notifications?: Array<{
     target_person_id: string,
@@ -109,7 +109,8 @@ taskflow_create({
 - Assignee resolution (name → person_id)
 - Unknown person → offer to register flow
 - Recurring setup (due_date calculation)
-- Project subtask initialization
+- Project subtask initialization (as real task rows with `parent_task_id`)
+- Subtask assignee resolution and notification
 - Auto-link to child board on assignment (hierarchy mode)
 
 ---
@@ -125,7 +126,7 @@ taskflow_move({
   action: 'start' | 'wait' | 'resume' | 'return' | 'review' | 'approve' | 'reject' | 'conclude' | 'reopen' | 'force_start',
   sender_name: string,
   reason?: string,           // for 'wait' and 'reject'
-  subtask_id?: string,       // for project subtask completion (e.g. "P-001.2")
+  subtask_id?: string,       // for project subtask completion (e.g. "P1.2")
 })
 ```
 
@@ -250,6 +251,8 @@ taskflow_update({
     add_subtask?: string,         // project only
     rename_subtask?: { id: string, title: string },
     reopen_subtask?: string,      // subtask ID
+    assign_subtask?: { id: string, assignee: string },  // assign subtask to team member
+    unassign_subtask?: string,    // remove subtask assignment (subtask ID)
     recurrence?: string,          // change frequency
   },
 })
@@ -262,6 +265,10 @@ taskflow_update({
   task_id: string,
   changes: string[],         // human-readable list of what changed
   error?: string,
+  offer_register?: {         // if subtask assignee unknown
+    name: string,
+    message: string,
+  },
   notifications?: Array<{
     target_person_id: string,
     notification_group_jid: string | null,
@@ -486,8 +493,8 @@ Table mapping user commands to tool calls:
 |-----------|-----------|
 | "anotar: X" | taskflow_create({ type: 'inbox', title: 'X' }) |
 | "tarefa para Y: X ate Z" | taskflow_create({ type: 'simple', ... }) |
-| "comecando T-001" | taskflow_move({ task_id: 'T-001', action: 'start' }) |
-| "reatribuir T-001 para Y" | taskflow_reassign({ task_id: 'T-001', ... }) |
+| "comecando T001" | taskflow_move({ task_id: 'T001', action: 'start' }) |
+| "reatribuir T001 para Y" | taskflow_reassign({ task_id: 'T001', ... }) |
 | "quadro" | taskflow_query({ query: 'board' }) |
 | ... | ... |
 
@@ -522,6 +529,7 @@ Full table list with key columns and types.
 Agent uses this for direct SQL queries when tools don't cover the need:
 - tasks: id, board_id, type, title, assignee, column, priority,
   due_date, labels (JSON), blocked_by (JSON), notes (JSON),
+  parent_task_id (FK to parent project for subtask rows),
   child_exec_enabled, child_exec_board_id, ...
 - board_people: person_id, name, phone, role, wip_limit
 - board_admins: person_id, admin_role, is_primary_manager
@@ -591,6 +599,69 @@ TOTAL: ~370 lines (with room for buffer to ~400)
     └── taskflow.test.ts     (updated)
 ```
 
+## Subtask Storage Model
+
+Project subtasks are stored as **real task rows** in the `tasks` table with `parent_task_id` pointing to the parent project. This replaces the earlier JSON-in-column approach and enables:
+
+- **Assignable subtasks**: Each subtask can have its own `assignee` (independent of the project owner)
+- **Standard task lifecycle**: Subtasks are regular task rows queryable with standard SQL
+- **WIP counting**: Assigned subtasks count toward the assignee's WIP limit
+- **Direct column transitions**: Subtask assignees can mark their subtasks as done
+
+### Subtask ID Format
+
+Subtask IDs use dotted notation: `P4.1`, `P4.2`, etc. The parent task's ID is the prefix.
+
+### Schema Addition
+
+```sql
+-- Added to tasks table:
+parent_task_id TEXT  -- NULL for regular tasks, set for subtask rows
+
+-- Partial index for efficient subtask lookups:
+CREATE INDEX IF NOT EXISTS idx_tasks_parent
+  ON tasks(board_id, parent_task_id)
+  WHERE parent_task_id IS NOT NULL;
+```
+
+### WIP Limit Extension
+
+When checking WIP for a person, the engine counts:
+1. Tasks assigned to the person in `in_progress` column (standard)
+2. Pending subtask rows assigned to the person where the parent project is in `in_progress` and the person is NOT the project owner (to avoid double-counting)
+
+### Subtask Assignee Authorization
+
+- **Project owner or manager** can assign/unassign subtasks via `assign_subtask` / `unassign_subtask`
+- **Subtask assignee** can mark their own subtask as done (`conclude` action)
+- Subtask assignees must be registered on the same board
+
+### Subtask Assignment Notification
+
+When a subtask is assigned, the assignee receives:
+```
+🔔 *Etapa atribuída para você*
+*P4.2* — [subtask title]
+*Projeto:* P4 — [project title]
+*Por:* [assigner name]
+```
+
+### Registration Prompt (offer_register)
+
+When an unknown person is referenced as assignee (task or subtask), the engine returns:
+```
+[name] não está cadastrado(a). Membros atuais: [list].
+Quer cadastrar? Preciso do *nome exibido no grupo* (display name do WhatsApp), telefone e cargo.
+```
+
+The prompt asks for the person's **WhatsApp group display name** (used for sender matching).
+
+### Query Extensions
+
+- `my_tasks` and `person_tasks` include a `subtask_assignments` array showing subtasks assigned to the person from other people's projects
+- Standup/report `per_person` sections include `subtask_assignments` count
+- Board column views filter out subtask rows (they appear under their parent project)
+
 ## Notification System
 
 Notifications are cross-group messages sent after state-changing operations (~107 lines in the current CLAUDE.md). The MCP tools handle mutations but do NOT send notifications directly — they return a `notifications` array in the result, and the agent dispatches them.
@@ -609,6 +680,22 @@ Notifications are cross-group messages sent after state-changing operations (~10
 3. The notification message templates are generated by the engine (it knows the old/new state), so the agent just dispatches them.
 
 This keeps the engine pure (no side effects beyond SQLite) while eliminating the 107 lines of notification logic from the CLAUDE.md.
+
+### Notification Builders (Implementation Detail)
+
+The engine uses four private notification builders, all producing rich pt-BR formatted messages:
+
+- **`buildCreateNotification`** — new task assignment. Accepts `task: { id, title, assignee, due_date?, priority?, column? }`.
+- **`buildMoveNotification`** — column transition. Accepts `task: { id, title, assignee }` and an `action` string. Does not accept `column`, `due_date`, or `priority` (those fields are not used in move notification messages).
+- **`buildReassignNotification`** — task reassignment. Accepts `task: { id, title }`, `fromPersonId`, `targetPerson: { person_id, notification_group_jid }`, and `modifierPersonId`.
+- **`buildUpdateNotification`** — field updates (priority, due date, etc.). Accepts `task: { id, title, assignee }` and a `changes` string array.
+- **`buildSubtaskAssignNotification`** — subtask assignment. Accepts `subtask: { id, title }`, `project: { id, title }`, `assigneePersonId`, `modifierPersonId`. Returns notification targeting the subtask assignee.
+
+All builders delegate target resolution to `resolveNotifTarget(assigneePersonId, modifierPersonId)`, which returns `{ target_person_id, notification_group_jid }` (no `name` field). It queries only `notification_group_jid` from `board_people` — display names are resolved separately via `personDisplayName()`.
+
+The `moveActionLabels` map (action string to pt-BR description) is a `private static readonly` property on `TaskflowEngine`, not recreated per call.
+
+Both the runtime engine (`container/agent-runner/src/taskflow-engine.ts`) and the skill copy (`.claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts`) use the same notification builders. The skill copy's reassign handler uses `buildReassignNotification` (the rich pt-BR builder), not an inline English string.
 
 ## Reminder Mechanism
 

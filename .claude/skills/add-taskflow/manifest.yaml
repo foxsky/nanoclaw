@@ -11,6 +11,12 @@ modifies:
   - container/agent-runner/src/ipc-mcp-stdio.ts
   - container/agent-runner/src/runtime-config.ts
   - src/container-runner.ts
+  - src/channels/whatsapp.ts      # intent-only: adds resolvePhoneJid method
+  - src/config.ts                 # intent-only: adds buildTriggerPattern function
+  - src/index.ts                  # intent-only: per-group trigger + resolvePhoneJid wiring
+  - src/ipc.ts                    # intent-only: adds resolvePhoneJid to IpcDeps
+  - src/ipc-plugins/create-group.ts          # intent-only: resolve JIDs before group creation
+  - src/ipc-plugins/provision-child-board.ts # intent-only: resolve JID for child board
 structured:
   npm_dependencies:
     better-sqlite3: "^12.6.2"

@@ -64,7 +64,7 @@ There is no mirrored “shared board + private per-user view” mode, and there 
 During setup, collect:
 
 - Manager name
-- Manager phone (digits only)
+- Manager phone (digits only — automatically resolved to the correct WhatsApp JID format via `onWhatsApp()` lookup)
 - Output language
 - TaskFlow timezone
 - Board topology
@@ -109,7 +109,7 @@ If creating a new WhatsApp group automatically, stop the service first. Only one
 systemctl stop nanoclaw
 ```
 
-Use the Baileys `groupCreate` flow described in the TaskFlow skill. Shared-team boards can be created with only the manager initially, then members can be added later.
+Use the Baileys `groupCreate` flow described in the TaskFlow skill. Phone numbers are automatically resolved to the correct WhatsApp JID via `onWhatsApp()` before group creation — no need to manually adjust number formats (e.g. Brazilian 9th-digit prefix). Shared-team boards can be created with only the manager initially, then members can be added later.
 
 ### New Group (Manual Fallback)
 
@@ -251,8 +251,9 @@ If enabled:
 
 Operator-relevant task rules:
 
-- Projects use parent IDs like `P-001`.
-- Project subtasks use dotted child IDs like `P-001.1`, `P-001.2`.
+- Projects use parent IDs like `P1`.
+- Project subtasks are stored as real task rows with `parent_task_id` pointing to the parent project. Subtask IDs use dotted notation: `P1.1`, `P1.2`.
+- Subtasks can be assigned to different team members. Assigned subtasks count toward the assignee's WIP limit.
 - Recurring tasks create the next cycle immediately when a cycle is completed.
 - `cancel_task` is for scheduled runner jobs, not normal board task cancellation.
 - Normal task cancellation is a board mutation in the `tasks` and `archive` tables.
@@ -261,7 +262,7 @@ Operator-relevant task rules:
 
 TaskFlow uses two separate layers:
 
-- Board tasks: user-facing items in the `tasks` table such as `T-001`, `P-001`, and `R-001`
+- Board tasks: user-facing items in the `tasks` table such as `T1`, `P1`, and `R1`
 - Scheduler tasks: operator/runtime rows in `scheduled_tasks` used for standup, digest, review, and optional DST guard
 
 These are not interchangeable:
@@ -324,12 +325,38 @@ Use task-level operations on the runner IDs stored in `board_runtime_config`.
 
 Do not confuse runner tasks with normal board tasks.
 
+## Board Display Format
+
+The CLAUDE.md template prescribes a standard visual format for the `quadro` command:
+
+```
+📊 *Board — QUARTA, 04/03/2026*
+
+⏭️ *Next Action (3):*
+• 🔗 T001 (Alexandre): Title → _next action text_ ⏰ vence 10/03
+• T005 (Rafael): Title → _next action text_ ⏰ vence 06/03 ⚠️
+
+🔄 *In Progress (1):*
+• 🔗 T004 (Giovanni): Title → _status update_ ⏰ vence 31/03
+
+---
+
+📋 *Alexandre:*
+⏭️ T001: Title
+⏭️ T002: Title ⚠️ vence sexta
+_WIP: 0/3_
+
+⚠️ *Atenção:* T002 vence em 2 dias (06/03 — sexta). Alexandre, alguma atualização?
+```
+
+Key elements: date header, column emojis (📥 ⏭️ 🔄 ⏳ 🔍), link markers (🔗), due date warnings (⚠️ near, 🔴 overdue), per-person WIP sections.
+
 ## Verification Checklist
 
 After provisioning a board:
 
 1. Send `@<assistant> quadro` in the target group.
-2. Confirm the group responds with TaskFlow behavior.
+2. Confirm the group responds with the standard board display format (date header, column emojis, link markers, per-person WIP).
 3. Create a quick capture item.
 4. Confirm the task appears in the `tasks` table.
 5. Confirm runner IDs are stored in `board_runtime_config`.
@@ -342,7 +369,7 @@ After provisioning a board:
 
 - Confirm the group is present in `registered_groups`.
 - Restart NanoClaw after registration changes.
-- Verify the trigger pattern matches the assistant name.
+- Verify the trigger pattern matches the assistant name. Each group can have its own trigger via the `trigger_pattern` column in `registered_groups` — it does not have to match the global `ASSISTANT_NAME` in `.env`.
 
 ### Runner Exists But Never Fires
 
@@ -483,7 +510,7 @@ The SQLite database contains 10 tables. Created by `src/taskflow-db.ts` via `nod
 | `board_people` | Team members per board, with per-person WIP limits and `notification_group_jid` for cross-group notifications |
 | `board_admins` | Manager/delegate authorization (`admin_role`: `'manager'` or `'delegate'`) |
 | `child_board_registrations` | Links parent board to child board via person_id |
-| `tasks` | Active tasks with hierarchy columns (`child_exec_*`, `linked_parent_*`) |
+| `tasks` | Active tasks with hierarchy columns (`child_exec_*`, `linked_parent_*`) and `parent_task_id` for project subtask rows |
 | `task_history` | Full event stream per task (cap at 50 active) |
 | `archive` | Completed/cancelled tasks with snapshot and history slice (20 entries) |
 | `board_runtime_config` | Language, timezone, runner IDs, cron schedules, DST guard, attachment policy |
@@ -495,6 +522,7 @@ Key hierarchy columns on `tasks`:
 - `child_exec_board_id` — which child board handles execution
 - `child_exec_rollup_status` — current rollup status (`active`, `blocked`, `at_risk`, `ready_for_review`, `no_work_yet`, `cancelled_needs_decision`)
 - `linked_parent_board_id` + `linked_parent_task_id` — upward reference to parent deliverable
+- `parent_task_id` — set on subtask rows to reference the parent project (e.g., `P4.1` has `parent_task_id = 'P4'`)
 
 ### Cross-Group Notifications
 
@@ -504,7 +532,7 @@ In hierarchy setups, notifications need to reach people in their working group, 
 
 1. Each person in `board_people` has an optional `notification_group_jid` column. When set, notifications for that person are sent to the specified group JID instead of the current group.
 
-2. The `send_message` MCP tool accepts an optional `target_chat_jid` parameter. When a TaskFlow agent sends a notification, it queries `notification_group_jid` for the assignee and passes it as `target_chat_jid`.
+2. The `send_message` MCP tool accepts an optional `target_chat_jid` parameter. When a TaskFlow MCP tool performs a mutation, the engine's internal `resolveNotifTarget` queries `notification_group_jid` from `board_people` and includes it in the returned `notifications` array. The agent then dispatches each notification via `send_message` with the given `target_chat_jid`.
 
 3. The IPC authorization layer allows TaskFlow groups (`taskflowManaged=1`) to send to other TaskFlow groups. Non-TaskFlow groups remain restricted.
 
@@ -564,7 +592,7 @@ All TaskFlow boards use SQLite exclusively — no JSON files.
 - Leaf boards (`taskflow_hierarchy_level + 1 >= taskflow_max_depth`) cannot create children
 
 **Rollup shows stale data**
-- The agent refreshes rollup only when the user requests `atualizar status T-XXX` on a board that has delegated the same deliverable further down
+- The agent refreshes rollup only when the user requests `atualizar status TXXX` on a board that has delegated the same deliverable further down
 - Receiving boards can still move linked tasks directly through normal GTD phases; refresh is for pulling child-board progress, not for normal worker updates
 - There is no automatic background refresh
 - The digest and weekly review flag stale rollup (>24h) with `⚠️`

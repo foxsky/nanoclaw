@@ -11,7 +11,7 @@ CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT
 CREATE TABLE board_admins (board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL, admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
 CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
 CREATE TABLE board_groups (board_id TEXT, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, group_role TEXT DEFAULT 'team', PRIMARY KEY (board_id, group_jid));
-CREATE TABLE tasks (id TEXT NOT NULL, board_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'simple', title TEXT NOT NULL, assignee TEXT, next_action TEXT, waiting_for TEXT, column TEXT DEFAULT 'inbox', priority TEXT, due_date TEXT, description TEXT, labels TEXT DEFAULT '[]', blocked_by TEXT DEFAULT '[]', reminders TEXT DEFAULT '[]', next_note_id INTEGER DEFAULT 1, notes TEXT DEFAULT '[]', _last_mutation TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, child_exec_enabled INTEGER DEFAULT 0, child_exec_board_id TEXT, child_exec_person_id TEXT, child_exec_rollup_status TEXT, child_exec_last_rollup_at TEXT, child_exec_last_rollup_summary TEXT, linked_parent_board_id TEXT, linked_parent_task_id TEXT, subtasks TEXT, recurrence TEXT, current_cycle TEXT, PRIMARY KEY (board_id, id));
+CREATE TABLE tasks (id TEXT NOT NULL, board_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'simple', title TEXT NOT NULL, assignee TEXT, next_action TEXT, waiting_for TEXT, column TEXT DEFAULT 'inbox', priority TEXT, due_date TEXT, description TEXT, labels TEXT DEFAULT '[]', blocked_by TEXT DEFAULT '[]', reminders TEXT DEFAULT '[]', next_note_id INTEGER DEFAULT 1, notes TEXT DEFAULT '[]', _last_mutation TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, child_exec_enabled INTEGER DEFAULT 0, child_exec_board_id TEXT, child_exec_person_id TEXT, child_exec_rollup_status TEXT, child_exec_last_rollup_at TEXT, child_exec_last_rollup_summary TEXT, linked_parent_board_id TEXT, linked_parent_task_id TEXT, parent_task_id TEXT, subtasks TEXT, recurrence TEXT, current_cycle TEXT, PRIMARY KEY (board_id, id));
 CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, task_id TEXT NOT NULL, action TEXT NOT NULL, by TEXT, at TEXT NOT NULL, details TEXT);
 CREATE TABLE archive (board_id TEXT NOT NULL, task_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, assignee TEXT, archive_reason TEXT NOT NULL, linked_parent_board_id TEXT, linked_parent_task_id TEXT, archived_at TEXT NOT NULL, task_snapshot TEXT NOT NULL, history TEXT, PRIMARY KEY (board_id, task_id));
 CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, language TEXT NOT NULL DEFAULT 'pt-BR', timezone TEXT NOT NULL DEFAULT 'America/Fortaleza', runner_standup_task_id TEXT, runner_digest_task_id TEXT, runner_review_task_id TEXT, runner_dst_guard_task_id TEXT, standup_cron_local TEXT, digest_cron_local TEXT, review_cron_local TEXT, standup_cron_utc TEXT, digest_cron_utc TEXT, review_cron_utc TEXT, dst_sync_enabled INTEGER DEFAULT 0, dst_last_offset_minutes INTEGER, dst_last_synced_at TEXT, dst_resync_count_24h INTEGER DEFAULT 0, dst_resync_window_started_at TEXT, attachment_enabled INTEGER DEFAULT 1, attachment_disabled_reason TEXT DEFAULT '', attachment_allowed_formats TEXT DEFAULT '["pdf","jpg","png"]', attachment_max_size_bytes INTEGER DEFAULT 10485760, welcome_sent INTEGER DEFAULT 0, standup_target TEXT DEFAULT 'team', digest_target TEXT DEFAULT 'team', review_target TEXT DEFAULT 'team', runner_standup_secondary_task_id TEXT, runner_digest_secondary_task_id TEXT, runner_review_secondary_task_id TEXT);
@@ -742,11 +742,11 @@ describe('TaskflowEngine', () => {
         sender_name: 'Giovanni',
       });
       expect(r.success).toBe(true);
-      expect(r.task_id).toBe('T-004');
+      expect(r.task_id).toBe('T4');
       expect(r.column).toBe('inbox');
 
       // Verify task in DB
-      const task = engine.getTask('T-004');
+      const task = engine.getTask('T4');
       expect(task).toBeTruthy();
       expect(task.title).toBe('Buy supplies');
       expect(task.type).toBe('simple'); // inbox stored as simple
@@ -763,11 +763,11 @@ describe('TaskflowEngine', () => {
         sender_name: 'Alexandre',
       });
       expect(r.success).toBe(true);
-      expect(r.task_id).toBe('T-004');
+      expect(r.task_id).toBe('T4');
       expect(r.column).toBe('next_action');
 
       // Verify task in DB
-      const task = engine.getTask('T-004');
+      const task = engine.getTask('T4');
       expect(task.title).toBe('Deploy v2');
       expect(task.assignee).toBe('person-2');
       expect(task.column).toBe('next_action');
@@ -775,7 +775,7 @@ describe('TaskflowEngine', () => {
       // Notification: sender (Alexandre/person-1) != assignee (Giovanni/person-2)
       expect(r.notifications).toHaveLength(1);
       expect(r.notifications![0].target_person_id).toBe('person-2');
-      expect(r.notifications![0].message).toContain('T-004');
+      expect(r.notifications![0].message).toContain('T4');
     });
 
     it('returns offer_register for unknown assignee', () => {
@@ -789,7 +789,7 @@ describe('TaskflowEngine', () => {
       expect(r.success).toBe(false);
       expect(r.offer_register).toBeTruthy();
       expect(r.offer_register!.name).toBe('Rafael');
-      expect(r.offer_register!.message).toContain('Rafael not registered');
+      expect(r.offer_register!.message).toContain('não está cadastrado');
       expect(r.offer_register!.message).toContain('Alexandre');
       expect(r.offer_register!.message).toContain('Giovanni');
     });
@@ -803,16 +803,19 @@ describe('TaskflowEngine', () => {
         sender_name: 'Alexandre',
       });
       expect(r.success).toBe(true);
-      expect(r.task_id).toBe('P-004');
+      expect(r.task_id).toBe('P4');
       expect(r.column).toBe('inbox'); // no assignee → inbox
 
-      const task = engine.getTask('P-004');
+      const task = engine.getTask('P4');
       expect(task.type).toBe('project');
-      const subtasks = JSON.parse(task.subtasks);
-      expect(subtasks).toHaveLength(3);
-      expect(subtasks[0]).toEqual({ id: 'P-004.1', title: 'Design', status: 'pending' });
-      expect(subtasks[1]).toEqual({ id: 'P-004.2', title: 'Implement', status: 'pending' });
-      expect(subtasks[2]).toEqual({ id: 'P-004.3', title: 'Test', status: 'pending' });
+      // Subtasks are stored as real task rows with parent_task_id
+      const subtaskRows = db
+        .prepare(`SELECT id, title, column FROM tasks WHERE board_id = ? AND parent_task_id = ? ORDER BY id`)
+        .all(BOARD_ID, 'P4') as Array<{ id: string; title: string; column: string }>;
+      expect(subtaskRows).toHaveLength(3);
+      expect(subtaskRows[0]).toMatchObject({ id: 'P4.1', title: 'Design', column: 'inbox' });
+      expect(subtaskRows[1]).toMatchObject({ id: 'P4.2', title: 'Implement', column: 'inbox' });
+      expect(subtaskRows[2]).toMatchObject({ id: 'P4.3', title: 'Test', column: 'inbox' });
     });
 
     it('creates recurring task', () => {
@@ -824,9 +827,9 @@ describe('TaskflowEngine', () => {
         sender_name: 'Alexandre',
       });
       expect(r.success).toBe(true);
-      expect(r.task_id).toBe('R-004');
+      expect(r.task_id).toBe('R4');
 
-      const task = engine.getTask('R-004');
+      const task = engine.getTask('R4');
       expect(task.type).toBe('recurring');
       expect(task.recurrence).toBe('weekly');
       expect(task.due_date).toBeTruthy(); // auto-calculated
@@ -855,7 +858,7 @@ describe('TaskflowEngine', () => {
 
       const history = db
         .prepare(
-          `SELECT * FROM task_history WHERE board_id = ? AND task_id = 'T-004'`,
+          `SELECT * FROM task_history WHERE board_id = ? AND task_id = 'T4'`,
         )
         .all(BOARD_ID) as any[];
       expect(history).toHaveLength(1);
@@ -878,8 +881,8 @@ describe('TaskflowEngine', () => {
         title: 'Second',
         sender_name: 'Alexandre',
       });
-      expect(r1.task_id).toBe('T-004');
-      expect(r2.task_id).toBe('T-005');
+      expect(r1.task_id).toBe('T4');
+      expect(r2.task_id).toBe('T5');
 
       // Verify next_task_number in DB is now 6
       const config = db
@@ -1354,7 +1357,7 @@ describe('TaskflowEngine', () => {
       expect(r.success).toBe(false);
       expect(r.offer_register).toBeTruthy();
       expect(r.offer_register!.name).toBe('Rafael');
-      expect(r.offer_register!.message).toContain('Rafael not registered');
+      expect(r.offer_register!.message).toContain('não está cadastrado');
       expect(r.offer_register!.message).toContain('Alexandre');
       expect(r.offer_register!.message).toContain('Giovanni');
     });

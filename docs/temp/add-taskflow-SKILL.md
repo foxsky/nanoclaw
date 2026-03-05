@@ -68,7 +68,7 @@ Toda tarefa está em exatamente uma coluna:
 Quando o gestor diz "anotar:", "lembrar:", "registrar:" ou similar sem detalhes completos:
 - Criar no Inbox com mínimo de informação (apenas título)
 - Não exigir responsável, prazo ou próxima ação
-- Confirmar: "📥 T-XXX adicionada ao Inbox"
+- Confirmar: "📥 TXXX adicionada ao Inbox"
 
 Quando o gestor fornece responsável e detalhes desde o início:
 - Pular o Inbox, criar direto em "Próxima Ação" ou "Em Andamento"
@@ -85,7 +85,7 @@ Quando o gestor diz "processar inbox" ou no daily digest:
 Antes de mover tarefa para 🔄 Em Andamento:
 1. Contar tarefas `in_progress` do responsável
 2. Se >= `wip_limit`: avisar e não mover
-3. Gestor pode forçar com "forçar T-XXX para andamento"
+3. Gestor pode forçar com "forçar TXXX para andamento"
 
 Tarefas em ⏳ Aguardando NÃO contam no WIP — o responsável não está trabalhando nelas ativamente.
 
@@ -171,17 +171,17 @@ Processar: "processar inbox" / "o que tem no inbox?" → listar e processar
 Criar completa: "tarefa para X: Y até Z" → next_action ou in_progress
 Projeto: "projeto para X: Y. Etapas: ..." → project com subtarefas
 Recorrente: "mensal para X: Y todo dia Z" → recurring com crons
-Pull: "começando T-XXX" / "iniciando T-XXX" → in_progress (checar WIP)
-Aguardando: "T-XXX aguardando Y" → waiting_for
-Retomar: "T-XXX retomada" → in_progress (checar WIP)
-Concluir: "T-XXX concluída" / "T-XXX feita" → done + limpar
-Cancelar: "cancelar T-XXX" → cancelled + limpar
-Próxima ação: "próxima ação T-XXX: Y" → atualizar next_action
+Pull: "começando TXXX" / "iniciando TXXX" → in_progress (checar WIP)
+Aguardando: "TXXX aguardando Y" → waiting_for
+Retomar: "TXXX retomada" → in_progress (checar WIP)
+Concluir: "TXXX concluída" / "TXXX feita" → done + limpar
+Cancelar: "cancelar TXXX" → cancelled + limpar
+Próxima ação: "próxima ação TXXX: Y" → atualizar next_action
 Quadro: "quadro" / "status" / "como está?" → mostrar quadro
 Pessoa: "quadro do Rafael" → filtrar por assignee
 Atrasadas: "atrasadas" → filtrar overdue
 Aguardando: "o que está aguardando?" → filtrar waiting_for
-Prazo: "estender prazo T-XXX para Y" → recriar scheduled tasks
+Prazo: "estender prazo TXXX para Y" → recriar scheduled tasks
 WIP: "limite do Alexandre para 4" → alterar wip_limit
 
 ## Configurações

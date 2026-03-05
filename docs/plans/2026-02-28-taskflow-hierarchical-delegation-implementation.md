@@ -290,7 +290,7 @@ CREATE TABLE board_config (
 - `board_runtime_config` preserves language, timezone, runner IDs, cron schedules, DST guard state, and attachment policy so hierarchy boards keep the same runner + attachment behavior as standard TaskFlow boards.
 - `attachment_audit_log` preserves the existing attachment audit trail for confirmed imports on hierarchy boards.
 - `task_history` must continue to store the existing TaskFlow v2 history action set; the hierarchy actions below are additive, not a replacement.
-- Board-local task IDs (T-001, P-001, R-001) are scoped by `board_id` in the composite primary key.
+- Board-local task IDs (T1, P1, R1) are scoped by `board_id` in the composite primary key.
 
 ### 1.4 History Actions
 
@@ -566,16 +566,16 @@ Extend `.claude/skills/add-taskflow/templates/CLAUDE.md.template` so hierarchy b
 
 #### Task hierarchy commands (any non-leaf level):
 
-- `vincular T-XXX ao quadro do [pessoa]` — link task to child board
-- `usar equipe de [pessoa] para T-XXX` — alternative link syntax
-- `atualizar status T-XXX` — refresh rollup from immediate child board
-- `sincronizar T-XXX` — alternative refresh syntax
-- `resumo de execucao T-XXX` — view rollup summary
-- `desvincular T-XXX` — unlink child execution
+- `vincular TXXX ao quadro do [pessoa]` — link task to child board
+- `usar equipe de [pessoa] para TXXX` — alternative link syntax
+- `atualizar status TXXX` — refresh rollup from immediate child board
+- `sincronizar TXXX` — alternative refresh syntax
+- `resumo de execucao TXXX` — view rollup summary
+- `desvincular TXXX` — unlink child execution
 
 #### Upward tagging command (any board with a parent, including leaf boards):
 
-- `ligar tarefa ao pai T-XXX` — tag local task to parent deliverable
+- `ligar tarefa ao pai TXXX` — tag local task to parent deliverable
 
 ### 3.3 Command Semantics
 
@@ -588,11 +588,11 @@ Extend `.claude/skills/add-taskflow/templates/CLAUDE.md.template` so hierarchy b
 
 #### Task hierarchy:
 
-- **Auto-link**: When a task is assigned to a person with a registered child board, the board automatically links it (if the sender is a full manager and the task is not a recurring task). The `vincular` UPDATE is performed immediately after assignment. The manager is informed: `T-XXX vinculada automaticamente ao quadro de [pessoa].` The board owner can always unlink later.
+- **Auto-link**: When a task is assigned to a person with a registered child board, the board automatically links it (if the sender is a full manager and the task is not a recurring task). The `vincular` UPDATE is performed immediately after assignment. The manager is informed: `TXXX vinculada automaticamente ao quadro de [pessoa].` The board owner can always unlink later.
 - **Link validation**: Linking succeeds only if the task assignee matches a person in `child_board_registrations` and that person has a registered entry.
 - **Link effect**: Sets `child_exec_enabled = 1` and populates `child_exec_board_id`, `child_exec_person_id` on the task. The task remains on the parent board — the child board sees it via the `child_exec_board_id` reference (no copy is created).
 - **Leaf restriction**: Linking must be refused if `hierarchy_level == max_depth` (leaf board).
-- **Task type restriction**: Linking is allowed on simple tasks (T-XXX) and projects (P-XXX). Recurring tasks (R-XXX) cannot be linked because cycle resets would break the linkage contract. Error: `Tarefas recorrentes nao podem ser vinculadas a quadros. Crie uma tarefa simples para cada ciclo.`
+- **Task type restriction**: Linking is allowed on simple tasks (TXXX) and projects (PXXX). Recurring tasks (RXXX) cannot be linked because cycle resets would break the linkage contract. Error: `Tarefas recorrentes nao podem ser vinculadas a quadros. Crie uma tarefa simples para cada ciclo.`
 - **Multiple parents**: Multiple parent tasks may be linked to the same child board simultaneously. Each parent task's rollup considers only child-board tasks tagged to that specific parent task (matched by `linked_parent_task_id`).
 - **Receiving-board authority**: Once linked, the receiving board may move the task directly through the normal GTD phases. The `🔗` marker indicates cross-board routing only; it does not make the task read-only there.
 - **Refresh**: Queries the child board's tasks via SQL and recomputes rollup fields. This is for parent boards that have delegated the same deliverable further down, not for ordinary direct execution on the current board.
@@ -600,7 +600,7 @@ Extend `.claude/skills/add-taskflow/templates/CLAUDE.md.template` so hierarchy b
 - **Unlink**: Sets `child_exec_enabled = 0` (preserves `child_exec_*` fields for audit), keeps the task's current `column`, records `child_board_unlinked` with the last known `rollup_status`, and re-enables normal assignee column moves. The child board will no longer see this task.
 - **Upward tagging**: Sets `linked_parent_board_id` and `linked_parent_task_id` on the local task. The command accepts the parent task ID only because the board already knows its `parent_board_id`; the stored reference is always fully qualified.
 - **Root restriction**: Upward tagging must be refused on root boards (`parent_board_id IS NULL`).
-- **Disambiguation**: `"resumo"` alone triggers the v2 ad-hoc digest. `"resumo de execucao T-XXX"` triggers the rollup view. The task ID suffix disambiguates.
+- **Disambiguation**: `"resumo"` alone triggers the v2 ad-hoc digest. `"resumo de execucao TXXX"` triggers the rollup view. The task ID suffix disambiguates.
 - **Reassignment**: If a linked task is reassigned to a different person, the existing child execution link must be removed first. No silent transfer of linkage. The board owner must explicitly re-link to the new assignee's child board.
 - **Rejection**: When the board owner rejects a linked task in `review` (with `rollup_status = 'ready_for_review'`), the task moves back to `in_progress` and `rollup_status` resets to `active`. The child board should be notified to reopen or add work.
 
@@ -611,7 +611,7 @@ When `child_exec_enabled = 1`:
 - On the receiving board, `column` stays directly actionable through the normal GTD commands
 - Normal assignee movement on that task remains allowed on the receiving board
 - The board owner still controls due date, priority, labels, and final approval
-- If this board later delegates the same deliverable to an immediate child board, `atualizar status T-XXX` / `sincronizar T-XXX` pulls that child progress back into the current task
+- If this board later delegates the same deliverable to an immediate child board, `atualizar status TXXX` / `sincronizar TXXX` pulls that child progress back into the current task
 - If the board owner wants to remove cross-board visibility entirely, they must unlink first
 
 This rule must be explicit in the prompt so the runtime distinguishes ordinary direct execution on the current board from explicit rollup pulls from an immediate child board.
@@ -639,7 +639,7 @@ This returns own tasks (`board_id` match) plus tasks delegated from parent board
 
 The prompt must enforce these interaction rules when a task has `child_exec_enabled = 1`:
 
-- Rollup-driven column changes caused by `atualizar status T-XXX` / `sincronizar T-XXX` must not be captured in `_last_mutation` and cannot be undone via `desfazer`. Ordinary direct moves on the current board still follow the normal mutation/undo rules.
+- Rollup-driven column changes caused by `atualizar status TXXX` / `sincronizar TXXX` must not be captured in `_last_mutation` and cannot be undone via `desfazer`. Ordinary direct moves on the current board still follow the normal mutation/undo rules.
 - `blocked_by` references must be validated as board-local only. Cross-board task IDs are not valid dependency targets. Cross-board blocking is expressed through `rollup_status = 'blocked'`.
 - `reminders` continue to fire on the board-owner-managed `due_date` regardless of linkage state.
 - `description` does not roll up. Parent and child descriptions are independent.
@@ -664,22 +664,22 @@ This must remain a hard boundary in the prompt.
 The prompt must specify how hierarchy-linked tasks appear in standard TaskFlow views:
 
 **Board view (`quadro`)**: Show a `🔗` marker and rollup status on linked tasks:
-- `🔗 T-004 Entregar infraestrutura (Alexandre) [active]`
+- `🔗 T004 Entregar infraestrutura (Alexandre) [active]`
 
-**Task details (`detalhes T-XXX`)**: Include rollup section showing child board, rollup status, last refresh time, and summary.
+**Task details (`detalhes TXXX`)**: Include rollup section showing child board, rollup status, last refresh time, and summary.
 
 **Morning standup**: Show linked tasks with rollup summary instead of column-only status:
-- `T-004 — 🔗 Alexandre: 4 itens ativos, 1 em risco (atualizado 16:00)`
+- `T004 — 🔗 Alexandre: 4 itens ativos, 1 em risco (atualizado 16:00)`
 
 **Evening digest**: Include linked tasks with current rollup status. Flag stale rollup (last refreshed > 24h):
-- `T-004 — 🔗 active (⚠️ rollup desatualizado — ultimo refresh ha 36h)`
+- `T004 — 🔗 active (⚠️ rollup desatualizado — ultimo refresh ha 36h)`
 
 **Weekly review**: List all hierarchy-linked tasks with rollup status. Suggest refreshing stale ones before the review proceeds.
 
 ### 3.8 Task Type Restrictions
 
-- Simple tasks (T-XXX) and projects (P-XXX): Can be linked to child boards.
-- Recurring tasks (R-XXX): Cannot be linked. Cycle resets would break the linkage contract. Error: `Tarefas recorrentes nao podem ser vinculadas a quadros. Crie uma tarefa simples para cada ciclo.`
+- Simple tasks (TXXX) and projects (PXXX): Can be linked to child boards.
+- Recurring tasks (RXXX): Cannot be linked. Cycle resets would break the linkage contract. Error: `Tarefas recorrentes nao podem ser vinculadas a quadros. Crie uma tarefa simples para cada ciclo.`
 
 ## Phase 4: Rollup Engine
 
@@ -687,7 +687,7 @@ The prompt must specify how hierarchy-linked tasks appear in standard TaskFlow v
 
 Each board refreshes independently by querying the shared SQLite database. No root mediation needed. No cascading refresh needed.
 
-When board X refreshes rollup for task T-004 linked to child board Y:
+When board X refreshes rollup for task T004 linked to child board Y:
 
 ```sql
 SELECT
@@ -890,7 +890,7 @@ Extend `.claude/skills/add-taskflow/tests/taskflow.test.ts` with coverage for:
 - Initial rollup state for "linked but no tagged work yet"
 - Rollup distinguishes "no tagged work yet" from "all tagged work done"
 - Automatic auto-link when assigning to a person with a registered child board
-- Recurring tasks (R-XXX) cannot be linked to child boards
+- Recurring tasks (RXXX) cannot be linked to child boards
 - Multiple parent tasks can link to the same child board with independent rollup
 - Board display shows `🔗` marker on linked tasks
 - Standup/digest include rollup summary for linked tasks
@@ -913,7 +913,7 @@ Add negative assertions to prevent regressions such as:
 - Allowing downward child-board link commands on leaf boards
 - Allowing upward tagging on root boards
 - Per-level-named fields (`director_execution`, `manager_execution`) instead of generic `child_exec_*`
-- Allowing recurring tasks (R-XXX) to be linked to child boards
+- Allowing recurring tasks (RXXX) to be linked to child boards
 - Root-mediated refresh patterns (each board refreshes independently)
 - File-based data storage for hierarchy boards (must use SQLite)
 - JSON file path resolution for cross-board reads
@@ -1003,7 +1003,7 @@ Key decisions made during implementation:
 
 7. **`ANTHROPIC_AUTH_TOKEN` in secret env vars**: Linter flagged this missing from both `container-runner.ts` and `container/agent-runner/src/index.ts`. Added to `SECRET_ENV_VARS` / `readSecrets` in both files.
 
-8. **Cross-group notifications for hierarchy**: Added `notification_group_jid TEXT` column to `board_people` to store the WhatsApp group JID where a person receives notifications. Added `target_chat_jid` optional parameter to the `send_message` MCP tool. Updated IPC authorization in `src/ipc.ts` to allow TaskFlow-managed groups to send to other TaskFlow-managed groups. During child board provisioning, the parent board's `board_people.notification_group_jid` is updated with the child group's JID. The notification system in CLAUDE.md template queries this field and passes it as `target_chat_jid` when sending notifications.
+8. **Cross-group notifications for hierarchy**: Added `notification_group_jid TEXT` column to `board_people` to store the WhatsApp group JID where a person receives notifications. Added `target_chat_jid` optional parameter to the `send_message` MCP tool. Updated IPC authorization in `src/ipc.ts` to allow TaskFlow-managed groups to send to other TaskFlow-managed groups. During child board provisioning, the parent board's `board_people.notification_group_jid` is updated with the child group's JID. With the v2 MCP tools, notification target resolution is handled by the engine's `resolveNotifTarget()` method — it queries only `notification_group_jid` from `board_people` and returns `{ target_person_id, notification_group_jid }`. The engine's notification builders (`buildMoveNotification`, `buildReassignNotification`, etc.) produce rich pt-BR messages; the agent dispatches them via `send_message` with the provided `target_chat_jid`.
 
 9. **Auto-provisioning via IPC plugin**: Added `src/ipc-plugins/provision-child-board.ts` (host-side) and `provision_child_board` MCP tool in `ipc-mcp-stdio.ts` (container-side). When a person is registered via `cadastrar` on a non-leaf hierarchy board, the agent calls `provision_child_board` which writes an IPC file. The host plugin handles the full lifecycle: WhatsApp group creation, DB registration, taskflow.db seeding, CLAUDE.md generation from template, runner scheduling, ownership fix, and confirmation message. Fire-and-forget from the container's perspective. Added to `ALLOWED_IPC_PLUGIN_FILES` in `src/ipc.ts`.
 

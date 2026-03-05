@@ -54,13 +54,13 @@ Cada tarefa está em exatamente uma coluna:
 
 Cada pessoa tem um limite de tarefas simultâneas em "Em Andamento" (padrão: 3). Se o limite for atingido, o assistente avisa e não permite mover mais tarefas para andamento até que uma seja concluída ou mova para aguardando.
 
-O gestor pode forçar com: `@Case forcar T-XXX para andamento`
+O gestor pode forçar com: `@Case forcar TXXX para andamento`
 
 ### Tipos de Tarefa
 
-- **T-NNN** — Tarefa simples (ação única)
-- **P-NNN** — Projeto (tem sub-etapas). Cada etapa vira uma sub-tarefa (`P-001.1`, `P-001.2`, etc.)
-- **R-NNN** — Recorrente (repete por agenda). Gera automaticamente uma nova instância após conclusão.
+- **TN** — Tarefa simples (ação única)
+- **PN** — Projeto (tem sub-etapas). Cada etapa vira uma sub-tarefa (`P1.1`, `P1.2`, etc.)
+- **RN** — Recorrente (repete por agenda). Gera automaticamente uma nova instância após conclusão.
 
 Todos os comandos de movimentação funcionam com qualquer prefixo (`T-`, `P-`, `R-`).
 
@@ -80,7 +80,7 @@ Quando você quer registrar algo rapidamente, sem detalhes:
 @Case registrar: comprar material de escritório
 ```
 
-O assistente cria a tarefa no Inbox e responde: `📥 T-001 adicionada ao Inbox`
+O assistente cria a tarefa no Inbox e responde: `📥 T1 adicionada ao Inbox`
 
 ### Criar Tarefa Completa
 
@@ -98,6 +98,14 @@ Somente um gestor pode usar os comandos de criação completa (`tarefa`, `projet
 ```
 @Case projeto para Alexandre: migração do servidor. Etapas: 1. backup dos dados, 2. instalar novo SO, 3. migrar serviços, 4. testes
 ```
+
+Você pode atribuir etapas a diferentes pessoas da equipe:
+
+```
+@Case projeto para Alexandre: relatório trimestral. Etapas: 1. Coleta de dados (Giovanni), 2. Análise (Rafael), 3. Revisão final
+```
+
+Cada responsável de etapa recebe notificação e pode marcar sua etapa como concluída. Etapas atribuídas contam no limite WIP do responsável.
 
 Projetos também podem ser recorrentes. As etapas são reiniciadas automaticamente a cada ciclo:
 
@@ -120,33 +128,35 @@ Projetos também podem ser recorrentes. As etapas são reiniciadas automaticamen
 
 | Comando | O que faz |
 |---------|-----------|
-| `@Case comecando T-001` | Move para Em Andamento (verifica WIP) |
-| `@Case iniciando T-001` | Mesmo que acima |
-| `@Case T-001 aguardando resposta do fornecedor` | Move para Aguardando |
-| `@Case T-001 retomada` | Volta para Em Andamento (verifica WIP) |
-| `@Case devolver T-001` | Devolve de Em Andamento para Próxima Ação (libera WIP) |
-| `@Case T-001 pronta para revisao` | Move para Revisão |
-| `@Case T-001 aprovada` | Move de Revisão para Concluída (gestor ou delegado) |
-| `@Case T-001 rejeitada: ajustar item X` | Devolve de Revisão para Em Andamento com motivo de retrabalho (gestor ou delegado) |
-| `@Case reabrir T-001` | Reabre uma tarefa concluída e devolve para Próxima Ação |
-| `@Case T-001 concluida` | Atalho: move direto para Concluída (responsável ou gestor) |
-| `@Case T-001 feita` | Mesmo que acima |
-| `@Case forcar T-001 para andamento` | Move para Em Andamento ignorando limite WIP (gestor) |
-| `@Case adicionar etapa P-001: validar rollback` | Adiciona uma nova sub-etapa ao final do projeto |
-| `@Case renomear etapa P-001.2: instalar SO atualizado` | Renomeia uma sub-etapa específica do projeto |
-| `@Case reabrir etapa P-001.2` | Reabre uma sub-etapa concluída e recalcula a próxima ação |
-| `@Case P-001.1 concluida` | Marca sub-etapa do projeto como feita e avança a próxima ação |
-| `@Case reatribuir T-001 para Rafael` | Muda o responsável da tarefa (responsável ou gestor, pede confirmação) |
-| `@Case cancelar T-001` | Cancela e arquiva (gestor, pede confirmação) |
-| `@Case restaurar T-001` | Restaura uma tarefa arquivada para Próxima Ação (gestor) |
+| `@Case comecando T001` | Move para Em Andamento (verifica WIP) |
+| `@Case iniciando T001` | Mesmo que acima |
+| `@Case T001 aguardando resposta do fornecedor` | Move para Aguardando |
+| `@Case T001 retomada` | Volta para Em Andamento (verifica WIP) |
+| `@Case devolver T001` | Devolve de Em Andamento para Próxima Ação (libera WIP) |
+| `@Case T001 pronta para revisao` | Move para Revisão |
+| `@Case T001 aprovada` | Move de Revisão para Concluída (gestor ou delegado) |
+| `@Case T001 rejeitada: ajustar item X` | Devolve de Revisão para Em Andamento com motivo de retrabalho (gestor ou delegado) |
+| `@Case reabrir T001` | Reabre uma tarefa concluída e devolve para Próxima Ação |
+| `@Case T001 concluida` | Atalho: move direto para Concluída (responsável ou gestor) |
+| `@Case T001 feita` | Mesmo que acima |
+| `@Case forcar T001 para andamento` | Move para Em Andamento ignorando limite WIP (gestor) |
+| `@Case adicionar etapa P001: validar rollback` | Adiciona uma nova sub-etapa ao final do projeto |
+| `@Case renomear etapa P001.2: instalar SO atualizado` | Renomeia uma sub-etapa específica do projeto |
+| `@Case reabrir etapa P001.2` | Reabre uma sub-etapa concluída e recalcula a próxima ação |
+| `@Case atribuir etapa P001.2 para Giovanni` | Atribui uma sub-etapa a um membro da equipe (gestor ou dono do projeto) |
+| `@Case desatribuir etapa P001.2` | Remove a atribuição de uma sub-etapa |
+| `@Case P001.1 concluida` | Marca sub-etapa do projeto como feita e avança a próxima ação |
+| `@Case reatribuir T001 para Rafael` | Muda o responsável da tarefa (responsável ou gestor, pede confirmação) |
+| `@Case cancelar T001` | Cancela e arquiva (gestor, pede confirmação) |
+| `@Case restaurar T001` | Restaura uma tarefa arquivada para Próxima Ação (gestor) |
 
 ### Operações em Lote
 
 Você pode aplicar ações a várias tarefas de uma vez usando IDs separados por vírgula:
 
 ```
-@Case T-005, T-006, T-007 aprovadas
-@Case aprovar T-005, T-006, T-007
+@Case T5, T6, T7 aprovadas
+@Case aprovar T5, T6, T7
 ```
 
 Funciona com: aprovar, rejeitar, concluir, cancelar. Cada tarefa é processada individualmente (mesma permissão e validação). O resultado mostra o status de cada uma.
@@ -165,11 +175,11 @@ Limitações: não desfaz criação (use `cancelar`), arquivamento, avanço de r
 
 ```
 1. Gestor cria tarefa     → @Case tarefa para Alexandre: revisar contrato ate sexta
-2. Responsável começa     → @Case comecando T-001
-3. Fica bloqueado         → @Case T-001 aguardando aprovação jurídica
-4. Desbloqueou            → @Case T-001 retomada
-5. Finalizou              → @Case T-001 pronta para revisao
-6. Gestor aprova          → @Case T-001 aprovada
+2. Responsável começa     → @Case comecando T001
+3. Fica bloqueado         → @Case T001 aguardando aprovação jurídica
+4. Desbloqueou            → @Case T001 retomada
+5. Finalizou              → @Case T001 pronta para revisao
+6. Gestor aprova          → @Case T001 aprovada
 ```
 
 ---
@@ -188,8 +198,8 @@ Limitações: não desfaz criação (use `cancelar`), arquivamento, avanço de r
 | `@Case proxima acao` | Somente tarefas em Próxima Ação |
 | `@Case em andamento` | Somente tarefas em Em Andamento |
 | `@Case minhas tarefas` | Suas próprias tarefas (identifica pelo remetente) |
-| `@Case detalhes T-001` | Todos os campos da tarefa, notas e últimas 5 ações do histórico |
-| `@Case historico T-001` | Histórico completo da tarefa |
+| `@Case detalhes T001` | Todos os campos da tarefa, notas e últimas 5 ações do histórico |
+| `@Case historico T001` | Histórico completo da tarefa |
 | `@Case atrasadas` | Tarefas com prazo vencido |
 | `@Case vencem hoje` | Tarefas com prazo para hoje |
 | `@Case vencem amanha` | Tarefas com prazo para amanhã |
@@ -247,21 +257,21 @@ O assistente lista cada item e pergunta: responsável, prazo e próxima ação. 
 Também pode processar um item específico (gestor ou delegado):
 
 ```
-@Case T-001 para Alexandre, prazo sexta
+@Case T001 para Alexandre, prazo sexta
 ```
 
 ### Atualizar Tarefa
 
 ```
-@Case proxima acao T-001: enviar email para o cliente
-@Case renomear T-001: título corrigido
-@Case prioridade T-001: alta
-@Case rotulo T-001: financeiro
-@Case remover rotulo T-001: financeiro
-@Case nota T-001: cliente pediu ajuste no item 3
-@Case editar nota T-001 #1: cliente pediu ajuste no item 4
-@Case remover nota T-001 #1
-@Case descricao T-001: texto da descrição
+@Case proxima acao T001: enviar email para o cliente
+@Case renomear T001: título corrigido
+@Case prioridade T001: alta
+@Case rotulo T001: financeiro
+@Case remover rotulo T001: financeiro
+@Case nota T001: cliente pediu ajuste no item 3
+@Case editar nota T001 #1: cliente pediu ajuste no item 4
+@Case remover nota T001 #1
+@Case descricao T001: texto da descrição
 ```
 
 A descrição é um texto livre de até 500 caracteres que detalha o escopo da tarefa. Diferente das notas, cada tarefa tem apenas uma descrição. Para alterar, envie o comando novamente com o novo texto.
@@ -270,8 +280,8 @@ As notas funcionam como comentários da tarefa: o assistente registra automatica
 
 Notas novas podem ser editadas e removidas pelo gestor ou pelo responsável:
 
-- `@Case editar nota T-001 #2: novo texto`
-- `@Case remover nota T-001 #2`
+- `@Case editar nota T001 #2: novo texto`
+- `@Case remover nota T001 #2`
 
 Notas antigas de quadros muito antigos podem aparecer sem ID. Elas continuam visíveis, mas não podem ser editadas.
 
@@ -285,14 +295,14 @@ Você pode marcar que uma tarefa depende de outra. As dependências são informa
 
 | Comando | O que faz |
 |---------|-----------|
-| `@Case T-001 depende de T-002` | Marca que T-001 depende de T-002 |
-| `@Case remover dependencia T-001 de T-002` | Remove a dependência |
+| `@Case T001 depende de T002` | Marca que T001 depende de T002 |
+| `@Case remover dependencia T001 de T002` | Remove a dependência |
 
 Quando uma tarefa bloqueadora é concluída, a dependência é removida automaticamente e o grupo é notificado.
 
 Se você cancelar uma tarefa que bloqueia outras, o assistente avisa antes da confirmação quais tarefas serão destravadas. Depois da confirmação, ele remove essa dependência das tarefas afetadas e avisa o grupo.
 
-O assistente verifica dependências circulares antes de adicionar (ex: se T-002 já depende de T-001, recusa).
+O assistente verifica dependências circulares antes de adicionar (ex: se T002 já depende de T001, recusa).
 
 ### Lembretes de Prazo
 
@@ -300,8 +310,8 @@ Crie lembretes para receber uma notificação N dias antes do prazo:
 
 | Comando | O que faz |
 |---------|-----------|
-| `@Case lembrete T-001 3 dias antes` | Cria lembrete 3 dias antes do prazo |
-| `@Case remover lembrete T-001` | Remove todos os lembretes da tarefa |
+| `@Case lembrete T001 3 dias antes` | Cria lembrete 3 dias antes do prazo |
+| `@Case remover lembrete T001` | Remove todos os lembretes da tarefa |
 
 A tarefa precisa ter um prazo definido. Se o prazo mudar, os lembretes são reagendados automaticamente. Se o prazo for removido, os lembretes são cancelados.
 Se a tarefa for cancelada, os lembretes ativos também são cancelados antes do arquivamento.
@@ -312,16 +322,16 @@ Se a tarefa for cancelada, os lembretes ativos também são cancelados antes do 
 
 | Comando | O que faz |
 |---------|-----------|
-| `@Case estender prazo T-001 para 20/03` | Altera prazo (gestor) |
+| `@Case estender prazo T001 para 20/03` | Altera prazo (gestor) |
 | `@Case limite do Alexandre para 4` | Altera limite WIP da pessoa (gestor) |
 | `@Case cadastrar João, telefone 5586999990004, Analista` | Adiciona pessoa (gestor) |
 | `@Case remover João` | Remove pessoa (gestor, pede confirmação, reatribui tarefas abertas) |
-| `@Case reatribuir T-001 para Rafael` | Muda responsável da tarefa (responsável ou gestor, pede confirmação) |
-| `@Case alterar recorrencia R-001 para semanal` | Altera frequência de tarefa recorrente (gestor) |
+| `@Case reatribuir T001 para Rafael` | Muda responsável da tarefa (responsável ou gestor, pede confirmação) |
+| `@Case alterar recorrencia R001 para semanal` | Altera frequência de tarefa recorrente (gestor) |
 | `@Case adicionar gestor Maria, telefone 5586999990010` | Adiciona outro gestor com poderes completos (gestor) |
 | `@Case adicionar delegado Rafael, telefone 5586999990002` | Adiciona um delegado (gestor) |
 | `@Case remover gestor Maria` | Remove um gestor ou delegado (gestor, pede confirmação; o último gestor não pode ser removido) |
-| `@Case remover prazo T-001` | Remove prazo da tarefa (gestor) |
+| `@Case remover prazo T001` | Remove prazo da tarefa (gestor) |
 | `@Case transferir tarefas do Alexandre para Rafael` | Transfere todas as tarefas ativas de uma pessoa para outra (gestor, pede confirmação) |
 
 ---
@@ -416,7 +426,8 @@ Revisão GTD completa às sextas. Inclui:
 | Reabrir tarefa concluída | Gestor ou responsável da tarefa |
 | Devolver tarefa para fila | Responsável da tarefa |
 | Mover próprias tarefas | Responsável da tarefa |
-| Marcar sub-etapa como feita | Responsável ou gestor |
+| Marcar sub-etapa como feita | Responsável da etapa, dono do projeto ou gestor |
+| Atribuir / desatribuir sub-etapa | Dono do projeto ou gestor |
 | Adicionar / renomear / reabrir sub-etapa | Responsável ou gestor |
 | Alterar prioridade da tarefa | Gestor ou responsável da tarefa |
 | Adicionar / remover rótulo da tarefa | Gestor ou responsável da tarefa |
@@ -495,43 +506,43 @@ VER QUADRO
   @Case em andamento
 
 MOVER TAREFA
-  @Case comecando T-XXX
-  @Case T-XXX aguardando [motivo]
-  @Case T-XXX retomada
-  @Case devolver T-XXX
-  @Case T-XXX pronta para revisao
-  @Case T-XXX aprovada
-  @Case T-XXX rejeitada: [motivo]
-  @Case reabrir T-XXX
-  @Case T-XXX concluida
-  @Case adicionar etapa P-XXX: [título]
-  @Case renomear etapa P-XXX.N: [novo título]
-  @Case reabrir etapa P-XXX.N
-  @Case P-XXX.N concluida                (sub-etapa de projeto)
-  @Case forcar T-XXX para andamento
-  @Case T-XXX, T-YYY, T-ZZZ aprovadas  (operações em lote)
+  @Case comecando TXXX
+  @Case TXXX aguardando [motivo]
+  @Case TXXX retomada
+  @Case devolver TXXX
+  @Case TXXX pronta para revisao
+  @Case TXXX aprovada
+  @Case TXXX rejeitada: [motivo]
+  @Case reabrir TXXX
+  @Case TXXX concluida
+  @Case adicionar etapa PXXX: [título]
+  @Case renomear etapa PXXX.N: [novo título]
+  @Case reabrir etapa PXXX.N
+  @Case PXXX.N concluida                (sub-etapa de projeto)
+  @Case forcar TXXX para andamento
+  @Case TXXX, TYYY, TZZZ aprovadas  (operações em lote)
   @Case desfazer
 
 ATUALIZAR TAREFA
-  @Case proxima acao T-XXX: [nova ação]
-  @Case renomear T-XXX: [novo título]
-  @Case prioridade T-XXX: [baixa|normal|alta|urgente]
-  @Case rotulo T-XXX: [nome]
-  @Case remover rotulo T-XXX: [nome]
-  @Case nota T-XXX: [texto]
-  @Case editar nota T-XXX #[N]: [novo texto]
-  @Case remover nota T-XXX #[N]
-  @Case descricao T-XXX: [texto]
-  @Case T-XXX depende de T-YYY
-  @Case remover dependencia T-XXX de T-YYY
-  @Case lembrete T-XXX [N] dia(s) antes
-  @Case remover lembrete T-XXX
+  @Case proxima acao TXXX: [nova ação]
+  @Case renomear TXXX: [novo título]
+  @Case prioridade TXXX: [baixa|normal|alta|urgente]
+  @Case rotulo TXXX: [nome]
+  @Case remover rotulo TXXX: [nome]
+  @Case nota TXXX: [texto]
+  @Case editar nota TXXX #[N]: [novo texto]
+  @Case remover nota TXXX #[N]
+  @Case descricao TXXX: [texto]
+  @Case TXXX depende de TYYY
+  @Case remover dependencia TXXX de TYYY
+  @Case lembrete TXXX [N] dia(s) antes
+  @Case remover lembrete TXXX
 
 CONSULTAS
   @Case ajuda
   @Case minhas tarefas
-  @Case detalhes T-XXX
-  @Case historico T-XXX
+  @Case detalhes TXXX
+  @Case historico TXXX
   @Case buscar [texto]
   @Case buscar [texto] com rotulo [nome]
   @Case urgentes
@@ -562,23 +573,23 @@ CONSULTAS
 
 INBOX (gestor ou delegado)
   @Case processar inbox
-  @Case T-XXX para [pessoa], prazo [data]
+  @Case TXXX para [pessoa], prazo [data]
 
 GESTÃO (responsável ou gestor)
-  @Case reatribuir T-XXX para [pessoa]
+  @Case reatribuir TXXX para [pessoa]
 
 GESTÃO (gestor)
-  @Case estender prazo T-XXX para [data]
-  @Case cancelar T-XXX
-  @Case restaurar T-XXX
+  @Case estender prazo TXXX para [data]
+  @Case cancelar TXXX
+  @Case restaurar TXXX
   @Case limite do [pessoa] para [N]
   @Case cadastrar [nome], telefone [numero], [cargo]
   @Case remover [nome]
-  @Case alterar recorrencia R-XXX para [frequencia]
+  @Case alterar recorrencia RXXX para [frequencia]
   @Case adicionar gestor [nome], telefone [numero]
   @Case adicionar delegado [nome], telefone [numero]
   @Case remover gestor [nome]
-  @Case remover prazo T-XXX
+  @Case remover prazo TXXX
   @Case transferir tarefas do [pessoa] para [pessoa]
 
 ANEXOS (com mídia ativada)
@@ -589,11 +600,11 @@ ANEXOS (com mídia ativada)
 HIERARQUIA (modo hierárquico)
   @Case criar quadro para [pessoa]
   @Case remover quadro do [pessoa]
-  @Case vincular T-XXX ao quadro do [pessoa]
-  @Case desvincular T-XXX
-  @Case atualizar status T-XXX
-  @Case resumo de execucao T-XXX
-  @Case ligar tarefa ao pai T-XXX
+  @Case vincular TXXX ao quadro do [pessoa]
+  @Case desvincular TXXX
+  @Case atualizar status TXXX
+  @Case resumo de execucao TXXX
+  @Case ligar tarefa ao pai TXXX
 ```
 
 ---
@@ -604,16 +615,16 @@ HIERARQUIA (modo hierárquico)
 Não. Apenas o responsável pode mover suas próprias tarefas. O gestor pode forçar movimentações.
 
 **Posso reatribuir uma tarefa minha para outra pessoa?**
-Sim. O responsável da tarefa ou qualquer gestor podem reatribuir com `@Case reatribuir T-001 para Rafael`. Não há verificação de limite WIP na reatribuição. Se a tarefa estiver vinculada a um quadro, o vínculo é transferido automaticamente.
+Sim. O responsável da tarefa ou qualquer gestor podem reatribuir com `@Case reatribuir T001 para Rafael`. Não há verificação de limite WIP na reatribuição. Se a tarefa estiver vinculada a um quadro, o vínculo é transferido automaticamente.
 
 **O que acontece se eu tentar começar uma tarefa e estiver no limite WIP?**
-O assistente avisa que o limite foi atingido e não move a tarefa. Você precisa concluir ou mover uma tarefa para Aguardando antes de começar outra. O gestor pode forçar com `@Case forcar T-XXX para andamento`.
+O assistente avisa que o limite foi atingido e não move a tarefa. Você precisa concluir ou mover uma tarefa para Aguardando antes de começar outra. O gestor pode forçar com `@Case forcar TXXX para andamento`.
 
 **Posso pular etapas no quadro (ex: de Inbox direto para Concluída)?**
-Sim. O comando `@Case T-XXX concluida` move direto para Concluída de qualquer coluna, mas só pode ser usado pelo responsável da tarefa ou pelo gestor.
+Sim. O comando `@Case TXXX concluida` move direto para Concluída de qualquer coluna, mas só pode ser usado pelo responsável da tarefa ou pelo gestor.
 
 **Posso reabrir uma tarefa concluída?**
-Sim. Use `@Case reabrir T-001`. O gestor ou o responsável da tarefa podem devolver uma tarefa concluída para Próxima Ação. Se ela já tiver sido arquivada, o gestor usa `@Case restaurar T-001`.
+Sim. Use `@Case reabrir T001`. O gestor ou o responsável da tarefa podem devolver uma tarefa concluída para Próxima Ação. Se ela já tiver sido arquivada, o gestor usa `@Case restaurar T001`.
 
 **O que acontece com tarefas recorrentes quando são concluídas?**
 Uma nova instância é criada automaticamente com o próximo prazo, baseado na frequência configurada.
@@ -631,22 +642,25 @@ Sim. Standup, resumo do gestor e revisão semanal são definidos na instalação
 Não. As automações do TaskFlow já são configuradas pelo gestor na instalação e funcionam como parte do próprio TaskFlow. Para o usuário, elas aparecem apenas como mensagens automáticas no grupo.
 
 **Como marco uma sub-etapa de projeto como feita?**
-Use `@Case P-001.1 concluida` com o ID da sub-etapa (formato pontilhado). O assistente atualiza automaticamente a próxima ação do projeto. Quando todas as sub-etapas forem concluídas, o projeto move para Revisão.
+Use `@Case P001.1 concluida` com o ID da sub-etapa (formato pontilhado). O assistente atualiza automaticamente a próxima ação do projeto. Quando todas as sub-etapas forem concluídas, o projeto move para Revisão.
 
 **Posso ajustar as etapas de um projeto depois de criar?**
-Sim. Você pode usar `@Case adicionar etapa P-001: ...`, `@Case renomear etapa P-001.2: ...` e `@Case reabrir etapa P-001.2`.
+Sim. Você pode usar `@Case adicionar etapa P001: ...`, `@Case renomear etapa P001.2: ...` e `@Case reabrir etapa P001.2`.
+
+**Posso atribuir etapas de um projeto a diferentes pessoas?**
+Sim. Use `@Case atribuir etapa P001.2 para Giovanni` para atribuir uma etapa a outro membro da equipe. O responsável da etapa recebe notificação e pode marcá-la como concluída. Use `@Case desatribuir etapa P001.2` para remover a atribuição. Etapas também podem ser atribuídas na criação do projeto: `@Case projeto para Alexandre: X. Etapas: 1. A (Giovanni), 2. B (Rafael)`.
 
 **Posso criar tarefas recorrentes semanais ou diárias?**
 Sim. Use `diario`, `semanal`, `mensal` ou `anual` ao criar a tarefa recorrente. Exemplo: `@Case semanal para Rafael: backup do servidor toda segunda`.
 
 **Posso renomear uma tarefa após criá-la?**
-Sim. Use `@Case renomear T-001: novo título`. O gestor ou o responsável pela tarefa podem renomear.
+Sim. Use `@Case renomear T001: novo título`. O gestor ou o responsável pela tarefa podem renomear.
 
 **Posso editar ou apagar um comentário da tarefa?**
-Sim. Use `@Case editar nota T-001 #2: novo texto` ou `@Case remover nota T-001 #2`. Isso vale para notas novas com ID.
+Sim. Use `@Case editar nota T001 #2: novo texto` ou `@Case remover nota T001 #2`. Isso vale para notas novas com ID.
 
 **Comecei uma tarefa mas quero devolver para a fila, como faço?**
-Use `@Case devolver T-001`. A tarefa volta para Próxima Ação e libera uma vaga no seu limite WIP.
+Use `@Case devolver T001`. A tarefa volta para Próxima Ação e libera uma vaga no seu limite WIP.
 
 **Posso ver as tarefas concluídas?**
 Sim. Use `@Case concluidas hoje` ou `@Case concluidas esta semana` para ver tarefas finalizadas recentemente.
@@ -658,10 +672,10 @@ Sim. Use `@Case buscar contrato` (ou qualquer outro texto). O assistente procura
 Sim. Você pode usar `@Case revisao do Alexandre`, `@Case aguardando do Alexandre`, `@Case buscar rotulo financeiro` e `@Case buscar contrato com rotulo financeiro`.
 
 **Posso marcar tarefas urgentes ou separar por categoria?**
-Sim. Use `@Case prioridade T-001: urgente` para destacar urgência e `@Case rotulo T-001: financeiro` para agrupar por tema. Depois você pode consultar com `@Case urgentes`, `@Case prioridade alta` ou `@Case rotulo financeiro`.
+Sim. Use `@Case prioridade T001: urgente` para destacar urgência e `@Case rotulo T001: financeiro` para agrupar por tema. Depois você pode consultar com `@Case urgentes`, `@Case prioridade alta` ou `@Case rotulo financeiro`.
 
 **Posso alterar a frequência de uma tarefa recorrente?**
-Sim. Um gestor pode usar `@Case alterar recorrencia R-001 para semanal` (aceita: diario, semanal, mensal, anual).
+Sim. Um gestor pode usar `@Case alterar recorrencia R001 para semanal` (aceita: diario, semanal, mensal, anual).
 
 **Como vejo os comandos disponíveis?**
 Envie `@Case ajuda` para ver uma lista organizada de todos os comandos.
@@ -685,10 +699,10 @@ Não. Toda interação acontece no grupo do WhatsApp.
 Sim. A profundidade é definida pelo operador durante a instalação (mínimo 2 níveis). Todos os comandos funcionam da mesma forma em qualquer nível.
 
 **O que acontece no quadro folha (último nível)?**
-Ele funciona como um quadro normal do TaskFlow — todos os comandos padrão estão disponíveis. A única diferença é que não pode criar sub-quadros nem vincular tarefas para baixo. Pode usar `ligar tarefa ao pai T-XXX` para marcar trabalho como parte de uma entrega do nível acima.
+Ele funciona como um quadro normal do TaskFlow — todos os comandos padrão estão disponíveis. A única diferença é que não pode criar sub-quadros nem vincular tarefas para baixo. Pode usar `ligar tarefa ao pai TXXX` para marcar trabalho como parte de uma entrega do nível acima.
 
 **Posso desvincular uma tarefa que está sendo controlada pelo rollup?**
-Sim. O gestor usa `@Case desvincular T-XXX`. A tarefa volta a aceitar movimentação manual normal.
+Sim. O gestor usa `@Case desvincular TXXX`. A tarefa volta a aceitar movimentação manual normal.
 
 ---
 
@@ -742,9 +756,9 @@ Quando uma tarefa é vinculada ao quadro de uma pessoa, o quadro pai recebe atua
 
 O rollup é sempre entre níveis adjacentes — o nível 1 consulta o nível 2, o nível 2 consulta o nível 3. Nenhum nível acessa quadros mais distantes.
 
-No quadro que recebe a tarefa vinculada, ela continua acionável: a pessoa pode usar os comandos normais (`T-XXX em andamento`, `T-XXX concluida`, etc.) para tocar o trabalho.
+No quadro que recebe a tarefa vinculada, ela continua acionável: a pessoa pode usar os comandos normais (`TXXX em andamento`, `TXXX concluida`, etc.) para tocar o trabalho.
 
-Use `@Case atualizar status T-XXX` apenas quando esse mesmo quadro tiver delegado a entrega para um quadro filho e precisar puxar o progresso agregado de volta.
+Use `@Case atualizar status TXXX` apenas quando esse mesmo quadro tiver delegado a entrega para um quadro filho e precisar puxar o progresso agregado de volta.
 
 ### Comandos de Hierarquia
 
@@ -754,18 +768,18 @@ Use `@Case atualizar status T-XXX` apenas quando esse mesmo quadro tiver delegad
 |---------|-----------|
 | `@Case criar quadro para [pessoa]` | Solicita criação de quadro para a pessoa |
 | `@Case remover quadro do [pessoa]` | Remove registro do quadro filho |
-| `@Case vincular T-XXX ao quadro do [pessoa]` | Vincula tarefa ao quadro filho |
-| `@Case desvincular T-XXX` | Remove vínculo com quadro filho |
-| `@Case atualizar status T-XXX` | Atualiza rollup do quadro filho |
-| `@Case resumo de execucao T-XXX` | Mostra resumo do rollup |
+| `@Case vincular TXXX ao quadro do [pessoa]` | Vincula tarefa ao quadro filho |
+| `@Case desvincular TXXX` | Remove vínculo com quadro filho |
+| `@Case atualizar status TXXX` | Atualiza rollup do quadro filho |
+| `@Case resumo de execucao TXXX` | Mostra resumo do rollup |
 
 #### Comandos no quadro filho
 
 | Comando | O que faz |
 |---------|-----------|
-| `@Case ligar tarefa ao pai T-XXX` | Marca tarefa local como parte de uma entrega do nível acima |
+| `@Case ligar tarefa ao pai TXXX` | Marca tarefa local como parte de uma entrega do nível acima |
 
-Tarefas marcadas com `🔗` continuam acionáveis no quadro que as recebeu. Use os comandos normais de fluxo (`T-XXX em andamento`, `T-XXX aguardando`, `T-XXX concluida`, etc.) para avançá-las.
+Tarefas marcadas com `🔗` continuam acionáveis no quadro que as recebeu. Use os comandos normais de fluxo (`TXXX em andamento`, `TXXX aguardando`, `TXXX concluida`, etc.) para avançá-las.
 
 Além desses, todos os comandos normais do TaskFlow continuam funcionando em qualquer quadro da hierarquia: captura rápida, projetos, recorrentes, notas, prioridades, rótulos, dependências, lembretes, etc.
 
@@ -777,17 +791,17 @@ No modo hierárquico, quando uma tarefa é atribuída a uma pessoa no quadro pai
 
 Atribuir e vincular são a mesma operação. Quando uma tarefa é atribuída ou reatribuída a uma pessoa que tem quadro registrado, o assistente vincula automaticamente ao quadro dessa pessoa e informa:
 
-> T-004 vinculada automaticamente ao quadro de Alexandre.
+> T004 vinculada automaticamente ao quadro de Alexandre.
 
 Na reatribuição de uma tarefa vinculada, o vínculo anterior é removido automaticamente e o novo vínculo é criado para o quadro da nova pessoa. Se a nova pessoa não tem quadro, a tarefa fica desvinculada.
 
-O gestor pode desvincular a qualquer momento com `desvincular T-XXX`.
+O gestor pode desvincular a qualquer momento com `desvincular TXXX`.
 
 ### Regras Importantes
 
-- Tarefas recorrentes (`R-XXX`) não podem ser vinculadas a quadros filhos. Use tarefas simples.
+- Tarefas recorrentes (`RXXX`) não podem ser vinculadas a quadros filhos. Use tarefas simples.
 - Enquanto vinculada, a movimentação da tarefa é controlada pelo rollup — o responsável não pode mover manualmente.
-- Para retomar controle manual, o gestor precisa desvincular primeiro (`desvincular T-XXX`).
+- Para retomar controle manual, o gestor precisa desvincular primeiro (`desvincular TXXX`).
 - Se uma tarefa vinculada for reatribuída para outra pessoa, o vínculo anterior é removido e refeito automaticamente para o quadro da nova pessoa (se existir). Se a nova pessoa não tem quadro, a tarefa fica desvinculada.
 - A reatribuição pode ser feita pelo responsável da tarefa ou pelo gestor — não é necessário verificar limite WIP.
 - Se o gestor rejeitar uma tarefa em revisão que está vinculada, o rollup reseta para "ativo" e o quadro filho é notificado.
@@ -797,26 +811,26 @@ O gestor pode desvincular a qualquer momento com `desvincular T-XXX`.
 Quadros no último nível (`hierarchy_level == max_depth`) são quadros folha. Eles funcionam como quadros normais do TaskFlow com todos os comandos padrão, mas não podem:
 
 - Criar sub-quadros (`criar quadro para ...`)
-- Vincular tarefas a quadros filhos (`vincular T-XXX ...`)
+- Vincular tarefas a quadros filhos (`vincular TXXX ...`)
 
-Quadros folha podem usar o comando `ligar tarefa ao pai T-XXX` para marcar trabalho como parte de uma entrega do nível acima.
+Quadros folha podem usar o comando `ligar tarefa ao pai TXXX` para marcar trabalho como parte de uma entrega do nível acima.
 
 ### Marcadores Visuais
 
 Tarefas vinculadas aparecem com `🔗` no quadro:
 
 ```
-🔗 T-004 Entregar infraestrutura (Alexandre) [active]
+🔗 T004 Entregar infraestrutura (Alexandre) [active]
 ```
 
 No standup matinal:
 ```
-T-004 — 🔗 Alexandre: 4 itens ativos, 1 em risco (atualizado 16:00)
+T004 — 🔗 Alexandre: 4 itens ativos, 1 em risco (atualizado 16:00)
 ```
 
 Se o rollup estiver desatualizado (mais de 24h), o resumo do gestor e a revisão semanal destacam com `⚠️`:
 ```
-T-004 — 🔗 active (⚠️ rollup desatualizado — ultimo refresh ha 36h)
+T004 — 🔗 active (⚠️ rollup desatualizado — ultimo refresh ha 36h)
 ```
 
 ### O Assistente na Hierarquia

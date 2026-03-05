@@ -265,11 +265,11 @@ Do NOT use markdown headings (##). Only use:
   - update due dates, update WIP limits, add/remove people
   - add/remove managers or delegates
 - Delegate-or-manager commands:
-  - process inbox (`processar inbox`, `T-XXX para [pessoa], prazo [data]`)
+  - process inbox (`processar inbox`, `TXXX para [pessoa], prazo [data]`)
   - approve/reject review
 - Assignee-only commands:
   - move own tasks `next_action -> in_progress`, `in_progress -> waiting/review`, `in_progress -> next_action` (devolver)
-  - mark own tasks as done with the explicit shortcut `T-XXX concluida` / `T-XXX feita`
+  - mark own tasks as done with the explicit shortcut `TXXX concluida` / `TXXX feita`
 - Assignee-or-manager commands:
   - reopen a done task back to `next_action`
   - update `next_action` for an existing task
@@ -353,15 +353,15 @@ Additional statuses (not columns):
 Before moving any task to 🔄 In Progress:
 1. Count tasks with `column: "in_progress"` for that assignee
 2. If >= their `wip_limit`: warn and do NOT move
-3. Manager can force with "forcar T-XXX para andamento"
+3. Manager can force with "forcar TXXX para andamento"
 
 Tasks in ⏳ Waiting do NOT count toward WIP.
 
 ### Task Types
 
-- **simple** (T-NNN): Single action
-- **project** (P-NNN): Has `subtasks[]`. `next_action` is always the first pending subtask.
-- **recurring** (R-NNN): Has `recurrence{}` and `current_cycle{}`. Cycles repeat per schedule.
+- **simple** (TN): Single action
+- **project** (PN): Has `subtasks[]`. `next_action` is always the first pending subtask.
+- **recurring** (RN): Has `recurrence{}` and `current_cycle{}`. Cycles repeat per schedule.
 
 ### Archival
 
@@ -399,7 +399,7 @@ Append to the template:
 When the user says "anotar:", "lembrar:", "registrar:" or similar without full details:
 - Create in Inbox with minimum info (title only)
 - Do NOT require assignee, deadline, or next_action
-- Confirm: "📥 T-XXX added to Inbox"
+- Confirm: "📥 TXXX added to Inbox"
 
 When the user provides assignee and details from the start:
 - Skip Inbox, create directly in Next Action or In Progress
@@ -421,13 +421,13 @@ Every task in ⏳ Waiting MUST have `waiting_for` filled — who/what is being w
 
 ### Projects
 
-For project tasks (P-NNN):
-- Create one ordered subtask entry for each provided step using the dotted child ID format (`P-001.1`, `P-001.2`, ...)
+For project tasks (PN):
+- Create one ordered subtask entry for each provided step using the dotted child ID format (`P1.1`, `P1.2`, ...)
 - `next_action` is always derived from the first pending subtask
 - When all subtasks complete, move project to Review
 
 Subtask completion:
-- User marks a subtask done with: `P-001.1 concluida` (or `feita`, `pronta`)
+- User marks a subtask done with: `P1.1 concluida` (or `feita`, `pronta`)
 - Set `subtasks[].done = true` for that subtask
 - Auto-update `next_action` to the title of the next pending subtask (first where `done` is `false`)
 - If the completed subtask was the last one, move the project to Review
@@ -486,28 +486,28 @@ Interpret user messages naturally. Key patterns:
 |---------|--------|------------|
 | "anotar: X" / "lembrar: X" / "registrar: X" | Create in Inbox | Everyone |
 | "processar inbox" / "o que tem no inbox?" | List and process Inbox items | Delegate or full manager |
-| "T-XXX para [pessoa], prazo [data]" | Process inbox item → Next Action | Delegate or full manager |
-| "proxima acao T-XXX: Y" | Update next_action field | Assignee or manager |
+| "TXXX para [pessoa], prazo [data]" | Process inbox item → Next Action | Delegate or full manager |
+| "proxima acao TXXX: Y" | Update next_action field | Assignee or manager |
 
 ### Board Movement
 | Pattern | Action | Permission |
 |---------|--------|------------|
-| "comecando T-XXX" / "iniciando T-XXX" | Move to In Progress (check WIP) | Assignee |
-| "T-XXX aguardando Y" | Move to Waiting, set waiting_for | Assignee |
-| "T-XXX retomada" | Move to In Progress (check WIP) | Assignee |
-| "devolver T-XXX" | Move from In Progress back to Next Action (frees WIP) | Assignee |
-| "T-XXX pronta para revisao" | Move to Review | Assignee |
-| "T-XXX rejeitada: [motivo]" | Move from Review back to In Progress, record rework reason | Delegate or full manager |
-| "T-XXX aprovada" | Move from Review to Done | Delegate or full manager |
-| "reabrir T-XXX" | Move from Done back to Next Action | Assignee or manager |
-| "T-XXX concluida" / "T-XXX feita" | Move to Done (shortcut) | Assignee or manager |
-| "forcar T-XXX para andamento" | Move to In Progress ignoring WIP limit | Full manager |
-| "adicionar etapa P-XXX: [titulo]" | Append a new project subtask at the end | Assignee or manager |
-| "renomear etapa P-XXX.N: [novo titulo]" | Rename a specific project subtask | Assignee or manager |
-| "reabrir etapa P-XXX.N" | Reopen a completed project subtask | Assignee or manager |
-| "P-XXX.N concluida" / "P-XXX.N feita" / "P-XXX.N pronta" | Mark project subtask as done, advance next_action | Assignee or manager |
-| "cancelar T-XXX" | Move to Cancelled → Archive (confirm first) | Full manager |
-| "T-005, T-006, T-007 aprovadas" (approve, reject, conclude, cancel) | Batch operation — apply same action to multiple tasks | Same as individual |
+| "comecando TXXX" / "iniciando TXXX" | Move to In Progress (check WIP) | Assignee |
+| "TXXX aguardando Y" | Move to Waiting, set waiting_for | Assignee |
+| "TXXX retomada" | Move to In Progress (check WIP) | Assignee |
+| "devolver TXXX" | Move from In Progress back to Next Action (frees WIP) | Assignee |
+| "TXXX pronta para revisao" | Move to Review | Assignee |
+| "TXXX rejeitada: [motivo]" | Move from Review back to In Progress, record rework reason | Delegate or full manager |
+| "TXXX aprovada" | Move from Review to Done | Delegate or full manager |
+| "reabrir TXXX" | Move from Done back to Next Action | Assignee or manager |
+| "TXXX concluida" / "TXXX feita" | Move to Done (shortcut) | Assignee or manager |
+| "forcar TXXX para andamento" | Move to In Progress ignoring WIP limit | Full manager |
+| "adicionar etapa PXXX: [titulo]" | Append a new project subtask at the end | Assignee or manager |
+| "renomear etapa PXXX.N: [novo titulo]" | Rename a specific project subtask | Assignee or manager |
+| "reabrir etapa PXXX.N" | Reopen a completed project subtask | Assignee or manager |
+| "PXXX.N concluida" / "PXXX.N feita" / "PXXX.N pronta" | Mark project subtask as done, advance next_action | Assignee or manager |
+| "cancelar TXXX" | Move to Cancelled → Archive (confirm first) | Full manager |
+| "T5, T6, T7 aprovadas" (approve, reject, conclude, cancel) | Batch operation — apply same action to multiple tasks | Same as individual |
 
 ### Task Creation
 | Pattern | Action | Permission |
@@ -533,8 +533,8 @@ Interpret user messages naturally. Key patterns:
 | "proxima acao" / "proximas acoes" | Show only tasks currently in Next Action | Everyone |
 | "em andamento" | Show only tasks currently in In Progress | Everyone |
 | "minhas tarefas" / "meu quadro" | Show sender's own tasks | Everyone |
-| "detalhes T-XXX" / "info T-XXX" | Show full task details, notes, and last 5 history entries | Everyone |
-| "historico T-XXX" | Show complete task history | Everyone |
+| "detalhes TXXX" / "info TXXX" | Show full task details, notes, and last 5 history entries | Everyone |
+| "historico TXXX" | Show complete task history | Everyone |
 | "buscar [texto]" | Search tasks by text across title, next_action, waiting_for, notes | Everyone |
 | "buscar [texto] com rotulo [nome]" | Search tasks by text, filtered by label | Everyone |
 | "urgentes" / "prioridade urgente" | Show only urgent-priority tasks | Everyone |
@@ -550,24 +550,24 @@ Interpret user messages naturally. Key patterns:
 | "ajuda" / "comandos" / "help" | Show summary of available commands grouped by category | Everyone |
 | "concluidas hoje" | Show tasks moved to Done today | Everyone |
 | "concluidas esta semana" | Show tasks moved to Done during the current week | Everyone |
-| "restaurar T-XXX" | Restore an archived task back to Next Action | Full manager |
-| "estender prazo T-XXX para Y" | Update due_date and record the change in task history | Full manager |
-| "reatribuir T-XXX para [pessoa]" | Change task assignee (confirm first) | Full manager |
+| "restaurar TXXX" | Restore an archived task back to Next Action | Full manager |
+| "estender prazo TXXX para Y" | Update due_date and record the change in task history | Full manager |
+| "reatribuir TXXX para [pessoa]" | Change task assignee (confirm first) | Full manager |
 | "limite do [pessoa] para N" | Update wip_limit | Full manager |
 | "cadastrar [nome], telefone [numero], [cargo]" | Add person to people[] | Full manager |
-| "prioridade T-XXX: [baixa\|normal\|alta\|urgente]" | Update task priority and record in history | Assignee or manager |
-| "rotulo T-XXX: [nome]" | Add a label to task and record in history | Assignee or manager |
-| "remover rotulo T-XXX: [nome]" | Remove a label from task and record in history | Assignee or manager |
-| "renomear T-XXX: novo titulo" | Update task title and record in history | Assignee or manager |
-| "nota T-XXX: texto" / "anotacao T-XXX: texto" | Append a structured note with `id`, `text`, `by`, `created_at`, and `updated_at`; increment `next_note_id`; record in history | Assignee or manager |
-| "editar nota T-XXX #N: texto" | Update a structured note by ID and record in history | Assignee or manager |
-| "remover nota T-XXX #N" | Remove a structured note by ID and record in history | Assignee or manager |
-| "alterar recorrencia R-XXX para [frequencia]" | Change recurrence frequency and recompute next due_date | Full manager |
+| "prioridade TXXX: [baixa\|normal\|alta\|urgente]" | Update task priority and record in history | Assignee or manager |
+| "rotulo TXXX: [nome]" | Add a label to task and record in history | Assignee or manager |
+| "remover rotulo TXXX: [nome]" | Remove a label from task and record in history | Assignee or manager |
+| "renomear TXXX: novo titulo" | Update task title and record in history | Assignee or manager |
+| "nota TXXX: texto" / "anotacao TXXX: texto" | Append a structured note with `id`, `text`, `by`, `created_at`, and `updated_at`; increment `next_note_id`; record in history | Assignee or manager |
+| "editar nota TXXX #N: texto" | Update a structured note by ID and record in history | Assignee or manager |
+| "remover nota TXXX #N" | Remove a structured note by ID and record in history | Assignee or manager |
+| "alterar recorrencia RXXX para [frequencia]" | Change recurrence frequency and recompute next due_date | Full manager |
 | "remover [nome]" | Remove person, reassign open tasks (confirm first) | Full manager |
 | "adicionar gestor [nome], telefone [numero]" | Add another full manager to meta.managers[] | Full manager |
 | "adicionar delegado [nome], telefone [numero]" | Add a delegate to meta.managers[] | Full manager |
 | "remover gestor [nome]" / "remover delegado [nome]" | Remove admin entry (confirm first, never remove last full manager) | Full manager |
-| "remover prazo T-XXX" | Remove due date from task | Full manager |
+| "remover prazo TXXX" | Remove due date from task | Full manager |
 | "concluidas do [pessoa]" | Show tasks completed by a specific person | Everyone |
 | "concluidas do mes" / "concluidas este mes" | Show tasks completed during the current month | Everyone |
 | "resumo" | Ad-hoc digest (distinct from "resumo semanal"/"revisao") | Everyone |
@@ -577,17 +577,17 @@ Interpret user messages naturally. Key patterns:
 | "transferir tarefas do [pessoa] para [pessoa]" | Bulk reassign all tasks from one person to another (confirm first) | Full manager |
 | "desfazer" | Undo last mutation (within 60s window) | Mutation actor or full manager |
 | "o que mudou hoje?" / "mudancas hoje" / "o que mudou desde ontem?" / "o que mudou esta semana?" | Show changelog of recent task mutations | Everyone |
-| "descricao T-XXX: [texto]" | Update task description (max 500 chars) | Assignee or manager |
-| "T-XXX depende de T-YYY" | Add advisory dependency between tasks | Assignee or manager |
-| "remover dependencia T-XXX de T-YYY" | Remove dependency between tasks | Assignee or manager |
-| "lembrete T-XXX [N] dia(s) antes" | Add deadline reminder N days before due date | Assignee or manager |
-| "remover lembrete T-XXX" | Remove deadline reminder from task | Assignee or manager |
+| "descricao TXXX: [texto]" | Update task description (max 500 chars) | Assignee or manager |
+| "TXXX depende de TYYY" | Add advisory dependency between tasks | Assignee or manager |
+| "remover dependencia TXXX de TYYY" | Remove dependency between tasks | Assignee or manager |
+| "lembrete TXXX [N] dia(s) antes" | Add deadline reminder N days before due date | Assignee or manager |
+| "remover lembrete TXXX" | Remove deadline reminder from task | Assignee or manager |
 | "estatisticas" / "estatisticas do [pessoa]" / "estatisticas do mes" | Show task statistics and metrics | Everyone |
 
 ### Confirmation Required
 Always confirm before:
-- Cancelling a task (`cancelar T-XXX`)
-- Reassigning a task (`reatribuir T-XXX para [pessoa]`)
+- Cancelling a task (`cancelar TXXX`)
+- Reassigning a task (`reatribuir TXXX para [pessoa]`)
 - Bulk reassigning tasks (`transferir tarefas do [pessoa] para [pessoa]`)
 - Removing a person (`remover [nome]`) — also reassign their open tasks
 - Removing a manager or delegate (`remover gestor [nome]` / `remover delegado [nome]`)
@@ -1174,8 +1174,8 @@ Tell the user to test quick capture:
 ```
 
 The agent should:
-- Create T-001 in Inbox
-- Respond: "📥 T-001 added to Inbox: tarefa de teste"
+- Create T1 in Inbox
+- Respond: "📥 T1 added to Inbox: tarefa de teste"
 
 ### 3. Test Attachment Import (Create + Update)
 
@@ -1689,4 +1689,4 @@ These controls MUST pass before the skill can be merged:
 | R22 | Missing `manifest.yaml` per nanorepo architecture | Medium | Added Task 3b with manifest declaring skill metadata, optional media integration via `tested_with: [media-support]` (no hard dependency), and test command. Config-only skills have empty `adds`/`modifies` but still require a manifest for state tracking and replay. |
 | R23 | Missing skill package tests per nanorepo architecture | Medium | Added Task 12b with vitest tests verifying: manifest validity, SKILL.md phases, template structure, JSON validity after substitution, CLAUDE.md sections, correct `send_message` signature, and placeholder consistency. Uses existing `.claude/skills/vitest.config.ts` runner. |
 | R24 | Primary manager missing from active people store | Medium | Clarified: the primary full manager must still have a `people[]` record even when they should not receive normal day-to-day assignments, because sender identification and admin authorization resolve through the active people store. |
-| R25 | Cross-group notifications for hierarchy | Medium | Added `target_chat_jid` optional parameter to `send_message` MCP tool. TaskFlow-managed groups can send to other TaskFlow groups via IPC authorization. `board_people.notification_group_jid` stores the target group JID for each person. Updated `send_message` signature, security section, and IPC authorization description. |
+| R25 | Cross-group notifications for hierarchy | Medium | Added `target_chat_jid` optional parameter to `send_message` MCP tool. TaskFlow-managed groups can send to other TaskFlow groups via IPC authorization. `board_people.notification_group_jid` stores the target group JID for each person. Updated `send_message` signature, security section, and IPC authorization description. With v2 MCP tools, notification target resolution is handled by the engine's `resolveNotifTarget()` (queries only `notification_group_jid` from `board_people`, returns `{ target_person_id, notification_group_jid }`). The engine's notification builders (`buildCreateNotification`, `buildMoveNotification`, `buildReassignNotification`, `buildUpdateNotification`) produce rich pt-BR messages. |

@@ -58,6 +58,13 @@ export const TRIGGER_PATTERN = new RegExp(
   'i',
 );
 
+/** Build a trigger regex from a per-group trigger string (e.g. "@Case" → /^@Case\b/i). */
+export function buildTriggerPattern(trigger: string): RegExp {
+  // trigger is stored as "@Name" — use it directly
+  const name = trigger.startsWith('@') ? trigger.slice(1) : trigger;
+  return new RegExp(`^@${escapeRegex(name)}\\b`, 'i');
+}
+
 // Timezone for scheduled tasks (cron expressions, etc.)
 // Uses system timezone by default
 export const TIMEZONE =
