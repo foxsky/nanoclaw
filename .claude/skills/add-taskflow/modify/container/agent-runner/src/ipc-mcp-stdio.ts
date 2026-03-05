@@ -445,13 +445,13 @@ server.tool(
       .string()
       .optional()
       .describe(
-        'WhatsApp group name override. Auto-generated as "[name] - TaskFlow" if omitted.',
+        'WhatsApp group name — MUST be the division/sector name (e.g., "SETD-SECTI - TaskFlow"), never the person name. Falls back to person name if omitted (not recommended).',
       ),
     group_folder: z
       .string()
       .optional()
       .describe(
-        'Folder name override. Auto-generated from person_id if omitted.',
+        'Folder name — MUST be the division/sector abbreviation (e.g., "setd-secti-taskflow"), never the person name. Falls back to person_id if omitted (not recommended).',
       ),
   },
   async (args) => {
@@ -666,9 +666,36 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         task_id: z.string().optional().describe('Task ID (for cancel_task, restore_task)'),
         confirmed: z.boolean().optional().describe('Confirmation flag (for destructive actions)'),
         force: z.boolean().optional().describe('Force flag (bypasses safety checks)'),
+        group_name: z.string().optional().describe('Division/sector name for child board WhatsApp group (for register_person on hierarchy boards, e.g., "SETD-SECTI - TaskFlow")'),
+        group_folder: z.string().optional().describe('Division/sector folder name for child board (for register_person on hierarchy boards, e.g., "setd-secti-taskflow")'),
       },
       async (args) => {
         const result = engine.admin({ ...args, board_id: boardId });
+        if (
+          args.action === 'register_person' &&
+          result.success &&
+          result.auto_provision_request &&
+          canUseCreateGroup({
+            isMain: false,
+            isTaskflowManaged,
+            taskflowHierarchyLevel,
+            taskflowMaxDepth,
+          })
+        ) {
+          const ap = result.auto_provision_request;
+          writeIpcFile(TASKS_DIR, {
+            type: 'provision_child_board',
+            person_id: ap.person_id,
+            person_name: ap.person_name,
+            person_phone: ap.person_phone,
+            person_role: ap.person_role,
+            group_name: ap.group_name,
+            group_folder: ap.group_folder,
+            groupFolder,
+            isMain,
+            timestamp: new Date().toISOString(),
+          });
+        }
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
           isError: !result.success,
@@ -685,6 +712,25 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
       async (args) => {
         const result = engine.undo({ ...args, board_id: boardId });
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          isError: !result.success,
+        };
+      },
+    );
+
+    server.tool(
+      'taskflow_hierarchy',
+      'Manage hierarchy links between parent and child boards. Link/unlink tasks to child boards, refresh rollup status, or tag a local task to a parent deliverable.',
+      {
+        action: z.enum(['link', 'unlink', 'refresh_rollup', 'tag_parent']).describe('Hierarchy action'),
+        task_id: z.string().describe('Task ID to operate on'),
+        person_name: z.string().optional().describe('Target person with child board (for link action)'),
+        parent_task_id: z.string().optional().describe('Parent task ID (for tag_parent action)'),
+        sender_name: z.string().describe('Name of the person performing the action'),
+      },
+      async (args) => {
+        const result = engine.hierarchy({ ...args, board_id: boardId });
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
           isError: !result.success,

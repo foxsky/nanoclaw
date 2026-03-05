@@ -228,7 +228,9 @@ Limitações: não desfaz criação (use `cancelar`), arquivamento, avanço de r
 | `@Case estatisticas` | Estatísticas do quadro (concluídas, tempo médio, tendência) |
 | `@Case estatisticas do Alexandre` | Estatísticas de uma pessoa |
 | `@Case estatisticas do mes` | Estatísticas do mês atual |
-| `@Case ajuda` | Lista de comandos disponíveis |
+| `@Case ajuda` | Resumo curto dos comandos (~20 linhas) |
+| `@Case manual` | Referência detalhada de todos os comandos, com descrições, permissões e dicas |
+| `@Case guia rapido` | Guia para iniciantes: conceito do quadro, fluxo típico, primeiros passos |
 
 ### Estatísticas
 
@@ -539,7 +541,9 @@ ATUALIZAR TAREFA
   @Case remover lembrete TXXX
 
 CONSULTAS
-  @Case ajuda
+  @Case ajuda                              (resumo curto)
+  @Case manual                             (referência completa)
+  @Case guia rapido                        (guia para iniciantes)
   @Case minhas tarefas
   @Case detalhes TXXX
   @Case historico TXXX
@@ -615,7 +619,7 @@ HIERARQUIA (modo hierárquico)
 Não. Apenas o responsável pode mover suas próprias tarefas. O gestor pode forçar movimentações.
 
 **Posso reatribuir uma tarefa minha para outra pessoa?**
-Sim. O responsável da tarefa ou qualquer gestor podem reatribuir com `@Case reatribuir T001 para Rafael`. Não há verificação de limite WIP na reatribuição. Se a tarefa estiver vinculada a um quadro, o vínculo é transferido automaticamente.
+Sim. O responsável da tarefa ou qualquer gestor podem reatribuir com `@Case reatribuir T001 para Rafael`. Não há verificação de limite WIP na reatribuição. Se a nova pessoa tiver um quadro filho registrado, a tarefa é vinculada automaticamente — mesmo que não estivesse vinculada antes.
 
 **O que acontece se eu tentar começar uma tarefa e estiver no limite WIP?**
 O assistente avisa que o limite foi atingido e não move a tarefa. Você precisa concluir ou mover uma tarefa para Aguardando antes de começar outra. O gestor pode forçar com `@Case forcar TXXX para andamento`.
@@ -678,7 +682,10 @@ Sim. Use `@Case prioridade T001: urgente` para destacar urgência e `@Case rotul
 Sim. Um gestor pode usar `@Case alterar recorrencia R001 para semanal` (aceita: diario, semanal, mensal, anual).
 
 **Como vejo os comandos disponíveis?**
-Envie `@Case ajuda` para ver uma lista organizada de todos os comandos.
+O TaskFlow tem 3 níveis de ajuda:
+- `@Case ajuda` — resumo curto (~20 linhas) dos comandos mais usados
+- `@Case manual` — referência completa com todos os comandos, descrições, permissões e dicas de uso
+- `@Case guia rapido` — guia para iniciantes com conceito do quadro, fluxo típico e primeiros passos
 
 **Posso desfazer uma ação?**
 Sim, use `@Case desfazer` em até 60 segundos. Não funciona para criação, arquivamento ou operações em lote.

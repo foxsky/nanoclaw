@@ -993,7 +993,7 @@ Or use the Baileys script from Phase 2 Step 1 if the service is stopped.
 Insert into `registered_groups` with TaskFlow metadata:
 
 ```bash
-sqlite3 store/messages.db "INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, taskflow_managed, taskflow_hierarchy_level, taskflow_max_depth) VALUES ('{{CHILD_GROUP_JID}}', '{{CHILD_GROUP_NAME}}', '{{CHILD_GROUP_FOLDER}}', '@{{ASSISTANT_NAME}}', '$(date -u +%Y-%m-%dT%H:%M:%S.000Z)', NULL, 1, 1, ${CHILD_RUNTIME_LEVEL}, {{MAX_DEPTH}});"
+sqlite3 store/messages.db "INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, taskflow_managed, taskflow_hierarchy_level, taskflow_max_depth) VALUES ('{{CHILD_GROUP_JID}}', '{{CHILD_GROUP_NAME}}', '{{CHILD_GROUP_FOLDER}}', '@{{ASSISTANT_NAME}}', '$(date -u +%Y-%m-%dT%H:%M:%S.000Z)', NULL, 0, 1, ${CHILD_RUNTIME_LEVEL}, {{MAX_DEPTH}});"
 ```
 
 ### 5. Seed Child Board in TaskFlow DB

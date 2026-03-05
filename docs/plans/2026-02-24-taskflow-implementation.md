@@ -547,7 +547,9 @@ Interpret user messages naturally. Key patterns:
 | "vence amanha" / "vencem amanha" | Show tasks due tomorrow | Everyone |
 | "vence esta semana" / "vencem esta semana" | Show tasks due through end of current week | Everyone |
 | "proximos 7 dias" / "vencem nos proximos 7 dias" | Show tasks due within next 7 days | Everyone |
-| "ajuda" / "comandos" / "help" | Show summary of available commands grouped by category | Everyone |
+| "ajuda" / "comandos" / "help" | Show SHORT command summary (~20 lines, max) | Everyone |
+| "manual" | Show DETAILED command reference — all commands with descriptions, permissions, tips, workflow examples, FAQ | Everyone |
+| "guia rapido" / "quick start" | Show BEGINNER-FRIENDLY quick start — board concept, typical flow, first steps | Everyone |
 | "concluidas hoje" | Show tasks moved to Done today | Everyone |
 | "concluidas esta semana" | Show tasks moved to Done during the current week | Everyone |
 | "restaurar TXXX" | Restore an archived task back to Next Action | Full manager |

@@ -220,8 +220,8 @@ taskflow_reassign({
 **Logic moved from CLAUDE.md:**
 - Permission check (assignee or manager)
 - Target person validation
-- Auto-unlink from old child board
-- Auto-relink to new child board (if exists)
+- Auto-link to new child board if target has one (regardless of previous link state)
+- Auto-unlink if target has no child board and task was previously linked
 - Bulk transfer logic
 - History recording
 - NO WIP check (by design)

@@ -601,7 +601,7 @@ Extend `.claude/skills/add-taskflow/templates/CLAUDE.md.template` so hierarchy b
 - **Upward tagging**: Sets `linked_parent_board_id` and `linked_parent_task_id` on the local task. The command accepts the parent task ID only because the board already knows its `parent_board_id`; the stored reference is always fully qualified.
 - **Root restriction**: Upward tagging must be refused on root boards (`parent_board_id IS NULL`).
 - **Disambiguation**: `"resumo"` alone triggers the v2 ad-hoc digest. `"resumo de execucao TXXX"` triggers the rollup view. The task ID suffix disambiguates.
-- **Reassignment**: If a linked task is reassigned to a different person, the existing child execution link must be removed first. No silent transfer of linkage. The board owner must explicitly re-link to the new assignee's child board.
+- **Reassignment**: When a task is reassigned, the engine auto-links to the new assignee's child board (if registered) regardless of whether the task was previously linked. If the new assignee has no child board and the task was linked, the link is removed. This ensures tasks are always visible on the correct child board without manual re-linking.
 - **Rejection**: When the board owner rejects a linked task in `review` (with `rollup_status = 'ready_for_review'`), the task moves back to `in_progress` and `rollup_status` resets to `active`. The child board should be notified to reopen or add work.
 
 ### 3.4 Authority While Linked

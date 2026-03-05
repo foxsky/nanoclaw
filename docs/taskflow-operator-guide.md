@@ -277,7 +277,7 @@ The generated prompt enforces:
 
 - Full-manager-only creation of complete tasks (`tarefa`, `projeto`, `diario`, `semanal`, `mensal`, `anual`)
 - Delegate-or-manager inbox processing and review approval/rejection
-- Assignee-or-manager reassignment (no WIP check on reassign; auto-relinks in hierarchy mode)
+- Assignee-or-manager reassignment (no WIP check on reassign; auto-links to child board if target has one, regardless of prior link state)
 - Full-manager-only admin actions (WIP overrides, people changes, manager/delegate changes, cancel, bulk reassign)
 - Assignee-only movement into work states
 - Assignee-or-manager updates of `next_action`, title, priority, labels, and task notes (including edit/remove of structured notes)
@@ -425,7 +425,7 @@ Child boards are provisioned **automatically** via the `provision_child_board` I
 - A manager assigns a task to an unknown person and confirms registration (the agent asks for phone and role, then runs the `cadastrar` flow)
 - A board owner explicitly requests `criar quadro para [pessoa]`
 
-The host-side plugin handles the full lifecycle asynchronously — no operator intervention required. The steps below document what the plugin does (and serve as a manual fallback for troubleshooting):
+The host-side plugin handles the full lifecycle asynchronously — no operator intervention required. Child boards are registered with `requires_trigger = 0` so the person can message without prefixing `@Case` (they are personal boards with a single user). The steps below document what the plugin does (and serve as a manual fallback for troubleshooting):
 
 1. **Pre-flight**: Verify `registered_groups.taskflow_hierarchy_level + 1 < registered_groups.taskflow_max_depth` for the source group. Use the `boards` row only as a consistency check after registration data is confirmed. Verify the person doesn't already have a board in `child_board_registrations`.
 2. **WhatsApp group**: Create via `create_group` IPC plugin (no service stop required) or manual fallback.

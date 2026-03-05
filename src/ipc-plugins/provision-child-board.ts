@@ -210,6 +210,12 @@ const handleProvisionChildBoard: IpcHandler = async (
       typeof data.group_folder === 'string' && data.group_folder.trim()
         ? data.group_folder.trim()
         : sanitizeFolder(personId) + '-taskflow';
+    if (!(typeof data.group_folder === 'string' && data.group_folder.trim())) {
+      logger.warn(
+        { personId, fallbackFolder: childGroupFolder },
+        'provision_child_board: group_folder not provided, falling back to person-based name. Child boards should use division/sector names.',
+      );
+    }
 
     // Ensure folder uniqueness
     const existingFolders = new Set(
@@ -265,7 +271,7 @@ const handleProvisionChildBoard: IpcHandler = async (
         folder: childGroupFolder,
         trigger: sourceEntry.trigger,
         added_at: new Date().toISOString(),
-        requiresTrigger: true,
+        requiresTrigger: false,
         taskflowManaged: true,
         taskflowHierarchyLevel: childLevel,
         taskflowMaxDepth: sourceEntry.taskflowMaxDepth,
@@ -545,6 +551,27 @@ const handleProvisionChildBoard: IpcHandler = async (
           'provision_child_board: failed to send confirmation',
         );
       }
+    }
+
+    // --- 13. Send welcome message to child group ---
+    try {
+      await deps.sendMessage(
+        childGroupJid,
+        `👋 *Bem-vindo ao ${childGroupName}!*\n\nEste é o seu quadro de tarefas pessoal. Aqui você receberá suas tarefas, atualizações e automações (standup, resumo, revisão semanal).\n\nDigite \`ajuda\` para ver os comandos disponíveis.`,
+        assistantName,
+      );
+      tfDb
+        .prepare('UPDATE board_runtime_config SET welcome_sent = 1 WHERE board_id = ?')
+        .run(childBoardId);
+      logger.info(
+        { childGroupJid },
+        'provision_child_board: welcome message sent',
+      );
+    } catch (err) {
+      logger.error(
+        { err },
+        'provision_child_board: failed to send welcome message',
+      );
     }
 
     logger.info(

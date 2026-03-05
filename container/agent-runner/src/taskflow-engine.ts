@@ -76,6 +76,7 @@ export interface MoveResult extends TaskflowResult {
   recurring_cycle?: { new_due_date: string; cycle_number: number };
   archive_triggered?: boolean;
   notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
+  parent_notification?: { parent_group_jid: string; message: string };
 }
 
 export interface ReassignParams {
@@ -166,12 +167,23 @@ export interface AdminParams {
   task_id?: string;
   confirmed?: boolean;
   force?: boolean;
+  group_name?: string;
+  group_folder?: string;
 }
 
 export interface AdminResult extends TaskflowResult {
   person_id?: string;
   tasks_to_reassign?: Array<{ task_id: string; title: string }>;
   tasks?: any[];
+  auto_provision_request?: {
+    person_id: string;
+    person_name: string;
+    person_phone: string;
+    person_role: string;
+    group_name?: string;
+    group_folder?: string;
+    message: string;
+  };
 }
 
 export interface ReportParams {
@@ -205,6 +217,22 @@ export interface ReportResult extends TaskflowResult {
       trend: 'up' | 'down' | 'same';
     };
   };
+}
+
+export interface HierarchyParams {
+  board_id: string;
+  action: 'link' | 'unlink' | 'refresh_rollup' | 'tag_parent';
+  task_id: string;
+  person_name?: string;       // for link — target person with child board
+  parent_task_id?: string;    // for tag_parent — parent board deliverable ID
+  sender_name: string;
+}
+
+export interface HierarchyResult extends TaskflowResult {
+  task_id?: string;
+  rollup_status?: string;
+  rollup_summary?: string;
+  new_column?: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -265,6 +293,13 @@ function lastWeekEnd(): string {
   const day = d.getDay();
   const diff = day === 0 ? 6 : day - 1;
   d.setDate(d.getDate() - diff - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Compute a reminder date by subtracting days from a due date. */
+function reminderDateFromDue(dueDate: string, daysBefore: number): string {
+  const d = new Date(dueDate + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - daysBefore);
   return d.toISOString().slice(0, 10);
 }
 
@@ -331,7 +366,8 @@ export class TaskflowEngine {
 
   /** Resolve a human-readable name to a person_id + canonical name. */
   resolvePerson(name: string): { person_id: string; name: string } | null {
-    const row = this.db
+    // 1. Exact match by name (case-insensitive)
+    const exact = this.db
       .prepare(
         `SELECT person_id, name FROM board_people
          WHERE board_id = ? AND LOWER(name) = LOWER(?)`,
@@ -339,7 +375,42 @@ export class TaskflowEngine {
       .get(this.boardId, name) as
       | { person_id: string; name: string }
       | undefined;
-    return row ?? null;
+    if (exact) return exact;
+
+    // 2. Exact match by person_id
+    const byId = this.db
+      .prepare(
+        `SELECT person_id, name FROM board_people
+         WHERE board_id = ? AND LOWER(person_id) = LOWER(?)`,
+      )
+      .get(this.boardId, name) as
+      | { person_id: string; name: string }
+      | undefined;
+    if (byId) return byId;
+
+    // 3. First-name match: compare first word of input against first word of each name
+    const firstName = name.split(/\s+/)[0];
+    if (firstName) {
+      const all = this.db
+        .prepare(
+          `SELECT person_id, name FROM board_people WHERE board_id = ?`,
+        )
+        .all(this.boardId) as Array<{ person_id: string; name: string }>;
+      const matches = all.filter(
+        (p) => p.name.split(/\s+/)[0].toLowerCase() === firstName.toLowerCase(),
+      );
+      if (matches.length === 1) return matches[0];
+    }
+
+    return null;
+  }
+
+  /** Check if this board can delegate downward (not a leaf board). */
+  private canDelegateDown(): boolean {
+    const row = this.db
+      .prepare(`SELECT hierarchy_level, max_depth FROM boards WHERE id = ?`)
+      .get(this.boardId) as { hierarchy_level: number | null; max_depth: number | null } | undefined;
+    return row?.hierarchy_level != null && row?.max_depth != null && row.hierarchy_level < row.max_depth;
   }
 
   /** Fetch a single active task by its id. */
@@ -751,7 +822,7 @@ export class TaskflowEngine {
       /* --- Recurrence --- */
       let recurrence: string | null = null;
       let dueDate: string | null = params.due_date ?? null;
-      if (params.type === 'recurring' && params.recurrence) {
+      if ((params.type === 'recurring' || params.type === 'project') && params.recurrence) {
         recurrence = params.recurrence;
         if (!dueDate) {
           dueDate = advanceDateByRecurrence(new Date(), params.recurrence);
@@ -762,7 +833,7 @@ export class TaskflowEngine {
       let childExecEnabled = 0;
       let childExecBoardId: string | null = null;
       let childExecPersonId: string | null = null;
-      if (assigneePersonId) {
+      if (assigneePersonId && params.type !== 'recurring' && !recurrence) {
         const reg = this.getChildBoardRegistration(assigneePersonId);
         if (reg) {
           childExecEnabled = 1;
@@ -944,6 +1015,35 @@ export class TaskflowEngine {
     }
   }
 
+  /** Archive a single task: snapshot to archive, resolve dependencies, delete. */
+  private archiveTask(task: any, reason: string): void {
+    const now = new Date().toISOString();
+    const history = this.getHistory(task.id);
+
+    this.db
+      .prepare(
+        `INSERT INTO archive (board_id, task_id, type, title, assignee, archive_reason,
+         linked_parent_board_id, linked_parent_task_id, archived_at, task_snapshot, history)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        this.boardId, task.id, task.type, task.title, task.assignee, reason,
+        task.linked_parent_board_id ?? null, task.linked_parent_task_id ?? null,
+        now, JSON.stringify(task), JSON.stringify(history),
+      );
+
+    this.resolveDependencies(task.id, this.boardId);
+
+    if (task.type === 'project') {
+      this.db
+        .prepare(`DELETE FROM tasks WHERE board_id = ? AND parent_task_id = ?`)
+        .run(this.boardId, task.id);
+    }
+    this.db
+      .prepare(`DELETE FROM tasks WHERE board_id = ? AND id = ?`)
+      .run(this.boardId, task.id);
+  }
+
   /** Advance a recurring task: calculate next due_date and increment cycle. */
   private advanceRecurringTask(task: any): { new_due_date: string; cycle_number: number } {
     const recurrence = task.recurrence as 'daily' | 'weekly' | 'monthly' | 'yearly';
@@ -955,10 +1055,21 @@ export class TaskflowEngine {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        `UPDATE tasks SET column = 'next_action', due_date = ?, current_cycle = ?, updated_at = ?
+        `UPDATE tasks SET column = 'next_action', due_date = ?, current_cycle = ?, reminders = '[]',
+         notes = '[]', next_note_id = 1, blocked_by = '[]', next_action = NULL, waiting_for = NULL, updated_at = ?
          WHERE board_id = ? AND id = ?`,
       )
       .run(newDueDate, String(nextCycle), now, this.taskBoardId(task), task.id);
+
+    /* Reset subtask rows for recurring projects */
+    if (task.type === 'project') {
+      this.db
+        .prepare(
+          `UPDATE tasks SET column = 'next_action', updated_at = ?
+           WHERE board_id = ? AND parent_task_id = ? AND column = 'done'`,
+        )
+        .run(now, this.taskBoardId(task), task.id);
+    }
 
     return { new_due_date: newDueDate, cycle_number: nextCycle };
   }
@@ -1205,6 +1316,10 @@ export class TaskflowEngine {
         }
       }
 
+      const senderDisplayName = senderPersonId
+        ? this.personDisplayName(senderPersonId)
+        : params.sender_name;
+
       /* --- Notifications --- */
       const notifications: MoveResult['notifications'] = [];
       if (senderPersonId) {
@@ -1214,6 +1329,64 @@ export class TaskflowEngine {
           senderPersonId,
         );
         if (notif) notifications.push(notif);
+      }
+
+      /* --- Linked task review rejection (reset rollup + notify child board) --- */
+      if (params.action === 'reject' && task.child_exec_enabled === 1) {
+        this.db
+          .prepare(
+            `UPDATE tasks SET child_exec_rollup_status = 'active',
+             child_exec_last_rollup_at = ?, child_exec_last_rollup_summary = ?, updated_at = ?
+             WHERE board_id = ? AND id = ?`,
+          )
+          .run(now, `Rejeitada por ${senderDisplayName}`, now, taskBoardId, task.id);
+
+        if (task.child_exec_person_id) {
+          const childPerson = this.db
+            .prepare(
+              `SELECT notification_group_jid FROM board_people
+               WHERE board_id = ? AND person_id = ?`,
+            )
+            .get(taskBoardId, task.child_exec_person_id) as
+            | { notification_group_jid: string | null }
+            | undefined;
+
+          if (childPerson?.notification_group_jid) {
+            notifications.push({
+              target_person_id: task.child_exec_person_id,
+              notification_group_jid: childPerson.notification_group_jid,
+              message: `↩️ *${task.id}* — ${task.title}\nRevisão rejeitada por ${senderDisplayName}. Ajustes necessários antes de nova aprovação.`,
+            });
+          }
+        }
+      }
+
+      /* --- Parent board notification (linked task status change) --- */
+      let parentNotification: MoveResult['parent_notification'];
+      if (task.child_exec_enabled === 1 && task.board_id !== this.boardId) {
+        // This task belongs to a parent board but is being operated on from a child board
+        const parentBoard = this.db
+          .prepare(`SELECT group_jid FROM boards WHERE id = ?`)
+          .get(task.board_id) as { group_jid: string } | undefined;
+        if (parentBoard) {
+          const emoji = toColumn === 'done' ? '✅' : toColumn === 'review' ? '📋' : '🔄';
+          const statusText = TaskflowEngine.columnLabel(toColumn);
+          parentNotification = {
+            parent_group_jid: parentBoard.group_jid,
+            message: `${emoji} *${task.id}* — ${task.title}\n*Movida para:* ${statusText}\n*Por:* ${senderDisplayName}`,
+          };
+
+          // Also update rollup status on the parent task
+          if (toColumn === 'done') {
+            this.db
+              .prepare(
+                `UPDATE tasks SET child_exec_rollup_status = 'ready_for_review',
+                 child_exec_last_rollup_at = ?, child_exec_last_rollup_summary = ?
+                 WHERE board_id = ? AND id = ?`,
+              )
+              .run(now, `Concluída por ${senderDisplayName}`, task.board_id, task.id);
+          }
+        }
       }
 
       /* --- Build result --- */
@@ -1226,6 +1399,7 @@ export class TaskflowEngine {
       if (notifications.length > 0) result.notifications = notifications;
       if (projectUpdate) result.project_update = projectUpdate;
       if (recurringCycle) result.recurring_cycle = recurringCycle;
+      if (parentNotification) result.parent_notification = parentNotification;
 
       return result;
       })(); // end transaction
@@ -1315,7 +1489,7 @@ export class TaskflowEngine {
       const tasksAffected: ReassignResult['tasks_affected'] = [];
       for (const task of tasksToReassign) {
         const wasLinked = task.child_exec_enabled === 1;
-        const relinkedTo = wasLinked && targetChildReg ? targetChildReg.child_board_id : undefined;
+        const relinkedTo = targetChildReg ? targetChildReg.child_board_id : undefined;
 
         tasksAffected.push({
           task_id: task.id,
@@ -1386,15 +1560,19 @@ export class TaskflowEngine {
         let newChildExecBoardId = task.child_exec_board_id;
         let newChildExecPersonId = task.child_exec_person_id;
 
-        if (wasLinked) {
-          if (targetChildReg) {
-            newChildExecBoardId = targetChildReg.child_board_id;
-            newChildExecPersonId = targetPerson.person_id;
-          } else {
-            newChildExecEnabled = 0;
-            newChildExecBoardId = null;
-            newChildExecPersonId = null;
-          }
+        if (task.type === 'recurring') {
+          // Recurring tasks (RXXX) are never linked to child boards.
+          newChildExecEnabled = 0;
+          newChildExecBoardId = null;
+          newChildExecPersonId = null;
+        } else if (targetChildReg) {
+          newChildExecEnabled = 1;
+          newChildExecBoardId = targetChildReg.child_board_id;
+          newChildExecPersonId = targetPerson.person_id;
+        } else if (wasLinked) {
+          newChildExecEnabled = 0;
+          newChildExecBoardId = null;
+          newChildExecPersonId = null;
         }
 
         /* --- Update task --- */
@@ -1539,14 +1717,29 @@ export class TaskflowEngine {
       if (updates.due_date !== undefined) {
         if (updates.due_date === null) {
           this.db
-            .prepare(`UPDATE tasks SET due_date = NULL WHERE board_id = ? AND id = ?`)
+            .prepare(`UPDATE tasks SET due_date = NULL, reminders = '[]' WHERE board_id = ? AND id = ?`)
             .run(taskBoardId, task.id);
           changes.push('Due date removed');
+          const oldReminders: any[] = JSON.parse(task.reminders ?? '[]');
+          if (oldReminders.length > 0) changes.push('Reminders cleared (no due date)');
         } else {
-          this.db
-            .prepare(`UPDATE tasks SET due_date = ? WHERE board_id = ? AND id = ?`)
-            .run(updates.due_date, taskBoardId, task.id);
-          changes.push(`Due date set to ${updates.due_date}`);
+          /* Recalculate reminder dates for the new due_date */
+          const reminders: Array<{ days: number; date: string }> = JSON.parse(task.reminders ?? '[]');
+          if (reminders.length > 0) {
+            for (const r of reminders) {
+              r.date = reminderDateFromDue(updates.due_date, r.days);
+            }
+            this.db
+              .prepare(`UPDATE tasks SET due_date = ?, reminders = ? WHERE board_id = ? AND id = ?`)
+              .run(updates.due_date, JSON.stringify(reminders), taskBoardId, task.id);
+            changes.push(`Due date set to ${updates.due_date}`);
+            changes.push('Reminders recalculated for new due date');
+          } else {
+            this.db
+              .prepare(`UPDATE tasks SET due_date = ? WHERE board_id = ? AND id = ?`)
+              .run(updates.due_date, taskBoardId, task.id);
+            changes.push(`Due date set to ${updates.due_date}`);
+          }
         }
       }
 
@@ -1863,9 +2056,7 @@ export class TaskflowEngine {
           if (params.reminder_days == null || params.reminder_days < 0) {
             return { success: false, error: 'Missing or invalid parameter: reminder_days (must be >= 0).' };
           }
-          const dueDate = new Date(task.due_date + 'T00:00:00Z');
-          dueDate.setUTCDate(dueDate.getUTCDate() - params.reminder_days);
-          const reminderDate = dueDate.toISOString().slice(0, 10);
+          const reminderDate = reminderDateFromDue(task.due_date, params.reminder_days);
 
           const reminders: Array<{ days: number; date: string }> = JSON.parse(task.reminders ?? '[]');
           reminders.push({ days: params.reminder_days, date: reminderDate });
@@ -2642,10 +2833,26 @@ export class TaskflowEngine {
               params.wip_limit ?? null,
             );
 
+          let autoProvisionRequest: AdminResult['auto_provision_request'];
+          if (params.phone && this.canDelegateDown()) {
+            autoProvisionRequest = {
+              person_id: personId,
+              person_name: params.person_name,
+              person_phone: params.phone,
+              person_role: params.role ?? 'member',
+              group_name: params.group_name,
+              group_folder: params.group_folder,
+              message: `Quadro filho para ${params.person_name} será provisionado automaticamente.`,
+            };
+          }
+
           return {
             success: true,
             person_id: personId,
             data: { name: params.person_name, person_id: personId },
+            ...(autoProvisionRequest
+              ? { auto_provision_request: autoProvisionRequest }
+              : {}),
           };
         }
 
@@ -2844,46 +3051,13 @@ export class TaskflowEngine {
           const task = this.requireTask(params.task_id);
           const now = new Date().toISOString();
 
-          /* Gather history for the task */
-          const history = this.getHistory(task.id);
-
-          /* Save snapshot to archive */
-          this.db
-            .prepare(
-              `INSERT INTO archive (board_id, task_id, type, title, assignee, archive_reason,
-               linked_parent_board_id, linked_parent_task_id, archived_at, task_snapshot, history)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            )
-            .run(
-              this.boardId,
-              task.id,
-              task.type,
-              task.title,
-              task.assignee,
-              'cancelled',
-              task.linked_parent_board_id ?? null,
-              task.linked_parent_task_id ?? null,
-              now,
-              JSON.stringify(task),
-              JSON.stringify(history),
-            );
-
-          /* If task was linked, clear the link */
-          if (task.child_exec_enabled === 1) {
-            /* No cross-board cleanup needed here — just archive locally */
+          /* Authority-while-linked: child board cannot cancel parent board's tasks */
+          if (task.child_exec_enabled === 1 && task.board_id !== this.boardId) {
+            return { success: false, error: `Tarefa ${task.id} pertence ao quadro superior. Apenas o gestor do quadro superior pode cancelar.` };
           }
 
-          /* Delete from tasks (and any subtask rows if project) */
-          if (task.type === 'project') {
-            this.db
-              .prepare(`DELETE FROM tasks WHERE board_id = ? AND parent_task_id = ?`)
-              .run(this.boardId, task.id);
-          }
-          this.db
-            .prepare(
-              `DELETE FROM tasks WHERE board_id = ? AND id = ?`,
-            )
-            .run(this.boardId, task.id);
+          /* Archive and delete task (resolves dependencies, handles subtasks) */
+          this.archiveTask(task, 'cancelled');
 
           /* Record history (on the archive entry for reference) */
           this.recordHistory(task.id, 'cancelled', params.sender_name);
@@ -3267,6 +3441,26 @@ export class TaskflowEngine {
         };
       }
 
+      /* --- Stale tasks: no update 3+ days (weekly only) --- */
+      let staleTasks: Array<{ id: string; title: string; assignee: string | null; column: string; updated_at: string }> = [];
+      if (isWeekly) {
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - 3);
+        const cutoffIso = cutoff.toISOString();
+        staleTasks = this.db
+          .prepare(
+            `SELECT id, title, assignee, column, updated_at FROM tasks
+             WHERE board_id = ? AND column IN ('next_action', 'in_progress', 'review') AND updated_at < ?
+             ORDER BY updated_at ASC`,
+          )
+          .all(this.boardId, cutoffIso) as typeof staleTasks;
+      }
+
+      /* --- Auto-archive old done tasks (standup housekeeping) --- */
+      if (params.type === 'standup') {
+        try { this.archiveOldDoneTasks(); } catch { /* cleanup failure must not break standup */ }
+      }
+
       /* --- Assemble result --- */
       return {
         success: true,
@@ -3323,10 +3517,365 @@ export class TaskflowEngine {
           changes_today_count: isDigestOrWeekly ? changesTodayCount : 0,
           per_person: perPerson,
           ...(isWeekly && stats ? { stats } : {}),
+          ...(isWeekly && staleTasks.length > 0
+            ? {
+                stale_tasks: staleTasks.map((t) => ({
+                  id: t.id,
+                  title: t.title,
+                  assignee_name: resolveName(t.assignee),
+                  column: t.column,
+                  updated_at: t.updated_at,
+                })),
+              }
+            : {}),
         },
       };
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  hierarchy — taskflow_hierarchy                                    */
+  /* ---------------------------------------------------------------- */
+
+  hierarchy(params: HierarchyParams): HierarchyResult {
+    try {
+      return this.db.transaction(() => {
+      const now = new Date().toISOString();
+
+      /* --- Fetch task --- */
+      const task = this.requireTask(params.task_id);
+      const taskBoardId = this.taskBoardId(task);
+      const sender = this.resolvePerson(params.sender_name);
+      const senderPersonId = sender?.person_id ?? null;
+      const isMgr = this.isManager(params.sender_name);
+      const isAssignee = senderPersonId != null && task.assignee === senderPersonId;
+
+      /* Manager guard for link/unlink/refresh_rollup (tag_parent has its own permission model) */
+      if (['link', 'unlink', 'refresh_rollup'].includes(params.action) && !isMgr) {
+        return { success: false, error: `Only managers can manage hierarchy links. "${params.sender_name}" is not a manager.` };
+      }
+
+      switch (params.action) {
+        /* ---- link ---- */
+        case 'link': {
+          if (!this.canDelegateDown()) {
+            return { success: false, error: 'Cannot link tasks on a leaf board (max hierarchy depth reached).' };
+          }
+          if (!params.person_name) {
+            return { success: false, error: 'Missing required parameter: person_name (target person with child board).' };
+          }
+          if (task.type === 'recurring') {
+            return { success: false, error: 'Recurring tasks (RXXX) cannot be linked to child boards.' };
+          }
+          if (task.child_exec_enabled === 1) {
+            return { success: false, error: `Task ${task.id} is already linked to a child board. Unlink first.` };
+          }
+
+          /* Resolve target person */
+          const targetPerson = this.resolvePerson(params.person_name);
+          if (!targetPerson) {
+            return this.buildOfferRegisterError(params.person_name);
+          }
+
+          /* Check child board registration */
+          const reg = this.getChildBoardRegistration(targetPerson.person_id);
+          if (!reg) {
+            return { success: false, error: `${targetPerson.name} does not have a child board registered.` };
+          }
+          if (!task.assignee || task.assignee !== targetPerson.person_id) {
+            return {
+              success: false,
+              error: `Task ${task.id} assignee must match the child-board person. Reassign to ${targetPerson.name} first.`,
+            };
+          }
+
+          /* Link */
+          this.db
+            .prepare(
+              `UPDATE tasks SET child_exec_enabled = 1, child_exec_board_id = ?, child_exec_person_id = ?,
+               child_exec_rollup_status = 'no_work_yet', updated_at = ?
+               WHERE board_id = ? AND id = ?`,
+            )
+            .run(reg.child_board_id, targetPerson.person_id, now, taskBoardId, task.id);
+
+          this.recordHistory(task.id, 'child_board_linked', params.sender_name,
+            JSON.stringify({ child_board_id: reg.child_board_id, person: targetPerson.name }), taskBoardId);
+
+          return {
+            success: true,
+            task_id: task.id,
+            data: { linked_to: targetPerson.name, child_board_id: reg.child_board_id },
+          };
+        }
+
+        /* ---- unlink ---- */
+        case 'unlink': {
+          if (task.child_exec_enabled !== 1) {
+            return { success: false, error: `Task ${task.id} is not linked to a child board.` };
+          }
+
+          this.db
+            .prepare(
+              `UPDATE tasks SET child_exec_enabled = 0, child_exec_rollup_status = NULL,
+               child_exec_last_rollup_at = NULL, child_exec_last_rollup_summary = NULL, updated_at = ?
+               WHERE board_id = ? AND id = ?`,
+            )
+            .run(now, taskBoardId, task.id);
+
+          this.recordHistory(task.id, 'child_board_unlinked', params.sender_name,
+            JSON.stringify({
+              was_board_id: task.child_exec_board_id,
+              last_rollup_status: task.child_exec_rollup_status ?? null,
+            }), taskBoardId);
+
+          return {
+            success: true,
+            task_id: task.id,
+            data: { unlinked: true },
+          };
+        }
+
+        /* ---- refresh_rollup ---- */
+        case 'refresh_rollup': {
+          if (task.child_exec_enabled !== 1) {
+            return { success: false, error: `Task ${task.id} is not linked to a child board.` };
+          }
+
+          const childBoardId = task.child_exec_board_id;
+          const lastRollupAt = task.child_exec_last_rollup_at ?? '1970-01-01T00:00:00.000Z';
+
+          /* Step 1 — Count active child work */
+          const counts = this.db
+            .prepare(
+              `SELECT
+                 COUNT(*) AS total_count,
+                 SUM(CASE WHEN "column" != 'done' THEN 1 ELSE 0 END) AS open_count,
+                 SUM(CASE WHEN "column" = 'waiting' THEN 1 ELSE 0 END) AS waiting_count,
+                 SUM(CASE
+                   WHEN due_date IS NOT NULL AND due_date < ? AND "column" != 'done'
+                   THEN 1 ELSE 0 END) AS overdue_count,
+                 MAX(updated_at) AS latest_child_update_at
+               FROM tasks
+               WHERE board_id = ?
+                 AND linked_parent_board_id = ?
+                 AND linked_parent_task_id = ?`,
+            )
+            .get(now.slice(0, 10), childBoardId, taskBoardId, task.id) as any;
+
+          /* Step 2 — Count cancelled work since last rollup */
+          const cancelRow = this.db
+            .prepare(
+              `SELECT COUNT(*) AS cancelled_count
+               FROM archive
+               WHERE board_id = ?
+                 AND linked_parent_board_id = ?
+                 AND linked_parent_task_id = ?
+                 AND archive_reason = 'cancelled'
+                 AND archived_at > ?`,
+            )
+            .get(childBoardId, taskBoardId, task.id, lastRollupAt) as any;
+
+          const totalCount = counts.total_count ?? 0;
+          const openCount = counts.open_count ?? 0;
+          const waitingCount = counts.waiting_count ?? 0;
+          const overdueCount = counts.overdue_count ?? 0;
+          const cancelledCount = cancelRow.cancelled_count ?? 0;
+
+          /* Step 3 — Apply mapping rules (priority order) */
+          let rollupStatus: string;
+          let newColumn: string | null = null;
+          let waitingForValue: string | null = null;
+
+          if (cancelledCount > 0 && openCount === 0) {
+            rollupStatus = 'cancelled_needs_decision';
+            // Keep current column
+          } else if (totalCount > 0 && openCount === 0 && cancelledCount === 0) {
+            rollupStatus = 'ready_for_review';
+            newColumn = 'review';
+          } else if (waitingCount > 0) {
+            rollupStatus = 'blocked';
+            newColumn = 'waiting';
+            waitingForValue = `Quadro filho: ${waitingCount} tarefa(s) aguardando`;
+          } else if (overdueCount > 0) {
+            rollupStatus = 'at_risk';
+            newColumn = 'in_progress';
+          } else if (openCount > 0) {
+            rollupStatus = 'active';
+            newColumn = 'in_progress';
+          } else if (totalCount === 0 && cancelledCount === 0) {
+            rollupStatus = 'no_work_yet';
+            // Keep current column (next_action)
+          } else {
+            rollupStatus = 'active';
+            newColumn = 'in_progress';
+          }
+
+          /* Build summary */
+          const parts: string[] = [];
+          if (openCount > 0) parts.push(`${openCount} ativo(s)`);
+          if (waitingCount > 0) parts.push(`${waitingCount} aguardando`);
+          if (overdueCount > 0) parts.push(`${overdueCount} atrasado(s)`);
+          if (cancelledCount > 0) parts.push(`${cancelledCount} cancelado(s)`);
+          const doneCount = totalCount - openCount;
+          if (doneCount > 0) parts.push(`${doneCount} concluído(s)`);
+          const summary = parts.length > 0 ? parts.join(', ') : 'Sem atividade';
+
+          /* Step 4 — Update parent task */
+          if (newColumn) {
+            this.db
+              .prepare(
+                `UPDATE tasks SET
+                   child_exec_rollup_status = ?,
+                   child_exec_last_rollup_at = ?,
+                   child_exec_last_rollup_summary = ?,
+                   "column" = ?,
+                   waiting_for = CASE WHEN ? = 'waiting' THEN ? ELSE NULL END,
+                   updated_at = ?
+                 WHERE board_id = ? AND id = ?`,
+              )
+              .run(rollupStatus, now, summary, newColumn, newColumn, waitingForValue, now, taskBoardId, task.id);
+          } else {
+            this.db
+              .prepare(
+                `UPDATE tasks SET
+                   child_exec_rollup_status = ?,
+                   child_exec_last_rollup_at = ?,
+                   child_exec_last_rollup_summary = ?,
+                   updated_at = ?
+                 WHERE board_id = ? AND id = ?`,
+              )
+              .run(rollupStatus, now, summary, now, taskBoardId, task.id);
+          }
+
+          this.recordHistory(task.id, 'child_rollup_updated', params.sender_name,
+            JSON.stringify({ rollup_status: rollupStatus, summary, new_column: newColumn }), taskBoardId);
+          if (task.child_exec_rollup_status !== rollupStatus) {
+            const statusActionMap: Record<string, string> = {
+              blocked: 'child_rollup_blocked',
+              at_risk: 'child_rollup_at_risk',
+              ready_for_review: 'child_rollup_completed',
+              cancelled_needs_decision: 'child_rollup_cancelled',
+            };
+            const statusAction = statusActionMap[rollupStatus];
+            if (statusAction) {
+              this.recordHistory(
+                task.id,
+                statusAction,
+                params.sender_name,
+                JSON.stringify({
+                  from: task.child_exec_rollup_status ?? null,
+                  to: rollupStatus,
+                }),
+                taskBoardId,
+              );
+            }
+          }
+
+          return {
+            success: true,
+            task_id: task.id,
+            rollup_status: rollupStatus,
+            rollup_summary: summary,
+            new_column: newColumn ?? task.column,
+            data: {
+              total: totalCount,
+              open: openCount,
+              waiting: waitingCount,
+              overdue: overdueCount,
+              cancelled: cancelledCount,
+              done: doneCount,
+            },
+          };
+        }
+
+        /* ---- tag_parent ---- */
+        case 'tag_parent': {
+          if (!isMgr && !isAssignee) {
+            return {
+              success: false,
+              error: `Permission denied: "${params.sender_name}" is neither the assignee nor a manager.`,
+            };
+          }
+          if (taskBoardId !== this.boardId) {
+            return {
+              success: false,
+              error: `Task ${task.id} is not local to this board. Parent-tagging only applies to local tasks.`,
+            };
+          }
+          const boardInfo = this.db
+            .prepare(`SELECT parent_board_id FROM boards WHERE id = ?`)
+            .get(this.boardId) as { parent_board_id: string | null } | undefined;
+          if (!boardInfo?.parent_board_id) {
+            return {
+              success: false,
+              error: 'This is the root board. No parent board is available for tagging.',
+            };
+          }
+          if (!params.parent_task_id) {
+            return { success: false, error: 'Missing required parameter: parent_task_id' };
+          }
+
+          this.db
+            .prepare(
+              `UPDATE tasks SET linked_parent_board_id = ?, linked_parent_task_id = ?, updated_at = ?
+               WHERE board_id = ? AND id = ?`,
+            )
+            .run(boardInfo.parent_board_id, params.parent_task_id, now, taskBoardId, task.id);
+
+          this.recordHistory(
+            task.id,
+            'parent_linked',
+            params.sender_name,
+            JSON.stringify({
+              linked_parent_board_id: boardInfo.parent_board_id,
+              linked_parent_task_id: params.parent_task_id,
+            }),
+            taskBoardId,
+          );
+
+          return {
+            success: true,
+            task_id: task.id,
+            data: {
+              linked_parent_board_id: boardInfo.parent_board_id,
+              linked_parent_task_id: params.parent_task_id,
+            },
+          };
+        }
+
+        default:
+          return { success: false, error: `Unknown hierarchy action: ${(params as any).action}` };
+      }
+      })(); // end transaction
+    } catch (err: any) {
+      return { success: false, error: err.message ?? String(err) };
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  archiveOldDoneTasks — auto-archive done tasks older than 30 days */
+  /* ---------------------------------------------------------------- */
+
+  private archiveOldDoneTasks(): void {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 30);
+    const cutoffIso = cutoff.toISOString();
+
+    const oldDone = this.db
+      .prepare(
+        `SELECT * FROM tasks
+         WHERE board_id = ? AND column = 'done' AND updated_at < ?`,
+      )
+      .all(this.boardId, cutoffIso) as any[];
+
+    if (oldDone.length === 0) return;
+
+    this.db.transaction(() => {
+      for (const task of oldDone) {
+        this.archiveTask(task, 'done');
+      }
+    })();
   }
 }

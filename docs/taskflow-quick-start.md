@@ -86,7 +86,9 @@ Gestor aprova            →  @Case T001 aprovada
 | `@Case resumo` | Resumo executivo |
 | `@Case resumo semanal` | Revisao semanal sob demanda |
 | `@Case estatisticas` | Metricas do quadro |
-| `@Case ajuda` | Lista completa de comandos |
+| `@Case ajuda` | Resumo curto de comandos |
+| `@Case manual` | Referência completa detalhada |
+| `@Case guia rapido` | Guia para iniciantes |
 
 ### Criar Tarefas (gestor)
 
@@ -192,4 +194,4 @@ Tarefas vinculadas aparecem com 🔗 no quadro. O rollup mostra o status agregad
 
 Atribuir e vincular sao a mesma operacao — ao reatribuir uma tarefa vinculada, o vinculo e transferido automaticamente para o quadro da nova pessoa.
 
-Para o manual completo, envie `@Case manual` no grupo.
+Para mais informações, envie `@Case manual` (referência completa) ou `@Case guia rapido` (guia para iniciantes) no grupo.

@@ -554,7 +554,7 @@ force_start: ignores WIP (manager only)
 2. Target person exists? If not → offer_register
 3. If not confirmed → return requires_confirmation with summary
 4. UPDATE assignee
-5. If child_exec_enabled=1: unlink old board, relink to new board (if exists), else set child_exec_enabled=0
+5. Auto-link: if target has child board → set child_exec_enabled=1 and link (regardless of prior state). If target has no child board and was linked → set child_exec_enabled=0
 6. Record history
 7. Snapshot for undo
 
@@ -562,7 +562,8 @@ force_start: ignores WIP (manager only)
 - Reassign happy path (confirmed)
 - Reassign dry run (confirmed=false → returns summary)
 - Reassign to unknown person → offer_register
-- Reassign linked task → auto-relinks to new child board
+- Reassign unlinked task to person with child board → auto-links
+- Reassign linked task to person with different child board → auto-relinks
 - Reassign linked task to person without child board → unlinks
 - Bulk transfer: all tasks from person A to person B
 - Bulk transfer: no active tasks → error
