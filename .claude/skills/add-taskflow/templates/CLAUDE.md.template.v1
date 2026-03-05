@@ -1120,6 +1120,16 @@ WHERE board_id = :child_board_id
 
 Priority order: `cancelled_needs_decision` > `ready_for_review` > `blocked` > `at_risk` > `active` > `no_work_yet`.
 
+**Rollup status display names (pt-BR):** Never show raw rollup status values to users. Always translate:
+| rollup_status | Display |
+|---|---|
+| `no_work_yet` | sem atividade |
+| `active` | ativo |
+| `blocked` | bloqueado |
+| `at_risk` | em risco |
+| `ready_for_review` | pronto para revisão |
+| `cancelled_needs_decision` | cancelamentos pendentes |
+
 Summary format: `"4 itens ativos, 1 bloqueado por fornecedor, previsao quinta-feira"`
 
 **Step 4 — Update parent task:**

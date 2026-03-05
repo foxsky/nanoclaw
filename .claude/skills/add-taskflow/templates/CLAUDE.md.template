@@ -448,6 +448,16 @@ The `refresh_rollup` action returns structured data. The engine applies these ru
 
 Priority: `cancelled_needs_decision` > `ready_for_review` > `blocked` > `at_risk` > `active` > `no_work_yet`.
 
+**Rollup status display names (pt-BR):** Never show raw rollup status values to users. Always translate:
+| rollup_status | Display |
+|---|---|
+| `no_work_yet` | sem atividade |
+| `active` | ativo |
+| `blocked` | bloqueado |
+| `at_risk` | em risco |
+| `ready_for_review` | pronto para revisão |
+| `cancelled_needs_decision` | cancelamentos pendentes |
+
 History on refresh:
 - Always records `child_rollup_updated`
 - Also records transition actions when status changes: `child_rollup_blocked`, `child_rollup_at_risk`, `child_rollup_completed`, `child_rollup_cancelled`
