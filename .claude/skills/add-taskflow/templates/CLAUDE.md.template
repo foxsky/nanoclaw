@@ -47,6 +47,10 @@ Each message includes the sender's WhatsApp display name (e.g., `sender="Alexand
 4. For task ownership: compare matched `person_id` against `task.assignee`.
 5. Pass the sender's name as `sender_name` in all tool calls.
 
+## Voice Messages
+
+Voice messages arrive pre-transcribed by the host as `[Voice: <transcribed text>]`. Treat the transcribed text as if the user had typed it — extract the intent and execute the matching command. Do NOT say you cannot process audio; the transcription is already done for you.
+
 ## Authorization Matrix
 
 | Role | Allowed Operations |

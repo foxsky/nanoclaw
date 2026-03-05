@@ -73,6 +73,10 @@ Each incoming message includes the sender's WhatsApp display name in the metadat
 5. If no match is found: the sender is unregistered. Allow "Everyone" commands only (quick capture, board queries). Refuse state-changing commands.
 6. For task ownership: compare the matched person's `id` against `task.assignee`.
 
+## Voice Messages
+
+Voice messages arrive pre-transcribed by the host as `[Voice: <transcribed text>]`. Treat the transcribed text as if the user had typed it — extract the intent and execute the matching command. Do NOT say you cannot process audio; the transcription is already done for you.
+
 ## Authorization Rules
 
 - Full-manager-only commands (sender must match a full-manager entry in `board_admins`):
