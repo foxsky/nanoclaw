@@ -6,13 +6,11 @@ import { readEnvFile } from './env.js';
 interface TranscriptionConfig {
   model: string;
   enabled: boolean;
-  fallbackMessage: string;
 }
 
 const DEFAULT_CONFIG: TranscriptionConfig = {
   model: 'whisper-1',
   enabled: true,
-  fallbackMessage: '[Voice Message - transcription unavailable]',
 };
 
 async function transcribeWithOpenAI(
@@ -59,7 +57,7 @@ export async function transcribeAudioMessage(
   const config = DEFAULT_CONFIG;
 
   if (!config.enabled) {
-    return config.fallbackMessage;
+    return null;
   }
 
   try {
@@ -75,7 +73,7 @@ export async function transcribeAudioMessage(
 
     if (!buffer || buffer.length === 0) {
       console.error('Failed to download audio message');
-      return config.fallbackMessage;
+      return null;
     }
 
     console.log(`Downloaded audio message: ${buffer.length} bytes`);
@@ -83,13 +81,13 @@ export async function transcribeAudioMessage(
     const transcript = await transcribeWithOpenAI(buffer, config);
 
     if (!transcript) {
-      return config.fallbackMessage;
+      return null;
     }
 
     return transcript.trim();
   } catch (err) {
     console.error('Transcription error:', err);
-    return config.fallbackMessage;
+    return null;
   }
 }
 

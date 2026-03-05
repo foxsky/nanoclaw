@@ -204,6 +204,10 @@ export class WhatsAppChannel implements Channel {
             msg.message?.documentMessage?.caption ||
             '';
 
+          // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
+          // but allow voice messages and media messages through
+          if (!content && !isVoiceMessage(msg) && !isMediaMessage(msg)) continue;
+
           const sender = msg.key.participant || msg.key.remoteJid || '';
           const senderName = msg.pushName || sender.split('@')[0];
 
