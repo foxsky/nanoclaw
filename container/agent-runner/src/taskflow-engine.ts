@@ -3181,8 +3181,9 @@ export class TaskflowEngine {
                 child_exec_rollup_status, child_exec_last_rollup_at,
                 child_exec_last_rollup_summary,
                 linked_parent_board_id, linked_parent_task_id,
-                subtasks, recurrence, current_cycle
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                subtasks, recurrence, current_cycle,
+                max_cycles, recurrence_end_date
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             )
             .run(
               snapshot.id ?? archived.task_id,
@@ -3215,6 +3216,8 @@ export class TaskflowEngine {
               snapshot.subtasks ?? null,
               snapshot.recurrence ?? null,
               snapshot.current_cycle ?? null,
+              snapshot.max_cycles ?? null,
+              snapshot.recurrence_end_date ?? null,
             );
 
           /* Delete from archive */
