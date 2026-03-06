@@ -91,6 +91,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   subtasks TEXT,
   recurrence TEXT,
   current_cycle TEXT,
+  max_cycles INTEGER,
+  recurrence_end_date TEXT,
   PRIMARY KEY (board_id, id)
 );
 
@@ -193,6 +195,8 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   } catch {
     // Existing DBs may already have the column.
   }
+  try { db.exec('ALTER TABLE tasks ADD COLUMN max_cycles INTEGER'); } catch {}
+  try { db.exec('ALTER TABLE tasks ADD COLUMN recurrence_end_date TEXT'); } catch {}
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(board_id, parent_task_id) WHERE parent_task_id IS NOT NULL`);
 
   return db;
