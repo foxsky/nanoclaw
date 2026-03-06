@@ -366,6 +366,135 @@ export class TaskflowEngine {
     return task?.owning_board_id ?? task?.board_id ?? this.boardId;
   }
 
+  private ensureTaskSchema(): void {
+    try { this.db.exec(`ALTER TABLE tasks ADD COLUMN parent_task_id TEXT`); } catch {}
+    try { this.db.exec(`ALTER TABLE tasks ADD COLUMN max_cycles INTEGER`); } catch {}
+    try { this.db.exec(`ALTER TABLE tasks ADD COLUMN recurrence_end_date TEXT`); } catch {}
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(board_id, parent_task_id)
+       WHERE parent_task_id IS NOT NULL`,
+    );
+
+    try { this.db.exec(`ALTER TABLE board_config ADD COLUMN next_project_number INTEGER DEFAULT 1`); } catch {}
+    try { this.db.exec(`ALTER TABLE board_config ADD COLUMN next_recurring_number INTEGER DEFAULT 1`); } catch {}
+    this.db.exec(`
+      UPDATE board_config SET
+        next_project_number = COALESCE((
+          SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) + 1
+          FROM tasks
+          WHERE tasks.board_id = board_config.board_id
+            AND id GLOB 'P[0-9]*'
+            AND id NOT GLOB 'P*.*'
+        ), next_project_number),
+        next_recurring_number = COALESCE((
+          SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) + 1
+          FROM tasks
+          WHERE tasks.board_id = board_config.board_id
+            AND id GLOB 'R[0-9]*'
+        ), next_recurring_number)
+      WHERE next_project_number = 1 OR next_recurring_number = 1
+    `);
+  }
+
+  private migrateLegacyProjectSubtasks(): void {
+    const projectRows = this.db
+      .prepare(
+        `SELECT id, board_id, assignee, priority, created_at, updated_at, subtasks
+         FROM tasks
+         WHERE type = 'project' AND subtasks IS NOT NULL AND subtasks != '' AND subtasks != '[]'`,
+      )
+      .all() as Array<{
+      id: string;
+      board_id: string;
+      assignee: string | null;
+      priority: string | null;
+      created_at: string;
+      updated_at: string;
+      subtasks: string;
+    }>;
+
+    const subtaskExists = this.db.prepare(`SELECT 1 FROM tasks WHERE board_id = ? AND id = ?`);
+    const insertSubtask = this.db.prepare(
+      `INSERT INTO tasks (
+        id, board_id, type, title, assignee, column,
+        parent_task_id, priority, labels,
+        child_exec_enabled, child_exec_board_id, child_exec_person_id,
+        _last_mutation, created_at, updated_at
+      ) VALUES (?, ?, 'simple', ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?)`,
+    );
+    const clearLegacySubtasks = this.db.prepare(
+      `UPDATE tasks SET subtasks = NULL WHERE board_id = ? AND id = ?`,
+    );
+
+    for (const row of projectRows) {
+      let subtasks: any[];
+      try {
+        subtasks = JSON.parse(row.subtasks ?? '[]');
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(subtasks) || subtasks.length === 0) continue;
+
+      let allMigrated = true;
+      for (let i = 0; i < subtasks.length; i++) {
+        const subtask = subtasks[i] ?? {};
+        const subtaskId =
+          typeof subtask.id === 'string' && subtask.id.trim() !== ''
+            ? subtask.id
+            : `${row.id}.${i + 1}`;
+        const title =
+          typeof subtask.title === 'string' && subtask.title.trim() !== ''
+            ? subtask.title
+            : `Subtask ${i + 1}`;
+        const assignee =
+          typeof subtask.assignee === 'string' && subtask.assignee.trim() !== ''
+            ? subtask.assignee
+            : row.assignee;
+        const column =
+          typeof subtask.column === 'string' && subtask.column.trim() !== ''
+            ? subtask.column
+            : subtask.status === 'done'
+              ? 'done'
+              : 'next_action';
+
+        if (subtaskExists.get(row.board_id, subtaskId)) continue;
+
+        const childLink = this.linkedChildBoardFor(row.board_id, assignee ?? null);
+        insertSubtask.run(
+          subtaskId,
+          row.board_id,
+          title,
+          assignee ?? null,
+          column,
+          row.id,
+          row.priority ?? null,
+          childLink.child_exec_enabled,
+          childLink.child_exec_board_id,
+          childLink.child_exec_person_id,
+          null,
+          row.created_at,
+          row.updated_at,
+        );
+      }
+
+      for (let i = 0; i < subtasks.length; i++) {
+        const subtask = subtasks[i] ?? {};
+        const subtaskId =
+          typeof subtask.id === 'string' && subtask.id.trim() !== ''
+            ? subtask.id
+            : `${row.id}.${i + 1}`;
+        if (!subtaskExists.get(row.board_id, subtaskId)) {
+          allMigrated = false;
+          break;
+        }
+      }
+
+      if (allMigrated) {
+        clearLegacySubtasks.run(row.board_id, row.id);
+      }
+    }
+  }
+
   /* ---------------------------------------------------------------- */
   /*  Public helpers (used by mutation tools later)                     */
   /* ---------------------------------------------------------------- */
@@ -524,16 +653,21 @@ export class TaskflowEngine {
     return !!row;
   }
 
-  /** Read next_task_number from board_config, increment it, return the old value. */
-  private getNextTaskNumber(): number {
+  private static readonly prefixCounterColumn: Record<string, string> = {
+    T: 'next_task_number',
+    P: 'next_project_number',
+    R: 'next_recurring_number',
+  };
+
+  /** Read the per-prefix counter from board_config, increment it, return the old value. */
+  private getNextNumberForPrefix(prefix: string): number {
+    const col = TaskflowEngine.prefixCounterColumn[prefix] ?? 'next_task_number';
     const row = this.db
-      .prepare(`SELECT next_task_number FROM board_config WHERE board_id = ?`)
-      .get(this.boardId) as { next_task_number: number } | undefined;
-    const num = row?.next_task_number ?? 1;
+      .prepare(`SELECT ${col} FROM board_config WHERE board_id = ?`)
+      .get(this.boardId) as Record<string, number> | undefined;
+    const num = row?.[col] ?? 1;
     this.db
-      .prepare(
-        `UPDATE board_config SET next_task_number = ? WHERE board_id = ?`,
-      )
+      .prepare(`UPDATE board_config SET ${col} = ? WHERE board_id = ?`)
       .run(num + 1, this.boardId);
     return num;
   }
@@ -775,6 +909,21 @@ export class TaskflowEngine {
     return row ?? null;
   }
 
+  private linkedChildBoardFor(boardId: string, personId: string | null): {
+    child_exec_enabled: number;
+    child_exec_board_id: string | null;
+    child_exec_person_id: string | null;
+  } {
+    if (!personId) {
+      return { child_exec_enabled: 0, child_exec_board_id: null, child_exec_person_id: null };
+    }
+    const reg = this.getChildBoardRegistration(personId, boardId);
+    if (!reg) {
+      return { child_exec_enabled: 0, child_exec_board_id: null, child_exec_person_id: null };
+    }
+    return { child_exec_enabled: 1, child_exec_board_id: reg.child_board_id, child_exec_person_id: personId };
+  }
+
   /* ---------------------------------------------------------------- */
   /*  create — taskflow_create                                         */
   /* ---------------------------------------------------------------- */
@@ -803,13 +952,13 @@ export class TaskflowEngine {
       }
 
       /* --- ID generation --- */
-      const num = this.getNextTaskNumber();
       const prefix =
         params.type === 'project'
           ? 'P'
           : params.type === 'recurring'
             ? 'R'
             : 'T';
+      const num = this.getNextNumberForPrefix(prefix);
       const taskId = `${prefix}${num}`;
 
       /* --- Column placement --- */
@@ -914,6 +1063,7 @@ export class TaskflowEngine {
         const subColumn = sub.assigneePersonId ? 'next_action' : (assigneePersonId ? 'next_action' : 'inbox');
         const subAssignee = sub.assigneePersonId ?? assigneePersonId;
         this.insertSubtaskRow({
+          boardId: this.boardId,
           subtaskId, title: sub.title, assignee: subAssignee, column: subColumn,
           parentTaskId: taskId, priority: params.priority ?? null, senderName: params.sender_name, now,
         });
@@ -1272,7 +1422,7 @@ export class TaskflowEngine {
       let projectUpdate: MoveResult['project_update'];
       if (toColumn === 'done' && task.parent_task_id) {
         // This is a subtask being concluded — check sibling subtasks
-        const siblings = this.getSubtaskRows(task.parent_task_id);
+        const siblings = this.getSubtaskRows(task.parent_task_id, taskBoardId);
         // Find next pending sibling (not in done)
         let nextSubtask: string | undefined;
         const taskIndex = siblings.findIndex((s: any) => s.id === task.id);
@@ -1298,27 +1448,30 @@ export class TaskflowEngine {
       /* --- Legacy JSON subtask completion (backward compat) --- */
       if (params.subtask_id && task.subtasks) {
         try {
-          const subtasks: Array<{ id: string; title: string; status: string }> = JSON.parse(task.subtasks);
+          const subtasks: Array<{ id: string; title: string; status?: string; column?: string }> = JSON.parse(task.subtasks);
           let found = false;
           let nextSubtask: string | undefined;
           let foundIndex = -1;
+          const legacyState = (subtask: { status?: string; column?: string }): 'done' | 'pending' =>
+            subtask.column === 'done' || subtask.status === 'done' ? 'done' : 'pending';
           for (let i = 0; i < subtasks.length; i++) {
             if (subtasks[i].id === params.subtask_id) {
               subtasks[i].status = 'done';
+              subtasks[i].column = 'done';
               found = true;
               foundIndex = i;
             }
           }
           if (found) {
             for (let i = foundIndex + 1; i < subtasks.length; i++) {
-              if (subtasks[i].status === 'pending') { nextSubtask = subtasks[i].id; break; }
+              if (legacyState(subtasks[i]) === 'pending') { nextSubtask = subtasks[i].id; break; }
             }
             if (!nextSubtask) {
               for (let i = 0; i < foundIndex; i++) {
-                if (subtasks[i].status === 'pending') { nextSubtask = subtasks[i].id; break; }
+                if (legacyState(subtasks[i]) === 'pending') { nextSubtask = subtasks[i].id; break; }
               }
             }
-            const allComplete = subtasks.every((s) => s.status === 'done');
+            const allComplete = subtasks.every((s) => legacyState(s) === 'done');
             this.db
               .prepare(`UPDATE tasks SET subtasks = ?, updated_at = ? WHERE board_id = ? AND id = ?`)
               .run(JSON.stringify(subtasks), now, taskBoardId, task.id);
@@ -1908,6 +2061,7 @@ export class TaskflowEngine {
         const subtaskId = `${task.id}.${nextNum}`;
         const subColumn = task.assignee ? 'next_action' : 'inbox';
         this.insertSubtaskRow({
+          boardId: taskBoardId,
           subtaskId, title: updates.add_subtask, assignee: task.assignee, column: subColumn,
           parentTaskId: task.id, priority: task.priority ?? null, senderName: params.sender_name, now,
         });
@@ -1944,9 +2098,18 @@ export class TaskflowEngine {
         if (!check.success) return check;
         const subPerson = this.resolvePerson(updates.assign_subtask.assignee);
         if (!subPerson) return this.buildOfferRegisterError(updates.assign_subtask.assignee);
+        const childLink = this.linkedChildBoardFor(taskBoardId, subPerson.person_id);
         this.db
-          .prepare(`UPDATE tasks SET assignee = ?, column = CASE WHEN column = 'inbox' THEN 'next_action' ELSE column END, updated_at = ? WHERE board_id = ? AND id = ?`)
-          .run(subPerson.person_id, now, this.boardId, updates.assign_subtask.id);
+          .prepare(`UPDATE tasks SET assignee = ?, child_exec_enabled = ?, child_exec_board_id = ?, child_exec_person_id = ?, column = CASE WHEN column = 'inbox' THEN 'next_action' ELSE column END, updated_at = ? WHERE board_id = ? AND id = ?`)
+          .run(
+            subPerson.person_id,
+            childLink.child_exec_enabled,
+            childLink.child_exec_board_id,
+            childLink.child_exec_person_id,
+            now,
+            taskBoardId,
+            updates.assign_subtask.id,
+          );
         this.recordHistory(updates.assign_subtask.id, 'reassigned', params.sender_name,
           JSON.stringify({ from_assignee: check.subTask.assignee, to_assignee: subPerson.person_id }));
         changes.push(`Subtask ${updates.assign_subtask.id} assigned to ${subPerson.name}`);
@@ -1967,8 +2130,8 @@ export class TaskflowEngine {
         const check = this.requireProjectSubtask(task, updates.unassign_subtask);
         if (!check.success) return check;
         this.db
-          .prepare(`UPDATE tasks SET assignee = NULL, updated_at = ? WHERE board_id = ? AND id = ?`)
-          .run(now, this.boardId, updates.unassign_subtask);
+          .prepare(`UPDATE tasks SET assignee = NULL, child_exec_enabled = 0, child_exec_board_id = NULL, child_exec_person_id = NULL, updated_at = ? WHERE board_id = ? AND id = ?`)
+          .run(now, taskBoardId, updates.unassign_subtask);
         this.recordHistory(updates.unassign_subtask, 'unassigned', params.sender_name,
           JSON.stringify({ from_assignee: check.subTask.assignee }));
         changes.push(`Subtask ${updates.unassign_subtask} unassigned`);
@@ -2426,7 +2589,7 @@ export class TaskflowEngine {
           const data: any = { task, recent_history: history };
           // Include subtask rows for project tasks
           if (task.type === 'project') {
-            data.subtask_rows = this.getSubtaskRows(task.id);
+            data.subtask_rows = this.getSubtaskRows(task.id, this.taskBoardId(task));
           }
           // Include parent project info for subtasks
           if (task.parent_task_id) {
@@ -3187,13 +3350,13 @@ export class TaskflowEngine {
                 id, board_id, type, title, assignee, next_action, waiting_for,
                 column, priority, due_date, description, labels, blocked_by,
                 reminders, next_note_id, notes, _last_mutation, created_at, updated_at,
-                child_exec_enabled, child_exec_board_id, child_exec_person_id,
-                child_exec_rollup_status, child_exec_last_rollup_at,
-                child_exec_last_rollup_summary,
-                linked_parent_board_id, linked_parent_task_id,
-                subtasks, recurrence, current_cycle,
-                max_cycles, recurrence_end_date
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              child_exec_enabled, child_exec_board_id, child_exec_person_id,
+              child_exec_rollup_status, child_exec_last_rollup_at,
+              child_exec_last_rollup_summary,
+              linked_parent_board_id, linked_parent_task_id, parent_task_id,
+              subtasks, recurrence, current_cycle,
+              max_cycles, recurrence_end_date
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             )
             .run(
               snapshot.id ?? archived.task_id,
@@ -3223,6 +3386,7 @@ export class TaskflowEngine {
               snapshot.child_exec_last_rollup_summary ?? null,
               snapshot.linked_parent_board_id ?? null,
               snapshot.linked_parent_task_id ?? null,
+              snapshot.parent_task_id ?? null,
               snapshot.subtasks ?? null,
               snapshot.recurrence ?? null,
               snapshot.current_cycle ?? null,
@@ -3975,150 +4139,3 @@ export class TaskflowEngine {
     })();
   }
 }
-  private ensureTaskSchema(): void {
-    try {
-      this.db.exec(`ALTER TABLE tasks ADD COLUMN parent_task_id TEXT`);
-    } catch {
-      // Existing DBs may already have the column.
-    }
-    try {
-      this.db.exec(`ALTER TABLE tasks ADD COLUMN max_cycles INTEGER`);
-    } catch {
-      // Existing DBs may already have the column.
-    }
-    try {
-      this.db.exec(`ALTER TABLE tasks ADD COLUMN recurrence_end_date TEXT`);
-    } catch {
-      // Existing DBs may already have the column.
-    }
-    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(board_id, parent_task_id) WHERE parent_task_id IS NOT NULL`);
-  }
-
-  private linkedChildBoardFor(boardId: string, personId: string | null): {
-    child_exec_enabled: number;
-    child_exec_board_id: string | null;
-    child_exec_person_id: string | null;
-  } {
-    if (!personId) {
-      return {
-        child_exec_enabled: 0,
-        child_exec_board_id: null,
-        child_exec_person_id: null,
-      };
-    }
-    const reg = this.getChildBoardRegistration(personId, boardId);
-    if (!reg) {
-      return {
-        child_exec_enabled: 0,
-        child_exec_board_id: null,
-        child_exec_person_id: null,
-      };
-    }
-    return {
-      child_exec_enabled: 1,
-      child_exec_board_id: reg.child_board_id,
-      child_exec_person_id: personId,
-    };
-  }
-
-  private migrateLegacyProjectSubtasks(): void {
-    const rows = this.db
-      .prepare(
-        `SELECT id, board_id, title, assignee, priority, created_at, updated_at, subtasks
-         FROM tasks
-         WHERE type = 'project' AND subtasks IS NOT NULL AND subtasks != '' AND subtasks != '[]'`,
-      )
-      .all() as Array<{
-        id: string;
-        board_id: string;
-        title: string;
-        assignee: string | null;
-        priority: string | null;
-        created_at: string;
-        updated_at: string;
-        subtasks: string;
-      }>;
-
-    const insertSubtask = this.db.prepare(
-      `INSERT INTO tasks (
-        id, board_id, type, title, assignee, column,
-        parent_task_id, priority, labels,
-        child_exec_enabled, child_exec_board_id, child_exec_person_id,
-        _last_mutation, created_at, updated_at
-      ) VALUES (?, ?, 'simple', ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?)`,
-    );
-    const subtaskExists = this.db.prepare(
-      `SELECT 1 FROM tasks WHERE board_id = ? AND id = ?`,
-    );
-    const clearLegacySubtasks = this.db.prepare(
-      `UPDATE tasks SET subtasks = NULL WHERE board_id = ? AND id = ?`,
-    );
-
-    for (const row of rows) {
-      let subtasks: any[];
-      try {
-        subtasks = JSON.parse(row.subtasks ?? '[]');
-      } catch {
-        continue;
-      }
-      if (!Array.isArray(subtasks) || subtasks.length === 0) continue;
-
-      let allMigrated = true;
-      for (let i = 0; i < subtasks.length; i++) {
-        const subtask = subtasks[i] ?? {};
-        const subtaskId =
-          typeof subtask.id === 'string' && subtask.id.trim() !== ''
-            ? subtask.id
-            : `${row.id}.${i + 1}`;
-        const title =
-          typeof subtask.title === 'string' && subtask.title.trim() !== ''
-            ? subtask.title
-            : `Subtask ${i + 1}`;
-        const assignee =
-          typeof subtask.assignee === 'string' && subtask.assignee.trim() !== ''
-            ? subtask.assignee
-            : row.assignee;
-        const column =
-          typeof subtask.column === 'string' && subtask.column.trim() !== ''
-            ? subtask.column
-            : subtask.status === 'done'
-              ? 'done'
-              : 'next_action';
-        const existing = subtaskExists.get(row.board_id, subtaskId);
-        if (existing) continue;
-
-        const childLink = this.linkedChildBoardFor(row.board_id, assignee ?? null);
-        insertSubtask.run(
-          subtaskId,
-          row.board_id,
-          title,
-          assignee ?? null,
-          column,
-          row.id,
-          row.priority ?? null,
-          childLink.child_exec_enabled,
-          childLink.child_exec_board_id,
-          childLink.child_exec_person_id,
-          null,
-          row.created_at,
-          row.updated_at,
-        );
-      }
-
-      for (let i = 0; i < subtasks.length; i++) {
-        const subtask = subtasks[i] ?? {};
-        const subtaskId =
-          typeof subtask.id === 'string' && subtask.id.trim() !== ''
-            ? subtask.id
-            : `${row.id}.${i + 1}`;
-        if (!subtaskExists.get(row.board_id, subtaskId)) {
-          allMigrated = false;
-          break;
-        }
-      }
-
-      if (allMigrated) {
-        clearLegacySubtasks.run(row.board_id, row.id);
-      }
-    }
-  }
