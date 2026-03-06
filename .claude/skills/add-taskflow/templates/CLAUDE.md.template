@@ -119,6 +119,12 @@ When the user sends a command, call the matching MCP tool. The tool handles all 
 | "projeto para Y: X. Etapas: 1. A (Z), 2. B (W)" | `taskflow_create({ type: 'project', title: 'X', assignee: 'Y', subtasks: [{ title: 'A', assignee: 'Z' }, { title: 'B', assignee: 'W' }], sender_name: SENDER })` |
 | "diario/semanal/mensal/anual para Y: X" | `taskflow_create({ type: 'recurring', title: 'X', assignee: 'Y', recurrence: FREQ, sender_name: SENDER })` |
 | "projeto recorrente para Y: X. Etapas: 1. A, 2. B todo [freq]" | `taskflow_create({ type: 'project', title: 'X', assignee: 'Y', subtasks: ['A', 'B'], recurrence: FREQ, sender_name: SENDER })` — uses P prefix, supports subtasks + recurring cycles |
+| "semanal por 6 semanas para Y: X" | `taskflow_create({ type: 'recurring', title: 'X', assignee: 'Y', recurrence: 'weekly', max_cycles: 6, sender_name: SENDER })` |
+| "mensal ate 30/06 para Y: X" | `taskflow_create({ type: 'recurring', title: 'X', assignee: 'Y', recurrence: 'monthly', recurrence_end_date: '2026-06-30', sender_name: SENDER })` |
+| "projeto recorrente para Y: X. Etapas: 1. A, 2. B por 6 semanas" | `taskflow_create({ type: 'project', title: 'X', assignee: 'Y', subtasks: ['A', 'B'], recurrence: 'weekly', max_cycles: 6, sender_name: SENDER })` |
+| "mensal por 3 meses ate 30/06 para Y: X" | Bounds are mutually exclusive. Ask user to choose: max_cycles OR recurrence_end_date |
+
+- `max_cycles` and `recurrence_end_date` are **mutually exclusive** -- only one can be set. Setting one via update clears the other automatically. If user asks for both, ask them to choose one.
 
 ### Column Transitions
 | User says | Tool call |
@@ -164,6 +170,9 @@ When the user sends a command, call the matching MCP tool. The tool handles all 
 | "atribuir etapa PXXX.N para Y" | `taskflow_update({ task_id: 'PXXX', updates: { assign_subtask: { id: 'PXXX.N', assignee: 'Y' } }, sender_name: SENDER })` |
 | "desatribuir etapa PXXX.N" | `taskflow_update({ task_id: 'PXXX', updates: { unassign_subtask: 'PXXX.N' }, sender_name: SENDER })` |
 | "alterar recorrencia RXXX para semanal" | `taskflow_update({ task_id: 'RXXX', updates: { recurrence: 'weekly' }, sender_name: SENDER })` |
+| "estender RXXX/PXXX por mais N ciclos" | `taskflow_update({ task_id: TARGET_ID, updates: { max_cycles: CURRENT_CYCLE + N }, sender_name: SENDER })` -- agent reads current_cycle first |
+| "estender RXXX/PXXX ate DD/MM" | `taskflow_update({ task_id: TARGET_ID, updates: { recurrence_end_date: 'YYYY-MM-DD' }, sender_name: SENDER })` |
+| "remover limite de RXXX/PXXX" | `taskflow_update({ task_id: TARGET_ID, updates: { max_cycles: null }, sender_name: SENDER })` or `{ recurrence_end_date: null }` |
 
 ### Dependencies & Reminders
 | User says | Tool call |
@@ -258,7 +267,15 @@ Every tool returns JSON with `success`, `data`, and optionally `error` and `noti
 - `requires_confirmation` -> Present the summary, wait for explicit "sim", then re-call with `confirmed: true`
 - `wip_warning` -> "[person] ja tem N tarefas em andamento (limite: M). Use 'forcar' para ultrapassar."
 - `project_update` -> Show subtask completion progress
-- `recurring_cycle` -> Show next cycle info
+- `recurring_cycle` -> Show cycle info. Check `expired` field:
+  - `expired: false` -> normal cycle, show: "Ciclo N concluido. Proximo ciclo: DUE_DATE"
+  - `expired: true` -> recurrence ended. Show:
+    "✅ RXXX concluida (ciclo final: N)
+
+    Recorrencia encerrada. Deseja:
+    1. Renovar por mais N ciclos
+    2. Estender ate uma nova data
+    3. Arquivar"
 - `archive_triggered` -> Note that task was archived
 - `auto_provision_request` -> Confirm to the manager that child-board provisioning was queued for the new person
 
@@ -394,7 +411,7 @@ Rate limit: max 10 messages/min, space batch sends by 5 seconds.
 
 Key tables and columns for direct SQL queries:
 
-- **tasks**: id, board_id, type, title, assignee, column, priority, due_date, next_action, waiting_for, description, labels (JSON), blocked_by (JSON), notes (JSON), next_note_id, reminders (JSON), subtasks (JSON — legacy), parent_task_id (for subtask rows), recurrence (JSON), current_cycle (JSON), _last_mutation (JSON), child_exec_enabled, child_exec_board_id, child_exec_person_id, child_exec_rollup_status, linked_parent_board_id, linked_parent_task_id, created_at, updated_at
+- **tasks**: id, board_id, type, title, assignee, column, priority, due_date, next_action, waiting_for, description, labels (JSON), blocked_by (JSON), notes (JSON), next_note_id, reminders (JSON), subtasks (JSON — legacy), parent_task_id (for subtask rows), recurrence (JSON), current_cycle (JSON), max_cycles (INTEGER, nullable), recurrence_end_date (TEXT, nullable), _last_mutation (JSON), child_exec_enabled, child_exec_board_id, child_exec_person_id, child_exec_rollup_status, linked_parent_board_id, linked_parent_task_id, created_at, updated_at
 - **board_people**: board_id, person_id, name, phone, role, wip_limit, notification_group_jid
 - **board_admins**: board_id, person_id, phone, admin_role, is_primary_manager
 - **board_config**: board_id, columns (JSON), wip_limit, next_task_number, next_note_id

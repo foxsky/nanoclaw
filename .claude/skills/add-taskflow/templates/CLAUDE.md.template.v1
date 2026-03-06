@@ -297,7 +297,17 @@ Additional columns:
 - `current_cycle` TEXT — JSON object: `{ "cycle": 1, "started_at": "..." }`
   - `cycle`: incremented each time the task is completed and recreated
   - `started_at`: when this cycle began
+- `max_cycles` INTEGER (nullable) — maximum number of cycles before recurrence ends
+- `recurrence_end_date` TEXT (nullable) — ISO-8601 date after which recurrence ends
 - On completion: reset `column` to `next_action`, increment `cycle`, compute next `due_date` from `recurrence`, update `started_at`. Reset `blocked_by` to `[]`. Cancel all reminder scheduled tasks and clear `reminders` to `[]`. Clear `notes` to `[]` and reset `next_note_id` to `1` (notes are per-cycle operational context). Preserve `description` across cycles.
+- On completion with bounds: Check if `max_cycles` or `recurrence_end_date` is set. If the recurrence has expired (cycle >= max_cycles, or next due_date > recurrence_end_date), do NOT advance to next cycle. Instead, move to `done` and show:
+    "✅ RXXX concluida (ciclo final: N)
+
+    Recorrencia encerrada. Deseja:
+    1. Renovar por mais N ciclos
+    2. Estender ate uma nova data
+    3. Arquivar"
+  If the recurrence has NOT expired, advance normally and show: "Ciclo N concluido. Proximo ciclo: DUE_DATE"
 
 ### History (`task_history` table)
 
@@ -575,6 +585,12 @@ Interpret user messages naturally. Key patterns:
 | "semanal para X: Y toda [dia da semana]" | Full manager only. Create weekly recurring task |
 | "mensal para X: Y todo dia Z" | Full manager only. Create monthly recurring task |
 | "anual para X: Y todo dia D/M" | Full manager only. Create yearly recurring task |
+| "semanal por 6 semanas para Y: X" | Full manager only. Create recurring task with `max_cycles: 6` bound |
+| "mensal ate 30/06 para Y: X" | Full manager only. Create recurring task with `recurrence_end_date: '2026-06-30'` bound |
+| "projeto recorrente para Y: X. Etapas: 1. A, 2. B por 6 semanas" | Full manager only. Create recurring project with `max_cycles: 6` bound |
+| "mensal por 3 meses ate 30/06 para Y: X" | Bounds are mutually exclusive. Ask user to choose: max_cycles OR recurrence_end_date |
+
+- `max_cycles` and `recurrence_end_date` are **mutually exclusive** -- only one can be set. Setting one via update clears the other automatically. If user asks for both, ask them to choose one.
 | "importar anexo" / "ler anexo e criar tarefas" | Run attachment extraction + proposal flow (confirmation required) |
 | "atualizar tarefas pelo anexo" | Run attachment extraction + status-update proposal (confirmation required) |
 
@@ -647,6 +663,9 @@ Record lifecycle events in the `task_history` table.
 | "lembrete TXXX [N] dia(s) antes" | Assignee or manager. Schedule a reminder N days before due_date. Task must have a due_date |
 | "remover lembrete TXXX" | Assignee or manager. Cancel all reminders for the task |
 | "alterar recorrencia RXXX para [frequencia]" | Full manager only. Change recurrence frequency (diario/semanal/mensal/anual) and recompute next `due_date`. Record the change in the `task_history` table. |
+| "estender RXXX/PXXX por mais N ciclos" | Full manager only. Read `current_cycle`, then set `max_cycles = current_cycle + N`. Record the change in the `task_history` table. |
+| "estender RXXX/PXXX ate DD/MM" | Full manager only. Set `recurrence_end_date` to the given date (ISO format). Record the change in the `task_history` table. |
+| "remover limite de RXXX/PXXX" | Full manager only. Clear `max_cycles` to null or `recurrence_end_date` to null (whichever is set). Record the change in the `task_history` table. |
 | "adicionar gestor [nome], telefone [numero]" | Full manager only. Add another full manager entry to `board_admins`, and add/update the matching person record in `board_people` if needed |
 | "adicionar delegado [nome], telefone [numero]" | Full manager only. Add a delegate entry to `board_admins`, and add/update the matching person record in `board_people` if needed |
 | "remover gestor [nome]" / "remover delegado [nome]" | Full manager only. Remove that admin entry from `board_admins` after confirmation. Never remove the last full manager. **Primary-manager sync:** if the removed admin was the primary manager (`is_primary_manager = 1`), promote the next remaining full-manager row to primary before completing the removal |
