@@ -1063,14 +1063,36 @@ export class TaskflowEngine {
   }
 
   /** Advance a recurring task: calculate next due_date and increment cycle. */
-  private advanceRecurringTask(task: any): { new_due_date: string; cycle_number: number } {
+  private advanceRecurringTask(task: any): { cycle_number: number; expired: boolean; new_due_date?: string; reason?: 'max_cycles' | 'end_date' } {
     const recurrence = task.recurrence as 'daily' | 'weekly' | 'monthly' | 'yearly';
     const anchor = task.due_date ? new Date(task.due_date) : new Date();
     const currentCycle = parseInt(task.current_cycle ?? '0', 10);
     const nextCycle = currentCycle + 1;
 
     const newDueDate = advanceDateByRecurrence(anchor, recurrence);
+
+    // Check expiry bounds (mutually exclusive, but check both defensively)
+    let expiryReason: 'max_cycles' | 'end_date' | null = null;
+    if (task.max_cycles != null && nextCycle >= task.max_cycles) {
+      expiryReason = 'max_cycles';
+    } else if (task.recurrence_end_date && newDueDate > task.recurrence_end_date) {
+      expiryReason = 'end_date';
+    }
+
     const now = new Date().toISOString();
+
+    if (expiryReason) {
+      // Leave task in 'done' — just update cycle number
+      this.db
+        .prepare(
+          `UPDATE tasks SET current_cycle = ?, updated_at = ?
+           WHERE board_id = ? AND id = ?`,
+        )
+        .run(String(nextCycle), now, this.taskBoardId(task), task.id);
+      return { cycle_number: nextCycle, expired: true, reason: expiryReason };
+    }
+
+    // Normal advance: reset to next_action
     this.db
       .prepare(
         `UPDATE tasks SET column = 'next_action', due_date = ?, current_cycle = ?, reminders = '[]',
@@ -1089,7 +1111,7 @@ export class TaskflowEngine {
         .run(now, this.taskBoardId(task), task.id);
     }
 
-    return { new_due_date: newDueDate, cycle_number: nextCycle };
+    return { cycle_number: nextCycle, expired: false, new_due_date: newDueDate };
   }
 
   /* ---------------------------------------------------------------- */
