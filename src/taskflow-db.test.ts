@@ -184,4 +184,203 @@ describe('initTaskflowDb', () => {
 
     db.close();
   });
+
+  it('reconciles pre-existing subtask rows before clearing legacy JSON', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'taskflow-db-test-'));
+    tempDirs.push(tempDir);
+
+    const dbPath = path.join(tempDir, 'taskflow.db');
+    const legacyDb = new Database(dbPath);
+    legacyDb.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY);
+      CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (board_id, person_id));
+      CREATE TABLE board_admins (board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL, admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
+      CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
+      CREATE TABLE board_groups (board_id TEXT, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, group_role TEXT DEFAULT 'team', PRIMARY KEY (board_id, group_jid));
+      CREATE TABLE tasks (
+        id TEXT NOT NULL,
+        board_id TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT 'simple',
+        title TEXT NOT NULL,
+        assignee TEXT,
+        next_action TEXT,
+        waiting_for TEXT,
+        column TEXT DEFAULT 'inbox',
+        priority TEXT,
+        due_date TEXT,
+        description TEXT,
+        labels TEXT DEFAULT '[]',
+        blocked_by TEXT DEFAULT '[]',
+        reminders TEXT DEFAULT '[]',
+        next_note_id INTEGER DEFAULT 1,
+        notes TEXT DEFAULT '[]',
+        _last_mutation TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        child_exec_enabled INTEGER DEFAULT 0,
+        child_exec_board_id TEXT,
+        child_exec_person_id TEXT,
+        child_exec_rollup_status TEXT,
+        child_exec_last_rollup_at TEXT,
+        child_exec_last_rollup_summary TEXT,
+        linked_parent_board_id TEXT,
+        linked_parent_task_id TEXT,
+        subtasks TEXT,
+        recurrence TEXT,
+        current_cycle TEXT,
+        PRIMARY KEY (board_id, id)
+      );
+      CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, task_id TEXT NOT NULL, action TEXT NOT NULL, by TEXT, at TEXT NOT NULL, details TEXT);
+      CREATE TABLE archive (board_id TEXT NOT NULL, task_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, assignee TEXT, archive_reason TEXT NOT NULL, linked_parent_board_id TEXT, linked_parent_task_id TEXT, archived_at TEXT NOT NULL, task_snapshot TEXT NOT NULL, history TEXT, PRIMARY KEY (board_id, task_id));
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, language TEXT NOT NULL DEFAULT 'pt-BR', timezone TEXT NOT NULL DEFAULT 'America/Fortaleza');
+      CREATE TABLE attachment_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, source TEXT NOT NULL, filename TEXT NOT NULL, at TEXT NOT NULL, actor_person_id TEXT, affected_task_refs TEXT DEFAULT '[]');
+      CREATE TABLE board_config (board_id TEXT PRIMARY KEY, columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]', wip_limit INTEGER DEFAULT 5, next_task_number INTEGER DEFAULT 1, next_note_id INTEGER DEFAULT 1);
+      INSERT INTO boards (id) VALUES ('board-1');
+      INSERT INTO board_people (board_id, person_id, name) VALUES ('board-1', 'rafael', 'Rafael');
+      INSERT INTO child_board_registrations (parent_board_id, person_id, child_board_id) VALUES ('board-1', 'rafael', 'board-rafael');
+      INSERT INTO board_config (board_id) VALUES ('board-1');
+      INSERT INTO board_runtime_config (board_id) VALUES ('board-1');
+      INSERT INTO tasks (id, board_id, type, title, assignee, column, subtasks, created_at, updated_at)
+      VALUES (
+        'P16',
+        'board-1',
+        'project',
+        'Legacy project',
+        'manager',
+        'next_action',
+        '[{"id":"P16.1","title":"Call Jimmy","column":"next_action","assignee":"rafael"}]',
+        '2026-03-06T12:39:17Z',
+        '2026-03-06T12:39:17Z'
+      );
+      INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at)
+      VALUES ('P16.1', 'board-1', 'simple', 'Wrong title', NULL, 'inbox', '2026-03-06T12:39:17Z', '2026-03-06T12:39:17Z');
+    `);
+    legacyDb.close();
+
+    const db = initTaskflowDb(dbPath);
+    const subtask = db
+      .prepare(
+        `SELECT title, parent_task_id, assignee, child_exec_enabled, child_exec_board_id, "column"
+         FROM tasks WHERE board_id = ? AND id = ?`,
+      )
+      .get('board-1', 'P16.1') as {
+      title: string;
+      parent_task_id: string;
+      assignee: string | null;
+      child_exec_enabled: number;
+      child_exec_board_id: string | null;
+      column: string;
+    };
+    const parent = db
+      .prepare(`SELECT subtasks FROM tasks WHERE board_id = ? AND id = ?`)
+      .get('board-1', 'P16') as { subtasks: string | null };
+
+    expect(subtask).toEqual({
+      title: 'Call Jimmy',
+      parent_task_id: 'P16',
+      assignee: 'rafael',
+      child_exec_enabled: 1,
+      child_exec_board_id: 'board-rafael',
+      column: 'next_action',
+    });
+    expect(parent.subtasks).toBeNull();
+
+    db.close();
+  });
+
+  it('reconciles pre-existing recurring tasks with child-board linkage', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'taskflow-db-test-'));
+    tempDirs.push(tempDir);
+
+    const dbPath = path.join(tempDir, 'taskflow.db');
+    const legacyDb = new Database(dbPath);
+    legacyDb.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY);
+      CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (board_id, person_id));
+      CREATE TABLE board_admins (board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL, admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
+      CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
+      CREATE TABLE board_groups (board_id TEXT, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, group_role TEXT DEFAULT 'team', PRIMARY KEY (board_id, group_jid));
+      CREATE TABLE tasks (
+        id TEXT NOT NULL,
+        board_id TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT 'simple',
+        title TEXT NOT NULL,
+        assignee TEXT,
+        next_action TEXT,
+        waiting_for TEXT,
+        column TEXT DEFAULT 'inbox',
+        priority TEXT,
+        due_date TEXT,
+        description TEXT,
+        labels TEXT DEFAULT '[]',
+        blocked_by TEXT DEFAULT '[]',
+        reminders TEXT DEFAULT '[]',
+        next_note_id INTEGER DEFAULT 1,
+        notes TEXT DEFAULT '[]',
+        _last_mutation TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        child_exec_enabled INTEGER DEFAULT 0,
+        child_exec_board_id TEXT,
+        child_exec_person_id TEXT,
+        child_exec_rollup_status TEXT,
+        child_exec_last_rollup_at TEXT,
+        child_exec_last_rollup_summary TEXT,
+        linked_parent_board_id TEXT,
+        linked_parent_task_id TEXT,
+        subtasks TEXT,
+        recurrence TEXT,
+        current_cycle TEXT,
+        PRIMARY KEY (board_id, id)
+      );
+      CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, task_id TEXT NOT NULL, action TEXT NOT NULL, by TEXT, at TEXT NOT NULL, details TEXT);
+      CREATE TABLE archive (board_id TEXT NOT NULL, task_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, assignee TEXT, archive_reason TEXT NOT NULL, linked_parent_board_id TEXT, linked_parent_task_id TEXT, archived_at TEXT NOT NULL, task_snapshot TEXT NOT NULL, history TEXT, PRIMARY KEY (board_id, task_id));
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, language TEXT NOT NULL DEFAULT 'pt-BR', timezone TEXT NOT NULL DEFAULT 'America/Fortaleza');
+      CREATE TABLE attachment_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, source TEXT NOT NULL, filename TEXT NOT NULL, at TEXT NOT NULL, actor_person_id TEXT, affected_task_refs TEXT DEFAULT '[]');
+      CREATE TABLE board_config (board_id TEXT PRIMARY KEY, columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]', wip_limit INTEGER DEFAULT 5, next_task_number INTEGER DEFAULT 1, next_note_id INTEGER DEFAULT 1);
+      INSERT INTO boards (id) VALUES ('board-1');
+      INSERT INTO board_people (board_id, person_id, name) VALUES ('board-1', 'rafael', 'Rafael');
+      INSERT INTO child_board_registrations (parent_board_id, person_id, child_board_id) VALUES ('board-1', 'rafael', 'board-rafael');
+      INSERT INTO board_config (board_id) VALUES ('board-1');
+      INSERT INTO board_runtime_config (board_id) VALUES ('board-1');
+      INSERT INTO tasks (id, board_id, type, title, assignee, column, recurrence, child_exec_enabled, created_at, updated_at)
+      VALUES (
+        'R18',
+        'board-1',
+        'recurring',
+        'Legacy recurring',
+        'rafael',
+        'next_action',
+        'monthly',
+        0,
+        '2026-03-06T12:39:17Z',
+        '2026-03-06T12:39:17Z'
+      );
+    `);
+    legacyDb.close();
+
+    const db = initTaskflowDb(dbPath);
+    const task = db
+      .prepare(
+        `SELECT assignee, recurrence, child_exec_enabled, child_exec_board_id, child_exec_person_id
+         FROM tasks WHERE board_id = ? AND id = ?`,
+      )
+      .get('board-1', 'R18') as {
+      assignee: string | null;
+      recurrence: string | null;
+      child_exec_enabled: number;
+      child_exec_board_id: string | null;
+      child_exec_person_id: string | null;
+    };
+
+    expect(task).toEqual({
+      assignee: 'rafael',
+      recurrence: 'monthly',
+      child_exec_enabled: 1,
+      child_exec_board_id: 'board-rafael',
+      child_exec_person_id: 'rafael',
+    });
+
+    db.close();
+  });
 });

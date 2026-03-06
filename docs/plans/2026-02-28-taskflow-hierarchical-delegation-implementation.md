@@ -1,7 +1,7 @@
 # TaskFlow — Bounded-Recursive Hierarchy Implementation Plan (SQLite)
 
 **Date**: 2026-02-28
-**Status**: Implemented (active SQLite storage/provisioning baseline; hierarchy rules included)
+**Status**: Implemented (active SQLite storage/provisioning baseline; hierarchy rules included; production hardening follow-up required)
 
 ## Transition Note
 
@@ -22,6 +22,96 @@ All board data lives in a shared SQLite database accessed through an off-the-she
 The assistant remains a direct root-level role by default.
 
 **Infrastructure source changes** (routing, container awareness, IPC plugins) are already in place. The hierarchy logic itself remains template-only — board commands, rollup rules, and authorization are all prompt-enforced via CLAUDE.md.
+
+## 2026-03-06 Production Hardening Addendum
+
+Investigation of the live `P16.2` failure exposed a real deployment/data-drift issue:
+
+- some live boards still carried legacy project `subtasks` JSON
+- runtime prompts already assumed subtasks were first-class task rows
+- delegated subtasks were expected to be executable from the assignee child board
+
+The immediate runtime fix added startup schema backfill plus legacy subtask migration, but three follow-up requirements must be treated as part of the active implementation plan.
+
+### A. Restore Must Recreate Migrated Project Subtasks
+
+Once legacy project subtasks are migrated into real task rows, `cancel_task` archives the parent and deletes all `parent_task_id` children. `restore_task` must therefore restore the full project tree, not only the parent row.
+
+Required behavior:
+
+- archiving a project must preserve the child task rows needed for restore
+- restoring a project must recreate all archived `parent_task_id` rows with their original assignee, column, child-board link state, and history context
+- restore must work for both:
+  - projects created natively with real subtask rows
+  - projects that were backfilled from legacy `subtasks` JSON
+
+Implementation options:
+
+1. archive child rows explicitly in `archive.history` / `task_snapshot` alongside the parent snapshot
+2. or archive project children as separate archive records and restore them transactionally with the parent
+
+Constraint:
+
+- do not rely on `tasks.subtasks` JSON as the restore source after migration, because successful migration clears that field
+
+### B. Child-Board Undo Must Work For Delegated Subtasks
+
+Delegated subtasks are now actionable from the child board through `child_exec_board_id`, but `undo` still searches only local `board_id`.
+
+Required behavior:
+
+- if Rafael concludes delegated subtask `P16.2` from his board, `undo` from Rafael's board must find and revert that mutation
+- undo authorization must still follow the current rule:
+  - mutation author or manager
+- undo must target the owning row (`tasks.board_id`) while remaining discoverable from the visible child-board scope
+
+Implementation note:
+
+- `undo` should resolve the latest mutation over the same visible task scope used by `getTask`, then write the restore against the owning board row
+
+### C. Legacy Migration Must Reconcile, Not Only Detect Existence
+
+The current migration bridge is not complete if it only checks "row exists". A partially migrated board may already contain `P16.2`, but with broken linkage or missing `parent_task_id`.
+
+Required behavior:
+
+- migration must validate existing candidate subtask rows for:
+  - `parent_task_id`
+  - assignee
+  - column/state
+  - `child_exec_enabled`
+  - `child_exec_board_id`
+  - `child_exec_person_id`
+- if the row exists but does not match the canonical migrated shape, migration must repair it
+- clear legacy `tasks.subtasks` only after every referenced subtask row both exists and matches the reconciled target state
+
+This is required in both:
+
+- runtime startup migration in `container/agent-runner/src/taskflow-engine.ts`
+- host DB init/migration in `src/taskflow-db.ts`
+
+### D. Mandatory Regression Coverage
+
+Add and keep regression tests for:
+
+1. `cancel_task` + `restore_task` on a project with real subtask rows
+2. `cancel_task` + `restore_task` on a project backfilled from legacy JSON subtasks
+3. `undo` from a child board after moving a delegated subtask
+4. migration reconciliation when a dotted subtask row already exists but is missing:
+   - `parent_task_id`
+   - child-board linkage
+   - or correct assignee/column state
+
+### E. Rollout Rule
+
+The runtime migration bridge is temporary compatibility logic, not the target model.
+
+Target model remains:
+
+- a subtask is a normal task row
+- it may have its own assignee independent of the parent project
+- its only structural distinction is `parent_task_id`
+- child-board execution must be driven by the subtask row's own delegation/link state
 
 ## Infrastructure Already In Place
 

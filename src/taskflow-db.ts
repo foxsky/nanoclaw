@@ -206,6 +206,13 @@ function linkedChildBoardFor(
   };
 }
 
+function legacySubtaskColumn(subtask: { status?: string; column?: string }): string {
+  if (typeof subtask.column === 'string' && subtask.column.trim() !== '') {
+    return subtask.column;
+  }
+  return subtask.status === 'done' ? 'done' : 'next_action';
+}
+
 function migrateLegacyProjectSubtasks(db: Database.Database): void {
   const rows = db
     .prepare(
@@ -223,7 +230,12 @@ function migrateLegacyProjectSubtasks(db: Database.Database): void {
       subtasks: string;
     }>;
 
-  const subtaskExists = db.prepare(`SELECT 1 FROM tasks WHERE board_id = ? AND id = ?`);
+  const subtaskRow = db.prepare(
+    `SELECT id, title, assignee, "column", parent_task_id, priority,
+            child_exec_enabled, child_exec_board_id, child_exec_person_id
+       FROM tasks
+      WHERE board_id = ? AND id = ?`,
+  );
   const insertSubtask = db.prepare(
     `INSERT INTO tasks (
       id, board_id, type, title, assignee, column,
@@ -231,6 +243,12 @@ function migrateLegacyProjectSubtasks(db: Database.Database): void {
       child_exec_enabled, child_exec_board_id, child_exec_person_id,
       _last_mutation, created_at, updated_at
     ) VALUES (?, ?, 'simple', ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?)`,
+  );
+  const reconcileSubtask = db.prepare(
+    `UPDATE tasks
+        SET title = ?, assignee = ?, "column" = ?, parent_task_id = ?, priority = ?,
+            child_exec_enabled = ?, child_exec_board_id = ?, child_exec_person_id = ?
+      WHERE board_id = ? AND id = ?`,
   );
   const clearLegacySubtasks = db.prepare(
     `UPDATE tasks SET subtasks = NULL WHERE board_id = ? AND id = ?`,
@@ -260,31 +278,52 @@ function migrateLegacyProjectSubtasks(db: Database.Database): void {
         typeof subtask.assignee === 'string' && subtask.assignee.trim() !== ''
           ? subtask.assignee
           : row.assignee;
-      const column =
-        typeof subtask.column === 'string' && subtask.column.trim() !== ''
-          ? subtask.column
-          : subtask.status === 'done'
-            ? 'done'
-            : 'next_action';
-
-      if (subtaskExists.get(row.board_id, subtaskId)) continue;
-
+      const column = legacySubtaskColumn(subtask);
       const childLink = linkedChildBoardFor(db, row.board_id, assignee ?? null);
-      insertSubtask.run(
-        subtaskId,
-        row.board_id,
-        title,
-        assignee ?? null,
-        column,
-        row.id,
-        row.priority ?? null,
-        childLink.child_exec_enabled,
-        childLink.child_exec_board_id,
-        childLink.child_exec_person_id,
-        null,
-        row.created_at,
-        row.updated_at,
-      );
+      const existing = subtaskRow.get(row.board_id, subtaskId) as
+        | {
+            id: string;
+            title: string;
+            assignee: string | null;
+            column: string;
+            parent_task_id: string | null;
+            priority: string | null;
+            child_exec_enabled: number;
+            child_exec_board_id: string | null;
+            child_exec_person_id: string | null;
+          }
+        | undefined;
+
+      if (!existing) {
+        insertSubtask.run(
+          subtaskId,
+          row.board_id,
+          title,
+          assignee ?? null,
+          column,
+          row.id,
+          row.priority ?? null,
+          childLink.child_exec_enabled,
+          childLink.child_exec_board_id,
+          childLink.child_exec_person_id,
+          null,
+          row.created_at,
+          row.updated_at,
+        );
+      } else {
+        reconcileSubtask.run(
+          title,
+          assignee ?? null,
+          column,
+          row.id,
+          row.priority ?? null,
+          childLink.child_exec_enabled,
+          childLink.child_exec_board_id,
+          childLink.child_exec_person_id,
+          row.board_id,
+          subtaskId,
+        );
+      }
     }
 
     for (let i = 0; i < subtasks.length; i++) {
@@ -293,7 +332,33 @@ function migrateLegacyProjectSubtasks(db: Database.Database): void {
         typeof subtask.id === 'string' && subtask.id.trim() !== ''
           ? subtask.id
           : `${row.id}.${i + 1}`;
-      if (!subtaskExists.get(row.board_id, subtaskId)) {
+      const assignee =
+        typeof subtask.assignee === 'string' && subtask.assignee.trim() !== ''
+          ? subtask.assignee
+          : row.assignee;
+      const expectedColumn = legacySubtaskColumn(subtask);
+      const expectedChildLink = linkedChildBoardFor(db, row.board_id, assignee ?? null);
+      const existing = subtaskRow.get(row.board_id, subtaskId) as
+        | {
+            title: string;
+            assignee: string | null;
+            column: string;
+            parent_task_id: string | null;
+            priority: string | null;
+            child_exec_enabled: number;
+            child_exec_board_id: string | null;
+            child_exec_person_id: string | null;
+          }
+        | undefined;
+      if (
+        !existing ||
+        existing.parent_task_id !== row.id ||
+        existing.assignee !== (assignee ?? null) ||
+        existing.column !== expectedColumn ||
+        existing.child_exec_enabled !== expectedChildLink.child_exec_enabled ||
+        (existing.child_exec_board_id ?? null) !== expectedChildLink.child_exec_board_id ||
+        (existing.child_exec_person_id ?? null) !== expectedChildLink.child_exec_person_id
+      ) {
         allMigrated = false;
         break;
       }
@@ -301,6 +366,50 @@ function migrateLegacyProjectSubtasks(db: Database.Database): void {
 
     if (allMigrated) {
       clearLegacySubtasks.run(row.board_id, row.id);
+    }
+  }
+}
+
+function reconcileDelegationLinks(db: Database.Database): void {
+  const rows = db
+    .prepare(
+      `SELECT id, board_id, assignee, child_exec_enabled, child_exec_board_id, child_exec_person_id
+         FROM tasks
+        WHERE assignee IS NOT NULL
+          AND (
+            parent_task_id IS NOT NULL
+            OR recurrence IS NOT NULL
+          )`,
+    )
+    .all() as Array<{
+    id: string;
+    board_id: string;
+    assignee: string | null;
+    child_exec_enabled: number;
+    child_exec_board_id: string | null;
+    child_exec_person_id: string | null;
+  }>;
+
+  const update = db.prepare(
+    `UPDATE tasks
+        SET child_exec_enabled = ?, child_exec_board_id = ?, child_exec_person_id = ?
+      WHERE board_id = ? AND id = ?`,
+  );
+
+  for (const row of rows) {
+    const expected = linkedChildBoardFor(db, row.board_id, row.assignee ?? null);
+    if (
+      row.child_exec_enabled !== expected.child_exec_enabled ||
+      (row.child_exec_board_id ?? null) !== expected.child_exec_board_id ||
+      (row.child_exec_person_id ?? null) !== expected.child_exec_person_id
+    ) {
+      update.run(
+        expected.child_exec_enabled,
+        expected.child_exec_board_id,
+        expected.child_exec_person_id,
+        row.board_id,
+        row.id,
+      );
     }
   }
 }
@@ -349,6 +458,7 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
     WHERE next_project_number = 1 OR next_recurring_number = 1
   `);
   migrateLegacyProjectSubtasks(db);
+  reconcileDelegationLinks(db);
 
   return db;
 }
