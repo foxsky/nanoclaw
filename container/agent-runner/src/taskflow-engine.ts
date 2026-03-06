@@ -1127,6 +1127,15 @@ export class TaskflowEngine {
       const sender = this.resolvePerson(params.sender_name);
       const senderPersonId = sender?.person_id ?? null;
 
+      /* --- Auto-resolve subtask IDs (e.g. P16.2 → task_id=P16, subtask_id=P16.2) --- */
+      if (!params.subtask_id && params.task_id.includes('.')) {
+        const directTask = this.getTask(params.task_id);
+        if (!directTask) {
+          const parentId = params.task_id.split('.').slice(0, -1).join('.');
+          params = { ...params, task_id: parentId, subtask_id: params.task_id };
+        }
+      }
+
       /* --- Fetch task --- */
       const task = this.requireTask(params.task_id);
       const taskBoardId = this.taskBoardId(task);
@@ -1722,6 +1731,8 @@ export class TaskflowEngine {
           next_note_id: task.next_note_id,
           subtasks: task.subtasks,
           recurrence: task.recurrence,
+          max_cycles: task.max_cycles,
+          recurrence_end_date: task.recurrence_end_date,
           updated_at: task.updated_at,
         },
       });
@@ -1729,6 +1740,16 @@ export class TaskflowEngine {
       /* --- Process each update field --- */
       const changes: string[] = [];
       const notifications: UpdateResult['notifications'] = [];
+
+      /* Reject setting both bounds in one call */
+      if (updates.max_cycles !== undefined && updates.max_cycles !== null &&
+          updates.recurrence_end_date !== undefined && updates.recurrence_end_date !== null) {
+        return { success: false, error: 'Cannot set both max_cycles and recurrence_end_date. Choose one bound.' };
+      }
+      if (updates.max_cycles !== undefined && updates.max_cycles !== null &&
+          (!Number.isInteger(updates.max_cycles) || updates.max_cycles <= 0)) {
+        return { success: false, error: 'max_cycles must be a positive integer.' };
+      }
 
       /* Title */
       if (updates.title !== undefined) {
@@ -1945,13 +1966,35 @@ export class TaskflowEngine {
 
       /* Recurrence (recurring only) */
       if (updates.recurrence !== undefined) {
-        if (task.type !== 'recurring') {
+        if (!task.recurrence) {
           return { success: false, error: 'Recurrence can only be changed on recurring tasks.' };
         }
         this.db
           .prepare(`UPDATE tasks SET recurrence = ? WHERE board_id = ? AND id = ?`)
           .run(updates.recurrence, taskBoardId, task.id);
         changes.push(`Recurrence changed to ${updates.recurrence}`);
+      }
+
+      /* max_cycles (recurring only — setting clears recurrence_end_date) */
+      if (updates.max_cycles !== undefined) {
+        if (!task.recurrence) {
+          return { success: false, error: 'max_cycles can only be set on tasks with recurrence.' };
+        }
+        this.db
+          .prepare(`UPDATE tasks SET max_cycles = ?, recurrence_end_date = NULL WHERE board_id = ? AND id = ?`)
+          .run(updates.max_cycles, taskBoardId, task.id);
+        changes.push(updates.max_cycles === null ? 'Removed max_cycles bound' : `max_cycles set to ${updates.max_cycles}`);
+      }
+
+      /* recurrence_end_date (recurring only — setting clears max_cycles) */
+      if (updates.recurrence_end_date !== undefined) {
+        if (!task.recurrence) {
+          return { success: false, error: 'recurrence_end_date can only be set on tasks with recurrence.' };
+        }
+        this.db
+          .prepare(`UPDATE tasks SET recurrence_end_date = ?, max_cycles = NULL WHERE board_id = ? AND id = ?`)
+          .run(updates.recurrence_end_date, taskBoardId, task.id);
+        changes.push(updates.recurrence_end_date === null ? 'Removed recurrence_end_date bound' : `recurrence_end_date set to ${updates.recurrence_end_date}`);
       }
 
       /* --- After all updates: set updated_at, _last_mutation, record history --- */
