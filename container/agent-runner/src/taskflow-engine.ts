@@ -41,6 +41,8 @@ export interface CreateParams {
   subtasks?: Array<string | { title: string; assignee?: string }>;
   recurrence?: 'daily' | 'weekly' | 'monthly' | 'yearly';
   recurrence_anchor?: string;
+  max_cycles?: number;
+  recurrence_end_date?: string;
   sender_name: string;
 }
 
@@ -73,7 +75,7 @@ export interface MoveResult extends TaskflowResult {
   to_column?: string;
   wip_warning?: { person: string; current: number; limit: number };
   project_update?: { completed_subtask: string; next_subtask?: string; all_complete: boolean };
-  recurring_cycle?: { new_due_date: string; cycle_number: number };
+  recurring_cycle?: { cycle_number: number; expired: boolean; new_due_date?: string; reason?: 'max_cycles' | 'end_date' };
   archive_triggered?: boolean;
   notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
   parent_notification?: { parent_group_jid: string; message: string };
@@ -121,6 +123,8 @@ export interface UpdateParams {
     assign_subtask?: { id: string; assignee: string };   // assign person to subtask
     unassign_subtask?: string;    // subtask ID to unassign
     recurrence?: string;          // change frequency
+    max_cycles?: number | null;            // null = remove bound
+    recurrence_end_date?: string | null;   // null = remove bound
   };
 }
 
