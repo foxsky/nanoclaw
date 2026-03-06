@@ -846,6 +846,17 @@ export class TaskflowEngine {
         }
       }
 
+      /* --- Validate bounded recurrence params --- */
+      if (params.max_cycles != null && params.recurrence_end_date != null) {
+        return { success: false, error: 'Cannot set both max_cycles and recurrence_end_date. Choose one bound.' };
+      }
+      if ((params.max_cycles != null || params.recurrence_end_date != null) && !recurrence) {
+        return { success: false, error: 'Bounded recurrence requires a recurring task or recurring project.' };
+      }
+      if (params.max_cycles != null && (!Number.isInteger(params.max_cycles) || params.max_cycles <= 0)) {
+        return { success: false, error: 'max_cycles must be a positive integer.' };
+      }
+
       /* --- Undo snapshot --- */
       const lastMutation = JSON.stringify({
         action: 'created',
@@ -859,9 +870,10 @@ export class TaskflowEngine {
           `INSERT INTO tasks (
             id, board_id, type, title, assignee, column,
             priority, due_date, labels, recurrence,
+            max_cycles, recurrence_end_date,
             child_exec_enabled, child_exec_board_id, child_exec_person_id,
             _last_mutation, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           taskId,
@@ -874,6 +886,8 @@ export class TaskflowEngine {
           dueDate,
           params.labels ? JSON.stringify(params.labels) : '[]',
           recurrence,
+          params.max_cycles ?? null,
+          params.recurrence_end_date ?? null,
           childExecEnabled,
           childExecBoardId,
           childExecPersonId,
