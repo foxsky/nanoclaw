@@ -41,6 +41,8 @@ export interface CreateParams {
   subtasks?: Array<string | { title: string; assignee?: string }>;
   recurrence?: 'daily' | 'weekly' | 'monthly' | 'yearly';
   recurrence_anchor?: string;
+  max_cycles?: number;
+  recurrence_end_date?: string;
   sender_name: string;
 }
 
@@ -73,7 +75,7 @@ export interface MoveResult extends TaskflowResult {
   to_column?: string;
   wip_warning?: { person: string; current: number; limit: number };
   project_update?: { completed_subtask: string; next_subtask?: string; all_complete: boolean };
-  recurring_cycle?: { new_due_date: string; cycle_number: number };
+  recurring_cycle?: { cycle_number: number; expired: boolean; new_due_date?: string; reason?: 'max_cycles' | 'end_date' };
   archive_triggered?: boolean;
   notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
   parent_notification?: { parent_group_jid: string; message: string };
@@ -121,6 +123,8 @@ export interface UpdateParams {
     assign_subtask?: { id: string; assignee: string };   // assign person to subtask
     unassign_subtask?: string;    // subtask ID to unassign
     recurrence?: string;          // change frequency
+    max_cycles?: number | null;            // null = remove bound
+    recurrence_end_date?: string | null;   // null = remove bound
   };
 }
 
@@ -345,6 +349,8 @@ export class TaskflowEngine {
     private boardId: string,
   ) {
     this.db.pragma('busy_timeout = 5000');
+    this.ensureTaskSchema();
+    this.migrateLegacyProjectSubtasks();
   }
 
   private visibleTaskScope(alias = ''): string {
@@ -452,12 +458,12 @@ export class TaskflowEngine {
       .all(...this.visibleTaskParams(), personId);
   }
 
-  private getSubtaskRows(parentTaskId: string): any[] {
+  private getSubtaskRows(parentTaskId: string, boardId = this.boardId): any[] {
     return this.db
       .prepare(
         `SELECT * FROM tasks WHERE board_id = ? AND parent_task_id = ? ORDER BY id`,
       )
-      .all(this.boardId, parentTaskId);
+      .all(boardId, parentTaskId);
   }
 
   private getLinkedTasks(): any[] {
@@ -698,23 +704,30 @@ export class TaskflowEngine {
 
   /** Insert a subtask row linked to a parent project. */
   private insertSubtaskRow(opts: {
+    boardId?: string;
     subtaskId: string; title: string; assignee: string | null;
     column: string; parentTaskId: string; priority: string | null;
     senderName: string; now: string;
   }): void {
+    const boardId = opts.boardId ?? this.boardId;
     const subMutation = JSON.stringify({ action: 'created', by: opts.senderName, at: opts.now });
+    const childLink = this.linkedChildBoardFor(boardId, opts.assignee);
     this.db
       .prepare(
         `INSERT INTO tasks (
           id, board_id, type, title, assignee, column,
           parent_task_id, priority, labels,
+          child_exec_enabled, child_exec_board_id, child_exec_person_id,
           _last_mutation, created_at, updated_at
-        ) VALUES (?, ?, 'simple', ?, ?, ?, ?, ?, '[]', ?, ?, ?)`,
+        ) VALUES (?, ?, 'simple', ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?)`,
       )
-      .run(opts.subtaskId, this.boardId, opts.title, opts.assignee, opts.column,
-        opts.parentTaskId, opts.priority, subMutation, opts.now, opts.now);
+      .run(opts.subtaskId, boardId, opts.title, opts.assignee, opts.column,
+        opts.parentTaskId, opts.priority,
+        childLink.child_exec_enabled, childLink.child_exec_board_id, childLink.child_exec_person_id,
+        subMutation, opts.now, opts.now);
     this.recordHistory(opts.subtaskId, 'created', opts.senderName,
-      JSON.stringify({ type: 'subtask', parent: opts.parentTaskId, title: opts.title, assignee: opts.assignee }));
+      JSON.stringify({ type: 'subtask', parent: opts.parentTaskId, title: opts.title, assignee: opts.assignee }),
+      boardId);
   }
 
   /** Build a notification for subtask assignment. */
@@ -751,13 +764,14 @@ export class TaskflowEngine {
   /** Check if an assignee has a child board registered. */
   private getChildBoardRegistration(
     personId: string,
+    boardId = this.boardId,
   ): { child_board_id: string } | null {
     const row = this.db
       .prepare(
         `SELECT child_board_id FROM child_board_registrations
          WHERE parent_board_id = ? AND person_id = ?`,
       )
-      .get(this.boardId, personId) as { child_board_id: string } | undefined;
+      .get(boardId, personId) as { child_board_id: string } | undefined;
     return row ?? null;
   }
 
@@ -842,6 +856,17 @@ export class TaskflowEngine {
         }
       }
 
+      /* --- Validate bounded recurrence params --- */
+      if (params.max_cycles != null && params.recurrence_end_date != null) {
+        return { success: false, error: 'Cannot set both max_cycles and recurrence_end_date. Choose one bound.' };
+      }
+      if ((params.max_cycles != null || params.recurrence_end_date != null) && !recurrence) {
+        return { success: false, error: 'Bounded recurrence requires a recurring task or recurring project.' };
+      }
+      if (params.max_cycles != null && (!Number.isInteger(params.max_cycles) || params.max_cycles <= 0)) {
+        return { success: false, error: 'max_cycles must be a positive integer.' };
+      }
+
       /* --- Undo snapshot --- */
       const lastMutation = JSON.stringify({
         action: 'created',
@@ -855,9 +880,10 @@ export class TaskflowEngine {
           `INSERT INTO tasks (
             id, board_id, type, title, assignee, column,
             priority, due_date, labels, recurrence,
+            max_cycles, recurrence_end_date,
             child_exec_enabled, child_exec_board_id, child_exec_person_id,
             _last_mutation, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           taskId,
@@ -870,6 +896,8 @@ export class TaskflowEngine {
           dueDate,
           params.labels ? JSON.stringify(params.labels) : '[]',
           recurrence,
+          params.max_cycles ?? null,
+          params.recurrence_end_date ?? null,
           childExecEnabled,
           childExecBoardId,
           childExecPersonId,
@@ -1045,14 +1073,36 @@ export class TaskflowEngine {
   }
 
   /** Advance a recurring task: calculate next due_date and increment cycle. */
-  private advanceRecurringTask(task: any): { new_due_date: string; cycle_number: number } {
+  private advanceRecurringTask(task: any): { cycle_number: number; expired: boolean; new_due_date?: string; reason?: 'max_cycles' | 'end_date' } {
     const recurrence = task.recurrence as 'daily' | 'weekly' | 'monthly' | 'yearly';
     const anchor = task.due_date ? new Date(task.due_date) : new Date();
     const currentCycle = parseInt(task.current_cycle ?? '0', 10);
     const nextCycle = currentCycle + 1;
 
     const newDueDate = advanceDateByRecurrence(anchor, recurrence);
+
+    // Check expiry bounds (mutually exclusive, but check both defensively)
+    let expiryReason: 'max_cycles' | 'end_date' | null = null;
+    if (task.max_cycles != null && nextCycle >= task.max_cycles) {
+      expiryReason = 'max_cycles';
+    } else if (task.recurrence_end_date && newDueDate > task.recurrence_end_date) {
+      expiryReason = 'end_date';
+    }
+
     const now = new Date().toISOString();
+
+    if (expiryReason) {
+      // Leave task in 'done' — just update cycle number
+      this.db
+        .prepare(
+          `UPDATE tasks SET current_cycle = ?, updated_at = ?
+           WHERE board_id = ? AND id = ?`,
+        )
+        .run(String(nextCycle), now, this.taskBoardId(task), task.id);
+      return { cycle_number: nextCycle, expired: true, reason: expiryReason };
+    }
+
+    // Normal advance: reset to next_action
     this.db
       .prepare(
         `UPDATE tasks SET column = 'next_action', due_date = ?, current_cycle = ?, reminders = '[]',
@@ -1071,7 +1121,7 @@ export class TaskflowEngine {
         .run(now, this.taskBoardId(task), task.id);
     }
 
-    return { new_due_date: newDueDate, cycle_number: nextCycle };
+    return { cycle_number: nextCycle, expired: false, new_due_date: newDueDate };
   }
 
   /* ---------------------------------------------------------------- */
@@ -1086,6 +1136,15 @@ export class TaskflowEngine {
       /* --- Resolve sender --- */
       const sender = this.resolvePerson(params.sender_name);
       const senderPersonId = sender?.person_id ?? null;
+
+      /* --- Auto-resolve subtask IDs (e.g. P16.2 → task_id=P16, subtask_id=P16.2) --- */
+      if (!params.subtask_id && params.task_id.includes('.')) {
+        const directTask = this.getTask(params.task_id);
+        if (!directTask) {
+          const parentId = params.task_id.split('.').slice(0, -1).join('.');
+          params = { ...params, task_id: parentId, subtask_id: params.task_id };
+        }
+      }
 
       /* --- Fetch task --- */
       const task = this.requireTask(params.task_id);
@@ -1682,6 +1741,8 @@ export class TaskflowEngine {
           next_note_id: task.next_note_id,
           subtasks: task.subtasks,
           recurrence: task.recurrence,
+          max_cycles: task.max_cycles,
+          recurrence_end_date: task.recurrence_end_date,
           updated_at: task.updated_at,
         },
       });
@@ -1689,6 +1750,16 @@ export class TaskflowEngine {
       /* --- Process each update field --- */
       const changes: string[] = [];
       const notifications: UpdateResult['notifications'] = [];
+
+      /* Reject setting both bounds in one call */
+      if (updates.max_cycles !== undefined && updates.max_cycles !== null &&
+          updates.recurrence_end_date !== undefined && updates.recurrence_end_date !== null) {
+        return { success: false, error: 'Cannot set both max_cycles and recurrence_end_date. Choose one bound.' };
+      }
+      if (updates.max_cycles !== undefined && updates.max_cycles !== null &&
+          (!Number.isInteger(updates.max_cycles) || updates.max_cycles <= 0)) {
+        return { success: false, error: 'max_cycles must be a positive integer.' };
+      }
 
       /* Title */
       if (updates.title !== undefined) {
@@ -1905,13 +1976,35 @@ export class TaskflowEngine {
 
       /* Recurrence (recurring only) */
       if (updates.recurrence !== undefined) {
-        if (task.type !== 'recurring') {
+        if (!task.recurrence) {
           return { success: false, error: 'Recurrence can only be changed on recurring tasks.' };
         }
         this.db
           .prepare(`UPDATE tasks SET recurrence = ? WHERE board_id = ? AND id = ?`)
           .run(updates.recurrence, taskBoardId, task.id);
         changes.push(`Recurrence changed to ${updates.recurrence}`);
+      }
+
+      /* max_cycles (recurring only — setting clears recurrence_end_date) */
+      if (updates.max_cycles !== undefined) {
+        if (!task.recurrence) {
+          return { success: false, error: 'max_cycles can only be set on tasks with recurrence.' };
+        }
+        this.db
+          .prepare(`UPDATE tasks SET max_cycles = ?, recurrence_end_date = NULL WHERE board_id = ? AND id = ?`)
+          .run(updates.max_cycles, taskBoardId, task.id);
+        changes.push(updates.max_cycles === null ? 'Removed max_cycles bound' : `max_cycles set to ${updates.max_cycles}`);
+      }
+
+      /* recurrence_end_date (recurring only — setting clears max_cycles) */
+      if (updates.recurrence_end_date !== undefined) {
+        if (!task.recurrence) {
+          return { success: false, error: 'recurrence_end_date can only be set on tasks with recurrence.' };
+        }
+        this.db
+          .prepare(`UPDATE tasks SET recurrence_end_date = ?, max_cycles = NULL WHERE board_id = ? AND id = ?`)
+          .run(updates.recurrence_end_date, taskBoardId, task.id);
+        changes.push(updates.recurrence_end_date === null ? 'Removed recurrence_end_date bound' : `recurrence_end_date set to ${updates.recurrence_end_date}`);
       }
 
       /* --- After all updates: set updated_at, _last_mutation, record history --- */
@@ -3098,8 +3191,9 @@ export class TaskflowEngine {
                 child_exec_rollup_status, child_exec_last_rollup_at,
                 child_exec_last_rollup_summary,
                 linked_parent_board_id, linked_parent_task_id,
-                subtasks, recurrence, current_cycle
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                subtasks, recurrence, current_cycle,
+                max_cycles, recurrence_end_date
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             )
             .run(
               snapshot.id ?? archived.task_id,
@@ -3132,6 +3226,8 @@ export class TaskflowEngine {
               snapshot.subtasks ?? null,
               snapshot.recurrence ?? null,
               snapshot.current_cycle ?? null,
+              snapshot.max_cycles ?? null,
+              snapshot.recurrence_end_date ?? null,
             );
 
           /* Delete from archive */
@@ -3879,3 +3975,150 @@ export class TaskflowEngine {
     })();
   }
 }
+  private ensureTaskSchema(): void {
+    try {
+      this.db.exec(`ALTER TABLE tasks ADD COLUMN parent_task_id TEXT`);
+    } catch {
+      // Existing DBs may already have the column.
+    }
+    try {
+      this.db.exec(`ALTER TABLE tasks ADD COLUMN max_cycles INTEGER`);
+    } catch {
+      // Existing DBs may already have the column.
+    }
+    try {
+      this.db.exec(`ALTER TABLE tasks ADD COLUMN recurrence_end_date TEXT`);
+    } catch {
+      // Existing DBs may already have the column.
+    }
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(board_id, parent_task_id) WHERE parent_task_id IS NOT NULL`);
+  }
+
+  private linkedChildBoardFor(boardId: string, personId: string | null): {
+    child_exec_enabled: number;
+    child_exec_board_id: string | null;
+    child_exec_person_id: string | null;
+  } {
+    if (!personId) {
+      return {
+        child_exec_enabled: 0,
+        child_exec_board_id: null,
+        child_exec_person_id: null,
+      };
+    }
+    const reg = this.getChildBoardRegistration(personId, boardId);
+    if (!reg) {
+      return {
+        child_exec_enabled: 0,
+        child_exec_board_id: null,
+        child_exec_person_id: null,
+      };
+    }
+    return {
+      child_exec_enabled: 1,
+      child_exec_board_id: reg.child_board_id,
+      child_exec_person_id: personId,
+    };
+  }
+
+  private migrateLegacyProjectSubtasks(): void {
+    const rows = this.db
+      .prepare(
+        `SELECT id, board_id, title, assignee, priority, created_at, updated_at, subtasks
+         FROM tasks
+         WHERE type = 'project' AND subtasks IS NOT NULL AND subtasks != '' AND subtasks != '[]'`,
+      )
+      .all() as Array<{
+        id: string;
+        board_id: string;
+        title: string;
+        assignee: string | null;
+        priority: string | null;
+        created_at: string;
+        updated_at: string;
+        subtasks: string;
+      }>;
+
+    const insertSubtask = this.db.prepare(
+      `INSERT INTO tasks (
+        id, board_id, type, title, assignee, column,
+        parent_task_id, priority, labels,
+        child_exec_enabled, child_exec_board_id, child_exec_person_id,
+        _last_mutation, created_at, updated_at
+      ) VALUES (?, ?, 'simple', ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?)`,
+    );
+    const subtaskExists = this.db.prepare(
+      `SELECT 1 FROM tasks WHERE board_id = ? AND id = ?`,
+    );
+    const clearLegacySubtasks = this.db.prepare(
+      `UPDATE tasks SET subtasks = NULL WHERE board_id = ? AND id = ?`,
+    );
+
+    for (const row of rows) {
+      let subtasks: any[];
+      try {
+        subtasks = JSON.parse(row.subtasks ?? '[]');
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(subtasks) || subtasks.length === 0) continue;
+
+      let allMigrated = true;
+      for (let i = 0; i < subtasks.length; i++) {
+        const subtask = subtasks[i] ?? {};
+        const subtaskId =
+          typeof subtask.id === 'string' && subtask.id.trim() !== ''
+            ? subtask.id
+            : `${row.id}.${i + 1}`;
+        const title =
+          typeof subtask.title === 'string' && subtask.title.trim() !== ''
+            ? subtask.title
+            : `Subtask ${i + 1}`;
+        const assignee =
+          typeof subtask.assignee === 'string' && subtask.assignee.trim() !== ''
+            ? subtask.assignee
+            : row.assignee;
+        const column =
+          typeof subtask.column === 'string' && subtask.column.trim() !== ''
+            ? subtask.column
+            : subtask.status === 'done'
+              ? 'done'
+              : 'next_action';
+        const existing = subtaskExists.get(row.board_id, subtaskId);
+        if (existing) continue;
+
+        const childLink = this.linkedChildBoardFor(row.board_id, assignee ?? null);
+        insertSubtask.run(
+          subtaskId,
+          row.board_id,
+          title,
+          assignee ?? null,
+          column,
+          row.id,
+          row.priority ?? null,
+          childLink.child_exec_enabled,
+          childLink.child_exec_board_id,
+          childLink.child_exec_person_id,
+          null,
+          row.created_at,
+          row.updated_at,
+        );
+      }
+
+      for (let i = 0; i < subtasks.length; i++) {
+        const subtask = subtasks[i] ?? {};
+        const subtaskId =
+          typeof subtask.id === 'string' && subtask.id.trim() !== ''
+            ? subtask.id
+            : `${row.id}.${i + 1}`;
+        if (!subtaskExists.get(row.board_id, subtaskId)) {
+          allMigrated = false;
+          break;
+        }
+      }
+
+      if (allMigrated) {
+        clearLegacySubtasks.run(row.board_id, row.id);
+      }
+    }
+  }

@@ -551,6 +551,8 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         ])).optional().describe('Subtask titles (strings) or objects with title and optional assignee'),
         recurrence: z.enum(['daily', 'weekly', 'monthly', 'yearly']).optional().describe('Recurrence pattern (for recurring type)'),
         recurrence_anchor: z.string().optional().describe('Recurrence anchor date (ISO format)'),
+        max_cycles: z.number().int().positive().optional().describe('Maximum number of cycles before expiry (mutually exclusive with recurrence_end_date)'),
+        recurrence_end_date: z.string().optional().describe('ISO date after which recurrence stops (mutually exclusive with max_cycles)'),
         sender_name: z.string().describe('Name of the person creating the task'),
       },
       async (args) => {
@@ -566,11 +568,11 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       'taskflow_move',
       'Move a task through workflow stages (start, wait, resume, review, approve, reject, conclude, reopen, etc.).',
       {
-        task_id: z.string().describe('Task ID to move'),
+        task_id: z.string().describe('Task ID to move. For project subtasks (e.g. P16.2), use the PARENT project ID (e.g. P16) and pass the subtask ID in subtask_id'),
         action: z.enum(['start', 'wait', 'resume', 'return', 'review', 'approve', 'reject', 'conclude', 'reopen', 'force_start']).describe('Workflow action'),
         sender_name: z.string().describe('Name of the person performing the action'),
         reason: z.string().optional().describe('Reason for the action (e.g., wait/reject reason)'),
-        subtask_id: z.string().optional().describe('Subtask ID for subtask-specific actions'),
+        subtask_id: z.string().optional().describe('Subtask ID to complete within a project (e.g. P16.2). When provided, task_id must be the parent project ID (e.g. P16)'),
       },
       async (args) => {
         const result = engine.move({ ...args, board_id: boardId });
@@ -623,6 +625,8 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           assign_subtask: z.object({ id: z.string(), assignee: z.string() }).optional().describe('Assign a person to a project subtask'),
           unassign_subtask: z.string().optional().describe('Subtask ID to unassign'),
           recurrence: z.string().optional().describe('New recurrence pattern'),
+          max_cycles: z.number().int().positive().nullable().optional().describe('Maximum cycles (null to remove; setting clears recurrence_end_date)'),
+          recurrence_end_date: z.string().nullable().optional().describe('End date for recurrence (null to remove; setting clears max_cycles)'),
         }).describe('Fields to update'),
       },
       async (args) => {
