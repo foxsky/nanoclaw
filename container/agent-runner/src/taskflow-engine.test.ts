@@ -16,7 +16,7 @@ CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT N
 CREATE TABLE archive (board_id TEXT NOT NULL, task_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, assignee TEXT, archive_reason TEXT NOT NULL, linked_parent_board_id TEXT, linked_parent_task_id TEXT, archived_at TEXT NOT NULL, task_snapshot TEXT NOT NULL, history TEXT, PRIMARY KEY (board_id, task_id));
 CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, language TEXT NOT NULL DEFAULT 'pt-BR', timezone TEXT NOT NULL DEFAULT 'America/Fortaleza', runner_standup_task_id TEXT, runner_digest_task_id TEXT, runner_review_task_id TEXT, runner_dst_guard_task_id TEXT, standup_cron_local TEXT, digest_cron_local TEXT, review_cron_local TEXT, standup_cron_utc TEXT, digest_cron_utc TEXT, review_cron_utc TEXT, dst_sync_enabled INTEGER DEFAULT 0, dst_last_offset_minutes INTEGER, dst_last_synced_at TEXT, dst_resync_count_24h INTEGER DEFAULT 0, dst_resync_window_started_at TEXT, attachment_enabled INTEGER DEFAULT 1, attachment_disabled_reason TEXT DEFAULT '', attachment_allowed_formats TEXT DEFAULT '["pdf","jpg","png"]', attachment_max_size_bytes INTEGER DEFAULT 10485760, welcome_sent INTEGER DEFAULT 0, standup_target TEXT DEFAULT 'team', digest_target TEXT DEFAULT 'team', review_target TEXT DEFAULT 'team', runner_standup_secondary_task_id TEXT, runner_digest_secondary_task_id TEXT, runner_review_secondary_task_id TEXT);
 CREATE TABLE attachment_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, source TEXT NOT NULL, filename TEXT NOT NULL, at TEXT NOT NULL, actor_person_id TEXT, affected_task_refs TEXT DEFAULT '[]');
-CREATE TABLE board_config (board_id TEXT PRIMARY KEY, columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]', wip_limit INTEGER DEFAULT 5, next_task_number INTEGER DEFAULT 1, next_note_id INTEGER DEFAULT 1);
+CREATE TABLE board_config (board_id TEXT PRIMARY KEY, columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]', wip_limit INTEGER DEFAULT 5, next_task_number INTEGER DEFAULT 1, next_project_number INTEGER DEFAULT 1, next_recurring_number INTEGER DEFAULT 1, next_note_id INTEGER DEFAULT 1);
 `;
 
 function seedTestDb(db: Database.Database, boardId: string) {
@@ -26,7 +26,7 @@ function seedTestDb(db: Database.Database, boardId: string) {
     `INSERT INTO boards VALUES ('${boardId}', 'test@g.us', 'test', 'standard', 0, 1, NULL)`,
   );
   db.exec(
-    `INSERT INTO board_config VALUES ('${boardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 4, 1)`,
+    `INSERT INTO board_config VALUES ('${boardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 4, 4, 4, 1)`,
   );
   db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${boardId}')`);
   db.exec(
@@ -51,6 +51,30 @@ function seedTestDb(db: Database.Database, boardId: string) {
   db.exec(
     `INSERT INTO tasks (id, board_id, type, title, column, created_at, updated_at)
      VALUES ('T-003', '${boardId}', 'simple', 'Review PR', 'inbox', '${now}', '${now}')`,
+  );
+}
+
+function seedChildBoard(
+  db: Database.Database,
+  opts: {
+    parentBoardId: string;
+    childBoardId: string;
+    personId: string;
+    name: string;
+  },
+) {
+  db.exec(
+    `INSERT INTO boards VALUES ('${opts.childBoardId}', '${opts.childBoardId}@g.us', '${opts.childBoardId}', 'standard', 1, 1, '${opts.parentBoardId}')`,
+  );
+  db.exec(
+    `INSERT INTO board_config VALUES ('${opts.childBoardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 1, 1, 1, 1)`,
+  );
+  db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${opts.childBoardId}')`);
+  db.exec(
+    `INSERT INTO board_people VALUES ('${opts.childBoardId}', '${opts.personId}', '${opts.name}', NULL, 'Dev', 3, NULL)`,
+  );
+  db.exec(
+    `INSERT INTO board_admins VALUES ('${opts.childBoardId}', '${opts.personId}', '5585999990009', 'manager', 1)`,
   );
 }
 
@@ -803,19 +827,19 @@ describe('TaskflowEngine', () => {
         sender_name: 'Alexandre',
       });
       expect(r.success).toBe(true);
-      expect(r.task_id).toBe('P4');
+      expect(r.task_id).toBe('P1');
       expect(r.column).toBe('inbox'); // no assignee → inbox
 
-      const task = engine.getTask('P4');
+      const task = engine.getTask('P1');
       expect(task.type).toBe('project');
       // Subtasks are stored as real task rows with parent_task_id
       const subtaskRows = db
         .prepare(`SELECT id, title, column FROM tasks WHERE board_id = ? AND parent_task_id = ? ORDER BY id`)
-        .all(BOARD_ID, 'P4') as Array<{ id: string; title: string; column: string }>;
+        .all(BOARD_ID, 'P1') as Array<{ id: string; title: string; column: string }>;
       expect(subtaskRows).toHaveLength(3);
-      expect(subtaskRows[0]).toMatchObject({ id: 'P4.1', title: 'Design', column: 'inbox' });
-      expect(subtaskRows[1]).toMatchObject({ id: 'P4.2', title: 'Implement', column: 'inbox' });
-      expect(subtaskRows[2]).toMatchObject({ id: 'P4.3', title: 'Test', column: 'inbox' });
+      expect(subtaskRows[0]).toMatchObject({ id: 'P1.1', title: 'Design', column: 'inbox' });
+      expect(subtaskRows[1]).toMatchObject({ id: 'P1.2', title: 'Implement', column: 'inbox' });
+      expect(subtaskRows[2]).toMatchObject({ id: 'P1.3', title: 'Test', column: 'inbox' });
     });
 
     it('creates recurring task', () => {
@@ -827,9 +851,9 @@ describe('TaskflowEngine', () => {
         sender_name: 'Alexandre',
       });
       expect(r.success).toBe(true);
-      expect(r.task_id).toBe('R4');
+      expect(r.task_id).toBe('R1');
 
-      const task = engine.getTask('R4');
+      const task = engine.getTask('R1');
       expect(task.type).toBe('recurring');
       expect(task.recurrence).toBe('weekly');
       expect(task.due_date).toBeTruthy(); // auto-calculated
@@ -2696,6 +2720,258 @@ describe('TaskflowEngine', () => {
       expect(rw.data!.stats!.completed_week).toBe(0);
       expect(rw.data!.stats!.created_week).toBe(0);
       expect(rw.data!.stats!.trend).toBe('same');
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  bounded recurrence                                               */
+  /* ---------------------------------------------------------------- */
+
+  describe('bounded recurrence', () => {
+    it('creates recurring task with max_cycles', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'recurring',
+        title: 'Bounded weekly',
+        recurrence: 'weekly',
+        max_cycles: 6,
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.task_id).toMatch(/^R/);
+
+      const task = engine.getTask(r.task_id!);
+      expect(task.max_cycles).toBe(6);
+      expect(task.recurrence_end_date).toBeNull();
+    });
+
+    it('creates recurring task with recurrence_end_date', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'recurring',
+        title: 'End-dated weekly',
+        recurrence: 'weekly',
+        recurrence_end_date: '2026-12-31',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+
+      const task = engine.getTask(r.task_id!);
+      expect(task.recurrence_end_date).toBe('2026-12-31');
+      expect(task.max_cycles).toBeNull();
+    });
+
+    it('rejects creation with both max_cycles and recurrence_end_date', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'recurring',
+        title: 'Both bounds',
+        recurrence: 'weekly',
+        max_cycles: 6,
+        recurrence_end_date: '2026-12-31',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('Cannot set both');
+    });
+
+    it('rejects bounded recurrence on non-recurring task', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Not recurring',
+        max_cycles: 3,
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('requires a recurring task');
+    });
+
+    it('expires recurring task when max_cycles reached', () => {
+      const now = new Date().toISOString();
+      const dueDate = new Date().toISOString().slice(0, 10);
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, recurrence, due_date, current_cycle, max_cycles, created_at, updated_at)
+         VALUES ('R-MC1', '${BOARD_ID}', 'recurring', 'One-shot recurring', 'person-1', 'in_progress', 'daily', '${dueDate}', '0', 1, '${now}', '${now}')`,
+      );
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'R-MC1',
+        action: 'conclude',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.recurring_cycle).toBeTruthy();
+      expect(r.recurring_cycle!.expired).toBe(true);
+      expect(r.recurring_cycle!.reason).toBe('max_cycles');
+      expect(r.recurring_cycle!.new_due_date).toBeUndefined();
+
+      const task = engine.getTask('R-MC1');
+      expect(task.column).toBe('done');
+      expect(task.current_cycle).toBe('1');
+    });
+
+    it('expires recurring task when recurrence_end_date passed', () => {
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, recurrence, due_date, current_cycle, recurrence_end_date, created_at, updated_at)
+         VALUES ('R-ED1', '${BOARD_ID}', 'recurring', 'Past-end monthly', 'person-1', 'in_progress', 'monthly', '2020-01-01', '0', '2020-01-01', '${now}', '${now}')`,
+      );
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'R-ED1',
+        action: 'conclude',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.recurring_cycle).toBeTruthy();
+      expect(r.recurring_cycle!.expired).toBe(true);
+      expect(r.recurring_cycle!.reason).toBe('end_date');
+    });
+
+    it('advances normally when no bounds set', () => {
+      const now = new Date().toISOString();
+      const dueDate = new Date().toISOString().slice(0, 10);
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, recurrence, due_date, current_cycle, created_at, updated_at)
+         VALUES ('R-UB1', '${BOARD_ID}', 'recurring', 'Unbounded weekly', 'person-1', 'in_progress', 'weekly', '${dueDate}', '0', '${now}', '${now}')`,
+      );
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'R-UB1',
+        action: 'conclude',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      expect(r.recurring_cycle).toBeTruthy();
+      expect(r.recurring_cycle!.expired).toBe(false);
+      expect(r.recurring_cycle!.new_due_date).toBeDefined();
+    });
+
+    it('updates max_cycles on recurring task', () => {
+      const now = new Date().toISOString();
+      const dueDate = new Date().toISOString().slice(0, 10);
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, recurrence, due_date, current_cycle, created_at, updated_at)
+         VALUES ('R-UM1', '${BOARD_ID}', 'recurring', 'Update me', 'person-1', 'in_progress', 'weekly', '${dueDate}', '0', '${now}', '${now}')`,
+      );
+
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'R-UM1',
+        sender_name: 'Alexandre',
+        updates: { max_cycles: 12 },
+      });
+      expect(r.success).toBe(true);
+      expect(r.changes).toContain('max_cycles set to 12');
+
+      const task = engine.getTask('R-UM1');
+      expect(task.max_cycles).toBe(12);
+    });
+
+    it('setting recurrence_end_date clears max_cycles', () => {
+      const now = new Date().toISOString();
+      const dueDate = new Date().toISOString().slice(0, 10);
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, recurrence, due_date, current_cycle, max_cycles, created_at, updated_at)
+         VALUES ('R-CL1', '${BOARD_ID}', 'recurring', 'Clear cycles', 'person-1', 'in_progress', 'weekly', '${dueDate}', '0', 10, '${now}', '${now}')`,
+      );
+
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'R-CL1',
+        sender_name: 'Alexandre',
+        updates: { recurrence_end_date: '2026-12-31' },
+      });
+      expect(r.success).toBe(true);
+
+      const task = engine.getTask('R-CL1');
+      expect(task.max_cycles).toBeNull();
+      expect(task.recurrence_end_date).toBe('2026-12-31');
+    });
+
+    it('rejects update with both bounds', () => {
+      const now = new Date().toISOString();
+      const dueDate = new Date().toISOString().slice(0, 10);
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, recurrence, due_date, current_cycle, created_at, updated_at)
+         VALUES ('R-RJ1', '${BOARD_ID}', 'recurring', 'Reject both', 'person-1', 'in_progress', 'weekly', '${dueDate}', '0', '${now}', '${now}')`,
+      );
+
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'R-RJ1',
+        sender_name: 'Alexandre',
+        updates: { max_cycles: 5, recurrence_end_date: '2026-12-31' },
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('Cannot set both');
+    });
+
+    it('recurring project with bounded recurrence expires on conclude', () => {
+      const now = new Date().toISOString();
+      const dueDate = new Date().toISOString().slice(0, 10);
+      // Insert a recurring project directly with subtask rows already done
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, recurrence, due_date, current_cycle, max_cycles, subtasks, created_at, updated_at)
+         VALUES ('P-BR1', '${BOARD_ID}', 'project', 'Bounded project', 'person-1', 'in_progress', 'weekly', '${dueDate}', '0', 1, '${JSON.stringify([{ id: 'P-BR1.1', title: 'Step A', status: 'done' }, { id: 'P-BR1.2', title: 'Step B', status: 'done' }]).replace(/'/g, "''")}', '${now}', '${now}')`,
+      );
+      // Insert subtask rows in done column
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, parent_task_id, created_at, updated_at)
+         VALUES ('P-BR1.1', '${BOARD_ID}', 'simple', 'Step A', 'person-1', 'done', 'P-BR1', '${now}', '${now}')`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, parent_task_id, created_at, updated_at)
+         VALUES ('P-BR1.2', '${BOARD_ID}', 'simple', 'Step B', 'person-1', 'done', 'P-BR1', '${now}', '${now}')`,
+      );
+
+      const cr = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'P-BR1',
+        action: 'conclude',
+        sender_name: 'Alexandre',
+      });
+      expect(cr.success).toBe(true);
+      expect(cr.recurring_cycle).toBeTruthy();
+      expect(cr.recurring_cycle!.expired).toBe(true);
+      expect(cr.recurring_cycle!.reason).toBe('max_cycles');
+
+      const task = engine.getTask('P-BR1');
+      expect(task.column).toBe('done');
+    });
+
+    it('undo restores max_cycles after update', () => {
+      const now = new Date().toISOString();
+      const dueDate = new Date().toISOString().slice(0, 10);
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, recurrence, due_date, current_cycle, max_cycles, created_at, updated_at)
+         VALUES ('R-UN1', '${BOARD_ID}', 'recurring', 'Undo cycles', 'person-1', 'in_progress', 'weekly', '${dueDate}', '0', 5, '${now}', '${now}')`,
+      );
+
+      // Update max_cycles to 12
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: 'R-UN1',
+        sender_name: 'Alexandre',
+        updates: { max_cycles: 12 },
+      });
+
+      let task = engine.getTask('R-UN1');
+      expect(task.max_cycles).toBe(12);
+
+      // Undo the update
+      const undoResult = engine.undo({
+        board_id: BOARD_ID,
+        sender_name: 'Alexandre',
+      });
+      expect(undoResult.success).toBe(true);
+
+      task = engine.getTask('R-UN1');
+      expect(task.max_cycles).toBe(5);
     });
   });
 });
