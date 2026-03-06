@@ -1920,6 +1920,34 @@ describe('taskflow skill package', () => {
     expect(content).toContain("type: 'recurring'");
   });
 
+  it('CLAUDE.md.template has bounded recurrence commands', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    expect(content).toContain('max_cycles');
+    expect(content).toContain('recurrence_end_date');
+    expect(content).toContain('ciclo final');
+    expect(content).toContain('Recorrencia encerrada');
+  });
+
+  it('CLAUDE.md.template documents bounded recurrence exclusivity', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    expect(content).toContain('mutually exclusive');
+  });
+
+  it('test schema includes bounded recurrence columns', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'add', 'container', 'agent-runner', 'src', 'taskflow-engine.test.ts'),
+      'utf-8',
+    );
+    expect(content).toContain('max_cycles INTEGER');
+    expect(content).toContain('recurrence_end_date TEXT');
+  });
+
   // ── Remaining passing tests that don't need modification ──────────
 
   it('operator guide and user manual reflect SQLite-only storage', () => {
