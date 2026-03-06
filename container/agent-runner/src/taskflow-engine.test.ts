@@ -26,7 +26,7 @@ function seedTestDb(db: Database.Database, boardId: string) {
     `INSERT INTO boards VALUES ('${boardId}', 'test@g.us', 'test', 'standard', 0, 1, NULL)`,
   );
   db.exec(
-    `INSERT INTO board_config VALUES ('${boardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 4, 4, 4, 1)`,
+    `INSERT INTO board_config VALUES ('${boardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 4, 1, 1, 1)`,
   );
   db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${boardId}')`);
   db.exec(
@@ -840,6 +840,54 @@ describe('TaskflowEngine', () => {
       expect(subtaskRows[0]).toMatchObject({ id: 'P1.1', title: 'Design', column: 'inbox' });
       expect(subtaskRows[1]).toMatchObject({ id: 'P1.2', title: 'Implement', column: 'inbox' });
       expect(subtaskRows[2]).toMatchObject({ id: 'P1.3', title: 'Test', column: 'inbox' });
+    });
+
+    it('creates subtask rows with child-board linkage for delegated assignees', () => {
+      db.exec(
+        `INSERT INTO child_board_registrations VALUES ('${BOARD_ID}', 'person-2', 'board-child-gio')`,
+      );
+      seedChildBoard(db, {
+        parentBoardId: BOARD_ID,
+        childBoardId: 'board-child-gio',
+        personId: 'person-2',
+        name: 'Giovanni',
+      });
+
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'project',
+        title: 'Launch outreach',
+        subtasks: [{ title: 'Call Jimmy', assignee: 'Giovanni' }],
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(true);
+      expect(r.task_id).toBe('P1');
+
+      const subtask = db
+        .prepare(
+          `SELECT id, parent_task_id, assignee, child_exec_enabled, child_exec_board_id, child_exec_person_id
+           FROM tasks WHERE board_id = ? AND id = ?`,
+        )
+        .get(BOARD_ID, 'P1.1') as {
+        id: string;
+        parent_task_id: string;
+        assignee: string;
+        child_exec_enabled: number;
+        child_exec_board_id: string | null;
+        child_exec_person_id: string | null;
+      };
+      expect(subtask).toEqual({
+        id: 'P1.1',
+        parent_task_id: 'P1',
+        assignee: 'person-2',
+        child_exec_enabled: 1,
+        child_exec_board_id: 'board-child-gio',
+        child_exec_person_id: 'person-2',
+      });
+
+      const childEngine = new TaskflowEngine(db, 'board-child-gio');
+      expect(childEngine.getTask('P1.1')?.id).toBe('P1.1');
     });
 
     it('creates recurring task', () => {
@@ -1880,6 +1928,225 @@ describe('TaskflowEngine', () => {
       });
       expect(r.success).toBe(true);
       expect(r.notifications).toBeUndefined();
+    });
+
+    it('assign_subtask links the subtask to the assignee child board', () => {
+      db.exec(
+        `INSERT INTO child_board_registrations VALUES ('${BOARD_ID}', 'person-2', 'board-child-gio')`,
+      );
+      seedChildBoard(db, {
+        parentBoardId: BOARD_ID,
+        childBoardId: 'board-child-gio',
+        personId: 'person-2',
+        name: 'Giovanni',
+      });
+      engine.create({
+        board_id: BOARD_ID,
+        type: 'project',
+        title: 'Sales follow-up',
+        subtasks: ['Call Jimmy'],
+        sender_name: 'Alexandre',
+      });
+
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'P1',
+        sender_name: 'Alexandre',
+        updates: {
+          assign_subtask: {
+            id: 'P1.1',
+            assignee: 'Giovanni',
+          },
+        },
+      });
+
+      expect(r.success).toBe(true);
+      const subtask = db
+        .prepare(
+          `SELECT assignee, child_exec_enabled, child_exec_board_id, child_exec_person_id, "column"
+           FROM tasks WHERE board_id = ? AND id = ?`,
+        )
+        .get(BOARD_ID, 'P1.1') as {
+        assignee: string;
+        child_exec_enabled: number;
+        child_exec_board_id: string | null;
+        child_exec_person_id: string | null;
+        column: string;
+      };
+      expect(subtask).toEqual({
+        assignee: 'person-2',
+        child_exec_enabled: 1,
+        child_exec_board_id: 'board-child-gio',
+        child_exec_person_id: 'person-2',
+        column: 'next_action',
+      });
+
+      const childEngine = new TaskflowEngine(db, 'board-child-gio');
+      expect(childEngine.getTask('P1.1')?.id).toBe('P1.1');
+    });
+
+    it('unassign_subtask clears child-board linkage', () => {
+      db.exec(
+        `INSERT INTO child_board_registrations VALUES ('${BOARD_ID}', 'person-2', 'board-child-gio')`,
+      );
+      seedChildBoard(db, {
+        parentBoardId: BOARD_ID,
+        childBoardId: 'board-child-gio',
+        personId: 'person-2',
+        name: 'Giovanni',
+      });
+      engine.create({
+        board_id: BOARD_ID,
+        type: 'project',
+        title: 'Sales follow-up',
+        subtasks: [{ title: 'Call Jimmy', assignee: 'Giovanni' }],
+        sender_name: 'Alexandre',
+      });
+
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'P1',
+        sender_name: 'Alexandre',
+        updates: {
+          unassign_subtask: 'P1.1',
+        },
+      });
+
+      expect(r.success).toBe(true);
+      const subtask = db
+        .prepare(
+          `SELECT assignee, child_exec_enabled, child_exec_board_id, child_exec_person_id
+           FROM tasks WHERE board_id = ? AND id = ?`,
+        )
+        .get(BOARD_ID, 'P1.1') as {
+        assignee: string | null;
+        child_exec_enabled: number;
+        child_exec_board_id: string | null;
+        child_exec_person_id: string | null;
+      };
+      expect(subtask).toEqual({
+        assignee: null,
+        child_exec_enabled: 0,
+        child_exec_board_id: null,
+        child_exec_person_id: null,
+      });
+
+      const childEngine = new TaskflowEngine(db, 'board-child-gio');
+      expect(childEngine.getTask('P1.1')).toBeNull();
+    });
+  });
+
+  describe('legacy project subtask migration', () => {
+    it('migrates JSON subtasks into real rows that the child board can conclude', () => {
+      const legacyDb = new Database(':memory:');
+      legacyDb.exec(`
+        CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, board_role TEXT DEFAULT 'standard', hierarchy_level INTEGER, max_depth INTEGER, parent_board_id TEXT);
+        CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT NULL, phone TEXT, role TEXT DEFAULT 'member', wip_limit INTEGER, notification_group_jid TEXT, PRIMARY KEY (board_id, person_id));
+        CREATE TABLE board_admins (board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL, admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
+        CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
+        CREATE TABLE board_groups (board_id TEXT, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, group_role TEXT DEFAULT 'team', PRIMARY KEY (board_id, group_jid));
+        CREATE TABLE tasks (
+          id TEXT NOT NULL,
+          board_id TEXT NOT NULL,
+          type TEXT NOT NULL DEFAULT 'simple',
+          title TEXT NOT NULL,
+          assignee TEXT,
+          next_action TEXT,
+          waiting_for TEXT,
+          column TEXT DEFAULT 'inbox',
+          priority TEXT,
+          due_date TEXT,
+          description TEXT,
+          labels TEXT DEFAULT '[]',
+          blocked_by TEXT DEFAULT '[]',
+          reminders TEXT DEFAULT '[]',
+          next_note_id INTEGER DEFAULT 1,
+          notes TEXT DEFAULT '[]',
+          _last_mutation TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          child_exec_enabled INTEGER DEFAULT 0,
+          child_exec_board_id TEXT,
+          child_exec_person_id TEXT,
+          child_exec_rollup_status TEXT,
+          child_exec_last_rollup_at TEXT,
+          child_exec_last_rollup_summary TEXT,
+          linked_parent_board_id TEXT,
+          linked_parent_task_id TEXT,
+          subtasks TEXT,
+          recurrence TEXT,
+          current_cycle TEXT,
+          PRIMARY KEY (board_id, id)
+        );
+        CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, task_id TEXT NOT NULL, action TEXT NOT NULL, by TEXT, at TEXT NOT NULL, details TEXT);
+        CREATE TABLE archive (board_id TEXT NOT NULL, task_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, assignee TEXT, archive_reason TEXT NOT NULL, linked_parent_board_id TEXT, linked_parent_task_id TEXT, archived_at TEXT NOT NULL, task_snapshot TEXT NOT NULL, history TEXT, PRIMARY KEY (board_id, task_id));
+        CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, language TEXT NOT NULL DEFAULT 'pt-BR', timezone TEXT NOT NULL DEFAULT 'America/Fortaleza');
+        CREATE TABLE attachment_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, source TEXT NOT NULL, filename TEXT NOT NULL, at TEXT NOT NULL, actor_person_id TEXT, affected_task_refs TEXT DEFAULT '[]');
+        CREATE TABLE board_config (board_id TEXT PRIMARY KEY, columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]', wip_limit INTEGER DEFAULT 5, next_task_number INTEGER DEFAULT 17, next_note_id INTEGER DEFAULT 1);
+
+        INSERT INTO boards VALUES ('board-parent', 'parent@g.us', 'parent', 'standard', 0, 1, NULL);
+        INSERT INTO boards VALUES ('board-rafael', 'rafael@g.us', 'rafael', 'standard', 1, 1, 'board-parent');
+        INSERT INTO board_config VALUES ('board-parent', '["inbox","next_action","in_progress","waiting","review","done"]', 5, 17, 1);
+        INSERT INTO board_config VALUES ('board-rafael', '["inbox","next_action","in_progress","waiting","review","done"]', 5, 1, 1);
+        INSERT INTO board_runtime_config (board_id) VALUES ('board-parent');
+        INSERT INTO board_runtime_config (board_id) VALUES ('board-rafael');
+        INSERT INTO board_people VALUES ('board-parent', 'person-1', 'Alexandre', NULL, 'Gestor', 3, NULL);
+        INSERT INTO board_people VALUES ('board-parent', 'rafael', 'Rafael', NULL, 'Dev', 3, NULL);
+        INSERT INTO board_people VALUES ('board-rafael', 'rafael', 'Rafael', NULL, 'Dev', 3, NULL);
+        INSERT INTO board_admins VALUES ('board-parent', 'person-1', '5585999990001', 'manager', 1);
+        INSERT INTO board_admins VALUES ('board-rafael', 'rafael', '5585999990008', 'manager', 1);
+        INSERT INTO child_board_registrations VALUES ('board-parent', 'rafael', 'board-rafael');
+        INSERT INTO tasks (id, board_id, type, title, assignee, column, subtasks, created_at, updated_at)
+        VALUES (
+          'P16',
+          'board-parent',
+          'project',
+          'Legacy project',
+          'person-1',
+          'next_action',
+          '[{"id":"P16.1","title":"Preparar resumo","column":"done","assignee":"person-1"},{"id":"P16.2","title":"Call Jimmy","column":"next_action","assignee":"rafael"}]',
+          '2026-03-06T12:39:17Z',
+          '2026-03-06T12:39:17Z'
+        );
+      `);
+
+      const parentEngine = new TaskflowEngine(legacyDb, 'board-parent');
+      const childEngine = new TaskflowEngine(legacyDb, 'board-rafael');
+
+      const migrated = legacyDb
+        .prepare(
+          `SELECT parent_task_id, child_exec_enabled, child_exec_board_id, child_exec_person_id
+           FROM tasks WHERE board_id = ? AND id = ?`,
+        )
+        .get('board-parent', 'P16.2') as {
+        parent_task_id: string;
+        child_exec_enabled: number;
+        child_exec_board_id: string | null;
+        child_exec_person_id: string | null;
+      };
+      expect(migrated).toEqual({
+        parent_task_id: 'P16',
+        child_exec_enabled: 1,
+        child_exec_board_id: 'board-rafael',
+        child_exec_person_id: 'rafael',
+      });
+      expect(childEngine.getTask('P16.2')?.id).toBe('P16.2');
+
+      const moveResult = childEngine.move({
+        board_id: 'board-rafael',
+        task_id: 'P16.2',
+        action: 'conclude',
+        sender_name: 'Rafael',
+      });
+      expect(moveResult.success).toBe(true);
+      expect(parentEngine.getTask('P16.2')?.column).toBe('done');
+
+      const parent = legacyDb
+        .prepare(`SELECT subtasks FROM tasks WHERE board_id = ? AND id = ?`)
+        .get('board-parent', 'P16') as { subtasks: string | null };
+      expect(parent.subtasks).toBeNull();
+
+      legacyDb.close();
     });
   });
 

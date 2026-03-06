@@ -168,9 +168,142 @@ CREATE TABLE IF NOT EXISTS board_config (
   columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]',
   wip_limit INTEGER DEFAULT 5,
   next_task_number INTEGER DEFAULT 1,
+  next_project_number INTEGER DEFAULT 1,
+  next_recurring_number INTEGER DEFAULT 1,
   next_note_id INTEGER DEFAULT 1
 );
 `;
+
+function linkedChildBoardFor(
+  db: Database.Database,
+  boardId: string,
+  personId: string | null,
+): { child_exec_enabled: number; child_exec_board_id: string | null; child_exec_person_id: string | null } {
+  if (!personId) {
+    return {
+      child_exec_enabled: 0,
+      child_exec_board_id: null,
+      child_exec_person_id: null,
+    };
+  }
+  const row = db
+    .prepare(
+      `SELECT child_board_id FROM child_board_registrations
+       WHERE parent_board_id = ? AND person_id = ?`,
+    )
+    .get(boardId, personId) as { child_board_id: string } | undefined;
+  if (!row) {
+    return {
+      child_exec_enabled: 0,
+      child_exec_board_id: null,
+      child_exec_person_id: null,
+    };
+  }
+  return {
+    child_exec_enabled: 1,
+    child_exec_board_id: row.child_board_id,
+    child_exec_person_id: personId,
+  };
+}
+
+function migrateLegacyProjectSubtasks(db: Database.Database): void {
+  const rows = db
+    .prepare(
+      `SELECT id, board_id, assignee, priority, created_at, updated_at, subtasks
+       FROM tasks
+       WHERE type = 'project' AND subtasks IS NOT NULL AND subtasks != '' AND subtasks != '[]'`,
+    )
+    .all() as Array<{
+      id: string;
+      board_id: string;
+      assignee: string | null;
+      priority: string | null;
+      created_at: string;
+      updated_at: string;
+      subtasks: string;
+    }>;
+
+  const subtaskExists = db.prepare(`SELECT 1 FROM tasks WHERE board_id = ? AND id = ?`);
+  const insertSubtask = db.prepare(
+    `INSERT INTO tasks (
+      id, board_id, type, title, assignee, column,
+      parent_task_id, priority, labels,
+      child_exec_enabled, child_exec_board_id, child_exec_person_id,
+      _last_mutation, created_at, updated_at
+    ) VALUES (?, ?, 'simple', ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?)`,
+  );
+  const clearLegacySubtasks = db.prepare(
+    `UPDATE tasks SET subtasks = NULL WHERE board_id = ? AND id = ?`,
+  );
+
+  for (const row of rows) {
+    let subtasks: any[];
+    try {
+      subtasks = JSON.parse(row.subtasks ?? '[]');
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(subtasks) || subtasks.length === 0) continue;
+
+    let allMigrated = true;
+    for (let i = 0; i < subtasks.length; i++) {
+      const subtask = subtasks[i] ?? {};
+      const subtaskId =
+        typeof subtask.id === 'string' && subtask.id.trim() !== ''
+          ? subtask.id
+          : `${row.id}.${i + 1}`;
+      const title =
+        typeof subtask.title === 'string' && subtask.title.trim() !== ''
+          ? subtask.title
+          : `Subtask ${i + 1}`;
+      const assignee =
+        typeof subtask.assignee === 'string' && subtask.assignee.trim() !== ''
+          ? subtask.assignee
+          : row.assignee;
+      const column =
+        typeof subtask.column === 'string' && subtask.column.trim() !== ''
+          ? subtask.column
+          : subtask.status === 'done'
+            ? 'done'
+            : 'next_action';
+
+      if (subtaskExists.get(row.board_id, subtaskId)) continue;
+
+      const childLink = linkedChildBoardFor(db, row.board_id, assignee ?? null);
+      insertSubtask.run(
+        subtaskId,
+        row.board_id,
+        title,
+        assignee ?? null,
+        column,
+        row.id,
+        row.priority ?? null,
+        childLink.child_exec_enabled,
+        childLink.child_exec_board_id,
+        childLink.child_exec_person_id,
+        null,
+        row.created_at,
+        row.updated_at,
+      );
+    }
+
+    for (let i = 0; i < subtasks.length; i++) {
+      const subtask = subtasks[i] ?? {};
+      const subtaskId =
+        typeof subtask.id === 'string' && subtask.id.trim() !== ''
+          ? subtask.id
+          : `${row.id}.${i + 1}`;
+      if (!subtaskExists.get(row.board_id, subtaskId)) {
+        allMigrated = false;
+        break;
+      }
+    }
+
+    if (allMigrated) {
+      clearLegacySubtasks.run(row.board_id, row.id);
+    }
+  }
+}
 
 /**
  * Initialize the TaskFlow database at the given path (or default location).
@@ -198,6 +331,24 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   try { db.exec('ALTER TABLE tasks ADD COLUMN max_cycles INTEGER'); } catch {}
   try { db.exec('ALTER TABLE tasks ADD COLUMN recurrence_end_date TEXT'); } catch {}
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(board_id, parent_task_id) WHERE parent_task_id IS NOT NULL`);
+
+  /* --- Per-prefix counters (P, T, R) --- */
+  try { db.exec('ALTER TABLE board_config ADD COLUMN next_project_number INTEGER DEFAULT 1'); } catch {}
+  try { db.exec('ALTER TABLE board_config ADD COLUMN next_recurring_number INTEGER DEFAULT 1'); } catch {}
+  // Seed new counters from existing task IDs (one-time migration)
+  db.exec(`
+    UPDATE board_config SET
+      next_project_number = COALESCE((
+        SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) + 1
+        FROM tasks WHERE tasks.board_id = board_config.board_id AND id GLOB 'P[0-9]*' AND id NOT GLOB 'P*.*'
+      ), next_project_number),
+      next_recurring_number = COALESCE((
+        SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) + 1
+        FROM tasks WHERE tasks.board_id = board_config.board_id AND id GLOB 'R[0-9]*'
+      ), next_recurring_number)
+    WHERE next_project_number = 1 OR next_recurring_number = 1
+  `);
+  migrateLegacyProjectSubtasks(db);
 
   return db;
 }
