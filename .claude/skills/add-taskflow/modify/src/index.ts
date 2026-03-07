@@ -44,7 +44,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
-import { findChannel, formatMessages, formatOutbound } from './router.js';
+import { findChannel, formatMessages, formatOutbound, stripInternalTags } from './router.js';
 import {
   isSenderAllowed,
   isTriggerAllowed,
@@ -208,6 +208,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
+  // Derive group-specific sender name from trigger (e.g. "@Case" → "Case").
+  // Falls back to global ASSISTANT_NAME for groups without a custom trigger.
+  const groupSender = getGroupSenderName(group.trigger);
+
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
@@ -215,11 +219,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         typeof result.result === 'string'
           ? result.result
           : JSON.stringify(result.result);
-      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+      const text = stripInternalTags(raw);
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
       if (text) {
-        await channel.sendMessage(chatJid, text);
+        await channel.sendMessage(chatJid, text, groupSender);
         outputSentToUser = true;
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)

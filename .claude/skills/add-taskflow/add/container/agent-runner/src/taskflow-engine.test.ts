@@ -1003,11 +1003,11 @@ describe('TaskflowEngine', () => {
       expect(r1.task_id).toBe('T4');
       expect(r2.task_id).toBe('T5');
 
-      // Verify next_task_number in DB is now 6
-      const config = db
-        .prepare(`SELECT next_task_number FROM board_config WHERE board_id = ?`)
-        .get(BOARD_ID) as { next_task_number: number };
-      expect(config.next_task_number).toBe(6);
+      // Verify counter in board_id_counters is now 6
+      const counter = db
+        .prepare(`SELECT next_number FROM board_id_counters WHERE board_id = ? AND prefix = 'T'`)
+        .get(BOARD_ID) as { next_number: number };
+      expect(counter.next_number).toBe(6);
     });
   });
 

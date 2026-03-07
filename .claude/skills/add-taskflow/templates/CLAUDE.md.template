@@ -81,9 +81,9 @@ Voice messages arrive pre-transcribed by the host as `[Voice: <transcribed text>
 
 ## Tool vs. Direct SQL
 
-**Preferred path:** Use TaskFlow MCP tools for all standard commands. Tools handle validation, permissions, history recording, undo snapshots, and notifications automatically.
+**Preferred path:** Use TaskFlow MCP tools for all standard commands. Tools handle validation, permissions, history recording, undo snapshots, ID generation, and notifications automatically. **NEVER use direct SQL to create, move, or update tasks** — the engine generates task IDs (T1, P2, R3) with internal counters that direct SQL bypasses, causing ID collisions and format errors.
 
-**SQL fallback:** Use `mcp__sqlite__read_query` / `mcp__sqlite__write_query` when:
+**SQL fallback:** Use `mcp__sqlite__read_query` / `mcp__sqlite__write_query` ONLY for READ queries or when:
 - The request doesn't map to a single tool call
 - A tool returns an error but you see a valid workaround
 - Ad-hoc questions combining data in novel ways

@@ -500,25 +500,42 @@ export class TaskflowEngine {
     try { this.db.exec(`ALTER TABLE board_runtime_config ADD COLUMN state TEXT`); } catch {}
     try { this.db.exec(`ALTER TABLE board_runtime_config ADD COLUMN city TEXT`); } catch {}
 
-    try { this.db.exec(`ALTER TABLE board_config ADD COLUMN next_project_number INTEGER DEFAULT 1`); } catch {}
-    try { this.db.exec(`ALTER TABLE board_config ADD COLUMN next_recurring_number INTEGER DEFAULT 1`); } catch {}
+    // Per-prefix counters table (extensible for any future task type prefixes)
     this.db.exec(`
-      UPDATE board_config SET
-        next_project_number = COALESCE((
-          SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) + 1
-          FROM tasks
-          WHERE tasks.board_id = board_config.board_id
-            AND id GLOB 'P[0-9]*'
-            AND id NOT GLOB 'P*.*'
-        ), next_project_number),
-        next_recurring_number = COALESCE((
-          SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) + 1
-          FROM tasks
-          WHERE tasks.board_id = board_config.board_id
-            AND id GLOB 'R[0-9]*'
-        ), next_recurring_number)
-      WHERE next_project_number = 1 OR next_recurring_number = 1
+      CREATE TABLE IF NOT EXISTS board_id_counters (
+        board_id TEXT NOT NULL,
+        prefix TEXT NOT NULL,
+        next_number INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (board_id, prefix)
+      )
     `);
+
+    // Migrate legacy per-column counters into the new table (one-time)
+    const hasLegacy = (() => {
+      try {
+        return this.db.prepare(`SELECT next_task_number FROM board_config WHERE board_id = ?`).get(this.boardId) as any;
+      } catch { return null; }
+    })();
+    if (hasLegacy) {
+      const legacyMap: Record<string, string> = { T: 'next_task_number', P: 'next_project_number', R: 'next_recurring_number' };
+      for (const [prefix, col] of Object.entries(legacyMap)) {
+        const existing = this.db.prepare(`SELECT next_number FROM board_id_counters WHERE board_id = ? AND prefix = ?`).get(this.boardId, prefix) as any;
+        if (!existing) {
+          let val: number;
+          try {
+            const row = this.db.prepare(`SELECT ${col} FROM board_config WHERE board_id = ?`).get(this.boardId) as any;
+            val = row?.[col] ?? 1;
+          } catch { val = 1; }
+          // Also check max existing ID in tasks to avoid collisions
+          const maxRow = this.db.prepare(
+            `SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) AS m FROM tasks WHERE board_id = ? AND id GLOB ? AND id NOT GLOB ?`
+          ).get(this.boardId, `${prefix}[0-9]*`, `${prefix}*.*`) as any;
+          const fromTasks = (maxRow?.m ?? 0) + 1;
+          this.db.prepare(`INSERT INTO board_id_counters (board_id, prefix, next_number) VALUES (?, ?, ?)`)
+            .run(this.boardId, prefix, Math.max(val, fromTasks));
+        }
+      }
+    }
   }
 
   private migrateLegacyProjectSubtasks(): void {
@@ -945,12 +962,6 @@ export class TaskflowEngine {
     return !!row;
   }
 
-  private static readonly prefixCounterColumn: Record<'T' | 'P' | 'R', string> = {
-    T: 'next_task_number',
-    P: 'next_project_number',
-    R: 'next_recurring_number',
-  };
-
   /** Validate bounded recurrence params. Returns error string or null if valid. */
   private static validateBoundedRecurrence(
     maxCycles: number | null | undefined,
@@ -965,16 +976,24 @@ export class TaskflowEngine {
     return null;
   }
 
-  /** Read the per-prefix counter from board_config, increment it, return the old value. */
-  private getNextNumberForPrefix(prefix: 'T' | 'P' | 'R'): number {
-    const col = TaskflowEngine.prefixCounterColumn[prefix];
+  /** Read the per-prefix counter, increment it, return the old value. Works for any prefix. */
+  private getNextNumberForPrefix(prefix: string): number {
     const row = this.db
-      .prepare(`SELECT ${col} FROM board_config WHERE board_id = ?`)
-      .get(this.boardId) as Record<string, number> | undefined;
-    const num = row?.[col] ?? 1;
-    this.db
-      .prepare(`UPDATE board_config SET ${col} = ? WHERE board_id = ?`)
-      .run(num + 1, this.boardId);
+      .prepare(`SELECT next_number FROM board_id_counters WHERE board_id = ? AND prefix = ?`)
+      .get(this.boardId, prefix) as { next_number: number } | undefined;
+    if (row) {
+      this.db
+        .prepare(`UPDATE board_id_counters SET next_number = ? WHERE board_id = ? AND prefix = ?`)
+        .run(row.next_number + 1, this.boardId, prefix);
+      return row.next_number;
+    }
+    // First use of this prefix — compute from existing tasks
+    const maxRow = this.db.prepare(
+      `SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) AS m FROM tasks WHERE board_id = ? AND id GLOB ? AND id NOT GLOB ?`
+    ).get(this.boardId, `${prefix}[0-9]*`, `${prefix}*.*`) as any;
+    const num = (maxRow?.m ?? 0) + 1;
+    this.db.prepare(`INSERT INTO board_id_counters (board_id, prefix, next_number) VALUES (?, ?, ?)`)
+      .run(this.boardId, prefix, num + 1);
     return num;
   }
 
@@ -1258,7 +1277,7 @@ export class TaskflowEngine {
       }
 
       /* --- ID generation --- */
-      const prefix: 'T' | 'P' | 'R' =
+      const prefix =
         params.type === 'project'
           ? 'P'
           : params.type === 'recurring'
