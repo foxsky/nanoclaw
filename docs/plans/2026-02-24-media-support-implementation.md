@@ -1,5 +1,14 @@
 # /add-media-support Implementation Plan
 
+> **Update (2026-03-07):** This plan has been superseded by the unified media pipeline. Images now use sharp-based processing with Claude multimodal vision (`src/image.ts`). PDFs use `pdf-reader` (poppler-utils) for text extraction. All media saves to `attachments/` instead of `media/`. See the updated `add-media-support` SKILL.md for current architecture.
+>
+> **Key changes from this plan:**
+> - `[Media: image at /workspace/group/media/...]` → `[Image: attachments/filename.jpg]` (with vision)
+> - `[Media: document at /workspace/group/media/...]` → `[PDF: attachments/filename.pdf (SIZE KB)]` (with pdf-reader hint)
+> - New dependencies: `sharp`, `poppler-utils`
+> - New files: `src/image.ts`, `container/skills/pdf-reader/`
+> - Modified: `container-runner.ts` (imageAttachments), `index.ts` (parseImageReferences), `container/agent-runner/src/index.ts` (multimodal content)
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Create the `/add-media-support` NanoClaw skill — downloads images and documents (PDFs, DOCX, etc.) from WhatsApp messages and makes them available to agents in all groups. Videos and audio are excluded (audio is handled by `/add-voice-transcription`; video files are too large and agents cannot process video content).

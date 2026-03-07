@@ -78,7 +78,11 @@ Quando você quer registrar algo rapidamente, sem detalhes:
 @Case anotar: revisar contrato do fornecedor
 @Case lembrar: ligar para o cliente amanhã
 @Case registrar: comprar material de escritório
+@Case nova tarefa: organizar reunião de planejamento
+@Case tarefa: verificar relatório mensal
 ```
+
+Se usar "tarefa" sem indicar responsável (sem "para [pessoa]"), vai para o Inbox como captura rápida.
 
 O assistente cria a tarefa no Inbox e responde: `📥 T1 adicionada ao Inbox`
 
@@ -86,7 +90,7 @@ O assistente cria a tarefa no Inbox e responde: `📥 T1 adicionada ao Inbox`
 
 Se já tem responsável e prazo, a tarefa vai direto para Próxima Ação:
 
-Somente um gestor pode usar os comandos de criação completa (`tarefa`, `projeto`, `diario`, `semanal`, `mensal`, `anual`).
+Somente um gestor pode usar os comandos de criação completa (`tarefa para [pessoa]`, `projeto para [pessoa]`, `diario`, `semanal`, `mensal`, `anual`).
 
 ```
 @Case tarefa para Alexandre: revisar contrato ate sexta

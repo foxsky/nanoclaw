@@ -1,25 +1,30 @@
 skill: taskflow
-version: 2.0.0
+version: 2.3.0
 description: "Kanban+GTD task management with MCP tool engine"
 core_version: 0.1.0
 adds:
   - container/agent-runner/src/taskflow-engine.ts
   - container/agent-runner/src/taskflow-engine.test.ts
-modifies:
+  - container/agent-runner/src/runtime-config.ts
   - src/taskflow-db.ts
+  - src/ipc-plugins/create-group.ts
+  - src/ipc-plugins/create-group.test.ts
+  - src/ipc-plugins/provision-child-board.ts
+  - src/ipc-plugins/provision-child-board.test.ts
+modifies:
   - container/Dockerfile
   - container/agent-runner/src/ipc-mcp-stdio.ts
-  - container/agent-runner/src/runtime-config.ts
   - src/container-runner.ts
-  - src/channels/whatsapp.ts      # intent-only: adds resolvePhoneJid method
-  - src/config.ts                 # intent-only: adds buildTriggerPattern function
-  - src/index.ts                  # intent-only: per-group trigger + resolvePhoneJid wiring
-  - src/ipc.ts                    # intent-only: adds resolvePhoneJid to IpcDeps
-  - src/ipc-plugins/create-group.ts          # intent-only: resolve JIDs before group creation
-  - src/ipc-plugins/provision-child-board.ts # intent-only: resolve JID for child board
+  - src/channels/whatsapp.ts
+  - src/types.ts
+  - src/config.ts
+  - src/db.ts
+  - src/ipc.ts
+  - src/index.ts
+  - src/task-scheduler.ts
 structured:
   npm_dependencies:
-    better-sqlite3: "^12.6.2"
+    better-sqlite3: "^11.8.1"
   npm_dev_dependencies:
     "@types/better-sqlite3": "^7.6.13"
     vitest: "^4.0.18"

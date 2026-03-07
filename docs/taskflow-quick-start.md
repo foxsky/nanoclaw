@@ -58,7 +58,11 @@ Gestor aprova            →  @Case T001 aprovada
 ```
 @Case anotar: [descricao]
 @Case lembrar: [descricao]
+@Case nova tarefa: [descricao]
+@Case tarefa: [descricao]
 ```
+
+Se usar "tarefa" sem indicar responsavel (sem "para [pessoa]"), vai para o Inbox como captura rapida.
 
 ### Mover Tarefas
 
@@ -90,7 +94,7 @@ Gestor aprova            →  @Case T001 aprovada
 | `@Case manual` | Referência completa detalhada |
 | `@Case guia rapido` | Guia para iniciantes |
 
-### Criar Tarefas (gestor)
+### Criar Tarefas com Responsavel (gestor)
 
 ```
 @Case tarefa para [pessoa]: [descricao] ate [data]

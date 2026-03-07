@@ -5,10 +5,12 @@ export interface ContainerInput {
   chatJid: string;
   isMain: boolean;
   isTaskflowManaged?: boolean;
+  taskflowBoardId?: string;
   taskflowHierarchyLevel?: number;
   taskflowMaxDepth?: number;
   isScheduledTask?: boolean;
   assistantName?: string;
+  imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
   secrets?: Record<string, string>;
 }
 
@@ -45,9 +47,8 @@ export function buildNanoclawMcpEnv(
     NANOCLAW_IS_TASKFLOW_MANAGED: containerInput.isTaskflowManaged ? '1' : '0',
   };
 
-  // Derive board ID from folder name (convention: 'board-{folder}')
-  if (containerInput.isTaskflowManaged) {
-    env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-' + containerInput.groupFolder;
+  if (containerInput.isTaskflowManaged && containerInput.taskflowBoardId) {
+    env.NANOCLAW_TASKFLOW_BOARD_ID = containerInput.taskflowBoardId;
   }
 
   if (containerInput.taskflowHierarchyLevel !== undefined) {

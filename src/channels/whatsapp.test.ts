@@ -36,29 +36,35 @@ vi.mock('../transcription.js', () => ({
     .mockResolvedValue('Hello this is a voice message'),
 }));
 
-// Mock media
+// Mock image processing
+vi.mock('../image.js', () => ({
+  isImageMessage: vi.fn((msg: any) => !!msg.message?.imageMessage),
+  processImage: vi.fn().mockResolvedValue({
+    content: '[Image: attachments/img-mock.jpg]',
+    relativePath: 'attachments/img-mock.jpg',
+  }),
+  parseImageReferences: vi.fn(() => []),
+}));
+
+// Mock media (for non-image files: PDFs, documents)
 vi.mock('../media.js', () => ({
   isMediaMessage: vi.fn((msg: any) => {
     const m = msg.message;
     if (!m) return false;
-    if (
-      m.imageMessage?.mimetype === 'image/jpeg' ||
-      m.imageMessage?.mimetype === 'image/png'
-    )
-      return true;
+    // Images are handled by image.js, not media.js
     if (m.documentMessage?.mimetype === 'application/pdf') return true;
+    if (m.documentMessage?.mimetype?.startsWith('application/vnd.openxmlformats')) return true;
     return false;
   }),
   getMediaType: vi.fn((msg: any) => {
     const m = msg.message;
-    if (m?.imageMessage) return 'image';
     if (m?.documentMessage) return 'document';
     return null;
   }),
   downloadAndSaveMedia: vi
     .fn()
     .mockResolvedValue(
-      '/tmp/nanoclaw-test-groups/test-group/media/msg-id.jpeg',
+      '/tmp/nanoclaw-test-groups/test-group/attachments/msg-id.pdf',
     ),
 }));
 
@@ -71,6 +77,7 @@ vi.mock('fs', async () => {
       ...actual,
       existsSync: vi.fn(() => true),
       mkdirSync: vi.fn(),
+      statSync: vi.fn(() => ({ size: 102400 })), // 100KB
     },
   };
 });
@@ -119,6 +126,7 @@ vi.mock('@whiskeysockets/baileys', () => {
       timedOut: 408,
       restartRequired: 515,
     },
+    downloadMediaMessage: vi.fn().mockResolvedValue(Buffer.from('mock-image-data')),
     fetchLatestWaWebVersion: vi
       .fn()
       .mockResolvedValue({ version: [2, 3000, 0] }),
@@ -136,6 +144,7 @@ vi.mock('@whiskeysockets/baileys', () => {
 import { WhatsAppChannel, WhatsAppChannelOpts } from './whatsapp.js';
 import { getLastGroupSync, updateChatName, setLastGroupSync } from '../db.js';
 import { transcribeAudioMessage } from '../transcription.js';
+import { processImage } from '../image.js';
 import { downloadAndSaveMedia } from '../media.js';
 
 // --- Test helpers ---
@@ -488,6 +497,11 @@ describe('WhatsAppChannel', () => {
 
       await connectChannel(channel);
 
+      vi.mocked(processImage).mockResolvedValueOnce({
+        content: '[Image: attachments/img-cap.jpg] Check this photo',
+        relativePath: 'attachments/img-cap.jpg',
+      });
+
       await triggerMessages([
         {
           key: {
@@ -507,6 +521,7 @@ describe('WhatsAppChannel', () => {
         },
       ]);
 
+      expect(processImage).toHaveBeenCalled();
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
         expect.objectContaining({
@@ -645,15 +660,11 @@ describe('WhatsAppChannel', () => {
 
     // --- Media handling ---
 
-    it('downloads image and prepends annotation', async () => {
+    it('processes image with sharp and produces [Image:] annotation', async () => {
       const opts = createTestOpts();
       const channel = new WhatsAppChannel(opts);
 
       await connectChannel(channel);
-
-      vi.mocked(downloadAndSaveMedia).mockResolvedValueOnce(
-        '/tmp/nanoclaw-test-groups/test-group/media/msg-img.jpeg',
-      );
 
       await triggerMessages([
         {
@@ -671,23 +682,23 @@ describe('WhatsAppChannel', () => {
         },
       ]);
 
-      expect(downloadAndSaveMedia).toHaveBeenCalled();
+      expect(processImage).toHaveBeenCalled();
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
         expect.objectContaining({
-          content: '[Media: image at /workspace/group/media/msg-img.jpeg]',
+          content: '[Image: attachments/img-mock.jpg]',
         }),
       );
     });
 
-    it('downloads PDF and prepends document annotation', async () => {
+    it('downloads PDF and produces [PDF:] annotation with usage hint', async () => {
       const opts = createTestOpts();
       const channel = new WhatsAppChannel(opts);
 
       await connectChannel(channel);
 
       vi.mocked(downloadAndSaveMedia).mockResolvedValueOnce(
-        '/tmp/nanoclaw-test-groups/test-group/media/msg-doc-itinerary.pdf',
+        '/tmp/nanoclaw-test-groups/test-group/attachments/msg-doc-itinerary.pdf',
       );
 
       await triggerMessages([
@@ -713,21 +724,27 @@ describe('WhatsAppChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
         expect.objectContaining({
-          content:
-            '[Media: document at /workspace/group/media/msg-doc-itinerary.pdf]',
+          content: expect.stringContaining('[PDF: attachments/msg-doc-itinerary.pdf'),
+        }),
+      );
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          content: expect.stringContaining('pdf-reader extract'),
         }),
       );
     });
 
-    it('preserves caption with media annotation', async () => {
+    it('preserves caption with image annotation', async () => {
       const opts = createTestOpts();
       const channel = new WhatsAppChannel(opts);
 
       await connectChannel(channel);
 
-      vi.mocked(downloadAndSaveMedia).mockResolvedValueOnce(
-        '/tmp/nanoclaw-test-groups/test-group/media/msg-cap.jpeg',
-      );
+      vi.mocked(processImage).mockResolvedValueOnce({
+        content: '[Image: attachments/img-cap.jpg] Look at this!',
+        relativePath: 'attachments/img-cap.jpg',
+      });
 
       await triggerMessages([
         {
@@ -748,8 +765,7 @@ describe('WhatsAppChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
         expect.objectContaining({
-          content:
-            '[Media: image at /workspace/group/media/msg-cap.jpeg]\nLook at this!',
+          content: '[Image: attachments/img-cap.jpg] Look at this!',
         }),
       );
     });
@@ -774,6 +790,7 @@ describe('WhatsAppChannel', () => {
         },
       ]);
 
+      expect(processImage).not.toHaveBeenCalled();
       expect(downloadAndSaveMedia).not.toHaveBeenCalled();
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
@@ -786,6 +803,10 @@ describe('WhatsAppChannel', () => {
       const channel = new WhatsAppChannel(opts);
 
       await connectChannel(channel);
+
+      vi.mocked(downloadAndSaveMedia).mockResolvedValueOnce(
+        '/tmp/nanoclaw-test-groups/test-group/attachments/msg-doc-cap-report.pdf',
+      );
 
       await triggerMessages([
         {
@@ -816,18 +837,18 @@ describe('WhatsAppChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
         expect.objectContaining({
-          content: expect.stringContaining('[Media: document at'),
+          content: expect.stringContaining('[PDF: attachments/'),
         }),
       );
     });
 
-    it('handles media download failure gracefully', async () => {
+    it('handles image processing failure gracefully', async () => {
       const opts = createTestOpts();
       const channel = new WhatsAppChannel(opts);
 
       await connectChannel(channel);
 
-      vi.mocked(downloadAndSaveMedia).mockResolvedValueOnce(null);
+      vi.mocked(processImage).mockResolvedValueOnce(null);
 
       await triggerMessages([
         {
@@ -848,7 +869,7 @@ describe('WhatsAppChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
         expect.objectContaining({
-          content: expect.stringContaining('[Media: image — download failed]'),
+          content: expect.stringContaining('[Image: download failed]'),
         }),
       );
     });

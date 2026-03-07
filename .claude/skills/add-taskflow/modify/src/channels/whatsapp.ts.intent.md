@@ -1,16 +1,20 @@
-# whatsapp.ts Modifications
+# Intent: src/channels/whatsapp.ts modifications
 
-Add `resolvePhoneJid` method to the `WhatsAppChannel` class. This is used by `create-group` and `provision-child-board` IPC plugins to resolve phone numbers to proper WhatsApp JIDs before creating groups.
+## What changed
+Added optional `sender` parameter to `sendMessage()` so TaskFlow groups can use their per-group trigger name (e.g., "Case") instead of the global `ASSISTANT_NAME` (e.g., "Kipp") as the message prefix.
 
-Add this method after the `isValidJid` method:
+## Key sections
 
-```typescript
-async resolvePhoneJid(phone: string): Promise<string> {
-  const results = await this.sock.onWhatsApp(phone);
-  if (results?.length && results[0].exists) {
-    return results[0].jid;
-  }
-  // Fallback: use raw digits
-  return phone.replace(/\D/g, '') + '@s.whatsapp.net';
-}
-```
+### sendMessage method
+- Added: `sender?: string` parameter to method signature
+- Added: `const displayName = sender?.trim() || ASSISTANT_NAME;` to resolve the display name
+- Changed: prefix uses `displayName` instead of `ASSISTANT_NAME`
+
+## Invariants (must-keep)
+- All existing message handling (messages.upsert handler) unchanged
+- Connection lifecycle (connect, reconnect, disconnect) unchanged
+- LID translation logic unchanged
+- Outgoing message queue unchanged
+- Group metadata sync unchanged
+- setTyping, ownsJid, isConnected unchanged
+- ASSISTANT_HAS_OWN_NUMBER conditional prefix logic unchanged (just uses displayName instead of ASSISTANT_NAME)

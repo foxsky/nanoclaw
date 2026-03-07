@@ -44,6 +44,7 @@ export interface CreateParams {
   max_cycles?: number;
   recurrence_end_date?: string;
   sender_name: string;
+  allow_non_business_day?: boolean;
 }
 
 export interface CreateResult extends TaskflowResult {
@@ -125,6 +126,7 @@ export interface UpdateParams {
     recurrence?: string;          // change frequency
     max_cycles?: number | null;            // null = remove bound
     recurrence_end_date?: string | null;   // null = remove bound
+    allow_non_business_day?: boolean;
   };
 }
 
@@ -162,7 +164,7 @@ export interface UndoResult extends TaskflowResult {
 
 export interface AdminParams {
   board_id: string;
-  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox';
+  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays';
   sender_name: string;
   person_name?: string;
   phone?: string;
@@ -173,6 +175,10 @@ export interface AdminParams {
   force?: boolean;
   group_name?: string;
   group_folder?: string;
+  holiday_operation?: 'add' | 'remove' | 'set_year' | 'list';
+  holidays?: Array<{ date: string; label?: string }>;
+  holiday_dates?: string[];
+  holiday_year?: number;
 }
 
 export interface AdminResult extends TaskflowResult {
@@ -367,6 +373,102 @@ export class TaskflowEngine {
     return task?.owning_board_id ?? task?.board_id ?? this.boardId;
   }
 
+  /** Get the short_code for a board. */
+  private getBoardShortCode(boardId: string): string | null {
+    const row = this.db
+      .prepare(`SELECT short_code FROM boards WHERE id = ?`)
+      .get(boardId) as { short_code: string | null } | undefined;
+    return row?.short_code ?? null;
+  }
+
+  /** Display ID: prefix delegated tasks with source board's short_code. */
+  private displayId(task: any): string {
+    const owning = task.owning_board_id ?? task.board_id;
+    if (owning === this.boardId) return task.id;
+    const sc = this.getBoardShortCode(owning);
+    return sc ? `${sc}-${task.id}` : task.id;
+  }
+
+  /** Resolve a potentially board-prefixed task ID (e.g. SEC-T10 → board_id + T10). */
+  private resolveInputTaskId(taskId: string): { boardId: string | null; rawId: string } {
+    const match = taskId.match(/^([A-Z]{2,})-(.+)$/);
+    if (!match) return { boardId: null, rawId: taskId };
+    const [, shortCode, rawId] = match;
+    const row = this.db
+      .prepare(`SELECT id FROM boards WHERE short_code = ?`)
+      .get(shortCode) as { id: string } | undefined;
+    return { boardId: row?.id ?? null, rawId };
+  }
+
+  private static readonly WEEKDAY_NAMES_PT: Record<number, string> = {
+    0: 'domingo', 1: 'segunda-feira', 2: 'terça-feira', 3: 'quarta-feira',
+    4: 'quinta-feira', 5: 'sexta-feira', 6: 'sábado',
+  };
+
+  private _holidayCache: Map<string, string | null> | null = null;
+
+  /** Lazily load all board holidays into a Map<date, label>. Cached per engine instance. */
+  private getBoardHolidays(): Map<string, string | null> {
+    if (!this._holidayCache) {
+      const rows = this.db
+        .prepare(`SELECT holiday_date, label FROM board_holidays WHERE board_id = ?`)
+        .all(this.boardId) as Array<{ holiday_date: string; label: string | null }>;
+      this._holidayCache = new Map(rows.map((r) => [r.holiday_date, r.label]));
+    }
+    return this._holidayCache;
+  }
+
+  /** Check if a date string (YYYY-MM-DD) falls on a weekend or board holiday. */
+  private isNonBusinessDay(dateStr: string): { weekend: boolean; holiday: boolean; dow: number; label?: string } {
+    const d = new Date(dateStr + 'T12:00:00Z');
+    const dow = d.getUTCDay();
+    const weekend = dow === 0 || dow === 6;
+    const holidays = this.getBoardHolidays();
+    const holidayLabel = holidays.get(dateStr);
+    return { weekend, holiday: holidayLabel !== undefined, dow, label: holidayLabel ?? undefined };
+  }
+
+  /** Return the next business day (YYYY-MM-DD) that is not a weekend or board holiday. */
+  private getNextBusinessDay(dateStr: string): string {
+    const d = new Date(dateStr + 'T12:00:00Z');
+    for (let i = 0; i < 30; i++) {
+      d.setUTCDate(d.getUTCDate() + 1);
+      const candidate = d.toISOString().slice(0, 10);
+      const check = this.isNonBusinessDay(candidate);
+      if (!check.weekend && !check.holiday) return candidate;
+    }
+    return dateStr;
+  }
+
+  /** Shift a date to the next business day if it falls on a weekend or holiday. */
+  private shiftToBusinessDay(dateStr: string): string {
+    const check = this.isNonBusinessDay(dateStr);
+    if (check.weekend || check.holiday) return this.getNextBusinessDay(dateStr);
+    return dateStr;
+  }
+
+  /** Validate a due date against weekends/holidays. Returns warning result or null if OK. */
+  private checkNonBusinessDay(dateStr: string, allowOverride: boolean): TaskflowResult | null {
+    if (allowOverride) return null;
+    const check = this.isNonBusinessDay(dateStr);
+    if (!check.weekend && !check.holiday) return null;
+    const dayName = TaskflowEngine.WEEKDAY_NAMES_PT[check.dow];
+    const reason = check.holiday
+      ? (check.label ? `feriado (${check.label})` : 'feriado')
+      : dayName;
+    const suggested = this.getNextBusinessDay(dateStr);
+    const sugDow = new Date(suggested + 'T12:00:00Z').getUTCDay();
+    const sugDayName = TaskflowEngine.WEEKDAY_NAMES_PT[sugDow];
+    return {
+      success: false,
+      non_business_day_warning: true,
+      original_date: dateStr,
+      suggested_date: suggested,
+      reason,
+      error: `Due date falls on ${reason} (${dateStr}). Suggest ${suggested} (${sugDayName}).`,
+    };
+  }
+
   private static legacySubtaskColumn(subtask: { status?: string; column?: string }): string {
     if (typeof subtask.column === 'string' && subtask.column.trim() !== '') {
       return subtask.column;
@@ -382,6 +484,21 @@ export class TaskflowEngine {
       `CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(board_id, parent_task_id)
        WHERE parent_task_id IS NOT NULL`,
     );
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS board_holidays (
+        board_id TEXT NOT NULL,
+        holiday_date TEXT NOT NULL,
+        label TEXT,
+        PRIMARY KEY (board_id, holiday_date)
+      )
+    `);
+
+    try { this.db.exec(`ALTER TABLE boards ADD COLUMN short_code TEXT`); } catch {}
+
+    try { this.db.exec(`ALTER TABLE board_runtime_config ADD COLUMN country TEXT`); } catch {}
+    try { this.db.exec(`ALTER TABLE board_runtime_config ADD COLUMN state TEXT`); } catch {}
+    try { this.db.exec(`ALTER TABLE board_runtime_config ADD COLUMN city TEXT`); } catch {}
 
     try { this.db.exec(`ALTER TABLE board_config ADD COLUMN next_project_number INTEGER DEFAULT 1`); } catch {}
     try { this.db.exec(`ALTER TABLE board_config ADD COLUMN next_recurring_number INTEGER DEFAULT 1`); } catch {}
@@ -658,17 +775,30 @@ export class TaskflowEngine {
     return row?.hierarchy_level != null && row?.max_depth != null && row.hierarchy_level < row.max_depth;
   }
 
-  /** Fetch a single active task by its id. */
+  private static readonly TASK_BY_BOARD_SQL =
+    `SELECT tasks.*, tasks.board_id AS owning_board_id FROM tasks WHERE board_id = ? AND id = ?`;
+
+  /** Fetch a single active task by its id. Handles board-prefixed IDs (e.g. SEC-T10). */
   getTask(taskId: string): any {
-    return (
-      this.db
-        .prepare(
-          `SELECT tasks.*, tasks.board_id AS owning_board_id
-             FROM tasks
-            WHERE ${this.visibleTaskScope('tasks')} AND tasks.id = ?`,
-        )
-        .get(...this.visibleTaskParams(), taskId) ?? null
-    );
+    const { boardId: targetBoardId, rawId } = this.resolveInputTaskId(taskId);
+    if (targetBoardId) {
+      // Short-code resolved — still enforce visibility (local or delegated to this board)
+      const task = this.db.prepare(TaskflowEngine.TASK_BY_BOARD_SQL).get(targetBoardId, rawId) as any | undefined;
+      if (!task) return null;
+      if (task.board_id === this.boardId) return task;
+      if (task.child_exec_board_id === this.boardId && task.child_exec_enabled === 1) return task;
+      return null;
+    }
+    // Prefer local board for ambiguous IDs
+    const local = this.db.prepare(TaskflowEngine.TASK_BY_BOARD_SQL).get(this.boardId, rawId);
+    if (local) return local;
+    // Fall back to delegated tasks
+    return this.db
+      .prepare(
+        `SELECT tasks.*, tasks.board_id AS owning_board_id FROM tasks
+         WHERE child_exec_board_id = ? AND child_exec_enabled = 1 AND id = ?`,
+      )
+      .get(this.boardId, rawId) ?? null;
   }
 
   /* ---------------------------------------------------------------- */
@@ -1168,6 +1298,18 @@ export class TaskflowEngine {
         }
       }
 
+      /* --- Non-business-day check --- */
+      if (dueDate) {
+        if (params.due_date) {
+          // User-provided due date: warn if non-business day
+          const warning = this.checkNonBusinessDay(dueDate, !!params.allow_non_business_day);
+          if (warning) return warning;
+        } else {
+          // Auto-calculated due date (recurrence): silently shift to next business day
+          dueDate = this.shiftToBusinessDay(dueDate);
+        }
+      }
+
       /* --- Child board auto-link --- */
       let childExecEnabled = 0;
       let childExecBoardId: string | null = null;
@@ -1411,7 +1553,9 @@ export class TaskflowEngine {
     const currentCycle = parseInt(task.current_cycle ?? '0', 10);
     const nextCycle = currentCycle + 1;
 
-    const newDueDate = advanceDateByRecurrence(anchor, recurrence);
+    let newDueDate = advanceDateByRecurrence(anchor, recurrence);
+    // Auto-shift recurring due dates off weekends/holidays (no user confirmation)
+    newDueDate = this.shiftToBusinessDay(newDueDate);
 
     // Check expiry bounds (mutually exclusive, but check both defensively)
     let expiryReason: 'max_cycles' | 'end_date' | null = null;
@@ -2126,6 +2270,9 @@ export class TaskflowEngine {
           const oldReminders: any[] = JSON.parse(task.reminders ?? '[]');
           if (oldReminders.length > 0) changes.push('Reminders cleared (no due date)');
         } else {
+          /* Non-business-day check */
+          const warning = this.checkNonBusinessDay(updates.due_date, !!updates.allow_non_business_day);
+          if (warning) return warning;
           /* Recalculate reminder dates for the new due_date */
           const reminders: Array<{ days: number; date: string }> = JSON.parse(task.reminders ?? '[]');
           if (reminders.length > 0) {
@@ -2563,6 +2710,239 @@ export class TaskflowEngine {
   }
 
   /* ---------------------------------------------------------------- */
+  /*  Pre-formatted board view                                         */
+  /* ---------------------------------------------------------------- */
+
+  private formatBoardView(mode: 'board' | 'standup' = 'board'): string {
+    const todayStr = today();
+    const todayMs = new Date(todayStr).getTime();
+
+    /* --- Person name lookup --- */
+    const people = this.db
+      .prepare(`SELECT person_id, name FROM board_people WHERE board_id = ?`)
+      .all(this.boardId) as Array<{ person_id: string; name: string }>;
+    const nameOf = new Map(people.map((p) => [p.person_id, p.name]));
+    const pName = (id: string | null) => (id ? nameOf.get(id) ?? id : null);
+
+    /* --- Short-code cache for displayId (avoids N+1 per-task DB queries) --- */
+    const shortCodes = new Map<string, string | null>();
+    const allBoards = this.db.prepare(`SELECT id, short_code FROM boards`).all() as Array<{ id: string; short_code: string | null }>;
+    for (const b of allBoards) shortCodes.set(b.id, b.short_code);
+    const dId = (task: any): string => {
+      const owning = task.owning_board_id ?? task.board_id;
+      if (owning === this.boardId) return task.id;
+      const sc = shortCodes.get(owning) ?? null;
+      return sc ? `${sc}-${task.id}` : task.id;
+    };
+
+    /* --- Fetch tasks (exclude done) --- */
+    const allTasks = this.db
+      .prepare(
+        `SELECT * FROM tasks WHERE ${this.visibleTaskScope()} AND column != 'done' ORDER BY id`,
+      )
+      .all(...this.visibleTaskParams()) as any[];
+
+    /* --- Split top-level vs subtasks --- */
+    const topLevel = allTasks.filter((t) => !t.parent_task_id);
+    const subtaskMap = new Map<string, any[]>();
+    for (const t of allTasks.filter((t) => t.parent_task_id)) {
+      const arr = subtaskMap.get(t.parent_task_id);
+      if (arr) arr.push(t);
+      else subtaskMap.set(t.parent_task_id, [t]);
+    }
+
+    /* --- Promote orphaned subtasks: fetch parent from other board --- */
+    const topLevelIds = new Set(topLevel.map((t) => t.id));
+    for (const [parentId, subs] of subtaskMap.entries()) {
+      if (!topLevelIds.has(parentId)) {
+        const parentBoardId = subs[0].owning_board_id ?? subs[0].board_id;
+        const parent = this.db
+          .prepare(TaskflowEngine.TASK_BY_BOARD_SQL)
+          .get(parentBoardId, parentId) as any | undefined;
+        if (parent) {
+          topLevel.push(parent);
+          topLevelIds.add(parent.id);
+        }
+      }
+    }
+
+    /* --- Counts --- */
+    const projectCount = topLevel.filter((t) => t.type === 'project').length;
+    const subtaskCount = allTasks.filter((t) => t.parent_task_id).length;
+    const taskCount = topLevel.length;
+
+    /* --- Group top-level by column --- */
+    const byColumn = new Map<string, any[]>();
+    for (const t of topLevel) {
+      const col = t.column ?? 'inbox';
+      const arr = byColumn.get(col);
+      if (arr) arr.push(t);
+      else byColumn.set(col, [t]);
+    }
+
+    /* --- Helpers --- */
+    const fmtDate = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
+    const daysDiff = (iso: string) =>
+      Math.floor((new Date(iso).getTime() - todayMs) / 86400000);
+
+    const hasNotes = (t: any): boolean => {
+      if (!t.notes) return false;
+      try {
+        const a = typeof t.notes === 'string' ? JSON.parse(t.notes) : t.notes;
+        return Array.isArray(a) && a.length > 0;
+      } catch {
+        return false;
+      }
+    };
+
+    const pfx = (t: any): string => {
+      if (t.due_date && daysDiff(t.due_date) <= 2) return '\u26a0\ufe0f ';
+      if (t.child_exec_enabled === 1) return '\ud83d\udd17 ';
+      if (t.type === 'project') return '\ud83d\udcc1 ';
+      if (t.type === 'recurring') return '\ud83d\udd04 ';
+      return '';
+    };
+
+    const dueSfx = (t: any): string => {
+      if (!t.due_date) return '';
+      const d = daysDiff(t.due_date);
+      if (d <= 2) return ` \u23f0 *${fmtDate(t.due_date)} (${d}d!)*`;
+      return ` \u23f0 ${fmtDate(t.due_date)}`;
+    };
+
+    const notesSfx = (t: any) => (hasNotes(t) ? ' \ud83d\udcac' : '');
+
+    /* --- Build output --- */
+    const urgent: string[] = [];
+    const lines: string[] = [];
+    const SEP = '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501';
+
+    /* Header */
+    const [y, m, d] = todayStr.split('-');
+    if (mode === 'board') {
+      lines.push(`\ud83d\udccb *TASKFLOW BOARD* \u2014 ${d}/${m}/${y}`);
+    } else {
+      const dayNames = [
+        'Domingo',
+        'Segunda',
+        'Ter\u00e7a',
+        'Quarta',
+        'Quinta',
+        'Sexta',
+        'S\u00e1bado',
+      ];
+      lines.push(
+        `\ud83d\udcca *Board \u2014 ${dayNames[new Date().getDay()]}, ${d}/${m}/${y}*`,
+      );
+    }
+    lines.push(
+      `\ud83d\udcca ${taskCount} tarefas \u2022 ${projectCount} projetos \u2022 ${subtaskCount} subtarefas`,
+    );
+
+    /* Columns */
+    const colOrder: Array<[string, string]> = [
+      ['inbox', '\ud83d\udce5 *INBOX*'],
+      ['next_action', '\u23ed\ufe0f *PR\u00d3XIMAS A\u00c7\u00d5ES*'],
+      ['in_progress', '\ud83d\udd04 *EM ANDAMENTO*'],
+      ['waiting', '\u23f3 *AGUARDANDO*'],
+      ['review', '\ud83d\udd0d *REVIS\u00c3O*'],
+    ];
+
+    for (const [col, label] of colOrder) {
+      const tasks = byColumn.get(col);
+      if (!tasks || tasks.length === 0) continue;
+
+      lines.push('', SEP, '');
+
+      if (col === 'inbox') {
+        lines.push(`${label} (${tasks.length})`, '');
+        for (const t of tasks) lines.push(`\u2022 ${dId(t)}: ${t.title}`);
+        continue;
+      }
+
+      /* Group by person */
+      const byPerson = new Map<string, any[]>();
+      for (const t of tasks) {
+        const key = t.assignee ?? '__none__';
+        const arr = byPerson.get(key);
+        if (arr) arr.push(t);
+        else byPerson.set(key, [t]);
+      }
+
+      /* Sort persons by earliest due date */
+      const earliest = (list: any[]) =>
+        list.reduce(
+          (mn: string | null, t: any) =>
+            t.due_date && (!mn || t.due_date < mn) ? t.due_date : mn,
+          null as string | null,
+        );
+      const cmpDateNullable = (a: string | null, b: string | null): number => {
+        if (a && b) return a.localeCompare(b);
+        if (a) return -1;
+        if (b) return 1;
+        return 0;
+      };
+      const persons = [...byPerson.entries()].sort((a, b) =>
+        cmpDateNullable(earliest(a[1]), earliest(b[1])),
+      );
+
+      lines.push(label, '');
+
+      for (const [personId, pTasks] of persons) {
+        const nm = pName(personId) ?? personId;
+        const subCount = pTasks.reduce(
+          (n, t) => n + (subtaskMap.get(t.id)?.length ?? 0),
+          0,
+        );
+        lines.push(`\ud83d\udc64 *${nm}* (${pTasks.length + subCount})`);
+
+        /* Sort tasks by due date */
+        const sorted = [...pTasks].sort((a, b) =>
+          cmpDateNullable(a.due_date, b.due_date),
+        );
+
+        for (const t of sorted) {
+          const tid = dId(t);
+          let line = `${pfx(t)}${tid}: ${t.title}${dueSfx(t)}${notesSfx(t)}`;
+          if (col === 'waiting' && t.waiting_for)
+            line += ` \u2192 _${t.waiting_for}_`;
+          lines.push(line);
+
+          /* Track urgency */
+          if (t.due_date) {
+            const dd = daysDiff(t.due_date);
+            if (dd <= 2) {
+              if (dd < 0)
+                urgent.push(`\u26a0\ufe0f *${tid} (${nm}) atrasada!*`);
+              else
+                urgent.push(
+                  `\u26a0\ufe0f *${tid} (${nm}) vence em ${dd} dias!*`,
+                );
+            }
+          }
+
+          /* Subtasks */
+          const subs = subtaskMap.get(t.id);
+          if (subs) {
+            for (const st of subs) {
+              lines.push(
+                `   \u21b3 ${dId(st)}: ${st.title}${dueSfx(st)}${notesSfx(st)}`,
+              );
+            }
+          }
+        }
+        lines.push('');
+      }
+    }
+
+    /* Footer */
+    lines.push(SEP);
+    for (const u of urgent) lines.push(u);
+
+    return lines.join('\n');
+  }
+
+  /* ---------------------------------------------------------------- */
   /*  Main query dispatcher                                            */
   /* ---------------------------------------------------------------- */
 
@@ -2581,7 +2961,11 @@ export class TaskflowEngine {
           }
           return {
             success: true,
-            data: { columns: grouped, linked_tasks: linked },
+            data: {
+              columns: grouped,
+              linked_tasks: linked,
+              formatted_board: this.formatBoardView('board'),
+            },
           };
         }
 
@@ -3224,8 +3608,15 @@ export class TaskflowEngine {
   admin(params: AdminParams): AdminResult {
     try {
       return this.db.transaction(() => {
-      /* --- Permission check: all admin actions require manager --- */
-      if (!this.isManager(params.sender_name)) {
+      /* --- Permission check: process_inbox allows manager or delegate; all others require manager --- */
+      if (params.action === 'process_inbox') {
+        if (!this.isManagerOrDelegate(params.sender_name)) {
+          return {
+            success: false,
+            error: `Permission denied: "${params.sender_name}" is not a manager or delegate.`,
+          };
+        }
+      } else if (!this.isManager(params.sender_name)) {
         return {
           success: false,
           error: `Permission denied: "${params.sender_name}" is not a manager.`,
@@ -3570,6 +3961,109 @@ export class TaskflowEngine {
           };
         }
 
+        /* ---- manage_holidays ---- */
+        case 'manage_holidays': {
+          const op = params.holiday_operation;
+          if (!op) return { success: false, error: 'Missing required parameter: holiday_operation' };
+
+          const dateFormatRe = /^\d{4}-\d{2}-\d{2}$/;
+          const validateHolidayDates = (holidays: Array<{ date: string }>): string | null => {
+            for (const h of holidays) {
+              if (!dateFormatRe.test(h.date)) return `Invalid date format "${h.date}". Expected YYYY-MM-DD.`;
+            }
+            return null;
+          };
+
+          switch (op) {
+            case 'add': {
+              if (!params.holidays || params.holidays.length === 0) {
+                return { success: false, error: 'Missing required parameter: holidays (array of {date, label?})' };
+              }
+              const fmtErr = validateHolidayDates(params.holidays);
+              if (fmtErr) return { success: false, error: fmtErr };
+              const stmt = this.db.prepare(
+                `INSERT OR REPLACE INTO board_holidays (board_id, holiday_date, label) VALUES (?, ?, ?)`,
+              );
+              for (const h of params.holidays) {
+                stmt.run(this.boardId, h.date, h.label ?? null);
+              }
+              this._holidayCache = null;
+              return {
+                success: true,
+                data: { added: params.holidays.length },
+              };
+            }
+            case 'remove': {
+              if (!params.holiday_dates || params.holiday_dates.length === 0) {
+                return { success: false, error: 'Missing required parameter: holiday_dates (array of date strings)' };
+              }
+              const stmt = this.db.prepare(
+                `DELETE FROM board_holidays WHERE board_id = ? AND holiday_date = ?`,
+              );
+              let removed = 0;
+              for (const d of params.holiday_dates) {
+                const r = stmt.run(this.boardId, d);
+                removed += r.changes;
+              }
+              this._holidayCache = null;
+              return {
+                success: true,
+                data: { removed },
+              };
+            }
+            case 'set_year': {
+              if (params.holiday_year == null) {
+                return { success: false, error: 'Missing required parameter: holiday_year' };
+              }
+              if (!params.holidays) {
+                return { success: false, error: 'Missing required parameter: holidays (array of {date, label?})' };
+              }
+              const fmtErr = validateHolidayDates(params.holidays);
+              if (fmtErr) return { success: false, error: fmtErr };
+              const yearStr = String(params.holiday_year);
+              for (const h of params.holidays) {
+                if (!h.date.startsWith(yearStr + '-')) {
+                  return { success: false, error: `Holiday date "${h.date}" does not belong to year ${params.holiday_year}.` };
+                }
+              }
+              const yearPrefix = `${params.holiday_year}-`;
+              this.db
+                .prepare(`DELETE FROM board_holidays WHERE board_id = ? AND holiday_date LIKE ?`)
+                .run(this.boardId, `${yearPrefix}%`);
+              const stmt = this.db.prepare(
+                `INSERT INTO board_holidays (board_id, holiday_date, label) VALUES (?, ?, ?)`,
+              );
+              for (const h of params.holidays) {
+                stmt.run(this.boardId, h.date, h.label ?? null);
+              }
+              this._holidayCache = null;
+              return {
+                success: true,
+                data: { year: params.holiday_year, set: params.holidays.length },
+              };
+            }
+            case 'list': {
+              let rows;
+              if (params.holiday_year != null) {
+                rows = this.db
+                  .prepare(`SELECT holiday_date, label FROM board_holidays WHERE board_id = ? AND holiday_date LIKE ? ORDER BY holiday_date`)
+                  .all(this.boardId, `${params.holiday_year}-%`) as Array<{ holiday_date: string; label: string | null }>;
+              } else {
+                rows = this.db
+                  .prepare(`SELECT holiday_date, label FROM board_holidays WHERE board_id = ? ORDER BY holiday_date`)
+                  .all(this.boardId) as Array<{ holiday_date: string; label: string | null }>;
+              }
+              return {
+                success: true,
+                holidays: rows.map((r) => ({ date: r.holiday_date, label: r.label })),
+                data: { count: rows.length },
+              };
+            }
+            default:
+              return { success: false, error: `Unknown holiday operation: ${op}` };
+          }
+        }
+
         default:
           return { success: false, error: `Unknown admin action: ${(params as any).action}` };
       }
@@ -3871,11 +4365,16 @@ export class TaskflowEngine {
         try { this.archiveOldDoneTasks(); } catch { /* cleanup failure must not break standup */ }
       }
 
+      /* --- Formatted board for standup --- */
+      const formatted_board =
+        params.type === 'standup' ? this.formatBoardView('standup') : undefined;
+
       /* --- Assemble result --- */
       return {
         success: true,
         data: {
           date: todayStr,
+          ...(formatted_board ? { formatted_board } : {}),
           overdue: overdue.map((t) => ({
             id: t.id,
             title: t.title,

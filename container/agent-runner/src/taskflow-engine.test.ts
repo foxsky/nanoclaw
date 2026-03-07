@@ -6,7 +6,7 @@ import { TaskflowEngine } from './taskflow-engine.js';
 const BOARD_ID = 'board-test-001';
 
 const SCHEMA = `
-CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, board_role TEXT DEFAULT 'standard', hierarchy_level INTEGER, max_depth INTEGER, parent_board_id TEXT);
+CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, board_role TEXT DEFAULT 'standard', hierarchy_level INTEGER, max_depth INTEGER, parent_board_id TEXT, short_code TEXT);
 CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT NULL, phone TEXT, role TEXT DEFAULT 'member', wip_limit INTEGER, notification_group_jid TEXT, PRIMARY KEY (board_id, person_id));
 CREATE TABLE board_admins (board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL, admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
 CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
@@ -23,7 +23,7 @@ function seedTestDb(db: Database.Database, boardId: string) {
   db.exec(SCHEMA);
 
   db.exec(
-    `INSERT INTO boards VALUES ('${boardId}', 'test@g.us', 'test', 'standard', 0, 1, NULL)`,
+    `INSERT INTO boards VALUES ('${boardId}', 'test@g.us', 'test', 'standard', 0, 1, NULL, NULL)`,
   );
   db.exec(
     `INSERT INTO board_config VALUES ('${boardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 4, 1, 1, 1)`,
@@ -64,7 +64,7 @@ function seedChildBoard(
   },
 ) {
   db.exec(
-    `INSERT INTO boards VALUES ('${opts.childBoardId}', '${opts.childBoardId}@g.us', '${opts.childBoardId}', 'standard', 1, 1, '${opts.parentBoardId}')`,
+    `INSERT INTO boards VALUES ('${opts.childBoardId}', '${opts.childBoardId}@g.us', '${opts.childBoardId}', 'standard', 1, 1, '${opts.parentBoardId}', NULL)`,
   );
   db.exec(
     `INSERT INTO board_config VALUES ('${opts.childBoardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 1, 1, 1, 1)`,
@@ -97,7 +97,7 @@ function seedLinkedTask(
   const now = new Date().toISOString();
 
   db.exec(
-    `INSERT INTO boards VALUES ('${ownerBoardId}', 'parent@g.us', 'parent-group', 'standard', 0, 1, NULL)`,
+    `INSERT INTO boards VALUES ('${ownerBoardId}', 'parent@g.us', 'parent-group', 'standard', 0, 1, NULL, NULL)`,
   );
   db.exec(
     `INSERT INTO tasks (id, board_id, type, title, assignee, column, child_exec_enabled, child_exec_board_id, child_exec_person_id, created_at, updated_at)
@@ -2087,7 +2087,7 @@ describe('TaskflowEngine', () => {
     it('migrates JSON subtasks into real rows that the child board can conclude', () => {
       const legacyDb = new Database(':memory:');
       legacyDb.exec(`
-        CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, board_role TEXT DEFAULT 'standard', hierarchy_level INTEGER, max_depth INTEGER, parent_board_id TEXT);
+        CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, board_role TEXT DEFAULT 'standard', hierarchy_level INTEGER, max_depth INTEGER, parent_board_id TEXT, short_code TEXT);
         CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT NULL, phone TEXT, role TEXT DEFAULT 'member', wip_limit INTEGER, notification_group_jid TEXT, PRIMARY KEY (board_id, person_id));
         CREATE TABLE board_admins (board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL, admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
         CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
@@ -2131,8 +2131,8 @@ describe('TaskflowEngine', () => {
         CREATE TABLE attachment_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, source TEXT NOT NULL, filename TEXT NOT NULL, at TEXT NOT NULL, actor_person_id TEXT, affected_task_refs TEXT DEFAULT '[]');
         CREATE TABLE board_config (board_id TEXT PRIMARY KEY, columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]', wip_limit INTEGER DEFAULT 5, next_task_number INTEGER DEFAULT 17, next_note_id INTEGER DEFAULT 1);
 
-        INSERT INTO boards VALUES ('board-parent', 'parent@g.us', 'parent', 'standard', 0, 1, NULL);
-        INSERT INTO boards VALUES ('board-rafael', 'rafael@g.us', 'rafael', 'standard', 1, 1, 'board-parent');
+        INSERT INTO boards VALUES ('board-parent', 'parent@g.us', 'parent', 'standard', 0, 1, NULL, NULL);
+        INSERT INTO boards VALUES ('board-rafael', 'rafael@g.us', 'rafael', 'standard', 1, 1, 'board-parent', NULL);
         INSERT INTO board_config VALUES ('board-parent', '["inbox","next_action","in_progress","waiting","review","done"]', 5, 17, 1);
         INSERT INTO board_config VALUES ('board-rafael', '["inbox","next_action","in_progress","waiting","review","done"]', 5, 1, 1);
         INSERT INTO board_runtime_config (board_id) VALUES ('board-parent');
@@ -2199,7 +2199,7 @@ describe('TaskflowEngine', () => {
     it('reconciles pre-existing subtask rows and restores migrated projects with children', () => {
       const legacyDb = new Database(':memory:');
       legacyDb.exec(`
-        CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, board_role TEXT DEFAULT 'standard', hierarchy_level INTEGER, max_depth INTEGER, parent_board_id TEXT);
+        CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, board_role TEXT DEFAULT 'standard', hierarchy_level INTEGER, max_depth INTEGER, parent_board_id TEXT, short_code TEXT);
         CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT NULL, phone TEXT, role TEXT DEFAULT 'member', wip_limit INTEGER, notification_group_jid TEXT, PRIMARY KEY (board_id, person_id));
         CREATE TABLE board_admins (board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL, admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
         CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
@@ -2243,8 +2243,8 @@ describe('TaskflowEngine', () => {
         CREATE TABLE attachment_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, source TEXT NOT NULL, filename TEXT NOT NULL, at TEXT NOT NULL, actor_person_id TEXT, affected_task_refs TEXT DEFAULT '[]');
         CREATE TABLE board_config (board_id TEXT PRIMARY KEY, columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]', wip_limit INTEGER DEFAULT 5, next_task_number INTEGER DEFAULT 17, next_note_id INTEGER DEFAULT 1);
 
-        INSERT INTO boards VALUES ('board-parent', 'parent@g.us', 'parent', 'standard', 0, 1, NULL);
-        INSERT INTO boards VALUES ('board-rafael', 'rafael@g.us', 'rafael', 'standard', 1, 1, 'board-parent');
+        INSERT INTO boards VALUES ('board-parent', 'parent@g.us', 'parent', 'standard', 0, 1, NULL, NULL);
+        INSERT INTO boards VALUES ('board-rafael', 'rafael@g.us', 'rafael', 'standard', 1, 1, 'board-parent', NULL);
         INSERT INTO board_config VALUES ('board-parent', '["inbox","next_action","in_progress","waiting","review","done"]', 5, 17, 1);
         INSERT INTO board_config VALUES ('board-rafael', '["inbox","next_action","in_progress","waiting","review","done"]', 5, 1, 1);
         INSERT INTO board_runtime_config (board_id) VALUES ('board-parent');
@@ -2329,10 +2329,10 @@ describe('TaskflowEngine', () => {
         ${SCHEMA}
       `);
       legacyDb.exec(
-        `INSERT INTO boards VALUES ('board-sec-taskflow', 'sec@g.us', 'sec', 'standard', 0, 1, NULL)`,
+        `INSERT INTO boards VALUES ('board-sec-taskflow', 'sec@g.us', 'sec', 'standard', 0, 1, NULL, NULL)`,
       );
       legacyDb.exec(
-        `INSERT INTO boards VALUES ('board-setec-secti-taskflow', 'setec@g.us', 'setec', 'standard', 1, 1, 'board-sec-taskflow')`,
+        `INSERT INTO boards VALUES ('board-setec-secti-taskflow', 'setec@g.us', 'setec', 'standard', 1, 1, 'board-sec-taskflow', NULL)`,
       );
       legacyDb.exec(
         `INSERT INTO board_config VALUES ('board-sec-taskflow', '["inbox","next_action","in_progress","waiting","review","done"]', 5, 17, 1, 1, 1)`,
@@ -2407,10 +2407,10 @@ describe('TaskflowEngine', () => {
         ${SCHEMA}
       `);
       legacyDb.exec(
-        `INSERT INTO boards VALUES ('board-sec-taskflow', 'sec@g.us', 'sec', 'standard', 0, 1, NULL)`,
+        `INSERT INTO boards VALUES ('board-sec-taskflow', 'sec@g.us', 'sec', 'standard', 0, 1, NULL, NULL)`,
       );
       legacyDb.exec(
-        `INSERT INTO boards VALUES ('board-setec-secti-taskflow', 'setec@g.us', 'setec', 'standard', 1, 1, 'board-sec-taskflow')`,
+        `INSERT INTO boards VALUES ('board-setec-secti-taskflow', 'setec@g.us', 'setec', 'standard', 1, 1, 'board-sec-taskflow', NULL)`,
       );
       legacyDb.exec(
         `INSERT INTO board_config VALUES ('board-sec-taskflow', '["inbox","next_action","in_progress","waiting","review","done"]', 5, 17, 1, 1, 1)`,

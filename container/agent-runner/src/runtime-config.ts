@@ -10,6 +10,7 @@ export interface ContainerInput {
   taskflowMaxDepth?: number;
   isScheduledTask?: boolean;
   assistantName?: string;
+  imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
   secrets?: Record<string, string>;
 }
 

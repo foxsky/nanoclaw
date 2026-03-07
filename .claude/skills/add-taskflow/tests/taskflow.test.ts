@@ -112,8 +112,8 @@ describe('taskflow skill package', () => {
     expect(content).toContain('Quick Capture');
     expect(content).toContain('## Attachment Intake');
 
-    // Runner formats — v2 uses Report Templates section
-    expect(content).toContain('Standup (Morning)');
+    // Runner formats — standup uses formatted_board, digest/weekly still documented
+    expect(content).toContain('Standup-specific behavior');
     expect(content).toContain('Digest (Evening)');
     expect(content).toContain('Weekly Review (Friday)');
 
@@ -163,9 +163,9 @@ describe('taskflow skill package', () => {
     expect(content).toContain('Delegate');
     expect(content).toContain('Process inbox');
 
-    // v2 authorization matrix enforces permissions via sender_name in tool calls
+    // v2 authorization matrix — engine enforces permissions via sender_name
     expect(content).toContain('sender_name');
-    expect(content).toContain('If sender lacks permission, refuse briefly');
+    expect(content).toContain('ALWAYS call the MCP tool and pass the resolved');
   });
 
   it('CLAUDE.md.template documents management commands via MCP tool mapping', () => {
@@ -282,8 +282,8 @@ describe('taskflow skill package', () => {
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    // v2 uses Report Templates section with Standup (Morning), Digest (Evening), Weekly Review (Friday)
-    const standupSection = content.split('### Standup (Morning)')[1]?.split('### Digest')[0] ?? '';
+    // Standup uses formatted_board section, digest/weekly still have own sections
+    const standupSection = content.split('### Standup-specific behavior')[1]?.split('###')[0] ?? '';
     const digestSection = content.split('### Digest (Evening)')[1]?.split('### Weekly Review')[0] ?? '';
     const reviewSection = content.split('### Weekly Review (Friday)')[1]?.split('## Notification')[0] ?? '';
 
@@ -1679,8 +1679,8 @@ describe('taskflow skill package', () => {
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    // v2: engine enforces RXXX restriction, template notes it
-    expect(content).toContain('not RXXX');
+    // v2: engine enforces recurring restriction, template documents constraint
+    expect(content).toContain('non-recurring');
   });
 
   it('CLAUDE.md.template rollup SQL scopes by parent board and task in hierarchy section', () => {
@@ -1804,23 +1804,33 @@ describe('taskflow skill package', () => {
     expect(content).not.toContain('TASKS.json');
   });
 
-  it('hierarchy mode uses a single global counter for all task types (no per-type counters)', () => {
-    const claudeTemplate = fs.readFileSync(
-      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+  it('ID generation uses per-prefix counters (T/P/R) in engine and db schema', () => {
+    // Engine maps each prefix to its own counter column
+    const engine = fs.readFileSync(
+      path.resolve(skillDir, 'add/container/agent-runner/src/taskflow-engine.ts'),
       'utf-8',
     );
-    // v2: engine handles ID generation, schema has single counter
-    expect(claudeTemplate).toContain('next_task_number');
-    expect(claudeTemplate).not.toContain('next_project_number');
-    expect(claudeTemplate).not.toContain('next_recurring_number');
+    expect(engine).toContain('next_task_number');
+    expect(engine).toContain('next_project_number');
+    expect(engine).toContain('next_recurring_number');
 
+    // DB schema defines all three counter columns
     const dbSchema = fs.readFileSync(
       path.resolve(skillDir, '../../../src/taskflow-db.ts'),
       'utf-8',
     );
     expect(dbSchema).toContain('next_task_number');
-    expect(dbSchema).not.toContain('next_project_number');
-    expect(dbSchema).not.toContain('next_recurring_number');
+    expect(dbSchema).toContain('next_project_number');
+    expect(dbSchema).toContain('next_recurring_number');
+
+    // CLAUDE.md template only exposes next_task_number (counters are engine-internal)
+    const claudeTemplate = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    expect(claudeTemplate).toContain('next_task_number');
+    expect(claudeTemplate).not.toContain('next_project_number');
+    expect(claudeTemplate).not.toContain('next_recurring_number');
   });
 
   it('CLAUDE.md.template recurrence schema has fields in schema reference', () => {

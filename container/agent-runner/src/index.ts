@@ -42,9 +42,21 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
+interface ImageContentBlock {
+  type: 'image';
+  source: { type: 'base64'; media_type: string; data: string };
+}
+
+interface TextContentBlock {
+  type: 'text';
+  text: string;
+}
+
+type ContentBlock = TextContentBlock | ImageContentBlock;
+
 interface SDKUserMessage {
   type: 'user';
-  message: { role: 'user'; content: string };
+  message: { role: 'user'; content: string | ContentBlock[] };
   parent_tool_use_id: null;
   session_id: string;
 }
@@ -66,6 +78,16 @@ class MessageStream {
     this.queue.push({
       type: 'user',
       message: { role: 'user', content: text },
+      parent_tool_use_id: null,
+      session_id: '',
+    });
+    this.waiting?.();
+  }
+
+  pushMultimodal(content: ContentBlock[]): void {
+    this.queue.push({
+      type: 'user',
+      message: { role: 'user', content },
       parent_tool_use_id: null,
       session_id: '',
     });
@@ -358,6 +380,28 @@ async function runQuery(
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
   stream.push(prompt);
+
+  // Load image attachments as multimodal content blocks
+  if (containerInput.imageAttachments && containerInput.imageAttachments.length > 0) {
+    const blocks: ContentBlock[] = [];
+    for (const att of containerInput.imageAttachments) {
+      const filePath = path.join('/workspace/group', att.relativePath);
+      if (fs.existsSync(filePath)) {
+        const data = fs.readFileSync(filePath).toString('base64');
+        blocks.push({
+          type: 'image',
+          source: { type: 'base64', media_type: att.mediaType, data },
+        });
+        log(`Loaded image: ${att.relativePath} (${Math.round(data.length * 0.75 / 1024)}KB)`);
+      } else {
+        log(`Image not found: ${filePath}`);
+      }
+    }
+    if (blocks.length > 0) {
+      blocks.push({ type: 'text', text: 'Images attached above were sent in the conversation.' });
+      stream.pushMultimodal(blocks);
+    }
+  }
 
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;

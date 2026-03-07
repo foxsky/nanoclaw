@@ -5,6 +5,7 @@ import path from 'path';
 import makeWASocket, {
   Browsers,
   DisconnectReason,
+  downloadMediaMessage,
   WASocket,
   fetchLatestWaWebVersion,
   makeCacheableSignalKeyStore,
@@ -19,6 +20,7 @@ import {
 } from '../config.js';
 import { getLastGroupSync, setLastGroupSync, updateChatName } from '../db.js';
 import { logger } from '../logger.js';
+import { isImageMessage, processImage } from '../image.js';
 import { isMediaMessage, getMediaType, downloadAndSaveMedia } from '../media.js';
 import { isVoiceMessage, transcribeAudioMessage } from '../transcription.js';
 import {
@@ -205,8 +207,8 @@ export class WhatsAppChannel implements Channel {
             '';
 
           // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
-          // but allow voice messages and media messages through
-          if (!content && !isVoiceMessage(msg) && !isMediaMessage(msg)) continue;
+          // but allow voice messages, images, and other media through
+          if (!content && !isVoiceMessage(msg) && !isImageMessage(msg) && !isMediaMessage(msg)) continue;
 
           const sender = msg.key.participant || msg.key.remoteJid || '';
           const senderName = msg.pushName || sender.split('@')[0];
@@ -244,11 +246,43 @@ export class WhatsAppChannel implements Channel {
             }
           }
 
-          // Download media files (images, PDFs, documents)
-          if (isMediaMessage(msg)) {
+          // Image vision pipeline: resize with sharp, save to attachments/
+          // The [Image: attachments/...] annotation is parsed by the host to
+          // inject images as multimodal content blocks into the Claude API call.
+          if (isImageMessage(msg)) {
+            const groupEntry = groups[chatJid];
+            const groupDir = path.join(GROUPS_DIR, groupEntry.folder);
+            try {
+              const buffer = await downloadMediaMessage(
+                msg,
+                'buffer',
+                {},
+                {
+                  logger: console as any,
+                  reuploadRequest: this.sock.updateMediaMessage,
+                },
+              ) as Buffer;
+              const caption = msg.message?.imageMessage?.caption || '';
+              const result = await processImage(buffer, groupDir, caption);
+              if (result) {
+                finalContent = result.content;
+              } else {
+                finalContent = finalContent
+                  ? `[Image: download failed]\n${finalContent}`
+                  : '[Image: download failed]';
+              }
+            } catch (err) {
+              logger.error({ err }, 'Image download/processing error');
+              finalContent = finalContent
+                ? `[Image: download failed]\n${finalContent}`
+                : '[Image: download failed]';
+            }
+          }
+          // Download other media files (PDFs, documents)
+          else if (isMediaMessage(msg)) {
             const mediaType = getMediaType(msg);
             const groupEntry = groups[chatJid];
-            const mediaDir = path.join(GROUPS_DIR, groupEntry.folder, 'media');
+            const mediaDir = path.join(GROUPS_DIR, groupEntry.folder, 'attachments');
             const savedPath = await downloadAndSaveMedia(
               msg,
               mediaDir,
@@ -256,10 +290,18 @@ export class WhatsAppChannel implements Channel {
             );
             if (savedPath) {
               const filename = path.basename(savedPath);
-              const annotation = `[Media: ${mediaType} at /workspace/group/media/${filename}]`;
-              finalContent = finalContent
-                ? `${annotation}\n${finalContent}`
-                : annotation;
+              const sizeKB = Math.round(fs.statSync(savedPath).size / 1024);
+              if (mediaType === 'document' && filename.endsWith('.pdf')) {
+                const annotation = `[PDF: attachments/${filename} (${sizeKB}KB)]\nUse \`pdf-reader extract attachments/${filename} --layout\` to read this PDF.`;
+                finalContent = finalContent
+                  ? `${annotation}\n${finalContent}`
+                  : annotation;
+              } else {
+                const annotation = `[Document: attachments/${filename} (${sizeKB}KB)]`;
+                finalContent = finalContent
+                  ? `${annotation}\n${finalContent}`
+                  : annotation;
+              }
             } else {
               const annotation = `[Media: ${mediaType} — download failed]`;
               finalContent = finalContent

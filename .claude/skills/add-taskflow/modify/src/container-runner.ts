@@ -25,6 +25,7 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { validateAdditionalMounts } from './mount-security.js';
+import Database from 'better-sqlite3';
 import { initTaskflowDb } from './taskflow-db.js';
 import { RegisteredGroup } from './types.js';
 
@@ -48,6 +49,7 @@ export interface ContainerInput {
   isTaskflowManaged?: boolean;
   taskflowHierarchyLevel?: number;
   taskflowMaxDepth?: number;
+  taskflowBoardId?: string;
   isScheduledTask?: boolean;
   assistantName?: string;
   secrets?: Record<string, string>;
@@ -267,6 +269,52 @@ function readSecrets(): Record<string, string> {
   return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
 }
 
+/**
+ * Resolve the TaskFlow board ID from the database.
+ * The group folder (e.g. "sec-secti") is not the board ID — we need to look up
+ * the actual board ID (e.g. "board-sec-taskflow") from the boards table.
+ */
+function resolveTaskflowBoardId(
+  group: RegisteredGroup,
+  explicitBoardId?: string,
+): string | undefined {
+  if (explicitBoardId) return explicitBoardId;
+  if (group.taskflowManaged !== true) return undefined;
+
+  const dbPath = path.join(DATA_DIR, 'taskflow', 'taskflow.db');
+  if (!fs.existsSync(dbPath)) {
+    return undefined;
+  }
+
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    db.pragma('busy_timeout = 5000');
+
+    const direct = db
+      .prepare(`SELECT id FROM boards WHERE group_folder = ? LIMIT 1`)
+      .get(group.folder) as { id: string } | undefined;
+    if (direct?.id) {
+      return direct.id;
+    }
+
+    const mapped = db
+      .prepare(
+        `SELECT board_id FROM board_groups WHERE group_folder = ? LIMIT 1`,
+      )
+      .get(group.folder) as { board_id: string } | undefined;
+    return mapped?.board_id;
+  } catch (err) {
+    logger.warn(
+      { err, groupFolder: group.folder },
+      'Failed to resolve TaskFlow board ID',
+    );
+    return undefined;
+  } finally {
+    db?.close();
+  }
+}
+
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
@@ -306,6 +354,17 @@ export async function runContainerAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
+
+  if (group.taskflowManaged === true) {
+    input.taskflowBoardId = resolveTaskflowBoardId(group, input.taskflowBoardId);
+    if (!input.taskflowBoardId) {
+      return {
+        status: 'error',
+        result: null,
+        error: `TaskFlow board mapping not found for group ${group.folder}`,
+      };
+    }
+  }
 
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
