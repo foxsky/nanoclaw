@@ -1679,6 +1679,26 @@ export class TaskflowEngine {
       return { cycle_number: nextCycle, expired: true, reason: expiryReason };
     }
 
+    // Archive meeting occurrence before cycle reset
+    if (task.type === 'meeting') {
+      const meetingSnapshot = {
+        ...task,
+        current_cycle: currentCycle,
+        occurrence_scheduled_at: task.scheduled_at,
+      };
+      this.recordHistory(
+        task.id,
+        'meeting_occurrence_archived',
+        'system',
+        JSON.stringify({
+          cycle_number: currentCycle,
+          occurrence_scheduled_at: task.scheduled_at,
+          snapshot: meetingSnapshot,
+        }),
+        this.taskBoardId(task),
+      );
+    }
+
     // Normal advance: reset to next_action
     this.db
       .prepare(
@@ -1687,6 +1707,18 @@ export class TaskflowEngine {
          WHERE board_id = ? AND id = ?`,
       )
       .run(newDueDate, String(nextCycle), now, this.taskBoardId(task), task.id);
+
+    // Advance scheduled_at for recurring meetings
+    if (task.type === 'meeting' && task.scheduled_at) {
+      const anchor = new Date(task.scheduled_at);
+      const nextScheduled = advanceDateByRecurrence(anchor, recurrence);
+      // scheduled_at includes time, so preserve time component
+      const timePart = task.scheduled_at.slice(10); // e.g. T14:00:00Z
+      const nextScheduledWithTime = nextScheduled.slice(0, 10) + timePart;
+      this.db
+        .prepare(`UPDATE tasks SET scheduled_at = ? WHERE board_id = ? AND id = ?`)
+        .run(nextScheduledWithTime, this.taskBoardId(task), task.id);
+    }
 
     /* Reset subtask rows for recurring projects */
     if (task.type === 'project') {

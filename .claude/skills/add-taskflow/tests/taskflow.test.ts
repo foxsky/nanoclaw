@@ -3151,4 +3151,50 @@ describe('meeting notes', () => {
       expect(result.success).toBe(false);
     });
   });
+
+  describe('recurring meeting advance', () => {
+    it('archives meeting notes with metadata before cycle reset', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Weekly standup',
+        scheduled_at: '2026-03-10T14:00:00Z',
+        recurrence: 'weekly',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      const meetingId = r.task_id!;
+
+      // Add notes
+      engine.update({ board_id: BOARD_ID, task_id: meetingId, sender_name: 'Alexandre', updates: { add_note: 'Agenda item' } });
+      engine.update({ board_id: BOARD_ID, task_id: meetingId, sender_name: 'Alexandre', updates: { set_note_status: { id: 1, status: 'checked' } } });
+
+      // Move to done (triggers advance)
+      engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
+      const doneResult = engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'conclude', sender_name: 'Alexandre' });
+      expect(doneResult.success).toBe(true);
+      expect(doneResult.recurring_cycle).toBeDefined();
+      expect(doneResult.recurring_cycle!.expired).toBe(false);
+
+      // Verify notes were reset
+      const task = db.prepare(`SELECT notes, scheduled_at, participants FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+      expect(JSON.parse(task.notes)).toEqual([]);
+
+      // Verify participants preserved
+      const parts = JSON.parse(task.participants);
+      expect(parts).toContain('person-2');
+
+      // Verify scheduled_at advanced
+      expect(task.scheduled_at).not.toBe('2026-03-10T14:00:00Z');
+
+      // Verify archived occurrence preserves notes and metadata
+      const occurrences = db.prepare(
+        `SELECT * FROM task_history WHERE board_id = ? AND task_id = ? AND action = 'meeting_occurrence_archived'`
+      ).all(BOARD_ID, meetingId);
+      expect(occurrences.length).toBe(1);
+      const details = JSON.parse((occurrences[0] as any).details);
+      expect(details.snapshot.notes).toBeDefined();
+      expect(details.snapshot.scheduled_at).toBe('2026-03-10T14:00:00Z');
+    });
+  });
 });
