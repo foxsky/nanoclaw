@@ -3041,4 +3041,114 @@ describe('meeting notes', () => {
       expect(result.success).toBe(true);
     });
   });
+
+  describe('admin meeting triage', () => {
+    let meetingId: string;
+
+    beforeEach(() => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Triage meeting',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      meetingId = r.task_id!;
+      engine.update({ board_id: BOARD_ID, task_id: meetingId, sender_name: 'Alexandre', updates: { add_note: 'Budget review' } });
+      engine.update({ board_id: BOARD_ID, task_id: meetingId, sender_name: 'Alexandre', updates: { add_note: 'Timeline definition' } });
+      engine.update({ board_id: BOARD_ID, task_id: meetingId, sender_name: 'Alexandre', updates: { add_note: 'Server issue' } });
+      engine.update({ board_id: BOARD_ID, task_id: meetingId, sender_name: 'Alexandre', updates: { set_note_status: { id: 1, status: 'checked' } } });
+    });
+
+    it('process_minutes returns only open notes', () => {
+      const result = engine.admin({
+        board_id: BOARD_ID,
+        action: 'process_minutes',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      expect(result.data.open_items.length).toBe(2);
+      expect(result.data.open_items.every((n: any) => n.status === 'open')).toBe(true);
+    });
+
+    it('process_minutes_decision creates task atomically', () => {
+      const result = engine.admin({
+        board_id: BOARD_ID,
+        action: 'process_minutes_decision',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        note_id: 2,
+        decision: 'create_task',
+        create: {
+          type: 'simple',
+          title: 'Timeline follow-up',
+          assignee: 'Giovanni',
+          labels: ['ata:' + meetingId],
+        },
+      });
+      expect(result.success).toBe(true);
+      expect(result.data.created_task_id).toBeDefined();
+
+      const task = db.prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+      const notes = JSON.parse(task.notes);
+      const note = notes.find((n: any) => n.id === 2);
+      expect(note.status).toBe('task_created');
+      expect(note.created_task_id).toBe(result.data.created_task_id);
+
+      const createdTask = db.prepare(`SELECT * FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, result.data.created_task_id) as any;
+      expect(createdTask).toBeDefined();
+      expect(createdTask.title).toBe('Timeline follow-up');
+    });
+
+    it('process_minutes_decision creates inbox atomically', () => {
+      const result = engine.admin({
+        board_id: BOARD_ID,
+        action: 'process_minutes_decision',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        note_id: 3,
+        decision: 'create_inbox',
+        create: {
+          type: 'inbox',
+          title: 'Investigate server issue',
+          labels: ['ata:' + meetingId],
+        },
+      });
+      expect(result.success).toBe(true);
+      expect(result.data.created_task_id).toBeDefined();
+
+      const task = db.prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+      const notes = JSON.parse(task.notes);
+      const note = notes.find((n: any) => n.id === 3);
+      expect(note.status).toBe('inbox_created');
+    });
+
+    it('process_minutes_decision rejects invalid note_id', () => {
+      const result = engine.admin({
+        board_id: BOARD_ID,
+        action: 'process_minutes_decision',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        note_id: 999,
+        decision: 'create_task',
+        create: { type: 'simple', title: 'No note', assignee: 'Giovanni' },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('process_minutes_decision rejects already-processed note', () => {
+      const result = engine.admin({
+        board_id: BOARD_ID,
+        action: 'process_minutes_decision',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        note_id: 1,
+        decision: 'create_task',
+        create: { type: 'simple', title: 'Already done', assignee: 'Giovanni' },
+      });
+      expect(result.success).toBe(false);
+    });
+  });
 });

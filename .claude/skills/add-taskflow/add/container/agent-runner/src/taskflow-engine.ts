@@ -173,7 +173,7 @@ export interface UndoResult extends TaskflowResult {
 
 export interface AdminParams {
   board_id: string;
-  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays';
+  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision';
   sender_name: string;
   person_name?: string;
   phone?: string;
@@ -188,6 +188,14 @@ export interface AdminParams {
   holidays?: Array<{ date: string; label?: string }>;
   holiday_dates?: string[];
   holiday_year?: number;
+  note_id?: number;
+  decision?: 'create_task' | 'create_inbox';
+  create?: {
+    type: string;
+    title: string;
+    assignee?: string;
+    labels?: string[];
+  };
 }
 
 export interface AdminResult extends TaskflowResult {
@@ -4496,6 +4504,84 @@ export class TaskflowEngine {
             default:
               return { success: false, error: `Unknown holiday operation: ${op}` };
           }
+        }
+
+        case 'process_minutes': {
+          const task = this.requireTask(params.task_id);
+          if (task.type !== 'meeting') {
+            return { success: false, error: `Task ${params.task_id} is not a meeting.` };
+          }
+          const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+          const openItems = notes.filter((n: any) => n.status === 'open');
+
+          const grouped: Array<{ item: any; replies: any[] }> = [];
+          const topLevel = openItems.filter((n: any) => !n.parent_note_id);
+          for (const item of topLevel) {
+            const replies = openItems.filter((n: any) => n.parent_note_id === item.id);
+            grouped.push({ item, replies });
+          }
+          const coveredIds = new Set(grouped.flatMap((g) => [g.item.id, ...g.replies.map((r: any) => r.id)]));
+          const orphans = openItems.filter((n: any) => !coveredIds.has(n.id));
+          for (const o of orphans) grouped.push({ item: o, replies: [] });
+
+          return {
+            success: true,
+            data: { open_items: openItems, grouped },
+          };
+        }
+
+        case 'process_minutes_decision': {
+          const task = this.requireTask(params.task_id);
+          if (task.type !== 'meeting') {
+            return { success: false, error: `Task ${params.task_id} is not a meeting.` };
+          }
+          if (params.note_id == null) {
+            return { success: false, error: 'Missing required parameter: note_id' };
+          }
+          if (!params.decision) {
+            return { success: false, error: 'Missing required parameter: decision' };
+          }
+          if (!params.create) {
+            return { success: false, error: 'Missing required parameter: create' };
+          }
+
+          const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+          const note = notes.find((n: any) => n.id === params.note_id);
+          if (!note) {
+            return { success: false, error: `Note #${params.note_id} not found.` };
+          }
+          if (note.status !== 'open') {
+            return { success: false, error: `Note #${params.note_id} is already processed (status: ${note.status}).` };
+          }
+
+          const now = new Date().toISOString();
+
+          const createResult = this.create({
+            board_id: this.boardId,
+            type: params.create!.type as any,
+            title: params.create!.title,
+            assignee: params.create!.assignee,
+            labels: params.create!.labels,
+            sender_name: params.sender_name,
+          });
+
+          if (!createResult.success) {
+            throw new Error(`Failed to create task: ${createResult.error}`);
+          }
+
+          note.status = params.decision === 'create_task' ? 'task_created' : 'inbox_created';
+          note.processed_at = now;
+          note.processed_by = params.sender_name;
+          note.created_task_id = createResult.task_id;
+
+          this.db
+            .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
+            .run(JSON.stringify(notes), this.taskBoardId(task), task.id);
+
+          return {
+            success: true,
+            data: { created_task_id: createResult.task_id, note_id: params.note_id },
+          };
         }
 
         default:
