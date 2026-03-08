@@ -2442,6 +2442,40 @@ describe('taskflow skill package', () => {
     );
   });
 
+  it('MCP schema includes meeting type in taskflow_create', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'modify', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
+      'utf-8',
+    );
+    expect(content).toContain("'meeting'");
+    expect(content).toContain('scheduled_at');
+    expect(content).toContain('participants');
+  });
+
+  it('MCP schema includes meeting queries in taskflow_query', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'modify', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
+      'utf-8',
+    );
+    expect(content).toContain('meetings');
+    expect(content).toContain('meeting_agenda');
+    expect(content).toContain('meeting_minutes');
+    expect(content).toContain('upcoming_meetings');
+    expect(content).toContain('meeting_participants');
+    expect(content).toContain('meeting_open_items');
+    expect(content).toContain('meeting_history');
+    expect(content).toContain('meeting_minutes_at');
+  });
+
+  it('MCP schema includes process_minutes in taskflow_admin', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'modify', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
+      'utf-8',
+    );
+    expect(content).toContain('process_minutes');
+    expect(content).toContain('process_minutes_decision');
+  });
+
 });
 
 describe('meeting notes', () => {
