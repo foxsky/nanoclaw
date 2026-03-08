@@ -359,24 +359,26 @@ function advanceDateByRecurrence(d: Date, recurrence: 'daily' | 'weekly' | 'mont
   return d.toISOString().slice(0, 10);
 }
 
-/** Advance a full ISO datetime by a recurrence interval, preserving the time component. */
+/** Advance a full ISO datetime by a recurrence interval, preserving the time component.
+ *  @param cycles Number of recurrence periods to advance (default 1). */
 function advanceDateTimeByRecurrence(
   isoDateTime: string,
   recurrence: 'daily' | 'weekly' | 'monthly' | 'yearly',
+  cycles: number = 1,
 ): string {
   const d = new Date(isoDateTime);
   switch (recurrence) {
     case 'daily':
-      d.setUTCDate(d.getUTCDate() + 1);
+      d.setUTCDate(d.getUTCDate() + 1 * cycles);
       break;
     case 'weekly':
-      d.setUTCDate(d.getUTCDate() + 7);
+      d.setUTCDate(d.getUTCDate() + 7 * cycles);
       break;
     case 'monthly':
-      d.setUTCMonth(d.getUTCMonth() + 1);
+      d.setUTCMonth(d.getUTCMonth() + 1 * cycles);
       break;
     case 'yearly':
-      d.setUTCFullYear(d.getUTCFullYear() + 1);
+      d.setUTCFullYear(d.getUTCFullYear() + 1 * cycles);
       break;
   }
   return d.toISOString();
@@ -1205,9 +1207,11 @@ export class TaskflowEngine {
         return [];
       }
     })();
-    const allRecipients = task.assignee && !participantIds.includes(task.assignee)
-      ? [...participantIds, task.assignee]
-      : [...participantIds];
+    const allRecipients = [...new Set(
+      task.assignee && !participantIds.includes(task.assignee)
+        ? [...participantIds, task.assignee]
+        : [...participantIds],
+    )];
     if (allRecipients.length === 0) return [];
     const placeholders = allRecipients.map(() => '?').join(',');
     const rows = this.db.prepare(
@@ -1819,10 +1823,10 @@ export class TaskflowEngine {
     let newScheduledAt: string | undefined;
     if (isMeeting) {
       const recurrenceBase =
-        task.scheduled_at ??
         task.recurrence_anchor ??
+        task.scheduled_at ??
         new Date().toISOString();
-      newScheduledAt = advanceDateTimeByRecurrence(recurrenceBase, recurrence);
+      newScheduledAt = advanceDateTimeByRecurrence(recurrenceBase, recurrence, nextCycle);
     } else {
       const anchor = task.due_date ? new Date(task.due_date) : new Date();
       newDueDate = advanceDateByRecurrence(anchor, recurrence);
@@ -1834,7 +1838,7 @@ export class TaskflowEngine {
     let expiryReason: 'max_cycles' | 'end_date' | null = null;
     if (task.max_cycles != null && nextCycle >= task.max_cycles) {
       expiryReason = 'max_cycles';
-    } else if (task.recurrence_end_date && (isMeeting ? (newScheduledAt ?? '') : (newDueDate ?? '')) > task.recurrence_end_date) {
+    } else if (task.recurrence_end_date && (isMeeting ? (newScheduledAt ?? '').slice(0, 10) : (newDueDate ?? '')) > task.recurrence_end_date) {
       expiryReason = 'end_date';
     }
 
@@ -2042,16 +2046,29 @@ export class TaskflowEngine {
       }
 
       /* --- Snapshot before mutation --- */
+      const snapshotFields: Record<string, any> = {
+        column: fromColumn,
+        assignee: task.assignee,
+        due_date: task.due_date,
+        updated_at: task.updated_at,
+      };
+      /* Recurring conclude/approve mutates many fields via advanceRecurringTask;
+         capture them so undo can fully revert the cycle advance. */
+      if (toColumn === 'done' && task.recurrence) {
+        snapshotFields.scheduled_at = task.scheduled_at ?? null;
+        snapshotFields.notes = task.notes ?? '[]';
+        snapshotFields.next_note_id = task.next_note_id ?? 1;
+        snapshotFields.current_cycle = task.current_cycle ?? null;
+        snapshotFields.reminders = task.reminders ?? '[]';
+        snapshotFields.blocked_by = task.blocked_by ?? '[]';
+        snapshotFields.next_action = task.next_action ?? null;
+        snapshotFields.waiting_for = task.waiting_for ?? null;
+      }
       const snapshot = JSON.stringify({
         action: params.action,
         by: params.sender_name,
         at: now,
-        snapshot: {
-          column: fromColumn,
-          assignee: task.assignee,
-          due_date: task.due_date,
-          updated_at: task.updated_at,
-        },
+        snapshot: snapshotFields,
       });
 
       /* --- Project subtask completion (real task rows) --- */
@@ -2238,8 +2255,13 @@ export class TaskflowEngine {
       }
 
       /* --- Open meeting minutes warning --- */
+      // Skip the warning for recurring meetings that were advanced (not expired):
+      // advanceRecurringTask already cleared the notes from the task, so
+      // process_minutes / process_minutes_decision would find nothing to triage.
+      // The notes are preserved in meeting_occurrence_archived history.
       let unprocessedMinutesWarning: boolean | undefined;
-      if (toColumn === 'done' && task.type === 'meeting') {
+      const recurringAdvanced = recurringCycle && !recurringCycle.expired;
+      if (toColumn === 'done' && task.type === 'meeting' && !recurringAdvanced) {
         const notes: Array<any> = JSON.parse(task.notes ?? '[]');
         const hasOpenNotes = notes.some((n: any) => n.status === 'open');
         if (hasOpenNotes) unprocessedMinutesWarning = true;
@@ -2524,7 +2546,31 @@ export class TaskflowEngine {
           updates.remove_note !== undefined ||
           updates.set_note_status !== undefined);
 
-      if (!isMeetingNoteOperation && !isMgr && !isAssignee) {
+      // Meeting note operations bypass the main gate, but only for note-specific fields.
+      // If the request also includes privileged fields (title, priority, due_date, etc.),
+      // the main assignee/manager gate must still apply to prevent participants from
+      // modifying fields they shouldn't have access to.
+      const hasPrivilegedUpdate =
+        updates.title !== undefined ||
+        updates.priority !== undefined ||
+        updates.due_date !== undefined ||
+        updates.description !== undefined ||
+        updates.next_action !== undefined ||
+        updates.add_label !== undefined ||
+        updates.remove_label !== undefined ||
+        updates.scheduled_at !== undefined ||
+        updates.add_participant !== undefined ||
+        updates.remove_participant !== undefined ||
+        updates.add_subtask !== undefined ||
+        updates.rename_subtask !== undefined ||
+        updates.reopen_subtask !== undefined ||
+        updates.assign_subtask !== undefined ||
+        updates.unassign_subtask !== undefined ||
+        updates.recurrence !== undefined ||
+        updates.max_cycles !== undefined ||
+        updates.recurrence_end_date !== undefined;
+
+      if ((!isMeetingNoteOperation || hasPrivilegedUpdate) && !isMgr && !isAssignee) {
         return {
           success: false,
           error: `Permission denied: "${params.sender_name}" is neither the assignee nor a manager.`,
@@ -2549,6 +2595,9 @@ export class TaskflowEngine {
           recurrence: task.recurrence,
           max_cycles: task.max_cycles,
           recurrence_end_date: task.recurrence_end_date,
+          participants: task.participants,
+          scheduled_at: task.scheduled_at,
+          reminders: task.reminders,
           updated_at: task.updated_at,
         },
       });
@@ -2741,7 +2790,18 @@ export class TaskflowEngine {
         if (task.type !== 'meeting') {
           return { success: false, error: 'Note status can only be set on meeting tasks.' };
         }
-        const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+        // Meeting note authorization: only participants, organizer, or manager can set status
+        if (!isMgr && !isAssignee) {
+          const participants: string[] = JSON.parse(task.participants ?? '[]');
+          if (!participants.includes(senderPersonId ?? '')) {
+            return { success: false, error: `Permission denied: "${params.sender_name}" is not a participant of this meeting.` };
+          }
+        }
+        // Re-read notes from DB to pick up any preceding add_note/edit_note/remove_note in the same update call
+        const freshNotesRow = this.db
+          .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+          .get(taskBoardId, task.id) as { notes: string } | undefined;
+        const notes: Array<any> = JSON.parse(freshNotesRow?.notes ?? task.notes ?? '[]');
         const note = notes.find((n: any) => n.id === updates.set_note_status!.id);
         if (!note) {
           return { success: false, error: `Note #${updates.set_note_status.id} not found.` };
@@ -2784,7 +2844,9 @@ export class TaskflowEngine {
         }
         const person = this.resolvePerson(updates.remove_participant);
         if (!person) return this.buildOfferRegisterError(updates.remove_participant);
-        const participants: string[] = JSON.parse(task.participants ?? '[]');
+        // Re-read from DB to pick up any preceding add_participant in the same update call
+        const freshTask = this.requireTask(task.id);
+        const participants: string[] = JSON.parse(freshTask.participants ?? '[]');
         const idx = participants.indexOf(person.person_id);
         if (idx >= 0) {
           participants.splice(idx, 1);
@@ -3364,7 +3426,9 @@ export class TaskflowEngine {
         try {
           const p = JSON.parse(t.participants);
           if (Array.isArray(p) && p.length > 0) {
-            parts.push(`${p.length + 1} participantes`);
+            const organizerAlreadyCounted = t.assignee && p.includes(t.assignee);
+            const total = organizerAlreadyCounted ? p.length : p.length + 1;
+            parts.push(`${total} participantes`);
           }
         } catch {}
       }
@@ -4048,14 +4112,15 @@ export class TaskflowEngine {
         }
 
         case 'upcoming_meetings': {
+          const nowIso = new Date().toISOString();
           const tasks = this.db
             .prepare(
               `SELECT * FROM tasks
                WHERE ${this.visibleTaskScope()} AND type = 'meeting' AND column != 'done'
-                 AND scheduled_at IS NOT NULL
+                 AND scheduled_at IS NOT NULL AND scheduled_at >= ?
                ORDER BY scheduled_at ASC`,
             )
-            .all(...this.visibleTaskParams());
+            .all(...this.visibleTaskParams(), nowIso);
           return { success: true, data: tasks };
         }
 
@@ -4202,10 +4267,10 @@ export class TaskflowEngine {
         };
       }
 
-      /* --- 5. WIP guard: if restoring to in_progress, check WIP limit --- */
+      /* --- 5. WIP guard: if restoring to in_progress, check WIP limit (meetings exempt) --- */
       if (snapshot?.column === 'in_progress') {
         const task = this.getTask(taskId);
-        if (task?.assignee) {
+        if (task?.assignee && task.type !== 'meeting') {
           const wip = this.checkWipLimit(task.assignee);
           if (!wip.ok) {
             if (!params.force) {
@@ -4821,7 +4886,10 @@ export class TaskflowEngine {
           });
 
           if (!createResult.success) {
-            throw new Error(`Failed to create task: ${createResult.error}`);
+            const errorMsg = createResult.error
+              ?? (createResult as any).offer_register?.message
+              ?? 'Unknown error creating task from meeting note';
+            throw new Error(`Failed to create task: ${errorMsg}`);
           }
 
           note.status = params.decision === 'create_task' ? 'task_created' : 'inbox_created';
@@ -5138,27 +5206,32 @@ export class TaskflowEngine {
       }
 
       /* --- Upcoming meetings (next 7 days) --- */
+      const nowStr = new Date().toISOString();
       const sevenDaysFromNow = new Date(Date.now() + 7 * 86400000).toISOString();
       const upcomingMeetings = this.db
         .prepare(
-          `SELECT id, title, scheduled_at, participants FROM tasks
+          `SELECT id, title, scheduled_at, participants, assignee FROM tasks
            WHERE ${this.visibleTaskScope()} AND type = 'meeting' AND column != 'done'
-             AND scheduled_at IS NOT NULL AND scheduled_at <= ?
+             AND scheduled_at IS NOT NULL AND scheduled_at >= ? AND scheduled_at <= ?
            ORDER BY scheduled_at`,
         )
-        .all(...this.visibleTaskParams(), sevenDaysFromNow) as Array<{
-          id: string; title: string; scheduled_at: string; participants: string | null;
+        .all(...this.visibleTaskParams(), nowStr, sevenDaysFromNow) as Array<{
+          id: string; title: string; scheduled_at: string; participants: string | null; assignee: string | null;
         }>;
 
-      const upcomingMeetingsFormatted = upcomingMeetings.map((m) => ({
-        id: m.id,
-        title: m.title,
-        scheduled_at: m.scheduled_at,
-        participant_count: m.participants ? JSON.parse(m.participants).length + 1 : 1,
-      }));
+      const upcomingMeetingsFormatted = upcomingMeetings.map((m) => {
+        let pArr: string[] = [];
+        try { pArr = m.participants ? JSON.parse(m.participants) : []; } catch { /* skip malformed */ }
+        const organizerAlreadyCounted = m.assignee && pArr.includes(m.assignee);
+        return {
+          id: m.id,
+          title: m.title,
+          scheduled_at: m.scheduled_at,
+          participant_count: pArr.length > 0 ? (organizerAlreadyCounted ? pArr.length : pArr.length + 1) : 1,
+        };
+      });
 
       /* --- Meetings with open minutes (past scheduled_at, has open notes) --- */
-      const nowStr = new Date().toISOString();
       const pastMeetings = this.db
         .prepare(
           `SELECT id, title, scheduled_at, notes FROM tasks

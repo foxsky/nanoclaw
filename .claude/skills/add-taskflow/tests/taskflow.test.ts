@@ -2136,9 +2136,11 @@ describe('taskflow skill package', () => {
     expect(content).toContain('📅');
     expect(content).toContain('participante');
 
-    // Schema reference
+    // Schema reference: participants stores person_id values, not display names
     expect(content).toContain('participants');
     expect(content).toContain('scheduled_at');
+    expect(content).toContain('person_id values');
+    expect(content).not.toContain('JSON array of person names');
   });
 
   it('test schema includes bounded recurrence columns', () => {
@@ -2574,7 +2576,7 @@ describe('meeting notes', () => {
       expect(task.assignee).toBe('person-1');
     });
 
-    it('stores participants as JSON array', () => {
+    it('stores participants as person_ids (not display names)', () => {
       const result = engine.create({
         board_id: BOARD_ID,
         type: 'meeting',
@@ -2588,6 +2590,9 @@ describe('meeting notes', () => {
         .get(BOARD_ID, result.task_id) as { participants: string };
       const parts = JSON.parse(task.participants);
       expect(parts).toContain('person-2');
+      // Participants stores person_id values, NOT display names.
+      // Ad-hoc SQL must join with board_people to get display names.
+      expect(parts).not.toContain('Giovanni');
     });
 
     it('stores scheduled_at in UTC', () => {
@@ -2880,6 +2885,41 @@ describe('meeting notes', () => {
       expect(parts).not.toContain('person-2');
     });
 
+    it('add_participant + remove_participant in same update call preserves both changes', () => {
+      // Register a third person
+      engine.admin({
+        board_id: BOARD_ID,
+        action: 'register_person',
+        sender_name: 'Alexandre',
+        person_name: 'Ana',
+        phone: '5585999990003',
+        role: 'QA',
+      });
+
+      // meetingId has Giovanni (person-2) as participant from beforeEach
+      // Now add Ana and remove Giovanni in a single update call
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_participant: 'Ana', remove_participant: 'Giovanni' },
+      });
+      expect(result.success).toBe(true);
+
+      const task = db
+        .prepare(`SELECT participants FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { participants: string };
+      const parts = JSON.parse(task.participants);
+
+      // Ana should have been added
+      const anaPerson = db
+        .prepare(`SELECT person_id FROM board_people WHERE board_id = ? AND name = 'Ana'`)
+        .get(BOARD_ID) as { person_id: string };
+      expect(parts).toContain(anaPerson.person_id);
+      // Giovanni should have been removed
+      expect(parts).not.toContain('person-2');
+    });
+
     it('scheduled_at update reschedules meeting', () => {
       const result = engine.update({
         board_id: BOARD_ID,
@@ -2948,6 +2988,102 @@ describe('meeting notes', () => {
       });
       expect(removeResult.success).toBe(false);
       expect(removeResult.error).toContain('Permission denied');
+    });
+
+    it('non-participant cannot set_note_status on a meeting', () => {
+      // Register a third person who is NOT a participant of the meeting
+      db.exec(
+        `INSERT INTO board_people VALUES ('${BOARD_ID}', 'person-3', 'Outsider', '5585999990003', 'Dev', 3, NULL)`,
+      );
+      // Add a note as the organizer
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Agenda item' },
+      });
+      // Outsider (not participant, not assignee, not manager) tries to set note status
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Outsider',
+        updates: { set_note_status: { id: 1, status: 'checked' } },
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Permission denied');
+      // Clean up the extra person so other tests aren't affected
+      db.exec(`DELETE FROM board_people WHERE person_id = 'person-3'`);
+    });
+
+    it('participant cannot modify privileged fields by bundling with a note operation', () => {
+      // Giovanni is a participant (person-2) but NOT the assignee (person-1) or a manager.
+      // The isMeetingNoteOperation bypass must NOT let participants change title, priority, etc.
+      const originalTask = db
+        .prepare(`SELECT title, priority FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { title: string; priority: string };
+
+      // Attempt to change title by bundling with add_note
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Giovanni',
+        updates: { add_note: 'Legit note', title: 'Hacked Title' },
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Permission denied');
+
+      // Verify title was NOT changed in the database
+      const afterTask = db
+        .prepare(`SELECT title FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { title: string };
+      expect(afterTask.title).toBe(originalTask.title);
+    });
+
+    it('add_note + set_note_status in same update preserves both changes', () => {
+      // Add an initial note (note #1)
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'First agenda item' },
+      });
+
+      // Verify note #1 exists with status 'open'
+      const beforeTask = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      const beforeNotes = JSON.parse(beforeTask.notes);
+      expect(beforeNotes).toHaveLength(1);
+      expect(beforeNotes[0].id).toBe(1);
+      expect(beforeNotes[0].status).toBe('open');
+
+      // In a single update, add a new note AND check note #1
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: {
+          add_note: 'Second agenda item',
+          set_note_status: { id: 1, status: 'checked' },
+        },
+      });
+      expect(result.success).toBe(true);
+
+      // Both changes should be present in the DB
+      const afterTask = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      const afterNotes = JSON.parse(afterTask.notes);
+
+      // Note #1 should have status 'checked'
+      const note1 = afterNotes.find((n: any) => n.id === 1);
+      expect(note1).toBeDefined();
+      expect(note1.status).toBe('checked');
+
+      // Note #2 should exist (added by add_note in same call)
+      const note2 = afterNotes.find((n: any) => n.id === 2);
+      expect(note2).toBeDefined();
+      expect(note2.text).toBe('Second agenda item');
     });
   });
 
@@ -3108,6 +3244,41 @@ describe('meeting notes', () => {
       expect(result.data[0].scheduled_at <= result.data[1].scheduled_at).toBe(true);
     });
 
+    it('upcoming_meetings excludes meetings scheduled in the past', () => {
+      // Create a meeting scheduled in the past (yesterday)
+      const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 19) + 'Z';
+      const pastMeeting = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Past meeting',
+        scheduled_at: yesterday,
+        sender_name: 'Alexandre',
+      });
+      expect(pastMeeting.success).toBe(true);
+
+      // Create a meeting scheduled in the future (tomorrow)
+      const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 19) + 'Z';
+      const futureMeeting = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Future meeting',
+        scheduled_at: tomorrow,
+        sender_name: 'Alexandre',
+      });
+      expect(futureMeeting.success).toBe(true);
+
+      const result = engine.query({ query: 'upcoming_meetings' });
+      expect(result.success).toBe(true);
+
+      // Past meeting should NOT appear in upcoming_meetings
+      const pastInResult = result.data.some((t: any) => t.id === pastMeeting.task_id);
+      expect(pastInResult).toBe(false);
+
+      // Future meeting should appear
+      const futureInResult = result.data.some((t: any) => t.id === futureMeeting.task_id);
+      expect(futureInResult).toBe(true);
+    });
+
     it('meeting_participants returns participant list', () => {
       const result = engine.query({ query: 'meeting_participants', task_id: meetingId });
       expect(result.success).toBe(true);
@@ -3249,6 +3420,24 @@ describe('meeting notes', () => {
       expect(result.success).toBe(false);
     });
 
+    it('process_minutes_decision returns meaningful error for unregistered assignee', () => {
+      const result = engine.admin({
+        board_id: BOARD_ID,
+        action: 'process_minutes_decision',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        note_id: 2,
+        decision: 'create_task',
+        create: { type: 'simple', title: 'Task for unknown person', assignee: 'UnknownPerson' },
+      });
+      expect(result.success).toBe(false);
+      // Before fix, this was "Failed to create task: undefined" because
+      // buildOfferRegisterError sets offer_register but not error
+      expect(result.error).toBeDefined();
+      expect(result.error).not.toContain('undefined');
+      expect(result.error).toContain('UnknownPerson');
+    });
+
     it('bundled engine uses createTaskInternal for process_minutes_decision', () => {
       const content = fs.readFileSync(
         path.join(skillDir, 'add', 'container', 'agent-runner', 'src', 'taskflow-engine.ts'),
@@ -3276,6 +3465,41 @@ describe('meeting notes', () => {
       expect(board).toContain('📅');
       expect(board).toContain('Alinhamento semanal');
       expect(board).toContain('participante');
+    });
+
+    it('participant count does not double-count organizer when organizer is also in participants list', () => {
+      // Create a meeting where organizer (Alexandre) is NOT in participants initially
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Dedup test meeting',
+        scheduled_at: '2026-03-20T14:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+
+      // Add the organizer (Alexandre) as a participant — this creates the duplicate state
+      const upd = engine.update({
+        board_id: BOARD_ID,
+        task_id: r.task_id!,
+        sender_name: 'Alexandre',
+        updates: { add_participant: 'Alexandre' },
+      });
+      expect(upd.success).toBe(true);
+
+      // Verify the DB state: participants now includes the organizer
+      const task = db.prepare(`SELECT assignee, participants FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, r.task_id!) as { assignee: string; participants: string };
+      const participantIds: string[] = JSON.parse(task.participants);
+      expect(participantIds).toContain(task.assignee); // organizer is in participants
+
+      // Board view should show 2 participantes (Alexandre + Giovanni), NOT 3
+      const board = engine.query({ query: 'board' });
+      expect(board.success).toBe(true);
+      const formatted = board.data.formatted_board as string;
+      expect(formatted).toContain('2 participantes');
+      expect(formatted).not.toContain('3 participantes');
     });
   });
 
@@ -3327,6 +3551,151 @@ describe('meeting notes', () => {
       expect(details.snapshot.scheduled_at).toBe('2026-03-10T14:00:00Z');
       expect(details.snapshot.recurrence_anchor).toBe('2026-03-10T14:00:00Z');
     });
+
+    it('recurring meeting advance does NOT fire unprocessed_minutes_warning (notes already archived)', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Recurring with open notes',
+        scheduled_at: '2026-03-10T14:00:00Z',
+        recurrence: 'weekly',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      const meetingId = r.task_id!;
+
+      // Start the meeting and add a note (status: open, phase: meeting)
+      engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
+      engine.update({ board_id: BOARD_ID, task_id: meetingId, sender_name: 'Alexandre', updates: { add_note: 'Unprocessed action item' } });
+
+      // Conclude — recurring advance clears notes; warning should NOT fire
+      const doneResult = engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'conclude', sender_name: 'Alexandre' });
+      expect(doneResult.success).toBe(true);
+      expect(doneResult.recurring_cycle).toBeDefined();
+      expect(doneResult.recurring_cycle!.expired).toBe(false);
+      // Warning must not fire: notes were archived and cleared, process_minutes would find nothing
+      expect((doneResult as any).unprocessed_minutes_warning).toBeUndefined();
+
+      // Verify notes are indeed cleared on the task
+      const task = db.prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+      expect(JSON.parse(task.notes)).toEqual([]);
+
+      // But notes are preserved in the archived occurrence
+      const occurrences = db.prepare(
+        `SELECT * FROM task_history WHERE board_id = ? AND task_id = ? AND action = 'meeting_occurrence_archived'`
+      ).all(BOARD_ID, meetingId);
+      expect(occurrences.length).toBe(1);
+      const details = JSON.parse((occurrences[0] as any).details);
+      expect(details.snapshot.notes).toContain('Unprocessed action item');
+    });
+
+    it('rescheduled meeting advances from recurrence_anchor, not drifted scheduled_at', () => {
+      // Create a weekly meeting anchored to Monday 10:00 UTC
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Weekly sync',
+        scheduled_at: '2026-03-09T10:00:00Z', // Monday
+        recurrence: 'weekly',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      const meetingId = r.task_id!;
+
+      // Reschedule this occurrence to Tuesday (one-time change)
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { scheduled_at: '2026-03-10T10:00:00Z' }, // Tuesday
+      });
+
+      // Verify scheduled_at drifted but anchor stayed
+      const before = db.prepare(`SELECT scheduled_at, recurrence_anchor FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+      expect(before.scheduled_at).toBe('2026-03-10T10:00:00Z');
+      expect(before.recurrence_anchor).toBe('2026-03-09T10:00:00Z');
+
+      // Conclude the meeting (triggers advance)
+      engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
+      const doneResult = engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'conclude', sender_name: 'Alexandre' });
+      expect(doneResult.success).toBe(true);
+      expect(doneResult.recurring_cycle).toBeDefined();
+
+      // Next occurrence must be based on anchor (Monday), not the drifted Tuesday
+      // Anchor 2026-03-09 + 7 days = 2026-03-16 (Monday)
+      const task = db.prepare(`SELECT scheduled_at, recurrence_anchor FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+      expect(task.scheduled_at).toContain('2026-03-16');
+      expect(task.recurrence_anchor).toBe('2026-03-09T10:00:00Z');
+    });
+
+    it('recurring meeting advances correctly across multiple cycles', () => {
+      // Create a weekly meeting anchored to Monday 2026-03-09
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Multi-cycle weekly',
+        scheduled_at: '2026-03-09T10:00:00Z', // Monday
+        recurrence: 'weekly',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      const meetingId = r.task_id!;
+
+      // Complete cycle 0 => should advance to 2026-03-16T10:00:00.000Z
+      engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
+      const done1 = engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'conclude', sender_name: 'Alexandre' });
+      expect(done1.success).toBe(true);
+      expect(done1.recurring_cycle!.new_scheduled_at).toContain('2026-03-16');
+
+      const after1 = db.prepare(`SELECT scheduled_at, recurrence_anchor FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+      expect(after1.scheduled_at).toContain('2026-03-16');
+
+      // Complete cycle 1 => should advance to 2026-03-23T10:00:00.000Z (NOT stay at 2026-03-16)
+      engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
+      const done2 = engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'conclude', sender_name: 'Alexandre' });
+      expect(done2.success).toBe(true);
+      expect(done2.recurring_cycle!.new_scheduled_at).toContain('2026-03-23');
+
+      const after2 = db.prepare(`SELECT scheduled_at, recurrence_anchor FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+      expect(after2.scheduled_at).toContain('2026-03-23');
+
+      // Complete cycle 2 => should advance to 2026-03-30T10:00:00.000Z
+      engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
+      const done3 = engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'conclude', sender_name: 'Alexandre' });
+      expect(done3.success).toBe(true);
+      expect(done3.recurring_cycle!.new_scheduled_at).toContain('2026-03-30');
+    });
+
+    it('recurrence_end_date is inclusive for meetings (date-only comparison)', () => {
+      // Create a weekly meeting scheduled on 2026-03-10, end date 2026-03-17
+      // This means we want the meeting on 03-10 AND 03-17 (two occurrences).
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Bounded weekly',
+        scheduled_at: '2026-03-10T14:00:00Z',
+        recurrence: 'weekly',
+        recurrence_end_date: '2026-03-17',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      const meetingId = r.task_id!;
+
+      // Complete cycle 0 (first occurrence on 2026-03-10)
+      engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
+      const doneResult = engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'conclude', sender_name: 'Alexandre' });
+      expect(doneResult.success).toBe(true);
+      expect(doneResult.recurring_cycle).toBeDefined();
+      // The next scheduled_at should be 2026-03-17T14:00:00.000Z, which is ON the end date.
+      // It should NOT be expired — the end date is inclusive (same day).
+      expect(doneResult.recurring_cycle!.expired).toBe(false);
+      expect(doneResult.recurring_cycle!.new_scheduled_at).toContain('2026-03-17');
+
+      // Verify task was reset to next_action with new scheduled_at
+      const task = db.prepare(`SELECT column, scheduled_at FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+      expect(task.column).toBe('next_action');
+      expect(task.scheduled_at).toContain('2026-03-17');
+    });
   });
 
   describe('report meetings', () => {
@@ -3354,6 +3723,68 @@ describe('meeting notes', () => {
       expect(report.success).toBe(true);
       expect(report.data!.upcoming_meetings).toBeDefined();
       expect(report.data!.meetings_with_open_minutes).toBeDefined();
+    });
+
+    it('report upcoming_meetings excludes past meetings', () => {
+      // Create a meeting scheduled in the past (yesterday)
+      const yesterday = new Date(Date.now() - 86400000).toISOString();
+      const pastMeeting = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Yesterday standup',
+        scheduled_at: yesterday,
+        sender_name: 'Alexandre',
+      });
+      expect(pastMeeting.success).toBe(true);
+
+      // Create a meeting scheduled in the future (tomorrow)
+      const tomorrow = new Date(Date.now() + 86400000).toISOString();
+      const futureMeeting = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Tomorrow standup',
+        scheduled_at: tomorrow,
+        sender_name: 'Alexandre',
+      });
+      expect(futureMeeting.success).toBe(true);
+
+      const report = engine.report({ board_id: BOARD_ID, type: 'standup' });
+      expect(report.success).toBe(true);
+
+      const upcomingIds = report.data!.upcoming_meetings!.map((m: any) => m.id);
+
+      // Past meeting must NOT appear in upcoming_meetings
+      expect(upcomingIds).not.toContain(pastMeeting.task_id);
+
+      // Future meeting must appear in upcoming_meetings
+      expect(upcomingIds).toContain(futureMeeting.task_id);
+    });
+
+    it('report survives malformed participants JSON in upcoming meetings', () => {
+      // Create a meeting with valid data, then corrupt participants directly in DB
+      const tomorrow = new Date(Date.now() + 86400000).toISOString();
+      const m = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Corrupted participants meeting',
+        scheduled_at: tomorrow,
+        sender_name: 'Alexandre',
+      });
+      expect(m.success).toBe(true);
+
+      // Corrupt the participants JSON directly in the database
+      db.prepare(`UPDATE tasks SET participants = '{invalid json' WHERE board_id = ? AND id = ?`)
+        .run(BOARD_ID, m.task_id);
+
+      // report() should NOT throw — it should gracefully skip the malformed participants
+      const report = engine.report({ board_id: BOARD_ID, type: 'standup' });
+      expect(report.success).toBe(true);
+      expect(report.data!.upcoming_meetings).toBeDefined();
+
+      // The corrupted meeting should still appear but with participant_count defaulting to 1
+      const corrupted = report.data!.upcoming_meetings!.find((u: any) => u.id === m.task_id);
+      expect(corrupted).toBeDefined();
+      expect(corrupted!.participant_count).toBe(1);
     });
   });
 
@@ -3412,6 +3843,26 @@ describe('meeting notes', () => {
       ).toBe(true);
     });
 
+    it('no duplicate notifications when participants list has duplicate person_ids', () => {
+      // Manually insert a meeting with duplicate person_ids in participants
+      const now = new Date().toISOString();
+      const meetingTime = new Date(Date.now() + 2 * 60_000);
+      const scheduledAt = meetingTime.toISOString();
+      db.prepare(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, participants, scheduled_at, created_at, updated_at)
+         VALUES (?, ?, 'meeting', 'Dup test', 'person-1', 'next_action', ?, ?, ?, ?)`,
+      ).run('M-DUP', BOARD_ID, JSON.stringify(['person-2', 'person-2', 'person-1']), scheduledAt, now, now);
+
+      const notifications = engine.getMeetingStartingNotifications(
+        new Date(meetingTime.getTime() - 60_000).toISOString(),
+        5,
+      );
+      const meetingNotifs = notifications.filter((n) => n.task_id === 'M-DUP');
+      // Each person should appear exactly once — person-1 and person-2
+      const recipientIds = meetingNotifs.map((n) => n.target_person_id);
+      expect(recipientIds.sort()).toEqual(['person-1', 'person-2']);
+    });
+
     it('process_minutes_decision notifies assigned person', () => {
       const r = engine.create({
         board_id: BOARD_ID,
@@ -3440,6 +3891,331 @@ describe('meeting notes', () => {
       expect(result.success).toBe(true);
       // The created task will have its own create notification via the normal create() path
       expect(result.data.created_task_id).toBeDefined();
+    });
+  });
+
+  describe('manage_holidays MCP schema parity', () => {
+    let db: Database.Database;
+    let engine: TaskflowEngine;
+
+    beforeEach(() => {
+      db = new Database(':memory:');
+      seedTestDb(db, BOARD_ID);
+      engine = new TaskflowEngine(db, BOARD_ID);
+    });
+
+    afterEach(() => {
+      db.close();
+    });
+
+    it('MCP schema includes manage_holidays in admin action enum', () => {
+      // The engine supports manage_holidays as an admin action.
+      // The MCP schema must include it so agents can actually call it.
+      const mcpContent = fs.readFileSync(
+        path.resolve(skillDir, 'modify/container/agent-runner/src/ipc-mcp-stdio.ts'),
+        'utf-8',
+      );
+      // Verify the action enum includes manage_holidays
+      expect(mcpContent).toMatch(/action:.*z\.enum\(\[.*'manage_holidays'/);
+      // Verify the holiday-related parameters exist in the schema
+      expect(mcpContent).toContain('holiday_operation');
+      expect(mcpContent).toContain('holidays:');
+      expect(mcpContent).toContain('holiday_dates');
+      expect(mcpContent).toContain('holiday_year');
+    });
+
+    it('engine manage_holidays add+list round-trips correctly', () => {
+      const addResult = engine.admin({
+        board_id: BOARD_ID,
+        action: 'manage_holidays',
+        sender_name: 'Alexandre',
+        holiday_operation: 'add',
+        holidays: [
+          { date: '2026-12-25', label: 'Natal' },
+          { date: '2026-01-01', label: 'Ano Novo' },
+        ],
+      });
+      expect(addResult.success).toBe(true);
+
+      const listResult = engine.admin({
+        board_id: BOARD_ID,
+        action: 'manage_holidays',
+        sender_name: 'Alexandre',
+        holiday_operation: 'list',
+      });
+      expect(listResult.success).toBe(true);
+      expect(listResult.holidays).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ date: '2026-01-01', label: 'Ano Novo' }),
+          expect.objectContaining({ date: '2026-12-25', label: 'Natal' }),
+        ]),
+      );
+    });
+  });
+
+  describe('undo reverts meeting-specific fields (participants, scheduled_at, reminders)', () => {
+    it('undo reverts add_participant change', () => {
+      // Create meeting with Giovanni as participant
+      const createResult = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Undo participant test',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      expect(createResult.success).toBe(true);
+      const meetingId = createResult.task_id!;
+
+      // Verify initial participants: only Giovanni (person-2)
+      const before = db
+        .prepare(`SELECT participants FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { participants: string };
+      const partsBefore = JSON.parse(before.participants);
+      expect(partsBefore).toEqual(['person-2']);
+
+      // Add Alexandre as participant (this triggers update snapshot)
+      const updateResult = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_participant: 'Alexandre' },
+      });
+      expect(updateResult.success).toBe(true);
+
+      // Verify participants now includes both
+      const afterUpdate = db
+        .prepare(`SELECT participants FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { participants: string };
+      const partsAfter = JSON.parse(afterUpdate.participants);
+      expect(partsAfter).toContain('person-1');
+      expect(partsAfter).toContain('person-2');
+
+      // Undo the update
+      const undoResult = engine.undo({
+        board_id: BOARD_ID,
+        sender_name: 'Alexandre',
+      });
+      expect(undoResult.success).toBe(true);
+
+      // Verify participants reverted to original (only Giovanni)
+      const afterUndo = db
+        .prepare(`SELECT participants FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { participants: string };
+      const partsUndo = JSON.parse(afterUndo.participants);
+      expect(partsUndo).toEqual(['person-2']);
+    });
+
+    it('undo reverts scheduled_at change', () => {
+      const createResult = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Undo reschedule test',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      expect(createResult.success).toBe(true);
+      const meetingId = createResult.task_id!;
+
+      // Reschedule the meeting
+      const updateResult = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { scheduled_at: '2026-03-20T14:00:00Z' },
+      });
+      expect(updateResult.success).toBe(true);
+
+      // Verify rescheduled
+      const afterUpdate = db
+        .prepare(`SELECT scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { scheduled_at: string };
+      expect(afterUpdate.scheduled_at).toBe('2026-03-20T14:00:00Z');
+
+      // Undo the reschedule
+      const undoResult = engine.undo({
+        board_id: BOARD_ID,
+        sender_name: 'Alexandre',
+      });
+      expect(undoResult.success).toBe(true);
+
+      // Verify scheduled_at reverted to original
+      const afterUndo = db
+        .prepare(`SELECT scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { scheduled_at: string };
+      expect(afterUndo.scheduled_at).toBe('2026-03-15T17:00:00Z');
+    });
+  });
+
+  describe('undo of recurring meeting conclude restores cycle-advanced fields', () => {
+    it('undo restores scheduled_at, notes, and current_cycle after recurring meeting conclude', () => {
+      // Create a recurring weekly meeting with notes
+      const createResult = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Weekly sync',
+        scheduled_at: '2026-03-08T10:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+        recurrence: 'weekly',
+      });
+      expect(createResult.success).toBe(true);
+      const meetingId = createResult.task_id!;
+
+      // Add a note to the meeting
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Discuss roadmap priorities' },
+      });
+
+      // Verify note exists before conclude
+      const beforeConclude = db
+        .prepare(`SELECT notes, scheduled_at, current_cycle FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string; scheduled_at: string; current_cycle: string | null };
+      const notesBefore = JSON.parse(beforeConclude.notes);
+      expect(notesBefore.length).toBe(1);
+      expect(notesBefore[0].text).toBe('Discuss roadmap priorities');
+      expect(beforeConclude.scheduled_at).toBe('2026-03-08T10:00:00Z');
+
+      // Conclude the meeting — this triggers advanceRecurringTask
+      const concludeResult = engine.move({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        action: 'conclude',
+        sender_name: 'Alexandre',
+      });
+      expect(concludeResult.success).toBe(true);
+      expect(concludeResult.recurring_cycle).toBeDefined();
+      expect(concludeResult.recurring_cycle!.expired).toBe(false);
+
+      // After advance: notes cleared, scheduled_at advanced, cycle incremented
+      const afterAdvance = db
+        .prepare(`SELECT notes, scheduled_at, current_cycle, column FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string; scheduled_at: string; current_cycle: string; column: string };
+      expect(afterAdvance.column).toBe('next_action');
+      expect(afterAdvance.notes).toBe('[]');
+      expect(afterAdvance.scheduled_at).not.toBe('2026-03-08T10:00:00Z');
+      expect(afterAdvance.current_cycle).toBe('1');
+
+      // Undo the conclude
+      const undoResult = engine.undo({
+        board_id: BOARD_ID,
+        sender_name: 'Alexandre',
+      });
+      expect(undoResult.success).toBe(true);
+
+      // Verify: scheduled_at, notes, and current_cycle are all restored
+      const afterUndo = db
+        .prepare(`SELECT notes, scheduled_at, current_cycle, column FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string; scheduled_at: string; current_cycle: string | null; column: string };
+      // Column should be restored to the pre-conclude value
+      expect(afterUndo.column).toBe('next_action'); // meetings start in next_action
+      // scheduled_at should be the original, not the advanced one
+      expect(afterUndo.scheduled_at).toBe('2026-03-08T10:00:00Z');
+      // notes should be restored (not empty)
+      const notesAfterUndo = JSON.parse(afterUndo.notes);
+      expect(notesAfterUndo.length).toBe(1);
+      expect(notesAfterUndo[0].text).toBe('Discuss roadmap priorities');
+      // current_cycle should be restored to pre-advance value (null before first advance)
+      expect(afterUndo.current_cycle).toBeNull();
+    });
+  });
+
+  describe('undo WIP guard exempts meetings', () => {
+    it('undo of meeting wait succeeds even when assignee is at WIP limit', () => {
+      // Set WIP limit to 2 for Alexandre (person-1)
+      engine.admin({
+        board_id: BOARD_ID,
+        action: 'set_wip_limit',
+        sender_name: 'Alexandre',
+        person_name: 'Alexandre',
+        wip_limit: 2,
+      });
+
+      // Fill WIP FIRST: T-001 from seed is already in_progress, add one more
+      const t2 = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Fill WIP slot 2',
+        assignee: 'Alexandre',
+        sender_name: 'Alexandre',
+      });
+      expect(t2.success).toBe(true);
+      const t2Start = engine.move({
+        board_id: BOARD_ID,
+        task_id: t2.task_id!,
+        action: 'start',
+        sender_name: 'Alexandre',
+      });
+      expect(t2Start.success).toBe(true);
+
+      // Verify WIP is at limit: a regular task start should be blocked
+      const t3 = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Should be blocked by WIP',
+        assignee: 'Alexandre',
+        sender_name: 'Alexandre',
+      });
+      expect(t3.success).toBe(true);
+      const blockedStart = engine.move({
+        board_id: BOARD_ID,
+        task_id: t3.task_id!,
+        action: 'start',
+        sender_name: 'Alexandre',
+      });
+      expect(blockedStart.success).toBe(false);
+      expect(blockedStart.error).toContain('WIP limit exceeded');
+
+      // Create a meeting assigned to Alexandre
+      const meetingResult = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'WIP exempt meeting',
+        scheduled_at: '2026-03-15T10:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      expect(meetingResult.success).toBe(true);
+      const meetingId = meetingResult.task_id!;
+
+      // Start the meeting (meetings bypass WIP)
+      const startResult = engine.move({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        action: 'start',
+        sender_name: 'Alexandre',
+      });
+      expect(startResult.success).toBe(true);
+      expect(startResult.to_column).toBe('in_progress');
+
+      // Move meeting to waiting (this is the LAST mutation)
+      const waitResult = engine.move({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        action: 'wait',
+        sender_name: 'Alexandre',
+        reason: 'Waiting for agenda items',
+      });
+      expect(waitResult.success).toBe(true);
+      expect(waitResult.to_column).toBe('waiting');
+
+      // Undo the meeting wait — this should succeed because meetings
+      // are exempt from WIP limits (undo restores meeting to in_progress)
+      const undoResult = engine.undo({
+        board_id: BOARD_ID,
+        sender_name: 'Alexandre',
+      });
+      expect(undoResult.success).toBe(true);
+
+      // Verify the meeting is back in_progress
+      const afterUndo = db
+        .prepare(`SELECT column FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { column: string };
+      expect(afterUndo.column).toBe('in_progress');
     });
   });
 });

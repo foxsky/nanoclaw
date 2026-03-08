@@ -672,15 +672,15 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
 
     server.tool(
       'taskflow_admin',
-      'Board administration: register/remove people, manage roles, set WIP limits, cancel/restore tasks, process inbox.',
+      'Board administration: register/remove people, manage roles, set WIP limits, cancel/restore tasks, process inbox, manage holidays.',
       {
-        action: z.enum(['register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin', 'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox', 'process_minutes', 'process_minutes_decision']).describe('Admin action'),
+        action: z.enum(['register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin', 'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays', 'process_minutes', 'process_minutes_decision']).describe('Admin action'),
         sender_name: z.string().describe('Name of the person performing the admin action'),
         person_name: z.string().optional().describe('Person name (for person-related actions)'),
         phone: z.string().optional().describe('Phone number (for register_person)'),
         role: z.string().optional().describe('Role (for register_person, add_manager, add_delegate)'),
         wip_limit: z.number().optional().describe('WIP limit (for set_wip_limit)'),
-        task_id: z.string().optional().describe('Task ID (for cancel_task, restore_task)'),
+        task_id: z.string().optional().describe('Task ID (for cancel_task, restore_task, process_minutes, process_minutes_decision)'),
         confirmed: z.boolean().optional().describe('Confirmation flag (for destructive actions)'),
         force: z.boolean().optional().describe('Force flag (bypasses safety checks)'),
         group_name: z.string().optional().describe('Division/sector name for child board WhatsApp group (for register_person on hierarchy boards, e.g., "SETD-SECTI - TaskFlow")'),
@@ -693,6 +693,10 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           assignee: z.string().optional(),
           labels: z.array(z.string()).optional(),
         }).optional().describe('Task creation params for process_minutes_decision'),
+        holiday_operation: z.enum(['add', 'remove', 'set_year', 'list']).optional().describe('Holiday sub-operation (for manage_holidays)'),
+        holidays: z.array(z.object({ date: z.string(), label: z.string().optional() })).optional().describe('Holiday entries with date (YYYY-MM-DD) and optional label (for manage_holidays add/set_year)'),
+        holiday_dates: z.array(z.string()).optional().describe('Holiday dates to remove (YYYY-MM-DD) (for manage_holidays remove)'),
+        holiday_year: z.number().optional().describe('Year filter for listing or target year for set_year (for manage_holidays list/set_year)'),
       },
       async (args) => {
         const result = engine.admin({ ...args, board_id: boardId });

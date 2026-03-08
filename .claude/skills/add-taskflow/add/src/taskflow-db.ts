@@ -90,9 +90,12 @@ CREATE TABLE IF NOT EXISTS tasks (
   parent_task_id TEXT,
   subtasks TEXT,
   recurrence TEXT,
+  recurrence_anchor TEXT,
   current_cycle TEXT,
   max_cycles INTEGER,
   recurrence_end_date TEXT,
+  participants TEXT,
+  scheduled_at TEXT,
   PRIMARY KEY (board_id, id)
 );
 
