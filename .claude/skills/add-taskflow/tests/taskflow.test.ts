@@ -2609,4 +2609,247 @@ describe('meeting notes', () => {
       expect(result.notifications!.length).toBeGreaterThan(0);
     });
   });
+
+  describe('update meeting', () => {
+    let meetingId: string;
+
+    beforeEach(() => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Test meeting',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      meetingId = result.task_id!;
+    });
+
+    it('add_note auto-tags phase=pre when meeting is in next_action', () => {
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Revisar orçamento Q2' },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      const notes = JSON.parse(task.notes);
+      expect(notes[0].phase).toBe('pre');
+      expect(notes[0].status).toBe('open');
+    });
+
+    it('add_note with parent_note_id links to parent', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Agenda item 1' },
+      });
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Giovanni',
+        updates: { add_note: 'Reply to agenda 1', parent_note_id: 1 },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      const notes = JSON.parse(task.notes);
+      expect(notes[1].parent_note_id).toBe(1);
+    });
+
+    it('add_note auto-tags phase=meeting when in_progress', () => {
+      engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Discussion point' },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      const notes = JSON.parse(task.notes);
+      const lastNote = notes[notes.length - 1];
+      expect(lastNote.phase).toBe('meeting');
+    });
+
+    it('add_note auto-tags phase=post when in review', () => {
+      engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
+      engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'review', sender_name: 'Alexandre' });
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Post-meeting reflection' },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      const notes = JSON.parse(task.notes);
+      const lastNote = notes[notes.length - 1];
+      expect(lastNote.phase).toBe('post');
+    });
+
+    it('set_note_status changes status from open to checked', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Item to check' },
+      });
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { set_note_status: { id: 1, status: 'checked' } },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      const notes = JSON.parse(task.notes);
+      expect(notes[0].status).toBe('checked');
+      expect(notes[0].processed_at).toBeDefined();
+      expect(notes[0].processed_by).toBe('Alexandre');
+    });
+
+    it('set_note_status can reopen a checked note', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Reopen test' },
+      });
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { set_note_status: { id: 1, status: 'checked' } },
+      });
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { set_note_status: { id: 1, status: 'open' } },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      const notes = JSON.parse(task.notes);
+      expect(notes[0].status).toBe('open');
+    });
+
+    it('set_note_status dismissed', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Dismiss me' },
+      });
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { set_note_status: { id: 1, status: 'dismissed' } },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('add_participant adds a person', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Add participant test',
+        sender_name: 'Alexandre',
+      });
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: r.task_id!,
+        sender_name: 'Alexandre',
+        updates: { add_participant: 'Giovanni' },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT participants FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, r.task_id!) as { participants: string };
+      const parts = JSON.parse(task.participants);
+      expect(parts).toContain('person-2');
+    });
+
+    it('remove_participant removes a person', () => {
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { remove_participant: 'Giovanni' },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT participants FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { participants: string };
+      const parts = JSON.parse(task.participants);
+      expect(parts).not.toContain('person-2');
+    });
+
+    it('scheduled_at update reschedules meeting', () => {
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { scheduled_at: '2026-03-20T14:00:00Z' },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { scheduled_at: string };
+      expect(task.scheduled_at).toBe('2026-03-20T14:00:00Z');
+    });
+
+    it('non-meeting note has no phase or status', () => {
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Regular note' },
+      });
+      expect(r.success).toBe(true);
+      const task = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, 'T-002') as { notes: string };
+      const notes = JSON.parse(task.notes);
+      expect(notes[0].phase).toBeUndefined();
+      expect(notes[0].status).toBeUndefined();
+    });
+
+    it('participant can add note but not edit another participant note', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Manager note' },
+      });
+      const addResult = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Giovanni',
+        updates: { add_note: 'Participant note' },
+      });
+      expect(addResult.success).toBe(true);
+      const editResult = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Giovanni',
+        updates: { edit_note: { id: 1, text: 'Tampered note' } },
+      });
+      expect(editResult.success).toBe(false);
+    });
+  });
 });

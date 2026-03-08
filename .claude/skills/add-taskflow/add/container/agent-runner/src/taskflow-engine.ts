@@ -120,6 +120,11 @@ export interface UpdateParams {
     add_note?: string;
     edit_note?: { id: number; text: string };
     remove_note?: number;
+    parent_note_id?: number;
+    scheduled_at?: string;
+    add_participant?: string;
+    remove_participant?: string;
+    set_note_status?: { id: number; status: 'open' | 'checked' | 'task_created' | 'inbox_created' | 'dismissed' };
     add_subtask?: string;         // project only
     rename_subtask?: { id: string; title: string };
     reopen_subtask?: string;      // subtask ID
@@ -1143,6 +1148,19 @@ export class TaskflowEngine {
       ...target,
       message: `🔔 *Atualização na sua tarefa*\n\n*${task.id}* — ${task.title}\n*Modificado por:* ${modName}\n\n${changeList}\n\nDigite \`${task.id}\` para ver detalhes.`,
     };
+  }
+
+  /** Determine meeting note phase based on the task's current column. */
+  private getMeetingNotePhase(task: any): 'pre' | 'meeting' | 'post' | undefined {
+    if (task.type !== 'meeting') return undefined;
+    switch (task.column) {
+      case 'next_action': return 'pre';
+      case 'in_progress':
+      case 'waiting': return 'meeting';
+      case 'review':
+      case 'done': return 'post';
+      default: return undefined;
+    }
   }
 
   /** List all team member names for the current board. */
@@ -2266,10 +2284,18 @@ export class TaskflowEngine {
       /* --- Check task is active (not archived / done is still active in tasks table) --- */
       // Tasks only leave the tasks table when archived; if it's here, it's active.
 
-      /* --- Permission: sender must be assignee or manager --- */
+      /* --- Permission: sender must be assignee or manager (or meeting participant for note ops) --- */
       const isAssignee = senderPersonId != null && task.assignee === senderPersonId;
       const isMgr = this.isManager(params.sender_name);
-      if (!isAssignee && !isMgr) {
+
+      const isMeetingNoteOperation =
+        task.type === 'meeting' &&
+        (updates.add_note !== undefined ||
+          updates.edit_note !== undefined ||
+          updates.remove_note !== undefined ||
+          updates.set_note_status !== undefined);
+
+      if (!isMeetingNoteOperation && !isMgr && !isAssignee) {
         return {
           success: false,
           error: `Permission denied: "${params.sender_name}" is neither the assignee nor a manager.`,
@@ -2412,9 +2438,33 @@ export class TaskflowEngine {
 
       /* Add note */
       if (updates.add_note !== undefined) {
-        const notes: Array<{ id: number; text: string; at: string; by: string }> = JSON.parse(task.notes ?? '[]');
+        // Meeting note authorization: participants can add notes
+        if (task.type === 'meeting' && !isMgr && !isAssignee) {
+          const participants: string[] = JSON.parse(task.participants ?? '[]');
+          if (!participants.includes(senderPersonId ?? '')) {
+            return { success: false, error: `Permission denied: "${params.sender_name}" is not a participant of this meeting.` };
+          }
+        }
+
+        const notes: Array<any> = JSON.parse(task.notes ?? '[]');
         const noteId = task.next_note_id ?? 1;
-        notes.push({ id: noteId, text: updates.add_note, at: now, by: params.sender_name });
+        const noteEntry: any = { id: noteId, text: updates.add_note, at: now, by: params.sender_name };
+
+        // Meeting-only metadata
+        const phase = this.getMeetingNotePhase(task);
+        if (phase) {
+          noteEntry.phase = phase;
+          noteEntry.status = 'open';
+        }
+        if (updates.parent_note_id !== undefined) {
+          const parentExists = notes.some((n: any) => n.id === updates.parent_note_id);
+          if (!parentExists) {
+            return { success: false, error: `Parent note #${updates.parent_note_id} not found.` };
+          }
+          noteEntry.parent_note_id = updates.parent_note_id;
+        }
+
+        notes.push(noteEntry);
         this.db
           .prepare(`UPDATE tasks SET notes = ?, next_note_id = ? WHERE board_id = ? AND id = ?`)
           .run(JSON.stringify(notes), noteId + 1, taskBoardId, task.id);
@@ -2423,10 +2473,14 @@ export class TaskflowEngine {
 
       /* Edit note */
       if (updates.edit_note !== undefined) {
-        const notes: Array<{ id: number; text: string; at: string; by: string }> = JSON.parse(task.notes ?? '[]');
-        const note = notes.find((n) => n.id === updates.edit_note!.id);
+        const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+        const note = notes.find((n: any) => n.id === updates.edit_note!.id);
         if (!note) {
           return { success: false, error: `Note #${updates.edit_note.id} not found.` };
+        }
+        // Meeting note authorization: only author/organizer/manager can edit
+        if (task.type === 'meeting' && !isMgr && !isAssignee && note.by !== params.sender_name) {
+          return { success: false, error: `Permission denied: only the note author, organizer, or manager can edit note #${updates.edit_note.id}.` };
         }
         note.text = updates.edit_note.text;
         this.db
@@ -2447,6 +2501,76 @@ export class TaskflowEngine {
           .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
           .run(JSON.stringify(notes), taskBoardId, task.id);
         changes.push(`Note #${updates.remove_note} removed`);
+      }
+
+      /* Set note status (meeting only) */
+      if (updates.set_note_status !== undefined) {
+        if (task.type !== 'meeting') {
+          return { success: false, error: 'Note status can only be set on meeting tasks.' };
+        }
+        const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+        const note = notes.find((n: any) => n.id === updates.set_note_status!.id);
+        if (!note) {
+          return { success: false, error: `Note #${updates.set_note_status.id} not found.` };
+        }
+        note.status = updates.set_note_status.status;
+        if (updates.set_note_status.status === 'open') {
+          delete note.processed_at;
+          delete note.processed_by;
+        } else {
+          note.processed_at = now;
+          note.processed_by = params.sender_name;
+        }
+        this.db
+          .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
+          .run(JSON.stringify(notes), taskBoardId, task.id);
+        changes.push(`Note #${updates.set_note_status.id} status set to ${updates.set_note_status.status}`);
+      }
+
+      /* Add participant (meeting only) */
+      if (updates.add_participant !== undefined) {
+        if (task.type !== 'meeting') {
+          return { success: false, error: 'Participants can only be added to meeting tasks.' };
+        }
+        const person = this.resolvePerson(updates.add_participant);
+        if (!person) return this.buildOfferRegisterError(updates.add_participant);
+        const participants: string[] = JSON.parse(task.participants ?? '[]');
+        if (!participants.includes(person.person_id)) {
+          participants.push(person.person_id);
+          this.db
+            .prepare(`UPDATE tasks SET participants = ? WHERE board_id = ? AND id = ?`)
+            .run(JSON.stringify(participants), taskBoardId, task.id);
+          changes.push(`Participant ${person.name} added`);
+        }
+      }
+
+      /* Remove participant (meeting only) */
+      if (updates.remove_participant !== undefined) {
+        if (task.type !== 'meeting') {
+          return { success: false, error: 'Participants can only be removed from meeting tasks.' };
+        }
+        const person = this.resolvePerson(updates.remove_participant);
+        if (!person) return this.buildOfferRegisterError(updates.remove_participant);
+        const participants: string[] = JSON.parse(task.participants ?? '[]');
+        const idx = participants.indexOf(person.person_id);
+        if (idx >= 0) {
+          participants.splice(idx, 1);
+          this.db
+            .prepare(`UPDATE tasks SET participants = ? WHERE board_id = ? AND id = ?`)
+            .run(JSON.stringify(participants), taskBoardId, task.id);
+          changes.push(`Participant ${person.name} removed`);
+        }
+      }
+
+      /* Scheduled at (meeting only) */
+      if (updates.scheduled_at !== undefined) {
+        if (task.type !== 'meeting') {
+          return { success: false, error: 'scheduled_at can only be set on meeting tasks.' };
+        }
+        this.db
+          .prepare(`UPDATE tasks SET scheduled_at = ? WHERE board_id = ? AND id = ?`)
+          .run(updates.scheduled_at, taskBoardId, task.id);
+        changes.push(`Meeting rescheduled to ${updates.scheduled_at}`);
       }
 
       /* Add subtask (project only) — creates a real task row */
