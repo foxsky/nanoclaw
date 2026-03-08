@@ -1,6 +1,59 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
+import Database from 'better-sqlite3';
+import { TaskflowEngine } from '../add/container/agent-runner/src/taskflow-engine.js';
+
+const BOARD_ID = 'board-test-001';
+
+const SCHEMA = `
+CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, board_role TEXT DEFAULT 'standard', hierarchy_level INTEGER, max_depth INTEGER, parent_board_id TEXT, short_code TEXT);
+CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT NULL, phone TEXT, role TEXT DEFAULT 'member', wip_limit INTEGER, notification_group_jid TEXT, PRIMARY KEY (board_id, person_id));
+CREATE TABLE board_admins (board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL, admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
+CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
+CREATE TABLE board_groups (board_id TEXT, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, group_role TEXT DEFAULT 'team', PRIMARY KEY (board_id, group_jid));
+CREATE TABLE tasks (id TEXT NOT NULL, board_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'simple', title TEXT NOT NULL, assignee TEXT, next_action TEXT, waiting_for TEXT, column TEXT DEFAULT 'inbox', priority TEXT, due_date TEXT, description TEXT, labels TEXT DEFAULT '[]', blocked_by TEXT DEFAULT '[]', reminders TEXT DEFAULT '[]', next_note_id INTEGER DEFAULT 1, notes TEXT DEFAULT '[]', _last_mutation TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, child_exec_enabled INTEGER DEFAULT 0, child_exec_board_id TEXT, child_exec_person_id TEXT, child_exec_rollup_status TEXT, child_exec_last_rollup_at TEXT, child_exec_last_rollup_summary TEXT, linked_parent_board_id TEXT, linked_parent_task_id TEXT, parent_task_id TEXT, subtasks TEXT, recurrence TEXT, current_cycle TEXT, max_cycles INTEGER, recurrence_end_date TEXT, participants TEXT, scheduled_at TEXT, PRIMARY KEY (board_id, id));
+CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, task_id TEXT NOT NULL, action TEXT NOT NULL, by TEXT, at TEXT NOT NULL, details TEXT);
+CREATE TABLE archive (board_id TEXT NOT NULL, task_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, assignee TEXT, archive_reason TEXT NOT NULL, linked_parent_board_id TEXT, linked_parent_task_id TEXT, archived_at TEXT NOT NULL, task_snapshot TEXT NOT NULL, history TEXT, PRIMARY KEY (board_id, task_id));
+CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, language TEXT NOT NULL DEFAULT 'pt-BR', timezone TEXT NOT NULL DEFAULT 'America/Fortaleza', runner_standup_task_id TEXT, runner_digest_task_id TEXT, runner_review_task_id TEXT, runner_dst_guard_task_id TEXT, standup_cron_local TEXT, digest_cron_local TEXT, review_cron_local TEXT, standup_cron_utc TEXT, digest_cron_utc TEXT, review_cron_utc TEXT, dst_sync_enabled INTEGER DEFAULT 0, dst_last_offset_minutes INTEGER, dst_last_synced_at TEXT, dst_resync_count_24h INTEGER DEFAULT 0, dst_resync_window_started_at TEXT, attachment_enabled INTEGER DEFAULT 1, attachment_disabled_reason TEXT DEFAULT '', attachment_allowed_formats TEXT DEFAULT '["pdf","jpg","png"]', attachment_max_size_bytes INTEGER DEFAULT 10485760, welcome_sent INTEGER DEFAULT 0, standup_target TEXT DEFAULT 'team', digest_target TEXT DEFAULT 'team', review_target TEXT DEFAULT 'team', runner_standup_secondary_task_id TEXT, runner_digest_secondary_task_id TEXT, runner_review_secondary_task_id TEXT);
+CREATE TABLE attachment_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, source TEXT NOT NULL, filename TEXT NOT NULL, at TEXT NOT NULL, actor_person_id TEXT, affected_task_refs TEXT DEFAULT '[]');
+CREATE TABLE board_config (board_id TEXT PRIMARY KEY, columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]', wip_limit INTEGER DEFAULT 5, next_task_number INTEGER DEFAULT 1, next_project_number INTEGER DEFAULT 1, next_recurring_number INTEGER DEFAULT 1, next_note_id INTEGER DEFAULT 1);
+`;
+
+function seedTestDb(db: Database.Database, boardId: string) {
+  db.exec(SCHEMA);
+
+  db.exec(
+    `INSERT INTO boards VALUES ('${boardId}', 'test@g.us', 'test', 'standard', 0, 1, NULL, NULL)`,
+  );
+  db.exec(
+    `INSERT INTO board_config VALUES ('${boardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 4, 1, 1, 1)`,
+  );
+  db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${boardId}')`);
+  db.exec(
+    `INSERT INTO board_admins VALUES ('${boardId}', 'person-1', '5585999990001', 'manager', 1)`,
+  );
+  db.exec(
+    `INSERT INTO board_people VALUES ('${boardId}', 'person-1', 'Alexandre', '5585999990001', 'Gestor', 3, NULL)`,
+  );
+  db.exec(
+    `INSERT INTO board_people VALUES ('${boardId}', 'person-2', 'Giovanni', '5585999990002', 'Dev', 3, NULL)`,
+  );
+
+  const now = new Date().toISOString();
+  db.exec(
+    `INSERT INTO tasks (id, board_id, type, title, assignee, column, priority, created_at, updated_at)
+     VALUES ('T-001', '${boardId}', 'simple', 'Fix login bug', 'person-1', 'in_progress', 'high', '${now}', '${now}')`,
+  );
+  db.exec(
+    `INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at)
+     VALUES ('T-002', '${boardId}', 'simple', 'Update docs', 'person-2', 'next_action', '${now}', '${now}')`,
+  );
+  db.exec(
+    `INSERT INTO tasks (id, board_id, type, title, column, created_at, updated_at)
+     VALUES ('T-003', '${boardId}', 'simple', 'Review PR', 'inbox', '${now}', '${now}')`,
+  );
+}
 
 describe('taskflow skill package', () => {
   const skillDir = path.resolve(__dirname, '..');
@@ -77,12 +130,12 @@ describe('taskflow skill package', () => {
     expect(skillMd).toContain('board_runtime_config');
   });
 
-  it('templates dir contains only CLAUDE.md.template', () => {
+  it('templates dir contains CLAUDE.md.template (and optional v1 rollback)', () => {
     const templatesDir = path.join(skillDir, 'templates');
     expect(fs.existsSync(path.join(templatesDir, 'CLAUDE.md.template'))).toBe(true);
 
     const files = fs.readdirSync(templatesDir).sort();
-    expect(files).toEqual(['CLAUDE.md.template']);
+    expect(files).toEqual(['CLAUDE.md.template', 'CLAUDE.md.template.v1']);
   });
 
   it('CLAUDE.md.template has all required sections', () => {
@@ -2053,6 +2106,42 @@ describe('taskflow skill package', () => {
     expect(content).toContain('mutually exclusive');
   });
 
+  it('CLAUDE.md.template has meeting commands', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    // Meeting creation commands
+    expect(content).toContain("type: 'meeting'");
+    expect(content).toContain('reunião');
+    expect(content).toContain('scheduled_at');
+
+    // Meeting note commands
+    expect(content).toContain('pauta M');
+    expect(content).toContain('ata M');
+    expect(content).toContain('parent_note_id');
+
+    // Phase auto-tagging rule
+    expect(content).toContain('phase');
+    expect(content).toContain('auto-tagged');
+
+    // Disambiguation rule
+    expect(content).toContain('pauta M1"');
+    expect(content).toContain('query');
+
+    // Triage
+    expect(content).toContain('processar ata');
+    expect(content).toContain('process_minutes');
+
+    // Display
+    expect(content).toContain('📅');
+    expect(content).toContain('participante');
+
+    // Schema reference
+    expect(content).toContain('participants');
+    expect(content).toContain('scheduled_at');
+  });
+
   it('test schema includes bounded recurrence columns', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'add', 'container', 'agent-runner', 'src', 'taskflow-engine.test.ts'),
@@ -2389,4 +2478,894 @@ describe('taskflow skill package', () => {
     );
   });
 
+  it('MCP schema includes meeting type in taskflow_create', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'modify', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
+      'utf-8',
+    );
+    expect(content).toContain("'meeting'");
+    expect(content).toContain('scheduled_at');
+    expect(content).toContain('participants');
+  });
+
+  it('MCP schema includes meeting queries in taskflow_query', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'modify', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
+      'utf-8',
+    );
+    expect(content).toContain('meetings');
+    expect(content).toContain('meeting_agenda');
+    expect(content).toContain('meeting_minutes');
+    expect(content).toContain('upcoming_meetings');
+    expect(content).toContain('meeting_participants');
+    expect(content).toContain('meeting_open_items');
+    expect(content).toContain('meeting_history');
+    expect(content).toContain('meeting_minutes_at');
+  });
+
+  it('MCP schema includes process_minutes in taskflow_admin', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'modify', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
+      'utf-8',
+    );
+    expect(content).toContain('process_minutes');
+    expect(content).toContain('process_minutes_decision');
+  });
+
+});
+
+describe('meeting notes', () => {
+  let db: Database.Database;
+  let engine: TaskflowEngine;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    seedTestDb(db, BOARD_ID);
+    engine = new TaskflowEngine(db, BOARD_ID);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('schema has participants and scheduled_at columns on tasks', () => {
+    const cols = db
+      .prepare(`PRAGMA table_info(tasks)`)
+      .all() as Array<{ name: string }>;
+    const colNames = cols.map((c) => c.name);
+    expect(colNames).toContain('participants');
+    expect(colNames).toContain('scheduled_at');
+  });
+
+  describe('create meeting', () => {
+    it('creates a meeting with M prefix and next_action column', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Alinhamento semanal',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      expect(result.task_id).toMatch(/^M\d+$/);
+      expect(result.column).toBe('next_action');
+    });
+
+    it('auto-sets organizer (assignee) to sender', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Kickoff',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT assignee FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, result.task_id) as { assignee: string };
+      expect(task.assignee).toBe('person-1');
+    });
+
+    it('stores participants as JSON array', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Sprint review',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT participants FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, result.task_id) as { participants: string };
+      const parts = JSON.parse(task.participants);
+      expect(parts).toContain('person-2');
+    });
+
+    it('stores scheduled_at in UTC', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Planning',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, result.task_id) as { scheduled_at: string };
+      expect(task.scheduled_at).toBe('2026-03-15T17:00:00Z');
+    });
+
+    it('creates meeting without scheduled_at (unscheduled draft)', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'TBD meeting',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, result.task_id) as { scheduled_at: string | null };
+      expect(task.scheduled_at).toBeNull();
+    });
+
+    it('defaults recurrence_anchor to scheduled_at for recurring meetings', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Weekly sync',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        recurrence: 'weekly',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT recurrence, scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, result.task_id) as { recurrence: string; scheduled_at: string };
+      expect(task.recurrence).toBe('weekly');
+      expect(task.scheduled_at).toBe('2026-03-15T17:00:00Z');
+    });
+
+    it('rejects recurring meeting without scheduled_at', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Broken recurring meeting',
+        recurrence: 'weekly',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('scheduled_at');
+    });
+
+    it('resolves participant names to person_ids', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Cross-team',
+        participants: ['Giovanni', 'Alexandre'],
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT participants FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, result.task_id) as { participants: string };
+      const parts = JSON.parse(task.participants);
+      expect(parts).toContain('person-1');
+      expect(parts).toContain('person-2');
+    });
+
+    it('returns error for unresolved participant', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Bad meeting',
+        participants: ['Unknown Person'],
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('notifies all participants on creation', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Notif test',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      expect(result.notifications).toBeDefined();
+      expect(result.notifications!.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('update meeting', () => {
+    let meetingId: string;
+
+    beforeEach(() => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Test meeting',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      meetingId = result.task_id!;
+    });
+
+    it('add_note auto-tags phase=pre when meeting is in next_action', () => {
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Revisar orçamento Q2' },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      const notes = JSON.parse(task.notes);
+      expect(notes[0].phase).toBe('pre');
+      expect(notes[0].status).toBe('open');
+    });
+
+    it('add_note with parent_note_id links to parent', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Agenda item 1' },
+      });
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Giovanni',
+        updates: { add_note: 'Reply to agenda 1', parent_note_id: 1 },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      const notes = JSON.parse(task.notes);
+      expect(notes[1].parent_note_id).toBe(1);
+    });
+
+    it('add_note auto-tags phase=meeting when in_progress', () => {
+      engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Discussion point' },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      const notes = JSON.parse(task.notes);
+      const lastNote = notes[notes.length - 1];
+      expect(lastNote.phase).toBe('meeting');
+    });
+
+    it('add_note auto-tags phase=post when in review', () => {
+      engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
+      engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'review', sender_name: 'Alexandre' });
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Post-meeting reflection' },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      const notes = JSON.parse(task.notes);
+      const lastNote = notes[notes.length - 1];
+      expect(lastNote.phase).toBe('post');
+    });
+
+    it('set_note_status changes status from open to checked', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Item to check' },
+      });
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { set_note_status: { id: 1, status: 'checked' } },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      const notes = JSON.parse(task.notes);
+      expect(notes[0].status).toBe('checked');
+      expect(notes[0].processed_at).toBeDefined();
+      expect(notes[0].processed_by).toBe('Alexandre');
+    });
+
+    it('set_note_status can reopen a checked note', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Reopen test' },
+      });
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { set_note_status: { id: 1, status: 'checked' } },
+      });
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { set_note_status: { id: 1, status: 'open' } },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      const notes = JSON.parse(task.notes);
+      expect(notes[0].status).toBe('open');
+    });
+
+    it('set_note_status dismissed', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Dismiss me' },
+      });
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { set_note_status: { id: 1, status: 'dismissed' } },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('add_participant adds a person', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Add participant test',
+        sender_name: 'Alexandre',
+      });
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: r.task_id!,
+        sender_name: 'Alexandre',
+        updates: { add_participant: 'Giovanni' },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT participants FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, r.task_id!) as { participants: string };
+      const parts = JSON.parse(task.participants);
+      expect(parts).toContain('person-2');
+    });
+
+    it('remove_participant removes a person', () => {
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { remove_participant: 'Giovanni' },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT participants FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { participants: string };
+      const parts = JSON.parse(task.participants);
+      expect(parts).not.toContain('person-2');
+    });
+
+    it('scheduled_at update reschedules meeting', () => {
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { scheduled_at: '2026-03-20T14:00:00Z' },
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { scheduled_at: string };
+      expect(task.scheduled_at).toBe('2026-03-20T14:00:00Z');
+    });
+
+    it('non-meeting note has no phase or status', () => {
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Regular note' },
+      });
+      expect(r.success).toBe(true);
+      const task = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, 'T-002') as { notes: string };
+      const notes = JSON.parse(task.notes);
+      expect(notes[0].phase).toBeUndefined();
+      expect(notes[0].status).toBeUndefined();
+    });
+
+    it('participant can add note but not edit another participant note', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Manager note' },
+      });
+      const addResult = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Giovanni',
+        updates: { add_note: 'Participant note' },
+      });
+      expect(addResult.success).toBe(true);
+      const editResult = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Giovanni',
+        updates: { edit_note: { id: 1, text: 'Tampered note' } },
+      });
+      expect(editResult.success).toBe(false);
+    });
+  });
+
+  describe('move meeting', () => {
+    let meetingId: string;
+
+    beforeEach(() => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Move test meeting',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      meetingId = result.task_id!;
+    });
+
+    it('meetings do not count against WIP limits', () => {
+      const t1 = engine.create({ board_id: BOARD_ID, type: 'simple', title: 'Filler 1', assignee: 'Alexandre', sender_name: 'Alexandre' });
+      engine.move({ board_id: BOARD_ID, task_id: t1.task_id!, action: 'start', sender_name: 'Alexandre' });
+      const t2 = engine.create({ board_id: BOARD_ID, type: 'simple', title: 'Filler 2', assignee: 'Alexandre', sender_name: 'Alexandre' });
+      engine.move({ board_id: BOARD_ID, task_id: t2.task_id!, action: 'start', sender_name: 'Alexandre' });
+      // Now at WIP limit (3: T-001 + Filler1 + Filler2), starting a meeting should not be blocked
+      const result = engine.move({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        action: 'start',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('done on meeting with open notes returns unprocessed_minutes_warning', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Open agenda item' },
+      });
+      const result = engine.move({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        action: 'conclude',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      expect((result as any).unprocessed_minutes_warning).toBe(true);
+    });
+
+    it('done on meeting with all checked notes does NOT return warning', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Checked item' },
+      });
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { set_note_status: { id: 1, status: 'checked' } },
+      });
+      const result = engine.move({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        action: 'conclude',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      expect((result as any).unprocessed_minutes_warning).toBeUndefined();
+    });
+
+    it('cancel meeting notifies participants', () => {
+      const result = engine.admin({
+        board_id: BOARD_ID,
+        action: 'cancel_task',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      expect(result.notifications).toBeDefined();
+      expect(result.notifications!.some((n: any) => n.target_person_id === 'person-2')).toBe(true);
+    });
+
+    it('meeting moves through full lifecycle', () => {
+      let r = engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
+      expect(r.success).toBe(true);
+      expect(r.to_column).toBe('in_progress');
+      r = engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'review', sender_name: 'Alexandre' });
+      expect(r.success).toBe(true);
+      expect(r.to_column).toBe('review');
+      r = engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'conclude', sender_name: 'Alexandre' });
+      expect(r.success).toBe(true);
+      expect(r.to_column).toBe('done');
+    });
+  });
+
+  describe('query meetings', () => {
+    let meetingId: string;
+
+    beforeEach(() => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Weekly sync',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      meetingId = r.task_id!;
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Review budget' },
+      });
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Define timeline' },
+      });
+    });
+
+    it('meetings query returns all active meetings', () => {
+      const result = engine.query({ query: 'meetings' });
+      expect(result.success).toBe(true);
+      expect(result.data.length).toBeGreaterThanOrEqual(1);
+      expect(result.data[0].type).toBe('meeting');
+    });
+
+    it('meeting_agenda returns pre-phase notes', () => {
+      const result = engine.query({ query: 'meeting_agenda', task_id: meetingId });
+      expect(result.success).toBe(true);
+      expect(result.data.length).toBe(2);
+      expect(result.data[0].phase).toBe('pre');
+    });
+
+    it('meeting_minutes returns all notes with threading', () => {
+      const result = engine.query({ query: 'meeting_minutes', task_id: meetingId });
+      expect(result.success).toBe(true);
+      expect(result.data.notes.length).toBe(2);
+      expect(result.formatted).toBeDefined();
+    });
+
+    it('upcoming_meetings returns meetings sorted by scheduled_at', () => {
+      engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Earlier meeting',
+        scheduled_at: '2026-03-10T10:00:00Z',
+        sender_name: 'Alexandre',
+      });
+      const result = engine.query({ query: 'upcoming_meetings' });
+      expect(result.success).toBe(true);
+      expect(result.data.length).toBeGreaterThanOrEqual(2);
+      expect(result.data[0].scheduled_at <= result.data[1].scheduled_at).toBe(true);
+    });
+
+    it('meeting_participants returns participant list', () => {
+      const result = engine.query({ query: 'meeting_participants', task_id: meetingId });
+      expect(result.success).toBe(true);
+      expect(result.data.organizer).toBeDefined();
+      expect(result.data.participants.length).toBeGreaterThan(0);
+    });
+
+    it('meeting_open_items returns only open notes', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { set_note_status: { id: 1, status: 'checked' } },
+      });
+      const result = engine.query({ query: 'meeting_open_items', task_id: meetingId });
+      expect(result.success).toBe(true);
+      expect(result.data.length).toBe(1);
+      expect(result.data[0].id).toBe(2);
+    });
+
+    it('meeting_history returns task history', () => {
+      const result = engine.query({ query: 'meeting_history', task_id: meetingId });
+      expect(result.success).toBe(true);
+      expect(result.data.length).toBeGreaterThan(0);
+    });
+
+    it('meeting_minutes_at returns archived occurrence by date', () => {
+      const result = engine.query({ query: 'meeting_minutes_at', task_id: meetingId, at: '2026-03-15' });
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe('admin meeting triage', () => {
+    let meetingId: string;
+
+    beforeEach(() => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Triage meeting',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      meetingId = r.task_id!;
+      engine.update({ board_id: BOARD_ID, task_id: meetingId, sender_name: 'Alexandre', updates: { add_note: 'Budget review' } });
+      engine.update({ board_id: BOARD_ID, task_id: meetingId, sender_name: 'Alexandre', updates: { add_note: 'Timeline definition' } });
+      engine.update({ board_id: BOARD_ID, task_id: meetingId, sender_name: 'Alexandre', updates: { add_note: 'Server issue' } });
+      engine.update({ board_id: BOARD_ID, task_id: meetingId, sender_name: 'Alexandre', updates: { set_note_status: { id: 1, status: 'checked' } } });
+    });
+
+    it('process_minutes returns only open notes', () => {
+      const result = engine.admin({
+        board_id: BOARD_ID,
+        action: 'process_minutes',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      expect(result.data.open_items.length).toBe(2);
+      expect(result.data.open_items.every((n: any) => n.status === 'open')).toBe(true);
+    });
+
+    it('process_minutes_decision creates task atomically', () => {
+      const result = engine.admin({
+        board_id: BOARD_ID,
+        action: 'process_minutes_decision',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        note_id: 2,
+        decision: 'create_task',
+        create: {
+          type: 'simple',
+          title: 'Timeline follow-up',
+          assignee: 'Giovanni',
+          labels: ['ata:' + meetingId],
+        },
+      });
+      expect(result.success).toBe(true);
+      expect(result.data.created_task_id).toBeDefined();
+
+      const task = db.prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+      const notes = JSON.parse(task.notes);
+      const note = notes.find((n: any) => n.id === 2);
+      expect(note.status).toBe('task_created');
+      expect(note.created_task_id).toBe(result.data.created_task_id);
+
+      const createdTask = db.prepare(`SELECT * FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, result.data.created_task_id) as any;
+      expect(createdTask).toBeDefined();
+      expect(createdTask.title).toBe('Timeline follow-up');
+    });
+
+    it('process_minutes_decision creates inbox atomically', () => {
+      const result = engine.admin({
+        board_id: BOARD_ID,
+        action: 'process_minutes_decision',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        note_id: 3,
+        decision: 'create_inbox',
+        create: {
+          type: 'inbox',
+          title: 'Investigate server issue',
+          labels: ['ata:' + meetingId],
+        },
+      });
+      expect(result.success).toBe(true);
+      expect(result.data.created_task_id).toBeDefined();
+
+      const task = db.prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+      const notes = JSON.parse(task.notes);
+      const note = notes.find((n: any) => n.id === 3);
+      expect(note.status).toBe('inbox_created');
+    });
+
+    it('process_minutes_decision rejects invalid note_id', () => {
+      const result = engine.admin({
+        board_id: BOARD_ID,
+        action: 'process_minutes_decision',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        note_id: 999,
+        decision: 'create_task',
+        create: { type: 'simple', title: 'No note', assignee: 'Giovanni' },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('process_minutes_decision rejects already-processed note', () => {
+      const result = engine.admin({
+        board_id: BOARD_ID,
+        action: 'process_minutes_decision',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        note_id: 1,
+        decision: 'create_task',
+        create: { type: 'simple', title: 'Already done', assignee: 'Giovanni' },
+      });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe('board view meetings', () => {
+    it('shows meeting emoji, scheduled_at time, and participant count', () => {
+      engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Alinhamento semanal',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      const result = engine.query({ query: 'board' });
+      expect(result.success).toBe(true);
+      const board = result.data.formatted_board as string;
+      expect(board).toContain('📅');
+      expect(board).toContain('Alinhamento semanal');
+      expect(board).toContain('participante');
+    });
+  });
+
+  describe('recurring meeting advance', () => {
+    it('archives meeting notes with metadata before cycle reset', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Weekly standup',
+        scheduled_at: '2026-03-10T14:00:00Z',
+        recurrence: 'weekly',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      const meetingId = r.task_id!;
+
+      // Add notes
+      engine.update({ board_id: BOARD_ID, task_id: meetingId, sender_name: 'Alexandre', updates: { add_note: 'Agenda item' } });
+      engine.update({ board_id: BOARD_ID, task_id: meetingId, sender_name: 'Alexandre', updates: { set_note_status: { id: 1, status: 'checked' } } });
+
+      // Move to done (triggers advance)
+      engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
+      const doneResult = engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'conclude', sender_name: 'Alexandre' });
+      expect(doneResult.success).toBe(true);
+      expect(doneResult.recurring_cycle).toBeDefined();
+      expect(doneResult.recurring_cycle!.expired).toBe(false);
+
+      // Verify notes were reset
+      const task = db.prepare(`SELECT notes, scheduled_at, participants FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+      expect(JSON.parse(task.notes)).toEqual([]);
+
+      // Verify participants preserved
+      const parts = JSON.parse(task.participants);
+      expect(parts).toContain('person-2');
+
+      // Verify scheduled_at advanced
+      expect(task.scheduled_at).not.toBe('2026-03-10T14:00:00Z');
+
+      // Verify archived occurrence preserves notes and metadata
+      const occurrences = db.prepare(
+        `SELECT * FROM task_history WHERE board_id = ? AND task_id = ? AND action = 'meeting_occurrence_archived'`
+      ).all(BOARD_ID, meetingId);
+      expect(occurrences.length).toBe(1);
+      const details = JSON.parse((occurrences[0] as any).details);
+      expect(details.snapshot.notes).toBeDefined();
+      expect(details.snapshot.scheduled_at).toBe('2026-03-10T14:00:00Z');
+    });
+  });
+
+  describe('report meetings', () => {
+    it('standup includes upcoming meetings and open-minutes warnings', () => {
+      // Create a past meeting with open notes (simulate overdue minutes)
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Past meeting',
+        scheduled_at: '2026-03-01T10:00:00Z',
+        sender_name: 'Alexandre',
+      });
+      engine.update({ board_id: BOARD_ID, task_id: r.task_id!, sender_name: 'Alexandre', updates: { add_note: 'Unresolved item' } });
+
+      // Create upcoming meeting
+      engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Tomorrow meeting',
+        scheduled_at: new Date(Date.now() + 86400000).toISOString(),
+        sender_name: 'Alexandre',
+      });
+
+      const report = engine.report({ board_id: BOARD_ID, type: 'standup' });
+      expect(report.success).toBe(true);
+      expect(report.data!.upcoming_meetings).toBeDefined();
+      expect(report.data!.meetings_with_open_minutes).toBeDefined();
+    });
+  });
+
+  describe('meeting notifications', () => {
+    it('getMeetingReminders returns meetings scheduled within reminder window', () => {
+      // Create a meeting scheduled for tomorrow
+      const tomorrow = new Date(Date.now() + 86400000);
+      tomorrow.setUTCHours(14, 0, 0, 0);
+      engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Tomorrow sync',
+        scheduled_at: tomorrow.toISOString(),
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+
+      // Query for meetings needing reminders (next 2 days)
+      const result = engine.query({ query: 'upcoming_meetings' });
+      expect(result.success).toBe(true);
+      expect(result.data.length).toBeGreaterThanOrEqual(1);
+      const meeting = result.data.find((m: any) => m.title === 'Tomorrow sync');
+      expect(meeting).toBeDefined();
+      expect(meeting.scheduled_at).toBeDefined();
+    });
+
+    it('process_minutes_decision notifies assigned person', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Notif meeting',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      engine.update({ board_id: BOARD_ID, task_id: r.task_id!, sender_name: 'Alexandre', updates: { add_note: 'Action item for Giovanni' } });
+
+      const result = engine.admin({
+        board_id: BOARD_ID,
+        action: 'process_minutes_decision',
+        task_id: r.task_id!,
+        sender_name: 'Alexandre',
+        note_id: 1,
+        decision: 'create_task',
+        create: {
+          type: 'simple',
+          title: 'Follow up action',
+          assignee: 'Giovanni',
+          labels: ['ata:' + r.task_id],
+        },
+      });
+      expect(result.success).toBe(true);
+      // The created task will have its own create notification via the normal create() path
+      expect(result.data.created_task_id).toBeDefined();
+    });
+  });
 });

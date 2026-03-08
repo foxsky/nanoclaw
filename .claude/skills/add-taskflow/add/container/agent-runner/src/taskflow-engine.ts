@@ -20,6 +20,7 @@ export interface QueryParams {
   search_text?: string;
   label?: string;
   since?: string;
+  at?: string; // for meeting_minutes_at (YYYY-MM-DD)
 }
 
 export interface TaskflowResult {
@@ -32,7 +33,7 @@ export interface TaskflowResult {
 
 export interface CreateParams {
   board_id: string;
-  type: 'simple' | 'project' | 'recurring' | 'inbox';
+  type: 'simple' | 'project' | 'recurring' | 'inbox' | 'meeting';
   title: string;
   assignee?: string;
   due_date?: string;
@@ -43,6 +44,8 @@ export interface CreateParams {
   recurrence_anchor?: string;
   max_cycles?: number;
   recurrence_end_date?: string;
+  participants?: string[];
+  scheduled_at?: string;
   sender_name: string;
   allow_non_business_day?: boolean;
 }
@@ -80,6 +83,7 @@ export interface MoveResult extends TaskflowResult {
   archive_triggered?: boolean;
   notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
   parent_notification?: { parent_group_jid: string; message: string };
+  unprocessed_minutes_warning?: boolean;
 }
 
 export interface ReassignParams {
@@ -118,6 +122,11 @@ export interface UpdateParams {
     add_note?: string;
     edit_note?: { id: number; text: string };
     remove_note?: number;
+    parent_note_id?: number;
+    scheduled_at?: string;
+    add_participant?: string;
+    remove_participant?: string;
+    set_note_status?: { id: number; status: 'open' | 'checked' | 'task_created' | 'inbox_created' | 'dismissed' };
     add_subtask?: string;         // project only
     rename_subtask?: { id: string; title: string };
     reopen_subtask?: string;      // subtask ID
@@ -164,7 +173,7 @@ export interface UndoResult extends TaskflowResult {
 
 export interface AdminParams {
   board_id: string;
-  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays';
+  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision';
   sender_name: string;
   person_name?: string;
   phone?: string;
@@ -179,6 +188,14 @@ export interface AdminParams {
   holidays?: Array<{ date: string; label?: string }>;
   holiday_dates?: string[];
   holiday_year?: number;
+  note_id?: number;
+  decision?: 'create_task' | 'create_inbox';
+  create?: {
+    type: string;
+    title: string;
+    assignee?: string;
+    labels?: string[];
+  };
 }
 
 export interface AdminResult extends TaskflowResult {
@@ -194,6 +211,7 @@ export interface AdminResult extends TaskflowResult {
     group_folder?: string;
     message: string;
   };
+  notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
 }
 
 export interface ReportParams {
@@ -226,6 +244,8 @@ export interface ReportResult extends TaskflowResult {
       created_week: number;
       trend: 'up' | 'down' | 'same';
     };
+    upcoming_meetings?: Array<{ id: string; title: string; scheduled_at: string; participant_count: number }>;
+    meetings_with_open_minutes?: Array<{ id: string; title: string; scheduled_at: string; open_count: number }>;
   };
 }
 
@@ -480,6 +500,8 @@ export class TaskflowEngine {
     try { this.db.exec(`ALTER TABLE tasks ADD COLUMN parent_task_id TEXT`); } catch {}
     try { this.db.exec(`ALTER TABLE tasks ADD COLUMN max_cycles INTEGER`); } catch {}
     try { this.db.exec(`ALTER TABLE tasks ADD COLUMN recurrence_end_date TEXT`); } catch {}
+    try { this.db.exec(`ALTER TABLE tasks ADD COLUMN participants TEXT`); } catch {}
+    try { this.db.exec(`ALTER TABLE tasks ADD COLUMN scheduled_at TEXT`); } catch {}
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(board_id, parent_task_id)
        WHERE parent_task_id IS NOT NULL`,
@@ -1141,6 +1163,19 @@ export class TaskflowEngine {
     };
   }
 
+  /** Determine meeting note phase based on the task's current column. */
+  private getMeetingNotePhase(task: any): 'pre' | 'meeting' | 'post' | undefined {
+    if (task.type !== 'meeting') return undefined;
+    switch (task.column) {
+      case 'next_action': return 'pre';
+      case 'in_progress':
+      case 'waiting': return 'meeting';
+      case 'review':
+      case 'done': return 'post';
+      default: return undefined;
+    }
+  }
+
   /** List all team member names for the current board. */
   private listTeamNames(): string[] {
     const rows = this.db
@@ -1282,12 +1317,22 @@ export class TaskflowEngine {
           ? 'P'
           : params.type === 'recurring'
             ? 'R'
-            : 'T';
+            : params.type === 'meeting'
+              ? 'M'
+              : 'T';
       const num = this.getNextNumberForPrefix(prefix);
       const taskId = `${prefix}${num}`;
 
+      /* --- Auto-set organizer for meetings --- */
+      if (params.type === 'meeting' && !assigneePersonId) {
+        const senderPerson = this.resolvePerson(params.sender_name);
+        if (senderPerson) assigneePersonId = senderPerson.person_id;
+      }
+
       /* --- Column placement --- */
-      const column = params.type === 'inbox' || !assigneePersonId ? 'inbox' : 'next_action';
+      const column = params.type === 'inbox' || (!assigneePersonId && params.type !== 'meeting')
+        ? 'inbox'
+        : 'next_action';
 
       /* --- Type mapping (inbox → simple for storage) --- */
       const storedType = params.type === 'inbox' ? 'simple' : params.type;
@@ -1307,12 +1352,33 @@ export class TaskflowEngine {
         }
       }
 
+      /* --- Participant resolution (meetings only) --- */
+      let participantIds: string[] | null = null;
+      if (params.type === 'meeting' && params.participants) {
+        participantIds = [];
+        for (const pName of params.participants) {
+          const person = this.resolvePerson(pName);
+          if (!person) return this.buildOfferRegisterError(pName);
+          participantIds.push(person.person_id);
+        }
+      }
+
+      /* --- Recurring meeting validation --- */
+      if (params.type === 'meeting' && params.recurrence && !params.scheduled_at) {
+        return { success: false, error: 'Recurring meetings require scheduled_at for the first occurrence.' };
+      }
+
+      /* --- Default recurrence_anchor for meetings --- */
+      if (params.type === 'meeting' && params.recurrence && params.scheduled_at && !params.recurrence_anchor) {
+        params = { ...params, recurrence_anchor: params.scheduled_at };
+      }
+
       /* --- Recurrence --- */
       let recurrence: string | null = null;
       let dueDate: string | null = params.due_date ?? null;
-      if ((params.type === 'recurring' || params.type === 'project') && params.recurrence) {
+      if ((params.type === 'recurring' || params.type === 'project' || params.type === 'meeting') && params.recurrence) {
         recurrence = params.recurrence;
-        if (!dueDate) {
+        if (params.type !== 'meeting' && !dueDate) {
           dueDate = advanceDateByRecurrence(new Date(), params.recurrence);
         }
       }
@@ -1364,8 +1430,9 @@ export class TaskflowEngine {
             priority, due_date, labels, recurrence,
             max_cycles, recurrence_end_date,
             child_exec_enabled, child_exec_board_id, child_exec_person_id,
+            participants, scheduled_at,
             _last_mutation, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           taskId,
@@ -1383,6 +1450,8 @@ export class TaskflowEngine {
           childExecEnabled,
           childExecBoardId,
           childExecPersonId,
+          participantIds ? JSON.stringify(participantIds) : null,
+          params.scheduled_at ?? null,
           lastMutation,
           now,
           now,
@@ -1415,6 +1484,8 @@ export class TaskflowEngine {
       if (params.labels?.length) detailsSummary.labels = params.labels;
       if (subtaskDefs.length > 0) detailsSummary.subtasks_count = subtaskDefs.length;
       if (recurrence) detailsSummary.recurrence = recurrence;
+      if (participantIds) detailsSummary.participants = participantIds;
+      if (params.scheduled_at) detailsSummary.scheduled_at = params.scheduled_at;
 
       this.recordHistory(taskId, 'created', params.sender_name, JSON.stringify(detailsSummary));
 
@@ -1441,6 +1512,19 @@ export class TaskflowEngine {
             { id: sub.id, title: sub.title },
             { id: taskId, title: params.title },
             sub.assignee, senderPersonId,
+          );
+          if (notif) notifications.push(notif);
+        }
+      }
+
+      /* Notify participants (meetings) */
+      if (participantIds && participantIds.length > 0) {
+        for (const pid of participantIds) {
+          if (pid === senderPersonId) continue;
+          if (pid === assigneePersonId) continue;
+          const notif = this.buildCreateNotification(
+            { id: taskId, title: params.title, assignee: pid, due_date: dueDate, priority: params.priority, column },
+            senderPersonId,
           );
           if (notif) notifications.push(notif);
         }
@@ -1477,7 +1561,7 @@ export class TaskflowEngine {
     const countRow = this.db
       .prepare(
         `SELECT COUNT(*) as cnt FROM tasks
-         WHERE ${this.visibleTaskScope()} AND assignee = ? AND column = 'in_progress'`,
+         WHERE ${this.visibleTaskScope()} AND assignee = ? AND column = 'in_progress' AND type != 'meeting'`,
       )
       .get(...this.visibleTaskParams(), personId) as { cnt: number };
 
@@ -1597,6 +1681,29 @@ export class TaskflowEngine {
       return { cycle_number: nextCycle, expired: true, reason: expiryReason };
     }
 
+    // Archive meeting occurrence before cycle reset (selective fields only)
+    if (task.type === 'meeting') {
+      this.recordHistory(
+        task.id,
+        'meeting_occurrence_archived',
+        'system',
+        JSON.stringify({
+          cycle_number: currentCycle,
+          occurrence_scheduled_at: task.scheduled_at,
+          snapshot: {
+            id: task.id,
+            title: task.title,
+            scheduled_at: task.scheduled_at,
+            participants: task.participants,
+            notes: task.notes,
+            assignee: task.assignee,
+            current_cycle: currentCycle,
+          },
+        }),
+        this.taskBoardId(task),
+      );
+    }
+
     // Normal advance: reset to next_action
     this.db
       .prepare(
@@ -1605,6 +1712,18 @@ export class TaskflowEngine {
          WHERE board_id = ? AND id = ?`,
       )
       .run(newDueDate, String(nextCycle), now, this.taskBoardId(task), task.id);
+
+    // Advance scheduled_at for recurring meetings
+    if (task.type === 'meeting' && task.scheduled_at) {
+      const anchor = new Date(task.scheduled_at);
+      const nextScheduled = advanceDateByRecurrence(anchor, recurrence);
+      // scheduled_at includes time, so preserve time component
+      const timePart = task.scheduled_at.slice(10); // e.g. T14:00:00Z
+      const nextScheduledWithTime = nextScheduled.slice(0, 10) + timePart;
+      this.db
+        .prepare(`UPDATE tasks SET scheduled_at = ? WHERE board_id = ? AND id = ?`)
+        .run(nextScheduledWithTime, this.taskBoardId(task), task.id);
+    }
 
     /* Reset subtask rows for recurring projects */
     if (task.type === 'project') {
@@ -1738,8 +1857,8 @@ export class TaskflowEngine {
         }
       }
 
-      /* --- WIP limit check (start, resume, reject — NOT force_start) --- */
-      if (['start', 'resume', 'reject'].includes(params.action) && task.assignee) {
+      /* --- WIP limit check (start, resume, reject — NOT force_start, NOT meetings) --- */
+      if (['start', 'resume', 'reject'].includes(params.action) && task.assignee && task.type !== 'meeting') {
         const wip = this.checkWipLimit(task.assignee);
         if (!wip.ok) {
           return {
@@ -1946,6 +2065,14 @@ export class TaskflowEngine {
         }
       }
 
+      /* --- Open meeting minutes warning --- */
+      let unprocessedMinutesWarning: boolean | undefined;
+      if (toColumn === 'done' && task.type === 'meeting') {
+        const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+        const hasOpenNotes = notes.some((n: any) => n.status === 'open');
+        if (hasOpenNotes) unprocessedMinutesWarning = true;
+      }
+
       /* --- Build result --- */
       const result: MoveResult = {
         success: true,
@@ -1957,6 +2084,7 @@ export class TaskflowEngine {
       if (projectUpdate) result.project_update = projectUpdate;
       if (recurringCycle) result.recurring_cycle = recurringCycle;
       if (parentNotification) result.parent_notification = parentNotification;
+      if (unprocessedMinutesWarning) result.unprocessed_minutes_warning = true;
 
       return result;
       })(); // end transaction
@@ -2213,10 +2341,18 @@ export class TaskflowEngine {
       /* --- Check task is active (not archived / done is still active in tasks table) --- */
       // Tasks only leave the tasks table when archived; if it's here, it's active.
 
-      /* --- Permission: sender must be assignee or manager --- */
+      /* --- Permission: sender must be assignee or manager (or meeting participant for note ops) --- */
       const isAssignee = senderPersonId != null && task.assignee === senderPersonId;
       const isMgr = this.isManager(params.sender_name);
-      if (!isAssignee && !isMgr) {
+
+      const isMeetingNoteOperation =
+        task.type === 'meeting' &&
+        (updates.add_note !== undefined ||
+          updates.edit_note !== undefined ||
+          updates.remove_note !== undefined ||
+          updates.set_note_status !== undefined);
+
+      if (!isMeetingNoteOperation && !isMgr && !isAssignee) {
         return {
           success: false,
           error: `Permission denied: "${params.sender_name}" is neither the assignee nor a manager.`,
@@ -2359,9 +2495,33 @@ export class TaskflowEngine {
 
       /* Add note */
       if (updates.add_note !== undefined) {
-        const notes: Array<{ id: number; text: string; at: string; by: string }> = JSON.parse(task.notes ?? '[]');
+        // Meeting note authorization: participants can add notes
+        if (task.type === 'meeting' && !isMgr && !isAssignee) {
+          const participants: string[] = JSON.parse(task.participants ?? '[]');
+          if (!participants.includes(senderPersonId ?? '')) {
+            return { success: false, error: `Permission denied: "${params.sender_name}" is not a participant of this meeting.` };
+          }
+        }
+
+        const notes: Array<any> = JSON.parse(task.notes ?? '[]');
         const noteId = task.next_note_id ?? 1;
-        notes.push({ id: noteId, text: updates.add_note, at: now, by: params.sender_name });
+        const noteEntry: any = { id: noteId, text: updates.add_note, at: now, by: params.sender_name };
+
+        // Meeting-only metadata
+        const phase = this.getMeetingNotePhase(task);
+        if (phase) {
+          noteEntry.phase = phase;
+          noteEntry.status = 'open';
+        }
+        if (updates.parent_note_id !== undefined) {
+          const parentExists = notes.some((n: any) => n.id === updates.parent_note_id);
+          if (!parentExists) {
+            return { success: false, error: `Parent note #${updates.parent_note_id} not found.` };
+          }
+          noteEntry.parent_note_id = updates.parent_note_id;
+        }
+
+        notes.push(noteEntry);
         this.db
           .prepare(`UPDATE tasks SET notes = ?, next_note_id = ? WHERE board_id = ? AND id = ?`)
           .run(JSON.stringify(notes), noteId + 1, taskBoardId, task.id);
@@ -2370,10 +2530,14 @@ export class TaskflowEngine {
 
       /* Edit note */
       if (updates.edit_note !== undefined) {
-        const notes: Array<{ id: number; text: string; at: string; by: string }> = JSON.parse(task.notes ?? '[]');
-        const note = notes.find((n) => n.id === updates.edit_note!.id);
+        const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+        const note = notes.find((n: any) => n.id === updates.edit_note!.id);
         if (!note) {
           return { success: false, error: `Note #${updates.edit_note.id} not found.` };
+        }
+        // Meeting note authorization: only author/organizer/manager can edit
+        if (task.type === 'meeting' && !isMgr && !isAssignee && note.by !== params.sender_name) {
+          return { success: false, error: `Permission denied: only the note author, organizer, or manager can edit note #${updates.edit_note.id}.` };
         }
         note.text = updates.edit_note.text;
         this.db
@@ -2394,6 +2558,76 @@ export class TaskflowEngine {
           .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
           .run(JSON.stringify(notes), taskBoardId, task.id);
         changes.push(`Note #${updates.remove_note} removed`);
+      }
+
+      /* Set note status (meeting only) */
+      if (updates.set_note_status !== undefined) {
+        if (task.type !== 'meeting') {
+          return { success: false, error: 'Note status can only be set on meeting tasks.' };
+        }
+        const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+        const note = notes.find((n: any) => n.id === updates.set_note_status!.id);
+        if (!note) {
+          return { success: false, error: `Note #${updates.set_note_status.id} not found.` };
+        }
+        note.status = updates.set_note_status.status;
+        if (updates.set_note_status.status === 'open') {
+          delete note.processed_at;
+          delete note.processed_by;
+        } else {
+          note.processed_at = now;
+          note.processed_by = params.sender_name;
+        }
+        this.db
+          .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
+          .run(JSON.stringify(notes), taskBoardId, task.id);
+        changes.push(`Note #${updates.set_note_status.id} status set to ${updates.set_note_status.status}`);
+      }
+
+      /* Add participant (meeting only) */
+      if (updates.add_participant !== undefined) {
+        if (task.type !== 'meeting') {
+          return { success: false, error: 'Participants can only be added to meeting tasks.' };
+        }
+        const person = this.resolvePerson(updates.add_participant);
+        if (!person) return this.buildOfferRegisterError(updates.add_participant);
+        const participants: string[] = JSON.parse(task.participants ?? '[]');
+        if (!participants.includes(person.person_id)) {
+          participants.push(person.person_id);
+          this.db
+            .prepare(`UPDATE tasks SET participants = ? WHERE board_id = ? AND id = ?`)
+            .run(JSON.stringify(participants), taskBoardId, task.id);
+          changes.push(`Participant ${person.name} added`);
+        }
+      }
+
+      /* Remove participant (meeting only) */
+      if (updates.remove_participant !== undefined) {
+        if (task.type !== 'meeting') {
+          return { success: false, error: 'Participants can only be removed from meeting tasks.' };
+        }
+        const person = this.resolvePerson(updates.remove_participant);
+        if (!person) return this.buildOfferRegisterError(updates.remove_participant);
+        const participants: string[] = JSON.parse(task.participants ?? '[]');
+        const idx = participants.indexOf(person.person_id);
+        if (idx >= 0) {
+          participants.splice(idx, 1);
+          this.db
+            .prepare(`UPDATE tasks SET participants = ? WHERE board_id = ? AND id = ?`)
+            .run(JSON.stringify(participants), taskBoardId, task.id);
+          changes.push(`Participant ${person.name} removed`);
+        }
+      }
+
+      /* Scheduled at (meeting only) */
+      if (updates.scheduled_at !== undefined) {
+        if (task.type !== 'meeting') {
+          return { success: false, error: 'scheduled_at can only be set on meeting tasks.' };
+        }
+        this.db
+          .prepare(`UPDATE tasks SET scheduled_at = ? WHERE board_id = ? AND id = ?`)
+          .run(updates.scheduled_at, taskBoardId, task.id);
+        changes.push(`Meeting rescheduled to ${updates.scheduled_at}`);
       }
 
       /* Add subtask (project only) — creates a real task row */
@@ -2729,6 +2963,90 @@ export class TaskflowEngine {
   }
 
   /* ---------------------------------------------------------------- */
+  /*  Formatted meeting minutes                                        */
+  /* ---------------------------------------------------------------- */
+
+  private formatMeetingMinutes(task: any, notes: Array<any>): string {
+    const lines: string[] = [];
+    const scheduledStr = task.scheduled_at
+      ? (() => { const d = task.scheduled_at; return `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(0,4)} ${d.slice(11,16)}`; })()
+      : 'sem data';
+    lines.push(`📅 *${task.id} — ${task.title}* (${scheduledStr})`);
+    lines.push('');
+
+    const topLevel = notes.filter((n: any) => !n.parent_note_id);
+    const replies = new Map<number, any[]>();
+    for (const n of notes.filter((n: any) => n.parent_note_id)) {
+      const arr = replies.get(n.parent_note_id) ?? [];
+      arr.push(n);
+      replies.set(n.parent_note_id, arr);
+    }
+
+    const statusMarker = (n: any): string => {
+      switch (n.status) {
+        case 'checked': return '✓';
+        case 'task_created': return `⤷ ${n.created_task_id ?? ''}`;
+        case 'inbox_created': return `📥 ${n.created_task_id ?? ''}`;
+        case 'dismissed': return '—';
+        default: return '';
+      }
+    };
+
+    const preNotes = topLevel.filter((n: any) => n.phase === 'pre');
+    const meetingNotes = topLevel.filter((n: any) => n.phase === 'meeting');
+    const postNotes = topLevel.filter((n: any) => n.phase === 'post');
+    const otherNotes = topLevel.filter((n: any) => !n.phase);
+
+    if (preNotes.length > 0) {
+      lines.push('*Pauta:*');
+      for (let i = 0; i < preNotes.length; i++) {
+        const n = preNotes[i];
+        const marker = statusMarker(n);
+        lines.push(`${i + 1}. ${marker ? marker + ' ' : ''}${n.text}`);
+        for (const r of replies.get(n.id) ?? []) {
+          const rMarker = statusMarker(r);
+          const postTag = r.phase === 'post' ? ' _(pós-reunião)_' : '';
+          lines.push(`   → ${rMarker ? rMarker + ' ' : ''}${r.text}${postTag}`);
+        }
+      }
+    }
+
+    if (meetingNotes.length > 0) {
+      lines.push('');
+      for (const n of meetingNotes) {
+        const marker = statusMarker(n);
+        lines.push(`*${marker ? marker + ' ' : ''}[Novo] ${n.text}*`);
+        for (const r of replies.get(n.id) ?? []) {
+          const rMarker = statusMarker(r);
+          const postTag = r.phase === 'post' ? ' _(pós-reunião)_' : '';
+          lines.push(`   → ${rMarker ? rMarker + ' ' : ''}${r.text}${postTag}`);
+        }
+      }
+    }
+
+    if (postNotes.length > 0) {
+      lines.push('');
+      lines.push('*[Pós-reunião]*');
+      for (const n of postNotes) {
+        const marker = statusMarker(n);
+        lines.push(`   → ${marker ? marker + ' ' : ''}${n.text}`);
+        for (const r of replies.get(n.id) ?? []) {
+          const rMarker = statusMarker(r);
+          lines.push(`   → ${rMarker ? rMarker + ' ' : ''}${r.text}`);
+        }
+      }
+    }
+
+    if (otherNotes.length > 0) {
+      for (const n of otherNotes) {
+        lines.push(`• ${n.text}`);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  /* ---------------------------------------------------------------- */
   /*  Pre-formatted board view                                         */
   /* ---------------------------------------------------------------- */
 
@@ -2815,6 +3133,7 @@ export class TaskflowEngine {
     };
 
     const pfx = (t: any): string => {
+      if (t.type === 'meeting') return '\ud83d\udcc5 ';
       if (t.due_date && daysDiff(t.due_date) <= 2) return '\u26a0\ufe0f ';
       if (t.child_exec_enabled === 1) return '\ud83d\udd17 ';
       if (t.type === 'project') return '\ud83d\udcc1 ';
@@ -2830,6 +3149,24 @@ export class TaskflowEngine {
     };
 
     const notesSfx = (t: any) => (hasNotes(t) ? ' \ud83d\udcac' : '');
+
+    const meetingSfx = (t: any): string => {
+      if (t.type !== 'meeting') return '';
+      const parts: string[] = [];
+      if (t.scheduled_at) {
+        const d = t.scheduled_at;
+        parts.push(`${d.slice(8,10)}/${d.slice(5,7)} ${d.slice(11,16)}`);
+      }
+      if (t.participants) {
+        try {
+          const p = JSON.parse(t.participants);
+          if (Array.isArray(p) && p.length > 0) {
+            parts.push(`${p.length + 1} participantes`);
+          }
+        } catch {}
+      }
+      return parts.length > 0 ? ` (${parts.join(' \u2014 ')})` : '';
+    };
 
     /* --- Build output --- */
     const urgent: string[] = [];
@@ -2922,7 +3259,7 @@ export class TaskflowEngine {
 
         for (const t of sorted) {
           const tid = dId(t);
-          let line = `${pfx(t)}${tid}: ${t.title}${dueSfx(t)}${notesSfx(t)}`;
+          let line = `${pfx(t)}${tid}: ${t.title}${meetingSfx(t)}${dueSfx(t)}${notesSfx(t)}`;
           if (col === 'waiting' && t.waiting_for)
             line += ` \u2192 _${t.waiting_for}_`;
           lines.push(line);
@@ -3476,6 +3813,120 @@ export class TaskflowEngine {
           };
         }
 
+        /* ---------- Meetings ---------- */
+
+        case 'meetings': {
+          const tasks = this.db
+            .prepare(
+              `SELECT * FROM tasks
+               WHERE ${this.visibleTaskScope()} AND type = 'meeting' AND column != 'done'
+               ORDER BY scheduled_at, id`,
+            )
+            .all(...this.visibleTaskParams());
+          return { success: true, data: tasks };
+        }
+
+        case 'meeting_agenda': {
+          if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
+          const task = this.requireTask(params.task_id);
+          if (task.type !== 'meeting') return { success: false, error: `Task ${params.task_id} is not a meeting.` };
+          const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+          const agenda = notes.filter((n: any) => n.phase === 'pre');
+          return { success: true, data: agenda };
+        }
+
+        case 'meeting_minutes': {
+          if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
+          const task = this.requireTask(params.task_id);
+          if (task.type !== 'meeting') return { success: false, error: `Task ${params.task_id} is not a meeting.` };
+          const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+          const formatted = this.formatMeetingMinutes(task, notes);
+          return { success: true, data: { task, notes }, formatted };
+        }
+
+        case 'upcoming_meetings': {
+          const tasks = this.db
+            .prepare(
+              `SELECT * FROM tasks
+               WHERE ${this.visibleTaskScope()} AND type = 'meeting' AND column != 'done'
+                 AND scheduled_at IS NOT NULL
+               ORDER BY scheduled_at ASC`,
+            )
+            .all(...this.visibleTaskParams());
+          return { success: true, data: tasks };
+        }
+
+        case 'meeting_participants': {
+          if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
+          const task = this.requireTask(params.task_id);
+          if (task.type !== 'meeting') return { success: false, error: `Task ${params.task_id} is not a meeting.` };
+          const participantIds: string[] = JSON.parse(task.participants ?? '[]');
+          const organizerRow = task.assignee
+            ? this.db.prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id = ?`).get(this.boardId, task.assignee) as any
+            : null;
+          if (participantIds.length === 0) {
+            return {
+              success: true,
+              data: {
+                organizer: organizerRow ?? { person_id: task.assignee, name: task.assignee },
+                participants: [],
+              },
+            };
+          }
+          const people = this.db
+            .prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id IN (${participantIds.map(() => '?').join(',')})`)
+            .all(this.boardId, ...participantIds) as Array<{ person_id: string; name: string; role: string }>;
+          return {
+            success: true,
+            data: {
+              organizer: organizerRow ?? { person_id: task.assignee, name: task.assignee },
+              participants: people,
+            },
+          };
+        }
+
+        case 'meeting_open_items': {
+          if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
+          const task = this.requireTask(params.task_id);
+          if (task.type !== 'meeting') return { success: false, error: `Task ${params.task_id} is not a meeting.` };
+          const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+          const openItems = notes.filter((n: any) => n.status === 'open');
+          return { success: true, data: openItems };
+        }
+
+        case 'meeting_history': {
+          if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
+          const history = this.getHistory(params.task_id);
+          return { success: true, data: history };
+        }
+
+        case 'meeting_minutes_at': {
+          if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
+          if (!params.at) return { success: false, error: 'Missing required parameter: at (YYYY-MM-DD)' };
+          const occurrences = this.getHistory(params.task_id)
+            .filter((h: any) => h.action === 'meeting_occurrence_archived');
+
+          for (const row of occurrences) {
+            try {
+              const details = JSON.parse(row.details ?? '{}');
+              const snapshot = details.snapshot;
+              const snapshotDate = (snapshot?.scheduled_at ?? '').slice(0, 10);
+              if (snapshotDate === params.at) {
+                return { success: true, data: snapshot, formatted: this.formatMeetingMinutes(snapshot, JSON.parse(snapshot.notes ?? '[]')) };
+              }
+            } catch { /* skip malformed */ }
+          }
+
+          // Fallback: check current task if date matches
+          const task = this.getTask(params.task_id);
+          if (task && task.scheduled_at?.startsWith(params.at)) {
+            const notes = JSON.parse(task.notes ?? '[]');
+            return { success: true, data: task, formatted: this.formatMeetingMinutes(task, notes) };
+          }
+
+          return { success: false, error: `No meeting occurrence found for ${params.task_id} on ${params.at}` };
+        }
+
         /* ---------- Unknown ---------- */
 
         default:
@@ -3910,9 +4361,33 @@ export class TaskflowEngine {
           /* Record history (on the archive entry for reference) */
           this.recordHistory(task.id, 'cancelled', params.sender_name);
 
+          /* Notify meeting participants on cancellation (single batch query) */
+          const cancelNotifications: AdminResult['notifications'] = [];
+          if (task.type === 'meeting' && task.participants) {
+            const participants: string[] = JSON.parse(task.participants ?? '[]');
+            const allRecipients = task.assignee && !participants.includes(task.assignee)
+              ? [...participants, task.assignee]
+              : [...participants];
+            if (allRecipients.length > 0) {
+              const placeholders = allRecipients.map(() => '?').join(',');
+              const rows = this.db.prepare(
+                `SELECT person_id, notification_group_jid FROM board_people WHERE board_id = ? AND person_id IN (${placeholders})`
+              ).all(this.boardId, ...allRecipients) as Array<{ person_id: string; notification_group_jid: string | null }>;
+              const jidMap = new Map(rows.map(r => [r.person_id, r.notification_group_jid]));
+              for (const pid of allRecipients) {
+                cancelNotifications.push({
+                  target_person_id: pid,
+                  notification_group_jid: jidMap.get(pid) ?? null,
+                  message: `📅 Reunião ${task.id} "${task.title}" foi cancelada.`,
+                });
+              }
+            }
+          }
+
           return {
             success: true,
             data: { cancelled: task.id, title: task.title },
+            ...(cancelNotifications.length > 0 ? { notifications: cancelNotifications } : {}),
           };
         }
 
@@ -4081,6 +4556,87 @@ export class TaskflowEngine {
             default:
               return { success: false, error: `Unknown holiday operation: ${op}` };
           }
+        }
+
+        case 'process_minutes': {
+          const task = this.requireTask(params.task_id);
+          if (task.type !== 'meeting') {
+            return { success: false, error: `Task ${params.task_id} is not a meeting.` };
+          }
+          const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+          const openItems = notes.filter((n: any) => n.status === 'open');
+
+          const grouped: Array<{ item: any; replies: any[] }> = [];
+          const topLevel = openItems.filter((n: any) => !n.parent_note_id);
+          for (const item of topLevel) {
+            const replies = openItems.filter((n: any) => n.parent_note_id === item.id);
+            grouped.push({ item, replies });
+          }
+          const coveredIds = new Set(grouped.flatMap((g) => [g.item.id, ...g.replies.map((r: any) => r.id)]));
+          const orphans = openItems.filter((n: any) => !coveredIds.has(n.id));
+          for (const o of orphans) grouped.push({ item: o, replies: [] });
+
+          return {
+            success: true,
+            data: { open_items: openItems, grouped },
+          };
+        }
+
+        case 'process_minutes_decision': {
+          const task = this.requireTask(params.task_id);
+          if (task.type !== 'meeting') {
+            return { success: false, error: `Task ${params.task_id} is not a meeting.` };
+          }
+          if (params.note_id == null) {
+            return { success: false, error: 'Missing required parameter: note_id' };
+          }
+          if (!params.decision) {
+            return { success: false, error: 'Missing required parameter: decision' };
+          }
+          if (!params.create) {
+            return { success: false, error: 'Missing required parameter: create' };
+          }
+
+          const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+          const note = notes.find((n: any) => n.id === params.note_id);
+          if (!note) {
+            return { success: false, error: `Note #${params.note_id} not found.` };
+          }
+          if (note.status !== 'open') {
+            return { success: false, error: `Note #${params.note_id} is already processed (status: ${note.status}).` };
+          }
+
+          const now = new Date().toISOString();
+
+          // Safe: better-sqlite3 nests this inside admin()'s transaction via savepoint
+          const createResult = this.create({
+            board_id: this.boardId,
+            type: params.create!.type as any,
+            title: params.create!.title,
+            assignee: params.create!.assignee,
+            labels: params.create!.labels,
+            sender_name: params.sender_name,
+          });
+
+          if (!createResult.success) {
+            throw new Error(`Failed to create task: ${createResult.error}`);
+          }
+
+          note.status = params.decision === 'create_task' ? 'task_created' : 'inbox_created';
+          note.processed_at = now;
+          note.processed_by = params.sender_name;
+          note.created_task_id = createResult.task_id;
+
+          this.db
+            .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
+            .run(JSON.stringify(notes), this.taskBoardId(task), task.id);
+
+          const resultNotifications = createResult.notifications ?? [];
+          return {
+            success: true,
+            data: { created_task_id: createResult.task_id, note_id: params.note_id },
+            ...(resultNotifications.length > 0 ? { notifications: resultNotifications } : {}),
+          };
         }
 
         default:
@@ -4379,6 +4935,50 @@ export class TaskflowEngine {
           .all(this.boardId, cutoffIso) as typeof staleTasks;
       }
 
+      /* --- Upcoming meetings (next 7 days) --- */
+      const sevenDaysFromNow = new Date(Date.now() + 7 * 86400000).toISOString();
+      const upcomingMeetings = this.db
+        .prepare(
+          `SELECT id, title, scheduled_at, participants FROM tasks
+           WHERE ${this.visibleTaskScope()} AND type = 'meeting' AND column != 'done'
+             AND scheduled_at IS NOT NULL AND scheduled_at <= ?
+           ORDER BY scheduled_at`,
+        )
+        .all(...this.visibleTaskParams(), sevenDaysFromNow) as Array<{
+          id: string; title: string; scheduled_at: string; participants: string | null;
+        }>;
+
+      const upcomingMeetingsFormatted = upcomingMeetings.map((m) => ({
+        id: m.id,
+        title: m.title,
+        scheduled_at: m.scheduled_at,
+        participant_count: m.participants ? JSON.parse(m.participants).length + 1 : 1,
+      }));
+
+      /* --- Meetings with open minutes (past scheduled_at, has open notes) --- */
+      const nowStr = new Date().toISOString();
+      const pastMeetings = this.db
+        .prepare(
+          `SELECT id, title, scheduled_at, notes FROM tasks
+           WHERE ${this.visibleTaskScope()} AND type = 'meeting' AND column != 'done'
+             AND scheduled_at IS NOT NULL AND scheduled_at < ?
+           ORDER BY scheduled_at`,
+        )
+        .all(...this.visibleTaskParams(), nowStr) as Array<{
+          id: string; title: string; scheduled_at: string; notes: string;
+        }>;
+
+      const meetingsWithOpenMinutes: Array<{ id: string; title: string; scheduled_at: string; open_count: number }> = [];
+      for (const m of pastMeetings) {
+        try {
+          const notes = JSON.parse(m.notes ?? '[]');
+          const open_count = notes.filter((n: any) => n.status === 'open').length;
+          if (open_count > 0) {
+            meetingsWithOpenMinutes.push({ id: m.id, title: m.title, scheduled_at: m.scheduled_at, open_count });
+          }
+        } catch { /* skip malformed notes */ }
+      }
+
       /* --- Auto-archive old done tasks (standup housekeeping) --- */
       if (params.type === 'standup') {
         try { this.archiveOldDoneTasks(); } catch { /* cleanup failure must not break standup */ }
@@ -4456,6 +5056,8 @@ export class TaskflowEngine {
                 })),
               }
             : {}),
+          upcoming_meetings: upcomingMeetingsFormatted,
+          meetings_with_open_minutes: meetingsWithOpenMinutes,
         },
       };
     } catch (err: any) {
