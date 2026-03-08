@@ -2106,6 +2106,42 @@ describe('taskflow skill package', () => {
     expect(content).toContain('mutually exclusive');
   });
 
+  it('CLAUDE.md.template has meeting commands', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    // Meeting creation commands
+    expect(content).toContain("type: 'meeting'");
+    expect(content).toContain('reunião');
+    expect(content).toContain('scheduled_at');
+
+    // Meeting note commands
+    expect(content).toContain('pauta M');
+    expect(content).toContain('ata M');
+    expect(content).toContain('parent_note_id');
+
+    // Phase auto-tagging rule
+    expect(content).toContain('phase');
+    expect(content).toContain('auto-tagged');
+
+    // Disambiguation rule
+    expect(content).toContain('pauta M1"');
+    expect(content).toContain('query');
+
+    // Triage
+    expect(content).toContain('processar ata');
+    expect(content).toContain('process_minutes');
+
+    // Display
+    expect(content).toContain('📅');
+    expect(content).toContain('participante');
+
+    // Schema reference
+    expect(content).toContain('participants');
+    expect(content).toContain('scheduled_at');
+  });
+
   it('test schema includes bounded recurrence columns', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'add', 'container', 'agent-runner', 'src', 'taskflow-engine.test.ts'),
