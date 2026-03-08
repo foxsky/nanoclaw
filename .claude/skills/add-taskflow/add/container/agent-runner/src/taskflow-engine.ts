@@ -4631,9 +4631,11 @@ export class TaskflowEngine {
             .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
             .run(JSON.stringify(notes), this.taskBoardId(task), task.id);
 
+          const resultNotifications = createResult.notifications ?? [];
           return {
             success: true,
             data: { created_task_id: createResult.task_id, note_id: params.note_id },
+            ...(resultNotifications.length > 0 ? { notifications: resultNotifications } : {}),
           };
         }
 

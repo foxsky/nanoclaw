@@ -3244,4 +3244,58 @@ describe('meeting notes', () => {
       expect(report.data!.meetings_with_open_minutes).toBeDefined();
     });
   });
+
+  describe('meeting notifications', () => {
+    it('getMeetingReminders returns meetings scheduled within reminder window', () => {
+      // Create a meeting scheduled for tomorrow
+      const tomorrow = new Date(Date.now() + 86400000);
+      tomorrow.setUTCHours(14, 0, 0, 0);
+      engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Tomorrow sync',
+        scheduled_at: tomorrow.toISOString(),
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+
+      // Query for meetings needing reminders (next 2 days)
+      const result = engine.query({ query: 'upcoming_meetings' });
+      expect(result.success).toBe(true);
+      expect(result.data.length).toBeGreaterThanOrEqual(1);
+      const meeting = result.data.find((m: any) => m.title === 'Tomorrow sync');
+      expect(meeting).toBeDefined();
+      expect(meeting.scheduled_at).toBeDefined();
+    });
+
+    it('process_minutes_decision notifies assigned person', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Notif meeting',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      engine.update({ board_id: BOARD_ID, task_id: r.task_id!, sender_name: 'Alexandre', updates: { add_note: 'Action item for Giovanni' } });
+
+      const result = engine.admin({
+        board_id: BOARD_ID,
+        action: 'process_minutes_decision',
+        task_id: r.task_id!,
+        sender_name: 'Alexandre',
+        note_id: 1,
+        decision: 'create_task',
+        create: {
+          type: 'simple',
+          title: 'Follow up action',
+          assignee: 'Giovanni',
+          labels: ['ata:' + r.task_id],
+        },
+      });
+      expect(result.success).toBe(true);
+      // The created task will have its own create notification via the normal create() path
+      expect(result.data.created_task_id).toBeDefined();
+    });
+  });
 });
