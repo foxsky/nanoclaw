@@ -82,6 +82,7 @@ export interface MoveResult extends TaskflowResult {
   archive_triggered?: boolean;
   notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
   parent_notification?: { parent_group_jid: string; message: string };
+  unprocessed_minutes_warning?: boolean;
 }
 
 export interface ReassignParams {
@@ -201,6 +202,7 @@ export interface AdminResult extends TaskflowResult {
     group_folder?: string;
     message: string;
   };
+  notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
 }
 
 export interface ReportParams {
@@ -1548,7 +1550,7 @@ export class TaskflowEngine {
     const countRow = this.db
       .prepare(
         `SELECT COUNT(*) as cnt FROM tasks
-         WHERE ${this.visibleTaskScope()} AND assignee = ? AND column = 'in_progress'`,
+         WHERE ${this.visibleTaskScope()} AND assignee = ? AND column = 'in_progress' AND type != 'meeting'`,
       )
       .get(...this.visibleTaskParams(), personId) as { cnt: number };
 
@@ -1809,8 +1811,8 @@ export class TaskflowEngine {
         }
       }
 
-      /* --- WIP limit check (start, resume, reject — NOT force_start) --- */
-      if (['start', 'resume', 'reject'].includes(params.action) && task.assignee) {
+      /* --- WIP limit check (start, resume, reject — NOT force_start, NOT meetings) --- */
+      if (['start', 'resume', 'reject'].includes(params.action) && task.assignee && task.type !== 'meeting') {
         const wip = this.checkWipLimit(task.assignee);
         if (!wip.ok) {
           return {
@@ -2017,6 +2019,14 @@ export class TaskflowEngine {
         }
       }
 
+      /* --- Open meeting minutes warning --- */
+      let unprocessedMinutesWarning: boolean | undefined;
+      if (toColumn === 'done' && task.type === 'meeting') {
+        const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+        const hasOpenNotes = notes.some((n: any) => n.status === 'open');
+        if (hasOpenNotes) unprocessedMinutesWarning = true;
+      }
+
       /* --- Build result --- */
       const result: MoveResult = {
         success: true,
@@ -2028,6 +2038,7 @@ export class TaskflowEngine {
       if (projectUpdate) result.project_update = projectUpdate;
       if (recurringCycle) result.recurring_cycle = recurringCycle;
       if (parentNotification) result.parent_notification = parentNotification;
+      if (unprocessedMinutesWarning) result.unprocessed_minutes_warning = true;
 
       return result;
       })(); // end transaction
@@ -4087,9 +4098,37 @@ export class TaskflowEngine {
           /* Record history (on the archive entry for reference) */
           this.recordHistory(task.id, 'cancelled', params.sender_name);
 
+          /* Notify meeting participants on cancellation */
+          const cancelNotifications: AdminResult['notifications'] = [];
+          if (task.type === 'meeting' && task.participants) {
+            const participants: string[] = JSON.parse(task.participants ?? '[]');
+            for (const pid of participants) {
+              const personRow = this.db.prepare(
+                `SELECT notification_group_jid FROM board_people WHERE board_id = ? AND person_id = ?`
+              ).get(this.boardId, pid) as { notification_group_jid: string | null } | undefined;
+              cancelNotifications.push({
+                target_person_id: pid,
+                notification_group_jid: personRow?.notification_group_jid ?? null,
+                message: `📅 Reunião ${task.id} "${task.title}" foi cancelada.`,
+              });
+            }
+            /* Also notify assignee if not in participants */
+            if (task.assignee && !participants.includes(task.assignee)) {
+              const assigneeRow = this.db.prepare(
+                `SELECT notification_group_jid FROM board_people WHERE board_id = ? AND person_id = ?`
+              ).get(this.boardId, task.assignee) as { notification_group_jid: string | null } | undefined;
+              cancelNotifications.push({
+                target_person_id: task.assignee,
+                notification_group_jid: assigneeRow?.notification_group_jid ?? null,
+                message: `📅 Reunião ${task.id} "${task.title}" foi cancelada.`,
+              });
+            }
+          }
+
           return {
             success: true,
             data: { cancelled: task.id, title: task.title },
+            ...(cancelNotifications.length > 0 ? { notifications: cancelNotifications } : {}),
           };
         }
 

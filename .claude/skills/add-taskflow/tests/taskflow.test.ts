@@ -2852,4 +2852,99 @@ describe('meeting notes', () => {
       expect(editResult.success).toBe(false);
     });
   });
+
+  describe('move meeting', () => {
+    let meetingId: string;
+
+    beforeEach(() => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Move test meeting',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      meetingId = result.task_id!;
+    });
+
+    it('meetings do not count against WIP limits', () => {
+      const t1 = engine.create({ board_id: BOARD_ID, type: 'simple', title: 'Filler 1', assignee: 'Alexandre', sender_name: 'Alexandre' });
+      engine.move({ board_id: BOARD_ID, task_id: t1.task_id!, action: 'start', sender_name: 'Alexandre' });
+      const t2 = engine.create({ board_id: BOARD_ID, type: 'simple', title: 'Filler 2', assignee: 'Alexandre', sender_name: 'Alexandre' });
+      engine.move({ board_id: BOARD_ID, task_id: t2.task_id!, action: 'start', sender_name: 'Alexandre' });
+      // Now at WIP limit (3: T-001 + Filler1 + Filler2), starting a meeting should not be blocked
+      const result = engine.move({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        action: 'start',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('done on meeting with open notes returns unprocessed_minutes_warning', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Open agenda item' },
+      });
+      const result = engine.move({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        action: 'conclude',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      expect((result as any).unprocessed_minutes_warning).toBe(true);
+    });
+
+    it('done on meeting with all checked notes does NOT return warning', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Checked item' },
+      });
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { set_note_status: { id: 1, status: 'checked' } },
+      });
+      const result = engine.move({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        action: 'conclude',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      expect((result as any).unprocessed_minutes_warning).toBeUndefined();
+    });
+
+    it('cancel meeting notifies participants', () => {
+      const result = engine.admin({
+        board_id: BOARD_ID,
+        action: 'cancel_task',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      expect(result.notifications).toBeDefined();
+      expect(result.notifications!.some((n: any) => n.target_person_id === 'person-2')).toBe(true);
+    });
+
+    it('meeting moves through full lifecycle', () => {
+      let r = engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
+      expect(r.success).toBe(true);
+      expect(r.to_column).toBe('in_progress');
+      r = engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'review', sender_name: 'Alexandre' });
+      expect(r.success).toBe(true);
+      expect(r.to_column).toBe('review');
+      r = engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'conclude', sender_name: 'Alexandre' });
+      expect(r.success).toBe(true);
+      expect(r.to_column).toBe('done');
+    });
+  });
 });
