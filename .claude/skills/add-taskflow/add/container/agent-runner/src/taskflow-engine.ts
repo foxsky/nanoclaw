@@ -1681,13 +1681,8 @@ export class TaskflowEngine {
       return { cycle_number: nextCycle, expired: true, reason: expiryReason };
     }
 
-    // Archive meeting occurrence before cycle reset
+    // Archive meeting occurrence before cycle reset (selective fields only)
     if (task.type === 'meeting') {
-      const meetingSnapshot = {
-        ...task,
-        current_cycle: currentCycle,
-        occurrence_scheduled_at: task.scheduled_at,
-      };
       this.recordHistory(
         task.id,
         'meeting_occurrence_archived',
@@ -1695,7 +1690,15 @@ export class TaskflowEngine {
         JSON.stringify({
           cycle_number: currentCycle,
           occurrence_scheduled_at: task.scheduled_at,
-          snapshot: meetingSnapshot,
+          snapshot: {
+            id: task.id,
+            title: task.title,
+            scheduled_at: task.scheduled_at,
+            participants: task.participants,
+            notes: task.notes,
+            assignee: task.assignee,
+            current_cycle: currentCycle,
+          },
         }),
         this.taskBoardId(task),
       );
@@ -3158,7 +3161,7 @@ export class TaskflowEngine {
         try {
           const p = JSON.parse(t.participants);
           if (Array.isArray(p) && p.length > 0) {
-            parts.push(`${p.length + 1} participante${p.length > 0 ? 's' : ''}`);
+            parts.push(`${p.length + 1} participantes`);
           }
         } catch {}
       }
@@ -4358,30 +4361,26 @@ export class TaskflowEngine {
           /* Record history (on the archive entry for reference) */
           this.recordHistory(task.id, 'cancelled', params.sender_name);
 
-          /* Notify meeting participants on cancellation */
+          /* Notify meeting participants on cancellation (single batch query) */
           const cancelNotifications: AdminResult['notifications'] = [];
           if (task.type === 'meeting' && task.participants) {
             const participants: string[] = JSON.parse(task.participants ?? '[]');
-            for (const pid of participants) {
-              const personRow = this.db.prepare(
-                `SELECT notification_group_jid FROM board_people WHERE board_id = ? AND person_id = ?`
-              ).get(this.boardId, pid) as { notification_group_jid: string | null } | undefined;
-              cancelNotifications.push({
-                target_person_id: pid,
-                notification_group_jid: personRow?.notification_group_jid ?? null,
-                message: `📅 Reunião ${task.id} "${task.title}" foi cancelada.`,
-              });
-            }
-            /* Also notify assignee if not in participants */
-            if (task.assignee && !participants.includes(task.assignee)) {
-              const assigneeRow = this.db.prepare(
-                `SELECT notification_group_jid FROM board_people WHERE board_id = ? AND person_id = ?`
-              ).get(this.boardId, task.assignee) as { notification_group_jid: string | null } | undefined;
-              cancelNotifications.push({
-                target_person_id: task.assignee,
-                notification_group_jid: assigneeRow?.notification_group_jid ?? null,
-                message: `📅 Reunião ${task.id} "${task.title}" foi cancelada.`,
-              });
+            const allRecipients = task.assignee && !participants.includes(task.assignee)
+              ? [...participants, task.assignee]
+              : [...participants];
+            if (allRecipients.length > 0) {
+              const placeholders = allRecipients.map(() => '?').join(',');
+              const rows = this.db.prepare(
+                `SELECT person_id, notification_group_jid FROM board_people WHERE board_id = ? AND person_id IN (${placeholders})`
+              ).all(this.boardId, ...allRecipients) as Array<{ person_id: string; notification_group_jid: string | null }>;
+              const jidMap = new Map(rows.map(r => [r.person_id, r.notification_group_jid]));
+              for (const pid of allRecipients) {
+                cancelNotifications.push({
+                  target_person_id: pid,
+                  notification_group_jid: jidMap.get(pid) ?? null,
+                  message: `📅 Reunião ${task.id} "${task.title}" foi cancelada.`,
+                });
+              }
             }
           }
 
@@ -4609,6 +4608,7 @@ export class TaskflowEngine {
 
           const now = new Date().toISOString();
 
+          // Safe: better-sqlite3 nests this inside admin()'s transaction via savepoint
           const createResult = this.create({
             board_id: this.boardId,
             type: params.create!.type as any,
@@ -4968,22 +4968,16 @@ export class TaskflowEngine {
           id: string; title: string; scheduled_at: string; notes: string;
         }>;
 
-      const meetingsWithOpenMinutes = pastMeetings
-        .filter((m) => {
-          try {
-            const notes = JSON.parse(m.notes ?? '[]');
-            return notes.some((n: any) => n.status === 'open');
-          } catch { return false; }
-        })
-        .map((m) => {
+      const meetingsWithOpenMinutes: Array<{ id: string; title: string; scheduled_at: string; open_count: number }> = [];
+      for (const m of pastMeetings) {
+        try {
           const notes = JSON.parse(m.notes ?? '[]');
-          return {
-            id: m.id,
-            title: m.title,
-            scheduled_at: m.scheduled_at,
-            open_count: notes.filter((n: any) => n.status === 'open').length,
-          };
-        });
+          const open_count = notes.filter((n: any) => n.status === 'open').length;
+          if (open_count > 0) {
+            meetingsWithOpenMinutes.push({ id: m.id, title: m.title, scheduled_at: m.scheduled_at, open_count });
+          }
+        } catch { /* skip malformed notes */ }
+      }
 
       /* --- Auto-archive old done tasks (standup housekeeping) --- */
       if (params.type === 'standup') {
