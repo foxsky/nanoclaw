@@ -2466,4 +2466,147 @@ describe('meeting notes', () => {
     expect(colNames).toContain('participants');
     expect(colNames).toContain('scheduled_at');
   });
+
+  describe('create meeting', () => {
+    it('creates a meeting with M prefix and next_action column', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Alinhamento semanal',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      expect(result.task_id).toMatch(/^M\d+$/);
+      expect(result.column).toBe('next_action');
+    });
+
+    it('auto-sets organizer (assignee) to sender', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Kickoff',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT assignee FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, result.task_id) as { assignee: string };
+      expect(task.assignee).toBe('person-1');
+    });
+
+    it('stores participants as JSON array', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Sprint review',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT participants FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, result.task_id) as { participants: string };
+      const parts = JSON.parse(task.participants);
+      expect(parts).toContain('person-2');
+    });
+
+    it('stores scheduled_at in UTC', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Planning',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, result.task_id) as { scheduled_at: string };
+      expect(task.scheduled_at).toBe('2026-03-15T17:00:00Z');
+    });
+
+    it('creates meeting without scheduled_at (unscheduled draft)', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'TBD meeting',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, result.task_id) as { scheduled_at: string | null };
+      expect(task.scheduled_at).toBeNull();
+    });
+
+    it('defaults recurrence_anchor to scheduled_at for recurring meetings', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Weekly sync',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        recurrence: 'weekly',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT recurrence, scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, result.task_id) as { recurrence: string; scheduled_at: string };
+      expect(task.recurrence).toBe('weekly');
+      expect(task.scheduled_at).toBe('2026-03-15T17:00:00Z');
+    });
+
+    it('rejects recurring meeting without scheduled_at', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Broken recurring meeting',
+        recurrence: 'weekly',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('scheduled_at');
+    });
+
+    it('resolves participant names to person_ids', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Cross-team',
+        participants: ['Giovanni', 'Alexandre'],
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      const task = db
+        .prepare(`SELECT participants FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, result.task_id) as { participants: string };
+      const parts = JSON.parse(task.participants);
+      expect(parts).toContain('person-1');
+      expect(parts).toContain('person-2');
+    });
+
+    it('returns error for unresolved participant', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Bad meeting',
+        participants: ['Unknown Person'],
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('notifies all participants on creation', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Notif test',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      expect(result.notifications).toBeDefined();
+      expect(result.notifications!.length).toBeGreaterThan(0);
+    });
+  });
 });

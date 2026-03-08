@@ -32,7 +32,7 @@ export interface TaskflowResult {
 
 export interface CreateParams {
   board_id: string;
-  type: 'simple' | 'project' | 'recurring' | 'inbox';
+  type: 'simple' | 'project' | 'recurring' | 'inbox' | 'meeting';
   title: string;
   assignee?: string;
   due_date?: string;
@@ -43,6 +43,8 @@ export interface CreateParams {
   recurrence_anchor?: string;
   max_cycles?: number;
   recurrence_end_date?: string;
+  participants?: string[];
+  scheduled_at?: string;
   sender_name: string;
   allow_non_business_day?: boolean;
 }
@@ -1284,12 +1286,22 @@ export class TaskflowEngine {
           ? 'P'
           : params.type === 'recurring'
             ? 'R'
-            : 'T';
+            : params.type === 'meeting'
+              ? 'M'
+              : 'T';
       const num = this.getNextNumberForPrefix(prefix);
       const taskId = `${prefix}${num}`;
 
+      /* --- Auto-set organizer for meetings --- */
+      if (params.type === 'meeting' && !assigneePersonId) {
+        const senderPerson = this.resolvePerson(params.sender_name);
+        if (senderPerson) assigneePersonId = senderPerson.person_id;
+      }
+
       /* --- Column placement --- */
-      const column = params.type === 'inbox' || !assigneePersonId ? 'inbox' : 'next_action';
+      const column = params.type === 'inbox' || (!assigneePersonId && params.type !== 'meeting')
+        ? 'inbox'
+        : 'next_action';
 
       /* --- Type mapping (inbox → simple for storage) --- */
       const storedType = params.type === 'inbox' ? 'simple' : params.type;
@@ -1309,12 +1321,33 @@ export class TaskflowEngine {
         }
       }
 
+      /* --- Participant resolution (meetings only) --- */
+      let participantIds: string[] | null = null;
+      if (params.type === 'meeting' && params.participants) {
+        participantIds = [];
+        for (const pName of params.participants) {
+          const person = this.resolvePerson(pName);
+          if (!person) return this.buildOfferRegisterError(pName);
+          participantIds.push(person.person_id);
+        }
+      }
+
+      /* --- Recurring meeting validation --- */
+      if (params.type === 'meeting' && params.recurrence && !params.scheduled_at) {
+        return { success: false, error: 'Recurring meetings require scheduled_at for the first occurrence.' };
+      }
+
+      /* --- Default recurrence_anchor for meetings --- */
+      if (params.type === 'meeting' && params.recurrence && params.scheduled_at && !params.recurrence_anchor) {
+        params = { ...params, recurrence_anchor: params.scheduled_at };
+      }
+
       /* --- Recurrence --- */
       let recurrence: string | null = null;
       let dueDate: string | null = params.due_date ?? null;
-      if ((params.type === 'recurring' || params.type === 'project') && params.recurrence) {
+      if ((params.type === 'recurring' || params.type === 'project' || params.type === 'meeting') && params.recurrence) {
         recurrence = params.recurrence;
-        if (!dueDate) {
+        if (params.type !== 'meeting' && !dueDate) {
           dueDate = advanceDateByRecurrence(new Date(), params.recurrence);
         }
       }
@@ -1366,8 +1399,9 @@ export class TaskflowEngine {
             priority, due_date, labels, recurrence,
             max_cycles, recurrence_end_date,
             child_exec_enabled, child_exec_board_id, child_exec_person_id,
+            participants, scheduled_at,
             _last_mutation, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           taskId,
@@ -1385,6 +1419,8 @@ export class TaskflowEngine {
           childExecEnabled,
           childExecBoardId,
           childExecPersonId,
+          participantIds ? JSON.stringify(participantIds) : null,
+          params.scheduled_at ?? null,
           lastMutation,
           now,
           now,
@@ -1417,6 +1453,8 @@ export class TaskflowEngine {
       if (params.labels?.length) detailsSummary.labels = params.labels;
       if (subtaskDefs.length > 0) detailsSummary.subtasks_count = subtaskDefs.length;
       if (recurrence) detailsSummary.recurrence = recurrence;
+      if (participantIds) detailsSummary.participants = participantIds;
+      if (params.scheduled_at) detailsSummary.scheduled_at = params.scheduled_at;
 
       this.recordHistory(taskId, 'created', params.sender_name, JSON.stringify(detailsSummary));
 
@@ -1443,6 +1481,19 @@ export class TaskflowEngine {
             { id: sub.id, title: sub.title },
             { id: taskId, title: params.title },
             sub.assignee, senderPersonId,
+          );
+          if (notif) notifications.push(notif);
+        }
+      }
+
+      /* Notify participants (meetings) */
+      if (participantIds && participantIds.length > 0) {
+        for (const pid of participantIds) {
+          if (pid === senderPersonId) continue;
+          if (pid === assigneePersonId) continue;
+          const notif = this.buildCreateNotification(
+            { id: taskId, title: params.title, assignee: pid, due_date: dueDate, priority: params.priority, column },
+            senderPersonId,
           );
           if (notif) notifications.push(notif);
         }
