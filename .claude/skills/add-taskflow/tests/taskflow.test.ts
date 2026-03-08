@@ -3152,6 +3152,25 @@ describe('meeting notes', () => {
     });
   });
 
+  describe('board view meetings', () => {
+    it('shows meeting emoji, scheduled_at time, and participant count', () => {
+      engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Alinhamento semanal',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      const result = engine.query({ query: 'board' });
+      expect(result.success).toBe(true);
+      const board = result.data.formatted_board as string;
+      expect(board).toContain('📅');
+      expect(board).toContain('Alinhamento semanal');
+      expect(board).toContain('participante');
+    });
+  });
+
   describe('recurring meeting advance', () => {
     it('archives meeting notes with metadata before cycle reset', () => {
       const r = engine.create({

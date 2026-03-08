@@ -3128,6 +3128,7 @@ export class TaskflowEngine {
     };
 
     const pfx = (t: any): string => {
+      if (t.type === 'meeting') return '\ud83d\udcc5 ';
       if (t.due_date && daysDiff(t.due_date) <= 2) return '\u26a0\ufe0f ';
       if (t.child_exec_enabled === 1) return '\ud83d\udd17 ';
       if (t.type === 'project') return '\ud83d\udcc1 ';
@@ -3143,6 +3144,24 @@ export class TaskflowEngine {
     };
 
     const notesSfx = (t: any) => (hasNotes(t) ? ' \ud83d\udcac' : '');
+
+    const meetingSfx = (t: any): string => {
+      if (t.type !== 'meeting') return '';
+      const parts: string[] = [];
+      if (t.scheduled_at) {
+        const d = t.scheduled_at;
+        parts.push(`${d.slice(8,10)}/${d.slice(5,7)} ${d.slice(11,16)}`);
+      }
+      if (t.participants) {
+        try {
+          const p = JSON.parse(t.participants);
+          if (Array.isArray(p) && p.length > 0) {
+            parts.push(`${p.length + 1} participante${p.length > 0 ? 's' : ''}`);
+          }
+        } catch {}
+      }
+      return parts.length > 0 ? ` (${parts.join(' \u2014 ')})` : '';
+    };
 
     /* --- Build output --- */
     const urgent: string[] = [];
@@ -3235,7 +3254,7 @@ export class TaskflowEngine {
 
         for (const t of sorted) {
           const tid = dId(t);
-          let line = `${pfx(t)}${tid}: ${t.title}${dueSfx(t)}${notesSfx(t)}`;
+          let line = `${pfx(t)}${tid}: ${t.title}${meetingSfx(t)}${dueSfx(t)}${notesSfx(t)}`;
           if (col === 'waiting' && t.waiting_for)
             line += ` \u2192 _${t.waiting_for}_`;
           lines.push(line);
