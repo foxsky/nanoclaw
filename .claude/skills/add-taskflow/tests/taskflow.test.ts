@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { TaskflowEngine } from '../add/container/agent-runner/src/taskflow-engine.js';
 
 const BOARD_ID = 'board-test-001';
+const skillDir = path.resolve(__dirname, '..');
 
 const SCHEMA = `
 CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, board_role TEXT DEFAULT 'standard', hierarchy_level INTEGER, max_depth INTEGER, parent_board_id TEXT, short_code TEXT);
@@ -12,7 +13,7 @@ CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT
 CREATE TABLE board_admins (board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL, admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
 CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
 CREATE TABLE board_groups (board_id TEXT, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, group_role TEXT DEFAULT 'team', PRIMARY KEY (board_id, group_jid));
-CREATE TABLE tasks (id TEXT NOT NULL, board_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'simple', title TEXT NOT NULL, assignee TEXT, next_action TEXT, waiting_for TEXT, column TEXT DEFAULT 'inbox', priority TEXT, due_date TEXT, description TEXT, labels TEXT DEFAULT '[]', blocked_by TEXT DEFAULT '[]', reminders TEXT DEFAULT '[]', next_note_id INTEGER DEFAULT 1, notes TEXT DEFAULT '[]', _last_mutation TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, child_exec_enabled INTEGER DEFAULT 0, child_exec_board_id TEXT, child_exec_person_id TEXT, child_exec_rollup_status TEXT, child_exec_last_rollup_at TEXT, child_exec_last_rollup_summary TEXT, linked_parent_board_id TEXT, linked_parent_task_id TEXT, parent_task_id TEXT, subtasks TEXT, recurrence TEXT, current_cycle TEXT, max_cycles INTEGER, recurrence_end_date TEXT, participants TEXT, scheduled_at TEXT, PRIMARY KEY (board_id, id));
+CREATE TABLE tasks (id TEXT NOT NULL, board_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'simple', title TEXT NOT NULL, assignee TEXT, next_action TEXT, waiting_for TEXT, column TEXT DEFAULT 'inbox', priority TEXT, due_date TEXT, description TEXT, labels TEXT DEFAULT '[]', blocked_by TEXT DEFAULT '[]', reminders TEXT DEFAULT '[]', next_note_id INTEGER DEFAULT 1, notes TEXT DEFAULT '[]', _last_mutation TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, child_exec_enabled INTEGER DEFAULT 0, child_exec_board_id TEXT, child_exec_person_id TEXT, child_exec_rollup_status TEXT, child_exec_last_rollup_at TEXT, child_exec_last_rollup_summary TEXT, linked_parent_board_id TEXT, linked_parent_task_id TEXT, parent_task_id TEXT, subtasks TEXT, recurrence TEXT, recurrence_anchor TEXT, current_cycle TEXT, max_cycles INTEGER, recurrence_end_date TEXT, participants TEXT, scheduled_at TEXT, PRIMARY KEY (board_id, id));
 CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, task_id TEXT NOT NULL, action TEXT NOT NULL, by TEXT, at TEXT NOT NULL, details TEXT);
 CREATE TABLE archive (board_id TEXT NOT NULL, task_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, assignee TEXT, archive_reason TEXT NOT NULL, linked_parent_board_id TEXT, linked_parent_task_id TEXT, archived_at TEXT NOT NULL, task_snapshot TEXT NOT NULL, history TEXT, PRIMARY KEY (board_id, task_id));
 CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, language TEXT NOT NULL DEFAULT 'pt-BR', timezone TEXT NOT NULL DEFAULT 'America/Fortaleza', runner_standup_task_id TEXT, runner_digest_task_id TEXT, runner_review_task_id TEXT, runner_dst_guard_task_id TEXT, standup_cron_local TEXT, digest_cron_local TEXT, review_cron_local TEXT, standup_cron_utc TEXT, digest_cron_utc TEXT, review_cron_utc TEXT, dst_sync_enabled INTEGER DEFAULT 0, dst_last_offset_minutes INTEGER, dst_last_synced_at TEXT, dst_resync_count_24h INTEGER DEFAULT 0, dst_resync_window_started_at TEXT, attachment_enabled INTEGER DEFAULT 1, attachment_disabled_reason TEXT DEFAULT '', attachment_allowed_formats TEXT DEFAULT '["pdf","jpg","png"]', attachment_max_size_bytes INTEGER DEFAULT 10485760, welcome_sent INTEGER DEFAULT 0, standup_target TEXT DEFAULT 'team', digest_target TEXT DEFAULT 'team', review_target TEXT DEFAULT 'team', runner_standup_secondary_task_id TEXT, runner_digest_secondary_task_id TEXT, runner_review_secondary_task_id TEXT);
@@ -56,8 +57,6 @@ function seedTestDb(db: Database.Database, boardId: string) {
 }
 
 describe('taskflow skill package', () => {
-  const skillDir = path.resolve(__dirname, '..');
-
   it('has a valid manifest', () => {
     const manifestPath = path.join(skillDir, 'manifest.yaml');
     expect(fs.existsSync(manifestPath)).toBe(true);
@@ -2533,8 +2532,19 @@ describe('meeting notes', () => {
       .prepare(`PRAGMA table_info(tasks)`)
       .all() as Array<{ name: string }>;
     const colNames = cols.map((c) => c.name);
+    expect(colNames).toContain('recurrence_anchor');
     expect(colNames).toContain('participants');
     expect(colNames).toContain('scheduled_at');
+  });
+
+  it('bundled taskflow-db snapshot includes meeting schema columns', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'add', 'src', 'taskflow-db.ts'),
+      'utf-8',
+    );
+    expect(content).toContain('recurrence_anchor TEXT');
+    expect(content).toContain('participants TEXT');
+    expect(content).toContain('scheduled_at TEXT');
   });
 
   describe('create meeting', () => {
@@ -2620,9 +2630,10 @@ describe('meeting notes', () => {
       });
       expect(result.success).toBe(true);
       const task = db
-        .prepare(`SELECT recurrence, scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
-        .get(BOARD_ID, result.task_id) as { recurrence: string; scheduled_at: string };
+        .prepare(`SELECT recurrence, recurrence_anchor, scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, result.task_id) as { recurrence: string; recurrence_anchor: string; scheduled_at: string };
       expect(task.recurrence).toBe('weekly');
+      expect(task.recurrence_anchor).toBe('2026-03-15T17:00:00Z');
       expect(task.scheduled_at).toBe('2026-03-15T17:00:00Z');
     });
 
@@ -2920,6 +2931,23 @@ describe('meeting notes', () => {
         updates: { edit_note: { id: 1, text: 'Tampered note' } },
       });
       expect(editResult.success).toBe(false);
+    });
+
+    it('participant cannot remove another participant note', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Manager note' },
+      });
+      const removeResult = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Giovanni',
+        updates: { remove_note: 1 },
+      });
+      expect(removeResult.success).toBe(false);
+      expect(removeResult.error).toContain('Permission denied');
     });
   });
 
@@ -3220,6 +3248,16 @@ describe('meeting notes', () => {
       });
       expect(result.success).toBe(false);
     });
+
+    it('bundled engine uses createTaskInternal for process_minutes_decision', () => {
+      const content = fs.readFileSync(
+        path.join(skillDir, 'add', 'container', 'agent-runner', 'src', 'taskflow-engine.ts'),
+        'utf-8',
+      );
+      expect(content).toContain('private createTaskInternal(params: CreateParams): CreateResult');
+      expect(content).toContain('const createResult = this.createTaskInternal({');
+      expect(content).not.toContain('const createResult = this.create({');
+    });
   });
 
   describe('board view meetings', () => {
@@ -3264,10 +3302,12 @@ describe('meeting notes', () => {
       expect(doneResult.success).toBe(true);
       expect(doneResult.recurring_cycle).toBeDefined();
       expect(doneResult.recurring_cycle!.expired).toBe(false);
+      expect(doneResult.recurring_cycle!.new_scheduled_at).toBeDefined();
 
       // Verify notes were reset
-      const task = db.prepare(`SELECT notes, scheduled_at, participants FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+      const task = db.prepare(`SELECT notes, due_date, scheduled_at, recurrence_anchor, participants FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
       expect(JSON.parse(task.notes)).toEqual([]);
+      expect(task.due_date).toBeNull();
 
       // Verify participants preserved
       const parts = JSON.parse(task.participants);
@@ -3275,6 +3315,7 @@ describe('meeting notes', () => {
 
       // Verify scheduled_at advanced
       expect(task.scheduled_at).not.toBe('2026-03-10T14:00:00Z');
+      expect(task.recurrence_anchor).toBe('2026-03-10T14:00:00Z');
 
       // Verify archived occurrence preserves notes and metadata
       const occurrences = db.prepare(
@@ -3284,6 +3325,7 @@ describe('meeting notes', () => {
       const details = JSON.parse((occurrences[0] as any).details);
       expect(details.snapshot.notes).toBeDefined();
       expect(details.snapshot.scheduled_at).toBe('2026-03-10T14:00:00Z');
+      expect(details.snapshot.recurrence_anchor).toBe('2026-03-10T14:00:00Z');
     });
   });
 
@@ -3316,26 +3358,58 @@ describe('meeting notes', () => {
   });
 
   describe('meeting notifications', () => {
-    it('getMeetingReminders returns meetings scheduled within reminder window', () => {
-      // Create a meeting scheduled for tomorrow
-      const tomorrow = new Date(Date.now() + 86400000);
-      tomorrow.setUTCHours(14, 0, 0, 0);
-      engine.create({
+    it('meeting reminders are keyed to scheduled_at', () => {
+      const meetingTime = new Date(Date.now() + 86400000);
+      meetingTime.setUTCHours(14, 0, 0, 0);
+      const createResult = engine.create({
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'Tomorrow sync',
-        scheduled_at: tomorrow.toISOString(),
+        scheduled_at: meetingTime.toISOString(),
         participants: ['Giovanni'],
         sender_name: 'Alexandre',
       });
+      expect(createResult.success).toBe(true);
 
-      // Query for meetings needing reminders (next 2 days)
-      const result = engine.query({ query: 'upcoming_meetings' });
-      expect(result.success).toBe(true);
-      expect(result.data.length).toBeGreaterThanOrEqual(1);
-      const meeting = result.data.find((m: any) => m.title === 'Tomorrow sync');
-      expect(meeting).toBeDefined();
-      expect(meeting.scheduled_at).toBeDefined();
+      const reminderResult = engine.dependency({
+        board_id: BOARD_ID,
+        action: 'add_reminder',
+        task_id: createResult.task_id!,
+        reminder_days: 1,
+        sender_name: 'Alexandre',
+      });
+      expect(reminderResult.success).toBe(true);
+
+      const nowIso = new Date(meetingTime.getTime() - 86400000).toISOString();
+      const notifications = engine.getMeetingReminderNotifications(nowIso);
+      expect(
+        notifications.some(
+          (n) => n.task_id === createResult.task_id && n.target_person_id === 'person-2' && n.reminder_days === 1,
+        ),
+      ).toBe(true);
+    });
+
+    it('meeting starting notifications are keyed to scheduled_at', () => {
+      const startTime = new Date(Date.now() + 2 * 60_000).toISOString();
+      const createResult = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Starts soon',
+        scheduled_at: startTime,
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      expect(createResult.success).toBe(true);
+
+      const notifications = engine.getMeetingStartingNotifications(
+        new Date(new Date(startTime).getTime() - 60_000).toISOString(),
+        5,
+      );
+      expect(
+        notifications.some(
+          (n) => n.task_id === createResult.task_id && n.target_person_id === 'person-2',
+        ),
+      ).toBe(true);
     });
 
     it('process_minutes_decision notifies assigned person', () => {

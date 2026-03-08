@@ -218,6 +218,7 @@ Do NOT call `taskflow_admin` with `confirmed: false` for `remove_person` or `can
 | "reunião: X" | `taskflow_create({ type: 'meeting', title: 'X', sender_name: SENDER })` |
 | "reunião com Y, Z: X em DD/MM às HH:MM" | `taskflow_create({ type: 'meeting', title: 'X', scheduled_at: 'YYYY-MM-DDTHH:MM:SSZ', participants: ['Y', 'Z'], sender_name: SENDER })` |
 | "reunião semanal: X começando DD/MM às HH:MM" | `taskflow_create({ type: 'meeting', title: 'X', scheduled_at: 'YYYY-MM-DDTHH:MM:SSZ', recurrence: 'weekly', sender_name: SENDER })` |
+| "reunião semanal com Y, Z: X começando DD/MM às HH:MM" | `taskflow_create({ type: 'meeting', title: 'X', scheduled_at: 'YYYY-MM-DDTHH:MM:SSZ', recurrence: 'weekly', participants: ['Y', 'Z'], sender_name: SENDER })` |
 
 Parse `scheduled_at` in the board timezone ({{TIMEZONE}}) from the user's date/time expression, then store in UTC.
 Organizer (assignee) is auto-set to sender. Meetings always start in `next_action`.
@@ -594,7 +595,7 @@ All timestamps: ISO-8601 UTC.
 All JSON fields: parse before use, stringify before write.
 Board ID for this board: `{{BOARD_ID}}`
 
-**Meeting notes structure:** For meetings (`type = 'meeting'`), each note in the `notes` JSON array includes additional fields: `phase` (auto-tagged from column state: `pre`, `meeting`, or `post`), `status` (`open`, `checked`, or `dismissed`), and optional `parent_note_id` (integer, links sub-items to a parent note). The `participants` field is a JSON array of person names attending the meeting. The `scheduled_at` field stores the meeting date/time in ISO-8601 UTC.
+**Meeting notes structure:** For meetings (`type = 'meeting'`), each note in the `notes` JSON array includes additional fields: `phase` (auto-tagged from column state: `pre`, `meeting`, or `post`), `status` (`open`, `checked`, `dismissed`, `task_created`, or `inbox_created`), and optional `parent_note_id` (integer, links sub-items to a parent note). The `participants` field is a JSON array of person names attending the meeting. The `scheduled_at` field stores the meeting date/time in ISO-8601 UTC.
 
 ## Hierarchy Features
 

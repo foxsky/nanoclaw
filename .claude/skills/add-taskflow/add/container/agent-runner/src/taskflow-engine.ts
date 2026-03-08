@@ -79,7 +79,7 @@ export interface MoveResult extends TaskflowResult {
   to_column?: string;
   wip_warning?: { person: string; current: number; limit: number };
   project_update?: { completed_subtask: string; next_subtask?: string; all_complete: boolean };
-  recurring_cycle?: { cycle_number: number; expired: boolean; new_due_date?: string; reason?: 'max_cycles' | 'end_date' };
+  recurring_cycle?: { cycle_number: number; expired: boolean; new_due_date?: string; new_scheduled_at?: string; reason?: 'max_cycles' | 'end_date' };
   archive_triggered?: boolean;
   notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
   parent_notification?: { parent_group_jid: string; message: string };
@@ -333,6 +333,13 @@ function reminderDateFromDue(dueDate: string, daysBefore: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** Compute a reminder date by subtracting days from a scheduled datetime. */
+function reminderDateFromScheduledAt(scheduledAt: string, daysBefore: number): string {
+  const d = new Date(scheduledAt);
+  d.setUTCDate(d.getUTCDate() - daysBefore);
+  return d.toISOString().slice(0, 10);
+}
+
 /** Advance a date by a recurrence interval and return the ISO date string. */
 function advanceDateByRecurrence(d: Date, recurrence: 'daily' | 'weekly' | 'monthly' | 'yearly'): string {
   switch (recurrence) {
@@ -350,6 +357,29 @@ function advanceDateByRecurrence(d: Date, recurrence: 'daily' | 'weekly' | 'mont
       break;
   }
   return d.toISOString().slice(0, 10);
+}
+
+/** Advance a full ISO datetime by a recurrence interval, preserving the time component. */
+function advanceDateTimeByRecurrence(
+  isoDateTime: string,
+  recurrence: 'daily' | 'weekly' | 'monthly' | 'yearly',
+): string {
+  const d = new Date(isoDateTime);
+  switch (recurrence) {
+    case 'daily':
+      d.setUTCDate(d.getUTCDate() + 1);
+      break;
+    case 'weekly':
+      d.setUTCDate(d.getUTCDate() + 7);
+      break;
+    case 'monthly':
+      d.setUTCMonth(d.getUTCMonth() + 1);
+      break;
+    case 'yearly':
+      d.setUTCFullYear(d.getUTCFullYear() + 1);
+      break;
+  }
+  return d.toISOString();
 }
 
 /* ------------------------------------------------------------------ */
@@ -500,6 +530,7 @@ export class TaskflowEngine {
     try { this.db.exec(`ALTER TABLE tasks ADD COLUMN parent_task_id TEXT`); } catch {}
     try { this.db.exec(`ALTER TABLE tasks ADD COLUMN max_cycles INTEGER`); } catch {}
     try { this.db.exec(`ALTER TABLE tasks ADD COLUMN recurrence_end_date TEXT`); } catch {}
+    try { this.db.exec(`ALTER TABLE tasks ADD COLUMN recurrence_anchor TEXT`); } catch {}
     try { this.db.exec(`ALTER TABLE tasks ADD COLUMN participants TEXT`); } catch {}
     try { this.db.exec(`ALTER TABLE tasks ADD COLUMN scheduled_at TEXT`); } catch {}
     this.db.exec(
@@ -904,9 +935,9 @@ export class TaskflowEngine {
           child_exec_rollup_status, child_exec_last_rollup_at,
           child_exec_last_rollup_summary,
           linked_parent_board_id, linked_parent_task_id, parent_task_id,
-          subtasks, recurrence, current_cycle,
-          max_cycles, recurrence_end_date
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          subtasks, recurrence, recurrence_anchor, current_cycle,
+          max_cycles, recurrence_end_date, participants, scheduled_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         snapshot.id,
@@ -939,9 +970,12 @@ export class TaskflowEngine {
         snapshot.parent_task_id ?? null,
         snapshot.subtasks ?? null,
         snapshot.recurrence ?? null,
+        snapshot.recurrence_anchor ?? null,
         snapshot.current_cycle ?? null,
         snapshot.max_cycles ?? null,
         snapshot.recurrence_end_date ?? null,
+        snapshot.participants ?? null,
+        snapshot.scheduled_at ?? null,
       );
   }
 
@@ -1163,6 +1197,128 @@ export class TaskflowEngine {
     };
   }
 
+  private meetingNotificationRecipients(task: any): Array<{ target_person_id: string; notification_group_jid: string | null }> {
+    const participantIds: string[] = (() => {
+      try {
+        return JSON.parse(task.participants ?? '[]');
+      } catch {
+        return [];
+      }
+    })();
+    const allRecipients = task.assignee && !participantIds.includes(task.assignee)
+      ? [...participantIds, task.assignee]
+      : [...participantIds];
+    if (allRecipients.length === 0) return [];
+    const placeholders = allRecipients.map(() => '?').join(',');
+    const rows = this.db.prepare(
+      `SELECT person_id, notification_group_jid FROM board_people WHERE board_id = ? AND person_id IN (${placeholders})`,
+    ).all(this.boardId, ...allRecipients) as Array<{ person_id: string; notification_group_jid: string | null }>;
+    const jidMap = new Map(rows.map((r) => [r.person_id, r.notification_group_jid ?? null]));
+    return allRecipients.map((personId) => ({
+      target_person_id: personId,
+      notification_group_jid: jidMap.get(personId) ?? null,
+    }));
+  }
+
+  /** Scheduled meeting reminders keyed to scheduled_at. */
+  getMeetingReminderNotifications(nowIso = new Date().toISOString()): Array<{
+    task_id: string;
+    reminder_days: number;
+    target_person_id: string;
+    notification_group_jid: string | null;
+    message: string;
+  }> {
+    const todayStr = nowIso.slice(0, 10);
+    const meetings = this.db
+      .prepare(
+        `SELECT id, title, scheduled_at, participants, assignee, reminders FROM tasks
+         WHERE ${this.visibleTaskScope()} AND type = 'meeting' AND column != 'done'
+           AND scheduled_at IS NOT NULL AND reminders != '[]'`,
+      )
+      .all(...this.visibleTaskParams()) as Array<{
+      id: string;
+      title: string;
+      scheduled_at: string;
+      participants: string | null;
+      assignee: string | null;
+      reminders: string | null;
+    }>;
+    const notifications: Array<{
+      task_id: string;
+      reminder_days: number;
+      target_person_id: string;
+      notification_group_jid: string | null;
+      message: string;
+    }> = [];
+    for (const meeting of meetings) {
+      let reminders: Array<{ days: number; date: string }> = [];
+      try {
+        reminders = JSON.parse(meeting.reminders ?? '[]');
+      } catch {
+        continue;
+      }
+      for (const reminder of reminders) {
+        if (reminder.date !== todayStr) continue;
+        for (const recipient of this.meetingNotificationRecipients(meeting)) {
+          notifications.push({
+            task_id: meeting.id,
+            reminder_days: reminder.days,
+            ...recipient,
+            message: `📅 *Lembrete de reunião*\n\n*${meeting.id}* — ${meeting.title}\n*Quando:* ${meeting.scheduled_at}\n*Faltam:* ${reminder.days} dia(s)`,
+          });
+        }
+      }
+    }
+    return notifications;
+  }
+
+  /** Exact-time meeting-start notifications keyed to scheduled_at. */
+  getMeetingStartingNotifications(
+    nowIso = new Date().toISOString(),
+    windowMinutes = 5,
+  ): Array<{
+    task_id: string;
+    target_person_id: string;
+    notification_group_jid: string | null;
+    message: string;
+  }> {
+    const nowMs = new Date(nowIso).getTime();
+    const windowMs = windowMinutes * 60_000;
+    const meetings = this.db
+      .prepare(
+        `SELECT id, title, scheduled_at, participants, assignee FROM tasks
+         WHERE ${this.visibleTaskScope()} AND type = 'meeting' AND column != 'done'
+           AND scheduled_at IS NOT NULL`,
+      )
+      .all(...this.visibleTaskParams()) as Array<{
+      id: string;
+      title: string;
+      scheduled_at: string;
+      participants: string | null;
+      assignee: string | null;
+    }>;
+    const notifications: Array<{
+      task_id: string;
+      target_person_id: string;
+      notification_group_jid: string | null;
+      message: string;
+    }> = [];
+    for (const meeting of meetings) {
+      const scheduledMs = new Date(meeting.scheduled_at).getTime();
+      if (Number.isNaN(scheduledMs)) continue;
+      const delta = scheduledMs - nowMs;
+      if (delta < 0 || delta > windowMs) continue;
+      for (const recipient of this.meetingNotificationRecipients(meeting)) {
+        notifications.push({
+          task_id: meeting.id,
+          ...recipient,
+          message: `📅 *Reunião começando*\n\n*${meeting.id}* — ${meeting.title}\n*Agora:* ${meeting.scheduled_at}`,
+        });
+      }
+    }
+    return notifications;
+  }
+
   /** Determine meeting note phase based on the task's current column. */
   private getMeetingNotePhase(task: any): 'pre' | 'meeting' | 'post' | undefined {
     if (task.type !== 'meeting') return undefined;
@@ -1290,7 +1446,13 @@ export class TaskflowEngine {
 
   create(params: CreateParams): CreateResult {
     try {
-      return this.db.transaction(() => {
+      return this.db.transaction(() => this.createTaskInternal(params))();
+    } catch (err: any) {
+      return { success: false, error: err.message ?? String(err) };
+    }
+  }
+
+  private createTaskInternal(params: CreateParams): CreateResult {
       const now = new Date().toISOString();
 
       /* --- Permission check --- */
@@ -1427,12 +1589,12 @@ export class TaskflowEngine {
         .prepare(
           `INSERT INTO tasks (
             id, board_id, type, title, assignee, column,
-            priority, due_date, labels, recurrence,
+            priority, due_date, labels, recurrence, recurrence_anchor,
             max_cycles, recurrence_end_date,
             child_exec_enabled, child_exec_board_id, child_exec_person_id,
             participants, scheduled_at,
             _last_mutation, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           taskId,
@@ -1445,6 +1607,7 @@ export class TaskflowEngine {
           dueDate,
           params.labels ? JSON.stringify(params.labels) : '[]',
           recurrence,
+          params.recurrence_anchor ?? null,
           params.max_cycles ?? null,
           params.recurrence_end_date ?? null,
           childExecEnabled,
@@ -1536,10 +1699,6 @@ export class TaskflowEngine {
         column,
         ...(notifications.length > 0 ? { notifications } : {}),
       };
-      })(); // end transaction
-    } catch (err: any) {
-      return { success: false, error: err.message ?? String(err) };
-    }
   }
 
   /* ---------------------------------------------------------------- */
@@ -1649,22 +1808,33 @@ export class TaskflowEngine {
       .run(taskBoardId, task.id);
   }
 
-  /** Advance a recurring task: calculate next due_date and increment cycle. */
-  private advanceRecurringTask(task: any): { cycle_number: number; expired: boolean; new_due_date?: string; reason?: 'max_cycles' | 'end_date' } {
+  /** Advance a recurring task: calculate next schedule and increment cycle. */
+  private advanceRecurringTask(task: any): { cycle_number: number; expired: boolean; new_due_date?: string; new_scheduled_at?: string; reason?: 'max_cycles' | 'end_date' } {
     const recurrence = task.recurrence as 'daily' | 'weekly' | 'monthly' | 'yearly';
-    const anchor = task.due_date ? new Date(task.due_date) : new Date();
     const currentCycle = parseInt(task.current_cycle ?? '0', 10);
     const nextCycle = currentCycle + 1;
+    const isMeeting = task.type === 'meeting';
 
-    let newDueDate = advanceDateByRecurrence(anchor, recurrence);
-    // Auto-shift recurring due dates off weekends/holidays (no user confirmation)
-    newDueDate = this.shiftToBusinessDay(newDueDate);
+    let newDueDate: string | undefined;
+    let newScheduledAt: string | undefined;
+    if (isMeeting) {
+      const recurrenceBase =
+        task.scheduled_at ??
+        task.recurrence_anchor ??
+        new Date().toISOString();
+      newScheduledAt = advanceDateTimeByRecurrence(recurrenceBase, recurrence);
+    } else {
+      const anchor = task.due_date ? new Date(task.due_date) : new Date();
+      newDueDate = advanceDateByRecurrence(anchor, recurrence);
+      // Auto-shift recurring due dates off weekends/holidays (no user confirmation)
+      newDueDate = this.shiftToBusinessDay(newDueDate);
+    }
 
     // Check expiry bounds (mutually exclusive, but check both defensively)
     let expiryReason: 'max_cycles' | 'end_date' | null = null;
     if (task.max_cycles != null && nextCycle >= task.max_cycles) {
       expiryReason = 'max_cycles';
-    } else if (task.recurrence_end_date && newDueDate > task.recurrence_end_date) {
+    } else if (task.recurrence_end_date && (isMeeting ? (newScheduledAt ?? '') : (newDueDate ?? '')) > task.recurrence_end_date) {
       expiryReason = 'end_date';
     }
 
@@ -1695,6 +1865,7 @@ export class TaskflowEngine {
             title: task.title,
             scheduled_at: task.scheduled_at,
             participants: task.participants,
+            recurrence_anchor: task.recurrence_anchor ?? null,
             notes: task.notes,
             assignee: task.assignee,
             current_cycle: currentCycle,
@@ -1705,24 +1876,23 @@ export class TaskflowEngine {
     }
 
     // Normal advance: reset to next_action
-    this.db
-      .prepare(
-        `UPDATE tasks SET column = 'next_action', due_date = ?, current_cycle = ?, reminders = '[]',
-         notes = '[]', next_note_id = 1, blocked_by = '[]', next_action = NULL, waiting_for = NULL, updated_at = ?
-         WHERE board_id = ? AND id = ?`,
-      )
-      .run(newDueDate, String(nextCycle), now, this.taskBoardId(task), task.id);
-
-    // Advance scheduled_at for recurring meetings
-    if (task.type === 'meeting' && task.scheduled_at) {
-      const anchor = new Date(task.scheduled_at);
-      const nextScheduled = advanceDateByRecurrence(anchor, recurrence);
-      // scheduled_at includes time, so preserve time component
-      const timePart = task.scheduled_at.slice(10); // e.g. T14:00:00Z
-      const nextScheduledWithTime = nextScheduled.slice(0, 10) + timePart;
+    if (isMeeting) {
       this.db
-        .prepare(`UPDATE tasks SET scheduled_at = ? WHERE board_id = ? AND id = ?`)
-        .run(nextScheduledWithTime, this.taskBoardId(task), task.id);
+        .prepare(
+          `UPDATE tasks SET column = 'next_action', current_cycle = ?, reminders = '[]',
+           notes = '[]', next_note_id = 1, blocked_by = '[]', next_action = NULL, waiting_for = NULL,
+           scheduled_at = ?, updated_at = ?
+           WHERE board_id = ? AND id = ?`,
+        )
+        .run(String(nextCycle), newScheduledAt ?? task.scheduled_at ?? null, now, this.taskBoardId(task), task.id);
+    } else {
+      this.db
+        .prepare(
+          `UPDATE tasks SET column = 'next_action', due_date = ?, current_cycle = ?, reminders = '[]',
+           notes = '[]', next_note_id = 1, blocked_by = '[]', next_action = NULL, waiting_for = NULL, updated_at = ?
+           WHERE board_id = ? AND id = ?`,
+        )
+        .run(newDueDate, String(nextCycle), now, this.taskBoardId(task), task.id);
     }
 
     /* Reset subtask rows for recurring projects */
@@ -1735,7 +1905,9 @@ export class TaskflowEngine {
         .run(now, this.taskBoardId(task), task.id);
     }
 
-    return { cycle_number: nextCycle, expired: false, new_due_date: newDueDate };
+    return isMeeting
+      ? { cycle_number: nextCycle, expired: false, new_scheduled_at: newScheduledAt }
+      : { cycle_number: nextCycle, expired: false, new_due_date: newDueDate };
   }
 
   /* ---------------------------------------------------------------- */
@@ -2553,6 +2725,10 @@ export class TaskflowEngine {
         if (idx < 0) {
           return { success: false, error: `Note #${updates.remove_note} not found.` };
         }
+        // Meeting note authorization: only author/organizer/manager can remove
+        if (task.type === 'meeting' && !isMgr && !isAssignee && notes[idx].by !== params.sender_name) {
+          return { success: false, error: `Permission denied: only the note author, organizer, or manager can remove note #${updates.remove_note}.` };
+        }
         notes.splice(idx, 1);
         this.db
           .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
@@ -2624,9 +2800,20 @@ export class TaskflowEngine {
         if (task.type !== 'meeting') {
           return { success: false, error: 'scheduled_at can only be set on meeting tasks.' };
         }
-        this.db
-          .prepare(`UPDATE tasks SET scheduled_at = ? WHERE board_id = ? AND id = ?`)
-          .run(updates.scheduled_at, taskBoardId, task.id);
+        const reminders: Array<{ days: number; date: string }> = JSON.parse(task.reminders ?? '[]');
+        if (reminders.length > 0) {
+          for (const r of reminders) {
+            r.date = reminderDateFromScheduledAt(updates.scheduled_at, r.days);
+          }
+          this.db
+            .prepare(`UPDATE tasks SET scheduled_at = ?, reminders = ? WHERE board_id = ? AND id = ?`)
+            .run(updates.scheduled_at, JSON.stringify(reminders), taskBoardId, task.id);
+          changes.push('Meeting reminders recalculated for new scheduled_at');
+        } else {
+          this.db
+            .prepare(`UPDATE tasks SET scheduled_at = ? WHERE board_id = ? AND id = ?`)
+            .run(updates.scheduled_at, taskBoardId, task.id);
+        }
         changes.push(`Meeting rescheduled to ${updates.scheduled_at}`);
       }
 
@@ -2885,13 +3072,26 @@ export class TaskflowEngine {
 
         /* ---- add_reminder ---- */
         case 'add_reminder': {
-          if (!task.due_date) {
-            return { success: false, error: 'Cannot add reminder: task has no due date.' };
+          const reminderBase =
+            task.type === 'meeting'
+              ? task.scheduled_at ?? null
+              : task.due_date ?? null;
+          if (!reminderBase) {
+            return {
+              success: false,
+              error:
+                task.type === 'meeting'
+                  ? 'Cannot add reminder: meeting has no scheduled_at.'
+                  : 'Cannot add reminder: task has no due date.',
+            };
           }
           if (params.reminder_days == null || params.reminder_days < 0) {
             return { success: false, error: 'Missing or invalid parameter: reminder_days (must be >= 0).' };
           }
-          const reminderDate = reminderDateFromDue(task.due_date, params.reminder_days);
+          const reminderDate =
+            task.type === 'meeting'
+              ? reminderDateFromScheduledAt(reminderBase, params.reminder_days)
+              : reminderDateFromDue(reminderBase, params.reminder_days);
 
           const reminders: Array<{ days: number; date: string }> = JSON.parse(task.reminders ?? '[]');
           reminders.push({ days: params.reminder_days, date: reminderDate });
@@ -2899,7 +3099,10 @@ export class TaskflowEngine {
             .prepare(`UPDATE tasks SET reminders = ?, updated_at = ?, _last_mutation = ? WHERE board_id = ? AND id = ?`)
             .run(JSON.stringify(reminders), now, snapshot, taskBoardId, task.id);
 
-          change = `Reminder added: ${params.reminder_days} day(s) before due date (${reminderDate})`;
+          change =
+            task.type === 'meeting'
+              ? `Reminder added: ${params.reminder_days} day(s) before scheduled_at (${reminderDate})`
+              : `Reminder added: ${params.reminder_days} day(s) before due date (${reminderDate})`;
           this.recordHistory(
             task.id,
             'reminder_added',
@@ -4608,8 +4811,7 @@ export class TaskflowEngine {
 
           const now = new Date().toISOString();
 
-          // Safe: better-sqlite3 nests this inside admin()'s transaction via savepoint
-          const createResult = this.create({
+          const createResult = this.createTaskInternal({
             board_id: this.boardId,
             type: params.create!.type as any,
             title: params.create!.title,
