@@ -3216,4 +3216,32 @@ describe('meeting notes', () => {
       expect(details.snapshot.scheduled_at).toBe('2026-03-10T14:00:00Z');
     });
   });
+
+  describe('report meetings', () => {
+    it('standup includes upcoming meetings and open-minutes warnings', () => {
+      // Create a past meeting with open notes (simulate overdue minutes)
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Past meeting',
+        scheduled_at: '2026-03-01T10:00:00Z',
+        sender_name: 'Alexandre',
+      });
+      engine.update({ board_id: BOARD_ID, task_id: r.task_id!, sender_name: 'Alexandre', updates: { add_note: 'Unresolved item' } });
+
+      // Create upcoming meeting
+      engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Tomorrow meeting',
+        scheduled_at: new Date(Date.now() + 86400000).toISOString(),
+        sender_name: 'Alexandre',
+      });
+
+      const report = engine.report({ board_id: BOARD_ID, type: 'standup' });
+      expect(report.success).toBe(true);
+      expect(report.data!.upcoming_meetings).toBeDefined();
+      expect(report.data!.meetings_with_open_minutes).toBeDefined();
+    });
+  });
 });

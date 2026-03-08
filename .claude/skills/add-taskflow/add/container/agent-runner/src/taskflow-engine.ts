@@ -244,6 +244,8 @@ export interface ReportResult extends TaskflowResult {
       created_week: number;
       trend: 'up' | 'down' | 'same';
     };
+    upcoming_meetings?: Array<{ id: string; title: string; scheduled_at: string; participant_count: number }>;
+    meetings_with_open_minutes?: Array<{ id: string; title: string; scheduled_at: string; open_count: number }>;
   };
 }
 
@@ -4931,6 +4933,56 @@ export class TaskflowEngine {
           .all(this.boardId, cutoffIso) as typeof staleTasks;
       }
 
+      /* --- Upcoming meetings (next 7 days) --- */
+      const sevenDaysFromNow = new Date(Date.now() + 7 * 86400000).toISOString();
+      const upcomingMeetings = this.db
+        .prepare(
+          `SELECT id, title, scheduled_at, participants FROM tasks
+           WHERE ${this.visibleTaskScope()} AND type = 'meeting' AND column != 'done'
+             AND scheduled_at IS NOT NULL AND scheduled_at <= ?
+           ORDER BY scheduled_at`,
+        )
+        .all(...this.visibleTaskParams(), sevenDaysFromNow) as Array<{
+          id: string; title: string; scheduled_at: string; participants: string | null;
+        }>;
+
+      const upcomingMeetingsFormatted = upcomingMeetings.map((m) => ({
+        id: m.id,
+        title: m.title,
+        scheduled_at: m.scheduled_at,
+        participant_count: m.participants ? JSON.parse(m.participants).length + 1 : 1,
+      }));
+
+      /* --- Meetings with open minutes (past scheduled_at, has open notes) --- */
+      const nowStr = new Date().toISOString();
+      const pastMeetings = this.db
+        .prepare(
+          `SELECT id, title, scheduled_at, notes FROM tasks
+           WHERE ${this.visibleTaskScope()} AND type = 'meeting' AND column != 'done'
+             AND scheduled_at IS NOT NULL AND scheduled_at < ?
+           ORDER BY scheduled_at`,
+        )
+        .all(...this.visibleTaskParams(), nowStr) as Array<{
+          id: string; title: string; scheduled_at: string; notes: string;
+        }>;
+
+      const meetingsWithOpenMinutes = pastMeetings
+        .filter((m) => {
+          try {
+            const notes = JSON.parse(m.notes ?? '[]');
+            return notes.some((n: any) => n.status === 'open');
+          } catch { return false; }
+        })
+        .map((m) => {
+          const notes = JSON.parse(m.notes ?? '[]');
+          return {
+            id: m.id,
+            title: m.title,
+            scheduled_at: m.scheduled_at,
+            open_count: notes.filter((n: any) => n.status === 'open').length,
+          };
+        });
+
       /* --- Auto-archive old done tasks (standup housekeeping) --- */
       if (params.type === 'standup') {
         try { this.archiveOldDoneTasks(); } catch { /* cleanup failure must not break standup */ }
@@ -5008,6 +5060,8 @@ export class TaskflowEngine {
                 })),
               }
             : {}),
+          upcoming_meetings: upcomingMeetingsFormatted,
+          meetings_with_open_minutes: meetingsWithOpenMinutes,
         },
       };
     } catch (err: any) {
