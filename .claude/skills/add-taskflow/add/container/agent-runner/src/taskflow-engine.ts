@@ -20,6 +20,7 @@ export interface QueryParams {
   search_text?: string;
   label?: string;
   since?: string;
+  at?: string; // for meeting_minutes_at (YYYY-MM-DD)
 }
 
 export interface TaskflowResult {
@@ -2917,6 +2918,90 @@ export class TaskflowEngine {
   }
 
   /* ---------------------------------------------------------------- */
+  /*  Formatted meeting minutes                                        */
+  /* ---------------------------------------------------------------- */
+
+  private formatMeetingMinutes(task: any, notes: Array<any>): string {
+    const lines: string[] = [];
+    const scheduledStr = task.scheduled_at
+      ? (() => { const d = task.scheduled_at; return `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(0,4)} ${d.slice(11,16)}`; })()
+      : 'sem data';
+    lines.push(`📅 *${task.id} — ${task.title}* (${scheduledStr})`);
+    lines.push('');
+
+    const topLevel = notes.filter((n: any) => !n.parent_note_id);
+    const replies = new Map<number, any[]>();
+    for (const n of notes.filter((n: any) => n.parent_note_id)) {
+      const arr = replies.get(n.parent_note_id) ?? [];
+      arr.push(n);
+      replies.set(n.parent_note_id, arr);
+    }
+
+    const statusMarker = (n: any): string => {
+      switch (n.status) {
+        case 'checked': return '✓';
+        case 'task_created': return `⤷ ${n.created_task_id ?? ''}`;
+        case 'inbox_created': return `📥 ${n.created_task_id ?? ''}`;
+        case 'dismissed': return '—';
+        default: return '';
+      }
+    };
+
+    const preNotes = topLevel.filter((n: any) => n.phase === 'pre');
+    const meetingNotes = topLevel.filter((n: any) => n.phase === 'meeting');
+    const postNotes = topLevel.filter((n: any) => n.phase === 'post');
+    const otherNotes = topLevel.filter((n: any) => !n.phase);
+
+    if (preNotes.length > 0) {
+      lines.push('*Pauta:*');
+      for (let i = 0; i < preNotes.length; i++) {
+        const n = preNotes[i];
+        const marker = statusMarker(n);
+        lines.push(`${i + 1}. ${marker ? marker + ' ' : ''}${n.text}`);
+        for (const r of replies.get(n.id) ?? []) {
+          const rMarker = statusMarker(r);
+          const postTag = r.phase === 'post' ? ' _(pós-reunião)_' : '';
+          lines.push(`   → ${rMarker ? rMarker + ' ' : ''}${r.text}${postTag}`);
+        }
+      }
+    }
+
+    if (meetingNotes.length > 0) {
+      lines.push('');
+      for (const n of meetingNotes) {
+        const marker = statusMarker(n);
+        lines.push(`*${marker ? marker + ' ' : ''}[Novo] ${n.text}*`);
+        for (const r of replies.get(n.id) ?? []) {
+          const rMarker = statusMarker(r);
+          const postTag = r.phase === 'post' ? ' _(pós-reunião)_' : '';
+          lines.push(`   → ${rMarker ? rMarker + ' ' : ''}${r.text}${postTag}`);
+        }
+      }
+    }
+
+    if (postNotes.length > 0) {
+      lines.push('');
+      lines.push('*[Pós-reunião]*');
+      for (const n of postNotes) {
+        const marker = statusMarker(n);
+        lines.push(`   → ${marker ? marker + ' ' : ''}${n.text}`);
+        for (const r of replies.get(n.id) ?? []) {
+          const rMarker = statusMarker(r);
+          lines.push(`   → ${rMarker ? rMarker + ' ' : ''}${r.text}`);
+        }
+      }
+    }
+
+    if (otherNotes.length > 0) {
+      for (const n of otherNotes) {
+        lines.push(`• ${n.text}`);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  /* ---------------------------------------------------------------- */
   /*  Pre-formatted board view                                         */
   /* ---------------------------------------------------------------- */
 
@@ -3662,6 +3747,120 @@ export class TaskflowEngine {
               blocked: blockingCount,
             },
           };
+        }
+
+        /* ---------- Meetings ---------- */
+
+        case 'meetings': {
+          const tasks = this.db
+            .prepare(
+              `SELECT * FROM tasks
+               WHERE ${this.visibleTaskScope()} AND type = 'meeting' AND column != 'done'
+               ORDER BY scheduled_at, id`,
+            )
+            .all(...this.visibleTaskParams());
+          return { success: true, data: tasks };
+        }
+
+        case 'meeting_agenda': {
+          if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
+          const task = this.requireTask(params.task_id);
+          if (task.type !== 'meeting') return { success: false, error: `Task ${params.task_id} is not a meeting.` };
+          const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+          const agenda = notes.filter((n: any) => n.phase === 'pre');
+          return { success: true, data: agenda };
+        }
+
+        case 'meeting_minutes': {
+          if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
+          const task = this.requireTask(params.task_id);
+          if (task.type !== 'meeting') return { success: false, error: `Task ${params.task_id} is not a meeting.` };
+          const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+          const formatted = this.formatMeetingMinutes(task, notes);
+          return { success: true, data: { task, notes }, formatted };
+        }
+
+        case 'upcoming_meetings': {
+          const tasks = this.db
+            .prepare(
+              `SELECT * FROM tasks
+               WHERE ${this.visibleTaskScope()} AND type = 'meeting' AND column != 'done'
+                 AND scheduled_at IS NOT NULL
+               ORDER BY scheduled_at ASC`,
+            )
+            .all(...this.visibleTaskParams());
+          return { success: true, data: tasks };
+        }
+
+        case 'meeting_participants': {
+          if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
+          const task = this.requireTask(params.task_id);
+          if (task.type !== 'meeting') return { success: false, error: `Task ${params.task_id} is not a meeting.` };
+          const participantIds: string[] = JSON.parse(task.participants ?? '[]');
+          const organizerRow = task.assignee
+            ? this.db.prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id = ?`).get(this.boardId, task.assignee) as any
+            : null;
+          if (participantIds.length === 0) {
+            return {
+              success: true,
+              data: {
+                organizer: organizerRow ?? { person_id: task.assignee, name: task.assignee },
+                participants: [],
+              },
+            };
+          }
+          const people = this.db
+            .prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id IN (${participantIds.map(() => '?').join(',')})`)
+            .all(this.boardId, ...participantIds) as Array<{ person_id: string; name: string; role: string }>;
+          return {
+            success: true,
+            data: {
+              organizer: organizerRow ?? { person_id: task.assignee, name: task.assignee },
+              participants: people,
+            },
+          };
+        }
+
+        case 'meeting_open_items': {
+          if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
+          const task = this.requireTask(params.task_id);
+          if (task.type !== 'meeting') return { success: false, error: `Task ${params.task_id} is not a meeting.` };
+          const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+          const openItems = notes.filter((n: any) => n.status === 'open');
+          return { success: true, data: openItems };
+        }
+
+        case 'meeting_history': {
+          if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
+          const history = this.getHistory(params.task_id);
+          return { success: true, data: history };
+        }
+
+        case 'meeting_minutes_at': {
+          if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
+          if (!params.at) return { success: false, error: 'Missing required parameter: at (YYYY-MM-DD)' };
+          const occurrences = this.getHistory(params.task_id)
+            .filter((h: any) => h.action === 'meeting_occurrence_archived');
+
+          for (const row of occurrences) {
+            try {
+              const details = JSON.parse(row.details ?? '{}');
+              const snapshot = details.snapshot;
+              const snapshotDate = (snapshot?.scheduled_at ?? '').slice(0, 10);
+              if (snapshotDate === params.at) {
+                return { success: true, data: snapshot, formatted: this.formatMeetingMinutes(snapshot, JSON.parse(snapshot.notes ?? '[]')) };
+              }
+            } catch { /* skip malformed */ }
+          }
+
+          // Fallback: check current task if date matches
+          const task = this.getTask(params.task_id);
+          if (task && task.scheduled_at?.startsWith(params.at)) {
+            const notes = JSON.parse(task.notes ?? '[]');
+            return { success: true, data: task, formatted: this.formatMeetingMinutes(task, notes) };
+          }
+
+          return { success: false, error: `No meeting occurrence found for ${params.task_id} on ${params.at}` };
         }
 
         /* ---------- Unknown ---------- */

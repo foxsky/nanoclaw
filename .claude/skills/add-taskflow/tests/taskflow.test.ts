@@ -2947,4 +2947,98 @@ describe('meeting notes', () => {
       expect(r.to_column).toBe('done');
     });
   });
+
+  describe('query meetings', () => {
+    let meetingId: string;
+
+    beforeEach(() => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Weekly sync',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      meetingId = r.task_id!;
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Review budget' },
+      });
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Define timeline' },
+      });
+    });
+
+    it('meetings query returns all active meetings', () => {
+      const result = engine.query({ query: 'meetings' });
+      expect(result.success).toBe(true);
+      expect(result.data.length).toBeGreaterThanOrEqual(1);
+      expect(result.data[0].type).toBe('meeting');
+    });
+
+    it('meeting_agenda returns pre-phase notes', () => {
+      const result = engine.query({ query: 'meeting_agenda', task_id: meetingId });
+      expect(result.success).toBe(true);
+      expect(result.data.length).toBe(2);
+      expect(result.data[0].phase).toBe('pre');
+    });
+
+    it('meeting_minutes returns all notes with threading', () => {
+      const result = engine.query({ query: 'meeting_minutes', task_id: meetingId });
+      expect(result.success).toBe(true);
+      expect(result.data.notes.length).toBe(2);
+      expect(result.formatted).toBeDefined();
+    });
+
+    it('upcoming_meetings returns meetings sorted by scheduled_at', () => {
+      engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Earlier meeting',
+        scheduled_at: '2026-03-10T10:00:00Z',
+        sender_name: 'Alexandre',
+      });
+      const result = engine.query({ query: 'upcoming_meetings' });
+      expect(result.success).toBe(true);
+      expect(result.data.length).toBeGreaterThanOrEqual(2);
+      expect(result.data[0].scheduled_at <= result.data[1].scheduled_at).toBe(true);
+    });
+
+    it('meeting_participants returns participant list', () => {
+      const result = engine.query({ query: 'meeting_participants', task_id: meetingId });
+      expect(result.success).toBe(true);
+      expect(result.data.organizer).toBeDefined();
+      expect(result.data.participants.length).toBeGreaterThan(0);
+    });
+
+    it('meeting_open_items returns only open notes', () => {
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { set_note_status: { id: 1, status: 'checked' } },
+      });
+      const result = engine.query({ query: 'meeting_open_items', task_id: meetingId });
+      expect(result.success).toBe(true);
+      expect(result.data.length).toBe(1);
+      expect(result.data[0].id).toBe(2);
+    });
+
+    it('meeting_history returns task history', () => {
+      const result = engine.query({ query: 'meeting_history', task_id: meetingId });
+      expect(result.success).toBe(true);
+      expect(result.data.length).toBeGreaterThan(0);
+    });
+
+    it('meeting_minutes_at returns archived occurrence by date', () => {
+      const result = engine.query({ query: 'meeting_minutes_at', task_id: meetingId, at: '2026-03-15' });
+      expect(result.success).toBe(true);
+    });
+  });
 });
