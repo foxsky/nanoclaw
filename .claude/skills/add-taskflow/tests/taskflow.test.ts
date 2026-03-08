@@ -11,7 +11,7 @@ describe('taskflow skill package', () => {
 
     const content = fs.readFileSync(manifestPath, 'utf-8');
     expect(content).toContain('skill: taskflow');
-    expect(content).toContain('version: 2.0.0');
+    expect(content).toMatch(/version:\s+\d+\.\d+\.\d+/);
     expect(content).toContain('taskflow-engine.ts');
   });
 
@@ -82,7 +82,7 @@ describe('taskflow skill package', () => {
     expect(fs.existsSync(path.join(templatesDir, 'CLAUDE.md.template'))).toBe(true);
 
     const files = fs.readdirSync(templatesDir).sort();
-    expect(files).toEqual(['CLAUDE.md.template', 'CLAUDE.md.template.v1']);
+    expect(files).toEqual(['CLAUDE.md.template']);
   });
 
   it('CLAUDE.md.template has all required sections', () => {
@@ -188,6 +188,36 @@ describe('taskflow skill package', () => {
     expect(content).toContain("action: 'conclude'");
   });
 
+  it('CLAUDE.md.template schema reference matches SQLite storage and runtime columns', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+
+    expect(content).toContain('labels TEXT');
+    expect(content).toContain('blocked_by TEXT');
+    expect(content).toContain('notes TEXT');
+    expect(content).toContain('reminders TEXT');
+    expect(content).toContain('child_exec_last_rollup_at TEXT');
+    expect(content).toContain('child_exec_last_rollup_summary TEXT');
+    expect(content).toContain('runner_standup_task_id TEXT');
+    expect(content).toContain('runner_review_secondary_task_id TEXT');
+    expect(content).toContain('country TEXT');
+    expect(content).toContain('city TEXT');
+    expect(content).toContain('attachment_allowed_formats TEXT');
+  });
+
+  it('CLAUDE.md.template clarifies hierarchy parent-linking and manager-only WIP forcing', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+
+    expect(content).toContain('"ligar TXXX ao pai TYYY"');
+    expect(content).toContain('forcar TXXX para andamento');
+    expect(content).toContain('comando de gestor');
+  });
+
   it('CLAUDE.md.template requires the exact attachment confirmation token', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
@@ -245,8 +275,11 @@ describe('taskflow skill package', () => {
     expect(content).toContain('**board_people**');
     expect(content).toContain('**board_admins**');
     expect(content).toContain('**board_config**');
+    expect(content).toContain('**board_id_counters**');
     expect(content).toContain('**task_history**');
     expect(content).toContain('**archive**');
+    expect(content).toContain('**attachment_audit_log**');
+    expect(content).toContain('**board_holidays**');
 
     // Key columns
     expect(content).toContain('board_id');
@@ -266,6 +299,9 @@ describe('taskflow skill package', () => {
     expect(content).toContain('recurrence');
     expect(content).toContain('current_cycle');
     expect(content).toContain('parent_task_id');
+    expect(content).toContain('TEXT');
+    expect(content).toContain('INTEGER');
+    expect(content).toContain('JSON');
   });
 
 
@@ -748,25 +784,6 @@ describe('taskflow skill package', () => {
     expect(content).toContain('offer_register');
   });
 
-  it('CLAUDE.md.template v1 has subtask assignee commands', () => {
-    const content = fs.readFileSync(
-      path.join(skillDir, 'templates', 'CLAUDE.md.template.v1'),
-      'utf-8',
-    );
-
-    // Subtask assignee authorization
-    expect(content).toContain('Subtask-assignee');
-
-    // Subtask assignment commands
-    expect(content).toContain('atribuir etapa PXXX.N');
-    expect(content).toContain('desatribuir etapa PXXX.N');
-
-    // Schema has parent_task_id
-    expect(content).toContain('parent_task_id');
-
-    // offer_register mentions group display name
-    expect(content).toContain('nome exibido no grupo');
-  });
 
   it('CLAUDE.md.template shared lifecycle rules are storage-mode aware', () => {
     const content = fs.readFileSync(
@@ -810,7 +827,7 @@ describe('taskflow skill package', () => {
     expect(content).toContain("updates: { edit_note:");
     expect(content).toContain("updates: { remove_note:");
     // notes column in schema reference
-    expect(content).toContain('notes (JSON)');
+    expect(content).toContain('`notes TEXT` (JSON array)');
 
     // v2: query commands via taskflow_query tool mapping
     expect(content).toContain('"em revisao"');
@@ -1139,8 +1156,8 @@ describe('taskflow skill package', () => {
     expect(content).toContain('"manual"');
     expect(content).toContain('"guia rapido"');
     expect(content).toContain('Do NOT query the database');
-    // Scope guard suggests ajuda for off-topic queries
-    expect(content).toContain('suggest `ajuda`');
+    // Scope guard points to the board help commands
+    expect(content).toContain('`ajuda`, `comandos`, or `help`');
   });
 
   it('CLAUDE.md.template has return-to-queue (devolver) command and transition', () => {
@@ -1184,16 +1201,18 @@ describe('taskflow skill package', () => {
     expect(content).toContain("updates: { recurrence:");
   });
 
-  it('CLAUDE.md.template has date format convention via Error Presentation', () => {
+  it('CLAUDE.md.template has date parsing section', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    // v2: date format in Error Presentation section
+    // v2: date parsing has its own section
+    expect(content).toContain('## Date Parsing');
     expect(content).toContain('pt-BR');
     expect(content).toContain('DD/MM');
     expect(content).toContain('MM/DD');
     expect(content).toContain('{{LANGUAGE}}');
+    expect(content).toContain('When a date could be ambiguous, ask a clarification question');
   });
 
   it('SKILL.md clarifies manager as team member in Phase 3', () => {
@@ -1288,6 +1307,23 @@ describe('taskflow skill package', () => {
     expect(content).toContain('## Statistics Display');
   });
 
+  it('CLAUDE.md.template makes help hint language-neutral and defines SENDER', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    expect(content).toContain('`ajuda`, `comandos`, or `help`');
+    expect(content).toContain('`SENDER` below means the resolved sender `person_id`');
+  });
+
+  it('CLAUDE.md.template allows WhatsApp strikethrough formatting', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    expect(content).toContain('~Strikethrough~');
+  });
+
   it('CLAUDE.md.template has undo mechanics with desfazer command', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
@@ -1320,6 +1356,26 @@ describe('taskflow skill package', () => {
     expect(content).toContain("query: 'statistics'");
     expect(content).toContain("query: 'person_statistics'");
     expect(content).toContain("query: 'month_statistics'");
+  });
+
+  it('CLAUDE.md.template statistics guidance does not invent trend data', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    expect(content).toContain('Only include trend comparison when the tool response already provides explicit trend data');
+  });
+
+  it('CLAUDE.md.template documents tool responses as top-level fields, not always data-wrapped', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    expect(content).toContain('Every tool returns JSON with `success` and may include `data`, `error`, `notifications`, and other top-level fields');
+    expect(content).toContain('First, check special top-level fields regardless of `success`');
+    expect(content).toContain('If no `error` exists but you already handled a special top-level field above, do NOT invent an extra generic error message');
+    expect(content).toContain('For all other responses with `data`');
+    expect(content).not.toContain('Every tool returns JSON with `success`, `data`, and optionally `error` and `notifications`');
   });
 
   it('CLAUDE.md.template authorization rules include feature permissions', () => {
@@ -1356,10 +1412,10 @@ describe('taskflow skill package', () => {
     );
     // v2: engine handles cycle reset behavior
     // Schema shows the relevant fields
-    expect(content).toContain('notes (JSON)');
+    expect(content).toContain('`notes TEXT` (JSON array)');
     expect(content).toContain('next_note_id');
-    expect(content).toContain('recurrence (JSON)');
-    expect(content).toContain('current_cycle (JSON)');
+    expect(content).toContain('`recurrence TEXT` (JSON object)');
+    expect(content).toContain('`current_cycle TEXT` (JSON object)');
   });
 
   it('CLAUDE.md.template has hierarchy features section', () => {
@@ -1397,16 +1453,17 @@ describe('taskflow skill package', () => {
     expect(content).toContain('`{{MAX_DEPTH}}` is `1` or not set, skip this section');
   });
 
-  it('CLAUDE.md.template hierarchy ID generation uses engine (board_config counter)', () => {
+  it('CLAUDE.md.template hierarchy ID generation uses engine counters', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    // v2: ID generation handled by engine, board_config referenced in schema
+    // v2: ID generation handled by engine, with legacy and current counter stores documented
     expect(content).toContain('next_task_number');
     expect(content).toContain('board_config');
-    expect(content).not.toContain('next_project_number');
-    expect(content).not.toContain('next_recurring_number');
+    expect(content).toContain('next_project_number');
+    expect(content).toContain('next_recurring_number');
+    expect(content).toContain('board_id_counters');
   });
 
   it('CLAUDE.md.template hierarchy uses shared Sender Identification section (board_people/board_admins)', () => {
@@ -1724,6 +1781,7 @@ describe('taskflow skill package', () => {
     // v2: notifications dispatched via tool response notifications array
     expect(content).toContain('notification_group_jid');
     expect(content).toContain('notifications');
+    expect(content).toContain('do NOT call `send_message`');
   });
 
   it('CLAUDE.md.template done shortcut allows Assignee via tool authorization', () => {
@@ -1804,6 +1862,16 @@ describe('taskflow skill package', () => {
     expect(content).not.toContain('TASKS.json');
   });
 
+  it('CLAUDE.md.template avoids unsupported holiday and non-business-day tool calls', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    expect(content).not.toContain("action: 'manage_holidays'");
+    expect(content).not.toContain('allow_non_business_day: true');
+    expect(content).toContain('does NOT expose a non-business-day override');
+  });
+
   it('ID generation uses per-prefix counters (T/P/R) in engine and db schema', () => {
     // Engine maps each prefix to its own counter column
     const engine = fs.readFileSync(
@@ -1823,14 +1891,15 @@ describe('taskflow skill package', () => {
     expect(dbSchema).toContain('next_project_number');
     expect(dbSchema).toContain('next_recurring_number');
 
-    // CLAUDE.md template only exposes next_task_number (counters are engine-internal)
+    // CLAUDE.md template documents both legacy board_config counters and current board_id_counters
     const claudeTemplate = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
     expect(claudeTemplate).toContain('next_task_number');
-    expect(claudeTemplate).not.toContain('next_project_number');
-    expect(claudeTemplate).not.toContain('next_recurring_number');
+    expect(claudeTemplate).toContain('next_project_number');
+    expect(claudeTemplate).toContain('next_recurring_number');
+    expect(claudeTemplate).toContain('board_id_counters');
   });
 
   it('CLAUDE.md.template recurrence schema has fields in schema reference', () => {
@@ -1838,9 +1907,9 @@ describe('taskflow skill package', () => {
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    // v2: recurrence is JSON field in schema reference
-    expect(content).toContain('recurrence (JSON)');
-    expect(content).toContain('current_cycle (JSON)');
+    // v2: recurrence is stored as TEXT containing JSON in SQLite
+    expect(content).toContain('`recurrence TEXT` (JSON object)');
+    expect(content).toContain('`current_cycle TEXT` (JSON object)');
   });
 
   it('CLAUDE.md.template digest format uses taskflow_report digest type', () => {
@@ -1872,7 +1941,8 @@ describe('taskflow skill package', () => {
     );
     expect(content).toContain('remover Nome');
     expect(content).toContain("action: 'remove_person'");
-    expect(content).toContain('confirmed: false');
+    expect(content).toContain('Ask explicit confirmation in chat FIRST');
+    expect(content).toContain('does not expose an admin dry-run');
   });
 
   it('CLAUDE.md.template digest report via taskflow_report tool', () => {
@@ -1894,6 +1964,40 @@ describe('taskflow skill package', () => {
     expect(content).toContain('source_person');
     expect(content).toContain('target_person');
     expect(content).toContain('confirmed: false');
+  });
+
+  it('CLAUDE.md.template inbox processing converts captures into new tasks', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    expect(content).toContain("taskflow_admin({ action: 'process_inbox', sender_name: SENDER })");
+    expect(content).toContain('CREATE a new task from the inbox title');
+    expect(content).toContain('Ask whether to remove the original inbox capture');
+    expect(content).toContain('summarize the mapping from old inbox IDs to new task IDs');
+    expect(content).toContain('discard an inbox item entirely');
+    expect(content).toContain('batch instruction');
+  });
+
+  it('CLAUDE.md.template has cancelled query shortcut and date parsing section', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    expect(content).toContain('"canceladas"');
+    expect(content).toContain("archive_reason = 'cancelled'");
+    expect(content).toContain('## Date Parsing');
+    expect(content).toContain('When a date could be ambiguous, ask a clarification question');
+  });
+
+  it('CLAUDE.md.template rate limit guidance is actionable and mentions subtask reorder limitation', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    expect(content).toContain('Max 10 `send_message` calls per user request or tool response');
+    expect(content).toContain('Prefer batched summaries');
+    expect(content).toContain('does NOT expose a subtask reorder command');
   });
 
   it('CLAUDE.md.template Task Dependencies use taskflow_dependency tool', () => {
@@ -2143,6 +2247,27 @@ describe('taskflow skill package', () => {
     expect(dbModule).toContain('linked_parent_task_id');
     expect(dbModule).toContain("journal_mode = WAL");
     expect(dbModule).toContain("foreign_keys = ON");
+  });
+
+  it('skill packaged taskflow-db snapshot adds linked-parent index for rollup queries', () => {
+    const dbModule = fs.readFileSync(
+      path.join(skillDir, 'add', 'src', 'taskflow-db.ts'),
+      'utf-8',
+    );
+    expect(dbModule).toContain('idx_tasks_linked_parent');
+    expect(dbModule).toContain('linked_parent_board_id');
+    expect(dbModule).toContain('linked_parent_task_id');
+  });
+
+  it('skill packaged engine snapshot uses owning board IDs for delegated subtask updates', () => {
+    const engineModule = fs.readFileSync(
+      path.join(skillDir, 'add', 'container', 'agent-runner', 'src', 'taskflow-engine.ts'),
+      'utf-8',
+    );
+    expect(engineModule).toContain(".run(updates.rename_subtask.title, now, taskBoardId, updates.rename_subtask.id)");
+    expect(engineModule).toContain(".run(now, taskBoardId, updates.reopen_subtask);");
+    expect(engineModule).toContain("this.recordHistory(updates.reopen_subtask, 'reopened', params.sender_name, undefined, taskBoardId);");
+    expect(engineModule).toContain("JSON.stringify({ from_assignee: check.subTask.assignee, to_assignee: subPerson.person_id }), taskBoardId);");
   });
 
   it('existing IPC tools still documented for runners on hierarchy boards', () => {

@@ -2419,7 +2419,7 @@ export class TaskflowEngine {
         if (!check.success) return check;
         this.db
           .prepare(`UPDATE tasks SET title = ?, updated_at = ? WHERE board_id = ? AND id = ?`)
-          .run(updates.rename_subtask.title, now, this.boardId, updates.rename_subtask.id);
+          .run(updates.rename_subtask.title, now, taskBoardId, updates.rename_subtask.id);
         changes.push(`Subtask ${updates.rename_subtask.id} renamed to "${updates.rename_subtask.title}"`);
       }
 
@@ -2432,8 +2432,8 @@ export class TaskflowEngine {
         }
         this.db
           .prepare(`UPDATE tasks SET column = 'next_action', updated_at = ? WHERE board_id = ? AND id = ?`)
-          .run(now, this.boardId, updates.reopen_subtask);
-        this.recordHistory(updates.reopen_subtask, 'reopened', params.sender_name, undefined);
+          .run(now, taskBoardId, updates.reopen_subtask);
+        this.recordHistory(updates.reopen_subtask, 'reopened', params.sender_name, undefined, taskBoardId);
         changes.push(`Subtask ${updates.reopen_subtask} reopened`);
       }
 
@@ -2456,7 +2456,7 @@ export class TaskflowEngine {
             updates.assign_subtask.id,
           );
         this.recordHistory(updates.assign_subtask.id, 'reassigned', params.sender_name,
-          JSON.stringify({ from_assignee: check.subTask.assignee, to_assignee: subPerson.person_id }));
+          JSON.stringify({ from_assignee: check.subTask.assignee, to_assignee: subPerson.person_id }), taskBoardId);
         changes.push(`Subtask ${updates.assign_subtask.id} assigned to ${subPerson.name}`);
 
         // Notify subtask assignee
