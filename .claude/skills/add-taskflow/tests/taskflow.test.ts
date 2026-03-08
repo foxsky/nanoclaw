@@ -130,12 +130,12 @@ describe('taskflow skill package', () => {
     expect(skillMd).toContain('board_runtime_config');
   });
 
-  it('templates dir contains only CLAUDE.md.template', () => {
+  it('templates dir contains CLAUDE.md.template (and optional v1 rollback)', () => {
     const templatesDir = path.join(skillDir, 'templates');
     expect(fs.existsSync(path.join(templatesDir, 'CLAUDE.md.template'))).toBe(true);
 
     const files = fs.readdirSync(templatesDir).sort();
-    expect(files).toEqual(['CLAUDE.md.template']);
+    expect(files).toEqual(['CLAUDE.md.template', 'CLAUDE.md.template.v1']);
   });
 
   it('CLAUDE.md.template has all required sections', () => {
