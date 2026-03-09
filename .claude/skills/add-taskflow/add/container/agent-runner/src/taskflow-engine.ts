@@ -1072,25 +1072,55 @@ export class TaskflowEngine {
       .run(boardId, taskId, action, by, now, details ?? null);
   }
 
-  /** Resolve assignee person info for notifications. Returns null if self-update or missing. */
+  /** Resolve notification target. Manager→assignee when someone else modifies; assignee→creator when self-modifying. */
   private resolveNotifTarget(
     assigneePersonId: string | null,
     modifierPersonId: string,
+    taskId?: string,
   ): { target_person_id: string; notification_group_jid: string | null } | null {
-    if (!assigneePersonId || assigneePersonId === modifierPersonId) return null;
-    const person = this.db
-      .prepare(
-        `SELECT notification_group_jid FROM board_people
-         WHERE board_id = ? AND person_id = ?`,
-      )
-      .get(this.boardId, assigneePersonId) as
-      | { notification_group_jid: string | null }
-      | undefined;
-    if (!person) return null;
-    return {
-      target_person_id: assigneePersonId,
-      notification_group_jid: person.notification_group_jid ?? null,
-    };
+    // Someone else modified → notify assignee
+    if (assigneePersonId && assigneePersonId !== modifierPersonId) {
+      const person = this.db
+        .prepare(
+          `SELECT notification_group_jid FROM board_people
+           WHERE board_id = ? AND person_id = ?`,
+        )
+        .get(this.boardId, assigneePersonId) as
+        | { notification_group_jid: string | null }
+        | undefined;
+      if (!person) return null;
+      return {
+        target_person_id: assigneePersonId,
+        notification_group_jid: person.notification_group_jid ?? null,
+      };
+    }
+    // Self-update → notify creator/delegator (if different from assignee)
+    if (taskId && assigneePersonId === modifierPersonId) {
+      const creator = this.db
+        .prepare(
+          `SELECT by FROM task_history
+           WHERE board_id = ? AND task_id = ? AND action = 'created'
+           ORDER BY at ASC LIMIT 1`,
+        )
+        .get(this.boardId, taskId) as { by: string } | undefined;
+      if (!creator) return null;
+      const creatorPerson = this.resolvePerson(creator.by);
+      if (!creatorPerson || creatorPerson.person_id === modifierPersonId) return null;
+      const personRow = this.db
+        .prepare(
+          `SELECT notification_group_jid FROM board_people
+           WHERE board_id = ? AND person_id = ?`,
+        )
+        .get(this.boardId, creatorPerson.person_id) as
+        | { notification_group_jid: string | null }
+        | undefined;
+      if (!personRow) return null;
+      return {
+        target_person_id: creatorPerson.person_id,
+        notification_group_jid: personRow.notification_group_jid ?? null,
+      };
+    }
+    return null;
   }
 
   /** Resolve display name for a person_id. */
@@ -1155,7 +1185,7 @@ export class TaskflowEngine {
     action: MoveParams['action'],
     modifierPersonId: string,
   ): { target_person_id: string; notification_group_jid: string | null; message: string } | null {
-    const target = this.resolveNotifTarget(task.assignee, modifierPersonId);
+    const target = this.resolveNotifTarget(task.assignee, modifierPersonId, task.id);
     if (!target) return null;
     const modName = this.personDisplayName(modifierPersonId);
     const desc = TaskflowEngine.moveActionLabels[action] ?? action;
@@ -1189,7 +1219,7 @@ export class TaskflowEngine {
     changes: string[],
     modifierPersonId: string,
   ): { target_person_id: string; notification_group_jid: string | null; message: string } | null {
-    const target = this.resolveNotifTarget(task.assignee, modifierPersonId);
+    const target = this.resolveNotifTarget(task.assignee, modifierPersonId, task.id);
     if (!target) return null;
     const modName = this.personDisplayName(modifierPersonId);
     const changeList = changes.map(c => `• ${c}`).join('\n');
@@ -2778,7 +2808,7 @@ export class TaskflowEngine {
         this.db
           .prepare(`UPDATE tasks SET notes = ?, next_note_id = ? WHERE board_id = ? AND id = ?`)
           .run(JSON.stringify(notes), noteId + 1, taskBoardId, task.id);
-        changes.push(`Note #${noteId} added`);
+        changes.push(`Nota: ${updates.add_note}`);
       }
 
       /* Edit note */

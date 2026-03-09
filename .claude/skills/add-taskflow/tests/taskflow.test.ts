@@ -4395,6 +4395,51 @@ describe('meeting notes', () => {
       // The created task will have its own create notification via the normal create() path
       expect(result.data.created_task_id).toBeDefined();
     });
+
+    it('assignee self-update notifies the task creator', () => {
+      // Alexandre (manager) creates a task assigned to Giovanni
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Reverse notification test',
+        assignee: 'Giovanni',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+
+      // Giovanni (assignee) adds a note to his own task
+      const updateResult = engine.update({
+        board_id: BOARD_ID,
+        task_id: r.task_id!,
+        sender_name: 'Giovanni',
+        updates: { add_note: 'Concluído' },
+      });
+      expect(updateResult.success).toBe(true);
+      expect(updateResult.notifications).toBeDefined();
+      expect(updateResult.notifications!.length).toBe(1);
+      expect(updateResult.notifications![0].target_person_id).toBe('person-1');
+    });
+
+    it('assignee self-update does NOT notify if assignee is also the creator', () => {
+      // Alexandre creates a task assigned to himself
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Self-assigned task',
+        assignee: 'Alexandre',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+
+      const updateResult = engine.update({
+        board_id: BOARD_ID,
+        task_id: r.task_id!,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'My own note' },
+      });
+      expect(updateResult.success).toBe(true);
+      expect(updateResult.notifications).toBeUndefined();
+    });
   });
 
   describe('manage_holidays MCP schema parity', () => {
