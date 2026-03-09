@@ -32,6 +32,7 @@ export const MCP_JSON_CONTENT = JSON.stringify(
 );
 
 export const TASKFLOW_SUFFIX = ' - TaskFlow';
+export const PARTICIPANT_JID_PATTERN = /^\d{6,20}@s\.whatsapp\.net$/;
 
 export const PARENT_BOARD_HINT =
   " IMPORTANT — Parent board tasks: After querying your own board, also check for tasks assigned to this board's people on parent boards. Query: SELECT parent_board_id FROM boards WHERE id = YOUR_BOARD_ID. If parent_board_id is not null, query: SELECT * FROM tasks WHERE board_id = PARENT_BOARD_ID AND assignee IN (SELECT person_id FROM board_people WHERE board_id = YOUR_BOARD_ID) AND column != 'done'. Include these parent-board tasks in a separate \"Tarefas do quadro superior\" section, clearly labeled with the parent board name.";
@@ -92,6 +93,18 @@ export function sanitizeFolder(input: string): string {
     .replace(/[^a-z0-9-]/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
+}
+
+export function uniqueFolder(
+  base: string,
+  existingFolders: Set<string>,
+): string {
+  if (!existingFolders.has(base)) return base;
+  let suffix = 2;
+  while (existingFolders.has(`${base}-${suffix}`)) {
+    suffix++;
+  }
+  return `${base}-${suffix}`;
 }
 
 export function generateClaudeMd(

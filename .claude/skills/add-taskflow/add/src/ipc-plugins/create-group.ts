@@ -1,10 +1,12 @@
 import type { IpcHandler } from '../ipc.js';
 import { logger } from '../logger.js';
+import {
+  PARTICIPANT_JID_PATTERN,
+  TASKFLOW_SUFFIX,
+} from './provision-shared.js';
 
 const MAX_GROUP_SUBJECT_LENGTH = 100;
 const MAX_GROUP_PARTICIPANTS = 256;
-const PARTICIPANT_JID_PATTERN = /^\d{6,20}@s\.whatsapp\.net$/;
-const TASKFLOW_SUFFIX = ' - TaskFlow';
 
 function normalizeSubject(subject: unknown): string | null {
   if (typeof subject !== 'string') return null;
@@ -82,8 +84,9 @@ const handleCreateGroup: IpcHandler = async (
     logger.warn('create_group handler: no createGroup dep available');
     return;
   }
-  const isTaskflowSource =
-    !isMain && canCreateGroupFromSource(sourceGroup, false, deps);
+  // If we reached here with !isMain, the auth check above already confirmed
+  // this is a valid TaskFlow source (managed + within depth limit).
+  const isTaskflowSource = !isMain;
   let subject = normalizeSubject(data.subject);
   const participants = normalizeParticipants(data.participants);
   if (!subject || !participants) {

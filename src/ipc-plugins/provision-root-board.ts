@@ -11,13 +11,13 @@ import {
   createBoardFilesystem,
   fixOwnership,
   MCP_JSON_CONTENT,
+  PARTICIPANT_JID_PATTERN,
   sanitizeFolder,
   scheduleRunners,
   TASKFLOW_DB_PATH,
   TASKFLOW_SUFFIX,
+  uniqueFolder,
 } from './provision-shared.js';
-
-const PARTICIPANT_JID_PATTERN = /^\d{6,20}@s\.whatsapp\.net$/;
 
 // Default cron schedules (America/Fortaleza, UTC-3)
 const DEFAULT_STANDUP_LOCAL = '0 8 * * 1-5';
@@ -164,13 +164,7 @@ const handleProvisionRootBoard: IpcHandler = async (
   const existingFolders = new Set(
     Object.values(registeredGroups).map((g) => g.folder),
   );
-  if (existingFolders.has(groupFolder)) {
-    let suffix = 2;
-    while (existingFolders.has(`${groupFolder}-${suffix}`)) {
-      suffix++;
-    }
-    groupFolder = `${groupFolder}-${suffix}`;
-  }
+  groupFolder = uniqueFolder(groupFolder, existingFolders);
 
   if (!isValidGroupFolder(groupFolder)) {
     logger.warn(

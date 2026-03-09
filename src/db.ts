@@ -143,32 +143,7 @@ function createSchema(database: Database.Database): void {
     );
   }
 
-  // Add taskflow_managed column if it doesn't exist
-  try {
-    database.exec(
-      `ALTER TABLE registered_groups ADD COLUMN taskflow_managed INTEGER DEFAULT 0`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(
-      `ALTER TABLE registered_groups ADD COLUMN taskflow_hierarchy_level INTEGER`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(
-      `ALTER TABLE registered_groups ADD COLUMN taskflow_max_depth INTEGER`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  // Add taskflow_managed column if it doesn't exist
+  // Add taskflow columns if they don't exist
   try {
     database.exec(
       `ALTER TABLE registered_groups ADD COLUMN taskflow_managed INTEGER DEFAULT 0`,

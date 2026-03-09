@@ -15,6 +15,7 @@ import {
   sanitizeFolder,
   scheduleRunners,
   TASKFLOW_DB_PATH,
+  uniqueFolder,
 } from './provision-shared.js';
 
 const handleProvisionChildBoard: IpcHandler = async (
@@ -140,13 +141,7 @@ const handleProvisionChildBoard: IpcHandler = async (
     const existingFolders = new Set(
       Object.values(registeredGroups).map((g) => g.folder),
     );
-    if (existingFolders.has(childGroupFolder)) {
-      let suffix = 2;
-      while (existingFolders.has(`${childGroupFolder}-${suffix}`)) {
-        suffix++;
-      }
-      childGroupFolder = `${childGroupFolder}-${suffix}`;
-    }
+    childGroupFolder = uniqueFolder(childGroupFolder, existingFolders);
 
     if (!isValidGroupFolder(childGroupFolder)) {
       logger.warn(
