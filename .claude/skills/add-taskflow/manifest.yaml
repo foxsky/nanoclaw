@@ -1,27 +1,44 @@
 skill: taskflow
-version: 2.3.0
+version: 2.4.0
 description: "Kanban+GTD task management with MCP tool engine"
-core_version: 0.1.0
+core_version: 1.2.12
 adds:
+  # Container-side engine
   - container/agent-runner/src/taskflow-engine.ts
   - container/agent-runner/src/taskflow-engine.test.ts
   - container/agent-runner/src/runtime-config.ts
-  - src/taskflow-db.ts
-  - src/ipc-plugins/create-group.ts
-  - src/ipc-plugins/create-group.test.ts
+  - container/agent-runner/src/runtime-config.test.ts
+  - container/agent-runner/src/ipc-tooling.ts
+  - container/agent-runner/src/mcp-plugins/create-group.ts
+  # Host-side IPC plugins
+  - src/ipc-plugins/provision-shared.ts
+  - src/ipc-plugins/provision-root-board.ts
   - src/ipc-plugins/provision-child-board.ts
   - src/ipc-plugins/provision-child-board.test.ts
+  - src/ipc-plugins/create-group.ts
+  - src/ipc-plugins/create-group.test.ts
+  # Host-side TaskFlow support
+  - src/taskflow-db.ts
+  - src/taskflow-db.test.ts
+  - src/migrate-to-sqlite.ts
+  - src/migrate-to-sqlite.test.ts
+  - src/agent-runner-ipc-tooling.test.ts
 modifies:
   - container/Dockerfile
   - container/agent-runner/src/ipc-mcp-stdio.ts
-  - src/container-runner.ts
+  - container/agent-runner/src/index.ts
   - src/channels/whatsapp.ts
-  - src/types.ts
   - src/config.ts
+  - src/container-runner.ts
+  - src/container-runner.test.ts
   - src/db.ts
-  - src/ipc.ts
   - src/index.ts
+  - src/ipc.ts
+  - src/router.ts
   - src/task-scheduler.ts
+  - src/types.ts
+templates:
+  - templates/CLAUDE.md.template
 structured:
   npm_dependencies:
     better-sqlite3: "^11.8.1"
