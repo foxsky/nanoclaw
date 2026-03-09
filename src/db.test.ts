@@ -466,66 +466,52 @@ describe('message query LIMIT', () => {
     }
   });
 
-  it('getNewMessages caps to limit and returns most recent in chronological order', () => {
+  it('getNewMessages returns messages in chronological order', () => {
     const { messages, newTimestamp } = getNewMessages(
       ['group@g.us'],
       '2024-01-01T00:00:00.000Z',
       'Andy',
-      3,
     );
-    expect(messages).toHaveLength(3);
-    expect(messages[0].content).toBe('message 8');
-    expect(messages[2].content).toBe('message 10');
+    expect(messages).toHaveLength(10);
+    expect(messages[0].content).toBe('message 1');
+    expect(messages[9].content).toBe('message 10');
     // Chronological order preserved
     expect(messages[1].timestamp > messages[0].timestamp).toBe(true);
     // newTimestamp reflects latest returned row
     expect(newTimestamp).toBe('2024-01-01T00:00:10.000Z');
   });
 
-  it('getMessagesSince caps to limit and returns most recent in chronological order', () => {
+  it('getMessagesSince returns messages in chronological order', () => {
     const messages = getMessagesSince(
       'group@g.us',
       '2024-01-01T00:00:00.000Z',
       'Andy',
-      3,
-    );
-    expect(messages).toHaveLength(3);
-    expect(messages[0].content).toBe('message 8');
-    expect(messages[2].content).toBe('message 10');
-    expect(messages[1].timestamp > messages[0].timestamp).toBe(true);
-  });
-
-  it('returns all messages when count is under the limit', () => {
-    const { messages } = getNewMessages(
-      ['group@g.us'],
-      '2024-01-01T00:00:00.000Z',
-      'Andy',
-      50,
     );
     expect(messages).toHaveLength(10);
+    expect(messages[0].content).toBe('message 1');
+    expect(messages[9].content).toBe('message 10');
+    expect(messages[1].timestamp > messages[0].timestamp).toBe(true);
   });
 });
 
-// --- RegisteredGroup isMain round-trip ---
+// --- RegisteredGroup round-trip ---
 
-describe('registered group isMain', () => {
-  it('persists isMain=true through set/get round-trip', () => {
+describe('registered group round-trip', () => {
+  it('persists group through set/get round-trip', () => {
     setRegisteredGroup('main@s.whatsapp.net', {
       name: 'Main Chat',
       folder: 'whatsapp_main',
       trigger: '@Andy',
       added_at: '2024-01-01T00:00:00.000Z',
-      isMain: true,
     });
 
     const groups = getAllRegisteredGroups();
     const group = groups['main@s.whatsapp.net'];
     expect(group).toBeDefined();
-    expect(group.isMain).toBe(true);
     expect(group.folder).toBe('whatsapp_main');
   });
 
-  it('omits isMain for non-main groups', () => {
+  it('persists optional fields', () => {
     setRegisteredGroup('group@g.us', {
       name: 'Family Chat',
       folder: 'whatsapp_family-chat',
@@ -536,6 +522,6 @@ describe('registered group isMain', () => {
     const groups = getAllRegisteredGroups();
     const group = groups['group@g.us'];
     expect(group).toBeDefined();
-    expect(group.isMain).toBeUndefined();
+    expect(group.folder).toBe('whatsapp_family-chat');
   });
 });

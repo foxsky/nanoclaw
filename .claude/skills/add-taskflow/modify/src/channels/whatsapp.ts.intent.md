@@ -10,6 +10,14 @@ Added optional `sender` parameter to `sendMessage()` so TaskFlow groups can use 
 - Added: `const displayName = sender?.trim() || ASSISTANT_NAME;` to resolve the display name
 - Changed: prefix uses `displayName` instead of `ASSISTANT_NAME`
 
+### resolvePhoneJid method
+- Added: `resolvePhoneJid(phone: string)` — resolves a phone number to a WhatsApp JID using `sock.onWhatsApp()`
+- Fallback: returns `phone@s.whatsapp.net` if not found on WhatsApp
+
+### createGroup method
+- Added: `createGroup(subject, participants)` — creates a WhatsApp group using `sock.groupCreate()`
+- Returns `{ jid, subject }` for IPC plugin use (provision-root-board, provision-child-board, create-group)
+
 ## Invariants (must-keep)
 - All existing message handling (messages.upsert handler) unchanged
 - Connection lifecycle (connect, reconnect, disconnect) unchanged

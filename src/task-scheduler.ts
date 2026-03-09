@@ -2,7 +2,12 @@ import { ChildProcess } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
-import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
+import {
+  getGroupSenderName,
+  MAIN_GROUP_FOLDER,
+  SCHEDULER_POLL_INTERVAL,
+  TIMEZONE,
+} from './config.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -21,47 +26,6 @@ import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
-/**
- * Compute the next run time for a recurring task, anchored to the
- * task's scheduled time rather than Date.now() to prevent cumulative
- * drift on interval-based tasks.
- *
- * Co-authored-by: @community-pr-601
- */
-export function computeNextRun(task: ScheduledTask): string | null {
-  if (task.schedule_type === 'once') return null;
-
-  const now = Date.now();
-
-  if (task.schedule_type === 'cron') {
-    const interval = CronExpressionParser.parse(task.schedule_value, {
-      tz: TIMEZONE,
-    });
-    return interval.next().toISOString();
-  }
-
-  if (task.schedule_type === 'interval') {
-    const ms = parseInt(task.schedule_value, 10);
-    if (!ms || ms <= 0) {
-      // Guard against malformed interval that would cause an infinite loop
-      logger.warn(
-        { taskId: task.id, value: task.schedule_value },
-        'Invalid interval value',
-      );
-      return new Date(now + 60_000).toISOString();
-    }
-    // Anchor to the scheduled time, not now, to prevent drift.
-    // Skip past any missed intervals so we always land in the future.
-    let next = new Date(task.next_run!).getTime() + ms;
-    while (next <= now) {
-      next += ms;
-    }
-    return new Date(next).toISOString();
-  }
-
-  return null;
-}
-
 export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
   getSessions: () => Record<string, string>;
@@ -73,6 +37,25 @@ export interface SchedulerDependencies {
     groupFolder: string,
   ) => void;
   sendMessage: (jid: string, text: string) => Promise<void>;
+}
+
+/**
+ * Compute the next run time for a task based on its schedule type.
+ * Returns null for 'once' tasks (no recurrence).
+ * Exported for testing.
+ */
+export function computeNextRun(task: ScheduledTask): string | null {
+  if (task.schedule_type === 'cron') {
+    const interval = CronExpressionParser.parse(task.schedule_value, {
+      tz: TIMEZONE,
+    });
+    return interval.next().toISOString();
+  } else if (task.schedule_type === 'interval') {
+    const ms = parseInt(task.schedule_value, 10);
+    return new Date(Date.now() + ms).toISOString();
+  }
+  // 'once' tasks have no next run
+  return null;
 }
 
 async function runTask(
@@ -129,8 +112,17 @@ async function runTask(
     return;
   }
 
+  // Advance next_run BEFORE executing so the scheduler loop won't
+  // re-enqueue this task while it's still running. For 'once' tasks
+  // next_run becomes null and status flips to 'completed' via
+  // updateTaskAfterRun after the run finishes.
+  const precomputedNextRun = computeNextRun(task);
+  if (precomputedNextRun) {
+    updateTask(task.id, { next_run: precomputedNextRun });
+  }
+
   // Update tasks snapshot for container to read (filtered by group)
-  const isMain = group.isMain === true;
+  const isMain = task.group_folder === MAIN_GROUP_FOLDER;
   const tasks = getAllTasks();
   writeTasksSnapshot(
     task.group_folder,
@@ -177,24 +169,36 @@ async function runTask(
         groupFolder: task.group_folder,
         chatJid: task.chat_jid,
         isMain,
+        isTaskflowManaged: group.taskflowManaged === true,
+        taskflowHierarchyLevel: group.taskflowHierarchyLevel,
+        taskflowMaxDepth: group.taskflowMaxDepth,
         isScheduledTask: true,
-        assistantName: ASSISTANT_NAME,
+        assistantName: getGroupSenderName(group.trigger),
       },
       (proc, containerName) =>
         deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
-          // Forward result to user (sendMessage handles formatting)
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          // TaskFlow runner prompts send chat output explicitly via the MCP
+          // send_message tool. Avoid duplicating that output here.
+          if (group.taskflowManaged !== true) {
+            await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          }
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {
           deps.queue.notifyIdle(task.chat_jid);
-          scheduleClose(); // Close promptly even when result is null (e.g. IPC-only tasks)
         }
         if (streamedOutput.status === 'error') {
           error = streamedOutput.error || 'Unknown error';
+          // Notify group about TaskFlow runner failures so they don't go silent
+          if (group.taskflowManaged === true) {
+            await deps.sendMessage(
+              task.chat_jid,
+              `⚠️ TaskFlow runner error: ${error.slice(0, 200)}`,
+            );
+          }
         }
       },
     );
@@ -204,7 +208,7 @@ async function runTask(
     if (output.status === 'error') {
       error = output.error || 'Unknown error';
     } else if (output.result) {
-      // Result was already forwarded to the user via the streaming callback above
+      // Messages are sent via MCP tool (IPC), result text is just logged
       result = output.result;
     }
 
@@ -229,7 +233,10 @@ async function runTask(
     error,
   });
 
+  // Recompute next_run after execution so it's based on post-run time.
+  // (The pre-execution advancement was just to prevent double-pickup.)
   const nextRun = computeNextRun(task);
+
   const resultSummary = error
     ? `Error: ${error}`
     : result
@@ -238,6 +245,7 @@ async function runTask(
   updateTaskAfterRun(task.id, nextRun, resultSummary);
 }
 
+const inFlightTaskIds = new Set<string>();
 let schedulerRunning = false;
 
 export function startSchedulerLoop(deps: SchedulerDependencies): void {
@@ -256,15 +264,40 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
       }
 
       for (const task of dueTasks) {
-        // Re-check task status in case it was paused/cancelled
-        const currentTask = getTaskById(task.id);
-        if (!currentTask || currentTask.status !== 'active') {
+        // Skip tasks already in flight (prevents duplicate execution on slow containers)
+        if (inFlightTaskIds.has(task.id)) {
+          logger.debug({ taskId: task.id }, 'Skipping due task already in flight');
           continue;
         }
 
-        deps.queue.enqueueTask(currentTask.chat_jid, currentTask.id, () =>
-          runTask(currentTask, deps),
+        // Re-check task status in case it was paused/cancelled
+        const currentTask = getTaskById(task.id);
+        if (!currentTask || currentTask.status !== 'active') {
+          logger.debug(
+            { taskId: task.id, exists: !!currentTask, status: currentTask?.status },
+            'Skipping due task after status re-check',
+          );
+          continue;
+        }
+
+        logger.info(
+          {
+            taskId: currentTask.id,
+            group: currentTask.group_folder,
+            scheduleType: currentTask.schedule_type,
+            nextRun: currentTask.next_run,
+            contextMode: currentTask.context_mode,
+          },
+          'Queueing due task',
         );
+        inFlightTaskIds.add(currentTask.id);
+        deps.queue.enqueueTask(currentTask.chat_jid, currentTask.id, async () => {
+          try {
+            await runTask(currentTask, deps);
+          } finally {
+            inFlightTaskIds.delete(currentTask.id);
+          }
+        });
       }
     } catch (err) {
       logger.error({ err }, 'Error in scheduler loop');

@@ -39,7 +39,9 @@ export interface RegisteredGroup {
   added_at: string;
   containerConfig?: ContainerConfig;
   requiresTrigger?: boolean; // Default: true for groups, false for solo chats
-  isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
+  taskflowManaged?: boolean; // Set for groups provisioned by the TaskFlow skill
+  taskflowHierarchyLevel?: number; // 0-based depth in the TaskFlow hierarchy
+  taskflowMaxDepth?: number; // Inclusive maximum depth allowed for descendants
 }
 
 export interface NewMessage {
@@ -82,14 +84,17 @@ export interface TaskRunLog {
 export interface Channel {
   name: string;
   connect(): Promise<void>;
-  sendMessage(jid: string, text: string): Promise<void>;
+  sendMessage(jid: string, text: string, sender?: string): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
   // Optional: typing indicator. Channels that support it implement it.
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
-  // Optional: sync group/chat names from the platform.
-  syncGroups?(force: boolean): Promise<void>;
+  // Optional: group creation. Channels that support it implement it.
+  createGroup?(
+    subject: string,
+    participants: string[],
+  ): Promise<{ jid: string; subject: string }>;
 }
 
 // Callback type that channels use to deliver inbound messages
@@ -97,7 +102,7 @@ export type OnInboundMessage = (chatJid: string, message: NewMessage) => void;
 
 // Callback for chat metadata discovery.
 // name is optional — channels that deliver names inline (Telegram) pass it here;
-// channels that sync names separately (via syncGroups) omit it.
+// channels that sync names separately (WhatsApp syncGroupMetadata) omit it.
 export type OnChatMetadata = (
   chatJid: string,
   timestamp: string,

@@ -373,6 +373,23 @@ export class WhatsAppChannel implements Channel {
     return jid;
   }
 
+  async resolvePhoneJid(phone: string): Promise<string> {
+    const results = await this.sock.onWhatsApp(phone);
+    if (results?.length && results[0].exists) {
+      return results[0].jid;
+    }
+    // Fallback: use raw digits
+    return phone.replace(/\D/g, '') + '@s.whatsapp.net';
+  }
+
+  async createGroup(
+    subject: string,
+    participants: string[],
+  ): Promise<{ jid: string; subject: string }> {
+    const result = await this.sock.groupCreate(subject, participants);
+    return { jid: result.id, subject: result.subject };
+  }
+
   private async flushOutgoingQueue(): Promise<void> {
     if (this.flushing || this.outgoingQueue.length === 0) return;
     this.flushing = true;
