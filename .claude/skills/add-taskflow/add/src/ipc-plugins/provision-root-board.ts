@@ -35,7 +35,10 @@ const handleProvisionRootBoard: IpcHandler = async (
 ) => {
   // --- 1. Authorization: main group only ---
   if (!isMain) {
-    logger.warn({ sourceGroup }, 'provision_root_board: only main group can provision root boards');
+    logger.warn(
+      { sourceGroup },
+      'provision_root_board: only main group can provision root boards',
+    );
     return;
   }
 
@@ -46,11 +49,18 @@ const handleProvisionRootBoard: IpcHandler = async (
 
   // --- 2. Validate required input ---
   let subject = typeof data.subject === 'string' ? data.subject.trim() : '';
-  const personId = typeof data.person_id === 'string' ? data.person_id.trim() : '';
-  const personName = typeof data.person_name === 'string' ? data.person_name.trim() : '';
-  const personPhone = typeof data.person_phone === 'string' ? data.person_phone.trim() : '';
-  const personRole = typeof data.person_role === 'string' ? data.person_role.trim() : 'manager';
-  const shortCode = typeof data.short_code === 'string' ? data.short_code.trim().toUpperCase() : '';
+  const personId =
+    typeof data.person_id === 'string' ? data.person_id.trim() : '';
+  const personName =
+    typeof data.person_name === 'string' ? data.person_name.trim() : '';
+  const personPhone =
+    typeof data.person_phone === 'string' ? data.person_phone.trim() : '';
+  const personRole =
+    typeof data.person_role === 'string' ? data.person_role.trim() : 'manager';
+  const shortCode =
+    typeof data.short_code === 'string'
+      ? data.short_code.trim().toUpperCase()
+      : '';
 
   // Append " - TaskFlow" suffix if not already present
   if (subject && !subject.endsWith(TASKFLOW_SUFFIX)) {
@@ -62,14 +72,22 @@ const handleProvisionRootBoard: IpcHandler = async (
 
   if (!subject || !personId || !personName || !personPhone || !shortCode) {
     logger.warn(
-      { subject: !!subject, personId: !!personId, personName: !!personName, personPhone: !!personPhone, shortCode: !!shortCode },
+      {
+        subject: !!subject,
+        personId: !!personId,
+        personName: !!personName,
+        personPhone: !!personPhone,
+        shortCode: !!shortCode,
+      },
       'provision_root_board: missing required fields',
     );
     return;
   }
 
   // Validate participants
-  const participants = Array.isArray(data.participants) ? data.participants : [];
+  const participants = Array.isArray(data.participants)
+    ? data.participants
+    : [];
   const phoneJid = personPhone + '@s.whatsapp.net';
   const allParticipants = new Set<string>([phoneJid]);
   for (const p of participants) {
@@ -83,28 +101,65 @@ const handleProvisionRootBoard: IpcHandler = async (
   const mainEntry = Object.values(registeredGroups).find(
     (g) => g.folder === sourceGroup,
   );
-  const trigger = typeof data.trigger === 'string' ? data.trigger.trim() : (mainEntry?.trigger || '@Case');
-  const requiresTrigger = typeof data.requires_trigger === 'boolean' ? data.requires_trigger : false;
-  const language = typeof data.language === 'string' ? data.language.trim() : 'pt-BR';
-  const timezone = typeof data.timezone === 'string' ? data.timezone.trim() : 'America/Fortaleza';
-  const wipLimit = typeof data.wip_limit === 'number' && data.wip_limit > 0 ? data.wip_limit : 5;
-  const maxDepth = typeof data.max_depth === 'number' && data.max_depth >= 1 ? data.max_depth : 3;
-  const model = typeof data.model === 'string' ? data.model.trim() : 'claude-sonnet-4-6';
+  const trigger =
+    typeof data.trigger === 'string'
+      ? data.trigger.trim()
+      : mainEntry?.trigger || '@Case';
+  const requiresTrigger =
+    typeof data.requires_trigger === 'boolean' ? data.requires_trigger : false;
+  const language =
+    typeof data.language === 'string' ? data.language.trim() : 'pt-BR';
+  const timezone =
+    typeof data.timezone === 'string'
+      ? data.timezone.trim()
+      : 'America/Fortaleza';
+  const wipLimit =
+    typeof data.wip_limit === 'number' && data.wip_limit > 0
+      ? data.wip_limit
+      : 5;
+  const maxDepth =
+    typeof data.max_depth === 'number' && data.max_depth >= 1
+      ? data.max_depth
+      : 3;
+  const model =
+    typeof data.model === 'string' ? data.model.trim() : 'claude-sonnet-4-6';
 
   // Cron schedules (use provided or defaults)
-  const standupLocal = typeof data.standup_cron_local === 'string' ? data.standup_cron_local : DEFAULT_STANDUP_LOCAL;
-  const digestLocal = typeof data.digest_cron_local === 'string' ? data.digest_cron_local : DEFAULT_DIGEST_LOCAL;
-  const reviewLocal = typeof data.review_cron_local === 'string' ? data.review_cron_local : DEFAULT_REVIEW_LOCAL;
-  const standupUtc = typeof data.standup_cron_utc === 'string' ? data.standup_cron_utc : DEFAULT_STANDUP_UTC;
-  const digestUtc = typeof data.digest_cron_utc === 'string' ? data.digest_cron_utc : DEFAULT_DIGEST_UTC;
-  const reviewUtc = typeof data.review_cron_utc === 'string' ? data.review_cron_utc : DEFAULT_REVIEW_UTC;
+  const standupLocal =
+    typeof data.standup_cron_local === 'string'
+      ? data.standup_cron_local
+      : DEFAULT_STANDUP_LOCAL;
+  const digestLocal =
+    typeof data.digest_cron_local === 'string'
+      ? data.digest_cron_local
+      : DEFAULT_DIGEST_LOCAL;
+  const reviewLocal =
+    typeof data.review_cron_local === 'string'
+      ? data.review_cron_local
+      : DEFAULT_REVIEW_LOCAL;
+  const standupUtc =
+    typeof data.standup_cron_utc === 'string'
+      ? data.standup_cron_utc
+      : DEFAULT_STANDUP_UTC;
+  const digestUtc =
+    typeof data.digest_cron_utc === 'string'
+      ? data.digest_cron_utc
+      : DEFAULT_DIGEST_UTC;
+  const reviewUtc =
+    typeof data.review_cron_utc === 'string'
+      ? data.review_cron_utc
+      : DEFAULT_REVIEW_UTC;
 
-  const groupContext = typeof data.group_context === 'string' ? data.group_context.trim() : `${subject} task board`;
+  const groupContext =
+    typeof data.group_context === 'string'
+      ? data.group_context.trim()
+      : `${subject} task board`;
 
   // --- 4. Compute folder and board ID ---
-  let groupFolder = typeof data.group_folder === 'string' && data.group_folder.trim()
-    ? data.group_folder.trim()
-    : sanitizeFolder(shortCode) + '-taskflow';
+  let groupFolder =
+    typeof data.group_folder === 'string' && data.group_folder.trim()
+      ? data.group_folder.trim()
+      : sanitizeFolder(shortCode) + '-taskflow';
 
   const existingFolders = new Set(
     Object.values(registeredGroups).map((g) => g.folder),
@@ -112,7 +167,10 @@ const handleProvisionRootBoard: IpcHandler = async (
   groupFolder = uniqueFolder(groupFolder, existingFolders);
 
   if (!isValidGroupFolder(groupFolder)) {
-    logger.warn({ groupFolder }, 'provision_root_board: invalid group folder name');
+    logger.warn(
+      { groupFolder },
+      'provision_root_board: invalid group folder name',
+    );
     return;
   }
 
@@ -199,7 +257,16 @@ const handleProvisionRootBoard: IpcHandler = async (
         .prepare(
           'INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
         )
-        .run(boardId, groupJid, groupFolder, 'hierarchy', 0, maxDepth, null, shortCode);
+        .run(
+          boardId,
+          groupJid,
+          groupFolder,
+          'hierarchy',
+          0,
+          maxDepth,
+          null,
+          shortCode,
+        );
 
       tfDb
         .prepare('INSERT INTO board_config (board_id, wip_limit) VALUES (?, ?)')
@@ -216,10 +283,17 @@ const handleProvisionRootBoard: IpcHandler = async (
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
-          boardId, language, timezone,
-          standupLocal, digestLocal, reviewLocal,
-          standupUtc, digestUtc, reviewUtc,
-          0, '',
+          boardId,
+          language,
+          timezone,
+          standupLocal,
+          digestLocal,
+          reviewLocal,
+          standupUtc,
+          digestUtc,
+          reviewUtc,
+          0,
+          '',
           1,
         );
 
@@ -233,14 +307,26 @@ const handleProvisionRootBoard: IpcHandler = async (
         .prepare(
           'INSERT INTO board_people (board_id, person_id, name, phone, role, wip_limit, notification_group_jid) VALUES (?, ?, ?, ?, ?, ?, ?)',
         )
-        .run(boardId, personId, personName, personPhone, personRole, wipLimit, null);
+        .run(
+          boardId,
+          personId,
+          personName,
+          personPhone,
+          personRole,
+          wipLimit,
+          null,
+        );
 
       tfDb
         .prepare(
           'INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES (?, ?, ?, ?, ?, ?)',
         )
         .run(
-          boardId, '', 'root_board_created', personId, now,
+          boardId,
+          '',
+          'root_board_created',
+          personId,
+          now,
           JSON.stringify({ board_id: boardId, short_code: shortCode }),
         );
     });
@@ -249,7 +335,10 @@ const handleProvisionRootBoard: IpcHandler = async (
       seedTransaction();
       logger.info({ boardId }, 'provision_root_board: taskflow DB seeded');
     } catch (err) {
-      logger.error({ err, boardId }, 'provision_root_board: failed to seed taskflow DB');
+      logger.error(
+        { err, boardId },
+        'provision_root_board: failed to seed taskflow DB',
+      );
       return;
     }
 
@@ -280,20 +369,34 @@ const handleProvisionRootBoard: IpcHandler = async (
         reviewCronLocal: reviewLocal,
       });
     } catch (err) {
-      logger.error({ err, groupFolder }, 'provision_root_board: failed to create filesystem');
+      logger.error(
+        { err, groupFolder },
+        'provision_root_board: failed to create filesystem',
+      );
     }
 
     // --- 10. Write settings.json (model override) ---
     try {
-      const sessionsDir = path.join(DATA_DIR, 'sessions', groupFolder, '.claude');
+      const sessionsDir = path.join(
+        DATA_DIR,
+        'sessions',
+        groupFolder,
+        '.claude',
+      );
       fs.mkdirSync(sessionsDir, { recursive: true });
       fs.writeFileSync(
         path.join(sessionsDir, 'settings.json'),
         JSON.stringify({ model }, null, 2) + '\n',
       );
-      logger.info({ model, groupFolder }, 'provision_root_board: settings.json written');
+      logger.info(
+        { model, groupFolder },
+        'provision_root_board: settings.json written',
+      );
     } catch (err) {
-      logger.error({ err }, 'provision_root_board: failed to write settings.json');
+      logger.error(
+        { err },
+        'provision_root_board: failed to write settings.json',
+      );
     }
 
     // --- 11. Schedule runners ---
@@ -319,7 +422,10 @@ const handleProvisionRootBoard: IpcHandler = async (
       fs.mkdirSync(path.join(ipcDir, 'messages'), { recursive: true });
       fs.mkdirSync(path.join(ipcDir, 'tasks'), { recursive: true });
     } catch (err) {
-      logger.error({ err }, 'provision_root_board: failed to create IPC directories');
+      logger.error(
+        { err },
+        'provision_root_board: failed to create IPC directories',
+      );
     }
 
     // --- 13. Fix ownership ---
@@ -342,7 +448,10 @@ const handleProvisionRootBoard: IpcHandler = async (
           assistantName,
         );
       } catch (err) {
-        logger.error({ err }, 'provision_root_board: failed to send confirmation');
+        logger.error(
+          { err },
+          'provision_root_board: failed to send confirmation',
+        );
       }
     }
 
@@ -354,11 +463,16 @@ const handleProvisionRootBoard: IpcHandler = async (
         assistantName,
       );
       tfDb
-        .prepare('UPDATE board_runtime_config SET welcome_sent = 1 WHERE board_id = ?')
+        .prepare(
+          'UPDATE board_runtime_config SET welcome_sent = 1 WHERE board_id = ?',
+        )
         .run(boardId);
       logger.info({ groupJid }, 'provision_root_board: welcome message sent');
     } catch (err) {
-      logger.error({ err }, 'provision_root_board: failed to send welcome message');
+      logger.error(
+        { err },
+        'provision_root_board: failed to send welcome message',
+      );
     }
 
     logger.info(

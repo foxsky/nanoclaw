@@ -199,7 +199,11 @@ function linkedChildBoardFor(
   db: Database.Database,
   boardId: string,
   personId: string | null,
-): { child_exec_enabled: number; child_exec_board_id: string | null; child_exec_person_id: string | null } {
+): {
+  child_exec_enabled: number;
+  child_exec_board_id: string | null;
+  child_exec_person_id: string | null;
+} {
   if (!personId) {
     return {
       child_exec_enabled: 0,
@@ -227,7 +231,10 @@ function linkedChildBoardFor(
   };
 }
 
-function legacySubtaskColumn(subtask: { status?: string; column?: string }): string {
+function legacySubtaskColumn(subtask: {
+  status?: string;
+  column?: string;
+}): string {
   if (typeof subtask.column === 'string' && subtask.column.trim() !== '') {
     return subtask.column;
   }
@@ -242,14 +249,14 @@ function migrateLegacyProjectSubtasks(db: Database.Database): void {
        WHERE type = 'project' AND subtasks IS NOT NULL AND subtasks != '' AND subtasks != '[]'`,
     )
     .all() as Array<{
-      id: string;
-      board_id: string;
-      assignee: string | null;
-      priority: string | null;
-      created_at: string;
-      updated_at: string;
-      subtasks: string;
-    }>;
+    id: string;
+    board_id: string;
+    assignee: string | null;
+    priority: string | null;
+    created_at: string;
+    updated_at: string;
+    subtasks: string;
+  }>;
 
   const subtaskRow = db.prepare(
     `SELECT id, title, assignee, "column", parent_task_id, priority,
@@ -358,7 +365,11 @@ function migrateLegacyProjectSubtasks(db: Database.Database): void {
           ? subtask.assignee
           : row.assignee;
       const expectedColumn = legacySubtaskColumn(subtask);
-      const expectedChildLink = linkedChildBoardFor(db, row.board_id, assignee ?? null);
+      const expectedChildLink = linkedChildBoardFor(
+        db,
+        row.board_id,
+        assignee ?? null,
+      );
       const existing = subtaskRow.get(row.board_id, subtaskId) as
         | {
             title: string;
@@ -377,8 +388,10 @@ function migrateLegacyProjectSubtasks(db: Database.Database): void {
         existing.assignee !== (assignee ?? null) ||
         existing.column !== expectedColumn ||
         existing.child_exec_enabled !== expectedChildLink.child_exec_enabled ||
-        (existing.child_exec_board_id ?? null) !== expectedChildLink.child_exec_board_id ||
-        (existing.child_exec_person_id ?? null) !== expectedChildLink.child_exec_person_id
+        (existing.child_exec_board_id ?? null) !==
+          expectedChildLink.child_exec_board_id ||
+        (existing.child_exec_person_id ?? null) !==
+          expectedChildLink.child_exec_person_id
       ) {
         allMigrated = false;
         break;
@@ -418,7 +431,11 @@ function reconcileDelegationLinks(db: Database.Database): void {
   );
 
   for (const row of rows) {
-    const expected = linkedChildBoardFor(db, row.board_id, row.assignee ?? null);
+    const expected = linkedChildBoardFor(
+      db,
+      row.board_id,
+      row.assignee ?? null,
+    );
     if (
       row.child_exec_enabled !== expected.child_exec_enabled ||
       (row.child_exec_board_id ?? null) !== expected.child_exec_board_id ||
@@ -458,27 +475,57 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   } catch {
     // Existing DBs may already have the column.
   }
-  try { db.exec('ALTER TABLE tasks ADD COLUMN max_cycles INTEGER'); } catch {}
-  try { db.exec('ALTER TABLE tasks ADD COLUMN recurrence_end_date TEXT'); } catch {}
-  try { db.exec('ALTER TABLE tasks ADD COLUMN recurrence_anchor TEXT'); } catch {}
-  try { db.exec('ALTER TABLE tasks ADD COLUMN participants TEXT'); } catch {}
-  try { db.exec('ALTER TABLE tasks ADD COLUMN scheduled_at TEXT'); } catch {}
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(board_id, parent_task_id) WHERE parent_task_id IS NOT NULL`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_linked_parent ON tasks(board_id, linked_parent_board_id, linked_parent_task_id) WHERE linked_parent_board_id IS NOT NULL AND linked_parent_task_id IS NOT NULL`);
+  try {
+    db.exec('ALTER TABLE tasks ADD COLUMN max_cycles INTEGER');
+  } catch {}
+  try {
+    db.exec('ALTER TABLE tasks ADD COLUMN recurrence_end_date TEXT');
+  } catch {}
+  try {
+    db.exec('ALTER TABLE tasks ADD COLUMN recurrence_anchor TEXT');
+  } catch {}
+  try {
+    db.exec('ALTER TABLE tasks ADD COLUMN participants TEXT');
+  } catch {}
+  try {
+    db.exec('ALTER TABLE tasks ADD COLUMN scheduled_at TEXT');
+  } catch {}
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(board_id, parent_task_id) WHERE parent_task_id IS NOT NULL`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_tasks_linked_parent ON tasks(board_id, linked_parent_board_id, linked_parent_task_id) WHERE linked_parent_board_id IS NOT NULL AND linked_parent_task_id IS NOT NULL`,
+  );
 
   /* --- board_holidays table (migration for existing DBs) --- */
   db.exec(`CREATE TABLE IF NOT EXISTS board_holidays (
     board_id TEXT NOT NULL, holiday_date TEXT NOT NULL, label TEXT,
     PRIMARY KEY (board_id, holiday_date)
   )`);
-  try { db.exec(`ALTER TABLE boards ADD COLUMN short_code TEXT`); } catch {}
-  try { db.exec(`ALTER TABLE board_runtime_config ADD COLUMN country TEXT`); } catch {}
-  try { db.exec(`ALTER TABLE board_runtime_config ADD COLUMN state TEXT`); } catch {}
-  try { db.exec(`ALTER TABLE board_runtime_config ADD COLUMN city TEXT`); } catch {}
+  try {
+    db.exec(`ALTER TABLE boards ADD COLUMN short_code TEXT`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE board_runtime_config ADD COLUMN country TEXT`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE board_runtime_config ADD COLUMN state TEXT`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE board_runtime_config ADD COLUMN city TEXT`);
+  } catch {}
 
   /* --- Per-prefix counters (P, T, R) --- */
-  try { db.exec('ALTER TABLE board_config ADD COLUMN next_project_number INTEGER DEFAULT 1'); } catch {}
-  try { db.exec('ALTER TABLE board_config ADD COLUMN next_recurring_number INTEGER DEFAULT 1'); } catch {}
+  try {
+    db.exec(
+      'ALTER TABLE board_config ADD COLUMN next_project_number INTEGER DEFAULT 1',
+    );
+  } catch {}
+  try {
+    db.exec(
+      'ALTER TABLE board_config ADD COLUMN next_recurring_number INTEGER DEFAULT 1',
+    );
+  } catch {}
   // Seed new counters from existing task IDs (one-time migration)
   db.exec(`
     UPDATE board_config SET

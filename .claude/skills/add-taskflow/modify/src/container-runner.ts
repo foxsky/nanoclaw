@@ -355,7 +355,10 @@ export async function runContainerAgent(
   const startTime = Date.now();
 
   if (group.taskflowManaged === true) {
-    input.taskflowBoardId = resolveTaskflowBoardId(group, input.taskflowBoardId);
+    input.taskflowBoardId = resolveTaskflowBoardId(
+      group,
+      input.taskflowBoardId,
+    );
     if (!input.taskflowBoardId) {
       return {
         status: 'error',
@@ -683,9 +686,7 @@ export async function runContainerAgent(
         // (most recent) one rather than the first.
         const startIdx = stdout.lastIndexOf(OUTPUT_START_MARKER);
         const endIdx =
-          startIdx !== -1
-            ? stdout.indexOf(OUTPUT_END_MARKER, startIdx)
-            : -1;
+          startIdx !== -1 ? stdout.indexOf(OUTPUT_END_MARKER, startIdx) : -1;
 
         let jsonLine: string;
         if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
