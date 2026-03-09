@@ -5407,28 +5407,28 @@ export class TaskflowEngine {
           date: todayStr,
           ...(formatted_board ? { formatted_board } : {}),
           overdue: overdue.map((t) => ({
-            id: t.id,
+            id: this.displayId(t),
             title: t.title,
             assignee_name: resolveName(t.assignee),
             due_date: t.due_date,
           })),
           in_progress: inProgress.map((t) => ({
-            id: t.id,
+            id: this.displayId(t),
             title: t.title,
             assignee_name: resolveName(t.assignee),
           })),
           review: review.map((t) => ({
-            id: t.id,
+            id: this.displayId(t),
             title: t.title,
             assignee_name: resolveName(t.assignee),
           })),
           due_today: dueToday.map((t) => ({
-            id: t.id,
+            id: this.displayId(t),
             title: t.title,
             assignee_name: resolveName(t.assignee),
           })),
           waiting: waiting.map((t) => ({
-            id: t.id,
+            id: this.displayId(t),
             title: t.title,
             assignee_name: resolveName(t.assignee),
             waiting_for: t.waiting_for,
@@ -5440,7 +5440,7 @@ export class TaskflowEngine {
                   blockedByIds = JSON.parse(t.blocked_by_raw);
                 } catch {}
                 return {
-                  id: t.id,
+                  id: this.displayId(t),
                   title: t.title,
                   assignee_name: resolveName(t.assignee),
                   blocked_by: blockedByIds,
@@ -5449,7 +5449,7 @@ export class TaskflowEngine {
             : [],
           completed_today: isDigestOrWeekly
             ? completedTodayTasks.map((t) => ({
-                id: t.id,
+                id: this.displayId(t),
                 title: t.title,
                 assignee_name: resolveName(t.assignee),
               }))
@@ -5460,7 +5460,7 @@ export class TaskflowEngine {
           ...(isWeekly && staleTasks.length > 0
             ? {
                 stale_tasks: staleTasks.map((t) => ({
-                  id: t.id,
+                  id: this.displayId(t),
                   title: t.title,
                   assignee_name: resolveName(t.assignee),
                   column: t.column,
