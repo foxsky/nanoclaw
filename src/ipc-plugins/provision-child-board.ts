@@ -58,11 +58,18 @@ const handleProvisionChildBoard: IpcHandler = async (
   const assistantName = getGroupSenderName(sourceEntry.trigger);
 
   // --- 2. Validate input ---
-  const personId = typeof data.person_id === 'string' ? data.person_id.trim() : '';
-  const personName = typeof data.person_name === 'string' ? data.person_name.trim() : '';
-  const personPhone = typeof data.person_phone === 'string' ? data.person_phone.trim() : '';
-  const personRole = typeof data.person_role === 'string' ? data.person_role.trim() : '';
-  const shortCode = typeof data.short_code === 'string' ? data.short_code.trim().toUpperCase() : null;
+  const personId =
+    typeof data.person_id === 'string' ? data.person_id.trim() : '';
+  const personName =
+    typeof data.person_name === 'string' ? data.person_name.trim() : '';
+  const personPhone =
+    typeof data.person_phone === 'string' ? data.person_phone.trim() : '';
+  const personRole =
+    typeof data.person_role === 'string' ? data.person_role.trim() : '';
+  const shortCode =
+    typeof data.short_code === 'string'
+      ? data.short_code.trim().toUpperCase()
+      : null;
 
   if (!personId || !personName || !personPhone || !personRole) {
     logger.warn(
@@ -87,7 +94,10 @@ const handleProvisionChildBoard: IpcHandler = async (
       .get(sourceGroup) as BoardRow | undefined;
 
     if (!parentBoard) {
-      logger.warn({ sourceGroup }, 'provision_child_board: parent board not found');
+      logger.warn(
+        { sourceGroup },
+        'provision_child_board: parent board not found',
+      );
       return;
     }
 
@@ -301,7 +311,12 @@ const handleProvisionChildBoard: IpcHandler = async (
 
       if (linked.changes > 0) {
         logger.info(
-          { count: linked.changes, parentBoardId: parentBoard.id, personId, childBoardId },
+          {
+            count: linked.changes,
+            parentBoardId: parentBoard.id,
+            personId,
+            childBoardId,
+          },
           'provision_child_board: retroactively linked existing tasks',
         );
       }
@@ -423,7 +438,9 @@ const handleProvisionChildBoard: IpcHandler = async (
         assistantName,
       );
       tfDb
-        .prepare('UPDATE board_runtime_config SET welcome_sent = 1 WHERE board_id = ?')
+        .prepare(
+          'UPDATE board_runtime_config SET welcome_sent = 1 WHERE board_id = ?',
+        )
         .run(childBoardId);
       logger.info(
         { childGroupJid },

@@ -370,11 +370,7 @@ describe('container-runner legacy mode output parsing', () => {
   });
 
   it('parses single marker pair correctly (legacy mode)', async () => {
-    const resultPromise = runContainerAgent(
-      testGroup,
-      testInput,
-      () => {},
-    );
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
 
     const output: ContainerOutput = {
       status: 'success',

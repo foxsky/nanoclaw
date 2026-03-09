@@ -153,9 +153,9 @@ describe('initTaskflowDb', () => {
     legacyDb.close();
 
     const db = initTaskflowDb(dbPath);
-    const columns = db
-      .prepare(`PRAGMA table_info(tasks)`)
-      .all() as Array<{ name: string }>;
+    const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{
+      name: string;
+    }>;
     const subtask = db
       .prepare(
         `SELECT id, parent_task_id, assignee, child_exec_enabled, child_exec_board_id
@@ -444,9 +444,9 @@ describe('initTaskflowDb', () => {
     legacyDb.close();
 
     const db = initTaskflowDb(dbPath);
-    const columns = db
-      .prepare(`PRAGMA table_info(tasks)`)
-      .all() as Array<{ name: string }>;
+    const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{
+      name: string;
+    }>;
     const colNames = columns.map((c) => c.name);
 
     expect(colNames).toContain('recurrence_anchor');
@@ -455,8 +455,15 @@ describe('initTaskflowDb', () => {
 
     // Verify existing data is intact and new columns are NULL
     const task = db
-      .prepare(`SELECT title, recurrence_anchor, participants, scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
-      .get('board-1', 'T1') as { title: string; recurrence_anchor: string | null; participants: string | null; scheduled_at: string | null };
+      .prepare(
+        `SELECT title, recurrence_anchor, participants, scheduled_at FROM tasks WHERE board_id = ? AND id = ?`,
+      )
+      .get('board-1', 'T1') as {
+      title: string;
+      recurrence_anchor: string | null;
+      participants: string | null;
+      scheduled_at: string | null;
+    };
     expect(task.title).toBe('Existing task');
     expect(task.recurrence_anchor).toBeNull();
     expect(task.participants).toBeNull();

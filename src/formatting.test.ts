@@ -92,18 +92,16 @@ describe('formatMessages', () => {
   });
 
   it('escapes special characters in content', () => {
-    const result = formatMessages(
-      [makeMsg({ content: '<script>alert("xss")</script>' })],
-    );
+    const result = formatMessages([
+      makeMsg({ content: '<script>alert("xss")</script>' }),
+    ]);
     expect(result).toContain(
       '&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;',
     );
   });
 
   it('escapes special characters in timestamp', () => {
-    const result = formatMessages([
-      makeMsg({ timestamp: 'bad"&<>timestamp' }),
-    ]);
+    const result = formatMessages([makeMsg({ timestamp: 'bad"&<>timestamp' })]);
     expect(result).toContain('time="bad&quot;&amp;&lt;&gt;timestamp"');
   });
 

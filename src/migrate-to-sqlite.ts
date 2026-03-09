@@ -225,7 +225,10 @@ function log(msg: string, dryRun = DRY_RUN): void {
   console.log(`${prefix}${msg}`);
 }
 
-function ensureTaskflowColumns(messagesDb: Database.Database, dryRun: boolean): void {
+function ensureTaskflowColumns(
+  messagesDb: Database.Database,
+  dryRun: boolean,
+): void {
   try {
     messagesDb.exec(
       `ALTER TABLE registered_groups ADD COLUMN taskflow_managed INTEGER DEFAULT 0`,
@@ -263,7 +266,9 @@ function loadAssistantName(projectRoot: string, fallback: string): string {
   return match ? match[1].trim() : fallback;
 }
 
-function collectRejectedMutationTaskIds(rejectedMutations: unknown[]): string[] {
+function collectRejectedMutationTaskIds(
+  rejectedMutations: unknown[],
+): string[] {
   const refs = new Set<string>();
 
   const collect = (value: unknown): void => {
@@ -294,10 +299,7 @@ function collectRejectedMutationTaskIds(rejectedMutations: unknown[]): string[] 
         continue;
       }
 
-      if (
-        (key === 'task_ids' || key === 'taskIds') &&
-        Array.isArray(nested)
-      ) {
+      if ((key === 'task_ids' || key === 'taskIds') && Array.isArray(nested)) {
         for (const entry of nested) collect(entry);
         continue;
       }
@@ -310,9 +312,10 @@ function collectRejectedMutationTaskIds(rejectedMutations: unknown[]): string[] 
   return Array.from(refs);
 }
 
-function prepareTempMessagesDb(
-  messagesDbPath: string,
-): { db: Database.Database; tempRoot: string } {
+function prepareTempMessagesDb(messagesDbPath: string): {
+  db: Database.Database;
+  tempRoot: string;
+} {
   const tempRoot = fs.mkdtempSync(
     path.join(os.tmpdir(), 'taskflow-migrate-dry-run-'),
   );
@@ -430,12 +433,8 @@ export function migrateBoard(options: MigrateBoardOptions): void {
     taskflowDb
       .prepare(`DELETE FROM task_history WHERE board_id = ?`)
       .run(boardId);
-    taskflowDb
-      .prepare(`DELETE FROM archive WHERE board_id = ?`)
-      .run(boardId);
-    taskflowDb
-      .prepare(`DELETE FROM tasks WHERE board_id = ?`)
-      .run(boardId);
+    taskflowDb.prepare(`DELETE FROM archive WHERE board_id = ?`).run(boardId);
+    taskflowDb.prepare(`DELETE FROM tasks WHERE board_id = ?`).run(boardId);
     taskflowDb
       .prepare(`DELETE FROM board_admins WHERE board_id = ?`)
       .run(boardId);
@@ -538,10 +537,7 @@ export function migrateBoard(options: MigrateBoardOptions): void {
       managerInPeople?.wip_limit ?? null,
       null,
     );
-    personIdByPhone.set(
-      meta.manager.phone,
-      managerInPeople?.id ?? managerSlug,
-    );
+    personIdByPhone.set(meta.manager.phone, managerInPeople?.id ?? managerSlug);
     resolvedManagerId = personIdByPhone.get(meta.manager.phone) ?? managerSlug;
 
     // board_admins — preserve legacy managers/delegates when available
@@ -800,7 +796,9 @@ export function migrateBoard(options: MigrateBoardOptions): void {
 
 // --- Main migration ---
 
-function migrateWithConfig(options: MigrationRunOptions = {}): MigrationSummary {
+function migrateWithConfig(
+  options: MigrationRunOptions = {},
+): MigrationSummary {
   const projectRoot = options.projectRoot ?? PROJECT_ROOT;
   const groupsDir = options.groupsDir ?? path.join(projectRoot, 'groups');
   const storeDir = options.storeDir ?? path.join(projectRoot, 'store');
@@ -936,7 +934,10 @@ function migrateWithConfig(options: MigrationRunOptions = {}): MigrationSummary 
       log(`  Board ID: ${boardId}`, dryRun);
       log(`  Group JID: ${regGroup.jid}`, dryRun);
       log(`  Manager: ${meta.manager.name} (${meta.manager.phone})`, dryRun);
-      log(`  People: ${tasksJson.people.map((p) => p.name).join(', ')}`, dryRun);
+      log(
+        `  People: ${tasksJson.people.map((p) => p.name).join(', ')}`,
+        dryRun,
+      );
       log(
         `  Tasks: ${tasksJson.tasks.length}, Archived: ${archiveJson.tasks.length}`,
         dryRun,
@@ -981,9 +982,15 @@ function migrateWithConfig(options: MigrationRunOptions = {}): MigrationSummary 
   log(`Boards discovered: ${boardFolders.length}`, dryRun);
   log(`Boards migrated: ${migratedCount}`, dryRun);
   log(`Boards skipped: ${skippedCount}`, dryRun);
-  log(`TaskFlow DB: ${dryRun ? '(in-memory, dry run)' : taskflowDbPath}`, dryRun);
+  log(
+    `TaskFlow DB: ${dryRun ? '(in-memory, dry run)' : taskflowDbPath}`,
+    dryRun,
+  );
   log('\nNext steps:', dryRun);
-  log('  1. Verify: sqlite3 data/taskflow/taskflow.db "SELECT * FROM boards;"', dryRun);
+  log(
+    '  1. Verify: sqlite3 data/taskflow/taskflow.db "SELECT * FROM boards;"',
+    dryRun,
+  );
   log(
     '  2. Verify: sqlite3 store/messages.db "SELECT folder, taskflow_managed FROM registered_groups WHERE taskflow_managed = 1;"',
     dryRun,

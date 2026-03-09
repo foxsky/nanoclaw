@@ -266,7 +266,10 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
       for (const task of dueTasks) {
         // Skip tasks already in flight (prevents duplicate execution on slow containers)
         if (inFlightTaskIds.has(task.id)) {
-          logger.debug({ taskId: task.id }, 'Skipping due task already in flight');
+          logger.debug(
+            { taskId: task.id },
+            'Skipping due task already in flight',
+          );
           continue;
         }
 
@@ -274,7 +277,11 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
         const currentTask = getTaskById(task.id);
         if (!currentTask || currentTask.status !== 'active') {
           logger.debug(
-            { taskId: task.id, exists: !!currentTask, status: currentTask?.status },
+            {
+              taskId: task.id,
+              exists: !!currentTask,
+              status: currentTask?.status,
+            },
             'Skipping due task after status re-check',
           );
           continue;
@@ -291,13 +298,17 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
           'Queueing due task',
         );
         inFlightTaskIds.add(currentTask.id);
-        deps.queue.enqueueTask(currentTask.chat_jid, currentTask.id, async () => {
-          try {
-            await runTask(currentTask, deps);
-          } finally {
-            inFlightTaskIds.delete(currentTask.id);
-          }
-        });
+        deps.queue.enqueueTask(
+          currentTask.chat_jid,
+          currentTask.id,
+          async () => {
+            try {
+              await runTask(currentTask, deps);
+            } finally {
+              inFlightTaskIds.delete(currentTask.id);
+            }
+          },
+        );
       }
     } catch (err) {
       logger.error({ err }, 'Error in scheduler loop');

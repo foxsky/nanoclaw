@@ -144,7 +144,9 @@ function runMigration(opts: {
     expect(fs.existsSync(mcpPath)).toBe(true);
     const claudePath = path.join(groupDir, 'CLAUDE.md');
     expect(fs.existsSync(claudePath)).toBe(true);
-    expect(fs.readFileSync(claudePath, 'utf-8')).not.toContain('{{MANAGER_ID}}');
+    expect(fs.readFileSync(claudePath, 'utf-8')).not.toContain(
+      '{{MANAGER_ID}}',
+    );
     expect(fs.existsSync(path.join(groupDir, 'CLAUDE.md.pre-migration'))).toBe(
       true,
     );
@@ -334,12 +336,12 @@ describe('migrate-to-sqlite', () => {
 
   it('resolves the default project root from the script location, not cwd', () => {
     expect(
-      resolveDefaultProjectRoot('file:///tmp/example/dist/migrate-to-sqlite.js'),
+      resolveDefaultProjectRoot(
+        'file:///tmp/example/dist/migrate-to-sqlite.js',
+      ),
     ).toBe('/tmp/example');
     expect(
-      resolveDefaultProjectRoot(
-        'file:///tmp/example/src/migrate-to-sqlite.ts',
-      ),
+      resolveDefaultProjectRoot('file:///tmp/example/src/migrate-to-sqlite.ts'),
     ).toBe('/tmp/example');
   });
 
@@ -665,7 +667,10 @@ describe('migrate-to-sqlite', () => {
         assistantName: 'Tars',
       });
 
-      const rendered = fs.readFileSync(path.join(groupDir, 'CLAUDE.md'), 'utf-8');
+      const rendered = fs.readFileSync(
+        path.join(groupDir, 'CLAUDE.md'),
+        'utf-8',
+      );
       expect(rendered).toContain('Manager miguel-custom');
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -1194,9 +1199,7 @@ describe('migrate-to-sqlite', () => {
         'SELECT person_id, admin_role FROM board_admins WHERE board_id = ? ORDER BY person_id, admin_role',
       )
       .all(boardId) as Array<{ person_id: string; admin_role: string }>;
-    expect(admins).toEqual([
-      { person_id: 'miguel', admin_role: 'manager' },
-    ]);
+    expect(admins).toEqual([{ person_id: 'miguel', admin_role: 'manager' }]);
   });
 
   it('rewrites DST guard prompt when runner_dst_guard_task_id is present', () => {
@@ -1275,7 +1278,9 @@ describe('migrate-to-sqlite', () => {
       expect(summary.discoveredCount).toBe(1);
       expect(summary.migratedCount).toBe(1);
       expect(summary.skippedCount).toBe(0);
-      expect(fs.existsSync(path.join(project.groupDir, '.mcp.json'))).toBe(true);
+      expect(fs.existsSync(path.join(project.groupDir, '.mcp.json'))).toBe(
+        true,
+      );
       expect(
         fs.existsSync(path.join(project.groupDir, 'CLAUDE.md.pre-migration')),
       ).toBe(true);
@@ -1336,12 +1341,16 @@ describe('migrate-to-sqlite', () => {
       expect(summary.migratedCount).toBe(1);
       expect(summary.dryRun).toBe(true);
 
-      expect(fs.existsSync(path.join(project.groupDir, '.mcp.json'))).toBe(false);
+      expect(fs.existsSync(path.join(project.groupDir, '.mcp.json'))).toBe(
+        false,
+      );
       expect(
         fs.readFileSync(path.join(project.groupDir, 'CLAUDE.md'), 'utf-8'),
       ).toBe(originalClaude);
 
-      const messagesDb = new Database(project.messagesDbPath, { readonly: true });
+      const messagesDb = new Database(project.messagesDbPath, {
+        readonly: true,
+      });
       const columns = messagesDb
         .prepare(`PRAGMA table_info(registered_groups)`)
         .all() as Array<{ name: string }>;

@@ -34,16 +34,16 @@ export const MCP_JSON_CONTENT = JSON.stringify(
 export const TASKFLOW_SUFFIX = ' - TaskFlow';
 
 export const PARENT_BOARD_HINT =
-  ' IMPORTANT — Parent board tasks: After querying your own board, also check for tasks assigned to this board\'s people on parent boards. Query: SELECT parent_board_id FROM boards WHERE id = YOUR_BOARD_ID. If parent_board_id is not null, query: SELECT * FROM tasks WHERE board_id = PARENT_BOARD_ID AND assignee IN (SELECT person_id FROM board_people WHERE board_id = YOUR_BOARD_ID) AND column != \'done\'. Include these parent-board tasks in a separate "Tarefas do quadro superior" section, clearly labeled with the parent board name.';
+  " IMPORTANT — Parent board tasks: After querying your own board, also check for tasks assigned to this board's people on parent boards. Query: SELECT parent_board_id FROM boards WHERE id = YOUR_BOARD_ID. If parent_board_id is not null, query: SELECT * FROM tasks WHERE board_id = PARENT_BOARD_ID AND assignee IN (SELECT person_id FROM board_people WHERE board_id = YOUR_BOARD_ID) AND column != 'done'. Include these parent-board tasks in a separate \"Tarefas do quadro superior\" section, clearly labeled with the parent board name.";
 
 export const STANDUP_PROMPT =
   "[TF-STANDUP] You are running the morning standup for this group. Query the board from /workspace/taskflow/taskflow.db using the SQLite MCP tools — SELECT from tasks, board_people, board_config for your board_id. If no tasks exist on your board AND no parent-board tasks are assigned to your people, do NOT send any message — just perform housekeeping (archival) silently and exit. Otherwise: 1) Send the Kanban board to this group via send_message (grouped by column, show overdue with 🔴). 2) Include per-person sections in the group message with their personal board, WIP status (X/Y), and prompt for updates. 3) Check for tasks with column = 'done' and updated_at older than 30 days — INSERT them into archive and DELETE from tasks. 4) List any inbox items that need processing. Note: send_message sends to this group only — individual DMs are not supported." +
   PARENT_BOARD_HINT;
 export const DIGEST_PROMPT =
-  "[TF-DIGEST] You are generating the manager digest for this task group. Query the board from /workspace/taskflow/taskflow.db using the SQLite MCP tools — SELECT from tasks for your board_id. If no tasks exist on your board AND no parent-board tasks are assigned to your people, do NOT send any message — exit silently. Otherwise consolidate: 🔥 Overdue tasks, ⏳ Tasks due in next 48h, 🚧 Waiting/blocked tasks, 💤 Tasks with no update in 24h+, ✅ Tasks completed today. Format as a concise executive summary and suggest 3 specific follow-up actions with task IDs. Send the digest to this group via send_message. Note: send_message sends to this group only — individual DMs are not supported." +
+  '[TF-DIGEST] You are generating the manager digest for this task group. Query the board from /workspace/taskflow/taskflow.db using the SQLite MCP tools — SELECT from tasks for your board_id. If no tasks exist on your board AND no parent-board tasks are assigned to your people, do NOT send any message — exit silently. Otherwise consolidate: 🔥 Overdue tasks, ⏳ Tasks due in next 48h, 🚧 Waiting/blocked tasks, 💤 Tasks with no update in 24h+, ✅ Tasks completed today. Format as a concise executive summary and suggest 3 specific follow-up actions with task IDs. Send the digest to this group via send_message. Note: send_message sends to this group only — individual DMs are not supported.' +
   PARENT_BOARD_HINT;
 export const REVIEW_PROMPT =
-  "[TF-REVIEW] You are running the weekly GTD review for this task group. Query the board from /workspace/taskflow/taskflow.db using the SQLite MCP tools — SELECT from tasks and archive for your board_id. If no tasks exist on your board AND no parent-board tasks are assigned to your people, do NOT send any message — exit silently, even if there was archive activity this week. Otherwise produce: 1) Summary: completed, created, overdue this week. 2) Inbox items pending processing. 3) Waiting tasks older than 5 days (suggest follow-up). 4) Overdue tasks (suggest action). 5) In Progress tasks with no update in 3+ days. 6) Next week preview (deadlines and recurrences). 7) Per-person weekly summaries inline. Send the full review to this group via send_message. Note: send_message sends to this group only — individual DMs are not supported." +
+  '[TF-REVIEW] You are running the weekly GTD review for this task group. Query the board from /workspace/taskflow/taskflow.db using the SQLite MCP tools — SELECT from tasks and archive for your board_id. If no tasks exist on your board AND no parent-board tasks are assigned to your people, do NOT send any message — exit silently, even if there was archive activity this week. Otherwise produce: 1) Summary: completed, created, overdue this week. 2) Inbox items pending processing. 3) Waiting tasks older than 5 days (suggest follow-up). 4) Overdue tasks (suggest action). 5) In Progress tasks with no update in 3+ days. 6) Next week preview (deadlines and recurrences). 7) Per-person weekly summaries inline. Send the full review to this group via send_message. Note: send_message sends to this group only — individual DMs are not supported.' +
   PARENT_BOARD_HINT;
 
 export interface BoardRow {
@@ -117,7 +117,16 @@ export interface ScheduleRunnersParams {
 }
 
 export function scheduleRunners(params: ScheduleRunnersParams): void {
-  const { tfDb, boardId, groupFolder, groupJid, standupCronUtc, digestCronUtc, reviewCronUtc, now } = params;
+  const {
+    tfDb,
+    boardId,
+    groupFolder,
+    groupJid,
+    standupCronUtc,
+    digestCronUtc,
+    reviewCronUtc,
+    now,
+  } = params;
   const runners = [
     { prompt: STANDUP_PROMPT, cron: standupCronUtc },
     { prompt: DIGEST_PROMPT, cron: digestCronUtc },
@@ -153,7 +162,10 @@ export function scheduleRunners(params: ScheduleRunnersParams): void {
     )
     .run(standupId, digestId, reviewId, boardId);
 
-  logger.info({ standupId, digestId, reviewId, boardId }, 'Board runners scheduled');
+  logger.info(
+    { standupId, digestId, reviewId, boardId },
+    'Board runners scheduled',
+  );
 }
 
 export interface CreateBoardFilesystemParams {
@@ -185,7 +197,9 @@ export interface CreateBoardFilesystemParams {
   dstGuardEnabled?: boolean;
 }
 
-export function createBoardFilesystem(params: CreateBoardFilesystemParams): void {
+export function createBoardFilesystem(
+  params: CreateBoardFilesystemParams,
+): void {
   const groupDir = path.join(PROJECT_ROOT, 'groups', params.groupFolder);
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
@@ -218,9 +232,12 @@ export function createBoardFilesystem(params: CreateBoardFilesystemParams): void
       '{{STANDUP_CRON_LOCAL}}': params.standupCronLocal,
       '{{DIGEST_CRON_LOCAL}}': params.digestCronLocal,
       '{{REVIEW_CRON_LOCAL}}': params.reviewCronLocal,
-      '{{ATTACHMENT_IMPORT_ENABLED}}': params.attachmentEnabled ? 'true' : 'false',
+      '{{ATTACHMENT_IMPORT_ENABLED}}': params.attachmentEnabled
+        ? 'true'
+        : 'false',
       '{{ATTACHMENT_IMPORT_REASON}}': params.attachmentReason || '',
-      '{{DST_GUARD_ENABLED}}': params.dstGuardEnabled !== false ? 'true' : 'false',
+      '{{DST_GUARD_ENABLED}}':
+        params.dstGuardEnabled !== false ? 'true' : 'false',
     };
     const claudeMd = generateClaudeMd(template, replacements);
     fs.writeFileSync(path.join(groupDir, 'CLAUDE.md'), claudeMd);

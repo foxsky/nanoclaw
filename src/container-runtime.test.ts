@@ -56,10 +56,16 @@ describe('stopContainer', () => {
   });
 
   it('rejects names containing shell metacharacters (command injection)', () => {
-    expect(() => stopContainer('foo; rm -rf /')).toThrow('Invalid container name');
-    expect(() => stopContainer('foo$(whoami)')).toThrow('Invalid container name');
+    expect(() => stopContainer('foo; rm -rf /')).toThrow(
+      'Invalid container name',
+    );
+    expect(() => stopContainer('foo$(whoami)')).toThrow(
+      'Invalid container name',
+    );
     expect(() => stopContainer('foo`id`')).toThrow('Invalid container name');
-    expect(() => stopContainer('foo | cat /etc/passwd')).toThrow('Invalid container name');
+    expect(() => stopContainer('foo | cat /etc/passwd')).toThrow(
+      'Invalid container name',
+    );
     expect(() => stopContainer('foo\nbar')).toThrow('Invalid container name');
   });
 
