@@ -1175,7 +1175,7 @@ export class TaskflowEngine {
     const pri = TaskflowEngine.formatPriority(task.priority ?? null);
     return {
       ...target,
-      message: `🔔 *Nova tarefa atribuída a você*\n\n*${task.id}* — ${task.title}\n*Atribuído por:* ${modName}\n*Coluna:* ${col}\n\n• Prazo: ${due}\n• Prioridade: ${pri}\n\nDigite \`${task.id}\` para ver detalhes.`,
+      message: `🔔 *Nova tarefa atribuída a você*\n\n*${this.displayId(task)}* — ${task.title}\n*Atribuído por:* ${modName}\n*Coluna:* ${col}\n\n• Prazo: ${due}\n• Prioridade: ${pri}\n\nDigite \`${this.displayId(task)}\` para ver detalhes.`,
     };
   }
 
@@ -1191,7 +1191,7 @@ export class TaskflowEngine {
     const desc = TaskflowEngine.moveActionLabels[action] ?? action;
     return {
       ...target,
-      message: `🔔 *Atualização na sua tarefa*\n\n*${task.id}* — ${task.title}\n*Por:* ${modName}\n*Ação:* ${desc}\n\nDigite \`${task.id}\` para ver detalhes.`,
+      message: `🔔 *Atualização na sua tarefa*\n\n*${this.displayId(task)}* — ${task.title}\n*Por:* ${modName}\n*Ação:* ${desc}\n\nDigite \`${this.displayId(task)}\` para ver detalhes.`,
     };
   }
 
@@ -1203,13 +1203,14 @@ export class TaskflowEngine {
     modifierPersonId: string,
   ): { target_person_id: string; notification_group_jid: string | null; message: string } {
     const modName = this.personDisplayName(modifierPersonId);
+    const did = this.displayId(task);
     const header = fromPersonId
-      ? `🔔 *Tarefa reatribuída para você*\n\n*${task.id}* — ${task.title}\n*Reatribuída de:* ${this.personDisplayName(fromPersonId)}\n*Por:* ${modName}`
-      : `🔔 *Tarefa atribuída para você*\n\n*${task.id}* — ${task.title}\n*Por:* ${modName}`;
+      ? `🔔 *Tarefa reatribuída para você*\n\n*${did}* — ${task.title}\n*Reatribuída de:* ${this.personDisplayName(fromPersonId)}\n*Por:* ${modName}`
+      : `🔔 *Tarefa atribuída para você*\n\n*${did}* — ${task.title}\n*Por:* ${modName}`;
     return {
       target_person_id: targetPerson.person_id,
       notification_group_jid: targetPerson.notification_group_jid ?? null,
-      message: `${header}\n\nDigite \`${task.id}\` para ver detalhes.`,
+      message: `${header}\n\nDigite \`${did}\` para ver detalhes.`,
     };
   }
 
@@ -1225,7 +1226,7 @@ export class TaskflowEngine {
     const changeList = changes.map(c => `• ${c}`).join('\n');
     return {
       ...target,
-      message: `🔔 *Atualização na sua tarefa*\n\n*${task.id}* — ${task.title}\n*Modificado por:* ${modName}\n\n${changeList}\n\nDigite \`${task.id}\` para ver detalhes.`,
+      message: `🔔 *Atualização na sua tarefa*\n\n*${this.displayId(task)}* — ${task.title}\n*Modificado por:* ${modName}\n\n${changeList}\n\nDigite \`${this.displayId(task)}\` para ver detalhes.`,
     };
   }
 
@@ -1427,7 +1428,7 @@ export class TaskflowEngine {
     const modName = this.personDisplayName(modifierPersonId);
     return {
       ...target,
-      message: `🔔 *Etapa atribuída para você*\n*${subtask.id}* — ${subtask.title}\n*Projeto:* ${project.id} — ${project.title}\n*Por:* ${modName}`,
+      message: `🔔 *Etapa atribuída para você*\n*${this.displayId(subtask)}* — ${subtask.title}\n*Projeto:* ${this.displayId(project)} — ${project.title}\n*Por:* ${modName}`,
     };
   }
 
@@ -4779,7 +4780,7 @@ export class TaskflowEngine {
                 cancelNotifications.push({
                   target_person_id: pid,
                   notification_group_jid: jidMap.get(pid) ?? null,
-                  message: `📅 Reunião ${task.id} "${task.title}" foi cancelada.`,
+                  message: `📅 Reunião ${this.displayId(task)} "${task.title}" foi cancelada.`,
                 });
               }
             }
