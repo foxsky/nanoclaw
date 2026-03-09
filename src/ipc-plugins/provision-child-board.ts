@@ -1,104 +1,21 @@
 import Database from 'better-sqlite3';
-import { execSync } from 'child_process';
-import fs from 'fs';
 import path from 'path';
 
-import { DATA_DIR, getGroupSenderName, PROJECT_ROOT } from '../config.js';
-import { createTask } from '../db.js';
+import { getGroupSenderName, PROJECT_ROOT } from '../config.js';
 import { isValidGroupFolder } from '../group-folder.js';
 import type { IpcHandler } from '../ipc.js';
 import { logger } from '../logger.js';
-import { computeNextRun } from '../task-scheduler.js';
 
-const TASKFLOW_DB_PATH = path.join(DATA_DIR, 'taskflow', 'taskflow.db');
-const TEMPLATE_PATH = path.join(
-  PROJECT_ROOT,
-  '.claude',
-  'skills',
-  'add-taskflow',
-  'templates',
-  'CLAUDE.md.template',
-);
-const MCP_JSON_CONTENT = JSON.stringify(
-  {
-    mcpServers: {
-      sqlite: {
-        type: 'stdio',
-        command: 'npx',
-        args: ['-y', 'mcp-server-sqlite-npx', '/workspace/taskflow/taskflow.db'],
-      },
-    },
-  },
-  null,
-  2,
-);
-
-const STANDUP_PROMPT =
-  "[TF-STANDUP] You are running the morning standup for this group. Query the board from /workspace/taskflow/taskflow.db using the SQLite MCP tools — SELECT from tasks, board_people, board_config for your board_id. If no tasks exist, do NOT send any message — just perform housekeeping (archival) silently and exit. Otherwise: 1) Send the Kanban board to this group via send_message (grouped by column, show overdue with 🔴). 2) Include per-person sections in the group message with their personal board, WIP status (X/Y), and prompt for updates. 3) Check for tasks with column = 'done' and updated_at older than 30 days — INSERT them into archive and DELETE from tasks. 4) List any inbox items that need processing. Note: send_message sends to this group only — individual DMs are not supported.";
-const DIGEST_PROMPT =
-  "[TF-DIGEST] You are generating the manager digest for this task group. Query the board from /workspace/taskflow/taskflow.db using the SQLite MCP tools — SELECT from tasks for your board_id. If no tasks exist, do NOT send any message — exit silently. Otherwise consolidate: 🔥 Overdue tasks, ⏳ Tasks due in next 48h, 🚧 Waiting/blocked tasks, 💤 Tasks with no update in 24h+, ✅ Tasks completed today. Format as a concise executive summary and suggest 3 specific follow-up actions with task IDs. Send the digest to this group via send_message. Note: send_message sends to this group only — individual DMs are not supported.";
-const REVIEW_PROMPT =
-  "[TF-REVIEW] You are running the weekly GTD review for this task group. Query the board from /workspace/taskflow/taskflow.db using the SQLite MCP tools — SELECT from tasks and archive for your board_id. If no tasks exist, do NOT send any message — exit silently, even if there was archive activity this week. Otherwise produce: 1) Summary: completed, created, overdue this week. 2) Inbox items pending processing. 3) Waiting tasks older than 5 days (suggest follow-up). 4) Overdue tasks (suggest action). 5) In Progress tasks with no update in 3+ days. 6) Next week preview (deadlines and recurrences). 7) Per-person weekly summaries inline. Send the full review to this group via send_message. Note: send_message sends to this group only — individual DMs are not supported.";
-
-interface BoardRow {
-  id: string;
-  group_jid: string;
-  group_folder: string;
-  board_role: string;
-  hierarchy_level: number;
-  max_depth: number;
-  parent_board_id: string | null;
-  short_code: string | null;
-}
-
-interface BoardConfigRow {
-  board_id: string;
-  wip_limit: number;
-}
-
-interface BoardRuntimeConfigRow {
-  board_id: string;
-  language: string;
-  timezone: string;
-  standup_cron_local: string;
-  digest_cron_local: string;
-  review_cron_local: string;
-  standup_cron_utc: string;
-  digest_cron_utc: string;
-  review_cron_utc: string;
-  attachment_enabled: number;
-  attachment_disabled_reason: string;
-  dst_sync_enabled: number;
-}
-
-/** Wrapper to compute next cron run using the shared computeNextRun from task-scheduler. */
-function nextCronRun(cronExpr: string): string | null {
-  return computeNextRun({
-    schedule_type: 'cron',
-    schedule_value: cronExpr,
-  } as import('../types.js').ScheduledTask);
-}
-
-function sanitizeFolder(personId: string): string {
-  return personId
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '') // strip accents
-    .replace(/[^a-z0-9-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-}
-
-function generateClaudeMd(
-  templateContent: string,
-  replacements: Record<string, string>,
-): string {
-  let content = templateContent;
-  for (const [key, value] of Object.entries(replacements)) {
-    content = content.split(key).join(value);
-  }
-  return content;
-}
+import {
+  BoardConfigRow,
+  BoardRow,
+  BoardRuntimeConfigRow,
+  createBoardFilesystem,
+  fixOwnership,
+  sanitizeFolder,
+  scheduleRunners,
+  TASKFLOW_DB_PATH,
+} from './provision-shared.js';
 
 const handleProvisionChildBoard: IpcHandler = async (
   data,
@@ -294,7 +211,6 @@ const handleProvisionChildBoard: IpcHandler = async (
     const now = new Date().toISOString();
 
     const seedTransaction = tfDb.transaction(() => {
-      // Board row
       tfDb
         .prepare(
           'INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
@@ -310,19 +226,16 @@ const handleProvisionChildBoard: IpcHandler = async (
           shortCode,
         );
 
-      // Child board registration
       tfDb
         .prepare(
           'INSERT INTO child_board_registrations (parent_board_id, person_id, child_board_id) VALUES (?, ?, ?)',
         )
         .run(parentBoard.id, personId, childBoardId);
 
-      // Board config
       tfDb
         .prepare('INSERT INTO board_config (board_id, wip_limit) VALUES (?, ?)')
         .run(childBoardId, parentConfig.wip_limit);
 
-      // Board runtime config (inherit from parent)
       tfDb
         .prepare(
           `INSERT INTO board_runtime_config (
@@ -346,14 +259,12 @@ const handleProvisionChildBoard: IpcHandler = async (
           parentRuntime.attachment_disabled_reason,
         );
 
-      // Board admin (person becomes manager of their own board)
       tfDb
         .prepare(
           'INSERT INTO board_admins (board_id, person_id, phone, admin_role, is_primary_manager) VALUES (?, ?, ?, ?, ?)',
         )
         .run(childBoardId, personId, personPhone, 'manager', 1);
 
-      // Person as member on their board
       tfDb
         .prepare(
           'INSERT INTO board_people (board_id, person_id, name, phone, role, wip_limit, notification_group_jid) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -375,7 +286,26 @@ const handleProvisionChildBoard: IpcHandler = async (
         )
         .run(childGroupJid, parentBoard.id, personId);
 
-      // Record history
+      // Retroactively link existing tasks assigned to this person
+      const linked = tfDb
+        .prepare(
+          `UPDATE tasks
+           SET child_exec_enabled = 1,
+               child_exec_board_id = ?,
+               child_exec_person_id = ?,
+               column = CASE WHEN column = 'inbox' THEN 'next_action' ELSE column END,
+               updated_at = ?
+           WHERE board_id = ? AND assignee = ? AND child_exec_enabled = 0`,
+        )
+        .run(childBoardId, personId, now, parentBoard.id, personId);
+
+      if (linked.changes > 0) {
+        logger.info(
+          { count: linked.changes, parentBoardId: parentBoard.id, personId, childBoardId },
+          'provision_child_board: retroactively linked existing tasks',
+        );
+      }
+
       tfDb
         .prepare(
           'INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES (?, ?, ?, ?, ?, ?)',
@@ -409,72 +339,37 @@ const handleProvisionChildBoard: IpcHandler = async (
     }
 
     // --- 9. Create filesystem ---
-    const groupDir = path.join(PROJECT_ROOT, 'groups', childGroupFolder);
     try {
-      fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
-
-      // Write .mcp.json
-      fs.writeFileSync(
-        path.join(groupDir, '.mcp.json'),
-        MCP_JSON_CONTENT + '\n',
-      );
-
-      // Generate CLAUDE.md from template
-      try {
-        const template = fs.readFileSync(TEMPLATE_PATH, 'utf-8');
-
-        const replacements: Record<string, string> = {
-          '{{ASSISTANT_NAME}}': assistantName,
-          '{{MANAGER_NAME}}': personName,
-          '{{MANAGER_PHONE}}': personPhone,
-          '{{MANAGER_ID}}': personId,
-          '{{LANGUAGE}}': parentRuntime.language,
-          '{{TIMEZONE}}': parentRuntime.timezone,
-          '{{WIP_LIMIT}}': String(parentConfig.wip_limit),
-          '{{BOARD_ID}}': childBoardId,
-          '{{GROUP_NAME}}': childGroupName,
-          '{{GROUP_CONTEXT}}': `${personName}'s tasks (private standup channel)`,
-          '{{GROUP_JID}}': childGroupJid,
-          '{{CONTROL_GROUP_HINT}}': '',
-          '{{BOARD_ROLE}}': 'hierarchy',
-          '{{HIERARCHY_LEVEL}}': String(childLevel),
-          '{{MAX_DEPTH}}': String(parentBoard.max_depth),
-          '{{PARENT_BOARD_ID}}': parentBoard.id,
-          '{{STANDUP_CRON}}': parentRuntime.standup_cron_utc,
-          '{{DIGEST_CRON}}': parentRuntime.digest_cron_utc,
-          '{{REVIEW_CRON}}': parentRuntime.review_cron_utc,
-          '{{STANDUP_CRON_LOCAL}}': parentRuntime.standup_cron_local,
-          '{{DIGEST_CRON_LOCAL}}': parentRuntime.digest_cron_local,
-          '{{REVIEW_CRON_LOCAL}}': parentRuntime.review_cron_local,
-          '{{ATTACHMENT_IMPORT_ENABLED}}': parentRuntime.attachment_enabled
-            ? 'true'
-            : 'false',
-          '{{ATTACHMENT_IMPORT_REASON}}':
-            parentRuntime.attachment_disabled_reason || '',
-          '{{DST_GUARD_ENABLED}}': parentRuntime.dst_sync_enabled
-            ? 'true'
-            : 'false',
-        };
-
-        const claudeMd = generateClaudeMd(template, replacements);
-        fs.writeFileSync(path.join(groupDir, 'CLAUDE.md'), claudeMd);
-        logger.info(
-          { path: path.join(groupDir, 'CLAUDE.md') },
-          'provision_child_board: CLAUDE.md generated',
-        );
-      } catch (templateErr: any) {
-        if (templateErr?.code === 'ENOENT') {
-          logger.warn(
-            { templatePath: TEMPLATE_PATH },
-            'provision_child_board: template not found, skipping CLAUDE.md generation',
-          );
-        } else {
-          throw templateErr;
-        }
-      }
+      createBoardFilesystem({
+        groupFolder: childGroupFolder,
+        assistantName,
+        personName,
+        personPhone,
+        personId,
+        language: parentRuntime.language,
+        timezone: parentRuntime.timezone,
+        wipLimit: parentConfig.wip_limit,
+        boardId: childBoardId,
+        groupName: childGroupName,
+        groupContext: `${personName}'s tasks (private standup channel)`,
+        groupJid: childGroupJid,
+        boardRole: 'hierarchy',
+        hierarchyLevel: childLevel,
+        maxDepth: parentBoard.max_depth,
+        parentBoardId: parentBoard.id,
+        standupCronUtc: parentRuntime.standup_cron_utc,
+        digestCronUtc: parentRuntime.digest_cron_utc,
+        reviewCronUtc: parentRuntime.review_cron_utc,
+        standupCronLocal: parentRuntime.standup_cron_local,
+        digestCronLocal: parentRuntime.digest_cron_local,
+        reviewCronLocal: parentRuntime.review_cron_local,
+        attachmentEnabled: !!parentRuntime.attachment_enabled,
+        attachmentReason: parentRuntime.attachment_disabled_reason,
+        dstGuardEnabled: !!parentRuntime.dst_sync_enabled,
+      });
     } catch (err) {
       logger.error(
-        { err, groupDir },
+        { err, childGroupFolder },
         'provision_child_board: failed to create filesystem',
       );
       // Continue — group and DB are already provisioned
@@ -482,46 +377,17 @@ const handleProvisionChildBoard: IpcHandler = async (
 
     // --- 10. Schedule runners ---
     try {
-      const runners = [
-        { prompt: STANDUP_PROMPT, cron: parentRuntime.standup_cron_utc },
-        { prompt: DIGEST_PROMPT, cron: parentRuntime.digest_cron_utc },
-        { prompt: REVIEW_PROMPT, cron: parentRuntime.review_cron_utc },
-      ] as const;
-
-      const runnerIds = runners.map(({ prompt, cron }) => {
-        const id = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        createTask({
-          id,
-          group_folder: childGroupFolder,
-          chat_jid: childGroupJid,
-          prompt,
-          schedule_type: 'cron',
-          schedule_value: cron,
-          context_mode: 'group',
-          next_run: nextCronRun(cron),
-          status: 'active',
-          created_at: now,
-        });
-        return id;
+      scheduleRunners({
+        tfDb,
+        boardId: childBoardId,
+        groupFolder: childGroupFolder,
+        groupJid: childGroupJid,
+        standupCronUtc: parentRuntime.standup_cron_utc,
+        digestCronUtc: parentRuntime.digest_cron_utc,
+        reviewCronUtc: parentRuntime.review_cron_utc,
+        now,
       });
-
-      const [standupId, digestId, reviewId] = runnerIds;
-
-      // Store runner IDs in board_runtime_config
-      tfDb
-        .prepare(
-          `UPDATE board_runtime_config SET
-            runner_standup_task_id = ?,
-            runner_digest_task_id = ?,
-            runner_review_task_id = ?
-          WHERE board_id = ?`,
-        )
-        .run(standupId, digestId, reviewId, childBoardId);
-
-      logger.info(
-        { standupId, digestId, reviewId },
-        'provision_child_board: runners scheduled',
-      );
+      logger.info({ childBoardId }, 'provision_child_board: runners scheduled');
     } catch (err) {
       logger.error(
         { err },
@@ -531,14 +397,7 @@ const handleProvisionChildBoard: IpcHandler = async (
     }
 
     // --- 11. Fix ownership ---
-    try {
-      execSync(
-        `chown -R nanoclaw:nanoclaw ${JSON.stringify(groupDir)}`,
-        { timeout: 5000 },
-      );
-    } catch {
-      // Best-effort; may fail if not running as root
-    }
+    fixOwnership(path.join(PROJECT_ROOT, 'groups', childGroupFolder));
 
     // --- 12. Send confirmation ---
     if (sourceGroupJid) {

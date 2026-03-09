@@ -5,6 +5,7 @@ import { CronExpressionParser } from 'cron-parser';
 
 import {
   DATA_DIR,
+  getGroupSenderName,
   IPC_POLL_INTERVAL,
   MAIN_GROUP_FOLDER,
   TIMEZONE,
@@ -47,6 +48,7 @@ const handlers = new Map<string, IpcHandler>();
 const ALLOWED_IPC_PLUGIN_FILES = new Set([
   'create-group.js',
   'provision-child-board.js',
+  'provision-root-board.js',
 ]);
 
 function parseOptionalNonNegativeInteger(value: unknown): number | undefined {
@@ -419,7 +421,9 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                     (isTaskflow && targetGroup.taskflowManaged))
                 ) {
                   const sender =
-                    typeof data.sender === 'string' ? data.sender : undefined;
+                    typeof data.sender === 'string'
+                      ? data.sender
+                      : getGroupSenderName(targetGroup.trigger);
                   await deps.sendMessage(data.chatJid, data.text, sender);
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },

@@ -11,7 +11,7 @@ CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT
 CREATE TABLE board_admins (board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL, admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
 CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
 CREATE TABLE board_groups (board_id TEXT, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, group_role TEXT DEFAULT 'team', PRIMARY KEY (board_id, group_jid));
-CREATE TABLE tasks (id TEXT NOT NULL, board_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'simple', title TEXT NOT NULL, assignee TEXT, next_action TEXT, waiting_for TEXT, column TEXT DEFAULT 'inbox', priority TEXT, due_date TEXT, description TEXT, labels TEXT DEFAULT '[]', blocked_by TEXT DEFAULT '[]', reminders TEXT DEFAULT '[]', next_note_id INTEGER DEFAULT 1, notes TEXT DEFAULT '[]', _last_mutation TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, child_exec_enabled INTEGER DEFAULT 0, child_exec_board_id TEXT, child_exec_person_id TEXT, child_exec_rollup_status TEXT, child_exec_last_rollup_at TEXT, child_exec_last_rollup_summary TEXT, linked_parent_board_id TEXT, linked_parent_task_id TEXT, parent_task_id TEXT, subtasks TEXT, recurrence TEXT, current_cycle TEXT, max_cycles INTEGER, recurrence_end_date TEXT, PRIMARY KEY (board_id, id));
+CREATE TABLE tasks (id TEXT NOT NULL, board_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'simple', title TEXT NOT NULL, assignee TEXT, next_action TEXT, waiting_for TEXT, column TEXT DEFAULT 'inbox', priority TEXT, due_date TEXT, description TEXT, labels TEXT DEFAULT '[]', blocked_by TEXT DEFAULT '[]', reminders TEXT DEFAULT '[]', next_note_id INTEGER DEFAULT 1, notes TEXT DEFAULT '[]', _last_mutation TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, child_exec_enabled INTEGER DEFAULT 0, child_exec_board_id TEXT, child_exec_person_id TEXT, child_exec_rollup_status TEXT, child_exec_last_rollup_at TEXT, child_exec_last_rollup_summary TEXT, linked_parent_board_id TEXT, linked_parent_task_id TEXT, parent_task_id TEXT, subtasks TEXT, recurrence TEXT, current_cycle TEXT, max_cycles INTEGER, recurrence_end_date TEXT, participants TEXT, scheduled_at TEXT, PRIMARY KEY (board_id, id));
 CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, task_id TEXT NOT NULL, action TEXT NOT NULL, by TEXT, at TEXT NOT NULL, details TEXT);
 CREATE TABLE archive (board_id TEXT NOT NULL, task_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, assignee TEXT, archive_reason TEXT NOT NULL, linked_parent_board_id TEXT, linked_parent_task_id TEXT, archived_at TEXT NOT NULL, task_snapshot TEXT NOT NULL, history TEXT, PRIMARY KEY (board_id, task_id));
 CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, language TEXT NOT NULL DEFAULT 'pt-BR', timezone TEXT NOT NULL DEFAULT 'America/Fortaleza', runner_standup_task_id TEXT, runner_digest_task_id TEXT, runner_review_task_id TEXT, runner_dst_guard_task_id TEXT, standup_cron_local TEXT, digest_cron_local TEXT, review_cron_local TEXT, standup_cron_utc TEXT, digest_cron_utc TEXT, review_cron_utc TEXT, dst_sync_enabled INTEGER DEFAULT 0, dst_last_offset_minutes INTEGER, dst_last_synced_at TEXT, dst_resync_count_24h INTEGER DEFAULT 0, dst_resync_window_started_at TEXT, attachment_enabled INTEGER DEFAULT 1, attachment_disabled_reason TEXT DEFAULT '', attachment_allowed_formats TEXT DEFAULT '["pdf","jpg","png"]', attachment_max_size_bytes INTEGER DEFAULT 10485760, welcome_sent INTEGER DEFAULT 0, standup_target TEXT DEFAULT 'team', digest_target TEXT DEFAULT 'team', review_target TEXT DEFAULT 'team', runner_standup_secondary_task_id TEXT, runner_digest_secondary_task_id TEXT, runner_review_secondary_task_id TEXT);
@@ -2030,6 +2030,66 @@ describe('TaskflowEngine', () => {
 
       const childEngine = new TaskflowEngine(db, 'board-child-gio');
       expect(childEngine.getTask('P1.1')?.id).toBe('P1.1');
+    });
+
+    it('delegated subtask rename and reopen write to the owning board and history', () => {
+      db.exec(
+        `INSERT INTO child_board_registrations VALUES ('${BOARD_ID}', 'person-2', 'board-child-gio')`,
+      );
+      seedChildBoard(db, {
+        parentBoardId: BOARD_ID,
+        childBoardId: 'board-child-gio',
+        personId: 'person-2',
+        name: 'Giovanni',
+      });
+      engine.create({
+        board_id: BOARD_ID,
+        type: 'project',
+        title: 'Sales follow-up',
+        subtasks: [{ title: 'Call Jimmy', assignee: 'Giovanni' }],
+        sender_name: 'Alexandre',
+      });
+      db.exec(
+        `UPDATE tasks SET "column" = 'done' WHERE board_id = '${BOARD_ID}' AND id = 'P1.1'`,
+      );
+
+      const childEngine = new TaskflowEngine(db, 'board-child-gio');
+      const renameResult = childEngine.update({
+        board_id: 'board-child-gio',
+        task_id: 'P1',
+        sender_name: 'Giovanni',
+        updates: {
+          rename_subtask: {
+            id: 'P1.1',
+            title: 'Call ACME',
+          },
+        },
+      });
+      expect(renameResult.success).toBe(true);
+
+      const reopenResult = childEngine.update({
+        board_id: 'board-child-gio',
+        task_id: 'P1',
+        sender_name: 'Giovanni',
+        updates: {
+          reopen_subtask: 'P1.1',
+        },
+      });
+      expect(reopenResult.success).toBe(true);
+
+      const subtask = db
+        .prepare(
+          `SELECT title, "column" FROM tasks WHERE board_id = ? AND id = ?`,
+        )
+        .get(BOARD_ID, 'P1.1') as { title: string; column: string } | undefined;
+      expect(subtask).toEqual({ title: 'Call ACME', column: 'next_action' });
+
+      const history = db
+        .prepare(
+          `SELECT board_id, action, by FROM task_history WHERE task_id = ? AND action = 'reopened' ORDER BY id DESC LIMIT 1`,
+        )
+        .get('P1.1') as { board_id: string; action: string; by: string } | undefined;
+      expect(history).toEqual({ board_id: BOARD_ID, action: 'reopened', by: 'Giovanni' });
     });
 
     it('unassign_subtask clears child-board linkage', () => {

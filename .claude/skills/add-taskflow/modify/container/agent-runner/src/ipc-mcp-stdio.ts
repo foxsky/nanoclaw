@@ -508,6 +508,33 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
     process.on('exit', () => tfDb.close());
     const engine = new TaskflowEngine(tfDb, boardId);
 
+    /** Write IPC message files for any notifications returned by the engine. */
+    function dispatchNotifications(result: Record<string, unknown>): void {
+      if (Array.isArray(result.notifications)) {
+        for (const notif of result.notifications as Array<{ notification_group_jid: string | null; message: string }>) {
+          if (notif.notification_group_jid) {
+            writeIpcFile(MESSAGES_DIR, {
+              type: 'message',
+              chatJid: notif.notification_group_jid,
+              text: notif.message,
+              groupFolder,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+      }
+      const pn = result.parent_notification as { parent_group_jid?: string; message?: string } | undefined;
+      if (pn?.parent_group_jid && pn.message) {
+        writeIpcFile(MESSAGES_DIR, {
+          type: 'message',
+          chatJid: pn.parent_group_jid,
+          text: pn.message,
+          groupFolder,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+
     server.tool(
       'taskflow_query',
       'Query the TaskFlow board. Returns structured data for board views, task details, search, statistics, etc.',
@@ -562,6 +589,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
       async (args) => {
         const result = engine.create({ ...args, board_id: boardId });
+        if (result.success) dispatchNotifications(result);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
           isError: !result.success,
@@ -581,6 +609,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
       async (args) => {
         const result = engine.move({ ...args, board_id: boardId });
+        if (result.success) dispatchNotifications(result);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
           isError: !result.success,
@@ -600,6 +629,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
       async (args) => {
         const result = engine.reassign({ ...args, board_id: boardId });
+        if (result.success) dispatchNotifications(result);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
           isError: !result.success,
@@ -644,6 +674,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
       async (args) => {
         const result = engine.update({ ...args, board_id: boardId });
+        if (result.success) dispatchNotifications(result);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
           isError: !result.success,
@@ -725,6 +756,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
             timestamp: new Date().toISOString(),
           });
         }
+        if (result.success) dispatchNotifications(result);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
           isError: !result.success,

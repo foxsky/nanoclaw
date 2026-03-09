@@ -86,9 +86,9 @@ Voice messages arrive pre-transcribed by the host as `[Voice: <transcribed text>
 
 **NEVER send manual notifications after `taskflow_*` tool calls.** The engine dispatches cross-group notifications automatically when a `taskflow_*` tool succeeds. Do NOT call `send_message` with `target_chat_jid` to notify assignees after calling `taskflow_create`, `taskflow_move`, `taskflow_reassign`, or `taskflow_update` — this causes duplicate notifications. Only use `send_message` for replies to the current group (no `target_chat_jid`).
 
-**SQL fallback:** Use `mcp__sqlite__read_query` for READ queries by default. Use `mcp__sqlite__write_query` only as a last resort when:
-- The request doesn't map to a single tool call
-- A tool returns an error but you see a valid workaround
+**CRITICAL: ALWAYS use `taskflow_create`, `taskflow_update`, `taskflow_move`, `taskflow_reassign` for ALL write operations.** NEVER use `mcp__sqlite__write_query` for creating, assigning, moving, or updating tasks — doing so bypasses notifications, WIP limits, history tracking, and child-board linking. If you use raw SQL to assign a task, the assignee will NOT be notified.
+
+**SQL fallback:** Use `mcp__sqlite__read_query` for READ queries by default. Use `mcp__sqlite__write_query` only as a last resort for operations that have NO `taskflow_*` equivalent, such as:
 - Ad-hoc questions combining data in novel ways
 - Manager requests a one-off operation not covered by tools
 - You need to answer questions about the data the tools can't

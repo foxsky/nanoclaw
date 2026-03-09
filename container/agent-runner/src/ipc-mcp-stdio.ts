@@ -508,6 +508,33 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
     process.on('exit', () => tfDb.close());
     const engine = new TaskflowEngine(tfDb, boardId);
 
+    /** Write IPC message files for any notifications returned by the engine. */
+    function dispatchNotifications(result: Record<string, unknown>): void {
+      if (Array.isArray(result.notifications)) {
+        for (const notif of result.notifications as Array<{ notification_group_jid: string | null; message: string }>) {
+          if (notif.notification_group_jid) {
+            writeIpcFile(MESSAGES_DIR, {
+              type: 'message',
+              chatJid: notif.notification_group_jid,
+              text: notif.message,
+              groupFolder,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+      }
+      const pn = result.parent_notification as { parent_group_jid?: string; message?: string } | undefined;
+      if (pn?.parent_group_jid && pn.message) {
+        writeIpcFile(MESSAGES_DIR, {
+          type: 'message',
+          chatJid: pn.parent_group_jid,
+          text: pn.message,
+          groupFolder,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+
     server.tool(
       'taskflow_query',
       'Query the TaskFlow board. Returns structured data for board views, task details, search, statistics, etc.',
@@ -518,13 +545,16 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           'completed_this_month', 'person_tasks', 'person_waiting', 'person_completed', 'person_review',
           'task_details', 'task_history', 'archive', 'archive_search', 'agenda', 'agenda_week',
           'changes_today', 'changes_since', 'changes_this_week', 'statistics', 'person_statistics',
-          'month_statistics', 'summary']).describe('Query type'),
+          'month_statistics', 'summary',
+          'meetings', 'meeting_agenda', 'meeting_minutes', 'upcoming_meetings',
+          'meeting_participants', 'meeting_open_items', 'meeting_history', 'meeting_minutes_at']).describe('Query type'),
         sender_name: z.string().optional().describe('Sender name for my_tasks'),
         person_name: z.string().optional().describe('Person name for person_* queries'),
         task_id: z.string().optional().describe('Task ID for task_details/history'),
         search_text: z.string().optional().describe('Search text'),
         label: z.string().optional().describe('Label filter'),
         since: z.string().optional().describe('ISO date for changes_since'),
+        at: z.string().optional().describe('Date (YYYY-MM-DD) for meeting_minutes_at query'),
       },
       async (args) => {
         const result = engine.query(args);
@@ -539,10 +569,12 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       'taskflow_create',
       'Create a new task on the TaskFlow board.',
       {
-        type: z.enum(['simple', 'project', 'recurring', 'inbox']).describe('Task type'),
+        type: z.enum(['simple', 'project', 'recurring', 'inbox', 'meeting']).describe('Task type'),
         title: z.string().describe('Task title'),
         assignee: z.string().optional().describe('Person to assign the task to'),
         due_date: z.string().optional().describe('Due date (ISO format)'),
+        scheduled_at: z.string().optional().describe('Scheduled datetime (ISO-8601 UTC) for meetings'),
+        participants: z.array(z.string()).optional().describe('Participant names for meetings'),
         priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('Task priority'),
         labels: z.array(z.string()).optional().describe('Labels to attach'),
         subtasks: z.array(z.union([
@@ -557,6 +589,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
       async (args) => {
         const result = engine.create({ ...args, board_id: boardId });
+        if (result.success) dispatchNotifications(result);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
           isError: !result.success,
@@ -576,6 +609,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
       async (args) => {
         const result = engine.move({ ...args, board_id: boardId });
+        if (result.success) dispatchNotifications(result);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
           isError: !result.success,
@@ -595,6 +629,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
       async (args) => {
         const result = engine.reassign({ ...args, board_id: boardId });
+        if (result.success) dispatchNotifications(result);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
           isError: !result.success,
@@ -627,10 +662,19 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           recurrence: z.string().optional().describe('New recurrence pattern'),
           max_cycles: z.number().int().positive().nullable().optional().describe('Maximum cycles (null to remove; setting clears recurrence_end_date)'),
           recurrence_end_date: z.string().nullable().optional().describe('End date for recurrence (null to remove; setting clears max_cycles)'),
+          parent_note_id: z.number().optional().describe('Parent note ID for threaded meeting notes'),
+          scheduled_at: z.string().optional().describe('Reschedule meeting (ISO-8601 UTC)'),
+          add_participant: z.string().optional().describe('Add a participant to a meeting'),
+          remove_participant: z.string().optional().describe('Remove a participant from a meeting'),
+          set_note_status: z.object({
+            id: z.number(),
+            status: z.enum(['open', 'checked', 'task_created', 'inbox_created', 'dismissed']),
+          }).optional().describe('Set meeting note status'),
         }).describe('Fields to update'),
       },
       async (args) => {
         const result = engine.update({ ...args, board_id: boardId });
+        if (result.success) dispatchNotifications(result);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
           isError: !result.success,
@@ -659,19 +703,31 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
 
     server.tool(
       'taskflow_admin',
-      'Board administration: register/remove people, manage roles, set WIP limits, cancel/restore tasks, process inbox.',
+      'Board administration: register/remove people, manage roles, set WIP limits, cancel/restore tasks, process inbox, manage holidays.',
       {
-        action: z.enum(['register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin', 'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox']).describe('Admin action'),
+        action: z.enum(['register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin', 'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays', 'process_minutes', 'process_minutes_decision']).describe('Admin action'),
         sender_name: z.string().describe('Name of the person performing the admin action'),
         person_name: z.string().optional().describe('Person name (for person-related actions)'),
         phone: z.string().optional().describe('Phone number (for register_person)'),
         role: z.string().optional().describe('Role (for register_person, add_manager, add_delegate)'),
         wip_limit: z.number().optional().describe('WIP limit (for set_wip_limit)'),
-        task_id: z.string().optional().describe('Task ID (for cancel_task, restore_task)'),
+        task_id: z.string().optional().describe('Task ID (for cancel_task, restore_task, process_minutes, process_minutes_decision)'),
         confirmed: z.boolean().optional().describe('Confirmation flag (for destructive actions)'),
         force: z.boolean().optional().describe('Force flag (bypasses safety checks)'),
         group_name: z.string().optional().describe('Division/sector name for child board WhatsApp group (for register_person on hierarchy boards, e.g., "SETD-SECTI - TaskFlow")'),
         group_folder: z.string().optional().describe('Division/sector folder name for child board (for register_person on hierarchy boards, e.g., "setd-secti-taskflow")'),
+        note_id: z.number().optional().describe('Note ID for process_minutes_decision'),
+        decision: z.enum(['create_task', 'create_inbox']).optional().describe('Decision for process_minutes_decision'),
+        create: z.object({
+          type: z.string(),
+          title: z.string(),
+          assignee: z.string().optional(),
+          labels: z.array(z.string()).optional(),
+        }).optional().describe('Task creation params for process_minutes_decision'),
+        holiday_operation: z.enum(['add', 'remove', 'set_year', 'list']).optional().describe('Holiday sub-operation (for manage_holidays)'),
+        holidays: z.array(z.object({ date: z.string(), label: z.string().optional() })).optional().describe('Holiday entries with date (YYYY-MM-DD) and optional label (for manage_holidays add/set_year)'),
+        holiday_dates: z.array(z.string()).optional().describe('Holiday dates to remove (YYYY-MM-DD) (for manage_holidays remove)'),
+        holiday_year: z.number().optional().describe('Year filter for listing or target year for set_year (for manage_holidays list/set_year)'),
       },
       async (args) => {
         const result = engine.admin({ ...args, board_id: boardId });
@@ -700,6 +756,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
             timestamp: new Date().toISOString(),
           });
         }
+        if (result.success) dispatchNotifications(result);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
           isError: !result.success,

@@ -87,6 +87,19 @@ const groups = [
       '{{MANAGER_NAME}}': 'Alexandre',
     },
   },
+  {
+    folder: 'ci-seci-taskflow',
+    overrides: {
+      '{{BOARD_ID}}': 'board-ci-seci-taskflow',
+      '{{GROUP_NAME}}': 'CI-SECI-SECTI - TaskFlow',
+      '{{GROUP_CONTEXT}}': "Mauro's tasks (private standup channel)",
+      '{{GROUP_JID}}': '120363407206502707@g.us',
+      '{{CONTROL_GROUP_HINT}}': '',
+      '{{HIERARCHY_LEVEL}}': '3',
+      '{{PARENT_BOARD_ID}}': 'board-seci-taskflow',
+      '{{MANAGER_NAME}}': 'Mauro',
+    },
+  },
 ];
 
 for (const group of groups) {

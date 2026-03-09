@@ -247,6 +247,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
 
     if (result.status === 'success') {
+      // Pause typing after each result so the user doesn't see
+      // "typing..." indefinitely when the next result is internal-only.
+      await channel.setTyping?.(chatJid, false);
       queue.notifyIdle(chatJid);
     }
 
