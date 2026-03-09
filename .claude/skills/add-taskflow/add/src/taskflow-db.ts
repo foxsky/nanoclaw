@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS boards (
   board_role TEXT DEFAULT 'standard',
   hierarchy_level INTEGER,
   max_depth INTEGER,
-  parent_board_id TEXT REFERENCES boards(id)
+  parent_board_id TEXT REFERENCES boards(id),
+  short_code TEXT
 );
 
 CREATE TABLE IF NOT EXISTS board_people (
@@ -184,6 +185,13 @@ CREATE TABLE IF NOT EXISTS board_config (
   next_project_number INTEGER DEFAULT 1,
   next_recurring_number INTEGER DEFAULT 1,
   next_note_id INTEGER DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS board_id_counters (
+  board_id TEXT NOT NULL,
+  prefix TEXT NOT NULL,
+  next_number INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (board_id, prefix)
 );
 `;
 
@@ -452,6 +460,9 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   }
   try { db.exec('ALTER TABLE tasks ADD COLUMN max_cycles INTEGER'); } catch {}
   try { db.exec('ALTER TABLE tasks ADD COLUMN recurrence_end_date TEXT'); } catch {}
+  try { db.exec('ALTER TABLE tasks ADD COLUMN recurrence_anchor TEXT'); } catch {}
+  try { db.exec('ALTER TABLE tasks ADD COLUMN participants TEXT'); } catch {}
+  try { db.exec('ALTER TABLE tasks ADD COLUMN scheduled_at TEXT'); } catch {}
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(board_id, parent_task_id) WHERE parent_task_id IS NOT NULL`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_linked_parent ON tasks(board_id, linked_parent_board_id, linked_parent_task_id) WHERE linked_parent_board_id IS NOT NULL AND linked_parent_task_id IS NOT NULL`);
 
@@ -460,6 +471,7 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
     board_id TEXT NOT NULL, holiday_date TEXT NOT NULL, label TEXT,
     PRIMARY KEY (board_id, holiday_date)
   )`);
+  try { db.exec(`ALTER TABLE boards ADD COLUMN short_code TEXT`); } catch {}
   try { db.exec(`ALTER TABLE board_runtime_config ADD COLUMN country TEXT`); } catch {}
   try { db.exec(`ALTER TABLE board_runtime_config ADD COLUMN state TEXT`); } catch {}
   try { db.exec(`ALTER TABLE board_runtime_config ADD COLUMN city TEXT`); } catch {}

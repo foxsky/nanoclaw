@@ -1327,6 +1327,7 @@ export class TaskflowEngine {
   private getMeetingNotePhase(task: any): 'pre' | 'meeting' | 'post' | undefined {
     if (task.type !== 'meeting') return undefined;
     switch (task.column) {
+      case 'inbox':
       case 'next_action': return 'pre';
       case 'in_progress':
       case 'waiting': return 'meeting';
@@ -1537,6 +1538,11 @@ export class TaskflowEngine {
       /* --- Default recurrence_anchor for meetings --- */
       if (params.type === 'meeting' && params.recurrence && params.scheduled_at && !params.recurrence_anchor) {
         params = { ...params, recurrence_anchor: params.scheduled_at };
+      }
+
+      /* --- Meetings never use due_date (reminders/overdue key off scheduled_at) --- */
+      if (params.type === 'meeting' && params.due_date) {
+        return { success: false, error: 'Meetings use scheduled_at, not due_date. Remove due_date or change the task type.' };
       }
 
       /* --- Recurrence --- */
@@ -2052,6 +2058,10 @@ export class TaskflowEngine {
         due_date: task.due_date,
         updated_at: task.updated_at,
       };
+      /* Capture waiting_for so undo of wait/resume restores it correctly. */
+      if (params.action === 'wait' || params.action === 'resume' || (fromColumn === 'waiting' && params.action === 'conclude')) {
+        snapshotFields.waiting_for = task.waiting_for ?? null;
+      }
       /* Recurring conclude/approve mutates many fields via advanceRecurringTask;
          capture them so undo can fully revert the cycle advance. */
       if (toColumn === 'done' && task.recurrence) {
@@ -2158,6 +2168,15 @@ export class TaskflowEngine {
             `UPDATE tasks SET waiting_for = ? WHERE board_id = ? AND id = ?`,
           )
           .run(params.reason, taskBoardId, task.id);
+      }
+
+      /* --- Clear waiting_for when leaving waiting column --- */
+      if (params.action === 'resume' || (fromColumn === 'waiting' && params.action === 'conclude')) {
+        this.db
+          .prepare(
+            `UPDATE tasks SET waiting_for = NULL WHERE board_id = ? AND id = ?`,
+          )
+          .run(taskBoardId, task.id);
       }
 
       /* --- Record history --- */
@@ -2638,20 +2657,29 @@ export class TaskflowEngine {
 
       /* Due date */
       if (updates.due_date !== undefined) {
+        /* Meeting reminders are keyed to scheduled_at, not due_date.
+           Only touch reminders when the task is NOT a meeting. */
+        const isMeetingTask = task.type === 'meeting';
         if (updates.due_date === null) {
-          this.db
-            .prepare(`UPDATE tasks SET due_date = NULL, reminders = '[]' WHERE board_id = ? AND id = ?`)
-            .run(taskBoardId, task.id);
+          if (isMeetingTask) {
+            this.db
+              .prepare(`UPDATE tasks SET due_date = NULL WHERE board_id = ? AND id = ?`)
+              .run(taskBoardId, task.id);
+          } else {
+            this.db
+              .prepare(`UPDATE tasks SET due_date = NULL, reminders = '[]' WHERE board_id = ? AND id = ?`)
+              .run(taskBoardId, task.id);
+            const oldReminders: any[] = JSON.parse(task.reminders ?? '[]');
+            if (oldReminders.length > 0) changes.push('Reminders cleared (no due date)');
+          }
           changes.push('Due date removed');
-          const oldReminders: any[] = JSON.parse(task.reminders ?? '[]');
-          if (oldReminders.length > 0) changes.push('Reminders cleared (no due date)');
         } else {
           /* Non-business-day check */
           const warning = this.checkNonBusinessDay(updates.due_date, !!updates.allow_non_business_day);
           if (warning) return warning;
-          /* Recalculate reminder dates for the new due_date */
+          /* Recalculate reminder dates for the new due_date (non-meeting only) */
           const reminders: Array<{ days: number; date: string }> = JSON.parse(task.reminders ?? '[]');
-          if (reminders.length > 0) {
+          if (!isMeetingTask && reminders.length > 0) {
             for (const r of reminders) {
               r.date = reminderDateFromDue(updates.due_date, r.days);
             }
@@ -2703,7 +2731,11 @@ export class TaskflowEngine {
 
       /* Remove label */
       if (updates.remove_label !== undefined) {
-        const labels: string[] = JSON.parse(task.labels ?? '[]');
+        // Re-read labels from DB to pick up any preceding add_label in the same update call
+        const freshLabelRow = this.db
+          .prepare(`SELECT labels FROM tasks WHERE board_id = ? AND id = ?`)
+          .get(taskBoardId, task.id) as { labels: string } | undefined;
+        const labels: string[] = JSON.parse(freshLabelRow?.labels ?? task.labels ?? '[]');
         const idx = labels.indexOf(updates.remove_label);
         if (idx >= 0) {
           labels.splice(idx, 1);
@@ -2751,7 +2783,11 @@ export class TaskflowEngine {
 
       /* Edit note */
       if (updates.edit_note !== undefined) {
-        const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+        // Re-read notes from DB to pick up any preceding add_note in the same update call
+        const freshEditRow = this.db
+          .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+          .get(taskBoardId, task.id) as { notes: string } | undefined;
+        const notes: Array<any> = JSON.parse(freshEditRow?.notes ?? task.notes ?? '[]');
         const note = notes.find((n: any) => n.id === updates.edit_note!.id);
         if (!note) {
           return { success: false, error: `Note #${updates.edit_note.id} not found.` };
@@ -2769,7 +2805,11 @@ export class TaskflowEngine {
 
       /* Remove note */
       if (updates.remove_note !== undefined) {
-        const notes: Array<{ id: number; text: string; at: string; by: string }> = JSON.parse(task.notes ?? '[]');
+        // Re-read notes from DB to pick up any preceding add_note/edit_note in the same update call
+        const freshRemoveRow = this.db
+          .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+          .get(taskBoardId, task.id) as { notes: string } | undefined;
+        const notes: Array<{ id: number; text: string; at: string; by: string }> = JSON.parse(freshRemoveRow?.notes ?? task.notes ?? '[]');
         const idx = notes.findIndex((n) => n.id === updates.remove_note);
         if (idx < 0) {
           return { success: false, error: `Note #${updates.remove_note} not found.` };
@@ -2778,7 +2818,14 @@ export class TaskflowEngine {
         if (task.type === 'meeting' && !isMgr && !isAssignee && notes[idx].by !== params.sender_name) {
           return { success: false, error: `Permission denied: only the note author, organizer, or manager can remove note #${updates.remove_note}.` };
         }
+        const removedId = notes[idx].id;
         notes.splice(idx, 1);
+        // Promote orphaned children to top-level so they remain visible
+        for (const n of notes) {
+          if ((n as any).parent_note_id === removedId) {
+            delete (n as any).parent_note_id;
+          }
+        }
         this.db
           .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
           .run(JSON.stringify(notes), taskBoardId, task.id);
@@ -2834,6 +2881,19 @@ export class TaskflowEngine {
             .prepare(`UPDATE tasks SET participants = ? WHERE board_id = ? AND id = ?`)
             .run(JSON.stringify(participants), taskBoardId, task.id);
           changes.push(`Participant ${person.name} added`);
+
+          /* Notify the newly added participant (consistent with create() path) */
+          if (senderPersonId && person.person_id !== senderPersonId) {
+            const target = this.resolveNotifTarget(person.person_id, senderPersonId);
+            if (target) {
+              const modName = this.personDisplayName(senderPersonId);
+              const scheduledInfo = task.scheduled_at ? `\n*Quando:* ${task.scheduled_at}` : '';
+              notifications.push({
+                ...target,
+                message: `📅 *Você foi adicionado(a) a uma reunião*\n\n*${task.id}* — ${task.title}${scheduledInfo}\n*Adicionado por:* ${modName}\n\nDigite \`${task.id}\` para ver detalhes.`,
+              });
+            }
+          }
         }
       }
 
@@ -2976,25 +3036,41 @@ export class TaskflowEngine {
         changes.push(`Recurrence changed to ${updates.recurrence}`);
       }
 
-      /* max_cycles (recurring only — setting clears recurrence_end_date) */
+      /* max_cycles (recurring only — setting clears recurrence_end_date unless also provided) */
       if (updates.max_cycles !== undefined) {
         if (!task.recurrence) {
           return { success: false, error: 'max_cycles can only be set on tasks with recurrence.' };
         }
-        this.db
-          .prepare(`UPDATE tasks SET max_cycles = ?, recurrence_end_date = NULL WHERE board_id = ? AND id = ?`)
-          .run(updates.max_cycles, taskBoardId, task.id);
+        // Only clear recurrence_end_date if it is NOT also being set in this same update call;
+        // otherwise the later recurrence_end_date block handles it and we avoid overwrite conflicts.
+        if (updates.recurrence_end_date !== undefined) {
+          this.db
+            .prepare(`UPDATE tasks SET max_cycles = ? WHERE board_id = ? AND id = ?`)
+            .run(updates.max_cycles, taskBoardId, task.id);
+        } else {
+          this.db
+            .prepare(`UPDATE tasks SET max_cycles = ?, recurrence_end_date = NULL WHERE board_id = ? AND id = ?`)
+            .run(updates.max_cycles, taskBoardId, task.id);
+        }
         changes.push(updates.max_cycles === null ? 'Removed max_cycles bound' : `max_cycles set to ${updates.max_cycles}`);
       }
 
-      /* recurrence_end_date (recurring only — setting clears max_cycles) */
+      /* recurrence_end_date (recurring only — setting clears max_cycles unless also provided) */
       if (updates.recurrence_end_date !== undefined) {
         if (!task.recurrence) {
           return { success: false, error: 'recurrence_end_date can only be set on tasks with recurrence.' };
         }
-        this.db
-          .prepare(`UPDATE tasks SET recurrence_end_date = ?, max_cycles = NULL WHERE board_id = ? AND id = ?`)
-          .run(updates.recurrence_end_date, taskBoardId, task.id);
+        // Only clear max_cycles if it is NOT also being set in this same update call;
+        // otherwise the preceding max_cycles block already wrote its value.
+        if (updates.max_cycles !== undefined) {
+          this.db
+            .prepare(`UPDATE tasks SET recurrence_end_date = ? WHERE board_id = ? AND id = ?`)
+            .run(updates.recurrence_end_date, taskBoardId, task.id);
+        } else {
+          this.db
+            .prepare(`UPDATE tasks SET recurrence_end_date = ?, max_cycles = NULL WHERE board_id = ? AND id = ?`)
+            .run(updates.recurrence_end_date, taskBoardId, task.id);
+        }
         changes.push(updates.recurrence_end_date === null ? 'Removed recurrence_end_date bound' : `recurrence_end_date set to ${updates.recurrence_end_date}`);
       }
 
@@ -3305,6 +3381,10 @@ export class TaskflowEngine {
     if (otherNotes.length > 0) {
       for (const n of otherNotes) {
         lines.push(`• ${n.text}`);
+        for (const r of replies.get(n.id) ?? []) {
+          const rMarker = statusMarker(r);
+          lines.push(`   → ${rMarker ? rMarker + ' ' : ''}${r.text}`);
+        }
       }
     }
 
@@ -3386,6 +3466,10 @@ export class TaskflowEngine {
     const fmtDate = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
     const daysDiff = (iso: string) =>
       Math.floor((new Date(iso).getTime() - todayMs) / 86400000);
+
+    /** Sort key: prefer due_date, fall back to scheduled_at date portion for meetings. */
+    const sortDate = (t: any): string | null =>
+      t.due_date ?? (t.scheduled_at ? t.scheduled_at.slice(0, 10) : null);
 
     const hasNotes = (t: any): boolean => {
       if (!t.notes) return false;
@@ -3492,11 +3576,13 @@ export class TaskflowEngine {
         else byPerson.set(key, [t]);
       }
 
-      /* Sort persons by earliest due date */
+      /* Sort persons by earliest date (due_date or scheduled_at for meetings) */
       const earliest = (list: any[]) =>
         list.reduce(
-          (mn: string | null, t: any) =>
-            t.due_date && (!mn || t.due_date < mn) ? t.due_date : mn,
+          (mn: string | null, t: any) => {
+            const d = sortDate(t);
+            return d && (!mn || d < mn) ? d : mn;
+          },
           null as string | null,
         );
       const cmpDateNullable = (a: string | null, b: string | null): number => {
@@ -3519,9 +3605,9 @@ export class TaskflowEngine {
         );
         lines.push(`\ud83d\udc64 *${nm}* (${pTasks.length + subCount})`);
 
-        /* Sort tasks by due date */
+        /* Sort tasks by date (due_date, or scheduled_at for meetings) */
         const sorted = [...pTasks].sort((a, b) =>
-          cmpDateNullable(a.due_date, b.due_date),
+          cmpDateNullable(sortDate(a), sortDate(b)),
         );
 
         for (const t of sorted) {
@@ -4098,7 +4184,18 @@ export class TaskflowEngine {
           const task = this.requireTask(params.task_id);
           if (task.type !== 'meeting') return { success: false, error: `Task ${params.task_id} is not a meeting.` };
           const notes: Array<any> = JSON.parse(task.notes ?? '[]');
-          const agenda = notes.filter((n: any) => n.phase === 'pre');
+          const preNotes = notes.filter((n: any) => n.phase === 'pre');
+          const topLevel = preNotes.filter((n: any) => !n.parent_note_id);
+          const replyMap = new Map<number, any[]>();
+          for (const n of preNotes.filter((r: any) => r.parent_note_id)) {
+            const arr = replyMap.get(n.parent_note_id) ?? [];
+            arr.push(n);
+            replyMap.set(n.parent_note_id, arr);
+          }
+          const agenda = topLevel.map((n: any) => ({
+            ...n,
+            replies: replyMap.get(n.id) ?? [],
+          }));
           return { success: true, data: agenda };
         }
 
@@ -4636,13 +4733,19 @@ export class TaskflowEngine {
             const allRecipients = task.assignee && !participants.includes(task.assignee)
               ? [...participants, task.assignee]
               : [...participants];
-            if (allRecipients.length > 0) {
-              const placeholders = allRecipients.map(() => '?').join(',');
+            /* Exclude the sender from cancellation notifications (they already know) */
+            const senderPerson = this.resolvePerson(params.sender_name);
+            const senderPersonId = senderPerson?.person_id ?? null;
+            const recipientsExcludingSender = senderPersonId
+              ? allRecipients.filter((pid) => pid !== senderPersonId)
+              : allRecipients;
+            if (recipientsExcludingSender.length > 0) {
+              const placeholders = recipientsExcludingSender.map(() => '?').join(',');
               const rows = this.db.prepare(
                 `SELECT person_id, notification_group_jid FROM board_people WHERE board_id = ? AND person_id IN (${placeholders})`
-              ).all(this.boardId, ...allRecipients) as Array<{ person_id: string; notification_group_jid: string | null }>;
+              ).all(this.boardId, ...recipientsExcludingSender) as Array<{ person_id: string; notification_group_jid: string | null }>;
               const jidMap = new Map(rows.map(r => [r.person_id, r.notification_group_jid]));
-              for (const pid of allRecipients) {
+              for (const pid of recipientsExcludingSender) {
                 cancelNotifications.push({
                   target_person_id: pid,
                   notification_group_jid: jidMap.get(pid) ?? null,
@@ -4685,6 +4788,7 @@ export class TaskflowEngine {
               type: snapshot.type ?? archived.type,
               title: snapshot.title ?? archived.title,
               assignee: snapshot.assignee ?? archived.assignee ?? null,
+              _last_mutation: null,   // clear stale pre-cancellation mutation to prevent undo from reverting it
             },
             this.boardId,
             now,
@@ -4898,7 +5002,7 @@ export class TaskflowEngine {
           note.created_task_id = createResult.task_id;
 
           this.db
-            .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
+            .prepare(`UPDATE tasks SET notes = ?, _last_mutation = NULL WHERE board_id = ? AND id = ?`)
             .run(JSON.stringify(notes), this.taskBoardId(task), task.id);
 
           const resultNotifications = createResult.notifications ?? [];
@@ -4948,11 +5052,11 @@ export class TaskflowEngine {
       /* --- In-progress tasks --- */
       const inProgress = this.db
         .prepare(
-          `SELECT id, title, assignee FROM tasks
+          `SELECT id, title, assignee, type FROM tasks
            WHERE ${this.visibleTaskScope()} AND column = 'in_progress'
            ORDER BY id`,
         )
-        .all(...this.visibleTaskParams()) as Array<{ id: string; title: string; assignee: string | null }>;
+        .all(...this.visibleTaskParams()) as Array<{ id: string; title: string; assignee: string | null; type: string }>;
 
       /* --- Review tasks --- */
       const review = this.db
@@ -4975,11 +5079,11 @@ export class TaskflowEngine {
       /* --- Waiting tasks --- */
       const waiting = this.db
         .prepare(
-          `SELECT id, title, assignee, waiting_for FROM tasks
+          `SELECT id, title, assignee, waiting_for, type FROM tasks
            WHERE ${this.visibleTaskScope()} AND column = 'waiting'
            ORDER BY id`,
         )
-        .all(...this.visibleTaskParams()) as Array<{ id: string; title: string; assignee: string | null; waiting_for: string | null }>;
+        .all(...this.visibleTaskParams()) as Array<{ id: string; title: string; assignee: string | null; waiting_for: string | null; type: string }>;
 
       /* --- Blocked tasks (digest + weekly) --- */
       let blocked: Array<{ id: string; title: string; assignee: string | null; blocked_by_raw: string }> = [];
@@ -5112,8 +5216,10 @@ export class TaskflowEngine {
       }
 
       for (const person of people) {
-        const ipCount = inProgress.filter((t) => t.assignee === person.person_id).length;
-        const wCount = waiting.filter((t) => t.assignee === person.person_id).length;
+        /* Exclude meetings from per-person counts to match WIP limit semantics
+           (meetings are shown in their own upcoming_meetings / open_minutes sections) */
+        const ipCount = inProgress.filter((t) => t.assignee === person.person_id && t.type !== 'meeting').length;
+        const wCount = waiting.filter((t) => t.assignee === person.person_id && t.type !== 'meeting').length;
         const subCount = subtaskCountByPerson.get(person.person_id) ?? 0;
         const entry: typeof perPerson[number] = {
           name: person.name,

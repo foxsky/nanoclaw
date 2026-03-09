@@ -383,4 +383,85 @@ describe('initTaskflowDb', () => {
 
     db.close();
   });
+
+  it('adds meeting columns (recurrence_anchor, participants, scheduled_at) to legacy tasks table', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'taskflow-db-test-'));
+    tempDirs.push(tempDir);
+
+    const dbPath = path.join(tempDir, 'taskflow.db');
+    const legacyDb = new Database(dbPath);
+    // Legacy schema without meeting columns
+    legacyDb.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY);
+      CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (board_id, person_id));
+      CREATE TABLE board_admins (board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL, admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
+      CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
+      CREATE TABLE board_groups (board_id TEXT, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, group_role TEXT DEFAULT 'team', PRIMARY KEY (board_id, group_jid));
+      CREATE TABLE tasks (
+        id TEXT NOT NULL,
+        board_id TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT 'simple',
+        title TEXT NOT NULL,
+        assignee TEXT,
+        next_action TEXT,
+        waiting_for TEXT,
+        column TEXT DEFAULT 'inbox',
+        priority TEXT,
+        due_date TEXT,
+        description TEXT,
+        labels TEXT DEFAULT '[]',
+        blocked_by TEXT DEFAULT '[]',
+        reminders TEXT DEFAULT '[]',
+        next_note_id INTEGER DEFAULT 1,
+        notes TEXT DEFAULT '[]',
+        _last_mutation TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        child_exec_enabled INTEGER DEFAULT 0,
+        child_exec_board_id TEXT,
+        child_exec_person_id TEXT,
+        child_exec_rollup_status TEXT,
+        child_exec_last_rollup_at TEXT,
+        child_exec_last_rollup_summary TEXT,
+        linked_parent_board_id TEXT,
+        linked_parent_task_id TEXT,
+        subtasks TEXT,
+        recurrence TEXT,
+        current_cycle TEXT,
+        PRIMARY KEY (board_id, id)
+      );
+      CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, task_id TEXT NOT NULL, action TEXT NOT NULL, by TEXT, at TEXT NOT NULL, details TEXT);
+      CREATE TABLE archive (board_id TEXT NOT NULL, task_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, assignee TEXT, archive_reason TEXT NOT NULL, linked_parent_board_id TEXT, linked_parent_task_id TEXT, archived_at TEXT NOT NULL, task_snapshot TEXT NOT NULL, history TEXT, PRIMARY KEY (board_id, task_id));
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, language TEXT NOT NULL DEFAULT 'pt-BR', timezone TEXT NOT NULL DEFAULT 'America/Fortaleza');
+      CREATE TABLE attachment_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, source TEXT NOT NULL, filename TEXT NOT NULL, at TEXT NOT NULL, actor_person_id TEXT, affected_task_refs TEXT DEFAULT '[]');
+      CREATE TABLE board_config (board_id TEXT PRIMARY KEY, columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]', wip_limit INTEGER DEFAULT 5, next_task_number INTEGER DEFAULT 1, next_note_id INTEGER DEFAULT 1);
+      INSERT INTO boards (id) VALUES ('board-1');
+      INSERT INTO board_config (board_id) VALUES ('board-1');
+      INSERT INTO board_runtime_config (board_id) VALUES ('board-1');
+      INSERT INTO tasks (id, board_id, type, title, column, created_at, updated_at)
+      VALUES ('T1', 'board-1', 'simple', 'Existing task', 'next_action', '2026-03-06T12:00:00Z', '2026-03-06T12:00:00Z');
+    `);
+    legacyDb.close();
+
+    const db = initTaskflowDb(dbPath);
+    const columns = db
+      .prepare(`PRAGMA table_info(tasks)`)
+      .all() as Array<{ name: string }>;
+    const colNames = columns.map((c) => c.name);
+
+    expect(colNames).toContain('recurrence_anchor');
+    expect(colNames).toContain('participants');
+    expect(colNames).toContain('scheduled_at');
+
+    // Verify existing data is intact and new columns are NULL
+    const task = db
+      .prepare(`SELECT title, recurrence_anchor, participants, scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
+      .get('board-1', 'T1') as { title: string; recurrence_anchor: string | null; participants: string | null; scheduled_at: string | null };
+    expect(task.title).toBe('Existing task');
+    expect(task.recurrence_anchor).toBeNull();
+    expect(task.participants).toBeNull();
+    expect(task.scheduled_at).toBeNull();
+
+    db.close();
+  });
 });

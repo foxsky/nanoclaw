@@ -2349,6 +2349,27 @@ describe('taskflow skill package', () => {
     expect(dbModule).toContain('linked_parent_task_id');
   });
 
+  it('bundled and source taskflow-db schemas include all engine-expected columns and tables', () => {
+    const bundled = fs.readFileSync(
+      path.join(skillDir, 'add', 'src', 'taskflow-db.ts'),
+      'utf-8',
+    );
+    const source = fs.readFileSync(
+      path.resolve(skillDir, '..', '..', '..', 'src', 'taskflow-db.ts'),
+      'utf-8',
+    );
+    for (const schema of [bundled, source]) {
+      // boards.short_code — required by provision-child-board INSERT
+      expect(schema).toContain('short_code TEXT');
+      // board_id_counters — required by engine getNextNumberForPrefix
+      expect(schema).toContain('CREATE TABLE IF NOT EXISTS board_id_counters');
+      // tasks columns added by engine ensureTaskSchema
+      expect(schema).toContain('recurrence_anchor TEXT');
+      expect(schema).toContain('participants TEXT');
+      expect(schema).toContain('scheduled_at TEXT');
+    }
+  });
+
   it('skill packaged engine snapshot uses owning board IDs for delegated subtask updates', () => {
     const engineModule = fs.readFileSync(
       path.join(skillDir, 'add', 'container', 'agent-runner', 'src', 'taskflow-engine.ts'),
@@ -2682,6 +2703,19 @@ describe('meeting notes', () => {
       expect(result.success).toBe(false);
     });
 
+    it('rejects meeting with due_date (meetings use scheduled_at)', () => {
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Meeting with due_date',
+        due_date: '2026-03-10',
+        scheduled_at: '2026-03-15T17:00:00Z',
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('due_date');
+    });
+
     it('notifies all participants on creation', () => {
       const result = engine.create({
         board_id: BOARD_ID,
@@ -2746,6 +2780,47 @@ describe('meeting notes', () => {
         .get(BOARD_ID, meetingId) as { notes: string };
       const notes = JSON.parse(task.notes);
       expect(notes[1].parent_note_id).toBe(1);
+    });
+
+    it('remove_note promotes orphaned children to top-level', () => {
+      // Add parent note
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Parent item' },
+      });
+      // Add child note replying to parent (id=1)
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Giovanni',
+        updates: { add_note: 'Reply to parent', parent_note_id: 1 },
+      });
+      // Verify child has parent_note_id
+      let task = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      let notes = JSON.parse(task.notes);
+      expect(notes[1].parent_note_id).toBe(1);
+
+      // Remove the parent note
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { remove_note: 1 },
+      });
+      expect(result.success).toBe(true);
+
+      // The child should be promoted to top-level (parent_note_id cleared)
+      task = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      notes = JSON.parse(task.notes);
+      expect(notes).toHaveLength(1);
+      expect(notes[0].text).toBe('Reply to parent');
+      expect(notes[0].parent_note_id).toBeUndefined();
     });
 
     it('add_note auto-tags phase=meeting when in_progress', () => {
@@ -2870,6 +2945,31 @@ describe('meeting notes', () => {
       expect(parts).toContain('person-2');
     });
 
+    it('add_participant notifies the newly added participant', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Notif participant test',
+        scheduled_at: '2026-04-01T10:00:00Z',
+        sender_name: 'Alexandre',
+      });
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: r.task_id!,
+        sender_name: 'Alexandre',
+        updates: { add_participant: 'Giovanni' },
+      });
+      expect(result.success).toBe(true);
+      expect(result.notifications).toBeDefined();
+      const notif = result.notifications!.find(
+        (n: any) => n.target_person_id === 'person-2',
+      );
+      expect(notif).toBeDefined();
+      expect(notif!.message).toContain('adicionado(a) a uma reunião');
+      expect(notif!.message).toContain(r.task_id!);
+      expect(notif!.message).toContain('2026-04-01T10:00:00Z');
+    });
+
     it('remove_participant removes a person', () => {
       const result = engine.update({
         board_id: BOARD_ID,
@@ -2934,6 +3034,43 @@ describe('meeting notes', () => {
       expect(task.scheduled_at).toBe('2026-03-20T14:00:00Z');
     });
 
+    it('clearing due_date on a meeting does not wipe scheduled_at-based reminders', () => {
+      // Add a reminder to the meeting (keyed to scheduled_at)
+      const addRem = engine.dependency({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        action: 'add_reminder',
+        reminder_days: 2,
+        sender_name: 'Alexandre',
+      });
+      expect(addRem.success).toBe(true);
+
+      // Verify the reminder exists
+      const before = db
+        .prepare(`SELECT reminders FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { reminders: string };
+      const remindersBefore = JSON.parse(before.reminders);
+      expect(remindersBefore).toHaveLength(1);
+      expect(remindersBefore[0].days).toBe(2);
+
+      // Now clear due_date — this should NOT destroy the scheduled_at-based reminders
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { due_date: null },
+      });
+      expect(result.success).toBe(true);
+
+      // Reminders must still be intact
+      const after = db
+        .prepare(`SELECT reminders FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { reminders: string };
+      const remindersAfter = JSON.parse(after.reminders);
+      expect(remindersAfter).toHaveLength(1);
+      expect(remindersAfter[0].days).toBe(2);
+    });
+
     it('non-meeting note has no phase or status', () => {
       const r = engine.update({
         board_id: BOARD_ID,
@@ -2948,6 +3085,30 @@ describe('meeting notes', () => {
       const notes = JSON.parse(task.notes);
       expect(notes[0].phase).toBeUndefined();
       expect(notes[0].status).toBeUndefined();
+    });
+
+    it('add_note on meeting in inbox still gets phase=pre and status=open', () => {
+      // Simulate a meeting ending up in inbox (e.g., via direct DB edit or undo)
+      db.prepare(`UPDATE tasks SET column = 'inbox' WHERE board_id = ? AND id = ?`)
+        .run(BOARD_ID, meetingId);
+
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Note added while in inbox' },
+      });
+      expect(result.success).toBe(true);
+
+      const task = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      const notes = JSON.parse(task.notes);
+      const note = notes[notes.length - 1];
+      // Without the fix, phase and status would be undefined because
+      // getMeetingNotePhase did not handle the 'inbox' column
+      expect(note.phase).toBe('pre');
+      expect(note.status).toBe('open');
     });
 
     it('participant can add note but not edit another participant note', () => {
@@ -3085,6 +3246,125 @@ describe('meeting notes', () => {
       expect(note2).toBeDefined();
       expect(note2.text).toBe('Second agenda item');
     });
+
+    it('add_note + edit_note in same update preserves both changes', () => {
+      // Add an initial note (note #1)
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'First agenda item' },
+      });
+
+      // In a single update, add a new note AND edit note #1
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: {
+          add_note: 'Second agenda item',
+          edit_note: { id: 1, text: 'Updated first item' },
+        },
+      });
+      expect(result.success).toBe(true);
+
+      // Both changes should be present in the DB
+      const afterTask = db
+        .prepare(`SELECT notes, next_note_id FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string; next_note_id: number };
+      const afterNotes = JSON.parse(afterTask.notes);
+
+      // Note #1 should have updated text
+      const note1 = afterNotes.find((n: any) => n.id === 1);
+      expect(note1).toBeDefined();
+      expect(note1.text).toBe('Updated first item');
+
+      // Note #2 should exist (added by add_note in same call, NOT lost by stale edit_note read)
+      const note2 = afterNotes.find((n: any) => n.id === 2);
+      expect(note2).toBeDefined();
+      expect(note2.text).toBe('Second agenda item');
+    });
+
+    it('add_note + remove_note in same update preserves the added note', () => {
+      // Add two initial notes
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Note to keep' },
+      });
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Note to remove' },
+      });
+
+      // In a single update, add a new note AND remove note #2
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: {
+          add_note: 'Third note',
+          remove_note: 2,
+        },
+      });
+      expect(result.success).toBe(true);
+
+      const afterTask = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      const afterNotes = JSON.parse(afterTask.notes);
+
+      // Note #1 should still exist
+      expect(afterNotes.find((n: any) => n.id === 1)).toBeDefined();
+
+      // Note #2 should be removed
+      expect(afterNotes.find((n: any) => n.id === 2)).toBeUndefined();
+
+      // Note #3 (added in same call) should NOT be lost by stale remove_note read
+      const note3 = afterNotes.find((n: any) => n.id === 3);
+      expect(note3).toBeDefined();
+      expect(note3.text).toBe('Third note');
+    });
+
+    it('add_label + remove_label in same update do not overwrite each other', () => {
+      // Seed the meeting with an existing label
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_label: 'existing' },
+      });
+      // Verify seed
+      const before = db
+        .prepare(`SELECT labels FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { labels: string };
+      expect(JSON.parse(before.labels)).toEqual(['existing']);
+
+      // In a single update, add a new label AND remove the existing one
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: {
+          add_label: 'new-label',
+          remove_label: 'existing',
+        },
+      });
+      expect(result.success).toBe(true);
+
+      const after = db
+        .prepare(`SELECT labels FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { labels: string };
+      const labels = JSON.parse(after.labels);
+
+      // 'new-label' should survive (add_label wrote it to DB)
+      expect(labels).toContain('new-label');
+      // 'existing' should be gone (remove_label must read fresh DB, not stale snapshot)
+      expect(labels).not.toContain('existing');
+    });
   });
 
   describe('move meeting', () => {
@@ -3169,6 +3449,116 @@ describe('meeting notes', () => {
       expect(result.notifications!.some((n: any) => n.target_person_id === 'person-2')).toBe(true);
     });
 
+    it('cancel meeting does not send self-notification to the sender', () => {
+      const result = engine.admin({
+        board_id: BOARD_ID,
+        action: 'cancel_task',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+      });
+      expect(result.success).toBe(true);
+      // Alexandre (person-1) is both the organizer and the sender — should NOT receive a notification
+      expect(result.notifications).toBeDefined();
+      expect(result.notifications!.some((n: any) => n.target_person_id === 'person-1')).toBe(false);
+      // Giovanni (person-2, participant) should still receive a notification
+      expect(result.notifications!.some((n: any) => n.target_person_id === 'person-2')).toBe(true);
+    });
+
+    it('restore cancelled meeting preserves participants, scheduled_at, and column', () => {
+      // Cancel the meeting
+      const cancelResult = engine.admin({
+        board_id: BOARD_ID,
+        action: 'cancel_task',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+      });
+      expect(cancelResult.success).toBe(true);
+      expect(engine.getTask(meetingId)).toBeNull();
+
+      // Restore the meeting
+      const restoreResult = engine.admin({
+        board_id: BOARD_ID,
+        action: 'restore_task',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+      });
+      expect(restoreResult.success).toBe(true);
+      expect(restoreResult.data.restored).toBe(meetingId);
+      expect(restoreResult.data.column).toBe('next_action');
+
+      // Verify the restored task has all meeting fields
+      const task = db
+        .prepare(`SELECT type, participants, scheduled_at, assignee, column FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as any;
+      expect(task).toBeTruthy();
+      expect(task.type).toBe('meeting');
+      expect(task.column).toBe('next_action');
+      expect(task.scheduled_at).toBe('2026-03-15T17:00:00Z');
+      expect(task.assignee).toBe('person-1');
+      const participants = JSON.parse(task.participants);
+      expect(participants).toContain('person-2');
+    });
+
+    it('restore cancelled meeting clears _last_mutation to avoid stale undo', () => {
+      // Start the meeting (sets _last_mutation to the start action)
+      engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
+      const beforeCancel = db
+        .prepare(`SELECT _last_mutation FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { _last_mutation: string | null };
+      expect(beforeCancel._last_mutation).not.toBeNull();
+
+      // Cancel the in-progress meeting
+      engine.admin({
+        board_id: BOARD_ID,
+        action: 'cancel_task',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+      });
+
+      // Restore it
+      engine.admin({
+        board_id: BOARD_ID,
+        action: 'restore_task',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+      });
+
+      // _last_mutation should be NULL after restore — the pre-cancellation
+      // mutation is stale and undoing it would incorrectly revert the start
+      const afterRestore = db
+        .prepare(`SELECT _last_mutation FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { _last_mutation: string | null };
+      expect(afterRestore._last_mutation).toBeNull();
+    });
+
+    it('restore cancelled meeting from in_progress preserves column', () => {
+      // Start the meeting
+      engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
+
+      // Cancel the in-progress meeting
+      const cancelResult = engine.admin({
+        board_id: BOARD_ID,
+        action: 'cancel_task',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+      });
+      expect(cancelResult.success).toBe(true);
+
+      // Restore it
+      const restoreResult = engine.admin({
+        board_id: BOARD_ID,
+        action: 'restore_task',
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+      });
+      expect(restoreResult.success).toBe(true);
+      expect(restoreResult.data.column).toBe('in_progress');
+
+      const task = engine.getTask(meetingId);
+      expect(task.column).toBe('in_progress');
+      expect(task.type).toBe('meeting');
+    });
+
     it('meeting moves through full lifecycle', () => {
       let r = engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
       expect(r.success).toBe(true);
@@ -3221,6 +3611,29 @@ describe('meeting notes', () => {
       expect(result.success).toBe(true);
       expect(result.data.length).toBe(2);
       expect(result.data[0].phase).toBe('pre');
+      expect(result.data[0].replies).toEqual([]);
+    });
+
+    it('meeting_agenda nests pre-phase replies under their parent instead of listing them as separate items', () => {
+      // Add a reply to the first agenda item (still in pre-phase since meeting is in next_action)
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Giovanni',
+        updates: { add_note: 'Include Q2 projections', parent_note_id: 1 },
+      });
+
+      const result = engine.query({ query: 'meeting_agenda', task_id: meetingId });
+      expect(result.success).toBe(true);
+
+      // Bug: before fix, data.length was 3 (the reply appeared as a separate agenda item).
+      // After fix: only 2 top-level agenda items; the reply is nested under its parent.
+      expect(result.data.length).toBe(2);
+      expect(result.data[0].text).toBe('Review budget');
+      expect(result.data[0].replies.length).toBe(1);
+      expect(result.data[0].replies[0].text).toBe('Include Q2 projections');
+      expect(result.data[1].text).toBe('Define timeline');
+      expect(result.data[1].replies).toEqual([]);
     });
 
     it('meeting_minutes returns all notes with threading', () => {
@@ -3228,6 +3641,25 @@ describe('meeting notes', () => {
       expect(result.success).toBe(true);
       expect(result.data.notes.length).toBe(2);
       expect(result.formatted).toBeDefined();
+    });
+
+    it('formatMeetingMinutes renders replies under phase-less notes', () => {
+      // Manually inject notes without phase (simulating data migration / non-standard column)
+      const task = engine.query({ query: 'meeting_minutes', task_id: meetingId }).data.task;
+      const notes = [
+        { id: 1, text: 'Top-level item', at: '2026-03-15T17:00:00Z', by: 'Alexandre', status: 'open' },
+        { id: 2, text: 'Reply to top-level', at: '2026-03-15T17:05:00Z', by: 'Giovanni', parent_note_id: 1, status: 'open' },
+      ];
+      // Write notes directly to the DB to bypass phase assignment
+      const db = (engine as any).db;
+      db.prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`).run(
+        JSON.stringify(notes), task.board_id ?? (engine as any).boardId, meetingId,
+      );
+      const result = engine.query({ query: 'meeting_minutes', task_id: meetingId });
+      expect(result.success).toBe(true);
+      // The reply text must appear in the formatted output
+      expect(result.formatted).toContain('Reply to top-level');
+      expect(result.formatted).toContain('Top-level item');
     });
 
     it('upcoming_meetings returns meetings sorted by scheduled_at', () => {
@@ -3500,6 +3932,46 @@ describe('meeting notes', () => {
       const formatted = board.data.formatted_board as string;
       expect(formatted).toContain('2 participantes');
       expect(formatted).not.toContain('3 participantes');
+    });
+
+    it('sorts meetings by scheduled_at among tasks with due_date', () => {
+      // Create a task with a far-future due date
+      engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Far future task',
+        assignee: 'Alexandre',
+        due_date: '2026-04-30',
+        sender_name: 'Alexandre',
+      });
+      // Create a meeting scheduled for much sooner (no due_date)
+      engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Imminent meeting',
+        scheduled_at: '2026-03-12T10:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      // Move both to in_progress so they share a column+person
+      const tasks = engine.query({ query: 'board' });
+      const allIds = Object.values(tasks.data.columns as Record<string, any[]>).flat();
+      for (const t of allIds) {
+        if (t.title === 'Far future task' || t.title === 'Imminent meeting') {
+          engine.move({ board_id: BOARD_ID, task_id: t.id, action: 'start', sender_name: 'Alexandre' });
+        }
+      }
+
+      const board = engine.query({ query: 'board' });
+      expect(board.success).toBe(true);
+      const formatted = board.data.formatted_board as string;
+
+      // The meeting (scheduled 2026-03-12) should appear BEFORE the far-future task (due 2026-04-30)
+      const meetingIdx = formatted.indexOf('Imminent meeting');
+      const taskIdx = formatted.indexOf('Far future task');
+      expect(meetingIdx).toBeGreaterThan(-1);
+      expect(taskIdx).toBeGreaterThan(-1);
+      expect(meetingIdx).toBeLessThan(taskIdx);
     });
   });
 
@@ -3785,6 +4257,37 @@ describe('meeting notes', () => {
       const corrupted = report.data!.upcoming_meetings!.find((u: any) => u.id === m.task_id);
       expect(corrupted).toBeDefined();
       expect(corrupted!.participant_count).toBe(1);
+    });
+
+    it('per_person in_progress count excludes meetings (consistent with WIP limits)', () => {
+      // Alexandre already has T-001 in_progress from seed data.
+      // Create a meeting and start it — should NOT inflate Alexandre's in_progress count.
+      const meeting = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Team sync',
+        scheduled_at: new Date(Date.now() + 3600000).toISOString(),
+        sender_name: 'Alexandre',
+      });
+      expect(meeting.success).toBe(true);
+      engine.move({ board_id: BOARD_ID, task_id: meeting.task_id!, action: 'start', sender_name: 'Alexandre' });
+
+      // Verify the meeting is actually in_progress
+      const task = db.prepare(`SELECT column FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meeting.task_id) as { column: string };
+      expect(task.column).toBe('in_progress');
+
+      const report = engine.report({ board_id: BOARD_ID, type: 'standup' });
+      expect(report.success).toBe(true);
+
+      // The meeting SHOULD appear in the in_progress list (informational)
+      const ipIds = report.data!.in_progress.map((t: any) => t.id);
+      expect(ipIds).toContain(meeting.task_id);
+
+      // But Alexandre's per_person in_progress count should NOT include the meeting
+      const alexandre = report.data!.per_person.find((p: any) => p.name === 'Alexandre');
+      expect(alexandre).toBeDefined();
+      // T-001 is in_progress (from seed) — that's the only non-meeting in_progress task
+      expect(alexandre!.in_progress).toBe(1);
     });
   });
 
@@ -4124,6 +4627,99 @@ describe('meeting notes', () => {
     });
   });
 
+  describe('process_minutes_decision clears _last_mutation to prevent undo reverting processed notes', () => {
+    it('undo after process_minutes_decision does not revert note processing', () => {
+      // Create a meeting with a note
+      const createResult = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Budget review',
+        scheduled_at: '2026-03-15T10:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      expect(createResult.success).toBe(true);
+      const meetingId = createResult.task_id!;
+
+      // Start the meeting (moves to in_progress so notes get 'meeting' phase)
+      engine.move({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        action: 'start',
+        sender_name: 'Alexandre',
+      });
+
+      // Add a meeting note (this sets _last_mutation with snapshot)
+      const noteResult = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Review Q2 budget allocation' },
+      });
+      expect(noteResult.success).toBe(true);
+
+      // Update the title (sets _last_mutation with snapshot that includes current notes)
+      const titleResult = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { title: 'Q2 Budget review' },
+      });
+      expect(titleResult.success).toBe(true);
+
+      // Verify _last_mutation is set (from title update)
+      const beforeProcess = db
+        .prepare(`SELECT _last_mutation, notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { _last_mutation: string | null; notes: string };
+      expect(beforeProcess._last_mutation).not.toBeNull();
+
+      // Process the meeting note via admin process_minutes_decision
+      const notesBefore = JSON.parse(beforeProcess.notes);
+      const openNote = notesBefore.find((n: any) => n.status === 'open');
+      expect(openNote).toBeDefined();
+
+      const processResult = engine.admin({
+        board_id: BOARD_ID,
+        action: 'process_minutes_decision',
+        sender_name: 'Alexandre',
+        task_id: meetingId,
+        note_id: openNote.id,
+        decision: 'create_task',
+        create: { type: 'simple', title: 'Review Q2 budget allocation' },
+      });
+      expect(processResult.success).toBe(true);
+
+      // Verify _last_mutation is now cleared (process_minutes_decision should clear it)
+      const afterProcess = db
+        .prepare(`SELECT _last_mutation, notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { _last_mutation: string | null; notes: string };
+      expect(afterProcess._last_mutation).toBeNull();
+
+      // Verify the note was processed
+      const notesAfterProcess = JSON.parse(afterProcess.notes);
+      const processedNote = notesAfterProcess.find((n: any) => n.id === openNote.id);
+      expect(processedNote.status).toBe('task_created');
+      expect(processedNote.created_task_id).toBeDefined();
+
+      // Attempt undo — should NOT find the meeting (its _last_mutation was cleared)
+      // It may find another task or return "nothing to undo"
+      const undoResult = engine.undo({
+        board_id: BOARD_ID,
+        sender_name: 'Alexandre',
+      });
+
+      // Even if undo finds and reverts a different task, verify the meeting's
+      // processed note was NOT reverted
+      const afterUndo = db
+        .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { notes: string };
+      const notesAfterUndo = JSON.parse(afterUndo.notes);
+      const noteAfterUndo = notesAfterUndo.find((n: any) => n.id === openNote.id);
+      expect(noteAfterUndo.status).toBe('task_created');
+      expect(noteAfterUndo.created_task_id).toBeDefined();
+    });
+  });
+
   describe('undo WIP guard exempts meetings', () => {
     it('undo of meeting wait succeeds even when assignee is at WIP limit', () => {
       // Set WIP limit to 2 for Alexandre (person-1)
@@ -4216,6 +4812,183 @@ describe('meeting notes', () => {
         .prepare(`SELECT column FROM tasks WHERE board_id = ? AND id = ?`)
         .get(BOARD_ID, meetingId) as { column: string };
       expect(afterUndo.column).toBe('in_progress');
+    });
+  });
+
+  describe('bounded recurrence stale-read: max_cycles + recurrence_end_date in same update', () => {
+
+    it('setting max_cycles and clearing recurrence_end_date in one call preserves max_cycles', () => {
+      // Create a recurring meeting with recurrence_end_date
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Bounded meeting',
+        scheduled_at: '2026-03-10T14:00:00Z',
+        recurrence: 'weekly',
+        recurrence_end_date: '2026-12-31',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      const meetingId = r.task_id!;
+
+      // Verify initial state
+      const before = db
+        .prepare(`SELECT max_cycles, recurrence_end_date FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { max_cycles: number | null; recurrence_end_date: string | null };
+      expect(before.max_cycles).toBeNull();
+      expect(before.recurrence_end_date).toBe('2026-12-31');
+
+      // In one update call: set max_cycles=5, clear recurrence_end_date
+      // Before the fix, the recurrence_end_date block's "SET max_cycles = NULL"
+      // would overwrite the max_cycles=5 that was just set.
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { max_cycles: 5, recurrence_end_date: null },
+      });
+      expect(result.success).toBe(true);
+
+      const after = db
+        .prepare(`SELECT max_cycles, recurrence_end_date FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { max_cycles: number | null; recurrence_end_date: string | null };
+      expect(after.max_cycles).toBe(5);
+      expect(after.recurrence_end_date).toBeNull();
+    });
+
+    it('clearing max_cycles and setting recurrence_end_date in one call preserves recurrence_end_date', () => {
+      // Create a recurring meeting with max_cycles
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Bounded meeting 2',
+        scheduled_at: '2026-03-10T14:00:00Z',
+        recurrence: 'weekly',
+        max_cycles: 10,
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      const meetingId = r.task_id!;
+
+      // In one update call: clear max_cycles, set recurrence_end_date
+      const result = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { max_cycles: null, recurrence_end_date: '2026-06-30' },
+      });
+      expect(result.success).toBe(true);
+
+      const after = db
+        .prepare(`SELECT max_cycles, recurrence_end_date FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { max_cycles: number | null; recurrence_end_date: string | null };
+      expect(after.max_cycles).toBeNull();
+      expect(after.recurrence_end_date).toBe('2026-06-30');
+    });
+  });
+
+  describe('waiting_for cleared on resume', () => {
+    it('clears stale waiting_for when a meeting is resumed then re-waited without reason', () => {
+      // Create a meeting
+      const meetingResult = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Stale waiting_for meeting',
+        scheduled_at: '2026-03-20T10:00:00Z',
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      expect(meetingResult.success).toBe(true);
+      const meetingId = meetingResult.task_id!;
+
+      // Start the meeting
+      engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
+
+      // Wait with a reason
+      const waitResult = engine.move({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        action: 'wait',
+        sender_name: 'Alexandre',
+        reason: 'Waiting for client approval',
+      });
+      expect(waitResult.success).toBe(true);
+
+      // Verify waiting_for is set
+      const afterWait = db
+        .prepare(`SELECT waiting_for FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { waiting_for: string | null };
+      expect(afterWait.waiting_for).toBe('Waiting for client approval');
+
+      // Resume the meeting
+      const resumeResult = engine.move({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        action: 'resume',
+        sender_name: 'Alexandre',
+      });
+      expect(resumeResult.success).toBe(true);
+
+      // waiting_for should be cleared after resume
+      const afterResume = db
+        .prepare(`SELECT waiting_for FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { waiting_for: string | null };
+      expect(afterResume.waiting_for).toBeNull();
+
+      // Wait again WITHOUT a reason
+      const waitAgain = engine.move({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        action: 'wait',
+        sender_name: 'Alexandre',
+      });
+      expect(waitAgain.success).toBe(true);
+
+      // waiting_for should still be null (not stale "Waiting for client approval")
+      const afterWaitAgain = db
+        .prepare(`SELECT waiting_for FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, meetingId) as { waiting_for: string | null };
+      expect(afterWaitAgain.waiting_for).toBeNull();
+    });
+
+    it('clears waiting_for when concluding from waiting column', () => {
+      // Create a simple task
+      const taskResult = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Conclude from waiting',
+        assignee: 'Alexandre',
+        sender_name: 'Alexandre',
+      });
+      expect(taskResult.success).toBe(true);
+      const taskId = taskResult.task_id!;
+
+      // Move to in_progress then waiting with reason
+      engine.move({ board_id: BOARD_ID, task_id: taskId, action: 'start', sender_name: 'Alexandre' });
+      engine.move({
+        board_id: BOARD_ID,
+        task_id: taskId,
+        action: 'wait',
+        sender_name: 'Alexandre',
+        reason: 'Blocked on dependency',
+      });
+
+      // Conclude directly from waiting
+      const concludeResult = engine.move({
+        board_id: BOARD_ID,
+        task_id: taskId,
+        action: 'conclude',
+        sender_name: 'Alexandre',
+      });
+      expect(concludeResult.success).toBe(true);
+
+      // waiting_for should be cleared
+      const afterConclude = db
+        .prepare(`SELECT waiting_for FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, taskId) as { waiting_for: string | null };
+      expect(afterConclude.waiting_for).toBeNull();
     });
   });
 });
