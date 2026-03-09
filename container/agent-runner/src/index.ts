@@ -16,13 +16,18 @@
 
 import fs from 'fs';
 import path from 'path';
-import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
+import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
-import {
-  buildNanoclawMcpEnv,
-  ContainerInput,
-  NANOCLAW_ALLOWED_TOOLS,
-} from './runtime-config.js';
+
+interface ContainerInput {
+  prompt: string;
+  sessionId?: string;
+  groupFolder: string;
+  chatJid: string;
+  isMain: boolean;
+  isScheduledTask?: boolean;
+  assistantName?: string;
+}
 
 interface ContainerOutput {
   status: 'success' | 'error';
@@ -42,21 +47,9 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
-interface ImageContentBlock {
-  type: 'image';
-  source: { type: 'base64'; media_type: string; data: string };
-}
-
-interface TextContentBlock {
-  type: 'text';
-  text: string;
-}
-
-type ContentBlock = TextContentBlock | ImageContentBlock;
-
 interface SDKUserMessage {
   type: 'user';
-  message: { role: 'user'; content: string | ContentBlock[] };
+  message: { role: 'user'; content: string };
   parent_tool_use_id: null;
   session_id: string;
 }
@@ -78,16 +71,6 @@ class MessageStream {
     this.queue.push({
       type: 'user',
       message: { role: 'user', content: text },
-      parent_tool_use_id: null,
-      session_id: '',
-    });
-    this.waiting?.();
-  }
-
-  pushMultimodal(content: ContentBlock[]): void {
-    this.queue.push({
-      type: 'user',
-      message: { role: 'user', content },
       parent_tool_use_id: null,
       session_id: '',
     });
@@ -198,30 +181,6 @@ function createPreCompactHook(assistantName?: string): HookCallback {
     }
 
     return {};
-  };
-}
-
-// Secrets to strip from Bash tool subprocess environments.
-// These are needed by claude-code for API auth but should never
-// be visible to commands Kit runs.
-const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
-
-function createSanitizeBashHook(): HookCallback {
-  return async (input, _toolUseId, _context) => {
-    const preInput = input as PreToolUseHookInput;
-    const command = (preInput.tool_input as { command?: string })?.command;
-    if (!command) return {};
-
-    const unsetPrefix = `unset ${SECRET_ENV_VARS.join(' ')} 2>/dev/null; `;
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        updatedInput: {
-          ...(preInput.tool_input as Record<string, unknown>),
-          command: unsetPrefix + command,
-        },
-      },
-    };
   };
 }
 
@@ -381,28 +340,6 @@ async function runQuery(
   const stream = new MessageStream();
   stream.push(prompt);
 
-  // Load image attachments as multimodal content blocks
-  if (containerInput.imageAttachments && containerInput.imageAttachments.length > 0) {
-    const blocks: ContentBlock[] = [];
-    for (const att of containerInput.imageAttachments) {
-      const filePath = path.join('/workspace/group', att.relativePath);
-      if (fs.existsSync(filePath)) {
-        const data = fs.readFileSync(filePath).toString('base64');
-        blocks.push({
-          type: 'image',
-          source: { type: 'base64', media_type: att.mediaType, data },
-        });
-        log(`Loaded image: ${att.relativePath} (${Math.round(data.length * 0.75 / 1024)}KB)`);
-      } else {
-        log(`Image not found: ${filePath}`);
-      }
-    }
-    if (blocks.length > 0) {
-      blocks.push({ type: 'text', text: 'Images attached above were sent in the conversation.' });
-      stream.pushMultimodal(blocks);
-    }
-  }
-
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;
   let closedDuringQuery = false;
@@ -462,7 +399,16 @@ async function runQuery(
       systemPrompt: globalClaudeMd
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
         : undefined,
-      allowedTools: [...NANOCLAW_ALLOWED_TOOLS],
+      allowedTools: [
+        'Bash',
+        'Read', 'Write', 'Edit', 'Glob', 'Grep',
+        'WebSearch', 'WebFetch',
+        'Task', 'TaskOutput', 'TaskStop',
+        'TeamCreate', 'TeamDelete', 'SendMessage',
+        'TodoWrite', 'ToolSearch', 'Skill',
+        'NotebookEdit',
+        'mcp__nanoclaw__*'
+      ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
@@ -471,12 +417,15 @@ async function runQuery(
         nanoclaw: {
           command: 'node',
           args: [mcpServerPath],
-          env: buildNanoclawMcpEnv(containerInput),
+          env: {
+            NANOCLAW_CHAT_JID: containerInput.chatJid,
+            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+          },
         },
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
-        PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],
       },
     }
   })) {
@@ -521,7 +470,6 @@ async function main(): Promise<void> {
   try {
     const stdinData = await readStdin();
     containerInput = JSON.parse(stdinData);
-    // Delete the temp file the entrypoint wrote — it contains secrets
     try { fs.unlinkSync('/tmp/input.json'); } catch { /* may not exist */ }
     log(`Received input for group: ${containerInput.groupFolder}`);
   } catch (err) {
@@ -533,12 +481,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Build SDK env: merge secrets into process.env for the SDK only.
-  // Secrets never touch process.env itself, so Bash subprocesses can't see them.
+  // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.
+  // No real secrets exist in the container environment.
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
-  for (const [key, value] of Object.entries(containerInput.secrets || {})) {
-    sdkEnv[key] = value;
-  }
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');

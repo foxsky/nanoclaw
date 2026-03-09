@@ -1,84 +1,238 @@
 # NanoClaw Specification
 
-A personal Claude assistant accessible via WhatsApp, with persistent memory per conversation, scheduled tasks, and email integration.
+A personal Claude assistant with multi-channel support, persistent memory per conversation, scheduled tasks, and container-isolated agent execution.
 
 ---
 
 ## Table of Contents
 
 1. [Architecture](#architecture)
-2. [Folder Structure](#folder-structure)
-3. [Configuration](#configuration)
-4. [Memory System](#memory-system)
-5. [Session Management](#session-management)
-6. [Message Flow](#message-flow)
-7. [Commands](#commands)
-8. [Scheduled Tasks](#scheduled-tasks)
-9. [MCP Servers](#mcp-servers)
-10. [Deployment](#deployment)
-11. [Security Considerations](#security-considerations)
+2. [Architecture: Channel System](#architecture-channel-system)
+3. [Folder Structure](#folder-structure)
+4. [Configuration](#configuration)
+5. [Memory System](#memory-system)
+6. [Session Management](#session-management)
+7. [Message Flow](#message-flow)
+8. [Commands](#commands)
+9. [Scheduled Tasks](#scheduled-tasks)
+10. [MCP Servers](#mcp-servers)
+11. [Deployment](#deployment)
+12. [Security Considerations](#security-considerations)
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        HOST (macOS)                                  │
-│                   (Main Node.js Process)                             │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  ┌──────────────┐                     ┌────────────────────┐        │
-│  │  WhatsApp    │────────────────────▶│   SQLite Database  │        │
-│  │  (baileys)   │◀────────────────────│   (messages.db)    │        │
-│  └──────────────┘   store/send        └─────────┬──────────┘        │
-│                                                  │                   │
-│         ┌────────────────────────────────────────┘                   │
-│         │                                                            │
-│         ▼                                                            │
-│  ┌──────────────────┐    ┌──────────────────┐    ┌───────────────┐  │
-│  │  Message Loop    │    │  Scheduler Loop  │    │  IPC Watcher  │  │
-│  │  (polls SQLite)  │    │  (checks tasks)  │    │  (file-based) │  │
-│  └────────┬─────────┘    └────────┬─────────┘    └───────────────┘  │
-│           │                       │                                  │
-│           └───────────┬───────────┘                                  │
-│                       │ spawns container                             │
-│                       ▼                                              │
-├─────────────────────────────────────────────────────────────────────┤
-│                     CONTAINER (Linux VM)                              │
-├─────────────────────────────────────────────────────────────────────┤
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │                    AGENT RUNNER                               │   │
-│  │                                                                │   │
-│  │  Working directory: /workspace/group (mounted from host)       │   │
-│  │  Volume mounts:                                                │   │
-│  │    • groups/{name}/ → /workspace/group                         │   │
-│  │    • groups/global/ → /workspace/global/ (non-main only)        │   │
-│  │    • data/sessions/{group}/.claude/ → /home/node/.claude/      │   │
-│  │    • Additional dirs → /workspace/extra/*                      │   │
-│  │                                                                │   │
-│  │  Tools (all groups):                                           │   │
-│  │    • Bash (safe - sandboxed in container!)                     │   │
-│  │    • Read, Write, Edit, Glob, Grep (file operations)           │   │
-│  │    • WebSearch, WebFetch (internet access)                     │   │
-│  │    • agent-browser (browser automation)                        │   │
-│  │    • mcp__nanoclaw__* (scheduler tools via IPC)                │   │
-│  │                                                                │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                        HOST (macOS / Linux)                           │
+│                     (Main Node.js Process)                            │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│  ┌──────────────────┐                  ┌────────────────────┐        │
+│  │ Channels         │─────────────────▶│   SQLite Database  │        │
+│  │ (self-register   │◀────────────────│   (messages.db)    │        │
+│  │  at startup)     │  store/send      └─────────┬──────────┘        │
+│  └──────────────────┘                            │                   │
+│                                                   │                   │
+│         ┌─────────────────────────────────────────┘                   │
+│         │                                                             │
+│         ▼                                                             │
+│  ┌──────────────────┐    ┌──────────────────┐    ┌───────────────┐   │
+│  │  Message Loop    │    │  Scheduler Loop  │    │  IPC Watcher  │   │
+│  │  (polls SQLite)  │    │  (checks tasks)  │    │  (file-based) │   │
+│  └────────┬─────────┘    └────────┬─────────┘    └───────────────┘   │
+│           │                       │                                   │
+│           └───────────┬───────────┘                                   │
+│                       │ spawns container                              │
+│                       ▼                                               │
+├──────────────────────────────────────────────────────────────────────┤
+│                     CONTAINER (Linux VM)                               │
+├──────────────────────────────────────────────────────────────────────┤
+│  ┌──────────────────────────────────────────────────────────────┐    │
+│  │                    AGENT RUNNER                               │    │
+│  │                                                                │    │
+│  │  Working directory: /workspace/group (mounted from host)       │    │
+│  │  Volume mounts:                                                │    │
+│  │    • groups/{name}/ → /workspace/group                         │    │
+│  │    • groups/global/ → /workspace/global/ (non-main only)       │    │
+│  │    • data/sessions/{group}/.claude/ → /home/node/.claude/      │    │
+│  │    • Additional dirs → /workspace/extra/*                      │    │
+│  │                                                                │    │
+│  │  Tools (all groups):                                           │    │
+│  │    • Bash (safe - sandboxed in container!)                     │    │
+│  │    • Read, Write, Edit, Glob, Grep (file operations)           │    │
+│  │    • WebSearch, WebFetch (internet access)                     │    │
+│  │    • agent-browser (browser automation)                        │    │
+│  │    • mcp__nanoclaw__* (scheduler tools via IPC)                │    │
+│  │                                                                │    │
+│  └──────────────────────────────────────────────────────────────┘    │
+│                                                                       │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Technology Stack
 
 | Component | Technology | Purpose |
 |-----------|------------|---------|
-| WhatsApp Connection | Node.js (@whiskeysockets/baileys) | Connect to WhatsApp, send/receive messages |
+| Channel System | Channel registry (`src/channels/registry.ts`) | Channels self-register at startup |
 | Message Storage | SQLite (better-sqlite3) | Store messages for polling |
 | Container Runtime | Containers (Linux VMs) | Isolated environments for agent execution |
 | Agent | @anthropic-ai/claude-agent-sdk (0.2.29) | Run Claude with tools and MCP servers |
 | Browser Automation | agent-browser + Chromium | Web interaction and screenshots |
 | Runtime | Node.js 20+ | Host process for routing and scheduling |
+
+---
+
+## Architecture: Channel System
+
+The core ships with no channels built in — each channel (WhatsApp, Telegram, Slack, Discord, Gmail) is installed as a [Claude Code skill](https://code.claude.com/docs/en/skills) that adds the channel code to your fork. Channels self-register at startup; installed channels with missing credentials emit a WARN log and are skipped.
+
+### System Diagram
+
+```mermaid
+graph LR
+    subgraph Channels["Channels"]
+        WA[WhatsApp]
+        TG[Telegram]
+        SL[Slack]
+        DC[Discord]
+        New["Other Channel (Signal, Gmail...)"]
+    end
+
+    subgraph Orchestrator["Orchestrator — index.ts"]
+        ML[Message Loop]
+        GQ[Group Queue]
+        RT[Router]
+        TS[Task Scheduler]
+        DB[(SQLite)]
+    end
+
+    subgraph Execution["Container Execution"]
+        CR[Container Runner]
+        LC["Linux Container"]
+        IPC[IPC Watcher]
+    end
+
+    %% Flow
+    WA & TG & SL & DC & New -->|onMessage| ML
+    ML --> GQ
+    GQ -->|concurrency| CR
+    CR --> LC
+    LC -->|filesystem IPC| IPC
+    IPC -->|tasks & messages| RT
+    RT -->|Channel.sendMessage| Channels
+    TS -->|due tasks| CR
+
+    %% DB Connections
+    DB <--> ML
+    DB <--> TS
+
+    %% Styling for the dynamic channel
+    style New stroke-dasharray: 5 5,stroke-width:2px
+```
+
+### Channel Registry
+
+The channel system is built on a factory registry in `src/channels/registry.ts`:
+
+```typescript
+export type ChannelFactory = (opts: ChannelOpts) => Channel | null;
+
+const registry = new Map<string, ChannelFactory>();
+
+export function registerChannel(name: string, factory: ChannelFactory): void {
+  registry.set(name, factory);
+}
+
+export function getChannelFactory(name: string): ChannelFactory | undefined {
+  return registry.get(name);
+}
+
+export function getRegisteredChannelNames(): string[] {
+  return [...registry.keys()];
+}
+```
+
+Each factory receives `ChannelOpts` (callbacks for `onMessage`, `onChatMetadata`, and `registeredGroups`) and returns either a `Channel` instance or `null` if that channel's credentials are not configured.
+
+### Channel Interface
+
+Every channel implements this interface (defined in `src/types.ts`):
+
+```typescript
+interface Channel {
+  name: string;
+  connect(): Promise<void>;
+  sendMessage(jid: string, text: string): Promise<void>;
+  isConnected(): boolean;
+  ownsJid(jid: string): boolean;
+  disconnect(): Promise<void>;
+  setTyping?(jid: string, isTyping: boolean): Promise<void>;
+  syncGroups?(force: boolean): Promise<void>;
+}
+```
+
+### Self-Registration Pattern
+
+Channels self-register using a barrel-import pattern:
+
+1. Each channel skill adds a file to `src/channels/` (e.g. `whatsapp.ts`, `telegram.ts`) that calls `registerChannel()` at module load time:
+
+   ```typescript
+   // src/channels/whatsapp.ts
+   import { registerChannel, ChannelOpts } from './registry.js';
+
+   export class WhatsAppChannel implements Channel { /* ... */ }
+
+   registerChannel('whatsapp', (opts: ChannelOpts) => {
+     // Return null if credentials are missing
+     if (!existsSync(authPath)) return null;
+     return new WhatsAppChannel(opts);
+   });
+   ```
+
+2. The barrel file `src/channels/index.ts` imports all channel modules, triggering registration:
+
+   ```typescript
+   import './whatsapp.js';
+   import './telegram.js';
+   // ... each skill adds its import here
+   ```
+
+3. At startup, the orchestrator (`src/index.ts`) loops through registered channels and connects whichever ones return a valid instance:
+
+   ```typescript
+   for (const name of getRegisteredChannelNames()) {
+     const factory = getChannelFactory(name);
+     const channel = factory?.(channelOpts);
+     if (channel) {
+       await channel.connect();
+       channels.push(channel);
+     }
+   }
+   ```
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `src/channels/registry.ts` | Channel factory registry |
+| `src/channels/index.ts` | Barrel imports that trigger channel self-registration |
+| `src/types.ts` | `Channel` interface, `ChannelOpts`, message types |
+| `src/index.ts` | Orchestrator — instantiates channels, runs message loop |
+| `src/router.ts` | Finds the owning channel for a JID, formats messages |
+
+### Adding a New Channel
+
+To add a new channel, contribute a skill to `.claude/skills/add-<name>/` that:
+
+1. Adds a `src/channels/<name>.ts` file implementing the `Channel` interface
+2. Calls `registerChannel(name, factory)` at module load
+3. Returns `null` from the factory if credentials are missing
+4. Adds an import line to `src/channels/index.ts`
+
+See existing skills (`/add-whatsapp`, `/add-telegram`, `/add-slack`, `/add-discord`, `/add-gmail`) for the pattern.
 
 ---
 
@@ -100,10 +254,9 @@ nanoclaw/
 ├── src/
 │   ├── index.ts                   # Orchestrator: state, message loop, agent invocation
 │   ├── channels/
-│   │   └── whatsapp.ts            # WhatsApp connection, auth, send/receive
-│   ├── ipc.ts                     # IPC handler registry, plugin loader, watcher
-│   ├── ipc-plugins/               # Host-side IPC plugins (auto-loaded at startup)
-│   │   └── create-group.ts         # Creates WhatsApp groups via IPC
+│   │   ├── registry.ts            # Channel factory registry
+│   │   └── index.ts               # Barrel imports for channel self-registration
+│   ├── ipc.ts                     # IPC watcher and task processing
 │   ├── router.ts                  # Message formatting and outbound routing
 │   ├── config.ts                  # Configuration constants
 │   ├── types.ts                   # TypeScript interfaces (includes Channel)
@@ -123,9 +276,7 @@ nanoclaw/
 │   │   ├── tsconfig.json
 │   │   └── src/
 │   │       ├── index.ts           # Entry point (query loop, IPC polling, session resume)
-│   │       ├── ipc-mcp-stdio.ts   # Stdio-based MCP server for host communication
-│   │       └── mcp-plugins/       # Container-side MCP plugin templates
-│   │           └── create-group.ts # create_group MCP tool
+│   │       └── ipc-mcp-stdio.ts   # Stdio-based MCP server for host communication
 │   └── skills/
 │       └── agent-browser.md       # Browser automation skill
 │
@@ -145,10 +296,10 @@ nanoclaw/
 │
 ├── groups/
 │   ├── CLAUDE.md                  # Global memory (all groups read this)
-│   ├── main/                      # Self-chat (main control channel)
+│   ├── {channel}_main/             # Main control channel (e.g., whatsapp_main/)
 │   │   ├── CLAUDE.md              # Main channel memory
 │   │   └── logs/                  # Task execution logs
-│   └── {Group Name}/              # Per-group folders (created on registration)
+│   └── {channel}_{group-name}/    # Per-group folders (created on registration)
 │       ├── CLAUDE.md              # Group-specific memory
 │       ├── logs/                  # Task logs for this group
 │       └── *.md                   # Files created by the agent
@@ -209,7 +360,7 @@ Groups can have additional directories mounted via `containerConfig` in the SQLi
 ```typescript
 registerGroup("1234567890@g.us", {
   name: "Dev Team",
-  folder: "dev-team",
+  folder: "whatsapp_dev-team",
   trigger: "@Andy",
   added_at: new Date().toISOString(),
   containerConfig: {
@@ -224,6 +375,8 @@ registerGroup("1234567890@g.us", {
   },
 });
 ```
+
+Folder names follow the convention `{channel}_{group-name}` (e.g., `whatsapp_family-chat`, `telegram_dev-team`). The main group has `isMain: true` set during registration.
 
 Additional mounts appear at `/workspace/extra/{containerPath}` inside the container.
 
@@ -255,10 +408,8 @@ ASSISTANT_NAME=Bot npm start
 ```
 
 Or edit the default in `src/config.ts`. This changes:
-- The default trigger pattern (messages must start with `@YourName`)
+- The trigger pattern (messages must start with `@YourName`)
 - The response prefix (`YourName:` added automatically)
-
-Groups can have their own trigger via the `trigger_pattern` column in `registered_groups` (e.g. `@Case`). When a per-group trigger is set, it takes precedence over the global `ASSISTANT_NAME` for that group.
 
 ### Placeholder Values in launchd
 
@@ -320,10 +471,10 @@ Sessions enable conversation continuity - Claude remembers what you talked about
 ### Incoming Message Flow
 
 ```
-1. User sends WhatsApp message
+1. User sends a message via any connected channel
    │
    ▼
-2. Baileys receives message via WhatsApp Web protocol
+2. Channel receives message (e.g. Baileys for WhatsApp, Bot API for Telegram)
    │
    ▼
 3. Message stored in SQLite (store/messages.db)
@@ -334,7 +485,7 @@ Sessions enable conversation continuity - Claude remembers what you talked about
    ▼
 5. Router checks:
    ├── Is chat_jid in registered groups (SQLite)? → No: ignore
-   └── Does message match group's trigger pattern? → No: store but don't process
+   └── Does message match trigger pattern? → No: store but don't process
    │
    ▼
 6. Router catches up conversation:
@@ -355,7 +506,7 @@ Sessions enable conversation continuity - Claude remembers what you talked about
    └── Uses tools as needed (search, email, etc.)
    │
    ▼
-9. Router prefixes response with assistant name and sends via WhatsApp
+9. Router prefixes response with assistant name and sends via the owning channel
    │
    ▼
 10. Router updates last agent timestamp and saves session ID
@@ -368,8 +519,6 @@ Messages must start with the trigger pattern (default: `@Andy`):
 - `@andy help me` → ✅ Triggers (case insensitive)
 - `Hey @Andy` → ❌ Ignored (trigger not at start)
 - `What's up?` → ❌ Ignored (no trigger)
-
-Each group can override the trigger via `trigger_pattern` in `registered_groups`. The per-group trigger is used for matching when set; otherwise the global `ASSISTANT_NAME` applies.
 
 ### Conversation Catch-Up
 
@@ -471,7 +620,7 @@ From main channel:
 
 The `nanoclaw` MCP server is created dynamically per agent call with the current group's context.
 
-**Core Tools:**
+**Available Tools:**
 | Tool | Purpose |
 |------|---------|
 | `schedule_task` | Schedule a recurring or one-time task |
@@ -481,93 +630,7 @@ The `nanoclaw` MCP server is created dynamically per agent call with the current
 | `pause_task` | Pause a task |
 | `resume_task` | Resume a paused task |
 | `cancel_task` | Delete a task |
-| `send_message` | Send a WhatsApp message to the group (optional `target_chat_jid` for cross-group, main/TaskFlow only) |
-| `register_group` | Register a new group (main only) |
-
-**Plugin Tools** (loaded from `/workspace/mcp-plugins/`):
-| Tool | Purpose |
-|------|---------|
-| `create_group` | Create a new WhatsApp group (main + TaskFlow groups). Participant phone numbers are resolved to WhatsApp JIDs via `onWhatsApp()` before creation. |
-
-Additional MCP tools can be added by dropping compiled `.js` files into `data/mcp-plugins/{group}/`. See [IPC Plugin Mechanism](#ipc-plugin-mechanism) below.
-
----
-
-## IPC Plugin Mechanism
-
-The IPC system is extensible via plugins. Both the host-side IPC handler and the container-side MCP server support loading plugins from directories at startup.
-
-### Architecture
-
-```
-Host (src/ipc.ts)                          Container (ipc-mcp-stdio.ts)
-┌──────────────────────┐                   ┌──────────────────────┐
-│  Handler Registry    │                   │  MCP Server          │
-│  Map<type, handler>  │                   │                      │
-│                      │  ◀── IPC file ──  │  Core tools          │
-│  Core handlers       │                   │  (send_message, etc) │
-│  (schedule_task,     │                   │                      │
-│   pause_task, etc)   │                   │  Plugin tools         │
-│                      │                   │  (loaded from         │
-│  Plugin handlers     │                   │   /workspace/         │
-│  (loaded from        │                   │   mcp-plugins/)       │
-│   dist/ipc-plugins/) │                   │                      │
-└──────────────────────┘                   └──────────────────────┘
-```
-
-### Host-Side Plugins (`src/ipc-plugins/*.ts`)
-
-Compiled to `dist/ipc-plugins/*.js` and loaded at startup by `loadIpcPlugins()`. Each plugin exports a `register` function:
-
-```typescript
-import type { IpcHandler } from '../ipc.js';
-
-const myHandler: IpcHandler = async (data, sourceGroup, isMain, deps) => {
-  // Handle the IPC task
-};
-
-export function register(reg: (type: string, handler: IpcHandler) => void): void {
-  reg('my_type', myHandler);
-}
-```
-
-The `IpcHandler` signature provides:
-- `data` — parsed JSON from the IPC file (`Record<string, unknown>`)
-- `sourceGroup` — verified group folder identity (from directory path)
-- `isMain` — whether the source is the main group
-- `deps` — host services (`sendMessage`, `registeredGroups`, `createGroup`, `resolvePhoneJid`, etc.)
-
-### Container-Side Plugins (`data/mcp-plugins/{group}/*.js`)
-
-Mounted read-only at `/workspace/mcp-plugins/` in the container. Each plugin exports a `register` function:
-
-```typescript
-export function register(server, ctx) {
-  // ctx: { chatJid, groupFolder, isMain, writeIpcFile, TASKS_DIR, MESSAGES_DIR }
-  server.tool('my_tool', 'Description', schema, handler);
-}
-```
-
-The `mcp__nanoclaw__*` wildcard in the agent runner's `allowedTools` automatically matches any tool registered on the server — no changes needed in `index.ts`.
-
-### Deploying a Plugin
-
-1. Write the host-side handler in `src/ipc-plugins/my-plugin.ts`
-2. Write the container-side MCP tool in `container/agent-runner/src/mcp-plugins/my-plugin.ts`
-3. Add the filename to the allowlists in `src/ipc.ts` (`ALLOWED_IPC_PLUGIN_FILES`) and `container/agent-runner/src/ipc-mcp-stdio.ts` (`ALLOWED_MCP_PLUGIN_FILES`)
-4. Run `npm run build` to compile the host plugin to `dist/ipc-plugins/`
-5. Compile the MCP plugin separately and copy to `data/mcp-plugins/{group}/`
-6. Restart NanoClaw — plugins load automatically
-
-### Security
-
-- **Allowlists** — Both host and container plugin loaders use hardcoded allowlists (`ALLOWED_IPC_PLUGIN_FILES`, `ALLOWED_MCP_PLUGIN_FILES`). Only reviewed plugins may run. Adding a new plugin requires updating the allowlist in the respective core file. This is a deliberate trade-off: true drop-in extensibility is sacrificed for the guarantee that only explicitly approved code runs in the host process.
-- **Dual authorization** — Container-side plugins perform a best-effort authorization check for fast user feedback. The host-side plugin is the sole authority. If the checks diverge, the host silently drops the request.
-- Host plugins run in the main process with full access to `IpcDeps`
-- Container plugins are mounted **read-only** — agents cannot modify them
-- Authorization is the plugin's responsibility (check `isMain`, `sourceGroup`)
-- Plugin filenames are validated with `path.basename()` to prevent traversal
-- Duplicate handler registrations log a warning before overwriting
+| `send_message` | Send a message to the group via its channel |
 
 ---
 
@@ -581,7 +644,8 @@ When NanoClaw starts, it:
 1. **Ensures container runtime is running** - Automatically starts it if needed; kills orphaned NanoClaw containers from previous runs
 2. Initializes the SQLite database (migrates from JSON files if they exist)
 3. Loads state from SQLite (registered groups, sessions, router state)
-4. Connects to WhatsApp (on `connection.open`):
+4. **Connects channels** — loops through registered channels, instantiates those with credentials, calls `connect()` on each
+5. Once at least one channel is connected:
    - Starts the scheduler loop
    - Starts the IPC watcher for container messages
    - Sets up the per-group queue with `processGroupMessages`

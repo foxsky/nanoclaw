@@ -3,28 +3,29 @@
  * Spawns agent execution in containers and handles IPC
  */
 import { ChildProcess, exec, spawn } from 'child_process';
-import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 
 import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
+  CREDENTIAL_PROXY_PORT,
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
   TIMEZONE,
 } from './config.js';
-import { readEnvFile } from './env.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
+  CONTAINER_HOST_GATEWAY,
   CONTAINER_RUNTIME_BIN,
+  hostGatewayArgs,
   readonlyMountArgs,
   stopContainer,
 } from './container-runtime.js';
+import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -32,26 +33,14 @@ import { RegisteredGroup } from './types.js';
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
-export function resolveProjectRoot(moduleUrl = import.meta.url): string {
-  const modulePath = fileURLToPath(moduleUrl);
-  return path.resolve(path.dirname(modulePath), '..');
-}
-
-const PROJECT_ROOT = resolveProjectRoot();
-
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
-  isTaskflowManaged?: boolean;
-  taskflowBoardId?: string;
-  taskflowHierarchyLevel?: number;
-  taskflowMaxDepth?: number;
   isScheduledTask?: boolean;
   assistantName?: string;
-  secrets?: Record<string, string>;
 }
 
 export interface ContainerOutput {
@@ -67,34 +56,12 @@ interface VolumeMount {
   readonly: boolean;
 }
 
-const CORE_AGENT_RUNNER_FILES = [
-  'index.ts',
-  'ipc-mcp-stdio.ts',
-  'ipc-tooling.ts',
-  'runtime-config.ts',
-  'taskflow-engine.ts',
-  path.join('mcp-plugins', 'create-group.ts'),
-] as const;
-
-function syncCoreAgentRunnerFiles(
-  sourceRoot: string,
-  targetRoot: string,
-): void {
-  for (const relativePath of CORE_AGENT_RUNNER_FILES) {
-    const sourcePath = path.join(sourceRoot, relativePath);
-    if (!fs.existsSync(sourcePath)) continue;
-
-    const targetPath = path.join(targetRoot, relativePath);
-    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    fs.copyFileSync(sourcePath, targetPath);
-  }
-}
-
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
+  const projectRoot = process.cwd();
   const groupDir = resolveGroupFolderPath(group.folder);
 
   if (isMain) {
@@ -104,10 +71,21 @@ function buildVolumeMounts(
     // (src/, dist/, package.json, etc.) which would bypass the sandbox
     // entirely on next restart.
     mounts.push({
-      hostPath: PROJECT_ROOT,
+      hostPath: projectRoot,
       containerPath: '/workspace/project',
       readonly: true,
     });
+
+    // Shadow .env so the agent cannot read secrets from the mounted project root.
+    // Credentials are injected by the credential proxy, never exposed to containers.
+    const envFile = path.join(projectRoot, '.env');
+    if (fs.existsSync(envFile)) {
+      mounts.push({
+        hostPath: '/dev/null',
+        containerPath: '/workspace/project/.env',
+        readonly: true,
+      });
+    }
 
     // Main also gets its group folder as the working directory
     mounts.push({
@@ -169,7 +147,7 @@ function buildVolumeMounts(
   }
 
   // Sync skills from container/skills/ into each group's .claude/skills/
-  const skillsSrc = path.join(PROJECT_ROOT, 'container', 'skills');
+  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');
   if (fs.existsSync(skillsSrc)) {
     for (const skillDir of fs.readdirSync(skillsSrc)) {
@@ -197,34 +175,11 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // TaskFlow groups get access to the shared TaskFlow database.
-  // Mount the directory (not the file) so SQLite WAL journal files
-  // (-wal, -shm) persist across container restarts.
-  if (group.taskflowManaged) {
-    const taskflowDir = path.join(DATA_DIR, 'taskflow');
-    fs.mkdirSync(taskflowDir, { recursive: true });
-    mounts.push({
-      hostPath: taskflowDir,
-      containerPath: '/workspace/taskflow',
-      readonly: false, // agents need write access for task mutations
-    });
-  }
-
-  // Per-group MCP plugins directory (read-only mount into container)
-  // Skills copy compiled .js plugin files here during setup.
-  const mcpPluginsDir = path.join(DATA_DIR, 'mcp-plugins', group.folder);
-  fs.mkdirSync(mcpPluginsDir, { recursive: true });
-  mounts.push({
-    hostPath: mcpPluginsDir,
-    containerPath: '/workspace/mcp-plugins',
-    readonly: true,
-  });
-
   // Copy agent-runner source into a per-group writable location so agents
   // can customize it (add tools, change behavior) without affecting other
   // groups. Recompiled on container startup via entrypoint.sh.
   const agentRunnerSrc = path.join(
-    PROJECT_ROOT,
+    projectRoot,
     'container',
     'agent-runner',
     'src',
@@ -237,9 +192,6 @@ function buildVolumeMounts(
   );
   if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
     fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
-  }
-  if (fs.existsSync(agentRunnerSrc)) {
-    syncCoreAgentRunnerFiles(agentRunnerSrc, groupAgentRunnerDir);
   }
   mounts.push({
     hostPath: groupAgentRunnerDir,
@@ -260,47 +212,6 @@ function buildVolumeMounts(
   return mounts;
 }
 
-/**
- * Read allowed secrets from .env for passing to the container via stdin.
- * Secrets are never written to disk or mounted as files.
- */
-function readSecrets(): Record<string, string> {
-  return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
-}
-
-function resolveTaskflowBoardId(
-  group: RegisteredGroup,
-  explicitBoardId?: string,
-): string | undefined {
-  if (explicitBoardId) return explicitBoardId;
-  if (group.taskflowManaged !== true) return undefined;
-
-  const dbPath = path.join(DATA_DIR, 'taskflow', 'taskflow.db');
-  if (!fs.existsSync(dbPath)) {
-    return undefined;
-  }
-
-  let db: Database.Database | undefined;
-  try {
-    db = new Database(dbPath, { readonly: true, fileMustExist: true });
-    db.pragma('busy_timeout = 5000');
-
-    const direct = db
-      .prepare(`SELECT id FROM boards WHERE group_folder = ? LIMIT 1`)
-      .get(group.folder) as { id: string } | undefined;
-    if (direct?.id) {
-      return direct.id;
-    }
-
-    const mapped = db
-      .prepare(`SELECT board_id FROM board_groups WHERE group_folder = ? LIMIT 1`)
-      .get(group.folder) as { board_id: string } | undefined;
-    return mapped?.board_id;
-  } finally {
-    db?.close();
-  }
-}
-
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
@@ -309,6 +220,26 @@ function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Route API traffic through the credential proxy (containers never see real secrets)
+  args.push(
+    '-e',
+    `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
+  );
+
+  // Mirror the host's auth method with a placeholder value.
+  // API key mode: SDK sends x-api-key, proxy replaces with real key.
+  // OAuth mode:   SDK exchanges placeholder token for temp API key,
+  //               proxy injects real OAuth token on that exchange request.
+  const authMode = detectAuthMode();
+  if (authMode === 'api-key') {
+    args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
+  } else {
+    args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+  }
+
+  // Runtime-specific args for host gateway resolution
+  args.push(...hostGatewayArgs());
 
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),
@@ -340,17 +271,6 @@ export async function runContainerAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
-
-  if (group.taskflowManaged === true) {
-    input.taskflowBoardId = resolveTaskflowBoardId(group, input.taskflowBoardId);
-    if (!input.taskflowBoardId) {
-      return {
-        status: 'error',
-        result: null,
-        error: `TaskFlow board mapping not found for group ${group.folder}`,
-      };
-    }
-  }
 
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
@@ -398,12 +318,8 @@ export async function runContainerAgent(
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
-    // Pass secrets via stdin (never written to disk or mounted as files)
-    input.secrets = readSecrets();
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
-    // Remove secrets from input so they don't appear in logs
-    delete input.secrets;
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';
@@ -664,15 +580,9 @@ export async function runContainerAgent(
 
       // Legacy mode: parse the last output marker pair from accumulated stdout
       try {
-        // Extract JSON between sentinel markers for robust parsing.
-        // Use lastIndexOf so that when multiple marker pairs exist (e.g.
-        // progress updates followed by a final result), we parse the last
-        // (most recent) one rather than the first.
-        const startIdx = stdout.lastIndexOf(OUTPUT_START_MARKER);
-        const endIdx =
-          startIdx !== -1
-            ? stdout.indexOf(OUTPUT_END_MARKER, startIdx)
-            : -1;
+        // Extract JSON between sentinel markers for robust parsing
+        const startIdx = stdout.indexOf(OUTPUT_START_MARKER);
+        const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
 
         let jsonLine: string;
         if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {

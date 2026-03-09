@@ -14,9 +14,10 @@ import { RegisteredGroup } from './types.js';
 // Set up registered groups used across tests
 const MAIN_GROUP: RegisteredGroup = {
   name: 'Main',
-  folder: 'main',
+  folder: 'whatsapp_main',
   trigger: 'always',
   added_at: '2024-01-01T00:00:00.000Z',
+  isMain: true,
 };
 
 const OTHER_GROUP: RegisteredGroup = {
@@ -58,7 +59,7 @@ beforeEach(() => {
       setRegisteredGroup(jid, group);
       // Mock the fs.mkdirSync that registerGroup does
     },
-    syncGroupMetadata: async () => {},
+    syncGroups: async () => {},
     getAvailableGroups: () => [],
     writeGroupsSnapshot: () => {},
   };
@@ -73,10 +74,10 @@ describe('schedule_task authorization', () => {
         type: 'schedule_task',
         prompt: 'do something',
         schedule_type: 'once',
-        schedule_value: '2099-06-01T00:00:00.000Z',
+        schedule_value: '2025-06-01T00:00:00',
         targetJid: 'other@g.us',
       },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );
@@ -93,7 +94,7 @@ describe('schedule_task authorization', () => {
         type: 'schedule_task',
         prompt: 'self task',
         schedule_type: 'once',
-        schedule_value: '2099-06-01T00:00:00.000Z',
+        schedule_value: '2025-06-01T00:00:00',
         targetJid: 'other@g.us',
       },
       'other-group',
@@ -112,7 +113,7 @@ describe('schedule_task authorization', () => {
         type: 'schedule_task',
         prompt: 'unauthorized',
         schedule_type: 'once',
-        schedule_value: '2099-06-01T00:00:00.000Z',
+        schedule_value: '2025-06-01T00:00:00',
         targetJid: 'main@g.us',
       },
       'other-group',
@@ -130,10 +131,10 @@ describe('schedule_task authorization', () => {
         type: 'schedule_task',
         prompt: 'no target',
         schedule_type: 'once',
-        schedule_value: '2099-06-01T00:00:00.000Z',
+        schedule_value: '2025-06-01T00:00:00',
         targetJid: 'unknown@g.us',
       },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );
@@ -149,13 +150,13 @@ describe('pause_task authorization', () => {
   beforeEach(() => {
     createTask({
       id: 'task-main',
-      group_folder: 'main',
+      group_folder: 'whatsapp_main',
       chat_jid: 'main@g.us',
       prompt: 'main task',
       schedule_type: 'once',
-      schedule_value: '2099-06-01T00:00:00.000Z',
+      schedule_value: '2025-06-01T00:00:00',
       context_mode: 'isolated',
-      next_run: '2099-06-01T00:00:00.000Z',
+      next_run: '2025-06-01T00:00:00.000Z',
       status: 'active',
       created_at: '2024-01-01T00:00:00.000Z',
     });
@@ -165,9 +166,9 @@ describe('pause_task authorization', () => {
       chat_jid: 'other@g.us',
       prompt: 'other task',
       schedule_type: 'once',
-      schedule_value: '2099-06-01T00:00:00.000Z',
+      schedule_value: '2025-06-01T00:00:00',
       context_mode: 'isolated',
-      next_run: '2099-06-01T00:00:00.000Z',
+      next_run: '2025-06-01T00:00:00.000Z',
       status: 'active',
       created_at: '2024-01-01T00:00:00.000Z',
     });
@@ -176,7 +177,7 @@ describe('pause_task authorization', () => {
   it('main group can pause any task', async () => {
     await processTaskIpc(
       { type: 'pause_task', taskId: 'task-other' },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );
@@ -214,9 +215,9 @@ describe('resume_task authorization', () => {
       chat_jid: 'other@g.us',
       prompt: 'paused task',
       schedule_type: 'once',
-      schedule_value: '2099-06-01T00:00:00.000Z',
+      schedule_value: '2025-06-01T00:00:00',
       context_mode: 'isolated',
-      next_run: '2099-06-01T00:00:00.000Z',
+      next_run: '2025-06-01T00:00:00.000Z',
       status: 'paused',
       created_at: '2024-01-01T00:00:00.000Z',
     });
@@ -225,7 +226,7 @@ describe('resume_task authorization', () => {
   it('main group can resume any task', async () => {
     await processTaskIpc(
       { type: 'resume_task', taskId: 'task-paused' },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );
@@ -263,7 +264,7 @@ describe('cancel_task authorization', () => {
       chat_jid: 'other@g.us',
       prompt: 'cancel me',
       schedule_type: 'once',
-      schedule_value: '2099-06-01T00:00:00.000Z',
+      schedule_value: '2025-06-01T00:00:00',
       context_mode: 'isolated',
       next_run: null,
       status: 'active',
@@ -272,7 +273,7 @@ describe('cancel_task authorization', () => {
 
     await processTaskIpc(
       { type: 'cancel_task', taskId: 'task-to-cancel' },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );
@@ -286,7 +287,7 @@ describe('cancel_task authorization', () => {
       chat_jid: 'other@g.us',
       prompt: 'my task',
       schedule_type: 'once',
-      schedule_value: '2099-06-01T00:00:00.000Z',
+      schedule_value: '2025-06-01T00:00:00',
       context_mode: 'isolated',
       next_run: null,
       status: 'active',
@@ -305,11 +306,11 @@ describe('cancel_task authorization', () => {
   it('non-main group cannot cancel another groups task', async () => {
     createTask({
       id: 'task-foreign',
-      group_folder: 'main',
+      group_folder: 'whatsapp_main',
       chat_jid: 'main@g.us',
       prompt: 'not yours',
       schedule_type: 'once',
-      schedule_value: '2099-06-01T00:00:00.000Z',
+      schedule_value: '2025-06-01T00:00:00',
       context_mode: 'isolated',
       next_run: null,
       status: 'active',
@@ -356,85 +357,12 @@ describe('register_group authorization', () => {
         folder: '../../outside',
         trigger: '@Andy',
       },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );
 
     expect(groups['new@g.us']).toBeUndefined();
-  });
-
-  it('main group can register TaskFlow metadata', async () => {
-    await processTaskIpc(
-      {
-        type: 'register_group',
-        jid: 'taskflow-child@g.us',
-        name: 'TaskFlow Child',
-        folder: 'taskflow-child',
-        trigger: '@Andy',
-        taskflowManaged: true,
-        taskflowHierarchyLevel: 2,
-        taskflowMaxDepth: 3,
-      },
-      'main',
-      true,
-      deps,
-    );
-
-    expect(groups['taskflow-child@g.us']).toMatchObject({
-      folder: 'taskflow-child',
-      taskflowManaged: true,
-      taskflowHierarchyLevel: 2,
-      taskflowMaxDepth: 3,
-    });
-    expect(getRegisteredGroup('taskflow-child@g.us')).toMatchObject({
-      folder: 'taskflow-child',
-      taskflowManaged: true,
-      taskflowHierarchyLevel: 2,
-      taskflowMaxDepth: 3,
-    });
-  });
-
-  it('rejects TaskFlow registration above max depth', async () => {
-    await processTaskIpc(
-      {
-        type: 'register_group',
-        jid: 'taskflow-too-deep@g.us',
-        name: 'TaskFlow Too Deep',
-        folder: 'taskflow-too-deep',
-        trigger: '@Andy',
-        taskflowManaged: true,
-        taskflowHierarchyLevel: 4,
-        taskflowMaxDepth: 3,
-      },
-      'main',
-      true,
-      deps,
-    );
-
-    expect(groups['taskflow-too-deep@g.us']).toBeUndefined();
-    expect(getRegisteredGroup('taskflow-too-deep@g.us')).toBeUndefined();
-  });
-
-  it('rejects TaskFlow registration with invalid hierarchy metadata', async () => {
-    await processTaskIpc(
-      {
-        type: 'register_group',
-        jid: 'taskflow-invalid@g.us',
-        name: 'TaskFlow Invalid',
-        folder: 'taskflow-invalid',
-        trigger: '@Andy',
-        taskflowManaged: true,
-        taskflowHierarchyLevel: 'not-a-number',
-        taskflowMaxDepth: 3,
-      },
-      'main',
-      true,
-      deps,
-    );
-
-    expect(groups['taskflow-invalid@g.us']).toBeUndefined();
-    expect(getRegisteredGroup('taskflow-invalid@g.us')).toBeUndefined();
   });
 });
 
@@ -455,8 +383,7 @@ describe('refresh_groups authorization', () => {
 
 // --- IPC message authorization ---
 // Tests the authorization pattern from startIpcWatcher (ipc.ts).
-// The logic: targetGroup && (isMain || targetGroup.folder === sourceGroup ||
-// (isTaskflow && targetGroup.taskflowManaged))
+// The logic: isMain || (targetGroup && targetGroup.folder === sourceGroup)
 
 describe('IPC message authorization', () => {
   // Replicate the exact check from the IPC watcher
@@ -466,20 +393,17 @@ describe('IPC message authorization', () => {
     targetChatJid: string,
     registeredGroups: Record<string, RegisteredGroup>,
   ): boolean {
-    const sourceGroupEntry = Object.values(registeredGroups).find(
-      (group) => group.folder === sourceGroup,
-    );
-    const isTaskflow = sourceGroupEntry?.taskflowManaged === true;
     const targetGroup = registeredGroups[targetChatJid];
-    return !!targetGroup &&
-      (isMain ||
-        targetGroup.folder === sourceGroup ||
-        (isTaskflow && targetGroup.taskflowManaged === true));
+    return isMain || (!!targetGroup && targetGroup.folder === sourceGroup);
   }
 
   it('main group can send to any group', () => {
-    expect(isMessageAuthorized('main', true, 'other@g.us', groups)).toBe(true);
-    expect(isMessageAuthorized('main', true, 'third@g.us', groups)).toBe(true);
+    expect(
+      isMessageAuthorized('whatsapp_main', true, 'other@g.us', groups),
+    ).toBe(true);
+    expect(
+      isMessageAuthorized('whatsapp_main', true, 'third@g.us', groups),
+    ).toBe(true);
   });
 
   it('non-main group can send to its own chat', () => {
@@ -503,44 +427,11 @@ describe('IPC message authorization', () => {
     ).toBe(false);
   });
 
-  it('main group cannot send to unregistered JID', () => {
-    // Main can cross-send, but only to registered groups.
-    expect(isMessageAuthorized('main', true, 'unknown@g.us', groups)).toBe(
-      false,
-    );
-  });
-
-  it('TaskFlow groups can send to other TaskFlow groups', () => {
-    groups['taskflow-a@g.us'] = {
-      name: 'TaskFlow A',
-      folder: 'taskflow-a',
-      trigger: '@Andy',
-      added_at: '2024-01-01T00:00:00.000Z',
-      taskflowManaged: true,
-    };
-    groups['taskflow-b@g.us'] = {
-      name: 'TaskFlow B',
-      folder: 'taskflow-b',
-      trigger: '@Andy',
-      added_at: '2024-01-01T00:00:00.000Z',
-      taskflowManaged: true,
-    };
-
-    expect(isMessageAuthorized('taskflow-a', false, 'taskflow-b@g.us', groups))
-      .toBe(true);
-  });
-
-  it('TaskFlow groups cannot send to non-TaskFlow groups', () => {
-    groups['taskflow-a@g.us'] = {
-      name: 'TaskFlow A',
-      folder: 'taskflow-a',
-      trigger: '@Andy',
-      added_at: '2024-01-01T00:00:00.000Z',
-      taskflowManaged: true,
-    };
-
-    expect(isMessageAuthorized('taskflow-a', false, 'other@g.us', groups))
-      .toBe(false);
+  it('main group can send to unregistered JID', () => {
+    // Main is always authorized regardless of target
+    expect(
+      isMessageAuthorized('whatsapp_main', true, 'unknown@g.us', groups),
+    ).toBe(true);
   });
 });
 
@@ -556,7 +447,7 @@ describe('schedule_task schedule types', () => {
         schedule_value: '0 9 * * *', // every day at 9am
         targetJid: 'other@g.us',
       },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );
@@ -580,7 +471,7 @@ describe('schedule_task schedule types', () => {
         schedule_value: 'not a cron',
         targetJid: 'other@g.us',
       },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );
@@ -599,7 +490,7 @@ describe('schedule_task schedule types', () => {
         schedule_value: '3600000', // 1 hour
         targetJid: 'other@g.us',
       },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );
@@ -622,7 +513,7 @@ describe('schedule_task schedule types', () => {
         schedule_value: 'abc',
         targetJid: 'other@g.us',
       },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );
@@ -639,7 +530,7 @@ describe('schedule_task schedule types', () => {
         schedule_value: '0',
         targetJid: 'other@g.us',
       },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );
@@ -656,24 +547,7 @@ describe('schedule_task schedule types', () => {
         schedule_value: 'not-a-date',
         targetJid: 'other@g.us',
       },
-      'main',
-      true,
-      deps,
-    );
-
-    expect(getAllTasks()).toHaveLength(0);
-  });
-
-  it('rejects unrecognized schedule_type', async () => {
-    await processTaskIpc(
-      {
-        type: 'schedule_task',
-        prompt: 'bad type',
-        schedule_type: 'daily',
-        schedule_value: '86400000',
-        targetJid: 'other@g.us',
-      },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );
@@ -691,11 +565,11 @@ describe('schedule_task context_mode', () => {
         type: 'schedule_task',
         prompt: 'group context',
         schedule_type: 'once',
-        schedule_value: '2099-06-01T00:00:00.000Z',
+        schedule_value: '2025-06-01T00:00:00',
         context_mode: 'group',
         targetJid: 'other@g.us',
       },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );
@@ -710,11 +584,11 @@ describe('schedule_task context_mode', () => {
         type: 'schedule_task',
         prompt: 'isolated context',
         schedule_type: 'once',
-        schedule_value: '2099-06-01T00:00:00.000Z',
+        schedule_value: '2025-06-01T00:00:00',
         context_mode: 'isolated',
         targetJid: 'other@g.us',
       },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );
@@ -729,11 +603,11 @@ describe('schedule_task context_mode', () => {
         type: 'schedule_task',
         prompt: 'bad context',
         schedule_type: 'once',
-        schedule_value: '2099-06-01T00:00:00.000Z',
+        schedule_value: '2025-06-01T00:00:00',
         context_mode: 'bogus' as any,
         targetJid: 'other@g.us',
       },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );
@@ -748,10 +622,10 @@ describe('schedule_task context_mode', () => {
         type: 'schedule_task',
         prompt: 'no context mode',
         schedule_type: 'once',
-        schedule_value: '2099-06-01T00:00:00.000Z',
+        schedule_value: '2025-06-01T00:00:00',
         targetJid: 'other@g.us',
       },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );
@@ -773,7 +647,7 @@ describe('register_group success', () => {
         folder: 'new-group',
         trigger: '@Andy',
       },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );
@@ -794,7 +668,7 @@ describe('register_group success', () => {
         name: 'Partial',
         // missing folder and trigger
       },
-      'main',
+      'whatsapp_main',
       true,
       deps,
     );

@@ -3,14 +3,18 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
-  buildTriggerPattern,
-  getGroupSenderName,
+  CREDENTIAL_PROXY_PORT,
   IDLE_TIMEOUT,
-  MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
+  TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
-import { WhatsAppChannel } from './channels/whatsapp.js';
+import { startCredentialProxy } from './credential-proxy.js';
+import './channels/index.js';
+import {
+  getChannelFactory,
+  getRegisteredChannelNames,
+} from './channels/registry.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -20,15 +24,16 @@ import {
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
+  PROXY_BIND_HOST,
 } from './container-runtime.js';
 import {
-  deleteRegisteredGroup,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
   getAllTasks,
   getMessagesSince,
   getNewMessages,
+  getRegisteredGroup,
   getRouterState,
   initDatabase,
   setRegisteredGroup,
@@ -40,7 +45,13 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
-import { findChannel, formatMessages, formatOutbound, stripInternalTags } from './router.js';
+import { findChannel, formatMessages, formatOutbound } from './router.js';
+import {
+  isSenderAllowed,
+  isTriggerAllowed,
+  loadSenderAllowlist,
+  shouldDropMessage,
+} from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
@@ -54,7 +65,6 @@ let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
-let whatsapp: WhatsAppChannel;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
@@ -92,39 +102,11 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
     return;
   }
 
-  const previousGroup = registeredGroups[jid];
-  let persisted = false;
+  registeredGroups[jid] = group;
+  setRegisteredGroup(jid, group);
 
-  try {
-    setRegisteredGroup(jid, group);
-    persisted = true;
-
-    // Create group folder
-    fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
-
-    registeredGroups[jid] = group;
-  } catch (err) {
-    if (persisted) {
-      try {
-        if (previousGroup) {
-          setRegisteredGroup(jid, previousGroup);
-        } else {
-          deleteRegisteredGroup(jid);
-        }
-      } catch (rollbackErr) {
-        logger.error(
-          { jid, folder: group.folder, rollbackErr },
-          'Failed to roll back group registration after provisioning error',
-        );
-      }
-    }
-
-    logger.error(
-      { jid, name: group.name, folder: group.folder, err },
-      'Failed to register group',
-    );
-    return;
-  }
+  // Create group folder
+  fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
   logger.info(
     { jid, name: group.name, folder: group.folder },
@@ -171,7 +153,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     return true;
   }
 
-  const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
+  const isMainGroup = group.isMain === true;
 
   const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
   const missedMessages = getMessagesSince(
@@ -184,16 +166,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
-    const pattern = group.trigger
-      ? buildTriggerPattern(group.trigger)
-      : TRIGGER_PATTERN;
-    const hasTrigger = missedMessages.some((m) =>
-      pattern.test(m.content.trim()),
+    const allowlistCfg = loadSenderAllowlist();
+    const hasTrigger = missedMessages.some(
+      (m) =>
+        TRIGGER_PATTERN.test(m.content.trim()) &&
+        (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
     );
     if (!hasTrigger) return true;
   }
 
-  const prompt = formatMessages(missedMessages);
+  const prompt = formatMessages(missedMessages, TIMEZONE);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -225,10 +207,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  // Derive group-specific sender name from trigger (e.g. "@Case" → "Case").
-  // Falls back to global ASSISTANT_NAME for groups without a custom trigger.
-  const groupSender = getGroupSenderName(group.trigger);
-
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
@@ -236,10 +214,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         typeof result.result === 'string'
           ? result.result
           : JSON.stringify(result.result);
-      const text = stripInternalTags(raw);
+      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
+      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
       if (text) {
-        await channel.sendMessage(chatJid, text, groupSender);
+        await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
@@ -247,9 +226,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
 
     if (result.status === 'success') {
-      // Pause typing after each result so the user doesn't see
-      // "typing..." indefinitely when the next result is internal-only.
-      await channel.setTyping?.(chatJid, false);
       queue.notifyIdle(chatJid);
     }
 
@@ -290,7 +266,7 @@ async function runAgent(
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
-  const isMain = group.folder === MAIN_GROUP_FOLDER;
+  const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
@@ -338,10 +314,7 @@ async function runAgent(
         groupFolder: group.folder,
         chatJid,
         isMain,
-        isTaskflowManaged: group.taskflowManaged === true,
-        taskflowHierarchyLevel: group.taskflowHierarchyLevel,
-        taskflowMaxDepth: group.taskflowMaxDepth,
-        assistantName: getGroupSenderName(group.trigger),
+        assistantName: ASSISTANT_NAME,
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
@@ -414,18 +387,19 @@ async function startMessageLoop(): Promise<void> {
             continue;
           }
 
-          const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
+          const isMainGroup = group.isMain === true;
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
 
           // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
           if (needsTrigger) {
-            const pattern = group.trigger
-              ? buildTriggerPattern(group.trigger)
-              : TRIGGER_PATTERN;
-            const hasTrigger = groupMessages.some((m) =>
-              pattern.test(m.content.trim()),
+            const allowlistCfg = loadSenderAllowlist();
+            const hasTrigger = groupMessages.some(
+              (m) =>
+                TRIGGER_PATTERN.test(m.content.trim()) &&
+                (m.is_from_me ||
+                  isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
             );
             if (!hasTrigger) continue;
           }
@@ -437,21 +411,17 @@ async function startMessageLoop(): Promise<void> {
             lastAgentTimestamp[chatJid] || '',
             ASSISTANT_NAME,
           );
-
-          // If allPending is empty, the agent has already processed all
-          // messages up to (or past) this point — skip piping to avoid
-          // re-sending already-processed messages and rolling the cursor back.
-          if (allPending.length === 0) continue;
-
-          const formatted = formatMessages(allPending);
+          const messagesToSend =
+            allPending.length > 0 ? allPending : groupMessages;
+          const formatted = formatMessages(messagesToSend, TIMEZONE);
 
           if (queue.sendMessage(chatJid, formatted)) {
             logger.debug(
-              { chatJid, count: allPending.length },
+              { chatJid, count: messagesToSend.length },
               'Piped messages to active container',
             );
             lastAgentTimestamp[chatJid] =
-              allPending[allPending.length - 1].timestamp;
+              messagesToSend[messagesToSend.length - 1].timestamp;
             saveState();
             // Show typing indicator while the container processes the piped message
             channel
@@ -501,9 +471,16 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
+  // Start credential proxy (containers route API calls through this)
+  const proxyServer = await startCredentialProxy(
+    CREDENTIAL_PROXY_PORT,
+    PROXY_BIND_HOST,
+  );
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    proxyServer.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
@@ -513,7 +490,25 @@ async function main(): Promise<void> {
 
   // Channel callbacks (shared by all channels)
   const channelOpts = {
-    onMessage: (_chatJid: string, msg: NewMessage) => storeMessage(msg),
+    onMessage: (chatJid: string, msg: NewMessage) => {
+      // Sender allowlist drop mode: discard messages from denied senders before storing
+      if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
+        const cfg = loadSenderAllowlist();
+        if (
+          shouldDropMessage(chatJid, cfg) &&
+          !isSenderAllowed(chatJid, msg.sender, cfg)
+        ) {
+          if (cfg.logDenied) {
+            logger.debug(
+              { chatJid, sender: msg.sender },
+              'sender-allowlist: dropping message (drop mode)',
+            );
+          }
+          return;
+        }
+      }
+      storeMessage(msg);
+    },
     onChatMetadata: (
       chatJid: string,
       timestamp: string,
@@ -524,10 +519,26 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
   };
 
-  // Create and connect channels
-  whatsapp = new WhatsAppChannel(channelOpts);
-  channels.push(whatsapp);
-  await whatsapp.connect();
+  // Create and connect all registered channels.
+  // Each channel self-registers via the barrel import above.
+  // Factories return null when credentials are missing, so unconfigured channels are skipped.
+  for (const channelName of getRegisteredChannelNames()) {
+    const factory = getChannelFactory(channelName)!;
+    const channel = factory(channelOpts);
+    if (!channel) {
+      logger.warn(
+        { channel: channelName },
+        'Channel installed but credentials missing — skipping. Check .env or re-run the channel skill.',
+      );
+      continue;
+    }
+    channels.push(channel);
+    await channel.connect();
+  }
+  if (channels.length === 0) {
+    logger.fatal('No channels connected');
+    process.exit(1);
+  }
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
@@ -546,27 +557,24 @@ async function main(): Promise<void> {
       if (text) await channel.sendMessage(jid, text);
     },
   });
-  await startIpcWatcher({
-    sendMessage: (jid, text, sender) => {
+  startIpcWatcher({
+    sendMessage: (jid, text) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text, sender);
+      return channel.sendMessage(jid, text);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,
-    syncGroupMetadata: (force) =>
-      whatsapp?.syncGroupMetadata(force) ?? Promise.resolve(),
+    syncGroups: async (force: boolean) => {
+      await Promise.all(
+        channels
+          .filter((ch) => ch.syncGroups)
+          .map((ch) => ch.syncGroups!(force)),
+      );
+    },
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
-    createGroup: (subject, participants) => {
-      if (!whatsapp) throw new Error('WhatsApp not connected');
-      return whatsapp.createGroup(subject, participants);
-    },
-    resolvePhoneJid: (phone) => {
-      if (!whatsapp) throw new Error('WhatsApp not connected');
-      return whatsapp.resolvePhoneJid(phone);
-    },
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();

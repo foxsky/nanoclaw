@@ -80,10 +80,7 @@ function createSchema(database: Database.Database): void {
       trigger_pattern TEXT NOT NULL,
       added_at TEXT NOT NULL,
       container_config TEXT,
-      requires_trigger INTEGER DEFAULT 1,
-      taskflow_managed INTEGER DEFAULT 0,
-      taskflow_hierarchy_level INTEGER,
-      taskflow_max_depth INTEGER
+      requires_trigger INTEGER DEFAULT 1
     );
   `);
 
@@ -109,26 +106,24 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
-  // Add channel and is_group columns if they don't exist (migration for existing DBs).
-  // Each ALTER TABLE is wrapped in its own try/catch so that if one column already
-  // exists (e.g. from a partially-completed previous migration) the other still gets added.
-  let channelAdded = false;
-  let isGroupAdded = false;
+  // Add is_main column if it doesn't exist (migration for existing DBs)
   try {
-    database.exec(`ALTER TABLE chats ADD COLUMN channel TEXT`);
-    channelAdded = true;
-  } catch {
-    /* column already exists */
-  }
-  try {
-    database.exec(`ALTER TABLE chats ADD COLUMN is_group INTEGER DEFAULT 0`);
-    isGroupAdded = true;
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN is_main INTEGER DEFAULT 0`,
+    );
+    // Backfill: existing rows with folder = 'main' are the main group
+    database.exec(
+      `UPDATE registered_groups SET is_main = 1 WHERE folder = 'main'`,
+    );
   } catch {
     /* column already exists */
   }
 
-  // Backfill only when at least one new column was added
-  if (channelAdded || isGroupAdded) {
+  // Add channel and is_group columns if they don't exist (migration for existing DBs)
+  try {
+    database.exec(`ALTER TABLE chats ADD COLUMN channel TEXT`);
+    database.exec(`ALTER TABLE chats ADD COLUMN is_group INTEGER DEFAULT 0`);
+    // Backfill from JID patterns
     database.exec(
       `UPDATE chats SET channel = 'whatsapp', is_group = 1 WHERE jid LIKE '%@g.us'`,
     );
@@ -141,56 +136,8 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `UPDATE chats SET channel = 'telegram', is_group = 1 WHERE jid LIKE 'tg:%'`,
     );
-  }
-
-  // Add taskflow_managed column if it doesn't exist
-  try {
-    database.exec(
-      `ALTER TABLE registered_groups ADD COLUMN taskflow_managed INTEGER DEFAULT 0`,
-    );
   } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(
-      `ALTER TABLE registered_groups ADD COLUMN taskflow_hierarchy_level INTEGER`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(
-      `ALTER TABLE registered_groups ADD COLUMN taskflow_max_depth INTEGER`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  // Add taskflow_managed column if it doesn't exist
-  try {
-    database.exec(
-      `ALTER TABLE registered_groups ADD COLUMN taskflow_managed INTEGER DEFAULT 0`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(
-      `ALTER TABLE registered_groups ADD COLUMN taskflow_hierarchy_level INTEGER`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(
-      `ALTER TABLE registered_groups ADD COLUMN taskflow_max_depth INTEGER`,
-    );
-  } catch {
-    /* column already exists */
+    /* columns already exist */
   }
 }
 
@@ -329,7 +276,7 @@ export function storeMessage(msg: NewMessage): void {
 }
 
 /**
- * Store a message directly (for non-WhatsApp channels that don't use Baileys proto).
+ * Store a message directly.
  */
 export function storeMessageDirect(msg: {
   id: string;
@@ -359,24 +306,29 @@ export function getNewMessages(
   jids: string[],
   lastTimestamp: string,
   botPrefix: string,
+  limit: number = 200,
 ): { messages: NewMessage[]; newTimestamp: string } {
   if (jids.length === 0) return { messages: [], newTimestamp: lastTimestamp };
 
   const placeholders = jids.map(() => '?').join(',');
   // Filter bot messages using both the is_bot_message flag AND the content
   // prefix as a backstop for messages written before the migration ran.
+  // Subquery takes the N most recent, outer query re-sorts chronologically.
   const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp
-    FROM messages
-    WHERE timestamp > ? AND chat_jid IN (${placeholders})
-      AND is_bot_message = 0 AND content NOT LIKE ?
-      AND content != '' AND content IS NOT NULL
-    ORDER BY timestamp
+    SELECT * FROM (
+      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
+      FROM messages
+      WHERE timestamp > ? AND chat_jid IN (${placeholders})
+        AND is_bot_message = 0 AND content NOT LIKE ?
+        AND content != '' AND content IS NOT NULL
+      ORDER BY timestamp DESC
+      LIMIT ?
+    ) ORDER BY timestamp
   `;
 
   const rows = db
     .prepare(sql)
-    .all(lastTimestamp, ...jids, `${botPrefix}:%`) as NewMessage[];
+    .all(lastTimestamp, ...jids, `${botPrefix}:%`, limit) as NewMessage[];
 
   let newTimestamp = lastTimestamp;
   for (const row of rows) {
@@ -390,20 +342,25 @@ export function getMessagesSince(
   chatJid: string,
   sinceTimestamp: string,
   botPrefix: string,
+  limit: number = 200,
 ): NewMessage[] {
   // Filter bot messages using both the is_bot_message flag AND the content
   // prefix as a backstop for messages written before the migration ran.
+  // Subquery takes the N most recent, outer query re-sorts chronologically.
   const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp
-    FROM messages
-    WHERE chat_jid = ? AND timestamp > ?
-      AND is_bot_message = 0 AND content NOT LIKE ?
-      AND content != '' AND content IS NOT NULL
-    ORDER BY timestamp
+    SELECT * FROM (
+      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
+      FROM messages
+      WHERE chat_jid = ? AND timestamp > ?
+        AND is_bot_message = 0 AND content NOT LIKE ?
+        AND content != '' AND content IS NOT NULL
+      ORDER BY timestamp DESC
+      LIMIT ?
+    ) ORDER BY timestamp
   `;
   return db
     .prepare(sql)
-    .all(chatJid, sinceTimestamp, `${botPrefix}:%`) as NewMessage[];
+    .all(chatJid, sinceTimestamp, `${botPrefix}:%`, limit) as NewMessage[];
 }
 
 export function createTask(
@@ -596,9 +553,7 @@ export function getRegisteredGroup(
         added_at: string;
         container_config: string | null;
         requires_trigger: number | null;
-        taskflow_managed: number | null;
-        taskflow_hierarchy_level: number | null;
-        taskflow_max_depth: number | null;
+        is_main: number | null;
       }
     | undefined;
   if (!row) return undefined;
@@ -620,14 +575,7 @@ export function getRegisteredGroup(
       : undefined,
     requiresTrigger:
       row.requires_trigger === null ? undefined : row.requires_trigger === 1,
-    taskflowManaged:
-      row.taskflow_managed === null ? undefined : row.taskflow_managed === 1,
-    taskflowHierarchyLevel:
-      row.taskflow_hierarchy_level === null
-        ? undefined
-        : row.taskflow_hierarchy_level,
-    taskflowMaxDepth:
-      row.taskflow_max_depth === null ? undefined : row.taskflow_max_depth,
+    isMain: row.is_main === 1 ? true : undefined,
   };
 }
 
@@ -636,8 +584,8 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     throw new Error(`Invalid group folder "${group.folder}" for JID ${jid}`);
   }
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, taskflow_managed, taskflow_hierarchy_level, taskflow_max_depth)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, is_main)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     jid,
     group.name,
@@ -646,14 +594,8 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.added_at,
     group.containerConfig ? JSON.stringify(group.containerConfig) : null,
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
-    group.taskflowManaged === undefined ? null : group.taskflowManaged ? 1 : 0,
-    group.taskflowHierarchyLevel ?? null,
-    group.taskflowMaxDepth ?? null,
+    group.isMain ? 1 : 0,
   );
-}
-
-export function deleteRegisteredGroup(jid: string): void {
-  db.prepare('DELETE FROM registered_groups WHERE jid = ?').run(jid);
 }
 
 export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
@@ -665,9 +607,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     added_at: string;
     container_config: string | null;
     requires_trigger: number | null;
-    taskflow_managed: number | null;
-    taskflow_hierarchy_level: number | null;
-    taskflow_max_depth: number | null;
+    is_main: number | null;
   }>;
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
@@ -688,14 +628,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
         : undefined,
       requiresTrigger:
         row.requires_trigger === null ? undefined : row.requires_trigger === 1,
-      taskflowManaged:
-        row.taskflow_managed === null ? undefined : row.taskflow_managed === 1,
-      taskflowHierarchyLevel:
-        row.taskflow_hierarchy_level === null
-          ? undefined
-          : row.taskflow_hierarchy_level,
-      taskflowMaxDepth:
-        row.taskflow_max_depth === null ? undefined : row.taskflow_max_depth,
+      isMain: row.is_main === 1 ? true : undefined,
     };
   }
   return result;
