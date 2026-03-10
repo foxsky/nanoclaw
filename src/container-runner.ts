@@ -328,7 +328,8 @@ function buildContainerArgs(
 
   // Point containers at the credential proxy instead of direct API access
   args.push(
-    '-e', `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
+    '-e',
+    `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
   );
 
   // On Linux, resolve host.docker.internal
