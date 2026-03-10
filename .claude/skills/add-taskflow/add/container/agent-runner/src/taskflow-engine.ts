@@ -3285,6 +3285,26 @@ export class TaskflowEngine {
             .run(updates.scheduled_at, taskBoardId, task.id);
         }
         changes.push(`Meeting rescheduled to ${updates.scheduled_at}`);
+
+        // Cascade to active external participant grants
+        const oldScheduledAt = task.scheduled_at;
+        if (oldScheduledAt) {
+          this.db.prepare(
+            `UPDATE meeting_external_participants
+             SET occurrence_scheduled_at = ?, updated_at = ?
+             WHERE board_id = ? AND meeting_task_id = ? AND occurrence_scheduled_at = ?
+               AND invite_status IN ('pending', 'invited', 'accepted')`
+          ).run(updates.scheduled_at, now, this.boardId, task.id, oldScheduledAt);
+        }
+
+        // Recalculate access_expires_at for active grants
+        const newExpiry = new Date(new Date(updates.scheduled_at).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+        this.db.prepare(
+          `UPDATE meeting_external_participants
+           SET access_expires_at = ?, updated_at = ?
+           WHERE board_id = ? AND meeting_task_id = ?
+             AND invite_status IN ('pending', 'invited', 'accepted')`
+        ).run(newExpiry, now, this.boardId, task.id);
       }
 
       /* Add subtask (project only) — creates a real task row */

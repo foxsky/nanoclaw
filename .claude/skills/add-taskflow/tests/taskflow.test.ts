@@ -5820,3 +5820,121 @@ describe('reinvite_external_participant', () => {
     expect(reinviteResult.error).toContain('not found');
   });
 });
+
+describe('occurrence key cascade on reschedule', () => {
+  let db: Database.Database;
+  let engine: TaskflowEngine;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    seedTestDb(db, BOARD_ID);
+    engine = new TaskflowEngine(db, BOARD_ID);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function createMeetingWithExternalParticipant(scheduledAt: string): { meetingId: string; externalId: string } {
+    const result = engine.create({
+      board_id: BOARD_ID,
+      type: 'meeting',
+      title: 'Sprint review',
+      scheduled_at: scheduledAt,
+      participants: ['Giovanni'],
+      sender_name: 'Alexandre',
+    });
+    const meetingId = result.task_id!;
+
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        add_external_participant: { name: 'Maria Silva', phone: '5585999991234' },
+      },
+    });
+
+    const contact = db.prepare(
+      `SELECT external_id FROM external_contacts WHERE phone = '5585999991234'`
+    ).get() as { external_id: string };
+
+    return { meetingId, externalId: contact.external_id };
+  }
+
+  it('updates occurrence_scheduled_at when meeting is rescheduled', () => {
+    const { meetingId, externalId } = createMeetingWithExternalParticipant('2026-03-12T14:00:00Z');
+
+    const result = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        scheduled_at: '2026-03-15T14:00:00Z',
+      },
+    });
+
+    expect(result.success).toBe(true);
+
+    const grant = db.prepare(
+      `SELECT * FROM meeting_external_participants WHERE meeting_task_id = ? AND external_id = ?`
+    ).get(meetingId, externalId) as any;
+
+    expect(grant).toBeTruthy();
+    expect(grant.occurrence_scheduled_at).toBe('2026-03-15T14:00:00Z');
+  });
+
+  it('recalculates access_expires_at on reschedule', () => {
+    const { meetingId, externalId } = createMeetingWithExternalParticipant('2026-03-12T14:00:00Z');
+
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        scheduled_at: '2026-03-15T14:00:00Z',
+      },
+    });
+
+    const grant = db.prepare(
+      `SELECT * FROM meeting_external_participants WHERE meeting_task_id = ? AND external_id = ?`
+    ).get(meetingId, externalId) as any;
+
+    expect(grant).toBeTruthy();
+
+    const expectedExpiry = new Date(new Date('2026-03-15T14:00:00Z').getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    expect(grant.access_expires_at).toBe(expectedExpiry);
+  });
+
+  it('does not update revoked grants', () => {
+    const { meetingId, externalId } = createMeetingWithExternalParticipant('2026-03-12T14:00:00Z');
+
+    // Revoke the participant
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        remove_external_participant: { phone: '5585999991234' },
+      },
+    });
+
+    // Reschedule the meeting
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        scheduled_at: '2026-03-15T14:00:00Z',
+      },
+    });
+
+    const grant = db.prepare(
+      `SELECT * FROM meeting_external_participants WHERE meeting_task_id = ? AND external_id = ?`
+    ).get(meetingId, externalId) as any;
+
+    expect(grant).toBeTruthy();
+    // Revoked grant should retain the original occurrence_scheduled_at
+    expect(grant.occurrence_scheduled_at).toBe('2026-03-12T14:00:00Z');
+  });
+});
