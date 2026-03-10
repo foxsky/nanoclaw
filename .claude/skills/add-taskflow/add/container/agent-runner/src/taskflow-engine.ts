@@ -128,6 +128,7 @@ export interface UpdateParams {
   board_id: string;
   task_id: string;
   sender_name: string;
+  sender_external_id?: string;
   updates: {
     title?: string;
     priority?: 'low' | 'normal' | 'high' | 'urgent';
@@ -2710,6 +2711,39 @@ export class TaskflowEngine {
       /* --- Check task is active (not archived / done is still active in tasks table) --- */
       // Tasks only leave the tasks table when archived; if it's here, it's active.
 
+      /* --- External sender resolution --- */
+      const isExternalSender = !!params.sender_external_id;
+      let hasExternalGrant = false;
+      if (isExternalSender) {
+        const grantNow = new Date().toISOString();
+        const grant = this.db.prepare(
+          `SELECT invite_status, access_expires_at FROM meeting_external_participants
+           WHERE board_id = ? AND meeting_task_id = ? AND external_id = ?
+             AND invite_status = 'accepted'`
+        ).get(this.boardId, task.id, params.sender_external_id) as any;
+        if (grant) {
+          // Lazy expiry check
+          if (grant.access_expires_at && grant.access_expires_at < grantNow) {
+            this.db.prepare(
+              `UPDATE meeting_external_participants SET invite_status = 'expired', updated_at = ?
+               WHERE board_id = ? AND meeting_task_id = ? AND external_id = ? AND invite_status = 'accepted'`
+            ).run(grantNow, this.boardId, task.id, params.sender_external_id);
+          } else {
+            hasExternalGrant = true;
+          }
+        }
+      }
+
+      /* --- Block non-note operations for external senders --- */
+      if (isExternalSender) {
+        const allowedOps = ['add_note', 'edit_note', 'remove_note', 'set_note_status', 'parent_note_id'];
+        const attemptedOps = Object.keys(updates).filter(k => (updates as any)[k] !== undefined);
+        const disallowed = attemptedOps.filter(op => !allowedOps.includes(op));
+        if (disallowed.length > 0) {
+          return { success: false, error: `Permission denied: external participants can only interact with meeting notes.` };
+        }
+      }
+
       /* --- Permission: sender must be assignee or manager (or meeting participant for note ops) --- */
       const isAssignee = senderPersonId != null && task.assignee === senderPersonId;
       const isMgr = this.isManager(params.sender_name);
@@ -2910,7 +2944,7 @@ export class TaskflowEngine {
         // Meeting note authorization: participants can add notes
         if (task.type === 'meeting' && !isMgr && !isAssignee) {
           const participants: string[] = JSON.parse(task.participants ?? '[]');
-          if (!participants.includes(senderPersonId ?? '')) {
+          if (!participants.includes(senderPersonId ?? '') && !hasExternalGrant) {
             return { success: false, error: `Permission denied: "${params.sender_name}" is not a participant of this meeting.` };
           }
         }
@@ -2924,6 +2958,12 @@ export class TaskflowEngine {
           noteEntry.author_actor_type = 'board_person';
           noteEntry.author_actor_id = senderPersonId;
           noteEntry.author_display_name = sender?.name ?? params.sender_name;
+        }
+        if (isExternalSender && params.sender_external_id) {
+          noteEntry.author_actor_type = 'external_contact';
+          noteEntry.author_actor_id = params.sender_external_id;
+          const ext = this.db.prepare(`SELECT display_name FROM external_contacts WHERE external_id = ?`).get(params.sender_external_id) as any;
+          noteEntry.author_display_name = ext?.display_name ?? params.sender_name;
         }
 
         // Meeting-only metadata
@@ -2960,8 +3000,9 @@ export class TaskflowEngine {
         }
         // Meeting note authorization: only author/organizer/manager can edit
         if (task.type === 'meeting' && !isMgr && !isAssignee) {
-          const isNoteAuthor =
-            !!note.author_actor_id && note.author_actor_id === senderPersonId;
+          const isNoteAuthor = note.author_actor_id
+            ? (note.author_actor_id === senderPersonId || note.author_actor_id === params.sender_external_id)
+            : false;
           if (!isNoteAuthor) {
             return { success: false, error: `Permission denied: only the note author, organizer, or manager can edit note #${updates.edit_note.id}.` };
           }
@@ -2987,9 +3028,9 @@ export class TaskflowEngine {
         // Meeting note authorization: only author/organizer/manager can remove
         if (task.type === 'meeting' && !isMgr && !isAssignee) {
           const noteAny = notes[idx] as any;
-          const isNoteAuthor =
-            !!noteAny.author_actor_id &&
-            noteAny.author_actor_id === senderPersonId;
+          const isNoteAuthor = noteAny.author_actor_id
+            ? (noteAny.author_actor_id === senderPersonId || noteAny.author_actor_id === params.sender_external_id)
+            : false;
           if (!isNoteAuthor) {
             return { success: false, error: `Permission denied: only the note author, organizer, or manager can remove note #${updates.remove_note}.` };
           }
@@ -3016,7 +3057,7 @@ export class TaskflowEngine {
         // Meeting note authorization: only participants, organizer, or manager can set status
         if (!isMgr && !isAssignee) {
           const participants: string[] = JSON.parse(task.participants ?? '[]');
-          if (!participants.includes(senderPersonId ?? '')) {
+          if (!participants.includes(senderPersonId ?? '') && !hasExternalGrant) {
             return { success: false, error: `Permission denied: "${params.sender_name}" is not a participant of this meeting.` };
           }
         }

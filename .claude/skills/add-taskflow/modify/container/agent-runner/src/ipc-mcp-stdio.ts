@@ -667,6 +667,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       {
         task_id: z.string().describe('Task ID to update'),
         sender_name: z.string().describe('Name of the person making the update'),
+        sender_external_id: z.string().optional().describe('External contact ID when the caller is an external participant'),
         updates: z.object({
           title: z.string().optional().describe('New title'),
           priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('New priority'),

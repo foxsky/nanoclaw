@@ -1125,6 +1125,39 @@ describe('taskflow skill package', () => {
     expect(secSectiBlock).not.toContain('You share the same board as the team group "SECTI - TaskFlow"');
   });
 
+  it('generate-claude-md covers laizys, thiago, and test taskflow groups', () => {
+    const script = fs.readFileSync(
+      path.join(skillDir, 'add/scripts/generate-claude-md.mjs'),
+      'utf-8',
+    );
+
+    const laizysBlock =
+      script.match(/folder: 'laizys-taskflow'[\s\S]*?\n  },/)?.[0] ?? '';
+    expect(laizysBlock).toContain("'{{BOARD_ID}}': 'board-laizys-taskflow'");
+    expect(laizysBlock).toContain("'{{GROUP_NAME}}': 'SEAF-SECTI - TaskFlow'");
+    expect(laizysBlock).toContain("'{{GROUP_JID}}': '120363425774136187@g.us'");
+    expect(laizysBlock).toContain("'{{HIERARCHY_LEVEL}}': '2'");
+    expect(laizysBlock).toContain("'{{PARENT_BOARD_ID}}': 'board-sec-taskflow'");
+    expect(laizysBlock).toContain("'{{MANAGER_NAME}}': 'Laizys'");
+
+    const thiagoBlock =
+      script.match(/folder: 'thiago-taskflow'[\s\S]*?\n  },/)?.[0] ?? '';
+    expect(thiagoBlock).toContain("'{{BOARD_ID}}': 'board-thiago-taskflow'");
+    expect(thiagoBlock).toContain("'{{GROUP_NAME}}': 'SETD-SECTI - TaskFlow'");
+    expect(thiagoBlock).toContain("'{{GROUP_JID}}': '120363423211033081@g.us'");
+    expect(thiagoBlock).toContain("'{{HIERARCHY_LEVEL}}': '2'");
+    expect(thiagoBlock).toContain("'{{PARENT_BOARD_ID}}': 'board-sec-taskflow'");
+    expect(thiagoBlock).toContain("'{{MANAGER_NAME}}': 'Thiago'");
+
+    const testBlock =
+      script.match(/folder: 'test-taskflow'[\s\S]*?\n  },/)?.[0] ?? '';
+    expect(testBlock).toContain("'{{BOARD_ID}}': 'board-test-taskflow'");
+    expect(testBlock).toContain("'{{GROUP_NAME}}': 'TEST'");
+    expect(testBlock).toContain("'{{GROUP_JID}}': '120363424971175850@g.us'");
+    expect(testBlock).toContain("'{{HIERARCHY_LEVEL}}': '0'");
+    expect(testBlock).toContain("'{{PARENT_BOARD_ID}}': ''");
+  });
+
   it('SKILL.md avoids person-specific setup examples in generic instructions', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
     expect(skillMd).not.toContain('"Miguel"');
@@ -6092,5 +6125,276 @@ describe('accept_external_invite', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('No pending invite found');
+  });
+});
+
+describe('external participant note operations', () => {
+  let db: Database.Database;
+  let engine: TaskflowEngine;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    seedTestDb(db, BOARD_ID);
+    engine = new TaskflowEngine(db, BOARD_ID);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function createMeetingWithAcceptedExternal(): { meetingId: string; externalId: string } {
+    const result = engine.create({
+      board_id: BOARD_ID,
+      type: 'meeting',
+      title: 'External Note Meeting',
+      scheduled_at: '2026-03-20T14:00:00Z',
+      participants: ['Giovanni'],
+      sender_name: 'Alexandre',
+    });
+    const meetingId = result.task_id!;
+
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        add_external_participant: { name: 'Maria Externa', phone: '5585988881111' },
+      },
+    });
+
+    const contact = db.prepare(
+      `SELECT external_id FROM external_contacts WHERE phone = '5585988881111'`
+    ).get() as { external_id: string };
+
+    // Accept the invite
+    engine.admin({
+      board_id: BOARD_ID,
+      action: 'accept_external_invite',
+      sender_name: '',
+      task_id: meetingId,
+      sender_external_id: contact.external_id,
+    });
+
+    return { meetingId, externalId: contact.external_id };
+  }
+
+  it('allows accepted external participant to add a note', () => {
+    const { meetingId, externalId } = createMeetingWithAcceptedExternal();
+
+    const result = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Maria Externa',
+      sender_external_id: externalId,
+      updates: { add_note: 'Client feedback on deliverables' },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.changes).toContain('Nota: Client feedback on deliverables');
+
+    // Verify note has external author identity
+    const task = db.prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+    const notes = JSON.parse(task.notes);
+    const note = notes.find((n: any) => n.text === 'Client feedback on deliverables');
+    expect(note).toBeTruthy();
+    expect(note.author_actor_type).toBe('external_contact');
+    expect(note.author_actor_id).toBe(externalId);
+    expect(note.author_display_name).toBe('Maria Externa');
+  });
+
+  it('blocks external participant from non-note operations', () => {
+    const { meetingId, externalId } = createMeetingWithAcceptedExternal();
+
+    const result = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Maria Externa',
+      sender_external_id: externalId,
+      updates: { title: 'Hijacked Title' },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Permission denied');
+    expect(result.error).toContain('external participants can only interact with meeting notes');
+  });
+
+  it('blocks expired external participant', () => {
+    const { meetingId, externalId } = createMeetingWithAcceptedExternal();
+
+    // Manually expire the grant
+    db.prepare(
+      `UPDATE meeting_external_participants SET access_expires_at = '2020-01-01T00:00:00Z' WHERE meeting_task_id = ? AND external_id = ?`
+    ).run(meetingId, externalId);
+
+    const result = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Maria Externa',
+      sender_external_id: externalId,
+      updates: { add_note: 'Should be blocked' },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Permission denied');
+
+    // Verify lazy expiry sets status to 'expired'
+    const grant = db.prepare(
+      `SELECT invite_status FROM meeting_external_participants WHERE meeting_task_id = ? AND external_id = ?`
+    ).get(meetingId, externalId) as any;
+    expect(grant.invite_status).toBe('expired');
+  });
+
+  it('allows external participant to edit their own note', () => {
+    const { meetingId, externalId } = createMeetingWithAcceptedExternal();
+
+    // Add a note first
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Maria Externa',
+      sender_external_id: externalId,
+      updates: { add_note: 'Original text' },
+    });
+
+    // Get the note ID
+    const task = db.prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+    const notes = JSON.parse(task.notes);
+    const note = notes.find((n: any) => n.text === 'Original text');
+
+    const result = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Maria Externa',
+      sender_external_id: externalId,
+      updates: { edit_note: { id: note.id, text: 'Updated text' } },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.changes).toContain(`Note #${note.id} edited`);
+  });
+
+  it('allows external participant to remove their own note', () => {
+    const { meetingId, externalId } = createMeetingWithAcceptedExternal();
+
+    // Add a note first
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Maria Externa',
+      sender_external_id: externalId,
+      updates: { add_note: 'Note to remove' },
+    });
+
+    // Get the note ID
+    const task = db.prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+    const notes = JSON.parse(task.notes);
+    const note = notes.find((n: any) => n.text === 'Note to remove');
+
+    const result = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Maria Externa',
+      sender_external_id: externalId,
+      updates: { remove_note: note.id },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.changes).toContain(`Note #${note.id} removed`);
+  });
+
+  it('allows external participant to set note status', () => {
+    const { meetingId, externalId } = createMeetingWithAcceptedExternal();
+
+    // Add a note first
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Maria Externa',
+      sender_external_id: externalId,
+      updates: { add_note: 'Action item' },
+    });
+
+    // Get the note ID
+    const task = db.prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+    const notes = JSON.parse(task.notes);
+    const note = notes.find((n: any) => n.text === 'Action item');
+
+    const result = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Maria Externa',
+      sender_external_id: externalId,
+      updates: { set_note_status: { id: note.id, status: 'checked' } },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.changes).toContain(`Note #${note.id} status set to checked`);
+  });
+
+  it('blocks external participant without accepted grant from adding notes', () => {
+    // Create meeting with external participant but don't accept the invite
+    const result = engine.create({
+      board_id: BOARD_ID,
+      type: 'meeting',
+      title: 'Pending Invite Meeting',
+      scheduled_at: '2026-03-20T14:00:00Z',
+      participants: ['Giovanni'],
+      sender_name: 'Alexandre',
+    });
+    const meetingId = result.task_id!;
+
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        add_external_participant: { name: 'Pending Person', phone: '5585977776666' },
+      },
+    });
+
+    const contact = db.prepare(
+      `SELECT external_id FROM external_contacts WHERE phone = '5585977776666'`
+    ).get() as { external_id: string };
+
+    // Try to add note without accepting invite first
+    const noteResult = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Pending Person',
+      sender_external_id: contact.external_id,
+      updates: { add_note: 'Should not work' },
+    });
+
+    expect(noteResult.success).toBe(false);
+    expect(noteResult.error).toContain('Permission denied');
+  });
+
+  it('prevents external participant from editing notes by other authors', () => {
+    const { meetingId, externalId } = createMeetingWithAcceptedExternal();
+
+    // Add a note as the organizer (Alexandre, a board person)
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: { add_note: 'Manager note' },
+    });
+
+    // Get the note ID
+    const task = db.prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+    const notes = JSON.parse(task.notes);
+    const note = notes.find((n: any) => n.text === 'Manager note');
+
+    // External participant tries to edit it
+    const result = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Maria Externa',
+      sender_external_id: externalId,
+      updates: { edit_note: { id: note.id, text: 'Overwritten' } },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Permission denied');
   });
 });
