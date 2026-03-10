@@ -681,6 +681,19 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           scheduled_at: z.string().optional().describe('Reschedule meeting (ISO-8601 UTC)'),
           add_participant: z.string().optional().describe('Add a participant to a meeting'),
           remove_participant: z.string().optional().describe('Remove a participant from a meeting'),
+          add_external_participant: z.object({
+            name: z.string(),
+            phone: z.string(),
+          }).optional().describe('Add an external participant (name + phone) to a meeting'),
+          remove_external_participant: z.object({
+            external_id: z.string().optional(),
+            phone: z.string().optional(),
+            name: z.string().optional(),
+          }).optional().describe('Remove an external participant from a meeting'),
+          reinvite_external_participant: z.object({
+            external_id: z.string().optional(),
+            phone: z.string().optional(),
+          }).optional().describe('Resend invite to an external participant'),
           set_note_status: z.object({
             id: z.number(),
             status: z.enum(['open', 'checked', 'task_created', 'inbox_created', 'dismissed']),

@@ -19,6 +19,8 @@ CREATE TABLE archive (board_id TEXT NOT NULL, task_id TEXT NOT NULL, type TEXT N
 CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, language TEXT NOT NULL DEFAULT 'pt-BR', timezone TEXT NOT NULL DEFAULT 'America/Fortaleza', runner_standup_task_id TEXT, runner_digest_task_id TEXT, runner_review_task_id TEXT, runner_dst_guard_task_id TEXT, standup_cron_local TEXT, digest_cron_local TEXT, review_cron_local TEXT, standup_cron_utc TEXT, digest_cron_utc TEXT, review_cron_utc TEXT, dst_sync_enabled INTEGER DEFAULT 0, dst_last_offset_minutes INTEGER, dst_last_synced_at TEXT, dst_resync_count_24h INTEGER DEFAULT 0, dst_resync_window_started_at TEXT, attachment_enabled INTEGER DEFAULT 1, attachment_disabled_reason TEXT DEFAULT '', attachment_allowed_formats TEXT DEFAULT '["pdf","jpg","png"]', attachment_max_size_bytes INTEGER DEFAULT 10485760, welcome_sent INTEGER DEFAULT 0, standup_target TEXT DEFAULT 'team', digest_target TEXT DEFAULT 'team', review_target TEXT DEFAULT 'team', runner_standup_secondary_task_id TEXT, runner_digest_secondary_task_id TEXT, runner_review_secondary_task_id TEXT);
 CREATE TABLE attachment_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, source TEXT NOT NULL, filename TEXT NOT NULL, at TEXT NOT NULL, actor_person_id TEXT, affected_task_refs TEXT DEFAULT '[]');
 CREATE TABLE board_config (board_id TEXT PRIMARY KEY, columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]', wip_limit INTEGER DEFAULT 5, next_task_number INTEGER DEFAULT 1, next_project_number INTEGER DEFAULT 1, next_recurring_number INTEGER DEFAULT 1, next_note_id INTEGER DEFAULT 1);
+CREATE TABLE IF NOT EXISTS external_contacts (external_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, phone TEXT NOT NULL UNIQUE, direct_chat_jid TEXT, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seen_at TEXT);
+CREATE TABLE IF NOT EXISTS meeting_external_participants (board_id TEXT NOT NULL, meeting_task_id TEXT NOT NULL, occurrence_scheduled_at TEXT NOT NULL, external_id TEXT NOT NULL, invite_status TEXT NOT NULL DEFAULT 'pending', invited_at TEXT, accepted_at TEXT, revoked_at TEXT, access_expires_at TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (board_id, meeting_task_id, occurrence_scheduled_at, external_id));
 `;
 
 function seedTestDb(db: Database.Database, boardId: string) {
@@ -5275,5 +5277,174 @@ describe('external contacts schema', () => {
     expect(() => {
       db.exec(`INSERT INTO meeting_external_participants VALUES ('board-1', 'M1', '2026-03-12T14:00:00Z', 'ext-1', 'invited', NULL, NULL, NULL, NULL, 'person-1', '2026-01-01', '2026-01-01')`);
     }).toThrow();
+  });
+});
+
+describe('add_external_participant', () => {
+  let db: Database.Database;
+  let engine: TaskflowEngine;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    seedTestDb(db, BOARD_ID);
+    engine = new TaskflowEngine(db, BOARD_ID);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function createScheduledMeeting(): string {
+    const result = engine.create({
+      board_id: BOARD_ID,
+      type: 'meeting',
+      title: 'Sprint review',
+      scheduled_at: '2026-03-15T17:00:00Z',
+      participants: ['Giovanni'],
+      sender_name: 'Alexandre',
+    });
+    return result.task_id!;
+  }
+
+  it('creates external contact and grant when adding to a scheduled meeting', () => {
+    const meetingId = createScheduledMeeting();
+    const result = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        add_external_participant: { name: 'Maria Silva', phone: '+55 85 99999-1234' },
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.changes).toContain('External participant Maria Silva invited');
+
+    // Verify external_contacts row
+    const contact = db.prepare(
+      `SELECT * FROM external_contacts WHERE phone = '5585999991234'`
+    ).get() as any;
+    expect(contact).toBeTruthy();
+    expect(contact.display_name).toBe('Maria Silva');
+    expect(contact.status).toBe('active');
+
+    // Verify meeting_external_participants row
+    const grant = db.prepare(
+      `SELECT * FROM meeting_external_participants WHERE meeting_task_id = ? AND external_id = ?`
+    ).get(meetingId, contact.external_id) as any;
+    expect(grant).toBeTruthy();
+    expect(grant.invite_status).toBe('invited');
+    expect(grant.board_id).toBe(BOARD_ID);
+    expect(grant.occurrence_scheduled_at).toBe('2026-03-15T17:00:00Z');
+    expect(grant.access_expires_at).toBeTruthy();
+
+    // Verify audit trail
+    const history = db.prepare(
+      `SELECT * FROM task_history WHERE task_id = ? AND action = 'add_external_participant'`
+    ).get(meetingId) as any;
+    expect(history).toBeTruthy();
+  });
+
+  it('rejects if meeting has no scheduled_at', () => {
+    const result = engine.create({
+      board_id: BOARD_ID,
+      type: 'meeting',
+      title: 'Unscheduled meeting',
+      sender_name: 'Alexandre',
+    });
+    const meetingId = result.task_id!;
+    const updateResult = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        add_external_participant: { name: 'Maria', phone: '5585999991234' },
+      },
+    });
+    expect(updateResult.success).toBe(false);
+    expect(updateResult.error).toContain('scheduled_at');
+  });
+
+  it('rejects if sender is not manager or organizer', () => {
+    const meetingId = createScheduledMeeting();
+    // Giovanni is a participant but not the organizer (assignee) or a manager
+    const result = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Giovanni',
+      updates: {
+        add_external_participant: { name: 'Maria', phone: '5585999991234' },
+      },
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Permission denied');
+  });
+
+  it('emits DM invite notification', () => {
+    const meetingId = createScheduledMeeting();
+    const result = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        add_external_participant: { name: 'Maria Silva', phone: '5585999991234' },
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.notifications).toBeDefined();
+    expect(result.notifications!.length).toBeGreaterThanOrEqual(1);
+
+    const dmNotif = (result.notifications as any[]).find(
+      (n: any) => n.target_kind === 'dm'
+    );
+    expect(dmNotif).toBeTruthy();
+    expect(dmNotif.target_chat_jid).toBe('5585999991234@s.whatsapp.net');
+    expect(dmNotif.message).toContain('Convite para');
+    expect(dmNotif.message).toContain(meetingId);
+  });
+
+  it('upserts existing external contact by phone (same phone to 2 meetings = 1 contact, 2 grants)', () => {
+    const meetingId1 = createScheduledMeeting();
+
+    // Create a second meeting
+    const result2 = engine.create({
+      board_id: BOARD_ID,
+      type: 'meeting',
+      title: 'Design review',
+      scheduled_at: '2026-03-20T14:00:00Z',
+      sender_name: 'Alexandre',
+    });
+    const meetingId2 = result2.task_id!;
+
+    // Add same person (by phone) to both meetings
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId1,
+      sender_name: 'Alexandre',
+      updates: {
+        add_external_participant: { name: 'Maria Silva', phone: '5585999991234' },
+      },
+    });
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId2,
+      sender_name: 'Alexandre',
+      updates: {
+        add_external_participant: { name: 'Maria S.', phone: '5585999991234' },
+      },
+    });
+
+    // Should be exactly 1 contact row
+    const contacts = db.prepare(
+      `SELECT * FROM external_contacts WHERE phone = '5585999991234'`
+    ).all();
+    expect(contacts).toHaveLength(1);
+    // Display name should be updated to the latest
+    expect((contacts[0] as any).display_name).toBe('Maria S.');
+
+    // Should be 2 grant rows
+    const grants = db.prepare(
+      `SELECT * FROM meeting_external_participants WHERE external_id = ?`
+    ).all((contacts[0] as any).external_id);
+    expect(grants).toHaveLength(2);
   });
 });

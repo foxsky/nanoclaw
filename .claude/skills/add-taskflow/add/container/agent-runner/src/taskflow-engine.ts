@@ -126,6 +126,9 @@ export interface UpdateParams {
     scheduled_at?: string;
     add_participant?: string;
     remove_participant?: string;
+    add_external_participant?: { name: string; phone: string };
+    remove_external_participant?: { external_id?: string; phone?: string; name?: string };
+    reinvite_external_participant?: { external_id?: string; phone?: string };
     set_note_status?: { id: number; status: 'open' | 'checked' | 'task_created' | 'inbox_created' | 'dismissed' };
     add_subtask?: string;         // project only
     rename_subtask?: { id: string; title: string };
@@ -2654,6 +2657,9 @@ export class TaskflowEngine {
         updates.scheduled_at !== undefined ||
         updates.add_participant !== undefined ||
         updates.remove_participant !== undefined ||
+        updates.add_external_participant !== undefined ||
+        updates.remove_external_participant !== undefined ||
+        updates.reinvite_external_participant !== undefined ||
         updates.add_subtask !== undefined ||
         updates.rename_subtask !== undefined ||
         updates.reopen_subtask !== undefined ||
@@ -3006,6 +3012,99 @@ export class TaskflowEngine {
             .run(JSON.stringify(participants), taskBoardId, task.id);
           changes.push(`Participant ${person.name} removed`);
         }
+      }
+
+      /* Add external participant (meeting only) */
+      if (updates.add_external_participant !== undefined) {
+        if (task.type !== 'meeting') {
+          return { success: false, error: 'External participants can only be added to meeting tasks.' };
+        }
+        if (!isMgr && !isAssignee) {
+          return { success: false, error: 'Permission denied: only the organizer or a manager can add external participants.' };
+        }
+        if (!task.scheduled_at) {
+          return { success: false, error: 'Meeting must have scheduled_at set before inviting an external participant.' };
+        }
+
+        const phone = normalizePhone(updates.add_external_participant.phone);
+        const displayName = updates.add_external_participant.name;
+
+        // Upsert external contact
+        let externalId: string;
+        const existing = this.db.prepare(
+          `SELECT external_id FROM external_contacts WHERE phone = ?`
+        ).get(phone) as { external_id: string } | undefined;
+
+        if (existing) {
+          externalId = existing.external_id;
+          this.db.prepare(
+            `UPDATE external_contacts SET display_name = ?, updated_at = ? WHERE external_id = ?`
+          ).run(displayName, now, externalId);
+        } else {
+          externalId = `ext-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          this.db.prepare(
+            `INSERT INTO external_contacts (external_id, display_name, phone, status, created_at, updated_at)
+             VALUES (?, ?, ?, 'active', ?, ?)`
+          ).run(externalId, displayName, phone, now, now);
+        }
+
+        // Create grant (upsert)
+        const occurrenceScheduledAt = task.scheduled_at;
+        const existingGrant = this.db.prepare(
+          `SELECT invite_status FROM meeting_external_participants
+           WHERE board_id = ? AND meeting_task_id = ? AND occurrence_scheduled_at = ? AND external_id = ?`
+        ).get(this.boardId, task.id, occurrenceScheduledAt, externalId) as { invite_status: string } | undefined;
+
+        if (existingGrant) {
+          if (existingGrant.invite_status === 'revoked' || existingGrant.invite_status === 'expired') {
+            this.db.prepare(
+              `UPDATE meeting_external_participants
+               SET invite_status = 'invited', revoked_at = NULL, updated_at = ?
+               WHERE board_id = ? AND meeting_task_id = ? AND occurrence_scheduled_at = ? AND external_id = ?`
+            ).run(now, this.boardId, task.id, occurrenceScheduledAt, externalId);
+          }
+          // else already invited/accepted — no-op
+        } else {
+          // Calculate access_expires_at: scheduled_at + 7 days
+          const expiresAt = new Date(new Date(occurrenceScheduledAt).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+          this.db.prepare(
+            `INSERT INTO meeting_external_participants
+             (board_id, meeting_task_id, occurrence_scheduled_at, external_id, invite_status,
+              invited_at, access_expires_at, created_by, created_at, updated_at)
+             VALUES (?, ?, ?, ?, 'invited', ?, ?, ?, ?, ?)`
+          ).run(this.boardId, task.id, occurrenceScheduledAt, externalId, now, expiresAt, senderPersonId ?? params.sender_name, now, now);
+        }
+
+        // Build DM invite notification
+        const dmJid = this.db.prepare(
+          `SELECT direct_chat_jid FROM external_contacts WHERE external_id = ?`
+        ).get(externalId) as { direct_chat_jid: string | null } | undefined;
+        const targetJid = dmJid?.direct_chat_jid ?? `${phone}@s.whatsapp.net`;
+
+        const organizerName = sender?.name ?? params.sender_name;
+        const inviteMessage =
+          `\u{1f4c5} *Convite para reuni\u00e3o*\n\n` +
+          `Voc\u00ea foi convidado para *${task.id} \u2014 ${task.title}*\n` +
+          `*Quando:* ${task.scheduled_at}\n` +
+          `*Organizador:* ${organizerName}\n\n` +
+          `Responda nesta conversa para participar da pauta e da ata.\n` +
+          `Para confirmar, diga: aceitar convite ${task.id}`;
+
+        notifications.push({
+          target_kind: 'dm',
+          target_external_id: externalId,
+          target_chat_jid: targetJid,
+          message: inviteMessage,
+        } as any);
+
+        // Audit trail
+        this.db.prepare(
+          `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+           VALUES (?, ?, 'add_external_participant', ?, ?, ?)`
+        ).run(this.boardId, task.id, senderPersonId ?? params.sender_name, now,
+          `External participant ${displayName} (${phone}) invited`);
+
+        changes.push(`External participant ${displayName} invited`);
       }
 
       /* Scheduled at (meeting only) */
