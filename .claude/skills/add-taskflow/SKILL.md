@@ -32,7 +32,16 @@ After copying the `modify/` files, apply these small changes to files not bundle
    - `src/ipc-plugins/create-group.test.ts` — in the mock IpcDeps object
    - `src/ipc-plugins/provision-child-board.test.ts` — in the mock IpcDeps object
 
-2. **Add TTL cache to `src/sender-allowlist.ts`** — after the `DEFAULT_CONFIG` constant, add:
+2. **Freeze `DEFAULT_CONFIG` in `src/sender-allowlist.ts`** — replace the `DEFAULT_CONFIG` declaration with:
+   ```typescript
+   const DEFAULT_CONFIG: Readonly<SenderAllowlistConfig> = Object.freeze({
+     default: Object.freeze({ allow: '*' as const, mode: 'trigger' as const }),
+     chats: Object.freeze({}),
+     logDenied: true,
+   });
+   ```
+
+3. **Add TTL cache to `src/sender-allowlist.ts`** — after the `DEFAULT_CONFIG` constant, add:
    ```typescript
    const CACHE_TTL_MS = 30_000; // 30 seconds
    let cachedConfig: SenderAllowlistConfig | null = null;
