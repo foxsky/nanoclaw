@@ -2,13 +2,15 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Refactor `src/index.ts` to use the upstream channel registry pattern instead of direct WhatsApp imports, so TaskFlow works with any channel (WhatsApp, Telegram, Slack, etc.)
+**Status:** Core migration completed in the runtime and TaskFlow skill copies. This document now records what shipped, what remains deferred, and how to validate the landed behavior.
+
+**Goal:** Refactor `src/index.ts` to use the upstream channel registry pattern instead of direct WhatsApp imports, so the runtime channel bootstrap and IPC wiring are channel-agnostic. This does **not** make all TaskFlow provisioning and IPC plugins fully channel-agnostic yet.
 
 **Architecture:** Replace the hardcoded `WhatsAppChannel` import and module-level variable with the self-registration barrel import (`channels/index.js`) + registry loop (`getRegisteredChannelNames` / `getChannelFactory`). Keep `createGroup` and `resolvePhoneJid` on IpcDeps but wire them through the channel that supports them, not a hardcoded reference. Rename `syncGroupMetadata` → `syncGroups` in IpcDeps to match the Channel interface.
 
 **Tech Stack:** Node.js, TypeScript, Vitest
 
-**Scope:** This plan covers Tasks 1-3 (core channel-agnostic migration) and Task 6 (skill sync). Credential proxy (Task 4) and sender allowlist (Task 5) are **deferred** — they are independent features with additional requirements beyond this refactor (see Codex Review Findings below).
+**Scope:** Tasks 1-3 (core registry migration) and Task 6 (skill sync) are already completed. Credential proxy (Task 4) and sender allowlist (Task 5) remain **deferred** because they are independent features with additional requirements beyond this refactor (see Codex Review Findings below).
 
 ---
 
@@ -53,32 +55,21 @@ The following issues were identified by Codex and incorporated into this plan:
 **Files:**
 - Modify: `src/types.ts:84-98`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
-Add to `src/ipc-auth.test.ts` (or a new test) a type check that Channel supports `resolvePhoneJid` and `syncGroups`:
+This was implemented by updating mock `Channel` values to include `resolvePhoneJid` and `syncGroups`.
 
-```typescript
-// In existing test that creates mock channels, add:
-const mockChannel: Channel = {
-  name: 'test',
-  connect: async () => {},
-  sendMessage: async () => {},
-  isConnected: () => true,
-  ownsJid: () => true,
-  disconnect: async () => {},
-  resolvePhoneJid: async (phone: string) => `${phone}@s.whatsapp.net`,
-  syncGroups: async () => {},
-};
-```
+- [x] **Step 2: Run build to verify it fails**
 
-- [ ] **Step 2: Run build to verify it fails**
+Historical note: this failure happened before `resolvePhoneJid` and `syncGroups` were added to `Channel`.
 
-Run: `npm run build`
-Expected: FAIL — `resolvePhoneJid` and `syncGroups` don't exist on Channel type
+Current validation:
+- `npm run build`
+- Expected: PASS — the `Channel` interface already includes both optional methods
 
-- [ ] **Step 3: Add optional methods to Channel interface**
+- [x] **Step 3: Add optional methods to Channel interface**
 
-In `src/types.ts`, add to the Channel interface:
+Implemented in `src/types.ts`:
 
 ```typescript
 export interface Channel {
@@ -98,12 +89,12 @@ export interface Channel {
 }
 ```
 
-- [ ] **Step 4: Run build to verify it passes**
+- [x] **Step 4: Run build to verify it passes**
 
 Run: `npm run build`
 Expected: PASS — TypeScript compiles cleanly
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/types.ts
@@ -119,13 +110,13 @@ git commit -m "feat: add resolvePhoneJid and syncGroups to Channel interface"
 - Modify: `src/ipc.ts` (all references to syncGroupMetadata)
 - Modify: `src/index.ts` (call site)
 
-- [ ] **Step 1: Find all references**
+- [x] **Step 1: Find all references**
 
 ```bash
 grep -rn 'syncGroupMetadata\|syncGroups' src/ --include='*.ts'
 ```
 
-- [ ] **Step 2: Rename in IpcDeps interface**
+- [x] **Step 2: Rename in IpcDeps interface**
 
 In `src/ipc.ts`, change:
 ```typescript
@@ -136,11 +127,11 @@ to:
 syncGroups: (force: boolean) => Promise<void>;
 ```
 
-- [ ] **Step 3: Update all call sites in ipc.ts**
+- [x] **Step 3: Update all call sites in ipc.ts**
 
 Replace `deps.syncGroupMetadata` → `deps.syncGroups` everywhere in `src/ipc.ts`.
 
-- [ ] **Step 4: Update index.ts call site**
+- [x] **Step 4: Update index.ts call site**
 
 In `src/index.ts`, change the `startIpcWatcher` call:
 ```typescript
@@ -158,14 +149,14 @@ syncGroups: async (force: boolean) => {
 },
 ```
 
-- [ ] **Step 5: Update test mocks**
+- [x] **Step 5: Update test mocks**
 
 Rename `syncGroupMetadata` → `syncGroups` in mock IpcDeps in **all three** test files:
 - `src/ipc-auth.test.ts` (line 61)
 - `src/ipc-plugins/create-group.test.ts` (line 65)
 - `src/ipc-plugins/provision-child-board.test.ts` (line 71)
 
-- [ ] **Step 5a: Update comment in types.ts**
+- [x] **Step 5a: Update comment in types.ts**
 
 In `src/types.ts`, update the comment referencing `syncGroupMetadata`:
 ```typescript
@@ -173,12 +164,12 @@ In `src/types.ts`, update the comment referencing `syncGroupMetadata`:
 // New: channels that sync names separately (WhatsApp syncGroups) omit it.
 ```
 
-- [ ] **Step 6: Build and run tests**
+- [x] **Step 6: Build and run tests**
 
 Run: `npm run build && npx vitest run -v`
 Expected: Build clean, all tests pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/ipc.ts src/index.ts src/types.ts \
@@ -197,7 +188,7 @@ git commit -m "refactor: rename syncGroupMetadata to syncGroups in IpcDeps"
 **Files:**
 - Modify: `src/index.ts:1-70` (imports and module-level vars)
 
-- [ ] **Step 1: Remove direct WhatsApp imports**
+- [x] **Step 1: Remove direct WhatsApp imports**
 
 Delete these lines from `src/index.ts`:
 ```typescript
@@ -208,7 +199,7 @@ and:
 let whatsapp: WhatsAppChannel;
 ```
 
-- [ ] **Step 2: Add channel registry imports**
+- [x] **Step 2: Add channel registry imports**
 
 Add to `src/index.ts`:
 ```typescript
@@ -219,7 +210,7 @@ import {
 } from './channels/registry.js';
 ```
 
-- [ ] **Step 3: Refactor channel initialization in main()**
+- [x] **Step 3: Refactor channel initialization in main()**
 
 Replace the hardcoded WhatsApp instantiation block:
 ```typescript
@@ -248,7 +239,7 @@ if (channels.length === 0) {
 }
 ```
 
-- [ ] **Step 4: Wire createGroup and resolvePhoneJid through channels array**
+- [x] **Step 4: Wire createGroup and resolvePhoneJid through channels array**
 
 Replace the IPC watcher bindings:
 ```typescript
@@ -275,7 +266,7 @@ resolvePhoneJid: (phone) => {
 },
 ```
 
-- [ ] **Step 5: Build and run tests**
+- [x] **Step 5: Build and run tests**
 
 ```bash
 npm run build
@@ -284,7 +275,7 @@ npx vitest run
 
 Expected: Build clean, all tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/index.ts
@@ -319,7 +310,7 @@ This feature is independent of the channel registry migration and should be impl
 - Copy: `src/types.ts` → `.claude/skills/add-taskflow/modify/src/types.ts`
 - Copy: `src/ipc.ts` → `.claude/skills/add-taskflow/modify/src/ipc.ts`
 
-- [ ] **Step 1: Copy modified runtime files to skill**
+- [x] **Step 1: Copy modified runtime files to skill**
 
 ```bash
 cp src/index.ts .claude/skills/add-taskflow/modify/src/index.ts
@@ -327,7 +318,7 @@ cp src/types.ts .claude/skills/add-taskflow/modify/src/types.ts
 cp src/ipc.ts .claude/skills/add-taskflow/modify/src/ipc.ts
 ```
 
-- [ ] **Step 2: Run full test suite**
+- [x] **Step 2: Run full test suite**
 
 ```bash
 npm test
@@ -336,6 +327,8 @@ npm test
 Expected: 313+ tests pass (1 pre-existing flaky timing test allowed).
 
 - [ ] **Step 3: Restart service and run live E2E test**
+
+Status note: code sync is already present in `.claude/skills/add-taskflow/modify/src/`. This live validation remains optional operational follow-up, not a prerequisite for the migration code itself.
 
 ```bash
 npm run build
@@ -359,13 +352,15 @@ Expected: IPC message delivered to WhatsApp group.
 
 - [ ] **Step 4: Verify service logs show channel registry pattern**
 
+Status note: this is an operational verification step that may be run when validating a deployment, but the migration code is already landed.
+
 ```bash
 grep -i "channel\|connected\|registry" logs/nanoclaw.log | tail -10
 ```
 
 Expected: Logs show "Channel connected" with channel name, not direct WhatsApp instantiation.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .claude/skills/add-taskflow/modify/src/index.ts \
@@ -384,7 +379,22 @@ git commit -m "chore: sync TaskFlow skill copies after channel registry migratio
 | WhatsApp self-registration not triggered | `channels/index.ts` already imports `./whatsapp.js` |
 | Duplicate channel registration (index.ts + channels/index.ts) | After refactor, only channels/index.ts triggers registration — index.ts no longer imports WhatsApp directly |
 | `channels.find(c => c.createGroup)` picks first capable channel arbitrarily | Acceptable for single-channel setups; multi-channel disambiguation deferred to when a second channel supports provisioning |
-| IPC plugins still hardcode `@s.whatsapp.net` patterns | Known limitation — `provision-root-board.ts` and `provision-shared.ts` use WhatsApp JID patterns. These are channel-specific by design (board provisioning currently only works with WhatsApp). Refactoring these is a separate effort. |
+| IPC plugins still hardcode `@s.whatsapp.net` patterns | Known limitation — `provision-root-board.ts`, `provision-child-board.ts`, and `provision-shared.ts` still contain WhatsApp-specific JID assumptions. The registry migration does not remove these; plugin channel-agnostic refactoring is a separate effort. |
+
+## Current Outcome
+
+The following are already true in the repo:
+
+- `src/index.ts` uses `./channels/index.js` plus the channel registry loop for bootstrap
+- `src/types.ts` exposes optional `resolvePhoneJid` and `syncGroups` on `Channel`
+- `src/ipc.ts` uses `syncGroups` in `IpcDeps`
+- TaskFlow skill modify copies already mirror the migrated runtime files
+
+The following are still not true:
+
+- TaskFlow provisioning is not fully channel-agnostic end to end
+- IPC plugins that manipulate WhatsApp-style participant JIDs are still WhatsApp-specific
+- credential proxy and sender allowlist changes are not part of this landed migration
 
 ## What NOT to Change
 
