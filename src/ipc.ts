@@ -377,7 +377,11 @@ export function isIpcMessageAuthorized(opts: {
     return 'group';
   }
   const isDmTarget = !targetGroup && opts.chatJid.endsWith('@s.whatsapp.net');
-  if (isDmTarget && opts.isKnownExternalDm && (opts.isMain || opts.isTaskflow)) {
+  if (
+    isDmTarget &&
+    opts.isKnownExternalDm &&
+    (opts.isMain || opts.isTaskflow)
+  ) {
     return 'dm';
   }
   return false;
