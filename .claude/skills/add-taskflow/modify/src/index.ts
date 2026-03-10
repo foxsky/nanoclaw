@@ -10,7 +10,11 @@ import {
   POLL_INTERVAL,
   TRIGGER_PATTERN,
 } from './config.js';
-import { WhatsAppChannel } from './channels/whatsapp.js';
+import './channels/index.js';
+import {
+  getChannelFactory,
+  getRegisteredChannelNames,
+} from './channels/registry.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -59,7 +63,6 @@ let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
-let whatsapp: WhatsAppChannel;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
@@ -529,10 +532,26 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
   };
 
-  // Create and connect channels
-  whatsapp = new WhatsAppChannel(channelOpts);
-  channels.push(whatsapp);
-  await whatsapp.connect();
+  // Create and connect channels from registry
+  for (const channelName of getRegisteredChannelNames()) {
+    const factory = getChannelFactory(channelName)!;
+    const channel = factory(channelOpts);
+    if (!channel) {
+      logger.warn(
+        { channel: channelName },
+        'Channel installed but credentials missing, skipping',
+      );
+      continue;
+    }
+    channels.push(channel);
+    await channel.connect();
+    logger.info({ channel: channelName }, 'Channel connected');
+  }
+  if (channels.length === 0) {
+    throw new Error(
+      'No channels connected — at least one channel must be configured',
+    );
+  }
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
@@ -559,18 +578,38 @@ async function main(): Promise<void> {
     },
     registeredGroups: () => registeredGroups,
     registerGroup,
-    syncGroupMetadata: (force) =>
-      whatsapp?.syncGroupMetadata(force) ?? Promise.resolve(),
+    syncGroups: async (force: boolean) => {
+      await Promise.all(
+        channels
+          .filter(
+            (
+              ch,
+            ): ch is Channel & {
+              syncGroups: NonNullable<Channel['syncGroups']>;
+            } => !!ch.syncGroups,
+          )
+          .map((ch) => ch.syncGroups(force)),
+      );
+    },
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
     createGroup: (subject, participants) => {
-      if (!whatsapp) throw new Error('WhatsApp not connected');
-      return whatsapp.createGroup(subject, participants);
+      const ch = channels.find((c) => c.createGroup);
+      if (!ch?.createGroup)
+        throw new Error('No channel supports group creation');
+      return ch.createGroup(subject, participants);
     },
     resolvePhoneJid: (phone) => {
-      if (!whatsapp) throw new Error('WhatsApp not connected');
-      return whatsapp.resolvePhoneJid(phone);
+      const ch = channels.find(
+        (
+          c,
+        ): c is Channel & {
+          resolvePhoneJid: NonNullable<Channel['resolvePhoneJid']>;
+        } => !!c.resolvePhoneJid,
+      );
+      if (!ch) throw new Error('No channel supports phone JID resolution');
+      return ch.resolvePhoneJid(phone);
     },
   });
   queue.setProcessMessagesFn(processGroupMessages);

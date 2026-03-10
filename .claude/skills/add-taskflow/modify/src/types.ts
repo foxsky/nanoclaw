@@ -95,6 +95,10 @@ export interface Channel {
     subject: string,
     participants: string[],
   ): Promise<{ jid: string; subject: string }>;
+  // Optional: resolve a phone number to a JID. Channels that support it implement it.
+  resolvePhoneJid?(phone: string): Promise<string>;
+  // Optional: sync groups from the channel. Channels that support it implement it.
+  syncGroups?(force: boolean): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages
@@ -102,7 +106,7 @@ export type OnInboundMessage = (chatJid: string, message: NewMessage) => void;
 
 // Callback for chat metadata discovery.
 // name is optional — channels that deliver names inline (Telegram) pass it here;
-// channels that sync names separately (WhatsApp syncGroupMetadata) omit it.
+// channels that sync names separately (WhatsApp syncGroups) omit it.
 export type OnChatMetadata = (
   chatJid: string,
   timestamp: string,
