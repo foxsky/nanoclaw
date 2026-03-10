@@ -23,6 +23,36 @@ npx tsx scripts/apply-skill.ts .claude/skills/add-taskflow
 
 This installs the TaskFlow engine, updates the container runtime wiring, and keeps the SQLite MCP fallback available. `NANOCLAW_TASKFLOW_BOARD_ID` is resolved from the canonical TaskFlow board mapping at runtime; it must not be inferred from the group folder name.
 
+### Post-apply patches
+
+After copying the `modify/` files, apply these small changes to files not bundled as full copies:
+
+1. **Rename `syncGroupMetadata` → `syncGroups` in IPC test mocks** (3 files):
+   - `src/ipc-auth.test.ts` — in the mock IpcDeps object
+   - `src/ipc-plugins/create-group.test.ts` — in the mock IpcDeps object
+   - `src/ipc-plugins/provision-child-board.test.ts` — in the mock IpcDeps object
+
+2. **Add TTL cache to `src/sender-allowlist.ts`** — after the `DEFAULT_CONFIG` constant, add:
+   ```typescript
+   const CACHE_TTL_MS = 30_000; // 30 seconds
+   let cachedConfig: SenderAllowlistConfig | null = null;
+   let cacheTimestamp = 0;
+   ```
+   In `loadSenderAllowlist()`, before the `fs.readFileSync` call, add:
+   ```typescript
+   const now = Date.now();
+   if (!pathOverride && cachedConfig && now - cacheTimestamp < CACHE_TTL_MS) {
+     return cachedConfig;
+   }
+   ```
+   Before the final `return` statement, add:
+   ```typescript
+   if (!pathOverride) {
+     cachedConfig = result;
+     cacheTimestamp = now;
+   }
+   ```
+
 ## Phase 1: Configuration
 
 ### 1. Pre-flight Checks
