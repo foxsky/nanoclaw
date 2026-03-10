@@ -537,7 +537,10 @@ async function main(): Promise<void> {
     const factory = getChannelFactory(channelName)!;
     const channel = factory(channelOpts);
     if (!channel) {
-      logger.warn({ channel: channelName }, 'Channel installed but credentials missing, skipping');
+      logger.warn(
+        { channel: channelName },
+        'Channel installed but credentials missing, skipping',
+      );
       continue;
     }
     channels.push(channel);
@@ -545,7 +548,9 @@ async function main(): Promise<void> {
     logger.info({ channel: channelName }, 'Channel connected');
   }
   if (channels.length === 0) {
-    throw new Error('No channels connected — at least one channel must be configured');
+    throw new Error(
+      'No channels connected — at least one channel must be configured',
+    );
   }
 
   // Start subsystems (independently of connection handler)
@@ -576,7 +581,13 @@ async function main(): Promise<void> {
     syncGroups: async (force: boolean) => {
       await Promise.all(
         channels
-          .filter((ch): ch is Channel & { syncGroups: NonNullable<Channel['syncGroups']> } => !!ch.syncGroups)
+          .filter(
+            (
+              ch,
+            ): ch is Channel & {
+              syncGroups: NonNullable<Channel['syncGroups']>;
+            } => !!ch.syncGroups,
+          )
           .map((ch) => ch.syncGroups(force)),
       );
     },
@@ -585,11 +596,18 @@ async function main(): Promise<void> {
       writeGroupsSnapshot(gf, im, ag, rj),
     createGroup: (subject, participants) => {
       const ch = channels.find((c) => c.createGroup);
-      if (!ch?.createGroup) throw new Error('No channel supports group creation');
+      if (!ch?.createGroup)
+        throw new Error('No channel supports group creation');
       return ch.createGroup(subject, participants);
     },
     resolvePhoneJid: (phone) => {
-      const ch = channels.find((c): c is Channel & { resolvePhoneJid: NonNullable<Channel['resolvePhoneJid']> } => !!c.resolvePhoneJid);
+      const ch = channels.find(
+        (
+          c,
+        ): c is Channel & {
+          resolvePhoneJid: NonNullable<Channel['resolvePhoneJid']>;
+        } => !!c.resolvePhoneJid,
+      );
       if (!ch) throw new Error('No channel supports phone JID resolution');
       return ch.resolvePhoneJid(phone);
     },
