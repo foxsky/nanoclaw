@@ -155,6 +155,8 @@ When the user sends a command, call the matching MCP tool. The tool handles all 
 | "PXXX.N concluida" | `taskflow_move({ task_id: 'PXXX.N', action: 'conclude', sender_name: SENDER })` — subtasks are full tasks, moved by their own ID |
 | "comecando PXXX.N" | `taskflow_move({ task_id: 'PXXX.N', action: 'start', sender_name: SENDER })` |
 
+If a task has close approval enabled, an assignee's `conclude` request moves it to `review` instead of `done`. Managers and delegates still approve from `review`.
+
 ### Assignment & Reassignment
 | User says | Tool call |
 |-----------|-----------|
@@ -173,6 +175,8 @@ When the user sends a command, call the matching MCP tool. The tool handles all 
 | "remover rotulo TXXX: financeiro" | `taskflow_update({ task_id: 'TXXX', updates: { remove_label: 'financeiro' }, sender_name: SENDER })` |
 | "renomear TXXX: novo titulo" | `taskflow_update({ task_id: 'TXXX', updates: { title: 'novo titulo' }, sender_name: SENDER })` |
 | "descricao TXXX: texto" | `taskflow_update({ task_id: 'TXXX', updates: { description: 'texto' }, sender_name: SENDER })` |
+| "exigir aprovacao para concluir TXXX" | `taskflow_update({ task_id: 'TXXX', updates: { requires_close_approval: true }, sender_name: SENDER })` |
+| "permitir concluir TXXX sem aprovacao" | `taskflow_update({ task_id: 'TXXX', updates: { requires_close_approval: false }, sender_name: SENDER })` |
 | "nota TXXX: texto" | `taskflow_update({ task_id: 'TXXX', updates: { add_note: 'texto' }, sender_name: SENDER })` |
 | "editar nota TXXX #N: texto" | `taskflow_update({ task_id: 'TXXX', updates: { edit_note: { id: N, text: 'texto' } }, sender_name: SENDER })` |
 | "remover nota TXXX #N" | `taskflow_update({ task_id: 'TXXX', updates: { remove_note: N }, sender_name: SENDER })` |

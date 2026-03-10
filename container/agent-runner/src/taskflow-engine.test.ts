@@ -11,7 +11,7 @@ CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT
 CREATE TABLE board_admins (board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL, admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
 CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
 CREATE TABLE board_groups (board_id TEXT, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, group_role TEXT DEFAULT 'team', PRIMARY KEY (board_id, group_jid));
-CREATE TABLE tasks (id TEXT NOT NULL, board_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'simple', title TEXT NOT NULL, assignee TEXT, next_action TEXT, waiting_for TEXT, column TEXT DEFAULT 'inbox', priority TEXT, due_date TEXT, description TEXT, labels TEXT DEFAULT '[]', blocked_by TEXT DEFAULT '[]', reminders TEXT DEFAULT '[]', next_note_id INTEGER DEFAULT 1, notes TEXT DEFAULT '[]', _last_mutation TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, child_exec_enabled INTEGER DEFAULT 0, child_exec_board_id TEXT, child_exec_person_id TEXT, child_exec_rollup_status TEXT, child_exec_last_rollup_at TEXT, child_exec_last_rollup_summary TEXT, linked_parent_board_id TEXT, linked_parent_task_id TEXT, parent_task_id TEXT, subtasks TEXT, recurrence TEXT, current_cycle TEXT, max_cycles INTEGER, recurrence_end_date TEXT, participants TEXT, scheduled_at TEXT, PRIMARY KEY (board_id, id));
+CREATE TABLE tasks (id TEXT NOT NULL, board_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'simple', title TEXT NOT NULL, assignee TEXT, next_action TEXT, waiting_for TEXT, column TEXT DEFAULT 'inbox', priority TEXT, requires_close_approval INTEGER NOT NULL DEFAULT 1, due_date TEXT, description TEXT, labels TEXT DEFAULT '[]', blocked_by TEXT DEFAULT '[]', reminders TEXT DEFAULT '[]', next_note_id INTEGER DEFAULT 1, notes TEXT DEFAULT '[]', _last_mutation TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, child_exec_enabled INTEGER DEFAULT 0, child_exec_board_id TEXT, child_exec_person_id TEXT, child_exec_rollup_status TEXT, child_exec_last_rollup_at TEXT, child_exec_last_rollup_summary TEXT, linked_parent_board_id TEXT, linked_parent_task_id TEXT, parent_task_id TEXT, subtasks TEXT, recurrence TEXT, current_cycle TEXT, max_cycles INTEGER, recurrence_end_date TEXT, participants TEXT, scheduled_at TEXT, PRIMARY KEY (board_id, id));
 CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, task_id TEXT NOT NULL, action TEXT NOT NULL, by TEXT, at TEXT NOT NULL, details TEXT);
 CREATE TABLE archive (board_id TEXT NOT NULL, task_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, assignee TEXT, archive_reason TEXT NOT NULL, linked_parent_board_id TEXT, linked_parent_task_id TEXT, archived_at TEXT NOT NULL, task_snapshot TEXT NOT NULL, history TEXT, PRIMARY KEY (board_id, task_id));
 CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, language TEXT NOT NULL DEFAULT 'pt-BR', timezone TEXT NOT NULL DEFAULT 'America/Fortaleza', runner_standup_task_id TEXT, runner_digest_task_id TEXT, runner_review_task_id TEXT, runner_dst_guard_task_id TEXT, standup_cron_local TEXT, digest_cron_local TEXT, review_cron_local TEXT, standup_cron_utc TEXT, digest_cron_utc TEXT, review_cron_utc TEXT, dst_sync_enabled INTEGER DEFAULT 0, dst_last_offset_minutes INTEGER, dst_last_synced_at TEXT, dst_resync_count_24h INTEGER DEFAULT 0, dst_resync_window_started_at TEXT, attachment_enabled INTEGER DEFAULT 1, attachment_disabled_reason TEXT DEFAULT '', attachment_allowed_formats TEXT DEFAULT '["pdf","jpg","png"]', attachment_max_size_bytes INTEGER DEFAULT 10485760, welcome_sent INTEGER DEFAULT 0, standup_target TEXT DEFAULT 'team', digest_target TEXT DEFAULT 'team', review_target TEXT DEFAULT 'team', runner_standup_secondary_task_id TEXT, runner_digest_secondary_task_id TEXT, runner_review_secondary_task_id TEXT);
@@ -41,12 +41,12 @@ function seedTestDb(db: Database.Database, boardId: string) {
 
   const now = new Date().toISOString();
   db.exec(
-    `INSERT INTO tasks (id, board_id, type, title, assignee, column, priority, created_at, updated_at)
-     VALUES ('T-001', '${boardId}', 'simple', 'Fix login bug', 'person-1', 'in_progress', 'high', '${now}', '${now}')`,
+    `INSERT INTO tasks (id, board_id, type, title, assignee, column, priority, requires_close_approval, created_at, updated_at)
+     VALUES ('T-001', '${boardId}', 'simple', 'Fix login bug', 'person-1', 'in_progress', 'high', 0, '${now}', '${now}')`,
   );
   db.exec(
-    `INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at)
-     VALUES ('T-002', '${boardId}', 'simple', 'Update docs', 'person-2', 'next_action', '${now}', '${now}')`,
+    `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at)
+     VALUES ('T-002', '${boardId}', 'simple', 'Update docs', 'person-2', 'next_action', 0, '${now}', '${now}')`,
   );
   db.exec(
     `INSERT INTO tasks (id, board_id, type, title, column, created_at, updated_at)
@@ -100,8 +100,8 @@ function seedLinkedTask(
     `INSERT INTO boards VALUES ('${ownerBoardId}', 'parent@g.us', 'parent-group', 'standard', 0, 1, NULL, NULL)`,
   );
   db.exec(
-    `INSERT INTO tasks (id, board_id, type, title, assignee, column, child_exec_enabled, child_exec_board_id, child_exec_person_id, created_at, updated_at)
-     VALUES ('${taskId}', '${ownerBoardId}', 'simple', '${title}', '${assignee}', '${column}', 1, '${visibleBoardId}', '${assignee}', '${now}', '${now}')`,
+    `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, child_exec_enabled, child_exec_board_id, child_exec_person_id, created_at, updated_at)
+     VALUES ('${taskId}', '${ownerBoardId}', 'simple', '${title}', '${assignee}', '${column}', 1, 1, '${visibleBoardId}', '${assignee}', '${now}', '${now}')`,
   );
 
   return { ownerBoardId, taskId };
@@ -954,6 +954,32 @@ describe('TaskflowEngine', () => {
       expect(childEngine.getTask('R1')?.id).toBe('R1');
     });
 
+    it('defaults delegated tasks to require close approval', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Needs approval',
+        assignee: 'Giovanni',
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(true);
+      expect(engine.getTask(r.task_id!)?.requires_close_approval).toBe(1);
+    });
+
+    it('defaults self-assigned tasks to not require close approval', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Self owned',
+        assignee: 'Alexandre',
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(true);
+      expect(engine.getTask(r.task_id!)?.requires_close_approval).toBe(0);
+    });
+
     it('non-manager cannot create assigned task', () => {
       const r = engine.create({
         board_id: BOARD_ID,
@@ -1269,6 +1295,93 @@ describe('TaskflowEngine', () => {
       expect(r.to_column).toBe('done');
     });
 
+    it('conclude by assignee routes to review when close approval is required', () => {
+      db.exec(
+        `UPDATE tasks SET requires_close_approval = 1 WHERE board_id = '${BOARD_ID}' AND id = 'T-002'`,
+      );
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        action: 'conclude',
+        sender_name: 'Giovanni',
+      });
+
+      expect(r.success).toBe(true);
+      expect(r.approval_gate_applied).toBe(true);
+      expect(r.from_column).toBe('next_action');
+      expect(r.to_column).toBe('review');
+      expect(engine.getTask('T-002')?.column).toBe('review');
+
+      const history = db
+        .prepare(
+          `SELECT action, details FROM task_history WHERE board_id = ? AND task_id = ? ORDER BY id DESC LIMIT 1`,
+        )
+        .get(BOARD_ID, 'T-002') as { action: string; details: string };
+      expect(history.action).toBe('review');
+      expect(JSON.parse(history.details).requested_action).toBe('conclude');
+    });
+
+    it('conclude by assignee still routes to review even if the assignee is manager on the child board', () => {
+      seedChildBoard(db, {
+        parentBoardId: 'board-parent-gio',
+        childBoardId: 'board-child-gio',
+        personId: 'person-2',
+        name: 'Giovanni',
+      });
+      const { taskId } = seedLinkedTask(db, 'board-child-gio', {
+        ownerBoardId: 'board-parent-gio',
+        taskId: 'T-906',
+        assignee: 'person-2',
+        column: 'next_action',
+      });
+      const childEngine = new TaskflowEngine(db, 'board-child-gio');
+
+      const r = childEngine.move({
+        board_id: 'board-child-gio',
+        task_id: taskId,
+        action: 'conclude',
+        sender_name: 'Giovanni',
+      });
+
+      expect(r.success).toBe(true);
+      expect(r.approval_gate_applied).toBe(true);
+      expect(r.to_column).toBe('review');
+      expect(db.prepare(`SELECT "column" FROM tasks WHERE board_id = ? AND id = ?`).get('board-parent-gio', taskId)).toEqual({ column: 'review' });
+    });
+
+    it('suppresses duplicate creator notification when parent notification targets the same group', () => {
+      const { ownerBoardId, taskId } = seedLinkedTask(db, BOARD_ID, {
+        taskId: 'T-905',
+        assignee: 'person-2',
+        column: 'next_action',
+      });
+      db.exec(
+        `UPDATE board_people SET notification_group_jid = 'parent@g.us' WHERE board_id = '${BOARD_ID}' AND person_id = 'person-1'`,
+      );
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+         VALUES ('${BOARD_ID}', '${taskId}', 'created', 'Alexandre', '${now}', '{"title":"Linked task"}')`,
+      );
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: taskId,
+        action: 'conclude',
+        sender_name: 'Giovanni',
+      });
+
+      expect(r.success).toBe(true);
+      expect(r.parent_notification?.parent_group_jid).toBe('parent@g.us');
+      expect(r.notifications).toBeUndefined();
+
+      const ownerRow = db
+        .prepare(`SELECT "column" FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(ownerBoardId, taskId) as { column: string };
+      expect(ownerRow.column).toBe('review');
+    });
+
     it('reopen: done -> next_action', () => {
       // Move T-001 to done first
       db.exec(
@@ -1387,8 +1500,8 @@ describe('TaskflowEngine', () => {
       const now = new Date().toISOString();
       const dueDate = new Date().toISOString().slice(0, 10);
       db.exec(
-        `INSERT INTO tasks (id, board_id, type, title, assignee, column, recurrence, due_date, current_cycle, created_at, updated_at)
-         VALUES ('R-020', '${BOARD_ID}', 'recurring', 'Weekly check', 'person-1', 'in_progress', 'weekly', '${dueDate}', '0', '${now}', '${now}')`,
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, recurrence, due_date, current_cycle, created_at, updated_at)
+         VALUES ('R-020', '${BOARD_ID}', 'recurring', 'Weekly check', 'person-1', 'in_progress', 0, 'weekly', '${dueDate}', '0', '${now}', '${now}')`,
       );
 
       const r = engine.move({
@@ -1705,6 +1818,74 @@ describe('TaskflowEngine', () => {
 
       const task = engine.getTask('T-001');
       expect(task.priority).toBe('urgent');
+    });
+
+    it('manager can change close approval policy', () => {
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        sender_name: 'Alexandre',
+        updates: { requires_close_approval: true },
+      });
+
+      expect(r.success).toBe(true);
+      expect(r.changes).toContain('Close approval is now required');
+      expect(engine.getTask('T-002')?.requires_close_approval).toBe(1);
+    });
+
+    it('non-manager cannot change close approval policy', () => {
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        sender_name: 'Giovanni',
+        updates: { requires_close_approval: true },
+      });
+
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('only managers');
+    });
+
+    it('child-board manager cannot change close approval policy on a linked parent task', () => {
+      seedChildBoard(db, {
+        parentBoardId: 'board-parent-gio',
+        childBoardId: 'board-child-gio',
+        personId: 'person-2',
+        name: 'Giovanni',
+      });
+      const { taskId } = seedLinkedTask(db, 'board-child-gio', {
+        ownerBoardId: 'board-parent-gio',
+        taskId: 'T-907',
+        assignee: 'person-2',
+      });
+      const childEngine = new TaskflowEngine(db, 'board-child-gio');
+
+      const r = childEngine.update({
+        board_id: 'board-child-gio',
+        task_id: taskId,
+        sender_name: 'Giovanni',
+        updates: { requires_close_approval: false },
+      });
+
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('owning board');
+      expect(db.prepare(`SELECT requires_close_approval FROM tasks WHERE board_id = ? AND id = ?`).get('board-parent-gio', taskId)).toEqual({ requires_close_approval: 1 });
+    });
+
+    it('approval-gated conclude from waiting clears waiting_for', () => {
+      db.exec(
+        `UPDATE tasks SET column = 'waiting', waiting_for = 'Client reply', requires_close_approval = 1 WHERE board_id = '${BOARD_ID}' AND id = 'T-002'`,
+      );
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        action: 'conclude',
+        sender_name: 'Giovanni',
+      });
+
+      expect(r.success).toBe(true);
+      expect(r.to_column).toBe('review');
+      expect(db.prepare(`SELECT waiting_for FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, 'T-002')).toEqual({ waiting_for: null });
     });
 
     it('invalid priority -> error', () => {
@@ -2105,6 +2286,7 @@ describe('TaskflowEngine', () => {
           waiting_for TEXT,
           column TEXT DEFAULT 'inbox',
           priority TEXT,
+          requires_close_approval INTEGER NOT NULL DEFAULT 1,
           due_date TEXT,
           description TEXT,
           labels TEXT DEFAULT '[]',
@@ -2181,6 +2363,9 @@ describe('TaskflowEngine', () => {
         child_exec_person_id: 'rafael',
       });
       expect(childEngine.getTask('P16.2')?.id).toBe('P16.2');
+      legacyDb.exec(
+        `UPDATE tasks SET requires_close_approval = 0 WHERE board_id = 'board-parent' AND id = 'P16.2'`,
+      );
 
       const moveResult = childEngine.move({
         board_id: 'board-rafael',
@@ -2217,6 +2402,7 @@ describe('TaskflowEngine', () => {
           waiting_for TEXT,
           column TEXT DEFAULT 'inbox',
           priority TEXT,
+          requires_close_approval INTEGER NOT NULL DEFAULT 1,
           due_date TEXT,
           description TEXT,
           labels TEXT DEFAULT '[]',
@@ -2258,7 +2444,7 @@ describe('TaskflowEngine', () => {
         INSERT INTO board_admins VALUES ('board-parent', 'person-1', '5585999990001', 'manager', 1);
         INSERT INTO board_admins VALUES ('board-rafael', 'rafael', '5585999990008', 'manager', 1);
         INSERT INTO child_board_registrations VALUES ('board-parent', 'rafael', 'board-rafael');
-        INSERT INTO tasks (id, board_id, type, title, assignee, column, subtasks, created_at, updated_at)
+        INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, subtasks, created_at, updated_at)
         VALUES (
           'P16',
           'board-parent',
@@ -2266,12 +2452,13 @@ describe('TaskflowEngine', () => {
           'Legacy project',
           'person-1',
           'next_action',
+          0,
           '[{"id":"P16.1","title":"Preparar resumo","column":"done","assignee":"person-1"},{"id":"P16.2","title":"Call Jimmy","column":"next_action","assignee":"rafael"}]',
           '2026-03-06T12:39:17Z',
           '2026-03-06T12:39:17Z'
         );
-        INSERT INTO tasks (id, board_id, type, title, assignee, column, child_exec_enabled, created_at, updated_at)
-        VALUES ('P16.2', 'board-parent', 'simple', 'Wrong title', NULL, 'inbox', 0, '2026-03-06T12:39:17Z', '2026-03-06T12:39:17Z');
+        INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, child_exec_enabled, created_at, updated_at)
+        VALUES ('P16.2', 'board-parent', 'simple', 'Wrong title', NULL, 'inbox', 1, 0, '2026-03-06T12:39:17Z', '2026-03-06T12:39:17Z');
       `);
 
       const parentEngine = new TaskflowEngine(legacyDb, 'board-parent');
@@ -2368,8 +2555,8 @@ describe('TaskflowEngine', () => {
          VALUES ('P16', 'board-sec-taskflow', 'project', 'Acesso ao Spia', 'miguel', 'next_action', '2026-03-06T12:39:17Z', '2026-03-06T12:39:17Z')`,
       );
       legacyDb.exec(
-        `INSERT INTO tasks (id, board_id, type, title, assignee, "column", parent_task_id, child_exec_enabled, created_at, updated_at)
-         VALUES ('P16.2', 'board-sec-taskflow', 'simple', 'Confirmar com o Jimmy', 'rafael', 'next_action', 'P16', 0, '2026-03-06T12:39:17Z', '2026-03-06T12:39:17Z')`,
+        `INSERT INTO tasks (id, board_id, type, title, assignee, "column", requires_close_approval, parent_task_id, child_exec_enabled, created_at, updated_at)
+         VALUES ('P16.2', 'board-sec-taskflow', 'simple', 'Confirmar com o Jimmy', 'rafael', 'next_action', 0, 'P16', 0, '2026-03-06T12:39:17Z', '2026-03-06T12:39:17Z')`,
       );
 
       const parentEngine = new TaskflowEngine(legacyDb, 'board-sec-taskflow');
@@ -2929,6 +3116,7 @@ describe('TaskflowEngine', () => {
       const task = engine.getTask('T-002');
       expect(task).toBeTruthy();
       expect(task.title).toBe('Update docs');
+      expect(task.requires_close_approval).toBe(0);
 
       // Archive entry should be gone
       const archived = db
@@ -3214,6 +3402,9 @@ describe('TaskflowEngine', () => {
         subtasks: [{ title: 'Call Jimmy', assignee: 'Giovanni' }],
         sender_name: 'Alexandre',
       });
+      db.exec(
+        `UPDATE tasks SET requires_close_approval = 0 WHERE board_id = '${BOARD_ID}' AND id = 'P1.1'`,
+      );
 
       const childEngine = new TaskflowEngine(db, 'board-child-gio');
       const moveResult = childEngine.move({
@@ -3297,7 +3488,7 @@ describe('TaskflowEngine', () => {
       );
       db.exec(
         `INSERT INTO task_history (board_id, task_id, action, by, at, details)
-         VALUES ('${BOARD_ID}', 'T-001', 'moved', 'person-1', '${now}', '${JSON.stringify({ from_column: 'in_progress', to_column: 'done' })}')`,
+         VALUES ('${BOARD_ID}', 'T-001', 'conclude', 'person-1', '${now}', '${JSON.stringify({ from: 'in_progress', to: 'done' })}')`,
       );
 
       // Make T-002 blocked
@@ -3346,7 +3537,7 @@ describe('TaskflowEngine', () => {
       );
       db.exec(
         `INSERT INTO task_history (board_id, task_id, action, by, at, details)
-         VALUES ('${BOARD_ID}', 'T-001', 'moved', 'person-1', '${now}', '${JSON.stringify({ from_column: 'in_progress', to_column: 'done' })}')`,
+         VALUES ('${BOARD_ID}', 'T-001', 'conclude', 'person-1', '${now}', '${JSON.stringify({ from: 'in_progress', to: 'done' })}')`,
       );
 
       // T-003 created this week
@@ -3364,7 +3555,7 @@ describe('TaskflowEngine', () => {
 
       db.exec(
         `INSERT INTO task_history (board_id, task_id, action, by, at, details)
-         VALUES ('${BOARD_ID}', 'T-002', 'moved', 'person-2', '${lwStr}', '${JSON.stringify({ from_column: 'in_progress', to_column: 'done' })}')`,
+         VALUES ('${BOARD_ID}', 'T-002', 'approve', 'person-2', '${lwStr}', '${JSON.stringify({ from: 'review', to: 'done' })}')`,
       );
 
       const r = engine.report({ board_id: BOARD_ID, type: 'weekly' });
@@ -3484,8 +3675,8 @@ describe('TaskflowEngine', () => {
       const now = new Date().toISOString();
       const dueDate = new Date().toISOString().slice(0, 10);
       db.exec(
-        `INSERT INTO tasks (id, board_id, type, title, assignee, column, recurrence, due_date, current_cycle, max_cycles, created_at, updated_at)
-         VALUES ('R-MC1', '${BOARD_ID}', 'recurring', 'One-shot recurring', 'person-1', 'in_progress', 'daily', '${dueDate}', '0', 1, '${now}', '${now}')`,
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, recurrence, due_date, current_cycle, max_cycles, created_at, updated_at)
+         VALUES ('R-MC1', '${BOARD_ID}', 'recurring', 'One-shot recurring', 'person-1', 'in_progress', 0, 'daily', '${dueDate}', '0', 1, '${now}', '${now}')`,
       );
 
       const r = engine.move({
@@ -3508,8 +3699,8 @@ describe('TaskflowEngine', () => {
     it('expires recurring task when recurrence_end_date passed', () => {
       const now = new Date().toISOString();
       db.exec(
-        `INSERT INTO tasks (id, board_id, type, title, assignee, column, recurrence, due_date, current_cycle, recurrence_end_date, created_at, updated_at)
-         VALUES ('R-ED1', '${BOARD_ID}', 'recurring', 'Past-end monthly', 'person-1', 'in_progress', 'monthly', '2020-01-01', '0', '2020-01-01', '${now}', '${now}')`,
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, recurrence, due_date, current_cycle, recurrence_end_date, created_at, updated_at)
+         VALUES ('R-ED1', '${BOARD_ID}', 'recurring', 'Past-end monthly', 'person-1', 'in_progress', 0, 'monthly', '2020-01-01', '0', '2020-01-01', '${now}', '${now}')`,
       );
 
       const r = engine.move({
@@ -3528,8 +3719,8 @@ describe('TaskflowEngine', () => {
       const now = new Date().toISOString();
       const dueDate = new Date().toISOString().slice(0, 10);
       db.exec(
-        `INSERT INTO tasks (id, board_id, type, title, assignee, column, recurrence, due_date, current_cycle, created_at, updated_at)
-         VALUES ('R-UB1', '${BOARD_ID}', 'recurring', 'Unbounded weekly', 'person-1', 'in_progress', 'weekly', '${dueDate}', '0', '${now}', '${now}')`,
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, recurrence, due_date, current_cycle, created_at, updated_at)
+         VALUES ('R-UB1', '${BOARD_ID}', 'recurring', 'Unbounded weekly', 'person-1', 'in_progress', 0, 'weekly', '${dueDate}', '0', '${now}', '${now}')`,
       );
 
       const r = engine.move({
@@ -3609,8 +3800,8 @@ describe('TaskflowEngine', () => {
       const dueDate = new Date().toISOString().slice(0, 10);
       // Insert a recurring project directly with subtask rows already done
       db.exec(
-        `INSERT INTO tasks (id, board_id, type, title, assignee, column, recurrence, due_date, current_cycle, max_cycles, subtasks, created_at, updated_at)
-         VALUES ('P-BR1', '${BOARD_ID}', 'project', 'Bounded project', 'person-1', 'in_progress', 'weekly', '${dueDate}', '0', 1, '${JSON.stringify([{ id: 'P-BR1.1', title: 'Step A', status: 'done' }, { id: 'P-BR1.2', title: 'Step B', status: 'done' }]).replace(/'/g, "''")}', '${now}', '${now}')`,
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, recurrence, due_date, current_cycle, max_cycles, subtasks, created_at, updated_at)
+         VALUES ('P-BR1', '${BOARD_ID}', 'project', 'Bounded project', 'person-1', 'in_progress', 0, 'weekly', '${dueDate}', '0', 1, '${JSON.stringify([{ id: 'P-BR1.1', title: 'Step A', status: 'done' }, { id: 'P-BR1.2', title: 'Step B', status: 'done' }]).replace(/'/g, "''")}', '${now}', '${now}')`,
       );
       // Insert subtask rows in done column
       db.exec(

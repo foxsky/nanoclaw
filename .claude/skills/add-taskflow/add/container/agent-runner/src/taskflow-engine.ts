@@ -46,6 +46,7 @@ export interface CreateParams {
   type: 'simple' | 'project' | 'recurring' | 'inbox' | 'meeting';
   title: string;
   assignee?: string;
+  requires_close_approval?: boolean;
   due_date?: string;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
   labels?: string[];
@@ -83,6 +84,7 @@ export interface MoveResult extends TaskflowResult {
   task_id?: string;
   from_column?: string;
   to_column?: string;
+  approval_gate_applied?: boolean;
   wip_warning?: { person: string; current: number; limit: number };
   project_update?: { completed_subtask: string; next_subtask?: string; all_complete: boolean };
   recurring_cycle?: { cycle_number: number; expired: boolean; new_due_date?: string; new_scheduled_at?: string; reason?: 'max_cycles' | 'end_date' };
@@ -121,6 +123,7 @@ export interface UpdateParams {
   updates: {
     title?: string;
     priority?: 'low' | 'normal' | 'high' | 'urgent';
+    requires_close_approval?: boolean;
     due_date?: string | null;   // null = remove
     description?: string;
     next_action?: string;
@@ -568,6 +571,20 @@ export class TaskflowEngine {
   }
 
   private ensureTaskSchema(): void {
+    const taskColumns = this.db
+      .prepare(`PRAGMA table_info(tasks)`)
+      .all() as Array<{ name: string }>;
+    const hasRequiresCloseApproval = taskColumns.some(
+      (column) => column.name === 'requires_close_approval',
+    );
+    if (!hasRequiresCloseApproval) {
+      try { this.db.exec(`ALTER TABLE tasks ADD COLUMN requires_close_approval INTEGER NOT NULL DEFAULT 1`); } catch {}
+      this.db.exec(`
+        UPDATE tasks
+           SET requires_close_approval = 0
+         WHERE assignee IS NULL
+      `);
+    }
     try { this.db.exec(`ALTER TABLE tasks ADD COLUMN parent_task_id TEXT`); } catch {}
     try { this.db.exec(`ALTER TABLE tasks ADD COLUMN max_cycles INTEGER`); } catch {}
     try { this.db.exec(`ALTER TABLE tasks ADD COLUMN recurrence_end_date TEXT`); } catch {}
@@ -1001,7 +1018,7 @@ export class TaskflowEngine {
       .prepare(
         `INSERT INTO tasks (
           id, board_id, type, title, assignee, next_action, waiting_for,
-          column, priority, due_date, description, labels, blocked_by,
+          column, priority, requires_close_approval, due_date, description, labels, blocked_by,
           reminders, next_note_id, notes, _last_mutation, created_at, updated_at,
           child_exec_enabled, child_exec_board_id, child_exec_person_id,
           child_exec_rollup_status, child_exec_last_rollup_at,
@@ -1009,7 +1026,7 @@ export class TaskflowEngine {
           linked_parent_board_id, linked_parent_task_id, parent_task_id,
           subtasks, recurrence, recurrence_anchor, current_cycle,
           max_cycles, recurrence_end_date, participants, scheduled_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         snapshot.id,
@@ -1021,6 +1038,7 @@ export class TaskflowEngine {
         snapshot.waiting_for ?? null,
         snapshot.column ?? 'inbox',
         snapshot.priority ?? null,
+        snapshot.requires_close_approval ?? this.defaultRequiresCloseApproval(snapshot.assignee ?? null, null),
         snapshot.due_date ?? null,
         snapshot.description ?? null,
         snapshot.labels ?? '[]',
@@ -1078,7 +1096,7 @@ export class TaskflowEngine {
   /* ---------------------------------------------------------------- */
 
   /** Check if a sender is in board_admins with admin_role = 'manager'. */
-  private isManager(senderName: string): boolean {
+  private isManager(senderName: string, boardId = this.boardId): boolean {
     const person = this.resolvePerson(senderName);
     if (!person) return false;
     const row = this.db
@@ -1086,7 +1104,7 @@ export class TaskflowEngine {
         `SELECT 1 FROM board_admins
          WHERE board_id = ? AND person_id = ? AND admin_role = 'manager'`,
       )
-      .get(this.boardId, person.person_id);
+      .get(boardId, person.person_id);
     return !!row;
   }
 
@@ -1102,6 +1120,29 @@ export class TaskflowEngine {
       return 'max_cycles must be a positive integer.';
     }
     return null;
+  }
+
+  private defaultRequiresCloseApproval(
+    assigneePersonId: string | null,
+    senderPersonId: string | null,
+  ): number {
+    if (!assigneePersonId) return 0;
+    return assigneePersonId === senderPersonId ? 0 : 1;
+  }
+
+  private taskRequiresCloseApproval(task: { requires_close_approval?: unknown }): boolean {
+    return task.requires_close_approval === 1 || task.requires_close_approval === '1' || task.requires_close_approval === true;
+  }
+
+  private completionHistoryWhere(alias = ''): string {
+    const prefix = alias ? `${alias}.` : '';
+    return `(
+      ${prefix}action IN ('moved', 'approve', 'conclude')
+      AND (
+        ${prefix}details LIKE '%"to_column":"done"%'
+        OR ${prefix}details LIKE '%"to":"done"%'
+      )
+    )`;
   }
 
   /** Read the per-prefix counter, increment it, return the old value. Works for any prefix. */
@@ -1339,7 +1380,8 @@ export class TaskflowEngine {
        JOIN external_contacts ec ON ec.external_id = mep.external_id
        WHERE mep.board_id = ? AND mep.meeting_task_id = ?
          AND mep.invite_status = 'accepted'
-         AND (mep.access_expires_at IS NULL OR mep.access_expires_at >= ?)`,
+         AND (mep.access_expires_at IS NULL OR mep.access_expires_at >= ?)
+       GROUP BY ec.external_id`,
     ).all(this.boardId, task.id, recipientNow) as Array<{
       external_id: string; display_name: string; direct_chat_jid: string | null; phone: string;
     }>;
@@ -1480,21 +1522,23 @@ export class TaskflowEngine {
     const boardId = opts.boardId ?? this.boardId;
     const subMutation = JSON.stringify({ action: 'created', by: opts.senderName, at: opts.now });
     const childLink = this.linkedChildBoardFor(boardId, opts.assignee);
+    const senderPersonId = this.resolvePerson(opts.senderName)?.person_id ?? null;
+    const requiresCloseApproval = this.defaultRequiresCloseApproval(opts.assignee, senderPersonId);
     this.db
       .prepare(
         `INSERT INTO tasks (
-          id, board_id, type, title, assignee, column,
+          id, board_id, type, title, assignee, column, requires_close_approval,
           parent_task_id, priority, labels,
           child_exec_enabled, child_exec_board_id, child_exec_person_id,
           _last_mutation, created_at, updated_at
-        ) VALUES (?, ?, 'simple', ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, 'simple', ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?)`,
       )
-      .run(opts.subtaskId, boardId, opts.title, opts.assignee, opts.column,
+      .run(opts.subtaskId, boardId, opts.title, opts.assignee, opts.column, requiresCloseApproval,
         opts.parentTaskId, opts.priority,
         childLink.child_exec_enabled, childLink.child_exec_board_id, childLink.child_exec_person_id,
         subMutation, opts.now, opts.now);
     this.recordHistory(opts.subtaskId, 'created', opts.senderName,
-      JSON.stringify({ type: 'subtask', parent: opts.parentTaskId, title: opts.title, assignee: opts.assignee }),
+      JSON.stringify({ type: 'subtask', parent: opts.parentTaskId, title: opts.title, assignee: opts.assignee, requires_close_approval: requiresCloseApproval === 1 }),
       boardId);
   }
 
@@ -1700,6 +1744,13 @@ export class TaskflowEngine {
         return { success: false, error: 'Bounded recurrence requires a recurring task or recurring project.' };
       }
 
+      const senderPerson = this.resolvePerson(params.sender_name);
+      const senderPersonId = senderPerson?.person_id ?? params.sender_name;
+      const requiresCloseApproval =
+        params.requires_close_approval !== undefined
+          ? (params.requires_close_approval ? 1 : 0)
+          : this.defaultRequiresCloseApproval(assigneePersonId, senderPerson?.person_id ?? null);
+
       /* --- Undo snapshot --- */
       const lastMutation = JSON.stringify({
         action: 'created',
@@ -1712,12 +1763,12 @@ export class TaskflowEngine {
         .prepare(
           `INSERT INTO tasks (
             id, board_id, type, title, assignee, column,
-            priority, due_date, labels, recurrence, recurrence_anchor,
+            priority, requires_close_approval, due_date, labels, recurrence, recurrence_anchor,
             max_cycles, recurrence_end_date,
             child_exec_enabled, child_exec_board_id, child_exec_person_id,
             participants, scheduled_at,
             _last_mutation, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           taskId,
@@ -1727,6 +1778,7 @@ export class TaskflowEngine {
           assigneePersonId,
           column,
           params.priority ?? null,
+          requiresCloseApproval,
           dueDate,
           params.labels ? JSON.stringify(params.labels) : '[]',
           recurrence,
@@ -1765,6 +1817,7 @@ export class TaskflowEngine {
         column,
       };
       if (assigneePersonId) detailsSummary.assignee = assigneePersonId;
+      detailsSummary.requires_close_approval = requiresCloseApproval === 1;
       if (params.priority) detailsSummary.priority = params.priority;
       if (dueDate) detailsSummary.due_date = dueDate;
       if (params.labels?.length) detailsSummary.labels = params.labels;
@@ -1777,8 +1830,6 @@ export class TaskflowEngine {
 
       /* --- Notifications --- */
       const notifications: CreateResult['notifications'] = [];
-      const senderPerson = this.resolvePerson(params.sender_name);
-      const senderPersonId = senderPerson?.person_id ?? params.sender_name;
 
       // Notify project assignee
       if (assigneePersonId) {
@@ -1855,7 +1906,7 @@ export class TaskflowEngine {
   }
 
   /** Check if sender has manager or delegate role in board_admins. */
-  private isManagerOrDelegate(senderName: string): boolean {
+  private isManagerOrDelegate(senderName: string, boardId = this.boardId): boolean {
     const person = this.resolvePerson(senderName);
     if (!person) return false;
     const row = this.db
@@ -1863,7 +1914,7 @@ export class TaskflowEngine {
         `SELECT 1 FROM board_admins
          WHERE board_id = ? AND person_id = ? AND admin_role IN ('manager', 'delegate')`,
       )
-      .get(this.boardId, person.person_id);
+      .get(boardId, person.person_id);
     return !!row;
   }
 
@@ -1920,6 +1971,18 @@ export class TaskflowEngine {
       );
 
     this.resolveDependencies(task.id, this.boardId);
+
+    // Revoke active external participant grants for meeting tasks
+    if (task.type === 'meeting') {
+      this.db
+        .prepare(
+          `UPDATE meeting_external_participants
+           SET invite_status = 'revoked', revoked_at = ?, updated_at = ?
+           WHERE board_id = ? AND meeting_task_id = ?
+             AND invite_status IN ('pending', 'invited', 'accepted')`,
+        )
+        .run(now, now, this.boardId, task.id);
+    }
 
     if (task.type === 'project') {
       this.db
@@ -2008,6 +2071,18 @@ export class TaskflowEngine {
            WHERE board_id = ? AND id = ?`,
         )
         .run(String(nextCycle), newScheduledAt ?? task.scheduled_at ?? null, now, this.taskBoardId(task), task.id);
+      // Expire old-occurrence external participant grants so they don't bleed into the new cycle
+      if (task.scheduled_at) {
+        this.db
+          .prepare(
+            `UPDATE meeting_external_participants
+             SET invite_status = 'expired', updated_at = ?
+             WHERE board_id = ? AND meeting_task_id = ?
+               AND occurrence_scheduled_at = ?
+               AND invite_status IN ('invited', 'accepted')`,
+          )
+          .run(now, this.taskBoardId(task), task.id, task.scheduled_at);
+      }
     } else {
       this.db
         .prepare(
@@ -2074,25 +2149,19 @@ export class TaskflowEngine {
         reopen:      { from: ['done'], to: 'next_action' },
       };
 
-      const transition = transitions[params.action];
-      if (!transition) {
+      const baseTransition = transitions[params.action];
+      if (!baseTransition) {
         return { success: false, error: `Unknown action: ${params.action}` };
       }
-
-      /* --- Validate from column --- */
-      if (!transition.from.includes(fromColumn)) {
-        return {
-          success: false,
-          error: `Cannot "${params.action}" task ${params.task_id}: task is in "${fromColumn}", expected one of [${transition.from.join(', ')}].`,
-        };
-      }
-
-      const toColumn = transition.to;
 
       /* --- Permission checks --- */
       const isAssignee = senderPersonId != null && task.assignee === senderPersonId;
       const isMgr = this.isManager(params.sender_name);
       const isMgrOrDelegate = this.isManagerOrDelegate(params.sender_name);
+      const assigneeNeedsCloseApproval =
+        params.action === 'conclude' &&
+        isAssignee &&
+        this.taskRequiresCloseApproval(task);
 
       switch (params.action) {
         case 'start':
@@ -2134,8 +2203,36 @@ export class TaskflowEngine {
           break;
       }
 
+      let approvalGateApplied = false;
+      let effectiveAction = params.action;
+      let transition = baseTransition;
+      if (assigneeNeedsCloseApproval) {
+        if (fromColumn === 'review') {
+          return {
+            success: false,
+            error: `Task ${params.task_id} already awaits approval in "review". A manager or delegate must approve it.`,
+          };
+        }
+        approvalGateApplied = true;
+        effectiveAction = 'review';
+        transition = {
+          from: ['inbox', 'next_action', 'in_progress', 'waiting'],
+          to: 'review',
+        };
+      }
+
+      /* --- Validate from column --- */
+      if (!transition.from.includes(fromColumn)) {
+        return {
+          success: false,
+          error: `Cannot "${params.action}" task ${params.task_id}: task is in "${fromColumn}", expected one of [${transition.from.join(', ')}].`,
+        };
+      }
+
+      const toColumn = transition.to;
+
       /* --- Project conclude guard: all subtask rows must be done --- */
-      if ((params.action === 'conclude' || params.action === 'approve') && task.type === 'project') {
+      if ((toColumn === 'done' || approvalGateApplied) && task.type === 'project') {
         const pendingSubs = this.db
           .prepare(
             `SELECT id, title, column FROM tasks
@@ -2153,7 +2250,7 @@ export class TaskflowEngine {
       }
 
       /* --- WIP limit check (start, resume, reject — NOT force_start, NOT meetings) --- */
-      if (['start', 'resume', 'reject'].includes(params.action) && task.assignee && task.type !== 'meeting') {
+      if (['start', 'resume', 'reject'].includes(effectiveAction) && task.assignee && task.type !== 'meeting') {
         const wip = this.checkWipLimit(task.assignee);
         if (!wip.ok) {
           return {
@@ -2172,7 +2269,7 @@ export class TaskflowEngine {
         updated_at: task.updated_at,
       };
       /* Capture waiting_for so undo of wait/resume restores it correctly. */
-      if (params.action === 'wait' || params.action === 'resume' || (fromColumn === 'waiting' && params.action === 'conclude')) {
+      if (effectiveAction === 'wait' || effectiveAction === 'resume' || (fromColumn === 'waiting' && (toColumn === 'done' || toColumn === 'review'))) {
         snapshotFields.waiting_for = task.waiting_for ?? null;
       }
       /* Recurring conclude/approve mutates many fields via advanceRecurringTask;
@@ -2189,6 +2286,7 @@ export class TaskflowEngine {
       }
       const snapshot = JSON.stringify({
         action: params.action,
+        effective_action: effectiveAction,
         by: params.sender_name,
         at: now,
         snapshot: snapshotFields,
@@ -2264,6 +2362,7 @@ export class TaskflowEngine {
 
       /* --- Update task column, _last_mutation, updated_at --- */
       const detailsObj: Record<string, any> = { from: fromColumn, to: toColumn };
+      if (approvalGateApplied) detailsObj.requested_action = params.action;
       if (params.reason) detailsObj.reason = params.reason;
       if (params.subtask_id) detailsObj.subtask_id = params.subtask_id;
 
@@ -2275,7 +2374,7 @@ export class TaskflowEngine {
         .run(toColumn, snapshot, now, taskBoardId, task.id);
 
       /* --- If waiting, store reason in waiting_for --- */
-      if (params.action === 'wait' && params.reason) {
+      if (effectiveAction === 'wait' && params.reason) {
         this.db
           .prepare(
             `UPDATE tasks SET waiting_for = ? WHERE board_id = ? AND id = ?`,
@@ -2284,7 +2383,7 @@ export class TaskflowEngine {
       }
 
       /* --- Clear waiting_for when leaving waiting column --- */
-      if (params.action === 'resume' || (fromColumn === 'waiting' && params.action === 'conclude')) {
+      if (effectiveAction === 'resume' || (fromColumn === 'waiting' && (toColumn === 'done' || toColumn === 'review'))) {
         this.db
           .prepare(
             `UPDATE tasks SET waiting_for = NULL WHERE board_id = ? AND id = ?`,
@@ -2295,7 +2394,7 @@ export class TaskflowEngine {
       /* --- Record history --- */
       this.recordHistory(
         task.id,
-        params.action,
+        effectiveAction,
         params.sender_name,
         JSON.stringify(detailsObj),
         taskBoardId,
@@ -2322,7 +2421,7 @@ export class TaskflowEngine {
       if (senderPersonId) {
         const notif = this.buildMoveNotification(
           task,
-          params.action,
+          effectiveAction,
           senderPersonId,
           taskBoardId,
         );
@@ -2330,7 +2429,7 @@ export class TaskflowEngine {
       }
 
       /* --- Linked task review rejection (reset rollup + notify child board) --- */
-      if (params.action === 'reject' && task.child_exec_enabled === 1) {
+      if (effectiveAction === 'reject' && task.child_exec_enabled === 1) {
         this.db
           .prepare(
             `UPDATE tasks SET child_exec_rollup_status = 'active',
@@ -2387,6 +2486,14 @@ export class TaskflowEngine {
         }
       }
 
+      if (parentNotification) {
+        const deduped = notifications.filter(
+          (notification) => notification.notification_group_jid !== parentNotification.parent_group_jid,
+        );
+        notifications.length = 0;
+        notifications.push(...deduped);
+      }
+
       /* --- Open meeting minutes warning --- */
       // Skip the warning for recurring meetings that were advanced (not expired):
       // advanceRecurringTask already cleared the notes from the task, so
@@ -2407,6 +2514,7 @@ export class TaskflowEngine {
         from_column: fromColumn,
         to_column: toColumn,
       };
+      if (approvalGateApplied) result.approval_gate_applied = true;
       if (notifications.length > 0) result.notifications = notifications;
       if (projectUpdate) result.project_update = projectUpdate;
       if (recurringCycle) result.recurring_cycle = recurringCycle;
@@ -2673,21 +2781,23 @@ export class TaskflowEngine {
       let hasExternalGrant = false;
       if (isExternalSender) {
         const grantNow = new Date().toISOString();
-        const grant = this.db.prepare(
-          `SELECT invite_status, access_expires_at FROM meeting_external_participants
+        // Expire only stale grants (past access_expires_at), leaving valid ones untouched.
+        // This prevents a non-deterministic SELECT from picking an old occurrence's row
+        // and the broad UPDATE from incorrectly expiring newer valid grants.
+        this.db.prepare(
+          `UPDATE meeting_external_participants SET invite_status = 'expired', updated_at = ?
            WHERE board_id = ? AND meeting_task_id = ? AND external_id = ?
-             AND invite_status = 'accepted'`
+             AND invite_status = 'accepted'
+             AND access_expires_at IS NOT NULL AND access_expires_at < ?`
+        ).run(grantNow, this.boardId, task.id, params.sender_external_id, grantNow);
+        const grant = this.db.prepare(
+          `SELECT invite_status FROM meeting_external_participants
+           WHERE board_id = ? AND meeting_task_id = ? AND external_id = ?
+             AND invite_status = 'accepted'
+           ORDER BY occurrence_scheduled_at DESC LIMIT 1`
         ).get(this.boardId, task.id, params.sender_external_id) as any;
         if (grant) {
-          // Lazy expiry check
-          if (grant.access_expires_at && grant.access_expires_at < grantNow) {
-            this.db.prepare(
-              `UPDATE meeting_external_participants SET invite_status = 'expired', updated_at = ?
-               WHERE board_id = ? AND meeting_task_id = ? AND external_id = ? AND invite_status = 'accepted'`
-            ).run(grantNow, this.boardId, task.id, params.sender_external_id);
-          } else {
-            hasExternalGrant = true;
-          }
+          hasExternalGrant = true;
         }
       }
 
@@ -2704,6 +2814,7 @@ export class TaskflowEngine {
       /* --- Permission: sender must be assignee or manager (or meeting participant for note ops) --- */
       const isAssignee = senderPersonId != null && task.assignee === senderPersonId;
       const isMgr = this.isManager(params.sender_name);
+      const isOwnerMgr = this.isManager(params.sender_name, taskBoardId);
 
       const isMeetingNoteOperation =
         task.type === 'meeting' &&
@@ -2719,6 +2830,7 @@ export class TaskflowEngine {
       const hasPrivilegedUpdate =
         updates.title !== undefined ||
         updates.priority !== undefined ||
+        updates.requires_close_approval !== undefined ||
         updates.due_date !== undefined ||
         updates.description !== undefined ||
         updates.next_action !== undefined ||
@@ -2746,6 +2858,13 @@ export class TaskflowEngine {
         };
       }
 
+      if (updates.requires_close_approval !== undefined && !isOwnerMgr) {
+        return {
+          success: false,
+          error: 'Permission denied: only managers of the owning board can change whether close approval is required.',
+        };
+      }
+
       /* --- Save undo snapshot --- */
       const snapshot = JSON.stringify({
         action: 'updated',
@@ -2754,6 +2873,7 @@ export class TaskflowEngine {
         snapshot: {
           title: task.title,
           priority: task.priority,
+          requires_close_approval: task.requires_close_approval,
           due_date: task.due_date,
           description: task.description,
           next_action: task.next_action,
@@ -2803,6 +2923,19 @@ export class TaskflowEngine {
           .prepare(`UPDATE tasks SET priority = ? WHERE board_id = ? AND id = ?`)
           .run(updates.priority, taskBoardId, task.id);
         changes.push(`Priority set to ${updates.priority}`);
+      }
+
+      /* Close approval policy */
+      if (updates.requires_close_approval !== undefined) {
+        const requiresCloseApproval = updates.requires_close_approval ? 1 : 0;
+        this.db
+          .prepare(`UPDATE tasks SET requires_close_approval = ? WHERE board_id = ? AND id = ?`)
+          .run(requiresCloseApproval, taskBoardId, task.id);
+        changes.push(
+          requiresCloseApproval === 1
+            ? 'Close approval is now required'
+            : 'Close approval is no longer required',
+        );
       }
 
       /* Due date */
@@ -2961,7 +3094,10 @@ export class TaskflowEngine {
             return { success: false, error: `Permission denied: "${params.sender_name}" does not have active access to this meeting.` };
           }
           const isNoteAuthor = note.author_actor_id
-            ? (note.author_actor_id === senderPersonId || note.author_actor_id === params.sender_external_id)
+            ? (
+                (note.author_actor_type === 'board_person' && note.author_actor_id === senderPersonId && !isExternalSender) ||
+                (note.author_actor_type === 'external_contact' && note.author_actor_id === params.sender_external_id)
+              )
             : false;
           if (!isNoteAuthor) {
             return { success: false, error: `Permission denied: only the note author, organizer, or manager can edit note #${updates.edit_note.id}.` };
@@ -2992,7 +3128,10 @@ export class TaskflowEngine {
           }
           const noteAny = notes[idx] as any;
           const isNoteAuthor = noteAny.author_actor_id
-            ? (noteAny.author_actor_id === senderPersonId || noteAny.author_actor_id === params.sender_external_id)
+            ? (
+                (noteAny.author_actor_type === 'board_person' && noteAny.author_actor_id === senderPersonId && !isExternalSender) ||
+                (noteAny.author_actor_type === 'external_contact' && noteAny.author_actor_id === params.sender_external_id)
+              )
             : false;
           if (!isNoteAuthor) {
             return { success: false, error: `Permission denied: only the note author, organizer, or manager can remove note #${updates.remove_note}.` };
@@ -3105,7 +3244,7 @@ export class TaskflowEngine {
         if (!isMgr && !isAssignee) {
           return { success: false, error: 'Permission denied: only the organizer or a manager can add external participants.' };
         }
-        if (!task.scheduled_at) {
+        if (!task.scheduled_at && !updates.scheduled_at) {
           return { success: false, error: 'Meeting must have scheduled_at set before inviting an external participant.' };
         }
 
@@ -3134,7 +3273,7 @@ export class TaskflowEngine {
         }
 
         // Create grant (upsert)
-        const occurrenceScheduledAt = task.scheduled_at;
+        const occurrenceScheduledAt = updates.scheduled_at ?? task.scheduled_at;
         const existingGrant = this.db.prepare(
           `SELECT invite_status FROM meeting_external_participants
            WHERE board_id = ? AND meeting_task_id = ? AND occurrence_scheduled_at = ? AND external_id = ?`
@@ -3142,11 +3281,13 @@ export class TaskflowEngine {
 
         if (existingGrant) {
           if (existingGrant.invite_status === 'revoked' || existingGrant.invite_status === 'expired') {
+            const freshExpiry = new Date(new Date(occurrenceScheduledAt).getTime() + ACCESS_WINDOW_MS).toISOString();
             this.db.prepare(
               `UPDATE meeting_external_participants
-               SET invite_status = 'invited', revoked_at = NULL, updated_at = ?
+               SET invite_status = 'invited', revoked_at = NULL, accepted_at = NULL,
+                   invited_at = ?, access_expires_at = ?, updated_at = ?
                WHERE board_id = ? AND meeting_task_id = ? AND occurrence_scheduled_at = ? AND external_id = ?`
-            ).run(now, this.boardId, task.id, occurrenceScheduledAt, externalId);
+            ).run(now, freshExpiry, now, this.boardId, task.id, occurrenceScheduledAt, externalId);
           }
           // else already invited/accepted — no-op
         } else {
@@ -3168,7 +3309,7 @@ export class TaskflowEngine {
           target_kind: 'dm',
           target_external_id: externalId,
           target_chat_jid: targetJid,
-          message: buildExternalInviteMessage(task.id, task.title, task.scheduled_at, organizerName),
+          message: buildExternalInviteMessage(task.id, task.title, updates.scheduled_at ?? task.scheduled_at, organizerName),
         } as any);
 
         // Audit trail
@@ -3197,19 +3338,30 @@ export class TaskflowEngine {
           externalId = row?.external_id;
         }
         if (!externalId && name) {
-          const row = this.db.prepare(`SELECT external_id FROM external_contacts WHERE LOWER(display_name) = LOWER(?)`).get(name) as { external_id: string } | undefined;
+          const row = this.db.prepare(
+            `SELECT ec.external_id FROM external_contacts ec
+             JOIN meeting_external_participants mep ON mep.external_id = ec.external_id
+             WHERE LOWER(ec.display_name) = LOWER(?)
+               AND mep.board_id = ? AND mep.meeting_task_id = ?
+               AND mep.invite_status IN ('pending', 'invited', 'accepted')
+             LIMIT 1`
+          ).get(name, this.boardId, task.id) as { external_id: string } | undefined;
           externalId = row?.external_id;
         }
         if (!externalId) {
           return { success: false, error: 'External participant not found.' };
         }
 
-        this.db.prepare(
+        const revokeResult = this.db.prepare(
           `UPDATE meeting_external_participants
            SET invite_status = 'revoked', revoked_at = ?, updated_at = ?
            WHERE board_id = ? AND meeting_task_id = ? AND external_id = ?
              AND invite_status IN ('pending', 'invited', 'accepted')`
         ).run(now, now, this.boardId, task.id, externalId);
+
+        if (revokeResult.changes === 0) {
+          return { success: false, error: 'This external contact is not an active participant of this meeting.' };
+        }
 
         this.db.prepare(
           `INSERT INTO task_history (board_id, task_id, action, by, at, details)
@@ -3241,11 +3393,18 @@ export class TaskflowEngine {
           return { success: false, error: 'External contact not found.' };
         }
 
-        this.db.prepare(
+        // Reset grant with current schedule and fresh expiry window
+        const reinviteExpiry = new Date(new Date(task.scheduled_at).getTime() + ACCESS_WINDOW_MS).toISOString();
+        const reinviteResult = this.db.prepare(
           `UPDATE meeting_external_participants
-           SET invite_status = 'invited', revoked_at = NULL, invited_at = ?, updated_at = ?
-           WHERE board_id = ? AND meeting_task_id = ? AND external_id = ?`
-        ).run(now, now, this.boardId, task.id, externalId);
+           SET invite_status = 'invited', revoked_at = NULL, accepted_at = NULL,
+               access_expires_at = ?, invited_at = ?, updated_at = ?
+           WHERE board_id = ? AND meeting_task_id = ? AND occurrence_scheduled_at = ? AND external_id = ?
+             AND invite_status IN ('revoked', 'expired')`
+        ).run(reinviteExpiry, now, now, this.boardId, task.id, task.scheduled_at, externalId);
+        if (reinviteResult.changes === 0) {
+          return { success: false, error: 'No revoked or expired grant found for this participant on the current occurrence.' };
+        }
 
         // Build invite DM (same as add_external_participant)
         const contact = this.db.prepare(`SELECT display_name, phone, direct_chat_jid FROM external_contacts WHERE external_id = ?`).get(externalId) as any;
@@ -3281,6 +3440,13 @@ export class TaskflowEngine {
             .run(updates.scheduled_at, taskBoardId, task.id);
         }
         changes.push(`Meeting rescheduled to ${updates.scheduled_at}`);
+
+        // Notify all active meeting participants (internal + external) of the reschedule
+        const rescheduleMsg = `📅 *Reunião reagendada*\n\n*${task.id}* — ${task.title}\n*Novo horário:* ${updates.scheduled_at}\n*Por:* ${sender?.name ?? params.sender_name}`;
+        for (const recipient of this.meetingNotificationRecipients(task)) {
+          if (recipient.target_person_id && senderPersonId && recipient.target_person_id === senderPersonId) continue;
+          notifications.push({ ...recipient, message: rescheduleMsg });
+        }
 
         // Cascade to active external participant grants: update occurrence key + expiry in one statement
         const oldScheduledAt = task.scheduled_at;
@@ -4598,13 +4764,15 @@ export class TaskflowEngine {
             : this.db
                 .prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id IN (${participantIds.map(() => '?').join(',')})`)
                 .all(this.boardId, ...participantIds) as Array<{ person_id: string; name: string; role: string }>;
+          const epNow = new Date().toISOString();
           const externalParticipants = this.db.prepare(
             `SELECT ec.external_id, ec.display_name, mep.invite_status
              FROM meeting_external_participants mep
              JOIN external_contacts ec ON ec.external_id = mep.external_id
              WHERE mep.board_id = ? AND mep.meeting_task_id = ?
-               AND mep.invite_status NOT IN ('revoked', 'expired')`
-          ).all(this.boardId, task.id) as Array<{
+               AND mep.invite_status NOT IN ('revoked', 'expired')
+               AND (mep.access_expires_at IS NULL OR mep.access_expires_at >= ?)`
+          ).all(this.boardId, task.id, epNow) as Array<{
             external_id: string;
             display_name: string;
             invite_status: string;
@@ -5101,32 +5269,18 @@ export class TaskflowEngine {
           /* Record history (on the archive entry for reference) */
           this.recordHistory(task.id, 'cancelled', params.sender_name);
 
-          /* Notify meeting participants on cancellation (single batch query) */
+          /* Notify meeting participants on cancellation (internal + external) */
           const cancelNotifications: AdminResult['notifications'] = [];
-          if (task.type === 'meeting' && task.participants) {
-            const participants: string[] = JSON.parse(task.participants ?? '[]');
-            const allRecipients = task.assignee && !participants.includes(task.assignee)
-              ? [...participants, task.assignee]
-              : [...participants];
-            /* Exclude the sender from cancellation notifications (they already know) */
+          if (task.type === 'meeting') {
             const senderPerson = this.resolvePerson(params.sender_name);
             const senderPersonId = senderPerson?.person_id ?? null;
-            const recipientsExcludingSender = senderPersonId
-              ? allRecipients.filter((pid) => pid !== senderPersonId)
-              : allRecipients;
-            if (recipientsExcludingSender.length > 0) {
-              const placeholders = recipientsExcludingSender.map(() => '?').join(',');
-              const rows = this.db.prepare(
-                `SELECT person_id, notification_group_jid FROM board_people WHERE board_id = ? AND person_id IN (${placeholders})`
-              ).all(this.boardId, ...recipientsExcludingSender) as Array<{ person_id: string; notification_group_jid: string | null }>;
-              const jidMap = new Map(rows.map(r => [r.person_id, r.notification_group_jid]));
-              for (const pid of recipientsExcludingSender) {
-                cancelNotifications.push({
-                  target_person_id: pid,
-                  notification_group_jid: jidMap.get(pid) ?? null,
-                  message: `📅 Reunião ${this.displayId(task)} "${task.title}" foi cancelada.`,
-                });
-              }
+            const cancelMessage = `📅 Reunião ${this.displayId(task)} "${task.title}" foi cancelada.`;
+            for (const recipient of this.meetingNotificationRecipients(task)) {
+              if (senderPersonId && recipient.target_person_id === senderPersonId) continue;
+              cancelNotifications.push({
+                ...recipient,
+                message: cancelMessage,
+              });
             }
           }
 
@@ -5509,8 +5663,7 @@ export class TaskflowEngine {
         completedToday = this.db
           .prepare(
             `SELECT DISTINCT task_id FROM task_history
-             WHERE board_id = ? AND action = 'moved'
-               AND details LIKE '%"to_column":"done"%'
+             WHERE board_id = ? AND ${this.completionHistoryWhere()}
                AND at LIKE ?
              ORDER BY task_id`,
           )
@@ -5598,14 +5751,12 @@ export class TaskflowEngine {
           .prepare(
             `SELECT th.task_id, t.assignee FROM task_history th
              LEFT JOIN tasks t ON t.board_id = th.board_id AND t.id = th.task_id
-             WHERE th.board_id = ? AND th.action = 'moved'
-               AND th.details LIKE '%"to_column":"done"%'
+             WHERE th.board_id = ? AND ${this.completionHistoryWhere('th')}
                AND th.at >= ?
              UNION
              SELECT th.task_id, a.assignee FROM task_history th
              LEFT JOIN archive a ON a.board_id = th.board_id AND a.task_id = th.task_id
-             WHERE th.board_id = ? AND th.action = 'moved'
-               AND th.details LIKE '%"to_column":"done"%'
+             WHERE th.board_id = ? AND ${this.completionHistoryWhere('th')}
                AND th.at >= ?
                AND th.task_id NOT IN (SELECT id FROM tasks WHERE board_id = ?)`,
           )
@@ -5661,8 +5812,7 @@ export class TaskflowEngine {
         const completedWeekRow = this.db
           .prepare(
             `SELECT COUNT(DISTINCT task_id) AS cnt FROM task_history
-             WHERE board_id = ? AND action = 'moved'
-               AND details LIKE '%"to_column":"done"%'
+             WHERE board_id = ? AND ${this.completionHistoryWhere()}
                AND at >= ?`,
           )
           .get(this.boardId, ws) as { cnt: number };
@@ -5679,8 +5829,7 @@ export class TaskflowEngine {
         const completedLastWeekRow = this.db
           .prepare(
             `SELECT COUNT(DISTINCT task_id) AS cnt FROM task_history
-             WHERE board_id = ? AND action = 'moved'
-               AND details LIKE '%"to_column":"done"%'
+             WHERE board_id = ? AND ${this.completionHistoryWhere()}
                AND at >= ? AND at < ?`,
           )
           .get(this.boardId, lws, ws) as { cnt: number };
