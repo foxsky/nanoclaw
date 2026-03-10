@@ -65,7 +65,7 @@ server.tool(
   {
     text: z.string().describe('The message text to send'),
     sender: z.string().optional().describe('Optional role/identity label to use as the visible sender name. Channels that do not support separate bot identities will fall back to a text prefix.'),
-    target_chat_jid: z.string().optional().describe('(Main and TaskFlow groups only) Send to a different group by JID. Use for cross-group notifications. The target group must be registered.'),
+    target_chat_jid: z.string().optional().describe('(Main and TaskFlow groups only) Send to a different group or DM by JID. Use for cross-group notifications or external participant DMs. Groups must be registered; DMs must be known external contacts.'),
   },
   async (args) => {
     const isCrossGroupAttempt =
@@ -81,12 +81,16 @@ server.tool(
         isError: true,
       };
     }
-    if (args.target_chat_jid && !args.target_chat_jid.endsWith('@g.us')) {
+    if (
+      args.target_chat_jid &&
+      !args.target_chat_jid.endsWith('@g.us') &&
+      !args.target_chat_jid.endsWith('@s.whatsapp.net')
+    ) {
       return {
         content: [
           {
             type: 'text' as const,
-            text: 'target_chat_jid must be a WhatsApp group JID ending in "@g.us".',
+            text: 'target_chat_jid must be a WhatsApp JID ending in "@g.us" or "@s.whatsapp.net".',
           },
         ],
         isError: true,
