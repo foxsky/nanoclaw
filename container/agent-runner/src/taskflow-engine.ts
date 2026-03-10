@@ -1166,6 +1166,40 @@ export class TaskflowEngine {
     return num;
   }
 
+  private syncCounterPastExistingIds(prefix: string, minimumNextNumber = 1): number {
+    const maxRow = this.db.prepare(
+      `SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) AS m FROM tasks WHERE board_id = ? AND id GLOB ? AND id NOT GLOB ?`
+    ).get(this.boardId, `${prefix}[0-9]*`, `${prefix}*.*`) as any;
+    const nextNumber = Math.max((maxRow?.m ?? 0) + 1, minimumNextNumber);
+    const result = this.db
+      .prepare(
+        `UPDATE board_id_counters
+            SET next_number = CASE WHEN next_number < ? THEN ? ELSE next_number END
+          WHERE board_id = ? AND prefix = ?`,
+      )
+      .run(nextNumber, nextNumber, this.boardId, prefix);
+    if (result.changes === 0) {
+      this.db
+        .prepare(`INSERT INTO board_id_counters (board_id, prefix, next_number) VALUES (?, ?, ?)`)
+        .run(this.boardId, prefix, nextNumber);
+    }
+    return nextNumber;
+  }
+
+  private allocateTaskId(prefix: string): string {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const num = this.getNextNumberForPrefix(prefix);
+      const taskId = `${prefix}${num}`;
+      const exists = this.db
+        .prepare(`SELECT 1 FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(this.boardId, taskId) as { 1: number } | undefined;
+      if (!exists) return taskId;
+      this.syncCounterPastExistingIds(prefix, num + 1);
+    }
+
+    throw new Error(`Could not allocate a unique ${prefix} task ID for board ${this.boardId}.`);
+  }
+
   /** Insert a row into task_history. */
   recordHistory(
     taskId: string,
@@ -1644,8 +1678,7 @@ export class TaskflowEngine {
             : params.type === 'meeting'
               ? 'M'
               : 'T';
-      const num = this.getNextNumberForPrefix(prefix);
-      const taskId = `${prefix}${num}`;
+      const taskId = this.allocateTaskId(prefix);
 
       /* --- Auto-set organizer for meetings --- */
       if (params.type === 'meeting' && !assigneePersonId) {

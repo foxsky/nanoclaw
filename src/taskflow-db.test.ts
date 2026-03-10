@@ -31,9 +31,9 @@ describe('initTaskflowDb', () => {
 
   it('creates tasks with requires_close_approval', () => {
     const db = initTaskflowDb(':memory:');
-    const columns = db
-      .prepare(`PRAGMA table_info(tasks)`)
-      .all() as Array<{ name: string }>;
+    const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{
+      name: string;
+    }>;
 
     expect(columns.map((column) => column.name)).toContain(
       'requires_close_approval',

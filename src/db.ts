@@ -382,20 +382,23 @@ export function getMessagesSince(
   chatJid: string,
   sinceTimestamp: string,
   botPrefix: string,
+  extraBotPrefix?: string,
 ): NewMessage[] {
   // Filter bot messages using both the is_bot_message flag AND the content
   // prefix as a backstop for messages written before the migration ran.
+  const hasExtra = extraBotPrefix && extraBotPrefix !== botPrefix;
   const sql = `
     SELECT id, chat_jid, sender, sender_name, content, timestamp
     FROM messages
     WHERE chat_jid = ? AND timestamp > ?
       AND is_bot_message = 0 AND content NOT LIKE ?
+      ${hasExtra ? 'AND content NOT LIKE ?' : ''}
       AND content != '' AND content IS NOT NULL
     ORDER BY timestamp
   `;
-  return db
-    .prepare(sql)
-    .all(chatJid, sinceTimestamp, `${botPrefix}:%`) as NewMessage[];
+  const params: any[] = [chatJid, sinceTimestamp, `${botPrefix}:%`];
+  if (hasExtra) params.push(`${extraBotPrefix}:%`);
+  return db.prepare(sql).all(...params) as NewMessage[];
 }
 
 export function createTask(

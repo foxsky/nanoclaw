@@ -1035,6 +1035,31 @@ describe('TaskflowEngine', () => {
         .get(BOARD_ID) as { next_number: number };
       expect(counter.next_number).toBe(6);
     });
+
+    it('self-heals a stale task counter when the proposed ID already exists', () => {
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, column, created_at, updated_at)
+         VALUES ('T4', '${BOARD_ID}', 'simple', 'Existing T4', 'inbox', '${now}', '${now}')`,
+      );
+      db.prepare(`UPDATE board_id_counters SET next_number = 4 WHERE board_id = ? AND prefix = 'T'`)
+        .run(BOARD_ID);
+
+      const result = engine.create({
+        board_id: BOARD_ID,
+        type: 'inbox',
+        title: 'Counter repair',
+        sender_name: 'Alexandre',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.task_id).toBe('T5');
+
+      const counter = db
+        .prepare(`SELECT next_number FROM board_id_counters WHERE board_id = ? AND prefix = 'T'`)
+        .get(BOARD_ID) as { next_number: number };
+      expect(counter.next_number).toBe(6);
+    });
   });
 
   /* ---------------------------------------------------------------- */

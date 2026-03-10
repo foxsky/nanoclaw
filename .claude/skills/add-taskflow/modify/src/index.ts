@@ -225,6 +225,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     chatJid,
     sinceTimestamp,
     ASSISTANT_NAME,
+    getGroupSenderName(group.trigger),
   );
 
   // Check for pending external DM prompts (trigger-bypassed path)
@@ -546,6 +547,7 @@ async function startMessageLoop(): Promise<void> {
             chatJid,
             lastAgentTimestamp[chatJid] || '',
             ASSISTANT_NAME,
+            getGroupSenderName(group.trigger),
           );
 
           // If allPending is empty, the agent has already processed all
@@ -678,7 +680,7 @@ async function startMessageLoop(): Promise<void> {
 function recoverPendingMessages(): void {
   for (const [chatJid, group] of Object.entries(registeredGroups)) {
     const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
-    const pending = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
+    const pending = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME, getGroupSenderName(group.trigger));
     if (pending.length > 0) {
       logger.info(
         { group: group.name, pendingCount: pending.length },

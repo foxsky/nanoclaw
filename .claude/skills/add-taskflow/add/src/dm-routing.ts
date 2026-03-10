@@ -42,6 +42,14 @@ export function resolveExternalDm(
   db: Database.Database,
   dmJid: string,
 ): DmRouteResult | null {
+  // Guard: if external_contacts table doesn't exist yet, return null gracefully
+  const tableCheck = db
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='external_contacts'`,
+    )
+    .get();
+  if (!tableCheck) return null;
+
   // 1. Resolve external contact by direct_chat_jid
   let contact = db
     .prepare(
