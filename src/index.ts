@@ -586,14 +586,18 @@ async function startMessageLoop(): Promise<void> {
             string,
             ReturnType<typeof resolveExternalDm>
           >();
-          let hasStagedDm = false;
+          let safeDmCursor = lastDmTimestamp;
+          let hitStagedDm = false;
           for (const msg of dmMessages) {
             let route = routeCache.get(msg.chat_jid);
             if (route === undefined) {
               route = resolveExternalDm(taskflowDb, msg.chat_jid);
               routeCache.set(msg.chat_jid, route);
             }
-            if (!route) continue;
+            if (!route) {
+              if (!hitStagedDm) safeDmCursor = msg.timestamp;
+              continue;
+            }
 
             if (route.needsDisambiguation) {
               // More than one active grant: send disambiguation prompt via DM
@@ -607,12 +611,14 @@ async function startMessageLoop(): Promise<void> {
                   `Você participa de várias reuniões (${meetingList}). Inclua o ID da reunião no comando, ex: "pauta M1".`,
                 );
               }
+              if (!hitStagedDm) safeDmCursor = msg.timestamp;
               continue;
             }
 
             const groupJid = route.groupJid;
             const group = registeredGroups[groupJid];
             if (!group) {
+              if (!hitStagedDm) safeDmCursor = msg.timestamp;
               logger.warn(
                 { dmJid: msg.chat_jid, groupJid },
                 'DM route target group not registered',
@@ -626,6 +632,7 @@ async function startMessageLoop(): Promise<void> {
 
             // Try piping to active container first.
             if (queue.sendMessage(groupJid, externalContext)) {
+              if (!hitStagedDm) safeDmCursor = msg.timestamp;
               logger.info(
                 { dmJid: msg.chat_jid, groupJid },
                 'DM piped to active container',
@@ -638,7 +645,7 @@ async function startMessageLoop(): Promise<void> {
                 prompt: externalContext,
               });
               pendingExternalDmPrompts.set(groupJid, staged);
-              hasStagedDm = true;
+              hitStagedDm = true;
               if (msg.timestamp > stagedDmMaxTimestamp) {
                 stagedDmMaxTimestamp = msg.timestamp;
               }
@@ -649,11 +656,10 @@ async function startMessageLoop(): Promise<void> {
               );
             }
           }
-          // Only advance DM cursor if no messages were staged in-memory.
-          // Staged DMs live in pendingExternalDmPrompts (volatile); if the
-          // process restarts before they're processed, they'd be lost.
-          if (!hasStagedDm) {
-            lastDmTimestamp = dmMessages[dmMessages.length - 1].timestamp;
+          // Advance DM cursor to the last safely-processed message.
+          // Don't advance past staged DMs (in-memory only — lost on restart).
+          if (safeDmCursor !== lastDmTimestamp) {
+            lastDmTimestamp = safeDmCursor;
             saveState();
           }
         }

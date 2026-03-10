@@ -54,7 +54,7 @@ export function resolveExternalDm(
 
   // 2. Fallback: extract phone from JID and match
   if (!contact) {
-    const phone = dmJid.replace(/@s\.whatsapp\.net$/, '');
+    const phone = dmJid.replace(/@s\.whatsapp\.net$/, '').replace(/:\d+$/, '');
     contact = db
       .prepare(
         `SELECT external_id, display_name, phone FROM external_contacts
