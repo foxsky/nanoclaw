@@ -564,7 +564,10 @@ async function startMessageLoop(): Promise<void> {
         const dmMessages = getDmMessages(lastDmTimestamp, ASSISTANT_NAME);
         if (dmMessages.length > 0) {
           // Cache route lookups by JID to avoid redundant DB queries for same sender
-          const routeCache = new Map<string, ReturnType<typeof resolveExternalDm>>();
+          const routeCache = new Map<
+            string,
+            ReturnType<typeof resolveExternalDm>
+          >();
           for (const msg of dmMessages) {
             let route = routeCache.get(msg.chat_jid);
             if (route === undefined) {
