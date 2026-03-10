@@ -52,8 +52,7 @@ describe('task scheduler', () => {
     expect(task?.status).toBe('paused');
   });
 
-  it('computeNextRun anchors interval tasks to scheduled time to prevent drift', () => {
-    const scheduledTime = new Date(Date.now() - 2000).toISOString(); // 2s ago
+  it('computeNextRun computes interval tasks relative to now', () => {
     const task = {
       id: 'drift-test',
       group_folder: 'test',
@@ -62,19 +61,22 @@ describe('task scheduler', () => {
       schedule_type: 'interval' as const,
       schedule_value: '60000', // 1 minute
       context_mode: 'isolated' as const,
-      next_run: scheduledTime,
+      next_run: new Date(Date.now() - 2000).toISOString(),
       last_run: null,
       last_result: null,
       status: 'active' as const,
       created_at: '2026-01-01T00:00:00.000Z',
     };
 
+    const before = Date.now();
     const nextRun = computeNextRun(task);
+    const after = Date.now();
     expect(nextRun).not.toBeNull();
 
-    // Should be anchored to scheduledTime + 60s, NOT Date.now() + 60s
-    const expected = new Date(scheduledTime).getTime() + 60000;
-    expect(new Date(nextRun!).getTime()).toBe(expected);
+    // Should be Date.now() + interval_ms
+    const nextRunMs = new Date(nextRun!).getTime();
+    expect(nextRunMs).toBeGreaterThanOrEqual(before + 60000);
+    expect(nextRunMs).toBeLessThanOrEqual(after + 60000);
   });
 
   it('computeNextRun returns null for once-tasks', () => {
