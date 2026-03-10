@@ -2079,7 +2079,7 @@ export class TaskflowEngine {
              SET invite_status = 'expired', updated_at = ?
              WHERE board_id = ? AND meeting_task_id = ?
                AND occurrence_scheduled_at = ?
-               AND invite_status IN ('invited', 'accepted')`,
+               AND invite_status IN ('pending', 'invited', 'accepted')`,
           )
           .run(now, this.taskBoardId(task), task.id, task.scheduled_at);
       }
@@ -3171,6 +3171,18 @@ export class TaskflowEngine {
         const note = notes.find((n: any) => n.id === updates.set_note_status!.id);
         if (!note) {
           return { success: false, error: `Note #${updates.set_note_status.id} not found.` };
+        }
+        // External participants can only change status of their own notes
+        if (isExternalSender && !isMgr && !isAssignee) {
+          const isNoteAuthor = note.author_actor_id
+            ? (
+                (note.author_actor_type === 'board_person' && note.author_actor_id === senderPersonId && !isExternalSender) ||
+                (note.author_actor_type === 'external_contact' && note.author_actor_id === params.sender_external_id)
+              )
+            : false;
+          if (!isNoteAuthor) {
+            return { success: false, error: `Permission denied: only the note author, organizer, or manager can change status of note #${updates.set_note_status.id}.` };
+          }
         }
         note.status = updates.set_note_status.status;
         if (updates.set_note_status.status === 'open') {
