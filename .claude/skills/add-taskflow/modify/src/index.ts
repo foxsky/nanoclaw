@@ -92,7 +92,10 @@ let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
-const pendingExternalDmPrompts = new Map<string, Array<{ timestamp: string; prompt: string }>>();
+const pendingExternalDmPrompts = new Map<
+  string,
+  Array<{ timestamp: string; prompt: string }>
+>();
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
@@ -224,7 +227,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Check for pending external DM prompts (trigger-bypassed path)
   const pendingDms = pendingExternalDmPrompts.get(chatJid);
   if (pendingDms && pendingDms.length > 0) {
-    const dmPrompt = pendingDms.map(p => p.prompt).join('\n\n');
+    const dmPrompt = pendingDms.map((p) => p.prompt).join('\n\n');
     pendingExternalDmPrompts.delete(chatJid);
 
     // Advance cursor
@@ -242,10 +245,17 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
     const output = await runAgent(group, dmPrompt, chatJid, async (result) => {
       if (result.result) {
-        const raw = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
         const text = stripInternalTags(raw);
         if (text && channel) {
-          await channel.sendMessage(chatJid, text, getGroupSenderName(group.trigger));
+          await channel.sendMessage(
+            chatJid,
+            text,
+            getGroupSenderName(group.trigger),
+          );
         }
       }
     });
@@ -547,7 +557,9 @@ async function startMessageLoop(): Promise<void> {
 
             if (route.needsDisambiguation) {
               // More than one active grant: send disambiguation prompt via DM
-              const meetingList = route.grants.map(g => g.meetingTaskId).join(', ');
+              const meetingList = route.grants
+                .map((g) => g.meetingTaskId)
+                .join(', ');
               const channel = findChannel(channels, msg.chat_jid);
               if (channel) {
                 channel.sendMessage(
@@ -561,24 +573,36 @@ async function startMessageLoop(): Promise<void> {
             const groupJid = route.groupJid;
             const group = registeredGroups[groupJid];
             if (!group) {
-              logger.warn({ dmJid: msg.chat_jid, groupJid }, 'DM route target group not registered');
+              logger.warn(
+                { dmJid: msg.chat_jid, groupJid },
+                'DM route target group not registered',
+              );
               continue;
             }
 
             // Format as external participant message with metadata
             const formatted = formatMessages([msg]);
-            const externalContext = `[External participant: ${route.displayName} (${route.externalId}), active grants: ${route.grants.map(g => g.meetingTaskId).join(', ')}]\n${formatted}`;
+            const externalContext = `[External participant: ${route.displayName} (${route.externalId}), active grants: ${route.grants.map((g) => g.meetingTaskId).join(', ')}]\n${formatted}`;
 
             // Try piping to active container first.
             if (queue.sendMessage(groupJid, externalContext)) {
-              logger.info({ dmJid: msg.chat_jid, groupJid }, 'DM piped to active container');
+              logger.info(
+                { dmJid: msg.chat_jid, groupJid },
+                'DM piped to active container',
+              );
             } else {
               // No active container — stage prompt and enqueue for trigger-bypassed processing
               const staged = pendingExternalDmPrompts.get(groupJid) ?? [];
-              staged.push({ timestamp: msg.timestamp, prompt: externalContext });
+              staged.push({
+                timestamp: msg.timestamp,
+                prompt: externalContext,
+              });
               pendingExternalDmPrompts.set(groupJid, staged);
               queue.enqueueMessageCheck(groupJid);
-              logger.info({ dmJid: msg.chat_jid, groupJid }, 'DM staged for trigger-bypassed processing and enqueued');
+              logger.info(
+                { dmJid: msg.chat_jid, groupJid },
+                'DM staged for trigger-bypassed processing and enqueued',
+              );
             }
           }
         }
