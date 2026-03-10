@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import Database from 'better-sqlite3';
-import { TaskflowEngine } from '../add/container/agent-runner/src/taskflow-engine.js';
+import { TaskflowEngine, normalizePhone } from '../add/container/agent-runner/src/taskflow-engine.js';
 
 const BOARD_ID = 'board-test-001';
 const skillDir = path.resolve(__dirname, '..');
@@ -5034,6 +5034,20 @@ describe('meeting notes', () => {
         .prepare(`SELECT waiting_for FROM tasks WHERE board_id = ? AND id = ?`)
         .get(BOARD_ID, taskId) as { waiting_for: string | null };
       expect(afterConclude.waiting_for).toBeNull();
+    });
+  });
+
+  describe('normalizePhone', () => {
+    it('strips non-digit characters', () => {
+      expect(normalizePhone('+55 (85) 99999-1234')).toBe('5585999991234');
+    });
+
+    it('passes through already-clean phone', () => {
+      expect(normalizePhone('5585999991234')).toBe('5585999991234');
+    });
+
+    it('strips leading +', () => {
+      expect(normalizePhone('+5585999991234')).toBe('5585999991234');
     });
   });
 });

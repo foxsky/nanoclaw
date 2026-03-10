@@ -385,6 +385,14 @@ function advanceDateTimeByRecurrence(
 }
 
 /* ------------------------------------------------------------------ */
+/*  Utility Functions                                                  */
+/* ------------------------------------------------------------------ */
+
+export function normalizePhone(phone: string): string {
+  return phone.replace(/\D/g, '');
+}
+
+/* ------------------------------------------------------------------ */
 /*  TaskflowEngine                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -799,14 +807,14 @@ export class TaskflowEngine {
   /* ---------------------------------------------------------------- */
 
   /** Resolve a human-readable name to a person_id + canonical name. */
-  resolvePerson(name: string): { person_id: string; name: string } | null {
+  resolvePerson(name: string, boardId = this.boardId): { person_id: string; name: string } | null {
     // 1. Exact match by name (case-insensitive)
     const exact = this.db
       .prepare(
         `SELECT person_id, name FROM board_people
          WHERE board_id = ? AND LOWER(name) = LOWER(?)`,
       )
-      .get(this.boardId, name) as
+      .get(boardId, name) as
       | { person_id: string; name: string }
       | undefined;
     if (exact) return exact;
@@ -817,7 +825,7 @@ export class TaskflowEngine {
         `SELECT person_id, name FROM board_people
          WHERE board_id = ? AND LOWER(person_id) = LOWER(?)`,
       )
-      .get(this.boardId, name) as
+      .get(boardId, name) as
       | { person_id: string; name: string }
       | undefined;
     if (byId) return byId;
@@ -829,7 +837,7 @@ export class TaskflowEngine {
         .prepare(
           `SELECT person_id, name FROM board_people WHERE board_id = ?`,
         )
-        .all(this.boardId) as Array<{ person_id: string; name: string }>;
+        .all(boardId) as Array<{ person_id: string; name: string }>;
       const matches = all.filter(
         (p) => p.name.split(/\s+/)[0].toLowerCase() === firstName.toLowerCase(),
       );
@@ -1077,6 +1085,7 @@ export class TaskflowEngine {
     assigneePersonId: string | null,
     modifierPersonId: string,
     taskId?: string,
+    boardId = this.boardId,
   ): { target_person_id: string; notification_group_jid: string | null } | null {
     // Someone else modified → notify assignee
     if (assigneePersonId && assigneePersonId !== modifierPersonId) {
@@ -1085,7 +1094,7 @@ export class TaskflowEngine {
           `SELECT notification_group_jid FROM board_people
            WHERE board_id = ? AND person_id = ?`,
         )
-        .get(this.boardId, assigneePersonId) as
+        .get(boardId, assigneePersonId) as
         | { notification_group_jid: string | null }
         | undefined;
       if (!person) return null;
@@ -1102,16 +1111,16 @@ export class TaskflowEngine {
            WHERE board_id = ? AND task_id = ? AND action = 'created'
            ORDER BY at ASC LIMIT 1`,
         )
-        .get(this.boardId, taskId) as { by: string } | undefined;
+        .get(boardId, taskId) as { by: string } | undefined;
       if (!creator) return null;
-      const creatorPerson = this.resolvePerson(creator.by);
+      const creatorPerson = this.resolvePerson(creator.by, boardId);
       if (!creatorPerson || creatorPerson.person_id === modifierPersonId) return null;
       const personRow = this.db
         .prepare(
           `SELECT notification_group_jid FROM board_people
            WHERE board_id = ? AND person_id = ?`,
         )
-        .get(this.boardId, creatorPerson.person_id) as
+        .get(boardId, creatorPerson.person_id) as
         | { notification_group_jid: string | null }
         | undefined;
       if (!personRow) return null;
@@ -1124,10 +1133,10 @@ export class TaskflowEngine {
   }
 
   /** Resolve display name for a person_id. */
-  private personDisplayName(personId: string): string {
+  private personDisplayName(personId: string, boardId = this.boardId): string {
     const row = this.db
       .prepare(`SELECT name FROM board_people WHERE board_id = ? AND person_id = ?`)
-      .get(this.boardId, personId) as { name: string } | undefined;
+      .get(boardId, personId) as { name: string } | undefined;
     return row?.name ?? personId;
   }
 
@@ -1184,8 +1193,9 @@ export class TaskflowEngine {
     task: { id: string; title: string; assignee: string },
     action: MoveParams['action'],
     modifierPersonId: string,
+    taskBoardId = this.boardId,
   ): { target_person_id: string; notification_group_jid: string | null; message: string } | null {
-    const target = this.resolveNotifTarget(task.assignee, modifierPersonId, task.id);
+    const target = this.resolveNotifTarget(task.assignee, modifierPersonId, task.id, taskBoardId);
     if (!target) return null;
     const modName = this.personDisplayName(modifierPersonId);
     const desc = TaskflowEngine.moveActionLabels[action] ?? action;
@@ -1219,8 +1229,9 @@ export class TaskflowEngine {
     task: { id: string; title: string; assignee: string },
     changes: string[],
     modifierPersonId: string,
+    taskBoardId = this.boardId,
   ): { target_person_id: string; notification_group_jid: string | null; message: string } | null {
-    const target = this.resolveNotifTarget(task.assignee, modifierPersonId, task.id);
+    const target = this.resolveNotifTarget(task.assignee, modifierPersonId, task.id, taskBoardId);
     if (!target) return null;
     const modName = this.personDisplayName(modifierPersonId);
     const changeList = changes.map(c => `• ${c}`).join('\n');
@@ -2242,6 +2253,7 @@ export class TaskflowEngine {
           task,
           params.action,
           senderPersonId,
+          taskBoardId,
         );
         if (notif) notifications.push(notif);
       }
@@ -3127,6 +3139,7 @@ export class TaskflowEngine {
           { id: task.id, title: task.title, assignee: task.assignee },
           changes,
           senderPersonId,
+          taskBoardId,
         );
         if (notif) notifications.push(notif);
       }
