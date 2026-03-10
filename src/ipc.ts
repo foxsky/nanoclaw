@@ -356,6 +356,33 @@ async function loadIpcPlugins(): Promise<void> {
   }
 }
 
+// --- IPC message authorization ---
+
+/** Determine if an IPC message from sourceGroup is authorized to target chatJid. */
+export function isIpcMessageAuthorized(opts: {
+  chatJid: string;
+  sourceGroup: string;
+  isMain: boolean;
+  isTaskflow: boolean;
+  isKnownExternalDm: boolean;
+  registeredGroups: Record<string, RegisteredGroup>;
+}): 'group' | 'dm' | false {
+  const targetGroup = opts.registeredGroups[opts.chatJid];
+  if (
+    targetGroup &&
+    (opts.isMain ||
+      targetGroup.folder === opts.sourceGroup ||
+      (opts.isTaskflow && targetGroup.taskflowManaged))
+  ) {
+    return 'group';
+  }
+  const isDmTarget = !targetGroup && opts.chatJid.endsWith('@s.whatsapp.net');
+  if (isDmTarget && opts.isKnownExternalDm && (opts.isMain || opts.isTaskflow)) {
+    return 'dm';
+  }
+  return false;
+}
+
 // --- IPC watcher ---
 
 let ipcWatcherRunning = false;
@@ -409,17 +436,17 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               if (data.type === 'message' && data.chatJid && data.text) {
-                // Authorization: verify this group can send to this chatJid
-                // - Main can send to any registered group
-                // - TaskFlow groups can send to other TaskFlow groups (cross-group notifications)
-                // - Other groups can only send to themselves
-                const targetGroup = registeredGroups[data.chatJid];
-                if (
-                  targetGroup &&
-                  (isMain ||
-                    targetGroup.folder === sourceGroup ||
-                    (isTaskflow && targetGroup.taskflowManaged))
-                ) {
+                const authResult = isIpcMessageAuthorized({
+                  chatJid: data.chatJid,
+                  sourceGroup,
+                  isMain,
+                  isTaskflow,
+                  isKnownExternalDm: false, // Will be wired to dm-routing in a later task
+                  registeredGroups,
+                });
+
+                if (authResult === 'group') {
+                  const targetGroup = registeredGroups[data.chatJid];
                   const sender =
                     typeof data.sender === 'string'
                       ? data.sender
@@ -428,6 +455,14 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
                     'IPC message sent',
+                  );
+                } else if (authResult === 'dm') {
+                  const sender =
+                    typeof data.sender === 'string' ? data.sender : undefined;
+                  await deps.sendMessage(data.chatJid, data.text, sender);
+                  logger.info(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'IPC DM message sent to external contact',
                   );
                 } else {
                   logger.warn(
