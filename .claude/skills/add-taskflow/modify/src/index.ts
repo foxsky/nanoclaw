@@ -558,13 +558,19 @@ async function startMessageLoop(): Promise<void> {
         }
       }
 
-      // Check for DM messages from external contacts
-      const dmMessages = getDmMessages(lastDmTimestamp, ASSISTANT_NAME);
-      if (dmMessages.length > 0) {
-        const taskflowDb = getTaskflowDb(DATA_DIR);
-        if (taskflowDb) {
+      // Check for DM messages from external contacts (only if TaskFlow is active)
+      const taskflowDb = getTaskflowDb(DATA_DIR);
+      if (taskflowDb) {
+        const dmMessages = getDmMessages(lastDmTimestamp, ASSISTANT_NAME);
+        if (dmMessages.length > 0) {
+          // Cache route lookups by JID to avoid redundant DB queries for same sender
+          const routeCache = new Map<string, ReturnType<typeof resolveExternalDm>>();
           for (const msg of dmMessages) {
-            const route = resolveExternalDm(taskflowDb, msg.chat_jid);
+            let route = routeCache.get(msg.chat_jid);
+            if (route === undefined) {
+              route = resolveExternalDm(taskflowDb, msg.chat_jid);
+              routeCache.set(msg.chat_jid, route);
+            }
             if (!route) continue;
 
             if (route.needsDisambiguation) {
@@ -617,10 +623,10 @@ async function startMessageLoop(): Promise<void> {
               );
             }
           }
+          // Advance DM cursor
+          lastDmTimestamp = dmMessages[dmMessages.length - 1].timestamp;
+          saveState();
         }
-        // Advance DM cursor
-        lastDmTimestamp = dmMessages[dmMessages.length - 1].timestamp;
-        saveState();
       }
     } catch (err) {
       logger.error({ err }, 'Error in message loop');

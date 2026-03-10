@@ -31,6 +31,16 @@ export interface TaskflowResult {
   [key: string]: any;
 }
 
+/** Shared notification entry shape used across all result interfaces. */
+export type NotificationEntry = {
+  target_kind?: 'group' | 'dm';
+  target_person_id?: string;
+  target_external_id?: string;
+  notification_group_jid?: string | null;
+  target_chat_jid?: string | null;
+  message: string;
+};
+
 export interface CreateParams {
   board_id: string;
   type: 'simple' | 'project' | 'recurring' | 'inbox' | 'meeting';
@@ -57,14 +67,7 @@ export interface CreateResult extends TaskflowResult {
     name: string;
     message: string;
   };
-  notifications?: Array<{
-    target_kind?: 'group' | 'dm';
-    target_person_id?: string;
-    target_external_id?: string;
-    notification_group_jid?: string | null;
-    target_chat_jid?: string | null;
-    message: string;
-  }>;
+  notifications?: NotificationEntry[];
 }
 
 export interface MoveParams {
@@ -84,14 +87,7 @@ export interface MoveResult extends TaskflowResult {
   project_update?: { completed_subtask: string; next_subtask?: string; all_complete: boolean };
   recurring_cycle?: { cycle_number: number; expired: boolean; new_due_date?: string; new_scheduled_at?: string; reason?: 'max_cycles' | 'end_date' };
   archive_triggered?: boolean;
-  notifications?: Array<{
-    target_kind?: 'group' | 'dm';
-    target_person_id?: string;
-    target_external_id?: string;
-    notification_group_jid?: string | null;
-    target_chat_jid?: string | null;
-    message: string;
-  }>;
+  notifications?: NotificationEntry[];
   parent_notification?: { parent_group_jid: string; message: string };
   unprocessed_minutes_warning?: boolean;
 }
@@ -114,14 +110,7 @@ export interface ReassignResult extends TaskflowResult {
   }>;
   offer_register?: { name: string; message: string };
   requires_confirmation?: string;  // human-readable summary for dry run
-  notifications?: Array<{
-    target_kind?: 'group' | 'dm';
-    target_person_id?: string;
-    target_external_id?: string;
-    notification_group_jid?: string | null;
-    target_chat_jid?: string | null;
-    message: string;
-  }>;
+  notifications?: NotificationEntry[];
 }
 
 export interface UpdateParams {
@@ -164,14 +153,7 @@ export interface UpdateResult extends TaskflowResult {
   task_id?: string;
   changes?: string[];      // human-readable list of what changed
   offer_register?: { name: string; message: string };
-  notifications?: Array<{
-    target_kind?: 'group' | 'dm';
-    target_person_id?: string;
-    target_external_id?: string;
-    notification_group_jid?: string | null;
-    target_chat_jid?: string | null;
-    message: string;
-  }>;
+  notifications?: NotificationEntry[];
 }
 
 export interface DependencyParams {
@@ -240,14 +222,7 @@ export interface AdminResult extends TaskflowResult {
     group_folder?: string;
     message: string;
   };
-  notifications?: Array<{
-    target_kind?: 'group' | 'dm';
-    target_person_id?: string;
-    target_external_id?: string;
-    notification_group_jid?: string | null;
-    target_chat_jid?: string | null;
-    message: string;
-  }>;
+  notifications?: NotificationEntry[];
 }
 
 export interface ReportParams {
@@ -426,6 +401,26 @@ function advanceDateTimeByRecurrence(
 
 export function normalizePhone(phone: string): string {
   return phone.replace(/\D/g, '');
+}
+
+/** External participant access window: 7 days after scheduled occurrence. */
+const ACCESS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Build the DM invite message for an external meeting participant. */
+function buildExternalInviteMessage(
+  taskId: string,
+  taskTitle: string,
+  scheduledAt: string,
+  organizerName: string,
+): string {
+  return (
+    `\u{1f4c5} *Convite para reuni\u00e3o*\n\n` +
+    `Voc\u00ea foi convidado para *${taskId} \u2014 ${taskTitle}*\n` +
+    `*Quando:* ${scheduledAt}\n` +
+    `*Organizador:* ${organizerName}\n\n` +
+    `Responda nesta conversa para participar da pauta e da ata.\n` +
+    `Para confirmar, diga: aceitar convite ${taskId}`
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -1308,13 +1303,7 @@ export class TaskflowEngine {
     };
   }
 
-  private meetingNotificationRecipients(task: any): Array<{
-    target_kind: 'group' | 'dm';
-    target_person_id?: string;
-    target_external_id?: string;
-    notification_group_jid?: string | null;
-    target_chat_jid?: string | null;
-  }> {
+  private meetingNotificationRecipients(task: any): Omit<NotificationEntry, 'message'>[] {
     const participantIds: string[] = (() => {
       try {
         return JSON.parse(task.participants ?? '[]');
@@ -1327,13 +1316,7 @@ export class TaskflowEngine {
         ? [...participantIds, task.assignee]
         : [...participantIds],
     )];
-    const results: Array<{
-      target_kind: 'group' | 'dm';
-      target_person_id?: string;
-      target_external_id?: string;
-      notification_group_jid?: string | null;
-      target_chat_jid?: string | null;
-    }> = [];
+    const results: Omit<NotificationEntry, 'message'>[] = [];
     if (allRecipients.length > 0) {
       const placeholders = allRecipients.map(() => '?').join(',');
       const rows = this.db.prepare(
@@ -1369,15 +1352,9 @@ export class TaskflowEngine {
   }
 
   /** Scheduled meeting reminders keyed to scheduled_at. */
-  getMeetingReminderNotifications(nowIso = new Date().toISOString()): Array<{
+  getMeetingReminderNotifications(nowIso = new Date().toISOString()): Array<NotificationEntry & {
     task_id: string;
     reminder_days: number;
-    target_kind?: 'group' | 'dm';
-    target_person_id?: string;
-    target_external_id?: string;
-    notification_group_jid?: string | null;
-    target_chat_jid?: string | null;
-    message: string;
   }> {
     const todayStr = nowIso.slice(0, 10);
     const meetings = this.db
@@ -1394,15 +1371,9 @@ export class TaskflowEngine {
       assignee: string | null;
       reminders: string | null;
     }>;
-    const notifications: Array<{
+    const notifications: Array<NotificationEntry & {
       task_id: string;
       reminder_days: number;
-      target_kind?: 'group' | 'dm';
-      target_person_id?: string;
-      target_external_id?: string;
-      notification_group_jid?: string | null;
-      target_chat_jid?: string | null;
-      message: string;
     }> = [];
     for (const meeting of meetings) {
       let reminders: Array<{ days: number; date: string }> = [];
@@ -1430,15 +1401,7 @@ export class TaskflowEngine {
   getMeetingStartingNotifications(
     nowIso = new Date().toISOString(),
     windowMinutes = 5,
-  ): Array<{
-    task_id: string;
-    target_kind?: 'group' | 'dm';
-    target_person_id?: string;
-    target_external_id?: string;
-    notification_group_jid?: string | null;
-    target_chat_jid?: string | null;
-    message: string;
-  }> {
+  ): Array<NotificationEntry & { task_id: string }> {
     const nowMs = new Date(nowIso).getTime();
     const windowMs = windowMinutes * 60_000;
     const meetings = this.db
@@ -1454,15 +1417,7 @@ export class TaskflowEngine {
       participants: string | null;
       assignee: string | null;
     }>;
-    const notifications: Array<{
-      task_id: string;
-      target_kind?: 'group' | 'dm';
-      target_person_id?: string;
-      target_external_id?: string;
-      notification_group_jid?: string | null;
-      target_chat_jid?: string | null;
-      message: string;
-    }> = [];
+    const notifications: Array<NotificationEntry & { task_id: string }> = [];
     for (const meeting of meetings) {
       const scheduledMs = new Date(meeting.scheduled_at).getTime();
       if (Number.isNaN(scheduledMs)) continue;
@@ -3151,12 +3106,14 @@ export class TaskflowEngine {
 
         // Upsert external contact
         let externalId: string;
+        let existingChatJid: string | null = null;
         const existing = this.db.prepare(
-          `SELECT external_id FROM external_contacts WHERE phone = ?`
-        ).get(phone) as { external_id: string } | undefined;
+          `SELECT external_id, direct_chat_jid FROM external_contacts WHERE phone = ?`
+        ).get(phone) as { external_id: string; direct_chat_jid: string | null } | undefined;
 
         if (existing) {
           externalId = existing.external_id;
+          existingChatJid = existing.direct_chat_jid;
           this.db.prepare(
             `UPDATE external_contacts SET display_name = ?, updated_at = ? WHERE external_id = ?`
           ).run(displayName, now, externalId);
@@ -3186,7 +3143,7 @@ export class TaskflowEngine {
           // else already invited/accepted — no-op
         } else {
           // Calculate access_expires_at: scheduled_at + 7 days
-          const expiresAt = new Date(new Date(occurrenceScheduledAt).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+          const expiresAt = new Date(new Date(occurrenceScheduledAt).getTime() + ACCESS_WINDOW_MS).toISOString();
           this.db.prepare(
             `INSERT INTO meeting_external_participants
              (board_id, meeting_task_id, occurrence_scheduled_at, external_id, invite_status,
@@ -3195,26 +3152,15 @@ export class TaskflowEngine {
           ).run(this.boardId, task.id, occurrenceScheduledAt, externalId, now, expiresAt, senderPersonId ?? params.sender_name, now, now);
         }
 
-        // Build DM invite notification
-        const dmJid = this.db.prepare(
-          `SELECT direct_chat_jid FROM external_contacts WHERE external_id = ?`
-        ).get(externalId) as { direct_chat_jid: string | null } | undefined;
-        const targetJid = dmJid?.direct_chat_jid ?? `${phone}@s.whatsapp.net`;
-
+        // Build DM invite notification (use cached JID from initial lookup)
+        const targetJid = existingChatJid ?? `${phone}@s.whatsapp.net`;
         const organizerName = sender?.name ?? params.sender_name;
-        const inviteMessage =
-          `\u{1f4c5} *Convite para reuni\u00e3o*\n\n` +
-          `Voc\u00ea foi convidado para *${task.id} \u2014 ${task.title}*\n` +
-          `*Quando:* ${task.scheduled_at}\n` +
-          `*Organizador:* ${organizerName}\n\n` +
-          `Responda nesta conversa para participar da pauta e da ata.\n` +
-          `Para confirmar, diga: aceitar convite ${task.id}`;
 
         notifications.push({
           target_kind: 'dm',
           target_external_id: externalId,
           target_chat_jid: targetJid,
-          message: inviteMessage,
+          message: buildExternalInviteMessage(task.id, task.title, task.scheduled_at, organizerName),
         } as any);
 
         // Audit trail
@@ -3295,13 +3241,13 @@ export class TaskflowEngine {
 
         // Build invite DM (same as add_external_participant)
         const contact = this.db.prepare(`SELECT display_name, phone, direct_chat_jid FROM external_contacts WHERE external_id = ?`).get(externalId) as any;
-        const targetJid = contact.direct_chat_jid ?? `${contact.phone}@s.whatsapp.net`;
+        const reinviteJid = contact.direct_chat_jid ?? `${contact.phone}@s.whatsapp.net`;
         const organizerName = sender?.name ?? params.sender_name;
         notifications.push({
           target_kind: 'dm',
           target_external_id: externalId,
-          target_chat_jid: targetJid,
-          message: `\u{1f4c5} *Convite para reuni\u00e3o*\n\nVoc\u00ea foi convidado para *${task.id} \u2014 ${task.title}*\n*Quando:* ${task.scheduled_at}\n*Organizador:* ${organizerName}\n\nResponda nesta conversa para participar da pauta e da ata.\nPara confirmar, diga: aceitar convite ${task.id}`,
+          target_chat_jid: reinviteJid,
+          message: buildExternalInviteMessage(task.id, task.title, task.scheduled_at, organizerName),
         } as any);
 
         changes.push(`External participant ${contact.display_name} reinvited`);
@@ -3328,25 +3274,24 @@ export class TaskflowEngine {
         }
         changes.push(`Meeting rescheduled to ${updates.scheduled_at}`);
 
-        // Cascade to active external participant grants
+        // Cascade to active external participant grants: update occurrence key + expiry in one statement
         const oldScheduledAt = task.scheduled_at;
+        const newExpiry = new Date(new Date(updates.scheduled_at).getTime() + ACCESS_WINDOW_MS).toISOString();
         if (oldScheduledAt) {
           this.db.prepare(
             `UPDATE meeting_external_participants
-             SET occurrence_scheduled_at = ?, updated_at = ?
+             SET occurrence_scheduled_at = ?, access_expires_at = ?, updated_at = ?
              WHERE board_id = ? AND meeting_task_id = ? AND occurrence_scheduled_at = ?
                AND invite_status IN ('pending', 'invited', 'accepted')`
-          ).run(updates.scheduled_at, now, this.boardId, task.id, oldScheduledAt);
+          ).run(updates.scheduled_at, newExpiry, now, this.boardId, task.id, oldScheduledAt);
+        } else {
+          this.db.prepare(
+            `UPDATE meeting_external_participants
+             SET access_expires_at = ?, updated_at = ?
+             WHERE board_id = ? AND meeting_task_id = ?
+               AND invite_status IN ('pending', 'invited', 'accepted')`
+          ).run(newExpiry, now, this.boardId, task.id);
         }
-
-        // Recalculate access_expires_at for active grants
-        const newExpiry = new Date(new Date(updates.scheduled_at).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
-        this.db.prepare(
-          `UPDATE meeting_external_participants
-           SET access_expires_at = ?, updated_at = ?
-           WHERE board_id = ? AND meeting_task_id = ?
-             AND invite_status IN ('pending', 'invited', 'accepted')`
-        ).run(newExpiry, now, this.boardId, task.id);
       }
 
       /* Add subtask (project only) — creates a real task row */
