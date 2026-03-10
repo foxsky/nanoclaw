@@ -2834,6 +2834,13 @@ export class TaskflowEngine {
         const noteId = task.next_note_id ?? 1;
         const noteEntry: any = { id: noteId, text: updates.add_note, at: now, by: params.sender_name };
 
+        // Stable author identity for permission checks
+        if (senderPersonId) {
+          noteEntry.author_actor_type = 'board_person';
+          noteEntry.author_actor_id = senderPersonId;
+          noteEntry.author_display_name = sender?.name ?? params.sender_name;
+        }
+
         // Meeting-only metadata
         const phase = this.getMeetingNotePhase(task);
         if (phase) {
@@ -2867,8 +2874,12 @@ export class TaskflowEngine {
           return { success: false, error: `Note #${updates.edit_note.id} not found.` };
         }
         // Meeting note authorization: only author/organizer/manager can edit
-        if (task.type === 'meeting' && !isMgr && !isAssignee && note.by !== params.sender_name) {
-          return { success: false, error: `Permission denied: only the note author, organizer, or manager can edit note #${updates.edit_note.id}.` };
+        if (task.type === 'meeting' && !isMgr && !isAssignee) {
+          const isNoteAuthor =
+            !!note.author_actor_id && note.author_actor_id === senderPersonId;
+          if (!isNoteAuthor) {
+            return { success: false, error: `Permission denied: only the note author, organizer, or manager can edit note #${updates.edit_note.id}.` };
+          }
         }
         note.text = updates.edit_note.text;
         this.db

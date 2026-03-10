@@ -571,7 +571,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         since: z.string().optional().describe('ISO date for changes_since'),
         at: z.string().optional().describe('Date (YYYY-MM-DD) for meeting_minutes_at query'),
       },
-      async (args) => {
+      async (args: any) => {
         const result = engine.query(args);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
@@ -602,7 +602,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         recurrence_end_date: z.string().optional().describe('ISO date after which recurrence stops (mutually exclusive with max_cycles)'),
         sender_name: z.string().describe('Name of the person creating the task'),
       },
-      async (args) => {
+      async (args: any) => {
         const result = engine.create({ ...args, board_id: boardId });
         if (result.success) dispatchNotifications(result);
         return {
@@ -622,7 +622,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         reason: z.string().optional().describe('Reason for the action (e.g., wait/reject reason)'),
         subtask_id: z.string().optional().describe('Subtask ID to complete within a project (e.g. P16.2). When provided, task_id must be the parent project ID (e.g. P16)'),
       },
-      async (args) => {
+      async (args: any) => {
         const result = engine.move({ ...args, board_id: boardId });
         if (result.success) dispatchNotifications(result);
         return {
@@ -642,7 +642,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         sender_name: z.string().describe('Name of the person performing the reassignment'),
         confirmed: z.boolean().describe('Must be true to confirm the reassignment'),
       },
-      async (args) => {
+      async (args: any) => {
         const result = engine.reassign({ ...args, board_id: boardId });
         if (result.success) dispatchNotifications(result);
         return {
@@ -687,7 +687,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           }).optional().describe('Set meeting note status'),
         }).describe('Fields to update'),
       },
-      async (args) => {
+      async (args: any) => {
         const result = engine.update({ ...args, board_id: boardId });
         if (result.success) dispatchNotifications(result);
         return {
@@ -707,7 +707,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         reminder_days: z.number().optional().describe('Days before due date to send reminder (for add_reminder)'),
         sender_name: z.string().describe('Name of the person managing dependencies'),
       },
-      async (args) => {
+      async (args: any) => {
         const result = engine.dependency({ ...args, board_id: boardId });
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
@@ -744,7 +744,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         holiday_dates: z.array(z.string()).optional().describe('Holiday dates to remove (YYYY-MM-DD) (for manage_holidays remove)'),
         holiday_year: z.number().optional().describe('Year filter for listing or target year for set_year (for manage_holidays list/set_year)'),
       },
-      async (args) => {
+      async (args: any) => {
         const result = engine.admin({ ...args, board_id: boardId });
         if (
           args.action === 'register_person' &&
@@ -786,7 +786,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         sender_name: z.string().describe('Name of the person requesting the undo'),
         force: z.boolean().optional().describe('Force undo even if action was by a different person'),
       },
-      async (args) => {
+      async (args: any) => {
         const result = engine.undo({ ...args, board_id: boardId });
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
@@ -805,7 +805,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         parent_task_id: z.string().optional().describe('Parent task ID (for tag_parent action)'),
         sender_name: z.string().describe('Name of the person performing the action'),
       },
-      async (args) => {
+      async (args: any) => {
         const result = engine.hierarchy({ ...args, board_id: boardId });
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
@@ -820,7 +820,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       {
         type: z.enum(['standup', 'digest', 'weekly']).describe('Report type'),
       },
-      async (args) => {
+      async (args: any) => {
         const result = engine.report({ ...args, board_id: boardId });
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
