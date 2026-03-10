@@ -385,18 +385,30 @@ git commit -m "chore: sync TaskFlow skill copies after channel registry migratio
 
 ## Current Outcome
 
-The following are already true in the repo:
+The following are all true in the repo:
 
 - `src/index.ts` uses `./channels/index.js` plus the channel registry loop for bootstrap
 - `src/types.ts` exposes optional `resolvePhoneJid` and `syncGroups` on `Channel`
 - `src/ipc.ts` uses `syncGroups` in `IpcDeps`
 - TaskFlow skill modify copies already mirror the migrated runtime files
+- Credential proxy is wired end-to-end (`container-runner.ts` passes `CREDENTIAL_PROXY_PORT` to containers)
+- Sender allowlist is integrated in all trigger check sites with correct arguments and caching
 
 The following are still not true:
 
 - TaskFlow provisioning is not fully channel-agnostic end to end
 - IPC plugins that manipulate WhatsApp-style participant JIDs are still WhatsApp-specific
-- credential proxy and sender allowlist changes are not part of this landed migration
+
+## Post-Migration Bug Fixes
+
+After the migration and deferred tasks landed, the following bug fixes were applied:
+
+| Commit | Description |
+|--------|-------------|
+| `069ae56` | **fix: bot message detection for custom triggers and external DM safety** — `isBotMessage` now checks all registered group trigger prefixes (not just the global one); `getMessagesSince` accepts `extraBotPrefix` for per-group trigger detection; `resolveExternalDm` guards against missing `external_contacts` table; `allocateTaskId` self-heals stale task counters |
+| `a289ccc` | **style: prettier formatting from pre-commit hook** — formatting pass triggered by the above fix |
+
+---
 
 ## What NOT to Change
 

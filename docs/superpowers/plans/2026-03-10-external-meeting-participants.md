@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** Fully implemented. All 18 tasks (91 checkboxes) are complete.
+
 **Goal:** Allow external (non-board) contacts to be invited to TaskFlow meetings and interact via WhatsApp DM with meeting-scoped access.
 
 **Architecture:** Two-layer implementation. Phase 0 extends the core runtime (`src/index.ts`, `src/ipc.ts`) to support DM send/receive for known external contacts. Phases 1–6 add the data model, engine logic, invite flow, and prompt/UX to the `add-taskflow` skill package. External contacts are stored cross-board in `taskflow.db`. Inbound DMs are routed to the meeting's board group container by looking up active grants. If more than one active grant exists, the orchestrator must disambiguate before routing. Cold-start DM delivery must use an explicit trigger-bypass path in the orchestrator, not synthetic group messages that rely on normal trigger detection.
@@ -44,7 +46,7 @@
 
 This module provides a function that takes a DM JID and returns the board group JID to route to (or null). It uses a cached `taskflow.db` handle to query `external_contacts` and `meeting_external_participants`. Because the plan uses lazy expiry and `direct_chat_jid` backfill, this DB handle must be writable; a true read-only connection would not support the proposed updates.
 
-- [ ] **Step 1: Write the failing test for `resolveExternalDm`**
+- [x] **Step 1: Write the failing test for `resolveExternalDm`**
 
 In `src/dm-routing.test.ts`:
 
@@ -181,12 +183,12 @@ describe('resolveExternalDm', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run src/dm-routing.test.ts`
 Expected: FAIL — module `./dm-routing.js` does not exist
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `src/dm-routing.ts`:
 
@@ -310,12 +312,12 @@ export function resolveExternalDm(
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run src/dm-routing.test.ts`
 Expected: All tests PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/dm-routing.ts src/dm-routing.test.ts
@@ -332,7 +334,7 @@ git commit -m "feat: add DM routing module for external meeting participants"
 
 Extend the IPC message authorization block to allow TaskFlow containers to send to DM JIDs (`@s.whatsapp.net`) that belong to known external contacts with active grants.
 
-- [ ] **Step 1: Extract authorization into testable function and write failing test**
+- [x] **Step 1: Extract authorization into testable function and write failing test**
 
 First, extract the IPC message authorization decision into a pure function in `src/ipc.ts`:
 
@@ -444,12 +446,12 @@ describe('isIpcMessageAuthorized', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run src/ipc-dm-auth.test.ts`
 Expected: FAIL — `isIpcMessageAuthorized` not found
 
-- [ ] **Step 3: Implement `isIpcMessageAuthorized` and refactor IPC message authorization**
+- [x] **Step 3: Implement `isIpcMessageAuthorized` and refactor IPC message authorization**
 
 Add the `isIpcMessageAuthorized` function to `src/ipc.ts` (exported).
 
@@ -495,12 +497,12 @@ if (authResult === 'group') {
 }
 ```
 
-- [ ] **Step 4: Run existing IPC tests + new test**
+- [x] **Step 4: Run existing IPC tests + new test**
 
 Run: `npx vitest run src/ipc`
 Expected: All PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ipc.ts src/ipc-dm-auth.test.ts
@@ -518,7 +520,7 @@ git commit -m "feat: authorize DM-targeted IPC messages from TaskFlow containers
 
 Wire the DM routing module into the orchestrator so inbound DMs from external contacts are stored, and the message loop routes them to the correct board group container.
 
-- [ ] **Step 1: Keep `onMessage` DM ingestion unchanged, but make the intent explicit**
+- [x] **Step 1: Keep `onMessage` DM ingestion unchanged, but make the intent explicit**
 
 In `src/index.ts`, the current `onMessage` callback already stores messages for unregistered JIDs; the sender allowlist is only applied when `registeredGroups[chatJid]` exists. That means raw DM ingestion already works and does **not** need a new external-contact gate in `onMessage`.
 
@@ -536,7 +538,7 @@ Required clarification:
 - do **not** add DM allowlist checks in `onMessage`
 - perform external-contact authorization later in the DM routing path via `resolveExternalDm`
 
-- [ ] **Step 2: Add `getDmMessages` to `src/db.ts` and `openTaskflowDb` to `src/dm-routing.ts`**
+- [x] **Step 2: Add `getDmMessages` to `src/db.ts` and `openTaskflowDb` to `src/dm-routing.ts`**
 
 In `src/db.ts`, add:
 
@@ -582,7 +584,7 @@ export function getTaskflowDb(dataDir: string): Database.Database | null {
 }
 ```
 
-- [ ] **Step 3: Modify message loop to process external DMs**
+- [x] **Step 3: Modify message loop to process external DMs**
 
 In `src/index.ts`, after the existing group message processing loop (around line 489), add DM processing. The `getNewMessages` call at line 411 only queries registered group JIDs, so DMs won't appear there.
 
@@ -669,12 +671,12 @@ Key design decisions:
 - **Multi-grant disambiguation** is handled at the orchestrator level whenever more than one active grant exists, even if the grants are on the same board
 - **Cached `taskflowDb`** opened once lazily, not per-message
 
-- [ ] **Step 3: Run the full test suite**
+- [x] **Step 3: Run the full test suite**
 
 Run: `npx vitest run`
 Expected: All existing tests PASS, no regressions
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/index.ts src/db.ts
@@ -688,11 +690,11 @@ git commit -m "feat: wire inbound DM routing for external meeting participants"
 **Files:**
 - Modify: `.claude/skills/add-taskflow/modify/container/agent-runner/src/ipc-mcp-stdio.ts:84-94`
 
-- [ ] **Step 1: Write the expectation**
+- [x] **Step 1: Write the expectation**
 
 The current code at lines 84-94 rejects any `target_chat_jid` that doesn't end in `@g.us`. Change to accept both `@g.us` and `@s.whatsapp.net`.
 
-- [ ] **Step 2: Modify the validation**
+- [x] **Step 2: Modify the validation**
 
 Replace lines 84-94:
 
@@ -730,7 +732,7 @@ if (
 }
 ```
 
-- [ ] **Step 3: Update the tool description**
+- [x] **Step 3: Update the tool description**
 
 At line 68, change the `target_chat_jid` description from:
 
@@ -744,12 +746,12 @@ To:
 target_chat_jid: z.string().optional().describe('(Main and TaskFlow groups only) Send to a different group or DM by JID. Use for cross-group notifications or external participant DMs. Groups must be registered; DMs must be known external contacts.'),
 ```
 
-- [ ] **Step 4: Run build to verify no type errors**
+- [x] **Step 4: Run build to verify no type errors**
 
 Run: `cd .claude/skills/add-taskflow && npx tsc --noEmit` (or equivalent)
 Expected: No errors
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .claude/skills/add-taskflow/modify/container/agent-runner/src/ipc-mcp-stdio.ts
@@ -765,7 +767,7 @@ git commit -m "feat: allow DM JIDs in send_message tool for external participant
 
 The current `dispatchNotifications` only dispatches to `notification_group_jid`. Extend it to also handle the new `target_kind: 'dm'` + `target_chat_jid` shape.
 
-- [ ] **Step 1: Modify `dispatchNotifications`**
+- [x] **Step 1: Modify `dispatchNotifications`**
 
 Replace the current function (lines 512-536):
 
@@ -829,7 +831,7 @@ function dispatchNotifications(result: Record<string, unknown>): void {
 
 This is backward-compatible: existing notifications use `notification_group_jid` without `target_kind` and still work.
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add .claude/skills/add-taskflow/modify/container/agent-runner/src/ipc-mcp-stdio.ts
@@ -842,7 +844,7 @@ git commit -m "feat: extend dispatchNotifications for DM target kind"
 
 After Tasks 1–5 are complete, validate the round-trip before proceeding.
 
-- [ ] **Step 1: Manual validation checklist**
+- [x] **Step 1: Manual validation checklist**
 
 1. Seed `taskflow.db` with a test external contact and active grant
 2. Send a DM from the test phone number to the WhatsApp bot
@@ -853,7 +855,7 @@ After Tasks 1–5 are complete, validate the round-trip before proceeding.
 
 If any step fails, diagnose and fix before proceeding to Phase 1.
 
-- [ ] **Step 2: Commit any fixes**
+- [x] **Step 2: Commit any fixes**
 
 ```bash
 git add -A && git commit -m "fix: Phase 0 end-to-end validation fixes"
@@ -869,7 +871,7 @@ git add -A && git commit -m "fix: Phase 0 end-to-end validation fixes"
 - Modify: `.claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts` (schema init)
 - Modify: `.claude/skills/add-taskflow/tests/taskflow.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `.claude/skills/add-taskflow/tests/taskflow.test.ts`, add:
 
@@ -906,12 +908,12 @@ describe('external contacts schema', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
 Expected: FAIL — tables don't exist
 
-- [ ] **Step 3: Add CREATE TABLE statements to the engine's schema initialization**
+- [x] **Step 3: Add CREATE TABLE statements to the engine's schema initialization**
 
 In `taskflow-engine.ts`, find the schema initialization section (the constructor or `initSchema` method that runs CREATE TABLE statements). Add after existing table creation:
 
@@ -946,12 +948,12 @@ CREATE TABLE IF NOT EXISTS meeting_external_participants (
 
 Note: These tables are created in `taskflow.db` which is the same database the engine uses. The schema SQL should be added to the existing `TASKFLOW_SCHEMA` constant (in `taskflow-db.ts` if that's where it lives) or to the engine's constructor init block.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts
@@ -967,7 +969,7 @@ git commit -m "feat: add external_contacts and meeting_external_participants tab
 - Modify: `.claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts`
 - Modify: `.claude/skills/add-taskflow/tests/taskflow.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 describe('normalizePhone', () => {
@@ -985,12 +987,12 @@ describe('normalizePhone', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
 Expected: FAIL — `normalizePhone` not found
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `taskflow-engine.ts`, add as a module-level utility:
 
@@ -1000,12 +1002,12 @@ export function normalizePhone(phone: string): string {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts
@@ -1023,7 +1025,7 @@ git commit -m "feat: add phone normalization utility"
 
 Extend the `add_note` code path to include `author_actor_type`, `author_actor_id`, and `author_display_name` in the note JSON.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 describe('meeting note stable author identity', () => {
@@ -1058,12 +1060,12 @@ describe('meeting note stable author identity', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
 Expected: FAIL — `author_actor_type` is undefined
 
-- [ ] **Step 3: Modify the add_note code path**
+- [x] **Step 3: Modify the add_note code path**
 
 In `taskflow-engine.ts`, in the `add_note` handling block (around line 2792), after:
 
@@ -1084,7 +1086,7 @@ if (senderPersonId) {
 
 The `senderPersonId` and `senderPerson` variables should already be available in scope (from the top of the `update()` method). If `senderPersonId` is null (external contact path, added later), the `author_actor_type` will be set differently in Task 12.
 
-- [ ] **Step 4: Modify edit_note and remove_note permission checks**
+- [x] **Step 4: Modify edit_note and remove_note permission checks**
 
 In the `edit_note` block (around line 2826), change:
 
@@ -1125,12 +1127,12 @@ if (task.type === 'meeting' && !isMgr && !isAssignee) {
 
 **Legacy note policy (per spec):** For notes without `author_actor_id`, only organizer/manager may edit or remove them. Preserve the legacy `by` field for display only; do not grant authorship from display-name matching alone.
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add .claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts
@@ -1149,7 +1151,7 @@ git commit -m "feat: add stable author identity to meeting notes"
 - Modify: `.claude/skills/add-taskflow/modify/container/agent-runner/src/ipc-mcp-stdio.ts` (taskflow_update Zod schema)
 - Modify: `.claude/skills/add-taskflow/tests/taskflow.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 describe('add_external_participant', () => {
@@ -1290,12 +1292,12 @@ describe('add_external_participant', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
 Expected: FAIL — `add_external_participant` not handled
 
-- [ ] **Step 3: Add `add_external_participant` to `UpdateParams`**
+- [x] **Step 3: Add `add_external_participant` to `UpdateParams`**
 
 In `taskflow-engine.ts`, in the `UpdateParams.updates` interface (around line 114), add:
 
@@ -1305,7 +1307,7 @@ remove_external_participant?: { external_id?: string; phone?: string; name?: str
 reinvite_external_participant?: { external_id?: string; phone?: string };
 ```
 
-- [ ] **Step 4: Implement `add_external_participant` in the `update()` method**
+- [x] **Step 4: Implement `add_external_participant` in the `update()` method**
 
 In `taskflow-engine.ts`, in the `update()` method, after the existing `remove_participant` handler (around line 2949), add:
 
@@ -1406,7 +1408,7 @@ if (updates.add_external_participant !== undefined) {
 }
 ```
 
-- [ ] **Step 5: Add the Zod schema in `ipc-mcp-stdio.ts`**
+- [x] **Step 5: Add the Zod schema in `ipc-mcp-stdio.ts`**
 
 In the `taskflow_update` tool definition (around line 646), add to the `updates` z.object:
 
@@ -1426,12 +1428,12 @@ reinvite_external_participant: z.object({
 }).optional().describe('Resend invite to an external participant'),
 ```
 
-- [ ] **Step 6: Run test to verify it passes**
+- [x] **Step 6: Run test to verify it passes**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
 Expected: PASS
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add .claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts
@@ -1448,7 +1450,7 @@ git commit -m "feat: add external participant to meeting with DM invite"
 - Modify: `.claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts`
 - Modify: `.claude/skills/add-taskflow/tests/taskflow.test.ts`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```typescript
 describe('remove_external_participant', () => {
@@ -1498,12 +1500,12 @@ describe('reinvite_external_participant', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
 Expected: FAIL
 
-- [ ] **Step 3: Implement `remove_external_participant` in engine**
+- [x] **Step 3: Implement `remove_external_participant` in engine**
 
 In the `update()` method, add after `add_external_participant`:
 
@@ -1546,7 +1548,7 @@ if (updates.remove_external_participant !== undefined) {
 }
 ```
 
-- [ ] **Step 4: Implement `reinvite_external_participant`**
+- [x] **Step 4: Implement `reinvite_external_participant`**
 
 Similar to add but resets an existing revoked/expired grant and re-sends the invite DM.
 
@@ -1593,12 +1595,12 @@ if (updates.reinvite_external_participant !== undefined) {
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add .claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts
@@ -1614,7 +1616,7 @@ git commit -m "feat: remove and reinvite external meeting participants"
 - Modify: `.claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts` (meeting_participants query)
 - Modify: `.claude/skills/add-taskflow/tests/taskflow.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 describe('meeting_participants query with externals', () => {
@@ -1632,11 +1634,11 @@ describe('meeting_participants query with externals', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Expected: FAIL — `external_participants` is undefined
 
-- [ ] **Step 3: Modify `meeting_participants` query**
+- [x] **Step 3: Modify `meeting_participants` query**
 
 In `taskflow-engine.ts`, in the `meeting_participants` case (around line 4255-4282), after the existing participants lookup, add:
 
@@ -1664,12 +1666,12 @@ return {
 };
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts
@@ -1685,7 +1687,7 @@ git commit -m "feat: include external participants in meeting_participants query
 - Modify: `.claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts` (meetingNotificationRecipients)
 - Modify: `.claude/skills/add-taskflow/tests/taskflow.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 describe('meetingNotificationRecipients includes externals', () => {
@@ -1699,11 +1701,11 @@ describe('meetingNotificationRecipients includes externals', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Expected: FAIL — no DM notification produced
 
-- [ ] **Step 3: Extend `meetingNotificationRecipients()`**
+- [x] **Step 3: Extend `meetingNotificationRecipients()`**
 
 In `taskflow-engine.ts`, modify `meetingNotificationRecipients` (around line 1233) to also return external participants:
 
@@ -1796,12 +1798,12 @@ updates.remove_external_participant !== undefined ||
 updates.reinvite_external_participant !== undefined;
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts
@@ -1817,7 +1819,7 @@ git commit -m "feat: include external participants in meeting notifications"
 - Modify: `.claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts` (scheduled_at update)
 - Modify: `.claude/skills/add-taskflow/tests/taskflow.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 describe('occurrence key cascade on reschedule', () => {
@@ -1855,11 +1857,11 @@ describe('occurrence key cascade on reschedule', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Expected: FAIL — occurrence_scheduled_at not updated
 
-- [ ] **Step 3: Modify `scheduled_at` update handler**
+- [x] **Step 3: Modify `scheduled_at` update handler**
 
 In `taskflow-engine.ts`, in the `scheduled_at` update block (around line 2952-2970), add after the existing reschedule logic:
 
@@ -1885,12 +1887,12 @@ this.db.prepare(
 ).run(newExpiry, now, this.boardId, task.id);
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts
@@ -1911,7 +1913,7 @@ git commit -m "feat: cascade occurrence key and expiry on meeting reschedule"
 
 Add an `accept_external_invite` admin action that the agent calls when an external contact DMs "aceitar convite M1".
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 describe('accept_external_invite', () => {
@@ -1946,11 +1948,11 @@ describe('accept_external_invite', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Expected: FAIL
 
-- [ ] **Step 3: Implement `accept_external_invite` admin action and exempt it from the manager-only admin gate**
+- [x] **Step 3: Implement `accept_external_invite` admin action and exempt it from the manager-only admin gate**
 
 In `taskflow-engine.ts`, the current `admin()` method rejects every non-manager before entering the action switch except `process_inbox`. That gate must be updated first so `accept_external_invite` is reachable by an external contact.
 
@@ -2022,7 +2024,7 @@ export interface AdminParams {
 }
 ```
 
-- [ ] **Step 4: Add Zod schema for `sender_external_id` in `taskflow_admin` tool**
+- [x] **Step 4: Add Zod schema for `sender_external_id` in `taskflow_admin` tool**
 
 In `ipc-mcp-stdio.ts`, in the `taskflow_admin` tool definition, add to the schema:
 
@@ -2030,12 +2032,12 @@ In `ipc-mcp-stdio.ts`, in the `taskflow_admin` tool definition, add to the schem
 sender_external_id: z.string().optional().describe('External contact ID when the caller is an external participant'),
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add .claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts
@@ -2054,7 +2056,7 @@ git commit -m "feat: add accept_external_invite admin action"
 
 Extend the meeting note `add_note`, `edit_note`, `remove_note`, `set_note_status` permission checks to also allow external participants with accepted grants.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 describe('external participant note operations', () => {
@@ -2091,11 +2093,11 @@ describe('external participant note operations', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Expected: FAIL
 
-- [ ] **Step 3: Add `sender_external_id` to `UpdateParams`**
+- [x] **Step 3: Add `sender_external_id` to `UpdateParams`**
 
 ```typescript
 export interface UpdateParams {
@@ -2107,7 +2109,7 @@ export interface UpdateParams {
 }
 ```
 
-- [ ] **Step 4: Modify note permission checks in `update()` to check external grants**
+- [x] **Step 4: Modify note permission checks in `update()` to check external grants**
 
 At the top of the `update()` method, after resolving `senderPersonId`, add external contact resolution:
 
@@ -2181,7 +2183,7 @@ if (isExternalSender) {
 }
 ```
 
-- [ ] **Step 5: Add `sender_external_id` to the `taskflow_update` Zod schema**
+- [x] **Step 5: Add `sender_external_id` to the `taskflow_update` Zod schema**
 
 In `ipc-mcp-stdio.ts`, in the `taskflow_update` tool:
 
@@ -2189,12 +2191,12 @@ In `ipc-mcp-stdio.ts`, in the `taskflow_update` tool:
 sender_external_id: z.string().optional().describe('External contact ID when the caller is an external participant'),
 ```
 
-- [ ] **Step 6: Run test to verify it passes**
+- [x] **Step 6: Run test to verify it passes**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
 Expected: PASS
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add .claude/skills/add-taskflow/add/container/agent-runner/src/taskflow-engine.ts
@@ -2212,7 +2214,7 @@ git commit -m "feat: allow external participants to add/edit meeting notes"
 **Files:**
 - Modify: `.claude/skills/add-taskflow/templates/CLAUDE.md.template`
 
-- [ ] **Step 1: Add external participant commands to the meeting section**
+- [x] **Step 1: Add external participant commands to the meeting section**
 
 After the existing "Meeting Participants" section (around line 261), add:
 
@@ -2236,7 +2238,7 @@ External participants are people outside the board invited to a specific meeting
 - External participants do NOT have access to board queries, task management, or admin actions.
 ```
 
-- [ ] **Step 2: Add DM interaction guidance**
+- [x] **Step 2: Add DM interaction guidance**
 
 After the external participant commands, add:
 
@@ -2251,7 +2253,7 @@ When processing a message from an external participant (indicated by `sender_ext
 4. **Never expose board data** to external participants — no quadro, inbox, tasks, statistics, etc.
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add .claude/skills/add-taskflow/templates/CLAUDE.md.template
@@ -2265,7 +2267,7 @@ git commit -m "feat: document external participant commands in CLAUDE.md templat
 **Files:**
 - Modify: `.claude/skills/add-taskflow/tests/taskflow.test.ts`
 
-- [ ] **Step 1: Write end-to-end integration test**
+- [x] **Step 1: Write end-to-end integration test**
 
 ```typescript
 describe('external participant full flow', () => {
@@ -2431,12 +2433,12 @@ describe('external participant full flow', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it passes**
+- [x] **Step 2: Run test to verify it passes**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
 Expected: All PASS
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add .claude/skills/add-taskflow/tests/taskflow.test.ts
@@ -2447,17 +2449,17 @@ git commit -m "test: end-to-end external participant flow integration test"
 
 ### Task 18: Run Full Test Suite and Final Sync
 
-- [ ] **Step 1: Run full test suite**
+- [x] **Step 1: Run full test suite**
 
 Run: `npx vitest run`
 Expected: All tests PASS, no regressions
 
-- [ ] **Step 2: Build**
+- [x] **Step 2: Build**
 
 Run: `npm run build`
 Expected: No type errors
 
-- [ ] **Step 3: Final commit if any remaining changes**
+- [x] **Step 3: Final commit if any remaining changes**
 
 ```bash
 git add -A
@@ -2500,3 +2502,17 @@ Tasks within the same phase are mostly sequential (each builds on the previous),
 - Tasks 6 and 7 can run in parallel
 - Tasks 4 and 5 can run in parallel
 - Task 16 can run in parallel with Tasks 14-15
+
+---
+
+## Implementation Summary
+
+All 18 tasks across 6 phases were implemented and validated. A 40-agent bug hunt was conducted after the initial implementation, uncovering approximately 25 bugs which were subsequently fixed. The full implementation and bug fix history is captured in the following key commits:
+
+| Commit | Description |
+|--------|-------------|
+| `2486a93` | **Add external participant taskflow schema support** — initial schema and engine implementation |
+| `3f1105a` | **fix: refine DM cursor tracking and strip device suffix from JIDs** — corrects DM message cursor advancement and JID normalization for device-suffixed WhatsApp JIDs |
+| `bc47799` | **fix: address /simplify review findings for external DM routing and engine** — fixes identified during code review of external DM routing paths and engine logic |
+| `0bd11f9` | **fix: sync runtime engine with skill copy for external participants** — ensures runtime and skill copies of the engine stay in sync |
+| `069ae56` | **fix: bot message detection for custom triggers and external DM safety** — isBotMessage checks all registered group trigger prefixes; resolveExternalDm guards against missing external_contacts table |
