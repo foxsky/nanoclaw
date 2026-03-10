@@ -8,9 +8,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(__dirname, '..');
+const SKILL_ROOT = path.resolve(__dirname, '..', '..');
+const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..', '..', '..');
 
-const templatePath = path.join(PROJECT_ROOT, '.claude/skills/add-taskflow/templates/CLAUDE.md.template');
+const templatePath = path.join(SKILL_ROOT, 'templates', 'CLAUDE.md.template');
 const template = fs.readFileSync(templatePath, 'utf-8');
 
 // Shared values (common across all TaskFlow groups)
@@ -52,12 +53,25 @@ const groups = [
   {
     folder: 'sec-secti',
     overrides: {
-      '{{BOARD_ID}}': 'board-secti-taskflow',
+      '{{BOARD_ID}}': 'board-sec-taskflow',
       '{{GROUP_NAME}}': 'SEC-SECTI - TaskFlow',
       '{{GROUP_CONTEXT}}': 'private management for the SECTI team',
       '{{GROUP_JID}}': '120363409319476199@g.us',
-      '{{CONTROL_GROUP_HINT}}': '\nThis is the private management control group for Miguel. You share the same board as the team group "SECTI - TaskFlow". Commands you execute here affect the shared board. Messages sent via send_message go to this group only — the team group is not notified directly.',
+      '{{CONTROL_GROUP_HINT}}': '\nThis is the private management control group for Miguel. You operate the root board "SEC - TaskFlow". The team group "SECTI - TaskFlow" is a child board of this root. By default, `send_message` sends to this group — but the Notification System uses `target_chat_jid` to send cross-group notifications to assignees in their own groups.',
       '{{HIERARCHY_LEVEL}}': '1',
+      '{{PARENT_BOARD_ID}}': '',
+    },
+  },
+  {
+    folder: 'e2e-taskflow',
+    overrides: {
+      '{{ASSISTANT_NAME}}': 'Tars',
+      '{{BOARD_ID}}': 'board-e2e-taskflow',
+      '{{GROUP_NAME}}': 'E2E Test Board',
+      '{{GROUP_CONTEXT}}': 'E2E Test Board task board',
+      '{{GROUP_JID}}': '120363406927955265@g.us',
+      '{{CONTROL_GROUP_HINT}}': '',
+      '{{HIERARCHY_LEVEL}}': '0',
       '{{PARENT_BOARD_ID}}': '',
     },
   },
@@ -88,6 +102,45 @@ const groups = [
     },
   },
   {
+    folder: 'laizys-taskflow',
+    overrides: {
+      '{{BOARD_ID}}': 'board-laizys-taskflow',
+      '{{GROUP_NAME}}': 'SEAF-SECTI - TaskFlow',
+      '{{GROUP_CONTEXT}}': "Laizys's tasks (private standup channel)",
+      '{{GROUP_JID}}': '120363425774136187@g.us',
+      '{{CONTROL_GROUP_HINT}}': '',
+      '{{HIERARCHY_LEVEL}}': '2',
+      '{{PARENT_BOARD_ID}}': 'board-sec-taskflow',
+      '{{MANAGER_NAME}}': 'Laizys',
+    },
+  },
+  {
+    folder: 'thiago-taskflow',
+    overrides: {
+      '{{BOARD_ID}}': 'board-thiago-taskflow',
+      '{{GROUP_NAME}}': 'SETD-SECTI - TaskFlow',
+      '{{GROUP_CONTEXT}}': "Thiago's tasks (private standup channel)",
+      '{{GROUP_JID}}': '120363423211033081@g.us',
+      '{{CONTROL_GROUP_HINT}}': '',
+      '{{HIERARCHY_LEVEL}}': '2',
+      '{{PARENT_BOARD_ID}}': 'board-sec-taskflow',
+      '{{MANAGER_NAME}}': 'Thiago',
+    },
+  },
+  {
+    folder: 'setec-secti-taskflow',
+    overrides: {
+      '{{BOARD_ID}}': 'board-setec-secti-taskflow',
+      '{{GROUP_NAME}}': 'SETEC-SECTI - TaskFlow',
+      '{{GROUP_CONTEXT}}': "Rafael's tasks (private standup channel)",
+      '{{GROUP_JID}}': '120363408810515104@g.us',
+      '{{CONTROL_GROUP_HINT}}': '',
+      '{{HIERARCHY_LEVEL}}': '2',
+      '{{PARENT_BOARD_ID}}': 'board-sec-taskflow',
+      '{{MANAGER_NAME}}': 'Rafael',
+    },
+  },
+  {
     folder: 'ci-seci-taskflow',
     overrides: {
       '{{BOARD_ID}}': 'board-ci-seci-taskflow',
@@ -98,6 +151,18 @@ const groups = [
       '{{HIERARCHY_LEVEL}}': '3',
       '{{PARENT_BOARD_ID}}': 'board-seci-taskflow',
       '{{MANAGER_NAME}}': 'Mauro',
+    },
+  },
+  {
+    folder: 'test-taskflow',
+    overrides: {
+      '{{BOARD_ID}}': 'board-test-taskflow',
+      '{{GROUP_NAME}}': 'TEST',
+      '{{GROUP_CONTEXT}}': 'Test group for development',
+      '{{GROUP_JID}}': '120363424971175850@g.us',
+      '{{CONTROL_GROUP_HINT}}': '',
+      '{{HIERARCHY_LEVEL}}': '0',
+      '{{PARENT_BOARD_ID}}': '',
     },
   },
 ];
