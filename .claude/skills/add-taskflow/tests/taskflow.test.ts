@@ -3367,6 +3367,163 @@ describe('meeting notes', () => {
     });
   });
 
+  describe('meeting note stable author identity', () => {
+    it('includes author_actor_type and author_actor_id for board person notes', () => {
+      // Create a meeting, add a note, verify the note JSON shape
+      const createResult = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Test Meeting',
+        participants: ['Giovanni'],
+        scheduled_at: '2026-03-12T14:00:00Z',
+        sender_name: 'Alexandre',
+      });
+      expect(createResult.success).toBe(true);
+
+      const updateResult = engine.update({
+        board_id: BOARD_ID,
+        task_id: createResult.task_id!,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Test agenda item' },
+      });
+      expect(updateResult.success).toBe(true);
+
+      // Read the task and check note shape
+      const task = db.prepare(`SELECT notes FROM tasks WHERE id = ?`).get(createResult.task_id!) as any;
+      const notes = JSON.parse(task.notes);
+      expect(notes[0].author_actor_type).toBe('board_person');
+      expect(notes[0].author_actor_id).toBeTruthy(); // person_id for Alexandre
+      expect(notes[0].author_display_name).toBeTruthy();
+      expect(notes[0].by).toBe('Alexandre'); // legacy field preserved
+    });
+
+    it('participant can edit own note (stable identity match)', () => {
+      const createResult = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Auth test meeting',
+        participants: ['Giovanni'],
+        scheduled_at: '2026-03-12T14:00:00Z',
+        sender_name: 'Alexandre',
+      });
+      const meetingId = createResult.task_id!;
+
+      // Giovanni adds a note
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Giovanni',
+        updates: { add_note: 'Giovanni note' },
+      });
+
+      // Giovanni edits own note — should succeed
+      const editResult = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Giovanni',
+        updates: { edit_note: { id: 1, text: 'Updated Giovanni note' } },
+      });
+      expect(editResult.success).toBe(true);
+    });
+
+    it('participant cannot edit another person note (stable identity check)', () => {
+      const createResult = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Auth test meeting 2',
+        participants: ['Giovanni'],
+        scheduled_at: '2026-03-12T14:00:00Z',
+        sender_name: 'Alexandre',
+      });
+      const meetingId = createResult.task_id!;
+
+      // Alexandre adds a note
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Manager note' },
+      });
+
+      // Giovanni tries to edit Alexandre's note — should fail
+      const editResult = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Giovanni',
+        updates: { edit_note: { id: 1, text: 'Tampered note' } },
+      });
+      expect(editResult.success).toBe(false);
+      expect(editResult.error).toContain('Permission denied');
+    });
+
+    it('participant can remove own note (stable identity match)', () => {
+      const createResult = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Remove auth test',
+        participants: ['Giovanni'],
+        scheduled_at: '2026-03-12T14:00:00Z',
+        sender_name: 'Alexandre',
+      });
+      const meetingId = createResult.task_id!;
+
+      // Giovanni adds a note
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Giovanni',
+        updates: { add_note: 'Giovanni note to remove' },
+      });
+
+      // Giovanni removes own note — should succeed
+      const removeResult = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Giovanni',
+        updates: { remove_note: 1 },
+      });
+      expect(removeResult.success).toBe(true);
+    });
+
+    it('legacy notes without author_actor_id can only be edited by organizer/manager', () => {
+      const createResult = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Legacy note test',
+        participants: ['Giovanni'],
+        scheduled_at: '2026-03-12T14:00:00Z',
+        sender_name: 'Alexandre',
+      });
+      const meetingId = createResult.task_id!;
+
+      // Directly insert a legacy note (no author_actor_id) as Giovanni
+      db.prepare(`UPDATE tasks SET notes = ?, next_note_id = 2 WHERE board_id = ? AND id = ?`).run(
+        JSON.stringify([{ id: 1, text: 'Legacy note', at: new Date().toISOString(), by: 'Giovanni' }]),
+        BOARD_ID,
+        meetingId,
+      );
+
+      // Giovanni tries to edit the legacy note — should fail (no author_actor_id)
+      const editResult = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Giovanni',
+        updates: { edit_note: { id: 1, text: 'Tampered legacy' } },
+      });
+      expect(editResult.success).toBe(false);
+      expect(editResult.error).toContain('Permission denied');
+
+      // Alexandre (manager/organizer) can still edit it
+      const mgrEditResult = engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: { edit_note: { id: 1, text: 'Manager-corrected legacy' } },
+      });
+      expect(mgrEditResult.success).toBe(true);
+    });
+  });
+
   describe('move meeting', () => {
     let meetingId: string;
 

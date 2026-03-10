@@ -2900,8 +2900,14 @@ export class TaskflowEngine {
           return { success: false, error: `Note #${updates.remove_note} not found.` };
         }
         // Meeting note authorization: only author/organizer/manager can remove
-        if (task.type === 'meeting' && !isMgr && !isAssignee && notes[idx].by !== params.sender_name) {
-          return { success: false, error: `Permission denied: only the note author, organizer, or manager can remove note #${updates.remove_note}.` };
+        if (task.type === 'meeting' && !isMgr && !isAssignee) {
+          const noteAny = notes[idx] as any;
+          const isNoteAuthor =
+            !!noteAny.author_actor_id &&
+            noteAny.author_actor_id === senderPersonId;
+          if (!isNoteAuthor) {
+            return { success: false, error: `Permission denied: only the note author, organizer, or manager can remove note #${updates.remove_note}.` };
+          }
         }
         const removedId = notes[idx].id;
         notes.splice(idx, 1);
