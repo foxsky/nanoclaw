@@ -1109,6 +1109,22 @@ describe('taskflow skill package', () => {
     expect(placeholderList).not.toContain('board-secti-taskflow');
   });
 
+  it('generate-claude-md uses the root board for sec-secti control prompts', () => {
+    const script = fs.readFileSync(
+      path.join(skillDir, 'add/scripts/generate-claude-md.mjs'),
+      'utf-8',
+    );
+    const secSectiBlock =
+      script.match(/folder: 'sec-secti'[\s\S]*?folder: 'seci-taskflow'/)?.[0] ??
+      '';
+
+    expect(secSectiBlock).toContain("'{{BOARD_ID}}': 'board-sec-taskflow'");
+    expect(secSectiBlock).toContain('You operate the root board "SEC - TaskFlow"');
+    expect(secSectiBlock).toContain('team group "SECTI - TaskFlow" is a child board of this root');
+    expect(secSectiBlock).not.toContain("'{{BOARD_ID}}': 'board-secti-taskflow'");
+    expect(secSectiBlock).not.toContain('You share the same board as the team group "SECTI - TaskFlow"');
+  });
+
   it('SKILL.md avoids person-specific setup examples in generic instructions', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
     expect(skillMd).not.toContain('"Miguel"');
@@ -5936,5 +5952,145 @@ describe('occurrence key cascade on reschedule', () => {
     expect(grant).toBeTruthy();
     // Revoked grant should retain the original occurrence_scheduled_at
     expect(grant.occurrence_scheduled_at).toBe('2026-03-12T14:00:00Z');
+  });
+});
+
+describe('accept_external_invite', () => {
+  let db: Database.Database;
+  let engine: TaskflowEngine;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    seedTestDb(db, BOARD_ID);
+    engine = new TaskflowEngine(db, BOARD_ID);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function createMeetingWithExternalParticipant(): { meetingId: string; externalId: string } {
+    const result = engine.create({
+      board_id: BOARD_ID,
+      type: 'meeting',
+      title: 'Reunião de Alinhamento',
+      scheduled_at: '2026-03-20T14:00:00Z',
+      participants: ['Giovanni'],
+      sender_name: 'Alexandre',
+    });
+    const meetingId = result.task_id!;
+
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        add_external_participant: { name: 'Carlos Externo', phone: '5585988887777' },
+      },
+    });
+
+    const contact = db.prepare(
+      `SELECT external_id FROM external_contacts WHERE phone = '5585988887777'`
+    ).get() as { external_id: string };
+
+    return { meetingId, externalId: contact.external_id };
+  }
+
+  it('marks grant as accepted', () => {
+    const { meetingId, externalId } = createMeetingWithExternalParticipant();
+
+    const result = engine.admin({
+      board_id: BOARD_ID,
+      action: 'accept_external_invite',
+      sender_name: '',
+      task_id: meetingId,
+      sender_external_id: externalId,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain(meetingId);
+
+    const grant = db.prepare(
+      `SELECT * FROM meeting_external_participants WHERE meeting_task_id = ? AND external_id = ?`
+    ).get(meetingId, externalId) as any;
+
+    expect(grant).toBeTruthy();
+    expect(grant.invite_status).toBe('accepted');
+    expect(grant.accepted_at).toBeTruthy();
+
+    const history = db.prepare(
+      `SELECT * FROM task_history WHERE task_id = ? AND action = 'external_invite_accepted'`
+    ).get(meetingId) as any;
+
+    expect(history).toBeTruthy();
+    expect(history.by).toBe(externalId);
+  });
+
+  it('rejects if no pending/invited grant exists', () => {
+    const { meetingId } = createMeetingWithExternalParticipant();
+
+    const result = engine.admin({
+      board_id: BOARD_ID,
+      action: 'accept_external_invite',
+      sender_name: '',
+      task_id: meetingId,
+      sender_external_id: 'ext-nonexistent-id',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('No pending invite found');
+  });
+
+  it('rejects if sender_external_id is missing', () => {
+    const { meetingId } = createMeetingWithExternalParticipant();
+
+    const result = engine.admin({
+      board_id: BOARD_ID,
+      action: 'accept_external_invite',
+      sender_name: '',
+      task_id: meetingId,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Missing sender_external_id');
+  });
+
+  it('rejects if task_id is missing', () => {
+    const { externalId } = createMeetingWithExternalParticipant();
+
+    const result = engine.admin({
+      board_id: BOARD_ID,
+      action: 'accept_external_invite',
+      sender_name: '',
+      sender_external_id: externalId,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Missing task_id');
+  });
+
+  it('rejects if grant was already revoked', () => {
+    const { meetingId, externalId } = createMeetingWithExternalParticipant();
+
+    // Revoke the participant
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        remove_external_participant: { external_id: externalId },
+      },
+    });
+
+    const result = engine.admin({
+      board_id: BOARD_ID,
+      action: 'accept_external_invite',
+      sender_name: '',
+      task_id: meetingId,
+      sender_external_id: externalId,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('No pending invite found');
   });
 });

@@ -550,6 +550,15 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       }
     }
 
+    function stripDispatchOnlyFields(
+      result: Record<string, unknown>,
+    ): Record<string, unknown> {
+      const sanitized = { ...result };
+      delete sanitized.notifications;
+      delete sanitized.parent_notification;
+      return sanitized;
+    }
+
     server.tool(
       'taskflow_query',
       'Query the TaskFlow board. Returns structured data for board views, task details, search, statistics, etc.',
@@ -606,7 +615,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         const result = engine.create({ ...args, board_id: boardId });
         if (result.success) dispatchNotifications(result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          content: [{ type: 'text' as const, text: JSON.stringify(stripDispatchOnlyFields(result)) }],
           isError: !result.success,
         };
       },
@@ -626,7 +635,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         const result = engine.move({ ...args, board_id: boardId });
         if (result.success) dispatchNotifications(result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          content: [{ type: 'text' as const, text: JSON.stringify(stripDispatchOnlyFields(result)) }],
           isError: !result.success,
         };
       },
@@ -646,7 +655,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         const result = engine.reassign({ ...args, board_id: boardId });
         if (result.success) dispatchNotifications(result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          content: [{ type: 'text' as const, text: JSON.stringify(stripDispatchOnlyFields(result)) }],
           isError: !result.success,
         };
       },
@@ -704,7 +713,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         const result = engine.update({ ...args, board_id: boardId });
         if (result.success) dispatchNotifications(result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          content: [{ type: 'text' as const, text: JSON.stringify(stripDispatchOnlyFields(result)) }],
           isError: !result.success,
         };
       },
@@ -733,7 +742,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       'taskflow_admin',
       'Board administration: register/remove people, manage roles, set WIP limits, cancel/restore tasks, process inbox, manage holidays.',
       {
-        action: z.enum(['register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin', 'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays', 'process_minutes', 'process_minutes_decision']).describe('Admin action'),
+        action: z.enum(['register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin', 'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays', 'process_minutes', 'process_minutes_decision', 'accept_external_invite']).describe('Admin action'),
         sender_name: z.string().describe('Name of the person performing the admin action'),
         person_name: z.string().optional().describe('Person name (for person-related actions)'),
         phone: z.string().optional().describe('Phone number (for register_person)'),
@@ -756,6 +765,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         holidays: z.array(z.object({ date: z.string(), label: z.string().optional() })).optional().describe('Holiday entries with date (YYYY-MM-DD) and optional label (for manage_holidays add/set_year)'),
         holiday_dates: z.array(z.string()).optional().describe('Holiday dates to remove (YYYY-MM-DD) (for manage_holidays remove)'),
         holiday_year: z.number().optional().describe('Year filter for listing or target year for set_year (for manage_holidays list/set_year)'),
+        sender_external_id: z.string().optional().describe('External contact ID when the caller is an external participant'),
       },
       async (args: any) => {
         const result = engine.admin({ ...args, board_id: boardId });
@@ -786,7 +796,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         }
         if (result.success) dispatchNotifications(result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          content: [{ type: 'text' as const, text: JSON.stringify(stripDispatchOnlyFields(result)) }],
           isError: !result.success,
         };
       },

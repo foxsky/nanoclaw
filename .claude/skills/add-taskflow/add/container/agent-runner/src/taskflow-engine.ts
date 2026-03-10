@@ -200,7 +200,7 @@ export interface UndoResult extends TaskflowResult {
 
 export interface AdminParams {
   board_id: string;
-  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision';
+  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision' | 'accept_external_invite';
   sender_name: string;
   person_name?: string;
   phone?: string;
@@ -223,6 +223,7 @@ export interface AdminParams {
     assignee?: string;
     labels?: string[];
   };
+  sender_external_id?: string;
 }
 
 export interface AdminResult extends TaskflowResult {
@@ -4818,6 +4819,7 @@ export class TaskflowEngine {
     try {
       return this.db.transaction(() => {
       /* --- Permission check: process_inbox allows manager or delegate; all others require manager --- */
+      const isExternalInviteAccept = params.action === 'accept_external_invite';
       if (params.action === 'process_inbox') {
         if (!this.isManagerOrDelegate(params.sender_name)) {
           return {
@@ -4825,6 +4827,11 @@ export class TaskflowEngine {
             error: `Permission denied: "${params.sender_name}" is not a manager or delegate.`,
           };
         }
+      } else if (isExternalInviteAccept) {
+        if (!params.sender_external_id) {
+          return { success: false, error: 'Missing sender_external_id' };
+        }
+        // No manager check — action-specific grant validation happens in the case body
       } else if (!this.isManager(params.sender_name)) {
         return {
           success: false,
@@ -5385,6 +5392,37 @@ export class TaskflowEngine {
             data: { created_task_id: createResult.task_id, note_id: params.note_id },
             ...(resultNotifications.length > 0 ? { notifications: resultNotifications } : {}),
           };
+        }
+
+        case 'accept_external_invite': {
+          if (!params.task_id) return { success: false, error: 'Missing task_id' };
+          if (!params.sender_external_id) return { success: false, error: 'Missing sender_external_id' };
+
+          const task = this.requireTask(params.task_id);
+          if (task.type !== 'meeting') return { success: false, error: 'Not a meeting task.' };
+
+          const grant = this.db.prepare(
+            `SELECT rowid, invite_status FROM meeting_external_participants
+             WHERE board_id = ? AND meeting_task_id = ? AND external_id = ?
+               AND invite_status IN ('pending', 'invited')
+             ORDER BY occurrence_scheduled_at DESC LIMIT 1`
+          ).get(this.boardId, task.id, params.sender_external_id) as any;
+
+          if (!grant) return { success: false, error: 'No pending invite found for this meeting.' };
+
+          const now = new Date().toISOString();
+          this.db.prepare(
+            `UPDATE meeting_external_participants
+             SET invite_status = 'accepted', accepted_at = ?, updated_at = ?
+             WHERE rowid = ?`
+          ).run(now, now, grant.rowid);
+
+          this.db.prepare(
+            `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+             VALUES (?, ?, 'external_invite_accepted', ?, ?, ?)`
+          ).run(this.boardId, task.id, params.sender_external_id, now, 'External participant accepted invite');
+
+          return { success: true, message: `Convite aceito para ${task.id} — ${task.title}` };
         }
 
         default:
