@@ -95,6 +95,10 @@ export interface Channel {
     subject: string,
     participants: string[],
   ): Promise<{ jid: string; subject: string }>;
+  // Optional: resolve a phone number to a JID. Channels that support it implement it.
+  resolvePhoneJid?(phone: string): Promise<string>;
+  // Optional: sync groups from the channel. Channels that support it implement it.
+  syncGroups?(force: boolean): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages
