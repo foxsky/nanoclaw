@@ -361,6 +361,23 @@ export function getNewMessages(
   return { messages: rows, newTimestamp };
 }
 
+export function getDmMessages(
+  lastTimestamp: string,
+  botPrefix: string,
+): NewMessage[] {
+  const sql = `
+    SELECT m.id, m.chat_jid, m.sender, m.sender_name, m.content, m.timestamp
+    FROM messages m
+    JOIN chats c ON c.jid = m.chat_jid
+    WHERE m.timestamp > ? AND c.is_group = 0
+      AND m.is_bot_message = 0 AND m.is_from_me = 0
+      AND m.content NOT LIKE ?
+      AND m.content != '' AND m.content IS NOT NULL
+    ORDER BY m.timestamp
+  `;
+  return db.prepare(sql).all(lastTimestamp, `${botPrefix}:%`) as NewMessage[];
+}
+
 export function getMessagesSince(
   chatJid: string,
   sinceTimestamp: string,

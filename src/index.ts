@@ -5,6 +5,7 @@ import {
   ASSISTANT_NAME,
   buildTriggerPattern,
   CREDENTIAL_PROXY_PORT,
+  DATA_DIR,
   getGroupSenderName,
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
@@ -34,6 +35,7 @@ import {
   getAllRegisteredGroups,
   getAllSessions,
   getAllTasks,
+  getDmMessages,
   getMessagesSince,
   getNewMessages,
   getRouterState,
@@ -62,6 +64,7 @@ import {
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
+import { resolveExternalDm, getTaskflowDb } from './dm-routing.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -84,16 +87,19 @@ function hasTriggerMessage(
 }
 
 let lastTimestamp = '';
+let lastDmTimestamp = '';
 let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
+const pendingExternalDmPrompts = new Map<string, Array<{ timestamp: string; prompt: string }>>();
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
+  lastDmTimestamp = getRouterState('last_dm_timestamp') || '';
   const agentTs = getRouterState('last_agent_timestamp');
   try {
     lastAgentTimestamp = agentTs ? JSON.parse(agentTs) : {};
@@ -111,6 +117,7 @@ function loadState(): void {
 
 function saveState(): void {
   setRouterState('last_timestamp', lastTimestamp);
+  setRouterState('last_dm_timestamp', lastDmTimestamp);
   setRouterState('last_agent_timestamp', JSON.stringify(lastAgentTimestamp));
 }
 
@@ -213,6 +220,47 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     sinceTimestamp,
     ASSISTANT_NAME,
   );
+
+  // Check for pending external DM prompts (trigger-bypassed path)
+  const pendingDms = pendingExternalDmPrompts.get(chatJid);
+  if (pendingDms && pendingDms.length > 0) {
+    const dmPrompt = pendingDms.map(p => p.prompt).join('\n\n');
+    pendingExternalDmPrompts.delete(chatJid);
+
+    // Advance cursor
+    const previousCursor = lastAgentTimestamp[chatJid] || '';
+    lastAgentTimestamp[chatJid] = pendingDms[pendingDms.length - 1].timestamp;
+    saveState();
+
+    logger.info(
+      { group: group.name, dmCount: pendingDms.length },
+      'Processing external DM prompts (trigger-bypassed)',
+    );
+
+    const channel = findChannel(channels, chatJid);
+    if (channel) await channel.setTyping?.(chatJid, true);
+
+    const output = await runAgent(group, dmPrompt, chatJid, async (result) => {
+      if (result.result) {
+        const raw = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
+        const text = stripInternalTags(raw);
+        if (text && channel) {
+          await channel.sendMessage(chatJid, text, getGroupSenderName(group.trigger));
+        }
+      }
+    });
+
+    if (channel) await channel.setTyping?.(chatJid, false);
+
+    if (output === 'error') {
+      // Rollback: restore pending DMs for retry
+      pendingExternalDmPrompts.set(chatJid, pendingDms);
+      lastAgentTimestamp[chatJid] = previousCursor;
+      saveState();
+      return false;
+    }
+    return true;
+  }
 
   if (missedMessages.length === 0) return true;
 
@@ -486,6 +534,57 @@ async function startMessageLoop(): Promise<void> {
             queue.enqueueMessageCheck(chatJid);
           }
         }
+      }
+
+      // Check for DM messages from external contacts
+      const dmMessages = getDmMessages(lastDmTimestamp, ASSISTANT_NAME);
+      if (dmMessages.length > 0) {
+        const taskflowDb = getTaskflowDb(DATA_DIR);
+        if (taskflowDb) {
+          for (const msg of dmMessages) {
+            const route = resolveExternalDm(taskflowDb, msg.chat_jid);
+            if (!route) continue;
+
+            if (route.needsDisambiguation) {
+              // More than one active grant: send disambiguation prompt via DM
+              const meetingList = route.grants.map(g => g.meetingTaskId).join(', ');
+              const channel = findChannel(channels, msg.chat_jid);
+              if (channel) {
+                channel.sendMessage(
+                  msg.chat_jid,
+                  `Você participa de várias reuniões (${meetingList}). Inclua o ID da reunião no comando, ex: "pauta M1".`,
+                );
+              }
+              continue;
+            }
+
+            const groupJid = route.groupJid;
+            const group = registeredGroups[groupJid];
+            if (!group) {
+              logger.warn({ dmJid: msg.chat_jid, groupJid }, 'DM route target group not registered');
+              continue;
+            }
+
+            // Format as external participant message with metadata
+            const formatted = formatMessages([msg]);
+            const externalContext = `[External participant: ${route.displayName} (${route.externalId}), active grants: ${route.grants.map(g => g.meetingTaskId).join(', ')}]\n${formatted}`;
+
+            // Try piping to active container first.
+            if (queue.sendMessage(groupJid, externalContext)) {
+              logger.info({ dmJid: msg.chat_jid, groupJid }, 'DM piped to active container');
+            } else {
+              // No active container — stage prompt and enqueue for trigger-bypassed processing
+              const staged = pendingExternalDmPrompts.get(groupJid) ?? [];
+              staged.push({ timestamp: msg.timestamp, prompt: externalContext });
+              pendingExternalDmPrompts.set(groupJid, staged);
+              queue.enqueueMessageCheck(groupJid);
+              logger.info({ dmJid: msg.chat_jid, groupJid }, 'DM staged for trigger-bypassed processing and enqueued');
+            }
+          }
+        }
+        // Advance DM cursor
+        lastDmTimestamp = dmMessages[dmMessages.length - 1].timestamp;
+        saveState();
       }
     } catch (err) {
       logger.error({ err }, 'Error in message loop');

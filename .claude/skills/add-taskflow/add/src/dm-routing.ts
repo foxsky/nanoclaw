@@ -1,4 +1,19 @@
-import type Database from 'better-sqlite3';
+import Database from 'better-sqlite3';
+import path from 'path';
+
+let _taskflowDb: Database.Database | null = null;
+
+/** Lazily open taskflow.db and cache the handle. Writable access is required for lazy expiry/backfill. */
+export function getTaskflowDb(dataDir: string): Database.Database | null {
+  if (_taskflowDb) return _taskflowDb;
+  const dbPath = path.join(dataDir, 'taskflow', 'taskflow.db');
+  try {
+    _taskflowDb = new Database(dbPath);
+    return _taskflowDb;
+  } catch {
+    return null;
+  }
+}
 
 export interface DmGrant {
   boardId: string;
