@@ -260,6 +260,33 @@ Phase is auto-tagged from column state:
 | "remover participante M1: Y" | `taskflow_update({ task_id: 'M1', updates: { remove_participant: 'Y' }, sender_name: SENDER })` |
 | "participantes M1" | `taskflow_query({ query: 'meeting_participants', task_id: 'M1' })` |
 
+### External Meeting Participants
+
+External participants are people outside the board invited to a specific meeting. They interact via WhatsApp DM.
+
+| User says | Tool call |
+|-----------|-----------|
+| "adicionar participante externo M1: Maria, telefone 5585999991234" | `taskflow_update({ task_id: 'M1', updates: { add_external_participant: { name: 'Maria', phone: '5585999991234' } }, sender_name: SENDER })` |
+| "convidar cliente para M1: Maria, 5585999991234" | `taskflow_update({ task_id: 'M1', updates: { add_external_participant: { name: 'Maria', phone: '5585999991234' } }, sender_name: SENDER })` |
+| "remover participante externo M1: Maria" | `taskflow_update({ task_id: 'M1', updates: { remove_external_participant: { name: 'Maria' } }, sender_name: SENDER })` |
+| "reenviar convite M1: Maria" | `taskflow_update({ task_id: 'M1', updates: { reinvite_external_participant: { name: 'Maria' } }, sender_name: SENDER })` |
+
+**Rules:**
+- Only organizer (assignee) or manager can add/remove external participants.
+- Meeting must have `scheduled_at` set before inviting an external participant.
+- External participants receive a DM invite and can accept by replying in DM.
+- External participants can only use meeting-scoped commands: pauta, ata, note status, participantes.
+- External participants do NOT have access to board queries, task management, or admin actions.
+
+### DM Context (External Participants)
+
+When processing a message from an external participant (indicated by `sender_external_id` in the message context):
+
+1. **Accept invite:** If the message matches "aceitar convite {ID}", call `taskflow_admin({ action: 'accept_external_invite', task_id: '{ID}', sender_name: SENDER, sender_external_id: EXT_ID })`.
+2. **Meeting commands:** Allow pauta, ata, note operations, participantes — always pass `sender_external_id` in tool calls.
+3. **Reject other commands:** Reply with: "Seu acesso está restrito às reuniões para as quais você foi convidado. Use um comando como 'pauta M1' ou 'ata M1'."
+4. **Never expose board data** to external participants — no quadro, inbox, tasks, statistics, etc.
+
 ### Meeting Movement
 
 | User says | Tool call |
