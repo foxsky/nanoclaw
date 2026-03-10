@@ -1331,14 +1331,16 @@ export class TaskflowEngine {
         });
       }
     }
-    // External participants with accepted grants
+    // External participants with accepted grants (exclude past-expiry even if not yet lazily updated)
+    const recipientNow = new Date().toISOString();
     const externals = this.db.prepare(
       `SELECT ec.external_id, ec.display_name, ec.direct_chat_jid, ec.phone
        FROM meeting_external_participants mep
        JOIN external_contacts ec ON ec.external_id = mep.external_id
        WHERE mep.board_id = ? AND mep.meeting_task_id = ?
-         AND mep.invite_status = 'accepted'`,
-    ).all(this.boardId, task.id) as Array<{
+         AND mep.invite_status = 'accepted'
+         AND (mep.access_expires_at IS NULL OR mep.access_expires_at >= ?)`,
+    ).all(this.boardId, task.id, recipientNow) as Array<{
       external_id: string; display_name: string; direct_chat_jid: string | null; phone: string;
     }>;
     for (const ext of externals) {
@@ -2955,6 +2957,9 @@ export class TaskflowEngine {
         }
         // Meeting note authorization: only author/organizer/manager can edit
         if (task.type === 'meeting' && !isMgr && !isAssignee) {
+          if (isExternalSender && !hasExternalGrant) {
+            return { success: false, error: `Permission denied: "${params.sender_name}" does not have active access to this meeting.` };
+          }
           const isNoteAuthor = note.author_actor_id
             ? (note.author_actor_id === senderPersonId || note.author_actor_id === params.sender_external_id)
             : false;
@@ -2982,6 +2987,9 @@ export class TaskflowEngine {
         }
         // Meeting note authorization: only author/organizer/manager can remove
         if (task.type === 'meeting' && !isMgr && !isAssignee) {
+          if (isExternalSender && !hasExternalGrant) {
+            return { success: false, error: `Permission denied: "${params.sender_name}" does not have active access to this meeting.` };
+          }
           const noteAny = notes[idx] as any;
           const isNoteAuthor = noteAny.author_actor_id
             ? (noteAny.author_actor_id === senderPersonId || noteAny.author_actor_id === params.sender_external_id)

@@ -3807,13 +3807,17 @@ describe('meeting notes', () => {
 
   describe('query meetings', () => {
     let meetingId: string;
+    // Use dynamic future date (7 days ahead) so tests don't become flaky
+    const nextWeek = new Date(Date.now() + 7 * 86400000);
+    const nextWeekISO = nextWeek.toISOString().slice(0, 19) + 'Z';
+    const nextWeekDate = nextWeek.toISOString().slice(0, 10);
 
     beforeEach(() => {
       const r = engine.create({
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'Weekly sync',
-        scheduled_at: '2026-03-15T17:00:00Z',
+        scheduled_at: nextWeekISO,
         participants: ['Giovanni'],
         sender_name: 'Alexandre',
       });
@@ -3896,11 +3900,13 @@ describe('meeting notes', () => {
     });
 
     it('upcoming_meetings returns meetings sorted by scheduled_at', () => {
+      // Use a dynamic future date so this test doesn't become flaky
+      const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 19) + 'Z';
       engine.create({
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'Earlier meeting',
-        scheduled_at: '2026-03-10T10:00:00Z',
+        scheduled_at: tomorrow,
         sender_name: 'Alexandre',
       });
       const result = engine.query({ query: 'upcoming_meetings' });
@@ -4025,7 +4031,7 @@ describe('meeting notes', () => {
     });
 
     it('meeting_minutes_at returns archived occurrence by date', () => {
-      const result = engine.query({ query: 'meeting_minutes_at', task_id: meetingId, at: '2026-03-15' });
+      const result = engine.query({ query: 'meeting_minutes_at', task_id: meetingId, at: nextWeekDate });
       expect(result.success).toBe(true);
     });
   });
