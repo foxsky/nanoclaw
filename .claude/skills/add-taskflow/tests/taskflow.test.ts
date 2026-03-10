@@ -5051,3 +5051,72 @@ describe('meeting notes', () => {
     });
   });
 });
+
+describe('external contacts schema', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS external_contacts (
+        external_id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        phone TEXT NOT NULL UNIQUE,
+        direct_chat_jid TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_seen_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS meeting_external_participants (
+        board_id TEXT NOT NULL,
+        meeting_task_id TEXT NOT NULL,
+        occurrence_scheduled_at TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        invite_status TEXT NOT NULL DEFAULT 'pending',
+        invited_at TEXT,
+        accepted_at TEXT,
+        revoked_at TEXT,
+        access_expires_at TEXT,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (board_id, meeting_task_id, occurrence_scheduled_at, external_id)
+      );
+    `);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('creates external_contacts table', () => {
+    const row = db.prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='external_contacts'`
+    ).get();
+    expect(row).toBeTruthy();
+  });
+
+  it('creates meeting_external_participants table', () => {
+    const row = db.prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='meeting_external_participants'`
+    ).get();
+    expect(row).toBeTruthy();
+  });
+
+  it('enforces phone uniqueness on external_contacts', () => {
+    db.exec(`INSERT INTO external_contacts VALUES ('ext-1', 'Maria', '5585999991234', NULL, 'active', '2026-01-01', '2026-01-01', NULL)`);
+    expect(() => {
+      db.exec(`INSERT INTO external_contacts VALUES ('ext-2', 'Maria Copy', '5585999991234', NULL, 'active', '2026-01-01', '2026-01-01', NULL)`);
+    }).toThrow();
+  });
+
+  it('enforces composite PK on meeting_external_participants', () => {
+    db.exec(`INSERT INTO external_contacts VALUES ('ext-1', 'Maria', '5585999991234', NULL, 'active', '2026-01-01', '2026-01-01', NULL)`);
+    db.exec(`INSERT INTO meeting_external_participants VALUES ('board-1', 'M1', '2026-03-12T14:00:00Z', 'ext-1', 'pending', NULL, NULL, NULL, NULL, 'person-1', '2026-01-01', '2026-01-01')`);
+    expect(() => {
+      db.exec(`INSERT INTO meeting_external_participants VALUES ('board-1', 'M1', '2026-03-12T14:00:00Z', 'ext-1', 'invited', NULL, NULL, NULL, NULL, 'person-1', '2026-01-01', '2026-01-01')`);
+    }).toThrow();
+  });
+});

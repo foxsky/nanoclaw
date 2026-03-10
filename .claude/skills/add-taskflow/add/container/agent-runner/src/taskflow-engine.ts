@@ -573,6 +573,37 @@ export class TaskflowEngine {
       )
     `);
 
+    // External contacts and meeting grants (cross-board, no board_id FK on external_contacts)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS external_contacts (
+        external_id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        phone TEXT NOT NULL UNIQUE,
+        direct_chat_jid TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_seen_at TEXT
+      )
+    `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS meeting_external_participants (
+        board_id TEXT NOT NULL,
+        meeting_task_id TEXT NOT NULL,
+        occurrence_scheduled_at TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        invite_status TEXT NOT NULL DEFAULT 'pending',
+        invited_at TEXT,
+        accepted_at TEXT,
+        revoked_at TEXT,
+        access_expires_at TEXT,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (board_id, meeting_task_id, occurrence_scheduled_at, external_id)
+      )
+    `);
+
     // Migrate legacy per-column counters into the new table (one-time)
     const hasLegacy = (() => {
       try {
