@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import Database from 'better-sqlite3';
+import { pathToFileURL } from 'url';
 import { TaskflowEngine, normalizePhone } from '../add/container/agent-runner/src/taskflow-engine.js';
 
 const BOARD_ID = 'board-test-001';
@@ -88,6 +89,38 @@ describe('taskflow skill package', () => {
 
     expect(skillMd).toContain('store both local and UTC schedules in `board_runtime_config`');
     expect(skillMd).not.toContain('`TASKS.json` meta for standard / separate boards');
+  });
+
+  it('generated sec-secti prompt stays aligned to the root board mapping', async () => {
+    const generatorModule = await import(
+      pathToFileURL(path.join(skillDir, 'add', 'scripts', 'generate-claude-md.mjs')).href
+    );
+    const secGroup = generatorModule.groups.find((group: any) => group.folder === 'sec-secti');
+
+    expect(secGroup).toBeTruthy();
+    expect(secGroup.overrides['{{BOARD_ID}}']).toBe('board-sec-taskflow');
+
+    const generated = generatorModule.renderGroup(secGroup);
+    const committed = fs.readFileSync(path.join(skillDir, '..', '..', '..', 'groups', 'sec-secti', 'CLAUDE.md'), 'utf-8');
+
+    expect(generated).toBe(committed);
+    expect(committed).toContain("board-sec-taskflow");
+    expect(committed).not.toContain("board-secti-taskflow");
+  });
+
+  it('all generator-managed TaskFlow group prompts stay aligned to the current template output', async () => {
+    const generatorModule = await import(
+      pathToFileURL(path.join(skillDir, 'add', 'scripts', 'generate-claude-md.mjs')).href
+    );
+
+    const staleGroups = generatorModule.groups
+      .map((group: any) => {
+        const result = generatorModule.checkGroup(group);
+        return result.matches ? null : path.relative(path.join(skillDir, '..', '..', '..'), result.outputPath);
+      })
+      .filter(Boolean);
+
+    expect(staleGroups).toEqual([]);
   });
 
   it('SKILL.md people registration uses board_people for all topologies', () => {

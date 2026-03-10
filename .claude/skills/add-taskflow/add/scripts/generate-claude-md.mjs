@@ -37,7 +37,7 @@ const shared = {
 };
 
 // Group-specific values (each group has its own BOARD_ID, JID, context, etc.)
-const groups = [
+export const groups = [
   {
     folder: 'secti-taskflow',
     overrides: {
@@ -167,16 +167,59 @@ const groups = [
   },
 ];
 
-for (const group of groups) {
+export function renderGroup(group) {
   const replacements = { ...shared, ...group.overrides };
   let content = template;
   for (const [key, value] of Object.entries(replacements)) {
     content = content.split(key).join(value);
   }
+  return content;
+}
 
-  const outputDir = path.join(PROJECT_ROOT, 'groups', group.folder);
-  fs.mkdirSync(outputDir, { recursive: true });
-  const outputPath = path.join(outputDir, 'CLAUDE.md');
+export function getGroupOutputPath(group) {
+  return path.join(PROJECT_ROOT, 'groups', group.folder, 'CLAUDE.md');
+}
+
+export function writeGroup(group) {
+  const content = renderGroup(group);
+  const outputPath = getGroupOutputPath(group);
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, content, 'utf-8');
-  console.log(`Written: ${outputPath} (${content.length} bytes)`);
+  return { outputPath, content };
+}
+
+export function checkGroup(group) {
+  const outputPath = getGroupOutputPath(group);
+  const content = renderGroup(group);
+  const existing = fs.existsSync(outputPath) ? fs.readFileSync(outputPath, 'utf-8') : null;
+  return {
+    outputPath,
+    matches: existing === content,
+    exists: existing !== null,
+    content,
+  };
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const checkOnly = process.argv.includes('--check');
+  let staleCount = 0;
+
+  for (const group of groups) {
+    if (checkOnly) {
+      const result = checkGroup(group);
+      if (!result.matches) {
+        staleCount += 1;
+        console.error(`Stale: ${result.outputPath}`);
+      }
+      continue;
+    }
+
+    const { outputPath, content } = writeGroup(group);
+    console.log(`Written: ${outputPath} (${content.length} bytes)`);
+  }
+
+  if (checkOnly && staleCount > 0) {
+    console.error(`Found ${staleCount} stale generated TaskFlow prompt(s). Run generate-claude-md.mjs to refresh them.`);
+    process.exit(1);
+  }
 }
