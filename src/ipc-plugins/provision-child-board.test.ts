@@ -68,7 +68,7 @@ describe('provision_child_board IPC plugin', () => {
       sendMessage: sendMessage as IpcDeps['sendMessage'],
       registeredGroups: () => registeredGroups,
       registerGroup: registerGroup as IpcDeps['registerGroup'],
-      syncGroupMetadata: async () => {},
+      syncGroups: async () => {},
       getAvailableGroups: () => [],
       writeGroupsSnapshot: () => {},
       createGroup: createGroup as IpcDeps['createGroup'],

@@ -20,7 +20,7 @@ export interface IpcDeps {
   sendMessage: (jid: string, text: string, sender?: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
-  syncGroupMetadata: (force: boolean) => Promise<void>;
+  syncGroups: (force: boolean) => Promise<void>;
   getAvailableGroups: () => AvailableGroup[];
   writeGroupsSnapshot: (
     groupFolder: string,
@@ -229,7 +229,7 @@ const handleRefreshGroups: IpcHandler = async (
   const registeredGroups = deps.registeredGroups();
   if (isMain) {
     logger.info({ sourceGroup }, 'Group metadata refresh requested via IPC');
-    await deps.syncGroupMetadata(true);
+    await deps.syncGroups(true);
     const availableGroups = deps.getAvailableGroups();
     deps.writeGroupsSnapshot(
       sourceGroup,
