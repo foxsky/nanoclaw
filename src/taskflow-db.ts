@@ -466,9 +466,9 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(TASKFLOW_SCHEMA);
-  const taskColumns = db
-    .prepare(`PRAGMA table_info(tasks)`)
-    .all() as Array<{ name: string }>;
+  const taskColumns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{
+    name: string;
+  }>;
   const hasRequiresCloseApproval = taskColumns.some(
     (column) => column.name === 'requires_close_approval',
   );
@@ -479,7 +479,9 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   }
   if (!hasRequiresCloseApproval) {
     try {
-      db.exec('ALTER TABLE tasks ADD COLUMN requires_close_approval INTEGER NOT NULL DEFAULT 1');
+      db.exec(
+        'ALTER TABLE tasks ADD COLUMN requires_close_approval INTEGER NOT NULL DEFAULT 1',
+      );
     } catch {}
     db.exec(`
       UPDATE tasks

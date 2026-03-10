@@ -2079,7 +2079,7 @@ export class TaskflowEngine {
              SET invite_status = 'expired', updated_at = ?
              WHERE board_id = ? AND meeting_task_id = ?
                AND occurrence_scheduled_at = ?
-               AND invite_status IN ('invited', 'accepted')`,
+               AND invite_status IN ('pending', 'invited', 'accepted')`,
           )
           .run(now, this.taskBoardId(task), task.id, task.scheduled_at);
       }
@@ -3172,6 +3172,18 @@ export class TaskflowEngine {
         if (!note) {
           return { success: false, error: `Note #${updates.set_note_status.id} not found.` };
         }
+        // External participants can only change status of their own notes
+        if (isExternalSender && !isMgr && !isAssignee) {
+          const isNoteAuthor = note.author_actor_id
+            ? (
+                (note.author_actor_type === 'board_person' && note.author_actor_id === senderPersonId && !isExternalSender) ||
+                (note.author_actor_type === 'external_contact' && note.author_actor_id === params.sender_external_id)
+              )
+            : false;
+          if (!isNoteAuthor) {
+            return { success: false, error: `Permission denied: only the note author, organizer, or manager can change status of note #${updates.set_note_status.id}.` };
+          }
+        }
         note.status = updates.set_note_status.status;
         if (updates.set_note_status.status === 'open') {
           delete note.processed_at;
@@ -3275,12 +3287,14 @@ export class TaskflowEngine {
         // Create grant (upsert)
         const occurrenceScheduledAt = updates.scheduled_at ?? task.scheduled_at;
         const existingGrant = this.db.prepare(
-          `SELECT invite_status FROM meeting_external_participants
+          `SELECT invite_status, access_expires_at FROM meeting_external_participants
            WHERE board_id = ? AND meeting_task_id = ? AND occurrence_scheduled_at = ? AND external_id = ?`
-        ).get(this.boardId, task.id, occurrenceScheduledAt, externalId) as { invite_status: string } | undefined;
+        ).get(this.boardId, task.id, occurrenceScheduledAt, externalId) as { invite_status: string; access_expires_at: string | null } | undefined;
 
         if (existingGrant) {
-          if (existingGrant.invite_status === 'revoked' || existingGrant.invite_status === 'expired') {
+          const isExpiredByTime = (existingGrant.invite_status === 'invited' || existingGrant.invite_status === 'accepted')
+            && existingGrant.access_expires_at != null && existingGrant.access_expires_at < now;
+          if (existingGrant.invite_status === 'revoked' || existingGrant.invite_status === 'expired' || isExpiredByTime) {
             const freshExpiry = new Date(new Date(occurrenceScheduledAt).getTime() + ACCESS_WINDOW_MS).toISOString();
             this.db.prepare(
               `UPDATE meeting_external_participants
@@ -5549,26 +5563,27 @@ export class TaskflowEngine {
           const task = this.requireTask(params.task_id);
           if (task.type !== 'meeting') return { success: false, error: 'Not a meeting task.' };
 
+          const acceptNow = new Date().toISOString();
           const grant = this.db.prepare(
             `SELECT rowid, invite_status FROM meeting_external_participants
              WHERE board_id = ? AND meeting_task_id = ? AND external_id = ?
                AND invite_status IN ('pending', 'invited')
+               AND (access_expires_at IS NULL OR access_expires_at >= ?)
              ORDER BY occurrence_scheduled_at DESC LIMIT 1`
-          ).get(this.boardId, task.id, params.sender_external_id) as any;
+          ).get(this.boardId, task.id, params.sender_external_id, acceptNow) as any;
 
           if (!grant) return { success: false, error: 'No pending invite found for this meeting.' };
 
-          const now = new Date().toISOString();
           this.db.prepare(
             `UPDATE meeting_external_participants
              SET invite_status = 'accepted', accepted_at = ?, updated_at = ?
              WHERE rowid = ?`
-          ).run(now, now, grant.rowid);
+          ).run(acceptNow, acceptNow, grant.rowid);
 
           this.db.prepare(
             `INSERT INTO task_history (board_id, task_id, action, by, at, details)
              VALUES (?, ?, 'external_invite_accepted', ?, ?, ?)`
-          ).run(this.boardId, task.id, params.sender_external_id, now, 'External participant accepted invite');
+          ).run(this.boardId, task.id, params.sender_external_id, acceptNow, 'External participant accepted invite');
 
           return { success: true, message: `Convite aceito para ${task.id} — ${task.title}` };
         }

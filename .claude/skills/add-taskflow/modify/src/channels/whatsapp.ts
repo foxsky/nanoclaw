@@ -200,9 +200,12 @@ export class WhatsAppChannel implements Channel {
             isGroup,
           );
 
-          // Only deliver full message for registered groups
+          // Deliver full message for registered groups and DM chats.
+          // DMs (non-group) must also be stored so getDmMessages() can
+          // find inbound messages from external meeting participants.
           const groups = this.opts.registeredGroups();
-          if (groups[chatJid]) {
+          const isDm = !isGroup;
+          if (groups[chatJid] || isDm) {
             const content =
               normalized.conversation ||
               normalized.extendedTextMessage?.text ||

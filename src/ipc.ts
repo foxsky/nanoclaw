@@ -12,6 +12,7 @@ import {
 } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import { resolveExternalDm, getTaskflowDb } from './dm-routing.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
@@ -445,7 +446,15 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                   sourceGroup,
                   isMain,
                   isTaskflow,
-                  isKnownExternalDm: false, // Will be wired to dm-routing in a later task
+                  isKnownExternalDm:
+                    data.chatJid.endsWith('@s.whatsapp.net') &&
+                    (() => {
+                      const tfDb = getTaskflowDb(DATA_DIR);
+                      return (
+                        tfDb !== null &&
+                        resolveExternalDm(tfDb, data.chatJid) !== null
+                      );
+                    })(),
                   registeredGroups,
                 });
 
@@ -461,13 +470,26 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                     'IPC message sent',
                   );
                 } else if (authResult === 'dm') {
-                  const sender =
-                    typeof data.sender === 'string' ? data.sender : undefined;
-                  await deps.sendMessage(data.chatJid, data.text, sender);
-                  logger.info(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'IPC DM message sent to external contact',
-                  );
+                  // Check disambiguation before sending — external contact
+                  // may have grants spanning multiple groups
+                  const tfDb = getTaskflowDb(DATA_DIR);
+                  const dmRoute = tfDb
+                    ? resolveExternalDm(tfDb, data.chatJid)
+                    : null;
+                  if (dmRoute?.needsDisambiguation) {
+                    logger.warn(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'IPC DM blocked: external contact has grants in multiple groups',
+                    );
+                  } else {
+                    const sender =
+                      typeof data.sender === 'string' ? data.sender : undefined;
+                    await deps.sendMessage(data.chatJid, data.text, sender);
+                    logger.info(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'IPC DM message sent to external contact',
+                    );
+                  }
                 } else {
                   logger.warn(
                     { chatJid: data.chatJid, sourceGroup },

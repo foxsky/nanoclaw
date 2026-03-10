@@ -29,7 +29,7 @@ export interface DmRouteResult {
   groupJid: string;
   groupFolder: string;
   grants: DmGrant[];
-  /** True when grants span multiple boards — orchestrator must send disambiguation prompt, not route. */
+  /** True when active grants span multiple distinct groups — orchestrator must send disambiguation prompt, not route. */
   needsDisambiguation: boolean;
 }
 
@@ -54,7 +54,7 @@ export function resolveExternalDm(
 
   // 2. Fallback: extract phone from JID and match
   if (!contact) {
-    const phone = dmJid.replace(/@s\.whatsapp\.net$/, '');
+    const phone = dmJid.replace(/@s\.whatsapp\.net$/, '').replace(/:\d+$/, '');
     contact = db
       .prepare(
         `SELECT external_id, display_name, phone FROM external_contacts
@@ -119,8 +119,13 @@ export function resolveExternalDm(
 
   if (active.length === 0) return null;
 
-  // 5. Any contact with more than one active grant must disambiguate before routing.
+  // 5. Disambiguation is only needed when grants span multiple distinct groups,
+  // because the orchestrator must pick a single group to route to. Multiple
+  // grants on the *same* group (e.g., invited to M1 and M2 on one board) are
+  // fine — the agent receives all grant IDs in the context tag and can resolve
+  // which meeting the user means from message content.
   const primary = active[0];
+  const distinctGroups = new Set(active.map((g) => g.group_jid));
   return {
     externalId: contact.external_id,
     displayName: contact.display_name,
@@ -133,6 +138,6 @@ export function resolveExternalDm(
       inviteStatus: g.invite_status,
       accessExpiresAt: g.access_expires_at,
     })),
-    needsDisambiguation: active.length > 1,
+    needsDisambiguation: distinctGroups.size > 1,
   };
 }

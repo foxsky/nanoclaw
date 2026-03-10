@@ -112,7 +112,7 @@ describe('resolveExternalDm', () => {
     expect(row.invite_status).toBe('expired');
   });
 
-  it('flags needsDisambiguation when more than one active grant exists', () => {
+  it('flags needsDisambiguation when active grants span different groups', () => {
     db.exec(
       `INSERT INTO boards VALUES ('board-2', '999999999@g.us', 'team-beta', 'standard', NULL, NULL, NULL, NULL)`,
     );
@@ -124,13 +124,14 @@ describe('resolveExternalDm', () => {
     expect(result!.needsDisambiguation).toBe(true);
   });
 
-  it('also flags needsDisambiguation for multiple meetings on the same board', () => {
+  it('does NOT flag needsDisambiguation for multiple meetings on the same board', () => {
     db.exec(
       `INSERT INTO meeting_external_participants VALUES ('board-1', 'M2', '2026-03-15T10:00:00Z', 'ext-1', 'accepted', '2026-03-10', '2026-03-10', NULL, '2026-03-22T10:00:00Z', 'person-1', '2026-03-10', '2026-03-10')`,
     );
     const result = resolveExternalDm(db, '5585999991234@s.whatsapp.net');
     expect(result).not.toBeNull();
-    expect(result!.needsDisambiguation).toBe(true);
+    expect(result!.needsDisambiguation).toBe(false);
+    expect(result!.grants).toHaveLength(2);
   });
 
   it('resolves by phone fallback when direct_chat_jid is null', () => {

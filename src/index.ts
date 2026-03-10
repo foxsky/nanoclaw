@@ -97,6 +97,8 @@ const pendingExternalDmPrompts = new Map<
   string,
   Array<{ timestamp: string; prompt: string }>
 >();
+/** Highest DM timestamp that is staged but not yet consumed. */
+let stagedDmMaxTimestamp = '';
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
@@ -231,10 +233,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     const dmPrompt = pendingDms.map((p) => p.prompt).join('\n\n');
     pendingExternalDmPrompts.delete(chatJid);
 
-    // Advance cursor
-    const previousCursor = lastAgentTimestamp[chatJid] || '';
-    lastAgentTimestamp[chatJid] = pendingDms[pendingDms.length - 1].timestamp;
-    saveState();
+    // NOTE: Do NOT advance lastAgentTimestamp here. That cursor tracks
+    // group-chat messages (filtered by chat_jid in getMessagesSince).
+    // DM timestamps live in a different chat and are already tracked by
+    // lastDmTimestamp. Advancing the group cursor to a DM timestamp
+    // would skip unprocessed group messages whose timestamps fall
+    // between the old cursor and the (unrelated) DM timestamp.
 
     logger.info(
       { group: group.name, dmCount: pendingDms.length },
@@ -264,11 +268,25 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (channel) await channel.setTyping?.(chatJid, false);
 
     if (output === 'error') {
-      // Rollback: restore pending DMs for retry
-      pendingExternalDmPrompts.set(chatJid, pendingDms);
-      lastAgentTimestamp[chatJid] = previousCursor;
-      saveState();
+      // Rollback: restore pending DMs for retry.
+      // New DMs may have arrived while the agent was running — merge
+      // them with the original batch so nothing is silently dropped.
+      const arrivedDuringRun = pendingExternalDmPrompts.get(chatJid);
+      if (arrivedDuringRun && arrivedDuringRun.length > 0) {
+        pendingExternalDmPrompts.set(chatJid, [
+          ...pendingDms,
+          ...arrivedDuringRun,
+        ]);
+      } else {
+        pendingExternalDmPrompts.set(chatJid, pendingDms);
+      }
       return false;
+    }
+    // Staged DMs consumed — advance cursor if no other groups still pending
+    if (pendingExternalDmPrompts.size === 0 && stagedDmMaxTimestamp) {
+      lastDmTimestamp = stagedDmMaxTimestamp;
+      stagedDmMaxTimestamp = '';
+      saveState();
     }
     return true;
   }
@@ -568,6 +586,7 @@ async function startMessageLoop(): Promise<void> {
             string,
             ReturnType<typeof resolveExternalDm>
           >();
+          let hasStagedDm = false;
           for (const msg of dmMessages) {
             let route = routeCache.get(msg.chat_jid);
             if (route === undefined) {
@@ -619,6 +638,10 @@ async function startMessageLoop(): Promise<void> {
                 prompt: externalContext,
               });
               pendingExternalDmPrompts.set(groupJid, staged);
+              hasStagedDm = true;
+              if (msg.timestamp > stagedDmMaxTimestamp) {
+                stagedDmMaxTimestamp = msg.timestamp;
+              }
               queue.enqueueMessageCheck(groupJid);
               logger.info(
                 { dmJid: msg.chat_jid, groupJid },
@@ -626,9 +649,13 @@ async function startMessageLoop(): Promise<void> {
               );
             }
           }
-          // Advance DM cursor
-          lastDmTimestamp = dmMessages[dmMessages.length - 1].timestamp;
-          saveState();
+          // Only advance DM cursor if no messages were staged in-memory.
+          // Staged DMs live in pendingExternalDmPrompts (volatile); if the
+          // process restarts before they're processed, they'd be lost.
+          if (!hasStagedDm) {
+            lastDmTimestamp = dmMessages[dmMessages.length - 1].timestamp;
+            saveState();
+          }
         }
       }
     } catch (err) {

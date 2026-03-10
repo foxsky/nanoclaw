@@ -65,7 +65,7 @@ server.tool(
   {
     text: z.string().describe('The message text to send'),
     sender: z.string().optional().describe('Optional role/identity label to use as the visible sender name. Channels that do not support separate bot identities will fall back to a text prefix.'),
-    target_chat_jid: z.string().optional().describe('(Main and TaskFlow groups only) Send to a different group by JID. Use for cross-group notifications. The target group must be registered.'),
+    target_chat_jid: z.string().optional().describe('(Main and TaskFlow groups only) Send to a different group or DM by JID. Use for cross-group notifications or external participant DMs. Groups must be registered; DMs must be known external contacts.'),
   },
   async (args) => {
     const isCrossGroupAttempt =
@@ -81,12 +81,16 @@ server.tool(
         isError: true,
       };
     }
-    if (args.target_chat_jid && !args.target_chat_jid.endsWith('@g.us')) {
+    if (
+      args.target_chat_jid &&
+      !args.target_chat_jid.endsWith('@g.us') &&
+      !args.target_chat_jid.endsWith('@s.whatsapp.net')
+    ) {
       return {
         content: [
           {
             type: 'text' as const,
-            text: 'target_chat_jid must be a WhatsApp group JID ending in "@g.us".',
+            text: 'target_chat_jid must be a WhatsApp JID ending in "@g.us" or "@s.whatsapp.net".',
           },
         ],
         isError: true,
@@ -511,11 +515,21 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
     /** Write IPC message files for any notifications returned by the engine. */
     function dispatchNotifications(result: Record<string, unknown>): void {
       if (Array.isArray(result.notifications)) {
-        for (const notif of result.notifications as Array<{ notification_group_jid: string | null; message: string }>) {
-          if (notif.notification_group_jid) {
+        for (const notif of result.notifications as Array<{
+          target_kind?: 'group' | 'dm';
+          notification_group_jid?: string | null;
+          target_chat_jid?: string | null;
+          message: string;
+        }>) {
+          // Determine target JID: new DM-aware shape or legacy group-only shape
+          const targetJid =
+            notif.target_kind === 'dm'
+              ? notif.target_chat_jid
+              : notif.notification_group_jid;
+          if (targetJid) {
             writeIpcFile(MESSAGES_DIR, {
               type: 'message',
-              chatJid: notif.notification_group_jid,
+              chatJid: targetJid,
               text: notif.message,
               groupFolder,
               timestamp: new Date().toISOString(),
@@ -523,6 +537,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           }
         }
       }
+      // Keep the parent_notification block unchanged
       const pn = result.parent_notification as { parent_group_jid?: string; message?: string } | undefined;
       if (pn?.parent_group_jid && pn.message) {
         writeIpcFile(MESSAGES_DIR, {
@@ -582,6 +597,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         title: z.string().describe('Task title'),
         assignee: z.string().optional().describe('Person to assign the task to'),
         due_date: z.string().optional().describe('Due date (ISO format)'),
+        allow_non_business_day: z.boolean().optional().describe('Allow due_date on weekends/holidays'),
         scheduled_at: z.string().optional().describe('Scheduled datetime (ISO-8601 UTC) for meetings'),
         participants: z.array(z.string()).optional().describe('Participant names for meetings'),
         priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('Task priority'),
@@ -652,10 +668,12 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       {
         task_id: z.string().describe('Task ID to update'),
         sender_name: z.string().describe('Name of the person making the update'),
+        sender_external_id: z.string().optional().describe('External contact ID when the caller is an external participant'),
         updates: z.object({
           title: z.string().optional().describe('New title'),
           priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('New priority'),
           due_date: z.string().nullable().optional().describe('New due date (ISO) or null to clear'),
+          allow_non_business_day: z.boolean().optional().describe('Allow due_date on weekends/holidays'),
           description: z.string().optional().describe('New description'),
           next_action: z.string().optional().describe('New next action text'),
           add_label: z.string().optional().describe('Label to add'),
@@ -675,6 +693,19 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           scheduled_at: z.string().optional().describe('Reschedule meeting (ISO-8601 UTC)'),
           add_participant: z.string().optional().describe('Add a participant to a meeting'),
           remove_participant: z.string().optional().describe('Remove a participant from a meeting'),
+          add_external_participant: z.object({
+            name: z.string(),
+            phone: z.string(),
+          }).optional().describe('Add an external participant (name + phone) to a meeting'),
+          remove_external_participant: z.object({
+            external_id: z.string().optional(),
+            phone: z.string().optional(),
+            name: z.string().optional(),
+          }).optional().describe('Remove an external participant from a meeting'),
+          reinvite_external_participant: z.object({
+            external_id: z.string().optional(),
+            phone: z.string().optional(),
+          }).optional().describe('Resend invite to an external participant'),
           set_note_status: z.object({
             id: z.number(),
             status: z.enum(['open', 'checked', 'task_created', 'inbox_created', 'dismissed']),
@@ -714,7 +745,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       'taskflow_admin',
       'Board administration: register/remove people, manage roles, set WIP limits, cancel/restore tasks, process inbox, manage holidays.',
       {
-        action: z.enum(['register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin', 'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays', 'process_minutes', 'process_minutes_decision']).describe('Admin action'),
+        action: z.enum(['register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin', 'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays', 'process_minutes', 'process_minutes_decision', 'accept_external_invite']).describe('Admin action'),
         sender_name: z.string().describe('Name of the person performing the admin action'),
         person_name: z.string().optional().describe('Person name (for person-related actions)'),
         phone: z.string().optional().describe('Phone number (for register_person)'),
@@ -737,6 +768,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         holidays: z.array(z.object({ date: z.string(), label: z.string().optional() })).optional().describe('Holiday entries with date (YYYY-MM-DD) and optional label (for manage_holidays add/set_year)'),
         holiday_dates: z.array(z.string()).optional().describe('Holiday dates to remove (YYYY-MM-DD) (for manage_holidays remove)'),
         holiday_year: z.number().optional().describe('Year filter for listing or target year for set_year (for manage_holidays list/set_year)'),
+        sender_external_id: z.string().optional().describe('External contact ID when the caller is an external participant'),
       },
       async (args: any) => {
         const result = engine.admin({ ...args, board_id: boardId });
