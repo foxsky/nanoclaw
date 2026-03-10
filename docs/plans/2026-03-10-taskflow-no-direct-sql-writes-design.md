@@ -49,19 +49,32 @@ This is not only a prompt-quality issue. It is an architecture issue: the agent 
 
 ## Current State
 
-The TaskFlow template currently:
+### Template SQL writes inventory
 
-- instructs the agent to `SELECT welcome_sent` and `UPDATE board_runtime_config` on first session interaction
-- instructs the agent to update `board_people.name` after first-name or single-person fallback identity resolution
-- documents `mcp__sqlite__write_query` as a last resort for writes with no `taskflow_*` equivalent
+The TaskFlow template currently instructs the agent to perform **5 distinct SQL write operations**:
 
-The runtime already contains partial hardening:
+| Write | SQL | Template location |
+|-------|-----|-------------------|
+| Welcome bookkeeping | `UPDATE board_runtime_config SET welcome_sent = 1` | ~line 15 |
+| Display-name normalization | `UPDATE board_people SET name = '...'` | ~line 54 |
+| Child board removal history | `INSERT INTO task_history (...)` | ~line 656 |
+| Child board deregistration | `DELETE FROM child_board_registrations WHERE ...` | ~line 656 |
+| Attachment audit logging | `INSERT INTO attachment_audit_log (...)` | ~line 841 |
 
-- TaskFlow MCP registration is gated by TaskFlow env vars
-- TaskFlow-managed startup now fails closed when required TaskFlow MCP registration is missing
-- Bash sanitization can block direct writes to `taskflow.db`
+Additionally, the template documents `mcp__sqlite__write_query` as a last resort for writes with no `taskflow_*` equivalent (~line 91).
 
-But full enforcement is not yet safe because the skill still documents and depends on some SQL writes.
+### Runtime hardening state
+
+The runtime has **no TaskFlow-specific hardening deployed**:
+
+- TaskFlow MCP registration is gated by TaskFlow env vars (deployed)
+- Bash hook only strips secret env vars — **no `taskflow.db` write blocking** (not deployed)
+- Startup guard for missing `NANOCLAW_TASKFLOW_BOARD_ID` — **silent fallback, not fail-closed** (not deployed)
+- Allowed tools use `mcp__sqlite__*` wildcard for all groups — **no TaskFlow restriction** (not deployed)
+
+### Test enforcement
+
+The test suite actively validates that the template contains `mcp__sqlite__write_query` (lines 585, 1494 of `taskflow.test.ts`). Removing the write fallback from the template will require updating these tests.
 
 ## Core Decision
 
@@ -85,6 +98,8 @@ Changes:
 
 - remove the `UPDATE board_runtime_config` welcome instruction from the prompt
 - remove the `UPDATE board_people` display-name sync instruction from the prompt
+- remove the `INSERT INTO task_history` / `DELETE FROM child_board_registrations` child board removal instructions
+- remove the `INSERT INTO attachment_audit_log` attachment audit instruction
 - remove `mcp__sqlite__write_query` as an approved fallback mutation path for TaskFlow groups
 - replace "write via SQL if no tool exists" with:
   - use an explicit TaskFlow tool if one exists
@@ -124,6 +139,24 @@ Requirements:
 - update only when the match is already considered safe by the existing identity rules
 - never broaden authorization by changing identity mapping logic
 
+### 3a. Move child board removal writes into the engine
+
+The template instructs the agent to manually `INSERT INTO task_history` and `DELETE FROM child_board_registrations` when removing a child board. These should be absorbed into the `taskflow_hierarchy` tool or a new `taskflow_admin` action.
+
+Preferred implementation:
+
+- add a `remove_child_board` action to `taskflow_hierarchy` or `taskflow_admin`
+- the engine handles history recording and registration cleanup atomically
+
+### 3b. Move attachment audit logging into the engine
+
+The template instructs the agent to `INSERT INTO attachment_audit_log` after processing file attachments. This should be absorbed into the engine or a narrow tool.
+
+Preferred implementation:
+
+- add a `log_attachment` action to `taskflow_admin` or expose as a narrow tool such as `taskflow_log_attachment`
+- the engine validates and records the audit entry
+
 ### 4. Close the generic write fallback
 
 After the above two migrations, TaskFlow groups should no longer require agent-authored SQL writes for normal operation.
@@ -140,8 +173,10 @@ If the product still needs some mutation not covered by the engine, add a narrow
 
 Examples:
 
-- runtime metadata acknowledgment
+- runtime metadata acknowledgment (welcome bookkeeping)
 - display-name sync
+- child board removal (history + deregistration)
+- attachment audit logging
 - other board-scoped maintenance operations that are intentionally supported
 
 Rule:
@@ -156,6 +191,8 @@ The TaskFlow template should be updated as follows.
 
 - any instruction telling the agent to `UPDATE board_runtime_config`
 - any instruction telling the agent to `UPDATE board_people`
+- any instruction telling the agent to `INSERT INTO task_history` or `DELETE FROM child_board_registrations` for child board removal
+- any instruction telling the agent to `INSERT INTO attachment_audit_log`
 - any instruction authorizing `mcp__sqlite__write_query` as a fallback mutation path
 - the section that tells the agent how to manually write `task_history`, `_last_mutation`, or `updated_at`
 
@@ -186,7 +223,7 @@ For non-TaskFlow contexts:
 
 ### Bash hardening
 
-Keep and enforce blocking for direct writes targeting `taskflow.db`.
+Implement and enforce blocking for direct writes targeting `taskflow.db`. This does not exist today — the current Bash hook only strips secret env vars.
 
 Minimum blocked categories:
 
@@ -224,13 +261,16 @@ This prevents silent degradation into non-TaskFlow behavior.
 
 - implement runtime-owned welcome bookkeeping
 - implement runtime-owned or tool-owned display-name sync
+- absorb child board removal writes into `taskflow_hierarchy` or `taskflow_admin`
+- absorb attachment audit logging into engine or narrow tool
 - add tests proving TaskFlow groups no longer need agent SQL writes for these cases
 
 ### Phase 3: Enforcement
 
-- remove `mcp__sqlite__write_query` from TaskFlow-managed allowed tools
+- implement Bash `taskflow.db` write blocking in `createSanitizeBashHook`
+- implement fail-closed startup guard in `ipc-mcp-stdio.ts`
+- remove `mcp__sqlite__write_query` from TaskFlow-managed allowed tools (switch to `NANOCLAW_ALLOWED_TOOLS_TASKFLOW`)
 - keep `mcp__sqlite__read_query`
-- keep Bash `taskflow.db` write blocking enabled
 
 ### Phase 4: Validation
 
@@ -239,6 +279,8 @@ This prevents silent degradation into non-TaskFlow behavior.
   - sender identity fallback
   - create/move/update/reassign
   - meeting flows
+  - child board removal
+  - attachment import auditing
   - inbox fallback
 - verify TaskFlow groups cannot mutate `taskflow.db` via SQL tool or Bash
 
@@ -246,12 +288,13 @@ This prevents silent degradation into non-TaskFlow behavior.
 
 ### 1. Hidden dependency on prompt-authored writes
 
-There may be undocumented workflows relying on direct SQL writes today.
+Five documented SQL write operations depend on prompt instructions today (see Current State inventory). There may be additional undocumented workflows.
 
 Mitigation:
 
-- inventory current template/tests before removing the path
-- add focused regression tests for welcome and sender-name sync
+- inventory current template/tests before removing the path (done — see Current State)
+- add focused regression tests for welcome, sender-name sync, child board removal, and attachment auditing
+- update existing tests that enforce `mcp__sqlite__write_query` presence (lines 585, 1494 of `taskflow.test.ts`)
 
 ### 2. Over-blocking Bash
 
