@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** Core migration completed in the runtime and TaskFlow skill copies. This document now records what shipped, what remains deferred, and how to validate the landed behavior.
+**Status:** Fully implemented. Core migration, credential proxy, and sender allowlist are all landed. This document records what shipped, the post-migration bug fixes, and how to validate the landed behavior.
 
 **Goal:** Refactor `src/index.ts` to use the upstream channel registry pattern instead of direct WhatsApp imports, so the runtime channel bootstrap and IPC wiring are channel-agnostic. This does **not** make all TaskFlow provisioning and IPC plugins fully channel-agnostic yet.
 
@@ -10,7 +10,7 @@
 
 **Tech Stack:** Node.js, TypeScript, Vitest
 
-**Scope:** Tasks 1-3 (core registry migration) and Task 6 (skill sync) are already completed. Credential proxy (Task 4) and sender allowlist (Task 5) remain **deferred** because they are independent features with additional requirements beyond this refactor (see Codex Review Findings below).
+**Scope:** All tasks are completed. Tasks 1-3 (core registry migration) and Task 6 (skill sync) landed first, followed by credential proxy (Task 4) and sender allowlist (Task 5) which were initially deferred but have since been implemented and landed.
 
 ---
 
@@ -20,8 +20,8 @@ The following issues were identified by Codex and incorporated into this plan:
 
 | Severity | Finding | Resolution |
 |----------|---------|------------|
-| HIGH | Task 5's `isTriggerAllowed` call uses wrong args (`group.jid` doesn't exist, missing 3rd `cfg` param) and only covers 1 of 2 trigger check sites | **Task 5 deferred** — needs its own focused plan |
-| HIGH | Task 4 starting credential proxy server alone doesn't wire containers to use it (`CREDENTIAL_PROXY_PORT` env not passed to containers) | **Task 4 deferred** — needs container-runner integration |
+| HIGH | Task 5's `isTriggerAllowed` call uses wrong args (`group.jid` doesn't exist, missing 3rd `cfg` param) and only covers 1 of 2 trigger check sites | **Resolved** — implemented in `5921c8e`, all trigger check sites covered, args corrected |
+| HIGH | Task 4 starting credential proxy server alone doesn't wire containers to use it (`CREDENTIAL_PROXY_PORT` env not passed to containers) | **Resolved** — implemented in `43d6961`, container-runner integration wired end-to-end |
 | HIGH | IPC plugins hardcode `@s.whatsapp.net` patterns — plan overstates "channel-agnostic" | **Acknowledged** — noted in Risk Assessment; IPC plugin refactor is a separate effort |
 | MEDIUM | Task 2 missing test updates in `create-group.test.ts` and `provision-child-board.test.ts` | **Fixed** — added Step 5a to Task 2 |
 | MEDIUM | Type checking should use `npm run build`, not vitest | **Fixed** — Task 1 now uses `npm run build` for verification |
@@ -284,20 +284,22 @@ git commit -m "refactor: use channel registry instead of direct WhatsApp import"
 
 ---
 
-## Deferred Tasks
+## Previously Deferred Tasks (Now Completed)
 
-### Task 4: Re-enable credential proxy — DEFERRED
+### Task 4: Re-enable credential proxy — COMPLETED
 
-**Reason:** Starting `startCredentialProxy()` in `index.ts` alone does not wire containers to use it. `CREDENTIAL_PROXY_PORT` must be passed as an environment variable to containers via `container-runner.ts`, and containers must be configured to route API traffic through the proxy. This requires a separate plan covering `container-runner.ts` changes and E2E validation.
+**Originally deferred because:** Starting `startCredentialProxy()` in `index.ts` alone does not wire containers to use it. `CREDENTIAL_PROXY_PORT` must be passed as an environment variable to containers via `container-runner.ts`, and containers must be configured to route API traffic through the proxy.
 
-### Task 5: Integrate sender allowlist — DEFERRED
+**Resolution:** Implemented end-to-end in `43d6961 feat: wire credential proxy end-to-end`. Container-runner integration, environment variable passing, and proxy wiring are all landed. Skill copies synced in `ddae8c2 chore: sync skill copies after credential proxy and sender allowlist`.
 
-**Reason:** The original plan's code had multiple bugs:
+### Task 5: Integrate sender allowlist — COMPLETED
+
+**Originally deferred because:** The original plan's code had multiple bugs:
 1. `group.jid` does not exist on `RegisteredGroup` — should use `chatJid`
 2. `isTriggerAllowed()` requires 3 args (chatJid, sender, cfg) — plan omitted `cfg`
 3. Only covered 1 of 2 trigger check sites (`processGroupMessages` but not `startMessageLoop`)
 
-This feature is independent of the channel registry migration and should be implemented in a separate plan that correctly addresses all trigger check sites.
+**Resolution:** All issues addressed in `5921c8e feat: integrate sender allowlist in all trigger check sites`. All trigger check sites covered with correct arguments. Further refined in `b89d7e4 refactor: simplify trigger checks, cache sender allowlist, clean up syncGroups`. Skill copies synced in `ddae8c2 chore: sync skill copies after credential proxy and sender allowlist`.
 
 ---
 
