@@ -14,11 +14,11 @@ export interface SenderAllowlistConfig {
   logDenied: boolean;
 }
 
-const DEFAULT_CONFIG: SenderAllowlistConfig = {
-  default: { allow: '*', mode: 'trigger' },
-  chats: {},
+const DEFAULT_CONFIG: Readonly<SenderAllowlistConfig> = Object.freeze({
+  default: Object.freeze({ allow: '*' as const, mode: 'trigger' as const }),
+  chats: Object.freeze({}),
   logDenied: true,
-};
+});
 
 const CACHE_TTL_MS = 30_000; // 30 seconds
 let cachedConfig: SenderAllowlistConfig | null = null;
