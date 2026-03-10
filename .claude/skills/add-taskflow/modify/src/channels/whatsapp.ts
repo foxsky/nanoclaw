@@ -230,9 +230,7 @@ export class WhatsAppChannel implements Channel {
                 Object.values(this.opts.registeredGroups()).some(
                   (g) =>
                     g.trigger &&
-                    content.startsWith(
-                      `${g.trigger.replace(/^@/, '')}:`,
-                    ),
+                    content.startsWith(`${g.trigger.replace(/^@/, '')}:`),
                 );
 
             this.opts.onMessage(chatJid, {
