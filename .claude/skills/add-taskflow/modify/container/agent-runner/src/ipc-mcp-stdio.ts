@@ -515,11 +515,21 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
     /** Write IPC message files for any notifications returned by the engine. */
     function dispatchNotifications(result: Record<string, unknown>): void {
       if (Array.isArray(result.notifications)) {
-        for (const notif of result.notifications as Array<{ notification_group_jid: string | null; message: string }>) {
-          if (notif.notification_group_jid) {
+        for (const notif of result.notifications as Array<{
+          target_kind?: 'group' | 'dm';
+          notification_group_jid?: string | null;
+          target_chat_jid?: string | null;
+          message: string;
+        }>) {
+          // Determine target JID: new DM-aware shape or legacy group-only shape
+          const targetJid =
+            notif.target_kind === 'dm'
+              ? notif.target_chat_jid
+              : notif.notification_group_jid;
+          if (targetJid) {
             writeIpcFile(MESSAGES_DIR, {
               type: 'message',
-              chatJid: notif.notification_group_jid,
+              chatJid: targetJid,
               text: notif.message,
               groupFolder,
               timestamp: new Date().toISOString(),
@@ -527,6 +537,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           }
         }
       }
+      // Keep the parent_notification block unchanged
       const pn = result.parent_notification as { parent_group_jid?: string; message?: string } | undefined;
       if (pn?.parent_group_jid && pn.message) {
         writeIpcFile(MESSAGES_DIR, {
