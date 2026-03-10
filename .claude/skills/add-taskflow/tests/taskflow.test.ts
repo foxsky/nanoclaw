@@ -1158,6 +1158,31 @@ describe('taskflow skill package', () => {
     expect(testBlock).toContain("'{{PARENT_BOARD_ID}}': ''");
   });
 
+  it('generate-claude-md covers e2e and setec taskflow groups', () => {
+    const script = fs.readFileSync(
+      path.join(skillDir, 'add/scripts/generate-claude-md.mjs'),
+      'utf-8',
+    );
+
+    const e2eBlock =
+      script.match(/folder: 'e2e-taskflow'[\s\S]*?\n  },/)?.[0] ?? '';
+    expect(e2eBlock).toContain("'{{ASSISTANT_NAME}}': 'Tars'");
+    expect(e2eBlock).toContain("'{{BOARD_ID}}': 'board-e2e-taskflow'");
+    expect(e2eBlock).toContain("'{{GROUP_NAME}}': 'E2E Test Board'");
+    expect(e2eBlock).toContain("'{{GROUP_JID}}': '120363406927955265@g.us'");
+    expect(e2eBlock).toContain("'{{HIERARCHY_LEVEL}}': '0'");
+    expect(e2eBlock).toContain("'{{PARENT_BOARD_ID}}': ''");
+
+    const setecBlock =
+      script.match(/folder: 'setec-secti-taskflow'[\s\S]*?\n  },/)?.[0] ?? '';
+    expect(setecBlock).toContain("'{{BOARD_ID}}': 'board-setec-secti-taskflow'");
+    expect(setecBlock).toContain("'{{GROUP_NAME}}': 'SETEC-SECTI - TaskFlow'");
+    expect(setecBlock).toContain("'{{GROUP_JID}}': '120363408810515104@g.us'");
+    expect(setecBlock).toContain("'{{HIERARCHY_LEVEL}}': '2'");
+    expect(setecBlock).toContain("'{{PARENT_BOARD_ID}}': 'board-sec-taskflow'");
+    expect(setecBlock).toContain("'{{MANAGER_NAME}}': 'Rafael'");
+  });
+
   it('SKILL.md avoids person-specific setup examples in generic instructions', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
     expect(skillMd).not.toContain('"Miguel"');
@@ -6396,5 +6421,202 @@ describe('external participant note operations', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('Permission denied');
+  });
+});
+
+describe('external participant full flow', () => {
+  let db: Database.Database;
+  let engine: TaskflowEngine;
+  let meetingId: string;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    seedTestDb(db, BOARD_ID);
+    engine = new TaskflowEngine(db, BOARD_ID);
+
+    // Create a meeting
+    const result = engine.create({
+      board_id: BOARD_ID,
+      type: 'meeting',
+      title: 'Client Alignment',
+      scheduled_at: '2026-03-12T14:00:00Z',
+      participants: ['Giovanni'],
+      sender_name: 'Alexandre',
+    });
+    meetingId = result.task_id!;
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('complete invite → accept → interact → revoke → block → reinvite flow', () => {
+    // 1. Add external participant
+    const addResult = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: { add_external_participant: { name: 'Maria', phone: '5585999991234' } },
+    });
+    expect(addResult.success).toBe(true);
+    expect(addResult.notifications!.some((n: any) => n.target_kind === 'dm')).toBe(true);
+
+    const extId = (db.prepare(`SELECT external_id FROM external_contacts WHERE phone = '5585999991234'`).get() as any).external_id;
+
+    // 2. Accept invite
+    const acceptResult = engine.admin({
+      board_id: BOARD_ID,
+      action: 'accept_external_invite',
+      task_id: meetingId,
+      sender_name: extId,
+      sender_external_id: extId,
+    });
+    expect(acceptResult.success).toBe(true);
+
+    // 3. Add a note as external participant
+    const noteResult = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: extId,
+      sender_external_id: extId,
+      updates: { add_note: 'Need to discuss contract terms' },
+    });
+    expect(noteResult.success).toBe(true);
+
+    // 4. Query participants — should include external
+    const queryResult = engine.query({ query: 'meeting_participants', task_id: meetingId });
+    expect(queryResult.data.external_participants).toHaveLength(1);
+    expect(queryResult.data.external_participants[0].invite_status).toBe('accepted');
+
+    // 5. Verify external can't do non-meeting operations
+    const hijackResult = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: extId,
+      sender_external_id: extId,
+      updates: { title: 'Hijacked!' },
+    });
+    expect(hijackResult.success).toBe(false);
+
+    // 6. Revoke
+    const revokeResult = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: { remove_external_participant: { phone: '5585999991234' } },
+    });
+    expect(revokeResult.success).toBe(true);
+
+    // 7. Verify revoked external can't add notes
+    const blockedResult = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: extId,
+      sender_external_id: extId,
+      updates: { add_note: 'Should be blocked' },
+    });
+    expect(blockedResult.success).toBe(false);
+
+    // 8. Reinvite after revoke
+    const reinviteResult = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: { reinvite_external_participant: { phone: '5585999991234' } },
+    });
+    expect(reinviteResult.success).toBe(true);
+    expect(reinviteResult.notifications!.some((n: any) => n.target_kind === 'dm')).toBe(true);
+  });
+
+  it('external participant can edit own note and set note status', () => {
+    // Add external, accept, add note
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: { add_external_participant: { name: 'Maria', phone: '5585999991234' } },
+    });
+    const extId = (db.prepare(`SELECT external_id FROM external_contacts WHERE phone = '5585999991234'`).get() as any).external_id;
+    engine.admin({
+      board_id: BOARD_ID,
+      action: 'accept_external_invite',
+      task_id: meetingId,
+      sender_name: extId,
+      sender_external_id: extId,
+    });
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: extId,
+      sender_external_id: extId,
+      updates: { add_note: 'Original note' },
+    });
+
+    // Get note ID
+    const task = db.prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
+    const noteId = JSON.parse(task.notes)[0].id;
+
+    // Edit own note
+    const editResult = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: extId,
+      sender_external_id: extId,
+      updates: { edit_note: { id: noteId, text: 'Edited note' } },
+    });
+    expect(editResult.success).toBe(true);
+
+    // Set note status
+    const statusResult = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: extId,
+      sender_external_id: extId,
+      updates: { set_note_status: { id: noteId, status: 'checked' } },
+    });
+    expect(statusResult.success).toBe(true);
+
+    // Remove own note
+    const removeResult = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: extId,
+      sender_external_id: extId,
+      updates: { remove_note: noteId },
+    });
+    expect(removeResult.success).toBe(true);
+  });
+
+  it('blocks expired external participant', () => {
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: { add_external_participant: { name: 'Maria', phone: '5585999991234' } },
+    });
+    const extId = (db.prepare(`SELECT external_id FROM external_contacts WHERE phone = '5585999991234'`).get() as any).external_id;
+    engine.admin({
+      board_id: BOARD_ID,
+      action: 'accept_external_invite',
+      task_id: meetingId,
+      sender_name: extId,
+      sender_external_id: extId,
+    });
+
+    // Manually expire the grant
+    db.exec(`UPDATE meeting_external_participants SET access_expires_at = '2020-01-01T00:00:00Z'`);
+
+    const result = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: extId,
+      sender_external_id: extId,
+      updates: { add_note: 'Should fail — expired' },
+    });
+    expect(result.success).toBe(false);
+
+    // Verify lazy expiry updated the status
+    const grant = db.prepare(`SELECT invite_status FROM meeting_external_participants WHERE external_id = ?`).get(extId) as any;
+    expect(grant.invite_status).toBe('expired');
   });
 });
