@@ -4500,23 +4500,28 @@ export class TaskflowEngine {
           const organizerRow = task.assignee
             ? this.db.prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id = ?`).get(this.boardId, task.assignee) as any
             : null;
-          if (participantIds.length === 0) {
-            return {
-              success: true,
-              data: {
-                organizer: organizerRow ?? { person_id: task.assignee, name: task.assignee },
-                participants: [],
-              },
-            };
-          }
-          const people = this.db
-            .prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id IN (${participantIds.map(() => '?').join(',')})`)
-            .all(this.boardId, ...participantIds) as Array<{ person_id: string; name: string; role: string }>;
+          const people = participantIds.length === 0
+            ? []
+            : this.db
+                .prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id IN (${participantIds.map(() => '?').join(',')})`)
+                .all(this.boardId, ...participantIds) as Array<{ person_id: string; name: string; role: string }>;
+          const externalParticipants = this.db.prepare(
+            `SELECT ec.external_id, ec.display_name, mep.invite_status
+             FROM meeting_external_participants mep
+             JOIN external_contacts ec ON ec.external_id = mep.external_id
+             WHERE mep.board_id = ? AND mep.meeting_task_id = ?
+               AND mep.invite_status NOT IN ('revoked', 'expired')`
+          ).all(this.boardId, task.id) as Array<{
+            external_id: string;
+            display_name: string;
+            invite_status: string;
+          }>;
           return {
             success: true,
             data: {
               organizer: organizerRow ?? { person_id: task.assignee, name: task.assignee },
               participants: people,
+              external_participants: externalParticipants,
             },
           };
         }

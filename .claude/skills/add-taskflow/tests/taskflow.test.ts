@@ -3877,6 +3877,60 @@ describe('meeting notes', () => {
       expect(result.data.participants.length).toBeGreaterThan(0);
     });
 
+    describe('meeting_participants query with externals', () => {
+      it('includes external_participants in response', () => {
+        // Add an external participant to the meeting
+        engine.update({
+          board_id: BOARD_ID,
+          task_id: meetingId,
+          sender_name: 'Alexandre',
+          updates: { add_external_participant: { name: 'Maria Silva', phone: '+55 85 99999-1234' } },
+        });
+
+        const result = engine.query({ query: 'meeting_participants', task_id: meetingId });
+        expect(result.success).toBe(true);
+        expect(result.data.external_participants).toBeDefined();
+        expect(Array.isArray(result.data.external_participants)).toBe(true);
+        expect(result.data.external_participants.length).toBe(1);
+
+        const ext = result.data.external_participants[0];
+        expect(ext.external_id).toBeTruthy();
+        expect(ext.display_name).toBe('Maria Silva');
+        expect(ext.invite_status).toBe('invited');
+
+        // Phone must NOT be included (privacy)
+        expect(ext.phone).toBeUndefined();
+      });
+
+      it('excludes revoked external participants', () => {
+        // Add then remove an external participant
+        engine.update({
+          board_id: BOARD_ID,
+          task_id: meetingId,
+          sender_name: 'Alexandre',
+          updates: { add_external_participant: { name: 'Maria Silva', phone: '+55 85 99999-1234' } },
+        });
+        engine.update({
+          board_id: BOARD_ID,
+          task_id: meetingId,
+          sender_name: 'Alexandre',
+          updates: { remove_external_participant: { phone: '+55 85 99999-1234' } },
+        });
+
+        const result = engine.query({ query: 'meeting_participants', task_id: meetingId });
+        expect(result.success).toBe(true);
+        expect(result.data.external_participants).toBeDefined();
+        expect(result.data.external_participants.length).toBe(0);
+      });
+
+      it('returns empty external_participants when none added', () => {
+        const result = engine.query({ query: 'meeting_participants', task_id: meetingId });
+        expect(result.success).toBe(true);
+        expect(result.data.external_participants).toBeDefined();
+        expect(result.data.external_participants.length).toBe(0);
+      });
+    });
+
     it('meeting_open_items returns only open notes', () => {
       engine.update({
         board_id: BOARD_ID,
