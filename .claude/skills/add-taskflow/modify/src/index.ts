@@ -66,6 +66,23 @@ import {
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
 
+/** Check if any message in the batch contains a trigger from an allowed sender. */
+function hasTriggerMessage(
+  messages: NewMessage[],
+  chatJid: string,
+  group: RegisteredGroup,
+): boolean {
+  const pattern = group.trigger
+    ? buildTriggerPattern(group.trigger)
+    : TRIGGER_PATTERN;
+  const cfg = loadSenderAllowlist();
+  return messages.some(
+    (m) =>
+      pattern.test(m.content.trim()) &&
+      (m.is_from_me || isTriggerAllowed(chatJid, m.sender, cfg)),
+  );
+}
+
 let lastTimestamp = '';
 let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
@@ -201,16 +218,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
-    const pattern = group.trigger
-      ? buildTriggerPattern(group.trigger)
-      : TRIGGER_PATTERN;
-    const cfg = loadSenderAllowlist();
-    const hasTrigger = missedMessages.some(
-      (m) =>
-        pattern.test(m.content.trim()) &&
-        (m.is_from_me || isTriggerAllowed(chatJid, m.sender, cfg)),
-    );
-    if (!hasTrigger) return true;
+    if (!hasTriggerMessage(missedMessages, chatJid, group)) return true;
   }
 
   const prompt = formatMessages(missedMessages);
@@ -441,16 +449,7 @@ async function startMessageLoop(): Promise<void> {
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
           if (needsTrigger) {
-            const pattern = group.trigger
-              ? buildTriggerPattern(group.trigger)
-              : TRIGGER_PATTERN;
-            const cfg = loadSenderAllowlist();
-            const hasTrigger = groupMessages.some(
-              (m) =>
-                pattern.test(m.content.trim()) &&
-                (m.is_from_me || isTriggerAllowed(chatJid, m.sender, cfg)),
-            );
-            if (!hasTrigger) continue;
+            if (!hasTriggerMessage(groupMessages, chatJid, group)) continue;
           }
 
           // Pull all messages since lastAgentTimestamp so non-trigger
@@ -619,15 +618,7 @@ async function main(): Promise<void> {
     registerGroup,
     syncGroups: async (force: boolean) => {
       await Promise.all(
-        channels
-          .filter(
-            (
-              ch,
-            ): ch is Channel & {
-              syncGroups: NonNullable<Channel['syncGroups']>;
-            } => !!ch.syncGroups,
-          )
-          .map((ch) => ch.syncGroups(force)),
+        channels.map((ch) => ch.syncGroups?.(force)).filter(Boolean),
       );
     },
     getAvailableGroups,
