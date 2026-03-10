@@ -31,6 +31,7 @@ import {
 import { startCredentialProxy } from './credential-proxy.js';
 import {
   deleteRegisteredGroup,
+  deleteSession,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -377,7 +378,18 @@ async function runAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
-  const sessionId = sessions[group.folder];
+  const persistedSessionId = sessions[group.folder];
+  const shouldResumeSession = group.taskflowManaged !== true;
+  const sessionId = shouldResumeSession ? persistedSessionId : undefined;
+
+  if (!shouldResumeSession && persistedSessionId) {
+    delete sessions[group.folder];
+    deleteSession(group.folder);
+    logger.info(
+      { group: group.name, staleSessionId: persistedSessionId },
+      'Discarded persisted TaskFlow session to force fresh tool registration',
+    );
+  }
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -407,7 +419,7 @@ async function runAgent(
   // Wrap onOutput to track session ID from streamed results
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
-        if (output.newSessionId) {
+        if (output.newSessionId && shouldResumeSession) {
           sessions[group.folder] = output.newSessionId;
           setSession(group.folder, output.newSessionId);
         }
@@ -434,7 +446,7 @@ async function runAgent(
       wrappedOnOutput,
     );
 
-    if (output.newSessionId) {
+    if (output.newSessionId && shouldResumeSession) {
       sessions[group.folder] = output.newSessionId;
       setSession(group.folder, output.newSessionId);
     }
