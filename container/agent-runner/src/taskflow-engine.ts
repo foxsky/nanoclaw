@@ -31,6 +31,16 @@ export interface TaskflowResult {
   [key: string]: any;
 }
 
+/** Shared notification entry shape used across all result interfaces. */
+export type NotificationEntry = {
+  target_kind?: 'group' | 'dm';
+  target_person_id?: string;
+  target_external_id?: string;
+  notification_group_jid?: string | null;
+  target_chat_jid?: string | null;
+  message: string;
+};
+
 export interface CreateParams {
   board_id: string;
   type: 'simple' | 'project' | 'recurring' | 'inbox' | 'meeting';
@@ -58,11 +68,7 @@ export interface CreateResult extends TaskflowResult {
     name: string;
     message: string;
   };
-  notifications?: Array<{
-    target_person_id: string;
-    notification_group_jid: string | null;
-    message: string;
-  }>;
+  notifications?: NotificationEntry[];
 }
 
 export interface MoveParams {
@@ -83,7 +89,7 @@ export interface MoveResult extends TaskflowResult {
   project_update?: { completed_subtask: string; next_subtask?: string; all_complete: boolean };
   recurring_cycle?: { cycle_number: number; expired: boolean; new_due_date?: string; new_scheduled_at?: string; reason?: 'max_cycles' | 'end_date' };
   archive_triggered?: boolean;
-  notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
+  notifications?: NotificationEntry[];
   parent_notification?: { parent_group_jid: string; message: string };
   unprocessed_minutes_warning?: boolean;
 }
@@ -106,13 +112,14 @@ export interface ReassignResult extends TaskflowResult {
   }>;
   offer_register?: { name: string; message: string };
   requires_confirmation?: string;  // human-readable summary for dry run
-  notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
+  notifications?: NotificationEntry[];
 }
 
 export interface UpdateParams {
   board_id: string;
   task_id: string;
   sender_name: string;
+  sender_external_id?: string;
   updates: {
     title?: string;
     priority?: 'low' | 'normal' | 'high' | 'urgent';
@@ -129,6 +136,9 @@ export interface UpdateParams {
     scheduled_at?: string;
     add_participant?: string;
     remove_participant?: string;
+    add_external_participant?: { name: string; phone: string };
+    remove_external_participant?: { external_id?: string; phone?: string; name?: string };
+    reinvite_external_participant?: { external_id?: string; phone?: string };
     set_note_status?: { id: number; status: 'open' | 'checked' | 'task_created' | 'inbox_created' | 'dismissed' };
     add_subtask?: string;         // project only
     rename_subtask?: { id: string; title: string };
@@ -146,7 +156,7 @@ export interface UpdateResult extends TaskflowResult {
   task_id?: string;
   changes?: string[];      // human-readable list of what changed
   offer_register?: { name: string; message: string };
-  notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
+  notifications?: NotificationEntry[];
 }
 
 export interface DependencyParams {
@@ -176,7 +186,7 @@ export interface UndoResult extends TaskflowResult {
 
 export interface AdminParams {
   board_id: string;
-  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision';
+  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision' | 'accept_external_invite';
   sender_name: string;
   person_name?: string;
   phone?: string;
@@ -199,6 +209,7 @@ export interface AdminParams {
     assignee?: string;
     labels?: string[];
   };
+  sender_external_id?: string;
 }
 
 export interface AdminResult extends TaskflowResult {
@@ -214,7 +225,7 @@ export interface AdminResult extends TaskflowResult {
     group_folder?: string;
     message: string;
   };
-  notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
+  notifications?: NotificationEntry[];
 }
 
 export interface ReportParams {
@@ -385,6 +396,34 @@ function advanceDateTimeByRecurrence(
       break;
   }
   return d.toISOString();
+}
+
+/* ------------------------------------------------------------------ */
+/*  Utility Functions                                                  */
+/* ------------------------------------------------------------------ */
+
+export function normalizePhone(phone: string): string {
+  return phone.replace(/\D/g, '');
+}
+
+/** External participant access window: 7 days after scheduled occurrence. */
+const ACCESS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Build the DM invite message for an external meeting participant. */
+function buildExternalInviteMessage(
+  taskId: string,
+  taskTitle: string,
+  scheduledAt: string,
+  organizerName: string,
+): string {
+  return (
+    `\u{1f4c5} *Convite para reuni\u00e3o*\n\n` +
+    `Voc\u00ea foi convidado para *${taskId} \u2014 ${taskTitle}*\n` +
+    `*Quando:* ${scheduledAt}\n` +
+    `*Organizador:* ${organizerName}\n\n` +
+    `Responda nesta conversa para participar da pauta e da ata.\n` +
+    `Para confirmar, diga: aceitar convite ${taskId}`
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -579,6 +618,37 @@ export class TaskflowEngine {
         prefix TEXT NOT NULL,
         next_number INTEGER NOT NULL DEFAULT 1,
         PRIMARY KEY (board_id, prefix)
+      )
+    `);
+
+    // External contacts and meeting grants (cross-board, no board_id FK on external_contacts)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS external_contacts (
+        external_id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        phone TEXT NOT NULL UNIQUE,
+        direct_chat_jid TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_seen_at TEXT
+      )
+    `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS meeting_external_participants (
+        board_id TEXT NOT NULL,
+        meeting_task_id TEXT NOT NULL,
+        occurrence_scheduled_at TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        invite_status TEXT NOT NULL DEFAULT 'pending',
+        invited_at TEXT,
+        accepted_at TEXT,
+        revoked_at TEXT,
+        access_expires_at TEXT,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (board_id, meeting_task_id, occurrence_scheduled_at, external_id)
       )
     `);
 
@@ -816,14 +886,14 @@ export class TaskflowEngine {
   /* ---------------------------------------------------------------- */
 
   /** Resolve a human-readable name to a person_id + canonical name. */
-  resolvePerson(name: string): { person_id: string; name: string } | null {
+  resolvePerson(name: string, boardId = this.boardId): { person_id: string; name: string } | null {
     // 1. Exact match by name (case-insensitive)
     const exact = this.db
       .prepare(
         `SELECT person_id, name FROM board_people
          WHERE board_id = ? AND LOWER(name) = LOWER(?)`,
       )
-      .get(this.boardId, name) as
+      .get(boardId, name) as
       | { person_id: string; name: string }
       | undefined;
     if (exact) return exact;
@@ -834,7 +904,7 @@ export class TaskflowEngine {
         `SELECT person_id, name FROM board_people
          WHERE board_id = ? AND LOWER(person_id) = LOWER(?)`,
       )
-      .get(this.boardId, name) as
+      .get(boardId, name) as
       | { person_id: string; name: string }
       | undefined;
     if (byId) return byId;
@@ -846,7 +916,7 @@ export class TaskflowEngine {
         .prepare(
           `SELECT person_id, name FROM board_people WHERE board_id = ?`,
         )
-        .all(this.boardId) as Array<{ person_id: string; name: string }>;
+        .all(boardId) as Array<{ person_id: string; name: string }>;
       const matches = all.filter(
         (p) => p.name.split(/\s+/)[0].toLowerCase() === firstName.toLowerCase(),
       );
@@ -1118,6 +1188,7 @@ export class TaskflowEngine {
     assigneePersonId: string | null,
     modifierPersonId: string,
     taskId?: string,
+    boardId = this.boardId,
   ): { target_person_id: string; notification_group_jid: string | null } | null {
     // Someone else modified → notify assignee
     if (assigneePersonId && assigneePersonId !== modifierPersonId) {
@@ -1126,7 +1197,7 @@ export class TaskflowEngine {
           `SELECT notification_group_jid FROM board_people
            WHERE board_id = ? AND person_id = ?`,
         )
-        .get(this.boardId, assigneePersonId) as
+        .get(boardId, assigneePersonId) as
         | { notification_group_jid: string | null }
         | undefined;
       if (!person) return null;
@@ -1143,16 +1214,16 @@ export class TaskflowEngine {
            WHERE board_id = ? AND task_id = ? AND action = 'created'
            ORDER BY at ASC LIMIT 1`,
         )
-        .get(this.boardId, taskId) as { by: string } | undefined;
+        .get(boardId, taskId) as { by: string } | undefined;
       if (!creator) return null;
-      const creatorPerson = this.resolvePerson(creator.by);
+      const creatorPerson = this.resolvePerson(creator.by, boardId);
       if (!creatorPerson || creatorPerson.person_id === modifierPersonId) return null;
       const personRow = this.db
         .prepare(
           `SELECT notification_group_jid FROM board_people
            WHERE board_id = ? AND person_id = ?`,
         )
-        .get(this.boardId, creatorPerson.person_id) as
+        .get(boardId, creatorPerson.person_id) as
         | { notification_group_jid: string | null }
         | undefined;
       if (!personRow) return null;
@@ -1165,10 +1236,10 @@ export class TaskflowEngine {
   }
 
   /** Resolve display name for a person_id. */
-  private personDisplayName(personId: string): string {
+  private personDisplayName(personId: string, boardId = this.boardId): string {
     const row = this.db
       .prepare(`SELECT name FROM board_people WHERE board_id = ? AND person_id = ?`)
-      .get(this.boardId, personId) as { name: string } | undefined;
+      .get(boardId, personId) as { name: string } | undefined;
     return row?.name ?? personId;
   }
 
@@ -1225,8 +1296,9 @@ export class TaskflowEngine {
     task: { id: string; title: string; assignee: string },
     action: MoveParams['action'],
     modifierPersonId: string,
+    taskBoardId = this.boardId,
   ): { target_person_id: string; notification_group_jid: string | null; message: string } | null {
-    const target = this.resolveNotifTarget(task.assignee, modifierPersonId, task.id);
+    const target = this.resolveNotifTarget(task.assignee, modifierPersonId, task.id, taskBoardId);
     if (!target) return null;
     const modName = this.personDisplayName(modifierPersonId);
     const desc = TaskflowEngine.moveActionLabels[action] ?? action;
@@ -1260,8 +1332,9 @@ export class TaskflowEngine {
     task: { id: string; title: string; assignee: string },
     changes: string[],
     modifierPersonId: string,
+    taskBoardId = this.boardId,
   ): { target_person_id: string; notification_group_jid: string | null; message: string } | null {
-    const target = this.resolveNotifTarget(task.assignee, modifierPersonId, task.id);
+    const target = this.resolveNotifTarget(task.assignee, modifierPersonId, task.id, taskBoardId);
     if (!target) return null;
     const modName = this.personDisplayName(modifierPersonId);
     const changeList = changes.map(c => `• ${c}`).join('\n');
@@ -1271,7 +1344,7 @@ export class TaskflowEngine {
     };
   }
 
-  private meetingNotificationRecipients(task: any): Array<{ target_person_id: string; notification_group_jid: string | null }> {
+  private meetingNotificationRecipients(task: any): Omit<NotificationEntry, 'message'>[] {
     const participantIds: string[] = (() => {
       try {
         return JSON.parse(task.participants ?? '[]');
@@ -1284,25 +1357,48 @@ export class TaskflowEngine {
         ? [...participantIds, task.assignee]
         : [...participantIds],
     )];
-    if (allRecipients.length === 0) return [];
-    const placeholders = allRecipients.map(() => '?').join(',');
-    const rows = this.db.prepare(
-      `SELECT person_id, notification_group_jid FROM board_people WHERE board_id = ? AND person_id IN (${placeholders})`,
-    ).all(this.boardId, ...allRecipients) as Array<{ person_id: string; notification_group_jid: string | null }>;
-    const jidMap = new Map(rows.map((r) => [r.person_id, r.notification_group_jid ?? null]));
-    return allRecipients.map((personId) => ({
-      target_person_id: personId,
-      notification_group_jid: jidMap.get(personId) ?? null,
-    }));
+    const results: Omit<NotificationEntry, 'message'>[] = [];
+    if (allRecipients.length > 0) {
+      const placeholders = allRecipients.map(() => '?').join(',');
+      const rows = this.db.prepare(
+        `SELECT person_id, notification_group_jid FROM board_people WHERE board_id = ? AND person_id IN (${placeholders})`,
+      ).all(this.boardId, ...allRecipients) as Array<{ person_id: string; notification_group_jid: string | null }>;
+      const jidMap = new Map(rows.map((r) => [r.person_id, r.notification_group_jid ?? null]));
+      for (const personId of allRecipients) {
+        results.push({
+          target_kind: 'group',
+          target_person_id: personId,
+          notification_group_jid: jidMap.get(personId) ?? null,
+        });
+      }
+    }
+    // External participants with accepted grants (exclude past-expiry even if not yet lazily updated)
+    const recipientNow = new Date().toISOString();
+    const externals = this.db.prepare(
+      `SELECT ec.external_id, ec.display_name, ec.direct_chat_jid, ec.phone
+       FROM meeting_external_participants mep
+       JOIN external_contacts ec ON ec.external_id = mep.external_id
+       WHERE mep.board_id = ? AND mep.meeting_task_id = ?
+         AND mep.invite_status = 'accepted'
+         AND (mep.access_expires_at IS NULL OR mep.access_expires_at >= ?)
+       GROUP BY ec.external_id`,
+    ).all(this.boardId, task.id, recipientNow) as Array<{
+      external_id: string; display_name: string; direct_chat_jid: string | null; phone: string;
+    }>;
+    for (const ext of externals) {
+      results.push({
+        target_kind: 'dm',
+        target_external_id: ext.external_id,
+        target_chat_jid: ext.direct_chat_jid ?? `${ext.phone}@s.whatsapp.net`,
+      });
+    }
+    return results;
   }
 
   /** Scheduled meeting reminders keyed to scheduled_at. */
-  getMeetingReminderNotifications(nowIso = new Date().toISOString()): Array<{
+  getMeetingReminderNotifications(nowIso = new Date().toISOString()): Array<NotificationEntry & {
     task_id: string;
     reminder_days: number;
-    target_person_id: string;
-    notification_group_jid: string | null;
-    message: string;
   }> {
     const todayStr = nowIso.slice(0, 10);
     const meetings = this.db
@@ -1319,12 +1415,9 @@ export class TaskflowEngine {
       assignee: string | null;
       reminders: string | null;
     }>;
-    const notifications: Array<{
+    const notifications: Array<NotificationEntry & {
       task_id: string;
       reminder_days: number;
-      target_person_id: string;
-      notification_group_jid: string | null;
-      message: string;
     }> = [];
     for (const meeting of meetings) {
       let reminders: Array<{ days: number; date: string }> = [];
@@ -1352,12 +1445,7 @@ export class TaskflowEngine {
   getMeetingStartingNotifications(
     nowIso = new Date().toISOString(),
     windowMinutes = 5,
-  ): Array<{
-    task_id: string;
-    target_person_id: string;
-    notification_group_jid: string | null;
-    message: string;
-  }> {
+  ): Array<NotificationEntry & { task_id: string }> {
     const nowMs = new Date(nowIso).getTime();
     const windowMs = windowMinutes * 60_000;
     const meetings = this.db
@@ -1373,12 +1461,7 @@ export class TaskflowEngine {
       participants: string | null;
       assignee: string | null;
     }>;
-    const notifications: Array<{
-      task_id: string;
-      target_person_id: string;
-      notification_group_jid: string | null;
-      message: string;
-    }> = [];
+    const notifications: Array<NotificationEntry & { task_id: string }> = [];
     for (const meeting of meetings) {
       const scheduledMs = new Date(meeting.scheduled_at).getTime();
       if (Number.isNaN(scheduledMs)) continue;
@@ -1889,6 +1972,18 @@ export class TaskflowEngine {
 
     this.resolveDependencies(task.id, this.boardId);
 
+    // Revoke active external participant grants for meeting tasks
+    if (task.type === 'meeting') {
+      this.db
+        .prepare(
+          `UPDATE meeting_external_participants
+           SET invite_status = 'revoked', revoked_at = ?, updated_at = ?
+           WHERE board_id = ? AND meeting_task_id = ?
+             AND invite_status IN ('pending', 'invited', 'accepted')`,
+        )
+        .run(now, now, this.boardId, task.id);
+    }
+
     if (task.type === 'project') {
       this.db
         .prepare(`DELETE FROM tasks WHERE board_id = ? AND parent_task_id = ?`)
@@ -1976,6 +2071,18 @@ export class TaskflowEngine {
            WHERE board_id = ? AND id = ?`,
         )
         .run(String(nextCycle), newScheduledAt ?? task.scheduled_at ?? null, now, this.taskBoardId(task), task.id);
+      // Expire old-occurrence external participant grants so they don't bleed into the new cycle
+      if (task.scheduled_at) {
+        this.db
+          .prepare(
+            `UPDATE meeting_external_participants
+             SET invite_status = 'expired', updated_at = ?
+             WHERE board_id = ? AND meeting_task_id = ?
+               AND occurrence_scheduled_at = ?
+               AND invite_status IN ('invited', 'accepted')`,
+          )
+          .run(now, this.taskBoardId(task), task.id, task.scheduled_at);
+      }
     } else {
       this.db
         .prepare(
@@ -2316,6 +2423,7 @@ export class TaskflowEngine {
           task,
           effectiveAction,
           senderPersonId,
+          taskBoardId,
         );
         if (notif) notifications.push(notif);
       }
@@ -2668,6 +2776,41 @@ export class TaskflowEngine {
       /* --- Check task is active (not archived / done is still active in tasks table) --- */
       // Tasks only leave the tasks table when archived; if it's here, it's active.
 
+      /* --- External sender resolution --- */
+      const isExternalSender = !!params.sender_external_id;
+      let hasExternalGrant = false;
+      if (isExternalSender) {
+        const grantNow = new Date().toISOString();
+        // Expire only stale grants (past access_expires_at), leaving valid ones untouched.
+        // This prevents a non-deterministic SELECT from picking an old occurrence's row
+        // and the broad UPDATE from incorrectly expiring newer valid grants.
+        this.db.prepare(
+          `UPDATE meeting_external_participants SET invite_status = 'expired', updated_at = ?
+           WHERE board_id = ? AND meeting_task_id = ? AND external_id = ?
+             AND invite_status = 'accepted'
+             AND access_expires_at IS NOT NULL AND access_expires_at < ?`
+        ).run(grantNow, this.boardId, task.id, params.sender_external_id, grantNow);
+        const grant = this.db.prepare(
+          `SELECT invite_status FROM meeting_external_participants
+           WHERE board_id = ? AND meeting_task_id = ? AND external_id = ?
+             AND invite_status = 'accepted'
+           ORDER BY occurrence_scheduled_at DESC LIMIT 1`
+        ).get(this.boardId, task.id, params.sender_external_id) as any;
+        if (grant) {
+          hasExternalGrant = true;
+        }
+      }
+
+      /* --- Block non-note operations for external senders --- */
+      if (isExternalSender) {
+        const allowedOps = ['add_note', 'edit_note', 'remove_note', 'set_note_status', 'parent_note_id'];
+        const attemptedOps = Object.keys(updates).filter(k => (updates as any)[k] !== undefined);
+        const disallowed = attemptedOps.filter(op => !allowedOps.includes(op));
+        if (disallowed.length > 0) {
+          return { success: false, error: `Permission denied: external participants can only interact with meeting notes.` };
+        }
+      }
+
       /* --- Permission: sender must be assignee or manager (or meeting participant for note ops) --- */
       const isAssignee = senderPersonId != null && task.assignee === senderPersonId;
       const isMgr = this.isManager(params.sender_name);
@@ -2696,6 +2839,9 @@ export class TaskflowEngine {
         updates.scheduled_at !== undefined ||
         updates.add_participant !== undefined ||
         updates.remove_participant !== undefined ||
+        updates.add_external_participant !== undefined ||
+        updates.remove_external_participant !== undefined ||
+        updates.reinvite_external_participant !== undefined ||
         updates.add_subtask !== undefined ||
         updates.rename_subtask !== undefined ||
         updates.reopen_subtask !== undefined ||
@@ -2888,7 +3034,7 @@ export class TaskflowEngine {
         // Meeting note authorization: participants can add notes
         if (task.type === 'meeting' && !isMgr && !isAssignee) {
           const participants: string[] = JSON.parse(task.participants ?? '[]');
-          if (!participants.includes(senderPersonId ?? '')) {
+          if (!participants.includes(senderPersonId ?? '') && !hasExternalGrant) {
             return { success: false, error: `Permission denied: "${params.sender_name}" is not a participant of this meeting.` };
           }
         }
@@ -2896,6 +3042,19 @@ export class TaskflowEngine {
         const notes: Array<any> = JSON.parse(task.notes ?? '[]');
         const noteId = task.next_note_id ?? 1;
         const noteEntry: any = { id: noteId, text: updates.add_note, at: now, by: params.sender_name };
+
+        // Stable author identity for permission checks
+        if (senderPersonId) {
+          noteEntry.author_actor_type = 'board_person';
+          noteEntry.author_actor_id = senderPersonId;
+          noteEntry.author_display_name = sender?.name ?? params.sender_name;
+        }
+        if (isExternalSender && params.sender_external_id) {
+          noteEntry.author_actor_type = 'external_contact';
+          noteEntry.author_actor_id = params.sender_external_id;
+          const ext = this.db.prepare(`SELECT display_name FROM external_contacts WHERE external_id = ?`).get(params.sender_external_id) as any;
+          noteEntry.author_display_name = ext?.display_name ?? params.sender_name;
+        }
 
         // Meeting-only metadata
         const phase = this.getMeetingNotePhase(task);
@@ -2930,8 +3089,19 @@ export class TaskflowEngine {
           return { success: false, error: `Note #${updates.edit_note.id} not found.` };
         }
         // Meeting note authorization: only author/organizer/manager can edit
-        if (task.type === 'meeting' && !isMgr && !isAssignee && note.by !== params.sender_name) {
-          return { success: false, error: `Permission denied: only the note author, organizer, or manager can edit note #${updates.edit_note.id}.` };
+        if (task.type === 'meeting' && !isMgr && !isAssignee) {
+          if (isExternalSender && !hasExternalGrant) {
+            return { success: false, error: `Permission denied: "${params.sender_name}" does not have active access to this meeting.` };
+          }
+          const isNoteAuthor = note.author_actor_id
+            ? (
+                (note.author_actor_type === 'board_person' && note.author_actor_id === senderPersonId && !isExternalSender) ||
+                (note.author_actor_type === 'external_contact' && note.author_actor_id === params.sender_external_id)
+              )
+            : false;
+          if (!isNoteAuthor) {
+            return { success: false, error: `Permission denied: only the note author, organizer, or manager can edit note #${updates.edit_note.id}.` };
+          }
         }
         note.text = updates.edit_note.text;
         this.db
@@ -2952,8 +3122,20 @@ export class TaskflowEngine {
           return { success: false, error: `Note #${updates.remove_note} not found.` };
         }
         // Meeting note authorization: only author/organizer/manager can remove
-        if (task.type === 'meeting' && !isMgr && !isAssignee && notes[idx].by !== params.sender_name) {
-          return { success: false, error: `Permission denied: only the note author, organizer, or manager can remove note #${updates.remove_note}.` };
+        if (task.type === 'meeting' && !isMgr && !isAssignee) {
+          if (isExternalSender && !hasExternalGrant) {
+            return { success: false, error: `Permission denied: "${params.sender_name}" does not have active access to this meeting.` };
+          }
+          const noteAny = notes[idx] as any;
+          const isNoteAuthor = noteAny.author_actor_id
+            ? (
+                (noteAny.author_actor_type === 'board_person' && noteAny.author_actor_id === senderPersonId && !isExternalSender) ||
+                (noteAny.author_actor_type === 'external_contact' && noteAny.author_actor_id === params.sender_external_id)
+              )
+            : false;
+          if (!isNoteAuthor) {
+            return { success: false, error: `Permission denied: only the note author, organizer, or manager can remove note #${updates.remove_note}.` };
+          }
         }
         const removedId = notes[idx].id;
         notes.splice(idx, 1);
@@ -2977,7 +3159,7 @@ export class TaskflowEngine {
         // Meeting note authorization: only participants, organizer, or manager can set status
         if (!isMgr && !isAssignee) {
           const participants: string[] = JSON.parse(task.participants ?? '[]');
-          if (!participants.includes(senderPersonId ?? '')) {
+          if (!participants.includes(senderPersonId ?? '') && !hasExternalGrant) {
             return { success: false, error: `Permission denied: "${params.sender_name}" is not a participant of this meeting.` };
           }
         }
@@ -3054,6 +3236,192 @@ export class TaskflowEngine {
         }
       }
 
+      /* Add external participant (meeting only) */
+      if (updates.add_external_participant !== undefined) {
+        if (task.type !== 'meeting') {
+          return { success: false, error: 'External participants can only be added to meeting tasks.' };
+        }
+        if (!isMgr && !isAssignee) {
+          return { success: false, error: 'Permission denied: only the organizer or a manager can add external participants.' };
+        }
+        if (!task.scheduled_at && !updates.scheduled_at) {
+          return { success: false, error: 'Meeting must have scheduled_at set before inviting an external participant.' };
+        }
+
+        const phone = normalizePhone(updates.add_external_participant.phone);
+        const displayName = updates.add_external_participant.name;
+
+        // Upsert external contact
+        let externalId: string;
+        let existingChatJid: string | null = null;
+        const existing = this.db.prepare(
+          `SELECT external_id, direct_chat_jid FROM external_contacts WHERE phone = ?`
+        ).get(phone) as { external_id: string; direct_chat_jid: string | null } | undefined;
+
+        if (existing) {
+          externalId = existing.external_id;
+          existingChatJid = existing.direct_chat_jid;
+          this.db.prepare(
+            `UPDATE external_contacts SET display_name = ?, updated_at = ? WHERE external_id = ?`
+          ).run(displayName, now, externalId);
+        } else {
+          externalId = `ext-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          this.db.prepare(
+            `INSERT INTO external_contacts (external_id, display_name, phone, status, created_at, updated_at)
+             VALUES (?, ?, ?, 'active', ?, ?)`
+          ).run(externalId, displayName, phone, now, now);
+        }
+
+        // Create grant (upsert)
+        const occurrenceScheduledAt = updates.scheduled_at ?? task.scheduled_at;
+        const existingGrant = this.db.prepare(
+          `SELECT invite_status, access_expires_at FROM meeting_external_participants
+           WHERE board_id = ? AND meeting_task_id = ? AND occurrence_scheduled_at = ? AND external_id = ?`
+        ).get(this.boardId, task.id, occurrenceScheduledAt, externalId) as { invite_status: string; access_expires_at: string | null } | undefined;
+
+        if (existingGrant) {
+          const isExpiredByTime = (existingGrant.invite_status === 'invited' || existingGrant.invite_status === 'accepted')
+            && existingGrant.access_expires_at != null && existingGrant.access_expires_at < now;
+          if (existingGrant.invite_status === 'revoked' || existingGrant.invite_status === 'expired' || isExpiredByTime) {
+            const freshExpiry = new Date(new Date(occurrenceScheduledAt).getTime() + ACCESS_WINDOW_MS).toISOString();
+            this.db.prepare(
+              `UPDATE meeting_external_participants
+               SET invite_status = 'invited', revoked_at = NULL, accepted_at = NULL,
+                   invited_at = ?, access_expires_at = ?, updated_at = ?
+               WHERE board_id = ? AND meeting_task_id = ? AND occurrence_scheduled_at = ? AND external_id = ?`
+            ).run(now, freshExpiry, now, this.boardId, task.id, occurrenceScheduledAt, externalId);
+          }
+          // else already invited/accepted — no-op
+        } else {
+          // Calculate access_expires_at: scheduled_at + 7 days
+          const expiresAt = new Date(new Date(occurrenceScheduledAt).getTime() + ACCESS_WINDOW_MS).toISOString();
+          this.db.prepare(
+            `INSERT INTO meeting_external_participants
+             (board_id, meeting_task_id, occurrence_scheduled_at, external_id, invite_status,
+              invited_at, access_expires_at, created_by, created_at, updated_at)
+             VALUES (?, ?, ?, ?, 'invited', ?, ?, ?, ?, ?)`
+          ).run(this.boardId, task.id, occurrenceScheduledAt, externalId, now, expiresAt, senderPersonId ?? params.sender_name, now, now);
+        }
+
+        // Build DM invite notification (use cached JID from initial lookup)
+        const targetJid = existingChatJid ?? `${phone}@s.whatsapp.net`;
+        const organizerName = sender?.name ?? params.sender_name;
+
+        notifications.push({
+          target_kind: 'dm',
+          target_external_id: externalId,
+          target_chat_jid: targetJid,
+          message: buildExternalInviteMessage(task.id, task.title, updates.scheduled_at ?? task.scheduled_at, organizerName),
+        } as any);
+
+        // Audit trail
+        this.db.prepare(
+          `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+           VALUES (?, ?, 'add_external_participant', ?, ?, ?)`
+        ).run(this.boardId, task.id, senderPersonId ?? params.sender_name, now,
+          `External participant ${displayName} (${phone}) invited`);
+
+        changes.push(`External participant ${displayName} invited`);
+      }
+
+      /* Remove external participant (meeting only) */
+      if (updates.remove_external_participant !== undefined) {
+        if (task.type !== 'meeting') {
+          return { success: false, error: 'External participants can only be removed from meeting tasks.' };
+        }
+        if (!isMgr && !isAssignee) {
+          return { success: false, error: 'Permission denied: only the organizer or a manager can remove external participants.' };
+        }
+
+        const { external_id, phone, name } = updates.remove_external_participant;
+        let externalId = external_id;
+        if (!externalId && phone) {
+          const row = this.db.prepare(`SELECT external_id FROM external_contacts WHERE phone = ?`).get(normalizePhone(phone)) as { external_id: string } | undefined;
+          externalId = row?.external_id;
+        }
+        if (!externalId && name) {
+          const row = this.db.prepare(
+            `SELECT ec.external_id FROM external_contacts ec
+             JOIN meeting_external_participants mep ON mep.external_id = ec.external_id
+             WHERE LOWER(ec.display_name) = LOWER(?)
+               AND mep.board_id = ? AND mep.meeting_task_id = ?
+               AND mep.invite_status IN ('pending', 'invited', 'accepted')
+             LIMIT 1`
+          ).get(name, this.boardId, task.id) as { external_id: string } | undefined;
+          externalId = row?.external_id;
+        }
+        if (!externalId) {
+          return { success: false, error: 'External participant not found.' };
+        }
+
+        const revokeResult = this.db.prepare(
+          `UPDATE meeting_external_participants
+           SET invite_status = 'revoked', revoked_at = ?, updated_at = ?
+           WHERE board_id = ? AND meeting_task_id = ? AND external_id = ?
+             AND invite_status IN ('pending', 'invited', 'accepted')`
+        ).run(now, now, this.boardId, task.id, externalId);
+
+        if (revokeResult.changes === 0) {
+          return { success: false, error: 'This external contact is not an active participant of this meeting.' };
+        }
+
+        this.db.prepare(
+          `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+           VALUES (?, ?, 'remove_external_participant', ?, ?, ?)`
+        ).run(this.boardId, task.id, senderPersonId ?? params.sender_name, now, `External participant ${externalId} revoked`);
+
+        changes.push(`External participant removed`);
+      }
+
+      /* Reinvite external participant (meeting only) */
+      if (updates.reinvite_external_participant !== undefined) {
+        if (task.type !== 'meeting') {
+          return { success: false, error: 'External participants can only be reinvited on meeting tasks.' };
+        }
+        if (!isMgr && !isAssignee) {
+          return { success: false, error: 'Permission denied: only the organizer or a manager can reinvite external participants.' };
+        }
+        if (!task.scheduled_at) {
+          return { success: false, error: 'Meeting must have scheduled_at set.' };
+        }
+
+        const { external_id, phone } = updates.reinvite_external_participant;
+        let externalId = external_id;
+        if (!externalId && phone) {
+          const row = this.db.prepare(`SELECT external_id FROM external_contacts WHERE phone = ?`).get(normalizePhone(phone)) as { external_id: string } | undefined;
+          externalId = row?.external_id;
+        }
+        if (!externalId) {
+          return { success: false, error: 'External contact not found.' };
+        }
+
+        // Reset grant with current schedule and fresh expiry window
+        const reinviteExpiry = new Date(new Date(task.scheduled_at).getTime() + ACCESS_WINDOW_MS).toISOString();
+        const reinviteResult = this.db.prepare(
+          `UPDATE meeting_external_participants
+           SET invite_status = 'invited', revoked_at = NULL, accepted_at = NULL,
+               access_expires_at = ?, invited_at = ?, updated_at = ?
+           WHERE board_id = ? AND meeting_task_id = ? AND occurrence_scheduled_at = ? AND external_id = ?
+             AND invite_status IN ('revoked', 'expired')`
+        ).run(reinviteExpiry, now, now, this.boardId, task.id, task.scheduled_at, externalId);
+        if (reinviteResult.changes === 0) {
+          return { success: false, error: 'No revoked or expired grant found for this participant on the current occurrence.' };
+        }
+
+        // Build invite DM (same as add_external_participant)
+        const contact = this.db.prepare(`SELECT display_name, phone, direct_chat_jid FROM external_contacts WHERE external_id = ?`).get(externalId) as any;
+        const reinviteJid = contact.direct_chat_jid ?? `${contact.phone}@s.whatsapp.net`;
+        const organizerName = sender?.name ?? params.sender_name;
+        notifications.push({
+          target_kind: 'dm',
+          target_external_id: externalId,
+          target_chat_jid: reinviteJid,
+          message: buildExternalInviteMessage(task.id, task.title, task.scheduled_at, organizerName),
+        } as any);
+
+        changes.push(`External participant ${contact.display_name} reinvited`);
+      }
+
       /* Scheduled at (meeting only) */
       if (updates.scheduled_at !== undefined) {
         if (task.type !== 'meeting') {
@@ -3074,6 +3442,32 @@ export class TaskflowEngine {
             .run(updates.scheduled_at, taskBoardId, task.id);
         }
         changes.push(`Meeting rescheduled to ${updates.scheduled_at}`);
+
+        // Notify all active meeting participants (internal + external) of the reschedule
+        const rescheduleMsg = `📅 *Reunião reagendada*\n\n*${task.id}* — ${task.title}\n*Novo horário:* ${updates.scheduled_at}\n*Por:* ${sender?.name ?? params.sender_name}`;
+        for (const recipient of this.meetingNotificationRecipients(task)) {
+          if (recipient.target_person_id && senderPersonId && recipient.target_person_id === senderPersonId) continue;
+          notifications.push({ ...recipient, message: rescheduleMsg });
+        }
+
+        // Cascade to active external participant grants: update occurrence key + expiry in one statement
+        const oldScheduledAt = task.scheduled_at;
+        const newExpiry = new Date(new Date(updates.scheduled_at).getTime() + ACCESS_WINDOW_MS).toISOString();
+        if (oldScheduledAt) {
+          this.db.prepare(
+            `UPDATE meeting_external_participants
+             SET occurrence_scheduled_at = ?, access_expires_at = ?, updated_at = ?
+             WHERE board_id = ? AND meeting_task_id = ? AND occurrence_scheduled_at = ?
+               AND invite_status IN ('pending', 'invited', 'accepted')`
+          ).run(updates.scheduled_at, newExpiry, now, this.boardId, task.id, oldScheduledAt);
+        } else {
+          this.db.prepare(
+            `UPDATE meeting_external_participants
+             SET access_expires_at = ?, updated_at = ?
+             WHERE board_id = ? AND meeting_task_id = ?
+               AND invite_status IN ('pending', 'invited', 'accepted')`
+          ).run(newExpiry, now, this.boardId, task.id);
+        }
       }
 
       /* Add subtask (project only) — creates a real task row */
@@ -3233,6 +3627,7 @@ export class TaskflowEngine {
           { id: task.id, title: task.title, assignee: task.assignee },
           changes,
           senderPersonId,
+          taskBoardId,
         );
         if (notif) notifications.push(notif);
       }
@@ -4366,23 +4761,30 @@ export class TaskflowEngine {
           const organizerRow = task.assignee
             ? this.db.prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id = ?`).get(this.boardId, task.assignee) as any
             : null;
-          if (participantIds.length === 0) {
-            return {
-              success: true,
-              data: {
-                organizer: organizerRow ?? { person_id: task.assignee, name: task.assignee },
-                participants: [],
-              },
-            };
-          }
-          const people = this.db
-            .prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id IN (${participantIds.map(() => '?').join(',')})`)
-            .all(this.boardId, ...participantIds) as Array<{ person_id: string; name: string; role: string }>;
+          const people = participantIds.length === 0
+            ? []
+            : this.db
+                .prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id IN (${participantIds.map(() => '?').join(',')})`)
+                .all(this.boardId, ...participantIds) as Array<{ person_id: string; name: string; role: string }>;
+          const epNow = new Date().toISOString();
+          const externalParticipants = this.db.prepare(
+            `SELECT ec.external_id, ec.display_name, mep.invite_status
+             FROM meeting_external_participants mep
+             JOIN external_contacts ec ON ec.external_id = mep.external_id
+             WHERE mep.board_id = ? AND mep.meeting_task_id = ?
+               AND mep.invite_status NOT IN ('revoked', 'expired')
+               AND (mep.access_expires_at IS NULL OR mep.access_expires_at >= ?)`
+          ).all(this.boardId, task.id, epNow) as Array<{
+            external_id: string;
+            display_name: string;
+            invite_status: string;
+          }>;
           return {
             success: true,
             data: {
               organizer: organizerRow ?? { person_id: task.assignee, name: task.assignee },
               participants: people,
+              external_participants: externalParticipants,
             },
           };
         }
@@ -4581,6 +4983,7 @@ export class TaskflowEngine {
     try {
       return this.db.transaction(() => {
       /* --- Permission check: process_inbox allows manager or delegate; all others require manager --- */
+      const isExternalInviteAccept = params.action === 'accept_external_invite';
       if (params.action === 'process_inbox') {
         if (!this.isManagerOrDelegate(params.sender_name)) {
           return {
@@ -4588,6 +4991,11 @@ export class TaskflowEngine {
             error: `Permission denied: "${params.sender_name}" is not a manager or delegate.`,
           };
         }
+      } else if (isExternalInviteAccept) {
+        if (!params.sender_external_id) {
+          return { success: false, error: 'Missing sender_external_id' };
+        }
+        // No manager check — action-specific grant validation happens in the case body
       } else if (!this.isManager(params.sender_name)) {
         return {
           success: false,
@@ -4863,32 +5271,18 @@ export class TaskflowEngine {
           /* Record history (on the archive entry for reference) */
           this.recordHistory(task.id, 'cancelled', params.sender_name);
 
-          /* Notify meeting participants on cancellation (single batch query) */
+          /* Notify meeting participants on cancellation (internal + external) */
           const cancelNotifications: AdminResult['notifications'] = [];
-          if (task.type === 'meeting' && task.participants) {
-            const participants: string[] = JSON.parse(task.participants ?? '[]');
-            const allRecipients = task.assignee && !participants.includes(task.assignee)
-              ? [...participants, task.assignee]
-              : [...participants];
-            /* Exclude the sender from cancellation notifications (they already know) */
+          if (task.type === 'meeting') {
             const senderPerson = this.resolvePerson(params.sender_name);
             const senderPersonId = senderPerson?.person_id ?? null;
-            const recipientsExcludingSender = senderPersonId
-              ? allRecipients.filter((pid) => pid !== senderPersonId)
-              : allRecipients;
-            if (recipientsExcludingSender.length > 0) {
-              const placeholders = recipientsExcludingSender.map(() => '?').join(',');
-              const rows = this.db.prepare(
-                `SELECT person_id, notification_group_jid FROM board_people WHERE board_id = ? AND person_id IN (${placeholders})`
-              ).all(this.boardId, ...recipientsExcludingSender) as Array<{ person_id: string; notification_group_jid: string | null }>;
-              const jidMap = new Map(rows.map(r => [r.person_id, r.notification_group_jid]));
-              for (const pid of recipientsExcludingSender) {
-                cancelNotifications.push({
-                  target_person_id: pid,
-                  notification_group_jid: jidMap.get(pid) ?? null,
-                  message: `📅 Reunião ${this.displayId(task)} "${task.title}" foi cancelada.`,
-                });
-              }
+            const cancelMessage = `📅 Reunião ${this.displayId(task)} "${task.title}" foi cancelada.`;
+            for (const recipient of this.meetingNotificationRecipients(task)) {
+              if (senderPersonId && recipient.target_person_id === senderPersonId) continue;
+              cancelNotifications.push({
+                ...recipient,
+                message: cancelMessage,
+              });
             }
           }
 
@@ -5148,6 +5542,38 @@ export class TaskflowEngine {
             data: { created_task_id: createResult.task_id, note_id: params.note_id },
             ...(resultNotifications.length > 0 ? { notifications: resultNotifications } : {}),
           };
+        }
+
+        case 'accept_external_invite': {
+          if (!params.task_id) return { success: false, error: 'Missing task_id' };
+          if (!params.sender_external_id) return { success: false, error: 'Missing sender_external_id' };
+
+          const task = this.requireTask(params.task_id);
+          if (task.type !== 'meeting') return { success: false, error: 'Not a meeting task.' };
+
+          const acceptNow = new Date().toISOString();
+          const grant = this.db.prepare(
+            `SELECT rowid, invite_status FROM meeting_external_participants
+             WHERE board_id = ? AND meeting_task_id = ? AND external_id = ?
+               AND invite_status IN ('pending', 'invited')
+               AND (access_expires_at IS NULL OR access_expires_at >= ?)
+             ORDER BY occurrence_scheduled_at DESC LIMIT 1`
+          ).get(this.boardId, task.id, params.sender_external_id, acceptNow) as any;
+
+          if (!grant) return { success: false, error: 'No pending invite found for this meeting.' };
+
+          this.db.prepare(
+            `UPDATE meeting_external_participants
+             SET invite_status = 'accepted', accepted_at = ?, updated_at = ?
+             WHERE rowid = ?`
+          ).run(acceptNow, acceptNow, grant.rowid);
+
+          this.db.prepare(
+            `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+             VALUES (?, ?, 'external_invite_accepted', ?, ?, ?)`
+          ).run(this.boardId, task.id, params.sender_external_id, acceptNow, 'External participant accepted invite');
+
+          return { success: true, message: `Convite aceito para ${task.id} — ${task.title}` };
         }
 
         default:
