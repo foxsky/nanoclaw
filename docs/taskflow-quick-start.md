@@ -20,7 +20,15 @@ A tarefa vai para o Inbox. Qualquer pessoa do grupo pode usar esse comando.
 
 A tarefa vai direto para Proxima Acao, com responsavel e prazo.
 
-### 3. Veja o quadro
+### 3. Agende uma reuniao
+
+```
+@Case reuniao: alinhamento semanal amanha as 14h
+```
+
+A reuniao recebe ID `MXXX`, fica em Proxima Acao e depois pode ganhar pauta, ata e participantes.
+
+### 4. Veja o quadro
 
 ```
 @Case quadro
@@ -87,6 +95,11 @@ Se usar "tarefa" sem indicar responsavel (sem "para [pessoa]"), vai para o Inbox
 | `@Case atrasadas` | Tarefas com prazo vencido |
 | `@Case vencem hoje` | Prazos de hoje |
 | `@Case buscar [texto]` | Busca por palavra |
+| `@Case reunioes` | Lista reunioes abertas |
+| `@Case proximas reunioes` | Reunioes agendadas para frente |
+| `@Case pauta MXXX` | Mostra a pauta da reuniao |
+| `@Case ata MXXX` | Mostra a ata/notas da reuniao |
+| `@Case participantes MXXX` | Mostra organizador e participantes |
 | `@Case resumo` | Resumo executivo |
 | `@Case resumo semanal` | Revisao semanal sob demanda |
 | `@Case estatisticas` | Metricas do quadro |
@@ -102,6 +115,16 @@ Se usar "tarefa" sem indicar responsavel (sem "para [pessoa]"), vai para o Inbox
 @Case diario para [pessoa]: [descricao]
 @Case semanal para [pessoa]: [descricao] toda segunda
 @Case mensal para [pessoa]: [descricao] todo dia [N]
+```
+
+### Reunioes
+
+```
+@Case reuniao: [titulo] em [data] as [hora]
+@Case reuniao com [pessoa], [pessoa]: [titulo] em [data] as [hora]
+@Case pauta MXXX: [texto]
+@Case ata MXXX: [texto]
+@Case reagendar MXXX para [data] as [hora]
 ```
 
 ### Reatribuir (responsavel ou gestor)
@@ -146,6 +169,7 @@ Comandos como `processar inbox`, `reatribuir`, `cancelar` e `estatisticas` funci
 - **TN** — Tarefa simples
 - **PN** — Projeto com sub-etapas (P1.1, P1.2, ...)
 - **RN** — Recorrente (gera nova instancia ao concluir)
+- **M** — Reuniao com horario, pauta, ata e participantes (`M001`, `M002`, ...)
 
 ---
 
@@ -153,10 +177,10 @@ Comandos como `processar inbox`, `reatribuir`, `cancelar` e `estatisticas` funci
 
 | Quem | O que pode |
 |------|-----------|
-| **Todos** | Captura rapida, consultas, busca, ajuda |
+| **Todos** | Captura rapida, consultas, busca, ajuda, criar reunioes |
 | **Responsavel** | Mover suas tarefas, adicionar notas, reatribuir suas tarefas |
 | **Delegado** | Processar inbox, aprovar/rejeitar revisao |
-| **Gestor** | Tudo: criar, cancelar, reatribuir qualquer tarefa, configurar equipe |
+| **Gestor** | Criar tarefas completas, cancelar, reatribuir qualquer tarefa, configurar equipe |
 
 ---
 
@@ -169,6 +193,9 @@ Comandos como `processar inbox`, `reatribuir`, `cancelar` e `estatisticas` funci
 - Dependencias: `@Case T001 depende de T002`
 - Descricao: `@Case descricao TXXX: escopo detalhado da tarefa`
 - Lembretes: `@Case lembrete TXXX 3 dias antes`
+- Pauta: `@Case pauta MXXX` consulta a agenda; `@Case pauta MXXX: texto` adiciona item
+- Ata: `@Case ata MXXX` mostra as notas; `@Case ata MXXX: texto` adiciona registro da reuniao
+- Reunioes nao contam no limite WIP e usam `MXXX` como prefixo
 
 ---
 

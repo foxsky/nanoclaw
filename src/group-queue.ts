@@ -24,6 +24,7 @@ interface GroupState {
   process: ChildProcess | null;
   containerName: string | null;
   groupFolder: string | null;
+  inputDir: string | null;
   retryCount: number;
   retryTimer: ReturnType<typeof setTimeout> | null;
 }
@@ -31,7 +32,7 @@ interface GroupState {
 export class GroupQueue {
   private groups = new Map<string, GroupState>();
   private activeCount = 0;
-  private waitingGroups: string[] = [];
+  private waitingGroups = new Set<string>();
   private processMessagesFn: ((groupJid: string) => Promise<boolean>) | null =
     null;
   private shuttingDown = false;
@@ -49,6 +50,7 @@ export class GroupQueue {
         process: null,
         containerName: null,
         groupFolder: null,
+        inputDir: null,
         retryCount: 0,
         retryTimer: null,
       };
@@ -74,9 +76,7 @@ export class GroupQueue {
 
     if (this.activeCount >= MAX_CONCURRENT_CONTAINERS) {
       state.pendingMessages = true;
-      if (!this.waitingGroups.includes(groupJid)) {
-        this.waitingGroups.push(groupJid);
-      }
+      this.waitingGroups.add(groupJid);
       logger.debug(
         { groupJid, activeCount: this.activeCount },
         'At concurrency limit, message queued',
@@ -124,9 +124,7 @@ export class GroupQueue {
 
     if (this.activeCount >= MAX_CONCURRENT_CONTAINERS) {
       state.pendingTasks.push({ id: taskId, groupJid, fn });
-      if (!this.waitingGroups.includes(groupJid)) {
-        this.waitingGroups.push(groupJid);
-      }
+      this.waitingGroups.add(groupJid);
       logger.debug(
         { groupJid, taskId, activeCount: this.activeCount },
         'At concurrency limit, task queued',
@@ -149,7 +147,11 @@ export class GroupQueue {
     const state = this.getGroup(groupJid);
     state.process = proc;
     state.containerName = containerName;
-    if (groupFolder) state.groupFolder = groupFolder;
+    if (groupFolder) {
+      state.groupFolder = groupFolder;
+      state.inputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
+      fs.mkdirSync(state.inputDir, { recursive: true });
+    }
   }
 
   /**
@@ -170,15 +172,12 @@ export class GroupQueue {
    */
   sendMessage(groupJid: string, text: string): boolean {
     const state = this.getGroup(groupJid);
-    if (!state.active || !state.groupFolder || state.isTaskContainer)
-      return false;
+    if (!state.active || !state.inputDir || state.isTaskContainer) return false;
     state.idleWaiting = false; // Agent is about to receive work, no longer idle
 
-    const inputDir = path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
     try {
-      fs.mkdirSync(inputDir, { recursive: true });
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
-      const filepath = path.join(inputDir, filename);
+      const filepath = path.join(state.inputDir, filename);
       const tempPath = `${filepath}.tmp`;
       fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
       fs.renameSync(tempPath, filepath);
@@ -193,12 +192,10 @@ export class GroupQueue {
    */
   closeStdin(groupJid: string): void {
     const state = this.getGroup(groupJid);
-    if (!state.active || !state.groupFolder) return;
+    if (!state.active || !state.inputDir) return;
 
-    const inputDir = path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
     try {
-      fs.mkdirSync(inputDir, { recursive: true });
-      fs.writeFileSync(path.join(inputDir, '_close'), '');
+      fs.writeFileSync(path.join(state.inputDir, '_close'), '');
     } catch {
       // ignore
     }
@@ -242,6 +239,7 @@ export class GroupQueue {
       state.process = null;
       state.containerName = null;
       state.groupFolder = null;
+      state.inputDir = null;
       this.activeCount--;
       this.drainGroup(groupJid);
     }
@@ -271,6 +269,7 @@ export class GroupQueue {
       state.process = null;
       state.containerName = null;
       state.groupFolder = null;
+      state.inputDir = null;
       this.activeCount--;
       this.drainGroup(groupJid);
     }
@@ -335,12 +334,11 @@ export class GroupQueue {
   }
 
   private drainWaiting(): void {
-    while (
-      this.waitingGroups.length > 0 &&
-      this.activeCount < MAX_CONCURRENT_CONTAINERS
-    ) {
-      const nextJid = this.waitingGroups.shift()!;
+    for (const nextJid of this.waitingGroups) {
+      if (this.activeCount >= MAX_CONCURRENT_CONTAINERS) break;
+
       const state = this.getGroup(nextJid);
+      this.waitingGroups.delete(nextJid);
 
       // Prioritize tasks over messages
       if (state.pendingTasks.length > 0) {

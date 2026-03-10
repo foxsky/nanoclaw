@@ -85,30 +85,14 @@ export function ensureContainerRuntimeRunning(): void {
     logger.debug('Container runtime already running');
   } catch (err) {
     logger.error({ err }, 'Failed to reach container runtime');
-    console.error(
-      '\n╔════════════════════════════════════════════════════════════════╗',
-    );
-    console.error(
-      '║  FATAL: Container runtime failed to start                      ║',
-    );
-    console.error(
-      '║                                                                ║',
-    );
-    console.error(
-      '║  Agents cannot run without a container runtime. To fix:        ║',
-    );
-    console.error(
-      '║  1. Ensure Docker is installed and running                     ║',
-    );
-    console.error(
-      '║  2. Run: docker info                                           ║',
-    );
-    console.error(
-      '║  3. Restart NanoClaw                                           ║',
-    );
-    console.error(
-      '╚════════════════════════════════════════════════════════════════╝\n',
-    );
+    console.error(`
+  FATAL: Container runtime (${CONTAINER_RUNTIME_BIN}) failed to start.
+
+  Agents cannot run without a container runtime. To fix:
+    1. Ensure ${CONTAINER_RUNTIME_BIN} is installed and running
+    2. Run: ${CONTAINER_RUNTIME_BIN} info
+    3. Restart NanoClaw
+`);
     throw new Error('Container runtime is required but failed to start');
   }
 }
@@ -121,14 +105,14 @@ export function cleanupOrphans(): void {
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
     const orphans = output.trim().split('\n').filter(Boolean);
-    for (const name of orphans) {
-      try {
-        execSync(stopContainer(name), { stdio: 'pipe' });
-      } catch {
-        /* already stopped */
-      }
-    }
     if (orphans.length > 0) {
+      try {
+        execSync(`${CONTAINER_RUNTIME_BIN} stop ${orphans.join(' ')}`, {
+          stdio: 'pipe',
+        });
+      } catch {
+        /* some may already be stopped */
+      }
       logger.info(
         { count: orphans.length, names: orphans },
         'Stopped orphaned containers',

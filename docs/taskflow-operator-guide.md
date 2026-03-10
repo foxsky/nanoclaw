@@ -3,6 +3,7 @@
 Operator guide for provisioning, configuring, and maintaining TaskFlow boards in NanoClaw.
 
 This document is for the system operator or team admin. End users should use [taskflow-user-manual.md](taskflow-user-manual.md).
+For meeting-specific queries and options, see [taskflow-meetings-reference.md](taskflow-meetings-reference.md).
 
 ## Scope
 

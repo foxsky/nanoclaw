@@ -61,8 +61,9 @@ O gestor pode forçar com: `@Case forcar TXXX para andamento`
 - **TN** — Tarefa simples (ação única)
 - **PN** — Projeto (tem sub-etapas). Cada etapa vira uma sub-tarefa (`P1.1`, `P1.2`, etc.)
 - **RN** — Recorrente (repete por agenda). Gera automaticamente uma nova instância após conclusão.
+- **M** — Reunião. Usa prefixo `M`, tem horário em `scheduled_at`, pauta, ata e participantes.
 
-Todos os comandos de movimentação funcionam com qualquer prefixo (`T-`, `P-`, `R-`).
+Todos os comandos de movimentação funcionam com qualquer prefixo (`T-`, `P-`, `R-`, `M-`).
 
 Toda tarefa nova nasce com prioridade `normal` e sem rótulos. Depois, o gestor ou o responsável podem ajustar isso.
 
@@ -126,6 +127,24 @@ Projetos também podem ser recorrentes. As etapas são reiniciadas automaticamen
 @Case anual para Alexandre: renovar licenças todo dia 15/01
 ```
 
+### Criar Reunião
+
+Use reunião quando você precisa agendar um encontro, registrar pauta antes, anotar decisões durante e revisar pendências depois.
+
+```
+@Case reunião: alinhamento semanal em 15/03 às 14:00
+@Case reunião: retrospectiva
+@Case reunião com Alexandre, Rafael: revisão da sprint em 15/03 às 09:30
+@Case reunião semanal: 1:1 com Alexandre começando 18/03 às 14:00
+```
+
+Observações importantes:
+
+- Reuniões usam ID com prefixo `M` (`M001`, `M002`, ...)
+- O horário da reunião fica em `scheduled_at`; `due_date` não é o campo principal para esse tipo
+- Reuniões não contam no limite WIP
+- Reuniões recorrentes precisam de uma primeira ocorrência com data e hora
+
 ---
 
 ### Mover Tarefas no Quadro
@@ -153,6 +172,51 @@ Projetos também podem ser recorrentes. As etapas são reiniciadas automaticamen
 | `@Case reatribuir T001 para Rafael` | Muda o responsável da tarefa (responsável ou gestor, pede confirmação) |
 | `@Case cancelar T001` | Cancela e arquiva (gestor, pede confirmação) |
 | `@Case restaurar T001` | Restaura uma tarefa arquivada para Próxima Ação (gestor) |
+
+### Reuniões
+
+As reuniões usam o mesmo quadro, mas com comportamento próprio:
+
+- Em `Próxima Ação`, você normalmente prepara a pauta
+- Em `Em Andamento` ou `Aguardando`, o foco é a ata/notas da reunião
+- Em `Revisão`, ficam os desdobramentos pós-reunião
+
+| Comando | O que faz |
+|---------|-----------|
+| `@Case reunião: alinhamento semanal em 15/03 às 14:00` | Cria uma reunião com data e hora |
+| `@Case reunião: retrospectiva` | Cria uma reunião sem horário definido ainda |
+| `@Case reunião com Alexandre, Rafael: revisão da sprint em 15/03 às 09:30` | Cria reunião já com participantes |
+| `@Case reunião semanal: 1:1 com Alexandre começando 18/03 às 14:00` | Cria reunião recorrente |
+| `@Case começando M001` | Inicia a reunião |
+| `@Case M001 aguardando resposta do cliente` | Marca a reunião como interrompida/bloqueada |
+| `@Case M001 retomada` | Retoma a reunião |
+| `@Case M001 pronta para revisao` | Move para acompanhamento pós-reunião |
+| `@Case M001 concluida` | Conclui a reunião; se houver itens abertos, o assistente avisa |
+| `@Case cancelar M001` | Cancela a reunião e arquiva |
+
+### Pauta, Ata e Participantes
+
+Em reuniões, a mesma estrutura de notas é usada para pauta, ata e pós-reunião. A fase é definida automaticamente pela coluna atual.
+
+| Comando | O que faz |
+|---------|-----------|
+| `@Case pauta M001` | Mostra a pauta/agenda da reunião |
+| `@Case pauta M001: revisar riscos do projeto` | Adiciona item de pauta |
+| `@Case ata M001` | Mostra a ata/notas atuais da reunião |
+| `@Case ata M001: aprovado cronograma final` | Adiciona nota de ata |
+| `@Case ata M001 #3: criar follow-up com fornecedor` | Responde a um item existente |
+| `@Case editar nota M001 #3: novo texto` | Edita uma nota de reunião |
+| `@Case remover nota M001 #3` | Remove uma nota de reunião |
+| `@Case marcar item M001 #3 como resolvido` | Marca item como tratado |
+| `@Case reabrir item M001 #3` | Reabre item |
+| `@Case descartar item M001 #3` | Descarta item sem ação futura |
+| `@Case reagendar M001 para 16/03 às 15:00` | Altera data e hora da reunião |
+| `@Case adicionar participante M001: Giovanni` | Adiciona participante |
+| `@Case remover participante M001: Giovanni` | Remove participante |
+| `@Case participantes M001` | Mostra organizador e participantes |
+| `@Case processar ata M001` | Abre a triagem dos itens ainda abertos da reunião |
+
+`pauta M001` sem dois-pontos consulta a pauta. `pauta M001: texto` adiciona um item novo.
 
 ### Operações em Lote
 
@@ -226,6 +290,14 @@ Limitações: não desfaz criação (use `cancelar`), arquivamento, avanço de r
 | `@Case buscar no arquivo contrato` | Busca no arquivo por texto |
 | `@Case agenda` | Agenda dos próximos 14 dias por prazo |
 | `@Case agenda da semana` | Agenda dos próximos 7 dias |
+| `@Case reunioes` | Todas as reuniões ainda não concluídas |
+| `@Case proximas reunioes` | Reuniões futuras, ordenadas por horário |
+| `@Case pauta M001` | Pauta da reunião |
+| `@Case ata M001` | Ata/notas da reunião |
+| `@Case participantes M001` | Organizador e participantes da reunião |
+| `@Case itens abertos M001` | Notas da reunião ainda em aberto |
+| `@Case historico reuniao M001` | Histórico da reunião |
+| `@Case ata M001 de 15/03/2026` | Ata de uma ocorrência específica da reunião |
 | `@Case o que mudou hoje?` | Mudanças feitas hoje (timeline) |
 | `@Case o que mudou desde ontem?` | Mudanças desde ontem |
 | `@Case o que mudou esta semana?` | Mudanças da semana atual |
@@ -290,6 +362,8 @@ Notas novas podem ser editadas e removidas pelo gestor ou pelo responsável:
 - `@Case remover nota T001 #2`
 
 Notas antigas de quadros muito antigos podem aparecer sem ID. Elas continuam visíveis, mas não podem ser editadas.
+
+Em reuniões, participantes também podem adicionar notas. Para editar ou remover nota de reunião, vale a regra: autor da nota, organizador da reunião ou gestor.
 
 Prioridades aceitas: `baixa`, `normal`, `alta`, `urgente`.
 
@@ -428,6 +502,7 @@ Revisão GTD completa às sextas. Inclui:
 | Buscar tarefas por texto | Todos |
 | Buscar tarefas por texto + rótulo | Todos |
 | Ver tarefas por prioridade ou rótulo | Todos |
+| Ver `reunioes` / `proximas reunioes` / `pauta MXXX` / `ata MXXX` / `itens abertos MXXX` / `historico reuniao MXXX` | Todos |
 | Ver `aguardando do [pessoa]` | Todos |
 | Reabrir tarefa concluída | Gestor ou responsável da tarefa |
 | Devolver tarefa para fila | Responsável da tarefa |
@@ -439,6 +514,13 @@ Revisão GTD completa às sextas. Inclui:
 | Adicionar / remover rótulo da tarefa | Gestor ou responsável da tarefa |
 | Renomear tarefa | Gestor ou responsável da tarefa |
 | Adicionar / editar / remover nota da tarefa | Gestor ou responsável da tarefa |
+| Criar reunião | Todos |
+| Mover reunião | Organizador da reunião ou Gestor |
+| Adicionar nota em reunião | Participante, organizador ou Gestor |
+| Editar / remover nota de reunião | Autor da nota, organizador ou Gestor |
+| Reagendar reunião | Organizador da reunião ou Gestor |
+| Adicionar / remover participante de reunião | Organizador da reunião ou Gestor |
+| Processar ata (`processar ata MXXX`) | Gestor |
 | Criar tarefa completa / projeto / recorrente | Gestor |
 | Processar Inbox | Gestor ou delegado |
 | Atualizar próxima ação | Gestor ou responsável da tarefa |
@@ -502,6 +584,16 @@ CRIAR TAREFA (gestor)
   @Case anual para [pessoa]: [descrição] todo dia [D/M]
   @Case projeto recorrente para [pessoa]: [descrição]. Etapas: ... todo [freq]
 
+REUNIOES
+  @Case reuniao: [titulo] em [data] as [hora]
+  @Case reuniao com [pessoa], [pessoa]: [titulo] em [data] as [hora]
+  @Case reuniao semanal: [titulo] comecando [data] as [hora]
+  @Case comecando MXXX
+  @Case MXXX aguardando [motivo]
+  @Case MXXX retomada
+  @Case MXXX pronta para revisao
+  @Case MXXX concluida
+
 VER QUADRO
   @Case quadro
   @Case quadro do [pessoa]
@@ -538,6 +630,15 @@ ATUALIZAR TAREFA
   @Case nota TXXX: [texto]
   @Case editar nota TXXX #[N]: [novo texto]
   @Case remover nota TXXX #[N]
+  @Case pauta MXXX: [texto]
+  @Case ata MXXX: [texto]
+  @Case ata MXXX #[N]: [texto]
+  @Case marcar item MXXX #[N] como resolvido
+  @Case reabrir item MXXX #[N]
+  @Case descartar item MXXX #[N]
+  @Case reagendar MXXX para [data] as [hora]
+  @Case adicionar participante MXXX: [nome]
+  @Case remover participante MXXX: [nome]
   @Case descricao TXXX: [texto]
   @Case TXXX depende de TYYY
   @Case remover dependencia TXXX de TYYY
@@ -551,6 +652,13 @@ CONSULTAS
   @Case minhas tarefas
   @Case detalhes TXXX
   @Case historico TXXX
+  @Case reunioes
+  @Case proximas reunioes
+  @Case pauta MXXX
+  @Case ata MXXX
+  @Case participantes MXXX
+  @Case itens abertos MXXX
+  @Case historico reuniao MXXX
   @Case buscar [texto]
   @Case buscar [texto] com rotulo [nome]
   @Case urgentes
@@ -582,6 +690,9 @@ CONSULTAS
 INBOX (gestor ou delegado)
   @Case processar inbox
   @Case TXXX para [pessoa], prazo [data]
+
+ATA (gestor)
+  @Case processar ata MXXX
 
 GESTÃO (responsável ou gestor)
   @Case reatribuir TXXX para [pessoa]
@@ -628,6 +739,9 @@ Sim. O responsável da tarefa ou qualquer gestor podem reatribuir com `@Case rea
 **O que acontece se eu tentar começar uma tarefa e estiver no limite WIP?**
 O assistente avisa que o limite foi atingido e não move a tarefa. Você precisa concluir ou mover uma tarefa para Aguardando antes de começar outra. O gestor pode forçar com `@Case forcar TXXX para andamento`.
 
+**Reuniões contam no limite WIP?**
+Não. Reuniões ficam visíveis no quadro, mas não ocupam vaga no limite de trabalho em andamento.
+
 **Posso pular etapas no quadro (ex: de Inbox direto para Concluída)?**
 Sim. O comando `@Case TXXX concluida` move direto para Concluída de qualquer coluna, mas só pode ser usado pelo responsável da tarefa ou pelo gestor.
 
@@ -666,6 +780,15 @@ Sim. Use `@Case renomear T001: novo título`. O gestor ou o responsável pela ta
 
 **Posso editar ou apagar um comentário da tarefa?**
 Sim. Use `@Case editar nota T001 #2: novo texto` ou `@Case remover nota T001 #2`. Isso vale para notas novas com ID.
+
+**Qual a diferença entre `pauta M001` e `pauta M001: texto`?**
+Sem `:` o assistente consulta a pauta atual. Com `:` ele adiciona um novo item na pauta da reunião.
+
+**Quem pode escrever na ata de uma reunião?**
+Participantes da reunião, o organizador e gestores podem adicionar notas. Para editar ou remover, vale a regra de autor da nota, organizador ou gestor.
+
+**Posso recuperar a ata de uma ocorrência antiga de reunião recorrente?**
+Sim. Use `@Case ata M001 de 15/03/2026` para buscar a ata de uma data específica.
 
 **Comecei uma tarefa mas quero devolver para a fila, como faço?**
 Use `@Case devolver T001`. A tarefa volta para Próxima Ação e libera uma vaga no seu limite WIP.
