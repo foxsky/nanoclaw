@@ -5448,3 +5448,235 @@ describe('add_external_participant', () => {
     expect(grants).toHaveLength(2);
   });
 });
+
+describe('remove_external_participant', () => {
+  let db: Database.Database;
+  let engine: TaskflowEngine;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    seedTestDb(db, BOARD_ID);
+    engine = new TaskflowEngine(db, BOARD_ID);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function createMeetingWithExternal(): { meetingId: string; externalId: string } {
+    const result = engine.create({
+      board_id: BOARD_ID,
+      type: 'meeting',
+      title: 'Sprint review',
+      scheduled_at: '2026-03-15T17:00:00Z',
+      participants: ['Giovanni'],
+      sender_name: 'Alexandre',
+    });
+    const meetingId = result.task_id!;
+
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        add_external_participant: { name: 'Maria Silva', phone: '5585999991234' },
+      },
+    });
+
+    const contact = db.prepare(
+      `SELECT external_id FROM external_contacts WHERE phone = '5585999991234'`
+    ).get() as { external_id: string };
+
+    return { meetingId, externalId: contact.external_id };
+  }
+
+  it('revokes grant for external participant by phone', () => {
+    const { meetingId, externalId } = createMeetingWithExternal();
+
+    const result = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        remove_external_participant: { phone: '+55 85 99999-1234' },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.changes).toContain('External participant removed');
+
+    const grant = db.prepare(
+      `SELECT invite_status FROM meeting_external_participants WHERE meeting_task_id = ? AND external_id = ?`
+    ).get(meetingId, externalId) as any;
+    expect(grant.invite_status).toBe('revoked');
+
+    const history = db.prepare(
+      `SELECT * FROM task_history WHERE task_id = ? AND action = 'remove_external_participant'`
+    ).get(meetingId) as any;
+    expect(history).toBeTruthy();
+  });
+
+  it('rejects if sender is not manager or organizer', () => {
+    const { meetingId } = createMeetingWithExternal();
+
+    // Giovanni is a participant but not the organizer (assignee) or a manager
+    const result = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Giovanni',
+      updates: {
+        remove_external_participant: { phone: '5585999991234' },
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Permission denied');
+  });
+
+  it('returns error when external participant not found', () => {
+    const result = engine.create({
+      board_id: BOARD_ID,
+      type: 'meeting',
+      title: 'Meeting',
+      scheduled_at: '2026-03-15T17:00:00Z',
+      sender_name: 'Alexandre',
+    });
+    const meetingId = result.task_id!;
+
+    const removeResult = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        remove_external_participant: { phone: '5500000000000' },
+      },
+    });
+
+    expect(removeResult.success).toBe(false);
+    expect(removeResult.error).toContain('not found');
+  });
+});
+
+describe('reinvite_external_participant', () => {
+  let db: Database.Database;
+  let engine: TaskflowEngine;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    seedTestDb(db, BOARD_ID);
+    engine = new TaskflowEngine(db, BOARD_ID);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function createMeetingWithRevokedExternal(): { meetingId: string; externalId: string } {
+    const result = engine.create({
+      board_id: BOARD_ID,
+      type: 'meeting',
+      title: 'Sprint review',
+      scheduled_at: '2026-03-15T17:00:00Z',
+      participants: ['Giovanni'],
+      sender_name: 'Alexandre',
+    });
+    const meetingId = result.task_id!;
+
+    // Add external participant
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        add_external_participant: { name: 'Maria Silva', phone: '5585999991234' },
+      },
+    });
+
+    const contact = db.prepare(
+      `SELECT external_id FROM external_contacts WHERE phone = '5585999991234'`
+    ).get() as { external_id: string };
+
+    // Revoke the participant
+    engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        remove_external_participant: { phone: '5585999991234' },
+      },
+    });
+
+    return { meetingId, externalId: contact.external_id };
+  }
+
+  it('resets revoked grant to invited and sends new invite notification', () => {
+    const { meetingId, externalId } = createMeetingWithRevokedExternal();
+
+    const result = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        reinvite_external_participant: { phone: '5585999991234' },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.changes).toContain('External participant Maria Silva reinvited');
+
+    // Verify invite_status is back to 'invited'
+    const grant = db.prepare(
+      `SELECT invite_status, revoked_at FROM meeting_external_participants WHERE meeting_task_id = ? AND external_id = ?`
+    ).get(meetingId, externalId) as any;
+    expect(grant.invite_status).toBe('invited');
+    expect(grant.revoked_at).toBeNull();
+
+    // Verify DM notification was emitted
+    expect(result.notifications).toBeDefined();
+    const dmNotif = (result.notifications as any[]).find((n: any) => n.target_kind === 'dm');
+    expect(dmNotif).toBeTruthy();
+    expect(dmNotif.target_chat_jid).toBe('5585999991234@s.whatsapp.net');
+    expect(dmNotif.message).toContain('Convite para');
+    expect(dmNotif.message).toContain(meetingId);
+  });
+
+  it('rejects if sender is not manager or organizer', () => {
+    const { meetingId } = createMeetingWithRevokedExternal();
+
+    // Giovanni is a participant but not the organizer (assignee) or a manager
+    const result = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Giovanni',
+      updates: {
+        reinvite_external_participant: { phone: '5585999991234' },
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Permission denied');
+  });
+
+  it('returns error when external contact not found', () => {
+    const result = engine.create({
+      board_id: BOARD_ID,
+      type: 'meeting',
+      title: 'Meeting',
+      scheduled_at: '2026-03-15T17:00:00Z',
+      sender_name: 'Alexandre',
+    });
+    const meetingId = result.task_id!;
+
+    const reinviteResult = engine.update({
+      board_id: BOARD_ID,
+      task_id: meetingId,
+      sender_name: 'Alexandre',
+      updates: {
+        reinvite_external_participant: { phone: '5500000000000' },
+      },
+    });
+
+    expect(reinviteResult.success).toBe(false);
+    expect(reinviteResult.error).toContain('not found');
+  });
+});

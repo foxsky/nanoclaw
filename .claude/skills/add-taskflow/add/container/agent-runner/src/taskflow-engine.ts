@@ -3107,6 +3107,86 @@ export class TaskflowEngine {
         changes.push(`External participant ${displayName} invited`);
       }
 
+      /* Remove external participant (meeting only) */
+      if (updates.remove_external_participant !== undefined) {
+        if (task.type !== 'meeting') {
+          return { success: false, error: 'External participants can only be removed from meeting tasks.' };
+        }
+        if (!isMgr && !isAssignee) {
+          return { success: false, error: 'Permission denied: only the organizer or a manager can remove external participants.' };
+        }
+
+        const { external_id, phone, name } = updates.remove_external_participant;
+        let externalId = external_id;
+        if (!externalId && phone) {
+          const row = this.db.prepare(`SELECT external_id FROM external_contacts WHERE phone = ?`).get(normalizePhone(phone)) as { external_id: string } | undefined;
+          externalId = row?.external_id;
+        }
+        if (!externalId && name) {
+          const row = this.db.prepare(`SELECT external_id FROM external_contacts WHERE LOWER(display_name) = LOWER(?)`).get(name) as { external_id: string } | undefined;
+          externalId = row?.external_id;
+        }
+        if (!externalId) {
+          return { success: false, error: 'External participant not found.' };
+        }
+
+        this.db.prepare(
+          `UPDATE meeting_external_participants
+           SET invite_status = 'revoked', revoked_at = ?, updated_at = ?
+           WHERE board_id = ? AND meeting_task_id = ? AND external_id = ?
+             AND invite_status IN ('pending', 'invited', 'accepted')`
+        ).run(now, now, this.boardId, task.id, externalId);
+
+        this.db.prepare(
+          `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+           VALUES (?, ?, 'remove_external_participant', ?, ?, ?)`
+        ).run(this.boardId, task.id, senderPersonId ?? params.sender_name, now, `External participant ${externalId} revoked`);
+
+        changes.push(`External participant removed`);
+      }
+
+      /* Reinvite external participant (meeting only) */
+      if (updates.reinvite_external_participant !== undefined) {
+        if (task.type !== 'meeting') {
+          return { success: false, error: 'External participants can only be reinvited on meeting tasks.' };
+        }
+        if (!isMgr && !isAssignee) {
+          return { success: false, error: 'Permission denied: only the organizer or a manager can reinvite external participants.' };
+        }
+        if (!task.scheduled_at) {
+          return { success: false, error: 'Meeting must have scheduled_at set.' };
+        }
+
+        const { external_id, phone } = updates.reinvite_external_participant;
+        let externalId = external_id;
+        if (!externalId && phone) {
+          const row = this.db.prepare(`SELECT external_id FROM external_contacts WHERE phone = ?`).get(normalizePhone(phone)) as { external_id: string } | undefined;
+          externalId = row?.external_id;
+        }
+        if (!externalId) {
+          return { success: false, error: 'External contact not found.' };
+        }
+
+        this.db.prepare(
+          `UPDATE meeting_external_participants
+           SET invite_status = 'invited', revoked_at = NULL, invited_at = ?, updated_at = ?
+           WHERE board_id = ? AND meeting_task_id = ? AND external_id = ?`
+        ).run(now, now, this.boardId, task.id, externalId);
+
+        // Build invite DM (same as add_external_participant)
+        const contact = this.db.prepare(`SELECT display_name, phone, direct_chat_jid FROM external_contacts WHERE external_id = ?`).get(externalId) as any;
+        const targetJid = contact.direct_chat_jid ?? `${contact.phone}@s.whatsapp.net`;
+        const organizerName = sender?.name ?? params.sender_name;
+        notifications.push({
+          target_kind: 'dm',
+          target_external_id: externalId,
+          target_chat_jid: targetJid,
+          message: `\u{1f4c5} *Convite para reuni\u00e3o*\n\nVoc\u00ea foi convidado para *${task.id} \u2014 ${task.title}*\n*Quando:* ${task.scheduled_at}\n*Organizador:* ${organizerName}\n\nResponda nesta conversa para participar da pauta e da ata.\nPara confirmar, diga: aceitar convite ${task.id}`,
+        } as any);
+
+        changes.push(`External participant ${contact.display_name} reinvited`);
+      }
+
       /* Scheduled at (meeting only) */
       if (updates.scheduled_at !== undefined) {
         if (task.type !== 'meeting') {
