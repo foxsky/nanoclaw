@@ -4,6 +4,7 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   buildTriggerPattern,
+  CREDENTIAL_PROXY_PORT,
   getGroupSenderName,
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
@@ -24,7 +25,9 @@ import {
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
+  PROXY_BIND_HOST,
 } from './container-runtime.js';
+import { startCredentialProxy } from './credential-proxy.js';
 import {
   deleteRegisteredGroup,
   getAllChats,
@@ -509,11 +512,18 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
-  // Graceful shutdown handlers
+  // Start credential proxy
+  const proxyServer = await startCredentialProxy(
+    CREDENTIAL_PROXY_PORT,
+    PROXY_BIND_HOST,
+  );
+
+  // Graceful shutdown handlers (after proxy so proxyServer is in scope)
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
+    proxyServer.close();
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -592,8 +602,7 @@ async function main(): Promise<void> {
       );
     },
     getAvailableGroups,
-    writeGroupsSnapshot: (gf, im, ag, rj) =>
-      writeGroupsSnapshot(gf, im, ag, rj),
+    writeGroupsSnapshot,
     createGroup: (subject, participants) => {
       const ch = channels.find((c) => c.createGroup);
       if (!ch?.createGroup)
@@ -601,14 +610,9 @@ async function main(): Promise<void> {
       return ch.createGroup(subject, participants);
     },
     resolvePhoneJid: (phone) => {
-      const ch = channels.find(
-        (
-          c,
-        ): c is Channel & {
-          resolvePhoneJid: NonNullable<Channel['resolvePhoneJid']>;
-        } => !!c.resolvePhoneJid,
-      );
-      if (!ch) throw new Error('No channel supports phone JID resolution');
+      const ch = channels.find((c) => c.resolvePhoneJid);
+      if (!ch?.resolvePhoneJid)
+        throw new Error('No channel supports phone JID resolution');
       return ch.resolvePhoneJid(phone);
     },
   });
