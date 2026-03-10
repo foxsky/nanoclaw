@@ -535,6 +535,15 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       }
     }
 
+    function stripDispatchOnlyFields(
+      result: Record<string, unknown>,
+    ): Record<string, unknown> {
+      const sanitized = { ...result };
+      delete sanitized.notifications;
+      delete sanitized.parent_notification;
+      return sanitized;
+    }
+
     server.tool(
       'taskflow_query',
       'Query the TaskFlow board. Returns structured data for board views, task details, search, statistics, etc.',
@@ -591,7 +600,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         const result = engine.create({ ...args, board_id: boardId });
         if (result.success) dispatchNotifications(result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          content: [{ type: 'text' as const, text: JSON.stringify(stripDispatchOnlyFields(result)) }],
           isError: !result.success,
         };
       },
@@ -611,7 +620,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         const result = engine.move({ ...args, board_id: boardId });
         if (result.success) dispatchNotifications(result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          content: [{ type: 'text' as const, text: JSON.stringify(stripDispatchOnlyFields(result)) }],
           isError: !result.success,
         };
       },
@@ -631,7 +640,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         const result = engine.reassign({ ...args, board_id: boardId });
         if (result.success) dispatchNotifications(result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          content: [{ type: 'text' as const, text: JSON.stringify(stripDispatchOnlyFields(result)) }],
           isError: !result.success,
         };
       },
@@ -676,7 +685,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         const result = engine.update({ ...args, board_id: boardId });
         if (result.success) dispatchNotifications(result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          content: [{ type: 'text' as const, text: JSON.stringify(stripDispatchOnlyFields(result)) }],
           isError: !result.success,
         };
       },
@@ -758,7 +767,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         }
         if (result.success) dispatchNotifications(result);
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          content: [{ type: 'text' as const, text: JSON.stringify(stripDispatchOnlyFields(result)) }],
           isError: !result.success,
         };
       },
