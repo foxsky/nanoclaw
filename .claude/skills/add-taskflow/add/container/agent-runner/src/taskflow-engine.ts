@@ -58,8 +58,11 @@ export interface CreateResult extends TaskflowResult {
     message: string;
   };
   notifications?: Array<{
-    target_person_id: string;
-    notification_group_jid: string | null;
+    target_kind?: 'group' | 'dm';
+    target_person_id?: string;
+    target_external_id?: string;
+    notification_group_jid?: string | null;
+    target_chat_jid?: string | null;
     message: string;
   }>;
 }
@@ -81,7 +84,14 @@ export interface MoveResult extends TaskflowResult {
   project_update?: { completed_subtask: string; next_subtask?: string; all_complete: boolean };
   recurring_cycle?: { cycle_number: number; expired: boolean; new_due_date?: string; new_scheduled_at?: string; reason?: 'max_cycles' | 'end_date' };
   archive_triggered?: boolean;
-  notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
+  notifications?: Array<{
+    target_kind?: 'group' | 'dm';
+    target_person_id?: string;
+    target_external_id?: string;
+    notification_group_jid?: string | null;
+    target_chat_jid?: string | null;
+    message: string;
+  }>;
   parent_notification?: { parent_group_jid: string; message: string };
   unprocessed_minutes_warning?: boolean;
 }
@@ -104,7 +114,14 @@ export interface ReassignResult extends TaskflowResult {
   }>;
   offer_register?: { name: string; message: string };
   requires_confirmation?: string;  // human-readable summary for dry run
-  notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
+  notifications?: Array<{
+    target_kind?: 'group' | 'dm';
+    target_person_id?: string;
+    target_external_id?: string;
+    notification_group_jid?: string | null;
+    target_chat_jid?: string | null;
+    message: string;
+  }>;
 }
 
 export interface UpdateParams {
@@ -146,7 +163,14 @@ export interface UpdateResult extends TaskflowResult {
   task_id?: string;
   changes?: string[];      // human-readable list of what changed
   offer_register?: { name: string; message: string };
-  notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
+  notifications?: Array<{
+    target_kind?: 'group' | 'dm';
+    target_person_id?: string;
+    target_external_id?: string;
+    notification_group_jid?: string | null;
+    target_chat_jid?: string | null;
+    message: string;
+  }>;
 }
 
 export interface DependencyParams {
@@ -214,7 +238,14 @@ export interface AdminResult extends TaskflowResult {
     group_folder?: string;
     message: string;
   };
-  notifications?: Array<{ target_person_id: string; notification_group_jid: string | null; message: string }>;
+  notifications?: Array<{
+    target_kind?: 'group' | 'dm';
+    target_person_id?: string;
+    target_external_id?: string;
+    notification_group_jid?: string | null;
+    target_chat_jid?: string | null;
+    message: string;
+  }>;
 }
 
 export interface ReportParams {
@@ -1275,7 +1306,13 @@ export class TaskflowEngine {
     };
   }
 
-  private meetingNotificationRecipients(task: any): Array<{ target_person_id: string; notification_group_jid: string | null }> {
+  private meetingNotificationRecipients(task: any): Array<{
+    target_kind: 'group' | 'dm';
+    target_person_id?: string;
+    target_external_id?: string;
+    notification_group_jid?: string | null;
+    target_chat_jid?: string | null;
+  }> {
     const participantIds: string[] = (() => {
       try {
         return JSON.parse(task.participants ?? '[]');
@@ -1288,24 +1325,56 @@ export class TaskflowEngine {
         ? [...participantIds, task.assignee]
         : [...participantIds],
     )];
-    if (allRecipients.length === 0) return [];
-    const placeholders = allRecipients.map(() => '?').join(',');
-    const rows = this.db.prepare(
-      `SELECT person_id, notification_group_jid FROM board_people WHERE board_id = ? AND person_id IN (${placeholders})`,
-    ).all(this.boardId, ...allRecipients) as Array<{ person_id: string; notification_group_jid: string | null }>;
-    const jidMap = new Map(rows.map((r) => [r.person_id, r.notification_group_jid ?? null]));
-    return allRecipients.map((personId) => ({
-      target_person_id: personId,
-      notification_group_jid: jidMap.get(personId) ?? null,
-    }));
+    const results: Array<{
+      target_kind: 'group' | 'dm';
+      target_person_id?: string;
+      target_external_id?: string;
+      notification_group_jid?: string | null;
+      target_chat_jid?: string | null;
+    }> = [];
+    if (allRecipients.length > 0) {
+      const placeholders = allRecipients.map(() => '?').join(',');
+      const rows = this.db.prepare(
+        `SELECT person_id, notification_group_jid FROM board_people WHERE board_id = ? AND person_id IN (${placeholders})`,
+      ).all(this.boardId, ...allRecipients) as Array<{ person_id: string; notification_group_jid: string | null }>;
+      const jidMap = new Map(rows.map((r) => [r.person_id, r.notification_group_jid ?? null]));
+      for (const personId of allRecipients) {
+        results.push({
+          target_kind: 'group',
+          target_person_id: personId,
+          notification_group_jid: jidMap.get(personId) ?? null,
+        });
+      }
+    }
+    // External participants with accepted grants
+    const externals = this.db.prepare(
+      `SELECT ec.external_id, ec.display_name, ec.direct_chat_jid, ec.phone
+       FROM meeting_external_participants mep
+       JOIN external_contacts ec ON ec.external_id = mep.external_id
+       WHERE mep.board_id = ? AND mep.meeting_task_id = ?
+         AND mep.invite_status = 'accepted'`,
+    ).all(this.boardId, task.id) as Array<{
+      external_id: string; display_name: string; direct_chat_jid: string | null; phone: string;
+    }>;
+    for (const ext of externals) {
+      results.push({
+        target_kind: 'dm',
+        target_external_id: ext.external_id,
+        target_chat_jid: ext.direct_chat_jid ?? `${ext.phone}@s.whatsapp.net`,
+      });
+    }
+    return results;
   }
 
   /** Scheduled meeting reminders keyed to scheduled_at. */
   getMeetingReminderNotifications(nowIso = new Date().toISOString()): Array<{
     task_id: string;
     reminder_days: number;
-    target_person_id: string;
-    notification_group_jid: string | null;
+    target_kind?: 'group' | 'dm';
+    target_person_id?: string;
+    target_external_id?: string;
+    notification_group_jid?: string | null;
+    target_chat_jid?: string | null;
     message: string;
   }> {
     const todayStr = nowIso.slice(0, 10);
@@ -1326,8 +1395,11 @@ export class TaskflowEngine {
     const notifications: Array<{
       task_id: string;
       reminder_days: number;
-      target_person_id: string;
-      notification_group_jid: string | null;
+      target_kind?: 'group' | 'dm';
+      target_person_id?: string;
+      target_external_id?: string;
+      notification_group_jid?: string | null;
+      target_chat_jid?: string | null;
       message: string;
     }> = [];
     for (const meeting of meetings) {
@@ -1358,8 +1430,11 @@ export class TaskflowEngine {
     windowMinutes = 5,
   ): Array<{
     task_id: string;
-    target_person_id: string;
-    notification_group_jid: string | null;
+    target_kind?: 'group' | 'dm';
+    target_person_id?: string;
+    target_external_id?: string;
+    notification_group_jid?: string | null;
+    target_chat_jid?: string | null;
     message: string;
   }> {
     const nowMs = new Date(nowIso).getTime();
@@ -1379,8 +1454,11 @@ export class TaskflowEngine {
     }>;
     const notifications: Array<{
       task_id: string;
-      target_person_id: string;
-      notification_group_jid: string | null;
+      target_kind?: 'group' | 'dm';
+      target_person_id?: string;
+      target_external_id?: string;
+      notification_group_jid?: string | null;
+      target_chat_jid?: string | null;
       message: string;
     }> = [];
     for (const meeting of meetings) {

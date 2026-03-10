@@ -4653,6 +4653,92 @@ describe('meeting notes', () => {
       expect(updateResult.success).toBe(true);
       expect(updateResult.notifications).toBeUndefined();
     });
+
+    it('getMeetingStartingNotifications includes accepted external participants as DM targets', () => {
+      // Create a meeting starting soon
+      const startTime = new Date(Date.now() + 2 * 60_000).toISOString();
+      const createResult = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'External attendee meeting',
+        scheduled_at: startTime,
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      expect(createResult.success).toBe(true);
+      const meetingId = createResult.task_id!;
+
+      // Add an external participant
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: {
+          add_external_participant: { name: 'Maria Silva', phone: '5585999991234' },
+        },
+      });
+
+      // Retrieve the external_id
+      const contact = db.prepare(
+        `SELECT external_id FROM external_contacts WHERE phone = '5585999991234'`,
+      ).get() as { external_id: string };
+
+      // Mark the invite as accepted
+      db.prepare(
+        `UPDATE meeting_external_participants SET invite_status = 'accepted' WHERE meeting_task_id = ? AND external_id = ?`,
+      ).run(meetingId, contact.external_id);
+
+      // Get notifications for the window that includes startTime
+      const nowIso = new Date(new Date(startTime).getTime() - 60_000).toISOString();
+      const notifications = engine.getMeetingStartingNotifications(nowIso, 5);
+
+      // There should be a DM notification for the external participant
+      const dmNotif = notifications.find(
+        (n) => n.task_id === meetingId && n.target_kind === 'dm' && n.target_external_id === contact.external_id,
+      );
+      expect(dmNotif).toBeDefined();
+      expect(dmNotif!.target_chat_jid).toBe(`5585999991234@s.whatsapp.net`);
+
+      // Internal participants should still get group notifications
+      expect(
+        notifications.some(
+          (n) => n.task_id === meetingId && n.target_kind === 'group' && n.target_person_id === 'person-2',
+        ),
+      ).toBe(true);
+    });
+
+    it('getMeetingStartingNotifications does NOT include external participants with pending invite_status', () => {
+      const startTime = new Date(Date.now() + 2 * 60_000).toISOString();
+      const createResult = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Pending external meeting',
+        scheduled_at: startTime,
+        participants: ['Giovanni'],
+        sender_name: 'Alexandre',
+      });
+      expect(createResult.success).toBe(true);
+      const meetingId = createResult.task_id!;
+
+      // Add an external participant (invite_status starts as 'pending')
+      engine.update({
+        board_id: BOARD_ID,
+        task_id: meetingId,
+        sender_name: 'Alexandre',
+        updates: {
+          add_external_participant: { name: 'Carlos Lima', phone: '5585888881234' },
+        },
+      });
+
+      const nowIso = new Date(new Date(startTime).getTime() - 60_000).toISOString();
+      const notifications = engine.getMeetingStartingNotifications(nowIso, 5);
+
+      // No DM notification for pending external
+      const dmNotif = notifications.find(
+        (n) => n.task_id === meetingId && n.target_kind === 'dm',
+      );
+      expect(dmNotif).toBeUndefined();
+    });
   });
 
   describe('manage_holidays MCP schema parity', () => {
