@@ -736,6 +736,13 @@ Não. Apenas o responsável pode mover suas próprias tarefas. O gestor pode for
 **Posso reatribuir uma tarefa minha para outra pessoa?**
 Sim. O responsável da tarefa ou qualquer gestor podem reatribuir com `@Case reatribuir T001 para Rafael`. Não há verificação de limite WIP na reatribuição. Se a nova pessoa tiver um quadro filho registrado, a tarefa é vinculada automaticamente — mesmo que não estivesse vinculada antes.
 
+**Se o quadro pai só precisa destravar uma tarefa do quadro filho, devo reatribuir?**
+Não por padrão. Se a entrega continua sendo do quadro filho, mantenha a mesma tarefa com o responsável atual e use:
+- `@Case proxima acao T001: Miguel aprovar orçamento`
+- `@Case T001 aguardando Miguel aprovar orçamento` somente se a tarefa já estiver Em Andamento
+
+`@Case devolver T001` continua significando devolver para Próxima Ação, não devolver para o quadro pai. Use reatribuição apenas quando a propriedade da mesma tarefa realmente precisa voltar para o quadro pai. Hoje, esse retorno real costuma ser feito no próprio quadro pai (ou grupo de controle), porque a resolução de pessoas é local ao quadro atual. Se o quadro pai precisa de um trabalho separado, crie a nova tarefa no próprio quadro pai (ou grupo de controle) e deixe a tarefa original em `Aguardando` quando fizer sentido.
+
 **O que acontece se eu tentar começar uma tarefa e estiver no limite WIP?**
 O assistente avisa que o limite foi atingido e não move a tarefa. Você precisa concluir ou mover uma tarefa para Aguardando antes de começar outra. O gestor pode forçar com `@Case forcar TXXX para andamento`.
 
@@ -915,6 +922,13 @@ Use `@Case atualizar status TXXX` apenas quando esse mesmo quadro tiver delegado
 
 Tarefas marcadas com `🔗` continuam acionáveis no quadro que as recebeu. Use os comandos normais de fluxo (`TXXX em andamento`, `TXXX aguardando`, `TXXX concluida`, etc.) para avançá-las.
 
+Quando o quadro pai só precisa destravar a execução:
+- prefira `proxima acao TXXX: [ação do gestor/pai]`
+- use `TXXX aguardando [ação do gestor/pai]` apenas se a tarefa já estiver em andamento
+- mantenha a tarefa com o responsável do quadro filho
+
+Reatribua apenas quando a propriedade da mesma tarefa realmente precisa subir de volta para o quadro pai. `Devolver` continua sendo retorno para Próxima Ação. No comportamento atual, essa reatribuição de volta ao pai normalmente é executada no quadro pai ou no grupo de controle do quadro pai. Se o gestor precisa de uma entrega separada, crie outra tarefa no quadro pai ou no grupo de controle do quadro pai.
+
 Além desses, todos os comandos normais do TaskFlow continuam funcionando em qualquer quadro da hierarquia: captura rápida, projetos, recorrentes, notas, prioridades, rótulos, dependências, lembretes, etc.
 
 ### Notificações entre Grupos
@@ -938,6 +952,7 @@ O gestor pode desvincular a qualquer momento com `desvincular TXXX`.
 - Para retomar controle manual, o gestor precisa desvincular primeiro (`desvincular TXXX`).
 - Se uma tarefa vinculada for reatribuída para outra pessoa, o vínculo anterior é removido e refeito automaticamente para o quadro da nova pessoa (se existir). Se a nova pessoa não tem quadro, a tarefa fica desvinculada.
 - A reatribuição pode ser feita pelo responsável da tarefa ou pelo gestor — não é necessário verificar limite WIP.
+- Se o quadro pai apenas precisa aprovar, decidir ou desbloquear algo, prefira `Próxima Ação`, ou `Aguardando` se a tarefa já estiver em andamento, em vez de reatribuir a tarefa.
 - Se o gestor rejeitar uma tarefa em revisão que está vinculada, o rollup reseta para "ativo" e o quadro filho é notificado.
 
 ### Quadros Folha

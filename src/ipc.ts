@@ -347,7 +347,10 @@ function reQueueDeferredNotification(
   const ipcBaseDir = path.join(DATA_DIR, 'ipc');
   const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
   const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
-  fs.writeFileSync(path.join(tasksDir, filename), JSON.stringify(data, null, 2));
+  fs.writeFileSync(
+    path.join(tasksDir, filename),
+    JSON.stringify(data, null, 2),
+  );
 }
 
 const handleDeferredNotification: IpcHandler = async (
@@ -361,7 +364,8 @@ const handleDeferredNotification: IpcHandler = async (
   if (!personId || !text) return;
 
   // TTL guard: drop notifications older than 5 minutes
-  const createdAt = typeof data.timestamp === 'string' ? new Date(data.timestamp).getTime() : 0;
+  const createdAt =
+    typeof data.timestamp === 'string' ? new Date(data.timestamp).getTime() : 0;
   if (createdAt > 0 && Date.now() - createdAt > DEFERRED_NOTIFICATION_TTL_MS) {
     logger.warn(
       { personId, sourceGroup, age: Date.now() - createdAt },

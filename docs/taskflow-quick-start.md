@@ -225,4 +225,11 @@ Tarefas vinculadas aparecem com 🔗 no quadro. O rollup mostra o status agregad
 
 Atribuir e vincular sao a mesma operacao — ao reatribuir uma tarefa vinculada, o vinculo e transferido automaticamente para o quadro da nova pessoa.
 
+Se o quadro pai so precisa destravar uma tarefa vinculada, nao reatribua por padrao. Prefira:
+
+- `@Case proxima acao TXXX: Miguel aprovar orçamento`
+- `@Case TXXX aguardando Miguel aprovar orçamento` somente se a tarefa ja estiver em andamento
+
+Assim a tarefa continua no quadro filho, mas fica claro que a proxima dependencia esta no quadro pai. `Devolver` continua sendo voltar para Proxima Acao, nao voltar para o quadro pai. Reatribua apenas quando a propriedade da mesma tarefa realmente precisar voltar para o quadro pai. Hoje isso normalmente e feito no quadro pai ou no grupo de controle, porque a resolucao de pessoas e local ao quadro atual. Se o gestor precisar de um trabalho separado, crie outra tarefa no quadro pai ou no grupo de controle.
+
 Para mais informações, envie `@Case manual` (referência completa) ou `@Case guia rapido` (guia para iniciantes) no grupo.

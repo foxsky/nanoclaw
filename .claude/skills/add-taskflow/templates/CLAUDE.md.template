@@ -174,7 +174,7 @@ If a task has close approval enabled, an assignee's `conclude` request moves it 
 - `taskflow_update(... updates: { next_action: 'Miguel aprovar ...' })` when the next concrete step belongs to the parent but the child still owns delivery
 - `taskflow_move(... action: 'wait', reason: 'Miguel aprovar ...')` only when the task is already `in_progress` and is now blocked on the parent
 
-`devolver` still means "back to queue" (`in_progress` -> `next_action`), not "return to parent". Only use reassignment when ownership of the same task is actually moving back to the parent. If the parent needs a separate tracked deliverable, create that task from the parent/control board instead of reassigning the child-owned work.
+`devolver` still means "back to queue" (`in_progress` -> `next_action`), not "return to parent". Only use reassignment when ownership of the same task is actually moving back to the parent. Under the current runtime, true upward reassignment is normally executed from the parent/control board because person resolution is board-local. If the parent needs a separate tracked deliverable, create that task from the parent/control board instead of reassigning the child-owned work.
 
 ### Updates
 | User says | Tool call |

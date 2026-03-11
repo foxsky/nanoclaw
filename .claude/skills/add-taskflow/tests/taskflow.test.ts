@@ -2013,6 +2013,23 @@ describe('taskflow skill package', () => {
     expect(content).toContain('source_person');
   });
 
+  it('CLAUDE.md.template prefers waiting_for or next_action over upward reassignment for parent unblockers', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+
+    expect(content).toContain('For linked parent tasks on a child board, do NOT default to reassignment');
+    expect(content).toContain("updates: { next_action: 'Miguel aprovar ...' }");
+    expect(content).toContain("taskflow_move(... action: 'wait', reason: 'Miguel aprovar ...')");
+    expect(content).toContain('only when the task is already `in_progress` and is now blocked on the parent');
+    expect(content).toContain('`devolver` still means "back to queue"');
+    expect(content).toContain('Only use reassignment when ownership of the same task is actually moving back to the parent');
+    expect(content).toContain('true upward reassignment is normally executed from the parent/control board because person resolution is board-local');
+    expect(content).toContain('create that task from the parent/control board');
+    expect(content).toContain('use `next_action` for planned parent-side work, or `waiting_for` only after the task is already `in_progress`');
+  });
+
   it('CLAUDE.md.template hierarchy board removal requires confirmation in tool mapping', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
