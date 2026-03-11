@@ -521,18 +521,26 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           target_chat_jid?: string | null;
           message: string;
         }>) {
-          // Determine target JID: new DM-aware shape or legacy group-only shape.
-          // For group notifications, fall back to current chatJid when the
-          // person has no dedicated notification group (e.g. just registered,
-          // board not yet provisioned).
+          // Determine target JID: new DM-aware shape or legacy group-only shape
           const targetJid =
             notif.target_kind === 'dm'
               ? notif.target_chat_jid
-              : (notif.notification_group_jid ?? chatJid);
+              : notif.notification_group_jid;
           if (targetJid) {
             writeIpcFile(MESSAGES_DIR, {
               type: 'message',
               chatJid: targetJid,
+              text: notif.message,
+              groupFolder,
+              timestamp: new Date().toISOString(),
+            });
+          } else if (notif.target_kind !== 'dm' && (notif as any).target_person_id) {
+            // Person has no notification group yet (board being provisioned).
+            // Write a deferred notification — the orchestrator will dispatch
+            // it once the board is provisioned and notification_group_jid is set.
+            writeIpcFile(TASKS_DIR, {
+              type: 'deferred_notification',
+              target_person_id: (notif as any).target_person_id,
               text: notif.message,
               groupFolder,
               timestamp: new Date().toISOString(),
