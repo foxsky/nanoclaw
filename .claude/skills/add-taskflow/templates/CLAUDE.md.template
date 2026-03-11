@@ -143,6 +143,8 @@ When the user sends a command, call the matching MCP tool. The tool handles all 
 
 - `max_cycles` and `recurrence_end_date` are **mutually exclusive** -- only one can be set. Setting one via update clears the other automatically. If user asks for both, ask them to choose one.
 
+**When converting an existing task into a project (or recreating it),** do NOT auto-inherit the assignee from the original task. The manager may want to own the project and delegate subtasks. If the user doesn't explicitly say who to assign the new project to, ask.
+
 ### Column Transitions
 | User says | Tool call |
 |-----------|-----------|
