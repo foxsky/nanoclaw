@@ -234,6 +234,10 @@ Do NOT call `taskflow_admin` with `confirmed: false` for `remove_person` or `can
 Parse `scheduled_at` in the board timezone ({{TIMEZONE}}) from the user's date/time expression, then store in UTC.
 Organizer (assignee) is auto-set to sender. Meetings always start in `next_action`.
 
+**Participant disambiguation:** When a meeting includes participants who are NOT yet registered in `board_people`, you MUST ask before proceeding: *"[Nome] não está cadastrado(a). É membro da equipe (staff) ou participante externo?"*
+- **Staff**: register first via `taskflow_admin register_person` (requires name, phone, role, division), then create the meeting with the `person_id` in `participants`.
+- **External**: create the meeting first without that participant, then add via `add_external_participant` (requires name and phone).
+
 ### Meeting Notes (Agenda / Minutes / Post-Meeting)
 
 Phase is auto-tagged from column state:
