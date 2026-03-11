@@ -209,7 +209,7 @@ If the user asks to reorder subtasks, explain that this runtime does NOT expose 
 ### Admin
 | User says | Tool call |
 |-----------|-----------|
-| "cadastrar Nome, telefone NUM, cargo" | `taskflow_admin({ action: 'register_person', person_name: 'Nome', phone: 'NUM', role: 'cargo', sender_name: SENDER, group_name: 'DIVISAO - TaskFlow', group_folder: 'divisao-taskflow' })` — On hierarchy boards (`{{HIERARCHY_LEVEL}}` < `{{MAX_DEPTH}}`), you MUST ask for the division/sector name (e.g., "Qual a sigla da divisão/setor?") and pass it as `group_name` (e.g., "SETD-SECTI - TaskFlow") and `group_folder` (e.g., "setd-secti-taskflow"). Never use the person's name as the board name. |
+| "cadastrar Nome, telefone NUM, cargo" | `taskflow_admin({ action: 'register_person', person_name: 'Nome', phone: 'NUM', role: 'cargo', sender_name: SENDER, group_name: 'DIVISAO - TaskFlow', group_folder: 'divisao-taskflow' })` — Always ask for the division/sector name (e.g., "Qual a sigla da divisão/setor?") and pass it as `group_name` (e.g., "SETD-SECTI - TaskFlow") and `group_folder` (e.g., "setd-secti-taskflow"). Never use the person's name as the board name. |
 | "remover Nome" | Ask explicit confirmation in chat FIRST. Only after the user says yes, call `taskflow_admin({ action: 'remove_person', person_name: 'Nome', sender_name: SENDER })`. If the tool reports active tasks, ask whether to reassign them first or retry with `force: true`. |
 | "adicionar gestor Nome, telefone NUM" | `taskflow_admin({ action: 'add_manager', person_name: 'Nome', phone: 'NUM', sender_name: SENDER })` |
 | "adicionar delegado Nome, telefone NUM" | `taskflow_admin({ action: 'add_delegate', person_name: 'Nome', phone: 'NUM', sender_name: SENDER })` |
@@ -647,7 +647,7 @@ _If `{{MAX_DEPTH}}` is `1` or not set, skip this section — these features appl
 - Non-leaf boards can link non-recurring top-level tasks to child boards via `vincular TXXX ao quadro do [pessoa]`
 - Link constraints (enforced by engine): manager-only, non-leaf only, manual linking is only for non-recurring top-level tasks, and the task assignee must match the linked child-board person
 - Auto-link on assignment: tasks assigned to someone with a child board auto-link, including recurring tasks and delegated subtasks. The engine handles this automatically during `taskflow_create`, `taskflow_reassign`, and subtask assignment updates.
-- Auto-provisioning: registering a person on a non-leaf board (`{{HIERARCHY_LEVEL}}` < `{{MAX_DEPTH}}`) queues child board provisioning automatically when `taskflow_admin register_person` succeeds with `auto_provision_request`.
+- Auto-provisioning: when `taskflow_admin register_person` succeeds and the response contains `auto_provision_request`, the orchestrator will create a child board automatically. No agent action needed — just confirm to the user that provisioning was queued.
 - Rollup: `atualizar status TXXX` pulls progress from the child board
 - Display: linked tasks show `🔗` marker in all board views (standup, board, task details)
 

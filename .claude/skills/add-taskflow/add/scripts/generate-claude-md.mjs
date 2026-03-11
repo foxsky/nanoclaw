@@ -154,6 +154,19 @@ export const groups = [
     },
   },
   {
+    folder: 'ux-setd-secti-taskflow',
+    overrides: {
+      '{{BOARD_ID}}': 'board-ux-setd-secti-taskflow',
+      '{{GROUP_NAME}}': 'UX-SETD-SECTI - TaskFlow',
+      '{{GROUP_CONTEXT}}': "Caio's tasks (private standup channel)",
+      '{{GROUP_JID}}': '120363425088189365@g.us',
+      '{{CONTROL_GROUP_HINT}}': '',
+      '{{HIERARCHY_LEVEL}}': '3',
+      '{{PARENT_BOARD_ID}}': 'board-thiago-taskflow',
+      '{{MANAGER_NAME}}': 'Caio',
+    },
+  },
+  {
     folder: 'test-taskflow',
     overrides: {
       '{{BOARD_ID}}': 'board-test-taskflow',
