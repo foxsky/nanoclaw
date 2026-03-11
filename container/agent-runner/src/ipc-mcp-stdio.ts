@@ -517,6 +517,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       if (Array.isArray(result.notifications)) {
         for (const notif of result.notifications as Array<{
           target_kind?: 'group' | 'dm';
+          target_person_id?: string;
           notification_group_jid?: string | null;
           target_chat_jid?: string | null;
           message: string;
@@ -534,13 +535,13 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
               groupFolder,
               timestamp: new Date().toISOString(),
             });
-          } else if (notif.target_kind !== 'dm' && (notif as any).target_person_id) {
+          } else if (notif.target_kind !== 'dm' && notif.target_person_id) {
             // Person has no notification group yet (board being provisioned).
             // Write a deferred notification — the orchestrator will dispatch
             // it once the board is provisioned and notification_group_jid is set.
             writeIpcFile(TASKS_DIR, {
               type: 'deferred_notification',
-              target_person_id: (notif as any).target_person_id,
+              target_person_id: notif.target_person_id,
               text: notif.message,
               groupFolder,
               timestamp: new Date().toISOString(),

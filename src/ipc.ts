@@ -336,7 +336,20 @@ registerIpcHandler('cancel_task', handleCancelTask);
 registerIpcHandler('refresh_groups', handleRefreshGroups);
 registerIpcHandler('register_group', handleRegisterGroup);
 
-// Deferred notifications: dispatched once the target person's board is provisioned
+// Deferred notifications: dispatched once the target person's board is provisioned.
+// Re-queues up to ~5 minutes (TTL based on original timestamp).
+const DEFERRED_NOTIFICATION_TTL_MS = 5 * 60 * 1000;
+
+function reQueueDeferredNotification(
+  data: Record<string, unknown>,
+  sourceGroup: string,
+): void {
+  const ipcBaseDir = path.join(DATA_DIR, 'ipc');
+  const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
+  const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
+  fs.writeFileSync(path.join(tasksDir, filename), JSON.stringify(data, null, 2));
+}
+
 const handleDeferredNotification: IpcHandler = async (
   data,
   sourceGroup,
@@ -347,41 +360,46 @@ const handleDeferredNotification: IpcHandler = async (
   const text = data.text as string | undefined;
   if (!personId || !text) return;
 
-  const tfDb = getTaskflowDb(DATA_DIR);
-  if (!tfDb) return;
-  try {
-    const row = tfDb
-      .prepare(
-        'SELECT notification_group_jid FROM board_people WHERE person_id = ? AND notification_group_jid IS NOT NULL LIMIT 1',
-      )
-      .get(personId) as { notification_group_jid: string } | undefined;
+  // TTL guard: drop notifications older than 5 minutes
+  const createdAt = typeof data.timestamp === 'string' ? new Date(data.timestamp).getTime() : 0;
+  if (createdAt > 0 && Date.now() - createdAt > DEFERRED_NOTIFICATION_TTL_MS) {
+    logger.warn(
+      { personId, sourceGroup, age: Date.now() - createdAt },
+      'Deferred notification expired (TTL exceeded), dropping',
+    );
+    return;
+  }
 
-    if (row) {
-      const registeredGroups = deps.registeredGroups();
-      const targetGroup = registeredGroups[row.notification_group_jid];
-      const sender = targetGroup
-        ? getGroupSenderName(targetGroup.trigger)
-        : undefined;
-      await deps.sendMessage(row.notification_group_jid, text, sender);
-      logger.info(
-        { personId, targetJid: row.notification_group_jid, sourceGroup },
-        'Deferred notification delivered',
-      );
-    } else {
-      // Board not provisioned yet — re-queue for next poll cycle
-      const ipcBaseDir = path.join(DATA_DIR, 'ipc');
-      const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
-      fs.mkdirSync(tasksDir, { recursive: true });
-      const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
-      const filepath = path.join(tasksDir, filename);
-      fs.writeFileSync(filepath, JSON.stringify(data, null, 2));
-      logger.info(
-        { personId, sourceGroup },
-        'Deferred notification re-queued (board not yet provisioned)',
-      );
-    }
-  } finally {
-    tfDb.close();
+  const tfDb = getTaskflowDb(DATA_DIR);
+  if (!tfDb) {
+    // DB unavailable — re-queue instead of silently dropping
+    reQueueDeferredNotification(data, sourceGroup);
+    return;
+  }
+
+  const row = tfDb
+    .prepare(
+      'SELECT notification_group_jid FROM board_people WHERE person_id = ? AND notification_group_jid IS NOT NULL LIMIT 1',
+    )
+    .get(personId) as { notification_group_jid: string } | undefined;
+
+  if (row) {
+    const registeredGroups = deps.registeredGroups();
+    const targetGroup = registeredGroups[row.notification_group_jid];
+    const sender = targetGroup
+      ? getGroupSenderName(targetGroup.trigger)
+      : undefined;
+    await deps.sendMessage(row.notification_group_jid, text, sender);
+    logger.info(
+      { personId, targetJid: row.notification_group_jid, sourceGroup },
+      'Deferred notification delivered',
+    );
+  } else {
+    reQueueDeferredNotification(data, sourceGroup);
+    logger.info(
+      { personId, sourceGroup },
+      'Deferred notification re-queued (board not yet provisioned)',
+    );
   }
 };
 registerIpcHandler('deferred_notification', handleDeferredNotification);

@@ -3369,7 +3369,7 @@ export class TaskflowEngine {
           target_external_id: externalId,
           target_chat_jid: targetJid,
           message: buildExternalInviteMessage(task.id, task.title, updates.scheduled_at ?? task.scheduled_at, organizerName),
-        } as any);
+        });
 
         // Audit trail
         this.db.prepare(
@@ -3434,7 +3434,7 @@ export class TaskflowEngine {
             target_external_id: externalId,
             target_chat_jid: removeJid,
             message: `📅 *Participação cancelada*\n\n*${task.id}* — ${task.title}\n*Por:* ${organizerName}\n\nSeu acesso a esta reunião foi revogado.`,
-          } as any);
+          });
         }
 
         this.db.prepare(
@@ -3489,7 +3489,7 @@ export class TaskflowEngine {
           target_external_id: externalId,
           target_chat_jid: reinviteJid,
           message: buildExternalInviteMessage(task.id, task.title, task.scheduled_at, organizerName),
-        } as any);
+        });
 
         changes.push(`External participant ${contact.display_name} reinvited`);
       }
