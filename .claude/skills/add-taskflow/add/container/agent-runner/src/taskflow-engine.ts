@@ -3278,6 +3278,18 @@ export class TaskflowEngine {
             .prepare(`UPDATE tasks SET participants = ? WHERE board_id = ? AND id = ?`)
             .run(JSON.stringify(participants), taskBoardId, task.id);
           changes.push(`Participant ${person.name} removed`);
+
+          /* Notify removed participant */
+          if (senderPersonId && person.person_id !== senderPersonId) {
+            const target = this.resolveNotifTarget(person.person_id, senderPersonId);
+            if (target) {
+              const modName = this.personDisplayName(senderPersonId);
+              notifications.push({
+                ...target,
+                message: `📅 *Você foi removido(a) de uma reunião*\n\n*${task.id}* — ${task.title}\n*Removido por:* ${modName}`,
+              });
+            }
+          }
         }
       }
 
@@ -3408,6 +3420,21 @@ export class TaskflowEngine {
 
         if (revokeResult.changes === 0) {
           return { success: false, error: 'This external contact is not an active participant of this meeting.' };
+        }
+
+        // Notify removed external participant via DM
+        const contact = this.db.prepare(
+          `SELECT display_name, phone, direct_chat_jid FROM external_contacts WHERE external_id = ?`
+        ).get(externalId) as { display_name: string; phone: string; direct_chat_jid: string | null } | undefined;
+        if (contact) {
+          const removeJid = contact.direct_chat_jid ?? `${contact.phone}@s.whatsapp.net`;
+          const organizerName = sender?.name ?? params.sender_name;
+          notifications.push({
+            target_kind: 'dm',
+            target_external_id: externalId,
+            target_chat_jid: removeJid,
+            message: `📅 *Participação cancelada*\n\n*${task.id}* — ${task.title}\n*Por:* ${organizerName}\n\nSeu acesso a esta reunião foi revogado.`,
+          } as any);
         }
 
         this.db.prepare(
