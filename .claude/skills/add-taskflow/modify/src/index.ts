@@ -805,6 +805,10 @@ async function main(): Promise<void> {
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       return channel.sendMessage(jid, text, sender);
     },
+    clearTyping: async (jid) => {
+      const channel = findChannel(channels, jid);
+      await channel?.setTyping?.(jid, false);
+    },
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroups: async (force: boolean) => {

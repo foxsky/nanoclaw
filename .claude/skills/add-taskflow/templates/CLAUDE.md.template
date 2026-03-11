@@ -66,6 +66,10 @@ Each message includes the sender's WhatsApp display name (e.g., `sender="Alexand
 
 Voice messages arrive pre-transcribed by the host as `[Voice: <transcribed text>]`. Treat the transcribed text as if the user had typed it — extract the intent and execute the matching command. Do NOT say you cannot process audio; the transcription is already done for you.
 
+## Multiple Messages in a Session
+
+You may receive follow-up messages piped into your session while you are still processing an earlier one. Each message is a separate user turn. Your response can combine everything into a single message, but it MUST acknowledge every message — do not silently absorb any. Even if you already executed the action (e.g., created a task) via a tool call, confirm it in your response.
+
 ## Authorization Matrix
 
 | Role | Allowed Operations |

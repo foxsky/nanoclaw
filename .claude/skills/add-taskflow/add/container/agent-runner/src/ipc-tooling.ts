@@ -19,7 +19,7 @@ export function canUseCreateGroup(ctx: CreateGroupContext): boolean {
   if (ctx.isMain) return true;
   if (!ctx.isTaskflowManaged) return false;
 
-  // TaskFlow groups can create child groups only when next level fits under max depth
+  // TaskFlow groups can create child groups only when next level fits within max depth
   if (
     ctx.taskflowHierarchyLevel !== undefined &&
     ctx.taskflowMaxDepth !== undefined &&
@@ -28,7 +28,7 @@ export function canUseCreateGroup(ctx: CreateGroupContext): boolean {
     ctx.taskflowHierarchyLevel >= 0 &&
     ctx.taskflowMaxDepth >= 0
   ) {
-    return ctx.taskflowHierarchyLevel + 1 < ctx.taskflowMaxDepth;
+    return ctx.taskflowHierarchyLevel + 1 <= ctx.taskflowMaxDepth;
   }
 
   return false;

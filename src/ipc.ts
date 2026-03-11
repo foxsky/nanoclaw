@@ -19,6 +19,7 @@ import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string, sender?: string) => Promise<void>;
+  clearTyping?: (jid: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -464,11 +465,15 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                     typeof data.sender === 'string'
                       ? data.sender
                       : getGroupSenderName(targetGroup.trigger);
-                  await deps.sendMessage(data.chatJid, data.text, sender);
-                  logger.info(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'IPC message sent',
-                  );
+                  try {
+                    await deps.sendMessage(data.chatJid, data.text, sender);
+                    logger.info(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'IPC message sent',
+                    );
+                  } finally {
+                    await deps.clearTyping?.(data.chatJid);
+                  }
                 } else if (authResult === 'dm') {
                   // Check disambiguation before sending — external contact
                   // may have grants spanning multiple groups
@@ -484,11 +489,15 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                   } else {
                     const sender =
                       typeof data.sender === 'string' ? data.sender : undefined;
-                    await deps.sendMessage(data.chatJid, data.text, sender);
-                    logger.info(
-                      { chatJid: data.chatJid, sourceGroup },
-                      'IPC DM message sent to external contact',
-                    );
+                    try {
+                      await deps.sendMessage(data.chatJid, data.text, sender);
+                      logger.info(
+                        { chatJid: data.chatJid, sourceGroup },
+                        'IPC DM message sent to external contact',
+                      );
+                    } finally {
+                      await deps.clearTyping?.(data.chatJid);
+                    }
                   }
                 } else {
                   logger.warn(

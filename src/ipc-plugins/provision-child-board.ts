@@ -38,7 +38,7 @@ const handleProvisionChildBoard: IpcHandler = async (
   if (
     sourceEntry.taskflowHierarchyLevel === undefined ||
     sourceEntry.taskflowMaxDepth === undefined ||
-    sourceEntry.taskflowHierarchyLevel + 1 >= sourceEntry.taskflowMaxDepth
+    sourceEntry.taskflowHierarchyLevel + 1 > sourceEntry.taskflowMaxDepth
   ) {
     logger.warn(
       {

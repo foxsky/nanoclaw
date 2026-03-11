@@ -539,6 +539,12 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(board_id, parent_task_id) WHERE parent_task_id IS NOT NULL`,
   );
+  try {
+    db.exec('ALTER TABLE tasks ADD COLUMN linked_parent_board_id TEXT');
+  } catch {}
+  try {
+    db.exec('ALTER TABLE tasks ADD COLUMN linked_parent_task_id TEXT');
+  } catch {}
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_tasks_linked_parent ON tasks(board_id, linked_parent_board_id, linked_parent_task_id) WHERE linked_parent_board_id IS NOT NULL AND linked_parent_task_id IS NOT NULL`,
   );

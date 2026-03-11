@@ -46,7 +46,7 @@ describe('provision_child_board IPC plugin', () => {
         trigger: '@Tars',
         added_at: '2024-01-01T00:00:00.000Z',
         taskflowManaged: true,
-        taskflowHierarchyLevel: 2,
+        taskflowHierarchyLevel: 3,
         taskflowMaxDepth: 3,
       },
       'plain@g.us': {
@@ -100,7 +100,7 @@ describe('provision_child_board IPC plugin', () => {
     expect(createGroup).not.toHaveBeenCalled();
   });
 
-  it('rejects leaf boards (level + 1 >= max_depth)', async () => {
+  it('rejects leaf boards (level + 1 > max_depth)', async () => {
     await handler(validData, 'leaf-taskflow', false, deps);
     expect(createGroup).not.toHaveBeenCalled();
   });
