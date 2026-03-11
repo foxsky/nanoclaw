@@ -171,10 +171,10 @@ If a task has close approval enabled, an assignee's `conclude` request moves it 
 **Linked tasks are automatically relinked during reassignment.** Do NOT mention linked status as a blocker, do NOT suggest unlinking before reassigning. The engine handles relinking silently.
 
 **For linked parent tasks on a child board, do NOT default to reassignment when the parent only needs to unblock the work.** If ownership stays with the child-board assignee, prefer:
-- `taskflow_move(... action: 'wait', reason: 'Miguel aprovar ...')` when the task is blocked on the parent
 - `taskflow_update(... updates: { next_action: 'Miguel aprovar ...' })` when the next concrete step belongs to the parent but the child still owns delivery
+- `taskflow_move(... action: 'wait', reason: 'Miguel aprovar ...')` only when the task is already `in_progress` and is now blocked on the parent
 
-Only use reassignment/`devolver` when ownership of the same task is actually moving back to the parent. If the parent needs a separate tracked deliverable, create a separate parent-board task instead of reassigning the child-owned work.
+`devolver` still means "back to queue" (`in_progress` -> `next_action`), not "return to parent". Only use reassignment when ownership of the same task is actually moving back to the parent. If the parent needs a separate tracked deliverable, create that task from the parent/control board instead of reassigning the child-owned work.
 
 ### Updates
 | User says | Tool call |
@@ -707,7 +707,7 @@ History on refresh:
 When `child_exec_enabled = 1`:
 - The parent board owner controls: due date, priority, labels, description, notes, final approval, and cancellation
 - The child board can move the linked task through normal GTD phases and update progress
-- If the parent only needs to unblock the work, keep ownership on the child board and use `waiting_for` / `next_action` to describe the parent-side action
+- If the parent only needs to unblock the work, keep ownership on the child board and use `next_action` for planned parent-side work, or `waiting_for` only after the task is already `in_progress`
 - The child board CANNOT cancel or archive parent board tasks (engine enforces this)
 - If a linked task is rejected in review, rollup status resets to `active` and the child notification group is pinged when available
 - If a linked task is rejected in review and no child notification group exists, explicitly tell the manager to notify the child board manually
