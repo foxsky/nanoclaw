@@ -248,8 +248,9 @@ const handleProvisionChildBoard: IpcHandler = async (
             board_id, language, timezone,
             standup_cron_local, digest_cron_local, review_cron_local,
             standup_cron_utc, digest_cron_utc, review_cron_utc,
-            attachment_enabled, attachment_disabled_reason
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            attachment_enabled, attachment_disabled_reason,
+            dst_sync_enabled
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           childBoardId,
@@ -263,6 +264,7 @@ const handleProvisionChildBoard: IpcHandler = async (
           parentRuntime.review_cron_utc,
           parentRuntime.attachment_enabled,
           parentRuntime.attachment_disabled_reason,
+          parentRuntime.dst_sync_enabled,
         );
 
       tfDb
