@@ -18,8 +18,19 @@ Added optional `sender` parameter to `sendMessage()` so TaskFlow groups can use 
 - Added: `createGroup(subject, participants)` — creates a WhatsApp group using `sock.groupCreate()`
 - Returns `{ jid, subject }` for IPC plugin use (provision-root-board, provision-child-board, create-group)
 
+### Voice message transcription (from voice-transcription skill)
+- Imports: `isVoiceMessage`, `transcribeAudioMessage` from `../transcription.js`
+- In messages.upsert handler: voice messages (`ptt=true`) are allowed through even without text content
+- Voice messages are transcribed via OpenAI Whisper and stored as `[Voice: <transcript>]`
+- Fallback messages for unavailable/failed transcription
+
+### DM message handling
+- DMs (non-group chats) are also stored so `getDmMessages()` can find inbound messages from external meeting participants
+
+### Multi-trigger bot detection
+- Bot message detection checks all registered group triggers, not just `ASSISTANT_NAME`
+
 ## Invariants (must-keep)
-- All existing message handling (messages.upsert handler) unchanged
 - Connection lifecycle (connect, reconnect, disconnect) unchanged
 - LID translation logic unchanged
 - Outgoing message queue unchanged

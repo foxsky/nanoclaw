@@ -123,6 +123,19 @@ describe('taskflow skill package', () => {
     expect(staleGroups).toEqual([]);
   });
 
+  it('generated TaskFlow prompts prefer taskflow_query over sqlite reads for normal inspection', async () => {
+    const generatorModule = await import(
+      pathToFileURL(path.join(skillDir, 'add', 'scripts', 'generate-claude-md.mjs')).href
+    );
+
+    for (const group of generatorModule.groups) {
+      const generated = generatorModule.renderGroup(group);
+      expect(generated).toContain("taskflow_query({ query: 'task_details', task_id: 'TXXX' })");
+      expect(generated).toContain('For normal task and board inspection, use `taskflow_query` first');
+      expect(generated).not.toContain('Use `mcp__sqlite__read_query` for READ queries by default');
+    }
+  });
+
   it('SKILL.md people registration uses board_people for all topologies', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
 
@@ -494,6 +507,8 @@ describe('taskflow skill package', () => {
     expect(toolSection).toContain('read_query');
     expect(toolSection).toContain('write_query');
     expect(toolSection).toContain('TaskFlow MCP tools');
+    expect(toolSection).toContain('For normal task and board inspection, use `taskflow_query` first');
+    expect(toolSection).not.toContain('Use `mcp__sqlite__read_query` for READ queries by default');
     expect(toolSection).not.toContain('TASKS.json');
   });
 
@@ -631,6 +646,7 @@ describe('taskflow skill package', () => {
     // v2 uses full mcp__sqlite__ prefix in Tool vs. Direct SQL section
     expect(content).toContain('mcp__sqlite__read_query');
     expect(content).toContain('mcp__sqlite__write_query');
+    expect(content).toContain('Do NOT start with `mcp__sqlite__read_query` when a `taskflow_query` variant can answer the question');
     // cancel_task documented in MCP Tool Usage section for runner jobs
     expect(content).toContain('cancel_task');
   });
@@ -661,6 +677,7 @@ describe('taskflow skill package', () => {
 
     expect(digestSection).toContain('taskflow_report');
     expect(digestSection).toContain('Skip if empty');
+    expect(digestSection).toContain('formatted_report');
     expect(digestSection).not.toContain('TASKS.json');
   });
 
@@ -675,8 +692,24 @@ describe('taskflow skill package', () => {
 
     expect(reviewSection).toContain('taskflow_report');
     expect(reviewSection).toContain('Skip if empty');
+    expect(reviewSection).toContain('formatted_report');
     expect(reviewSection).toContain('per-person');
     expect(reviewSection).not.toContain('TASKS.json');
+  });
+
+  it('CLAUDE.md.template distinguishes formatted_board from formatted_report', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+
+    const renderedSection =
+      content.split('## Rendered Output Format')[1]?.split('### Meeting Display')[0] ?? '';
+
+    expect(renderedSection).toContain('formatted_board');
+    expect(renderedSection).toContain('board queries and standup reports');
+    expect(renderedSection).toContain('formatted_report');
+    expect(renderedSection).toContain('digest and weekly reports');
   });
 
   it('TaskFlow scheduler docs do not hardcode UTC and match runtime timezone behavior', () => {

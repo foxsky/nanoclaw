@@ -438,6 +438,29 @@ describe('TaskflowEngine', () => {
       expect(r.success).toBe(false);
       expect(r.error).toMatch(/search_text/);
     });
+
+    it('resolves raw task ID as search_text', () => {
+      const r = engine.query({ query: 'search', search_text: 'T-001' });
+      expect(r.success).toBe(true);
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].id).toBe('T-001');
+    });
+
+    it('resolves prefixed task ID as search_text on delegated task', () => {
+      seedLinkedTask(db, BOARD_ID, {
+        ownerBoardId: 'board-parent-search',
+        taskId: 'T-050',
+        assignee: 'person-2',
+        column: 'in_progress',
+        title: 'Prefixed search target',
+      });
+      db.exec(`UPDATE boards SET short_code = 'PAR' WHERE id = 'board-parent-search'`);
+
+      const r = engine.query({ query: 'search', search_text: 'PAR-T-050' });
+      expect(r.success).toBe(true);
+      expect(r.data).toHaveLength(1);
+      expect(r.data[0].id).toBe('T-050');
+    });
   });
 
   /* ---------------------------------------------------------------- */
@@ -888,6 +911,73 @@ describe('TaskflowEngine', () => {
 
       const childEngine = new TaskflowEngine(db, 'board-child-gio');
       expect(childEngine.getTask('P1.1')?.id).toBe('P1.1');
+    });
+
+    it('notifications for delegated tasks include board prefix', () => {
+      db.exec(
+        `INSERT INTO child_board_registrations VALUES ('${BOARD_ID}', 'person-2', 'board-child-notif')`,
+      );
+      seedChildBoard(db, {
+        parentBoardId: BOARD_ID,
+        childBoardId: 'board-child-notif',
+        personId: 'person-2',
+        name: 'Giovanni',
+      });
+      db.exec(`UPDATE boards SET short_code = 'TST' WHERE id = '${BOARD_ID}'`);
+
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Delegated with prefix',
+        assignee: 'Giovanni',
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(true);
+      expect(r.notifications).toBeDefined();
+      expect(r.notifications!.length).toBeGreaterThan(0);
+      // The notification goes to the child board, so it should show the prefixed ID
+      expect(r.notifications![0].message).toContain('TST-');
+    });
+
+    it('self-update notifications to parent board do NOT include prefix', () => {
+      db.exec(
+        `INSERT INTO child_board_registrations VALUES ('${BOARD_ID}', 'person-2', 'board-child-selfup')`,
+      );
+      seedChildBoard(db, {
+        parentBoardId: BOARD_ID,
+        childBoardId: 'board-child-selfup',
+        personId: 'person-2',
+        name: 'Giovanni',
+      });
+      db.exec(`UPDATE boards SET short_code = 'TST' WHERE id = '${BOARD_ID}'`);
+
+      // Create a task assigned to Giovanni (delegated to child board)
+      const createResult = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Self-update check',
+        assignee: 'Giovanni',
+        sender_name: 'Alexandre',
+      });
+      expect(createResult.success).toBe(true);
+      const taskId = createResult.task_id!;
+
+      // Now Giovanni moves the task from the child board perspective
+      const childEngine = new TaskflowEngine(db, 'board-child-selfup');
+      const moveResult = childEngine.move({
+        board_id: 'board-child-selfup',
+        task_id: taskId,
+        action: 'start',
+        sender_name: 'Giovanni',
+      });
+
+      expect(moveResult.success).toBe(true);
+      // The self-update notification goes to the creator (Alexandre) on the parent board
+      // It should NOT have the prefix since Alexandre views tasks from the parent board
+      if (moveResult.notifications && moveResult.notifications.length > 0) {
+        expect(moveResult.notifications[0].message).not.toContain('TST-');
+      }
     });
 
     it('creates recurring task', () => {
@@ -1675,6 +1765,55 @@ describe('TaskflowEngine', () => {
       expect(task.child_exec_enabled).toBe(0);
       expect(task.child_exec_board_id).toBeNull();
       expect(task.child_exec_person_id).toBeNull();
+    });
+
+    it('single-task reassign to same person → error', () => {
+      // T-001 is assigned to person-1 (Alexandre); Alexandre reassigns to Alexandre
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        target_person: 'Alexandre',
+        sender_name: 'Alexandre',
+        confirmed: true,
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('already assigned');
+    });
+
+    it('reassign delegated task from child board → relinks using parent board registrations', () => {
+      // Seed a parent board with a task delegated to this (child) board
+      const { ownerBoardId, taskId } = seedLinkedTask(db, BOARD_ID, {
+        taskId: 'T-910',
+        assignee: 'person-1', // Alexandre on child board
+      });
+
+      // Register person-2 (Giovanni) as having a child board on the PARENT board
+      db.exec(
+        `INSERT INTO child_board_registrations VALUES ('${ownerBoardId}', 'person-2', 'child-board-giovanni')`,
+      );
+      // Also register person-2 on the parent board so resolvePerson works
+      // (person-2 already exists on BOARD_ID from seedTestDb)
+
+      // Reassign T-910 from person-1 to Giovanni, from the child board engine
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: taskId,
+        target_person: 'Giovanni',
+        sender_name: 'Alexandre', // manager
+        confirmed: true,
+      });
+      expect(r.success).toBe(true);
+      expect(r.tasks_affected).toHaveLength(1);
+      expect(r.tasks_affected![0].was_linked).toBe(true);
+      expect(r.tasks_affected![0].relinked_to).toBe('child-board-giovanni');
+
+      // Verify the task was relinked, not unlinked
+      const task = db
+        .prepare(`SELECT * FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(ownerBoardId, taskId) as any;
+      expect(task.child_exec_enabled).toBe(1);
+      expect(task.child_exec_board_id).toBe('child-board-giovanni');
+      expect(task.child_exec_person_id).toBe('person-2');
     });
 
     it('bulk transfer all tasks', () => {
@@ -3549,6 +3688,9 @@ describe('TaskflowEngine', () => {
 
       // Should NOT have weekly stats
       expect(r.data!.stats).toBeUndefined();
+      expect(r.data!.formatted_report).toContain('📊 *Resumo Executivo*');
+      expect(r.data!.formatted_report).toContain('*T-001*');
+      expect(r.data!.formatted_report).toContain('*T-002*');
     });
 
     it('weekly includes stats and trend', () => {
@@ -3601,6 +3743,27 @@ describe('TaskflowEngine', () => {
       expect(r.data!.completed_today).toBeDefined();
       expect(r.data!.blocked).toBeDefined();
       expect(r.data!.changes_today_count).toBeGreaterThanOrEqual(0);
+      expect(r.data!.formatted_report).toContain('📊 *Revisão Semanal*');
+      expect(r.data!.formatted_report).toContain('*✅ Concluídas na semana:*');
+      expect(r.data!.formatted_report).toContain('*T-001*');
+      expect(r.data!.formatted_report).toContain('*Alexandre*');
+    });
+
+    it('digest and weekly formatted reports preserve prefixed linked task ids', () => {
+      seedLinkedTask(db, BOARD_ID, {
+        ownerBoardId: 'board-parent-sec',
+        taskId: 'T9',
+        assignee: 'person-2',
+        column: 'next_action',
+        title: 'Linked parent task',
+      });
+      db.exec(`UPDATE boards SET short_code = 'SEC' WHERE id = 'board-parent-sec'`);
+
+      const digest = engine.report({ board_id: BOARD_ID, type: 'digest' });
+      const weekly = engine.report({ board_id: BOARD_ID, type: 'weekly' });
+
+      expect(digest.data!.formatted_report).toContain('SEC-T9');
+      expect(weekly.data!.formatted_report).toContain('SEC-T9');
     });
 
     it('empty board returns valid structure', () => {

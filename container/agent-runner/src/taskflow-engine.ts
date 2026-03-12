@@ -82,6 +82,7 @@ export interface MoveParams {
 
 export interface MoveResult extends TaskflowResult {
   task_id?: string;
+  title?: string;
   from_column?: string;
   to_column?: string;
   approval_gate_applied?: boolean;
@@ -154,6 +155,7 @@ export interface UpdateParams {
 
 export interface UpdateResult extends TaskflowResult {
   task_id?: string;
+  title?: string;
   changes?: string[];      // human-readable list of what changed
   offer_register?: { name: string; message: string };
   notifications?: NotificationEntry[];
@@ -170,6 +172,7 @@ export interface DependencyParams {
 
 export interface DependencyResult extends TaskflowResult {
   task_id?: string;
+  title?: string;
   change?: string;           // human-readable description of what changed
 }
 
@@ -181,6 +184,7 @@ export interface UndoParams {
 
 export interface UndoResult extends TaskflowResult {
   task_id?: string;
+  title?: string;
   undone_action?: string;
 }
 
@@ -236,13 +240,21 @@ export interface ReportParams {
 export interface ReportResult extends TaskflowResult {
   data?: {
     date: string;
+    formatted_report?: string;
     overdue: Array<{ id: string; title: string; assignee_name: string | null; due_date: string }>;
+    next_48h?: Array<{ id: string; title: string; assignee_name: string | null; due_date: string }>;
     in_progress: Array<{ id: string; title: string; assignee_name: string | null }>;
     review: Array<{ id: string; title: string; assignee_name: string | null }>;
     due_today: Array<{ id: string; title: string; assignee_name: string | null }>;
     waiting: Array<{ id: string; title: string; assignee_name: string | null; waiting_for: string | null }>;
+    waiting_5d?: Array<{ id: string; title: string; assignee_name: string | null; waiting_for: string | null; updated_at: string }>;
     blocked: Array<{ id: string; title: string; assignee_name: string | null; blocked_by: string[] }>;
     completed_today: Array<{ id: string; title: string; assignee_name: string | null }>;
+    completed_week?: Array<{ id: string; title: string; assignee_name: string | null }>;
+    stale_24h?: Array<{ id: string; title: string; assignee_name: string | null; column: string; updated_at: string }>;
+    stale_tasks?: Array<{ id: string; title: string; assignee_name: string | null; column: string; updated_at: string }>;
+    inbox?: Array<{ id: string; title: string; assignee_name: string | null }>;
+    next_week_deadlines?: Array<{ id: string; title: string; assignee_name: string | null; due_date: string }>;
     changes_today_count: number;
     per_person: Array<{
       name: string;
@@ -475,12 +487,20 @@ export class TaskflowEngine {
     return row?.short_code ?? null;
   }
 
-  /** Display ID: prefix delegated tasks with source board's short_code. */
-  private displayId(task: any): string {
+  /** Display ID: prefix delegated tasks with source board's short_code.
+   *  viewerBoardId overrides the perspective — used for notifications sent to child boards. */
+  private displayId(task: any, viewerBoardId = this.boardId): string {
     const owning = task.owning_board_id ?? task.board_id;
-    if (owning === this.boardId) return task.id;
+    if (owning === viewerBoardId) return task.id;
     const sc = this.getBoardShortCode(owning);
     return sc ? `${sc}-${task.id}` : task.id;
+  }
+
+  /** Determine the viewer board for a notification recipient.
+   *  If the target person has a child board under the task's board, they see it from the child board (needs prefix).
+   *  Otherwise they see it from the task's board (no prefix). */
+  private resolveViewerBoard(targetPersonId: string, taskBoardId: string): string {
+    return this.getChildBoardRegistration(targetPersonId, taskBoardId)?.child_board_id ?? taskBoardId;
   }
 
   /** Resolve a potentially board-prefixed task ID (e.g. SEC-T10 → board_id + T10). */
@@ -579,10 +599,20 @@ export class TaskflowEngine {
     );
     if (!hasRequiresCloseApproval) {
       try { this.db.exec(`ALTER TABLE tasks ADD COLUMN requires_close_approval INTEGER NOT NULL DEFAULT 1`); } catch {}
+      /* Zero out approval for unassigned tasks and self-assigned tasks (creator == assignee) */
+      this.db.exec(`UPDATE tasks SET requires_close_approval = 0 WHERE assignee IS NULL`);
       this.db.exec(`
         UPDATE tasks
            SET requires_close_approval = 0
-         WHERE assignee IS NULL
+         WHERE assignee IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM task_history th
+              JOIN board_people bp ON bp.board_id = tasks.board_id AND bp.name = th.by
+             WHERE th.board_id = tasks.board_id
+               AND th.task_id = tasks.id
+               AND th.action = 'created'
+               AND bp.person_id = tasks.assignee
+           )
       `);
     }
     try { this.db.exec(`ALTER TABLE tasks ADD COLUMN parent_task_id TEXT`); } catch {}
@@ -1310,47 +1340,55 @@ export class TaskflowEngine {
 
   /** Build a notification for new task assignment. */
   private buildCreateNotification(
-    task: { id: string; title: string; assignee: string; due_date?: string | null; priority?: string | null; column?: string },
+    task: { id: string; title: string; assignee: string; due_date?: string | null; priority?: string | null; column?: string; type?: string; board_id?: string },
     modifierPersonId: string,
   ): { target_person_id: string; notification_group_jid: string | null; message: string } | null {
     const target = this.resolveNotifTarget(task.assignee, modifierPersonId);
     if (!target) return null;
+    const viewerBoard = this.resolveViewerBoard(target.target_person_id, task.board_id ?? this.boardId);
     const modName = this.personDisplayName(modifierPersonId);
     const col = TaskflowEngine.columnLabel(task.column ?? 'next_action');
     const due = TaskflowEngine.formatDue(task.due_date ?? null);
     const pri = TaskflowEngine.formatPriority(task.priority ?? null);
+    const typeLabel = task.type === 'project' ? 'Novo projeto atribuído a você'
+      : task.type === 'meeting' ? 'Nova reunião atribuída a você'
+      : 'Nova tarefa atribuída a você';
+    const did = this.displayId(task, viewerBoard);
     return {
       ...target,
-      message: `🔔 *Nova tarefa atribuída a você*\n\n*${this.displayId(task)}* — ${task.title}\n*Atribuído por:* ${modName}\n*Coluna:* ${col}\n\n• Prazo: ${due}\n• Prioridade: ${pri}\n\nDigite \`${this.displayId(task)}\` para ver detalhes.`,
+      message: `🔔 *${typeLabel}*\n\n*${did}* — ${task.title}\n*Atribuído por:* ${modName}\n*Coluna:* ${col}\n\n• Prazo: ${due}\n• Prioridade: ${pri}\n\nDigite \`${did}\` para ver detalhes.`,
     };
   }
 
   /** Build a notification for task column transition. */
   private buildMoveNotification(
-    task: { id: string; title: string; assignee: string },
+    task: { id: string; title: string; assignee: string; board_id?: string },
     action: MoveParams['action'],
     modifierPersonId: string,
     taskBoardId = this.boardId,
   ): { target_person_id: string; notification_group_jid: string | null; message: string } | null {
     const target = this.resolveNotifTarget(task.assignee, modifierPersonId, task.id, taskBoardId);
     if (!target) return null;
+    const viewerBoard = this.resolveViewerBoard(target.target_person_id, task.board_id ?? taskBoardId);
     const modName = this.personDisplayName(modifierPersonId);
     const desc = TaskflowEngine.moveActionLabels[action] ?? action;
+    const did = this.displayId(task, viewerBoard);
     return {
       ...target,
-      message: `🔔 *Atualização na sua tarefa*\n\n*${this.displayId(task)}* — ${task.title}\n*Por:* ${modName}\n*Ação:* ${desc}\n\nDigite \`${this.displayId(task)}\` para ver detalhes.`,
+      message: `🔔 *Atualização na sua tarefa*\n\n*${did}* — ${task.title}\n*Por:* ${modName}\n*Ação:* ${desc}\n\nDigite \`${did}\` para ver detalhes.`,
     };
   }
 
   /** Build a notification for task reassignment. */
   private buildReassignNotification(
-    task: { id: string; title: string },
+    task: { id: string; title: string; board_id?: string },
     fromPersonId: string | null,
     targetPerson: { person_id: string; notification_group_jid: string | null },
     modifierPersonId: string,
   ): { target_person_id: string; notification_group_jid: string | null; message: string } {
+    const viewerBoard = this.resolveViewerBoard(targetPerson.person_id, task.board_id ?? this.boardId);
     const modName = this.personDisplayName(modifierPersonId);
-    const did = this.displayId(task);
+    const did = this.displayId(task, viewerBoard);
     const header = fromPersonId
       ? `🔔 *Tarefa reatribuída para você*\n\n*${did}* — ${task.title}\n*Reatribuída de:* ${this.personDisplayName(fromPersonId)}\n*Por:* ${modName}`
       : `🔔 *Tarefa atribuída para você*\n\n*${did}* — ${task.title}\n*Por:* ${modName}`;
@@ -1363,18 +1401,20 @@ export class TaskflowEngine {
 
   /** Build a notification for task field updates (priority, due date, etc.). */
   private buildUpdateNotification(
-    task: { id: string; title: string; assignee: string },
+    task: { id: string; title: string; assignee: string; board_id?: string },
     changes: string[],
     modifierPersonId: string,
     taskBoardId = this.boardId,
   ): { target_person_id: string; notification_group_jid: string | null; message: string } | null {
     const target = this.resolveNotifTarget(task.assignee, modifierPersonId, task.id, taskBoardId);
     if (!target) return null;
+    const viewerBoard = this.resolveViewerBoard(target.target_person_id, task.board_id ?? taskBoardId);
     const modName = this.personDisplayName(modifierPersonId);
     const changeList = changes.map(c => `• ${c}`).join('\n');
+    const did = this.displayId(task, viewerBoard);
     return {
       ...target,
-      message: `🔔 *Atualização na sua tarefa*\n\n*${this.displayId(task)}* — ${task.title}\n*Modificado por:* ${modName}\n\n${changeList}\n\nDigite \`${this.displayId(task)}\` para ver detalhes.`,
+      message: `🔔 *Atualização na sua tarefa*\n\n*${did}* — ${task.title}\n*Modificado por:* ${modName}\n\n${changeList}\n\nDigite \`${did}\` para ver detalhes.`,
     };
   }
 
@@ -1578,17 +1618,19 @@ export class TaskflowEngine {
 
   /** Build a notification for subtask assignment. */
   private buildSubtaskAssignNotification(
-    subtask: { id: string; title: string },
-    project: { id: string; title: string },
+    subtask: { id: string; title: string; board_id?: string },
+    project: { id: string; title: string; board_id?: string },
     assigneePersonId: string,
     modifierPersonId: string,
+    boardId = this.boardId,
   ): { target_person_id: string; notification_group_jid: string | null; message: string } | null {
-    const target = this.resolveNotifTarget(assigneePersonId, modifierPersonId);
+    const target = this.resolveNotifTarget(assigneePersonId, modifierPersonId, undefined, boardId);
     if (!target) return null;
+    const viewerBoard = this.resolveViewerBoard(target.target_person_id, subtask.board_id ?? boardId);
     const modName = this.personDisplayName(modifierPersonId);
     return {
       ...target,
-      message: `🔔 *Etapa atribuída para você*\n*${this.displayId(subtask)}* — ${subtask.title}\n*Projeto:* ${this.displayId(project)} — ${project.title}\n*Por:* ${modName}`,
+      message: `🔔 *Etapa atribuída para você*\n*${this.displayId(subtask, viewerBoard)}* — ${subtask.title}\n*Projeto:* ${this.displayId(project, viewerBoard)} — ${project.title}\n*Por:* ${modName}`,
     };
   }
 
@@ -1867,7 +1909,7 @@ export class TaskflowEngine {
       // Notify project assignee
       if (assigneePersonId) {
         const notif = this.buildCreateNotification(
-          { id: taskId, title: params.title, assignee: assigneePersonId, due_date: dueDate, priority: params.priority, column },
+          { id: taskId, title: params.title, assignee: assigneePersonId, due_date: dueDate, priority: params.priority, column, type: params.type, board_id: this.boardId },
           senderPersonId,
         );
         if (notif) notifications.push(notif);
@@ -1893,7 +1935,7 @@ export class TaskflowEngine {
           if (pid === senderPersonId) continue;
           if (pid === assigneePersonId) continue;
           const notif = this.buildCreateNotification(
-            { id: taskId, title: params.title, assignee: pid, due_date: dueDate, priority: params.priority, column },
+            { id: taskId, title: params.title, assignee: pid, due_date: dueDate, priority: params.priority, column, type: params.type },
             senderPersonId,
           );
           if (notif) notifications.push(notif);
@@ -2544,6 +2586,7 @@ export class TaskflowEngine {
       const result: MoveResult = {
         success: true,
         task_id: task.id,
+        title: task.title,
         from_column: fromColumn,
         to_column: toColumn,
       };
@@ -2599,6 +2642,11 @@ export class TaskflowEngine {
           return { success: false, error: `Permission denied: "${params.sender_name}" is neither the assignee nor a manager.` };
         }
 
+        /* --- Same-person check (mirrors the bulk-transfer guard) --- */
+        if (task.assignee === targetPerson.person_id) {
+          return { success: false, error: `Task ${params.task_id} is already assigned to ${targetPerson.name}.` };
+        }
+
         tasksToReassign = [task];
       } else {
         /* --- Bulk transfer --- */
@@ -2636,7 +2684,14 @@ export class TaskflowEngine {
       }
 
       /* --- Pre-fetch target's child board registration (avoid N+1) --- */
-      const targetChildReg = this.getChildBoardRegistration(targetPerson.person_id);
+      /* For delegated tasks (single-task path where task.board_id != this.boardId),
+         look up registrations on the task's owning board, not the current board.
+         child_board_registrations are keyed by parent_board_id, so using the
+         child board's ID would miss the registration and silently unlink. */
+      const regBoardId = params.task_id && tasksToReassign.length === 1
+        ? (tasksToReassign[0].board_id ?? this.boardId)
+        : this.boardId;
+      const targetChildReg = this.getChildBoardRegistration(targetPerson.person_id, regBoardId);
 
       /* --- Build affected tasks list with relink info --- */
       const tasksAffected: ReassignResult['tasks_affected'] = [];
@@ -3557,6 +3612,16 @@ export class TaskflowEngine {
           parentTaskId: task.id, priority: task.priority ?? null, senderName: params.sender_name, now,
         });
         changes.push(`Subtask ${subtaskId} "${updates.add_subtask}" added`);
+
+        // Notify subtask assignee (inherited from project)
+        if (task.assignee && senderPersonId && task.assignee !== senderPersonId) {
+          const notif = this.buildSubtaskAssignNotification(
+            { id: subtaskId, title: updates.add_subtask },
+            { id: task.id, title: task.title },
+            task.assignee, senderPersonId, taskBoardId,
+          );
+          if (notif) notifications.push(notif);
+        }
       }
 
       /* Rename subtask (project only) — operates on subtask task row */
@@ -3610,7 +3675,7 @@ export class TaskflowEngine {
           const notif = this.buildSubtaskAssignNotification(
             { id: updates.assign_subtask.id, title: check.subTask.title },
             { id: task.id, title: task.title },
-            subPerson.person_id, senderPersonId,
+            subPerson.person_id, senderPersonId, taskBoardId,
           );
           if (notif) notifications.push(notif);
         }
@@ -3696,7 +3761,7 @@ export class TaskflowEngine {
       /* --- Notification for task owner --- */
       if (senderPersonId && changes.length > 0) {
         const notif = this.buildUpdateNotification(
-          { id: task.id, title: task.title, assignee: task.assignee },
+          { id: task.id, title: task.title, assignee: task.assignee, board_id: task.board_id },
           changes,
           senderPersonId,
           taskBoardId,
@@ -3708,6 +3773,7 @@ export class TaskflowEngine {
       const result: UpdateResult = {
         success: true,
         task_id: task.id,
+        title: task.title,
         changes,
       };
       if (notifications.length > 0) result.notifications = notifications;
@@ -3873,6 +3939,7 @@ export class TaskflowEngine {
       return {
         success: true,
         task_id: task.id,
+        title: task.title,
         change,
       };
       })(); // end transaction
@@ -4255,6 +4322,151 @@ export class TaskflowEngine {
     return lines.join('\n');
   }
 
+  private formatDigestOrWeeklyReport(
+    type: 'digest' | 'weekly',
+    data: NonNullable<ReportResult['data']>,
+  ): string {
+    const lines: string[] = [this.formatBoardView('board')];
+    const SEP = '━━━━━━━━━━━━━━';
+    const taskLine = (
+      task: { id: string; title: string; assignee_name?: string | null; due_date?: string; waiting_for?: string | null; column?: string; updated_at?: string },
+      extras: string[] = [],
+    ): string[] => {
+      const assignee = task.assignee_name ? ` (${task.assignee_name})` : '';
+      const first = `• *${task.id}*${assignee} — ${task.title}`;
+      const more = [...extras];
+      if (task.due_date) more.push(`⏰ ${task.due_date.slice(8, 10)}/${task.due_date.slice(5, 7)}`);
+      if (task.waiting_for) more.push(`⏳ ${task.waiting_for}`);
+      return [first, ...more.map((line) => `  ${line}`)];
+    };
+    const meetingLine = (meeting: { id: string; title: string; scheduled_at: string; participant_count: number }): string => {
+      const when = `${meeting.scheduled_at.slice(8, 10)}/${meeting.scheduled_at.slice(5, 7)} ${meeting.scheduled_at.slice(11, 16)}`;
+      return `• *${meeting.id}* — ${meeting.title} (${when}) — ${meeting.participant_count} participante(s)`;
+    };
+    const staleExtras = (task: { column: string; updated_at: string }): string[] => [
+      `🗂️ Coluna: ${task.column}`,
+      `🕒 Última atualização: ${task.updated_at.slice(0, 10)}`,
+    ];
+
+    if (type === 'digest') {
+      lines.push('', SEP, '📊 *Resumo Executivo*', SEP);
+      if (data.overdue.length > 0) {
+        lines.push('', '*⚠️ Em atraso:*');
+        for (const task of data.overdue) lines.push(...taskLine(task));
+      }
+      if (data.next_48h && data.next_48h.length > 0) {
+        lines.push('', '*⏰ Próximas 48h:*');
+        for (const task of data.next_48h) lines.push(...taskLine(task));
+      }
+      if (data.completed_today.length > 0) {
+        lines.push('', '*✅ Concluídas hoje:*');
+        for (const task of data.completed_today) lines.push(...taskLine(task));
+      }
+      if (data.blocked.length > 0 || data.waiting.length > 0) {
+        lines.push('', '*🚧 Aguardando / Bloqueadas:*');
+        for (const task of data.waiting) lines.push(...taskLine(task));
+        for (const task of data.blocked) {
+          const blockers =
+            task.blocked_by.length > 0
+              ? [`🚫 Dependências: ${task.blocked_by.join(', ')}`]
+              : [];
+          lines.push(...taskLine(task, blockers));
+        }
+      }
+      if (data.stale_24h && data.stale_24h.length > 0) {
+        lines.push('', '*💤 Sem atualização (24h+):*');
+        for (const task of data.stale_24h.slice(0, 10)) {
+          lines.push(...taskLine(task, staleExtras(task)));
+        }
+      }
+      const meetings48h = (data.upcoming_meetings ?? []).filter((meeting) => {
+        const delta = new Date(meeting.scheduled_at).getTime() - Date.now();
+        return delta >= 0 && delta <= 48 * 60 * 60 * 1000;
+      });
+      if (meetings48h.length > 0) {
+        lines.push('', '*📅 Próximas reuniões:*');
+        for (const meeting of meetings48h.slice(0, 5)) {
+          lines.push(meetingLine(meeting));
+        }
+      }
+      lines.push('', '*📌 Resumo de atividade:*');
+      lines.push(`• ${data.changes_today_count} mudanças no quadro hoje`);
+      lines.push(`• ${data.in_progress.length} tarefa(s) em andamento`);
+      lines.push(`• ${data.completed_today.length} concluída(s) hoje`);
+      const suggestions: string[] = [];
+      if (data.overdue.length > 0) suggestions.push('Atacar as tarefas em atraso primeiro');
+      if (data.blocked.length > 0 || data.waiting.length > 0) suggestions.push('Destravar dependências pendentes');
+      if (meetings48h.length > 0) suggestions.push('Confirmar pendências antes das próximas reuniões');
+      if (data.stale_24h && data.stale_24h.length > 0) suggestions.push('Cobrar atualização das tarefas sem avanço');
+      if (suggestions.length > 0) {
+        lines.push('', '*➡️ Próximas ações sugeridas:*');
+        for (const suggestion of suggestions.slice(0, 3)) {
+          lines.push(`• ${suggestion}`);
+        }
+      }
+      return lines.join('\n');
+    }
+
+    lines.push('', SEP, '📊 *Revisão Semanal*', SEP);
+    if (data.stats) {
+      lines.push(
+        `• ${data.stats.total_active} tarefa(s) ativas`,
+        `• ${data.stats.completed_week} concluída(s) na semana`,
+        `• ${data.stats.created_week} criada(s) na semana`,
+      );
+    }
+    if (data.inbox && data.inbox.length > 0) {
+      lines.push('', '*📥 Inbox para processar:*');
+      for (const task of data.inbox.slice(0, 10)) lines.push(...taskLine(task));
+    }
+    if (data.waiting_5d && data.waiting_5d.length > 0) {
+      lines.push('', '*⏳ Aguardando 5+ dias:*');
+      for (const task of data.waiting_5d.slice(0, 10)) lines.push(...taskLine(task));
+    }
+    if (data.overdue.length > 0) {
+      lines.push('', '*⚠️ Em atraso:*');
+      for (const task of data.overdue) lines.push(...taskLine(task));
+    }
+    if (data.stale_tasks && data.stale_tasks.length > 0) {
+      lines.push('', '*💤 Sem atualização (3d+):*');
+      for (const task of data.stale_tasks.slice(0, 10)) {
+        lines.push(...taskLine(task, staleExtras(task)));
+      }
+    }
+    if (data.completed_week && data.completed_week.length > 0) {
+      lines.push('', '*✅ Concluídas na semana:*');
+      for (const task of data.completed_week) lines.push(...taskLine(task));
+    }
+    if (data.next_week_deadlines && data.next_week_deadlines.length > 0) {
+      lines.push('', '*🗓️ Próximos prazos:*');
+      for (const task of data.next_week_deadlines.slice(0, 10)) lines.push(...taskLine(task));
+    }
+    if (data.upcoming_meetings && data.upcoming_meetings.length > 0) {
+      lines.push('', '*📅 Próximas reuniões:*');
+      for (const meeting of data.upcoming_meetings.slice(0, 7)) {
+        lines.push(meetingLine(meeting));
+      }
+    }
+    if (data.meetings_with_open_minutes && data.meetings_with_open_minutes.length > 0) {
+      lines.push('', '*📝 Reuniões com ata pendente:*');
+      for (const meeting of data.meetings_with_open_minutes) {
+        lines.push(`• *${meeting.id}* — ${meeting.title} (${meeting.open_count} item(ns) aberto(s))`);
+      }
+    }
+    if (data.per_person.length > 0) {
+      lines.push('', '*👥 Resumo por pessoa:*');
+      for (const person of data.per_person) {
+        const parts = [
+          `${person.in_progress} em andamento`,
+          `${person.waiting} aguardando`,
+        ];
+        if (person.completed_week != null) parts.push(`${person.completed_week} concluída(s)`);
+        lines.push(`• *${person.name}* — ${parts.join(' • ')}`);
+      }
+    }
+    return lines.join('\n');
+  }
+
   /* ---------------------------------------------------------------- */
   /*  Main query dispatcher                                            */
   /* ---------------------------------------------------------------- */
@@ -4409,14 +4621,19 @@ export class TaskflowEngine {
             return { success: false, error: 'Missing required parameter: search_text' };
           }
           const pattern = `%${params.search_text}%`;
-          const tasks = this.db
+          const textMatches = this.db
             .prepare(
               `SELECT * FROM tasks
                WHERE ${this.visibleTaskScope()} AND (title LIKE ? OR description LIKE ?)
                ORDER BY id`,
             )
-            .all(...this.visibleTaskParams(), pattern, pattern);
-          return { success: true, data: tasks };
+            .all(...this.visibleTaskParams(), pattern, pattern) as any[];
+          /* Also try resolving search_text as a task ID (raw or prefixed) */
+          const idMatch = this.getTask(params.search_text);
+          if (idMatch && !textMatches.some((t: any) => t.id === idMatch.id && t.board_id === idMatch.board_id)) {
+            return { success: true, data: [idMatch, ...textMatches] };
+          }
+          return { success: true, data: textMatches };
         }
 
         case 'urgent': {
@@ -4928,12 +5145,12 @@ export class TaskflowEngine {
       /* --- 1. Find the most recently mutated task --- */
       const latestRow = this.db
         .prepare(
-          `SELECT id, board_id, _last_mutation FROM tasks
+          `SELECT id, title, board_id, _last_mutation FROM tasks
            WHERE ${this.visibleTaskScope()} AND _last_mutation IS NOT NULL
            ORDER BY json_extract(_last_mutation, '$.at') DESC LIMIT 1`,
         )
         .get(...this.visibleTaskParams()) as
-        | { id: string; board_id: string; _last_mutation: string }
+        | { id: string; title: string; board_id: string; _last_mutation: string }
         | undefined;
 
       if (!latestRow) {
@@ -5039,6 +5256,7 @@ export class TaskflowEngine {
       return {
         success: true,
         task_id: taskId,
+        title: latestRow.title,
         undone_action: action,
       };
       })(); // end transaction
@@ -5343,17 +5561,31 @@ export class TaskflowEngine {
           /* Record history (on the archive entry for reference) */
           this.recordHistory(task.id, 'cancelled', params.sender_name);
 
-          /* Notify meeting participants on cancellation (internal + external) */
+          /* Notify on cancellation */
           const cancelNotifications: AdminResult['notifications'] = [];
+          const senderPerson = this.resolvePerson(params.sender_name);
+          const senderPersonId = senderPerson?.person_id ?? null;
+          const cancelTaskBoard = task.board_id ?? this.boardId;
           if (task.type === 'meeting') {
-            const senderPerson = this.resolvePerson(params.sender_name);
-            const senderPersonId = senderPerson?.person_id ?? null;
-            const cancelMessage = `📅 Reunião ${this.displayId(task)} "${task.title}" foi cancelada.`;
             for (const recipient of this.meetingNotificationRecipients(task)) {
               if (senderPersonId && recipient.target_person_id === senderPersonId) continue;
+              const vb = recipient.target_person_id ? this.resolveViewerBoard(recipient.target_person_id, cancelTaskBoard) : cancelTaskBoard;
               cancelNotifications.push({
                 ...recipient,
-                message: cancelMessage,
+                message: `📅 Reunião ${this.displayId(task, vb)} "${task.title}" foi cancelada.`,
+              });
+            }
+          } else if (task.assignee && senderPersonId) {
+            const cancelLabel = task.type === 'project' ? 'Projeto cancelado'
+              : task.type === 'recurring' ? 'Tarefa recorrente cancelada'
+              : 'Tarefa cancelada';
+            const target = this.resolveNotifTarget(task.assignee, senderPersonId);
+            if (target) {
+              const vb = this.resolveViewerBoard(target.target_person_id, cancelTaskBoard);
+              const modName = this.personDisplayName(senderPersonId);
+              cancelNotifications.push({
+                ...target,
+                message: `🔔 *${cancelLabel}*\n\n*${this.displayId(task, vb)}* — ${task.title}\n*Por:* ${modName}`,
               });
             }
           }
@@ -5371,11 +5603,15 @@ export class TaskflowEngine {
             return { success: false, error: 'Missing required parameter: task_id' };
           }
 
+          const { boardId: resolvedBoard, rawId: resolvedId } = this.resolveInputTaskId(params.task_id);
+          if (resolvedBoard && resolvedBoard !== this.boardId) {
+            return { success: false, error: `Cannot restore tasks from another board. ${params.task_id} belongs to a different board.` };
+          }
           const archived = this.db
             .prepare(
               `SELECT * FROM archive WHERE board_id = ? AND task_id = ?`,
             )
-            .get(this.boardId, params.task_id) as any;
+            .get(this.boardId, resolvedId) as any;
 
           if (!archived) {
             return { success: false, error: `Archived task not found: ${params.task_id}` };
@@ -5409,14 +5645,14 @@ export class TaskflowEngine {
             .prepare(
               `DELETE FROM archive WHERE board_id = ? AND task_id = ?`,
             )
-            .run(this.boardId, params.task_id);
+            .run(this.boardId, resolvedId);
 
           /* Record history */
-          this.recordHistory(params.task_id, 'restored', params.sender_name);
+          this.recordHistory(resolvedId, 'restored', params.sender_name);
 
           return {
             success: true,
-            data: { restored: params.task_id, title: archived.title, column: snapshot.column ?? 'inbox' },
+            data: { restored: resolvedId, title: archived.title, column: snapshot.column ?? 'inbox' },
           };
         }
 
@@ -5711,14 +5947,59 @@ export class TaskflowEngine {
         )
         .all(...this.visibleTaskParams(), todayStr) as Array<{ id: string; title: string; assignee: string | null }>;
 
+      /* --- Due in next 48h (digest) / next week (weekly) --- */
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const tomorrowStr = tomorrow.toISOString().slice(0, 10);
+      const nextWeek = new Date();
+      nextWeek.setDate(nextWeek.getDate() + 7);
+      const nextWeekStr = nextWeek.toISOString().slice(0, 10);
+
+      let next48h: Array<{ id: string; title: string; assignee: string | null; due_date: string }> = [];
+      let nextWeekDeadlines: Array<{ id: string; title: string; assignee: string | null; due_date: string }> = [];
+      if (isDigestOrWeekly) {
+        next48h = this.db
+          .prepare(
+            `SELECT id, title, assignee, due_date FROM tasks
+             WHERE ${this.visibleTaskScope()} AND due_date >= ? AND due_date <= ? AND column != 'done'
+             ORDER BY due_date, id`,
+          )
+          .all(...this.visibleTaskParams(), todayStr, tomorrowStr) as typeof next48h;
+      }
+      if (isWeekly) {
+        nextWeekDeadlines = this.db
+          .prepare(
+            `SELECT id, title, assignee, due_date FROM tasks
+             WHERE ${this.visibleTaskScope()} AND due_date >= ? AND due_date <= ? AND column != 'done'
+             ORDER BY due_date, id`,
+          )
+          .all(...this.visibleTaskParams(), todayStr, nextWeekStr) as typeof nextWeekDeadlines;
+      }
+
       /* --- Waiting tasks --- */
       const waiting = this.db
         .prepare(
-          `SELECT id, title, assignee, waiting_for, type FROM tasks
+          `SELECT id, title, assignee, waiting_for, type, updated_at FROM tasks
            WHERE ${this.visibleTaskScope()} AND column = 'waiting'
            ORDER BY id`,
         )
-        .all(...this.visibleTaskParams()) as Array<{ id: string; title: string; assignee: string | null; waiting_for: string | null; type: string }>;
+        .all(...this.visibleTaskParams()) as Array<{ id: string; title: string; assignee: string | null; waiting_for: string | null; type: string; updated_at: string }>;
+
+      let waiting5d: Array<{ id: string; title: string; assignee: string | null; waiting_for: string | null; updated_at: string }> = [];
+      if (isWeekly) {
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - 5);
+        const cutoffIso = cutoff.toISOString();
+        waiting5d = waiting
+          .filter((t) => t.updated_at < cutoffIso)
+          .map((t) => ({
+            id: t.id,
+            title: t.title,
+            assignee: t.assignee,
+            waiting_for: t.waiting_for,
+            updated_at: t.updated_at,
+          }));
+      }
 
       /* --- Blocked tasks (digest + weekly) --- */
       let blocked: Array<{ id: string; title: string; assignee: string | null; blocked_by_raw: string }> = [];
@@ -5757,29 +6038,76 @@ export class TaskflowEngine {
         changesTodayCount = row.cnt;
       }
 
-      /* --- Resolve completed_today task details --- */
-      const completedTodayTasks: Array<{ id: string; title: string; assignee: string | null }> = [];
-      if (isDigestOrWeekly) {
-        for (const { task_id } of completedToday) {
-          // First check active tasks
-          const task = this.db
+      /* --- Helper: batch-resolve task details from IDs (tasks + archive fallback).
+       *  Uses board_id = this.boardId (not visibleTaskScope) because the source IDs
+       *  come from task_history scoped to this board — avoids collisions with
+       *  delegated tasks that share an ID. --- */
+      const resolveTaskDetails = (
+        ids: Array<{ task_id: string }>,
+      ): Array<{ id: string; title: string; assignee: string | null }> => {
+        if (ids.length === 0) return [];
+        const taskIds = ids.map((r) => r.task_id);
+        const placeholders = taskIds.map(() => '?').join(',');
+        const active = this.db
+          .prepare(
+            `SELECT id, title, assignee FROM tasks
+             WHERE board_id = ? AND id IN (${placeholders})`,
+          )
+          .all(this.boardId, ...taskIds) as Array<{ id: string; title: string; assignee: string | null }>;
+        const found = new Set(active.map((t) => t.id));
+        const missing = taskIds.filter((id) => !found.has(id));
+        let archived: Array<{ id: string; title: string; assignee: string | null }> = [];
+        if (missing.length > 0) {
+          const archPlaceholders = missing.map(() => '?').join(',');
+          archived = this.db
             .prepare(
-              `SELECT id, title, assignee FROM tasks
-               WHERE ${this.visibleTaskScope()} AND id = ?`,
+              `SELECT task_id AS id, title, assignee FROM archive
+               WHERE board_id = ? AND task_id IN (${archPlaceholders})`,
             )
-            .get(...this.visibleTaskParams(), task_id) as
-            | { id: string; title: string; assignee: string | null }
-            | undefined;
-          if (task) {
-            completedTodayTasks.push(task);
-          } else {
-            // Check archive
-            const archived = this.db
-              .prepare(`SELECT task_id AS id, title, assignee FROM archive WHERE board_id = ? AND task_id = ?`)
-              .get(this.boardId, task_id) as { id: string; title: string; assignee: string | null } | undefined;
-            if (archived) completedTodayTasks.push(archived);
-          }
+            .all(this.boardId, ...missing) as typeof archived;
         }
+        return [...active, ...archived];
+      };
+
+      /* --- Resolve completed_today task details --- */
+      const completedTodayTasks = isDigestOrWeekly ? resolveTaskDetails(completedToday) : [];
+
+      let completedWeekTasks: Array<{ id: string; title: string; assignee: string | null }> = [];
+      if (isWeekly) {
+        const completedWeekIds = this.db
+          .prepare(
+            `SELECT DISTINCT task_id FROM task_history
+             WHERE board_id = ? AND ${this.completionHistoryWhere()}
+               AND at >= ?
+             ORDER BY task_id`,
+          )
+          .all(this.boardId, weekStart()) as Array<{ task_id: string }>;
+        completedWeekTasks = resolveTaskDetails(completedWeekIds);
+      }
+
+      let stale24h: Array<{ id: string; title: string; assignee: string | null; column: string; updated_at: string }> = [];
+      if (isDigestOrWeekly) {
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - 1);
+        const cutoffIso = cutoff.toISOString();
+        stale24h = this.db
+          .prepare(
+            `SELECT id, title, assignee, column, updated_at FROM tasks
+             WHERE ${this.visibleTaskScope()} AND column IN ('next_action', 'in_progress', 'review') AND updated_at < ?
+             ORDER BY updated_at ASC`,
+          )
+          .all(...this.visibleTaskParams(), cutoffIso) as typeof stale24h;
+      }
+
+      let inboxTasks: Array<{ id: string; title: string; assignee: string | null }> = [];
+      if (isWeekly) {
+        inboxTasks = this.db
+          .prepare(
+            `SELECT id, title, assignee FROM tasks
+             WHERE ${this.visibleTaskScope()} AND column = 'inbox'
+             ORDER BY id`,
+          )
+          .all(...this.visibleTaskParams()) as typeof inboxTasks;
       }
 
       /* --- Per-person subtask assignments (active, not done) --- */
@@ -5935,10 +6263,10 @@ export class TaskflowEngine {
         staleTasks = this.db
           .prepare(
             `SELECT id, title, assignee, column, updated_at FROM tasks
-             WHERE board_id = ? AND column IN ('next_action', 'in_progress', 'review') AND updated_at < ?
+             WHERE ${this.visibleTaskScope()} AND column IN ('next_action', 'in_progress', 'review') AND updated_at < ?
              ORDER BY updated_at ASC`,
           )
-          .all(this.boardId, cutoffIso) as typeof staleTasks;
+          .all(...this.visibleTaskParams(), cutoffIso) as typeof staleTasks;
       }
 
       /* --- Upcoming meetings (next 7 days) --- */
@@ -5946,13 +6274,13 @@ export class TaskflowEngine {
       const sevenDaysFromNow = new Date(Date.now() + 7 * 86400000).toISOString();
       const upcomingMeetings = this.db
         .prepare(
-          `SELECT id, title, scheduled_at, participants, assignee FROM tasks
+          `SELECT id, title, scheduled_at, participants, assignee, board_id, board_id AS owning_board_id FROM tasks
            WHERE ${this.visibleTaskScope()} AND type = 'meeting' AND column != 'done'
              AND scheduled_at IS NOT NULL AND scheduled_at >= ? AND scheduled_at <= ?
            ORDER BY scheduled_at`,
         )
         .all(...this.visibleTaskParams(), nowStr, sevenDaysFromNow) as Array<{
-          id: string; title: string; scheduled_at: string; participants: string | null; assignee: string | null;
+          id: string; title: string; scheduled_at: string; participants: string | null; assignee: string | null; board_id: string; owning_board_id: string;
         }>;
 
       const upcomingMeetingsFormatted = upcomingMeetings.map((m) => {
@@ -5960,6 +6288,8 @@ export class TaskflowEngine {
         try { pArr = m.participants ? JSON.parse(m.participants) : []; } catch { /* skip malformed */ }
         const organizerAlreadyCounted = m.assignee && pArr.includes(m.assignee);
         return {
+          board_id: m.board_id,
+          owning_board_id: m.owning_board_id,
           id: m.id,
           title: m.title,
           scheduled_at: m.scheduled_at,
@@ -5970,22 +6300,22 @@ export class TaskflowEngine {
       /* --- Meetings with open minutes (past scheduled_at, has open notes) --- */
       const pastMeetings = this.db
         .prepare(
-          `SELECT id, title, scheduled_at, notes FROM tasks
+          `SELECT id, title, scheduled_at, notes, board_id, board_id AS owning_board_id FROM tasks
            WHERE ${this.visibleTaskScope()} AND type = 'meeting' AND column != 'done'
              AND scheduled_at IS NOT NULL AND scheduled_at < ?
            ORDER BY scheduled_at`,
         )
         .all(...this.visibleTaskParams(), nowStr) as Array<{
-          id: string; title: string; scheduled_at: string; notes: string;
+          id: string; title: string; scheduled_at: string; notes: string; board_id: string; owning_board_id: string;
         }>;
 
-      const meetingsWithOpenMinutes: Array<{ id: string; title: string; scheduled_at: string; open_count: number }> = [];
+      const meetingsWithOpenMinutes: Array<{ id: string; title: string; scheduled_at: string; open_count: number; board_id: string; owning_board_id: string }> = [];
       for (const m of pastMeetings) {
         try {
           const notes = JSON.parse(m.notes ?? '[]');
           const open_count = notes.filter((n: any) => n.status === 'open').length;
           if (open_count > 0) {
-            meetingsWithOpenMinutes.push({ id: m.id, title: m.title, scheduled_at: m.scheduled_at, open_count });
+            meetingsWithOpenMinutes.push({ id: m.id, title: m.title, scheduled_at: m.scheduled_at, open_count, board_id: m.board_id, owning_board_id: m.owning_board_id });
           }
         } catch { /* skip malformed notes */ }
       }
@@ -5999,39 +6329,69 @@ export class TaskflowEngine {
       const formatted_board =
         params.type === 'standup' ? this.formatBoardView('standup') : undefined;
 
+      /* --- Short-code cache for displayId (avoids N+1 per-task DB queries) --- */
+      const shortCodes = new Map<string, string | null>();
+      const allBoards = this.db.prepare(`SELECT id, short_code FROM boards`).all() as Array<{ id: string; short_code: string | null }>;
+      for (const b of allBoards) shortCodes.set(b.id, b.short_code);
+      const dId = (task: any): string => {
+        const owning = task.owning_board_id ?? task.board_id;
+        if (owning === this.boardId) return task.id;
+        const sc = shortCodes.get(owning) ?? null;
+        return sc ? `${sc}-${task.id}` : task.id;
+      };
+
       /* --- Assemble result --- */
-      return {
-        success: true,
-        data: {
+      const reportData: NonNullable<ReportResult['data']> = {
           date: todayStr,
           ...(formatted_board ? { formatted_board } : {}),
           overdue: overdue.map((t) => ({
-            id: this.displayId(t),
+            id: dId(t),
             title: t.title,
             assignee_name: resolveName(t.assignee),
             due_date: t.due_date,
           })),
+          ...(isDigestOrWeekly
+            ? {
+                next_48h: next48h.map((t) => ({
+                  id: dId(t),
+                  title: t.title,
+                  assignee_name: resolveName(t.assignee),
+                  due_date: t.due_date,
+                })),
+              }
+            : {}),
           in_progress: inProgress.map((t) => ({
-            id: this.displayId(t),
+            id: dId(t),
             title: t.title,
             assignee_name: resolveName(t.assignee),
           })),
           review: review.map((t) => ({
-            id: this.displayId(t),
+            id: dId(t),
             title: t.title,
             assignee_name: resolveName(t.assignee),
           })),
           due_today: dueToday.map((t) => ({
-            id: this.displayId(t),
+            id: dId(t),
             title: t.title,
             assignee_name: resolveName(t.assignee),
           })),
           waiting: waiting.map((t) => ({
-            id: this.displayId(t),
+            id: dId(t),
             title: t.title,
             assignee_name: resolveName(t.assignee),
             waiting_for: t.waiting_for,
           })),
+          ...(isWeekly
+            ? {
+                waiting_5d: waiting5d.map((t) => ({
+                  id: dId(t),
+                  title: t.title,
+                  assignee_name: resolveName(t.assignee),
+                  waiting_for: t.waiting_for,
+                  updated_at: t.updated_at,
+                })),
+              }
+            : {}),
           blocked: isDigestOrWeekly
             ? blocked.map((t) => {
                 let blockedByIds: string[] = [];
@@ -6039,7 +6399,7 @@ export class TaskflowEngine {
                   blockedByIds = JSON.parse(t.blocked_by_raw);
                 } catch {}
                 return {
-                  id: this.displayId(t),
+                  id: dId(t),
                   title: t.title,
                   assignee_name: resolveName(t.assignee),
                   blocked_by: blockedByIds,
@@ -6048,18 +6408,24 @@ export class TaskflowEngine {
             : [],
           completed_today: isDigestOrWeekly
             ? completedTodayTasks.map((t) => ({
-                id: this.displayId(t),
+                id: dId(t),
                 title: t.title,
                 assignee_name: resolveName(t.assignee),
               }))
             : [],
-          changes_today_count: isDigestOrWeekly ? changesTodayCount : 0,
-          per_person: perPerson,
-          ...(isWeekly && stats ? { stats } : {}),
-          ...(isWeekly && staleTasks.length > 0
+          ...(isWeekly
             ? {
-                stale_tasks: staleTasks.map((t) => ({
-                  id: this.displayId(t),
+                completed_week: completedWeekTasks.map((t) => ({
+                  id: dId(t),
+                  title: t.title,
+                  assignee_name: resolveName(t.assignee),
+                })),
+              }
+            : {}),
+          ...(isDigestOrWeekly
+            ? {
+                stale_24h: stale24h.map((t) => ({
+                  id: dId(t),
                   title: t.title,
                   assignee_name: resolveName(t.assignee),
                   column: t.column,
@@ -6067,9 +6433,55 @@ export class TaskflowEngine {
                 })),
               }
             : {}),
-          upcoming_meetings: upcomingMeetingsFormatted,
-          meetings_with_open_minutes: meetingsWithOpenMinutes,
-        },
+          ...(isWeekly
+            ? {
+                inbox: inboxTasks.map((t) => ({
+                  id: dId(t),
+                  title: t.title,
+                  assignee_name: resolveName(t.assignee),
+                })),
+                next_week_deadlines: nextWeekDeadlines.map((t) => ({
+                  id: dId(t),
+                  title: t.title,
+                  assignee_name: resolveName(t.assignee),
+                  due_date: t.due_date,
+                })),
+              }
+            : {}),
+          changes_today_count: isDigestOrWeekly ? changesTodayCount : 0,
+          per_person: perPerson,
+          ...(isWeekly && stats ? { stats } : {}),
+          ...(isWeekly && staleTasks.length > 0
+            ? {
+                stale_tasks: staleTasks.map((t) => ({
+                  id: dId(t),
+                  title: t.title,
+                  assignee_name: resolveName(t.assignee),
+                  column: t.column,
+                  updated_at: t.updated_at,
+                })),
+              }
+            : {}),
+          upcoming_meetings: upcomingMeetingsFormatted.map((m) => ({
+            ...m,
+            id: dId(m),
+          })),
+          meetings_with_open_minutes: meetingsWithOpenMinutes.map((m) => ({
+            ...m,
+            id: dId(m),
+          })),
+        };
+
+      if (params.type === 'digest' || params.type === 'weekly') {
+        reportData.formatted_report = this.formatDigestOrWeeklyReport(
+          params.type,
+          reportData,
+        );
+      }
+
+      return {
+        success: true,
+        data: reportData,
       };
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };

@@ -92,7 +92,9 @@ You may receive follow-up messages piped into your session while you are still p
 
 **CRITICAL: ALWAYS use `taskflow_create`, `taskflow_update`, `taskflow_move`, `taskflow_reassign` for ALL write operations.** NEVER use `mcp__sqlite__write_query` for creating, assigning, moving, or updating tasks — doing so bypasses notifications, WIP limits, history tracking, and child-board linking. If you use raw SQL to assign a task, the assignee will NOT be notified.
 
-**SQL fallback:** Use `mcp__sqlite__read_query` for READ queries by default. Use `mcp__sqlite__write_query` only as a last resort for operations that have NO `taskflow_*` equivalent, such as:
+**Read-path default:** For normal task and board inspection, use `taskflow_query` first (`task_details`, `task_history`, `my_tasks`, board lists, due-date queries, meeting queries). Do NOT start with `mcp__sqlite__read_query` when a `taskflow_query` variant can answer the question.
+
+**SQL fallback:** Use `mcp__sqlite__read_query` only for ad-hoc reporting, schema inspection, or novel cross-table questions that have NO `taskflow_query` equivalent. Use `mcp__sqlite__write_query` only as a last resort for operations that have NO `taskflow_*` equivalent, such as:
 - Ad-hoc questions combining data in novel ways
 - Manager requests a one-off operation not covered by tools
 - You need to answer questions about the data the tools can't
@@ -122,7 +124,8 @@ When the user sends a command, call the matching MCP tool. The tool handles all 
 ### Quick Capture (everyone)
 | User says | Tool call |
 |-----------|-----------|
-| "anotar: X" / "lembrar: X" / "registrar: X" | `taskflow_create({ type: 'inbox', title: 'X', sender_name: SENDER })` |
+| "anotar: X" / "lembrar: X" / "registrar: X" (no assignee) | `taskflow_create({ type: 'inbox', title: 'X', sender_name: SENDER })` |
+| "anotar: X; atribuir: Y" / "anotar: X; atribuído para Y" | `taskflow_create({ type: 'simple', title: 'X', assignee: 'Y', sender_name: SENDER })` — when capture AND assignment appear together, create with assignee directly in one call, NOT create then reassign |
 | "tarefa: X" (without "para Y") | `taskflow_create({ type: 'inbox', title: 'X', sender_name: SENDER })` — no assignee means inbox capture |
 
 ### Task Creation (manager)
@@ -416,7 +419,8 @@ Every tool returns JSON with `success` and may include `data`, `error`, `notific
 - `archive_triggered` -> Note that task was archived
 
 **On `success: true`:**
-- **If `data.formatted_board` exists** (board query, standup, digest, weekly): output `formatted_board` EXACTLY as-is. Do NOT build your own layout from `data.columns` or any other structured fields. The engine already formats the board — your job is to relay it unchanged.
+- **If `data.formatted_report` exists** (digest, weekly): output `formatted_report` EXACTLY as-is. Do NOT rebuild IDs, regroup tasks, or reword the report body.
+- **If `data.formatted_board` exists** (board query, standup): output `formatted_board` EXACTLY as-is. Do NOT build your own layout from `data.columns` or any other structured fields. The engine already formats the board — your job is to relay it unchanged.
 - For all other responses with `data`: format `data` for WhatsApp using the formatting and confirmation templates below
 - If `notifications` array is present, dispatch each (see Notification Dispatch)
 - If `parent_notification` is present, dispatch it (see Notification Dispatch)
@@ -551,9 +555,11 @@ When describing changes in confirmations and notifications:
 - Title: "Título alterado"
 - Multiple changes: list each as a bullet point with relevant emoji
 
-## Board View Format
+## Rendered Output Format
 
-**CRITICAL — MANDATORY RULE:** When `data.formatted_board` exists in a tool response, you MUST output it EXACTLY as-is. This applies to board queries, standup reports, digest, and weekly reviews.
+**CRITICAL — MANDATORY RULE:** When `data.formatted_board` exists in a tool response, you MUST output it EXACTLY as-is. This applies to board queries and standup reports.
+
+When `data.formatted_report` exists in a tool response, you MUST output it EXACTLY as-is. This applies to digest and weekly reports.
 
 **DO NOT:**
 - Build your own board layout from `data.columns` or other structured fields
@@ -562,7 +568,7 @@ When describing changes in confirmations and notifications:
 - Paraphrase task titles or reword any text
 - Add your own headers, footers, or commentary inside the board
 
-**DO:** Copy-paste `data.formatted_board` as your response. You may add a brief greeting before it or attention items after it, but the board itself must be untouched.
+**DO:** Copy-paste the rendered field as your response (`data.formatted_board` for board/standup, `data.formatted_report` for digest/weekly). You may add a brief greeting before it or brief attention items after it, but the rendered body itself must be untouched.
 
 ### Meeting Display
 
@@ -575,7 +581,7 @@ Meetings do NOT count against WIP limits.
 
 ### Message Length
 
-- For non-`formatted_board` outputs, keep responses compact for mobile reading
+- For outputs that do not include `formatted_board` or `formatted_report`, keep responses compact for mobile reading
 - If a custom response would exceed roughly 120 lines or become hard to scan, summarize first and offer follow-up detail by task/person/filter
 - Prefer splitting long ad-hoc SQL results into: top summary + the 5-10 most relevant rows, instead of dumping everything
 
@@ -600,13 +606,13 @@ Recurring tasks delegated to this board appear in the normal task sections, not 
 
 ### Digest (Evening)
 
-Call `taskflow_report({ type: 'digest' })`. **Skip if empty.**
+Call `taskflow_report({ type: 'digest' })`. **Skip if empty.** If the result includes `formatted_report`, output it exactly as returned.
 
 Format: Overdue -> Next 48h -> Waiting/Blocked -> No update (24h+) -> Completed today -> Upcoming meetings (next 48h). Suggest 3 follow-up actions. Include open-minutes warnings for concluded meetings with unprocessed notes.
 
 ### Weekly Review (Friday)
 
-Call `taskflow_report({ type: 'weekly' })`. **Skip if empty.**
+Call `taskflow_report({ type: 'weekly' })`. **Skip if empty.** If the result includes `formatted_report`, output it exactly as returned.
 
 Format: Summary (Completed/Created/Overdue) -> Inbox to process -> Waiting 5+ days -> Overdue -> No update 3+ days (`stale_tasks` in data — only next_action/in_progress/review columns) -> Next week deadlines -> Upcoming meetings next week. Include per-person weekly summaries. Flag meetings with open minutes that still need triage.
 
