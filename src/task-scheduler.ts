@@ -24,6 +24,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
+import { stripInternalTags } from './router.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 export interface SchedulerDependencies {
@@ -180,10 +181,21 @@ async function runTask(
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
-          // TaskFlow runner prompts send chat output explicitly via the MCP
-          // send_message tool. Avoid duplicating that output here.
           if (group.taskflowManaged !== true) {
+            // Non-TaskFlow groups: forward result directly.
             await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          } else {
+            // TaskFlow runners normally send chat output via send_message IPC.
+            // Fallback: if the agent returned visible text without calling
+            // send_message, forward it so the message doesn't go missing.
+            const visible = stripInternalTags(streamedOutput.result);
+            if (visible) {
+              logger.info(
+                { taskId: task.id, group: group.name },
+                'TaskFlow scheduled task returned visible text without IPC send — forwarding as fallback',
+              );
+              await deps.sendMessage(task.chat_jid, visible);
+            }
           }
           scheduleClose();
         }
