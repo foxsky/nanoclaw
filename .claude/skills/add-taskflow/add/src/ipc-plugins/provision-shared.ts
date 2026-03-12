@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { execSync } from 'child_process';
+import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 import path from 'path';
 
@@ -118,6 +119,64 @@ export function generateClaudeMd(
   return content;
 }
 
+export const ONBOARDING_FILES = [
+  'gtd-01-inbox-whatsapp.md',
+  'gtd-02-esclarecer-whatsapp.md',
+  'gtd-03-organizar-whatsapp.md',
+  'gtd-04-revisao-whatsapp.md',
+  'gtd-05-executar-whatsapp.md',
+] as const;
+
+function onboardingPrompt(filename: string): string {
+  return `[TF-ONBOARDING] Read the file /workspace/group/${filename} and send its EXACT contents verbatim to this group via send_message. Do NOT modify, summarize, or add any text — send the file contents as-is. If the file does not exist, do nothing.`;
+}
+
+export function scheduleOnboarding(params: {
+  groupFolder: string;
+  groupJid: string;
+  timezone?: string;
+}): void {
+  const now = Date.now();
+  const tz = params.timezone || 'America/Fortaleza';
+  const day1RunAt = new Date(now + 30 * 60 * 1000);
+
+  // "09:00 on weekdays" — anchored after Day 1 so Day 2 is always later
+  const cron = CronExpressionParser.parse('0 9 * * 1-5', {
+    tz,
+    currentDate: day1RunAt,
+  });
+
+  for (let i = 0; i < ONBOARDING_FILES.length; i++) {
+    const file = ONBOARDING_FILES[i];
+    let runAt: Date;
+    if (i === 0) {
+      // Day 1: 30 minutes from now (regardless of weekday)
+      runAt = day1RunAt;
+    } else {
+      // Days 2-5: next distinct weekdays at 09:00 local (DST-aware)
+      runAt = cron.next().toDate();
+    }
+    const id = `task-onboard-${now}-${Math.random().toString(36).slice(2, 8)}`;
+    const runAtIso = runAt.toISOString();
+    createTask({
+      id,
+      group_folder: params.groupFolder,
+      chat_jid: params.groupJid,
+      prompt: onboardingPrompt(file),
+      schedule_type: 'once',
+      schedule_value: runAtIso,
+      context_mode: 'isolated',
+      next_run: runAtIso,
+      status: 'active',
+      created_at: new Date().toISOString(),
+    });
+    logger.info(
+      { taskId: id, file, groupFolder: params.groupFolder, runAt: runAtIso },
+      'Onboarding task scheduled',
+    );
+  }
+}
+
 export interface ScheduleRunnersParams {
   tfDb: Database.Database;
   boardId: string;
@@ -218,6 +277,20 @@ export function createBoardFilesystem(
 
   // .mcp.json
   fs.writeFileSync(path.join(groupDir, '.mcp.json'), MCP_JSON_CONTENT + '\n');
+
+  // Onboarding series (5-day GTD course, read by scheduled onboarding tasks)
+  for (const file of ONBOARDING_FILES) {
+    const src = path.join(PROJECT_ROOT, 'container', file);
+    try {
+      fs.copyFileSync(src, path.join(groupDir, file));
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') {
+        logger.warn({ path: src }, 'Onboarding file not found, skipping copy');
+      } else {
+        throw err;
+      }
+    }
+  }
 
   // CLAUDE.md from template
   try {

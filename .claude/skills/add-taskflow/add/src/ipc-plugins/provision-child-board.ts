@@ -13,6 +13,7 @@ import {
   createBoardFilesystem,
   fixOwnership,
   sanitizeFolder,
+  scheduleOnboarding,
   scheduleRunners,
   TASKFLOW_DB_PATH,
   uniqueFolder,
@@ -445,6 +446,20 @@ const handleProvisionChildBoard: IpcHandler = async (
       logger.error(
         { err },
         'provision_child_board: failed to send welcome message',
+      );
+    }
+
+    // --- 14. Schedule onboarding message (30 min after welcome) ---
+    try {
+      scheduleOnboarding({
+        groupFolder: childGroupFolder,
+        groupJid: childGroupJid,
+        timezone: parentRuntime.timezone,
+      });
+    } catch (err) {
+      logger.error(
+        { err },
+        'provision_child_board: failed to schedule onboarding',
       );
     }
 

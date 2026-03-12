@@ -13,6 +13,7 @@ import {
   MCP_JSON_CONTENT,
   PARTICIPANT_JID_PATTERN,
   sanitizeFolder,
+  scheduleOnboarding,
   scheduleRunners,
   TASKFLOW_DB_PATH,
   TASKFLOW_SUFFIX,
@@ -472,6 +473,16 @@ const handleProvisionRootBoard: IpcHandler = async (
       logger.error(
         { err },
         'provision_root_board: failed to send welcome message',
+      );
+    }
+
+    // --- Schedule onboarding message (30 min after welcome) ---
+    try {
+      scheduleOnboarding({ groupFolder, groupJid, timezone });
+    } catch (err) {
+      logger.error(
+        { err },
+        'provision_root_board: failed to schedule onboarding',
       );
     }
 
