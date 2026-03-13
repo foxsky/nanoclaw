@@ -203,13 +203,14 @@ function buildVolumeMounts(
   // TaskFlow groups get access to the shared TaskFlow database.
   // Mount the directory (not the file) so SQLite WAL journal files
   // (-wal, -shm) persist across container restarts.
-  if (group.taskflowManaged) {
+  // Main group gets read-only access for admin queries.
+  if (group.taskflowManaged || isMain) {
     const taskflowDir = path.join(DATA_DIR, 'taskflow');
     fs.mkdirSync(taskflowDir, { recursive: true });
     mounts.push({
       hostPath: taskflowDir,
       containerPath: '/workspace/taskflow',
-      readonly: false, // agents need write access for task mutations
+      readonly: isMain, // main group: read-only; taskflow boards: read-write
     });
   }
 

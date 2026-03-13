@@ -122,7 +122,7 @@ export class WhatsAppChannel implements Channel {
           });
         } else {
           logger.info('Logged out. Run /setup to re-authenticate.');
-          process.exit(0);
+          process.exit(78); // EX_CONFIG — systemd RestartPreventExitStatus stops restart loop
         }
       } else if (connection === 'open') {
         this.connected = true;

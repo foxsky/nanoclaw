@@ -140,11 +140,20 @@ export function scheduleOnboarding(params: {
   const tz = params.timezone || 'America/Fortaleza';
   const day1RunAt = new Date(now + 30 * 60 * 1000);
 
-  // "09:00 on weekdays" — anchored after Day 1 so Day 2 is always later
+  // "09:00 on weekdays" — anchored after Day 1 so Day 2 is always later.
   const cron = CronExpressionParser.parse('0 9 * * 1-5', {
     tz,
     currentDate: day1RunAt,
   });
+
+  // Reusable formatter: YYYY-MM-DD in local timezone (en-CA locale).
+  const localDate = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const day1LocalDate = localDate.format(day1RunAt);
 
   for (let i = 0; i < ONBOARDING_FILES.length; i++) {
     const file = ONBOARDING_FILES[i];
@@ -153,8 +162,15 @@ export function scheduleOnboarding(params: {
       // Day 1: 30 minutes from now (regardless of weekday)
       runAt = day1RunAt;
     } else {
-      // Days 2-5: next distinct weekdays at 09:00 local (DST-aware)
+      // Days 2-5: next distinct weekdays at 09:00 local (DST-aware).
+      // The first cron.next() can land on the same local date as Day 1
+      // (e.g. provisioned before 09:00 → Day 1 is 08:30, cron returns 09:00
+      // same day). Subsequent iterations always advance, so only i===1 needs
+      // the collision check.
       runAt = cron.next().toDate();
+      if (i === 1 && localDate.format(runAt) === day1LocalDate) {
+        runAt = cron.next().toDate();
+      }
     }
     const id = `task-onboard-${now}-${Math.random().toString(36).slice(2, 8)}`;
     const runAtIso = runAt.toISOString();

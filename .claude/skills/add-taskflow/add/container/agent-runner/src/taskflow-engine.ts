@@ -3415,16 +3415,31 @@ export class TaskflowEngine {
           ).run(this.boardId, task.id, occurrenceScheduledAt, externalId, now, expiresAt, senderPersonId ?? params.sender_name, now, now);
         }
 
-        // Build DM invite notification (use cached JID from initial lookup)
-        const targetJid = existingChatJid ?? `${phone}@s.whatsapp.net`;
+        // Notify about the external participant invite.
+        // Only send a DM if the contact has previously messaged the bot
+        // (direct_chat_jid is set). Otherwise, WhatsApp may flag unsolicited
+        // DMs as spam and ban the account.
         const organizerName = sender?.name ?? params.sender_name;
 
-        notifications.push({
-          target_kind: 'dm',
-          target_external_id: externalId,
-          target_chat_jid: targetJid,
-          message: buildExternalInviteMessage(task.id, task.title, updates.scheduled_at ?? task.scheduled_at, organizerName),
-        });
+        if (existingChatJid) {
+          notifications.push({
+            target_kind: 'dm',
+            target_external_id: externalId,
+            target_chat_jid: existingChatJid,
+            message: buildExternalInviteMessage(task.id, task.title, updates.scheduled_at ?? task.scheduled_at, organizerName),
+          });
+        } else {
+          // Contact never messaged the bot — notify the group instead
+          notifications.push({
+            target_kind: 'group',
+            message:
+              `\u{1f4c5} *Convite pendente — ${displayName}*\n\n` +
+              `Para ${task.id} — ${task.title}\n\n` +
+              `${displayName} ainda n\u00e3o tem conversa com o assistente. ` +
+              `Pe\u00e7a para enviar qualquer mensagem (ex: "oi") para este n\u00famero, ` +
+              `depois repita o convite ou use: _reconvidar participante ${displayName}_`,
+          });
+        }
 
         // Audit trail
         this.db.prepare(
@@ -3477,17 +3492,16 @@ export class TaskflowEngine {
           return { success: false, error: 'This external contact is not an active participant of this meeting.' };
         }
 
-        // Notify removed external participant via DM
+        // Notify removed external participant via DM (only if they've messaged before)
         const contact = this.db.prepare(
           `SELECT display_name, phone, direct_chat_jid FROM external_contacts WHERE external_id = ?`
         ).get(externalId) as { display_name: string; phone: string; direct_chat_jid: string | null } | undefined;
-        if (contact) {
-          const removeJid = contact.direct_chat_jid ?? `${contact.phone}@s.whatsapp.net`;
+        if (contact?.direct_chat_jid) {
           const organizerName = sender?.name ?? params.sender_name;
           notifications.push({
             target_kind: 'dm',
             target_external_id: externalId,
-            target_chat_jid: removeJid,
+            target_chat_jid: contact.direct_chat_jid,
             message: `📅 *Participação cancelada*\n\n*${task.id}* — ${task.title}\n*Por:* ${organizerName}\n\nSeu acesso a esta reunião foi revogado.`,
           });
         }
@@ -3535,16 +3549,27 @@ export class TaskflowEngine {
           return { success: false, error: 'No revoked or expired grant found for this participant on the current occurrence.' };
         }
 
-        // Build invite DM (same as add_external_participant)
+        // Build invite notification (DM only if contact has messaged before)
         const contact = this.db.prepare(`SELECT display_name, phone, direct_chat_jid FROM external_contacts WHERE external_id = ?`).get(externalId) as any;
-        const reinviteJid = contact.direct_chat_jid ?? `${contact.phone}@s.whatsapp.net`;
         const organizerName = sender?.name ?? params.sender_name;
-        notifications.push({
-          target_kind: 'dm',
-          target_external_id: externalId,
-          target_chat_jid: reinviteJid,
-          message: buildExternalInviteMessage(task.id, task.title, task.scheduled_at, organizerName),
-        });
+
+        if (contact.direct_chat_jid) {
+          notifications.push({
+            target_kind: 'dm',
+            target_external_id: externalId,
+            target_chat_jid: contact.direct_chat_jid,
+            message: buildExternalInviteMessage(task.id, task.title, task.scheduled_at, organizerName),
+          });
+        } else {
+          notifications.push({
+            target_kind: 'group',
+            message:
+              `\u{1f4c5} *Reconvite pendente — ${contact.display_name}*\n\n` +
+              `Para ${task.id} — ${task.title}\n\n` +
+              `${contact.display_name} ainda n\u00e3o tem conversa com o assistente. ` +
+              `Pe\u00e7a para enviar qualquer mensagem para este n\u00famero primeiro.`,
+          });
+        }
 
         changes.push(`External participant ${contact.display_name} reinvited`);
       }
