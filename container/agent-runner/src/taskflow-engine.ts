@@ -7096,6 +7096,81 @@ export class TaskflowEngine {
   }
 
   /* ---------------------------------------------------------------- */
+  /*  buildContextSummary — augmented prompt preamble via embeddings    */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Build a compact board context summary ranked by semantic similarity
+   * to the user's message. Used to inject a preamble into the agent prompt.
+   * @param queryVector — pre-embedded user message (Float32Array)
+   * @param reader — EmbeddingReader instance (caller owns lifecycle)
+   */
+  buildContextSummary(
+    queryVector: Float32Array,
+    reader: import('./embedding-reader.js').EmbeddingReader,
+  ): string | null {
+    try {
+      const collection = `tasks:${this.boardId}`;
+      const ranked = reader.search(collection, queryVector, { limit: 10, threshold: 0.2 });
+      if (ranked.length === 0) return null;
+
+      // Column counts via visibleTaskScope
+      const counts = this.db.prepare(
+        `SELECT column, COUNT(*) as cnt FROM tasks
+         WHERE ${this.visibleTaskScope()} AND column != 'done'
+         GROUP BY column`
+      ).all(...this.visibleTaskParams()) as Array<{ column: string; cnt: number }>;
+
+      const countMap = new Map(counts.map(c => [c.column, c.cnt]));
+      const overdue = this.db.prepare(
+        `SELECT COUNT(*) as cnt FROM tasks
+         WHERE ${this.visibleTaskScope()} AND due_date < ? AND column != 'done'`
+      ).get(...this.visibleTaskParams(), today()) as { cnt: number };
+
+      const parts = ['inbox', 'next_action', 'in_progress', 'waiting', 'review']
+        .filter(c => (countMap.get(c) ?? 0) > 0)
+        .map(c => `${countMap.get(c)} ${c}`);
+      if (overdue.cnt > 0) parts.push(`${overdue.cnt} overdue`);
+
+      const lines = [`[Board context: ${parts.join(', ')}.`];
+      lines.push('Relevant tasks for this message:');
+
+      for (const item of ranked) {
+        const task = this.getTask(item.itemId);
+        if (!task) continue;
+        const assigneeName = task.assignee ? this.personDisplayName(task.assignee) : null;
+        const detail = [
+          `- ${task.id} ${task.title} (${task.column}`,
+          assigneeName ? `, ${assigneeName}` : '',
+          task.due_date ? `, prazo ${task.due_date.slice(8, 10)}/${task.due_date.slice(5, 7)}` : '',
+          task.next_action ? `, próxima ação: ${task.next_action}` : '',
+          ')',
+        ].join('');
+        lines.push(detail);
+      }
+
+      // All other tasks as one-liners
+      const rankedIds = new Set(ranked.map(r => r.itemId));
+      const others = this.db.prepare(
+        `SELECT id, title FROM tasks
+         WHERE ${this.visibleTaskScope()} AND column != 'done'
+         ORDER BY id`
+      ).all(...this.visibleTaskParams()) as Array<{ id: string; title: string }>;
+
+      const otherTasks = others.filter(t => !rankedIds.has(t.id));
+      if (otherTasks.length > 0) {
+        lines.push(`Other tasks: ${otherTasks.map(t => `${t.id} ${t.title}`).join(', ')}]`);
+      } else {
+        lines[lines.length - 1] += ']';
+      }
+
+      return lines.join('\n');
+    } catch {
+      return null;
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
   /*  archiveOldDoneTasks — auto-archive done tasks older than 30 days */
   /* ---------------------------------------------------------------- */
 
