@@ -14,33 +14,46 @@
 
 ## File Map
 
-### New files
+### Ownership
+
+All files are implemented together for the MVP, but ownership determines which skill is responsible for future maintenance.
+
+### New files — add-embeddings skill
 | File | Responsibility |
 |------|---------------|
 | `src/embedding-service.ts` | Generic embedding service (host, read-write). Schema creation, index(), indexer loop, getCollections(), getItemIds(), remove(). |
 | `src/embedding-service.test.ts` | Tests for EmbeddingService — schema creation, index idempotency, indexer cycle, model switch, stale cleanup |
-| `src/taskflow-embedding-sync.ts` | TaskFlow adapter — polls taskflow.db, feeds EmbeddingService, cleans stale embeddings. **Belongs to add-taskflow skill**, not add-embeddings — it knows about TaskFlow tables. |
 | `container/agent-runner/src/embedding-reader.ts` | Read-only embedding query client (container). Opens DB readonly, cosine similarity, search(), findSimilar(). Graceful fallback on missing DB. |
 
-### Modified files
+### New files — add-taskflow skill
+| File | Responsibility |
+|------|---------------|
+| `src/taskflow-embedding-sync.ts` | TaskFlow adapter — polls taskflow.db, feeds EmbeddingService, cleans stale embeddings. Knows about TaskFlow tables. |
+
+### Modified files — add-embeddings skill
 | File | Changes |
 |------|---------|
 | `src/container-runner.ts:45-58` | Add `queryVector?`, `ollamaHost?`, `embeddingModel?` to `ContainerInput`. Read `OLLAMA_HOST`/`EMBEDDING_MODEL` via `readEnvFile()`. Add `-e` flags in `buildContainerArgs()`. Add embeddings mount. Embed user message before container launch. |
-| `src/index.ts:393-486` | Instantiate `EmbeddingService` at startup. Start `taskflowEmbeddingSync`. Pass `queryVector` to `ContainerInput`. |
+| `src/index.ts:393-486` | Instantiate `EmbeddingService` at startup, call `startIndexer()`. |
 | `container/agent-runner/src/runtime-config.ts:1-15,40-65` | Add `queryVector?`, `ollamaHost?`, `embeddingModel?` to `ContainerInput`. Add `NANOCLAW_OLLAMA_HOST`, `NANOCLAW_EMBEDDING_MODEL` to `buildNanoclawMcpEnv()`. |
+
+### Modified files — add-taskflow skill
+| File | Changes |
+|------|---------|
+| `src/index.ts:393-486` | Wire `startTaskflowEmbeddingSync()` call (TaskFlow-specific, alongside generic service startup). |
 | `container/agent-runner/src/index.ts:540-570` | Read `queryVector` from `containerInput`. Build context preamble via `engine.buildContextSummary()`. Prepend to prompt. |
 | `container/agent-runner/src/ipc-mcp-stdio.ts:574-635` | Wrap `taskflow_query` search with async Ollama embed call. Wrap `taskflow_create` with duplicate detection. Add `force_create` to Zod schema. |
 | `container/agent-runner/src/taskflow-engine.ts:15-24,4816-4835` | Add `query_vector` to `QueryParams`. Enhance `search` case with semantic ranking. Add `buildContextSummary()` method. |
 
 ### Skill packaging files
-| File | Purpose |
-|------|---------|
-| `.claude/skills/add-embeddings/SKILL.md` | Installation instructions (4 phases) |
-| `.claude/skills/add-embeddings/manifest.yaml` | Metadata, file lists, dependencies |
+| File | Owner | Purpose |
+|------|-------|---------|
+| `.claude/skills/add-embeddings/SKILL.md` | add-embeddings | Installation instructions (4 phases) |
+| `.claude/skills/add-embeddings/manifest.yaml` | add-embeddings | Metadata, file lists (generic files only) |
 
 ---
 
-## Chunk 1: Core Embedding Service + Tests
+## Chunk 1: Core Embedding Service + Tests (add-embeddings)
 
 ### Task 1: EmbeddingService — schema, index(), indexer
 
@@ -544,9 +557,9 @@ git commit -m "feat(embeddings): add EmbeddingReader — read-only client with c
 
 ---
 
-## Chunk 2: Host Integration + TaskFlow Sync
+## Chunk 2: Host Integration (add-embeddings) + TaskFlow Sync (add-taskflow)
 
-### Task 3: Host wiring — env vars, mount, ContainerInput
+### Task 3: Host wiring — env vars, mount, ContainerInput (add-embeddings)
 
 **Files:**
 - Modify: `src/container-runner.ts:45-58,271-273,321-360,96-265`
@@ -652,7 +665,7 @@ git commit -m "feat(embeddings): host wiring — env vars, mount, queryVector in
 
 ---
 
-### Task 4: Container runtime-config + agent-runner index.ts
+### Task 4: Container runtime-config (add-embeddings) + agent-runner index.ts (add-taskflow)
 
 **Files:**
 - Modify: `container/agent-runner/src/runtime-config.ts:1-15,40-65`
@@ -842,9 +855,9 @@ git commit -m "feat(embeddings): TaskFlow sync adapter + host startup wiring"
 
 ---
 
-## Chunk 3: Container Integration — Search, Duplicate Detection, Context Preamble
+## Chunk 3: Container Integration — Search, Duplicate Detection, Context Preamble (add-taskflow)
 
-### Task 6: Semantic search + duplicate detection + buildContextSummary
+### Task 6: Semantic search + duplicate detection + buildContextSummary (add-taskflow)
 
 **Files:**
 - Modify: `container/agent-runner/src/taskflow-engine.ts:15-24,4816-4835`
@@ -1108,7 +1121,7 @@ git commit -m "feat(embeddings): semantic search, duplicate detection, buildCont
 
 ## Chunk 4: Skill Packaging + Final Verification
 
-### Task 7: Skill packaging
+### Task 7: Skill packaging (add-embeddings only)
 
 **Files:**
 - Create: `.claude/skills/add-embeddings/SKILL.md`
@@ -1123,20 +1136,21 @@ Write the SKILL.md with frontmatter and 4 phases (pre-flight, apply, configure, 
 ```yaml
 skill: add-embeddings
 version: 1.0.0
-description: "Generic embedding service with semantic search, duplicate detection, and context retrieval. First consumer: TaskFlow."
+description: "Generic embedding service via Ollama. Indexes, searches, and deduplicates text in named collections."
 core_version: 1.2.12
 adds:
   - src/embedding-service.ts
   - src/embedding-service.test.ts
   - container/agent-runner/src/embedding-reader.ts
-# Note: src/taskflow-embedding-sync.ts belongs to add-taskflow skill, not here
 modifies:
-  - src/index.ts
-  - src/container-runner.ts
-  - container/agent-runner/src/index.ts
-  - container/agent-runner/src/runtime-config.ts
-  - container/agent-runner/src/ipc-mcp-stdio.ts
-  - container/agent-runner/src/taskflow-engine.ts
+  - src/index.ts                                  # EmbeddingService startup only
+  - src/container-runner.ts                       # mount, env vars, queryVector
+  - container/agent-runner/src/runtime-config.ts  # ContainerInput fields, MCP env
+# TaskFlow-owned changes (NOT in this manifest):
+#   - src/taskflow-embedding-sync.ts (new, add-taskflow)
+#   - container/agent-runner/src/index.ts (context preamble, add-taskflow)
+#   - container/agent-runner/src/ipc-mcp-stdio.ts (search/dup wrap, add-taskflow)
+#   - container/agent-runner/src/taskflow-engine.ts (query_vector, add-taskflow)
 structured:
   npm_dependencies: {}
   env_additions:
