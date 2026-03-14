@@ -21,6 +21,8 @@ export interface QueryParams {
   label?: string;
   since?: string;
   at?: string; // for meeting_minutes_at (YYYY-MM-DD)
+  query_vector?: Float32Array; // pre-embedded search vector (used by buildContextSummary)
+  semantic_results?: Array<{ itemId: string; score: number }>; // pre-computed by MCP handler for search
 }
 
 export interface TaskflowResult {
@@ -2849,15 +2851,19 @@ export class TaskflowEngine {
           newChildExecPersonId = null;
         }
 
+        /* --- Auto-move inbox→next_action when assigning --- */
+        const newColumn = task.column === 'inbox' ? 'next_action' : task.column;
+
         /* --- Update task --- */
         this.db
           .prepare(
-            `UPDATE tasks SET assignee = ?, child_exec_enabled = ?, child_exec_board_id = ?,
+            `UPDATE tasks SET assignee = ?, column = ?, child_exec_enabled = ?, child_exec_board_id = ?,
              child_exec_person_id = ?, _last_mutation = ?, updated_at = ?
              WHERE board_id = ? AND id = ?`,
           )
           .run(
             targetPerson.person_id,
+            newColumn,
             newChildExecEnabled,
             newChildExecBoardId,
             newChildExecPersonId,
@@ -4824,6 +4830,40 @@ export class TaskflowEngine {
             .all(...this.visibleTaskParams(), pattern, pattern) as any[];
           /* Also try resolving search_text as a task ID (raw or prefixed) */
           const idMatch = this.getTask(params.search_text);
+
+          /* Semantic ranking — merge lexical + vector similarity results.
+             The MCP handler passes query_vector + semantic_results (pre-computed
+             by EmbeddingReader in the async handler). The engine merges them
+             with lexical results. */
+          if (params.semantic_results && params.semantic_results.length > 0) {
+            try {
+              const scored = new Map<string, { task: any; score: number }>();
+              for (const task of textMatches) {
+                scored.set(task.id, { task, score: 0.2 });
+              }
+              for (const sem of params.semantic_results) {
+                const existing = scored.get(sem.itemId);
+                if (existing) {
+                  existing.score += sem.score;
+                } else {
+                  const task = this.getTask(sem.itemId);
+                  if (task) scored.set(sem.itemId, { task, score: sem.score });
+                }
+              }
+              const ranked = [...scored.values()]
+                .sort((a, b) => b.score - a.score)
+                .slice(0, 20)
+                .map(r => r.task);
+
+              if (idMatch && !ranked.some((t: any) => t.id === idMatch.id && t.board_id === idMatch.board_id)) {
+                return { success: true, data: [idMatch, ...ranked] };
+              }
+              return { success: true, data: ranked };
+            } catch {
+              // Fallback to lexical only
+            }
+          }
+
           if (idMatch && !textMatches.some((t: any) => t.id === idMatch.id && t.board_id === idMatch.board_id)) {
             return { success: true, data: [idMatch, ...textMatches] };
           }

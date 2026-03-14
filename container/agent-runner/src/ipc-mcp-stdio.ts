@@ -593,6 +593,35 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         at: z.string().optional().describe('Date (YYYY-MM-DD) for meeting_minutes_at query'),
       },
       async (args: any) => {
+        // Semantic search: embed query text via Ollama, pass pre-computed results to engine
+        if (args.query === 'search' && args.search_text) {
+          const ollamaHost = process.env.NANOCLAW_OLLAMA_HOST;
+          const embeddingModel = process.env.NANOCLAW_EMBEDDING_MODEL || 'bge-m3';
+          if (ollamaHost) {
+            try {
+              const resp = await fetch(`${ollamaHost}/api/embed`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: embeddingModel, input: args.search_text }),
+                signal: AbortSignal.timeout(2000),
+              });
+              if (resp.ok) {
+                const data = await resp.json() as { embeddings: number[][] };
+                if (data.embeddings?.[0]) {
+                  const { EmbeddingReader } = await import('./embedding-reader.js');
+                  const reader = new EmbeddingReader('/workspace/embeddings/embeddings.db');
+                  const collection = `tasks:${boardId}`;
+                  const queryVector = new Float32Array(data.embeddings[0]);
+                  args.semantic_results = reader.search(collection, queryVector, { limit: 20, threshold: 0.3 });
+                  args.query_vector = queryVector;
+                  reader.close();
+                }
+              }
+            } catch {
+              // Ollama unreachable — fallback to lexical
+            }
+          }
+        }
         const result = engine.query(args);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
@@ -623,9 +652,55 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         max_cycles: z.number().int().positive().optional().describe('Maximum number of cycles before expiry (mutually exclusive with recurrence_end_date)'),
         recurrence_end_date: z.string().optional().describe('ISO date after which recurrence stops (mutually exclusive with max_cycles)'),
         sender_name: z.string().describe('Name of the person creating the task'),
+        force_create: z.boolean().optional().describe('Skip duplicate detection (set true after user confirms a duplicate warning)'),
       },
       async (args: any) => {
-        const result = engine.create({ ...args, board_id: boardId });
+        // Duplicate detection — check for similar existing tasks before creating
+        if (!args.force_create) {
+          const ollamaHost = process.env.NANOCLAW_OLLAMA_HOST;
+          const embeddingModel = process.env.NANOCLAW_EMBEDDING_MODEL || 'bge-m3';
+          if (ollamaHost) {
+            try {
+              const titleText = [args.title, args.description].filter(Boolean).join(' ');
+              const resp = await fetch(`${ollamaHost}/api/embed`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: embeddingModel, input: titleText }),
+                signal: AbortSignal.timeout(2000),
+              });
+              if (resp.ok) {
+                const data = await resp.json() as { embeddings: number[][] };
+                if (data.embeddings?.[0]) {
+                  const { EmbeddingReader } = await import('./embedding-reader.js');
+                  const reader = new EmbeddingReader('/workspace/embeddings/embeddings.db');
+                  const collection = `tasks:${boardId}`;
+                  const similar = reader.findSimilar(collection, new Float32Array(data.embeddings[0]), 0.85);
+                  reader.close();
+                  if (similar) {
+                    return {
+                      content: [{
+                        type: 'text' as const,
+                        text: JSON.stringify({
+                          success: false,
+                          duplicate_warning: {
+                            similar_task_id: similar.itemId,
+                            similar_task_title: similar.metadata?.title ?? similar.itemId,
+                            similarity: Math.round(similar.score * 100),
+                          },
+                          error: `Tarefa similar encontrada: ${similar.itemId} — ${similar.metadata?.title ?? '?'} (${Math.round(similar.score * 100)}%). Criar mesmo assim?`,
+                        }),
+                      }],
+                    };
+                  }
+                }
+              }
+            } catch {
+              console.warn('[embeddings] Duplicate detection skipped: Ollama unreachable');
+            }
+          }
+        }
+        const { force_create: _, ...createArgs } = args;
+        const result = engine.create({ ...createArgs, board_id: boardId });
         if (result.success) dispatchNotifications(result);
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(stripDispatchOnlyFields(result)) }],
