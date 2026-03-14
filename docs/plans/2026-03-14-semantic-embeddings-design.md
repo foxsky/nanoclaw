@@ -215,9 +215,10 @@ TaskFlow is the first consumer. The integration happens in two places:
 
 ### Host side (indexing)
 
-**File:** `src/index.ts` — after main loop starts, start the embedding service and the TaskFlow sync:
+**File:** `src/index.ts` — after main loop starts:
 
 ```typescript
+// Generic embedding service (add-embeddings skill)
 const embeddingService = new EmbeddingService(
   path.join(DATA_DIR, 'embeddings', 'embeddings.db'),
   ollamaHost,
@@ -225,9 +226,11 @@ const embeddingService = new EmbeddingService(
 );
 embeddingService.startIndexer();
 
-// TaskFlow task indexer — polls taskflow.db and feeds embedding service
+// TaskFlow sync adapter (add-taskflow skill — wired here because index.ts is the composition root)
 startTaskflowEmbeddingSync(embeddingService, getTaskflowDb());
 ```
+
+The `EmbeddingService` instantiation and `startIndexer()` belong to the `add-embeddings` skill. The `startTaskflowEmbeddingSync()` call belongs to the `add-taskflow` skill. Both are wired in `index.ts` because it's the composition root — but they're separate concerns.
 
 **File:** `src/taskflow-embedding-sync.ts` — **belongs to the `add-taskflow` skill** (not `add-embeddings`). This is a TaskFlow-specific adapter that reads tasks and calls the generic embedding service. It lives in the TaskFlow codebase because it knows about TaskFlow tables, columns, and board IDs:
 
@@ -465,6 +468,25 @@ mounts.push({
 - First indexer cycle populates the DB; subsequent container launches see data
 - Mount is always present — works for TaskFlow boards, main group, and any future non-TaskFlow groups
 
+## Ownership Map
+
+| File | Owner | Why |
+|------|-------|-----|
+| `src/embedding-service.ts` | **add-embeddings** | Generic service, no TaskFlow knowledge |
+| `src/embedding-service.test.ts` | **add-embeddings** | Tests for generic service |
+| `container/agent-runner/src/embedding-reader.ts` | **add-embeddings** | Generic read-only client |
+| `src/container-runner.ts` changes (mount, env vars, queryVector) | **add-embeddings** | Generic infrastructure |
+| `container/agent-runner/src/runtime-config.ts` changes (ContainerInput, MCP env) | **add-embeddings** | Generic infrastructure |
+| `src/index.ts` — `EmbeddingService` instantiation + `startIndexer()` | **add-embeddings** | Generic service startup |
+| `src/taskflow-embedding-sync.ts` | **add-taskflow** | Knows TaskFlow tables, columns, board IDs |
+| `src/index.ts` — `startTaskflowEmbeddingSync()` call | **add-taskflow** | TaskFlow-specific wiring |
+| `container/agent-runner/src/ipc-mcp-stdio.ts` changes (search wrap, duplicate detection, force_create) | **add-taskflow** | Modifies TaskFlow MCP tools |
+| `container/agent-runner/src/taskflow-engine.ts` changes (query_vector, buildContextSummary) | **add-taskflow** | Modifies TaskFlow engine |
+| `container/agent-runner/src/index.ts` changes (context preamble) | **add-taskflow** | Uses TaskflowEngine |
+| Group CLAUDE.md patches (duplicate_warning) | **add-taskflow** | TaskFlow agent behavior |
+
+**For the MVP**, all changes are implemented together in one pass. The ownership distinction matters for future maintenance — when upgrading either skill independently, the ownership map shows which changes belong where.
+
 ## Skill Design
 
 This is a **standalone skill** (`add-embeddings`) with **no dependencies** on other skills. It provides a generic embedding service. TaskFlow integration is included but the core service is reusable.
@@ -484,18 +506,13 @@ This is a **standalone skill** (`add-embeddings`) with **no dependencies** on ot
 ├── modify/
 │   ├── src/
 │   │   ├── index.ts                                  # Reference file
-│   │   ├── index.ts.intent.md                        # Start embedding service + TaskFlow sync
+│   │   ├── index.ts.intent.md                        # Start embedding service (generic only)
 │   │   ├── container-runner.ts                       # Reference file
 │   │   └── container-runner.ts.intent.md             # Add queryVector to ContainerInput, OLLAMA_HOST + EMBEDDING_MODEL env vars, embeddings mount
 │   └── container/agent-runner/src/
-│       ├── index.ts                                  # Reference file
-│       ├── index.ts.intent.md                        # Read queryVector from containerInput, build context preamble, prepend to prompt
 │       ├── runtime-config.ts                         # Reference file
-│       ├── runtime-config.ts.intent.md               # Add queryVector to ContainerInput, NANOCLAW_OLLAMA_HOST + NANOCLAW_EMBEDDING_MODEL to MCP env
-│       ├── ipc-mcp-stdio.ts                          # Reference file
-│       ├── ipc-mcp-stdio.ts.intent.md                # Async Ollama wrapping, force_create schema
-│       ├── taskflow-engine.ts                        # Reference file
-│       └── taskflow-engine.ts.intent.md              # query_vector param, cosine similarity, buildContextSummary()
+│       └── runtime-config.ts.intent.md               # Add queryVector/ollamaHost/embeddingModel to ContainerInput, MCP env vars
+# Note: container index.ts, ipc-mcp-stdio.ts, taskflow-engine.ts changes belong to add-taskflow
 └── tests/
     └── embeddings.test.ts                            # Skill integration test
 ```
@@ -512,12 +529,10 @@ adds:
   - src/embedding-service.test.ts
   - container/agent-runner/src/embedding-reader.ts
 modifies:
-  - src/index.ts
-  - src/container-runner.ts
-  - container/agent-runner/src/index.ts
-  - container/agent-runner/src/runtime-config.ts
-  - container/agent-runner/src/ipc-mcp-stdio.ts
-  - container/agent-runner/src/taskflow-engine.ts
+  - src/index.ts                                # EmbeddingService startup only
+  - src/container-runner.ts                     # mount, env vars, queryVector
+  - container/agent-runner/src/runtime-config.ts  # ContainerInput fields, MCP env
+# Note: ipc-mcp-stdio.ts, taskflow-engine.ts, container index.ts changes belong to add-taskflow
 structured:
   npm_dependencies: {}
   env_additions:
