@@ -293,18 +293,22 @@ MCP handler receives taskflow_query({ query: 'search', search_text: '...' })
   │     POST http://$OLLAMA_HOST/api/embed { model: 'bge-m3', input: search_text }
   │     → queryVector (Float32Array) or null on failure
   │
-  ├─ 2. Pass queryVector to engine:
-  │     engine.query({ query: 'search', search_text, query_vector: queryVector })
+  ├─ 2. If queryVector: use EmbeddingReader to get pre-computed semantic results
+  │     (sync: reads from /workspace/embeddings/embeddings.db, cosine similarity in JS)
+  │     → semanticResults[]
   │
-  └─ 3. Inside engine.query() (sync):
+  ├─ 3. Pass semanticResults to engine:
+  │     engine.query({ query: 'search', search_text, semantic_results: semanticResults })
+  │
+  └─ 4. Inside engine.query() (sync):
        ├─ Lexical: LIKE '%text%' → textMatches[]
-       ├─ If queryVector provided:
-       │   Load embeddings for collection 'tasks:{boardId}' from embeddings.db
-       │   Cosine similarity in JS → semanticMatches[]
+       ├─ If semantic_results provided:
        │   Merge: lexical matches get +0.2 boost
        │   Filter by threshold (>0.3)
        │   Sort by score, return top 20
-       └─ If no queryVector: return lexical only (fallback)
+       └─ If no semantic_results: return lexical only (fallback)
+
+Note: The MCP handler (async) calls Ollama and EmbeddingReader. The engine (sync) only merges pre-computed results with lexical matches — no imports or DB reads for embeddings inside the engine.
 ```
 
 **Note:** The engine reads from `embeddings.db` (not `taskflow.db`). The `data/embeddings/` directory is mounted read-only at `/workspace/embeddings/` (see "embeddings.db storage and mount" section).
@@ -391,7 +395,7 @@ If user confirms, re-call with force_create: true.
 
 **Problem:** `TaskflowEngine` lives in `container/agent-runner/src/` — a separate TypeScript package compiled by the container's `tsconfig.json`, not the host's. The host cannot `import { TaskflowEngine }` without restructuring the build layout.
 
-**Solution:** The context preamble is generated **inside the container** by the engine (which already has visibility rules), NOT on the host. The host embeds the user message via Ollama and passes the resulting vector as `containerInput.queryVector` (base64). The container's `index.ts` reads this vector, calls `engine.buildContextSummary(queryVector)`, and prepends the preamble to the prompt before calling `runQuery()`.
+**Solution:** The context preamble is generated **inside the container** by the engine (which already has visibility rules), NOT on the host. The host embeds the user message via Ollama and passes the resulting vector as `containerInput.queryVector` (base64). The container's `index.ts` reads this vector, calls `engine.buildContextSummary(queryVector, reader)`, and prepends the preamble to the prompt before calling `runQuery()`.
 
 ### Visibility contract
 
@@ -406,7 +410,7 @@ The context summary is injected into `containerInput.prompt` **before the SDK qu
 3. In `container/agent-runner/src/index.ts`, before calling `runQuery()`, the agent-runner:
    - Reads `containerInput.queryVector` (if present)
    - Instantiates `TaskflowEngine` + `EmbeddingReader`
-   - Calls `engine.buildContextSummary(queryVector)` → preamble string
+   - Calls `engine.buildContextSummary(queryVector, reader)` → preamble string
    - Prepends preamble to `prompt` before passing it to `runQuery()`
 
 This uses the existing `containerInput.prompt` → `runQuery(prompt)` path in `index.ts`. No MCP tool call needed. The agent sees the preamble as part of its initial prompt — before it decides to call any tools.
@@ -426,7 +430,7 @@ This uses the existing `containerInput.prompt` → `runQuery(prompt)` path in `i
 **New flow:**
 1. User sends message → host embeds message via Ollama → `queryVector`
 2. Host sets `containerInput.queryVector = base64(queryVector)`
-3. Container `index.ts` reads queryVector, calls `engine.buildContextSummary(queryVector)`:
+3. Container `index.ts` reads queryVector, calls `engine.buildContextSummary(queryVector, reader)`:
    - Uses `visibleTaskScope()` for correct visibility (standard + delegated)
    - Loads vectors from `embeddings.db` via `EmbeddingReader`
    - Ranks visible tasks by cosine similarity
@@ -565,7 +569,7 @@ If user confirms, re-call with force_create: true.
 **A: Yes.** The `buildContextSummary()` method uses `visibleTaskScope()` which handles both standard and delegated views. No special case needed.
 
 ### Q: Silent fallback for duplicate detection?
-**A: Silent fallback with audit logging.** When Ollama is unreachable and duplicate detection is skipped, the MCP handler logs a warning: `logger.warn({ reason: 'ollama_unreachable' }, 'Duplicate detection skipped')`. The task is still created successfully. This is an acceptable trade-off for MVP — the alternative (blocking creation) is worse UX. Monitoring the log for repeated `ollama_unreachable` warnings surfaces the issue operationally.
+**A: Silent fallback with audit logging.** When Ollama is unreachable and duplicate detection is skipped, the MCP handler logs a warning: `console.warn('[embeddings] Duplicate detection skipped: Ollama unreachable')` (uses `console.warn` because `ipc-mcp-stdio.ts` is a separate MCP subprocess without access to the host's pino logger). The task is still created successfully. This is an acceptable trade-off for MVP — the alternative (blocking creation) is worse UX. Monitoring the log for repeated `ollama_unreachable` warnings surfaces the issue operationally.
 
 ### Q: Model configuration — single source of truth
 **A:** `EMBEDDING_MODEL` env var is the single canonical source. Every path that writes or reads model information derives from this value:
