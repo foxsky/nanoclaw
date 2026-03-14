@@ -48,7 +48,7 @@ The embedding service is a standalone module with no knowledge of TaskFlow, task
 
 **Key decisions:**
 - Embedding service is **generic** — it knows about collections and items, not tasks or boards
-- Storage is in its own `data/embeddings.db`, not inside `taskflow.db` — clean separation, no coupling
+- Storage is in its own `data/embeddings/embeddings.db`, not inside `taskflow.db` — clean separation, no coupling
 - Host process owns the service — containers access pre-computed vectors via shared DB mount
 - Container calls Ollama directly for query-time embeddings (search, duplicate check)
 - If Ollama unreachable, all features fall back silently to existing behavior
@@ -65,7 +65,7 @@ The embedding DB has two distinct clients with different lifecycles:
 
 1. **`EmbeddingService` (host, read-write):** Created once in `src/index.ts` at startup. Constructor opens the DB in read-write mode, runs `db.exec(SCHEMA)` to bootstrap/migrate the schema, then starts the background indexer. This is the ONLY writer.
 
-2. **`EmbeddingReader` (container, read-only):** A lightweight read-only class used inside the container for search and duplicate detection. Opens the DB with `{ readonly: true }` — does NOT attempt schema creation. If `embeddings.db` doesn't exist yet (first-ever boot, before the host indexer runs), the reader returns empty results gracefully (no crash, no schema error). The file is mounted read-only into the container via Docker `-v data/embeddings.db:/workspace/embeddings.db:ro`.
+2. **`EmbeddingReader` (container, read-only):** A lightweight read-only class used inside the container for search and duplicate detection. Opens the DB with `{ readonly: true }` — does NOT attempt schema creation. If the DB file doesn't exist yet (first-ever boot, before the host indexer runs), the reader returns empty results gracefully (no crash, no schema error). The `data/embeddings/` directory is mounted read-only at `/workspace/embeddings/` — reader opens `/workspace/embeddings/embeddings.db`.
 
 This split guarantees: (a) schema is created only by the host writer, (b) the container never writes, (c) a missing DB on first boot is a no-op not a crash.
 
@@ -219,7 +219,7 @@ TaskFlow is the first consumer. The integration happens in two places:
 
 ```typescript
 const embeddingService = new EmbeddingService(
-  path.join(DATA_DIR, 'embeddings.db'),
+  path.join(DATA_DIR, 'embeddings', 'embeddings.db'),
   ollamaHost,
   embeddingModel,
 );
@@ -304,7 +304,7 @@ MCP handler receives taskflow_query({ query: 'search', search_text: '...' })
        └─ If no queryVector: return lexical only (fallback)
 ```
 
-**Note:** The engine reads from `embeddings.db` (not `taskflow.db`). The container needs read access to `data/embeddings.db` — add as an additional mount in `container-runner.ts`.
+**Note:** The engine reads from `embeddings.db` (not `taskflow.db`). The `data/embeddings/` directory is mounted read-only at `/workspace/embeddings/` (see "embeddings.db storage and mount" section).
 
 **Cosine similarity (pure JS):**
 ```typescript
@@ -388,7 +388,7 @@ If user confirms, re-call with force_create: true.
 
 **Problem:** `TaskflowEngine` lives in `container/agent-runner/src/` — a separate TypeScript package compiled by the container's `tsconfig.json`, not the host's. The host cannot `import { TaskflowEngine }` without restructuring the build layout.
 
-**Solution:** The context preamble is generated **inside the container** by the engine (which already has visibility rules), NOT on the host. The host's only role is embedding the user message and injecting the query vector into `containerInput.prompt`.
+**Solution:** The context preamble is generated **inside the container** by the engine (which already has visibility rules), NOT on the host. The host embeds the user message via Ollama and passes the resulting vector as `containerInput.queryVector` (base64). The container's `index.ts` reads this vector, calls `engine.buildContextSummary(queryVector)`, and prepends the preamble to the prompt before calling `runQuery()`.
 
 ### Visibility contract
 
