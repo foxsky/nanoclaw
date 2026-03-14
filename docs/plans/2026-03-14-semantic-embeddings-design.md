@@ -293,22 +293,21 @@ MCP handler receives taskflow_query({ query: 'search', search_text: '...' })
   │     POST http://$OLLAMA_HOST/api/embed { model: 'bge-m3', input: search_text }
   │     → queryVector (Float32Array) or null on failure
   │
-  ├─ 2. If queryVector: use EmbeddingReader to get pre-computed semantic results
-  │     (sync: reads from /workspace/embeddings/embeddings.db, cosine similarity in JS)
-  │     → semanticResults[]
+  ├─ 2. Pass queryVector to engine:
+  │     engine.query({ query: 'search', search_text, query_vector: queryVector })
   │
-  ├─ 3. Pass semanticResults to engine:
-  │     engine.query({ query: 'search', search_text, semantic_results: semanticResults })
-  │
-  └─ 4. Inside engine.query() (sync):
+  └─ 3. Inside engine.query() (sync):
        ├─ Lexical: LIKE '%text%' → textMatches[]
-       ├─ If semantic_results provided:
+       ├─ If query_vector provided:
+       │   Open EmbeddingReader (sync, read-only)
+       │   Load embeddings for collection 'tasks:{boardId}'
+       │   Cosine similarity in JS → semanticMatches[]
        │   Merge: lexical matches get +0.2 boost
        │   Filter by threshold (>0.3)
        │   Sort by score, return top 20
-       └─ If no semantic_results: return lexical only (fallback)
+       └─ If no query_vector: return lexical only (fallback)
 
-Note: The MCP handler (async) calls Ollama and EmbeddingReader. The engine (sync) only merges pre-computed results with lexical matches — no imports or DB reads for embeddings inside the engine.
+Note: The MCP handler (async) calls Ollama to get the query vector. The engine (sync) owns all semantic ranking — both search and `buildContextSummary()` share the same `EmbeddingReader`-based ranking logic. The engine imports `EmbeddingReader` via dynamic `import()` at the top of the file (ESM-compatible, loaded once at module init).
 ```
 
 **Note:** The engine reads from `embeddings.db` (not `taskflow.db`). The `data/embeddings/` directory is mounted read-only at `/workspace/embeddings/` (see "embeddings.db storage and mount" section).

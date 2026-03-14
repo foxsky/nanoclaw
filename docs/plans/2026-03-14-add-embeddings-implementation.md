@@ -35,7 +35,7 @@ All files are implemented together for the MVP, but ownership determines which s
 ### Modified files — add-embeddings skill
 | File | Changes |
 |------|---------|
-| `src/container-runner.ts:45-58` | Add `queryVector?`, `ollamaHost?`, `embeddingModel?` to `ContainerInput`. Read `OLLAMA_HOST`/`EMBEDDING_MODEL` via `readEnvFile()`. Add `-e` flags in `buildContainerArgs()`. Add embeddings mount. Embed user message before container launch. |
+| `src/container-runner.ts:45-58` | Add `queryVector?`, `ollamaHost?`, `embeddingModel?` to `ContainerInput`. Read `OLLAMA_HOST`/`EMBEDDING_MODEL` via `readEnvFile()`. Add `-e` flags in `buildContainerArgs()`. Add embeddings mount. (queryVector is set by TaskFlow integration plan, not here.) |
 | `src/index.ts:393-486` | Instantiate `EmbeddingService` at startup, call `startIndexer()`. |
 | `container/agent-runner/src/runtime-config.ts:1-15,40-65` | Add `queryVector?`, `ollamaHost?`, `embeddingModel?` to `ContainerInput`. Add `NANOCLAW_OLLAMA_HOST`, `NANOCLAW_EMBEDDING_MODEL` to `buildNanoclawMcpEnv()`. |
 
@@ -678,33 +678,9 @@ if (input.ollamaHost) {
 }
 ```
 
-- [ ] **Step 6: Embed user message and set queryVector**
+Note: The `queryVector` field on `ContainerInput` is plumbing only — the generic plan adds the field but does NOT embed the user message. That behavior (calling Ollama to embed the prompt and setting `input.queryVector`) belongs to the TaskFlow integration plan, which owns the "embed message for context preamble" logic.
 
-In `runContainerAgent()`, after building the prompt and before spawning the container:
-
-```typescript
-// Embed user message for context preamble (async, best-effort)
-if (embedCfg.ollamaHost && group.taskflowManaged) {
-  try {
-    const resp = await fetch(`${embedCfg.ollamaHost}/api/embed`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: embedCfg.embeddingModel, input: input.prompt }),
-      signal: AbortSignal.timeout(2000),
-    });
-    if (resp.ok) {
-      const data = await resp.json() as { embeddings: number[][] };
-      if (data.embeddings?.[0]) {
-        input.queryVector = Buffer.from(new Float32Array(data.embeddings[0]).buffer).toString('base64');
-      }
-    }
-  } catch {
-    // Ollama unreachable — skip context preamble
-  }
-}
-```
-
-- [ ] **Step 7: Build and verify**
+- [ ] **Step 6: Build and verify**
 
 Run: `npm run build`
 Expected: Clean build
@@ -839,6 +815,8 @@ Expected: Build complete
 
 Run: `npx vitest run src/embedding-service.test.ts`
 Expected: All tests pass
+
+Note: `EmbeddingReader` (container package) is tested by the companion TaskFlow integration plan's Task 4. The generic plan's test suite covers only `EmbeddingService` (host package). Both are owned by `add-embeddings` but live in different TypeScript packages with separate test runners.
 
 - [ ] **Step 4: Add OLLAMA_HOST and EMBEDDING_MODEL to .env**
 

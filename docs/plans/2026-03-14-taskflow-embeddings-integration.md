@@ -70,24 +70,38 @@ git commit -m "feat(taskflow): embedding sync adapter — indexes tasks into gen
 - Modify: `container/agent-runner/src/taskflow-engine.ts`
 - Modify: `container/agent-runner/src/ipc-mcp-stdio.ts`
 
-- [ ] **Step 1: Add semantic_results to QueryParams**
+- [ ] **Step 1: Add query_vector to QueryParams**
 
 In `taskflow-engine.ts`, add to `QueryParams`:
 ```typescript
-semantic_results?: Array<{ itemId: string; score: number }>;
+query_vector?: Float32Array;
 ```
 
-- [ ] **Step 2: Enhance search case**
+- [ ] **Step 2: Import EmbeddingReader in taskflow-engine.ts**
 
-Merge lexical + semantic results in the `search` case. Lexical matches get +0.2 boost. See spec Component 2 for full flow.
+At the top of the file, add a lazy import (ESM-compatible, loaded once):
+```typescript
+let _EmbeddingReader: typeof import('./embedding-reader.js').EmbeddingReader | null = null;
+function getEmbeddingReader() {
+  if (!_EmbeddingReader) {
+    try { _EmbeddingReader = require('./embedding-reader.js').EmbeddingReader; } catch { return null; }
+  }
+  return _EmbeddingReader;
+}
+```
+Note: The container compiles to CJS via the entrypoint, so `require()` works here. If ESM-only, use top-level `await import()` instead.
 
-- [ ] **Step 3: Wrap taskflow_query in MCP handler**
+- [ ] **Step 3: Enhance search case**
 
-In `ipc-mcp-stdio.ts`, before `engine.query()`: embed search text via Ollama (async), use `EmbeddingReader` to get semantic results, pass to engine.
+The engine owns semantic ranking. In the `search` case, if `query_vector` is provided, open `EmbeddingReader`, compute cosine similarity, merge with lexical results. This is the same ranking logic used by `buildContextSummary()` — both go through the engine. See spec Component 2 for full flow.
 
-- [ ] **Step 4: Add duplicate detection to taskflow_create**
+- [ ] **Step 4: Wrap taskflow_query in MCP handler**
 
-In `ipc-mcp-stdio.ts`: add `force_create` to Zod schema. Before `engine.create()`: embed title, check `reader.findSimilar()`, return `duplicate_warning` if >0.85.
+In `ipc-mcp-stdio.ts`, before `engine.query()`: embed search text via Ollama (async), pass the raw `Float32Array` as `query_vector` to the engine. The MCP handler does NOT do cosine similarity — it only provides the vector. The engine does the ranking.
+
+- [ ] **Step 5: Add duplicate detection to taskflow_create**
+
+In `ipc-mcp-stdio.ts`: add `force_create` to Zod schema. Before `engine.create()`: embed title via Ollama (async), open `EmbeddingReader`, call `reader.findSimilar()`, return `duplicate_warning` if >0.85. Duplicate detection stays in the MCP handler (it needs to short-circuit before `engine.create()`).
 
 - [ ] **Step 5: Build and verify**
 
@@ -102,11 +116,38 @@ git commit -m "feat(taskflow): semantic search + duplicate detection via embeddi
 
 ---
 
-## Task 3: Context Preamble + buildContextSummary
+## Task 3: Host message embedding + Context Preamble + buildContextSummary
 
 **Files:**
+- Modify: `src/container-runner.ts` (embed user message, set queryVector)
 - Modify: `container/agent-runner/src/taskflow-engine.ts`
 - Modify: `container/agent-runner/src/index.ts`
+
+- [ ] **Step 0: Embed user message on host (sets containerInput.queryVector)**
+
+In `src/container-runner.ts`, in `runContainerAgent()`, after building the prompt and before spawning the container:
+
+```typescript
+// Embed user message for context preamble (async, best-effort, TaskFlow only)
+if (input.ollamaHost && group.taskflowManaged) {
+  try {
+    const resp = await fetch(`${input.ollamaHost}/api/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: input.embeddingModel || 'bge-m3', input: input.prompt }),
+      signal: AbortSignal.timeout(2000),
+    });
+    if (resp.ok) {
+      const data = await resp.json() as { embeddings: number[][] };
+      if (data.embeddings?.[0]) {
+        input.queryVector = Buffer.from(new Float32Array(data.embeddings[0]).buffer).toString('base64');
+      }
+    }
+  } catch {
+    // Ollama unreachable — skip context preamble
+  }
+}
+```
 
 - [ ] **Step 1: Add buildContextSummary() to TaskflowEngine**
 
@@ -148,7 +189,7 @@ In `container/agent-runner/src/embedding-reader.test.ts`:
 
 - [ ] **Step 2: Write integration test for search wrapping**
 
-Mock Ollama response, verify `engine.query({ query: 'search', semantic_results })` merges lexical + semantic results.
+Mock Ollama response, verify `engine.query({ query: 'search', query_vector })` merges lexical + semantic results via engine-owned `EmbeddingReader`.
 
 - [ ] **Step 3: Write integration test for duplicate detection fallback**
 
