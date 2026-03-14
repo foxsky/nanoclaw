@@ -441,12 +441,53 @@ it('model change marks all items for re-embedding', async () => {
 });
 ```
 
-- [ ] **Step 16: Run all tests**
+- [ ] **Step 16: Write remaining spec-required tests**
+
+```typescript
+it('EmbeddingReader returns empty results for non-existent DB', () => {
+  const { EmbeddingReader } = require('../../container/agent-runner/src/embedding-reader.js');
+  const reader = new EmbeddingReader('/tmp/does-not-exist/embeddings.db');
+  const results = reader.search('tasks:board-1', new Float32Array(3), { limit: 10 });
+  expect(results).toEqual([]);
+  reader.close();
+});
+
+it('indexer processes all items without starvation', async () => {
+  const embeddings: number[][] = [];
+  const mockFetch = vi.fn().mockImplementation(async () => {
+    return { ok: true, json: async () => ({ embeddings: embeddings }) };
+  });
+  global.fetch = mockFetch as any;
+
+  const svc = new EmbeddingService(TEST_DB_PATH, 'http://localhost:11434', 'test-model');
+  // Insert 50 items
+  for (let i = 0; i < 50; i++) {
+    svc.index('c', `T${i}`, `text ${i}`);
+    embeddings.push([0.1 * i, 0.2, 0.3]);
+  }
+
+  // Run 3 cycles (20 per cycle = 60 capacity > 50 items)
+  // Reset mock for each cycle to return correct batch size
+  for (let cycle = 0; cycle < 3; cycle++) {
+    const pending = svc.db.prepare('SELECT COUNT(*) as cnt FROM embeddings WHERE vector IS NULL').get() as { cnt: number };
+    const batchSize = Math.min(pending.cnt, 20);
+    embeddings.length = 0;
+    for (let i = 0; i < batchSize; i++) embeddings.push([0.1, 0.2, 0.3]);
+    await svc.runIndexerCycle();
+  }
+
+  const remaining = svc.db.prepare('SELECT COUNT(*) as cnt FROM embeddings WHERE vector IS NULL').get() as { cnt: number };
+  expect(remaining.cnt).toBe(0);
+  svc.close();
+});
+```
+
+- [ ] **Step 17: Run all tests**
 
 Run: `npx vitest run src/embedding-service.test.ts`
-Expected: PASS (8 tests)
+Expected: PASS (10 tests)
 
-- [ ] **Step 17: Commit**
+- [ ] **Step 18: Commit**
 
 ```bash
 git add src/embedding-service.ts src/embedding-service.test.ts
@@ -603,26 +644,33 @@ mounts.push({
 });
 ```
 
-- [ ] **Step 4: Pass env vars in buildContainerArgs()**
+- [ ] **Step 4: Add `embedding-reader.ts` to CORE_AGENT_RUNNER_FILES**
 
-In `src/container-runner.ts`, inside `buildContainerArgs()`, after the existing `-e TZ=` line:
+In `src/container-runner.ts`, find the `CORE_AGENT_RUNNER_FILES` array (around line 73) and add:
 
 ```typescript
-const embedCfg = readEmbeddingConfig();
-if (embedCfg.ollamaHost) {
-  args.push('-e', `OLLAMA_HOST=${embedCfg.ollamaHost}`);
-  args.push('-e', `EMBEDDING_MODEL=${embedCfg.embeddingModel}`);
-}
+'embedding-reader.ts',
 ```
 
-- [ ] **Step 5: Set ollamaHost and embeddingModel on ContainerInput**
+This ensures the file is synced to per-group agent-runner copies for existing groups.
 
-In `runContainerAgent()`, where `input` is built (around line 431), add:
+- [ ] **Step 5: Set embeddings config on ContainerInput + pass env vars**
+
+In `runContainerAgent()`, where `input` is built (around line 431), call `readEmbeddingConfig()` ONCE and use the result for both ContainerInput and env vars:
 
 ```typescript
 const embedCfg = readEmbeddingConfig();
 input.ollamaHost = embedCfg.ollamaHost;
 input.embeddingModel = embedCfg.embeddingModel;
+```
+
+Then in `buildContainerArgs()`, add a parameter for embedding env vars (or pass them before the call):
+
+```typescript
+if (input.ollamaHost) {
+  args.push('-e', `OLLAMA_HOST=${input.ollamaHost}`);
+  args.push('-e', `EMBEDDING_MODEL=${input.embeddingModel}`);
+}
 ```
 
 - [ ] **Step 6: Embed user message and set queryVector**
@@ -665,11 +713,10 @@ git commit -m "feat(embeddings): host wiring — env vars, mount, queryVector in
 
 ---
 
-### Task 4: Container runtime-config (add-embeddings) + agent-runner index.ts (add-taskflow)
+### Task 4: Container runtime-config (add-embeddings)
 
 **Files:**
 - Modify: `container/agent-runner/src/runtime-config.ts:1-15,40-65`
-- Modify: `container/agent-runner/src/index.ts:540-570`
 
 - [ ] **Step 1: Add fields to ContainerInput (container side)**
 
@@ -694,49 +741,16 @@ if (containerInput.embeddingModel) {
 }
 ```
 
-- [ ] **Step 3: Build context preamble in container index.ts**
+- [ ] **Step 3: Build and verify**
 
-In `container/agent-runner/src/index.ts`, in `main()`, after reading `containerInput` and before the first `runQuery()` call, add:
+Run: `cd container/agent-runner && npx tsc --noEmit`
+Expected: Clean
 
-```typescript
-// Build context preamble from embeddings (if available)
-if (containerInput.queryVector && containerInput.isTaskflowManaged && containerInput.taskflowBoardId) {
-  try {
-    const { EmbeddingReader } = await import('./embedding-reader.js');
-    const reader = new EmbeddingReader('/workspace/embeddings/embeddings.db');
-    const vectorBuf = Buffer.from(containerInput.queryVector, 'base64');
-    const queryVector = new Float32Array(vectorBuf.buffer, vectorBuf.byteOffset, vectorBuf.byteLength / 4);
-
-    // Load TaskflowEngine for buildContextSummary
-    const { TaskflowEngine } = await import('./taskflow-engine.js');
-    const tfDbPath = '/workspace/taskflow/taskflow.db';
-    if (fs.existsSync(tfDbPath)) {
-      const engine = new TaskflowEngine(tfDbPath, containerInput.taskflowBoardId);
-      const preamble = engine.buildContextSummary(queryVector, reader);
-      if (preamble) {
-        prompt = preamble + '\n\n' + prompt;
-      }
-      engine.close();
-    }
-    reader.close();
-  } catch (err) {
-    log(`Context preamble skipped: ${err}`);
-  }
-}
-```
-
-- [ ] **Step 4: Build and verify**
-
-Run: `npm run build`
-Expected: Clean build (buildContextSummary not yet implemented — will be added in Task 6)
-
-Note: This step will fail until Task 6 adds `buildContextSummary()` to the engine. For now, commit the wiring and the import will be resolved in Task 6.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add container/agent-runner/src/runtime-config.ts container/agent-runner/src/index.ts
-git commit -m "feat(embeddings): container wiring — ContainerInput fields, MCP env, preamble injection"
+git add container/agent-runner/src/runtime-config.ts
+git commit -m "feat(embeddings): container runtime-config — ContainerInput fields, MCP env"
 ```
 
 ---
@@ -857,11 +871,12 @@ git commit -m "feat(embeddings): TaskFlow sync adapter + host startup wiring"
 
 ## Chunk 3: Container Integration — Search, Duplicate Detection, Context Preamble (add-taskflow)
 
-### Task 6: Semantic search + duplicate detection + buildContextSummary (add-taskflow)
+### Task 6: Semantic search + duplicate detection + buildContextSummary + context preamble (add-taskflow)
 
 **Files:**
 - Modify: `container/agent-runner/src/taskflow-engine.ts:15-24,4816-4835`
 - Modify: `container/agent-runner/src/ipc-mcp-stdio.ts:574-635`
+- Modify: `container/agent-runner/src/index.ts:540-570` (context preamble — moved here from Task 4 to avoid non-compiling intermediate state)
 
 - [ ] **Step 1: Add query_vector to QueryParams**
 
@@ -869,11 +884,14 @@ In `container/agent-runner/src/taskflow-engine.ts`, add to `QueryParams` interfa
 
 ```typescript
 query_vector?: Float32Array;
+semantic_results?: Array<{ itemId: string; score: number }>;  // pre-computed by MCP handler
 ```
+
+Note: `query_vector` is available but the engine doesn't use it directly — the MCP handler calls Ollama (async) and passes pre-computed `semantic_results` to the engine (sync). This avoids ESM `require()` issues and keeps the engine synchronous.
 
 - [ ] **Step 2: Enhance search case with semantic ranking**
 
-In the `search` case of `query()` method, after the existing lexical search, add semantic ranking:
+In the `search` case of `query()` method, after the existing lexical search, add semantic merging. The engine receives pre-computed semantic results from the MCP handler — no `EmbeddingReader` import needed:
 
 ```typescript
 case 'search': {
@@ -892,37 +910,27 @@ case 'search': {
 
   const idMatch = this.getTask(params.search_text);
 
-  // Semantic ranking (if query_vector provided)
-  if (params.query_vector) {
+  // Semantic ranking (if pre-computed results provided by MCP handler)
+  if (params.semantic_results && params.semantic_results.length > 0) {
     try {
-      const { EmbeddingReader, cosineSimilarity } = require('./embedding-reader.js');
-      const reader = new EmbeddingReader('/workspace/embeddings/embeddings.db');
-      const collection = `tasks:${this.boardId}`;
-      const semanticResults = reader.search(collection, params.query_vector, { limit: 20, threshold: 0.3 });
-      reader.close();
-
-      // Build scored result set
-      const lexicalIds = new Set(textMatches.map((t: any) => t.id));
       const scored = new Map<string, { task: any; score: number }>();
 
       // Lexical matches get a boost
       for (const task of textMatches) {
-        scored.set(task.id, { task, score: 0.2 }); // lexical boost
+        scored.set(task.id, { task, score: 0.2 });
       }
 
       // Merge semantic scores
-      for (const sem of semanticResults) {
+      for (const sem of params.semantic_results) {
         const existing = scored.get(sem.itemId);
         if (existing) {
-          existing.score += sem.score; // lexical + semantic
+          existing.score += sem.score;
         } else {
-          // Semantic-only match — need to fetch task data
           const task = this.getTask(sem.itemId);
           if (task) scored.set(sem.itemId, { task, score: sem.score });
         }
       }
 
-      // Sort by score descending
       const ranked = [...scored.values()]
         .sort((a, b) => b.score - a.score)
         .slice(0, 20)
@@ -983,7 +991,7 @@ buildContextSummary(
     for (const item of ranked) {
       const task = this.getTask(item.itemId);
       if (!task) continue;
-      const assigneeName = task.assignee ? this.getPersonName(task.assignee) : null;
+      const assigneeName = task.assignee ? this.personDisplayName(task.assignee) : null;
       const detail = [
         `- ${task.id} ${task.title} (${task.column}`,
         assigneeName ? `, ${assigneeName}` : '',
@@ -1021,8 +1029,8 @@ buildContextSummary(
 In `container/agent-runner/src/ipc-mcp-stdio.ts`, inside the `taskflow_query` handler, before calling `engine.query()`, add:
 
 ```typescript
-// Semantic search: embed query text via Ollama
-let queryVector: Float32Array | undefined;
+// Semantic search: embed query text via Ollama, pass pre-computed results to engine
+let semanticResults: Array<{ itemId: string; score: number }> | undefined;
 if (args.query === 'search' && args.search_text) {
   const ollamaHost = process.env.NANOCLAW_OLLAMA_HOST;
   const embeddingModel = process.env.NANOCLAW_EMBEDDING_MODEL || 'bge-m3';
@@ -1037,7 +1045,12 @@ if (args.query === 'search' && args.search_text) {
       if (resp.ok) {
         const data = await resp.json() as { embeddings: number[][] };
         if (data.embeddings?.[0]) {
-          queryVector = new Float32Array(data.embeddings[0]);
+          const { EmbeddingReader } = await import('./embedding-reader.js');
+          const reader = new EmbeddingReader('/workspace/embeddings/embeddings.db');
+          const collection = `tasks:${boardId}`;
+          const queryVector = new Float32Array(data.embeddings[0]);
+          semanticResults = reader.search(collection, queryVector, { limit: 20, threshold: 0.3 });
+          reader.close();
         }
       }
     } catch {
@@ -1045,7 +1058,7 @@ if (args.query === 'search' && args.search_text) {
     }
   }
 }
-const result = engine.query({ ...args, query_vector: queryVector });
+const result = engine.query({ ...args, semantic_results: semanticResults });
 ```
 
 - [ ] **Step 5: Wrap taskflow_create with duplicate detection**
@@ -1096,7 +1109,7 @@ if (!args.force_create) {
         }
       }
     } catch {
-      logger.warn({ reason: 'ollama_unreachable' }, 'Duplicate detection skipped');
+      console.warn('[embeddings] Duplicate detection skipped: Ollama unreachable');
     }
   }
 }
@@ -1110,11 +1123,50 @@ const result = engine.create(createArgs);
 Run: `npm run build`
 Expected: Clean build
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Add context preamble injection in container index.ts**
+
+In `container/agent-runner/src/index.ts`, in `main()`, after reading `containerInput` and before the first `runQuery()` call:
+
+```typescript
+// Build context preamble from embeddings (if available)
+if (containerInput.queryVector && containerInput.isTaskflowManaged && containerInput.taskflowBoardId) {
+  try {
+    const { EmbeddingReader } = await import('./embedding-reader.js');
+    const reader = new EmbeddingReader('/workspace/embeddings/embeddings.db');
+    const vectorBuf = Buffer.from(containerInput.queryVector, 'base64');
+    const queryVector = new Float32Array(vectorBuf.buffer, vectorBuf.byteOffset, vectorBuf.byteLength / 4);
+
+    const Database = (await import('better-sqlite3')).default;
+    const tfDbPath = '/workspace/taskflow/taskflow.db';
+    if (fs.existsSync(tfDbPath)) {
+      const tfDb = new Database(tfDbPath, { readonly: true });
+      const { TaskflowEngine } = await import('./taskflow-engine.js');
+      const engine = new TaskflowEngine(tfDb, containerInput.taskflowBoardId);
+      const preamble = engine.buildContextSummary(queryVector, reader);
+      if (preamble) {
+        prompt = preamble + '\n\n' + prompt;
+      }
+      tfDb.close();
+    }
+    reader.close();
+  } catch (err) {
+    log(`Context preamble skipped: ${err}`);
+  }
+}
+```
+
+Note: `TaskflowEngine` constructor takes `(db: Database.Database, boardId: string)` — NOT a path string. Open the DB first, then pass the instance.
+
+- [ ] **Step 8: Build and verify**
+
+Run: `npm run build`
+Expected: Clean build
+
+- [ ] **Step 9: Commit**
 
 ```bash
-git add container/agent-runner/src/taskflow-engine.ts container/agent-runner/src/ipc-mcp-stdio.ts
-git commit -m "feat(embeddings): semantic search, duplicate detection, buildContextSummary"
+git add container/agent-runner/src/taskflow-engine.ts container/agent-runner/src/ipc-mcp-stdio.ts container/agent-runner/src/index.ts
+git commit -m "feat(embeddings): semantic search, duplicate detection, context preamble, buildContextSummary"
 ```
 
 ---
