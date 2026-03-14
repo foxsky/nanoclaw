@@ -12,7 +12,7 @@ Add a generic embedding service to NanoClaw powered by BGE-M3 via Ollama. The se
 
 - **Embedding model:** Configured via `EMBEDDING_MODEL` env var (default deployment: `bge-m3`, 1024 dimensions, multilingual, pt-BR native). All code references the env var — never hardcoded.
 - **Ollama instance:** `192.168.2.13:11434` (existing, dedicated machine)
-- **Storage:** SQLite (`data/embeddings.db`) — separate DB, not inside taskflow.db
+- **Storage:** SQLite (`data/taskflow/embeddings.db`) — separate DB file, inside the already-mounted TaskFlow directory
 - **Vector search:** Pure JS cosine similarity (sufficient for <1000 items per collection)
 - **Config:** `OLLAMA_HOST` and `EMBEDDING_MODEL` in `.env`
 
@@ -57,7 +57,7 @@ The embedding service is a standalone module with no knowledge of TaskFlow, task
 
 ## Storage Schema
 
-Separate database at `data/embeddings.db`.
+Separate database at `data/taskflow/embeddings.db` (inside the already-mounted TaskFlow directory — no new Docker mount).
 
 ### Two access modes
 
@@ -442,17 +442,21 @@ This uses the existing `containerInput.prompt` → `runQuery(prompt)` path in `i
 
 **Fallback:** If no queryVector provided (Ollama unreachable) or `EmbeddingReader` returns empty, skip preamble — agent queries board as usual.
 
-### embeddings.db mount lifecycle
+### embeddings.db storage location
 
-The host `EmbeddingService` constructor creates `data/embeddings.db` at startup — before any container launch. The host is the single source of this file.
+The host `EmbeddingService` constructor creates the DB at startup. The DB file lives inside the **existing TaskFlow mount directory**: `data/taskflow/embeddings.db`.
 
-**Mount strategy:** The container does NOT mount `embeddings.db` directly as a file. Instead, `container-runner.ts` mounts the parent directory `data/` (already mounted for IPC and sessions) and `EmbeddingReader` opens `data/embeddings.db` from within that mount. This avoids Docker bind-mount issues with missing source files:
+**Why this path:**
+- `data/taskflow/` is already mounted into containers at `/workspace/taskflow/` (via `container-runner.ts` mount list)
+- No new Docker mount needed — `EmbeddingReader` opens `/workspace/taskflow/embeddings.db` inside the container
+- The generic `EmbeddingService` class takes `dbPath` as a constructor argument — it doesn't care where the file lives. Physical location is a deployment detail, not a service concern.
+- If TaskFlow is not installed (no `data/taskflow/` directory), the host creates it or falls back to `data/embeddings.db` with an explicit mount
 
-- If `embeddings.db` exists: reader opens it, reads vectors
-- If `embeddings.db` doesn't exist yet (first boot race): `EmbeddingReader` catches the open error and returns empty results — no crash
-- No new Docker mount needed — `data/` is already mounted
-
-This matches how the container already accesses `data/ipc/`, `data/sessions/`, and `data/taskflow/` — all via the shared `data/` mount.
+**Lifecycle:**
+- Host creates `data/taskflow/embeddings.db` at `EmbeddingService` instantiation (before container launch)
+- Container opens `/workspace/taskflow/embeddings.db` read-only via `EmbeddingReader`
+- If file doesn't exist yet (first boot race): `EmbeddingReader` catches the open error, returns empty results — no crash
+- First indexer cycle populates the DB; subsequent container launches see data
 
 ## Skill Design
 
@@ -475,14 +479,16 @@ This is a **standalone skill** (`add-embeddings`) with **no dependencies** on ot
 │   │   ├── index.ts                                  # Reference file
 │   │   ├── index.ts.intent.md                        # Start embedding service + TaskFlow sync
 │   │   ├── container-runner.ts                       # Reference file
-│   │   └── container-runner.ts.intent.md             # OLLAMA_HOST env, embeddings.db mount, prompt preamble
+│   │   └── container-runner.ts.intent.md             # OLLAMA_HOST + EMBEDDING_MODEL env vars, queryVector in containerInput
 │   └── container/agent-runner/src/
+│       ├── index.ts                                  # Reference file
+│       ├── index.ts.intent.md                        # Read queryVector from containerInput, build context preamble, prepend to prompt
 │       ├── runtime-config.ts                         # Reference file
-│       ├── runtime-config.ts.intent.md               # Add NANOCLAW_OLLAMA_HOST to MCP env
+│       ├── runtime-config.ts.intent.md               # Add NANOCLAW_OLLAMA_HOST + NANOCLAW_EMBEDDING_MODEL to MCP env
 │       ├── ipc-mcp-stdio.ts                          # Reference file
 │       ├── ipc-mcp-stdio.ts.intent.md                # Async Ollama wrapping, force_create schema
 │       ├── taskflow-engine.ts                        # Reference file
-│       └── taskflow-engine.ts.intent.md              # query_vector param, cosine similarity, read embeddings.db
+│       └── taskflow-engine.ts.intent.md              # query_vector param, cosine similarity, buildContextSummary()
 └── tests/
     └── embeddings.test.ts                            # Skill integration test
 ```
@@ -502,6 +508,7 @@ adds:
 modifies:
   - src/index.ts
   - src/container-runner.ts
+  - container/agent-runner/src/index.ts
   - container/agent-runner/src/runtime-config.ts
   - container/agent-runner/src/ipc-mcp-stdio.ts
   - container/agent-runner/src/taskflow-engine.ts
