@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement the `add-embeddings` skill — a generic embedding service powered by BGE-M3 via Ollama, with TaskFlow as the first consumer (semantic search, duplicate detection, augmented context).
+**Goal:** Implement the `add-embeddings` skill — a generic embedding service powered by BGE-M3 via Ollama. This plan covers only the generic service. TaskFlow integration (search, duplicate detection, context preamble) is in a separate plan.
 
-**Architecture:** Background indexer on host writes vectors to `data/embeddings/embeddings.db`. Containers read pre-computed vectors via read-only mount. Ollama called from container for query-time embeddings (search, duplicate detection). Context preamble built in container's `index.ts` before `runQuery()`.
+**Architecture:** Background indexer on host writes vectors to `data/embeddings/embeddings.db`. Containers read pre-computed vectors via read-only mount at `/workspace/embeddings/`.
+
+**Companion plan:** `docs/plans/2026-03-14-taskflow-embeddings-integration.md` (execute after this one)
 
 **Tech Stack:** TypeScript, SQLite (better-sqlite3, WAL mode), Ollama REST API (native fetch), cosine similarity (pure JS)
 
@@ -444,12 +446,15 @@ it('model change marks all items for re-embedding', async () => {
 - [ ] **Step 16: Write remaining spec-required tests**
 
 ```typescript
-it('EmbeddingReader returns empty results for non-existent DB', () => {
-  const { EmbeddingReader } = require('../../container/agent-runner/src/embedding-reader.js');
-  const reader = new EmbeddingReader('/tmp/does-not-exist/embeddings.db');
-  const results = reader.search('tasks:board-1', new Float32Array(3), { limit: 10 });
-  expect(results).toEqual([]);
-  reader.close();
+// Note: EmbeddingReader lives in container/agent-runner/src/ (separate package).
+// Its read-only fallback test belongs in the container test suite, not here.
+// See docs/plans/2026-03-14-taskflow-embeddings-integration.md for container tests.
+
+it('close() is safe to call multiple times', () => {
+  const svc = new EmbeddingService(TEST_DB_PATH, 'http://localhost:11434', 'test-model');
+  svc.close();
+  // Should not throw on second close
+  expect(() => svc.close()).not.toThrow();
 });
 
 it('indexer processes all items without starvation', async () => {
@@ -755,425 +760,21 @@ git commit -m "feat(embeddings): container runtime-config — ContainerInput fie
 
 ---
 
-### Task 5: TaskFlow Embedding Sync (add-taskflow owned, implemented here for first consumer)
+### ~~Task 5-6: MOVED to separate plan~~
 
-**Note:** This file belongs to the `add-taskflow` skill conceptually — it knows about TaskFlow tables. It's implemented here because TaskFlow is the first consumer, but future skill restructuring should move it under add-taskflow.
+TaskFlow-specific integration (sync adapter, semantic search wrapping, duplicate detection, context preamble, `buildContextSummary`) has been moved to a separate plan:
 
-**Files:**
-- Create: `src/taskflow-embedding-sync.ts`
-- Modify: `src/index.ts`
+**See:** `docs/plans/2026-03-14-taskflow-embeddings-integration.md`
 
-- [ ] **Step 1: Create taskflow-embedding-sync.ts**
-
-```typescript
-// src/taskflow-embedding-sync.ts
-import type Database from 'better-sqlite3';
-import type { EmbeddingService } from './embedding-service.js';
-import { logger } from './logger.js';
-
-export function buildSourceText(task: {
-  title: string;
-  description?: string | null;
-  next_action?: string | null;
-}): string {
-  return [task.title, task.description ?? '', task.next_action ?? ''].join(' ').trim();
-}
-
-export function startTaskflowEmbeddingSync(
-  service: EmbeddingService,
-  tfDb: Database.Database | null,
-  intervalMs = 15_000,
-): ReturnType<typeof setInterval> | null {
-  if (!tfDb) {
-    logger.info('TaskFlow DB not found — embedding sync disabled');
-    return null;
-  }
-
-  const sync = () => {
-    try {
-      const tasks = tfDb.prepare(
-        `SELECT board_id, id, title, description, next_action, assignee, column
-         FROM tasks WHERE column != 'done'`
-      ).all() as Array<{
-        board_id: string; id: string; title: string;
-        description: string | null; next_action: string | null;
-        assignee: string | null; column: string;
-      }>;
-
-      const activeKeys = new Set<string>();
-      for (const task of tasks) {
-        const collection = `tasks:${task.board_id}`;
-        const text = buildSourceText(task);
-        service.index(collection, task.id, text, {
-          title: task.title,
-          assignee: task.assignee,
-          column: task.column,
-        });
-        activeKeys.add(`${collection}\0${task.id}`);
-      }
-
-      // Clean stale embeddings
-      const allTaskCollections = service.getCollections('tasks:');
-      for (const collection of allTaskCollections) {
-        const items = service.getItemIds(collection);
-        for (const itemId of items) {
-          if (!activeKeys.has(`${collection}\0${itemId}`)) {
-            service.remove(collection, itemId);
-          }
-        }
-      }
-    } catch (err) {
-      logger.warn({ err }, 'TaskFlow embedding sync failed');
-    }
-  };
-
-  // Run first sync immediately
-  sync();
-  return setInterval(sync, intervalMs);
-}
-```
-
-- [ ] **Step 2: Wire into src/index.ts**
-
-In `src/index.ts`, after the main loop initialization:
-
-```typescript
-import { EmbeddingService } from './embedding-service.js';
-import { startTaskflowEmbeddingSync } from './taskflow-embedding-sync.js';
-
-// After existing service initialization:
-const embedCfg = readEnvFile(['OLLAMA_HOST', 'EMBEDDING_MODEL']);
-if (embedCfg.OLLAMA_HOST) {
-  const embeddingService = new EmbeddingService(
-    path.join(DATA_DIR, 'embeddings', 'embeddings.db'),
-    embedCfg.OLLAMA_HOST,
-    embedCfg.EMBEDDING_MODEL || 'bge-m3',
-  );
-  embeddingService.startIndexer();
-  startTaskflowEmbeddingSync(embeddingService, getTaskflowDb(DATA_DIR));
-  logger.info({ ollamaHost: embedCfg.OLLAMA_HOST }, 'Embedding service started');
-}
-```
-
-- [ ] **Step 3: Build and verify**
-
-Run: `npm run build`
-Expected: Clean build
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add src/taskflow-embedding-sync.ts src/index.ts
-git commit -m "feat(embeddings): TaskFlow sync adapter + host startup wiring"
-```
+This plan (`add-embeddings`) covers only the generic service. The TaskFlow integration plan should be executed after this one completes.
 
 ---
 
-## Chunk 3: Container Integration — Search, Duplicate Detection, Context Preamble (add-taskflow)
-
-### Task 6: Semantic search + duplicate detection + buildContextSummary + context preamble (add-taskflow)
-
-**Files:**
-- Modify: `container/agent-runner/src/taskflow-engine.ts:15-24,4816-4835`
-- Modify: `container/agent-runner/src/ipc-mcp-stdio.ts:574-635`
-- Modify: `container/agent-runner/src/index.ts:540-570` (context preamble — moved here from Task 4 to avoid non-compiling intermediate state)
-
-- [ ] **Step 1: Add query_vector to QueryParams**
-
-In `container/agent-runner/src/taskflow-engine.ts`, add to `QueryParams` interface:
-
-```typescript
-query_vector?: Float32Array;
-semantic_results?: Array<{ itemId: string; score: number }>;  // pre-computed by MCP handler
-```
-
-Note: `query_vector` is available but the engine doesn't use it directly — the MCP handler calls Ollama (async) and passes pre-computed `semantic_results` to the engine (sync). This avoids ESM `require()` issues and keeps the engine synchronous.
-
-- [ ] **Step 2: Enhance search case with semantic ranking**
-
-In the `search` case of `query()` method, after the existing lexical search, add semantic merging. The engine receives pre-computed semantic results from the MCP handler — no `EmbeddingReader` import needed:
-
-```typescript
-case 'search': {
-  if (!params.search_text) {
-    return { success: false, error: 'Missing required parameter: search_text' };
-  }
-  const escapedText = params.search_text.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
-  const pattern = `%${escapedText}%`;
-  const textMatches = this.db
-    .prepare(
-      `SELECT * FROM tasks
-       WHERE ${this.visibleTaskScope()} AND (title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')
-       ORDER BY id`,
-    )
-    .all(...this.visibleTaskParams(), pattern, pattern) as any[];
-
-  const idMatch = this.getTask(params.search_text);
-
-  // Semantic ranking (if pre-computed results provided by MCP handler)
-  if (params.semantic_results && params.semantic_results.length > 0) {
-    try {
-      const scored = new Map<string, { task: any; score: number }>();
-
-      // Lexical matches get a boost
-      for (const task of textMatches) {
-        scored.set(task.id, { task, score: 0.2 });
-      }
-
-      // Merge semantic scores
-      for (const sem of params.semantic_results) {
-        const existing = scored.get(sem.itemId);
-        if (existing) {
-          existing.score += sem.score;
-        } else {
-          const task = this.getTask(sem.itemId);
-          if (task) scored.set(sem.itemId, { task, score: sem.score });
-        }
-      }
-
-      const ranked = [...scored.values()]
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 20)
-        .map(r => r.task);
-
-      if (idMatch && !ranked.some((t: any) => t.id === idMatch.id && t.board_id === idMatch.board_id)) {
-        return { success: true, data: [idMatch, ...ranked] };
-      }
-      return { success: true, data: ranked };
-    } catch {
-      // Fallback to lexical only
-    }
-  }
-
-  if (idMatch && !textMatches.some((t: any) => t.id === idMatch.id && t.board_id === idMatch.board_id)) {
-    return { success: true, data: [idMatch, ...textMatches] };
-  }
-  return { success: true, data: textMatches };
-}
-```
-
-- [ ] **Step 3: Add buildContextSummary() method**
-
-Add to `TaskflowEngine` class:
-
-```typescript
-buildContextSummary(
-  queryVector: Float32Array,
-  reader: import('./embedding-reader.js').EmbeddingReader,
-): string | null {
-  try {
-    const collection = `tasks:${this.boardId}`;
-    const ranked = reader.search(collection, queryVector, { limit: 10, threshold: 0.2 });
-    if (ranked.length === 0) return null;
-
-    // Column counts
-    const counts = this.db.prepare(
-      `SELECT column, COUNT(*) as cnt FROM tasks
-       WHERE ${this.visibleTaskScope()} AND column != 'done'
-       GROUP BY column`
-    ).all(...this.visibleTaskParams()) as Array<{ column: string; cnt: number }>;
-
-    const countMap = new Map(counts.map(c => [c.column, c.cnt]));
-    const overdue = this.db.prepare(
-      `SELECT COUNT(*) as cnt FROM tasks
-       WHERE ${this.visibleTaskScope()} AND due_date < ? AND column != 'done'`
-    ).get(...this.visibleTaskParams(), new Date().toISOString().slice(0, 10)) as { cnt: number };
-
-    const parts = ['inbox', 'next_action', 'in_progress', 'waiting', 'review']
-      .filter(c => (countMap.get(c) ?? 0) > 0)
-      .map(c => `${countMap.get(c)} ${c}`);
-    if (overdue.cnt > 0) parts.push(`${overdue.cnt} overdue`);
-
-    const lines = [`[Board context: ${parts.join(', ')}.`];
-    lines.push('Relevant tasks for this message:');
-
-    // Top 10 with full details
-    for (const item of ranked) {
-      const task = this.getTask(item.itemId);
-      if (!task) continue;
-      const assigneeName = task.assignee ? this.personDisplayName(task.assignee) : null;
-      const detail = [
-        `- ${task.id} ${task.title} (${task.column}`,
-        assigneeName ? `, ${assigneeName}` : '',
-        task.due_date ? `, prazo ${task.due_date.slice(8, 10)}/${task.due_date.slice(5, 7)}` : '',
-        task.next_action ? `, próxima ação: ${task.next_action}` : '',
-        ')',
-      ].join('');
-      lines.push(detail);
-    }
-
-    // All other tasks as one-liners
-    const rankedIds = new Set(ranked.map(r => r.itemId));
-    const others = this.db.prepare(
-      `SELECT id, title FROM tasks
-       WHERE ${this.visibleTaskScope()} AND column != 'done'
-       ORDER BY id`
-    ).all(...this.visibleTaskParams()) as Array<{ id: string; title: string }>;
-
-    const otherTasks = others.filter(t => !rankedIds.has(t.id));
-    if (otherTasks.length > 0) {
-      lines.push(`Other tasks: ${otherTasks.map(t => `${t.id} ${t.title}`).join(', ')}]`);
-    } else {
-      lines[lines.length - 1] += ']';
-    }
-
-    return lines.join('\n');
-  } catch {
-    return null;
-  }
-}
-```
-
-- [ ] **Step 4: Wrap taskflow_query search with Ollama embed call in ipc-mcp-stdio.ts**
-
-In `container/agent-runner/src/ipc-mcp-stdio.ts`, inside the `taskflow_query` handler, before calling `engine.query()`, add:
-
-```typescript
-// Semantic search: embed query text via Ollama, pass pre-computed results to engine
-let semanticResults: Array<{ itemId: string; score: number }> | undefined;
-if (args.query === 'search' && args.search_text) {
-  const ollamaHost = process.env.NANOCLAW_OLLAMA_HOST;
-  const embeddingModel = process.env.NANOCLAW_EMBEDDING_MODEL || 'bge-m3';
-  if (ollamaHost) {
-    try {
-      const resp = await fetch(`${ollamaHost}/api/embed`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: embeddingModel, input: args.search_text }),
-        signal: AbortSignal.timeout(2000),
-      });
-      if (resp.ok) {
-        const data = await resp.json() as { embeddings: number[][] };
-        if (data.embeddings?.[0]) {
-          const { EmbeddingReader } = await import('./embedding-reader.js');
-          const reader = new EmbeddingReader('/workspace/embeddings/embeddings.db');
-          const collection = `tasks:${boardId}`;
-          const queryVector = new Float32Array(data.embeddings[0]);
-          semanticResults = reader.search(collection, queryVector, { limit: 20, threshold: 0.3 });
-          reader.close();
-        }
-      }
-    } catch {
-      // Ollama unreachable — fallback to lexical
-    }
-  }
-}
-const result = engine.query({ ...args, semantic_results: semanticResults });
-```
-
-- [ ] **Step 5: Wrap taskflow_create with duplicate detection**
-
-In `container/agent-runner/src/ipc-mcp-stdio.ts`, add `force_create` to the Zod schema for `taskflow_create`, and add duplicate detection before calling `engine.create()`:
-
-```typescript
-// In the Zod schema:
-force_create: z.boolean().optional(),
-
-// Before engine.create():
-if (!args.force_create) {
-  const ollamaHost = process.env.NANOCLAW_OLLAMA_HOST;
-  const embeddingModel = process.env.NANOCLAW_EMBEDDING_MODEL || 'bge-m3';
-  if (ollamaHost) {
-    try {
-      const titleText = [args.title, args.description].filter(Boolean).join(' ');
-      const resp = await fetch(`${ollamaHost}/api/embed`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: embeddingModel, input: titleText }),
-        signal: AbortSignal.timeout(2000),
-      });
-      if (resp.ok) {
-        const data = await resp.json() as { embeddings: number[][] };
-        if (data.embeddings?.[0]) {
-          const { EmbeddingReader } = await import('./embedding-reader.js');
-          const reader = new EmbeddingReader('/workspace/embeddings/embeddings.db');
-          const collection = `tasks:${boardId}`;
-          const similar = reader.findSimilar(collection, new Float32Array(data.embeddings[0]), 0.85);
-          reader.close();
-          if (similar) {
-            return {
-              content: [{
-                type: 'text',
-                text: JSON.stringify({
-                  success: false,
-                  duplicate_warning: {
-                    similar_task_id: similar.itemId,
-                    similar_task_title: similar.metadata?.title ?? similar.itemId,
-                    similarity: Math.round(similar.score * 100),
-                  },
-                  error: `Tarefa similar encontrada: ${similar.itemId} — ${similar.metadata?.title ?? '?'} (${Math.round(similar.score * 100)}%). Criar mesmo assim?`,
-                }),
-              }],
-            };
-          }
-        }
-      }
-    } catch {
-      console.warn('[embeddings] Duplicate detection skipped: Ollama unreachable');
-    }
-  }
-}
-// Remove force_create before passing to engine
-const { force_create, ...createArgs } = args;
-const result = engine.create(createArgs);
-```
-
-- [ ] **Step 6: Build and verify**
-
-Run: `npm run build`
-Expected: Clean build
-
-- [ ] **Step 7: Add context preamble injection in container index.ts**
-
-In `container/agent-runner/src/index.ts`, in `main()`, after reading `containerInput` and before the first `runQuery()` call:
-
-```typescript
-// Build context preamble from embeddings (if available)
-if (containerInput.queryVector && containerInput.isTaskflowManaged && containerInput.taskflowBoardId) {
-  try {
-    const { EmbeddingReader } = await import('./embedding-reader.js');
-    const reader = new EmbeddingReader('/workspace/embeddings/embeddings.db');
-    const vectorBuf = Buffer.from(containerInput.queryVector, 'base64');
-    const queryVector = new Float32Array(vectorBuf.buffer, vectorBuf.byteOffset, vectorBuf.byteLength / 4);
-
-    const Database = (await import('better-sqlite3')).default;
-    const tfDbPath = '/workspace/taskflow/taskflow.db';
-    if (fs.existsSync(tfDbPath)) {
-      const tfDb = new Database(tfDbPath, { readonly: true });
-      const { TaskflowEngine } = await import('./taskflow-engine.js');
-      const engine = new TaskflowEngine(tfDb, containerInput.taskflowBoardId);
-      const preamble = engine.buildContextSummary(queryVector, reader);
-      if (preamble) {
-        prompt = preamble + '\n\n' + prompt;
-      }
-      tfDb.close();
-    }
-    reader.close();
-  } catch (err) {
-    log(`Context preamble skipped: ${err}`);
-  }
-}
-```
-
-Note: `TaskflowEngine` constructor takes `(db: Database.Database, boardId: string)` — NOT a path string. Open the DB first, then pass the instance.
-
-- [ ] **Step 8: Build and verify**
-
-Run: `npm run build`
-Expected: Clean build
-
-- [ ] **Step 9: Commit**
-
-```bash
-git add container/agent-runner/src/taskflow-engine.ts container/agent-runner/src/ipc-mcp-stdio.ts container/agent-runner/src/index.ts
-git commit -m "feat(embeddings): semantic search, duplicate detection, context preamble, buildContextSummary"
-```
+## Chunk 3: Skill Packaging + Verification
 
 ---
 
-## Chunk 4: Skill Packaging + Final Verification
-
-### Task 7: Skill packaging (add-embeddings only)
+### Task 5: Skill packaging
 
 **Files:**
 - Create: `.claude/skills/add-embeddings/SKILL.md`
@@ -1222,7 +823,7 @@ git commit -m "feat(embeddings): add-embeddings skill packaging — SKILL.md + m
 
 ---
 
-### Task 8: End-to-end verification
+### Task 6: End-to-end verification (generic service only)
 
 - [ ] **Step 1: Build host**
 
@@ -1255,19 +856,26 @@ ssh nanoclaw@192.168.2.63 "cd /home/nanoclaw/nanoclaw && docker builder prune -a
 ssh nanoclaw@192.168.2.63 "systemctl --user restart nanoclaw"
 ```
 
-- [ ] **Step 6: Verify via WhatsApp**
+- [ ] **Step 6: Verify embedding service starts**
 
-Send a semantic search query to a TaskFlow group: "buscar tarefas de infraestrutura"
-Expected: results include tasks semantically related (e.g., "Migração da nuvem") even without keyword match
+Check logs for embedding indexer startup:
+```bash
+ssh nanoclaw@192.168.2.63 "tail -20 /home/nanoclaw/nanoclaw/logs/nanoclaw.log | grep -i embed"
+```
+Expected: `Embedding service started` log entry with Ollama host
 
-- [ ] **Step 7: Verify duplicate detection**
+- [ ] **Step 7: Verify embeddings.db is created and mounted**
 
-Create a task similar to an existing one: "anotar: Trocar filtro de linha"
-Expected: warning if a similar task exists
+```bash
+ssh nanoclaw@192.168.2.63 "ls -la /home/nanoclaw/nanoclaw/data/embeddings/"
+```
+Expected: `embeddings.db` file exists
 
 - [ ] **Step 8: Final commit**
 
 ```bash
 git add -A
-git commit -m "feat(embeddings): add-embeddings skill complete — search, duplicates, context preamble"
+git commit -m "feat(embeddings): add-embeddings generic service complete"
 ```
+
+**Next:** Execute `docs/plans/2026-03-14-taskflow-embeddings-integration.md` for TaskFlow-specific integration (semantic search, duplicate detection, context preamble).
