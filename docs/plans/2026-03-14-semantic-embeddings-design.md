@@ -1,4 +1,4 @@
-# Semantic Embeddings for TaskFlow (BGE-M3)
+# Generic Embedding Service for NanoClaw (BGE-M3)
 
 **Date:** 2026-03-14
 **Status:** Approved
@@ -6,131 +6,220 @@
 
 ## Summary
 
-Integrate BGE-M3 embeddings via Ollama into TaskFlow for semantic task search, duplicate detection on creation, and augmented context retrieval for agent sessions. Delivered as a new NanoClaw skill (`add-embeddings`).
+Add a generic embedding service to NanoClaw powered by BGE-M3 via Ollama. The service indexes, searches, and deduplicates text content organized into named collections. TaskFlow is the first consumer (semantic task search, duplicate detection, augmented context retrieval), but the service is reusable by any future feature (message history search, document search, email search).
 
 ## Infrastructure
 
 - **Embedding model:** BGE-M3 (1024 dimensions, multilingual, pt-BR native)
 - **Ollama instance:** `192.168.2.13:11434` (existing, dedicated machine)
-- **Storage:** SQLite (taskflow.db) — direct `db.prepare()` calls, no abstraction layer
-- **Vector search:** Pure JS cosine similarity (sufficient for <1000 tasks)
+- **Storage:** SQLite (`data/embeddings.db`) — separate DB, not inside taskflow.db
+- **Vector search:** Pure JS cosine similarity (sufficient for <1000 items per collection)
 - **Config:** `OLLAMA_HOST` and `EMBEDDING_MODEL` in `.env`
 
 ## Architecture
 
-Hybrid approach — background indexer on host + query functions in container MCP handler.
+The embedding service is a standalone module with no knowledge of TaskFlow, tasks, or boards. Consumers (TaskFlow being the first) register collections and call the service API.
 
 ```
-Host Process                          Docker Container
-┌────────────────────────┐           ┌──────────────────────────┐
-│ Embedding Indexer      │           │ ipc-mcp-stdio.ts         │
-│ (setInterval 10s)      │           │ (async MCP handler)      │
-│                        │           │                          │
-│ • finds un-embedded    │           │ taskflow_query 'search': │
-│   tasks in taskflow.db │           │   1. call Ollama (async) │
-│ • calls Ollama BGE-M3  │           │   2. engine.query()      │
-│ • stores vectors in    │           │      (sync, reads vecs)  │
-│   task_embeddings      │           │   3. return ranked       │
-│                        │           │                          │
-│ Context Builder        │           │ taskflow_create:         │
-│ • embeds user message  │           │   1. call Ollama (async) │
-│   before container     │           │   2. check duplicates    │
-│   launch               │           │      (sync, reads vecs)  │
-│ • builds augmented     │           │   3. if dup, return warn │
-│   prompt preamble      │           │   4. else engine.create()│
-└───────────┬────────────┘           └──────────────────────────┘
-            │                                    │
-            ▼                                    ▼
-     ┌──────────────┐                   Ollama @ 192.168.2.13
-     │ taskflow.db  │                   (container has LAN access)
-     │ ┌──────────┐ │
-     │ │ tasks    │ │   ◄── shared mount
-     │ │ task_emb │ │
-     │ └──────────┘ │
-     └──────────────┘
+                        Embedding Service (generic)
+                     ┌──────────────────────────────────┐
+                     │  embedding-service.ts             │
+                     │                                    │
+                     │  • index(collection, id, text)     │
+                     │  • search(collection, query, opts) │
+                     │  • findSimilar(collection, text)   │
+                     │  • remove(collection, id)          │
+                     │  • removeCollection(collection)    │
+                     │                                    │
+                     │  Background indexer:               │
+                     │  • processes pending queue          │
+                     │  • calls Ollama BGE-M3              │
+                     │  • stores vectors in embeddings.db  │
+                     └──────────┬─────────────────────────┘
+                                │
+          ┌─────────────────────┼─────────────────────┐
+          ▼                     ▼                     ▼
+   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+   │ TaskFlow     │    │ Future:      │    │ Future:      │
+   │ (first       │    │ Message      │    │ PDF/Email    │
+   │  consumer)   │    │ History      │    │ Search       │
+   └──────────────┘    └──────────────┘    └──────────────┘
 ```
 
 **Key decisions:**
-- Host owns the indexer — containers never write embeddings
-- Semantic search and duplicate detection happen in the **async MCP handler** (`ipc-mcp-stdio.ts`), NOT inside the synchronous `taskflow-engine.ts` methods. The MCP handler calls Ollama (async), then passes results to the engine (sync).
-- Container has LAN access to Ollama at `192.168.2.13` (verified via `curl` from container)
-- Indexer runs in the main process (setInterval), not a separate service
+- Embedding service is **generic** — it knows about collections and items, not tasks or boards
+- Storage is in its own `data/embeddings.db`, not inside `taskflow.db` — clean separation, no coupling
+- Host process owns the service — containers access pre-computed vectors via shared DB mount
+- Container calls Ollama directly for query-time embeddings (search, duplicate check)
 - If Ollama unreachable, all features fall back silently to existing behavior
-- `OLLAMA_HOST` loaded on host via `readEnvFile(['OLLAMA_HOST', 'EMBEDDING_MODEL'])` (same pattern as secrets). Delivered to container via Docker `-e` flag in `buildContainerArgs()`. Inside container, forwarded to MCP subprocess via `buildNanoclawMcpEnv()` in `runtime-config.ts` (add `NANOCLAW_OLLAMA_HOST` to the env whitelist).
+- `OLLAMA_HOST` loaded on host via `readEnvFile()`. Delivered to container via Docker `-e` flag in `buildContainerArgs()`. Inside container, forwarded to MCP subprocess via `buildNanoclawMcpEnv()` in `runtime-config.ts` (add `NANOCLAW_OLLAMA_HOST` to the env whitelist).
+- No dependency on `add-taskflow` — the embedding service works independently. TaskFlow integration is done by the TaskFlow code calling the service.
 
 ## Storage Schema
 
-One new table in `taskflow-db.ts` (added to `initTaskflowDb()` using `CREATE TABLE IF NOT EXISTS` — idempotent, no `ALTER TABLE` migration needed):
+Separate database at `data/embeddings.db`:
 
 ```sql
-CREATE TABLE IF NOT EXISTS task_embeddings (
-  board_id TEXT NOT NULL,
-  task_id TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS embeddings (
+  collection TEXT NOT NULL,
+  item_id TEXT NOT NULL,
   vector BLOB NOT NULL,
   source_text TEXT NOT NULL,
   model TEXT NOT NULL DEFAULT 'bge-m3',
+  metadata TEXT DEFAULT '{}',
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (board_id, task_id)
+  PRIMARY KEY (collection, item_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_embeddings_collection ON embeddings(collection);
 ```
 
-- `vector`: Float32Array as Buffer (1024 × 4 bytes = 4KB per task)
-- `source_text`: canonical formula is `buildSourceText(task)` = `task.title + ' ' + (task.description ?? '') + ' ' + (task.next_action ?? '')` — trimmed. The SAME function is used in both the indexer (to detect staleness) and in the SQL comparison query. This prevents byte-mismatch false positives.
-- `model`: tracks which model produced the vector. On model change (env var differs from stored model), the indexer re-embeds all tasks.
-- No vector index — full scan + JS cosine is sufficient at current scale
+- `collection`: namespace for items (e.g., `"tasks:board-seci-taskflow"`, `"messages:sec-secti"`, `"documents:global"`)
+- `item_id`: unique within a collection (e.g., task ID `"T15"`, message ID)
+- `vector`: Float32Array as Buffer (1024 × 4 bytes = 4KB per item)
+- `source_text`: the text that was embedded — used to detect when re-embedding is needed
+- `metadata`: optional JSON for consumer-specific data (e.g., `{"title": "...", "assignee": "..."}` for tasks)
+- `model`: tracks which model produced the vector. On model change, re-embeds all items.
+- Index on `collection` for fast scoped queries
 
-## Component 1: Background Indexer
+## Component 1: Embedding Service
 
-**File:** `src/embedding-indexer.ts`
+**File:** `src/embedding-service.ts`
 
-**Lifecycle:** `startEmbeddingIndexer(db)` called from `index.ts` after main loop starts. Runs `setInterval(10_000)`. DB connection uses `busy_timeout: 5000` to handle WAL contention with container.
+A class that encapsulates all embedding operations. No knowledge of TaskFlow.
 
-**Each cycle:**
+```typescript
+class EmbeddingService {
+  constructor(dbPath: string, ollamaHost: string, model: string)
 
-1. Query all non-done tasks with their current embedding state:
+  // Index a single item (queued for async processing)
+  index(collection: string, itemId: string, text: string, metadata?: Record<string, any>): void
+
+  // Index multiple items in one call
+  indexBatch(items: Array<{ collection: string; itemId: string; text: string; metadata?: Record<string, any> }>): void
+
+  // Search a collection by text similarity (calls Ollama for query embedding)
+  async search(collection: string, queryText: string, opts?: {
+    limit?: number;        // default 20
+    threshold?: number;    // default 0.3
+  }): Promise<Array<{ itemId: string; score: number; metadata: Record<string, any> }>>
+
+  // Find the most similar existing item (for duplicate detection)
+  async findSimilar(collection: string, text: string, threshold?: number):
+    Promise<{ itemId: string; score: number; metadata: Record<string, any> } | null>
+
+  // Remove a single item
+  remove(collection: string, itemId: string): void
+
+  // Remove all items in a collection
+  removeCollection(collection: string): void
+
+  // Start background processing loop (call once at startup)
+  startIndexer(intervalMs?: number): void
+
+  // Stop background processing
+  stopIndexer(): void
+}
+```
+
+### Background Indexer
+
+The `startIndexer()` method runs `setInterval(10_000)`. Each cycle:
+
+1. Query pending items (source_text changed or model mismatch):
    ```sql
-   SELECT t.board_id, t.id, t.title, t.description, t.next_action,
-          e.source_text AS existing_source, e.model AS existing_model
-   FROM tasks t
-   LEFT JOIN task_embeddings e ON t.board_id = e.board_id AND t.id = e.task_id
-   WHERE t.column != 'done'
-   LIMIT 100
+   SELECT collection, item_id, source_text, model
+   FROM embeddings
+   WHERE vector IS NULL OR model != ?
+   LIMIT 20
    ```
-   Then in JS: filter to tasks where `existing_source !== buildSourceText(task) || existing_model !== currentModel` (null existing_source means new task). Take first 20 for this cycle's batch.
+   But since we queue via `index()`, the actual flow is:
+   - `index()` calls `INSERT OR REPLACE` with `vector = NULL` (placeholder)
+   - Indexer picks up rows where `vector IS NULL`
+   - After embedding, updates `vector` with the actual data
 
-2. Build source texts, batch-call Ollama:
+   Updated schema to support this:
+   ```sql
+   CREATE TABLE IF NOT EXISTS embeddings (
+     collection TEXT NOT NULL,
+     item_id TEXT NOT NULL,
+     vector BLOB,              -- NULL means pending indexing
+     source_text TEXT NOT NULL,
+     model TEXT NOT NULL DEFAULT 'bge-m3',
+     metadata TEXT DEFAULT '{}',
+     updated_at TEXT NOT NULL,
+     PRIMARY KEY (collection, item_id)
+   );
+   ```
+
+2. Batch-call Ollama:
    ```
    POST /api/embed { "model": "bge-m3", "input": [text1, text2, ...] }
    ```
 
-3. Upsert embeddings:
+3. Update vectors:
    ```sql
-   INSERT OR REPLACE INTO task_embeddings (board_id, task_id, vector, source_text, model, updated_at)
-   VALUES (?, ?, ?, ?, ?, ?)
+   UPDATE embeddings SET vector = ?, model = ?, updated_at = ? WHERE collection = ? AND item_id = ?
    ```
 
-4. Clean orphans (uses NOT EXISTS instead of multi-column NOT IN, which SQLite doesn't support):
+4. Handle model changes: if `EMBEDDING_MODEL` env var changed, mark all items for re-embedding:
    ```sql
-   DELETE FROM task_embeddings
-   WHERE NOT EXISTS (
-     SELECT 1 FROM tasks
-     WHERE tasks.board_id = task_embeddings.board_id
-       AND tasks.id = task_embeddings.task_id
-       AND tasks.column != 'done'
-   )
+   UPDATE embeddings SET vector = NULL WHERE model != ?
    ```
 
-**Cross-board note:** The indexer embeds tasks from ALL boards. This is intentional — the host process is trusted. The container-side query always filters by `board_id` via `visibleTaskScope()`, so no cross-board data leaks.
+**Error handling:** Ollama failures logged as warnings, never crash. Retry next cycle. DB uses `busy_timeout: 5000`.
 
-**Error handling:** Ollama failures logged as warnings, never crash. Retry next cycle.
+## Component 2: TaskFlow Integration — Semantic Search
 
-## Component 2: Semantic Search
+TaskFlow is the first consumer. The integration happens in two places:
 
-**Integration point:** The async MCP handler in `ipc-mcp-stdio.ts`, NOT inside the synchronous `taskflow-engine.ts`.
+### Host side (indexing)
 
-The `taskflow-engine.ts` query method remains synchronous. The async Ollama call happens in the MCP handler before calling the engine.
+**File:** `src/index.ts` — after main loop starts, register a TaskFlow indexer that watches for task changes:
 
-**Flow when user searches:**
+```typescript
+const embeddingService = new EmbeddingService(
+  path.join(DATA_DIR, 'embeddings.db'),
+  ollamaHost,
+  embeddingModel,
+);
+embeddingService.startIndexer();
+
+// TaskFlow task indexer — polls taskflow.db and feeds embedding service
+startTaskflowEmbeddingSync(embeddingService, getTaskflowDb());
+```
+
+**File:** `src/taskflow-embedding-sync.ts` — thin adapter that reads tasks from taskflow.db and calls `embeddingService.index()`:
+
+```typescript
+function startTaskflowEmbeddingSync(service: EmbeddingService, tfDb: Database) {
+  setInterval(() => {
+    const tasks = tfDb.prepare(
+      `SELECT board_id, id, title, description, next_action, assignee, column
+       FROM tasks WHERE column != 'done'`
+    ).all();
+
+    for (const task of tasks) {
+      const collection = `tasks:${task.board_id}`;
+      const text = buildSourceText(task);
+      service.index(collection, task.id, text, {
+        title: task.title,
+        assignee: task.assignee,
+        column: task.column,
+      });
+    }
+
+    // Clean collections for deleted tasks
+    // (service.index is idempotent — unchanged source_text is a no-op)
+  }, 15_000); // slightly offset from embedding indexer
+}
+```
+
+### Container side (search + duplicate detection)
+
+**Integration point:** The async MCP handler in `ipc-mcp-stdio.ts`.
+
+**Semantic search flow:**
 
 ```
 MCP handler receives taskflow_query({ query: 'search', search_text: '...' })
@@ -145,13 +234,15 @@ MCP handler receives taskflow_query({ query: 'search', search_text: '...' })
   └─ 3. Inside engine.query() (sync):
        ├─ Lexical: LIKE '%text%' → textMatches[]
        ├─ If queryVector provided:
-       │   Load task_embeddings for visible tasks
+       │   Load embeddings for collection 'tasks:{boardId}' from embeddings.db
        │   Cosine similarity in JS → semanticMatches[]
        │   Merge: lexical matches get +0.2 boost
        │   Filter by threshold (>0.3)
        │   Sort by score, return top 20
        └─ If no queryVector: return lexical only (fallback)
 ```
+
+**Note:** The engine reads from `embeddings.db` (not `taskflow.db`). The container needs read access to `data/embeddings.db` — add as an additional mount in `container-runner.ts`.
 
 **Cosine similarity (pure JS):**
 ```typescript
@@ -172,7 +263,7 @@ function cosineSimilarity(a: Float32Array, b: Float32Array): number {
 3. **MCP subprocess:** Add `NANOCLAW_OLLAMA_HOST: process.env.OLLAMA_HOST ?? ''` to `buildNanoclawMcpEnv()` in `runtime-config.ts`
 4. **ipc-mcp-stdio.ts:** Reads `process.env.NANOCLAW_OLLAMA_HOST`
 
-## Component 3: Duplicate Detection
+## Component 3: TaskFlow Integration — Duplicate Detection
 
 **Integration point:** The async MCP handler in `ipc-mcp-stdio.ts`, wrapping `taskflow_create`.
 
@@ -188,8 +279,8 @@ MCP handler receives taskflow_create({ title: '...', ... })
   ├─ 2. Async: embed title+description via Ollama (2s timeout)
   │     → newVector or null on failure
   │
-  ├─ 3. If newVector: load task_embeddings for this board, find best match
-  │     (sync: reads from taskflow.db, JS cosine similarity)
+  ├─ 3. If newVector: load embeddings for 'tasks:{boardId}', find best match
+  │     (sync: reads from embeddings.db, JS cosine similarity)
   │
   ├─ 4. If best match > 0.85:
   │     return {
@@ -216,7 +307,7 @@ If user confirms, re-call with force_create: true.
 
 **If Ollama unreachable:** Skip duplicate check silently — never block creation.
 
-## Component 4: Augmented Context Retrieval
+## Component 4: TaskFlow Integration — Augmented Context Retrieval
 
 **Integration point:** `src/container-runner.ts` (or `src/index.ts`), before container launch. Modifies the **prompt preamble** written to the container input, NOT a snapshot file.
 
@@ -229,8 +320,9 @@ If user confirms, re-call with force_create: true.
 
 **New flow:**
 1. User sends message → host embeds message via Ollama
-2. Host queries taskflow.db for board summary + ranked tasks
-3. Host prepends a context preamble to the prompt:
+2. Host queries `embeddings.db` for the board's collection, ranked by similarity
+3. Host queries `taskflow.db` for board summary counts
+4. Host prepends a context preamble to the prompt:
    ```
    [Board context: 3 inbox, 5 next_action, 2 in_progress, 1 waiting, 1 overdue (T4, 12/03).
    Relevant tasks for this message:
@@ -238,15 +330,15 @@ If user confirms, re-call with force_create: true.
    - T4 Migração nuvem SEMF/DSF (in_progress, Giovanni, prazo 31/03)
    Other tasks: T8 Hackaton SECTI, T9 PowerBI SEMPLAN, ...]
    ```
-4. Agent has immediate context without querying — can still query MCP for full details if needed
+5. Agent has immediate context without querying — can still query MCP for full details if needed
 
-**Token savings:** Agent skips the initial "show me the board" query in most sessions. Estimated ~75% reduction in board-loading tokens (from ~10,000 to ~2,600 for a 50-task board: 200 summary + 2,000 for 10 detailed tasks + 400 for 40 one-liners).
+**Token savings:** ~75% reduction (from ~10,000 to ~2,600 for a 50-task board: 200 summary + 2,000 for 10 detailed tasks + 400 for 40 one-liners).
 
 **Fallback:** If Ollama unreachable or no embeddings, no preamble injected — agent queries board as usual.
 
 ## Skill Design
 
-This is a **standalone skill** (`add-embeddings`), NOT an upgrade to the `add-taskflow` skill. It follows the NanoClaw structured skill format (same as `add-image-vision`, `add-voice-transcription`, etc.).
+This is a **standalone skill** (`add-embeddings`) with **no dependencies** on other skills. It provides a generic embedding service. TaskFlow integration is included but the core service is reusable.
 
 ### Skill directory structure
 
@@ -256,24 +348,22 @@ This is a **standalone skill** (`add-embeddings`), NOT an upgrade to the `add-ta
 ├── manifest.yaml                                     # Metadata, deps, file lists
 ├── add/
 │   └── src/
-│       ├── embedding-indexer.ts                      # Background indexer (host side)
-│       ├── embedding-indexer.test.ts                 # Tests
-│       └── embedding-utils.ts                        # Ollama client, cosine similarity, buildSourceText
+│       ├── embedding-service.ts                      # Generic embedding service class
+│       ├── embedding-service.test.ts                 # Tests
+│       └── taskflow-embedding-sync.ts                # TaskFlow adapter (feeds tasks into service)
 ├── modify/
 │   ├── src/
-│   │   ├── taskflow-db.ts                            # Reference file
-│   │   ├── taskflow-db.ts.intent.md                  # Add task_embeddings table
 │   │   ├── index.ts                                  # Reference file
-│   │   ├── index.ts.intent.md                        # Start indexer after main loop
+│   │   ├── index.ts.intent.md                        # Start embedding service + TaskFlow sync
 │   │   ├── container-runner.ts                       # Reference file
-│   │   └── container-runner.ts.intent.md             # OLLAMA_HOST env, prompt preamble
+│   │   └── container-runner.ts.intent.md             # OLLAMA_HOST env, embeddings.db mount, prompt preamble
 │   └── container/agent-runner/src/
 │       ├── runtime-config.ts                         # Reference file
 │       ├── runtime-config.ts.intent.md               # Add NANOCLAW_OLLAMA_HOST to MCP env
 │       ├── ipc-mcp-stdio.ts                          # Reference file
 │       ├── ipc-mcp-stdio.ts.intent.md                # Async Ollama wrapping, force_create schema
 │       ├── taskflow-engine.ts                        # Reference file
-│       └── taskflow-engine.ts.intent.md              # query_vector param, cosine similarity
+│       └── taskflow-engine.ts.intent.md              # query_vector param, cosine similarity, read embeddings.db
 └── tests/
     └── embeddings.test.ts                            # Skill integration test
 ```
@@ -283,14 +373,13 @@ This is a **standalone skill** (`add-embeddings`), NOT an upgrade to the `add-ta
 ```yaml
 skill: add-embeddings
 version: 1.0.0
-description: "Semantic search, duplicate detection, and context retrieval via BGE-M3 embeddings"
+description: "Generic embedding service with semantic search, duplicate detection, and context retrieval. First consumer: TaskFlow."
 core_version: 1.2.12
 adds:
-  - src/embedding-indexer.ts
-  - src/embedding-indexer.test.ts
-  - src/embedding-utils.ts
+  - src/embedding-service.ts
+  - src/embedding-service.test.ts
+  - src/taskflow-embedding-sync.ts
 modifies:
-  - src/taskflow-db.ts
   - src/index.ts
   - src/container-runner.ts
   - container/agent-runner/src/runtime-config.ts
@@ -302,31 +391,25 @@ structured:
     - OLLAMA_HOST
     - EMBEDDING_MODEL
 conflicts: []
-depends:
-  - add-taskflow
+depends: []
 test: "npx vitest run --config vitest.skills.config.ts .claude/skills/add-embeddings/tests/embeddings.test.ts"
 ```
 
 ### SKILL.md phases
 
-1. **Pre-flight:** Check Ollama is reachable (`curl $OLLAMA_HOST/api/tags`), verify BGE-M3 model is loaded, check `add-taskflow` is already applied (look for `src/taskflow-db.ts`)
+1. **Pre-flight:** Check Ollama is reachable (`curl $OLLAMA_HOST/api/tags`), verify BGE-M3 model is loaded
 2. **Apply code changes:** Copy files from `add/`, apply modifications using `modify/` intent files as guidance, rebuild (`npm run build && ./container/build.sh`)
-3. **Configure:** Add `OLLAMA_HOST` and `EMBEDDING_MODEL` to `.env`, patch existing group CLAUDE.md files with `duplicate_warning` handling instruction
-4. **Verify:** Send a search query via WhatsApp, confirm semantic results appear; create a near-duplicate task, confirm warning is shown
+3. **Configure:** Add `OLLAMA_HOST` and `EMBEDDING_MODEL` to `.env`. If TaskFlow is installed, patch existing group CLAUDE.md files with `duplicate_warning` handling instruction
+4. **Verify:** If TaskFlow installed, send a search query via WhatsApp and confirm semantic results; create a near-duplicate task and confirm warning. Otherwise, verify indexer starts in logs.
 
-### Dependency
+### CLAUDE.md changes (TaskFlow only)
 
-Requires `add-taskflow` to be installed first (needs `taskflow.db`, MCP tools, TaskFlow-managed groups). Declared in `manifest.yaml` as `depends: [add-taskflow]`.
-
-### CLAUDE.md changes
-
-During Phase 3, the skill patches existing group CLAUDE.md files to add to the "Tool Response Handling" section:
+During Phase 3, if TaskFlow is installed, the skill patches existing group CLAUDE.md files to add:
 ```
 When taskflow_create returns duplicate_warning, present:
 "⚠️ Tarefa similar encontrada: *[ID]* — [título] ([similarity]%). Criar mesmo assim?"
 If user confirms, re-call with force_create: true.
 ```
-This does NOT modify the `add-taskflow` template. Future boards provisioned after the skill is installed will get this instruction from the merged codebase automatically.
 
 ## Configuration
 
@@ -341,16 +424,16 @@ Hardcoded for MVP (tunable later):
 - Search threshold: 0.3 (semantic search)
 - Indexer interval: 10,000ms
 - Ollama timeout: 2,000ms
-- Batch size: 20 tasks per indexer cycle
+- Batch size: 20 items per indexer cycle
 
 ## Failure Modes
 
 | Scenario | Behavior |
 |----------|----------|
 | Ollama unreachable | Indexer warns + retries next cycle. Search returns lexical only. Create skips duplicate check. Prompt preamble skipped. |
-| taskflow.db locked | Indexer retries next cycle (busy_timeout: 5000ms). |
-| Malformed vector from Ollama | Skip that task, log warning. |
-| task_embeddings table missing | Auto-created by `CREATE TABLE IF NOT EXISTS` in initTaskflowDb(). |
+| embeddings.db locked | Indexer retries next cycle (busy_timeout: 5000ms). |
+| Malformed vector from Ollama | Skip that item, log warning. |
+| embeddings.db missing | Auto-created on first `new EmbeddingService()` call. |
 | BGE-M3 model not loaded in Ollama | Ollama returns error, treated as unreachable. |
-| Model changed in .env | Indexer detects `model` mismatch, re-embeds all tasks over next cycles. |
-| Board deleted | Orphan cleanup removes embeddings for tasks no longer in `tasks` table. |
+| Model changed in .env | Indexer detects mismatch, marks all items for re-embedding (`vector = NULL`). |
+| TaskFlow not installed | Embedding service starts but TaskFlow sync is skipped (no taskflow.db). Generic service still works for future consumers. |
