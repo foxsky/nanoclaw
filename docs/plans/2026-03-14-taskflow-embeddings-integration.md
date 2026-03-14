@@ -194,9 +194,11 @@ cd container/agent-runner && npx vitest run
 - [ ] **Step 5: Commit**
 
 ```bash
-git add container/agent-runner/src/embedding-reader.test.ts
-git commit -m "test(taskflow): embedding reader + search + duplicate detection integration tests"
+git add container/agent-runner/src/taskflow-embedding-integration.test.ts
+git commit -m "test(taskflow): semantic search, duplicate detection, buildContextSummary integration tests"
 ```
+
+Note: This test file is `taskflow-embedding-integration.test.ts`, NOT `embedding-reader.test.ts`. The baseline `EmbeddingReader` tests live in the generic plan.
 
 ---
 
