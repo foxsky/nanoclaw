@@ -244,27 +244,54 @@ If user confirms, re-call with force_create: true.
 
 **Fallback:** If Ollama unreachable or no embeddings, no preamble injected — agent queries board as usual.
 
-## Skill Structure
+## Skill Design
+
+This is a **standalone skill** (`add-embeddings`), NOT an upgrade to the `add-taskflow` skill. It follows the same pattern as `add-voice-transcription`, `add-image-vision`, etc.
+
+### Skill directory
 
 ```
 .claude/skills/add-embeddings/
-├── SKILL.md              # Merge instructions + config
-└── (code lives on skill branch, merged into main)
+└── SKILL.md              # Phases: pre-flight, merge, configure, verify
 ```
 
-**Files added:**
-- `src/embedding-indexer.ts` — background indexer (host side)
-- `src/embedding-utils.ts` — shared: Ollama HTTP client, `buildSourceText()`, cosine similarity, vector Buffer I/O
+### Skill branch
 
-**Files modified:**
-- `src/taskflow-db.ts` — add `task_embeddings` table (CREATE TABLE IF NOT EXISTS)
-- `src/index.ts` — start indexer after main loop
-- `src/container-runner.ts` — `buildContainerArgs()` adds `-e OLLAMA_HOST` (read via `readEnvFile()`), prompt preamble generation
-- `container/agent-runner/src/runtime-config.ts` — `buildNanoclawMcpEnv()` adds `NANOCLAW_OLLAMA_HOST`
-- `container/agent-runner/src/ipc-mcp-stdio.ts` — async Ollama calls before engine.query()/engine.create(), `force_create` in `taskflow_create` Zod schema
+All code lives on a git branch `skill/embeddings` that gets merged into the user's main branch during installation. The branch contains:
+
+**New files (no conflict risk):**
+- `src/embedding-indexer.ts` — background indexer (host side)
+- `src/embedding-utils.ts` — Ollama HTTP client, `buildSourceText()`, cosine similarity, vector Buffer I/O
+
+**Modified files (merged via git):**
+- `src/taskflow-db.ts` — add `task_embeddings` table
+- `src/index.ts` — import + start indexer after main loop
+- `src/container-runner.ts` — read `OLLAMA_HOST` via `readEnvFile()`, add `-e OLLAMA_HOST` to `buildContainerArgs()`, prompt preamble generation
+- `container/agent-runner/src/runtime-config.ts` — add `NANOCLAW_OLLAMA_HOST` to `buildNanoclawMcpEnv()`
+- `container/agent-runner/src/ipc-mcp-stdio.ts` — async Ollama calls wrapping engine.query()/engine.create(), `force_create` in `taskflow_create` Zod schema
 - `container/agent-runner/src/taskflow-engine.ts` — `query_vector` param in search, cosine similarity + vector loading functions
-- `.claude/skills/add-taskflow/templates/CLAUDE.md.template` — duplicate warning handling instruction
-- `.env` — `OLLAMA_HOST`, `EMBEDDING_MODEL`
+
+### SKILL.md phases
+
+1. **Pre-flight:** Check Ollama is reachable (`curl $OLLAMA_HOST/api/tags`), verify BGE-M3 model is loaded, check `add-taskflow` is already applied
+2. **Merge:** `git fetch origin skill/embeddings && git merge origin/skill/embeddings`
+3. **Configure:** Add `OLLAMA_HOST` and `EMBEDDING_MODEL` to `.env`, update CLAUDE.md templates with `duplicate_warning` instruction (the skill does NOT modify `add-taskflow`'s template — it patches group CLAUDE.md files directly during install, same pattern as other skills)
+4. **Build & deploy:** `npm run build && ./container/build.sh && systemctl --user restart nanoclaw`
+5. **Verify:** Send a search query via WhatsApp, confirm semantic results appear
+
+### Dependency
+
+Requires `add-taskflow` to be installed first (needs `taskflow.db`, `task_embeddings` table, MCP tools). The SKILL.md pre-flight checks for this.
+
+### CLAUDE.md changes
+
+The skill patches existing group CLAUDE.md files during Phase 3 (Configure) to add:
+```
+When taskflow_create returns duplicate_warning, present:
+"⚠️ Tarefa similar encontrada: *[ID]* — [título] ([similarity]%). Criar mesmo assim?"
+If user confirms, re-call with force_create: true.
+```
+This is appended to the existing "Tool Response Handling" section — it does NOT modify the `add-taskflow` template. Future boards provisioned after the skill is installed will get this instruction from the merged codebase automatically.
 
 ## Configuration
 
