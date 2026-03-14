@@ -173,11 +173,37 @@ The `startIndexer()` method runs `setInterval(10_000)`. Each cycle:
    UPDATE embeddings SET vector = ?, model = ?, updated_at = ? WHERE collection = ? AND item_id = ?
    ```
 
-**How `index()` works:**
-- `index(collection, id, text, metadata)` calls `INSERT OR REPLACE` with `vector = NULL`
-- If the `source_text` hasn't changed (same as stored), it's a no-op (the INSERT OR REPLACE produces an identical row, vector stays non-NULL)
-- If `source_text` changed, the new row has `vector = NULL`, triggering re-embedding on the next cycle
-- This means the consumer (`taskflow-embedding-sync.ts`) can call `index()` on every sync cycle without concern — unchanged items are free
+**How `index()` works — compare-before-write:**
+
+`index()` does NOT blindly `INSERT OR REPLACE` (which would destroy existing vectors). Instead it uses an explicit two-step check:
+
+```typescript
+index(collection: string, itemId: string, text: string, metadata?: Record<string, any>): void {
+  const existing = this.db.prepare(
+    `SELECT source_text, model FROM embeddings WHERE collection = ? AND item_id = ?`
+  ).get(collection, itemId) as { source_text: string; model: string } | undefined;
+
+  if (existing && existing.source_text === text && existing.model === this.model) {
+    // Source text and model unchanged — skip, preserve existing vector
+    return;
+  }
+
+  // New item OR source_text/model changed — upsert with vector = NULL (pending)
+  this.db.prepare(
+    `INSERT INTO embeddings (collection, item_id, vector, source_text, model, metadata, updated_at)
+     VALUES (?, ?, NULL, ?, ?, ?, ?)
+     ON CONFLICT (collection, item_id) DO UPDATE SET
+       vector = NULL, source_text = excluded.source_text, model = excluded.model,
+       metadata = excluded.metadata, updated_at = excluded.updated_at`
+  ).run(collection, itemId, text, this.model, JSON.stringify(metadata ?? {}), new Date().toISOString());
+}
+```
+
+Key behaviors:
+- **Unchanged items:** `SELECT` finds matching `source_text` and `model` → early return, no write, existing vector preserved
+- **Changed items:** `INSERT ... ON CONFLICT DO UPDATE` sets `vector = NULL` → indexer picks it up next cycle
+- **New items:** `INSERT` with `vector = NULL` → indexer picks it up
+- The periodic TaskFlow sync calls `index()` for every active task — unchanged tasks are a cheap SELECT + comparison, NOT a destructive REPLACE
 
 **No starvation guarantee:** Since pending items are selected purely by `WHERE vector IS NULL ORDER BY updated_at ASC LIMIT 20`, every item will eventually be processed. After a model change that invalidates 500 items, it takes 25 cycles (250 seconds) to re-embed all — no items are skipped.
 
@@ -358,19 +384,15 @@ If user confirms, re-call with force_create: true.
 
 **Clarification:** There is no TaskFlow "snapshot file" — the container reads taskflow.db directly via MCP tools. The context optimization works by injecting a compact board summary into the **prompt text** that the agent receives, reducing the need for the agent to query the full board on every session start.
 
+### Build boundary constraint
+
+**Problem:** `TaskflowEngine` lives in `container/agent-runner/src/` — a separate TypeScript package compiled by the container's `tsconfig.json`, not the host's. The host cannot `import { TaskflowEngine }` without restructuring the build layout.
+
+**Solution:** The context preamble is generated **inside the container** by the engine (which already has visibility rules), NOT on the host. The host's role is limited to embedding the user message and passing the query vector into the container.
+
 ### Visibility contract
 
-**Problem:** TaskFlow visibility is complex — `visibleTaskScope()` includes both `board_id = ?` AND delegated tasks via `child_exec_board_id = ? AND child_exec_enabled = 1`. A naive host-side query would miss delegated tasks or expose tasks the agent shouldn't see.
-
-**Solution:** The host does NOT reconstruct visibility rules. Instead, it uses the **engine itself** to generate the summary. The host instantiates `TaskflowEngine` with the board's `taskflow.db` and calls a new method `engine.buildContextSummary(queryVector)` that:
-1. Uses the existing `visibleTaskScope()` for correct visibility
-2. Queries column counts via the same scope
-3. Ranks visible tasks against `queryVector` using embeddings from `embeddings.db`
-4. Returns a formatted preamble string
-
-This guarantees **visibility parity** — the context preamble shows exactly the same task universe the agent would see via MCP queries. The engine method is synchronous (reads pre-computed vectors, no Ollama call). The async Ollama embed call for the user message happens on the host before calling the engine.
-
-**Applies to:** Standard boards AND delegated child-board views — the engine handles both via `visibleTaskScope()`.
+Visibility is handled by the engine's existing `visibleTaskScope()` — no rules are duplicated on the host. The new `buildContextSummary()` method lives in `taskflow-engine.ts` (container side) and uses the same scope as all other queries.
 
 ### Flow
 
@@ -381,21 +403,24 @@ This guarantees **visibility parity** — the context preamble shows exactly the
 
 **New flow:**
 1. User sends message → host embeds message via Ollama (async) → `queryVector`
-2. Host instantiates `TaskflowEngine` for the board, calls `engine.buildContextSummary(queryVector)`
-3. Engine queries visible tasks (using `visibleTaskScope()`), ranks by similarity, returns formatted preamble:
-   ```
-   [Board context: 3 inbox, 5 next_action, 2 in_progress, 1 waiting, 1 overdue (T4, 12/03).
-   Relevant tasks for this message:
-   - T15 Projeto HomeLab (next_action, Giovanni, prazo 16/03, próxima ação: apresentar arquitetura)
-   - T4 Migração nuvem SEMF/DSF (in_progress, Giovanni, prazo 31/03)
-   Other tasks: T8 Hackaton SECTI, T9 PowerBI SEMPLAN, ...]
-   ```
-4. Host prepends preamble to the container prompt
-5. Agent has immediate context without querying — can still query MCP for full details if needed
+2. Host passes `queryVector` as a base64-encoded field in `containerInput` (alongside `prompt`, `groupFolder`, etc.)
+3. Container starts, MCP server's startup handler calls `engine.buildContextSummary(queryVector, embeddingsDb)`:
+   - Uses `visibleTaskScope()` for correct visibility (standard + delegated)
+   - Loads embeddings from `embeddings.db` (read-only `EmbeddingReader`)
+   - Ranks visible tasks by cosine similarity
+   - Returns formatted preamble string
+4. MCP server prepends preamble to the first tool response or the agent receives it via an initial system context
+5. Agent has immediate context — can still query MCP for full details if needed
+
+**Why container-side:** The engine already knows visibility rules, board config, person names, column labels. Reconstructing this on the host would duplicate logic and create a maintenance burden. Passing the query vector (4KB base64) is trivial.
 
 **Token savings:** ~75% reduction (from ~10,000 to ~2,600 for a 50-task board: 200 summary + 2,000 for 10 detailed tasks + 400 for 40 one-liners).
 
-**Fallback:** If Ollama unreachable or no embeddings, no preamble injected — agent queries board as usual.
+**Fallback:** If no query vector provided (Ollama unreachable) or no embeddings.db, skip preamble — agent queries board as usual.
+
+### embeddings.db mount lifecycle
+
+The host creates `data/embeddings.db` when `EmbeddingService` is instantiated at startup (before any container launch). If for any reason the file doesn't exist when a container is launched (race on very first boot), the Docker `-v` mount creates an empty file. The container's `EmbeddingReader` detects an empty/missing-schema file and returns empty results — no crash. On the next host indexer cycle, the real DB is populated and subsequent container launches get a valid file.
 
 ## Skill Design
 
