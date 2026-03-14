@@ -55,6 +55,9 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   secrets?: Record<string, string>;
+  queryVector?: string; // base64-encoded Float32Array
+  ollamaHost?: string;
+  embeddingModel?: string;
 }
 
 export interface ContainerOutput {
@@ -76,6 +79,7 @@ const CORE_AGENT_RUNNER_FILES = [
   'ipc-tooling.ts',
   'runtime-config.ts',
   'taskflow-engine.ts',
+  'embedding-reader.ts',
   path.join('mcp-plugins', 'create-group.ts'),
 ] as const;
 
@@ -214,6 +218,15 @@ function buildVolumeMounts(
     });
   }
 
+  // Embeddings DB — read-only mount for all containers (generic embedding service)
+  const embeddingsDir = path.join(DATA_DIR, 'embeddings');
+  fs.mkdirSync(embeddingsDir, { recursive: true });
+  mounts.push({
+    hostPath: embeddingsDir,
+    containerPath: '/workspace/embeddings',
+    readonly: true,
+  });
+
   // Per-group MCP plugins directory (read-only mount into container)
   // Skills copy compiled .js plugin files here during setup.
   const mcpPluginsDir = path.join(DATA_DIR, 'mcp-plugins', group.folder);
@@ -272,6 +285,17 @@ function readSecrets(): Record<string, string> {
   return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
 }
 
+function readEmbeddingConfig(): {
+  ollamaHost: string;
+  embeddingModel: string;
+} {
+  const env = readEnvFile(['OLLAMA_HOST', 'EMBEDDING_MODEL']);
+  return {
+    ollamaHost: env.OLLAMA_HOST ?? '',
+    embeddingModel: env.EMBEDDING_MODEL ?? 'bge-m3',
+  };
+}
+
 /**
  * Resolve the TaskFlow board ID from the database.
  * The group folder (e.g. "sec-secti") is not the board ID — we need to look up
@@ -326,6 +350,13 @@ function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Pass embedding config to container (generic embedding service)
+  const embedCfg = readEmbeddingConfig();
+  if (embedCfg.ollamaHost) {
+    args.push('-e', `OLLAMA_HOST=${embedCfg.ollamaHost}`);
+    args.push('-e', `EMBEDDING_MODEL=${embedCfg.embeddingModel}`);
+  }
 
   // Point containers at the credential proxy instead of direct API access
   args.push(
@@ -414,6 +445,36 @@ export async function runContainerAgent(
 
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
+
+  // Set embedding config on ContainerInput (before Promise scope)
+  const embedCfg2 = readEmbeddingConfig();
+  input.ollamaHost = embedCfg2.ollamaHost;
+  input.embeddingModel = embedCfg2.embeddingModel;
+
+  // Embed user message for context-aware features (async, best-effort)
+  if (embedCfg2.ollamaHost) {
+    try {
+      const resp = await fetch(`${embedCfg2.ollamaHost}/api/embed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: embedCfg2.embeddingModel,
+          input: input.prompt,
+        }),
+        signal: AbortSignal.timeout(2000),
+      });
+      if (resp.ok) {
+        const data = (await resp.json()) as { embeddings: number[][] };
+        if (data.embeddings?.[0]) {
+          input.queryVector = Buffer.from(
+            new Float32Array(data.embeddings[0]).buffer,
+          ).toString('base64');
+        }
+      }
+    } catch {
+      // Ollama unreachable — queryVector stays undefined
+    }
+  }
 
   return new Promise((resolve) => {
     const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
