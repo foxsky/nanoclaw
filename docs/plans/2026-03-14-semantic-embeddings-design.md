@@ -388,39 +388,71 @@ If user confirms, re-call with force_create: true.
 
 **Problem:** `TaskflowEngine` lives in `container/agent-runner/src/` — a separate TypeScript package compiled by the container's `tsconfig.json`, not the host's. The host cannot `import { TaskflowEngine }` without restructuring the build layout.
 
-**Solution:** The context preamble is generated **inside the container** by the engine (which already has visibility rules), NOT on the host. The host's role is limited to embedding the user message and passing the query vector into the container.
+**Solution:** The context preamble is generated **inside the container** by the engine (which already has visibility rules), NOT on the host. The host's only role is embedding the user message and injecting the query vector into `containerInput.prompt`.
 
 ### Visibility contract
 
 Visibility is handled by the engine's existing `visibleTaskScope()` — no rules are duplicated on the host. The new `buildContextSummary()` method lives in `taskflow-engine.ts` (container side) and uses the same scope as all other queries.
 
+### Delivery mechanism: prompt injection
+
+The context summary is injected into `containerInput.prompt` **before the SDK query starts** — not via MCP tool responses or system context. This is the simplest and most reliable path:
+
+1. Host embeds the user message via Ollama → `queryVector`
+2. Host passes `queryVector` as base64 in `containerInput.queryVector`
+3. In `container/agent-runner/src/index.ts`, before calling `runQuery()`, the agent-runner:
+   - Reads `containerInput.queryVector` (if present)
+   - Instantiates `TaskflowEngine` + `EmbeddingReader`
+   - Calls `engine.buildContextSummary(queryVector)` → preamble string
+   - Prepends preamble to `prompt` before passing it to `runQuery()`
+
+This uses the existing `containerInput.prompt` → `runQuery(prompt)` path in `index.ts`. No MCP tool call needed. The agent sees the preamble as part of its initial prompt — before it decides to call any tools.
+
+**Why prompt injection (not MCP tool):**
+- MCP tools only fire after the agent decides to call them — too late to replace the "load the board" behavior
+- Prompt injection happens before the SDK query starts — the agent has context from the first token
+- No CLAUDE.md changes needed ("call this tool first") — the preamble is just there
+- Same mechanism as `containerInput.imageAttachments` — proven pattern
+
 ### Flow
 
 **Current flow:**
-1. User sends message → host builds prompt from message text
-2. Container starts, agent reads CLAUDE.md + queries full board via MCP tools
-3. Agent uses ~10,000 tokens loading all tasks
+1. User sends message → host builds prompt
+2. Container starts, agent queries full board via MCP tools (~10,000 tokens)
 
 **New flow:**
-1. User sends message → host embeds message via Ollama (async) → `queryVector`
-2. Host passes `queryVector` as a base64-encoded field in `containerInput` (alongside `prompt`, `groupFolder`, etc.)
-3. Container starts, MCP server's startup handler calls `engine.buildContextSummary(queryVector, embeddingsDb)`:
+1. User sends message → host embeds message via Ollama → `queryVector`
+2. Host sets `containerInput.queryVector = base64(queryVector)`
+3. Container `index.ts` reads queryVector, calls `engine.buildContextSummary(queryVector)`:
    - Uses `visibleTaskScope()` for correct visibility (standard + delegated)
-   - Loads embeddings from `embeddings.db` (read-only `EmbeddingReader`)
+   - Loads vectors from `embeddings.db` via `EmbeddingReader`
    - Ranks visible tasks by cosine similarity
-   - Returns formatted preamble string
-4. MCP server prepends preamble to the first tool response or the agent receives it via an initial system context
-5. Agent has immediate context — can still query MCP for full details if needed
+   - Returns formatted preamble:
+   ```
+   [Board context: 3 inbox, 5 next_action, 2 in_progress, 1 waiting, 1 overdue (T4, 12/03).
+   Relevant tasks for this message:
+   - T15 Projeto HomeLab (next_action, Giovanni, prazo 16/03, próxima ação: apresentar arquitetura)
+   - T4 Migração nuvem SEMF/DSF (in_progress, Giovanni, prazo 31/03)
+   Other tasks: T8 Hackaton SECTI, T9 PowerBI SEMPLAN, ...]
+   ```
+4. Preamble prepended to prompt → `runQuery(preamble + '\n\n' + prompt)`
+5. Agent has context from first token — can still query MCP for full details if needed
 
-**Why container-side:** The engine already knows visibility rules, board config, person names, column labels. Reconstructing this on the host would duplicate logic and create a maintenance burden. Passing the query vector (4KB base64) is trivial.
+**Token savings:** ~75% reduction (from ~10,000 to ~2,600 for a 50-task board).
 
-**Token savings:** ~75% reduction (from ~10,000 to ~2,600 for a 50-task board: 200 summary + 2,000 for 10 detailed tasks + 400 for 40 one-liners).
-
-**Fallback:** If no query vector provided (Ollama unreachable) or no embeddings.db, skip preamble — agent queries board as usual.
+**Fallback:** If no queryVector provided (Ollama unreachable) or `EmbeddingReader` returns empty, skip preamble — agent queries board as usual.
 
 ### embeddings.db mount lifecycle
 
-The host creates `data/embeddings.db` when `EmbeddingService` is instantiated at startup (before any container launch). If for any reason the file doesn't exist when a container is launched (race on very first boot), the Docker `-v` mount creates an empty file. The container's `EmbeddingReader` detects an empty/missing-schema file and returns empty results — no crash. On the next host indexer cycle, the real DB is populated and subsequent container launches get a valid file.
+The host `EmbeddingService` constructor creates `data/embeddings.db` at startup — before any container launch. The host is the single source of this file.
+
+**Mount strategy:** The container does NOT mount `embeddings.db` directly as a file. Instead, `container-runner.ts` mounts the parent directory `data/` (already mounted for IPC and sessions) and `EmbeddingReader` opens `data/embeddings.db` from within that mount. This avoids Docker bind-mount issues with missing source files:
+
+- If `embeddings.db` exists: reader opens it, reads vectors
+- If `embeddings.db` doesn't exist yet (first boot race): `EmbeddingReader` catches the open error and returns empty results — no crash
+- No new Docker mount needed — `data/` is already mounted
+
+This matches how the container already accesses `data/ipc/`, `data/sessions/`, and `data/taskflow/` — all via the shared `data/` mount.
 
 ## Skill Design
 
