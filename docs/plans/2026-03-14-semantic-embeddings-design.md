@@ -246,52 +246,87 @@ If user confirms, re-call with force_create: true.
 
 ## Skill Design
 
-This is a **standalone skill** (`add-embeddings`), NOT an upgrade to the `add-taskflow` skill. It follows the same pattern as `add-voice-transcription`, `add-image-vision`, etc.
+This is a **standalone skill** (`add-embeddings`), NOT an upgrade to the `add-taskflow` skill. It follows the NanoClaw structured skill format (same as `add-image-vision`, `add-voice-transcription`, etc.).
 
-### Skill directory
+### Skill directory structure
 
 ```
 .claude/skills/add-embeddings/
-└── SKILL.md              # Phases: pre-flight, merge, configure, verify
+├── SKILL.md                                          # Phases: pre-flight, apply, configure, verify
+├── manifest.yaml                                     # Metadata, deps, file lists
+├── add/
+│   └── src/
+│       ├── embedding-indexer.ts                      # Background indexer (host side)
+│       ├── embedding-indexer.test.ts                 # Tests
+│       └── embedding-utils.ts                        # Ollama client, cosine similarity, buildSourceText
+├── modify/
+│   ├── src/
+│   │   ├── taskflow-db.ts                            # Reference file
+│   │   ├── taskflow-db.ts.intent.md                  # Add task_embeddings table
+│   │   ├── index.ts                                  # Reference file
+│   │   ├── index.ts.intent.md                        # Start indexer after main loop
+│   │   ├── container-runner.ts                       # Reference file
+│   │   └── container-runner.ts.intent.md             # OLLAMA_HOST env, prompt preamble
+│   └── container/agent-runner/src/
+│       ├── runtime-config.ts                         # Reference file
+│       ├── runtime-config.ts.intent.md               # Add NANOCLAW_OLLAMA_HOST to MCP env
+│       ├── ipc-mcp-stdio.ts                          # Reference file
+│       ├── ipc-mcp-stdio.ts.intent.md                # Async Ollama wrapping, force_create schema
+│       ├── taskflow-engine.ts                        # Reference file
+│       └── taskflow-engine.ts.intent.md              # query_vector param, cosine similarity
+└── tests/
+    └── embeddings.test.ts                            # Skill integration test
 ```
 
-### Skill branch
+### manifest.yaml
 
-All code lives on a git branch `skill/embeddings` that gets merged into the user's main branch during installation. The branch contains:
-
-**New files (no conflict risk):**
-- `src/embedding-indexer.ts` — background indexer (host side)
-- `src/embedding-utils.ts` — Ollama HTTP client, `buildSourceText()`, cosine similarity, vector Buffer I/O
-
-**Modified files (merged via git):**
-- `src/taskflow-db.ts` — add `task_embeddings` table
-- `src/index.ts` — import + start indexer after main loop
-- `src/container-runner.ts` — read `OLLAMA_HOST` via `readEnvFile()`, add `-e OLLAMA_HOST` to `buildContainerArgs()`, prompt preamble generation
-- `container/agent-runner/src/runtime-config.ts` — add `NANOCLAW_OLLAMA_HOST` to `buildNanoclawMcpEnv()`
-- `container/agent-runner/src/ipc-mcp-stdio.ts` — async Ollama calls wrapping engine.query()/engine.create(), `force_create` in `taskflow_create` Zod schema
-- `container/agent-runner/src/taskflow-engine.ts` — `query_vector` param in search, cosine similarity + vector loading functions
+```yaml
+skill: add-embeddings
+version: 1.0.0
+description: "Semantic search, duplicate detection, and context retrieval via BGE-M3 embeddings"
+core_version: 1.2.12
+adds:
+  - src/embedding-indexer.ts
+  - src/embedding-indexer.test.ts
+  - src/embedding-utils.ts
+modifies:
+  - src/taskflow-db.ts
+  - src/index.ts
+  - src/container-runner.ts
+  - container/agent-runner/src/runtime-config.ts
+  - container/agent-runner/src/ipc-mcp-stdio.ts
+  - container/agent-runner/src/taskflow-engine.ts
+structured:
+  npm_dependencies: {}
+  env_additions:
+    - OLLAMA_HOST
+    - EMBEDDING_MODEL
+conflicts: []
+depends:
+  - add-taskflow
+test: "npx vitest run --config vitest.skills.config.ts .claude/skills/add-embeddings/tests/embeddings.test.ts"
+```
 
 ### SKILL.md phases
 
-1. **Pre-flight:** Check Ollama is reachable (`curl $OLLAMA_HOST/api/tags`), verify BGE-M3 model is loaded, check `add-taskflow` is already applied
-2. **Merge:** `git fetch origin skill/embeddings && git merge origin/skill/embeddings`
-3. **Configure:** Add `OLLAMA_HOST` and `EMBEDDING_MODEL` to `.env`, update CLAUDE.md templates with `duplicate_warning` instruction (the skill does NOT modify `add-taskflow`'s template — it patches group CLAUDE.md files directly during install, same pattern as other skills)
-4. **Build & deploy:** `npm run build && ./container/build.sh && systemctl --user restart nanoclaw`
-5. **Verify:** Send a search query via WhatsApp, confirm semantic results appear
+1. **Pre-flight:** Check Ollama is reachable (`curl $OLLAMA_HOST/api/tags`), verify BGE-M3 model is loaded, check `add-taskflow` is already applied (look for `src/taskflow-db.ts`)
+2. **Apply code changes:** Copy files from `add/`, apply modifications using `modify/` intent files as guidance, rebuild (`npm run build && ./container/build.sh`)
+3. **Configure:** Add `OLLAMA_HOST` and `EMBEDDING_MODEL` to `.env`, patch existing group CLAUDE.md files with `duplicate_warning` handling instruction
+4. **Verify:** Send a search query via WhatsApp, confirm semantic results appear; create a near-duplicate task, confirm warning is shown
 
 ### Dependency
 
-Requires `add-taskflow` to be installed first (needs `taskflow.db`, `task_embeddings` table, MCP tools). The SKILL.md pre-flight checks for this.
+Requires `add-taskflow` to be installed first (needs `taskflow.db`, MCP tools, TaskFlow-managed groups). Declared in `manifest.yaml` as `depends: [add-taskflow]`.
 
 ### CLAUDE.md changes
 
-The skill patches existing group CLAUDE.md files during Phase 3 (Configure) to add:
+During Phase 3, the skill patches existing group CLAUDE.md files to add to the "Tool Response Handling" section:
 ```
 When taskflow_create returns duplicate_warning, present:
 "⚠️ Tarefa similar encontrada: *[ID]* — [título] ([similarity]%). Criar mesmo assim?"
 If user confirms, re-call with force_create: true.
 ```
-This is appended to the existing "Tool Response Handling" section — it does NOT modify the `add-taskflow` template. Future boards provisioned after the skill is installed will get this instruction from the merged codebase automatically.
+This does NOT modify the `add-taskflow` template. Future boards provisioned after the skill is installed will get this instruction from the merged codebase automatically.
 
 ## Configuration
 
