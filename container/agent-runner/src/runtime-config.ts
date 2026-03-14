@@ -12,6 +12,9 @@ export interface ContainerInput {
   assistantName?: string;
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
   secrets?: Record<string, string>;
+  queryVector?: string; // base64-encoded Float32Array
+  ollamaHost?: string;
+  embeddingModel?: string;
 }
 
 export const NANOCLAW_ALLOWED_TOOLS = [
@@ -59,6 +62,13 @@ export function buildNanoclawMcpEnv(
 
   if (containerInput.taskflowMaxDepth !== undefined) {
     env.NANOCLAW_TASKFLOW_MAX_DEPTH = String(containerInput.taskflowMaxDepth);
+  }
+
+  if (containerInput.ollamaHost) {
+    env.NANOCLAW_OLLAMA_HOST = containerInput.ollamaHost;
+  }
+  if (containerInput.embeddingModel) {
+    env.NANOCLAW_EMBEDDING_MODEL = containerInput.embeddingModel;
   }
 
   return env;
