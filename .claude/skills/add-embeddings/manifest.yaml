@@ -1,0 +1,20 @@
+skill: add-embeddings
+version: 1.0.0
+description: "Generic embedding service via Ollama. Indexes, searches, and deduplicates text in named collections."
+core_version: 1.2.12
+adds:
+  - src/embedding-service.ts
+  - src/embedding-service.test.ts
+  - container/agent-runner/src/embedding-reader.ts
+  - container/agent-runner/src/embedding-reader.test.ts
+modifies:
+  - src/container-runner.ts
+  - container/agent-runner/src/runtime-config.ts
+structured:
+  npm_dependencies: {}
+  env_additions:
+    - OLLAMA_HOST
+    - EMBEDDING_MODEL
+conflicts: []
+depends: []
+test: "npx vitest run src/embedding-service.test.ts && cd container/agent-runner && npx vitest run src/embedding-reader.test.ts"
