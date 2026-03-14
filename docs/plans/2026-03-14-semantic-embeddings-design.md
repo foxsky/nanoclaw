@@ -325,10 +325,10 @@ Both `OLLAMA_HOST` and `EMBEDDING_MODEL` follow the same propagation path:
 
 1. **Host:** `readEnvFile(['OLLAMA_HOST', 'EMBEDDING_MODEL'])` in `container-runner.ts` (same pattern as `readSecrets()`)
 2. **Docker:** `-e OLLAMA_HOST=${ollamaHost} -e EMBEDDING_MODEL=${embeddingModel}` in `buildContainerArgs()`
-3. **MCP subprocess:** Add both to `buildNanoclawMcpEnv()` in `runtime-config.ts`:
+3. **MCP subprocess:** Add both to `buildNanoclawMcpEnv()` in `runtime-config.ts`. Note: existing pattern derives values from `containerInput` fields, not `process.env`. For consistency, add `ollamaHost?: string` and `embeddingModel?: string` to `ContainerInput`, set them in `container-runner.ts`, and read from `containerInput` in `buildNanoclawMcpEnv()`:
    ```typescript
-   NANOCLAW_OLLAMA_HOST: process.env.OLLAMA_HOST ?? '',
-   NANOCLAW_EMBEDDING_MODEL: process.env.EMBEDDING_MODEL ?? 'bge-m3',
+   NANOCLAW_OLLAMA_HOST: containerInput.ollamaHost ?? '',
+   NANOCLAW_EMBEDDING_MODEL: containerInput.embeddingModel ?? 'bge-m3',
    ```
 4. **ipc-mcp-stdio.ts:** Reads `process.env.NANOCLAW_OLLAMA_HOST` and `process.env.NANOCLAW_EMBEDDING_MODEL`
 
@@ -476,22 +476,23 @@ This is a **standalone skill** (`add-embeddings`) with **no dependencies** on ot
 ├── SKILL.md                                          # Phases: pre-flight, apply, configure, verify
 ├── manifest.yaml                                     # Metadata, deps, file lists
 ├── add/
-│   └── src/
-│       ├── embedding-service.ts                      # Generic embedding service (host, read-write)
-│       ├── embedding-reader.ts                       # Read-only query client (container)
-│       ├── embedding-service.test.ts                 # Tests
-│       └── taskflow-embedding-sync.ts                # TaskFlow adapter (feeds tasks into service)
+│   ├── src/
+│   │   ├── embedding-service.ts                      # Generic embedding service (host, read-write)
+│   │   ├── embedding-service.test.ts                 # Tests
+│   │   └── taskflow-embedding-sync.ts                # TaskFlow adapter (feeds tasks into service)
+│   └── container/agent-runner/src/
+│       └── embedding-reader.ts                       # Read-only query client (used inside container)
 ├── modify/
 │   ├── src/
 │   │   ├── index.ts                                  # Reference file
 │   │   ├── index.ts.intent.md                        # Start embedding service + TaskFlow sync
 │   │   ├── container-runner.ts                       # Reference file
-│   │   └── container-runner.ts.intent.md             # OLLAMA_HOST + EMBEDDING_MODEL env vars, queryVector in containerInput
+│   │   └── container-runner.ts.intent.md             # Add queryVector to ContainerInput, OLLAMA_HOST + EMBEDDING_MODEL env vars, embeddings mount
 │   └── container/agent-runner/src/
 │       ├── index.ts                                  # Reference file
 │       ├── index.ts.intent.md                        # Read queryVector from containerInput, build context preamble, prepend to prompt
 │       ├── runtime-config.ts                         # Reference file
-│       ├── runtime-config.ts.intent.md               # Add NANOCLAW_OLLAMA_HOST + NANOCLAW_EMBEDDING_MODEL to MCP env
+│       ├── runtime-config.ts.intent.md               # Add queryVector to ContainerInput, NANOCLAW_OLLAMA_HOST + NANOCLAW_EMBEDDING_MODEL to MCP env
 │       ├── ipc-mcp-stdio.ts                          # Reference file
 │       ├── ipc-mcp-stdio.ts.intent.md                # Async Ollama wrapping, force_create schema
 │       ├── taskflow-engine.ts                        # Reference file
@@ -509,9 +510,9 @@ description: "Generic embedding service with semantic search, duplicate detectio
 core_version: 1.2.12
 adds:
   - src/embedding-service.ts
-  - src/embedding-reader.ts
   - src/embedding-service.test.ts
   - src/taskflow-embedding-sync.ts
+  - container/agent-runner/src/embedding-reader.ts
 modifies:
   - src/index.ts
   - src/container-runner.ts
