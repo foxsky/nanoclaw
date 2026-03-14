@@ -12,7 +12,7 @@ Add a generic embedding service to NanoClaw powered by BGE-M3 via Ollama. The se
 
 - **Embedding model:** Configured via `EMBEDDING_MODEL` env var (default deployment: `bge-m3`, 1024 dimensions, multilingual, pt-BR native). All code references the env var — never hardcoded.
 - **Ollama instance:** `192.168.2.13:11434` (existing, dedicated machine)
-- **Storage:** SQLite (`data/taskflow/embeddings.db`) — separate DB file, inside the already-mounted TaskFlow directory
+- **Storage:** SQLite (`data/embeddings/embeddings.db`) — own directory, own mount, independent of TaskFlow
 - **Vector search:** Pure JS cosine similarity (sufficient for <1000 items per collection)
 - **Config:** `OLLAMA_HOST` and `EMBEDDING_MODEL` in `.env`
 
@@ -57,7 +57,7 @@ The embedding service is a standalone module with no knowledge of TaskFlow, task
 
 ## Storage Schema
 
-Separate database at `data/taskflow/embeddings.db` (inside the already-mounted TaskFlow directory — no new Docker mount).
+Separate database at `data/embeddings/embeddings.db`. Own directory, independent of TaskFlow.
 
 ### Two access modes
 
@@ -442,21 +442,28 @@ This uses the existing `containerInput.prompt` → `runQuery(prompt)` path in `i
 
 **Fallback:** If no queryVector provided (Ollama unreachable) or `EmbeddingReader` returns empty, skip preamble — agent queries board as usual.
 
-### embeddings.db storage location
+### embeddings.db storage and mount
 
-The host `EmbeddingService` constructor creates the DB at startup. The DB file lives inside the **existing TaskFlow mount directory**: `data/taskflow/embeddings.db`.
+The DB lives at `data/embeddings/embeddings.db` — its own directory, independent of TaskFlow. The directory (not the file) is mounted so SQLite WAL journal files (`-wal`, `-shm`) persist correctly — same pattern as the TaskFlow mount.
 
-**Why this path:**
-- `data/taskflow/` is already mounted into containers at `/workspace/taskflow/` (via `container-runner.ts` mount list)
-- No new Docker mount needed — `EmbeddingReader` opens `/workspace/taskflow/embeddings.db` inside the container
-- The generic `EmbeddingService` class takes `dbPath` as a constructor argument — it doesn't care where the file lives. Physical location is a deployment detail, not a service concern.
-- If TaskFlow is not installed (no `data/taskflow/` directory), the host creates it or falls back to `data/embeddings.db` with an explicit mount
+**New mount in `container-runner.ts`** (always added, not gated by `taskflowManaged`):
+```typescript
+// Embeddings DB — read-only mount for all containers
+const embeddingsDir = path.join(DATA_DIR, 'embeddings');
+fs.mkdirSync(embeddingsDir, { recursive: true });
+mounts.push({
+  hostPath: embeddingsDir,
+  containerPath: '/workspace/embeddings',
+  readonly: true,
+});
+```
 
 **Lifecycle:**
-- Host creates `data/taskflow/embeddings.db` at `EmbeddingService` instantiation (before container launch)
-- Container opens `/workspace/taskflow/embeddings.db` read-only via `EmbeddingReader`
-- If file doesn't exist yet (first boot race): `EmbeddingReader` catches the open error, returns empty results — no crash
+- Host creates `data/embeddings/` directory and `embeddings.db` at `EmbeddingService` instantiation (startup, before any container launch)
+- Container opens `/workspace/embeddings/embeddings.db` read-only via `EmbeddingReader`
+- If DB file doesn't exist yet (first boot race): directory mount succeeds (empty dir), `EmbeddingReader` catches the open error, returns empty results — no crash
 - First indexer cycle populates the DB; subsequent container launches see data
+- Mount is always present — works for TaskFlow boards, main group, and any future non-TaskFlow groups
 
 ## Skill Design
 
