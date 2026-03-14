@@ -215,7 +215,7 @@ TaskFlow is the first consumer. The integration happens in two places:
 
 ### Host side (indexing)
 
-**File:** `src/index.ts` — after main loop starts, register a TaskFlow indexer that watches for task changes:
+**File:** `src/index.ts` — after main loop starts, start the embedding service and the TaskFlow sync:
 
 ```typescript
 const embeddingService = new EmbeddingService(
@@ -229,7 +229,7 @@ embeddingService.startIndexer();
 startTaskflowEmbeddingSync(embeddingService, getTaskflowDb());
 ```
 
-**File:** `src/taskflow-embedding-sync.ts` — thin adapter that reads tasks from taskflow.db and calls `embeddingService.index()`:
+**File:** `src/taskflow-embedding-sync.ts` — **belongs to the `add-taskflow` skill** (not `add-embeddings`). This is a TaskFlow-specific adapter that reads tasks and calls the generic embedding service. It lives in the TaskFlow codebase because it knows about TaskFlow tables, columns, and board IDs:
 
 ```typescript
 function startTaskflowEmbeddingSync(service: EmbeddingService, tfDb: Database) {
@@ -478,8 +478,7 @@ This is a **standalone skill** (`add-embeddings`) with **no dependencies** on ot
 ├── add/
 │   ├── src/
 │   │   ├── embedding-service.ts                      # Generic embedding service (host, read-write)
-│   │   ├── embedding-service.test.ts                 # Tests
-│   │   └── taskflow-embedding-sync.ts                # TaskFlow adapter (feeds tasks into service)
+│   │   └── embedding-service.test.ts                 # Tests
 │   └── container/agent-runner/src/
 │       └── embedding-reader.ts                       # Read-only query client (used inside container)
 ├── modify/
@@ -511,7 +510,6 @@ core_version: 1.2.12
 adds:
   - src/embedding-service.ts
   - src/embedding-service.test.ts
-  - src/taskflow-embedding-sync.ts
   - container/agent-runner/src/embedding-reader.ts
 modifies:
   - src/index.ts

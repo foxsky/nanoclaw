@@ -19,7 +19,7 @@
 |------|---------------|
 | `src/embedding-service.ts` | Generic embedding service (host, read-write). Schema creation, index(), indexer loop, getCollections(), getItemIds(), remove(). |
 | `src/embedding-service.test.ts` | Tests for EmbeddingService — schema creation, index idempotency, indexer cycle, model switch, stale cleanup |
-| `src/taskflow-embedding-sync.ts` | TaskFlow adapter — polls taskflow.db, feeds EmbeddingService, cleans stale embeddings |
+| `src/taskflow-embedding-sync.ts` | TaskFlow adapter — polls taskflow.db, feeds EmbeddingService, cleans stale embeddings. **Belongs to add-taskflow skill**, not add-embeddings — it knows about TaskFlow tables. |
 | `container/agent-runner/src/embedding-reader.ts` | Read-only embedding query client (container). Opens DB readonly, cosine similarity, search(), findSimilar(). Graceful fallback on missing DB. |
 
 ### Modified files
@@ -728,7 +728,9 @@ git commit -m "feat(embeddings): container wiring — ContainerInput fields, MCP
 
 ---
 
-### Task 5: TaskFlow Embedding Sync
+### Task 5: TaskFlow Embedding Sync (add-taskflow owned, implemented here for first consumer)
+
+**Note:** This file belongs to the `add-taskflow` skill conceptually — it knows about TaskFlow tables. It's implemented here because TaskFlow is the first consumer, but future skill restructuring should move it under add-taskflow.
 
 **Files:**
 - Create: `src/taskflow-embedding-sync.ts`
@@ -1126,8 +1128,8 @@ core_version: 1.2.12
 adds:
   - src/embedding-service.ts
   - src/embedding-service.test.ts
-  - src/taskflow-embedding-sync.ts
   - container/agent-runner/src/embedding-reader.ts
+# Note: src/taskflow-embedding-sync.ts belongs to add-taskflow skill, not here
 modifies:
   - src/index.ts
   - src/container-runner.ts
