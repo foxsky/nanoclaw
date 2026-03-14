@@ -10,7 +10,7 @@ Add a generic embedding service to NanoClaw powered by BGE-M3 via Ollama. The se
 
 ## Infrastructure
 
-- **Embedding model:** BGE-M3 (1024 dimensions, multilingual, pt-BR native)
+- **Embedding model:** Configured via `EMBEDDING_MODEL` env var (default deployment: `bge-m3`, 1024 dimensions, multilingual, pt-BR native). All code references the env var — never hardcoded.
 - **Ollama instance:** `192.168.2.13:11434` (existing, dedicated machine)
 - **Storage:** SQLite (`data/embeddings.db`) — separate DB, not inside taskflow.db
 - **Vector search:** Pure JS cosine similarity (sufficient for <1000 items per collection)
@@ -57,30 +57,33 @@ The embedding service is a standalone module with no knowledge of TaskFlow, task
 
 ## Storage Schema
 
-Separate database at `data/embeddings.db`:
+Separate database at `data/embeddings.db`. **Schema is created by the `EmbeddingService` constructor** — not by `initTaskflowDb()` or any external migration. The constructor calls `db.exec(SCHEMA)` on every instantiation, using `CREATE TABLE IF NOT EXISTS` (idempotent). This guarantees the table exists before any read/write path, whether on a fresh install or an existing deployment.
+
+The container also opens `embeddings.db` read-only for search — the same constructor is used, so schema is guaranteed there too.
 
 ```sql
 CREATE TABLE IF NOT EXISTS embeddings (
   collection TEXT NOT NULL,
   item_id TEXT NOT NULL,
-  vector BLOB NOT NULL,
+  vector BLOB,                -- NULL means pending indexing
   source_text TEXT NOT NULL,
-  model TEXT NOT NULL DEFAULT 'bge-m3',
+  model TEXT NOT NULL,         -- NO DEFAULT — always set from config
   metadata TEXT DEFAULT '{}',
   updated_at TEXT NOT NULL,
   PRIMARY KEY (collection, item_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_embeddings_collection ON embeddings(collection);
+CREATE INDEX IF NOT EXISTS idx_embeddings_pending ON embeddings(collection) WHERE vector IS NULL;
 ```
 
-- `collection`: namespace for items (e.g., `"tasks:board-seci-taskflow"`, `"messages:sec-secti"`, `"documents:global"`)
+- `collection`: namespace for items (e.g., `"tasks:board-seci-taskflow"`, `"messages:sec-secti"`)
 - `item_id`: unique within a collection (e.g., task ID `"T15"`, message ID)
-- `vector`: Float32Array as Buffer (1024 × 4 bytes = 4KB per item)
+- `vector`: Float32Array as Buffer (1024 × 4 bytes = 4KB per item). **NULL means pending** — the indexer picks up NULL vectors for processing.
 - `source_text`: the text that was embedded — used to detect when re-embedding is needed
-- `metadata`: optional JSON for consumer-specific data (e.g., `{"title": "...", "assignee": "..."}` for tasks)
-- `model`: tracks which model produced the vector. On model change, re-embeds all items.
-- Index on `collection` for fast scoped queries
+- `metadata`: optional JSON for consumer-specific data (e.g., `{"title": "...", "assignee": "..."}`)
+- `model`: the model that produced the vector. **No default** — always set from the single config source (`EMBEDDING_MODEL` env var). On model change, all items are marked for re-embedding.
+- Index on `collection` for scoped queries; partial index on `vector IS NULL` for efficient pending-item lookup
 
 ## Component 1: Embedding Service
 
@@ -126,46 +129,40 @@ class EmbeddingService {
 
 The `startIndexer()` method runs `setInterval(10_000)`. Each cycle:
 
-1. Query pending items (source_text changed or model mismatch):
+1. **Model change detection** — if configured model differs from stored, mark ALL for re-embedding (runs once per model change, not every cycle):
    ```sql
-   SELECT collection, item_id, source_text, model
+   UPDATE embeddings SET vector = NULL WHERE model != ?
+   ```
+   This uses the configured `EMBEDDING_MODEL` (single source of truth) — never a hardcoded string.
+
+2. **Query pending items** — staleness decided entirely in SQL, no post-fetch JS filtering. Uses deterministic ordering (`ORDER BY updated_at ASC`) so oldest items are processed first — no starvation:
+   ```sql
+   SELECT collection, item_id, source_text
    FROM embeddings
-   WHERE vector IS NULL OR model != ?
+   WHERE vector IS NULL
+   ORDER BY updated_at ASC
    LIMIT 20
    ```
-   But since we queue via `index()`, the actual flow is:
-   - `index()` calls `INSERT OR REPLACE` with `vector = NULL` (placeholder)
-   - Indexer picks up rows where `vector IS NULL`
-   - After embedding, updates `vector` with the actual data
+   The `vector IS NULL` condition catches both new items (inserted by `index()`) and model-change invalidated items (set to NULL in step 1). The partial index `idx_embeddings_pending` makes this query fast.
 
-   Updated schema to support this:
-   ```sql
-   CREATE TABLE IF NOT EXISTS embeddings (
-     collection TEXT NOT NULL,
-     item_id TEXT NOT NULL,
-     vector BLOB,              -- NULL means pending indexing
-     source_text TEXT NOT NULL,
-     model TEXT NOT NULL DEFAULT 'bge-m3',
-     metadata TEXT DEFAULT '{}',
-     updated_at TEXT NOT NULL,
-     PRIMARY KEY (collection, item_id)
-   );
+3. **Batch-call Ollama:**
    ```
+   POST /api/embed { "model": "<EMBEDDING_MODEL>", "input": [text1, text2, ...] }
+   ```
+   Model name comes from the single config source, never hardcoded.
 
-2. Batch-call Ollama:
-   ```
-   POST /api/embed { "model": "bge-m3", "input": [text1, text2, ...] }
-   ```
-
-3. Update vectors:
+4. **Update vectors:**
    ```sql
    UPDATE embeddings SET vector = ?, model = ?, updated_at = ? WHERE collection = ? AND item_id = ?
    ```
 
-4. Handle model changes: if `EMBEDDING_MODEL` env var changed, mark all items for re-embedding:
-   ```sql
-   UPDATE embeddings SET vector = NULL WHERE model != ?
-   ```
+**How `index()` works:**
+- `index(collection, id, text, metadata)` calls `INSERT OR REPLACE` with `vector = NULL`
+- If the `source_text` hasn't changed (same as stored), it's a no-op (the INSERT OR REPLACE produces an identical row, vector stays non-NULL)
+- If `source_text` changed, the new row has `vector = NULL`, triggering re-embedding on the next cycle
+- This means the consumer (`taskflow-embedding-sync.ts`) can call `index()` on every sync cycle without concern — unchanged items are free
+
+**No starvation guarantee:** Since pending items are selected purely by `WHERE vector IS NULL ORDER BY updated_at ASC LIMIT 20`, every item will eventually be processed. After a model change that invalidates 500 items, it takes 25 cycles (250 seconds) to re-embed all — no items are skipped.
 
 **Error handling:** Ollama failures logged as warnings, never crash. Retry next cycle. DB uses `busy_timeout: 5000`.
 
@@ -313,16 +310,31 @@ If user confirms, re-call with force_create: true.
 
 **Clarification:** There is no TaskFlow "snapshot file" — the container reads taskflow.db directly via MCP tools. The context optimization works by injecting a compact board summary into the **prompt text** that the agent receives, reducing the need for the agent to query the full board on every session start.
 
+### Visibility contract
+
+**Problem:** TaskFlow visibility is complex — `visibleTaskScope()` includes both `board_id = ?` AND delegated tasks via `child_exec_board_id = ? AND child_exec_enabled = 1`. A naive host-side query would miss delegated tasks or expose tasks the agent shouldn't see.
+
+**Solution:** The host does NOT reconstruct visibility rules. Instead, it uses the **engine itself** to generate the summary. The host instantiates `TaskflowEngine` with the board's `taskflow.db` and calls a new method `engine.buildContextSummary(queryVector)` that:
+1. Uses the existing `visibleTaskScope()` for correct visibility
+2. Queries column counts via the same scope
+3. Ranks visible tasks against `queryVector` using embeddings from `embeddings.db`
+4. Returns a formatted preamble string
+
+This guarantees **visibility parity** — the context preamble shows exactly the same task universe the agent would see via MCP queries. The engine method is synchronous (reads pre-computed vectors, no Ollama call). The async Ollama embed call for the user message happens on the host before calling the engine.
+
+**Applies to:** Standard boards AND delegated child-board views — the engine handles both via `visibleTaskScope()`.
+
+### Flow
+
 **Current flow:**
 1. User sends message → host builds prompt from message text
 2. Container starts, agent reads CLAUDE.md + queries full board via MCP tools
 3. Agent uses ~10,000 tokens loading all tasks
 
 **New flow:**
-1. User sends message → host embeds message via Ollama
-2. Host queries `embeddings.db` for the board's collection, ranked by similarity
-3. Host queries `taskflow.db` for board summary counts
-4. Host prepends a context preamble to the prompt:
+1. User sends message → host embeds message via Ollama (async) → `queryVector`
+2. Host instantiates `TaskflowEngine` for the board, calls `engine.buildContextSummary(queryVector)`
+3. Engine queries visible tasks (using `visibleTaskScope()`), ranks by similarity, returns formatted preamble:
    ```
    [Board context: 3 inbox, 5 next_action, 2 in_progress, 1 waiting, 1 overdue (T4, 12/03).
    Relevant tasks for this message:
@@ -330,6 +342,7 @@ If user confirms, re-call with force_create: true.
    - T4 Migração nuvem SEMF/DSF (in_progress, Giovanni, prazo 31/03)
    Other tasks: T8 Hackaton SECTI, T9 PowerBI SEMPLAN, ...]
    ```
+4. Host prepends preamble to the container prompt
 5. Agent has immediate context without querying — can still query MCP for full details if needed
 
 **Token savings:** ~75% reduction (from ~10,000 to ~2,600 for a 50-task board: 200 summary + 2,000 for 10 detailed tasks + 400 for 40 one-liners).
@@ -410,6 +423,33 @@ When taskflow_create returns duplicate_warning, present:
 "⚠️ Tarefa similar encontrada: *[ID]* — [título] ([similarity]%). Criar mesmo assim?"
 If user confirms, re-call with force_create: true.
 ```
+
+## Design Decisions
+
+### Q: Context preamble for delegated child-board views?
+**A: Yes.** The `buildContextSummary()` method uses `visibleTaskScope()` which handles both standard and delegated views. No special case needed.
+
+### Q: Silent fallback for duplicate detection?
+**A: Silent fallback with audit logging.** When Ollama is unreachable and duplicate detection is skipped, the MCP handler logs a warning: `logger.warn({ reason: 'ollama_unreachable' }, 'Duplicate detection skipped')`. The task is still created successfully. This is an acceptable trade-off for MVP — the alternative (blocking creation) is worse UX. Monitoring the log for repeated `ollama_unreachable` warnings surfaces the issue operationally.
+
+### Q: Model configuration — single source of truth
+**A:** `EMBEDDING_MODEL` env var is the single canonical source. Every path that writes or reads model information derives from this value:
+- `EmbeddingService` constructor reads it once and stores as `this.model`
+- `index()` writes `this.model` to the `model` column
+- Indexer step 1 compares `model != this.model` to detect changes
+- Ollama embed calls use `this.model` as the request model
+- No hardcoded model strings anywhere in code (the schema has no DEFAULT on `model` column)
+
+## Required Test Coverage
+
+| Test | What it validates |
+|------|-------------------|
+| **Schema auto-creation** | Start from empty `data/` dir → `EmbeddingService` constructor creates `embeddings.db` with correct schema before any operation |
+| **Indexer no-starvation** | Insert 150 items → model change → verify all 150 get re-embedded over multiple cycles (no items stuck) |
+| **Visibility parity** | Delegated board: `buildContextSummary()` returns same task set as `visibleTaskScope()` query |
+| **Model switch reindex** | Change `EMBEDDING_MODEL` → verify all vectors set to NULL → verify re-embed uses new model |
+| **Duplicate detection fallback** | Mock Ollama as unreachable → verify `taskflow_create` succeeds with warning log (no block) |
+| **Source text idempotency** | Call `index()` twice with same text → verify vector is NOT re-computed (no unnecessary Ollama calls) |
 
 ## Configuration
 
