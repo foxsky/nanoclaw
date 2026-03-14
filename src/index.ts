@@ -718,6 +718,13 @@ async function main(): Promise<void> {
       embedEnv.EMBEDDING_MODEL || 'bge-m3',
     );
     embeddingService.startIndexer();
+
+    // TaskFlow sync adapter — feeds tasks into the generic embedding service
+    const { startTaskflowEmbeddingSync } = await import(
+      './taskflow-embedding-sync.js'
+    );
+    startTaskflowEmbeddingSync(embeddingService, getTaskflowDb(DATA_DIR));
+
     logger.info(
       { ollamaHost: embedEnv.OLLAMA_HOST, model: embedEnv.EMBEDDING_MODEL },
       'Embedding service started',
