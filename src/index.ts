@@ -707,6 +707,23 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
+  // Start embedding service (generic — no TaskFlow dependency)
+  const { readEnvFile: readEnv } = await import('./env.js');
+  const embedEnv = readEnv(['OLLAMA_HOST', 'EMBEDDING_MODEL']);
+  if (embedEnv.OLLAMA_HOST) {
+    const { EmbeddingService } = await import('./embedding-service.js');
+    const embeddingService = new EmbeddingService(
+      path.join(DATA_DIR, 'embeddings', 'embeddings.db'),
+      embedEnv.OLLAMA_HOST,
+      embedEnv.EMBEDDING_MODEL || 'bge-m3',
+    );
+    embeddingService.startIndexer();
+    logger.info(
+      { ollamaHost: embedEnv.OLLAMA_HOST, model: embedEnv.EMBEDDING_MODEL },
+      'Embedding service started',
+    );
+  }
+
   // Start credential proxy
   const proxyServer = await startCredentialProxy(
     CREDENTIAL_PROXY_PORT,
