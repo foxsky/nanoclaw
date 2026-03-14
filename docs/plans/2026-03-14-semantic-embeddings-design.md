@@ -57,9 +57,26 @@ The embedding service is a standalone module with no knowledge of TaskFlow, task
 
 ## Storage Schema
 
-Separate database at `data/embeddings.db`. **Schema is created by the `EmbeddingService` constructor** — not by `initTaskflowDb()` or any external migration. The constructor calls `db.exec(SCHEMA)` on every instantiation, using `CREATE TABLE IF NOT EXISTS` (idempotent). This guarantees the table exists before any read/write path, whether on a fresh install or an existing deployment.
+Separate database at `data/embeddings.db`.
 
-The container also opens `embeddings.db` read-only for search — the same constructor is used, so schema is guaranteed there too.
+### Two access modes
+
+The embedding DB has two distinct clients with different lifecycles:
+
+1. **`EmbeddingService` (host, read-write):** Created once in `src/index.ts` at startup. Constructor opens the DB in read-write mode, runs `db.exec(SCHEMA)` to bootstrap/migrate the schema, then starts the background indexer. This is the ONLY writer.
+
+2. **`EmbeddingReader` (container, read-only):** A lightweight read-only class used inside the container for search and duplicate detection. Opens the DB with `{ readonly: true }` — does NOT attempt schema creation. If `embeddings.db` doesn't exist yet (first-ever boot, before the host indexer runs), the reader returns empty results gracefully (no crash, no schema error). The file is mounted read-only into the container via Docker `-v data/embeddings.db:/workspace/embeddings.db:ro`.
+
+This split guarantees: (a) schema is created only by the host writer, (b) the container never writes, (c) a missing DB on first boot is a no-op not a crash.
+
+### Journal mode and concurrency
+
+The host `EmbeddingService` opens the DB with **WAL mode** (`PRAGMA journal_mode=WAL`) and `busy_timeout: 5000`. WAL allows:
+- One writer (host indexer) + multiple concurrent readers (containers) without blocking
+- Readers see a consistent snapshot even during writes
+- No lock contention between host writes and container reads
+
+The container's `EmbeddingReader` opens read-only — WAL mode is inherited from the DB file and requires no configuration on the reader side.
 
 ```sql
 CREATE TABLE IF NOT EXISTS embeddings (
@@ -191,11 +208,13 @@ startTaskflowEmbeddingSync(embeddingService, getTaskflowDb());
 ```typescript
 function startTaskflowEmbeddingSync(service: EmbeddingService, tfDb: Database) {
   setInterval(() => {
+    // 1. Index all active tasks (idempotent — unchanged source_text is a no-op)
     const tasks = tfDb.prepare(
       `SELECT board_id, id, title, description, next_action, assignee, column
        FROM tasks WHERE column != 'done'`
     ).all();
 
+    const activeKeys = new Set<string>(); // "collection\0item_id"
     for (const task of tasks) {
       const collection = `tasks:${task.board_id}`;
       const text = buildSourceText(task);
@@ -204,13 +223,33 @@ function startTaskflowEmbeddingSync(service: EmbeddingService, tfDb: Database) {
         assignee: task.assignee,
         column: task.column,
       });
+      activeKeys.add(`${collection}\0${task.id}`);
     }
 
-    // Clean collections for deleted tasks
-    // (service.index is idempotent — unchanged source_text is a no-op)
+    // 2. Remove stale embeddings for tasks that are done, archived, or deleted.
+    //    Query all task collections from embeddings.db and remove any item
+    //    not in the active set.
+    const allTaskCollections = service.getCollections('tasks:');
+    for (const collection of allTaskCollections) {
+      const items = service.getItemIds(collection);
+      for (const itemId of items) {
+        if (!activeKeys.has(`${collection}\0${itemId}`)) {
+          service.remove(collection, itemId);
+        }
+      }
+    }
   }, 15_000); // slightly offset from embedding indexer
 }
 ```
+
+**Cleanup lifecycle:** When a task moves to `done`, gets archived, or is cancelled/deleted, it disappears from the `WHERE column != 'done'` query. On the next sync cycle (≤15s), its embedding is removed. This ensures:
+- Completed tasks don't appear in semantic search results
+- Archived tasks don't trigger false duplicate warnings
+- Deleted boards' tasks are cleaned up (their collections empty out naturally)
+
+**Helper methods on EmbeddingService:**
+- `getCollections(prefix?: string)`: returns distinct collection names (optionally filtered by prefix)
+- `getItemIds(collection: string)`: returns all item IDs in a collection (lightweight — no vector data loaded)
 
 ### Container side (search + duplicate detection)
 
@@ -254,11 +293,20 @@ function cosineSimilarity(a: Float32Array, b: Float32Array): number {
 }
 ```
 
-**OLLAMA_HOST delivery chain:**
-1. **Host:** `readEnvFile(['OLLAMA_HOST'])` in `container-runner.ts` (same pattern as `readSecrets()`)
-2. **Docker:** `-e OLLAMA_HOST=${ollamaHost}` in `buildContainerArgs()`
-3. **MCP subprocess:** Add `NANOCLAW_OLLAMA_HOST: process.env.OLLAMA_HOST ?? ''` to `buildNanoclawMcpEnv()` in `runtime-config.ts`
-4. **ipc-mcp-stdio.ts:** Reads `process.env.NANOCLAW_OLLAMA_HOST`
+**Environment variable delivery chains:**
+
+Both `OLLAMA_HOST` and `EMBEDDING_MODEL` follow the same propagation path:
+
+1. **Host:** `readEnvFile(['OLLAMA_HOST', 'EMBEDDING_MODEL'])` in `container-runner.ts` (same pattern as `readSecrets()`)
+2. **Docker:** `-e OLLAMA_HOST=${ollamaHost} -e EMBEDDING_MODEL=${embeddingModel}` in `buildContainerArgs()`
+3. **MCP subprocess:** Add both to `buildNanoclawMcpEnv()` in `runtime-config.ts`:
+   ```typescript
+   NANOCLAW_OLLAMA_HOST: process.env.OLLAMA_HOST ?? '',
+   NANOCLAW_EMBEDDING_MODEL: process.env.EMBEDDING_MODEL ?? 'bge-m3',
+   ```
+4. **ipc-mcp-stdio.ts:** Reads `process.env.NANOCLAW_OLLAMA_HOST` and `process.env.NANOCLAW_EMBEDDING_MODEL`
+
+This guarantees the host indexer and container query paths use the **same model** — both derive from the single `.env` source, threaded through the same explicit chain. The `'bge-m3'` fallback in step 3 is a safety net only — the `.env` file should always set `EMBEDDING_MODEL`.
 
 ## Component 3: TaskFlow Integration — Duplicate Detection
 
@@ -361,7 +409,8 @@ This is a **standalone skill** (`add-embeddings`) with **no dependencies** on ot
 ├── manifest.yaml                                     # Metadata, deps, file lists
 ├── add/
 │   └── src/
-│       ├── embedding-service.ts                      # Generic embedding service class
+│       ├── embedding-service.ts                      # Generic embedding service (host, read-write)
+│       ├── embedding-reader.ts                       # Read-only query client (container)
 │       ├── embedding-service.test.ts                 # Tests
 │       └── taskflow-embedding-sync.ts                # TaskFlow adapter (feeds tasks into service)
 ├── modify/
@@ -390,6 +439,7 @@ description: "Generic embedding service with semantic search, duplicate detectio
 core_version: 1.2.12
 adds:
   - src/embedding-service.ts
+  - src/embedding-reader.ts
   - src/embedding-service.test.ts
   - src/taskflow-embedding-sync.ts
 modifies:
@@ -450,6 +500,9 @@ If user confirms, re-call with force_create: true.
 | **Model switch reindex** | Change `EMBEDDING_MODEL` → verify all vectors set to NULL → verify re-embed uses new model |
 | **Duplicate detection fallback** | Mock Ollama as unreachable → verify `taskflow_create` succeeds with warning log (no block) |
 | **Source text idempotency** | Call `index()` twice with same text → verify vector is NOT re-computed (no unnecessary Ollama calls) |
+| **WAL concurrency** | Host writer + container reader concurrent access → reader gets consistent results, no SQLITE_BUSY errors |
+| **Stale cleanup** | Move task to done → next sync cycle removes its embedding → search no longer returns it |
+| **Read-only graceful fallback** | `EmbeddingReader` opens non-existent `embeddings.db` → returns empty results, no crash |
 
 ## Configuration
 
