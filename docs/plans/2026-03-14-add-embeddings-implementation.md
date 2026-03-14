@@ -35,7 +35,7 @@ All files are implemented together for the MVP, but ownership determines which s
 ### Modified files — add-embeddings skill
 | File | Changes |
 |------|---------|
-| `src/container-runner.ts:45-58` | Add `queryVector?`, `ollamaHost?`, `embeddingModel?` to `ContainerInput`. Read `OLLAMA_HOST`/`EMBEDDING_MODEL` via `readEnvFile()`. Add `-e` flags in `buildContainerArgs()`. Add embeddings mount. (queryVector is set by TaskFlow integration plan, not here.) |
+| `src/container-runner.ts:45-58` | Add `queryVector?`, `ollamaHost?`, `embeddingModel?` to `ContainerInput`. Read `OLLAMA_HOST`/`EMBEDDING_MODEL` via `readEnvFile()`. Add `-e` flags in `buildContainerArgs()`. Add embeddings mount. Embed user message (generic hook — fires for all groups when Ollama configured). |
 | `src/index.ts:393-486` | Instantiate `EmbeddingService` at startup, call `startIndexer()`. |
 | `container/agent-runner/src/runtime-config.ts:1-15,40-65` | Add `queryVector?`, `ollamaHost?`, `embeddingModel?` to `ContainerInput`. Add `NANOCLAW_OLLAMA_HOST`, `NANOCLAW_EMBEDDING_MODEL` to `buildNanoclawMcpEnv()`. |
 
@@ -501,7 +501,7 @@ git commit -m "feat(embeddings): add EmbeddingService — schema, index, indexer
 
 ---
 
-### Task 2: EmbeddingReader (container, read-only)
+### Task 2: EmbeddingReader + baseline tests (container, read-only)
 
 **Files:**
 - Create: `container/agent-runner/src/embedding-reader.ts`
@@ -589,16 +589,98 @@ export class EmbeddingReader {
 }
 ```
 
-- [ ] **Step 2: Verify TypeScript compiles**
+- [ ] **Step 2: Write baseline tests for EmbeddingReader**
 
-Run: `cd container/agent-runner && npx tsc --noEmit`
-Expected: No errors
+Create `container/agent-runner/src/embedding-reader.test.ts`:
 
-- [ ] **Step 3: Commit**
+```typescript
+import { describe, it, expect, afterEach } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+import Database from 'better-sqlite3';
+import { EmbeddingReader, cosineSimilarity } from './embedding-reader.js';
+
+const TEST_DIR = path.join(import.meta.dirname, '..', 'test-embeddings');
+const TEST_DB = path.join(TEST_DIR, 'embeddings.db');
+
+afterEach(() => {
+  fs.rmSync(TEST_DIR, { recursive: true, force: true });
+});
+
+function seedDb(): Database.Database {
+  fs.mkdirSync(TEST_DIR, { recursive: true });
+  const db = new Database(TEST_DB);
+  db.exec(`CREATE TABLE embeddings (
+    collection TEXT NOT NULL, item_id TEXT NOT NULL,
+    vector BLOB, source_text TEXT NOT NULL, model TEXT NOT NULL,
+    metadata TEXT DEFAULT '{}', updated_at TEXT NOT NULL,
+    PRIMARY KEY (collection, item_id)
+  )`);
+  return db;
+}
+
+describe('EmbeddingReader', () => {
+  it('returns empty results for non-existent DB', () => {
+    const reader = new EmbeddingReader('/tmp/does-not-exist/embeddings.db');
+    expect(reader.search('c', new Float32Array([1, 0, 0]))).toEqual([]);
+    expect(reader.findSimilar('c', new Float32Array([1, 0, 0]))).toBeNull();
+    reader.close();
+  });
+
+  it('search returns ranked results above threshold', () => {
+    const db = seedDb();
+    const v1 = Buffer.from(new Float32Array([1, 0, 0]).buffer);
+    const v2 = Buffer.from(new Float32Array([0.9, 0.1, 0]).buffer);
+    const v3 = Buffer.from(new Float32Array([0, 0, 1]).buffer); // orthogonal
+    db.prepare('INSERT INTO embeddings VALUES (?,?,?,?,?,?,?)').run('c', 'A', v1, 'a', 'm', '{}', '');
+    db.prepare('INSERT INTO embeddings VALUES (?,?,?,?,?,?,?)').run('c', 'B', v2, 'b', 'm', '{}', '');
+    db.prepare('INSERT INTO embeddings VALUES (?,?,?,?,?,?,?)').run('c', 'C', v3, 'c', 'm', '{}', '');
+    db.close();
+
+    const reader = new EmbeddingReader(TEST_DB);
+    const results = reader.search('c', new Float32Array([1, 0, 0]), { threshold: 0.5 });
+    expect(results.length).toBe(2); // A and B, not C
+    expect(results[0].itemId).toBe('A'); // highest score
+    reader.close();
+  });
+
+  it('findSimilar returns best match or null', () => {
+    const db = seedDb();
+    db.prepare('INSERT INTO embeddings VALUES (?,?,?,?,?,?,?)').run(
+      'c', 'A', Buffer.from(new Float32Array([1, 0, 0]).buffer), 'a', 'm', '{"title":"test"}', ''
+    );
+    db.close();
+
+    const reader = new EmbeddingReader(TEST_DB);
+    const match = reader.findSimilar('c', new Float32Array([1, 0, 0]), 0.9);
+    expect(match).not.toBeNull();
+    expect(match!.itemId).toBe('A');
+    const noMatch = reader.findSimilar('c', new Float32Array([0, 0, 1]), 0.9);
+    expect(noMatch).toBeNull();
+    reader.close();
+  });
+});
+
+describe('cosineSimilarity', () => {
+  it('returns 1 for identical vectors', () => {
+    expect(cosineSimilarity(new Float32Array([1, 2, 3]), new Float32Array([1, 2, 3]))).toBeCloseTo(1);
+  });
+  it('returns 0 for orthogonal vectors', () => {
+    expect(cosineSimilarity(new Float32Array([1, 0, 0]), new Float32Array([0, 1, 0]))).toBeCloseTo(0);
+  });
+});
+```
+
+- [ ] **Step 3: Verify TypeScript compiles and tests pass**
+
+Run: `cd container/agent-runner && npx tsc --noEmit && npx vitest run src/embedding-reader.test.ts`
+Expected: No compile errors, all tests pass
+
+- [ ] **Step 4: Commit**
 
 ```bash
-git add container/agent-runner/src/embedding-reader.ts
-git commit -m "feat(embeddings): add EmbeddingReader — read-only client with cosine similarity"
+git add container/agent-runner/src/embedding-reader.ts container/agent-runner/src/embedding-reader.test.ts
+git commit -m "feat(embeddings): add EmbeddingReader + baseline tests — read-only client with cosine similarity"
 ```
 
 ---
@@ -678,9 +760,35 @@ if (input.ollamaHost) {
 }
 ```
 
-Note: The `queryVector` field on `ContainerInput` is plumbing only — the generic plan adds the field but does NOT embed the user message. That behavior (calling Ollama to embed the prompt and setting `input.queryVector`) belongs to the TaskFlow integration plan, which owns the "embed message for context preamble" logic.
+- [ ] **Step 6: Embed user message and set queryVector (generic hook)**
 
-- [ ] **Step 6: Build and verify**
+In `runContainerAgent()`, after setting `input.ollamaHost` and before spawning the container. This is generic infrastructure — any consumer that sets `ollamaHost` on `ContainerInput` gets query embedding. The hook is not TaskFlow-specific:
+
+```typescript
+// Embed user message for context-aware features (async, best-effort)
+if (input.ollamaHost) {
+  try {
+    const resp = await fetch(`${input.ollamaHost}/api/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: input.embeddingModel || 'bge-m3', input: input.prompt }),
+      signal: AbortSignal.timeout(2000),
+    });
+    if (resp.ok) {
+      const data = await resp.json() as { embeddings: number[][] };
+      if (data.embeddings?.[0]) {
+        input.queryVector = Buffer.from(new Float32Array(data.embeddings[0]).buffer).toString('base64');
+      }
+    }
+  } catch {
+    // Ollama unreachable — queryVector stays undefined
+  }
+}
+```
+
+Note: This hook fires for ALL groups when Ollama is configured — not gated by `taskflowManaged`. Any consumer (TaskFlow or future) can read `containerInput.queryVector` inside the container. If no consumer reads it, the field is harmlessly ignored.
+
+- [ ] **Step 7: Build and verify**
 
 Run: `npm run build`
 Expected: Clean build
@@ -787,7 +895,7 @@ structured:
     - EMBEDDING_MODEL
 conflicts: []
 depends: []
-test: "npx vitest run src/embedding-service.test.ts"
+test: "npx vitest run src/embedding-service.test.ts && cd container/agent-runner && npx vitest run src/embedding-reader.test.ts"
 ```
 
 - [ ] **Step 3: Commit**
@@ -813,10 +921,12 @@ Expected: Build complete
 
 - [ ] **Step 3: Run unit tests**
 
-Run: `npx vitest run src/embedding-service.test.ts`
-Expected: All tests pass
-
-Note: `EmbeddingReader` (container package) is tested by the companion TaskFlow integration plan's Task 4. The generic plan's test suite covers only `EmbeddingService` (host package). Both are owned by `add-embeddings` but live in different TypeScript packages with separate test runners.
+Run both test suites (host + container):
+```bash
+npx vitest run src/embedding-service.test.ts
+cd container/agent-runner && npx vitest run src/embedding-reader.test.ts
+```
+Expected: All tests pass in both packages
 
 - [ ] **Step 4: Add OLLAMA_HOST and EMBEDDING_MODEL to .env**
 

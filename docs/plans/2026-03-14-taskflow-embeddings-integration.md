@@ -79,17 +79,35 @@ query_vector?: Float32Array;
 
 - [ ] **Step 2: Import EmbeddingReader in taskflow-engine.ts**
 
-At the top of the file, add a lazy import (ESM-compatible, loaded once):
+The container package is ESM (`"type": "module"` in `package.json`). Use a top-level `await import()` — this is valid in ESM modules:
+
 ```typescript
-let _EmbeddingReader: typeof import('./embedding-reader.js').EmbeddingReader | null = null;
-function getEmbeddingReader() {
-  if (!_EmbeddingReader) {
-    try { _EmbeddingReader = require('./embedding-reader.js').EmbeddingReader; } catch { return null; }
+// At the top of taskflow-engine.ts, after other imports:
+const { EmbeddingReader, cosineSimilarity } = await import('./embedding-reader.js');
+```
+
+If the file is not an async context at top level (TypeScript may complain), wrap in a lazy initializer:
+
+```typescript
+import type { EmbeddingReader as EmbeddingReaderType } from './embedding-reader.js';
+
+let _readerModule: { EmbeddingReader: typeof EmbeddingReaderType; cosineSimilarity: (a: Float32Array, b: Float32Array) => number } | null = null;
+async function getReaderModule() {
+  if (!_readerModule) {
+    _readerModule = await import('./embedding-reader.js');
   }
-  return _EmbeddingReader;
+  return _readerModule;
 }
 ```
-Note: The container compiles to CJS via the entrypoint, so `require()` works here. If ESM-only, use top-level `await import()` instead.
+
+Since the engine's `query()` method is synchronous, the lazy import must be resolved before the first call. The MCP handler in `ipc-mcp-stdio.ts` already awaits before calling `engine.query()`, so add the initialization there:
+
+```typescript
+// In ipc-mcp-stdio.ts, at MCP server startup (before tool handlers):
+await import('./embedding-reader.js'); // pre-warm the ESM module cache
+```
+
+Alternatively, since `ipc-mcp-stdio.ts` is async, it can pass an already-opened `EmbeddingReader` instance to the engine methods as a parameter (same pattern as `buildContextSummary(queryVector, reader)`). This avoids the sync/async boundary entirely — the engine never imports the module itself.
 
 - [ ] **Step 3: Enhance search case**
 
@@ -116,38 +134,13 @@ git commit -m "feat(taskflow): semantic search + duplicate detection via embeddi
 
 ---
 
-## Task 3: Host message embedding + Context Preamble + buildContextSummary
+## Task 3: Context Preamble + buildContextSummary
 
 **Files:**
-- Modify: `src/container-runner.ts` (embed user message, set queryVector)
 - Modify: `container/agent-runner/src/taskflow-engine.ts`
 - Modify: `container/agent-runner/src/index.ts`
 
-- [ ] **Step 0: Embed user message on host (sets containerInput.queryVector)**
-
-In `src/container-runner.ts`, in `runContainerAgent()`, after building the prompt and before spawning the container:
-
-```typescript
-// Embed user message for context preamble (async, best-effort, TaskFlow only)
-if (input.ollamaHost && group.taskflowManaged) {
-  try {
-    const resp = await fetch(`${input.ollamaHost}/api/embed`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: input.embeddingModel || 'bge-m3', input: input.prompt }),
-      signal: AbortSignal.timeout(2000),
-    });
-    if (resp.ok) {
-      const data = await resp.json() as { embeddings: number[][] };
-      if (data.embeddings?.[0]) {
-        input.queryVector = Buffer.from(new Float32Array(data.embeddings[0]).buffer).toString('base64');
-      }
-    }
-  } catch {
-    // Ollama unreachable — skip context preamble
-  }
-}
-```
+**Note on queryVector:** The generic `add-embeddings` plan adds a `queryVector` hook in `container-runner.ts` that embeds the user message when `ollamaHost` is configured. This plan does NOT modify `container-runner.ts` — it consumes the `queryVector` that the generic plan's hook provides. See add-embeddings plan Task 3 Step 5 for the hook.
 
 - [ ] **Step 1: Add buildContextSummary() to TaskflowEngine**
 
@@ -178,22 +171,19 @@ git commit -m "feat(taskflow): context preamble via buildContextSummary + embedd
 
 ## Task 4: Integration Tests
 
-Container-side tests live in the container package (`container/agent-runner/`), not the host test suite.
+Container-side integration tests live in `container/agent-runner/`. Baseline `EmbeddingReader` tests are already in the generic plan (Task 2). This task covers TaskFlow-specific integration behavior only.
 
-- [ ] **Step 1: Write EmbeddingReader tests**
+- [ ] **Step 1: Write integration test for semantic search ranking**
 
-In `container/agent-runner/src/embedding-reader.test.ts`:
-- Read-only graceful fallback: open non-existent DB → empty results, no crash
-- Search returns ranked results above threshold
-- findSimilar returns best match or null
+Mock a populated `embeddings.db`, verify `engine.query({ query: 'search', search_text: '...', query_vector })` merges lexical + semantic results correctly (lexical boost, threshold filtering, score ordering).
 
-- [ ] **Step 2: Write integration test for search wrapping**
+- [ ] **Step 2: Write integration test for duplicate detection fallback**
 
-Mock Ollama response, verify `engine.query({ query: 'search', query_vector })` merges lexical + semantic results via engine-owned `EmbeddingReader`.
+Mock Ollama as unreachable, verify `taskflow_create` succeeds with `console.warn` log (no block, no crash).
 
-- [ ] **Step 3: Write integration test for duplicate detection fallback**
+- [ ] **Step 3: Write integration test for buildContextSummary**
 
-Mock Ollama as unreachable, verify `taskflow_create` succeeds with console.warn log (no block).
+Create tasks with embeddings, call `engine.buildContextSummary(queryVector, reader)`, verify preamble includes relevant tasks ranked by similarity and uses `visibleTaskScope()`.
 
 - [ ] **Step 4: Run all tests**
 

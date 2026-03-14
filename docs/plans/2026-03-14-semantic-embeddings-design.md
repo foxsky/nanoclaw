@@ -543,7 +543,7 @@ structured:
     - EMBEDDING_MODEL
 conflicts: []
 depends: []
-test: "npx vitest run --config vitest.skills.config.ts .claude/skills/add-embeddings/tests/embeddings.test.ts"
+test: "npx vitest run src/embedding-service.test.ts && cd container/agent-runner && npx vitest run src/embedding-reader.test.ts"
 ```
 
 ### SKILL.md phases
