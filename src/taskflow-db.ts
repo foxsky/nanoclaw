@@ -549,6 +549,12 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
     `CREATE INDEX IF NOT EXISTS idx_tasks_linked_parent ON tasks(board_id, linked_parent_board_id, linked_parent_task_id) WHERE linked_parent_board_id IS NOT NULL AND linked_parent_task_id IS NOT NULL`,
   );
 
+  /* --- Performance indexes for task_history and archive queries --- */
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_task_history_board_task ON task_history(board_id, task_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_task_history_board_at ON task_history(board_id, at)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_archive_board_assignee ON archive(board_id, assignee)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_archive_board_archived_at ON archive(board_id, archived_at)`);
+
   /* --- board_holidays table (migration for existing DBs) --- */
   db.exec(`CREATE TABLE IF NOT EXISTS board_holidays (
     board_id TEXT NOT NULL, holiday_date TEXT NOT NULL, label TEXT,

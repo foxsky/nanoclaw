@@ -7,7 +7,7 @@ import path from 'path';
 import { DATA_DIR, PROJECT_ROOT } from '../config.js';
 import { createTask } from '../db.js';
 import { logger } from '../logger.js';
-import { computeNextRun } from '../task-scheduler.js';
+
 
 export const TASKFLOW_DB_PATH = path.join(DATA_DIR, 'taskflow', 'taskflow.db');
 export const TEMPLATE_PATH = path.join(
@@ -80,10 +80,11 @@ export interface BoardRuntimeConfigRow {
 }
 
 export function nextCronRun(cronExpr: string): string | null {
-  return computeNextRun({
-    schedule_type: 'cron',
-    schedule_value: cronExpr,
-  } as import('../types.js').ScheduledTask);
+  try {
+    return CronExpressionParser.parse(cronExpr, { tz: 'UTC' }).next().toISOString();
+  } catch {
+    return null;
+  }
 }
 
 export function sanitizeFolder(input: string): string {

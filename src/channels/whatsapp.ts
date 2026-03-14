@@ -414,9 +414,57 @@ export class WhatsAppChannel implements Channel {
   async createGroup(
     subject: string,
     participants: string[],
-  ): Promise<{ jid: string; subject: string }> {
+  ): Promise<{ jid: string; subject: string; inviteLink?: string }> {
     const result = await this.sock.groupCreate(subject, participants);
-    return { jid: result.id, subject: result.subject };
+    const groupJid = result.id;
+
+    // Verify participants were added; if not, retry with groupParticipantsUpdate
+    let allAdded = true;
+    try {
+      const meta = await this.sock.groupMetadata(groupJid);
+      const memberIds = new Set(meta.participants.map((p) => p.id));
+      const missing = participants.filter((p) => !memberIds.has(p));
+      if (missing.length > 0) {
+        logger.info({ groupJid, missing }, 'Participants not added at creation, retrying');
+        try {
+          await this.sock.groupParticipantsUpdate(groupJid, missing, 'add');
+        } catch (retryErr) {
+          allAdded = false;
+          logger.warn({ err: retryErr, groupJid, missing }, 'Failed to add missing participants');
+        }
+        // Only re-verify if the retry didn't throw
+        if (allAdded) {
+          try {
+            const meta2 = await this.sock.groupMetadata(groupJid);
+            const memberIds2 = new Set(meta2.participants.map((p) => p.id));
+            const stillMissing = missing.filter((p) => !memberIds2.has(p));
+            if (stillMissing.length > 0) {
+              allAdded = false;
+              logger.warn({ groupJid, stillMissing }, 'Participants still missing after retry');
+            }
+          } catch {
+            // Re-verify failed but retry was attempted — assume success
+            logger.debug({ groupJid }, 'Could not re-verify participants after retry');
+          }
+        }
+      }
+    } catch (err) {
+      allAdded = false;
+      logger.warn({ err, groupJid }, 'Failed to verify group participants');
+    }
+
+    // Generate invite link only when participants couldn't be added
+    let inviteLink: string | undefined;
+    if (!allAdded) {
+      try {
+        const code = await this.sock.groupInviteCode(groupJid);
+        inviteLink = `https://chat.whatsapp.com/${code}`;
+      } catch (err) {
+        logger.warn({ err, groupJid }, 'Failed to generate invite link');
+      }
+    }
+
+    return { jid: groupJid, subject: result.subject, inviteLink };
   }
 
   private async flushOutgoingQueue(): Promise<void> {
@@ -430,11 +478,20 @@ export class WhatsAppChannel implements Channel {
       while (this.outgoingQueue.length > 0) {
         const item = this.outgoingQueue.shift()!;
         // Send directly — queued items are already prefixed by sendMessage
-        await this.sock.sendMessage(item.jid, { text: item.text });
-        logger.info(
-          { jid: item.jid, length: item.text.length },
-          'Queued message sent',
-        );
+        try {
+          await this.sock.sendMessage(item.jid, { text: item.text });
+          logger.info(
+            { jid: item.jid, length: item.text.length },
+            'Queued message sent',
+          );
+        } catch (err) {
+          this.outgoingQueue.unshift(item);
+          logger.warn(
+            { jid: item.jid, err, queueSize: this.outgoingQueue.length },
+            'Failed to send queued message, will retry on reconnect',
+          );
+          break;
+        }
       }
     } finally {
       this.flushing = false;

@@ -470,14 +470,17 @@ export async function runContainerAgent(
             .trim();
           parseBuffer = parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
 
+          // A complete marker pair means the container is actively responding.
+          // Mark activity and reset timeout before JSON.parse — a parse error
+          // on malformed output must not be mistaken for silence.
+          hadStreamingOutput = true;
+          resetTimeout();
+
           try {
             const parsed: ContainerOutput = JSON.parse(jsonStr);
             if (parsed.newSessionId) {
               newSessionId = parsed.newSessionId;
             }
-            hadStreamingOutput = true;
-            // Activity detected — reset the hard timeout
-            resetTimeout();
             // Call onOutput for all markers (including null results)
             // so idle timers start even for "silent" query completions.
             outputChain = outputChain.then(() => onOutput(parsed));

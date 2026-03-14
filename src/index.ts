@@ -214,8 +214,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const channel = findChannel(channels, chatJid);
   if (!channel) {
-    logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
-    return true;
+    logger.warn({ chatJid }, 'No channel owns JID, will retry');
+    return false;
   }
 
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;

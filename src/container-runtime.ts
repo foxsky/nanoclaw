@@ -72,7 +72,8 @@ export function stopContainer(name: string): string {
       `Invalid container name: "${name}" — must match ${VALID_CONTAINER_NAME}`,
     );
   }
-  return `${CONTAINER_RUNTIME_BIN} stop ${name}`;
+  const safeName = name.startsWith('/') ? name.slice(1) : name;
+  return `${CONTAINER_RUNTIME_BIN} stop ${safeName}`;
 }
 
 /** Ensure the container runtime is running, starting it if needed. */

@@ -105,7 +105,15 @@ class MessageStream {
         yield this.queue.shift()!;
       }
       if (this.done) return;
-      await new Promise<void>(r => { this.waiting = r; });
+      // Install waiter before re-checking done/queue to close the race window
+      // where end() or push() fires between the check above and the await.
+      await new Promise<void>(r => {
+        this.waiting = r;
+        if (this.done || this.queue.length > 0) {
+          this.waiting = null;
+          r();
+        }
+      });
       this.waiting = null;
     }
   }
@@ -511,6 +519,7 @@ async function runQuery(
   }
 
   ipcPolling = false;
+  stream.end();
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
@@ -573,6 +582,9 @@ async function main(): Promise<void> {
       if (queryResult.lastAssistantUuid) {
         resumeAt = queryResult.lastAssistantUuid;
       }
+      // Clear image attachments after first query — images belong only to the
+      // original message and must not be re-injected into follow-up queries.
+      containerInput.imageAttachments = undefined;
 
       // If _close was consumed during the query, exit immediately.
       // Don't emit a session-update marker (it would reset the host's

@@ -114,12 +114,13 @@ async function runTask(
   }
 
   // Advance next_run BEFORE executing so the scheduler loop won't
-  // re-enqueue this task while it's still running. For 'once' tasks
-  // next_run becomes null and status flips to 'completed' via
-  // updateTaskAfterRun after the run finishes.
+  // re-enqueue this task while it's still running or after a restart.
   const precomputedNextRun = computeNextRun(task);
   if (precomputedNextRun) {
     updateTask(task.id, { next_run: precomputedNextRun });
+  } else if (task.schedule_type === 'once') {
+    // Clear next_run so a crash/restart won't re-execute the once task.
+    updateTask(task.id, { next_run: null });
   }
 
   // Update tasks snapshot for container to read (filtered by group)

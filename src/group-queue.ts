@@ -27,6 +27,7 @@ interface GroupState {
   inputDir: string | null;
   retryCount: number;
   retryTimer: ReturnType<typeof setTimeout> | null;
+  pendingClose: boolean;
 }
 
 export class GroupQueue {
@@ -53,6 +54,7 @@ export class GroupQueue {
         inputDir: null,
         retryCount: 0,
         retryTimer: null,
+        pendingClose: false,
       };
       this.groups.set(groupJid, state);
     }
@@ -152,6 +154,11 @@ export class GroupQueue {
       state.inputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
       fs.mkdirSync(state.inputDir, { recursive: true });
     }
+    // Flush deferred close if preemption was requested before inputDir was set
+    if (state.pendingClose) {
+      state.pendingClose = false;
+      this.closeStdin(groupJid);
+    }
   }
 
   /**
@@ -192,8 +199,13 @@ export class GroupQueue {
    */
   closeStdin(groupJid: string): void {
     const state = this.getGroup(groupJid);
-    if (!state.active || !state.inputDir) return;
-
+    if (!state.active) return;
+    if (!state.inputDir) {
+      // Container still starting — record intent for registerProcess
+      state.pendingClose = true;
+      return;
+    }
+    state.pendingClose = false;
     try {
       fs.writeFileSync(path.join(state.inputDir, '_close'), '');
     } catch {
