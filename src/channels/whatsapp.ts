@@ -535,7 +535,8 @@ export class WhatsAppChannel implements Channel {
       jid: groupJid,
       subject: result.subject,
       inviteLink,
-      droppedParticipants: droppedParticipants.length > 0 ? droppedParticipants : undefined,
+      droppedParticipants:
+        droppedParticipants.length > 0 ? droppedParticipants : undefined,
     };
   }
 

@@ -199,7 +199,7 @@ const handleProvisionChildBoard: IpcHandler = async (
       if (result.inviteLink) {
         // Send invite link with dropped participant info so the manager knows who to forward it to
         const dropped = result.droppedParticipants?.length
-          ? `\n⚠️ Não foi possível adicionar: ${result.droppedParticipants.map(p => p.split('@')[0]).join(', ')}`
+          ? `\n⚠️ Não foi possível adicionar: ${result.droppedParticipants.map((p) => p.split('@')[0]).join(', ')}`
           : '';
         try {
           await deps.sendMessage(

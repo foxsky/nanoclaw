@@ -95,7 +95,12 @@ export interface Channel {
   createGroup?(
     subject: string,
     participants: string[],
-  ): Promise<{ jid: string; subject: string; inviteLink?: string; droppedParticipants?: string[] }>;
+  ): Promise<{
+    jid: string;
+    subject: string;
+    inviteLink?: string;
+    droppedParticipants?: string[];
+  }>;
   // Optional: resolve a phone number to a JID. Channels that support it implement it.
   resolvePhoneJid?(phone: string): Promise<string>;
   // Optional: sync groups from the channel. Channels that support it implement it.
