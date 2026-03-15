@@ -25,6 +25,11 @@ export class EmbeddingService {
   private readonly model: string;
   private indexerTimer: ReturnType<typeof setInterval> | null = null;
 
+  // Prepared statements (cached for performance — avoids re-parsing on every call)
+  private readonly stmtSelectExisting: Database.Statement;
+  private readonly stmtUpsert: Database.Statement;
+  private readonly stmtDelete: Database.Statement;
+
   constructor(dbPath: string, ollamaHost: string, model: string) {
     this.ollamaHost = ollamaHost;
     this.model = model;
@@ -33,6 +38,20 @@ export class EmbeddingService {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('busy_timeout = 5000');
     this.db.exec(SCHEMA);
+
+    this.stmtSelectExisting = this.db.prepare(
+      'SELECT source_text, model FROM embeddings WHERE collection = ? AND item_id = ?',
+    );
+    this.stmtUpsert = this.db.prepare(
+      `INSERT INTO embeddings (collection, item_id, vector, source_text, model, metadata, updated_at)
+       VALUES (?, ?, NULL, ?, ?, ?, ?)
+       ON CONFLICT (collection, item_id) DO UPDATE SET
+         vector = NULL, source_text = excluded.source_text, model = excluded.model,
+         metadata = excluded.metadata, updated_at = excluded.updated_at`,
+    );
+    this.stmtDelete = this.db.prepare(
+      'DELETE FROM embeddings WHERE collection = ? AND item_id = ?',
+    );
   }
 
   /* ---------------------------------------------------------------- */
@@ -45,11 +64,7 @@ export class EmbeddingService {
     text: string,
     metadata?: Record<string, any>,
   ): void {
-    const existing = this.db
-      .prepare(
-        'SELECT source_text, model FROM embeddings WHERE collection = ? AND item_id = ?',
-      )
-      .get(collection, itemId) as
+    const existing = this.stmtSelectExisting.get(collection, itemId) as
       | { source_text: string; model: string }
       | undefined;
 
@@ -61,15 +76,7 @@ export class EmbeddingService {
       return; // unchanged — preserve existing vector
     }
 
-    this.db
-      .prepare(
-        `INSERT INTO embeddings (collection, item_id, vector, source_text, model, metadata, updated_at)
-         VALUES (?, ?, NULL, ?, ?, ?, ?)
-         ON CONFLICT (collection, item_id) DO UPDATE SET
-           vector = NULL, source_text = excluded.source_text, model = excluded.model,
-           metadata = excluded.metadata, updated_at = excluded.updated_at`,
-      )
-      .run(
+    this.stmtUpsert.run(
         collection,
         itemId,
         text,
@@ -80,9 +87,7 @@ export class EmbeddingService {
   }
 
   remove(collection: string, itemId: string): void {
-    this.db
-      .prepare('DELETE FROM embeddings WHERE collection = ? AND item_id = ?')
-      .run(collection, itemId);
+    this.stmtDelete.run(collection, itemId);
   }
 
   removeCollection(collection: string): void {
@@ -132,13 +137,18 @@ export class EmbeddingService {
     try {
       // Step 1: Model change detection — only update if mismatched rows exist
       const mismatch = this.db
-        .prepare('SELECT COUNT(*) as cnt FROM embeddings WHERE model != ? AND vector IS NOT NULL')
+        .prepare(
+          'SELECT COUNT(*) as cnt FROM embeddings WHERE model != ? AND vector IS NOT NULL',
+        )
         .get(this.model) as { cnt: number };
       if (mismatch.cnt > 0) {
         this.db
           .prepare('UPDATE embeddings SET vector = NULL WHERE model != ?')
           .run(this.model);
-        logger.info({ count: mismatch.cnt, model: this.model }, 'Embedding indexer: model change detected, re-embedding');
+        logger.info(
+          { count: mismatch.cnt, model: this.model },
+          'Embedding indexer: model change detected, re-embedding',
+        );
       }
 
       // Step 2: Query pending items (deterministic order, no starvation)

@@ -7166,7 +7166,9 @@ export class TaskflowEngine {
 
       const otherTasks = others.filter(t => !rankedIds.has(t.id));
       if (otherTasks.length > 0) {
-        lines.push(`Other tasks: ${otherTasks.map(t => `${t.id} ${t.title}`).join(', ')}]`);
+        const shown = otherTasks.slice(0, 30);
+        const suffix = otherTasks.length > 30 ? ` ... and ${otherTasks.length - 30} more` : '';
+        lines.push(`Other tasks: ${shown.map(t => `${t.id} ${t.title}`).join(', ')}${suffix}]`);
       } else {
         lines[lines.length - 1] += ']';
       }
