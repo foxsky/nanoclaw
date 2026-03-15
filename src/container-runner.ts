@@ -449,9 +449,12 @@ export async function runContainerAgent(
     // Insert -e flags before the image name (last element). Docker requires
     // all options to precede the image; flags after it become entrypoint args.
     containerArgs.splice(
-      containerArgs.length - 1, 0,
-      '-e', `OLLAMA_HOST=${embedCfg.ollamaHost}`,
-      '-e', `EMBEDDING_MODEL=${embedCfg.embeddingModel}`,
+      containerArgs.length - 1,
+      0,
+      '-e',
+      `OLLAMA_HOST=${embedCfg.ollamaHost}`,
+      '-e',
+      `EMBEDDING_MODEL=${embedCfg.embeddingModel}`,
     );
   }
 
@@ -554,6 +557,14 @@ export async function runContainerAgent(
               { group: group.name, error: err },
               'Failed to parse streamed output chunk',
             );
+          }
+        }
+        // Prevent unbounded buffer growth: discard leading bytes that
+        // cannot be part of a future START marker.
+        if (parseBuffer.indexOf(OUTPUT_START_MARKER) === -1) {
+          const keep = OUTPUT_START_MARKER.length - 1;
+          if (parseBuffer.length > keep) {
+            parseBuffer = parseBuffer.slice(parseBuffer.length - keep);
           }
         }
       }

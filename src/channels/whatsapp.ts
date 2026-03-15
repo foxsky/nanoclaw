@@ -41,6 +41,7 @@ export class WhatsAppChannel implements Channel {
 
   private sock!: WASocket;
   private connected = false;
+  private reconnecting = false;
   private lidToPhoneMap: Record<string, string> = {};
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
@@ -59,6 +60,12 @@ export class WhatsAppChannel implements Channel {
   }
 
   private async connectInternal(onFirstOpen?: () => void): Promise<void> {
+    // Tear down old socket before creating a new one to prevent
+    // stacked event listeners from firing on the old emitter
+    if (this.sock) {
+      try { this.sock.end(undefined); } catch { /* ignore */ }
+    }
+
     const authDir = path.join(STORE_DIR, 'auth');
     fs.mkdirSync(authDir, { recursive: true });
 
@@ -111,15 +118,28 @@ export class WhatsAppChannel implements Channel {
         );
 
         if (shouldReconnect) {
+          if (this.reconnecting) {
+            logger.warn('Reconnect already in progress, skipping duplicate');
+            return;
+          }
+          this.reconnecting = true;
           logger.info('Reconnecting...');
-          this.connectInternal().catch((err) => {
-            logger.error({ err }, 'Failed to reconnect, retrying in 5s');
-            setTimeout(() => {
-              this.connectInternal().catch((err2) => {
-                logger.error({ err: err2 }, 'Reconnection retry failed');
+          this.connectInternal()
+            .catch((err) => {
+              logger.error({ err }, 'Failed to reconnect, retrying in 5s');
+              return new Promise<void>((resolve) => {
+                setTimeout(() => {
+                  this.connectInternal()
+                    .catch((err2) => {
+                      logger.error({ err: err2 }, 'Reconnection retry failed');
+                    })
+                    .finally(resolve);
+                }, 5000);
               });
-            }, 5000);
-          });
+            })
+            .finally(() => {
+              this.reconnecting = false;
+            });
         } else {
           logger.info('Logged out. Run /setup to re-authenticate.');
           process.exit(78); // EX_CONFIG — systemd RestartPreventExitStatus stops restart loop

@@ -42,7 +42,7 @@ function canUseCreateGroup(ctx: McpPluginContext): boolean {
   ) {
     // Runtime levels are 0-based; maxDepth is a 1-based depth count
     // (e.g., maxDepth 2 = root + one child). Leaf boards are at level == maxDepth - 1.
-    return level + 1 < maxDepth;
+    return level + 1 <= maxDepth;
   }
 
   return false;
