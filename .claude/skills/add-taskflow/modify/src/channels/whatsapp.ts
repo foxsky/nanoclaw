@@ -453,15 +453,40 @@ export class WhatsAppChannel implements Channel {
   async createGroup(
     subject: string,
     participants: string[],
-  ): Promise<{ jid: string; subject: string; inviteLink?: string }> {
+  ): Promise<{
+    jid: string;
+    subject: string;
+    inviteLink?: string;
+    droppedParticipants?: string[];
+  }> {
+    if (participants.length > 1023) {
+      throw new Error(
+        `Too many participants (${participants.length}): WhatsApp limit is 1024 including creator`,
+      );
+    }
     const result = await this.sock.groupCreate(subject, participants);
+    if (!result?.id) {
+      throw new Error(`groupCreate returned no result for "${subject}"`);
+    }
     const groupJid = result.id;
 
     // Verify participants were added; if not, retry with groupParticipantsUpdate
     let allAdded = true;
+    let droppedParticipants: string[] = [];
     try {
       const meta = await this.sock.groupMetadata(groupJid);
-      const memberIds = new Set(meta.participants.map((p) => p.id));
+      // Build member set with both raw IDs and phone-number equivalents.
+      // Group metadata may return LID JIDs (@lid) for participants that were
+      // added by phone JID (@s.whatsapp.net). Translate LIDs to phone JIDs
+      // so the comparison works across both formats.
+      const memberIds = new Set<string>();
+      for (const p of meta.participants) {
+        memberIds.add(p.id);
+        if (p.id.endsWith('@lid')) {
+          const phoneJid = await this.translateJid(p.id);
+          if (phoneJid !== p.id) memberIds.add(phoneJid);
+        }
+      }
       const missing = participants.filter((p) => !memberIds.has(p));
       if (missing.length > 0) {
         logger.info(
@@ -472,6 +497,7 @@ export class WhatsAppChannel implements Channel {
           await this.sock.groupParticipantsUpdate(groupJid, missing, 'add');
         } catch (retryErr) {
           allAdded = false;
+          droppedParticipants = missing;
           logger.warn(
             { err: retryErr, groupJid, missing },
             'Failed to add missing participants',
@@ -481,10 +507,18 @@ export class WhatsAppChannel implements Channel {
         if (allAdded) {
           try {
             const meta2 = await this.sock.groupMetadata(groupJid);
-            const memberIds2 = new Set(meta2.participants.map((p) => p.id));
+            const memberIds2 = new Set<string>();
+            for (const p of meta2.participants) {
+              memberIds2.add(p.id);
+              if (p.id.endsWith('@lid')) {
+                const phoneJid = await this.translateJid(p.id);
+                if (phoneJid !== p.id) memberIds2.add(phoneJid);
+              }
+            }
             const stillMissing = missing.filter((p) => !memberIds2.has(p));
             if (stillMissing.length > 0) {
               allAdded = false;
+              droppedParticipants = stillMissing;
               logger.warn(
                 { groupJid, stillMissing },
                 'Participants still missing after retry',
@@ -515,7 +549,13 @@ export class WhatsAppChannel implements Channel {
       }
     }
 
-    return { jid: groupJid, subject: result.subject, inviteLink };
+    return {
+      jid: groupJid,
+      subject: result.subject,
+      inviteLink,
+      droppedParticipants:
+        droppedParticipants.length > 0 ? droppedParticipants : undefined,
+    };
   }
 
   private async flushOutgoingQueue(): Promise<void> {

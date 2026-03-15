@@ -33,7 +33,12 @@ export interface IpcDeps {
   createGroup?: (
     subject: string,
     participants: string[],
-  ) => Promise<{ jid: string; subject: string; inviteLink?: string }>;
+  ) => Promise<{
+    jid: string;
+    subject: string;
+    inviteLink?: string;
+    droppedParticipants?: string[];
+  }>;
   resolvePhoneJid?: (phone: string) => Promise<string>;
 }
 
