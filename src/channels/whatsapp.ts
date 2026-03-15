@@ -444,7 +444,13 @@ export class WhatsAppChannel implements Channel {
   async resolvePhoneJid(phone: string): Promise<string> {
     const results = await this.sock.onWhatsApp(phone);
     if (results?.length && results[0].exists) {
-      return results[0].jid;
+      const jid = results[0].jid;
+      // Normalize to @s.whatsapp.net — onWhatsApp may return @c.us (legacy)
+      // or other suffixes. Strip any suffix and reconstruct.
+      if (jid && !jid.endsWith('@s.whatsapp.net')) {
+        return jid.replace(/@.*$/, '') + '@s.whatsapp.net';
+      }
+      return jid;
     }
     // Fallback: use raw digits
     return phone.replace(/\D/g, '') + '@s.whatsapp.net';
@@ -476,74 +482,78 @@ export class WhatsAppChannel implements Channel {
     let allAdded = true;
     let droppedParticipants: string[] = [];
     if (!this.connected) {
-      logger.warn({ groupJid }, 'Socket disconnected after groupCreate — skipping verify, generating invite link');
+      logger.warn(
+        { groupJid },
+        'Socket disconnected after groupCreate — skipping verify, generating invite link',
+      );
       allAdded = false;
       droppedParticipants = [...participants];
     }
-    if (allAdded) try {
-      const meta = await this.sock.groupMetadata(groupJid);
-      // Build member set with both raw IDs and phone-number equivalents.
-      // Group metadata may return LID JIDs (@lid) for participants that were
-      // added by phone JID (@s.whatsapp.net). Translate LIDs to phone JIDs
-      // so the comparison works across both formats.
-      const memberIds = new Set<string>();
-      for (const p of meta.participants) {
-        memberIds.add(p.id);
-        if (p.id.endsWith('@lid')) {
-          const phoneJid = await this.translateJid(p.id);
-          if (phoneJid !== p.id) memberIds.add(phoneJid);
-        }
-      }
-      const missing = participants.filter((p) => !memberIds.has(p));
-      if (missing.length > 0) {
-        logger.info(
-          { groupJid, missing },
-          'Participants not added at creation, retrying',
-        );
-        try {
-          await this.sock.groupParticipantsUpdate(groupJid, missing, 'add');
-        } catch (retryErr) {
-          allAdded = false;
-          droppedParticipants = missing;
-          logger.warn(
-            { err: retryErr, groupJid, missing },
-            'Failed to add missing participants',
-          );
-        }
-        // Only re-verify if the retry didn't throw
-        if (allAdded) {
-          try {
-            const meta2 = await this.sock.groupMetadata(groupJid);
-            const memberIds2 = new Set<string>();
-            for (const p of meta2.participants) {
-              memberIds2.add(p.id);
-              if (p.id.endsWith('@lid')) {
-                const phoneJid = await this.translateJid(p.id);
-                if (phoneJid !== p.id) memberIds2.add(phoneJid);
-              }
-            }
-            const stillMissing = missing.filter((p) => !memberIds2.has(p));
-            if (stillMissing.length > 0) {
-              allAdded = false;
-              droppedParticipants = stillMissing;
-              logger.warn(
-                { groupJid, stillMissing },
-                'Participants still missing after retry',
-              );
-            }
-          } catch {
-            // Re-verify failed but retry was attempted — assume success
-            logger.debug(
-              { groupJid },
-              'Could not re-verify participants after retry',
-            );
+    if (allAdded)
+      try {
+        const meta = await this.sock.groupMetadata(groupJid);
+        // Build member set with both raw IDs and phone-number equivalents.
+        // Group metadata may return LID JIDs (@lid) for participants that were
+        // added by phone JID (@s.whatsapp.net). Translate LIDs to phone JIDs
+        // so the comparison works across both formats.
+        const memberIds = new Set<string>();
+        for (const p of meta.participants) {
+          memberIds.add(p.id);
+          if (p.id.endsWith('@lid')) {
+            const phoneJid = await this.translateJid(p.id);
+            if (phoneJid !== p.id) memberIds.add(phoneJid);
           }
         }
+        const missing = participants.filter((p) => !memberIds.has(p));
+        if (missing.length > 0) {
+          logger.info(
+            { groupJid, missing },
+            'Participants not added at creation, retrying',
+          );
+          try {
+            await this.sock.groupParticipantsUpdate(groupJid, missing, 'add');
+          } catch (retryErr) {
+            allAdded = false;
+            droppedParticipants = missing;
+            logger.warn(
+              { err: retryErr, groupJid, missing },
+              'Failed to add missing participants',
+            );
+          }
+          // Only re-verify if the retry didn't throw
+          if (allAdded) {
+            try {
+              const meta2 = await this.sock.groupMetadata(groupJid);
+              const memberIds2 = new Set<string>();
+              for (const p of meta2.participants) {
+                memberIds2.add(p.id);
+                if (p.id.endsWith('@lid')) {
+                  const phoneJid = await this.translateJid(p.id);
+                  if (phoneJid !== p.id) memberIds2.add(phoneJid);
+                }
+              }
+              const stillMissing = missing.filter((p) => !memberIds2.has(p));
+              if (stillMissing.length > 0) {
+                allAdded = false;
+                droppedParticipants = stillMissing;
+                logger.warn(
+                  { groupJid, stillMissing },
+                  'Participants still missing after retry',
+                );
+              }
+            } catch {
+              // Re-verify failed but retry was attempted — assume success
+              logger.debug(
+                { groupJid },
+                'Could not re-verify participants after retry',
+              );
+            }
+          }
+        }
+      } catch (err) {
+        allAdded = false;
+        logger.warn({ err, groupJid }, 'Failed to verify group participants');
       }
-    } catch (err) {
-      allAdded = false;
-      logger.warn({ err, groupJid }, 'Failed to verify group participants');
-    }
 
     // Generate invite link only when participants couldn't be added
     let inviteLink: string | undefined;
@@ -555,7 +565,10 @@ export class WhatsAppChannel implements Channel {
         logger.warn({ err, groupJid }, 'Failed to generate invite link');
       }
     } else if (!allAdded) {
-      logger.warn({ groupJid }, 'Cannot generate invite link — socket disconnected');
+      logger.warn(
+        { groupJid },
+        'Cannot generate invite link — socket disconnected',
+      );
     }
 
     return {
