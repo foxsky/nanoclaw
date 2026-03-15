@@ -347,10 +347,11 @@ function reQueueDeferredNotification(
   const ipcBaseDir = path.join(DATA_DIR, 'ipc');
   const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
   const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
-  fs.writeFileSync(
-    path.join(tasksDir, filename),
-    JSON.stringify(data, null, 2),
-  );
+  const filepath = path.join(tasksDir, filename);
+  // Atomic write: temp then rename, so the IPC watcher never reads partial JSON
+  const tempPath = `${filepath}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(data, null, 2));
+  fs.renameSync(tempPath, filepath);
 }
 
 const handleDeferredNotification: IpcHandler = async (
@@ -538,12 +539,17 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                       ? data.sender
                       : getGroupSenderName(targetGroup.trigger);
                   await deps.sendMessage(data.chatJid, data.text, sender);
-                    logger.info(
-                      { chatJid: data.chatJid, sourceGroup },
-                      'IPC message sent',
-                    );
-                    await deps.clearTyping?.(data.chatJid)?.catch((err: unknown) => {
-                      logger.warn({ chatJid: data.chatJid, err }, 'clearTyping failed after IPC send');
+                  logger.info(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'IPC message sent',
+                  );
+                  await deps
+                    .clearTyping?.(data.chatJid)
+                    ?.catch((err: unknown) => {
+                      logger.warn(
+                        { chatJid: data.chatJid, err },
+                        'clearTyping failed after IPC send',
+                      );
                     });
                 } else if (authResult === 'dm') {
                   // Check disambiguation before sending — external contact
@@ -561,12 +567,17 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                     const sender =
                       typeof data.sender === 'string' ? data.sender : undefined;
                     await deps.sendMessage(data.chatJid, data.text, sender);
-                      logger.info(
-                        { chatJid: data.chatJid, sourceGroup },
-                        'IPC DM message sent to external contact',
-                      );
-                      await deps.clearTyping?.(data.chatJid)?.catch((err: unknown) => {
-                        logger.warn({ chatJid: data.chatJid, err }, 'clearTyping failed after IPC DM send');
+                    logger.info(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'IPC DM message sent to external contact',
+                    );
+                    await deps
+                      .clearTyping?.(data.chatJid)
+                      ?.catch((err: unknown) => {
+                        logger.warn(
+                          { chatJid: data.chatJid, err },
+                          'clearTyping failed after IPC DM send',
+                        );
                       });
                   }
                 } else {

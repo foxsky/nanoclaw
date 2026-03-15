@@ -63,7 +63,7 @@ function canCreateGroupFromSource(
     // A group may create one more level only if the next runtime level still
     // fits under the configured maximum depth.
     return (
-      sourceEntry.taskflowHierarchyLevel + 1 < sourceEntry.taskflowMaxDepth
+      sourceEntry.taskflowHierarchyLevel + 1 <= sourceEntry.taskflowMaxDepth
     );
   }
 

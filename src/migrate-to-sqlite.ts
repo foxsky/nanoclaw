@@ -909,15 +909,30 @@ function migrateWithConfig(
       const archivePath = path.join(groupDir, 'ARCHIVE.json');
 
       // Read TASKS.json
-      const tasksJson: LegacyTasksJson = JSON.parse(
-        fs.readFileSync(tasksPath, 'utf-8'),
-      );
+      let tasksJson: LegacyTasksJson;
+      try {
+        tasksJson = JSON.parse(fs.readFileSync(tasksPath, 'utf-8'));
+      } catch (err) {
+        console.error(
+          `  ERROR: Failed to parse TASKS.json for '${folder}': ${err instanceof Error ? err.message : String(err)}. Skipping.`,
+        );
+        skippedCount += 1;
+        continue;
+      }
       const meta = tasksJson.meta;
 
       // Read ARCHIVE.json (may not exist)
       let archiveJson: LegacyArchiveJson = { tasks: [] };
       if (fs.existsSync(archivePath)) {
-        archiveJson = JSON.parse(fs.readFileSync(archivePath, 'utf-8'));
+        try {
+          archiveJson = JSON.parse(fs.readFileSync(archivePath, 'utf-8'));
+        } catch (err) {
+          console.error(
+            `  ERROR: Failed to parse ARCHIVE.json for '${folder}': ${err instanceof Error ? err.message : String(err)}. Skipping.`,
+          );
+          skippedCount += 1;
+          continue;
+        }
       }
 
       // Get registered group info

@@ -40,7 +40,7 @@ describe('create_group IPC plugin', () => {
         trigger: '@Andy',
         added_at: '2024-01-01T00:00:00.000Z',
         taskflowManaged: true,
-        taskflowHierarchyLevel: 2,
+        taskflowHierarchyLevel: 3,
         taskflowMaxDepth: 3,
       },
       'plain@g.us': {
