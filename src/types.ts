@@ -42,6 +42,7 @@ export interface RegisteredGroup {
   taskflowManaged?: boolean; // Set for groups provisioned by the TaskFlow skill
   taskflowHierarchyLevel?: number; // 0-based depth in the TaskFlow hierarchy
   taskflowMaxDepth?: number; // Inclusive maximum depth allowed for descendants
+  isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
 }
 
 export interface NewMessage {
