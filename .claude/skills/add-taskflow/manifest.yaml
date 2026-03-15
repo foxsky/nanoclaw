@@ -18,6 +18,7 @@ adds:
   - src/ipc-plugins/create-group.ts
   - src/ipc-plugins/create-group.test.ts
   # Host-side TaskFlow support
+  - src/dm-routing.ts
   - src/taskflow-embedding-sync.ts
   - src/taskflow-db.ts
   - src/taskflow-db.test.ts
