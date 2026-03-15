@@ -625,9 +625,13 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
             args.embedding_reader = new EmbeddingReader(EMBEDDINGS_DB_PATH);
           }
         }
-        const result = engine.query(args);
-        if (args.embedding_reader) {
-          try { args.embedding_reader.close(); } catch {}
+        let result: ReturnType<typeof engine.query>;
+        try {
+          result = engine.query(args);
+        } finally {
+          if (args.embedding_reader) {
+            try { args.embedding_reader.close(); } catch {}
+          }
         }
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],

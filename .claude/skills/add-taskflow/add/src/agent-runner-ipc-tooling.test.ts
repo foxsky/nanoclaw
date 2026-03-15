@@ -14,7 +14,7 @@ describe('agent-runner canUseCreateGroup', () => {
     ).toBe(true);
   });
 
-  it('allows TaskFlow groups only when the next level stays below max depth', () => {
+  it('allows TaskFlow groups only when the next level stays within max depth', () => {
     expect(
       canUseCreateGroup({
         isMain: false,
@@ -24,11 +24,22 @@ describe('agent-runner canUseCreateGroup', () => {
       }),
     ).toBe(true);
 
+    // Level 1 can create level 2 children (2 <= max_depth 2)
     expect(
       canUseCreateGroup({
         isMain: false,
         isTaskflowManaged: true,
         taskflowHierarchyLevel: 1,
+        taskflowMaxDepth: 2,
+      }),
+    ).toBe(true);
+
+    // Level at max_depth cannot create children (3 > max_depth 2)
+    expect(
+      canUseCreateGroup({
+        isMain: false,
+        isTaskflowManaged: true,
+        taskflowHierarchyLevel: 2,
         taskflowMaxDepth: 2,
       }),
     ).toBe(false);

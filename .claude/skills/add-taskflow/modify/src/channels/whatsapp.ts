@@ -41,6 +41,7 @@ export class WhatsAppChannel implements Channel {
 
   private sock!: WASocket;
   private connected = false;
+  private reconnecting = false;
   private lidToPhoneMap: Record<string, string> = {};
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
@@ -59,6 +60,16 @@ export class WhatsAppChannel implements Channel {
   }
 
   private async connectInternal(onFirstOpen?: () => void): Promise<void> {
+    // Tear down old socket before creating a new one to prevent
+    // stacked event listeners from firing on the old emitter
+    if (this.sock) {
+      try {
+        this.sock.end(undefined);
+      } catch {
+        /* ignore */
+      }
+    }
+
     const authDir = path.join(STORE_DIR, 'auth');
     fs.mkdirSync(authDir, { recursive: true });
 
@@ -111,15 +122,28 @@ export class WhatsAppChannel implements Channel {
         );
 
         if (shouldReconnect) {
+          if (this.reconnecting) {
+            logger.warn('Reconnect already in progress, skipping duplicate');
+            return;
+          }
+          this.reconnecting = true;
           logger.info('Reconnecting...');
-          this.connectInternal().catch((err) => {
-            logger.error({ err }, 'Failed to reconnect, retrying in 5s');
-            setTimeout(() => {
-              this.connectInternal().catch((err2) => {
-                logger.error({ err: err2 }, 'Reconnection retry failed');
+          this.connectInternal()
+            .catch((err) => {
+              logger.error({ err }, 'Failed to reconnect, retrying in 5s');
+              return new Promise<void>((resolve) => {
+                setTimeout(() => {
+                  this.connectInternal()
+                    .catch((err2) => {
+                      logger.error({ err: err2 }, 'Reconnection retry failed');
+                    })
+                    .finally(resolve);
+                }, 5000);
               });
-            }, 5000);
-          });
+            })
+            .finally(() => {
+              this.reconnecting = false;
+            });
         } else {
           logger.info('Logged out. Run /setup to re-authenticate.');
           process.exit(78); // EX_CONFIG — systemd RestartPreventExitStatus stops restart loop
@@ -221,7 +245,14 @@ export class WhatsAppChannel implements Channel {
             const isVoice = normalized.audioMessage?.ptt === true;
             if (!content && !isVoice) continue;
 
-            const sender = msg.key.participant || msg.key.remoteJid || '';
+            // Translate LID participant to phone JID for group messages.
+            // In LID-mode groups, msg.key.participant is an @lid JID.
+            const rawParticipant =
+              msg.key.participant || msg.key.remoteJid || '';
+            const sender = rawParticipant.endsWith('@lid')
+              ? (msg.key as { participantAlt?: string }).participantAlt ||
+                (await this.translateJid(rawParticipant))
+              : rawParticipant;
             const senderName = msg.pushName || sender.split('@')[0];
 
             const fromMe = msg.key.fromMe || false;
@@ -353,6 +384,14 @@ export class WhatsAppChannel implements Channel {
     try {
       logger.info('Syncing group metadata from WhatsApp...');
       const groups = await this.sock.groupFetchAllParticipating();
+      const total = Object.keys(groups).length;
+
+      if (total === 0) {
+        logger.warn(
+          'Group sync returned zero groups — skipping timestamp update to allow retry',
+        );
+        return;
+      }
 
       let count = 0;
       for (const [jid, metadata] of Object.entries(groups)) {
@@ -363,7 +402,7 @@ export class WhatsAppChannel implements Channel {
       }
 
       setLastGroupSync();
-      logger.info({ count }, 'Group metadata synced');
+      logger.info({ count, total }, 'Group metadata synced');
     } catch (err) {
       logger.error({ err }, 'Failed to sync group metadata');
     }
@@ -414,9 +453,69 @@ export class WhatsAppChannel implements Channel {
   async createGroup(
     subject: string,
     participants: string[],
-  ): Promise<{ jid: string; subject: string }> {
+  ): Promise<{ jid: string; subject: string; inviteLink?: string }> {
     const result = await this.sock.groupCreate(subject, participants);
-    return { jid: result.id, subject: result.subject };
+    const groupJid = result.id;
+
+    // Verify participants were added; if not, retry with groupParticipantsUpdate
+    let allAdded = true;
+    try {
+      const meta = await this.sock.groupMetadata(groupJid);
+      const memberIds = new Set(meta.participants.map((p) => p.id));
+      const missing = participants.filter((p) => !memberIds.has(p));
+      if (missing.length > 0) {
+        logger.info(
+          { groupJid, missing },
+          'Participants not added at creation, retrying',
+        );
+        try {
+          await this.sock.groupParticipantsUpdate(groupJid, missing, 'add');
+        } catch (retryErr) {
+          allAdded = false;
+          logger.warn(
+            { err: retryErr, groupJid, missing },
+            'Failed to add missing participants',
+          );
+        }
+        // Only re-verify if the retry didn't throw
+        if (allAdded) {
+          try {
+            const meta2 = await this.sock.groupMetadata(groupJid);
+            const memberIds2 = new Set(meta2.participants.map((p) => p.id));
+            const stillMissing = missing.filter((p) => !memberIds2.has(p));
+            if (stillMissing.length > 0) {
+              allAdded = false;
+              logger.warn(
+                { groupJid, stillMissing },
+                'Participants still missing after retry',
+              );
+            }
+          } catch {
+            // Re-verify failed but retry was attempted — assume success
+            logger.debug(
+              { groupJid },
+              'Could not re-verify participants after retry',
+            );
+          }
+        }
+      }
+    } catch (err) {
+      allAdded = false;
+      logger.warn({ err, groupJid }, 'Failed to verify group participants');
+    }
+
+    // Generate invite link only when participants couldn't be added
+    let inviteLink: string | undefined;
+    if (!allAdded) {
+      try {
+        const code = await this.sock.groupInviteCode(groupJid);
+        inviteLink = `https://chat.whatsapp.com/${code}`;
+      } catch (err) {
+        logger.warn({ err, groupJid }, 'Failed to generate invite link');
+      }
+    }
+
+    return { jid: groupJid, subject: result.subject, inviteLink };
   }
 
   private async flushOutgoingQueue(): Promise<void> {
@@ -430,11 +529,20 @@ export class WhatsAppChannel implements Channel {
       while (this.outgoingQueue.length > 0) {
         const item = this.outgoingQueue.shift()!;
         // Send directly — queued items are already prefixed by sendMessage
-        await this.sock.sendMessage(item.jid, { text: item.text });
-        logger.info(
-          { jid: item.jid, length: item.text.length },
-          'Queued message sent',
-        );
+        try {
+          await this.sock.sendMessage(item.jid, { text: item.text });
+          logger.info(
+            { jid: item.jid, length: item.text.length },
+            'Queued message sent',
+          );
+        } catch (err) {
+          this.outgoingQueue.unshift(item);
+          logger.warn(
+            { jid: item.jid, err, queueSize: this.outgoingQueue.length },
+            'Failed to send queued message, will retry on reconnect',
+          );
+          break;
+        }
       }
     } finally {
       this.flushing = false;

@@ -60,6 +60,11 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 import {
+  restoreRemoteControl,
+  startRemoteControl,
+  stopRemoteControl,
+} from './remote-control.js';
+import {
   isSenderAllowed,
   isTriggerAllowed,
   loadSenderAllowlist,
@@ -706,6 +711,7 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
+  restoreRemoteControl();
 
   // --- add-embeddings skill: generic embedding service ---
   let embeddingService:
@@ -764,9 +770,61 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
 
+  // Handle /remote-control and /remote-control-end commands
+  async function handleRemoteControl(
+    command: string,
+    chatJid: string,
+    msg: NewMessage,
+  ): Promise<void> {
+    const group = registeredGroups[chatJid];
+    if (!group?.isMain) {
+      logger.warn(
+        { chatJid, sender: msg.sender },
+        'Remote control rejected: not main group',
+      );
+      return;
+    }
+
+    const channel = findChannel(channels, chatJid);
+    if (!channel) return;
+
+    if (command === '/remote-control') {
+      const result = await startRemoteControl(
+        msg.sender,
+        chatJid,
+        process.cwd(),
+      );
+      if (result.ok) {
+        await channel.sendMessage(chatJid, result.url);
+      } else {
+        await channel.sendMessage(
+          chatJid,
+          `Remote Control failed: ${result.error}`,
+        );
+      }
+    } else {
+      const result = stopRemoteControl();
+      if (result.ok) {
+        await channel.sendMessage(chatJid, 'Remote Control session ended.');
+      } else {
+        await channel.sendMessage(chatJid, result.error);
+      }
+    }
+  }
+
   // Channel callbacks (shared by all channels)
   const channelOpts = {
     onMessage: (chatJid: string, msg: NewMessage) => {
+      // Remote control commands — intercept before storage
+      const trimmed = msg.content.trim();
+      if (trimmed === '/remote-control' || trimmed === '/remote-control-end') {
+        handleRemoteControl(trimmed, chatJid, msg).catch((err) =>
+          logger.error({ err, chatJid }, 'Remote control command error'),
+        );
+        return;
+      }
+
+      // Sender allowlist drop mode: discard messages from denied senders before storing
       if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
         const cfg = loadSenderAllowlist();
         if (

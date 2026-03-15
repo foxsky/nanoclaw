@@ -48,11 +48,13 @@ export function startTaskflowEmbeddingSync(
       for (const task of tasks) {
         const collection = `tasks:${task.board_id}`;
         const text = buildSourceText(task);
-        service.index(collection, task.id, text, {
-          title: task.title,
-          assignee: task.assignee,
-          column: task.column,
-        });
+        if (text) {
+          service.index(collection, task.id, text, {
+            title: task.title,
+            assignee: task.assignee,
+            column: task.column,
+          });
+        }
         activeKeys.add(`${collection}\0${task.id}`);
       }
 

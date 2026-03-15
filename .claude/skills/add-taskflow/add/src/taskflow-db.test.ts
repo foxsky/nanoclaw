@@ -31,9 +31,9 @@ describe('initTaskflowDb', () => {
 
   it('creates tasks with requires_close_approval', () => {
     const db = initTaskflowDb(':memory:');
-    const columns = db
-      .prepare(`PRAGMA table_info(tasks)`)
-      .all() as Array<{ name: string }>;
+    const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{
+      name: string;
+    }>;
 
     expect(columns.map((column) => column.name)).toContain(
       'requires_close_approval',
@@ -110,9 +110,37 @@ describe('initTaskflowDb', () => {
         type TEXT NOT NULL DEFAULT 'simple',
         title TEXT NOT NULL,
         assignee TEXT,
+        next_action TEXT,
+        waiting_for TEXT,
         column TEXT DEFAULT 'inbox',
+        priority TEXT,
+        due_date TEXT,
+        description TEXT,
+        labels TEXT DEFAULT '[]',
+        blocked_by TEXT DEFAULT '[]',
+        reminders TEXT DEFAULT '[]',
+        next_note_id INTEGER DEFAULT 1,
+        notes TEXT DEFAULT '[]',
+        _last_mutation TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
+        child_exec_enabled INTEGER DEFAULT 0,
+        child_exec_board_id TEXT,
+        child_exec_person_id TEXT,
+        child_exec_rollup_status TEXT,
+        child_exec_last_rollup_at TEXT,
+        child_exec_last_rollup_summary TEXT,
+        linked_parent_board_id TEXT,
+        linked_parent_task_id TEXT,
+        subtasks TEXT,
+        recurrence TEXT,
+        current_cycle TEXT,
+        parent_task_id TEXT,
+        max_cycles INTEGER,
+        recurrence_end_date TEXT,
+        recurrence_anchor TEXT,
+        participants TEXT,
+        scheduled_at TEXT,
         PRIMARY KEY (board_id, id)
       );
       CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, task_id TEXT NOT NULL, action TEXT NOT NULL, by TEXT, at TEXT NOT NULL, details TEXT);

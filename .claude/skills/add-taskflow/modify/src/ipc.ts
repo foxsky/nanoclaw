@@ -33,7 +33,7 @@ export interface IpcDeps {
   createGroup?: (
     subject: string,
     participants: string[],
-  ) => Promise<{ jid: string; subject: string }>;
+  ) => Promise<{ jid: string; subject: string; inviteLink?: string }>;
   resolvePhoneJid?: (phone: string) => Promise<string>;
 }
 
@@ -144,6 +144,13 @@ const handleScheduleTask: IpcHandler = async (
         logger.warn(
           { scheduleValue: data.schedule_value },
           'Invalid timestamp',
+        );
+        return;
+      }
+      if (scheduled.getTime() < Date.now()) {
+        logger.warn(
+          { scheduleValue: data.schedule_value },
+          'schedule_task rejected: once task timestamp is in the past',
         );
         return;
       }
@@ -347,10 +354,11 @@ function reQueueDeferredNotification(
   const ipcBaseDir = path.join(DATA_DIR, 'ipc');
   const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
   const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
-  fs.writeFileSync(
-    path.join(tasksDir, filename),
-    JSON.stringify(data, null, 2),
-  );
+  const filepath = path.join(tasksDir, filename);
+  // Atomic write: temp then rename, so the IPC watcher never reads partial JSON
+  const tempPath = `${filepath}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(data, null, 2));
+  fs.renameSync(tempPath, filepath);
 }
 
 const handleDeferredNotification: IpcHandler = async (
@@ -508,7 +516,8 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
         if (fs.existsSync(messagesDir)) {
           const messageFiles = fs
             .readdirSync(messagesDir)
-            .filter((f) => f.endsWith('.json'));
+            .filter((f) => f.endsWith('.json'))
+            .sort();
           for (const file of messageFiles) {
             const filePath = path.join(messagesDir, file);
             try {
@@ -537,15 +546,19 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                     typeof data.sender === 'string'
                       ? data.sender
                       : getGroupSenderName(targetGroup.trigger);
-                  try {
-                    await deps.sendMessage(data.chatJid, data.text, sender);
-                    logger.info(
-                      { chatJid: data.chatJid, sourceGroup },
-                      'IPC message sent',
-                    );
-                  } finally {
-                    await deps.clearTyping?.(data.chatJid);
-                  }
+                  await deps.sendMessage(data.chatJid, data.text, sender);
+                  logger.info(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'IPC message sent',
+                  );
+                  await deps
+                    .clearTyping?.(data.chatJid)
+                    ?.catch((err: unknown) => {
+                      logger.warn(
+                        { chatJid: data.chatJid, err },
+                        'clearTyping failed after IPC send',
+                      );
+                    });
                 } else if (authResult === 'dm') {
                   // Check disambiguation before sending — external contact
                   // may have grants spanning multiple groups
@@ -553,23 +566,27 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                   const dmRoute = tfDb
                     ? resolveExternalDm(tfDb, data.chatJid)
                     : null;
-                  if (dmRoute?.needsDisambiguation) {
+                  if (!dmRoute || dmRoute.needsDisambiguation) {
                     logger.warn(
                       { chatJid: data.chatJid, sourceGroup },
-                      'IPC DM blocked: external contact has grants in multiple groups',
+                      'IPC DM blocked: route unavailable or grants in multiple groups',
                     );
                   } else {
                     const sender =
                       typeof data.sender === 'string' ? data.sender : undefined;
-                    try {
-                      await deps.sendMessage(data.chatJid, data.text, sender);
-                      logger.info(
-                        { chatJid: data.chatJid, sourceGroup },
-                        'IPC DM message sent to external contact',
-                      );
-                    } finally {
-                      await deps.clearTyping?.(data.chatJid);
-                    }
+                    await deps.sendMessage(data.chatJid, data.text, sender);
+                    logger.info(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'IPC DM message sent to external contact',
+                    );
+                    await deps
+                      .clearTyping?.(data.chatJid)
+                      ?.catch((err: unknown) => {
+                        logger.warn(
+                          { chatJid: data.chatJid, err },
+                          'clearTyping failed after IPC DM send',
+                        );
+                      });
                   }
                 } else {
                   logger.warn(
@@ -605,7 +622,8 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
         if (fs.existsSync(tasksDir)) {
           const taskFiles = fs
             .readdirSync(tasksDir)
-            .filter((f) => f.endsWith('.json'));
+            .filter((f) => f.endsWith('.json'))
+            .sort();
           for (const file of taskFiles) {
             const filePath = path.join(tasksDir, file);
             try {

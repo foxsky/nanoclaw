@@ -55,6 +55,9 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   secrets?: Record<string, string>;
+  queryVector?: string; // base64-encoded Float32Array
+  ollamaHost?: string;
+  embeddingModel?: string;
 }
 
 export interface ContainerOutput {
@@ -76,6 +79,7 @@ const CORE_AGENT_RUNNER_FILES = [
   'ipc-tooling.ts',
   'runtime-config.ts',
   'taskflow-engine.ts',
+  'embedding-reader.ts',
   path.join('mcp-plugins', 'create-group.ts'),
 ] as const;
 
@@ -203,15 +207,25 @@ function buildVolumeMounts(
   // TaskFlow groups get access to the shared TaskFlow database.
   // Mount the directory (not the file) so SQLite WAL journal files
   // (-wal, -shm) persist across container restarts.
-  if (group.taskflowManaged) {
+  // Main group gets read-only access for admin queries.
+  if (group.taskflowManaged || isMain) {
     const taskflowDir = path.join(DATA_DIR, 'taskflow');
     fs.mkdirSync(taskflowDir, { recursive: true });
     mounts.push({
       hostPath: taskflowDir,
       containerPath: '/workspace/taskflow',
-      readonly: false, // agents need write access for task mutations
+      readonly: isMain, // main group: read-only; taskflow boards: read-write
     });
   }
+
+  // Embeddings DB — read-only mount for all containers (generic embedding service)
+  const embeddingsDir = path.join(DATA_DIR, 'embeddings');
+  fs.mkdirSync(embeddingsDir, { recursive: true });
+  mounts.push({
+    hostPath: embeddingsDir,
+    containerPath: '/workspace/embeddings',
+    readonly: true,
+  });
 
   // Per-group MCP plugins directory (read-only mount into container)
   // Skills copy compiled .js plugin files here during setup.
@@ -271,6 +285,17 @@ function readSecrets(): Record<string, string> {
   return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
 }
 
+function readEmbeddingConfig(): {
+  ollamaHost: string;
+  embeddingModel: string;
+} {
+  const env = readEnvFile(['OLLAMA_HOST', 'EMBEDDING_MODEL']);
+  return {
+    ollamaHost: env.OLLAMA_HOST ?? '',
+    embeddingModel: env.EMBEDDING_MODEL ?? 'bge-m3',
+  };
+}
+
 /**
  * Resolve the TaskFlow board ID from the database.
  * The group folder (e.g. "sec-secti") is not the board ID — we need to look up
@@ -325,6 +350,8 @@ function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Embedding env vars are passed by runContainerAgent after buildContainerArgs returns
 
   // Point containers at the credential proxy instead of direct API access
   args.push(
@@ -414,6 +441,48 @@ export async function runContainerAgent(
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
 
+  // Set embedding config on ContainerInput + Docker env (single read)
+  const embedCfg = readEmbeddingConfig();
+  input.ollamaHost = embedCfg.ollamaHost;
+  input.embeddingModel = embedCfg.embeddingModel;
+  if (embedCfg.ollamaHost) {
+    // Insert -e flags before the image name (last element). Docker requires
+    // all options to precede the image; flags after it become entrypoint args.
+    containerArgs.splice(
+      containerArgs.length - 1,
+      0,
+      '-e',
+      `OLLAMA_HOST=${embedCfg.ollamaHost}`,
+      '-e',
+      `EMBEDDING_MODEL=${embedCfg.embeddingModel}`,
+    );
+  }
+
+  // Embed user message for context-aware features (async, best-effort)
+  if (embedCfg.ollamaHost) {
+    try {
+      const resp = await fetch(`${embedCfg.ollamaHost}/api/embed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: embedCfg.embeddingModel,
+          input: input.prompt,
+        }),
+        signal: AbortSignal.timeout(2000),
+      });
+      if (resp.ok) {
+        const data = (await resp.json()) as { embeddings: number[][] };
+        if (data.embeddings?.[0]) {
+          input.queryVector = Buffer.from(
+            new Float32Array(data.embeddings[0]).buffer,
+          ).toString('base64');
+        }
+      }
+    } catch {
+      // Ollama unreachable — queryVector stays undefined
+    }
+  }
+
   return new Promise((resolve) => {
     const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -469,14 +538,17 @@ export async function runContainerAgent(
             .trim();
           parseBuffer = parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
 
+          // A complete marker pair means the container is actively responding.
+          // Mark activity and reset timeout before JSON.parse — a parse error
+          // on malformed output must not be mistaken for silence.
+          hadStreamingOutput = true;
+          resetTimeout();
+
           try {
             const parsed: ContainerOutput = JSON.parse(jsonStr);
             if (parsed.newSessionId) {
               newSessionId = parsed.newSessionId;
             }
-            hadStreamingOutput = true;
-            // Activity detected — reset the hard timeout
-            resetTimeout();
             // Call onOutput for all markers (including null results)
             // so idle timers start even for "silent" query completions.
             outputChain = outputChain.then(() => onOutput(parsed));
@@ -485,6 +557,14 @@ export async function runContainerAgent(
               { group: group.name, error: err },
               'Failed to parse streamed output chunk',
             );
+          }
+        }
+        // Prevent unbounded buffer growth: discard leading bytes that
+        // cannot be part of a future START marker.
+        if (parseBuffer.indexOf(OUTPUT_START_MARKER) === -1) {
+          const keep = OUTPUT_START_MARKER.length - 1;
+          if (parseBuffer.length > keep) {
+            parseBuffer = parseBuffer.slice(parseBuffer.length - keep);
           }
         }
       }

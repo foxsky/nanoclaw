@@ -4843,17 +4843,23 @@ export class TaskflowEngine {
               );
 
               if (semanticResults.length > 0) {
+                // Use composite key (board_id:id) to avoid collision between
+                // local and delegated tasks that share the same raw ID
                 const scored = new Map<string, { task: any; score: number }>();
                 for (const task of textMatches) {
-                  scored.set(task.id, { task, score: 0.2 });
+                  scored.set(`${task.board_id}:${task.id}`, { task, score: 0.2 });
                 }
                 for (const sem of semanticResults) {
-                  const existing = scored.get(sem.itemId);
+                  // Look up task first to get correct board_id for composite key
+                  // (delegated tasks have a different board_id than this.boardId)
+                  const task = this.getTask(sem.itemId);
+                  if (!task) continue;
+                  const compositeKey = `${task.board_id}:${task.id}`;
+                  const existing = scored.get(compositeKey);
                   if (existing) {
                     existing.score += sem.score;
                   } else {
-                    const task = this.getTask(sem.itemId);
-                    if (task) scored.set(sem.itemId, { task, score: sem.score });
+                    scored.set(compositeKey, { task, score: sem.score });
                   }
                 }
                 const ranked = [...scored.values()]
@@ -7156,15 +7162,15 @@ export class TaskflowEngine {
         lines.push(detail);
       }
 
-      // All other tasks as one-liners
-      const rankedIds = new Set(ranked.map(r => r.itemId));
+      // All other tasks as one-liners (composite key avoids delegated ID collision)
+      const rankedIds = new Set(ranked.map(r => `${this.boardId}:${r.itemId}`));
       const others = this.db.prepare(
-        `SELECT id, title FROM tasks
+        `SELECT id, board_id, title FROM tasks
          WHERE ${this.visibleTaskScope()} AND column != 'done'
          ORDER BY id`
-      ).all(...this.visibleTaskParams()) as Array<{ id: string; title: string }>;
+      ).all(...this.visibleTaskParams()) as Array<{ id: string; board_id: string; title: string }>;
 
-      const otherTasks = others.filter(t => !rankedIds.has(t.id));
+      const otherTasks = others.filter(t => !rankedIds.has(`${t.board_id}:${t.id}`));
       if (otherTasks.length > 0) {
         const shown = otherTasks.slice(0, 30);
         const suffix = otherTasks.length > 30 ? ` ... and ${otherTasks.length - 30} more` : '';

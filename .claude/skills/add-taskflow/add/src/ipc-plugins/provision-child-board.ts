@@ -162,10 +162,21 @@ const handleProvisionChildBoard: IpcHandler = async (
       return;
     }
 
-    const childGroupName =
+    let childGroupName =
       typeof data.group_name === 'string' && data.group_name.trim()
         ? data.group_name.trim()
         : personName + ' - TaskFlow';
+
+    // Ensure child group name doesn't duplicate any existing group
+    const existingNames = new Set(
+      Object.values(registeredGroups).map((g) => g.name),
+    );
+    if (existingNames.has(childGroupName)) {
+      childGroupName = childGroupName.replace(
+        / - TaskFlow$/,
+        ` (${personName}) - TaskFlow`,
+      );
+    }
 
     const childBoardId = 'board-' + childGroupFolder;
 
@@ -178,9 +189,22 @@ const handleProvisionChildBoard: IpcHandler = async (
       const result = await deps.createGroup(childGroupName, [participantJid]);
       childGroupJid = result.jid;
       logger.info(
-        { jid: childGroupJid, subject: result.subject },
+        {
+          jid: childGroupJid,
+          subject: result.subject,
+          inviteLink: result.inviteLink,
+        },
         'provision_child_board: WhatsApp group created',
       );
+      if (result.inviteLink) {
+        // Send invite link to the source group so the manager can forward it
+        try {
+          await deps.sendMessage(
+            sourceGroupJid!,
+            `📎 Link de convite para o grupo *${childGroupName}* (${personName}):\n${result.inviteLink}`,
+          );
+        } catch {}
+      }
     } catch (err) {
       logger.error(
         { err, childGroupName },
@@ -189,31 +213,7 @@ const handleProvisionChildBoard: IpcHandler = async (
       return;
     }
 
-    // --- 7. Register child group ---
-    try {
-      deps.registerGroup(childGroupJid, {
-        name: childGroupName,
-        folder: childGroupFolder,
-        trigger: sourceEntry.trigger,
-        added_at: new Date().toISOString(),
-        requiresTrigger: false,
-        taskflowManaged: true,
-        taskflowHierarchyLevel: childLevel,
-        taskflowMaxDepth: sourceEntry.taskflowMaxDepth,
-      });
-      logger.info(
-        { jid: childGroupJid, folder: childGroupFolder },
-        'provision_child_board: group registered',
-      );
-    } catch (err) {
-      logger.error(
-        { err, childGroupJid },
-        'provision_child_board: failed to register group',
-      );
-      return;
-    }
-
-    // --- 8. Seed child board in taskflow.db (single transaction) ---
+    // --- 7. Seed child board in taskflow.db (single transaction) ---
     const now = new Date().toISOString();
 
     const seedTransaction = tfDb.transaction(() => {
@@ -347,6 +347,30 @@ const handleProvisionChildBoard: IpcHandler = async (
       logger.error(
         { err, childBoardId },
         'provision_child_board: failed to seed taskflow DB',
+      );
+      return;
+    }
+
+    // --- 8. Register child group (after DB seed to avoid orphan on seed failure) ---
+    try {
+      deps.registerGroup(childGroupJid, {
+        name: childGroupName,
+        folder: childGroupFolder,
+        trigger: sourceEntry.trigger,
+        added_at: new Date().toISOString(),
+        requiresTrigger: false,
+        taskflowManaged: true,
+        taskflowHierarchyLevel: childLevel,
+        taskflowMaxDepth: sourceEntry.taskflowMaxDepth,
+      });
+      logger.info(
+        { jid: childGroupJid, folder: childGroupFolder },
+        'provision_child_board: group registered',
+      );
+    } catch (err) {
+      logger.error(
+        { err, childGroupJid },
+        'provision_child_board: failed to register group',
       );
       return;
     }

@@ -181,6 +181,7 @@ const handleProvisionRootBoard: IpcHandler = async (
   // --- 5. Check board doesn't already exist ---
   let tfDb: Database.Database;
   try {
+    fs.mkdirSync(path.dirname(TASKFLOW_DB_PATH), { recursive: true });
     tfDb = new Database(TASKFLOW_DB_PATH);
   } catch (err) {
     logger.error({ err }, 'provision_root_board: cannot open taskflow.db');
@@ -226,31 +227,8 @@ const handleProvisionRootBoard: IpcHandler = async (
       return;
     }
 
-    // --- 7. Register group ---
-    try {
-      deps.registerGroup(groupJid, {
-        name: subject,
-        folder: groupFolder,
-        trigger,
-        added_at: new Date().toISOString(),
-        requiresTrigger,
-        taskflowManaged: true,
-        taskflowHierarchyLevel: 0,
-        taskflowMaxDepth: maxDepth,
-      });
-      logger.info(
-        { jid: groupJid, folder: groupFolder },
-        'provision_root_board: group registered',
-      );
-    } catch (err) {
-      logger.error(
-        { err, groupJid },
-        'provision_root_board: failed to register group',
-      );
-      return;
-    }
-
-    // --- 8. Seed taskflow.db (single transaction) ---
+    // --- 7. Seed taskflow.db (single transaction) ---
+    // (registerGroup moved to step 8 — seed must succeed before the group is live)
     const now = new Date().toISOString();
 
     const seedTransaction = tfDb.transaction(() => {
@@ -293,9 +271,9 @@ const handleProvisionRootBoard: IpcHandler = async (
           standupUtc,
           digestUtc,
           reviewUtc,
-          0,
+          1, // attachment_enabled (default on)
           '',
-          1,
+          1, // dst_sync_enabled
         );
 
       tfDb
@@ -339,6 +317,30 @@ const handleProvisionRootBoard: IpcHandler = async (
       logger.error(
         { err, boardId },
         'provision_root_board: failed to seed taskflow DB',
+      );
+      return;
+    }
+
+    // --- 8. Register group (after DB seed to avoid orphan on seed failure) ---
+    try {
+      deps.registerGroup(groupJid, {
+        name: subject,
+        folder: groupFolder,
+        trigger,
+        added_at: new Date().toISOString(),
+        requiresTrigger,
+        taskflowManaged: true,
+        taskflowHierarchyLevel: 0,
+        taskflowMaxDepth: maxDepth,
+      });
+      logger.info(
+        { jid: groupJid, folder: groupFolder },
+        'provision_root_board: group registered',
+      );
+    } catch (err) {
+      logger.error(
+        { err, groupJid },
+        'provision_root_board: failed to register group',
       );
       return;
     }

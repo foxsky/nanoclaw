@@ -42,6 +42,7 @@ export interface RegisteredGroup {
   taskflowManaged?: boolean; // Set for groups provisioned by the TaskFlow skill
   taskflowHierarchyLevel?: number; // 0-based depth in the TaskFlow hierarchy
   taskflowMaxDepth?: number; // Inclusive maximum depth allowed for descendants
+  isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
 }
 
 export interface NewMessage {
@@ -94,7 +95,7 @@ export interface Channel {
   createGroup?(
     subject: string,
     participants: string[],
-  ): Promise<{ jid: string; subject: string }>;
+  ): Promise<{ jid: string; subject: string; inviteLink?: string }>;
   // Optional: resolve a phone number to a JID. Channels that support it implement it.
   resolvePhoneJid?(phone: string): Promise<string>;
   // Optional: sync groups from the channel. Channels that support it implement it.
