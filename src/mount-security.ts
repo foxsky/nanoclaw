@@ -63,7 +63,8 @@ export function loadMountAllowlist(): MountAllowlist | null {
 
   try {
     if (!fs.existsSync(MOUNT_ALLOWLIST_PATH)) {
-      allowlistLoadError = `Mount allowlist not found at ${MOUNT_ALLOWLIST_PATH}`;
+      // Do NOT set allowlistLoadError — file may be created later without restart.
+      // Only parse/structural errors are permanently cached.
       logger.warn(
         { path: MOUNT_ALLOWLIST_PATH },
         'Mount allowlist not found - additional mounts will be BLOCKED. ' +
