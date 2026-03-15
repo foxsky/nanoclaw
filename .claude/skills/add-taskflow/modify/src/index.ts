@@ -214,8 +214,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const channel = findChannel(channels, chatJid);
   if (!channel) {
-    logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
-    return true;
+    logger.warn({ chatJid }, 'No channel owns JID, will retry');
+    return false;
   }
 
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
@@ -707,6 +707,36 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
+  // Start embedding service (generic — no TaskFlow dependency)
+  let embeddingService:
+    | import('./embedding-service.js').EmbeddingService
+    | null = null;
+  let embeddingSyncTimer: ReturnType<typeof setInterval> | null = null;
+  const { readEnvFile: readEnv } = await import('./env.js');
+  const embedEnv = readEnv(['OLLAMA_HOST', 'EMBEDDING_MODEL']);
+  if (embedEnv.OLLAMA_HOST) {
+    const { EmbeddingService } = await import('./embedding-service.js');
+    embeddingService = new EmbeddingService(
+      path.join(DATA_DIR, 'embeddings', 'embeddings.db'),
+      embedEnv.OLLAMA_HOST,
+      embedEnv.EMBEDDING_MODEL || 'bge-m3',
+    );
+    embeddingService.startIndexer();
+
+    // TaskFlow sync adapter — feeds tasks into the generic embedding service
+    const { startTaskflowEmbeddingSync } =
+      await import('./taskflow-embedding-sync.js');
+    embeddingSyncTimer = startTaskflowEmbeddingSync(
+      embeddingService,
+      getTaskflowDb(DATA_DIR),
+    );
+
+    logger.info(
+      { ollamaHost: embedEnv.OLLAMA_HOST, model: embedEnv.EMBEDDING_MODEL },
+      'Embedding service started',
+    );
+  }
+
   // Start credential proxy
   const proxyServer = await startCredentialProxy(
     CREDENTIAL_PROXY_PORT,
@@ -720,6 +750,8 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, 'Shutdown signal received');
     try {
+      if (embeddingSyncTimer) clearInterval(embeddingSyncTimer);
+      embeddingService?.close();
       await queue.shutdown(10000);
       for (const ch of channels) await ch.disconnect();
     } catch (err) {
