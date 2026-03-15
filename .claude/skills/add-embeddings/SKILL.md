@@ -1,6 +1,6 @@
 ---
 name: add-embeddings
-description: Generic embedding service via Ollama. Indexes, searches, and deduplicates text in named collections. First consumer is TaskFlow (semantic search, duplicate detection, context preamble).
+description: Generic embedding service via Ollama. Indexes, searches, and deduplicates text in named collections.
 ---
 
 # Add Embeddings
