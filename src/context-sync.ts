@@ -165,11 +165,25 @@ export function parseTurnsFromJsonl(
     if (entryType === 'user') {
       const content = entry.message?.content;
 
-      // String content: usually compaction summary — skip
+      // String content
       if (typeof content === 'string') {
         if (skipNextUser) {
           skipNextUser = false;
+          continue;
         }
+        // Skip compaction summaries (synthetic post-compact messages)
+        if (
+          content.startsWith(
+            'This session is being continued from a previous conversation',
+          )
+        ) {
+          continue;
+        }
+        // Real user message with string content (e.g., host prepends embedding preamble)
+        finalizeCurrentTurn(startIndex + i);
+        currentUserMessage = content;
+        currentTimestamp = entry.timestamp ?? (currentTimestamp || new Date().toISOString());
+        turnStarted = true;
         continue;
       }
 
