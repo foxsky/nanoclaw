@@ -77,13 +77,13 @@ export class EmbeddingService {
     }
 
     this.stmtUpsert.run(
-        collection,
-        itemId,
-        text,
-        this.model,
-        JSON.stringify(metadata ?? {}),
-        new Date().toISOString(),
-      );
+      collection,
+      itemId,
+      text,
+      this.model,
+      JSON.stringify(metadata ?? {}),
+      new Date().toISOString(),
+    );
   }
 
   remove(collection: string, itemId: string): void {
@@ -192,8 +192,11 @@ export class EmbeddingService {
 
       // Step 4: Update vectors in a single transaction
       const now = new Date().toISOString();
+      // Guard: only update if source_text hasn't changed since we read the pending row.
+      // If index() updated the row during the Ollama fetch, source_text won't match
+      // and the UPDATE affects 0 rows — leaving vector=NULL for the next cycle.
       const update = this.db.prepare(
-        'UPDATE embeddings SET vector = ?, model = ?, updated_at = ? WHERE collection = ? AND item_id = ?',
+        'UPDATE embeddings SET vector = ?, model = ?, updated_at = ? WHERE collection = ? AND item_id = ? AND source_text = ?',
       );
       this.db.transaction(() => {
         for (let i = 0; i < pending.length; i++) {
@@ -206,6 +209,7 @@ export class EmbeddingService {
             now,
             pending[i].collection,
             pending[i].item_id,
+            pending[i].source_text,
           );
         }
       })();

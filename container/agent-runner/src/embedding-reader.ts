@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 
 export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
+  if (a.length !== b.length || a.length === 0) return 0;
   let dot = 0,
     normA = 0,
     normB = 0;
@@ -11,7 +12,7 @@ export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
     normB += b[i] * b[i];
   }
   const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dot / denom;
+  return denom ? dot / denom : 0; // falsy catches both 0 and NaN
 }
 
 export class EmbeddingReader {
