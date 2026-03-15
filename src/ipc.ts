@@ -474,9 +474,127 @@ export function isIpcMessageAuthorized(opts: {
   return false;
 }
 
+// --- IPC error handling ---
+
+const IPC_MAX_RETRIES = 5;
+const IPC_ERROR_RETAIN_DAYS = 7;
+const IPC_ERROR_MAX_FILES = 1000;
+const ipcRetryCounts = new Map<string, number>();
+
+/**
+ * Returns true if the error is permanent (bad data) and should be quarantined immediately.
+ * Transient errors (send failures, network) should be retried.
+ */
+function isPermanentIpcError(err: unknown): boolean {
+  return err instanceof SyntaxError; // JSON parse failure = bad file, won't improve on retry
+}
+
+/**
+ * Handle an IPC file processing error.
+ * Permanent errors → quarantine immediately.
+ * Transient errors → leave in place for retry, quarantine after IPC_MAX_RETRIES.
+ */
+function handleIpcFileError(
+  filePath: string,
+  file: string,
+  sourceGroup: string,
+  err: unknown,
+  ipcBaseDir: string,
+): void {
+  if (isPermanentIpcError(err)) {
+    // Bad data — quarantine immediately
+    moveToErrorDir(filePath, file, sourceGroup, ipcBaseDir);
+    ipcRetryCounts.delete(filePath);
+    return;
+  }
+
+  // Transient error — increment retry count
+  const retries = (ipcRetryCounts.get(filePath) ?? 0) + 1;
+  ipcRetryCounts.set(filePath, retries);
+
+  if (retries >= IPC_MAX_RETRIES) {
+    logger.warn(
+      { file, sourceGroup, retries },
+      'IPC file exceeded max retries, quarantining',
+    );
+    moveToErrorDir(filePath, file, sourceGroup, ipcBaseDir);
+    ipcRetryCounts.delete(filePath);
+  } else {
+    logger.debug(
+      { file, sourceGroup, retries, maxRetries: IPC_MAX_RETRIES },
+      'Transient IPC error, will retry',
+    );
+    // Leave file in place — next poll cycle will pick it up again
+  }
+}
+
+function moveToErrorDir(
+  filePath: string,
+  file: string,
+  sourceGroup: string,
+  ipcBaseDir: string,
+): void {
+  try {
+    const errorDir = path.join(ipcBaseDir, 'errors');
+    fs.mkdirSync(errorDir, { recursive: true });
+    fs.renameSync(filePath, path.join(errorDir, `${sourceGroup}-${file}`));
+  } catch (moveErr) {
+    logger.warn({ moveErr, filePath }, 'Failed to move IPC file to error dir');
+  }
+}
+
+/**
+ * Evict old error files: remove files older than IPC_ERROR_RETAIN_DAYS,
+ * then cap at IPC_ERROR_MAX_FILES (removing oldest).
+ */
+export function evictErrorFiles(ipcBaseDir: string): void {
+  const errorDir = path.join(ipcBaseDir, 'errors');
+  if (!fs.existsSync(errorDir)) return;
+
+  try {
+    const files = fs.readdirSync(errorDir);
+    const cutoff = Date.now() - IPC_ERROR_RETAIN_DAYS * 86400000;
+    const remaining: Array<{ name: string; mtime: number }> = [];
+
+    for (const file of files) {
+      const filePath = path.join(errorDir, file);
+      try {
+        const stat = fs.statSync(filePath);
+        if (stat.mtimeMs < cutoff) {
+          fs.unlinkSync(filePath);
+        } else {
+          remaining.push({ name: file, mtime: stat.mtimeMs });
+        }
+      } catch {
+        // Skip files we can't stat
+      }
+    }
+
+    // Cap at max files — remove oldest
+    if (remaining.length > IPC_ERROR_MAX_FILES) {
+      remaining.sort((a, b) => a.mtime - b.mtime);
+      const toRemove = remaining.slice(0, remaining.length - IPC_ERROR_MAX_FILES);
+      for (const { name } of toRemove) {
+        try {
+          fs.unlinkSync(path.join(errorDir, name));
+        } catch {
+          // Best-effort
+        }
+      }
+      logger.info(
+        { removed: toRemove.length, remaining: IPC_ERROR_MAX_FILES },
+        'Evicted old IPC error files',
+      );
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Error evicting IPC error files');
+  }
+}
+
 // --- IPC watcher ---
 
 let ipcWatcherRunning = false;
+let lastEvictionTime = 0;
 
 export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
   if (ipcWatcherRunning) {
@@ -489,6 +607,9 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
 
   const ipcBaseDir = path.join(DATA_DIR, 'ipc');
   fs.mkdirSync(ipcBaseDir, { recursive: true });
+
+  // Evict old error files on startup
+  evictErrorFiles(ipcBaseDir);
 
   const processIpcFiles = async () => {
     // Scan all group IPC directories (identity determined by directory)
@@ -601,17 +722,13 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                 }
               }
               fs.unlinkSync(filePath);
+              ipcRetryCounts.delete(filePath);
             } catch (err) {
               logger.error(
                 { file, sourceGroup, err },
                 'Error processing IPC message',
               );
-              const errorDir = path.join(ipcBaseDir, 'errors');
-              fs.mkdirSync(errorDir, { recursive: true });
-              fs.renameSync(
-                filePath,
-                path.join(errorDir, `${sourceGroup}-${file}`),
-              );
+              handleIpcFileError(filePath, file, sourceGroup, err, ipcBaseDir);
             }
           }
         }
@@ -635,23 +752,25 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               await processTaskIpc(data, sourceGroup, isMain, deps);
               fs.unlinkSync(filePath);
+              ipcRetryCounts.delete(filePath);
             } catch (err) {
               logger.error(
                 { file, sourceGroup, err },
                 'Error processing IPC task',
               );
-              const errorDir = path.join(ipcBaseDir, 'errors');
-              fs.mkdirSync(errorDir, { recursive: true });
-              fs.renameSync(
-                filePath,
-                path.join(errorDir, `${sourceGroup}-${file}`),
-              );
+              handleIpcFileError(filePath, file, sourceGroup, err, ipcBaseDir);
             }
           }
         }
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
       }
+    }
+
+    // Periodic eviction of old error files (every 5 minutes)
+    if (Date.now() - lastEvictionTime > 300_000) {
+      evictErrorFiles(ipcBaseDir);
+      lastEvictionTime = Date.now();
     }
 
     setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
