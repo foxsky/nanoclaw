@@ -486,7 +486,13 @@ const ipcRetryCounts = new Map<string, number>();
  * Transient errors (send failures, network) should be retried.
  */
 function isPermanentIpcError(err: unknown): boolean {
-  return err instanceof SyntaxError; // JSON parse failure = bad file, won't improve on retry
+  // SyntaxError = bad JSON, TypeError = missing fields, RangeError = bad data shape
+  // All indicate malformed IPC payloads that won't improve on retry
+  return (
+    err instanceof SyntaxError ||
+    err instanceof TypeError ||
+    err instanceof RangeError
+  );
 }
 
 /**
@@ -503,8 +509,9 @@ function handleIpcFileError(
 ): void {
   if (isPermanentIpcError(err)) {
     // Bad data — quarantine immediately
-    moveToErrorDir(filePath, file, sourceGroup, ipcBaseDir);
-    ipcRetryCounts.delete(filePath);
+    if (moveToErrorDir(filePath, file, sourceGroup, ipcBaseDir)) {
+      ipcRetryCounts.delete(filePath);
+    }
     return;
   }
 
@@ -517,8 +524,10 @@ function handleIpcFileError(
       { file, sourceGroup, retries },
       'IPC file exceeded max retries, quarantining',
     );
-    moveToErrorDir(filePath, file, sourceGroup, ipcBaseDir);
-    ipcRetryCounts.delete(filePath);
+    if (moveToErrorDir(filePath, file, sourceGroup, ipcBaseDir)) {
+      ipcRetryCounts.delete(filePath);
+    }
+    // If move failed, retry count stays high — prevents infinite 5-retry loops
   } else {
     logger.debug(
       { file, sourceGroup, retries, maxRetries: IPC_MAX_RETRIES },
@@ -533,13 +542,16 @@ function moveToErrorDir(
   file: string,
   sourceGroup: string,
   ipcBaseDir: string,
-): void {
+): boolean {
   try {
     const errorDir = path.join(ipcBaseDir, 'errors');
     fs.mkdirSync(errorDir, { recursive: true });
-    fs.renameSync(filePath, path.join(errorDir, `${sourceGroup}-${file}`));
+    const errorName = `${sourceGroup}-${Date.now()}-${file}`;
+    fs.renameSync(filePath, path.join(errorDir, errorName));
+    return true;
   } catch (moveErr) {
     logger.warn({ moveErr, filePath }, 'Failed to move IPC file to error dir');
+    return false;
   }
 }
 
@@ -573,7 +585,10 @@ export function evictErrorFiles(ipcBaseDir: string): void {
     // Cap at max files — remove oldest
     if (remaining.length > IPC_ERROR_MAX_FILES) {
       remaining.sort((a, b) => a.mtime - b.mtime);
-      const toRemove = remaining.slice(0, remaining.length - IPC_ERROR_MAX_FILES);
+      const toRemove = remaining.slice(
+        0,
+        remaining.length - IPC_ERROR_MAX_FILES,
+      );
       for (const { name } of toRemove) {
         try {
           fs.unlinkSync(path.join(errorDir, name));
