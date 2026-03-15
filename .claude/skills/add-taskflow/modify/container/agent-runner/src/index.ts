@@ -105,7 +105,15 @@ class MessageStream {
         yield this.queue.shift()!;
       }
       if (this.done) return;
-      await new Promise<void>(r => { this.waiting = r; });
+      // Install waiter before re-checking done/queue to close the race window
+      // where end() or push() fires between the check above and the await.
+      await new Promise<void>(r => {
+        this.waiting = r;
+        if (this.done || this.queue.length > 0) {
+          this.waiting = null;
+          r();
+        }
+      });
       this.waiting = null;
     }
   }
@@ -511,6 +519,7 @@ async function runQuery(
   }
 
   ipcPolling = false;
+  stream.end();
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
@@ -560,6 +569,33 @@ async function main(): Promise<void> {
     prompt += '\n' + pending.join('\n');
   }
 
+  // Build context preamble from embeddings (if available)
+  if (containerInput.queryVector && containerInput.isTaskflowManaged && containerInput.taskflowBoardId) {
+    try {
+      const { EmbeddingReader } = await import('./embedding-reader.js');
+      const reader = new EmbeddingReader('/workspace/embeddings/embeddings.db');
+      const vectorBuf = Buffer.from(containerInput.queryVector, 'base64');
+      const queryVector = new Float32Array(vectorBuf.buffer, vectorBuf.byteOffset, vectorBuf.byteLength / 4);
+
+      const Database = (await import('better-sqlite3')).default;
+      const tfDbPath = '/workspace/taskflow/taskflow.db';
+      if (fs.existsSync(tfDbPath)) {
+        const tfDb = new Database(tfDbPath, { readonly: true });
+        const { TaskflowEngine } = await import('./taskflow-engine.js');
+        const engine = new TaskflowEngine(tfDb, containerInput.taskflowBoardId);
+        const preamble = engine.buildContextSummary(queryVector, reader);
+        if (preamble) {
+          prompt = preamble + '\n\n' + prompt;
+          log(`Context preamble injected (${preamble.length} chars)`);
+        }
+        tfDb.close();
+      }
+      reader.close();
+    } catch (err) {
+      log(`Context preamble skipped: ${err}`);
+    }
+  }
+
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
   try {
@@ -573,6 +609,9 @@ async function main(): Promise<void> {
       if (queryResult.lastAssistantUuid) {
         resumeAt = queryResult.lastAssistantUuid;
       }
+      // Clear image attachments after first query — images belong only to the
+      // original message and must not be re-injected into follow-up queries.
+      containerInput.imageAttachments = undefined;
 
       // If _close was consumed during the query, exit immediately.
       // Don't emit a session-update marker (it would reset the host's
