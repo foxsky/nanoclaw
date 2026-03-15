@@ -475,7 +475,18 @@ export class WhatsAppChannel implements Channel {
     let droppedParticipants: string[] = [];
     try {
       const meta = await this.sock.groupMetadata(groupJid);
-      const memberIds = new Set(meta.participants.map((p) => p.id));
+      // Build member set with both raw IDs and phone-number equivalents.
+      // Group metadata may return LID JIDs (@lid) for participants that were
+      // added by phone JID (@s.whatsapp.net). Translate LIDs to phone JIDs
+      // so the comparison works across both formats.
+      const memberIds = new Set<string>();
+      for (const p of meta.participants) {
+        memberIds.add(p.id);
+        if (p.id.endsWith('@lid')) {
+          const phoneJid = await this.translateJid(p.id);
+          if (phoneJid !== p.id) memberIds.add(phoneJid);
+        }
+      }
       const missing = participants.filter((p) => !memberIds.has(p));
       if (missing.length > 0) {
         logger.info(
@@ -496,7 +507,14 @@ export class WhatsAppChannel implements Channel {
         if (allAdded) {
           try {
             const meta2 = await this.sock.groupMetadata(groupJid);
-            const memberIds2 = new Set(meta2.participants.map((p) => p.id));
+            const memberIds2 = new Set<string>();
+            for (const p of meta2.participants) {
+              memberIds2.add(p.id);
+              if (p.id.endsWith('@lid')) {
+                const phoneJid = await this.translateJid(p.id);
+                if (phoneJid !== p.id) memberIds2.add(phoneJid);
+              }
+            }
             const stillMissing = missing.filter((p) => !memberIds2.has(p));
             if (stillMissing.length > 0) {
               allAdded = false;
