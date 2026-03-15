@@ -182,7 +182,8 @@ export function parseTurnsFromJsonl(
         // Real user message with string content (e.g., host prepends embedding preamble)
         finalizeCurrentTurn(startIndex + i);
         currentUserMessage = content;
-        currentTimestamp = entry.timestamp ?? (currentTimestamp || new Date().toISOString());
+        currentTimestamp =
+          entry.timestamp ?? (currentTimestamp || new Date().toISOString());
         turnStarted = true;
         continue;
       }
@@ -297,29 +298,32 @@ export async function captureAgentTurn(
   try {
     const filePath = jsonlPath(groupFolder, sessionId);
 
-    // Look up cursor (no existsSync — let readLinesFrom handle ENOENT)
+    // Look up cursor (no existsSync — let readLinesFromOffset handle ENOENT)
     const cursor = service.db
       .prepare(
-        'SELECT session_id, last_entry_index, last_assistant_uuid FROM context_cursors WHERE group_folder = ?',
+        'SELECT session_id, last_entry_index, last_byte_offset, last_assistant_uuid FROM context_cursors WHERE group_folder = ?',
       )
       .get(groupFolder) as
       | {
           session_id: string;
           last_entry_index: number;
+          last_byte_offset: number;
           last_assistant_uuid: string | null;
         }
       | undefined;
 
     let startLine = 0;
+    let byteOffset = 0;
     if (cursor) {
       if (cursor.session_id === sessionId) {
         startLine = cursor.last_entry_index;
+        byteOffset = cursor.last_byte_offset;
       }
       // If session_id changed, reset to 0 (new JSONL file)
     }
 
-    // Read the JSONL file from startLine
-    const allLines = readLinesFrom(filePath, startLine);
+    // Read only new bytes from the JSONL file using byte offset
+    const { lines: allLines, bytesRead } = readLinesFromOffset(filePath, byteOffset);
     if (allLines.length === 0) {
       return; // Nothing new
     }
@@ -349,18 +353,20 @@ export async function captureAgentTurn(
         });
       }
 
-      // Upsert cursor
+      // Upsert cursor with byte offset for efficient seeking
+      const newByteOffset = byteOffset + bytesRead;
       service.db
         .prepare(
-          `INSERT INTO context_cursors (group_folder, session_id, last_entry_index, last_assistant_uuid, updated_at)
-           VALUES (?, ?, ?, ?, ?)
+          `INSERT INTO context_cursors (group_folder, session_id, last_entry_index, last_byte_offset, last_assistant_uuid, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT(group_folder) DO UPDATE SET
              session_id = excluded.session_id,
              last_entry_index = excluded.last_entry_index,
+             last_byte_offset = excluded.last_byte_offset,
              last_assistant_uuid = excluded.last_assistant_uuid,
              updated_at = excluded.updated_at`,
         )
-        .run(groupFolder, sessionId, newCursorIndex, newAssistantUuid, now);
+        .run(groupFolder, sessionId, newCursorIndex, newByteOffset, newAssistantUuid, now);
     })();
 
     logger.info(
@@ -538,25 +544,35 @@ async function runRollups(
 /* ------------------------------------------------------------------ */
 
 /**
- * Reads lines from a file starting at a given line offset.
- * Uses readline to skip already-processed lines without buffering the entire file.
- * Returns an empty array if the file doesn't exist (handles ENOENT gracefully).
+ * Reads lines from a file starting at a given byte offset.
+ * Only reads new bytes from the offset, avoiding re-reading the entire file.
+ * Returns { lines, bytesRead } where bytesRead is the total new bytes consumed.
+ * Returns empty if the file doesn't exist (handles ENOENT gracefully).
  */
-function readLinesFrom(filePath: string, startLine: number): string[] {
+function readLinesFromOffset(
+  filePath: string,
+  byteOffset: number,
+): { lines: string[]; bytesRead: number } {
   let fd: number;
   try {
     fd = fs.openSync(filePath, 'r');
   } catch {
-    return []; // File doesn't exist yet — no-op
+    return { lines: [], bytesRead: 0 };
   }
   try {
-    const content = fs.readFileSync(fd, 'utf-8');
+    const stat = fs.fstatSync(fd);
+    const newBytes = stat.size - byteOffset;
+    if (newBytes <= 0) return { lines: [], bytesRead: 0 };
+
+    const buf = Buffer.alloc(newBytes);
+    fs.readSync(fd, buf, 0, newBytes, byteOffset);
+    const content = buf.toString('utf-8');
     const allLines = content.split('\n');
     // Remove trailing empty line if file ends with newline
     if (allLines.length > 0 && allLines[allLines.length - 1] === '') {
       allLines.pop();
     }
-    return allLines.slice(startLine);
+    return { lines: allLines, bytesRead: newBytes };
   } finally {
     fs.closeSync(fd);
   }

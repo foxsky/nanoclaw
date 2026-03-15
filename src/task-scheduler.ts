@@ -59,6 +59,32 @@ export function computeNextRun(task: ScheduledTask): string | null {
   return null;
 }
 
+/**
+ * Check if a cron task already ran in the current cron slot.
+ * Prevents re-execution on process restart when `inFlightTaskIds` is lost.
+ * Returns true if `last_run` falls within [currentSlot, nextSlot).
+ */
+export function cronSlotAlreadyRan(task: ScheduledTask): boolean {
+  if (task.schedule_type !== 'cron' || !task.last_run) return false;
+  try {
+    const interval = CronExpressionParser.parse(task.schedule_value, {
+      tz: TIMEZONE,
+    });
+    const nextSlot = interval.next().toDate();
+    // Current slot = the slot that just passed (prev from next)
+    const prevInterval = CronExpressionParser.parse(task.schedule_value, {
+      tz: TIMEZONE,
+      currentDate: nextSlot,
+    });
+    // Go back to get the current slot start
+    const currentSlot = prevInterval.prev().toDate();
+    const lastRun = new Date(task.last_run);
+    return lastRun >= currentSlot && lastRun < nextSlot;
+  } catch {
+    return false;
+  }
+}
+
 async function runTask(
   task: ScheduledTask,
   deps: SchedulerDependencies,
@@ -298,6 +324,17 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
               status: currentTask?.status,
             },
             'Skipping due task after status re-check',
+          );
+          continue;
+        }
+
+        // Idempotency guard: skip if this cron slot already ran (e.g., after process restart)
+        if (cronSlotAlreadyRan(currentTask)) {
+          const nextRun = computeNextRun(currentTask);
+          if (nextRun) updateTask(currentTask.id, { next_run: nextRun });
+          logger.debug(
+            { taskId: currentTask.id },
+            'Skipping cron task — already ran in this slot',
           );
           continue;
         }

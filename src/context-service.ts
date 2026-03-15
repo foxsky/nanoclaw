@@ -16,7 +16,7 @@ export const Level = {
   MONTHLY: 3,
 } as const;
 
-const DEFAULT_OLLAMA_MODEL = 'llama3.1';
+const DEFAULT_OLLAMA_MODEL = 'llama3.1:8b';
 const CLAUDE_API_MODEL = 'claude-haiku-4-5-20251001';
 const CLAUDE_DISPLAY_NAME = 'haiku-4.5';
 
@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS context_cursors (
   group_folder  TEXT PRIMARY KEY,
   session_id    TEXT NOT NULL,
   last_entry_index INTEGER NOT NULL DEFAULT 0,
+  last_byte_offset INTEGER NOT NULL DEFAULT 0,
   last_assistant_uuid TEXT,
   updated_at    TEXT NOT NULL
 );
