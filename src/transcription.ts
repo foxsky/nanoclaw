@@ -81,7 +81,7 @@ export async function transcribeAudioMessage(
 
     const transcript = await transcribeWithOpenAI(buffer, config);
 
-    if (!transcript) {
+    if (transcript === null) {
       return null;
     }
 

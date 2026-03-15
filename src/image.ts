@@ -27,13 +27,19 @@ export async function processImage(
 ): Promise<ProcessedImage | null> {
   if (!buffer || buffer.length === 0) return null;
 
-  const resized = await sharp(buffer)
-    .resize(MAX_DIMENSION, MAX_DIMENSION, {
-      fit: 'inside',
-      withoutEnlargement: true,
-    })
-    .jpeg({ quality: 85 })
-    .toBuffer();
+  let resized: Buffer;
+  try {
+    resized = await sharp(buffer)
+      .resize(MAX_DIMENSION, MAX_DIMENSION, {
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .jpeg({ quality: 85 })
+      .toBuffer();
+  } catch {
+    // Corrupt data, unsupported format, or memory pressure
+    return null;
+  }
 
   const attachDir = path.join(groupDir, 'attachments');
   fs.mkdirSync(attachDir, { recursive: true });
