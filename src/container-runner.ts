@@ -88,6 +88,7 @@ const CORE_AGENT_RUNNER_FILES = [
   'ipc-tooling.ts',
   'runtime-config.ts',
   'taskflow-engine.ts',
+  'db-util.ts',
   'embedding-reader.ts',
   'context-reader.ts',
   path.join('mcp-plugins', 'create-group.ts'),

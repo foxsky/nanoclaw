@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
-import fs from 'fs';
+
+import { closeDb, openReadonlyDb } from './db-util.js';
 
 export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   if (a.length !== b.length || a.length === 0) return 0;
@@ -19,15 +20,7 @@ export class EmbeddingReader {
   private db: Database.Database | null = null;
 
   constructor(dbPath: string) {
-    try {
-      if (!fs.existsSync(dbPath)) {
-        return; // DB not created yet — graceful no-op
-      }
-      this.db = new Database(dbPath, { readonly: true });
-      this.db.pragma('busy_timeout = 5000');
-    } catch {
-      this.db = null; // corrupted or locked — graceful fallback
-    }
+    this.db = openReadonlyDb(dbPath);
   }
 
   /**
@@ -93,9 +86,7 @@ export class EmbeddingReader {
   }
 
   close(): void {
-    try {
-      this.db?.close();
-    } catch {}
+    closeDb(this.db);
     this.db = null;
   }
 }
