@@ -453,9 +453,16 @@ export class WhatsAppChannel implements Channel {
   async createGroup(
     subject: string,
     participants: string[],
-  ): Promise<{ jid: string; subject: string; inviteLink?: string }> {
+  ): Promise<{
+    jid: string;
+    subject: string;
+    inviteLink?: string;
+    droppedParticipants?: string[];
+  }> {
     if (participants.length > 1024) {
-      throw new Error(`Too many participants (${participants.length}): WhatsApp limit is 1024`);
+      throw new Error(
+        `Too many participants (${participants.length}): WhatsApp limit is 1024`,
+      );
     }
     const result = await this.sock.groupCreate(subject, participants);
     if (!result?.id) {
@@ -465,6 +472,7 @@ export class WhatsAppChannel implements Channel {
 
     // Verify participants were added; if not, retry with groupParticipantsUpdate
     let allAdded = true;
+    let droppedParticipants: string[] = [];
     try {
       const meta = await this.sock.groupMetadata(groupJid);
       const memberIds = new Set(meta.participants.map((p) => p.id));
@@ -478,6 +486,7 @@ export class WhatsAppChannel implements Channel {
           await this.sock.groupParticipantsUpdate(groupJid, missing, 'add');
         } catch (retryErr) {
           allAdded = false;
+          droppedParticipants = missing;
           logger.warn(
             { err: retryErr, groupJid, missing },
             'Failed to add missing participants',
@@ -491,6 +500,7 @@ export class WhatsAppChannel implements Channel {
             const stillMissing = missing.filter((p) => !memberIds2.has(p));
             if (stillMissing.length > 0) {
               allAdded = false;
+              droppedParticipants = stillMissing;
               logger.warn(
                 { groupJid, stillMissing },
                 'Participants still missing after retry',
@@ -521,7 +531,12 @@ export class WhatsAppChannel implements Channel {
       }
     }
 
-    return { jid: groupJid, subject: result.subject, inviteLink };
+    return {
+      jid: groupJid,
+      subject: result.subject,
+      inviteLink,
+      droppedParticipants: droppedParticipants.length > 0 ? droppedParticipants : undefined,
+    };
   }
 
   private async flushOutgoingQueue(): Promise<void> {

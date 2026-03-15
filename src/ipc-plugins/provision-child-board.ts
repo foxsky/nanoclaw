@@ -197,11 +197,14 @@ const handleProvisionChildBoard: IpcHandler = async (
         'provision_child_board: WhatsApp group created',
       );
       if (result.inviteLink) {
-        // Send invite link to the source group so the manager can forward it
+        // Send invite link with dropped participant info so the manager knows who to forward it to
+        const dropped = result.droppedParticipants?.length
+          ? `\n⚠️ Não foi possível adicionar: ${result.droppedParticipants.map(p => p.split('@')[0]).join(', ')}`
+          : '';
         try {
           await deps.sendMessage(
             sourceGroupJid!,
-            `📎 Link de convite para o grupo *${childGroupName}* (${personName}):\n${result.inviteLink}`,
+            `📎 Link de convite para o grupo *${childGroupName}* (${personName}):\n${result.inviteLink}${dropped}`,
           );
         } catch {}
       }
