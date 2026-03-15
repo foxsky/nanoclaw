@@ -53,7 +53,11 @@ export class EmbeddingService {
       | { source_text: string; model: string }
       | undefined;
 
-    if (existing && existing.source_text === text && existing.model === this.model) {
+    if (
+      existing &&
+      existing.source_text === text &&
+      existing.model === this.model
+    ) {
       return; // unchanged — preserve existing vector
     }
 
@@ -103,7 +107,9 @@ export class EmbeddingService {
     }
     return (
       this.db
-        .prepare('SELECT DISTINCT collection FROM embeddings ORDER BY collection')
+        .prepare(
+          'SELECT DISTINCT collection FROM embeddings ORDER BY collection',
+        )
         .all() as Array<{ collection: string }>
     ).map((r) => r.collection);
   }
@@ -124,10 +130,16 @@ export class EmbeddingService {
 
   async runIndexerCycle(): Promise<void> {
     try {
-      // Step 1: Model change detection — mark mismatched for re-embedding
-      this.db
-        .prepare('UPDATE embeddings SET vector = NULL WHERE model != ?')
-        .run(this.model);
+      // Step 1: Model change detection — only update if mismatched rows exist
+      const mismatch = this.db
+        .prepare('SELECT COUNT(*) as cnt FROM embeddings WHERE model != ? AND vector IS NOT NULL')
+        .get(this.model) as { cnt: number };
+      if (mismatch.cnt > 0) {
+        this.db
+          .prepare('UPDATE embeddings SET vector = NULL WHERE model != ?')
+          .run(this.model);
+        logger.info({ count: mismatch.cnt, model: this.model }, 'Embedding indexer: model change detected, re-embedding');
+      }
 
       // Step 2: Query pending items (deterministic order, no starvation)
       const pending = this.db
@@ -162,7 +174,9 @@ export class EmbeddingService {
 
       const data = (await response.json()) as { embeddings: number[][] };
       if (!data.embeddings || data.embeddings.length !== pending.length) {
-        logger.warn('Embedding indexer: unexpected embedding count from Ollama');
+        logger.warn(
+          'Embedding indexer: unexpected embedding count from Ollama',
+        );
         return;
       }
 

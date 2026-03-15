@@ -351,12 +351,7 @@ function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
-  // Pass embedding config to container (generic embedding service)
-  const embedCfg = readEmbeddingConfig();
-  if (embedCfg.ollamaHost) {
-    args.push('-e', `OLLAMA_HOST=${embedCfg.ollamaHost}`);
-    args.push('-e', `EMBEDDING_MODEL=${embedCfg.embeddingModel}`);
-  }
+  // Embedding env vars are passed by runContainerAgent after buildContainerArgs returns
 
   // Point containers at the credential proxy instead of direct API access
   args.push(
@@ -446,19 +441,23 @@ export async function runContainerAgent(
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
 
-  // Set embedding config on ContainerInput (before Promise scope)
-  const embedCfg2 = readEmbeddingConfig();
-  input.ollamaHost = embedCfg2.ollamaHost;
-  input.embeddingModel = embedCfg2.embeddingModel;
+  // Set embedding config on ContainerInput + Docker env (single read)
+  const embedCfg = readEmbeddingConfig();
+  input.ollamaHost = embedCfg.ollamaHost;
+  input.embeddingModel = embedCfg.embeddingModel;
+  if (embedCfg.ollamaHost) {
+    containerArgs.push('-e', `OLLAMA_HOST=${embedCfg.ollamaHost}`);
+    containerArgs.push('-e', `EMBEDDING_MODEL=${embedCfg.embeddingModel}`);
+  }
 
   // Embed user message for context-aware features (async, best-effort)
-  if (embedCfg2.ollamaHost) {
+  if (embedCfg.ollamaHost) {
     try {
-      const resp = await fetch(`${embedCfg2.ollamaHost}/api/embed`, {
+      const resp = await fetch(`${embedCfg.ollamaHost}/api/embed`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: embedCfg2.embeddingModel,
+          model: embedCfg.embeddingModel,
           input: input.prompt,
         }),
         signal: AbortSignal.timeout(2000),
