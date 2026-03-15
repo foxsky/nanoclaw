@@ -600,6 +600,43 @@ async function main(): Promise<void> {
     }
   }
 
+  // --- add-long-term-context skill: conversation recap preamble ---
+  // Injected AFTER the embedding preamble, BEFORE the user message.
+  // Final prompt order: embedding preamble → conversation recap → user message.
+  try {
+    const { ContextReader } = await import('./context-reader.js');
+    const ctxReader = new ContextReader('/workspace/context/context.db');
+    try {
+      const recents = ctxReader.getRecentSummaries(containerInput.groupFolder, 3);
+      if (recents.length > 0) {
+        let budget = 1024;
+        const selected: typeof recents = [];
+        for (const node of recents) {
+          const cost = node.token_count ?? Math.ceil((node.summary?.length ?? 0) / 3.5);
+          if (budget - cost < 0 && selected.length > 0) break;
+          selected.push(node);
+          budget -= cost;
+        }
+        if (selected.length > 0) {
+          const lines = selected.reverse().map(n => {
+            const d = new Date(n.time_start);
+            const dateStr = d.toLocaleDateString('pt-BR', {
+              month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+            });
+            return `[${dateStr}] ${n.summary}`;
+          });
+          const recap = `--- Recent conversation history ---\n${lines.join('\n')}\n---`;
+          prompt = recap + '\n\n' + prompt;
+          log(`Context recap injected (${selected.length} summaries, ${recap.length} chars)`);
+        }
+      }
+    } finally {
+      ctxReader.close();
+    }
+  } catch (err) {
+    log(`Context recap skipped: ${err}`);
+  }
+
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
   try {

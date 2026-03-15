@@ -744,6 +744,37 @@ async function main(): Promise<void> {
     );
   }
 
+  // --- add-long-term-context skill ---
+  let contextSyncTimer: ReturnType<typeof setInterval> | null = null;
+  let contextService: import('./context-service.js').ContextService | null =
+    null;
+  {
+    const { readEnvFile: readCtxEnv } = await import('./env.js');
+    const ctxEnv = readCtxEnv([
+      'OLLAMA_HOST',
+      'CONTEXT_SUMMARIZER',
+      'CONTEXT_SUMMARIZER_MODEL',
+      'CONTEXT_RETAIN_DAYS',
+    ]);
+    const { ContextService } = await import('./context-service.js');
+    const { startContextSync } = await import('./context-sync.js');
+    const { setContextService } = await import('./container-runner.js');
+
+    contextService = new ContextService(
+      path.join(DATA_DIR, 'context', 'context.db'),
+      {
+        summarizer:
+          (ctxEnv.CONTEXT_SUMMARIZER as 'ollama' | 'claude') || 'ollama',
+        summarizerModel: ctxEnv.CONTEXT_SUMMARIZER_MODEL,
+        ollamaHost: ctxEnv.OLLAMA_HOST,
+        retainDays: parseInt(ctxEnv.CONTEXT_RETAIN_DAYS || '90'),
+      },
+    );
+    setContextService(contextService);
+    contextSyncTimer = startContextSync(contextService);
+    logger.info('Long-term context service started');
+  }
+
   // Start credential proxy
   const proxyServer = await startCredentialProxy(
     CREDENTIAL_PROXY_PORT,
@@ -757,6 +788,14 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, 'Shutdown signal received');
     try {
+      if (contextSyncTimer) clearInterval(contextSyncTimer); // add-long-term-context
+      if (contextService) {
+        try {
+          const { setContextService } = await import('./container-runner.js');
+          setContextService(null);
+        } catch {}
+        contextService.close();
+      }
       if (embeddingSyncTimer) clearInterval(embeddingSyncTimer); // add-taskflow
       embeddingService?.close(); // add-embeddings
       await queue.shutdown(10000);

@@ -1,0 +1,26 @@
+skill: add-long-term-context
+version: 1.0.0
+description: "Hierarchical long-term context via DAG summarization, FTS5 search, incremental turn capture"
+core_version: 1.2.12
+adds:
+  - src/context-service.ts
+  - src/context-service.test.ts
+  - src/context-sync.ts
+  - src/context-sync.test.ts
+  - container/agent-runner/src/context-reader.ts
+  - container/agent-runner/src/context-reader.test.ts
+modifies:
+  - src/container-runner.ts                         # mount, capture hook, CORE_AGENT_RUNNER_FILES
+  - src/index.ts                                    # service init, sync timer, shutdown
+  - container/agent-runner/src/index.ts             # conversation recap preamble
+  - container/agent-runner/src/ipc-mcp-stdio.ts     # context_search, context_recall MCP tools
+structured:
+  npm_dependencies: {}
+  env_additions:
+    - CONTEXT_SUMMARIZER
+    - CONTEXT_SUMMARIZER_MODEL
+    - CONTEXT_RETAIN_DAYS
+conflicts: []
+depends:
+  - add-embeddings                                  # uses shared OLLAMA_HOST for summarization
+test: "npx vitest run src/context-service.test.ts && npx vitest run src/context-sync.test.ts && cd container/agent-runner && npx vitest run src/context-reader.test.ts"

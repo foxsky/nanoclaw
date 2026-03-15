@@ -31,6 +31,15 @@ import {
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
+// --- add-long-term-context skill: module-level setter ---
+import type { ContextService } from './context-service.js';
+let _contextService: ContextService | null = null;
+
+/** Set by index.ts after creating the ContextService. Used by the capture hook. */
+export function setContextService(svc: ContextService | null): void {
+  _contextService = svc;
+}
+
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
@@ -80,6 +89,7 @@ const CORE_AGENT_RUNNER_FILES = [
   'runtime-config.ts',
   'taskflow-engine.ts',
   'embedding-reader.ts',
+  'context-reader.ts',
   path.join('mcp-plugins', 'create-group.ts'),
 ] as const;
 
@@ -224,6 +234,17 @@ function buildVolumeMounts(
   mounts.push({
     hostPath: embeddingsDir,
     containerPath: '/workspace/embeddings',
+    readonly: true,
+  });
+
+  // --- add-long-term-context skill ---
+  // Context DB — read-only mount for conversation history preamble and MCP tools.
+  // Mounts the directory (not the file) so SQLite WAL/SHM files are visible.
+  const contextDir = path.join(DATA_DIR, 'context');
+  fs.mkdirSync(contextDir, { recursive: true });
+  mounts.push({
+    hostPath: contextDir,
+    containerPath: '/workspace/context',
     readonly: true,
   });
 
@@ -627,6 +648,17 @@ export async function runContainerAgent(
     container.on('close', (code) => {
       clearTimeout(timeout);
       const duration = Date.now() - startTime;
+
+      // --- add-long-term-context skill: capture turns on container exit ---
+      // Fire-and-forget — safe even on error paths. Must be before branching
+      // so capture happens regardless of exit reason (timeout, error, success).
+      if (_contextService && newSessionId) {
+        import('./context-sync.js')
+          .then(({ captureAgentTurn }) =>
+            captureAgentTurn(_contextService!, group.folder, newSessionId!),
+          )
+          .catch(() => {});
+      }
 
       if (timedOut) {
         const ts = new Date().toISOString().replace(/[:.]/g, '-');
