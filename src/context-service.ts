@@ -213,6 +213,9 @@ export class ContextService {
   private readonly stmtInsertRollupNode: Database.Statement;
   private readonly stmtSetParent: Database.Statement;
   private readonly stmtSelectExistingNode: Database.Statement;
+  private readonly stmtPruneNodes: Database.Statement;
+  private readonly stmtPruneSessions: Database.Statement;
+  private readonly stmtVacuum: Database.Statement;
 
   constructor(dbPath: string, config: ContextConfig) {
     this.config = config;
@@ -273,6 +276,25 @@ export class ContextService {
 
     this.stmtSelectExistingNode = this.db.prepare(`
       SELECT id FROM context_nodes WHERE id = ?
+    `);
+
+    this.stmtPruneNodes = this.db.prepare(`
+      UPDATE context_nodes SET pruned_at = ?
+      WHERE pruned_at IS NULL AND level <= 1 AND created_at < ?
+    `);
+
+    this.stmtPruneSessions = this.db.prepare(`
+      UPDATE context_sessions SET pruned_at = ?
+      WHERE pruned_at IS NULL AND id IN (
+        SELECT cs.id FROM context_sessions cs
+        JOIN context_nodes cn ON cn.id = cs.id
+        WHERE cn.pruned_at IS NOT NULL AND cn.level = 0
+        AND cs.pruned_at IS NULL
+      )
+    `);
+
+    this.stmtVacuum = this.db.prepare(`
+      DELETE FROM context_nodes WHERE pruned_at IS NOT NULL AND pruned_at < ?
     `);
   }
 
@@ -417,7 +439,11 @@ export class ContextService {
     if (children.length === 0) return null;
 
     const levelName =
-      parentLevel === 1 ? 'day' : parentLevel === 2 ? 'week' : 'month';
+      parentLevel === Level.DAILY
+        ? 'day'
+        : parentLevel === Level.WEEKLY
+          ? 'week'
+          : 'month';
     const combinedSummaries = children.map((c) => c.summary).join('\n\n');
     const prompt = ROLLUP_PROMPTS[levelName].replace(
       '{summaries}',
@@ -469,25 +495,10 @@ export class ContextService {
     ).toISOString();
     const now = new Date().toISOString();
 
-    // Single transaction: prune nodes + sessions in lockstep
+    // Single transaction: prune nodes + sessions in lockstep (cached statements)
     const result = this.db.transaction(() => {
-      const nodeResult = this.db
-        .prepare(
-          `UPDATE context_nodes SET pruned_at = ?
-         WHERE pruned_at IS NULL AND level <= 1 AND created_at < ?`,
-        )
-        .run(now, cutoff);
-
-      // Prune matching session records for level-0 nodes
-      this.db
-        .prepare(
-          `UPDATE context_sessions SET pruned_at = ?
-         WHERE pruned_at IS NULL AND id IN (
-           SELECT id FROM context_nodes WHERE pruned_at IS NOT NULL AND level = 0
-         )`,
-        )
-        .run(now);
-
+      const nodeResult = this.stmtPruneNodes.run(now, cutoff);
+      this.stmtPruneSessions.run(now);
       return nodeResult;
     })();
 
@@ -497,12 +508,7 @@ export class ContextService {
   vacuum(): number {
     const cutoff = new Date(Date.now() - 30 * 86400000).toISOString();
     // DELETE on context_nodes cascades to context_sessions via FK ON DELETE CASCADE
-    const result = this.db
-      .prepare(
-        'DELETE FROM context_nodes WHERE pruned_at IS NOT NULL AND pruned_at < ?',
-      )
-      .run(cutoff);
-    return result.changes;
+    return this.stmtVacuum.run(cutoff).changes;
   }
 
   /* ---------------------------------------------------------------- */
@@ -551,7 +557,10 @@ export class ContextService {
       }),
       signal: AbortSignal.timeout(30_000),
     });
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      logger.warn({ status: resp.status, model: this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL }, 'Ollama summarizer returned non-OK');
+      return null;
+    }
     const data = (await resp.json()) as { response?: string };
     return data.response ?? null;
   }
@@ -573,7 +582,10 @@ export class ContextService {
       }),
       signal: AbortSignal.timeout(30_000),
     });
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      logger.warn({ status: resp.status }, 'Claude summarizer returned non-OK');
+      return null;
+    }
     const data = (await resp.json()) as {
       content?: Array<{ text?: string }>;
     };

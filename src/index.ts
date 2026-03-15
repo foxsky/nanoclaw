@@ -790,7 +790,10 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, 'Shutdown signal received');
     try {
-      if (contextSyncTimer) clearInterval(contextSyncTimer); // add-long-term-context: stop new compaction cycles
+      if (contextSyncTimer) {
+        clearInterval(contextSyncTimer);
+        clearTimeout((contextSyncTimer as any).__initialTimeout); // clear the 5s initial delay too
+      }
       if (embeddingSyncTimer) clearInterval(embeddingSyncTimer); // add-taskflow
       embeddingService?.close(); // add-embeddings
       await queue.shutdown(10000); // drain active containers — their close hooks may still capture turns

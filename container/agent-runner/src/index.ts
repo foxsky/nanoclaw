@@ -622,6 +622,7 @@ async function main(): Promise<void> {
           const lines = selected.reverse().map(n => {
             const d = new Date(n.time_start);
             const dateStr = d.toLocaleDateString('pt-BR', {
+              timeZone: process.env.TZ || 'America/Fortaleza',
               month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
             });
             return `[${dateStr}] ${n.summary}`;
