@@ -1,4 +1,7 @@
-import { downloadMediaMessage } from '@whiskeysockets/baileys';
+import {
+  downloadMediaMessage,
+  normalizeMessageContent,
+} from '@whiskeysockets/baileys';
 import { WAMessage, WASocket } from '@whiskeysockets/baileys';
 
 import { readEnvFile } from './env.js';
@@ -93,5 +96,6 @@ export async function transcribeAudioMessage(
 }
 
 export function isVoiceMessage(msg: WAMessage): boolean {
-  return msg.message?.audioMessage?.ptt === true;
+  const normalized = normalizeMessageContent(msg.message);
+  return normalized?.audioMessage?.ptt === true;
 }

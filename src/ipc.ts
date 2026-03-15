@@ -558,10 +558,10 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                   const dmRoute = tfDb
                     ? resolveExternalDm(tfDb, data.chatJid)
                     : null;
-                  if (dmRoute?.needsDisambiguation) {
+                  if (!dmRoute || dmRoute.needsDisambiguation) {
                     logger.warn(
                       { chatJid: data.chatJid, sourceGroup },
-                      'IPC DM blocked: external contact has grants in multiple groups',
+                      'IPC DM blocked: route unavailable or grants in multiple groups',
                     );
                   } else {
                     const sender =

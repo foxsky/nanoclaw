@@ -207,7 +207,7 @@ export function storeChatMetadata(
       INSERT INTO chats (jid, name, last_message_time, channel, is_group) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(jid) DO UPDATE SET
         name = excluded.name,
-        last_message_time = MAX(last_message_time, excluded.last_message_time),
+        last_message_time = MAX(COALESCE(last_message_time, ''), excluded.last_message_time),
         channel = COALESCE(excluded.channel, channel),
         is_group = COALESCE(excluded.is_group, is_group)
     `,
@@ -218,7 +218,7 @@ export function storeChatMetadata(
       `
       INSERT INTO chats (jid, name, last_message_time, channel, is_group) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(jid) DO UPDATE SET
-        last_message_time = MAX(last_message_time, excluded.last_message_time),
+        last_message_time = MAX(COALESCE(last_message_time, ''), excluded.last_message_time),
         channel = COALESCE(excluded.channel, channel),
         is_group = COALESCE(excluded.is_group, is_group)
     `,

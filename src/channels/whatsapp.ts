@@ -226,8 +226,8 @@ export class WhatsAppChannel implements Channel {
             const rawParticipant =
               msg.key.participant || msg.key.remoteJid || '';
             const sender = rawParticipant.endsWith('@lid')
-              ? ((msg.key as { participantAlt?: string }).participantAlt ||
-                  (await this.translateJid(rawParticipant)))
+              ? (msg.key as { participantAlt?: string }).participantAlt ||
+                (await this.translateJid(rawParticipant))
               : rawParticipant;
             const senderName = msg.pushName || sender.split('@')[0];
 
@@ -360,6 +360,14 @@ export class WhatsAppChannel implements Channel {
     try {
       logger.info('Syncing group metadata from WhatsApp...');
       const groups = await this.sock.groupFetchAllParticipating();
+      const total = Object.keys(groups).length;
+
+      if (total === 0) {
+        logger.warn(
+          'Group sync returned zero groups — skipping timestamp update to allow retry',
+        );
+        return;
+      }
 
       let count = 0;
       for (const [jid, metadata] of Object.entries(groups)) {
@@ -370,7 +378,7 @@ export class WhatsAppChannel implements Channel {
       }
 
       setLastGroupSync();
-      logger.info({ count }, 'Group metadata synced');
+      logger.info({ count, total }, 'Group metadata synced');
     } catch (err) {
       logger.error({ err }, 'Failed to sync group metadata');
     }

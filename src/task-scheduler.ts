@@ -98,9 +98,11 @@ async function runTask(
   );
 
   if (!group) {
+    // Pause to prevent infinite retry loop (next_run stays in the past)
+    updateTask(task.id, { status: 'paused' });
     logger.error(
       { taskId: task.id, groupFolder: task.group_folder },
-      'Group not found for task',
+      'Group not found for task — paused to prevent retry churn',
     );
     logTaskRun({
       task_id: task.id,
