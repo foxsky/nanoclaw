@@ -25,6 +25,10 @@ adds:
   - src/migrate-to-sqlite.ts
   - src/migrate-to-sqlite.test.ts
   - src/agent-runner-ipc-tooling.test.ts
+  # Utility scripts (TaskFlow group debugging/fixing)
+  - src/whatsapp-add-participants.ts
+  - src/whatsapp-check-groups.ts
+  - src/whatsapp-fix-groups.ts
 modifies:
   - container/Dockerfile
   - container/agent-runner/src/ipc-mcp-stdio.ts
