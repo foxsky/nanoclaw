@@ -4850,13 +4850,16 @@ export class TaskflowEngine {
                   scored.set(`${task.board_id}:${task.id}`, { task, score: 0.2 });
                 }
                 for (const sem of semanticResults) {
-                  const compositeKey = `${this.boardId}:${sem.itemId}`;
+                  // Look up task first to get correct board_id for composite key
+                  // (delegated tasks have a different board_id than this.boardId)
+                  const task = this.getTask(sem.itemId);
+                  if (!task) continue;
+                  const compositeKey = `${task.board_id}:${task.id}`;
                   const existing = scored.get(compositeKey);
                   if (existing) {
                     existing.score += sem.score;
                   } else {
-                    const task = this.getTask(sem.itemId);
-                    if (task) scored.set(`${task.board_id}:${task.id}`, { task, score: sem.score });
+                    scored.set(compositeKey, { task, score: sem.score });
                   }
                 }
                 const ranked = [...scored.values()]

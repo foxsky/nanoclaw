@@ -446,8 +446,13 @@ export async function runContainerAgent(
   input.ollamaHost = embedCfg.ollamaHost;
   input.embeddingModel = embedCfg.embeddingModel;
   if (embedCfg.ollamaHost) {
-    containerArgs.push('-e', `OLLAMA_HOST=${embedCfg.ollamaHost}`);
-    containerArgs.push('-e', `EMBEDDING_MODEL=${embedCfg.embeddingModel}`);
+    // Insert -e flags before the image name (last element). Docker requires
+    // all options to precede the image; flags after it become entrypoint args.
+    containerArgs.splice(
+      containerArgs.length - 1, 0,
+      '-e', `OLLAMA_HOST=${embedCfg.ollamaHost}`,
+      '-e', `EMBEDDING_MODEL=${embedCfg.embeddingModel}`,
+    );
   }
 
   // Embed user message for context-aware features (async, best-effort)

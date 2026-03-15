@@ -66,9 +66,9 @@ export function buildNanoclawMcpEnv(
 
   if (containerInput.ollamaHost) {
     env.NANOCLAW_OLLAMA_HOST = containerInput.ollamaHost;
-  }
-  if (containerInput.embeddingModel) {
-    env.NANOCLAW_EMBEDDING_MODEL = containerInput.embeddingModel;
+    if (containerInput.embeddingModel) {
+      env.NANOCLAW_EMBEDDING_MODEL = containerInput.embeddingModel;
+    }
   }
 
   return env;
