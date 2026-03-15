@@ -20,6 +20,11 @@ const DEFAULT_OLLAMA_MODEL = 'llama3.1:8b';
 const CLAUDE_API_MODEL = 'claude-haiku-4-5-20251001';
 const CLAUDE_DISPLAY_NAME = 'haiku-4.5';
 
+/** Estimate token count from text length. Calibrated at 3.5 chars/token for Portuguese/English. */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 3.5);
+}
+
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
@@ -367,7 +372,7 @@ export class ContextService {
 
         const summary = await this.callSummarizer(prompt);
         if (summary && summary.length > 20) {
-          const tokenCount = Math.ceil(summary.length / 3.5);
+          const tokenCount = estimateTokens(summary);
           const model = this.getModelName();
           this.stmtUpdateSummary.run(summary, tokenCount, model, row.id);
           count++;
@@ -454,7 +459,7 @@ export class ContextService {
     if (!summary || summary.length <= 20) return null;
 
     const now = new Date().toISOString();
-    const tokenCount = Math.ceil(summary.length / 3.5);
+    const tokenCount = estimateTokens(summary);
     const model = this.getModelName();
 
     // time_start = beginning of the range, time_end = last moment before rangeEnd
@@ -558,7 +563,13 @@ export class ContextService {
       signal: AbortSignal.timeout(30_000),
     });
     if (!resp.ok) {
-      logger.warn({ status: resp.status, model: this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL }, 'Ollama summarizer returned non-OK');
+      logger.warn(
+        {
+          status: resp.status,
+          model: this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL,
+        },
+        'Ollama summarizer returned non-OK',
+      );
       return null;
     }
     const data = (await resp.json()) as { response?: string };

@@ -606,6 +606,7 @@ async function main(): Promise<void> {
   // (Both are agent context; ordering between them is not semantically critical.)
   try {
     const { ContextReader } = await import('./context-reader.js');
+    const { estimateTokens } = await import('./db-util.js');
     const ctxReader = new ContextReader('/workspace/context/context.db');
     try {
       const recents = ctxReader.getRecentSummaries(containerInput.groupFolder, 3);
@@ -613,7 +614,7 @@ async function main(): Promise<void> {
         let budget = 1024;
         const selected: typeof recents = [];
         for (const node of recents) {
-          const cost = node.token_count ?? Math.ceil((node.summary?.length ?? 0) / 3.5);
+          const cost = node.token_count ?? estimateTokens(node.summary ?? '');
           if (budget - cost < 0 && selected.length > 0) break;
           selected.push(node);
           budget -= cost;
