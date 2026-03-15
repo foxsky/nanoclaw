@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS context_cursors (
   group_folder  TEXT PRIMARY KEY,
   session_id    TEXT NOT NULL,         -- current JSONL session ID
   last_entry_index INTEGER NOT NULL DEFAULT 0,  -- line offset in the JSONL file
+  last_byte_offset INTEGER NOT NULL DEFAULT 0,  -- byte offset for efficient seeking (avoids re-reading entire file)
   last_assistant_uuid TEXT,            -- UUID of last processed assistant message (best-effort consistency check only — NOT persisted by the host session model, only used within the context cursor for detecting transcript branch drift)
   updated_at    TEXT NOT NULL
 );
@@ -287,12 +288,13 @@ Summarize the month's activity from these weekly summaries. Capture:
 `src/context-service.ts`
 
 ```typescript
+// ContextService owns DB operations only (schema, CRUD, summarization, rollups, retention).
+// JSONL parsing and incremental capture live in context-sync.ts (separation of concerns).
 class ContextService {
   constructor(dbPath: string, config: ContextConfig)
 
-  // Incremental turn capture — reads JSONL from cursor, creates leaf nodes
-  // Returns count of new turns captured (0 if no new entries)
-  captureNewTurns(groupFolder: string, sessionId: string): number
+  // Insert a single captured turn as a leaf node + session record (transactional)
+  insertTurn(groupFolder: string, sessionId: string, turn: CapturedTurn): number
 
   // Summarization
   summarizePending(limit?: number): Promise<number>  // returns count processed
@@ -310,14 +312,17 @@ class ContextService {
   close(): void
 }
 
+// context-sync.ts — JSONL parsing, cursor management, background compaction
+function captureAgentTurn(service: ContextService, groupFolder: string, sessionId: string): Promise<void>
+function startContextSync(service: ContextService): NodeJS.Timeout
+
 interface ContextConfig {
   summarizer: 'ollama' | 'claude';
   summarizerModel?: string;       // Ollama model name
   ollamaHost?: string;            // reads from OLLAMA_HOST env
+  anthropicApiKey?: string;       // passed from caller (reads .env via readEnvFile at startup)
   retainDays: number;             // default 90
 }
-// Note: ANTHROPIC_API_KEY is read directly from process.env when summarizer='claude'
-// (same pattern as embedding service reading OLLAMA_HOST — avoids redundant pass-through)
 
 interface SessionMessage {
   sender: string;
@@ -425,26 +430,20 @@ SELECT * FROM context_sessions WHERE id = ? AND group_folder = ? AND pruned_at I
 
 ### Topics Extraction
 
-The `topics()` method uses SQLite's `fts5vocab` virtual table to extract term frequency data:
+The `topics()` method uses a single SQL query + JS-side tokenization to avoid N+1 FTS queries:
 
-```sql
-CREATE VIRTUAL TABLE IF NOT EXISTS context_fts_vocab USING fts5vocab(context_fts, row);
-```
-
-Query strategy: `fts5vocab` operates over the entire FTS5 index (not group-scoped). Since the standalone FTS5 table now stores `group_folder` as an UNINDEXED column, group-specific topic extraction works as follows:
-1. Get top candidate terms from `fts5vocab` (top 100 by `doc` count), filtering out stop words and terms < 3 chars
-2. For each candidate, run a group-scoped count:
+1. Fetch all non-pruned summaries for the group in one query:
    ```sql
-   SELECT COUNT(*) FROM context_fts WHERE context_fts MATCH ? AND group_folder = ?
+   SELECT summary, time_end FROM context_nodes
+   WHERE group_folder = ? AND summary IS NOT NULL AND pruned_at IS NULL
    ```
-   This uses the UNINDEXED `group_folder` column directly in the FTS5 table — no join to `context_nodes` needed.
-3. Return top 20 terms ranked by group-specific count, with `lastSeen` from:
-   ```sql
-   SELECT MAX(cn.time_end) FROM context_fts cf JOIN context_nodes cn ON cn.id = cf.node_id
-     WHERE context_fts MATCH ? AND cf.group_folder = ?
-   ```
+2. Tokenize each summary in JavaScript: lowercase, split on non-alphanumeric, filter stop words and terms < 3 chars, deduplicate per document
+3. Count term frequency across all summaries, track `lastSeen` per term
+4. Return top 20 terms ranked by group-specific count
 
-The initial `fts5vocab` read is global (unavoidable — `fts5vocab` has no group concept), but the **per-term counts are strictly group-scoped**. This is an N+1 pattern (100 FTS5 queries) acceptable for the expected data volume. The `context_topics` tool is only unlocked at >50 nodes and is not on the hot path.
+This approach eliminates the N+1 pattern entirely (no `fts5vocab` or per-term MATCH queries needed). The `fts5vocab` table remains in the schema but is not used by `topics()`.
+
+The `context_topics` tool is only unlocked at >50 nodes and is not on the hot path.
 
 ## Context Preamble Injection
 
@@ -466,7 +465,7 @@ The initial `fts5vocab` read is global (unavoidable — `fts5vocab` has no group
 
 **Token budget:** 1024 tokens for recap preamble. If the 3 most recent summaries exceed this, reduce to 2, then 1.
 
-**Order in final prompt:** Embedding preamble → Conversation recap → User message
+**Order in final prompt:** Conversation recap → Embedding preamble → User message (both blocks prepend to `prompt`; the recap runs second so it ends up first in the final string. Both are agent context — ordering between them is not semantically critical.)
 
 ## MCP Retrieval Tools
 
