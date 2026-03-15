@@ -258,45 +258,47 @@ export class ContextReader {
     if (!this.db) return [];
 
     try {
-      // Step 1: Get top candidate terms from fts5vocab (global, top 100 by doc count)
-      // fts5vocab in 'row' mode has columns: term, doc, cnt (no 'col' column —
-      // that only exists in 'col' mode). Since 'summary' is the only searchable
-      // column, all terms already come from it.
-      const candidates = this.db
+      // Single query: fetch all non-pruned summaries + time_end for this group.
+      // Tokenize and count in JS — eliminates N+1 FTS MATCH queries entirely.
+      const rows = this.db
         .prepare(
-          `SELECT term, doc FROM context_fts_vocab
-           WHERE LENGTH(term) >= 3
-           ORDER BY doc DESC LIMIT 100`,
+          `SELECT summary, time_end FROM context_nodes
+           WHERE group_folder = ? AND summary IS NOT NULL AND pruned_at IS NULL`,
         )
-        .all() as Array<{ term: string; doc: number }>;
+        .all(group) as Array<{ summary: string; time_end: string }>;
 
-      // Step 2: Filter stop words and get group-scoped counts + lastSeen in one query
-      const results: TopicEntry[] = [];
+      if (rows.length === 0) return [];
 
-      const topicStmt = this.db.prepare(
-        `SELECT COUNT(*) as cnt, MAX(cn.time_end) as last_seen
-         FROM context_fts cf
-         JOIN context_nodes cn ON cn.id = cf.node_id
-         WHERE context_fts MATCH ? AND cf.group_folder = ? AND cn.pruned_at IS NULL`,
-      );
+      // Count term frequency and track lastSeen across all summaries
+      const termCounts = new Map<string, { count: number; lastSeen: string }>();
 
-      for (const candidate of candidates) {
-        if (STOP_WORDS.has(candidate.term.toLowerCase())) continue;
+      for (const row of rows) {
+        // Simple word tokenization: lowercase, split on non-alphanumeric, filter short + stop words
+        const words = row.summary
+          .toLowerCase()
+          .split(/[^a-záàâãéèêíïóôõúüçñ0-9]+/)
+          .filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
 
-        const row = topicStmt.get(candidate.term, group) as {
-          cnt: number;
-          last_seen: string | null;
-        };
-        if (row.cnt === 0) continue;
-
-        results.push({
-          topic: candidate.term,
-          nodeCount: row.cnt,
-          lastSeen: row.last_seen ?? '',
-        });
+        // Deduplicate within a single summary (count each term once per document)
+        const unique = new Set(words);
+        for (const term of unique) {
+          const existing = termCounts.get(term);
+          if (existing) {
+            existing.count++;
+            if (row.time_end > existing.lastSeen) {
+              existing.lastSeen = row.time_end;
+            }
+          } else {
+            termCounts.set(term, { count: 1, lastSeen: row.time_end });
+          }
+        }
       }
 
-      // Sort by group-specific count descending, return top 20
+      // Sort by count descending, return top 20
+      const results: TopicEntry[] = [];
+      for (const [topic, { count, lastSeen }] of termCounts) {
+        results.push({ topic, nodeCount: count, lastSeen });
+      }
       results.sort((a, b) => b.nodeCount - a.nodeCount);
       return results.slice(0, 20);
     } catch {
