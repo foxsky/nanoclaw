@@ -147,6 +147,13 @@ const handleScheduleTask: IpcHandler = async (
         );
         return;
       }
+      if (scheduled.getTime() < Date.now()) {
+        logger.warn(
+          { scheduleValue: data.schedule_value },
+          'schedule_task rejected: once task timestamp is in the past',
+        );
+        return;
+      }
       nextRun = scheduled.toISOString();
     }
 
@@ -509,7 +516,8 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
         if (fs.existsSync(messagesDir)) {
           const messageFiles = fs
             .readdirSync(messagesDir)
-            .filter((f) => f.endsWith('.json'));
+            .filter((f) => f.endsWith('.json'))
+            .sort();
           for (const file of messageFiles) {
             const filePath = path.join(messagesDir, file);
             try {
@@ -614,7 +622,8 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
         if (fs.existsSync(tasksDir)) {
           const taskFiles = fs
             .readdirSync(tasksDir)
-            .filter((f) => f.endsWith('.json'));
+            .filter((f) => f.endsWith('.json'))
+            .sort();
           for (const file of taskFiles) {
             const filePath = path.join(tasksDir, file);
             try {
