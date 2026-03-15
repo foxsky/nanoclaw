@@ -707,11 +707,10 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
-  // Start embedding service (generic — no TaskFlow dependency)
+  // --- add-embeddings skill: generic embedding service ---
   let embeddingService:
     | import('./embedding-service.js').EmbeddingService
     | null = null;
-  let embeddingSyncTimer: ReturnType<typeof setInterval> | null = null;
   const { readEnvFile: readEnv } = await import('./env.js');
   const embedEnv = readEnv(['OLLAMA_HOST', 'EMBEDDING_MODEL']);
   if (embedEnv.OLLAMA_HOST) {
@@ -722,18 +721,20 @@ async function main(): Promise<void> {
       embedEnv.EMBEDDING_MODEL || 'bge-m3',
     );
     embeddingService.startIndexer();
+    logger.info(
+      { ollamaHost: embedEnv.OLLAMA_HOST, model: embedEnv.EMBEDDING_MODEL },
+      'Embedding service started',
+    );
+  }
 
-    // TaskFlow sync adapter — feeds tasks into the generic embedding service
+  // --- add-taskflow skill: embedding sync adapter ---
+  let embeddingSyncTimer: ReturnType<typeof setInterval> | null = null;
+  if (embeddingService) {
     const { startTaskflowEmbeddingSync } =
       await import('./taskflow-embedding-sync.js');
     embeddingSyncTimer = startTaskflowEmbeddingSync(
       embeddingService,
       getTaskflowDb(DATA_DIR),
-    );
-
-    logger.info(
-      { ollamaHost: embedEnv.OLLAMA_HOST, model: embedEnv.EMBEDDING_MODEL },
-      'Embedding service started',
     );
   }
 
@@ -750,8 +751,8 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, 'Shutdown signal received');
     try {
-      if (embeddingSyncTimer) clearInterval(embeddingSyncTimer);
-      embeddingService?.close();
+      if (embeddingSyncTimer) clearInterval(embeddingSyncTimer); // add-taskflow
+      embeddingService?.close(); // add-embeddings
       await queue.shutdown(10000);
       for (const ch of channels) await ch.disconnect();
     } catch (err) {

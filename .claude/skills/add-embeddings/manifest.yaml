@@ -8,6 +8,7 @@ adds:
   - container/agent-runner/src/embedding-reader.ts
   - container/agent-runner/src/embedding-reader.test.ts
 modifies:
+  - src/index.ts                                  # EmbeddingService startup only
   - src/container-runner.ts
   - container/agent-runner/src/runtime-config.ts
 structured:
