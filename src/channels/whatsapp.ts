@@ -471,9 +471,16 @@ export class WhatsAppChannel implements Channel {
     const groupJid = result.id;
 
     // Verify participants were added; if not, retry with groupParticipantsUpdate
+    // If socket disconnected between groupCreate and verify, skip verify and
+    // treat all participants as dropped (invite link is the fallback).
     let allAdded = true;
     let droppedParticipants: string[] = [];
-    try {
+    if (!this.connected) {
+      logger.warn({ groupJid }, 'Socket disconnected after groupCreate — skipping verify, generating invite link');
+      allAdded = false;
+      droppedParticipants = [...participants];
+    }
+    if (allAdded) try {
       const meta = await this.sock.groupMetadata(groupJid);
       // Build member set with both raw IDs and phone-number equivalents.
       // Group metadata may return LID JIDs (@lid) for participants that were
@@ -540,13 +547,15 @@ export class WhatsAppChannel implements Channel {
 
     // Generate invite link only when participants couldn't be added
     let inviteLink: string | undefined;
-    if (!allAdded) {
+    if (!allAdded && this.connected) {
       try {
         const code = await this.sock.groupInviteCode(groupJid);
         inviteLink = `https://chat.whatsapp.com/${code}`;
       } catch (err) {
         logger.warn({ err, groupJid }, 'Failed to generate invite link');
       }
+    } else if (!allAdded) {
+      logger.warn({ groupJid }, 'Cannot generate invite link — socket disconnected');
     }
 
     return {
