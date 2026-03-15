@@ -18,6 +18,7 @@ adds:
   - src/ipc-plugins/create-group.ts
   - src/ipc-plugins/create-group.test.ts
   # Host-side TaskFlow support
+  - src/taskflow-embedding-sync.ts
   - src/taskflow-db.ts
   - src/taskflow-db.test.ts
   - src/migrate-to-sqlite.ts
