@@ -5,6 +5,10 @@ core_version: 1.2.8
 adds:
   - src/image.ts
   - src/image.test.ts
+  - plugins/image-vision/index.ts
+  - plugins/image-vision/downloader.ts
+  - plugins/image-vision/cleaner.ts
+  - plugins/image-vision/types.ts
 modifies:
   - src/channels/whatsapp.ts
   - src/channels/whatsapp.test.ts
