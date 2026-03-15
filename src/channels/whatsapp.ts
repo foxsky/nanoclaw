@@ -542,9 +542,12 @@ export class WhatsAppChannel implements Channel {
                 );
               }
             } catch {
-              // Re-verify failed but retry was attempted — assume success
-              logger.debug(
-                { groupJid },
+              // Re-verify failed — can't confirm participants were added.
+              // Mark as not all added so invite link is generated.
+              allAdded = false;
+              droppedParticipants = missing;
+              logger.warn(
+                { groupJid, missing },
                 'Could not re-verify participants after retry',
               );
             }
