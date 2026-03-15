@@ -713,22 +713,31 @@ async function main(): Promise<void> {
   loadState();
   restoreRemoteControl();
 
+  // --- Shared env for embeddings + long-term context (single .env parse) ---
+  const { readEnvFile: readEnv } = await import('./env.js');
+  const skillEnv = readEnv([
+    'OLLAMA_HOST',
+    'EMBEDDING_MODEL',
+    'ANTHROPIC_API_KEY',
+    'CONTEXT_SUMMARIZER',
+    'CONTEXT_SUMMARIZER_MODEL',
+    'CONTEXT_RETAIN_DAYS',
+  ]);
+
   // --- add-embeddings skill: generic embedding service ---
   let embeddingService:
     | import('./embedding-service.js').EmbeddingService
     | null = null;
-  const { readEnvFile: readEnv } = await import('./env.js');
-  const embedEnv = readEnv(['OLLAMA_HOST', 'EMBEDDING_MODEL']);
-  if (embedEnv.OLLAMA_HOST) {
+  if (skillEnv.OLLAMA_HOST) {
     const { EmbeddingService } = await import('./embedding-service.js');
     embeddingService = new EmbeddingService(
       path.join(DATA_DIR, 'embeddings', 'embeddings.db'),
-      embedEnv.OLLAMA_HOST,
-      embedEnv.EMBEDDING_MODEL || 'bge-m3',
+      skillEnv.OLLAMA_HOST,
+      skillEnv.EMBEDDING_MODEL || 'bge-m3',
     );
     embeddingService.startIndexer();
     logger.info(
-      { ollamaHost: embedEnv.OLLAMA_HOST, model: embedEnv.EMBEDDING_MODEL },
+      { ollamaHost: skillEnv.OLLAMA_HOST, model: skillEnv.EMBEDDING_MODEL },
       'Embedding service started',
     );
   }
@@ -749,14 +758,6 @@ async function main(): Promise<void> {
   let contextService: import('./context-service.js').ContextService | null =
     null;
   {
-    const { readEnvFile: readCtxEnv } = await import('./env.js');
-    const ctxEnv = readCtxEnv([
-      'OLLAMA_HOST',
-      'ANTHROPIC_API_KEY',
-      'CONTEXT_SUMMARIZER',
-      'CONTEXT_SUMMARIZER_MODEL',
-      'CONTEXT_RETAIN_DAYS',
-    ]);
     const { ContextService } = await import('./context-service.js');
     const { startContextSync } = await import('./context-sync.js');
     const { setContextService } = await import('./container-runner.js');
@@ -765,11 +766,11 @@ async function main(): Promise<void> {
       path.join(DATA_DIR, 'context', 'context.db'),
       {
         summarizer:
-          (ctxEnv.CONTEXT_SUMMARIZER as 'ollama' | 'claude') || 'ollama',
-        summarizerModel: ctxEnv.CONTEXT_SUMMARIZER_MODEL,
-        ollamaHost: ctxEnv.OLLAMA_HOST,
-        anthropicApiKey: ctxEnv.ANTHROPIC_API_KEY,
-        retainDays: parseInt(ctxEnv.CONTEXT_RETAIN_DAYS || '90'),
+          (skillEnv.CONTEXT_SUMMARIZER as 'ollama' | 'claude') || 'ollama',
+        summarizerModel: skillEnv.CONTEXT_SUMMARIZER_MODEL,
+        ollamaHost: skillEnv.OLLAMA_HOST,
+        anthropicApiKey: skillEnv.ANTHROPIC_API_KEY,
+        retainDays: parseInt(skillEnv.CONTEXT_RETAIN_DAYS || '90'),
       },
     );
     setContextService(contextService);
