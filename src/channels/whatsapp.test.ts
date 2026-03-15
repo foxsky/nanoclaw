@@ -294,7 +294,7 @@ describe('WhatsAppChannel', () => {
       triggerDisconnect(401);
 
       expect(channel.isConnected()).toBe(false);
-      expect(mockExit).toHaveBeenCalledWith(0);
+      expect(mockExit).toHaveBeenCalledWith(78); // EX_CONFIG — prevents systemd restart loop
       mockExit.mockRestore();
     });
 
