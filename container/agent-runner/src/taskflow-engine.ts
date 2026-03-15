@@ -21,8 +21,8 @@ export interface QueryParams {
   label?: string;
   since?: string;
   at?: string; // for meeting_minutes_at (YYYY-MM-DD)
-  query_vector?: Float32Array; // pre-embedded search vector (used by buildContextSummary)
-  semantic_results?: Array<{ itemId: string; score: number }>; // pre-computed by MCP handler for search
+  query_vector?: Float32Array; // pre-embedded search vector
+  embedding_reader?: import('./embedding-reader.js').EmbeddingReader; // injected by MCP handler for semantic search
 }
 
 export interface TaskflowResult {
@@ -4831,36 +4831,43 @@ export class TaskflowEngine {
           /* Also try resolving search_text as a task ID (raw or prefixed) */
           const idMatch = this.getTask(params.search_text);
 
-          /* Semantic ranking — merge lexical + vector similarity results.
-             The MCP handler passes query_vector + semantic_results (pre-computed
-             by EmbeddingReader in the async handler). The engine merges them
-             with lexical results. */
-          if (params.semantic_results && params.semantic_results.length > 0) {
+          /* Semantic ranking — engine owns all ranking logic.
+             The MCP handler embeds the query text (async) and injects both
+             query_vector and an EmbeddingReader instance. The engine does
+             the ranking (sync). Same reader pattern as buildContextSummary. */
+          if (params.query_vector && params.embedding_reader) {
             try {
-              const scored = new Map<string, { task: any; score: number }>();
-              for (const task of textMatches) {
-                scored.set(task.id, { task, score: 0.2 });
-              }
-              for (const sem of params.semantic_results) {
-                const existing = scored.get(sem.itemId);
-                if (existing) {
-                  existing.score += sem.score;
-                } else {
-                  const task = this.getTask(sem.itemId);
-                  if (task) scored.set(sem.itemId, { task, score: sem.score });
-                }
-              }
-              const ranked = [...scored.values()]
-                .sort((a, b) => b.score - a.score)
-                .slice(0, 20)
-                .map(r => r.task);
+              const collection = `tasks:${this.boardId}`;
+              const semanticResults = params.embedding_reader.search(
+                collection, params.query_vector, { limit: 20, threshold: 0.3 },
+              );
 
-              if (idMatch && !ranked.some((t: any) => t.id === idMatch.id && t.board_id === idMatch.board_id)) {
-                return { success: true, data: [idMatch, ...ranked] };
+              if (semanticResults.length > 0) {
+                const scored = new Map<string, { task: any; score: number }>();
+                for (const task of textMatches) {
+                  scored.set(task.id, { task, score: 0.2 });
+                }
+                for (const sem of semanticResults) {
+                  const existing = scored.get(sem.itemId);
+                  if (existing) {
+                    existing.score += sem.score;
+                  } else {
+                    const task = this.getTask(sem.itemId);
+                    if (task) scored.set(sem.itemId, { task, score: sem.score });
+                  }
+                }
+                const ranked = [...scored.values()]
+                  .sort((a, b) => b.score - a.score)
+                  .slice(0, 20)
+                  .map(r => r.task);
+
+                if (idMatch && !ranked.some((t: any) => t.id === idMatch.id && t.board_id === idMatch.board_id)) {
+                  return { success: true, data: [idMatch, ...ranked] };
+                }
+                return { success: true, data: ranked };
               }
-              return { success: true, data: ranked };
             } catch {
-              // Fallback to lexical only
+              // EmbeddingReader not available — fallback to lexical only
             }
           }
 

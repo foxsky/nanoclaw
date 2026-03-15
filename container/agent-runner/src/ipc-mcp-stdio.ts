@@ -593,7 +593,8 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         at: z.string().optional().describe('Date (YYYY-MM-DD) for meeting_minutes_at query'),
       },
       async (args: any) => {
-        // Semantic search: embed query text via Ollama, pass pre-computed results to engine
+        // Semantic search: embed query text via Ollama, inject reader + vector into engine
+        // MCP handler does the async Ollama call; engine owns all ranking (sync)
         if (args.query === 'search' && args.search_text) {
           const ollamaHost = process.env.NANOCLAW_OLLAMA_HOST;
           const embeddingModel = process.env.NANOCLAW_EMBEDDING_MODEL || 'bge-m3';
@@ -609,12 +610,8 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
                 const data = await resp.json() as { embeddings: number[][] };
                 if (data.embeddings?.[0]) {
                   const { EmbeddingReader } = await import('./embedding-reader.js');
-                  const reader = new EmbeddingReader('/workspace/embeddings/embeddings.db');
-                  const collection = `tasks:${boardId}`;
-                  const queryVector = new Float32Array(data.embeddings[0]);
-                  args.semantic_results = reader.search(collection, queryVector, { limit: 20, threshold: 0.3 });
-                  args.query_vector = queryVector;
-                  reader.close();
+                  args.query_vector = new Float32Array(data.embeddings[0]);
+                  args.embedding_reader = new EmbeddingReader('/workspace/embeddings/embeddings.db');
                 }
               }
             } catch {
@@ -623,6 +620,10 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           }
         }
         const result = engine.query(args);
+        // Clean up reader if we opened one
+        if (args.embedding_reader) {
+          try { args.embedding_reader.close(); } catch {}
+        }
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result) }],
           isError: !result.success,

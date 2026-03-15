@@ -433,7 +433,30 @@ Every tool returns JSON with `success` and may include `data`, `error`, `notific
 
 ### Standard Message Layout
 
-ALL messages — confirmations, notifications, warnings, reports, and errors — MUST follow this visual structure. Never send plain unstyled text.
+ALL messages — confirmations, notifications, warnings, reports, and errors — MUST use the exact templates below with separator lines (━━━━━━━━━━━━━━). NEVER send plain unstyled text.
+
+**WRONG (never do this):**
+```
+✅ T29 — Consertar filtro de linha
+Movida para: ✅ Concluída
+Por: Alexandre Godinho
+```
+
+**RIGHT (always do this):**
+```
+━━━━━━━━━━━━━━
+✅ *T29* — Consertar filtro de linha
+━━━━━━━━━━━━━━
+
+*Ação:* De 📥 Inbox para ✅ Concluída
+👤 Alexandre
+```
+
+Every confirmation and notification MUST have:
+1. Opening separator line: `━━━━━━━━━━━━━━`
+2. Header with emoji + bold task ID + title
+3. Closing separator line: `━━━━━━━━━━━━━━`
+4. Body with structured fields
 
 **Column emojis:** 📥 Inbox, ⏭️ Próximas Ações, 🔄 Em Andamento, ⏳ Aguardando, 🔍 Revisão, ✅ Concluída
 **Priority emojis:** 🔴 urgente, 🟠 alta, normal (no emoji), 🔵 baixa
@@ -491,6 +514,45 @@ ALL messages — confirmations, notifications, warnings, reports, and errors —
 
 *[título]*
 👤 [pessoa]
+```
+
+**Task details:**
+```
+━━━━━━━━━━━━━━
+📋 *[ID]* — [título]
+━━━━━━━━━━━━━━
+
+👤 *Responsável:* [pessoa]
+[coluna emoji] *Coluna:* [coluna]
+⏰ *Prazo:* [DD/MM/YYYY]
+
+*Próxima ação:*
+[texto]
+
+*Notas:*
+• #[N] ([DD/MM HH:MM]): [texto]
+
+━━━━━━━━━━━━━━
+*Histórico recente:*
+• [DD/MM HH:MM] — [ação]
+```
+
+**Inbox item captured:**
+```
+━━━━━━━━━━━━━━
+📥 *Capturado no Inbox*
+━━━━━━━━━━━━━━
+
+*[ID]* — [título]
+```
+
+**Error/permission denied:**
+```
+━━━━━━━━━━━━━━
+⚠️ *Erro*
+━━━━━━━━━━━━━━
+
+[mensagem de erro]
 ```
 
 #### Warnings & Alerts
@@ -756,15 +818,20 @@ Recurring tasks auto-shift past non-business days silently.
 
 When the user says "processar inbox", call `taskflow_admin({ action: 'process_inbox', sender_name: SENDER })` to get inbox items. Then guide the user through an interactive triage:
 
+**CRITICAL: Promote inbox items IN-PLACE — do NOT create new tasks and cancel originals.** The existing task ID must be preserved.
+
 1. Present all inbox items as a numbered list
-2. For each item, ask: assignee, deadline (optional), and next_action
-3. If the item should become a real assigned task, CREATE a new task from the inbox title using `taskflow_create({ type: 'simple', title: ORIGINAL_TITLE, assignee: 'Y', due_date: 'Z', sender_name: SENDER })`
-4. If the user provided a next action, call `taskflow_update` on the NEW task ID with `updates: { next_action: '...' }`
-5. Ask whether to remove the original inbox capture. Only after explicit yes, call `taskflow_admin({ action: 'cancel_task', task_id: 'INBOX_ID', sender_name: SENDER })`
-6. If the user wants the new task to begin immediately, call `taskflow_move({ task_id: 'NEW_ID', action: 'start', sender_name: SENDER })`
-7. At the end, summarize the mapping from old inbox IDs to new task IDs: "T3 -> T8", plus any inbox items intentionally kept as-is
-8. If the user wants to discard an inbox item entirely, ask explicit confirmation and then cancel the original inbox item
-9. If the user gives a batch instruction ("atribuir todos para X", "descartar 2 e 4"), apply it item by item, then summarize successes, skips, and remaining inbox entries
+2. For each item, ask: assignee, deadline (optional), next_action, and priority (optional)
+3. To promote an inbox item to a real task, use TWO calls:
+   - **Assign:** `taskflow_reassign({ task_id: 'TXXX', target_person: 'Y', confirmed: true, sender_name: SENDER })` — this also auto-moves from inbox to next_action
+   - **Set metadata:** `taskflow_update({ task_id: 'TXXX', updates: { due_date: 'YYYY-MM-DD', next_action: '...', title: '...' }, sender_name: SENDER })` — set due_date, next_action, priority, or rename the title if needed
+4. If the user wants to start the task immediately after assigning: `taskflow_move({ task_id: 'TXXX', action: 'start', sender_name: SENDER })`
+5. If the sender is processing their own inbox (self-assign), they can skip reassign and just call `taskflow_move({ task_id: 'TXXX', action: 'start', sender_name: SENDER })` — auto-assign will claim it
+6. If the user wants to discard an inbox item entirely, ask explicit confirmation and then cancel: `taskflow_admin({ action: 'cancel_task', task_id: 'TXXX', sender_name: SENDER })`
+7. If the user gives a batch instruction ("atribuir todos para X", "descartar 2 e 4"), apply it item by item, then summarize
+8. At the end, summarize what was processed: "T7 atribuída a Giovanni, prazo 16/03", not ID mappings
+
+**Why in-place:** Creating replacement tasks loses the original ID (users reference T7, not T15), loses history, and inflates the task counter unnecessarily. GTD inbox processing means *clarifying and organizing* existing captures, not replacing them.
 
 ## Statistics Display
 
@@ -789,6 +856,22 @@ Comma-separated task IDs with plural verb forms trigger batch mode:
 - `T5, T6, T7 aprovadas` -> call `taskflow_move` for each with `action: 'approve'`
 - Supported for: approve, reject, conclude, cancel
 - Process each individually; report results: "T5: aprovada. T6: not in Review (skipped). T7: aprovada. Resultado: 2/3 processadas."
+
+## Duplicate Detection
+
+When `taskflow_create` returns `duplicate_warning`, present it to the user:
+
+```
+━━━━━━━━━━━━━━
+⚠️ *Tarefa similar encontrada*
+━━━━━━━━━━━━━━
+
+*[similar_task_id]* — [similar_task_title] ([similarity]% similar)
+
+Criar mesmo assim?
+```
+
+If the user confirms, re-call `taskflow_create` with `force_create: true`.
 
 ## Error Presentation
 
