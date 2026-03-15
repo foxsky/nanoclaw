@@ -601,8 +601,9 @@ async function main(): Promise<void> {
   }
 
   // --- add-long-term-context skill: conversation recap preamble ---
-  // Injected AFTER the embedding preamble, BEFORE the user message.
-  // Final prompt order: embedding preamble → conversation recap → user message.
+  // Runs AFTER embedding preamble block. Both prepend to `prompt`, so final order is:
+  // conversation recap → embedding preamble → user message.
+  // (Both are agent context; ordering between them is not semantically critical.)
   try {
     const { ContextReader } = await import('./context-reader.js');
     const ctxReader = new ContextReader('/workspace/context/context.db');

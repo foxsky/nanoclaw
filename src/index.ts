@@ -752,6 +752,7 @@ async function main(): Promise<void> {
     const { readEnvFile: readCtxEnv } = await import('./env.js');
     const ctxEnv = readCtxEnv([
       'OLLAMA_HOST',
+      'ANTHROPIC_API_KEY',
       'CONTEXT_SUMMARIZER',
       'CONTEXT_SUMMARIZER_MODEL',
       'CONTEXT_RETAIN_DAYS',
@@ -767,6 +768,7 @@ async function main(): Promise<void> {
           (ctxEnv.CONTEXT_SUMMARIZER as 'ollama' | 'claude') || 'ollama',
         summarizerModel: ctxEnv.CONTEXT_SUMMARIZER_MODEL,
         ollamaHost: ctxEnv.OLLAMA_HOST,
+        anthropicApiKey: ctxEnv.ANTHROPIC_API_KEY,
         retainDays: parseInt(ctxEnv.CONTEXT_RETAIN_DAYS || '90'),
       },
     );
@@ -788,7 +790,11 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, 'Shutdown signal received');
     try {
-      if (contextSyncTimer) clearInterval(contextSyncTimer); // add-long-term-context
+      if (contextSyncTimer) clearInterval(contextSyncTimer); // add-long-term-context: stop new compaction cycles
+      if (embeddingSyncTimer) clearInterval(embeddingSyncTimer); // add-taskflow
+      embeddingService?.close(); // add-embeddings
+      await queue.shutdown(10000); // drain active containers — their close hooks may still capture turns
+      // Close context service AFTER queue drain so capture hooks complete first
       if (contextService) {
         try {
           const { setContextService } = await import('./container-runner.js');
@@ -796,9 +802,6 @@ async function main(): Promise<void> {
         } catch {}
         contextService.close();
       }
-      if (embeddingSyncTimer) clearInterval(embeddingSyncTimer); // add-taskflow
-      embeddingService?.close(); // add-embeddings
-      await queue.shutdown(10000);
       for (const ch of channels) await ch.disconnect();
     } catch (err) {
       logger.error({ err }, 'Error during shutdown');

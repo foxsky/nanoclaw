@@ -50,9 +50,7 @@ describe('parseTurnsFromJsonl', () => {
         type: 'assistant',
         message: {
           role: 'assistant',
-          content: [
-            { type: 'text', text: 'I am doing well, thank you!' },
-          ],
+          content: [{ type: 'text', text: 'I am doing well, thank you!' }],
         },
         uuid: 'a1',
         timestamp: '2026-03-15T10:00:05.000Z',
@@ -172,9 +170,7 @@ describe('parseTurnsFromJsonl', () => {
         type: 'assistant',
         message: {
           role: 'assistant',
-          content: [
-            { type: 'text', text: 'Continuing after compaction' },
-          ],
+          content: [{ type: 'text', text: 'Continuing after compaction' }],
         },
         uuid: 'a-compact',
       }),
@@ -208,9 +204,7 @@ describe('parseTurnsFromJsonl', () => {
         type: 'assistant',
         message: {
           role: 'assistant',
-          content: [
-            { type: 'tool_use', name: 'taskflow_move', id: 'tc1' },
-          ],
+          content: [{ type: 'tool_use', name: 'taskflow_move', id: 'tc1' }],
         },
         uuid: 'a1',
       }),
@@ -325,9 +319,7 @@ describe('parseTurnsFromJsonl', () => {
         type: 'assistant',
         message: {
           role: 'assistant',
-          content: [
-            { type: 'tool_use', name: 'some_tool', id: 'tc1' },
-          ],
+          content: [{ type: 'tool_use', name: 'some_tool', id: 'tc1' }],
         },
         uuid: 'a1',
       }),
@@ -380,9 +372,7 @@ describe('parseTurnsFromJsonl', () => {
         type: 'assistant',
         message: {
           role: 'assistant',
-          content: [
-            { type: 'text', text: 'You have 5 tasks in progress.' },
-          ],
+          content: [{ type: 'text', text: 'You have 5 tasks in progress.' }],
         },
         uuid: 'a2',
       }),
@@ -803,9 +793,7 @@ describe('captureAgentTurn', () => {
         type: 'assistant',
         message: {
           role: 'assistant',
-          content: [
-            { type: 'text', text: 'T1 movido para Em Andamento' },
-          ],
+          content: [{ type: 'text', text: 'T1 movido para Em Andamento' }],
         },
         uuid: 'a1',
         timestamp: '2026-03-15T10:00:05.000Z',
@@ -1127,9 +1115,7 @@ describe('captureAgentTurn', () => {
     svc.close(); // close DB to force errors
 
     // Should not throw
-    await expect(
-      captureAgentTurn(svc, 'grp', 'sess'),
-    ).resolves.toBeUndefined();
+    await expect(captureAgentTurn(svc, 'grp', 'sess')).resolves.toBeUndefined();
   });
 });
 
@@ -1140,7 +1126,9 @@ describe('captureAgentTurn', () => {
 describe('jsonlPath', () => {
   it('constructs correct host-side path', () => {
     const p = jsonlPath('my-group', 'abc-123');
-    expect(p).toBe(
+    // Path is now absolute (uses DATA_DIR from config.ts)
+    expect(path.isAbsolute(p)).toBe(true);
+    expect(p).toContain(
       'data/sessions/my-group/.claude/projects/-workspace-group/abc-123.jsonl',
     );
   });

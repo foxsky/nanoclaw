@@ -53,7 +53,7 @@ const STOP_WORDS = new Set([
   'most', 'much', 'must', 'only', 'other', 'over', 'such', 'than',
   'them', 'then', 'they', 'very', 'when', 'which', 'your', 'after',
   'being', 'could', 'each', 'made', 'make', 'like', 'long', 'look',
-  'many', 'some', 'take', 'come', 'could', 'good', 'know', 'should',
+  'many', 'some', 'take', 'come', 'good', 'know', 'should',
   'would', 'their', 'there', 'these', 'those', 'where', 'while',
   'para', 'uma', 'com', 'que', 'por', 'dos', 'das', 'nos', 'nas',
   'foi', 'ser', 'ter', 'como', 'mais', 'sem', 'ele', 'ela',
@@ -244,7 +244,8 @@ export class ContextReader {
         .prepare(
           `SELECT * FROM context_nodes
            WHERE group_folder = ? AND time_start >= ? AND time_end <= ? AND pruned_at IS NULL
-           ORDER BY level DESC, time_start ASC`,
+           ORDER BY level DESC, time_start ASC
+           LIMIT 200`,
         )
         .all(group, dateFrom, dateTo) as ContextNode[];
     } catch {
@@ -276,33 +277,29 @@ export class ContextReader {
         )
         .all() as Array<{ term: string; doc: number }>;
 
-      // Step 2: Filter stop words and get group-scoped counts
+      // Step 2: Filter stop words and get group-scoped counts + lastSeen in one query
       const results: TopicEntry[] = [];
 
-      const countStmt = this.db.prepare(
-        `SELECT COUNT(*) as cnt FROM context_fts WHERE context_fts MATCH ? AND group_folder = ?`,
-      );
-
-      const lastSeenStmt = this.db.prepare(
-        `SELECT MAX(cn.time_end) as last_seen FROM context_fts cf
+      const topicStmt = this.db.prepare(
+        `SELECT COUNT(*) as cnt, MAX(cn.time_end) as last_seen
+         FROM context_fts cf
          JOIN context_nodes cn ON cn.id = cf.node_id
-         WHERE context_fts MATCH ? AND cf.group_folder = ?`,
+         WHERE context_fts MATCH ? AND cf.group_folder = ? AND cn.pruned_at IS NULL`,
       );
 
       for (const candidate of candidates) {
         if (STOP_WORDS.has(candidate.term.toLowerCase())) continue;
 
-        const countRow = countStmt.get(candidate.term, group) as { cnt: number };
-        if (countRow.cnt === 0) continue;
-
-        const lastSeenRow = lastSeenStmt.get(candidate.term, group) as {
+        const row = topicStmt.get(candidate.term, group) as {
+          cnt: number;
           last_seen: string | null;
         };
+        if (row.cnt === 0) continue;
 
         results.push({
           topic: candidate.term,
-          nodeCount: countRow.cnt,
-          lastSeen: lastSeenRow.last_seen ?? '',
+          nodeCount: row.cnt,
+          lastSeen: row.last_seen ?? '',
         });
       }
 

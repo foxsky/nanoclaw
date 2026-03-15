@@ -816,6 +816,16 @@ Recurring tasks auto-shift past non-business days silently.
 
 ## Inbox Processing
 
+### Implicit inbox promotion (organic interaction)
+
+When a user references an inbox task with an action (progress update, status change, starting work) and does NOT specify an assignee, **auto-assign to the board owner and execute the action immediately — do NOT ask.** The user's intent is clear from context; asking "do you want me to assign it first?" wastes time and breaks flow.
+
+Example: User says "T1 - serviço iniciado dia 15 as 7:00" → T1 is in inbox → auto-assign to board owner via `taskflow_reassign` (moves to next_action) → `taskflow_move` to start → `taskflow_update` with progress note. All in one response.
+
+If the board has multiple people and assignment is genuinely ambiguous, assign to the sender (the person reporting).
+
+### Formal triage ("processar inbox")
+
 When the user says "processar inbox", call `taskflow_admin({ action: 'process_inbox', sender_name: SENDER })` to get inbox items. Then guide the user through an interactive triage:
 
 **CRITICAL: Promote inbox items IN-PLACE — do NOT create new tasks and cancel originals.** The existing task ID must be preserved.

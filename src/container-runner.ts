@@ -652,10 +652,13 @@ export async function runContainerAgent(
       // --- add-long-term-context skill: capture turns on container exit ---
       // Fire-and-forget — safe even on error paths. Must be before branching
       // so capture happens regardless of exit reason (timeout, error, success).
-      if (_contextService && newSessionId) {
+      // Capture ref before async to prevent race with shutdown nulling _contextService.
+      const ctxSvc = _contextService;
+      const ctxSessionId = newSessionId;
+      if (ctxSvc && ctxSessionId) {
         import('./context-sync.js')
           .then(({ captureAgentTurn }) =>
-            captureAgentTurn(_contextService!, group.folder, newSessionId!),
+            captureAgentTurn(ctxSvc, group.folder, ctxSessionId),
           )
           .catch(() => {});
       }

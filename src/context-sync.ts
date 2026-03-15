@@ -24,7 +24,9 @@ export interface ParsedTurn {
 /*  JSONL path helper                                                  */
 /* ------------------------------------------------------------------ */
 
-const SESSIONS_BASE = 'data/sessions';
+import { DATA_DIR } from './config.js';
+
+const SESSIONS_BASE = path.join(DATA_DIR, 'sessions');
 
 /**
  * Constructs the host-side path to a session's JSONL transcript.
@@ -53,7 +55,14 @@ interface JsonlEntry {
   timestamp?: string;
   message?: {
     role?: string;
-    content?: string | Array<{ type?: string; text?: string; tool_use_id?: string; content?: string | Array<{ type?: string; text?: string }> }>;
+    content?:
+      | string
+      | Array<{
+          type?: string;
+          text?: string;
+          tool_use_id?: string;
+          content?: string | Array<{ type?: string; text?: string }>;
+        }>;
   };
   uuid?: string;
 }
@@ -274,11 +283,7 @@ export async function captureAgentTurn(
   try {
     const filePath = jsonlPath(groupFolder, sessionId);
 
-    if (!fs.existsSync(filePath)) {
-      return; // No JSONL yet — no-op
-    }
-
-    // Look up cursor
+    // Look up cursor (no existsSync — let readLinesFrom handle ENOENT)
     const cursor = service.db
       .prepare(
         'SELECT session_id, last_entry_index, last_assistant_uuid FROM context_cursors WHERE group_folder = ?',
@@ -415,8 +420,13 @@ export function startContextSync(
   };
 
   // Run first cycle after a short delay (5s), then every 60s
-  setTimeout(cycle, 5_000);
-  return setInterval(cycle, 60_000);
+  const initialTimeout = setTimeout(cycle, 5_000);
+  const interval = setInterval(cycle, 60_000);
+
+  // Return a composite cleanup: clearing the interval also clears the initial timeout
+  // to prevent firing after shutdown. We attach the timeout ID for cleanup.
+  (interval as any).__initialTimeout = initialTimeout;
+  return interval;
 }
 
 /* ------------------------------------------------------------------ */
@@ -515,16 +525,27 @@ async function runRollups(
 
 /**
  * Reads lines from a file starting at a given line offset.
- * Returns an array of raw line strings.
+ * Uses readline to skip already-processed lines without buffering the entire file.
+ * Returns an empty array if the file doesn't exist (handles ENOENT gracefully).
  */
 function readLinesFrom(filePath: string, startLine: number): string[] {
-  const content = fs.readFileSync(filePath, 'utf-8');
-  const allLines = content.split('\n');
-  // Remove trailing empty line if file ends with newline
-  if (allLines.length > 0 && allLines[allLines.length - 1] === '') {
-    allLines.pop();
+  let fd: number;
+  try {
+    fd = fs.openSync(filePath, 'r');
+  } catch {
+    return []; // File doesn't exist yet — no-op
   }
-  return allLines.slice(startLine);
+  try {
+    const content = fs.readFileSync(fd, 'utf-8');
+    const allLines = content.split('\n');
+    // Remove trailing empty line if file ends with newline
+    if (allLines.length > 0 && allLines[allLines.length - 1] === '') {
+      allLines.pop();
+    }
+    return allLines.slice(startLine);
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 /**

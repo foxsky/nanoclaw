@@ -5,6 +5,22 @@ import path from 'path';
 import { logger } from './logger.js';
 
 /* ------------------------------------------------------------------ */
+/*  Constants                                                          */
+/* ------------------------------------------------------------------ */
+
+/** DAG hierarchy levels */
+export const Level = {
+  LEAF: 0,
+  DAILY: 1,
+  WEEKLY: 2,
+  MONTHLY: 3,
+} as const;
+
+const DEFAULT_OLLAMA_MODEL = 'llama3.1';
+const CLAUDE_API_MODEL = 'claude-haiku-4-5-20251001';
+const CLAUDE_DISPLAY_NAME = 'haiku-4.5';
+
+/* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -12,6 +28,7 @@ export interface ContextConfig {
   summarizer: 'ollama' | 'claude';
   summarizerModel?: string;
   ollamaHost?: string;
+  anthropicApiKey?: string; // passed from caller (reads .env via readEnvFile)
   retainDays: number;
 }
 
@@ -321,10 +338,7 @@ export class ContextService {
           : [];
         const toolNames = tools.map((t) => t.tool).join(', ') || 'none';
 
-        const prompt = LEAF_PROMPT_TEMPLATE.replace(
-          '{user_message}',
-          userMsg,
-        )
+        const prompt = LEAF_PROMPT_TEMPLATE.replace('{user_message}', userMsg)
           .replace('{agent_response}', row.agent_response ?? '(no response)')
           .replace('{tool_names}', toolNames);
 
@@ -346,10 +360,7 @@ export class ContextService {
   /*  Rollups — daily, weekly, monthly                                 */
   /* ---------------------------------------------------------------- */
 
-  async rollupDaily(
-    groupFolder: string,
-    date: string,
-  ): Promise<string | null> {
+  async rollupDaily(groupFolder: string, date: string): Promise<string | null> {
     const parentId = `daily:${groupFolder}:${date}`;
     // Range: [date, date+1day) to capture all leaf nodes within that day
     const rangeStart = date;
@@ -376,7 +387,8 @@ export class ContextService {
     const monthStart = `${month}-01`;
     // Next month first day
     const [y, m] = month.split('-').map(Number);
-    const nextMonth = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+    const nextMonth =
+      m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
     const rangeEnd = `${nextMonth}-01`;
     return this.rollup(groupFolder, 2, 3, parentId, monthStart, rangeEnd);
   }
@@ -419,9 +431,8 @@ export class ContextService {
     const model = this.getModelName();
 
     // time_start = beginning of the range, time_end = last moment before rangeEnd
-    const timeStart = rangeStart.length === 10
-      ? rangeStart + 'T00:00:00.000Z'
-      : rangeStart;
+    const timeStart =
+      rangeStart.length === 10 ? rangeStart + 'T00:00:00.000Z' : rangeStart;
     // rangeEnd is exclusive (first day of next period), so time_end is the last moment
     // of the previous day: subtract 1 day from rangeEnd and add T23:59:59.999Z
     const lastDay = this.addDays(rangeEnd.slice(0, 10), -1);
@@ -511,8 +522,8 @@ export class ContextService {
 
   private getModelName(): string {
     return this.config.summarizer === 'claude'
-      ? 'haiku-4.5'
-      : (this.config.summarizerModel ?? 'llama3.1');
+      ? CLAUDE_DISPLAY_NAME
+      : (this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL);
   }
 
   private async callSummarizer(prompt: string): Promise<string | null> {
@@ -533,7 +544,7 @@ export class ContextService {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: this.config.summarizerModel ?? 'llama3.1',
+        model: this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL,
         prompt,
         stream: false,
       }),
@@ -545,7 +556,7 @@ export class ContextService {
   }
 
   private async callClaude(prompt: string): Promise<string | null> {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = this.config.anthropicApiKey;
     if (!apiKey) return null;
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -555,7 +566,7 @@ export class ContextService {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
+        model: CLAUDE_API_MODEL,
         max_tokens: 500,
         messages: [{ role: 'user', content: prompt }],
       }),

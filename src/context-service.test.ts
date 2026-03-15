@@ -204,8 +204,7 @@ describe('ContextService — summarizePending', () => {
 
     svc.insertTurn('test-group', 'sess-1', {
       userMessage: 'T1 servico iniciado dia 15 as 7:00',
-      agentResponse:
-        'T1 movido para Em Andamento, atribuido a Alexandre',
+      agentResponse: 'T1 movido para Em Andamento, atribuido a Alexandre',
       toolCalls: [{ tool: 'taskflow_move', resultSummary: 'ok' }],
       timestamp: '2026-03-15T07:00:00.000Z',
     });
@@ -224,15 +223,15 @@ describe('ContextService — summarizePending', () => {
 
     // Verify summary was set
     const node = svc.db
-      .prepare('SELECT summary, token_count, model FROM context_nodes WHERE level = 0')
+      .prepare(
+        'SELECT summary, token_count, model FROM context_nodes WHERE level = 0',
+      )
       .get() as any;
     expect(node.summary).toBe(
       'Alexandre reported T1 progress. Task moved to in-progress and assigned to Alexandre.',
     );
     expect(node.token_count).toBeGreaterThan(0);
-    expect(node.token_count).toBe(
-      Math.ceil(node.summary.length / 3.5),
-    );
+    expect(node.token_count).toBe(Math.ceil(node.summary.length / 3.5));
     expect(node.model).toBe('llama3.1');
 
     // Verify FTS was updated (via trigger)
@@ -257,9 +256,9 @@ describe('ContextService — summarizePending', () => {
   });
 
   it('summarizes via Claude when configured', async () => {
-    process.env.ANTHROPIC_API_KEY = 'test-key';
     const svc = new ContextService(TEST_DB, {
       summarizer: 'claude',
+      anthropicApiKey: 'test-key',
       retainDays: 90,
     });
 
@@ -274,7 +273,9 @@ describe('ContextService — summarizePending', () => {
       ok: true,
       json: async () => ({
         content: [
-          { text: 'User requested status check. All tasks confirmed up to date.' },
+          {
+            text: 'User requested status check. All tasks confirmed up to date.',
+          },
         ],
       }),
     });
@@ -293,7 +294,6 @@ describe('ContextService — summarizePending', () => {
       expect.objectContaining({ method: 'POST' }),
     );
 
-    delete process.env.ANTHROPIC_API_KEY;
     svc.close();
   });
 
@@ -449,7 +449,8 @@ describe('ContextService — FTS5 triggers', () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        response: 'User sent a test message and received a response from the agent.',
+        response:
+          'User sent a test message and received a response from the agent.',
       }),
     });
     global.fetch = mockFetch as any;
@@ -589,7 +590,8 @@ describe('ContextService — rollupDaily', () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        response: 'Daily summary for March 14. Two sessions about task progress.',
+        response:
+          'Daily summary for March 14. Two sessions about task progress.',
       }),
     });
     global.fetch = mockFetch as any;
@@ -758,7 +760,8 @@ describe('ContextService — rollupWeekly', () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        response: 'Weekly summary for the first week of March. Good progress overall.',
+        response:
+          'Weekly summary for the first week of March. Good progress overall.',
       }),
     });
     global.fetch = mockFetch as any;
@@ -816,7 +819,8 @@ describe('ContextService — rollupMonthly', () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        response: 'Monthly summary for February 2026. Significant progress made.',
+        response:
+          'Monthly summary for February 2026. Significant progress made.',
       }),
     });
     global.fetch = mockFetch as any;
@@ -944,12 +948,16 @@ describe('ContextService — applyRetention', () => {
     expect(daily.pruned_at).toBeTruthy();
 
     const weekly = svc.db
-      .prepare("SELECT pruned_at FROM context_nodes WHERE id = 'weekly:grp:old'")
+      .prepare(
+        "SELECT pruned_at FROM context_nodes WHERE id = 'weekly:grp:old'",
+      )
       .get() as any;
     expect(weekly.pruned_at).toBeNull();
 
     const monthly = svc.db
-      .prepare("SELECT pruned_at FROM context_nodes WHERE id = 'monthly:grp:old'")
+      .prepare(
+        "SELECT pruned_at FROM context_nodes WHERE id = 'monthly:grp:old'",
+      )
       .get() as any;
     expect(monthly.pruned_at).toBeNull();
 
