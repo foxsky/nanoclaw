@@ -459,9 +459,9 @@ export class WhatsAppChannel implements Channel {
     inviteLink?: string;
     droppedParticipants?: string[];
   }> {
-    if (participants.length > 1024) {
+    if (participants.length > 1023) {
       throw new Error(
-        `Too many participants (${participants.length}): WhatsApp limit is 1024`,
+        `Too many participants (${participants.length}): WhatsApp limit is 1024 including creator`,
       );
     }
     const result = await this.sock.groupCreate(subject, participants);
