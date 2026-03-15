@@ -455,6 +455,9 @@ export class WhatsAppChannel implements Channel {
     participants: string[],
   ): Promise<{ jid: string; subject: string; inviteLink?: string }> {
     const result = await this.sock.groupCreate(subject, participants);
+    if (!result?.id) {
+      throw new Error(`groupCreate returned no result for "${subject}"`);
+    }
     const groupJid = result.id;
 
     // Verify participants were added; if not, retry with groupParticipantsUpdate
