@@ -221,7 +221,14 @@ export class WhatsAppChannel implements Channel {
             const isVoice = normalized.audioMessage?.ptt === true;
             if (!content && !isVoice) continue;
 
-            const sender = msg.key.participant || msg.key.remoteJid || '';
+            // Translate LID participant to phone JID for group messages.
+            // In LID-mode groups, msg.key.participant is an @lid JID.
+            const rawParticipant =
+              msg.key.participant || msg.key.remoteJid || '';
+            const sender = rawParticipant.endsWith('@lid')
+              ? ((msg.key as { participantAlt?: string }).participantAlt ||
+                  (await this.translateJid(rawParticipant)))
+              : rawParticipant;
             const senderName = msg.pushName || sender.split('@')[0];
 
             const fromMe = msg.key.fromMe || false;
@@ -425,12 +432,18 @@ export class WhatsAppChannel implements Channel {
       const memberIds = new Set(meta.participants.map((p) => p.id));
       const missing = participants.filter((p) => !memberIds.has(p));
       if (missing.length > 0) {
-        logger.info({ groupJid, missing }, 'Participants not added at creation, retrying');
+        logger.info(
+          { groupJid, missing },
+          'Participants not added at creation, retrying',
+        );
         try {
           await this.sock.groupParticipantsUpdate(groupJid, missing, 'add');
         } catch (retryErr) {
           allAdded = false;
-          logger.warn({ err: retryErr, groupJid, missing }, 'Failed to add missing participants');
+          logger.warn(
+            { err: retryErr, groupJid, missing },
+            'Failed to add missing participants',
+          );
         }
         // Only re-verify if the retry didn't throw
         if (allAdded) {
@@ -440,11 +453,17 @@ export class WhatsAppChannel implements Channel {
             const stillMissing = missing.filter((p) => !memberIds2.has(p));
             if (stillMissing.length > 0) {
               allAdded = false;
-              logger.warn({ groupJid, stillMissing }, 'Participants still missing after retry');
+              logger.warn(
+                { groupJid, stillMissing },
+                'Participants still missing after retry',
+              );
             }
           } catch {
             // Re-verify failed but retry was attempted — assume success
-            logger.debug({ groupJid }, 'Could not re-verify participants after retry');
+            logger.debug(
+              { groupJid },
+              'Could not re-verify participants after retry',
+            );
           }
         }
       }

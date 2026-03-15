@@ -101,6 +101,10 @@ export function startCredentialProxy(
           if (!res.headersSent) {
             res.writeHead(502);
             res.end('Bad Gateway');
+          } else {
+            // Headers already sent (mid-stream error): destroy the client
+            // socket so the container doesn't hang waiting for a response
+            res.destroy(err);
           }
         });
 

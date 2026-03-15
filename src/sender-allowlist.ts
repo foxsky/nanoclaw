@@ -119,7 +119,17 @@ export function isSenderAllowed(
 ): boolean {
   const entry = getEntry(chatJid, cfg);
   if (entry.allow === '*') return true;
-  return entry.allow.includes(sender);
+  // Strip Multi-Device device suffix (e.g. 5551234:5@s.whatsapp.net → 5551234@s.whatsapp.net)
+  const atIdx = sender.indexOf('@');
+  let normalized = sender;
+  if (atIdx !== -1) {
+    const local = sender.slice(0, atIdx);
+    const colonIdx = local.indexOf(':');
+    if (colonIdx !== -1) {
+      normalized = local.slice(0, colonIdx) + sender.slice(atIdx);
+    }
+  }
+  return entry.allow.includes(normalized);
 }
 
 export function shouldDropMessage(
