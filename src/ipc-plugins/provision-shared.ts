@@ -8,7 +8,6 @@ import { DATA_DIR, PROJECT_ROOT } from '../config.js';
 import { createTask } from '../db.js';
 import { logger } from '../logger.js';
 
-
 export const TASKFLOW_DB_PATH = path.join(DATA_DIR, 'taskflow', 'taskflow.db');
 export const TEMPLATE_PATH = path.join(
   PROJECT_ROOT,
@@ -81,7 +80,9 @@ export interface BoardRuntimeConfigRow {
 
 export function nextCronRun(cronExpr: string): string | null {
   try {
-    return CronExpressionParser.parse(cronExpr, { tz: 'UTC' }).next().toISOString();
+    return CronExpressionParser.parse(cronExpr, { tz: 'UTC' })
+      .next()
+      .toISOString();
   } catch {
     return null;
   }

@@ -189,7 +189,11 @@ const handleProvisionChildBoard: IpcHandler = async (
       const result = await deps.createGroup(childGroupName, [participantJid]);
       childGroupJid = result.jid;
       logger.info(
-        { jid: childGroupJid, subject: result.subject, inviteLink: result.inviteLink },
+        {
+          jid: childGroupJid,
+          subject: result.subject,
+          inviteLink: result.inviteLink,
+        },
         'provision_child_board: WhatsApp group created',
       );
       if (result.inviteLink) {

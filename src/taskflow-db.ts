@@ -550,10 +550,18 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   );
 
   /* --- Performance indexes for task_history and archive queries --- */
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_task_history_board_task ON task_history(board_id, task_id)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_task_history_board_at ON task_history(board_id, at)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_archive_board_assignee ON archive(board_id, assignee)`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_archive_board_archived_at ON archive(board_id, archived_at)`);
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_task_history_board_task ON task_history(board_id, task_id)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_task_history_board_at ON task_history(board_id, at)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_archive_board_assignee ON archive(board_id, assignee)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_archive_board_archived_at ON archive(board_id, archived_at)`,
+  );
 
   /* --- board_holidays table (migration for existing DBs) --- */
   db.exec(`CREATE TABLE IF NOT EXISTS board_holidays (

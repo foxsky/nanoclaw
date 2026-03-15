@@ -63,7 +63,11 @@ export class WhatsAppChannel implements Channel {
     // Tear down old socket before creating a new one to prevent
     // stacked event listeners from firing on the old emitter
     if (this.sock) {
-      try { this.sock.end(undefined); } catch { /* ignore */ }
+      try {
+        this.sock.end(undefined);
+      } catch {
+        /* ignore */
+      }
     }
 
     const authDir = path.join(STORE_DIR, 'auth');
