@@ -212,8 +212,13 @@ export function _setRegisteredGroups(
 // Per-group response rate limit: minimum seconds between new container starts.
 // The first message is always processed immediately. Subsequent messages that
 // arrive while the container is idle accumulate and are batched on the next run.
+// Message noise patterns — pre-compiled for hot-path efficiency
+const NOISE_VOICE_PROCESSING = /^⏳\s*_?Processando\.{0,3}_?\s*$/;
+const NOISE_TYPING_INDICATOR = /^(Gravando|Digitando|Recording|Typing)\.{0,3}$/;
+
 const MIN_RESPONSE_INTERVAL_MS = 5_000; // 5 seconds between new agent invocations
 const lastResponseTime = new Map<string, number>();
+const pendingRateLimitTimers = new Set<string>(); // prevents timer stacking
 
 /**
  * Process all pending messages for a group.
@@ -223,13 +228,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const group = registeredGroups[chatJid];
   if (!group) return true;
 
-  // Rate limit: if we responded very recently, defer to let messages accumulate
+  // Rate limit: if we responded very recently, defer to let messages accumulate.
+  // Uses pendingRateLimitTimers to prevent timer stacking from drain loops.
   const lastResponse = lastResponseTime.get(chatJid) ?? 0;
   const elapsed = Date.now() - lastResponse;
   if (elapsed < MIN_RESPONSE_INTERVAL_MS && lastResponse > 0) {
-    // Re-enqueue after the remaining cooldown
-    setTimeout(() => queue.enqueueMessageCheck(chatJid), MIN_RESPONSE_INTERVAL_MS - elapsed);
-    return true; // return true so group-queue doesn't schedule a retry
+    if (!pendingRateLimitTimers.has(chatJid)) {
+      pendingRateLimitTimers.add(chatJid);
+      setTimeout(() => {
+        pendingRateLimitTimers.delete(chatJid);
+        queue.enqueueMessageCheck(chatJid);
+      }, MIN_RESPONSE_INTERVAL_MS - elapsed);
+    }
+    return true;
   }
 
   const channel = findChannel(channels, chatJid);
@@ -537,10 +548,8 @@ async function startMessageLoop(): Promise<void> {
         const substantiveMessages = messages.filter((msg) => {
           const text = msg.content.trim();
           if (!text) return false;
-          // WhatsApp voice transcription processing indicator
-          if (/^⏳\s*_?Processando\.{0,3}_?\s*$/.test(text)) return false;
-          // WhatsApp typing/recording indicators stored as text
-          if (/^(Gravando|Digitando|Recording|Typing)\.{0,3}$/.test(text)) return false;
+          if (NOISE_VOICE_PROCESSING.test(text)) return false;
+          if (NOISE_TYPING_INDICATOR.test(text)) return false;
           return true;
         });
 
