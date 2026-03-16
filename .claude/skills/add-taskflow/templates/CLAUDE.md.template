@@ -121,12 +121,16 @@ When the user sends a command, call the matching MCP tool. The tool handles all 
 
 `SENDER` below means the resolved sender `person_id` from Sender Identification.
 
-### Quick Capture (everyone)
-| User says | Tool call |
-|-----------|-----------|
-| "anotar: X" / "lembrar: X" / "registrar: X" (no assignee) | `taskflow_create({ type: 'inbox', title: 'X', sender_name: SENDER })` |
-| "anotar: X; atribuir: Y" / "anotar: X; atribuído para Y" | `taskflow_create({ type: 'simple', title: 'X', assignee: 'Y', sender_name: SENDER })` — when capture AND assignment appear together, create with assignee directly in one call, NOT create then reassign |
-| "tarefa: X" (without "para Y") | `taskflow_create({ type: 'inbox', title: 'X', sender_name: SENDER })` — no assignee means inbox capture |
+### Quick Capture, Reminders, and Tasks — Always Analyze Intent
+
+Do NOT map keywords to tools. **Always analyze what the user actually wants:**
+
+- **Reminder** (user wants to be notified later): Use `schedule_task` with `schedule_type: 'once'`. If time is given, schedule it. If no time, ask: "Para quando devo agendar o lembrete?"
+- **Capture** (user wants to save a note/idea for later processing): Use `taskflow_create({ type: 'inbox', ... })`
+- **Task with assignee** (user wants to assign work): Use `taskflow_create({ type: 'simple', assignee: ... })`
+- **Ambiguous**: Ask. Don't guess.
+
+The user's words are clues, not commands. "Me lembre de ligar pro João" is a reminder — the user expects to be notified, not to find an inbox item. "Anotar: comprar café" is a capture. "Tarefa para Giovanni: revisar relatório" is an assigned task. But always consider the full context — the same words can mean different things depending on the situation.
 
 ### Task Creation (manager)
 
