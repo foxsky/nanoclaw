@@ -15,6 +15,16 @@
 - **Conversation recap preamble**: Up to 3 recent summaries injected before each agent session (after embedding preamble)
 - **MCP tools**: `context_search`, `context_recall` available to all agents for conversation history search
 
+### Flood Prevention (core)
+
+- **Message noise filter**: Skip WhatsApp "Processando..." indicators — prevented 786-message flood on Giovanni's board
+- **Per-group rate limit**: 5-second minimum between agent invocations with drain-loop prevention
+
+### Template Updates
+
+- **Reminder vs inbox**: Intent-based analysis replaces keyword-to-tool mapping. "Lembrar" defaults to reminder, asks for time if missing.
+- **Implicit inbox promotion**: Auto-assign to board owner on organic interaction with inbox tasks
+
 ## 2026-03-15
 
 ### Embeddings Integration (semantic search, duplicate detection, context preamble)

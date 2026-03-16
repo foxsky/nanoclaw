@@ -23,3 +23,23 @@
 - **Monotonic leaf IDs**: Add suffix (:0000, :0001) to prevent timestamp collision data loss
 - **Tool result pairing**: Match by tool_use_id when available
 - **Manifest**: Remove false add-embeddings dependency, add db-util.ts
+
+### Simplify / Code Quality (from reviews)
+
+- **Shared db-util.ts**: Extract `openReadonlyDb()` + `closeDb()` from ContextReader and EmbeddingReader into shared utility
+- **estimateTokens()**: Extract token heuristic (`Math.ceil(len / 3.5)`) into named function in both host and container packages
+- **Consolidated readEnvFile**: Single `.env` parse at startup shared between embeddings and context skills
+- **Cached prepared statements**: `stmtPruneNodes`, `stmtPruneSessions`, `stmtVacuum` cached in constructor
+- **Level constants**: Use `Level.DAILY`/`Level.WEEKLY` instead of magic numbers in rollup prompt selection
+- **HTTP error logging**: Log Ollama/Claude non-OK status codes for debugging
+- **Timezone in preamble**: Add `timeZone` option to date formatting (TZ env or America/Fortaleza)
+- **Shutdown ordering**: Context service closes AFTER queue drain so capture hooks complete first
+- **Initial timeout cleanup**: Clear both interval and setTimeout on shutdown
+- **Topics N+1 eliminated**: Single SQL query + JS tokenization replaces fts5vocab N+1 pattern
+- **Schema migration**: Add `ALTER TABLE` guard for `last_byte_offset` column on existing DBs
+
+### Flood Prevention (core, affects all groups)
+
+- **Message noise filter**: Skip WhatsApp "Processando...", "Gravando...", "Digitando..." indicators before they reach agents
+- **Per-group rate limit**: 5-second minimum between new agent invocations, with `pendingRateLimitTimers` Set to prevent drain loop stacking
+- **Pre-compiled regex**: `NOISE_VOICE_PROCESSING` and `NOISE_TYPING_INDICATOR` hoisted to module constants
