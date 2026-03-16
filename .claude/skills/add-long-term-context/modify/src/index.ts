@@ -662,6 +662,11 @@ async function startMessageLoop(): Promise<void> {
                 'DM staged for trigger-bypassed processing and enqueued',
               );
             }
+            // Track max timestamp of ALL messages after a staged DM,
+            // not just staged ones — prevents re-delivery of piped DMs
+            if (hitStagedDm && msg.timestamp > stagedDmMaxTimestamp) {
+              stagedDmMaxTimestamp = msg.timestamp;
+            }
           }
           // Advance DM cursor to the last safely-processed message.
           // Don't advance past staged DMs (in-memory only — lost on restart).

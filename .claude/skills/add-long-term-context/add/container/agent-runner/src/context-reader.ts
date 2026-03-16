@@ -115,7 +115,15 @@ export class ContextReader {
         SELECT cn.* FROM context_fts cf
         JOIN context_nodes cn ON cn.id = cf.node_id
         WHERE context_fts MATCH ? AND cf.group_folder = ? AND cn.pruned_at IS NULL`;
-      const params: Array<string | number> = [query, group];
+      // Sanitize query for FTS5 MATCH: wrap tokens in double quotes to prevent
+      // metacharacters (*, ", NEAR, NOT, OR, column filters) from causing parse errors
+      const sanitizedQuery = query
+        .split(/\s+/)
+        .filter((t) => t.length > 0)
+        .map((token) => '"' + token.replace(/"/g, '""') + '"')
+        .join(' ');
+      if (!sanitizedQuery) return [];
+      const params: Array<string | number> = [sanitizedQuery, group];
 
       if (options?.dateFrom) {
         sql += ` AND cn.time_start >= ?`;
