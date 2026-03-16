@@ -209,6 +209,17 @@ export function _setRegisteredGroups(
   registeredGroups = groups;
 }
 
+// Per-group response rate limit: minimum seconds between new container starts.
+// The first message is always processed immediately. Subsequent messages that
+// arrive while the container is idle accumulate and are batched on the next run.
+// Message noise patterns — pre-compiled for hot-path efficiency
+const NOISE_VOICE_PROCESSING = /^⏳\s*_?Processando\.{0,3}_?\s*$/;
+const NOISE_TYPING_INDICATOR = /^(Gravando|Digitando|Recording|Typing)\.{0,3}$/;
+
+const MIN_RESPONSE_INTERVAL_MS = 5_000; // 5 seconds between new agent invocations
+const lastResponseTime = new Map<string, number>();
+const pendingRateLimitTimers = new Set<string>(); // prevents timer stacking
+
 /**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
@@ -216,6 +227,21 @@ export function _setRegisteredGroups(
 async function processGroupMessages(chatJid: string): Promise<boolean> {
   const group = registeredGroups[chatJid];
   if (!group) return true;
+
+  // Rate limit: if we responded very recently, defer to let messages accumulate.
+  // Uses pendingRateLimitTimers to prevent timer stacking from drain loops.
+  const lastResponse = lastResponseTime.get(chatJid) ?? 0;
+  const elapsed = Date.now() - lastResponse;
+  if (elapsed < MIN_RESPONSE_INTERVAL_MS && lastResponse > 0) {
+    if (!pendingRateLimitTimers.has(chatJid)) {
+      pendingRateLimitTimers.add(chatJid);
+      setTimeout(() => {
+        pendingRateLimitTimers.delete(chatJid);
+        queue.enqueueMessageCheck(chatJid);
+      }, MIN_RESPONSE_INTERVAL_MS - elapsed);
+    }
+    return true;
+  }
 
   const channel = findChannel(channels, chatJid);
   if (!channel) {
@@ -312,6 +338,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   lastAgentTimestamp[chatJid] =
     missedMessages[missedMessages.length - 1].timestamp;
   saveState();
+
+  // Mark response time BEFORE agent runs (blocks concurrent enqueues during processing)
+  lastResponseTime.set(chatJid, Date.now());
 
   logger.info(
     { group: group.name, messageCount: missedMessages.length },
@@ -515,9 +544,18 @@ async function startMessageLoop(): Promise<void> {
         lastTimestamp = newTimestamp;
         saveState();
 
+        // Filter out non-content noise (typing indicators, processing markers, empty)
+        const substantiveMessages = messages.filter((msg) => {
+          const text = msg.content.trim();
+          if (!text) return false;
+          if (NOISE_VOICE_PROCESSING.test(text)) return false;
+          if (NOISE_TYPING_INDICATOR.test(text)) return false;
+          return true;
+        });
+
         // Deduplicate by group
         const messagesByGroup = new Map<string, NewMessage[]>();
-        for (const msg of messages) {
+        for (const msg of substantiveMessages) {
           const existing = messagesByGroup.get(msg.chat_jid);
           if (existing) {
             existing.push(msg);
@@ -662,6 +700,11 @@ async function startMessageLoop(): Promise<void> {
                 'DM staged for trigger-bypassed processing and enqueued',
               );
             }
+            // Track max timestamp of ALL messages after a staged DM,
+            // not just staged ones — prevents re-delivery of piped DMs
+            if (hitStagedDm && msg.timestamp > stagedDmMaxTimestamp) {
+              stagedDmMaxTimestamp = msg.timestamp;
+            }
           }
           // Advance DM cursor to the last safely-processed message.
           // Don't advance past staged DMs (in-memory only — lost on restart).
@@ -713,22 +756,31 @@ async function main(): Promise<void> {
   loadState();
   restoreRemoteControl();
 
+  // --- Shared env for embeddings + long-term context (single .env parse) ---
+  const { readEnvFile: readEnv } = await import('./env.js');
+  const skillEnv = readEnv([
+    'OLLAMA_HOST',
+    'EMBEDDING_MODEL',
+    'ANTHROPIC_API_KEY',
+    'CONTEXT_SUMMARIZER',
+    'CONTEXT_SUMMARIZER_MODEL',
+    'CONTEXT_RETAIN_DAYS',
+  ]);
+
   // --- add-embeddings skill: generic embedding service ---
   let embeddingService:
     | import('./embedding-service.js').EmbeddingService
     | null = null;
-  const { readEnvFile: readEnv } = await import('./env.js');
-  const embedEnv = readEnv(['OLLAMA_HOST', 'EMBEDDING_MODEL']);
-  if (embedEnv.OLLAMA_HOST) {
+  if (skillEnv.OLLAMA_HOST) {
     const { EmbeddingService } = await import('./embedding-service.js');
     embeddingService = new EmbeddingService(
       path.join(DATA_DIR, 'embeddings', 'embeddings.db'),
-      embedEnv.OLLAMA_HOST,
-      embedEnv.EMBEDDING_MODEL || 'bge-m3',
+      skillEnv.OLLAMA_HOST,
+      skillEnv.EMBEDDING_MODEL || 'bge-m3',
     );
     embeddingService.startIndexer();
     logger.info(
-      { ollamaHost: embedEnv.OLLAMA_HOST, model: embedEnv.EMBEDDING_MODEL },
+      { ollamaHost: skillEnv.OLLAMA_HOST, model: skillEnv.EMBEDDING_MODEL },
       'Embedding service started',
     );
   }
@@ -744,6 +796,31 @@ async function main(): Promise<void> {
     );
   }
 
+  // --- add-long-term-context skill ---
+  let contextSyncTimer: ReturnType<typeof setInterval> | null = null;
+  let contextService: import('./context-service.js').ContextService | null =
+    null;
+  {
+    const { ContextService } = await import('./context-service.js');
+    const { startContextSync } = await import('./context-sync.js');
+    const { setContextService } = await import('./container-runner.js');
+
+    contextService = new ContextService(
+      path.join(DATA_DIR, 'context', 'context.db'),
+      {
+        summarizer:
+          (skillEnv.CONTEXT_SUMMARIZER as 'ollama' | 'claude') || 'ollama',
+        summarizerModel: skillEnv.CONTEXT_SUMMARIZER_MODEL,
+        ollamaHost: skillEnv.OLLAMA_HOST,
+        anthropicApiKey: skillEnv.ANTHROPIC_API_KEY,
+        retainDays: parseInt(skillEnv.CONTEXT_RETAIN_DAYS || '90'),
+      },
+    );
+    setContextService(contextService);
+    contextSyncTimer = startContextSync(contextService);
+    logger.info('Long-term context service started');
+  }
+
   // Start credential proxy
   const proxyServer = await startCredentialProxy(
     CREDENTIAL_PROXY_PORT,
@@ -757,9 +834,21 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, 'Shutdown signal received');
     try {
+      if (contextSyncTimer) {
+        clearInterval(contextSyncTimer);
+        clearTimeout((contextSyncTimer as any).__initialTimeout); // clear the 5s initial delay too
+      }
       if (embeddingSyncTimer) clearInterval(embeddingSyncTimer); // add-taskflow
       embeddingService?.close(); // add-embeddings
-      await queue.shutdown(10000);
+      await queue.shutdown(10000); // drain active containers — their close hooks may still capture turns
+      // Close context service AFTER queue drain so capture hooks complete first
+      if (contextService) {
+        try {
+          const { setContextService } = await import('./container-runner.js');
+          setContextService(null);
+        } catch {}
+        contextService.close();
+      }
       for (const ch of channels) await ch.disconnect();
     } catch (err) {
       logger.error({ err }, 'Error during shutdown');
