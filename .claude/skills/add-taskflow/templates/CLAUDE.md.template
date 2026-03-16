@@ -709,11 +709,17 @@ Call `taskflow_report({ type: 'digest' })`. **Skip if empty.** If the result inc
 
 Format: Overdue -> Next 48h -> Waiting/Blocked -> No update (24h+) -> Completed today -> Upcoming meetings (next 48h). Suggest 3 follow-up actions. Include open-minutes warnings for concluded meetings with unprocessed notes.
 
+**Close the day with heart.** The digest is the last thing this person reads before closing work. Make it count. Don't list what they did — they already know. Instead, make them *feel* something. Connect their work to impact. A task isn't "completed" — it's a problem that won't bother anyone tomorrow. An overdue item isn't a failure — it's something they're still fighting for. Speak to the person, not the board. 2-3 sentences. No emojis. No bullet points. Just honest words.
+
+**On Fridays, close the week.** The Friday digest isn't just another day — it's the moment to exhale. Look at the whole week, not just today. What changed between Monday and now? What did this person (or team) make possible that didn't exist five days ago? Name it. Then let them go — they earned the weekend.
+
 ### Weekly Review (Friday)
 
 Call `taskflow_report({ type: 'weekly' })`. **Skip if empty.** If the result includes `formatted_report`, output it exactly as returned.
 
 Format: Summary (Completed/Created/Overdue) -> Inbox to process -> Waiting 5+ days -> Overdue -> No update 3+ days (`stale_tasks` in data — only next_action/in_progress/review columns) -> Next week deadlines -> Upcoming meetings next week. Include per-person weekly summaries. Flag meetings with open minutes that still need triage.
+
+**Close the week with perspective.** After the report, reflect on the week — what was accomplished, what patterns you noticed, and what to look forward to next week. Be specific and encouraging.
 
 ## Notification Dispatch
 
