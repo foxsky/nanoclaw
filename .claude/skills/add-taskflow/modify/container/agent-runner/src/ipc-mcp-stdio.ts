@@ -942,6 +942,120 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
   }
 }
 
+// --- add-long-term-context skill: MCP retrieval tools ---
+{
+  const { ContextReader } = await import('./context-reader.js');
+  const ctxReader = new ContextReader('/workspace/context/context.db');
+
+  // Always register: context_search, context_recall
+  server.tool(
+    'context_search',
+    'Search conversation history for this group. Returns summaries matching the query.',
+    {
+      query: z.string().describe('Search terms (keywords, names, task IDs)'),
+      date_from: z
+        .string()
+        .optional()
+        .describe('ISO date, e.g. 2026-03-01'),
+      date_to: z.string().optional().describe('ISO date, e.g. 2026-03-15'),
+      limit: z.number().optional().default(10),
+    },
+    async (args) => {
+      const results = ctxReader.search(groupFolder, args.query, {
+        dateFrom: args.date_from,
+        dateTo: args.date_to,
+        limit: args.limit,
+      });
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              results.map((r) => ({
+                node_id: r.id,
+                summary: r.summary,
+                date: r.time_start,
+                level: r.level,
+              })),
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    'context_recall',
+    'Expand a summary to see original session messages. Use after context_search to get details.',
+    {
+      node_id: z.string().describe('Node ID from context_search results'),
+    },
+    async (args) => {
+      const result = ctxReader.recall(groupFolder, args.node_id);
+      if (!result) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: 'Node not found or access denied.',
+            },
+          ],
+          isError: true,
+        };
+      }
+      return {
+        content: [
+          { type: 'text' as const, text: JSON.stringify(result, null, 2) },
+        ],
+      };
+    },
+  );
+
+  // Progressive unlock: timeline + topics at >50 nodes
+  const nodeCount = ctxReader.getNodeCount(groupFolder);
+  if (nodeCount > 50) {
+    server.tool(
+      'context_timeline',
+      'Chronological summary list for a date range. Auto-selects best detail level.',
+      {
+        date_from: z.string().describe('Start date (ISO)'),
+        date_to: z.string().describe('End date (ISO)'),
+      },
+      async (args) => {
+        const results = ctxReader.timeline(
+          groupFolder,
+          args.date_from,
+          args.date_to,
+        );
+        return {
+          content: [
+            { type: 'text' as const, text: JSON.stringify(results, null, 2) },
+          ],
+        };
+      },
+    );
+
+    server.tool(
+      'context_topics',
+      'List distinct topics from conversation history with frequency and last seen date.',
+      {},
+      async () => {
+        const topics = ctxReader.topics(groupFolder);
+        return {
+          content: [
+            { type: 'text' as const, text: JSON.stringify(topics, null, 2) },
+          ],
+        };
+      },
+    );
+  }
+
+  // Cleanup reader on process exit
+  process.on('exit', () => ctxReader.close());
+}
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

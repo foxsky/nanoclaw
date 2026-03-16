@@ -509,12 +509,23 @@ async function runQuery(
     if (message.type === 'result') {
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
-      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
-      writeOutput({
-        status: 'success',
-        result: textResult || null,
-        newSessionId
-      });
+      const isError = message.subtype !== 'success';
+      const errors = 'errors' in message ? (message as { errors?: string[] }).errors : undefined;
+      log(`Result #${resultCount}: subtype=${message.subtype}${isError ? ` errors=${errors?.join('; ')}` : ''}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+      if (isError) {
+        writeOutput({
+          status: 'error',
+          result: null,
+          newSessionId,
+          error: `Agent ${message.subtype}: ${errors?.join('; ') ?? 'unknown error'}`,
+        });
+      } else {
+        writeOutput({
+          status: 'success',
+          result: textResult || null,
+          newSessionId,
+        });
+      }
     }
   }
 
@@ -598,6 +609,46 @@ async function main(): Promise<void> {
     } finally {
       reader.close();
     }
+  }
+
+  // --- add-long-term-context skill: conversation recap preamble ---
+  // Runs AFTER embedding preamble block. Both prepend to `prompt`, so final order is:
+  // conversation recap → embedding preamble → user message.
+  // (Both are agent context; ordering between them is not semantically critical.)
+  try {
+    const { ContextReader } = await import('./context-reader.js');
+    const { estimateTokens } = await import('./db-util.js');
+    const ctxReader = new ContextReader('/workspace/context/context.db');
+    try {
+      const recents = ctxReader.getRecentSummaries(containerInput.groupFolder, 3);
+      if (recents.length > 0) {
+        let budget = 1024;
+        const selected: typeof recents = [];
+        for (const node of recents) {
+          const cost = node.token_count ?? estimateTokens(node.summary ?? '');
+          if (budget - cost < 0 && selected.length > 0) break;
+          selected.push(node);
+          budget -= cost;
+        }
+        if (selected.length > 0) {
+          const lines = selected.reverse().map(n => {
+            const d = new Date(n.time_start);
+            const dateStr = d.toLocaleDateString('pt-BR', {
+              timeZone: process.env.TZ || 'America/Fortaleza',
+              month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+            });
+            return `[${dateStr}] ${n.summary}`;
+          });
+          const recap = `--- Recent conversation history ---\n${lines.join('\n')}\n---`;
+          prompt = recap + '\n\n' + prompt;
+          log(`Context recap injected (${selected.length} summaries, ${recap.length} chars)`);
+        }
+      }
+    } finally {
+      ctxReader.close();
+    }
+  } catch (err) {
+    log(`Context recap skipped: ${err}`);
   }
 
   // Query loop: run query → wait for IPC message → run new query → repeat
