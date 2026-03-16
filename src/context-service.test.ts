@@ -106,7 +106,11 @@ describe('ContextService — insertTurn', () => {
       )
       .get() as any;
     expect(node).toBeTruthy();
-    expect(node.id).toMatch(new RegExp(`^leaf:test-group:${now.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\d{4}$`));
+    expect(node.id).toMatch(
+      new RegExp(
+        `^leaf:test-group:${now.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\d{4}$`,
+      ),
+    );
     expect(node.summary).toBeNull();
     expect(node.level).toBe(0);
 
@@ -439,7 +443,11 @@ describe('ContextService — FTS5 triggers', () => {
     });
 
     // Before summarization: no FTS entry — look up actual node ID
-    const node = svc.db.prepare("SELECT id FROM context_nodes WHERE group_folder = 'grp' AND level = 0").get() as any;
+    const node = svc.db
+      .prepare(
+        "SELECT id FROM context_nodes WHERE group_folder = 'grp' AND level = 0",
+      )
+      .get() as any;
     const nodeId = node.id;
     let fts = svc.db
       .prepare('SELECT * FROM context_fts WHERE node_id = ?')

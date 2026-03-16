@@ -1,5 +1,20 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-03-15 (continued)
+
+### Bug Hunt Fixes (rounds 1-4, 20 agents)
+
+- **fix:** Counter seeding regression — split OR-joined UPDATE into two independent statements so one counter's default doesn't trigger regression of the other (taskflow-db.ts)
+- **fix:** Subtask ID collision after deletion — use max existing suffix instead of count to prevent P1.3 collision when P1.2 was cancelled (taskflow-engine.ts)
+- **fix:** Delegated task duplication in `buildContextSummary` — use actual `task.board_id` for rankedIds set instead of `this.boardId` (taskflow-engine.ts)
+- **fix:** Group name deduplication fails without ` - TaskFlow` suffix — fallback appends `(personName)` directly (provision-child-board.ts)
+- **fix:** SDK error results reported as `status: 'success'` — now correctly reports `status: 'error'` with error details for max_turns, budget, execution errors (agent-runner/index.ts)
+
+### Long-Term Context Integration
+
+- **Conversation recap preamble**: Up to 3 recent summaries injected before each agent session (after embedding preamble)
+- **MCP tools**: `context_search`, `context_recall` available to all agents for conversation history search
+
 ## 2026-03-15
 
 ### Embeddings Integration (semantic search, duplicate detection, context preamble)

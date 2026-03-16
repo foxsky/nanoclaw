@@ -18,6 +18,10 @@ All notable changes to NanoClaw will be documented in this file.
 - **fix:** WhatsApp message queue re-queues on send failure instead of losing messages
 - **fix:** WhatsApp LID translation for group message senders with `participantAlt` fallback
 - **fix:** Sender allowlist device suffix normalization (`:N@s.whatsapp.net` → `@s.whatsapp.net`)
+- **feat:** Hierarchical long-term context skill — DAG summarization, FTS5 search, incremental byte-offset cursor, conversation recap preamble, context_search/recall MCP tools
+- **fix:** Cron idempotency guard — `cronSlotAlreadyRan()` prevents re-execution on process restart
+- **fix:** IPC transient error retry (5 attempts) + error directory eviction (7 days / 1000 files cap)
+- **fix:** 18 bugs fixed across 4 rounds of 20 subagents — subtask ID collision, counter seeding regression, WhatsApp reconnection race, DM duplicate delivery, FTS5 MATCH injection, Docker option injection, cleanupOrphans command injection, SDK errors as success, stripInternalTags regex, embedding indexer re-entrancy, DM routing WAL mismatch, delegated task duplication, group name dedup, shutdown retry timer leak, monthly rollup orphans, NFD Unicode in topics, scheduler infinite loop, outputChain hang
 
 ## [1.2.0](https://github.com/qwibitai/nanoclaw/compare/v1.1.6...v1.2.0)
 

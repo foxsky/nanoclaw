@@ -575,7 +575,10 @@ export async function runContainerAgent(
             // so idle timers start even for "silent" query completions.
             outputChain = outputChain.then(() =>
               onOutput(parsed).catch((err: unknown) => {
-                logger.warn({ group: group.name, err }, 'onOutput callback failed');
+                logger.warn(
+                  { group: group.name, err },
+                  'onOutput callback failed',
+                );
               }),
             );
           } catch (err) {

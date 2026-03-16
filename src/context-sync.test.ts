@@ -810,7 +810,9 @@ describe('captureAgentTurn', () => {
       )
       .all() as any[];
     expect(nodes).toHaveLength(1);
-    expect(nodes[0].id).toMatch(/^leaf:test-group:2026-03-15T10:00:00\.000Z:\d{4}$/);
+    expect(nodes[0].id).toMatch(
+      /^leaf:test-group:2026-03-15T10:00:00\.000Z:\d{4}$/,
+    );
 
     // Verify session
     const session = svc.db
