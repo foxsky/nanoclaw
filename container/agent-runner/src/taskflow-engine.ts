@@ -3705,7 +3705,13 @@ export class TaskflowEngine {
           return { success: false, error: 'Subtasks can only be added to project tasks.' };
         }
         const existingSubtasks = this.getSubtaskRows(task.id, taskBoardId);
-        const nextNum = existingSubtasks.length + 1;
+        // Use max existing suffix, not count, to prevent ID collision after subtask deletion
+        const maxNum = existingSubtasks.reduce((max: number, s: { id: string }) => {
+          const parts = s.id.split('.');
+          const num = parseInt(parts[parts.length - 1], 10);
+          return Number.isNaN(num) ? max : Math.max(max, num);
+        }, 0);
+        const nextNum = maxNum + 1;
         const subtaskId = `${task.id}.${nextNum}`;
         const subColumn = task.assignee ? 'next_action' : 'inbox';
         this.insertSubtaskRow({

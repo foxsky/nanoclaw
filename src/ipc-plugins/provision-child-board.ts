@@ -172,10 +172,15 @@ const handleProvisionChildBoard: IpcHandler = async (
       Object.values(registeredGroups).map((g) => g.name),
     );
     if (existingNames.has(childGroupName)) {
-      childGroupName = childGroupName.replace(
+      const deduplicated = childGroupName.replace(
         / - TaskFlow$/,
         ` (${personName}) - TaskFlow`,
       );
+      // If regex didn't match (name doesn't end with " - TaskFlow"), append directly
+      childGroupName =
+        deduplicated !== childGroupName
+          ? deduplicated
+          : `${childGroupName} (${personName})`;
     }
 
     const childBoardId = 'board-' + childGroupFolder;

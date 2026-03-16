@@ -106,9 +106,13 @@ export function cleanupOrphans(): void {
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
     const orphans = output.trim().split('\n').filter(Boolean);
-    if (orphans.length > 0) {
+    // Validate orphan names before shell interpolation (same check as stopContainer)
+    const validOrphans = orphans
+      .map((n) => (n.startsWith('/') ? n.slice(1) : n))
+      .filter((n) => VALID_CONTAINER_NAME.test(n));
+    if (validOrphans.length > 0) {
       try {
-        execSync(`${CONTAINER_RUNTIME_BIN} stop ${orphans.join(' ')}`, {
+        execSync(`${CONTAINER_RUNTIME_BIN} stop ${validOrphans.join(' ')}`, {
           stdio: 'pipe',
         });
       } catch {
