@@ -206,6 +206,8 @@ Write a concise monthly summary in the same language as the sessions.`,
 /* ------------------------------------------------------------------ */
 
 export class ContextService {
+  private static leafCounter = 0; // monotonic suffix to prevent timestamp collisions
+
   readonly db: Database.Database;
   private readonly config: ContextConfig;
 
@@ -312,7 +314,9 @@ export class ContextService {
     sessionId: string,
     turn: CapturedTurn,
   ): number {
-    const nodeId = `leaf:${groupFolder}:${turn.timestamp}`;
+    // Add monotonic suffix to prevent collision when two turns share the same timestamp
+    const suffix = String(ContextService.leafCounter++).padStart(4, '0');
+    const nodeId = `leaf:${groupFolder}:${turn.timestamp}:${suffix}`;
     const now = new Date().toISOString();
     const messages: SessionMessage[] = [
       {

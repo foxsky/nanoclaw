@@ -106,7 +106,7 @@ describe('ContextService — insertTurn', () => {
       )
       .get() as any;
     expect(node).toBeTruthy();
-    expect(node.id).toBe(`leaf:test-group:${now}`);
+    expect(node.id).toMatch(new RegExp(`^leaf:test-group:${now.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\d{4}$`));
     expect(node.summary).toBeNull();
     expect(node.level).toBe(0);
 
@@ -151,13 +151,13 @@ describe('ContextService — insertTurn', () => {
       }),
     ).not.toThrow();
 
-    // Only one node should exist
+    // Both nodes exist (monotonic suffix makes IDs unique even with same timestamp)
     const nodes = svc.db
       .prepare(
         "SELECT * FROM context_nodes WHERE group_folder = 'grp' AND level = 0",
       )
       .all();
-    expect(nodes).toHaveLength(1);
+    expect(nodes).toHaveLength(2);
 
     svc.close();
   });
@@ -438,8 +438,9 @@ describe('ContextService — FTS5 triggers', () => {
       timestamp: '2026-03-15T09:00:00.000Z',
     });
 
-    // Before summarization: no FTS entry
-    const nodeId = 'leaf:grp:2026-03-15T09:00:00.000Z';
+    // Before summarization: no FTS entry — look up actual node ID
+    const node = svc.db.prepare("SELECT id FROM context_nodes WHERE group_folder = 'grp' AND level = 0").get() as any;
+    const nodeId = node.id;
     let fts = svc.db
       .prepare('SELECT * FROM context_fts WHERE node_id = ?')
       .get(nodeId) as any;

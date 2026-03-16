@@ -97,7 +97,7 @@ export function parseTurnsFromJsonl(
   let currentUserMessage = '';
   let currentTimestamp = '';
   let currentResponseTexts: string[] = [];
-  let currentToolCalls: Array<{ tool: string; resultSummary: string }> = [];
+  let currentToolCalls: Array<{ tool: string; toolUseId?: string; resultSummary: string }> = [];
   let currentLastAssistantUuid: string | undefined;
   let turnStarted = false;
   let lastCompleteEndIndex = startIndex; // tracks end of last complete turn
@@ -213,8 +213,16 @@ export function parseTurnsFromJsonl(
                   .join(' ')
                   .slice(0, 200);
               }
-              // Pair with the most recent tool_use if possible
-              if (
+              // Pair with matching tool_use by ID, fall back to last empty slot
+              const matchId = block.tool_use_id;
+              const match = matchId
+                ? currentToolCalls.find(
+                    (t) => t.toolUseId === matchId && !t.resultSummary,
+                  )
+                : undefined;
+              if (match) {
+                match.resultSummary = summary;
+              } else if (
                 currentToolCalls.length > 0 &&
                 !currentToolCalls[currentToolCalls.length - 1].resultSummary
               ) {
@@ -258,9 +266,12 @@ export function parseTurnsFromJsonl(
           if (block.type === 'text' && block.text) {
             currentResponseTexts.push(block.text);
           } else if (block.type === 'tool_use') {
-            const toolName =
-              (block as unknown as { name?: string }).name ?? 'unknown';
-            currentToolCalls.push({ tool: toolName, resultSummary: '' });
+            const toolBlock = block as unknown as { name?: string; id?: string };
+            currentToolCalls.push({
+              tool: toolBlock.name ?? 'unknown',
+              toolUseId: toolBlock.id,
+              resultSummary: '',
+            });
           }
         }
         if (entry.uuid) {
@@ -415,8 +426,11 @@ export function startContextSync(
   service: ContextService,
 ): ReturnType<typeof setInterval> | null {
   let lastVacuumDay = '';
+  let cycleRunning = false;
 
   const cycle = async () => {
+    if (cycleRunning) return; // prevent overlap if previous cycle exceeds 60s
+    cycleRunning = true;
     try {
       // 1. Summarize pending leaves
       const summarized = await service.summarizePending(5);
@@ -452,6 +466,8 @@ export function startContextSync(
       }
     } catch (err) {
       logger.warn({ err }, 'Context sync cycle failed');
+    } finally {
+      cycleRunning = false;
     }
   };
 
