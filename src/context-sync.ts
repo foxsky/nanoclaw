@@ -323,7 +323,10 @@ export async function captureAgentTurn(
     }
 
     // Read only new bytes from the JSONL file using byte offset
-    const { lines: allLines, bytesRead } = readLinesFromOffset(filePath, byteOffset);
+    const { lines: allLines, bytesRead } = readLinesFromOffset(
+      filePath,
+      byteOffset,
+    );
     if (allLines.length === 0) {
       return; // Nothing new
     }
@@ -353,8 +356,14 @@ export async function captureAgentTurn(
         });
       }
 
-      // Upsert cursor with byte offset for efficient seeking
-      const newByteOffset = byteOffset + bytesRead;
+      // Compute byte offset up to the last complete turn only (not EOF).
+      // This ensures incomplete trailing turns are re-read on the next capture.
+      const linesConsumed = newCursorIndex - startLine;
+      let consumedBytes = 0;
+      for (let i = 0; i < linesConsumed && i < allLines.length; i++) {
+        consumedBytes += Buffer.byteLength(allLines[i], 'utf-8') + 1; // +1 for \n
+      }
+      const newByteOffset = byteOffset + consumedBytes;
       service.db
         .prepare(
           `INSERT INTO context_cursors (group_folder, session_id, last_entry_index, last_byte_offset, last_assistant_uuid, updated_at)
@@ -366,7 +375,14 @@ export async function captureAgentTurn(
              last_assistant_uuid = excluded.last_assistant_uuid,
              updated_at = excluded.updated_at`,
         )
-        .run(groupFolder, sessionId, newCursorIndex, newByteOffset, newAssistantUuid, now);
+        .run(
+          groupFolder,
+          sessionId,
+          newCursorIndex,
+          newByteOffset,
+          newAssistantUuid,
+          now,
+        );
     })();
 
     logger.info(

@@ -123,7 +123,9 @@ export class ContextReader {
       }
       if (options?.dateTo) {
         sql += ` AND cn.time_end <= ?`;
-        params.push(options.dateTo);
+        // Append time suffix if date-only (e.g., '2026-03-15' → '2026-03-15T23:59:59.999Z')
+        const dateTo = options.dateTo.length === 10 ? options.dateTo + 'T23:59:59.999Z' : options.dateTo;
+        params.push(dateTo);
       }
 
       sql += ` ORDER BY rank LIMIT ?`;
@@ -240,7 +242,11 @@ export class ContextReader {
            ORDER BY level DESC, time_start ASC
            LIMIT 200`,
         )
-        .all(group, dateFrom, dateTo) as ContextNode[];
+        .all(
+          group,
+          dateFrom,
+          dateTo.length === 10 ? dateTo + 'T23:59:59.999Z' : dateTo,
+        ) as ContextNode[];
     } catch {
       return [];
     }

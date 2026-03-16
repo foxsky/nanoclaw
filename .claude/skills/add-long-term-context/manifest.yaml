@@ -9,6 +9,7 @@ adds:
   - src/context-sync.test.ts
   - container/agent-runner/src/context-reader.ts
   - container/agent-runner/src/context-reader.test.ts
+  - container/agent-runner/src/db-util.ts
 modifies:
   - src/container-runner.ts                         # mount, capture hook, CORE_AGENT_RUNNER_FILES
   - src/index.ts                                    # service init, sync timer, shutdown
@@ -21,6 +22,5 @@ structured:
     - CONTEXT_SUMMARIZER_MODEL
     - CONTEXT_RETAIN_DAYS
 conflicts: []
-depends:
-  - add-embeddings                                  # uses shared OLLAMA_HOST for summarization
+depends: []                                          # no skill dependencies — uses OLLAMA_HOST from .env independently
 test: "npx vitest run src/context-service.test.ts && npx vitest run src/context-sync.test.ts && cd container/agent-runner && npx vitest run src/context-reader.test.ts"
