@@ -233,6 +233,15 @@ export class ContextService {
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA);
 
+    // Schema migration: add last_byte_offset if missing (for DBs created before this column)
+    try {
+      this.db.exec(
+        'ALTER TABLE context_cursors ADD COLUMN last_byte_offset INTEGER NOT NULL DEFAULT 0',
+      );
+    } catch {
+      // Column already exists — expected
+    }
+
     // Execute each trigger as a separate db.exec() call — never split on ';'
     this.db.exec(TRIGGER_FTS_INSERT);
     this.db.exec(TRIGGER_FTS_UPDATE);
