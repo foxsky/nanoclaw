@@ -25,6 +25,8 @@ export class EmbeddingService {
   private readonly model: string;
   private indexerTimer: ReturnType<typeof setInterval> | null = null;
 
+  private indexerRunning = false; // re-entrancy guard for overlapping cycles
+
   // Prepared statements (cached for performance — avoids re-parsing on every call)
   private readonly stmtSelectExisting: Database.Statement;
   private readonly stmtUpsert: Database.Statement;
@@ -134,6 +136,8 @@ export class EmbeddingService {
   /* ---------------------------------------------------------------- */
 
   async runIndexerCycle(): Promise<void> {
+    if (this.indexerRunning) return; // prevent overlap when cycle exceeds interval
+    this.indexerRunning = true;
     try {
       // Step 1: Model change detection — only update if mismatched rows exist
       const mismatch = this.db
@@ -220,6 +224,8 @@ export class EmbeddingService {
       );
     } catch (err) {
       logger.warn({ err }, 'Embedding indexer cycle failed');
+    } finally {
+      this.indexerRunning = false;
     }
   }
 

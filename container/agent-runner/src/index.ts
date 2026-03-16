@@ -509,12 +509,23 @@ async function runQuery(
     if (message.type === 'result') {
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
-      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
-      writeOutput({
-        status: 'success',
-        result: textResult || null,
-        newSessionId
-      });
+      const isError = message.subtype !== 'success';
+      const errors = 'errors' in message ? (message as { errors?: string[] }).errors : undefined;
+      log(`Result #${resultCount}: subtype=${message.subtype}${isError ? ` errors=${errors?.join('; ')}` : ''}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+      if (isError) {
+        writeOutput({
+          status: 'error',
+          result: null,
+          newSessionId,
+          error: `Agent ${message.subtype}: ${errors?.join('; ') ?? 'unknown error'}`,
+        });
+      } else {
+        writeOutput({
+          status: 'success',
+          result: textResult || null,
+          newSessionId,
+        });
+      }
     }
   }
 

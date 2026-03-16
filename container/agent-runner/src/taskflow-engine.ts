@@ -7162,8 +7162,13 @@ export class TaskflowEngine {
         lines.push(detail);
       }
 
-      // All other tasks as one-liners (composite key avoids delegated ID collision)
-      const rankedIds = new Set(ranked.map(r => `${this.boardId}:${r.itemId}`));
+      // All other tasks as one-liners (use actual board_id from resolved tasks
+      // to correctly handle delegated tasks whose board_id differs from this.boardId)
+      const rankedIds = new Set<string>();
+      for (const item of ranked) {
+        const t = this.getTask(item.itemId);
+        if (t) rankedIds.add(`${t.board_id}:${t.id}`);
+      }
       const others = this.db.prepare(
         `SELECT id, board_id, title FROM tasks
          WHERE ${this.visibleTaskScope()} AND column != 'done'
