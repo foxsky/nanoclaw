@@ -376,6 +376,14 @@ export class GroupQueue {
   async shutdown(_gracePeriodMs: number): Promise<void> {
     this.shuttingDown = true;
 
+    // Cancel all pending retry timers to allow clean event-loop drain
+    for (const [, state] of this.groups) {
+      if (state.retryTimer !== null) {
+        clearTimeout(state.retryTimer);
+        state.retryTimer = null;
+      }
+    }
+
     // Count active containers but don't kill them — they'll finish on their own
     // via idle timeout or container timeout. The --rm flag cleans them up on exit.
     // This prevents WhatsApp reconnection restarts from killing working agents.

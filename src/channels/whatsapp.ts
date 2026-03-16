@@ -128,28 +128,38 @@ export class WhatsAppChannel implements Channel {
           }
           this.reconnecting = true;
           logger.info('Reconnecting...');
-          this.connectInternal()
-            .catch((err) => {
-              logger.error({ err }, 'Failed to reconnect, retrying in 5s');
-              return new Promise<void>((resolve) => {
-                setTimeout(() => {
-                  this.connectInternal()
-                    .catch((err2) => {
-                      logger.error({ err: err2 }, 'Reconnection retry failed');
-                    })
-                    .finally(resolve);
-                }, 5000);
-              });
-            })
-            .finally(() => {
-              this.reconnecting = false;
-            });
+          // Retry loop with exponential backoff. Only clear `reconnecting`
+          // on success (connection='open' handler) — NOT in finally.
+          const attemptReconnect = async (attempt = 1, maxAttempts = 5) => {
+            for (let i = attempt; i <= maxAttempts; i++) {
+              try {
+                await this.connectInternal();
+                return; // success — reconnecting cleared by connection='open' handler
+              } catch (err) {
+                const delay = Math.min(5000 * Math.pow(2, i - 1), 60000);
+                logger.error(
+                  { err, attempt: i, maxAttempts, retryInMs: delay },
+                  'Reconnection attempt failed',
+                );
+                if (i < maxAttempts) {
+                  await new Promise((r) => setTimeout(r, delay));
+                }
+              }
+            }
+            // All attempts exhausted — allow future reconnection attempts
+            this.reconnecting = false;
+            logger.error('All reconnection attempts exhausted');
+          };
+          attemptReconnect().catch(() => {
+            this.reconnecting = false;
+          });
         } else {
           logger.info('Logged out. Run /setup to re-authenticate.');
           process.exit(78); // EX_CONFIG — systemd RestartPreventExitStatus stops restart loop
         }
       } else if (connection === 'open') {
         this.connected = true;
+        this.reconnecting = false; // clear reconnecting flag on successful connection
         logger.info('Connected to WhatsApp');
 
         // Announce availability so WhatsApp relays subsequent presence updates (typing indicators)
