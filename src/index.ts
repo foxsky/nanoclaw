@@ -209,6 +209,12 @@ export function _setRegisteredGroups(
   registeredGroups = groups;
 }
 
+// Per-group response rate limit: minimum seconds between new container starts.
+// The first message is always processed immediately. Subsequent messages that
+// arrive while the container is idle accumulate and are batched on the next run.
+const MIN_RESPONSE_INTERVAL_MS = 5_000; // 5 seconds between new agent invocations
+const lastResponseTime = new Map<string, number>();
+
 /**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
@@ -216,6 +222,15 @@ export function _setRegisteredGroups(
 async function processGroupMessages(chatJid: string): Promise<boolean> {
   const group = registeredGroups[chatJid];
   if (!group) return true;
+
+  // Rate limit: if we responded very recently, defer to let messages accumulate
+  const lastResponse = lastResponseTime.get(chatJid) ?? 0;
+  const elapsed = Date.now() - lastResponse;
+  if (elapsed < MIN_RESPONSE_INTERVAL_MS && lastResponse > 0) {
+    // Re-enqueue after the remaining cooldown
+    setTimeout(() => queue.enqueueMessageCheck(chatJid), MIN_RESPONSE_INTERVAL_MS - elapsed);
+    return true; // return true so group-queue doesn't schedule a retry
+  }
 
   const channel = findChannel(channels, chatJid);
   if (!channel) {
@@ -312,6 +327,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   lastAgentTimestamp[chatJid] =
     missedMessages[missedMessages.length - 1].timestamp;
   saveState();
+
+  // Mark response time BEFORE agent runs (blocks concurrent enqueues during processing)
+  lastResponseTime.set(chatJid, Date.now());
 
   logger.info(
     { group: group.name, messageCount: missedMessages.length },
@@ -515,9 +533,20 @@ async function startMessageLoop(): Promise<void> {
         lastTimestamp = newTimestamp;
         saveState();
 
+        // Filter out non-content noise (typing indicators, processing markers, empty)
+        const substantiveMessages = messages.filter((msg) => {
+          const text = msg.content.trim();
+          if (!text) return false;
+          // WhatsApp voice transcription processing indicator
+          if (/^⏳\s*_?Processando\.{0,3}_?\s*$/.test(text)) return false;
+          // WhatsApp typing/recording indicators stored as text
+          if (/^(Gravando|Digitando|Recording|Typing)\.{0,3}$/.test(text)) return false;
+          return true;
+        });
+
         // Deduplicate by group
         const messagesByGroup = new Map<string, NewMessage[]>();
-        for (const msg of messages) {
+        for (const msg of substantiveMessages) {
           const existing = messagesByGroup.get(msg.chat_jid);
           if (existing) {
             existing.push(msg);
