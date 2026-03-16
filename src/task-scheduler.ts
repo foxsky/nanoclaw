@@ -276,7 +276,20 @@ async function runTask(
 
   // Recompute next_run after execution so it's based on post-run time.
   // (The pre-execution advancement was just to prevent double-pickup.)
-  const nextRun = computeNextRun(task);
+  let nextRun: string | null = null;
+  try {
+    nextRun = computeNextRun(task);
+  } catch (computeErr) {
+    // Malformed schedule_value (bad cron, non-numeric interval) → pause to prevent
+    // infinite error loop. Record last_run so the task doesn't appear stale.
+    logger.error(
+      { taskId: task.id, scheduleValue: task.schedule_value, err: computeErr },
+      'computeNextRun failed — pausing task to prevent retry churn',
+    );
+    updateTaskAfterRun(task.id, null, `Error: computeNextRun failed`);
+    updateTask(task.id, { status: 'paused' });
+    return;
+  }
 
   const resultSummary = error
     ? `Error: ${error}`

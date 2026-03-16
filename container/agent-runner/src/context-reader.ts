@@ -281,6 +281,7 @@ export class ContextReader {
       for (const row of rows) {
         // Simple word tokenization: lowercase, split on non-alphanumeric, filter short + stop words
         const words = row.summary
+          .normalize('NFC') // handle NFD decomposed Unicode (common in Portuguese)
           .toLowerCase()
           .split(/[^a-záàâãéèêíïóôõúüçñ0-9]+/)
           .filter((w) => w.length >= 3 && !STOP_WORDS.has(w));

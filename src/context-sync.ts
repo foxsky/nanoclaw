@@ -97,7 +97,11 @@ export function parseTurnsFromJsonl(
   let currentUserMessage = '';
   let currentTimestamp = '';
   let currentResponseTexts: string[] = [];
-  let currentToolCalls: Array<{ tool: string; toolUseId?: string; resultSummary: string }> = [];
+  let currentToolCalls: Array<{
+    tool: string;
+    toolUseId?: string;
+    resultSummary: string;
+  }> = [];
   let currentLastAssistantUuid: string | undefined;
   let turnStarted = false;
   let lastCompleteEndIndex = startIndex; // tracks end of last complete turn
@@ -266,7 +270,10 @@ export function parseTurnsFromJsonl(
           if (block.type === 'text' && block.text) {
             currentResponseTexts.push(block.text);
           } else if (block.type === 'tool_use') {
-            const toolBlock = block as unknown as { name?: string; id?: string };
+            const toolBlock = block as unknown as {
+              name?: string;
+              id?: string;
+            };
             currentToolCalls.push({
               tool: toolBlock.name ?? 'unknown',
               toolUseId: toolBlock.id,
@@ -548,8 +555,9 @@ async function runRollups(
     }
   }
 
-  // Monthly rollups: find completed months with un-rolled-up weeklies
-  const currentMonth = now.toISOString().slice(0, 7); // YYYY-MM
+  // Monthly rollups: use Monday's month as the gate to avoid orphaning
+  // cross-boundary weekly nodes (e.g., Feb 23-Mar 1 week not yet rolled up on Mar 1)
+  const monthGate = mondayStr.slice(0, 7); // YYYY-MM of current week's Monday
 
   const weeklyMonths = service.db
     .prepare(
@@ -560,7 +568,7 @@ async function runRollups(
          AND substr(time_start, 1, 7) < ?
        ORDER BY month ASC`,
     )
-    .all(groupFolder, currentMonth) as Array<{ month: string }>;
+    .all(groupFolder, monthGate) as Array<{ month: string }>;
 
   for (const { month } of weeklyMonths) {
     try {
