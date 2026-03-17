@@ -572,6 +572,7 @@ export class ContextService {
         model: this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL,
         prompt,
         stream: false,
+        keep_alive: -1,
       }),
       signal: AbortSignal.timeout(30_000),
     });
