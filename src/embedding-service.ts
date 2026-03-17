@@ -174,7 +174,11 @@ export class EmbeddingService {
       const response = await fetch(`${this.ollamaHost}/api/embed`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: this.model, input: texts, keep_alive: -1 }),
+        body: JSON.stringify({
+          model: this.model,
+          input: texts,
+          keep_alive: -1,
+        }),
         signal: AbortSignal.timeout(10_000),
       });
 
