@@ -574,7 +574,7 @@ export class ContextService {
         stream: false,
         keep_alive: -1,
       }),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(60_000),
     });
     if (!resp.ok) {
       logger.warn(
