@@ -376,6 +376,73 @@ function reminderDateFromScheduledAt(scheduledAt: string, daysBefore: number): s
   return d.toISOString().slice(0, 10);
 }
 
+/**
+ * Normalize a scheduled_at value to UTC.
+ * - No 'Z' suffix and no offset → treat as local time in `tz`, convert to UTC.
+ * - Has 'Z' or ±HH:MM offset → already timezone-aware, return as ISO string.
+ * Falls back to appending 'Z' if parsing fails.
+ */
+function localToUtc(naive: string, tz: string): string {
+  // Already timezone-aware — keep as-is
+  if (/[Zz]$/.test(naive) || /[+-]\d{2}:?\d{2}$/.test(naive)) {
+    return new Date(naive).toISOString();
+  }
+
+  // Parse components from naive ISO string (e.g. "2026-03-26T08:00:00")
+  const match = naive.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return naive.endsWith('Z') ? naive : naive + 'Z'; // unparseable fallback
+  const [, yr, mo, dy, hr, mn, sc = '0'] = match;
+
+  // Step 1: Create a UTC timestamp with the naive components
+  const utcGuess = Date.UTC(+yr, +mo - 1, +dy, +hr, +mn, +sc);
+
+  // Step 2: Find what local time this UTC instant maps to in the target timezone
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  });
+  const p = Object.fromEntries(
+    fmt.formatToParts(new Date(utcGuess)).map(x => [x.type, x.value]),
+  );
+  const localAtGuess = Date.UTC(
+    +p.year, +p.month - 1, +p.day,
+    p.hour === '24' ? 0 : +p.hour, +p.minute, +p.second,
+  );
+
+  // Step 3: offset = localAtGuess - utcGuess; actual UTC = utcGuess - offset
+  const offsetMs = localAtGuess - utcGuess;
+  return new Date(utcGuess - offsetMs).toISOString();
+}
+
+/**
+ * Format a UTC ISO string as a human-readable local date/time.
+ * Returns e.g. "26/03/2026 às 08:00".
+ */
+function utcToLocal(utcIso: string, tz: string): string {
+  const d = new Date(utcIso);
+  if (Number.isNaN(d.getTime())) return utcIso; // unparseable fallback
+  const fmt = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: tz,
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+    hour12: false,
+  });
+  const parts = Object.fromEntries(
+    fmt.formatToParts(d).map(x => [x.type, x.value]),
+  );
+  return `${parts.day}/${parts.month}/${parts.year} às ${parts.hour}:${parts.minute}`;
+}
+
+/** Read the board timezone from board_runtime_config. Queried per-call (no stale cache). */
+function getBoardTimezone(db: Database.Database, boardId: string): string {
+  const row = db.prepare(
+    `SELECT timezone FROM board_runtime_config WHERE board_id = ?`,
+  ).get(boardId) as { timezone: string } | undefined;
+  return row?.timezone ?? 'America/Fortaleza';
+}
+
 /** Advance a date by a recurrence interval and return the ISO date string. */
 function advanceDateByRecurrence(d: Date, recurrence: 'daily' | 'weekly' | 'monthly' | 'yearly'): string {
   switch (recurrence) {
@@ -437,11 +504,13 @@ function buildExternalInviteMessage(
   taskTitle: string,
   scheduledAt: string,
   organizerName: string,
+  tz: string,
 ): string {
+  const when = utcToLocal(scheduledAt, tz);
   return (
     `\u{1f4c5} *Convite para reuni\u00e3o*\n\n` +
     `Voc\u00ea foi convidado para *${taskId} \u2014 ${taskTitle}*\n` +
-    `*Quando:* ${scheduledAt}\n` +
+    `*Quando:* ${when}\n` +
     `*Organizador:* ${organizerName}\n\n` +
     `Responda nesta conversa para participar da pauta e da ata.\n` +
     `Para confirmar, diga: aceitar convite ${taskId}`
@@ -453,6 +522,17 @@ function buildExternalInviteMessage(
 /* ------------------------------------------------------------------ */
 
 export class TaskflowEngine {
+  /** Lazily cached board timezone (almost never changes per engine lifetime). */
+  private _boardTz: string | null = null;
+
+  /** Get the board timezone, cached after first call. */
+  private get boardTz(): string {
+    if (!this._boardTz) {
+      this._boardTz = this.boardTz;
+    }
+    return this._boardTz;
+  }
+
   private static readonly moveActionLabels: Record<MoveParams['action'], string> = {
     start: 'movida para 🔄 Em Andamento',
     wait: 'movida para ⏳ Aguardando',
@@ -1016,6 +1096,27 @@ export class TaskflowEngine {
     ).get(this.boardId, ...involved);
   }
 
+  /** Active (non-revoked, non-expired) external participants for a meeting task. */
+  private getActiveExternalParticipants(boardId: string, taskId: string): Array<{
+    external_id: string;
+    display_name: string;
+    invite_status: string;
+  }> {
+    const now = new Date().toISOString();
+    return this.db.prepare(
+      `SELECT ec.external_id, ec.display_name, mep.invite_status
+       FROM meeting_external_participants mep
+       JOIN external_contacts ec ON ec.external_id = mep.external_id
+       WHERE mep.board_id = ? AND mep.meeting_task_id = ?
+         AND mep.invite_status NOT IN ('revoked', 'expired')
+         AND (mep.access_expires_at IS NULL OR mep.access_expires_at >= ?)`,
+    ).all(boardId, taskId, now) as Array<{
+      external_id: string;
+      display_name: string;
+      invite_status: string;
+    }>;
+  }
+
   /* ---------------------------------------------------------------- */
   /*  Private helpers                                                  */
   /* ---------------------------------------------------------------- */
@@ -1528,6 +1629,7 @@ export class TaskflowEngine {
     task_id: string;
     reminder_days: number;
   }> {
+    const tz = this.boardTz;
     const todayStr = nowIso.slice(0, 10);
     const meetings = this.db
       .prepare(
@@ -1564,7 +1666,7 @@ export class TaskflowEngine {
             task_id: meeting.id,
             reminder_days: reminder.days,
             ...recipient,
-            message: `📅 *Lembrete de reunião*\n\n*${meeting.id}* — ${meeting.title}\n*Quando:* ${meeting.scheduled_at}\n*Faltam:* ${reminder.days} dia(s)`,
+            message: `📅 *Lembrete de reunião*\n\n*${meeting.id}* — ${meeting.title}\n*Quando:* ${utcToLocal(meeting.scheduled_at, tz)}\n*Faltam:* ${reminder.days} dia(s)`,
           });
         }
       }
@@ -1584,6 +1686,7 @@ export class TaskflowEngine {
     nowIso = new Date().toISOString(),
     windowMinutes = 5,
   ): Array<NotificationEntry & { task_id: string }> {
+    const tz = this.boardTz;
     const nowMs = new Date(nowIso).getTime();
     const windowMs = windowMinutes * 60_000;
     const meetings = this.db
@@ -1609,7 +1712,7 @@ export class TaskflowEngine {
         notifications.push({
           task_id: meeting.id,
           ...recipient,
-          message: `📅 *Reunião começando*\n\n*${meeting.id}* — ${meeting.title}\n*Agora:* ${meeting.scheduled_at}`,
+          message: `📅 *Reunião começando*\n\n*${meeting.id}* — ${meeting.title}\n*Agora:* ${utcToLocal(meeting.scheduled_at, tz)}`,
         });
       }
     }
@@ -1824,6 +1927,12 @@ export class TaskflowEngine {
           if (!person) return this.buildOfferRegisterError(pName);
           participantIds.push(person.person_id);
         }
+      }
+
+      /* --- Normalize scheduled_at from local time to UTC --- */
+      if (params.scheduled_at) {
+        const tz = this.boardTz;
+        params = { ...params, scheduled_at: localToUtc(params.scheduled_at, tz) };
       }
 
       /* --- Recurring meeting validation --- */
@@ -2272,6 +2381,13 @@ export class TaskflowEngine {
       /* --- Fetch task --- */
       const task = this.requireTask(params.task_id);
       const taskBoardId = this.taskBoardId(task);
+
+      /* --- Normalize scheduled_at from local time to UTC --- */
+      const tz = getBoardTimezone(this.db, taskBoardId);
+      if (updates.scheduled_at !== undefined) {
+        updates.scheduled_at = localToUtc(updates.scheduled_at, tz);
+      }
+
       const fromColumn: string = task.column;
 
       /* --- Define valid transitions --- */
@@ -2965,6 +3081,7 @@ export class TaskflowEngine {
       /* --- Fetch task --- */
       const task = this.requireTask(params.task_id);
       const taskBoardId = this.taskBoardId(task);
+      const tz = getBoardTimezone(this.db, taskBoardId);
 
       /* --- Check task is active (not archived / done is still active in tasks table) --- */
       // Tasks only leave the tasks table when archived; if it's here, it's active.
@@ -3411,7 +3528,7 @@ export class TaskflowEngine {
             const target = this.resolveNotifTarget(person.person_id, senderPersonId);
             if (target) {
               const modName = this.personDisplayName(senderPersonId);
-              const scheduledInfo = task.scheduled_at ? `\n*Quando:* ${task.scheduled_at}` : '';
+              const scheduledInfo = task.scheduled_at ? `\n*Quando:* ${utcToLocal(task.scheduled_at, tz)}` : '';
               notifications.push({
                 ...target,
                 message: `📅 *Você foi adicionado(a) a uma reunião*\n\n*${task.id}* — ${task.title}${scheduledInfo}\n*Adicionado por:* ${modName}\n\nDigite \`${task.id}\` para ver detalhes.`,
@@ -3535,7 +3652,7 @@ export class TaskflowEngine {
               target_kind: 'dm',
               target_external_id: externalId,
               target_chat_jid: existingChatJid,
-              message: buildExternalInviteMessage(task.id, task.title, updates.scheduled_at ?? task.scheduled_at, organizerName),
+              message: buildExternalInviteMessage(task.id, task.title, updates.scheduled_at ?? task.scheduled_at, organizerName, tz),
             });
           } else {
             // Contact never messaged the bot — notify the group instead
@@ -3668,7 +3785,7 @@ export class TaskflowEngine {
             target_kind: 'dm',
             target_external_id: externalId,
             target_chat_jid: contact.direct_chat_jid,
-            message: buildExternalInviteMessage(task.id, task.title, task.scheduled_at, organizerName),
+            message: buildExternalInviteMessage(task.id, task.title, task.scheduled_at, organizerName, tz),
           });
         } else {
           notifications.push({
@@ -3703,10 +3820,10 @@ export class TaskflowEngine {
             .prepare(`UPDATE tasks SET scheduled_at = ? WHERE board_id = ? AND id = ?`)
             .run(updates.scheduled_at, taskBoardId, task.id);
         }
-        changes.push(`Reunião reagendada para ${updates.scheduled_at}`);
+        changes.push(`Reunião reagendada para ${utcToLocal(updates.scheduled_at, tz)}`);
 
         // Notify all active meeting participants (internal + external) of the reschedule
-        const rescheduleMsg = `📅 *Reunião reagendada*\n\n*${task.id}* — ${task.title}\n*Novo horário:* ${updates.scheduled_at}\n*Por:* ${sender?.name ?? params.sender_name}`;
+        const rescheduleMsg = `📅 *Reunião reagendada*\n\n*${task.id}* — ${task.title}\n*Novo horário:* ${utcToLocal(updates.scheduled_at, tz)}\n*Por:* ${sender?.name ?? params.sender_name}`;
         for (const recipient of this.meetingNotificationRecipients(task)) {
           if (recipient.target_person_id && senderPersonId && recipient.target_person_id === senderPersonId) continue;
           notifications.push({ ...recipient, message: rescheduleMsg });
@@ -4139,8 +4256,9 @@ export class TaskflowEngine {
 
   private formatMeetingMinutes(task: any, notes: Array<any>): string {
     const lines: string[] = [];
+    const tz = getBoardTimezone(this.db, this.taskBoardId(task));
     const scheduledStr = task.scheduled_at
-      ? (() => { const d = task.scheduled_at; return `${d.slice(8,10)}/${d.slice(5,7)}/${d.slice(0,4)} ${d.slice(11,16)}`; })()
+      ? utcToLocal(task.scheduled_at, tz)
       : 'sem data';
     lines.push(`📅 *${task.id} — ${task.title}* (${scheduledStr})`);
     lines.push('');
@@ -4228,6 +4346,7 @@ export class TaskflowEngine {
   private formatBoardView(mode: 'board' | 'standup' = 'board'): string {
     const todayStr = today();
     const todayMs = new Date(todayStr).getTime();
+    const tz = this.boardTz;
 
     /* --- Person name lookup --- */
     const people = this.db
@@ -4333,8 +4452,7 @@ export class TaskflowEngine {
       if (t.type !== 'meeting') return '';
       const parts: string[] = [];
       if (t.scheduled_at) {
-        const d = t.scheduled_at;
-        parts.push(`${d.slice(8,10)}/${d.slice(5,7)} ${d.slice(11,16)}`);
+        parts.push(utcToLocal(t.scheduled_at, tz));
       }
       if (t.participants) {
         try {
@@ -4487,6 +4605,7 @@ export class TaskflowEngine {
   ): string {
     const lines: string[] = [this.formatBoardView('board')];
     const SEP = '━━━━━━━━━━━━━━';
+    const tz = this.boardTz;
     const taskLine = (
       task: { id: string; title: string; assignee_name?: string | null; due_date?: string; waiting_for?: string | null; column?: string; updated_at?: string },
       extras: string[] = [],
@@ -4499,7 +4618,7 @@ export class TaskflowEngine {
       return [first, ...more.map((line) => `  ${line}`)];
     };
     const meetingLine = (meeting: { id: string; title: string; scheduled_at: string; participant_count: number }): string => {
-      const when = `${meeting.scheduled_at.slice(8, 10)}/${meeting.scheduled_at.slice(5, 7)} ${meeting.scheduled_at.slice(11, 16)}`;
+      const when = utcToLocal(meeting.scheduled_at, tz);
       return `• *${meeting.id}* — ${meeting.title} (${when}) — ${meeting.participant_count} participante(s)`;
     };
     const staleExtras = (task: { column: string; updated_at: string }): string[] => [
@@ -4992,6 +5111,10 @@ export class TaskflowEngine {
               data.parent_project = { id: parent.id, title: parent.title, column: parent.column };
             }
           }
+          // Include external participants for meetings
+          if (task.type === 'meeting') {
+            data.external_participants = this.getActiveExternalParticipants(this.taskBoardId(task), task.id);
+          }
           return { success: true, data };
         }
 
@@ -5348,28 +5471,17 @@ export class TaskflowEngine {
           if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
           const task = this.requireTask(params.task_id);
           if (task.type !== 'meeting') return { success: false, error: `Task ${params.task_id} is not a meeting.` };
+          const owningBoard = this.taskBoardId(task);
           const participantIds: string[] = JSON.parse(task.participants ?? '[]');
           const organizerRow = task.assignee
-            ? this.db.prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id = ?`).get(this.boardId, task.assignee) as any
+            ? this.db.prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id = ?`).get(owningBoard, task.assignee) as any
             : null;
           const people = participantIds.length === 0
             ? []
             : this.db
                 .prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id IN (${participantIds.map(() => '?').join(',')})`)
-                .all(this.boardId, ...participantIds) as Array<{ person_id: string; name: string; role: string }>;
-          const epNow = new Date().toISOString();
-          const externalParticipants = this.db.prepare(
-            `SELECT ec.external_id, ec.display_name, mep.invite_status
-             FROM meeting_external_participants mep
-             JOIN external_contacts ec ON ec.external_id = mep.external_id
-             WHERE mep.board_id = ? AND mep.meeting_task_id = ?
-               AND mep.invite_status NOT IN ('revoked', 'expired')
-               AND (mep.access_expires_at IS NULL OR mep.access_expires_at >= ?)`
-          ).all(this.boardId, task.id, epNow) as Array<{
-            external_id: string;
-            display_name: string;
-            invite_status: string;
-          }>;
+                .all(owningBoard, ...participantIds) as Array<{ person_id: string; name: string; role: string }>;
+          const externalParticipants = this.getActiveExternalParticipants(owningBoard, task.id);
           return {
             success: true,
             data: {
@@ -5391,14 +5503,16 @@ export class TaskflowEngine {
 
         case 'meeting_history': {
           if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
-          const history = this.getHistory(params.task_id);
+          const task = this.requireTask(params.task_id);
+          const history = this.getHistory(task.id, undefined, this.taskBoardId(task));
           return { success: true, data: history };
         }
 
         case 'meeting_minutes_at': {
           if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
           if (!params.at) return { success: false, error: 'Missing required parameter: at (YYYY-MM-DD)' };
-          const occurrences = this.getHistory(params.task_id)
+          const mTask = this.requireTask(params.task_id);
+          const occurrences = this.getHistory(mTask.id, undefined, this.taskBoardId(mTask))
             .filter((h: any) => h.action === 'meeting_occurrence_archived');
 
           for (const row of occurrences) {
@@ -5413,10 +5527,9 @@ export class TaskflowEngine {
           }
 
           // Fallback: check current task if date matches
-          const task = this.getTask(params.task_id);
-          if (task && task.scheduled_at?.startsWith(params.at)) {
-            const notes = JSON.parse(task.notes ?? '[]');
-            return { success: true, data: task, formatted: this.formatMeetingMinutes(task, notes) };
+          if (mTask.scheduled_at?.startsWith(params.at)) {
+            const notes = JSON.parse(mTask.notes ?? '[]');
+            return { success: true, data: mTask, formatted: this.formatMeetingMinutes(mTask, notes) };
           }
 
           return { success: false, error: `No meeting occurrence found for ${params.task_id} on ${params.at}` };

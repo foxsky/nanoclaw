@@ -1,5 +1,23 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-03-18
+
+### Fixed
+- **Timezone handling**: `scheduled_at` passed without `Z` suffix is now treated as local time (board timezone) and automatically converted to UTC by the engine. Values with `Z` are kept as-is for backward compatibility. All notification messages (reminders, start, reschedule, invites) now display local time via `utcToLocal`.
+- **Cross-board meeting visibility**: Child board agents can now view meetings on parent boards where their people are participants or organizer. `getTask()` extended with `isBoardMeetingParticipant` check.
+- **External participants in task_details**: `task_details` query now includes `external_participants` for meeting tasks.
+- **Meeting query board_id**: `meeting_participants`, `meeting_history`, and `meeting_minutes_at` now use the owning board ID for all lookups, fixing incorrect results when queried from child boards.
+- **Tool descriptions**: `scheduled_at` in `taskflow_create` and `taskflow_update` now describes local time format, explicitly instructing agents not to append `Z`.
+
+### Parent Board Notifications for Task Updates
+- **feat:** `taskflow_update` now sends parent board notifications when a child board updates a delegated task (notes, priority, due date changes). Previously only `taskflow_move` (column transitions) notified the parent board, so update notes from child boards went unnoticed.
+- **refactor:** Extracted `buildParentNotification()`, `getBoardGroupJid()`, and `deduplicateNotificationsForParent()` helpers — shared between `move()` and `update()`, eliminating duplicated parent notification logic.
+- **refactor:** Extracted `ParentNotification` type — replaces inline `{ parent_group_jid: string; message: string }` in `MoveResult`, `UpdateResult`, and `ipc-mcp-stdio.ts`.
+
+### Timezone Fix for schedule_task Reminders
+- **fix:** CLAUDE.md template now explicitly instructs agents that `schedule_value` for `once` tasks is LOCAL time (no `Z` suffix). Previously agents would store UTC values without `Z`, causing `new Date()` to interpret them as local time — reminders fired 3 hours late in GMT-3 zones.
+- **fix:** Clarified `scheduled_at` (taskflow_create DB field, stored as UTC with `Z`) vs `schedule_value` (schedule_task IPC, interpreted as local time without `Z`).
+
 ## 2026-03-17
 
 ### Ollama Configuration

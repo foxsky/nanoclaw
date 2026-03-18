@@ -15,7 +15,7 @@ import {
   canUseCreateGroup,
   normalizeCreateGroupRequest,
 } from './ipc-tooling.js';
-import { TaskflowEngine } from './taskflow-engine.js';
+import { ParentNotification, TaskflowEngine } from './taskflow-engine.js';
 
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
@@ -573,7 +573,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         }
       }
       // Keep the parent_notification block unchanged
-      const pn = result.parent_notification as { parent_group_jid?: string; message?: string } | undefined;
+      const pn = result.parent_notification as ParentNotification | undefined;
       if (pn?.parent_group_jid && pn.message) {
         writeIpcFile(MESSAGES_DIR, {
           type: 'message',
@@ -649,7 +649,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         assignee: z.string().optional().describe('Person to assign the task to'),
         due_date: z.string().optional().describe('Due date (ISO format)'),
         allow_non_business_day: z.boolean().optional().describe('Allow due_date on weekends/holidays'),
-        scheduled_at: z.string().optional().describe('Scheduled datetime (ISO-8601 UTC) for meetings'),
+        scheduled_at: z.string().optional().describe('Meeting date/time in LOCAL time (board timezone, e.g. "2026-03-26T08:00:00"). Do NOT append "Z" — the engine converts to UTC automatically.'),
         participants: z.array(z.string()).optional().describe('Participant names for meetings'),
         priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('Task priority'),
         labels: z.array(z.string()).optional().describe('Labels to attach'),
@@ -666,17 +666,31 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
       async (args: any) => {
         // Duplicate detection — embed title, check for similar existing tasks
-        if (!args.force_create) {
-          try {
-            const titleText = [args.title, args.description].filter(Boolean).join(' ');
-            const vector = await ollamaEmbed(titleText);
-            if (vector) {
-              const { EmbeddingReader } = await import('./embedding-reader.js');
-              const reader = new EmbeddingReader(EMBEDDINGS_DB_PATH);
-              const similar = reader.findSimilar(`tasks:${boardId}`, vector, 0.85);
-              reader.close();
-              if (similar) {
-                const pct = Math.round(similar.score * 100);
+        // Always check, even with force_create — block >= 95% duplicates unconditionally
+        try {
+          const titleText = [args.title, args.description].filter(Boolean).join(' ');
+          const vector = await ollamaEmbed(titleText);
+          if (vector) {
+            const { EmbeddingReader } = await import('./embedding-reader.js');
+            const reader = new EmbeddingReader(EMBEDDINGS_DB_PATH);
+            const similar = reader.findSimilar(`tasks:${boardId}`, vector, 0.85);
+            reader.close();
+            if (similar) {
+              const pct = Math.round(similar.score * 100);
+              // Hard block: >= 95% similarity cannot be overridden
+              if (pct >= 95) {
+                return {
+                  content: [{
+                    type: 'text' as const,
+                    text: JSON.stringify({
+                      success: false,
+                      error: `Tarefa já existe: ${similar.itemId} — ${similar.metadata?.title ?? '?'} (${pct}% idêntica). Não é possível criar duplicata. Use a tarefa existente.`,
+                    }),
+                  }],
+                };
+              }
+              // Soft warning: 85-94% similarity, allow force_create override
+              if (!args.force_create) {
                 return {
                   content: [{
                     type: 'text' as const,
@@ -693,9 +707,9 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
                 };
               }
             }
-          } catch {
-            console.warn('[embeddings] Duplicate detection skipped: Ollama unreachable');
           }
+        } catch {
+          console.warn('[embeddings] Duplicate detection skipped: Ollama unreachable');
         }
         const { force_create: _, ...createArgs } = args;
         const result = engine.create({ ...createArgs, board_id: boardId });
@@ -775,7 +789,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           max_cycles: z.number().int().positive().nullable().optional().describe('Maximum cycles (null to remove; setting clears recurrence_end_date)'),
           recurrence_end_date: z.string().nullable().optional().describe('End date for recurrence (null to remove; setting clears max_cycles)'),
           parent_note_id: z.number().optional().describe('Parent note ID for threaded meeting notes'),
-          scheduled_at: z.string().optional().describe('Reschedule meeting (ISO-8601 UTC)'),
+          scheduled_at: z.string().optional().describe('Reschedule meeting — LOCAL time (board timezone, e.g. "2026-03-26T08:00:00"). Do NOT append "Z".'),
           add_participant: z.string().optional().describe('Add a participant to a meeting'),
           remove_participant: z.string().optional().describe('Remove a participant from a meeting'),
           add_external_participant: z.object({
@@ -940,6 +954,120 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
     );
   }
+}
+
+// --- add-long-term-context skill: MCP retrieval tools ---
+{
+  const { ContextReader } = await import('./context-reader.js');
+  const ctxReader = new ContextReader('/workspace/context/context.db');
+
+  // Always register: context_search, context_recall
+  server.tool(
+    'context_search',
+    'Search conversation history for this group. Returns summaries matching the query.',
+    {
+      query: z.string().describe('Search terms (keywords, names, task IDs)'),
+      date_from: z
+        .string()
+        .optional()
+        .describe('ISO date, e.g. 2026-03-01'),
+      date_to: z.string().optional().describe('ISO date, e.g. 2026-03-15'),
+      limit: z.number().optional().default(10),
+    },
+    async (args) => {
+      const results = ctxReader.search(groupFolder, args.query, {
+        dateFrom: args.date_from,
+        dateTo: args.date_to,
+        limit: args.limit,
+      });
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              results.map((r) => ({
+                node_id: r.id,
+                summary: r.summary,
+                date: r.time_start,
+                level: r.level,
+              })),
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    'context_recall',
+    'Expand a summary to see original session messages. Use after context_search to get details.',
+    {
+      node_id: z.string().describe('Node ID from context_search results'),
+    },
+    async (args) => {
+      const result = ctxReader.recall(groupFolder, args.node_id);
+      if (!result) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: 'Node not found or access denied.',
+            },
+          ],
+          isError: true,
+        };
+      }
+      return {
+        content: [
+          { type: 'text' as const, text: JSON.stringify(result, null, 2) },
+        ],
+      };
+    },
+  );
+
+  // Progressive unlock: timeline + topics at >50 nodes
+  const nodeCount = ctxReader.getNodeCount(groupFolder);
+  if (nodeCount > 50) {
+    server.tool(
+      'context_timeline',
+      'Chronological summary list for a date range. Auto-selects best detail level.',
+      {
+        date_from: z.string().describe('Start date (ISO)'),
+        date_to: z.string().describe('End date (ISO)'),
+      },
+      async (args) => {
+        const results = ctxReader.timeline(
+          groupFolder,
+          args.date_from,
+          args.date_to,
+        );
+        return {
+          content: [
+            { type: 'text' as const, text: JSON.stringify(results, null, 2) },
+          ],
+        };
+      },
+    );
+
+    server.tool(
+      'context_topics',
+      'List distinct topics from conversation history with frequency and last seen date.',
+      {},
+      async () => {
+        const topics = ctxReader.topics(groupFolder);
+        return {
+          content: [
+            { type: 'text' as const, text: JSON.stringify(topics, null, 2) },
+          ],
+        };
+      },
+    );
+  }
+
+  // Cleanup reader on process exit
+  process.on('exit', () => ctxReader.close());
 }
 
 // Start the stdio transport
