@@ -1877,6 +1877,12 @@ export class TaskflowEngine {
         }
       }
 
+      /* --- Normalize scheduled_at from local time to UTC --- */
+      if (params.scheduled_at) {
+        const tz = getBoardTimezone(this.db, this.boardId);
+        params = { ...params, scheduled_at: localToUtc(params.scheduled_at, tz) };
+      }
+
       /* --- Recurring meeting validation --- */
       if (params.type === 'meeting' && params.recurrence && !params.scheduled_at) {
         return { success: false, error: 'Recurring meetings require scheduled_at for the first occurrence.' };
@@ -2323,6 +2329,13 @@ export class TaskflowEngine {
       /* --- Fetch task --- */
       const task = this.requireTask(params.task_id);
       const taskBoardId = this.taskBoardId(task);
+
+      /* --- Normalize scheduled_at from local time to UTC --- */
+      const tz = getBoardTimezone(this.db, taskBoardId);
+      if (updates.scheduled_at !== undefined) {
+        updates.scheduled_at = localToUtc(updates.scheduled_at, tz);
+      }
+
       const fromColumn: string = task.column;
 
       /* --- Define valid transitions --- */
