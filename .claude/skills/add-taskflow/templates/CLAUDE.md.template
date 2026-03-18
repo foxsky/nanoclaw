@@ -273,13 +273,13 @@ Do NOT call `taskflow_admin` with `confirmed: false` for `remove_person` or `can
 
 | User says | Tool call |
 |-----------|-----------|
-| "reunião: X em DD/MM às HH:MM" | `taskflow_create({ type: 'meeting', title: 'X', scheduled_at: 'YYYY-MM-DDTHH:MM:SSZ', sender_name: SENDER })` |
+| "reunião: X em DD/MM às HH:MM" | `taskflow_create({ type: 'meeting', title: 'X', scheduled_at: 'YYYY-MM-DDTHH:MM:SS', sender_name: SENDER })` |
 | "reunião: X" | `taskflow_create({ type: 'meeting', title: 'X', sender_name: SENDER })` |
-| "reunião com Y, Z: X em DD/MM às HH:MM" | `taskflow_create({ type: 'meeting', title: 'X', scheduled_at: 'YYYY-MM-DDTHH:MM:SSZ', participants: ['Y', 'Z'], sender_name: SENDER })` |
-| "reunião semanal: X começando DD/MM às HH:MM" | `taskflow_create({ type: 'meeting', title: 'X', scheduled_at: 'YYYY-MM-DDTHH:MM:SSZ', recurrence: 'weekly', sender_name: SENDER })` |
-| "reunião semanal com Y, Z: X começando DD/MM às HH:MM" | `taskflow_create({ type: 'meeting', title: 'X', scheduled_at: 'YYYY-MM-DDTHH:MM:SSZ', recurrence: 'weekly', participants: ['Y', 'Z'], sender_name: SENDER })` |
+| "reunião com Y, Z: X em DD/MM às HH:MM" | `taskflow_create({ type: 'meeting', title: 'X', scheduled_at: 'YYYY-MM-DDTHH:MM:SS', participants: ['Y', 'Z'], sender_name: SENDER })` |
+| "reunião semanal: X começando DD/MM às HH:MM" | `taskflow_create({ type: 'meeting', title: 'X', scheduled_at: 'YYYY-MM-DDTHH:MM:SS', recurrence: 'weekly', sender_name: SENDER })` |
+| "reunião semanal com Y, Z: X começando DD/MM às HH:MM" | `taskflow_create({ type: 'meeting', title: 'X', scheduled_at: 'YYYY-MM-DDTHH:MM:SS', recurrence: 'weekly', participants: ['Y', 'Z'], sender_name: SENDER })` |
 
-Parse `scheduled_at` in the board timezone ({{TIMEZONE}}) from the user's date/time expression, then store in UTC.
+Pass `scheduled_at` as LOCAL time ({{TIMEZONE}}) directly from the user's date/time expression. Do NOT convert to UTC or append `Z` — the engine handles conversion automatically. This is consistent with `schedule_task`'s `schedule_value`, which also uses local time.
 Organizer (assignee) is auto-set to sender. Meetings always start in `next_action`.
 
 **Participant disambiguation:** When a meeting includes participants who are NOT yet registered in `board_people`, you MUST ask before proceeding: *"[Nome] não está cadastrado(a). É membro da equipe (staff) ou participante externo?"*
@@ -310,7 +310,7 @@ Phase is auto-tagged from column state:
 
 | User says | Tool call |
 |-----------|-----------|
-| "reagendar M1 para DD/MM às HH:MM" | `taskflow_update({ task_id: 'M1', updates: { scheduled_at: 'YYYY-MM-DDTHH:MM:SSZ' }, sender_name: SENDER })` |
+| "reagendar M1 para DD/MM às HH:MM" | `taskflow_update({ task_id: 'M1', updates: { scheduled_at: 'YYYY-MM-DDTHH:MM:SS' }, sender_name: SENDER })` |
 
 ### Meeting Participants
 
@@ -973,8 +973,9 @@ send_message(text: "[MESSAGE]", sender: "[OPTIONAL_ROLE_NAME]", target_chat_jid:
 schedule_task(prompt: "[PROMPT]", schedule_type: "[cron|interval|once]", schedule_value: "[CRON_OR_TIMESTAMP]", context_mode: "group")
 ```
 
-- `cron`: recurring (e.g., `"0 11 * * 1-5"` for weekdays)
+- `cron`: recurring (e.g., `"0 11 * * 1-5"` for weekdays at 11h LOCAL time)
 - `once`: one-time at timestamp; auto-cleans after execution
+- **TIMEZONE: `schedule_value` is always interpreted as LOCAL time ({{TIMEZONE}}).** Write the user's desired local time directly, WITHOUT converting to UTC. Example: user says "7:30" → `schedule_value: "2026-03-18T07:30:00"`. Do NOT append `Z`.
 - Prompts must be self-contained
 - Returns confirmation, not task ID. Use `list_tasks` to get the ID.
 

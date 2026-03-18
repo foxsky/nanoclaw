@@ -15,7 +15,7 @@ import {
   canUseCreateGroup,
   normalizeCreateGroupRequest,
 } from './ipc-tooling.js';
-import { TaskflowEngine } from './taskflow-engine.js';
+import { ParentNotification, TaskflowEngine } from './taskflow-engine.js';
 
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
@@ -573,7 +573,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         }
       }
       // Keep the parent_notification block unchanged
-      const pn = result.parent_notification as { parent_group_jid?: string; message?: string } | undefined;
+      const pn = result.parent_notification as ParentNotification | undefined;
       if (pn?.parent_group_jid && pn.message) {
         writeIpcFile(MESSAGES_DIR, {
           type: 'message',
@@ -649,7 +649,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         assignee: z.string().optional().describe('Person to assign the task to'),
         due_date: z.string().optional().describe('Due date (ISO format)'),
         allow_non_business_day: z.boolean().optional().describe('Allow due_date on weekends/holidays'),
-        scheduled_at: z.string().optional().describe('Scheduled datetime (ISO-8601 UTC) for meetings'),
+        scheduled_at: z.string().optional().describe('Meeting date/time in LOCAL time (board timezone, e.g. "2026-03-26T08:00:00"). Do NOT append "Z" — the engine converts to UTC automatically.'),
         participants: z.array(z.string()).optional().describe('Participant names for meetings'),
         priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('Task priority'),
         labels: z.array(z.string()).optional().describe('Labels to attach'),
@@ -789,7 +789,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           max_cycles: z.number().int().positive().nullable().optional().describe('Maximum cycles (null to remove; setting clears recurrence_end_date)'),
           recurrence_end_date: z.string().nullable().optional().describe('End date for recurrence (null to remove; setting clears max_cycles)'),
           parent_note_id: z.number().optional().describe('Parent note ID for threaded meeting notes'),
-          scheduled_at: z.string().optional().describe('Reschedule meeting (ISO-8601 UTC)'),
+          scheduled_at: z.string().optional().describe('Reschedule meeting — LOCAL time (board timezone, e.g. "2026-03-26T08:00:00"). Do NOT append "Z".'),
           add_participant: z.string().optional().describe('Add a participant to a meeting'),
           remove_participant: z.string().optional().describe('Remove a participant from a meeting'),
           add_external_participant: z.object({
