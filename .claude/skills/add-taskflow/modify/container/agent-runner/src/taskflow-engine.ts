@@ -380,40 +380,51 @@ function reminderDateFromScheduledAt(scheduledAt: string, daysBefore: number): s
  * Normalize a scheduled_at value to UTC.
  * - No 'Z' suffix and no offset → treat as local time in `tz`, convert to UTC.
  * - Has 'Z' or ±HH:MM offset → already timezone-aware, return as ISO string.
- * Falls back to appending 'Z' if parsing fails.
+ * - Date-only (no T) → treat as midnight local time.
+ * Returns the input unchanged for empty/unparseable values.
  */
 function localToUtc(naive: string, tz: string): string {
+  if (!naive) return naive; // guard empty/null
+
   // Already timezone-aware — keep as-is
   if (/[Zz]$/.test(naive) || /[+-]\d{2}:?\d{2}$/.test(naive)) {
     return new Date(naive).toISOString();
   }
 
+  // Normalize date-only to midnight
+  const input = naive.includes('T') ? naive : naive + 'T00:00:00';
+
   // Parse components from naive ISO string (e.g. "2026-03-26T08:00:00")
-  const match = naive.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/);
-  if (!match) return naive.endsWith('Z') ? naive : naive + 'Z'; // unparseable fallback
+  const match = input.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return naive; // unparseable — return as-is
   const [, yr, mo, dy, hr, mn, sc = '0'] = match;
 
-  // Step 1: Create a UTC timestamp with the naive components
-  const utcGuess = Date.UTC(+yr, +mo - 1, +dy, +hr, +mn, +sc);
+  try {
+    // Step 1: Create a UTC timestamp with the naive components
+    const utcGuess = Date.UTC(+yr, +mo - 1, +dy, +hr, +mn, +sc);
 
-  // Step 2: Find what local time this UTC instant maps to in the target timezone
-  const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: tz,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-    hour12: false,
-  });
-  const p = Object.fromEntries(
-    fmt.formatToParts(new Date(utcGuess)).map(x => [x.type, x.value]),
-  );
-  const localAtGuess = Date.UTC(
-    +p.year, +p.month - 1, +p.day,
-    p.hour === '24' ? 0 : +p.hour, +p.minute, +p.second,
-  );
+    // Step 2: Find what local time this UTC instant maps to in the target timezone
+    const fmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    });
+    const p = Object.fromEntries(
+      fmt.formatToParts(new Date(utcGuess)).map(x => [x.type, x.value]),
+    );
+    // hour '24' means midnight — advance to next day
+    let localDay = +p.day;
+    let localHour = +p.hour;
+    if (p.hour === '24') { localHour = 0; localDay += 1; }
+    const localAtGuess = Date.UTC(+p.year, +p.month - 1, localDay, localHour, +p.minute, +p.second);
 
-  // Step 3: offset = localAtGuess - utcGuess; actual UTC = utcGuess - offset
-  const offsetMs = localAtGuess - utcGuess;
-  return new Date(utcGuess - offsetMs).toISOString();
+    // Step 3: offset = localAtGuess - utcGuess; actual UTC = utcGuess - offset
+    const offsetMs = localAtGuess - utcGuess;
+    return new Date(utcGuess - offsetMs).toISOString();
+  } catch {
+    return naive; // invalid timezone or other error — return as-is
+  }
 }
 
 /**
@@ -421,18 +432,24 @@ function localToUtc(naive: string, tz: string): string {
  * Returns e.g. "26/03/2026 às 08:00".
  */
 function utcToLocal(utcIso: string, tz: string): string {
+  if (!utcIso) return ''; // guard null/empty
   const d = new Date(utcIso);
   if (Number.isNaN(d.getTime())) return utcIso; // unparseable fallback
-  const fmt = new Intl.DateTimeFormat('pt-BR', {
-    timeZone: tz,
-    day: '2-digit', month: '2-digit', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-    hour12: false,
-  });
-  const parts = Object.fromEntries(
-    fmt.formatToParts(d).map(x => [x.type, x.value]),
-  );
-  return `${parts.day}/${parts.month}/${parts.year} às ${parts.hour}:${parts.minute}`;
+  try {
+    const fmt = new Intl.DateTimeFormat('pt-BR', {
+      timeZone: tz,
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+      hour12: false,
+    });
+    const parts = Object.fromEntries(
+      fmt.formatToParts(d).map(x => [x.type, x.value]),
+    );
+    const hour = parts.hour === '24' ? '00' : parts.hour; // midnight guard
+    return `${parts.day}/${parts.month}/${parts.year} às ${hour}:${parts.minute}`;
+  } catch {
+    return utcIso; // invalid timezone — return raw value
+  }
 }
 
 /** Read the board timezone from board_runtime_config. Queried per-call (no stale cache). */
