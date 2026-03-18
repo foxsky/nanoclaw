@@ -666,17 +666,31 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
       async (args: any) => {
         // Duplicate detection — embed title, check for similar existing tasks
-        if (!args.force_create) {
-          try {
-            const titleText = [args.title, args.description].filter(Boolean).join(' ');
-            const vector = await ollamaEmbed(titleText);
-            if (vector) {
-              const { EmbeddingReader } = await import('./embedding-reader.js');
-              const reader = new EmbeddingReader(EMBEDDINGS_DB_PATH);
-              const similar = reader.findSimilar(`tasks:${boardId}`, vector, 0.85);
-              reader.close();
-              if (similar) {
-                const pct = Math.round(similar.score * 100);
+        // Always check, even with force_create — block >= 95% duplicates unconditionally
+        try {
+          const titleText = [args.title, args.description].filter(Boolean).join(' ');
+          const vector = await ollamaEmbed(titleText);
+          if (vector) {
+            const { EmbeddingReader } = await import('./embedding-reader.js');
+            const reader = new EmbeddingReader(EMBEDDINGS_DB_PATH);
+            const similar = reader.findSimilar(`tasks:${boardId}`, vector, 0.85);
+            reader.close();
+            if (similar) {
+              const pct = Math.round(similar.score * 100);
+              // Hard block: >= 95% similarity cannot be overridden
+              if (pct >= 95) {
+                return {
+                  content: [{
+                    type: 'text' as const,
+                    text: JSON.stringify({
+                      success: false,
+                      error: `Tarefa já existe: ${similar.itemId} — ${similar.metadata?.title ?? '?'} (${pct}% idêntica). Não é possível criar duplicata. Use a tarefa existente.`,
+                    }),
+                  }],
+                };
+              }
+              // Soft warning: 85-94% similarity, allow force_create override
+              if (!args.force_create) {
                 return {
                   content: [{
                     type: 'text' as const,
@@ -693,9 +707,9 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
                 };
               }
             }
-          } catch {
-            console.warn('[embeddings] Duplicate detection skipped: Ollama unreachable');
           }
+        } catch {
+          console.warn('[embeddings] Duplicate detection skipped: Ollama unreachable');
         }
         const { force_create: _, ...createArgs } = args;
         const result = engine.create({ ...createArgs, board_id: boardId });
