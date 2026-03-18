@@ -43,6 +43,8 @@ export type NotificationEntry = {
   message: string;
 };
 
+export type ParentNotification = { parent_group_jid: string; message: string };
+
 export interface CreateParams {
   board_id: string;
   type: 'simple' | 'project' | 'recurring' | 'inbox' | 'meeting';
@@ -93,7 +95,7 @@ export interface MoveResult extends TaskflowResult {
   recurring_cycle?: { cycle_number: number; expired: boolean; new_due_date?: string; new_scheduled_at?: string; reason?: 'max_cycles' | 'end_date' };
   archive_triggered?: boolean;
   notifications?: NotificationEntry[];
-  parent_notification?: { parent_group_jid: string; message: string };
+  parent_notification?: ParentNotification;
   unprocessed_minutes_warning?: boolean;
 }
 
@@ -161,6 +163,7 @@ export interface UpdateResult extends TaskflowResult {
   changes?: string[];      // human-readable list of what changed
   offer_register?: { name: string; message: string };
   notifications?: NotificationEntry[];
+  parent_notification?: ParentNotification;
 }
 
 export interface DependencyParams {
@@ -983,6 +986,8 @@ export class TaskflowEngine {
       if (!task) return null;
       if (task.board_id === this.boardId) return task;
       if (task.child_exec_board_id === this.boardId && task.child_exec_enabled === 1) return task;
+      // Allow cross-board visibility for meeting participants
+      if (task.type === 'meeting' && this.isBoardMeetingParticipant(task)) return task;
       return null;
     }
     // Prefer local board for ambiguous IDs
@@ -995,6 +1000,20 @@ export class TaskflowEngine {
          WHERE child_exec_board_id = ? AND child_exec_enabled = 1 AND id = ?`,
       )
       .get(this.boardId, rawId) ?? null;
+  }
+
+  /**
+   * Check if any person registered on this board is a participant or organizer
+   * of the given meeting task (which may belong to a different board).
+   */
+  private isBoardMeetingParticipant(task: any): boolean {
+    const participants: string[] = JSON.parse(task.participants ?? '[]');
+    const involved = [task.assignee, ...participants].filter(Boolean);
+    if (involved.length === 0) return false;
+    const ph = involved.map(() => '?').join(',');
+    return !!this.db.prepare(
+      `SELECT 1 FROM board_people WHERE board_id = ? AND person_id IN (${ph}) LIMIT 1`,
+    ).get(this.boardId, ...involved);
   }
 
   /* ---------------------------------------------------------------- */
@@ -1423,6 +1442,34 @@ export class TaskflowEngine {
       ...target,
       message: `🔔 *Atualização na sua tarefa*\n\n*${did}* — ${task.title}\n*Modificado por:* ${modName}\n\n${changeList}\n\nDigite \`${did}\` para ver detalhes.`,
     };
+  }
+
+  private getBoardGroupJid(boardId: string): string | null {
+    const row = this.db
+      .prepare(`SELECT group_jid FROM boards WHERE id = ?`)
+      .get(boardId) as { group_jid: string } | undefined;
+    return row?.group_jid ?? null;
+  }
+
+  private buildParentNotification(
+    task: { child_exec_enabled: number; board_id: string },
+    message: string,
+  ): ParentNotification | undefined {
+    if (task.child_exec_enabled !== 1 || task.board_id === this.boardId) return undefined;
+    const groupJid = this.getBoardGroupJid(task.board_id);
+    if (!groupJid) return undefined;
+    return { parent_group_jid: groupJid, message };
+  }
+
+  private deduplicateNotificationsForParent(
+    notifications: NotificationEntry[],
+    parentGroupJid: string,
+  ): void {
+    const deduped = notifications.filter(
+      (n) => n.notification_group_jid !== parentGroupJid,
+    );
+    notifications.length = 0;
+    notifications.push(...deduped);
   }
 
   private meetingNotificationRecipients(task: any): Omit<NotificationEntry, 'message'>[] {
@@ -2586,39 +2633,25 @@ export class TaskflowEngine {
       }
 
       /* --- Parent board notification (linked task status change) --- */
-      let parentNotification: MoveResult['parent_notification'];
-      if (task.child_exec_enabled === 1 && task.board_id !== this.boardId) {
-        // This task belongs to a parent board but is being operated on from a child board
-        const parentBoard = this.db
-          .prepare(`SELECT group_jid FROM boards WHERE id = ?`)
-          .get(task.board_id) as { group_jid: string } | undefined;
-        if (parentBoard) {
-          const emoji = toColumn === 'done' ? '✅' : toColumn === 'review' ? '📋' : '🔄';
-          const statusText = TaskflowEngine.columnLabel(toColumn);
-          parentNotification = {
-            parent_group_jid: parentBoard.group_jid,
-            message: `${emoji} *${task.id}* — ${task.title}\n*Movida para:* ${statusText}\n*Por:* ${senderDisplayName}`,
-          };
-
-          // Also update rollup status on the parent task
-          if (toColumn === 'done') {
-            this.db
-              .prepare(
-                `UPDATE tasks SET child_exec_rollup_status = 'ready_for_review',
-                 child_exec_last_rollup_at = ?, child_exec_last_rollup_summary = ?
-                 WHERE board_id = ? AND id = ?`,
-              )
-              .run(now, `Concluída por ${senderDisplayName}`, task.board_id, task.id);
-          }
-        }
-      }
+      const emoji = toColumn === 'done' ? '✅' : toColumn === 'review' ? '📋' : '🔄';
+      const statusText = TaskflowEngine.columnLabel(toColumn);
+      const parentNotification = this.buildParentNotification(
+        task,
+        `${emoji} *${task.id}* — ${task.title}\n*Movida para:* ${statusText}\n*Por:* ${senderDisplayName}`,
+      );
 
       if (parentNotification) {
-        const deduped = notifications.filter(
-          (notification) => notification.notification_group_jid !== parentNotification.parent_group_jid,
-        );
-        notifications.length = 0;
-        notifications.push(...deduped);
+        // Also update rollup status on the parent task
+        if (toColumn === 'done') {
+          this.db
+            .prepare(
+              `UPDATE tasks SET child_exec_rollup_status = 'ready_for_review',
+               child_exec_last_rollup_at = ?, child_exec_last_rollup_summary = ?
+               WHERE board_id = ? AND id = ?`,
+            )
+            .run(now, `Concluída por ${senderDisplayName}`, task.board_id, task.id);
+        }
+        this.deduplicateNotificationsForParent(notifications, parentNotification.parent_group_jid);
       }
 
       /* --- Open meeting minutes warning --- */
@@ -3877,6 +3910,20 @@ export class TaskflowEngine {
         if (notif) notifications.push(notif);
       }
 
+      /* --- Parent board notification (linked task update) --- */
+      let parentNotification: ParentNotification | undefined;
+      if (changes.length > 0) {
+        const modName = sender?.name ?? params.sender_name;
+        const changeList = changes.map(c => `• ${c}`).join('\n');
+        parentNotification = this.buildParentNotification(
+          task,
+          `🔔 *Atualização na sua tarefa*\n\n*${task.id}* — ${task.title}\n*Modificado por:* ${modName}\n\n${changeList}\n\nDigite \`${task.id}\` para ver detalhes.`,
+        );
+        if (parentNotification) {
+          this.deduplicateNotificationsForParent(notifications, parentNotification.parent_group_jid);
+        }
+      }
+
       /* --- Build result --- */
       const result: UpdateResult = {
         success: true,
@@ -3885,6 +3932,7 @@ export class TaskflowEngine {
         changes,
       };
       if (notifications.length > 0) result.notifications = notifications;
+      if (parentNotification) result.parent_notification = parentNotification;
 
       return result;
       })(); // end transaction

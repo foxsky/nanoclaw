@@ -1066,6 +1066,8 @@ export class TaskflowEngine {
       if (!task) return null;
       if (task.board_id === this.boardId) return task;
       if (task.child_exec_board_id === this.boardId && task.child_exec_enabled === 1) return task;
+      // Allow cross-board visibility for meeting participants
+      if (task.type === 'meeting' && this.isBoardMeetingParticipant(task)) return task;
       return null;
     }
     // Prefer local board for ambiguous IDs
@@ -1078,6 +1080,20 @@ export class TaskflowEngine {
          WHERE child_exec_board_id = ? AND child_exec_enabled = 1 AND id = ?`,
       )
       .get(this.boardId, rawId) ?? null;
+  }
+
+  /**
+   * Check if any person registered on this board is a participant or organizer
+   * of the given meeting task (which may belong to a different board).
+   */
+  private isBoardMeetingParticipant(task: any): boolean {
+    const participants: string[] = JSON.parse(task.participants ?? '[]');
+    const involved = [task.assignee, ...participants].filter(Boolean);
+    if (involved.length === 0) return false;
+    const ph = involved.map(() => '?').join(',');
+    return !!this.db.prepare(
+      `SELECT 1 FROM board_people WHERE board_id = ? AND person_id IN (${ph}) LIMIT 1`,
+    ).get(this.boardId, ...involved);
   }
 
   /* ---------------------------------------------------------------- */
