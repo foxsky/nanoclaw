@@ -5090,6 +5090,19 @@ export class TaskflowEngine {
               data.parent_project = { id: parent.id, title: parent.title, column: parent.column };
             }
           }
+          // Include external participants for meetings
+          if (task.type === 'meeting') {
+            const owningBoard = this.taskBoardId(task);
+            const epNow = new Date().toISOString();
+            data.external_participants = this.db.prepare(
+              `SELECT ec.external_id, ec.display_name, mep.invite_status
+               FROM meeting_external_participants mep
+               JOIN external_contacts ec ON ec.external_id = mep.external_id
+               WHERE mep.board_id = ? AND mep.meeting_task_id = ?
+                 AND mep.invite_status NOT IN ('revoked', 'expired')
+                 AND (mep.access_expires_at IS NULL OR mep.access_expires_at >= ?)`
+            ).all(owningBoard, task.id, epNow);
+          }
           return { success: true, data };
         }
 
@@ -5446,15 +5459,16 @@ export class TaskflowEngine {
           if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
           const task = this.requireTask(params.task_id);
           if (task.type !== 'meeting') return { success: false, error: `Task ${params.task_id} is not a meeting.` };
+          const owningBoard = this.taskBoardId(task);
           const participantIds: string[] = JSON.parse(task.participants ?? '[]');
           const organizerRow = task.assignee
-            ? this.db.prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id = ?`).get(this.boardId, task.assignee) as any
+            ? this.db.prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id = ?`).get(owningBoard, task.assignee) as any
             : null;
           const people = participantIds.length === 0
             ? []
             : this.db
                 .prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id IN (${participantIds.map(() => '?').join(',')})`)
-                .all(this.boardId, ...participantIds) as Array<{ person_id: string; name: string; role: string }>;
+                .all(owningBoard, ...participantIds) as Array<{ person_id: string; name: string; role: string }>;
           const epNow = new Date().toISOString();
           const externalParticipants = this.db.prepare(
             `SELECT ec.external_id, ec.display_name, mep.invite_status
@@ -5463,7 +5477,7 @@ export class TaskflowEngine {
              WHERE mep.board_id = ? AND mep.meeting_task_id = ?
                AND mep.invite_status NOT IN ('revoked', 'expired')
                AND (mep.access_expires_at IS NULL OR mep.access_expires_at >= ?)`
-          ).all(this.boardId, task.id, epNow) as Array<{
+          ).all(owningBoard, task.id, epNow) as Array<{
             external_id: string;
             display_name: string;
             invite_status: string;
@@ -5489,14 +5503,16 @@ export class TaskflowEngine {
 
         case 'meeting_history': {
           if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
-          const history = this.getHistory(params.task_id);
+          const task = this.requireTask(params.task_id);
+          const history = this.getHistory(task.id, undefined, this.taskBoardId(task));
           return { success: true, data: history };
         }
 
         case 'meeting_minutes_at': {
           if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
+          const mTask = this.requireTask(params.task_id);
           if (!params.at) return { success: false, error: 'Missing required parameter: at (YYYY-MM-DD)' };
-          const occurrences = this.getHistory(params.task_id)
+          const occurrences = this.getHistory(mTask.id, undefined, this.taskBoardId(mTask))
             .filter((h: any) => h.action === 'meeting_occurrence_archived');
 
           for (const row of occurrences) {
@@ -5511,10 +5527,9 @@ export class TaskflowEngine {
           }
 
           // Fallback: check current task if date matches
-          const task = this.getTask(params.task_id);
-          if (task && task.scheduled_at?.startsWith(params.at)) {
-            const notes = JSON.parse(task.notes ?? '[]');
-            return { success: true, data: task, formatted: this.formatMeetingMinutes(task, notes) };
+          if (mTask.scheduled_at?.startsWith(params.at)) {
+            const notes = JSON.parse(mTask.notes ?? '[]');
+            return { success: true, data: mTask, formatted: this.formatMeetingMinutes(mTask, notes) };
           }
 
           return { success: false, error: `No meeting occurrence found for ${params.task_id} on ${params.at}` };
