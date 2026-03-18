@@ -522,6 +522,17 @@ function buildExternalInviteMessage(
 /* ------------------------------------------------------------------ */
 
 export class TaskflowEngine {
+  /** Lazily cached board timezone (almost never changes per engine lifetime). */
+  private _boardTz: string | null = null;
+
+  /** Get the board timezone, cached after first call. */
+  private get boardTz(): string {
+    if (!this._boardTz) {
+      this._boardTz = this.boardTz;
+    }
+    return this._boardTz;
+  }
+
   private static readonly moveActionLabels: Record<MoveParams['action'], string> = {
     start: 'movida para 🔄 Em Andamento',
     wait: 'movida para ⏳ Aguardando',
@@ -1581,7 +1592,7 @@ export class TaskflowEngine {
     task_id: string;
     reminder_days: number;
   }> {
-    const tz = getBoardTimezone(this.db, this.boardId);
+    const tz = this.boardTz;
     const todayStr = nowIso.slice(0, 10);
     const meetings = this.db
       .prepare(
@@ -1638,7 +1649,7 @@ export class TaskflowEngine {
     nowIso = new Date().toISOString(),
     windowMinutes = 5,
   ): Array<NotificationEntry & { task_id: string }> {
-    const tz = getBoardTimezone(this.db, this.boardId);
+    const tz = this.boardTz;
     const nowMs = new Date(nowIso).getTime();
     const windowMs = windowMinutes * 60_000;
     const meetings = this.db
@@ -1883,7 +1894,7 @@ export class TaskflowEngine {
 
       /* --- Normalize scheduled_at from local time to UTC --- */
       if (params.scheduled_at) {
-        const tz = getBoardTimezone(this.db, this.boardId);
+        const tz = this.boardTz;
         params = { ...params, scheduled_at: localToUtc(params.scheduled_at, tz) };
       }
 
@@ -4206,11 +4217,11 @@ export class TaskflowEngine {
   /*  Formatted meeting minutes                                        */
   /* ---------------------------------------------------------------- */
 
-  private formatMeetingMinutes(task: any, notes: Array<any>, tz?: string): string {
+  private formatMeetingMinutes(task: any, notes: Array<any>): string {
     const lines: string[] = [];
-    const effectiveTz = tz ?? getBoardTimezone(this.db, this.taskBoardId(task));
+    const tz = getBoardTimezone(this.db, this.taskBoardId(task));
     const scheduledStr = task.scheduled_at
-      ? utcToLocal(task.scheduled_at, effectiveTz)
+      ? utcToLocal(task.scheduled_at, tz)
       : 'sem data';
     lines.push(`📅 *${task.id} — ${task.title}* (${scheduledStr})`);
     lines.push('');
@@ -4298,7 +4309,7 @@ export class TaskflowEngine {
   private formatBoardView(mode: 'board' | 'standup' = 'board'): string {
     const todayStr = today();
     const todayMs = new Date(todayStr).getTime();
-    const boardViewTz = getBoardTimezone(this.db, this.boardId);
+    const tz = this.boardTz;
 
     /* --- Person name lookup --- */
     const people = this.db
@@ -4404,7 +4415,7 @@ export class TaskflowEngine {
       if (t.type !== 'meeting') return '';
       const parts: string[] = [];
       if (t.scheduled_at) {
-        parts.push(utcToLocal(t.scheduled_at, boardViewTz));
+        parts.push(utcToLocal(t.scheduled_at, tz));
       }
       if (t.participants) {
         try {
@@ -4557,7 +4568,7 @@ export class TaskflowEngine {
   ): string {
     const lines: string[] = [this.formatBoardView('board')];
     const SEP = '━━━━━━━━━━━━━━';
-    const digestTz = getBoardTimezone(this.db, this.boardId);
+    const tz = this.boardTz;
     const taskLine = (
       task: { id: string; title: string; assignee_name?: string | null; due_date?: string; waiting_for?: string | null; column?: string; updated_at?: string },
       extras: string[] = [],
@@ -4570,7 +4581,7 @@ export class TaskflowEngine {
       return [first, ...more.map((line) => `  ${line}`)];
     };
     const meetingLine = (meeting: { id: string; title: string; scheduled_at: string; participant_count: number }): string => {
-      const when = utcToLocal(meeting.scheduled_at, digestTz);
+      const when = utcToLocal(meeting.scheduled_at, tz);
       return `• *${meeting.id}* — ${meeting.title} (${when}) — ${meeting.participant_count} participante(s)`;
     };
     const staleExtras = (task: { column: string; updated_at: string }): string[] => [
@@ -5398,8 +5409,7 @@ export class TaskflowEngine {
           const task = this.requireTask(params.task_id);
           if (task.type !== 'meeting') return { success: false, error: `Task ${params.task_id} is not a meeting.` };
           const notes: Array<any> = JSON.parse(task.notes ?? '[]');
-          const fmtTz = getBoardTimezone(this.db, this.taskBoardId(task));
-          const formatted = this.formatMeetingMinutes(task, notes, fmtTz);
+          const formatted = this.formatMeetingMinutes(task, notes);
           return { success: true, data: { task, notes }, formatted };
         }
 
@@ -5479,9 +5489,7 @@ export class TaskflowEngine {
               const snapshot = details.snapshot;
               const snapshotDate = (snapshot?.scheduled_at ?? '').slice(0, 10);
               if (snapshotDate === params.at) {
-                const mTask = snapshot;
-                const mTz = getBoardTimezone(this.db, this.taskBoardId(mTask));
-                return { success: true, data: snapshot, formatted: this.formatMeetingMinutes(snapshot, JSON.parse(snapshot.notes ?? '[]'), mTz) };
+                return { success: true, data: snapshot, formatted: this.formatMeetingMinutes(snapshot, JSON.parse(snapshot.notes ?? '[]')) };
               }
             } catch { /* skip malformed */ }
           }
@@ -5490,8 +5498,7 @@ export class TaskflowEngine {
           const task = this.getTask(params.task_id);
           if (task && task.scheduled_at?.startsWith(params.at)) {
             const notes = JSON.parse(task.notes ?? '[]');
-            const fallbackTz = getBoardTimezone(this.db, this.taskBoardId(task));
-            return { success: true, data: task, formatted: this.formatMeetingMinutes(task, notes, fallbackTz) };
+            return { success: true, data: task, formatted: this.formatMeetingMinutes(task, notes) };
           }
 
           return { success: false, error: `No meeting occurrence found for ${params.task_id} on ${params.at}` };
