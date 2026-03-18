@@ -528,7 +528,7 @@ export class TaskflowEngine {
   /** Get the board timezone, cached after first call. */
   private get boardTz(): string {
     if (!this._boardTz) {
-      this._boardTz = this.boardTz;
+      this._boardTz = getBoardTimezone(this.db, this.boardId);
     }
     return this._boardTz;
   }
@@ -2382,12 +2382,6 @@ export class TaskflowEngine {
       const task = this.requireTask(params.task_id);
       const taskBoardId = this.taskBoardId(task);
 
-      /* --- Normalize scheduled_at from local time to UTC --- */
-      const tz = getBoardTimezone(this.db, taskBoardId);
-      if (updates.scheduled_at !== undefined) {
-        updates.scheduled_at = localToUtc(updates.scheduled_at, tz);
-      }
-
       const fromColumn: string = task.column;
 
       /* --- Define valid transitions --- */
@@ -3082,6 +3076,11 @@ export class TaskflowEngine {
       const task = this.requireTask(params.task_id);
       const taskBoardId = this.taskBoardId(task);
       const tz = getBoardTimezone(this.db, taskBoardId);
+
+      /* --- Normalize scheduled_at from local time to UTC --- */
+      if (updates.scheduled_at !== undefined) {
+        updates.scheduled_at = localToUtc(updates.scheduled_at, tz);
+      }
 
       /* --- Check task is active (not archived / done is still active in tasks table) --- */
       // Tasks only leave the tasks table when archived; if it's here, it's active.
