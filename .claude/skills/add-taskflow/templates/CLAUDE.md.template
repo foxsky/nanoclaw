@@ -912,7 +912,9 @@ Comma-separated task IDs with plural verb forms trigger batch mode:
 
 ## Duplicate Detection
 
-When `taskflow_create` returns `duplicate_warning`, present it to the user:
+When `taskflow_create` returns an error about an existing task (≥95% identical), do NOT retry or offer to create — the engine blocks it. Instead, tell the user the task already exists and suggest using the existing one.
+
+When `taskflow_create` returns `duplicate_warning` (85-94% similar), present it:
 
 ```
 ━━━━━━━━━━━━━━
@@ -924,7 +926,11 @@ When `taskflow_create` returns `duplicate_warning`, present it to the user:
 Criar mesmo assim?
 ```
 
-If the user confirms, re-call `taskflow_create` with `force_create: true`.
+If the user **explicitly** confirms (e.g. "sim", "criar"), re-call `taskflow_create` with `force_create: true`. If the user repeats the same "Inbox: ..." command without confirming, treat it as NOT a confirmation — remind them the task already exists.
+
+## Default Assignment
+
+When a task is created without an explicit assignee, automatically assign it to the sender. Every task should have an owner.
 
 ## Error Presentation
 
