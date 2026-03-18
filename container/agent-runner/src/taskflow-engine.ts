@@ -1096,6 +1096,27 @@ export class TaskflowEngine {
     ).get(this.boardId, ...involved);
   }
 
+  /** Active (non-revoked, non-expired) external participants for a meeting task. */
+  private getActiveExternalParticipants(boardId: string, taskId: string): Array<{
+    external_id: string;
+    display_name: string;
+    invite_status: string;
+  }> {
+    const now = new Date().toISOString();
+    return this.db.prepare(
+      `SELECT ec.external_id, ec.display_name, mep.invite_status
+       FROM meeting_external_participants mep
+       JOIN external_contacts ec ON ec.external_id = mep.external_id
+       WHERE mep.board_id = ? AND mep.meeting_task_id = ?
+         AND mep.invite_status NOT IN ('revoked', 'expired')
+         AND (mep.access_expires_at IS NULL OR mep.access_expires_at >= ?)`,
+    ).all(boardId, taskId, now) as Array<{
+      external_id: string;
+      display_name: string;
+      invite_status: string;
+    }>;
+  }
+
   /* ---------------------------------------------------------------- */
   /*  Private helpers                                                  */
   /* ---------------------------------------------------------------- */
@@ -5092,16 +5113,7 @@ export class TaskflowEngine {
           }
           // Include external participants for meetings
           if (task.type === 'meeting') {
-            const owningBoard = this.taskBoardId(task);
-            const epNow = new Date().toISOString();
-            data.external_participants = this.db.prepare(
-              `SELECT ec.external_id, ec.display_name, mep.invite_status
-               FROM meeting_external_participants mep
-               JOIN external_contacts ec ON ec.external_id = mep.external_id
-               WHERE mep.board_id = ? AND mep.meeting_task_id = ?
-                 AND mep.invite_status NOT IN ('revoked', 'expired')
-                 AND (mep.access_expires_at IS NULL OR mep.access_expires_at >= ?)`
-            ).all(owningBoard, task.id, epNow);
+            data.external_participants = this.getActiveExternalParticipants(this.taskBoardId(task), task.id);
           }
           return { success: true, data };
         }
@@ -5469,19 +5481,7 @@ export class TaskflowEngine {
             : this.db
                 .prepare(`SELECT person_id, name, role FROM board_people WHERE board_id = ? AND person_id IN (${participantIds.map(() => '?').join(',')})`)
                 .all(owningBoard, ...participantIds) as Array<{ person_id: string; name: string; role: string }>;
-          const epNow = new Date().toISOString();
-          const externalParticipants = this.db.prepare(
-            `SELECT ec.external_id, ec.display_name, mep.invite_status
-             FROM meeting_external_participants mep
-             JOIN external_contacts ec ON ec.external_id = mep.external_id
-             WHERE mep.board_id = ? AND mep.meeting_task_id = ?
-               AND mep.invite_status NOT IN ('revoked', 'expired')
-               AND (mep.access_expires_at IS NULL OR mep.access_expires_at >= ?)`
-          ).all(owningBoard, task.id, epNow) as Array<{
-            external_id: string;
-            display_name: string;
-            invite_status: string;
-          }>;
+          const externalParticipants = this.getActiveExternalParticipants(owningBoard, task.id);
           return {
             success: true,
             data: {
@@ -5510,8 +5510,8 @@ export class TaskflowEngine {
 
         case 'meeting_minutes_at': {
           if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
-          const mTask = this.requireTask(params.task_id);
           if (!params.at) return { success: false, error: 'Missing required parameter: at (YYYY-MM-DD)' };
+          const mTask = this.requireTask(params.task_id);
           const occurrences = this.getHistory(mTask.id, undefined, this.taskBoardId(mTask))
             .filter((h: any) => h.action === 'meeting_occurrence_archived');
 
