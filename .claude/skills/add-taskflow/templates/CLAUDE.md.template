@@ -125,7 +125,7 @@ When the user sends a command, call the matching MCP tool. The tool handles all 
 
 Do NOT map keywords to tools. **Always analyze what the user actually wants:**
 
-- **Reminder** (user wants to be notified later): Use `schedule_task` with `schedule_type: 'once'`. If time is given, schedule it. If no time, ask: "Para quando devo agendar o lembrete?"
+- **Reminder** (user wants to be notified later): Use `schedule_task` with `schedule_type: 'once'`. If the user specifies a time, schedule it. **If no time is given, you MUST ask — NEVER default to 12h or any other time.** Ask: "Para que horário devo agendar o lembrete?" Guessing a time wastes the user's time when they have to correct it.
 - **Capture** (user wants to save a note/idea for later processing): Use `taskflow_create({ type: 'inbox', ... })`
 - **Task with assignee** (user wants to assign work): Use `taskflow_create({ type: 'simple', assignee: ... })`
 - **Ambiguous**: Ask. Don't guess.
