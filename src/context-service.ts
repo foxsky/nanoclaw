@@ -16,7 +16,7 @@ export const Level = {
   MONTHLY: 3,
 } as const;
 
-const DEFAULT_OLLAMA_MODEL = 'frob/qwen3.5-instruct:27b';
+const DEFAULT_OLLAMA_MODEL = 'qwen3-coder:latest';
 const CLAUDE_API_MODEL = 'claude-haiku-4-5-20251001';
 const CLAUDE_DISPLAY_NAME = 'haiku-4.5';
 
