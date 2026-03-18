@@ -1,5 +1,23 @@
 # Long-Term Context Skill Changelog
 
+## 2026-03-17
+
+### Ollama Configuration
+- **keep_alive: -1** on `/api/generate` calls — summarizer model stays loaded in GPU permanently
+- **Timeout increased** from 30s to 60s for larger models
+
+### Model Switch
+- **Default model** changed from `llama3.1:8b` → `frob/qwen3.5-instruct:27b` → `qwen3-coder:latest`
+- qwen3-coder: 36.6 tok/s (vs 4.5 tok/s for qwen3.5-instruct), concise output, stays on-language
+- Hardcoded `DEFAULT_OLLAMA_MODEL` updated in code + `.env` on both local and remote
+
+### Recovery Noise Filter
+- `recoverPendingMessages()` now applies `NOISE_VOICE_PROCESSING` and `NOISE_TYPING_INDICATOR` filters
+- Prevents spurious container starts from stale `⏳ Processando...` messages on service restart
+
+### Skill File Sync
+- Added missing test files to `add/` directory: `context-service.test.ts`, `context-sync.test.ts`, `context-reader.test.ts`
+
 ## 2026-03-15
 
 ### Initial Release
