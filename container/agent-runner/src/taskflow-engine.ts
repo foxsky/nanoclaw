@@ -43,6 +43,8 @@ export type NotificationEntry = {
   message: string;
 };
 
+export type ParentNotification = { parent_group_jid: string; message: string };
+
 export interface CreateParams {
   board_id: string;
   type: 'simple' | 'project' | 'recurring' | 'inbox' | 'meeting';
@@ -93,7 +95,7 @@ export interface MoveResult extends TaskflowResult {
   recurring_cycle?: { cycle_number: number; expired: boolean; new_due_date?: string; new_scheduled_at?: string; reason?: 'max_cycles' | 'end_date' };
   archive_triggered?: boolean;
   notifications?: NotificationEntry[];
-  parent_notification?: { parent_group_jid: string; message: string };
+  parent_notification?: ParentNotification;
   unprocessed_minutes_warning?: boolean;
 }
 
@@ -161,6 +163,7 @@ export interface UpdateResult extends TaskflowResult {
   changes?: string[];      // human-readable list of what changed
   offer_register?: { name: string; message: string };
   notifications?: NotificationEntry[];
+  parent_notification?: ParentNotification;
 }
 
 export interface DependencyParams {
@@ -371,6 +374,73 @@ function reminderDateFromScheduledAt(scheduledAt: string, daysBefore: number): s
   const d = new Date(scheduledAt.slice(0, 10) + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() - daysBefore);
   return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Normalize a scheduled_at value to UTC.
+ * - No 'Z' suffix and no offset → treat as local time in `tz`, convert to UTC.
+ * - Has 'Z' or ±HH:MM offset → already timezone-aware, return as ISO string.
+ * Falls back to appending 'Z' if parsing fails.
+ */
+function localToUtc(naive: string, tz: string): string {
+  // Already timezone-aware — keep as-is
+  if (/[Zz]$/.test(naive) || /[+-]\d{2}:?\d{2}$/.test(naive)) {
+    return new Date(naive).toISOString();
+  }
+
+  // Parse components from naive ISO string (e.g. "2026-03-26T08:00:00")
+  const match = naive.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return naive.endsWith('Z') ? naive : naive + 'Z'; // unparseable fallback
+  const [, yr, mo, dy, hr, mn, sc = '0'] = match;
+
+  // Step 1: Create a UTC timestamp with the naive components
+  const utcGuess = Date.UTC(+yr, +mo - 1, +dy, +hr, +mn, +sc);
+
+  // Step 2: Find what local time this UTC instant maps to in the target timezone
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  });
+  const p = Object.fromEntries(
+    fmt.formatToParts(new Date(utcGuess)).map(x => [x.type, x.value]),
+  );
+  const localAtGuess = Date.UTC(
+    +p.year, +p.month - 1, +p.day,
+    p.hour === '24' ? 0 : +p.hour, +p.minute, +p.second,
+  );
+
+  // Step 3: offset = localAtGuess - utcGuess; actual UTC = utcGuess - offset
+  const offsetMs = localAtGuess - utcGuess;
+  return new Date(utcGuess - offsetMs).toISOString();
+}
+
+/**
+ * Format a UTC ISO string as a human-readable local date/time.
+ * Returns e.g. "26/03/2026 às 08:00".
+ */
+function utcToLocal(utcIso: string, tz: string): string {
+  const d = new Date(utcIso);
+  if (Number.isNaN(d.getTime())) return utcIso; // unparseable fallback
+  const fmt = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: tz,
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+    hour12: false,
+  });
+  const parts = Object.fromEntries(
+    fmt.formatToParts(d).map(x => [x.type, x.value]),
+  );
+  return `${parts.day}/${parts.month}/${parts.year} às ${parts.hour}:${parts.minute}`;
+}
+
+/** Read the board timezone from board_runtime_config. Queried per-call (no stale cache). */
+function getBoardTimezone(db: Database.Database, boardId: string): string {
+  const row = db.prepare(
+    `SELECT timezone FROM board_runtime_config WHERE board_id = ?`,
+  ).get(boardId) as { timezone: string } | undefined;
+  return row?.timezone ?? 'America/Fortaleza';
 }
 
 /** Advance a date by a recurrence interval and return the ISO date string. */
@@ -1423,6 +1493,34 @@ export class TaskflowEngine {
       ...target,
       message: `🔔 *Atualização na sua tarefa*\n\n*${did}* — ${task.title}\n*Modificado por:* ${modName}\n\n${changeList}\n\nDigite \`${did}\` para ver detalhes.`,
     };
+  }
+
+  private getBoardGroupJid(boardId: string): string | null {
+    const row = this.db
+      .prepare(`SELECT group_jid FROM boards WHERE id = ?`)
+      .get(boardId) as { group_jid: string } | undefined;
+    return row?.group_jid ?? null;
+  }
+
+  private buildParentNotification(
+    task: { child_exec_enabled: number; board_id: string },
+    message: string,
+  ): ParentNotification | undefined {
+    if (task.child_exec_enabled !== 1 || task.board_id === this.boardId) return undefined;
+    const groupJid = this.getBoardGroupJid(task.board_id);
+    if (!groupJid) return undefined;
+    return { parent_group_jid: groupJid, message };
+  }
+
+  private deduplicateNotificationsForParent(
+    notifications: NotificationEntry[],
+    parentGroupJid: string,
+  ): void {
+    const deduped = notifications.filter(
+      (n) => n.notification_group_jid !== parentGroupJid,
+    );
+    notifications.length = 0;
+    notifications.push(...deduped);
   }
 
   private meetingNotificationRecipients(task: any): Omit<NotificationEntry, 'message'>[] {
@@ -2586,39 +2684,25 @@ export class TaskflowEngine {
       }
 
       /* --- Parent board notification (linked task status change) --- */
-      let parentNotification: MoveResult['parent_notification'];
-      if (task.child_exec_enabled === 1 && task.board_id !== this.boardId) {
-        // This task belongs to a parent board but is being operated on from a child board
-        const parentBoard = this.db
-          .prepare(`SELECT group_jid FROM boards WHERE id = ?`)
-          .get(task.board_id) as { group_jid: string } | undefined;
-        if (parentBoard) {
-          const emoji = toColumn === 'done' ? '✅' : toColumn === 'review' ? '📋' : '🔄';
-          const statusText = TaskflowEngine.columnLabel(toColumn);
-          parentNotification = {
-            parent_group_jid: parentBoard.group_jid,
-            message: `${emoji} *${task.id}* — ${task.title}\n*Movida para:* ${statusText}\n*Por:* ${senderDisplayName}`,
-          };
-
-          // Also update rollup status on the parent task
-          if (toColumn === 'done') {
-            this.db
-              .prepare(
-                `UPDATE tasks SET child_exec_rollup_status = 'ready_for_review',
-                 child_exec_last_rollup_at = ?, child_exec_last_rollup_summary = ?
-                 WHERE board_id = ? AND id = ?`,
-              )
-              .run(now, `Concluída por ${senderDisplayName}`, task.board_id, task.id);
-          }
-        }
-      }
+      const emoji = toColumn === 'done' ? '✅' : toColumn === 'review' ? '📋' : '🔄';
+      const statusText = TaskflowEngine.columnLabel(toColumn);
+      const parentNotification = this.buildParentNotification(
+        task,
+        `${emoji} *${task.id}* — ${task.title}\n*Movida para:* ${statusText}\n*Por:* ${senderDisplayName}`,
+      );
 
       if (parentNotification) {
-        const deduped = notifications.filter(
-          (notification) => notification.notification_group_jid !== parentNotification.parent_group_jid,
-        );
-        notifications.length = 0;
-        notifications.push(...deduped);
+        // Also update rollup status on the parent task
+        if (toColumn === 'done') {
+          this.db
+            .prepare(
+              `UPDATE tasks SET child_exec_rollup_status = 'ready_for_review',
+               child_exec_last_rollup_at = ?, child_exec_last_rollup_summary = ?
+               WHERE board_id = ? AND id = ?`,
+            )
+            .run(now, `Concluída por ${senderDisplayName}`, task.board_id, task.id);
+        }
+        this.deduplicateNotificationsForParent(notifications, parentNotification.parent_group_jid);
       }
 
       /* --- Open meeting minutes warning --- */
@@ -3877,6 +3961,20 @@ export class TaskflowEngine {
         if (notif) notifications.push(notif);
       }
 
+      /* --- Parent board notification (linked task update) --- */
+      let parentNotification: ParentNotification | undefined;
+      if (changes.length > 0) {
+        const modName = sender?.name ?? params.sender_name;
+        const changeList = changes.map(c => `• ${c}`).join('\n');
+        parentNotification = this.buildParentNotification(
+          task,
+          `🔔 *Atualização na sua tarefa*\n\n*${task.id}* — ${task.title}\n*Modificado por:* ${modName}\n\n${changeList}\n\nDigite \`${task.id}\` para ver detalhes.`,
+        );
+        if (parentNotification) {
+          this.deduplicateNotificationsForParent(notifications, parentNotification.parent_group_jid);
+        }
+      }
+
       /* --- Build result --- */
       const result: UpdateResult = {
         success: true,
@@ -3885,6 +3983,7 @@ export class TaskflowEngine {
         changes,
       };
       if (notifications.length > 0) result.notifications = notifications;
+      if (parentNotification) result.parent_notification = parentNotification;
 
       return result;
       })(); // end transaction
