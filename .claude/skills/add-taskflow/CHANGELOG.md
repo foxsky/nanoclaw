@@ -1,5 +1,40 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-03-17
+
+### Ollama Configuration
+- **keep_alive: -1** on all Ollama calls (embed + generate) — models stay loaded in GPU permanently
+- **Default summarizer model** changed from `llama3.1:8b` to `frob/qwen3.5-instruct:27b`
+- **Summarizer timeout** increased from 30s to 60s for larger model
+
+### Duplicate Prevention (engine-level)
+- **Hard block ≥95% similarity**: `taskflow_create` refuses creation, `force_create` cannot override
+- **Soft warning 85-94%**: unchanged behavior, `force_create` still works
+- **CLAUDE.md**: repeated "Inbox: ..." is not a confirmation — agent must remind user task exists
+
+### Motivational Digest Closing
+- **Explicit prohibitions** against pressure/blame language in evening digest
+- **Bad day guidance**: "find the human story" even with zero completions and many overdue items
+- **Friday close**: perspective on the week, not just the day
+
+### Default Assignment
+- Tasks created without explicit assignee are automatically assigned to the sender
+
+### Reminder Time Handling
+- Agent must ask for time when not specified, never silently default to 12h
+- If user doesn't answer or says "tanto faz", default to 08:00 (start of business)
+
+### Recovery Noise Filter (core)
+- `recoverPendingMessages()` now filters `⏳ Processando...` and typing indicators
+- Prevents spurious container starts and unwanted standups on service restart
+
+### Skill File Sync
+- Populated missing files in 4 skills to match their manifests:
+  - add-embeddings: `add/` (4 files) + `modify/` (3 files)
+  - add-image-vision: `add/plugins/image-vision/` (4 files)
+  - add-long-term-context: `add/` test files (3 files)
+  - add-taskflow: `modify/` (container-runtime.ts, group-queue.ts)
+
 ## 2026-03-15 (continued)
 
 ### Bug Hunt Fixes (rounds 1-4, 20 agents)
