@@ -3,6 +3,9 @@
 ## 2026-03-18
 
 ### Fixed
+- **Auto-assign to sender**: Tasks created without an explicit assignee are now auto-assigned to the sender (board owner). Previously only meetings did this; other types sat unassigned in inbox. Eliminates unowned tasks and the confusion of assigned-vs-unassigned inbox states.
+- **Start from inbox**: `start` and `force_start` now allow tasks in `inbox` column directly, removing two special-case branches. Previously, assigned inbox tasks had no valid `start` path — agents would thrash and resort to raw SQL.
+- **Digest credits assignee**: Evening digest closing now names the person who completed a task ("Laizys resolveu") rather than crediting the board owner.
 - **Timezone handling**: `scheduled_at` passed without `Z` suffix is now treated as local time (board timezone) and automatically converted to UTC by the engine. Values with `Z` are kept as-is for backward compatibility. All notification messages (reminders, start, reschedule, invites) now display local time via `utcToLocal`.
 - **Cross-board meeting visibility**: Child board agents can now view meetings on parent boards where their people are participants or organizer. `getTask()` extended with `isBoardMeetingParticipant` check.
 - **External participants in task_details**: `task_details` query now includes `external_participants` for meeting tasks.
