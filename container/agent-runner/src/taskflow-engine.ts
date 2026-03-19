@@ -2403,8 +2403,8 @@ export class TaskflowEngine {
 
       /* --- Define valid transitions --- */
       const transitions: Record<string, { from: string[]; to: string }> = {
-        start:       { from: ['next_action'], to: 'in_progress' },
-        force_start: { from: ['next_action'], to: 'in_progress' },
+        start:       { from: ['inbox', 'next_action'], to: 'in_progress' },
+        force_start: { from: ['inbox', 'next_action'], to: 'in_progress' },
         wait:        { from: ['in_progress'], to: 'waiting' },
         resume:      { from: ['waiting'], to: 'in_progress' },
         return:      { from: ['in_progress'], to: 'next_action' },
@@ -2492,15 +2492,6 @@ export class TaskflowEngine {
 
       /* --- Auto-assign inbox tasks when sender starts them --- */
       const autoAssigned = canClaimUnassigned && fromColumn === 'inbox' && !approvalGateApplied;
-      if (autoAssigned) {
-        // Expand transition to allow inbox → in_progress; assignment persisted in main UPDATE below
-        transition = { from: ['inbox', 'next_action'], to: 'in_progress' };
-      }
-
-      /* --- Auto-promote assigned inbox tasks (assignee or manager starts them) --- */
-      if (!autoAssigned && !approvalGateApplied && params.action === 'start' && fromColumn === 'inbox' && task.assignee) {
-        transition = { from: ['inbox', 'next_action'], to: 'in_progress' };
-      }
 
       /* --- Validate from column --- */
       if (!transition.from.includes(fromColumn)) {
