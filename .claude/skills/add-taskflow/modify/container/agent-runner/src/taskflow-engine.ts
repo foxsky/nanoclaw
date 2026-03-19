@@ -2497,6 +2497,11 @@ export class TaskflowEngine {
         transition = { from: ['inbox', 'next_action'], to: 'in_progress' };
       }
 
+      /* --- Auto-promote assigned inbox tasks (assignee or manager starts them) --- */
+      if (!autoAssigned && !approvalGateApplied && params.action === 'start' && fromColumn === 'inbox' && task.assignee) {
+        transition = { from: ['inbox', 'next_action'], to: 'in_progress' };
+      }
+
       /* --- Validate from column --- */
       if (!transition.from.includes(fromColumn)) {
         return {
