@@ -1906,16 +1906,14 @@ export class TaskflowEngine {
               : 'T';
       const taskId = this.allocateTaskId(prefix);
 
-      /* --- Auto-set organizer for meetings --- */
-      if (params.type === 'meeting' && !assigneePersonId) {
+      /* --- Auto-assign to sender when no explicit assignee --- */
+      if (!assigneePersonId) {
         const senderPerson = this.resolvePerson(params.sender_name);
         if (senderPerson) assigneePersonId = senderPerson.person_id;
       }
 
       /* --- Column placement --- */
-      const column = params.type === 'inbox' || (!assigneePersonId && params.type !== 'meeting')
-        ? 'inbox'
-        : 'next_action';
+      const column = params.type === 'inbox' ? 'inbox' : 'next_action';
 
       /* --- Type mapping (inbox → simple for storage) --- */
       const storedType = params.type === 'inbox' ? 'simple' : params.type;
