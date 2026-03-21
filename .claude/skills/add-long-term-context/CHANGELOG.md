@@ -2,6 +2,11 @@
 
 ## 2026-03-21
 
+### Ollama fallback model
+- **New:** `CONTEXT_FALLBACK_MODEL` env var — when primary Ollama model fails, retries with this model on the same host
+- Default: `minimax-m2.1:cloud` (fast cloud model, 2s response time, good Portuguese output)
+- No external API keys needed — uses the same Ollama instance
+
 ### Orphan adoption in rollups
 - **Fix:** Daily/weekly/monthly rollups now adopt late-arriving children that were summarized after the rollup was created
 - Previously, leaves summarized after their day's rollup ran were permanently orphaned (`parent_id IS NULL`)

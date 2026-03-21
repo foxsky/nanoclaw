@@ -20,6 +20,7 @@ structured:
   env_additions:
     - CONTEXT_SUMMARIZER
     - CONTEXT_SUMMARIZER_MODEL
+    - CONTEXT_FALLBACK_MODEL
     - CONTEXT_RETAIN_DAYS
 conflicts: []
 depends: []                                          # no skill dependencies — uses OLLAMA_HOST from .env independently

@@ -734,9 +734,19 @@ function recoverPendingMessages(): void {
       ASSISTANT_NAME,
       getGroupSenderName(group.trigger),
     );
-    if (pending.length > 0) {
+    // Apply the same noise filter used in the message loop so that
+    // stale processing indicators / typing markers don't trigger a
+    // spurious container start on restart.
+    const substantive = pending.filter((msg) => {
+      const text = msg.content.trim();
+      if (!text) return false;
+      if (NOISE_VOICE_PROCESSING.test(text)) return false;
+      if (NOISE_TYPING_INDICATOR.test(text)) return false;
+      return true;
+    });
+    if (substantive.length > 0) {
       logger.info(
-        { group: group.name, pendingCount: pending.length },
+        { group: group.name, pendingCount: substantive.length },
         'Recovery: found unprocessed messages',
       );
       queue.enqueueMessageCheck(chatJid);
@@ -764,6 +774,7 @@ async function main(): Promise<void> {
     'ANTHROPIC_API_KEY',
     'CONTEXT_SUMMARIZER',
     'CONTEXT_SUMMARIZER_MODEL',
+    'CONTEXT_FALLBACK_MODEL',
     'CONTEXT_RETAIN_DAYS',
   ]);
 
@@ -811,6 +822,7 @@ async function main(): Promise<void> {
         summarizer:
           (skillEnv.CONTEXT_SUMMARIZER as 'ollama' | 'claude') || 'ollama',
         summarizerModel: skillEnv.CONTEXT_SUMMARIZER_MODEL,
+        fallbackModel: skillEnv.CONTEXT_FALLBACK_MODEL,
         ollamaHost: skillEnv.OLLAMA_HOST,
         anthropicApiKey: skillEnv.ANTHROPIC_API_KEY,
         retainDays: parseInt(skillEnv.CONTEXT_RETAIN_DAYS || '90'),

@@ -32,6 +32,7 @@ export function estimateTokens(text: string): number {
 export interface ContextConfig {
   summarizer: 'ollama' | 'claude';
   summarizerModel?: string;
+  fallbackModel?: string; // CONTEXT_FALLBACK_MODEL — tried on same Ollama host when primary fails
   ollamaHost?: string;
   anthropicApiKey?: string; // passed from caller (reads .env via readEnvFile)
   retainDays: number;
@@ -579,6 +580,14 @@ export class ContextService {
         result = await this.callClaude(prompt);
       } else {
         result = await this.callOllama(prompt);
+        // Fallback to a different Ollama model when primary fails
+        if (!result && this.config.fallbackModel) {
+          logger.info(
+            { fallback: this.config.fallbackModel },
+            'Primary Ollama model failed, trying fallback',
+          );
+          result = await this.callOllama(prompt, this.config.fallbackModel);
+        }
       }
       if (result) {
         this.consecutiveFailures = 0;
@@ -611,13 +620,18 @@ export class ContextService {
     }
   }
 
-  private async callOllama(prompt: string): Promise<string | null> {
+  private async callOllama(
+    prompt: string,
+    modelOverride?: string,
+  ): Promise<string | null> {
     if (!this.config.ollamaHost) return null;
+    const model =
+      modelOverride ?? this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL;
     const resp = await fetch(`${this.config.ollamaHost}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL,
+        model,
         prompt,
         stream: false,
         keep_alive: -1,
@@ -626,10 +640,7 @@ export class ContextService {
     });
     if (!resp.ok) {
       logger.warn(
-        {
-          status: resp.status,
-          model: this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL,
-        },
+        { status: resp.status, model },
         'Ollama summarizer returned non-OK',
       );
       return null;
