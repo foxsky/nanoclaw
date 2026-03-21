@@ -1,5 +1,16 @@
 # Long-Term Context Skill Changelog
 
+## 2026-03-21
+
+### context_grep — regex + raw session search
+- **New MCP tool**: `context_grep` with `mode` (regex/full_text), `scope` (messages/summaries/both), date range, limit
+- Searches raw `context_sessions.messages` JSON and `agent_response` text — not just summaries
+- Regex mode with ReDoS protection (500-char limit, nested quantifier rejection, 10K row scan cap)
+- Full-text mode uses case-insensitive substring matching with LIKE
+- Returns snippets (200 chars) with `node_id` for drill-down via `context_recall`
+- Total output capped at 40K chars to prevent token bloat
+- Ported from upstream lossless-claw `lcm_grep` concept (validated via Codex)
+
 ## 2026-03-17
 
 ### Ollama Configuration

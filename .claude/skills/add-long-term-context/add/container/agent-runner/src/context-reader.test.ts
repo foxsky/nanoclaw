@@ -7,6 +7,7 @@ import {
   ContextReader,
   type ContextNode,
   type RecallResult,
+  type GrepResult,
 } from './context-reader.js';
 
 const TEST_DIR = path.join(import.meta.dirname, '..', 'test-context');
@@ -182,6 +183,7 @@ describe('ContextReader', () => {
       const reader = new ContextReader('/tmp/does-not-exist/context.db');
       expect(reader.getRecentSummaries('g', 10)).toEqual([]);
       expect(reader.search('g', 'test')).toEqual([]);
+      expect(reader.grep('g', 'test')).toEqual({ matches: [], truncated: false, rows_scanned: 0 });
       expect(reader.recall('g', 'node-1')).toBeNull();
       expect(reader.timeline('g', '2026-01-01', '2026-12-31')).toEqual([]);
       expect(reader.topics('g')).toEqual([]);
@@ -427,6 +429,231 @@ describe('ContextReader', () => {
       // Invalid FTS5 syntax — should not throw, return empty
       const results = reader.search('group-a', 'AND OR NOT');
       expect(results).toEqual([]);
+      reader.close();
+    });
+  });
+
+  describe('grep', () => {
+    it('full_text finds substring in summary', () => {
+      const db = seedDb();
+      insertNode(db, {
+        id: 'leaf:a:1', group: 'group-a', level: 0,
+        summary: 'Discussed deployment pipeline improvements for CI/CD',
+        timeStart: '2026-03-10T10:00:00Z', timeEnd: '2026-03-10T10:00:00Z',
+      });
+      db.close();
+
+      const reader = new ContextReader(TEST_DB);
+      const result = reader.grep('group-a', 'pipeline');
+      expect(result.matches.length).toBe(1);
+      expect(result.matches[0].source).toBe('summary');
+      expect(result.matches[0].snippet).toContain('pipeline');
+      expect(result.matches[0].node_id).toBe('leaf:a:1');
+      expect(result.truncated).toBe(false);
+      reader.close();
+    });
+
+    it('full_text finds text in session messages', () => {
+      const db = seedDb();
+      insertNode(db, {
+        id: 'leaf:a:1', group: 'group-a', level: 0,
+        summary: 'General discussion',
+        timeStart: '2026-03-10T10:00:00Z', timeEnd: '2026-03-10T10:00:00Z',
+      });
+      insertSession(db, {
+        id: 'leaf:a:1', group: 'group-a',
+        messages: [{ sender: 'Alice', content: 'Check the Kubernetes cluster status', timestamp: '2026-03-10T10:00:00Z' }],
+        agentResponse: 'The cluster is healthy.',
+      });
+      db.close();
+
+      const reader = new ContextReader(TEST_DB);
+      const result = reader.grep('group-a', 'Kubernetes', { scope: 'messages' });
+      expect(result.matches.length).toBe(1);
+      expect(result.matches[0].source).toBe('message');
+      expect(result.matches[0].snippet).toContain('Kubernetes');
+      reader.close();
+    });
+
+    it('full_text finds text in agent_response', () => {
+      const db = seedDb();
+      insertNode(db, {
+        id: 'leaf:a:1', group: 'group-a', level: 0,
+        summary: 'General discussion',
+        timeStart: '2026-03-10T10:00:00Z', timeEnd: '2026-03-10T10:00:00Z',
+      });
+      insertSession(db, {
+        id: 'leaf:a:1', group: 'group-a',
+        messages: [{ sender: 'Alice', content: 'How is the server?', timestamp: '2026-03-10T10:00:00Z' }],
+        agentResponse: 'The PostgreSQL database is running smoothly with zero errors.',
+      });
+      db.close();
+
+      const reader = new ContextReader(TEST_DB);
+      const result = reader.grep('group-a', 'PostgreSQL', { scope: 'messages' });
+      expect(result.matches.length).toBe(1);
+      expect(result.matches[0].source).toBe('agent_response');
+      expect(result.matches[0].snippet).toContain('PostgreSQL');
+      reader.close();
+    });
+
+    it('regex mode with valid pattern', () => {
+      const db = seedDb();
+      insertNode(db, {
+        id: 'leaf:a:1', group: 'group-a', level: 0,
+        summary: 'Fixed bug #1234 in the authentication module',
+        timeStart: '2026-03-10T10:00:00Z', timeEnd: '2026-03-10T10:00:00Z',
+      });
+      db.close();
+
+      const reader = new ContextReader(TEST_DB);
+      const result = reader.grep('group-a', 'bug #\\d+', { mode: 'regex', scope: 'summaries' });
+      expect(result.matches.length).toBe(1);
+      expect(result.matches[0].snippet).toContain('bug #1234');
+      reader.close();
+    });
+
+    it('rejects ReDoS patterns', () => {
+      const db = seedDb();
+      insertNode(db, {
+        id: 'leaf:a:1', group: 'group-a', level: 0,
+        summary: 'test', timeStart: '2026-03-10T10:00:00Z', timeEnd: '2026-03-10T10:00:00Z',
+      });
+      db.close();
+
+      const reader = new ContextReader(TEST_DB);
+      // Nested quantifier
+      const result1 = reader.grep('group-a', '(a+)+', { mode: 'regex' });
+      expect(result1.matches).toEqual([]);
+      // Pattern too long
+      const result2 = reader.grep('group-a', 'a'.repeat(501), { mode: 'regex' });
+      expect(result2.matches).toEqual([]);
+      reader.close();
+    });
+
+    it('returns empty for invalid regex', () => {
+      const db = seedDb();
+      db.close();
+      const reader = new ContextReader(TEST_DB);
+      const result = reader.grep('group-a', '[invalid', { mode: 'regex' });
+      expect(result.matches).toEqual([]);
+      reader.close();
+    });
+
+    it('enforces group isolation', () => {
+      const db = seedDb();
+      insertNode(db, {
+        id: 'leaf:a:1', group: 'group-a', level: 0,
+        summary: 'Secret alpha data', timeStart: '2026-03-10T10:00:00Z', timeEnd: '2026-03-10T10:00:00Z',
+      });
+      insertNode(db, {
+        id: 'leaf:b:1', group: 'group-b', level: 0,
+        summary: 'Secret beta data', timeStart: '2026-03-10T10:00:00Z', timeEnd: '2026-03-10T10:00:00Z',
+      });
+      db.close();
+
+      const reader = new ContextReader(TEST_DB);
+      const result = reader.grep('group-a', 'Secret');
+      expect(result.matches.length).toBe(1);
+      expect(result.matches[0].node_id).toBe('leaf:a:1');
+      reader.close();
+    });
+
+    it('scope=summaries ignores session matches', () => {
+      const db = seedDb();
+      insertNode(db, {
+        id: 'leaf:a:1', group: 'group-a', level: 0,
+        summary: 'Unrelated summary',
+        timeStart: '2026-03-10T10:00:00Z', timeEnd: '2026-03-10T10:00:00Z',
+      });
+      insertSession(db, {
+        id: 'leaf:a:1', group: 'group-a',
+        messages: [{ sender: 'Alice', content: 'keyword_only_in_messages', timestamp: '2026-03-10T10:00:00Z' }],
+      });
+      db.close();
+
+      const reader = new ContextReader(TEST_DB);
+      const result = reader.grep('group-a', 'keyword_only_in_messages', { scope: 'summaries' });
+      expect(result.matches.length).toBe(0);
+      reader.close();
+    });
+
+    it('scope=messages ignores summary matches', () => {
+      const db = seedDb();
+      insertNode(db, {
+        id: 'leaf:a:1', group: 'group-a', level: 0,
+        summary: 'keyword_only_in_summary',
+        timeStart: '2026-03-10T10:00:00Z', timeEnd: '2026-03-10T10:00:00Z',
+      });
+      insertSession(db, {
+        id: 'leaf:a:1', group: 'group-a',
+        messages: [{ sender: 'Alice', content: 'nothing relevant', timestamp: '2026-03-10T10:00:00Z' }],
+        agentResponse: 'nothing relevant either',
+      });
+      db.close();
+
+      const reader = new ContextReader(TEST_DB);
+      const result = reader.grep('group-a', 'keyword_only_in_summary', { scope: 'messages' });
+      expect(result.matches.length).toBe(0);
+      reader.close();
+    });
+
+    it('respects limit parameter', () => {
+      const db = seedDb();
+      for (let i = 0; i < 10; i++) {
+        insertNode(db, {
+          id: `leaf:a:${i}`, group: 'group-a', level: 0,
+          summary: `Deploy attempt ${i}`,
+          timeStart: `2026-03-${String(10 + i).padStart(2, '0')}T10:00:00Z`,
+          timeEnd: `2026-03-${String(10 + i).padStart(2, '0')}T10:00:00Z`,
+        });
+      }
+      db.close();
+
+      const reader = new ContextReader(TEST_DB);
+      const result = reader.grep('group-a', 'Deploy', { limit: 5 });
+      expect(result.matches.length).toBe(5);
+      reader.close();
+    });
+
+    it('date range filtering on sessions', () => {
+      const db = seedDb();
+      insertNode(db, {
+        id: 'leaf:a:1', group: 'group-a', level: 0,
+        summary: 'Old', timeStart: '2026-03-01T10:00:00Z', timeEnd: '2026-03-01T10:00:00Z',
+      });
+      insertSession(db, {
+        id: 'leaf:a:1', group: 'group-a',
+        messages: [{ sender: 'Alice', content: 'findme', timestamp: '2026-03-01T10:00:00Z' }],
+      });
+      insertNode(db, {
+        id: 'leaf:a:2', group: 'group-a', level: 0,
+        summary: 'New', timeStart: '2026-03-15T10:00:00Z', timeEnd: '2026-03-15T10:00:00Z',
+      });
+      insertSession(db, {
+        id: 'leaf:a:2', group: 'group-a',
+        messages: [{ sender: 'Bob', content: 'findme', timestamp: '2026-03-15T10:00:00Z' }],
+      });
+      db.close();
+
+      const reader = new ContextReader(TEST_DB);
+      const result = reader.grep('group-a', 'findme', { scope: 'messages', dateFrom: '2026-03-10T00:00:00Z' });
+      expect(result.matches.length).toBe(1);
+      expect(result.matches[0].node_id).toBe('leaf:a:2');
+      reader.close();
+    });
+
+    it('returns empty for empty pattern', () => {
+      const db = seedDb();
+      insertNode(db, {
+        id: 'leaf:a:1', group: 'group-a', level: 0,
+        summary: 'Something', timeStart: '2026-03-10T10:00:00Z', timeEnd: '2026-03-10T10:00:00Z',
+      });
+      db.close();
+
+      const reader = new ContextReader(TEST_DB);
+      const result = reader.grep('group-a', '');
+      expect(result.matches).toEqual([]);
       reader.close();
     });
   });

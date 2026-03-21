@@ -42,6 +42,37 @@ export interface TopicEntry {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Grep types                                                         */
+/* ------------------------------------------------------------------ */
+
+export type GrepMode = 'regex' | 'full_text';
+export type GrepScope = 'messages' | 'summaries' | 'both';
+
+export interface GrepMatch {
+  node_id: string;
+  source: 'summary' | 'message' | 'agent_response';
+  snippet: string;
+  date: string;
+  level: number;
+}
+
+export interface GrepResult {
+  matches: GrepMatch[];
+  truncated: boolean;
+  rows_scanned: number;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Grep constants                                                     */
+/* ------------------------------------------------------------------ */
+
+const MAX_ROW_SCAN = 10_000;
+const SNIPPET_CHAR_LIMIT = 200;
+const MAX_TOTAL_CHARS = 40_000;
+const REDOS_MAX_LEN = 500;
+const REDOS_NESTED_QUANTIFIER = /(\+|\*|\{)\s*(\+|\*|\{)/;
+
+/* ------------------------------------------------------------------ */
 /*  Stop words — filtered from topics extraction                       */
 /* ------------------------------------------------------------------ */
 
@@ -143,6 +174,168 @@ export class ContextReader {
     } catch {
       return [];
     }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  grep                                                             */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Regex or full-text search across summaries and/or raw session data.
+   * Returns snippets with node IDs for drill-down via recall().
+   */
+  grep(
+    group: string,
+    pattern: string,
+    options?: {
+      mode?: GrepMode;
+      scope?: GrepScope;
+      dateFrom?: string;
+      dateTo?: string;
+      limit?: number;
+    },
+  ): GrepResult {
+    const mode = options?.mode ?? 'full_text';
+    const scope = options?.scope ?? 'both';
+    const limit = options?.limit ?? 20;
+    const empty: GrepResult = { matches: [], truncated: false, rows_scanned: 0 };
+
+    if (!this.db || !pattern) return empty;
+
+    // ReDoS guard for regex mode
+    if (mode === 'regex') {
+      if (this.isRedosRisk(pattern)) return empty;
+    }
+
+    let regex: RegExp | null = null;
+    if (mode === 'regex') {
+      try {
+        regex = new RegExp(pattern, 'i');
+      } catch {
+        return empty;
+      }
+    }
+
+    const matches: GrepMatch[] = [];
+    let totalChars = 0;
+    let rowsScanned = 0;
+    let truncated = false;
+
+    const dateTo = options?.dateTo
+      ? (options.dateTo.length === 10 ? options.dateTo + 'T23:59:59.999Z' : options.dateTo)
+      : undefined;
+
+    try {
+      // --- Search summaries ---
+      if (scope === 'summaries' || scope === 'both') {
+        let sql = `SELECT id, summary, time_start, level FROM context_nodes
+                   WHERE group_folder = ? AND summary IS NOT NULL AND pruned_at IS NULL`;
+        const params: Array<string | number> = [group];
+
+        if (mode === 'full_text') {
+          sql += ` AND summary LIKE ? ESCAPE '\\'`;
+          params.push('%' + pattern.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_') + '%');
+        }
+        if (options?.dateFrom) { sql += ` AND time_start >= ?`; params.push(options.dateFrom); }
+        if (dateTo) { sql += ` AND time_end <= ?`; params.push(dateTo); }
+        sql += ` ORDER BY time_start DESC LIMIT ?`;
+        params.push(MAX_ROW_SCAN);
+
+        const rows = this.db.prepare(sql).all(...params) as Array<{
+          id: string; summary: string; time_start: string; level: number;
+        }>;
+
+        for (const row of rows) {
+          if (rowsScanned >= MAX_ROW_SCAN || totalChars > MAX_TOTAL_CHARS) { truncated = true; break; }
+          rowsScanned++;
+
+          if (mode === 'full_text') {
+            const idx = row.summary.toLowerCase().indexOf(pattern.toLowerCase());
+            if (idx === -1) continue;
+            const snippet = this.extractSnippet(row.summary, idx, pattern.length);
+            totalChars += snippet.length;
+            if (totalChars > MAX_TOTAL_CHARS) { truncated = true; break; }
+            matches.push({ node_id: row.id, source: 'summary', snippet, date: row.time_start, level: row.level });
+          } else {
+            const m = regex!.exec(row.summary);
+            if (!m) continue;
+            const snippet = this.extractSnippet(row.summary, m.index, m[0].length);
+            totalChars += snippet.length;
+            if (totalChars > MAX_TOTAL_CHARS) { truncated = true; break; }
+            matches.push({ node_id: row.id, source: 'summary', snippet, date: row.time_start, level: row.level });
+          }
+        }
+      }
+
+      // --- Search sessions ---
+      if ((scope === 'messages' || scope === 'both') && !truncated) {
+        let sql = `SELECT cs.id, cs.messages, cs.agent_response, cn.time_start, cn.level
+                   FROM context_sessions cs
+                   JOIN context_nodes cn ON cn.id = cs.id
+                   WHERE cs.group_folder = ? AND cs.pruned_at IS NULL AND cn.pruned_at IS NULL`;
+        const params: Array<string | number> = [group];
+        if (options?.dateFrom) { sql += ` AND cn.time_start >= ?`; params.push(options.dateFrom); }
+        if (dateTo) { sql += ` AND cn.time_end <= ?`; params.push(dateTo); }
+        sql += ` ORDER BY cn.time_start DESC LIMIT ?`;
+        params.push(MAX_ROW_SCAN);
+
+        const rows = this.db.prepare(sql).all(...params) as Array<{
+          id: string; messages: string; agent_response: string | null;
+          time_start: string; level: number;
+        }>;
+
+        for (const row of rows) {
+          if (rowsScanned >= MAX_ROW_SCAN || totalChars > MAX_TOTAL_CHARS) { truncated = true; break; }
+          rowsScanned++;
+
+          // Search messages JSON
+          if (mode === 'full_text') {
+            const idx = row.messages.toLowerCase().indexOf(pattern.toLowerCase());
+            if (idx !== -1) {
+              const snippet = this.extractSnippet(row.messages, idx, pattern.length);
+              totalChars += snippet.length;
+              if (totalChars > MAX_TOTAL_CHARS) { truncated = true; break; }
+              matches.push({ node_id: row.id, source: 'message', snippet, date: row.time_start, level: row.level });
+              continue;
+            }
+          } else {
+            const m = regex!.exec(row.messages);
+            if (m) {
+              const snippet = this.extractSnippet(row.messages, m.index, m[0].length);
+              totalChars += snippet.length;
+              if (totalChars > MAX_TOTAL_CHARS) { truncated = true; break; }
+              matches.push({ node_id: row.id, source: 'message', snippet, date: row.time_start, level: row.level });
+              continue;
+            }
+          }
+
+          // Search agent_response
+          if (row.agent_response) {
+            if (mode === 'full_text') {
+              const idx = row.agent_response.toLowerCase().indexOf(pattern.toLowerCase());
+              if (idx !== -1) {
+                const snippet = this.extractSnippet(row.agent_response, idx, pattern.length);
+                totalChars += snippet.length;
+                if (totalChars > MAX_TOTAL_CHARS) { truncated = true; break; }
+                matches.push({ node_id: row.id, source: 'agent_response', snippet, date: row.time_start, level: row.level });
+              }
+            } else {
+              const m = regex!.exec(row.agent_response);
+              if (m) {
+                const snippet = this.extractSnippet(row.agent_response, m.index, m[0].length);
+                totalChars += snippet.length;
+                if (totalChars > MAX_TOTAL_CHARS) { truncated = true; break; }
+                matches.push({ node_id: row.id, source: 'agent_response', snippet, date: row.time_start, level: row.level });
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // Graceful fallback on any DB error
+    }
+
+    return { matches: matches.slice(0, limit), truncated, rows_scanned: rowsScanned };
   }
 
   /* ---------------------------------------------------------------- */
@@ -354,6 +547,23 @@ export class ContextReader {
   /* ---------------------------------------------------------------- */
   /*  Private helpers                                                   */
   /* ---------------------------------------------------------------- */
+
+  private isRedosRisk(pattern: string): boolean {
+    if (pattern.length > REDOS_MAX_LEN) return true;
+    if (REDOS_NESTED_QUANTIFIER.test(pattern)) return true;
+    return false;
+  }
+
+  private extractSnippet(text: string, matchIndex: number, matchLength: number): string {
+    // Clamp to 0 so matches longer than SNIPPET_CHAR_LIMIT don't invert the window
+    const half = Math.max(0, Math.floor((SNIPPET_CHAR_LIMIT - matchLength) / 2));
+    const start = Math.max(0, matchIndex - half);
+    const end = Math.min(text.length, matchIndex + matchLength + half);
+    let snippet = text.slice(start, end);
+    if (start > 0) snippet = '...' + snippet;
+    if (end < text.length) snippet = snippet + '...';
+    return snippet;
+  }
 
   private parseJson<T>(value: string | null, fallback: T): T {
     if (!value) return fallback;

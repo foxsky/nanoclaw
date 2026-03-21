@@ -1027,6 +1027,40 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
     },
   );
 
+  server.tool(
+    'context_grep',
+    'Grep conversation history with regex or text search. Searches raw messages, agent responses, and/or summaries. Use context_recall on returned node_ids for full detail.',
+    {
+      pattern: z.string().describe('Search pattern (text or JS regex)'),
+      mode: z.enum(['regex', 'full_text']).optional().default('full_text'),
+      scope: z.enum(['messages', 'summaries', 'both']).optional().default('both'),
+      date_from: z.string().optional().describe('ISO date, e.g. 2026-03-01'),
+      date_to: z.string().optional().describe('ISO date, e.g. 2026-03-15'),
+      limit: z.number().optional().default(20),
+    },
+    async (args) => {
+      const result = ctxReader.grep(groupFolder, args.pattern, {
+        mode: args.mode,
+        scope: args.scope,
+        dateFrom: args.date_from,
+        dateTo: args.date_to,
+        limit: args.limit,
+      });
+      if (result.matches.length === 0) {
+        return {
+          content: [{ type: 'text' as const, text: `No matches for "${args.pattern}" (${result.rows_scanned} rows scanned).` }],
+        };
+      }
+      let text = JSON.stringify(result.matches.map((m) => ({
+        node_id: m.node_id, source: m.source, snippet: m.snippet, date: m.date, level: m.level,
+      })), null, 2);
+      if (result.truncated) {
+        text += `\n\n(Truncated — ${result.rows_scanned} rows scanned. Narrow with date_from/date_to.)`;
+      }
+      return { content: [{ type: 'text' as const, text }] };
+    },
+  );
+
   // Progressive unlock: timeline + topics at >50 nodes
   const nodeCount = ctxReader.getNodeCount(groupFolder);
   if (nodeCount > 50) {
