@@ -2,6 +2,15 @@
 
 ## 2026-03-21
 
+### Orphan adoption in rollups
+- **Fix:** Daily/weekly/monthly rollups now adopt late-arriving children that were summarized after the rollup was created
+- Previously, leaves summarized after their day's rollup ran were permanently orphaned (`parent_id IS NULL`)
+- 15 orphaned leaves in production recovered on deploy
+
+### Summarizer health alerting
+- **Fix:** Log `ERROR` (not just `WARN`) after 10 consecutive summarizer failures
+- Prevents silent multi-day outages like the March 18-21 incident (30K+ warnings, no alert)
+
 ### context_grep — regex + raw session search
 - **New MCP tool**: `context_grep` with `mode` (regex/full_text), `scope` (messages/summaries/both), date range, limit
 - Searches raw `context_sessions.messages` JSON and `agent_response` text — not just summaries
