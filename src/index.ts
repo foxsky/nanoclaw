@@ -826,9 +826,8 @@ async function main(): Promise<void> {
           (skillEnv.CONTEXT_SUMMARIZER as 'ollama' | 'claude') || 'ollama',
         summarizerModel: skillEnv.CONTEXT_SUMMARIZER_MODEL,
         fallbackModel: skillEnv.CONTEXT_FALLBACK_MODEL,
-        ollamaHost: skillEnv.OLLAMA_HOST,
-        fallbackOllamaHost:
-          skillEnv.CONTEXT_FALLBACK_OLLAMA_HOST || skillEnv.OLLAMA_HOST,
+        ollamaHost: skillEnv.CONTEXT_OLLAMA_HOST || skillEnv.OLLAMA_HOST,
+        fallbackOllamaHost: skillEnv.CONTEXT_FALLBACK_OLLAMA_HOST,
         anthropicApiKey: skillEnv.ANTHROPIC_API_KEY,
         retainDays: parseInt(skillEnv.CONTEXT_RETAIN_DAYS || '90'),
       },

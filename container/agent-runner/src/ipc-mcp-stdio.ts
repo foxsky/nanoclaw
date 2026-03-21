@@ -1051,9 +1051,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           content: [{ type: 'text' as const, text: `No matches for "${args.pattern}" (${result.rows_scanned} rows scanned).` }],
         };
       }
-      let text = JSON.stringify(result.matches.map((m) => ({
-        node_id: m.node_id, source: m.source, snippet: m.snippet, date: m.date, level: m.level,
-      })), null, 2);
+      let text = JSON.stringify(result.matches, null, 2);
       if (result.truncated) {
         text += `\n\n(Truncated — ${result.rows_scanned} rows scanned. Narrow with date_from/date_to.)`;
       }

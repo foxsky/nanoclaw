@@ -285,7 +285,8 @@ export class EmbeddingService {
         body,
         signal: AbortSignal.timeout(10_000),
       });
-    } catch {
+    } catch (err) {
+      logger.warn({ err, host }, 'Embedding fetch failed');
       return null;
     }
   }

@@ -220,6 +220,7 @@ export class ContextReader {
     let totalChars = 0;
     let rowsScanned = 0;
     let truncated = false;
+    const lowerPattern = pattern.toLowerCase();
 
     const dateTo = options?.dateTo
       ? (options.dateTo.length === 10 ? options.dateTo + 'T23:59:59.999Z' : options.dateTo)
@@ -250,7 +251,7 @@ export class ContextReader {
           rowsScanned++;
 
           if (mode === 'full_text') {
-            const idx = row.summary.toLowerCase().indexOf(pattern.toLowerCase());
+            const idx = row.summary.toLowerCase().indexOf(lowerPattern);
             if (idx === -1) continue;
             const snippet = this.extractSnippet(row.summary, idx, pattern.length);
             totalChars += snippet.length;
@@ -290,7 +291,7 @@ export class ContextReader {
 
           // Search messages JSON
           if (mode === 'full_text') {
-            const idx = row.messages.toLowerCase().indexOf(pattern.toLowerCase());
+            const idx = row.messages.toLowerCase().indexOf(lowerPattern);
             if (idx !== -1) {
               const snippet = this.extractSnippet(row.messages, idx, pattern.length);
               totalChars += snippet.length;
@@ -312,7 +313,7 @@ export class ContextReader {
           // Search agent_response
           if (row.agent_response) {
             if (mode === 'full_text') {
-              const idx = row.agent_response.toLowerCase().indexOf(pattern.toLowerCase());
+              const idx = row.agent_response.toLowerCase().indexOf(lowerPattern);
               if (idx !== -1) {
                 const snippet = this.extractSnippet(row.agent_response, idx, pattern.length);
                 totalChars += snippet.length;
