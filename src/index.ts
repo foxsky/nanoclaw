@@ -774,6 +774,7 @@ async function main(): Promise<void> {
     'ANTHROPIC_API_KEY',
     'CONTEXT_SUMMARIZER',
     'CONTEXT_SUMMARIZER_MODEL',
+    'CONTEXT_FALLBACK_MODEL',
     'CONTEXT_RETAIN_DAYS',
   ]);
 
@@ -821,6 +822,7 @@ async function main(): Promise<void> {
         summarizer:
           (skillEnv.CONTEXT_SUMMARIZER as 'ollama' | 'claude') || 'ollama',
         summarizerModel: skillEnv.CONTEXT_SUMMARIZER_MODEL,
+        fallbackModel: skillEnv.CONTEXT_FALLBACK_MODEL,
         ollamaHost: skillEnv.OLLAMA_HOST,
         anthropicApiKey: skillEnv.ANTHROPIC_API_KEY,
         retainDays: parseInt(skillEnv.CONTEXT_RETAIN_DAYS || '90'),
