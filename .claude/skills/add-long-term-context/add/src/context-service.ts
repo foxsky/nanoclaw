@@ -33,7 +33,7 @@ export interface ContextConfig {
   summarizer: 'ollama' | 'claude';
   summarizerModel?: string;
   fallbackModel?: string; // CONTEXT_FALLBACK_MODEL — tried on fallback host when primary fails
-  ollamaHost?: string;
+  ollamaHost?: string; // primary Ollama host (CONTEXT_OLLAMA_HOST or OLLAMA_HOST)
   fallbackOllamaHost?: string; // defaults to ollamaHost if not set
   anthropicApiKey?: string; // passed from caller (reads .env via readEnvFile)
   retainDays: number;

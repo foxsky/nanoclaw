@@ -774,6 +774,7 @@ async function main(): Promise<void> {
     'ANTHROPIC_API_KEY',
     'CONTEXT_SUMMARIZER',
     'CONTEXT_SUMMARIZER_MODEL',
+    'CONTEXT_OLLAMA_HOST',
     'CONTEXT_FALLBACK_MODEL',
     'CONTEXT_FALLBACK_OLLAMA_HOST',
     'CONTEXT_RETAIN_DAYS',
@@ -789,6 +790,7 @@ async function main(): Promise<void> {
       path.join(DATA_DIR, 'embeddings', 'embeddings.db'),
       skillEnv.OLLAMA_HOST,
       skillEnv.EMBEDDING_MODEL || 'bge-m3',
+      skillEnv.CONTEXT_FALLBACK_OLLAMA_HOST,
     );
     embeddingService.startIndexer();
     logger.info(
