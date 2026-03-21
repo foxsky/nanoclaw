@@ -2,12 +2,6 @@
 
 ## 2026-03-21
 
-### Claude Haiku fallback for summarizer
-- **New:** When Ollama fails (404, timeout, etc.), automatically falls back to Claude Haiku via Messages API
-- Supports both `ANTHROPIC_API_KEY` (x-api-key) and `CLAUDE_CODE_OAUTH_TOKEN` (Bearer auth)
-- Prevents multi-day summarization outages when Ollama model is unavailable
-- Fallback only triggers when primary summarizer is set to `ollama` (not when already using `claude`)
-
 ### Orphan adoption in rollups
 - **Fix:** Daily/weekly/monthly rollups now adopt late-arriving children that were summarized after the rollup was created
 - Previously, leaves summarized after their day's rollup ran were permanently orphaned (`parent_id IS NULL`)
