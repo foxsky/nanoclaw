@@ -34,7 +34,6 @@ export interface ContextConfig {
   summarizerModel?: string;
   ollamaHost?: string;
   anthropicApiKey?: string; // passed from caller (reads .env via readEnvFile)
-  oauthToken?: string; // CLAUDE_CODE_OAUTH_TOKEN — used as fallback auth for Claude API
   retainDays: number;
 }
 
@@ -580,19 +579,12 @@ export class ContextService {
         result = await this.callClaude(prompt);
       } else {
         result = await this.callOllama(prompt);
-        // Fallback to Claude Haiku when Ollama fails
-        if (!result && this.hasClaudeAuth()) {
-          logger.info('Ollama failed, falling back to Claude Haiku');
-          result = await this.callClaude(prompt);
-        }
       }
       if (result) {
         this.consecutiveFailures = 0;
       } else {
         this.consecutiveFailures++;
-        if (
-          this.consecutiveFailures === ContextService.FAILURE_ALERT_THRESHOLD
-        ) {
+        if (this.consecutiveFailures === ContextService.FAILURE_ALERT_THRESHOLD) {
           logger.error(
             {
               failures: this.consecutiveFailures,
@@ -644,28 +636,16 @@ export class ContextService {
     return data.response ?? null;
   }
 
-  private hasClaudeAuth(): boolean {
-    return !!(this.config.anthropicApiKey || this.config.oauthToken);
-  }
-
   private async callClaude(prompt: string): Promise<string | null> {
     const apiKey = this.config.anthropicApiKey;
-    const oauthToken = this.config.oauthToken;
-    if (!apiKey && !oauthToken) return null;
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'anthropic-version': '2023-06-01',
-    };
-    if (apiKey) {
-      headers['x-api-key'] = apiKey;
-    } else {
-      headers['authorization'] = `Bearer ${oauthToken}`;
-    }
-
+    if (!apiKey) return null;
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
       body: JSON.stringify({
         model: CLAUDE_API_MODEL,
         max_tokens: 500,
