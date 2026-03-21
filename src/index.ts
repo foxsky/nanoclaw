@@ -772,6 +772,7 @@ async function main(): Promise<void> {
     'OLLAMA_HOST',
     'EMBEDDING_MODEL',
     'ANTHROPIC_API_KEY',
+    'CLAUDE_CODE_OAUTH_TOKEN',
     'CONTEXT_SUMMARIZER',
     'CONTEXT_SUMMARIZER_MODEL',
     'CONTEXT_RETAIN_DAYS',
@@ -823,6 +824,7 @@ async function main(): Promise<void> {
         summarizerModel: skillEnv.CONTEXT_SUMMARIZER_MODEL,
         ollamaHost: skillEnv.OLLAMA_HOST,
         anthropicApiKey: skillEnv.ANTHROPIC_API_KEY,
+        oauthToken: skillEnv.CLAUDE_CODE_OAUTH_TOKEN,
         retainDays: parseInt(skillEnv.CONTEXT_RETAIN_DAYS || '90'),
       },
     );
