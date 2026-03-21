@@ -571,6 +571,67 @@ describe('ContextService — FTS5 triggers', () => {
 });
 
 /* ================================================================== */
+/*  summarizer failure alerting                                        */
+/* ================================================================== */
+
+describe('ContextService — summarizer failure alerting', () => {
+  it('logs ERROR after 10 consecutive failures, resets on success', async () => {
+    const svc = new ContextService(TEST_DB, {
+      summarizer: 'ollama',
+      ollamaHost: 'http://localhost:11434',
+      retainDays: 90,
+    });
+
+    const now = new Date().toISOString();
+
+    // Insert 12 pending leaves
+    for (let i = 0; i < 12; i++) {
+      const nodeId = `leaf:grp:2026-03-14T${String(i).padStart(2, '0')}:00:00.000Z`;
+      svc.db
+        .prepare(
+          `INSERT INTO context_nodes (id, group_folder, level, time_start, time_end, created_at)
+         VALUES (?, 'grp', 0, ?, ?, ?)`,
+        )
+        .run(nodeId, `2026-03-14T${String(i).padStart(2, '0')}:00:00.000Z`,
+          `2026-03-14T${String(i).padStart(2, '0')}:00:00.000Z`, now);
+      svc.db
+        .prepare(
+          `INSERT INTO context_sessions (id, group_folder, messages, agent_response, created_at)
+         VALUES (?, 'grp', '[]', 'resp', ?)`,
+        )
+        .run(nodeId, now);
+    }
+
+    // Mock fetch to always fail (non-OK)
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+    });
+    global.fetch = mockFetch as any;
+
+    // Run 2 cycles of 5 = 10 failures
+    await svc.summarizePending(5);
+    await svc.summarizePending(5);
+
+    // Access private field to verify counter
+    expect((svc as any).consecutiveFailures).toBe(10);
+
+    // Now make it succeed
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ response: 'Recovery summary after outage.' }),
+    });
+
+    await svc.summarizePending(2);
+
+    // Counter should reset
+    expect((svc as any).consecutiveFailures).toBe(0);
+
+    svc.close();
+  });
+});
+
+/* ================================================================== */
 /*  rollupDaily                                                        */
 /* ================================================================== */
 
@@ -670,6 +731,63 @@ describe('ContextService — rollupDaily', () => {
     // Second rollup should return null (already exists)
     const second = await svc.rollupDaily('grp', date);
     expect(second).toBeNull();
+
+    svc.close();
+  });
+
+  it('adopts late-arriving orphans into existing rollup', async () => {
+    const svc = new ContextService(TEST_DB, {
+      summarizer: 'ollama',
+      ollamaHost: 'http://localhost:11434',
+      retainDays: 90,
+    });
+
+    const date = '2026-03-14';
+    const now = new Date().toISOString();
+
+    // Insert first leaf and create the daily rollup
+    svc.db
+      .prepare(
+        `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
+       VALUES (?, 'grp', 0, 'early leaf', ?, ?, 10, 'test', ?)`,
+      )
+      .run(`leaf:grp:${date}T09:00:00.000Z`, `${date}T09:00:00.000Z`, `${date}T09:00:00.000Z`, now);
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ response: 'Daily rollup summary.' }),
+    });
+    global.fetch = mockFetch as any;
+
+    const dailyId = await svc.rollupDaily('grp', date);
+    expect(dailyId).toBeTruthy();
+
+    // Verify first leaf is linked
+    const earlyLeaf = svc.db.prepare('SELECT parent_id FROM context_nodes WHERE id = ?')
+      .get(`leaf:grp:${date}T09:00:00.000Z`) as any;
+    expect(earlyLeaf.parent_id).toBe(dailyId);
+
+    // Now insert a late-arriving orphan (summarized after the rollup was created)
+    svc.db
+      .prepare(
+        `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
+       VALUES (?, 'grp', 0, 'late orphan', ?, ?, 10, 'test', ?)`,
+      )
+      .run(`leaf:grp:${date}T21:00:00.000Z`, `${date}T21:00:00.000Z`, `${date}T21:00:00.000Z`, now);
+
+    // Re-run rollup — should adopt the orphan, not create a new daily
+    const second = await svc.rollupDaily('grp', date);
+    expect(second).toBeNull(); // still returns null (existing rollup)
+
+    // Verify the orphan was adopted
+    const lateLeaf = svc.db.prepare('SELECT parent_id FROM context_nodes WHERE id = ?')
+      .get(`leaf:grp:${date}T21:00:00.000Z`) as any;
+    expect(lateLeaf.parent_id).toBe(dailyId);
+
+    // Total children should be 2
+    const children = svc.db.prepare('SELECT COUNT(*) as cnt FROM context_nodes WHERE parent_id = ?')
+      .get(dailyId) as any;
+    expect(children.cnt).toBe(2);
 
     svc.close();
   });

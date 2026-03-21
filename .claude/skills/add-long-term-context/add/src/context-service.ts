@@ -584,7 +584,9 @@ export class ContextService {
         this.consecutiveFailures = 0;
       } else {
         this.consecutiveFailures++;
-        if (this.consecutiveFailures === ContextService.FAILURE_ALERT_THRESHOLD) {
+        if (
+          this.consecutiveFailures === ContextService.FAILURE_ALERT_THRESHOLD
+        ) {
           logger.error(
             {
               failures: this.consecutiveFailures,
