@@ -71,6 +71,7 @@ describe('provision_child_board IPC plugin', () => {
       syncGroups: async () => {},
       getAvailableGroups: () => [],
       writeGroupsSnapshot: () => {},
+      onTasksChanged: () => {},
       createGroup: createGroup as IpcDeps['createGroup'],
     };
   });

@@ -40,6 +40,7 @@ export interface IpcDeps {
     droppedParticipants?: string[];
   }>;
   resolvePhoneJid?: (phone: string) => Promise<string>;
+  onTasksChanged: () => void;
 }
 
 export type IpcHandler = (
@@ -183,15 +184,17 @@ const handleScheduleTask: IpcHandler = async (
       { taskId, sourceGroup, targetFolder, contextMode },
       'Task created via IPC',
     );
+    deps.onTasksChanged();
   }
 };
 
-const handlePauseTask: IpcHandler = async (data, sourceGroup, isMain) => {
+const handlePauseTask: IpcHandler = async (data, sourceGroup, isMain, deps) => {
   if (data.taskId) {
     const task = getTaskById(data.taskId as string);
     if (task && (isMain || task.group_folder === sourceGroup)) {
       updateTask(data.taskId as string, { status: 'paused' });
       logger.info({ taskId: data.taskId, sourceGroup }, 'Task paused via IPC');
+      deps.onTasksChanged();
     } else {
       logger.warn(
         { taskId: data.taskId, sourceGroup },
@@ -201,12 +204,18 @@ const handlePauseTask: IpcHandler = async (data, sourceGroup, isMain) => {
   }
 };
 
-const handleResumeTask: IpcHandler = async (data, sourceGroup, isMain) => {
+const handleResumeTask: IpcHandler = async (
+  data,
+  sourceGroup,
+  isMain,
+  deps,
+) => {
   if (data.taskId) {
     const task = getTaskById(data.taskId as string);
     if (task && (isMain || task.group_folder === sourceGroup)) {
       updateTask(data.taskId as string, { status: 'active' });
       logger.info({ taskId: data.taskId, sourceGroup }, 'Task resumed via IPC');
+      deps.onTasksChanged();
     } else {
       logger.warn(
         { taskId: data.taskId, sourceGroup },
@@ -216,7 +225,12 @@ const handleResumeTask: IpcHandler = async (data, sourceGroup, isMain) => {
   }
 };
 
-const handleCancelTask: IpcHandler = async (data, sourceGroup, isMain) => {
+const handleCancelTask: IpcHandler = async (
+  data,
+  sourceGroup,
+  isMain,
+  deps,
+) => {
   if (data.taskId) {
     const task = getTaskById(data.taskId as string);
     if (task && (isMain || task.group_folder === sourceGroup)) {
@@ -225,6 +239,7 @@ const handleCancelTask: IpcHandler = async (data, sourceGroup, isMain) => {
         { taskId: data.taskId, sourceGroup },
         'Task cancelled via IPC',
       );
+      deps.onTasksChanged();
     } else {
       logger.warn(
         { taskId: data.taskId, sourceGroup },
@@ -340,11 +355,82 @@ const handleRegisterGroup: IpcHandler = async (
   }
 };
 
+const handleUpdateTask: IpcHandler = async (
+  data,
+  sourceGroup,
+  isMain,
+  deps,
+) => {
+  if (data.taskId) {
+    const task = getTaskById(data.taskId as string);
+    if (!task) {
+      logger.warn(
+        { taskId: data.taskId, sourceGroup },
+        'Task not found for update',
+      );
+      return;
+    }
+    if (!isMain && task.group_folder !== sourceGroup) {
+      logger.warn(
+        { taskId: data.taskId, sourceGroup },
+        'Unauthorized task update attempt',
+      );
+      return;
+    }
+
+    const updates: Parameters<typeof updateTask>[1] = {};
+    if (data.prompt !== undefined) updates.prompt = data.prompt as string;
+    if (data.schedule_type !== undefined)
+      updates.schedule_type = data.schedule_type as
+        | 'cron'
+        | 'interval'
+        | 'once';
+    if (data.schedule_value !== undefined)
+      updates.schedule_value = data.schedule_value as string;
+
+    // Recompute next_run if schedule changed
+    if (data.schedule_type || data.schedule_value) {
+      const updatedTask = {
+        ...task,
+        ...updates,
+      };
+      if (updatedTask.schedule_type === 'cron') {
+        try {
+          const interval = CronExpressionParser.parse(
+            updatedTask.schedule_value,
+            { tz: TIMEZONE },
+          );
+          updates.next_run = interval.next().toISOString();
+        } catch {
+          logger.warn(
+            { taskId: data.taskId, value: updatedTask.schedule_value },
+            'Invalid cron in task update',
+          );
+          return;
+        }
+      } else if (updatedTask.schedule_type === 'interval') {
+        const ms = parseInt(updatedTask.schedule_value, 10);
+        if (!isNaN(ms) && ms > 0) {
+          updates.next_run = new Date(Date.now() + ms).toISOString();
+        }
+      }
+    }
+
+    updateTask(data.taskId as string, updates);
+    logger.info(
+      { taskId: data.taskId, sourceGroup, updates },
+      'Task updated via IPC',
+    );
+    deps.onTasksChanged();
+  }
+};
+
 // Register core handlers
 registerIpcHandler('schedule_task', handleScheduleTask);
 registerIpcHandler('pause_task', handlePauseTask);
 registerIpcHandler('resume_task', handleResumeTask);
 registerIpcHandler('cancel_task', handleCancelTask);
+registerIpcHandler('update_task', handleUpdateTask);
 registerIpcHandler('refresh_groups', handleRefreshGroups);
 registerIpcHandler('register_group', handleRegisterGroup);
 

@@ -65,6 +65,7 @@ describe('create_group IPC plugin', () => {
       syncGroups: async () => {},
       getAvailableGroups: () => [],
       writeGroupsSnapshot: () => {},
+      onTasksChanged: () => {},
       createGroup: async (subject, participants) =>
         createGroup(subject, participants),
     };

@@ -41,17 +41,17 @@ describe('readonlyMountArgs', () => {
 describe('stopContainer', () => {
   it('returns stop command using CONTAINER_RUNTIME_BIN', () => {
     expect(stopContainer('nanoclaw-test-123')).toBe(
-      `${CONTAINER_RUNTIME_BIN} stop nanoclaw-test-123`,
+      `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-test-123`,
     );
   });
 
   it('accepts valid Docker container names', () => {
     // Names with dots, underscores, leading slash
     expect(stopContainer('my_container.name')).toBe(
-      `${CONTAINER_RUNTIME_BIN} stop my_container.name`,
+      `${CONTAINER_RUNTIME_BIN} stop -t 1 my_container.name`,
     );
     expect(stopContainer('/nanoclaw-abc')).toBe(
-      `${CONTAINER_RUNTIME_BIN} stop /nanoclaw-abc`,
+      `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-abc`,
     );
   });
 

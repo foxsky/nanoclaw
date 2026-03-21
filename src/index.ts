@@ -377,7 +377,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           ? result.result
           : JSON.stringify(result.result);
       const text = stripInternalTags(raw);
-      logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
+      logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
       if (text) {
         await channel.sendMessage(chatJid, text, groupSender);
         outputSentToUser = true;
@@ -1025,6 +1025,21 @@ async function main(): Promise<void> {
       if (!ch?.resolvePhoneJid)
         throw new Error('No channel supports phone JID resolution');
       return ch.resolvePhoneJid(phone);
+    },
+    onTasksChanged: () => {
+      const tasks = getAllTasks();
+      const taskRows = tasks.map((t) => ({
+        id: t.id,
+        groupFolder: t.group_folder,
+        prompt: t.prompt,
+        schedule_type: t.schedule_type,
+        schedule_value: t.schedule_value,
+        status: t.status,
+        next_run: t.next_run,
+      }));
+      for (const group of Object.values(registeredGroups)) {
+        writeTasksSnapshot(group.folder, group.isMain === true, taskRows);
+      }
     },
   });
   queue.setProcessMessagesFn(processGroupMessages);
