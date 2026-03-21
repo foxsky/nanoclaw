@@ -22,6 +22,7 @@ CREATE INDEX IF NOT EXISTS idx_embeddings_pending ON embeddings(collection) WHER
 export class EmbeddingService {
   readonly db: Database.Database;
   private readonly ollamaHost: string;
+  private readonly fallbackOllamaHost: string | null;
   private readonly model: string;
   private indexerTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -32,8 +33,17 @@ export class EmbeddingService {
   private readonly stmtUpsert: Database.Statement;
   private readonly stmtDelete: Database.Statement;
 
-  constructor(dbPath: string, ollamaHost: string, model: string) {
+  constructor(
+    dbPath: string,
+    ollamaHost: string,
+    model: string,
+    fallbackOllamaHost?: string,
+  ) {
     this.ollamaHost = ollamaHost;
+    this.fallbackOllamaHost =
+      fallbackOllamaHost && fallbackOllamaHost !== ollamaHost
+        ? fallbackOllamaHost
+        : null;
     this.model = model;
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
@@ -169,22 +179,26 @@ export class EmbeddingService {
 
       if (pending.length === 0) return;
 
-      // Step 3: Batch-call Ollama
+      // Step 3: Batch-call Ollama (with fallback host)
       const texts = pending.map((p) => p.source_text);
-      const response = await fetch(`${this.ollamaHost}/api/embed`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: this.model,
-          input: texts,
-          keep_alive: -1,
-        }),
-        signal: AbortSignal.timeout(10_000),
+      const embedBody = JSON.stringify({
+        model: this.model,
+        input: texts,
+        keep_alive: -1,
       });
 
-      if (!response.ok) {
+      let response = await this.fetchEmbed(this.ollamaHost, embedBody);
+      if (!response?.ok && this.fallbackOllamaHost) {
+        logger.info(
+          { fallback: this.fallbackOllamaHost },
+          'Embedding indexer: primary failed, trying fallback',
+        );
+        response = await this.fetchEmbed(this.fallbackOllamaHost, embedBody);
+      }
+
+      if (!response?.ok) {
         logger.warn(
-          { status: response.status },
+          { status: response?.status },
           'Embedding indexer: Ollama request failed',
         );
         return;
@@ -257,6 +271,22 @@ export class EmbeddingService {
       this.db.close();
     } catch {
       // already closed
+    }
+  }
+
+  private async fetchEmbed(
+    host: string,
+    body: string,
+  ): Promise<Response | null> {
+    try {
+      return await fetch(`${host}/api/embed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch {
+      return null;
     }
   }
 }
