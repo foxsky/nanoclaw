@@ -34,7 +34,7 @@ export interface ContextConfig {
   summarizerModel?: string;
   fallbackModel?: string; // CONTEXT_FALLBACK_MODEL — tried on fallback host when primary fails
   ollamaHost?: string; // primary Ollama host (CONTEXT_OLLAMA_HOST or OLLAMA_HOST)
-  fallbackOllamaHost?: string; // defaults to ollamaHost if not set
+  fallbackOllamaHost?: string; // separate host for fallback model; omit to skip fallback on host failure
   anthropicApiKey?: string; // passed from caller (reads .env via readEnvFile)
   retainDays: number;
 }
@@ -592,8 +592,11 @@ export class ContextService {
         result = await this.callClaude(prompt);
       } else {
         result = await this.callOllama(prompt);
-        const hasFallback = this.config.fallbackModel &&
-          (this.config.fallbackOllamaHost || this.config.fallbackModel !== (this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL));
+        const hasFallback =
+          this.config.fallbackModel &&
+          (this.config.fallbackOllamaHost ||
+            this.config.fallbackModel !==
+              (this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL));
         if (!result && hasFallback) {
           logger.info(
             { fallback: this.config.fallbackModel },
