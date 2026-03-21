@@ -32,8 +32,9 @@ export function estimateTokens(text: string): number {
 export interface ContextConfig {
   summarizer: 'ollama' | 'claude';
   summarizerModel?: string;
-  fallbackModel?: string; // CONTEXT_FALLBACK_MODEL — tried on same Ollama host when primary fails
+  fallbackModel?: string; // CONTEXT_FALLBACK_MODEL — tried on fallback host when primary fails
   ollamaHost?: string;
+  fallbackOllamaHost?: string; // defaults to ollamaHost if not set
   anthropicApiKey?: string; // passed from caller (reads .env via readEnvFile)
   retainDays: number;
 }
@@ -586,7 +587,11 @@ export class ContextService {
             { fallback: this.config.fallbackModel },
             'Primary Ollama model failed, trying fallback',
           );
-          result = await this.callOllama(prompt, this.config.fallbackModel);
+          result = await this.callOllama(
+            prompt,
+            this.config.fallbackModel,
+            this.config.fallbackOllamaHost,
+          );
         }
       }
       if (result) {
@@ -623,11 +628,13 @@ export class ContextService {
   private async callOllama(
     prompt: string,
     modelOverride?: string,
+    hostOverride?: string,
   ): Promise<string | null> {
-    if (!this.config.ollamaHost) return null;
+    const host = hostOverride ?? this.config.ollamaHost;
+    if (!host) return null;
     const model =
       modelOverride ?? this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL;
-    const resp = await fetch(`${this.config.ollamaHost}/api/generate`, {
+    const resp = await fetch(`${host}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
