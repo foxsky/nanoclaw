@@ -444,7 +444,6 @@ export class ContextService {
     rangeStart: string,
     rangeEnd: string,
   ): Promise<string | null> {
-    // Check if rollup already exists — if so, adopt any late-arriving orphans
     const existing = this.stmtSelectExistingNode.get(parentId);
     if (existing) {
       const orphans = this.stmtSelectChildrenForRollup.all(
@@ -465,7 +464,6 @@ export class ContextService {
       return null;
     }
 
-    // Get children within the range
     const children = this.stmtSelectChildrenForRollup.all(
       groupFolder,
       childLevel,
@@ -570,9 +568,22 @@ export class ContextService {
       : (this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL);
   }
 
-  /** Consecutive summarizer failures — used for alerting. */
   private consecutiveFailures = 0;
   private static readonly FAILURE_ALERT_THRESHOLD = 10;
+
+  private recordFailure(): void {
+    this.consecutiveFailures++;
+    if (this.consecutiveFailures === ContextService.FAILURE_ALERT_THRESHOLD) {
+      logger.error(
+        {
+          failures: this.consecutiveFailures,
+          model: this.getModelName(),
+          summarizer: this.config.summarizer,
+        },
+        'Summarizer has failed 10 consecutive times — check model availability',
+      );
+    }
+  }
 
   private async callSummarizer(prompt: string): Promise<string | null> {
     try {
@@ -581,8 +592,12 @@ export class ContextService {
         result = await this.callClaude(prompt);
       } else {
         result = await this.callOllama(prompt);
-        // Fallback to a different Ollama model when primary fails
-        if (!result && this.config.fallbackModel) {
+        const hasFallback =
+          this.config.fallbackModel &&
+          (this.config.fallbackOllamaHost ||
+            this.config.fallbackModel !==
+              (this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL));
+        if (!result && hasFallback) {
           logger.info(
             { fallback: this.config.fallbackModel },
             'Primary Ollama model failed, trying fallback',
@@ -597,30 +612,12 @@ export class ContextService {
       if (result) {
         this.consecutiveFailures = 0;
       } else {
-        this.consecutiveFailures++;
-        if (
-          this.consecutiveFailures === ContextService.FAILURE_ALERT_THRESHOLD
-        ) {
-          logger.error(
-            {
-              failures: this.consecutiveFailures,
-              model: this.getModelName(),
-              summarizer: this.config.summarizer,
-            },
-            'Summarizer has failed 10 consecutive times — check model availability',
-          );
-        }
+        this.recordFailure();
       }
       return result;
     } catch (err) {
-      this.consecutiveFailures++;
       logger.warn({ err }, 'Summarizer call failed');
-      if (this.consecutiveFailures === ContextService.FAILURE_ALERT_THRESHOLD) {
-        logger.error(
-          { failures: this.consecutiveFailures, model: this.getModelName() },
-          'Summarizer has failed 10 consecutive times — check model availability',
-        );
-      }
+      this.recordFailure();
       return null;
     }
   }
