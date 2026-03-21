@@ -592,8 +592,12 @@ describe('ContextService — summarizer failure alerting', () => {
           `INSERT INTO context_nodes (id, group_folder, level, time_start, time_end, created_at)
          VALUES (?, 'grp', 0, ?, ?, ?)`,
         )
-        .run(nodeId, `2026-03-14T${String(i).padStart(2, '0')}:00:00.000Z`,
-          `2026-03-14T${String(i).padStart(2, '0')}:00:00.000Z`, now);
+        .run(
+          nodeId,
+          `2026-03-14T${String(i).padStart(2, '0')}:00:00.000Z`,
+          `2026-03-14T${String(i).padStart(2, '0')}:00:00.000Z`,
+          now,
+        );
       svc.db
         .prepare(
           `INSERT INTO context_sessions (id, group_folder, messages, agent_response, created_at)
@@ -751,7 +755,12 @@ describe('ContextService — rollupDaily', () => {
         `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
        VALUES (?, 'grp', 0, 'early leaf', ?, ?, 10, 'test', ?)`,
       )
-      .run(`leaf:grp:${date}T09:00:00.000Z`, `${date}T09:00:00.000Z`, `${date}T09:00:00.000Z`, now);
+      .run(
+        `leaf:grp:${date}T09:00:00.000Z`,
+        `${date}T09:00:00.000Z`,
+        `${date}T09:00:00.000Z`,
+        now,
+      );
 
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -763,7 +772,8 @@ describe('ContextService — rollupDaily', () => {
     expect(dailyId).toBeTruthy();
 
     // Verify first leaf is linked
-    const earlyLeaf = svc.db.prepare('SELECT parent_id FROM context_nodes WHERE id = ?')
+    const earlyLeaf = svc.db
+      .prepare('SELECT parent_id FROM context_nodes WHERE id = ?')
       .get(`leaf:grp:${date}T09:00:00.000Z`) as any;
     expect(earlyLeaf.parent_id).toBe(dailyId);
 
@@ -773,19 +783,26 @@ describe('ContextService — rollupDaily', () => {
         `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
        VALUES (?, 'grp', 0, 'late orphan', ?, ?, 10, 'test', ?)`,
       )
-      .run(`leaf:grp:${date}T21:00:00.000Z`, `${date}T21:00:00.000Z`, `${date}T21:00:00.000Z`, now);
+      .run(
+        `leaf:grp:${date}T21:00:00.000Z`,
+        `${date}T21:00:00.000Z`,
+        `${date}T21:00:00.000Z`,
+        now,
+      );
 
     // Re-run rollup — should adopt the orphan, not create a new daily
     const second = await svc.rollupDaily('grp', date);
     expect(second).toBeNull(); // still returns null (existing rollup)
 
     // Verify the orphan was adopted
-    const lateLeaf = svc.db.prepare('SELECT parent_id FROM context_nodes WHERE id = ?')
+    const lateLeaf = svc.db
+      .prepare('SELECT parent_id FROM context_nodes WHERE id = ?')
       .get(`leaf:grp:${date}T21:00:00.000Z`) as any;
     expect(lateLeaf.parent_id).toBe(dailyId);
 
     // Total children should be 2
-    const children = svc.db.prepare('SELECT COUNT(*) as cnt FROM context_nodes WHERE parent_id = ?')
+    const children = svc.db
+      .prepare('SELECT COUNT(*) as cnt FROM context_nodes WHERE parent_id = ?')
       .get(dailyId) as any;
     expect(children.cnt).toBe(2);
 
