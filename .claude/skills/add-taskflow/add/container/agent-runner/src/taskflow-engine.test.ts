@@ -1697,9 +1697,9 @@ describe('TaskflowEngine', () => {
       expect(task.column).toBe('review');
     });
 
-    it('return directly from waiting', () => {
+    it('return directly from waiting clears waiting_for', () => {
       db.exec(
-        `UPDATE tasks SET column = 'waiting', assignee = 'person-1' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+        `UPDATE tasks SET column = 'waiting', assignee = 'person-1', waiting_for = 'Client reply' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
       );
       const r = engine.move({
         board_id: BOARD_ID,
@@ -1710,6 +1710,7 @@ describe('TaskflowEngine', () => {
       expect(r.success).toBe(true);
       const task = engine.getTask('T-001');
       expect(task.column).toBe('next_action');
+      expect(task.waiting_for).toBeNull();
     });
 
     it('return directly from review', () => {

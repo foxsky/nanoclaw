@@ -2542,7 +2542,7 @@ export class TaskflowEngine {
         updated_at: task.updated_at,
       };
       /* Capture waiting_for so undo of wait/resume restores it correctly. */
-      if (effectiveAction === 'wait' || effectiveAction === 'resume' || (fromColumn === 'waiting' && (toColumn === 'done' || toColumn === 'review'))) {
+      if (effectiveAction === 'wait' || fromColumn === 'waiting') {
         snapshotFields.waiting_for = task.waiting_for ?? null;
       }
       /* Recurring conclude/approve mutates many fields via advanceRecurringTask;
@@ -2676,7 +2676,7 @@ export class TaskflowEngine {
       }
 
       /* --- Clear waiting_for when leaving waiting column --- */
-      if (effectiveAction === 'resume' || (fromColumn === 'waiting' && (toColumn === 'done' || toColumn === 'review'))) {
+      if (fromColumn === 'waiting') {
         this.db
           .prepare(
             `UPDATE tasks SET waiting_for = NULL WHERE board_id = ? AND id = ?`,
