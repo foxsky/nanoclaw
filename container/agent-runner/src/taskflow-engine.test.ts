@@ -3762,8 +3762,14 @@ describe('TaskflowEngine', () => {
       const digest = engine.report({ board_id: BOARD_ID, type: 'digest' });
       const weekly = engine.report({ board_id: BOARD_ID, type: 'weekly' });
 
-      expect(digest.data!.formatted_report).toContain('SEC-T9');
-      expect(weekly.data!.formatted_report).toContain('SEC-T9');
+      // Compact header doesn't list individual tasks — check that the board query still shows them
+      const board = engine.query({ board_id: BOARD_ID, query: 'board' });
+      expect(board.success).toBe(true);
+      expect((board as any).data.formatted_board).toContain('SEC-T9');
+
+      // Digest/weekly compact header shows column counts, not individual task IDs
+      expect(digest.data!.formatted_report).toContain('próximas');
+      expect(weekly.data!.formatted_report).toContain('próximas');
     });
 
     it('digest uses compact board header instead of full board', () => {
