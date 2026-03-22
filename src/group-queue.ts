@@ -13,6 +13,8 @@ interface QueuedTask {
 
 const MAX_RETRIES = 5;
 const BASE_RETRY_MS = 5000;
+/** Max time a queued task waits for a busy container before forcing close */
+const TASK_STARVATION_MS = 120_000; // 2 minutes
 
 interface GroupState {
   active: boolean;
@@ -28,6 +30,7 @@ interface GroupState {
   retryCount: number;
   retryTimer: ReturnType<typeof setTimeout> | null;
   pendingClose: boolean;
+  taskStarvationTimer: ReturnType<typeof setTimeout> | null;
 }
 
 export class GroupQueue {
@@ -55,6 +58,7 @@ export class GroupQueue {
         retryCount: 0,
         retryTimer: null,
         pendingClose: false,
+        taskStarvationTimer: null,
       };
       this.groups.set(groupJid, state);
     }
@@ -119,6 +123,19 @@ export class GroupQueue {
           { groupJid, taskId },
           'Container busy processing, task queued — will run after current query',
         );
+        // Start starvation timer — if container doesn't go idle in time, force close
+        if (!state.taskStarvationTimer) {
+          state.taskStarvationTimer = setTimeout(() => {
+            state.taskStarvationTimer = null;
+            if (state.active && !state.idleWaiting && state.pendingTasks.length > 0) {
+              logger.warn(
+                { groupJid, taskId, pendingCount: state.pendingTasks.length },
+                'Task starvation: container busy too long, forcing close',
+              );
+              this.closeStdin(groupJid);
+            }
+          }, TASK_STARVATION_MS);
+        }
       } else {
         logger.debug(
           { groupJid, taskId },
@@ -173,6 +190,11 @@ export class GroupQueue {
   notifyIdle(groupJid: string): void {
     const state = this.getGroup(groupJid);
     state.idleWaiting = true;
+    // Clear starvation timer — container went idle naturally
+    if (state.taskStarvationTimer) {
+      clearTimeout(state.taskStarvationTimer);
+      state.taskStarvationTimer = null;
+    }
     if (state.pendingTasks.length > 0) {
       this.closeStdin(groupJid);
     }
@@ -253,6 +275,11 @@ export class GroupQueue {
       this.scheduleRetry(groupJid, state);
     } finally {
       state.active = false;
+      state.pendingClose = false;
+      if (state.taskStarvationTimer) {
+        clearTimeout(state.taskStarvationTimer);
+        state.taskStarvationTimer = null;
+      }
       state.process = null;
       state.containerName = null;
       state.groupFolder = null;
@@ -281,6 +308,11 @@ export class GroupQueue {
       logger.error({ groupJid, taskId: task.id, err }, 'Error running task');
     } finally {
       state.active = false;
+      state.pendingClose = false;
+      if (state.taskStarvationTimer) {
+        clearTimeout(state.taskStarvationTimer);
+        state.taskStarvationTimer = null;
+      }
       state.isTaskContainer = false;
       state.runningTaskId = null;
       state.process = null;
