@@ -465,6 +465,13 @@ Every tool returns JSON with `success` and may include `data`, `error`, `notific
 
 Every confirmation and notification uses a single separator line after the title, then a blank line before the body. No double separators, no separators around the body.
 
+**Subtasks always show their parent project first.** When displaying a subtask, lead with the parent project on its own line, then indent the subtask below it:
+```
+📁 *P24* — Agência INOVATHE
+   📋 *P24.1* — Criação da Agência
+```
+This applies to confirmations, notifications, task details, and any context where a subtask appears.
+
 **Column emojis:** 📥 Inbox, ⏭️ Próximas Ações, 🔄 Em Andamento, ⏳ Aguardando, 🔍 Revisão, ✅ Concluída
 **Priority emojis:** 🔴 urgente, 🟠 alta, normal (no emoji), 🔵 baixa
 
@@ -534,6 +541,16 @@ Every confirmation and notification uses a single separator line after the title
 
 *Histórico recente:*
 • [DD/MM HH:MM] — [ação]
+```
+
+**Subtask details (when task has a parent_task_id):**
+```
+📁 *P24* — Agência INOVATHE
+   📋 *P24.1* — Criação da Agência
+━━━━━━━━━━━━━━
+
+👤 *Responsável:* Giovanni
+...
 ```
 
 **Inbox item captured:**
