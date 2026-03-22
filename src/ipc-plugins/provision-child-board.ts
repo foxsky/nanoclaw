@@ -134,6 +134,54 @@ const handleProvisionChildBoard: IpcHandler = async (
       return;
     }
 
+    // --- 4b. Check if person already has a board under a DIFFERENT parent ---
+    // If so, reuse the existing board instead of creating a duplicate
+    const existingElsewhere = tfDb
+      .prepare(
+        `SELECT cbr.child_board_id, b.group_jid, b.group_folder
+         FROM child_board_registrations cbr
+         JOIN boards b ON b.id = cbr.child_board_id
+         WHERE cbr.person_id = ? AND cbr.parent_board_id != ?`,
+      )
+      .get(personId, parentBoard.id) as { child_board_id: string; group_jid: string; group_folder: string } | undefined;
+
+    if (existingElsewhere) {
+      logger.info(
+        { parentBoardId: parentBoard.id, personId, existingBoard: existingElsewhere.child_board_id },
+        'provision_child_board: person already has a board under another parent — linking instead of creating',
+      );
+
+      // Register the link in child_board_registrations for this parent
+      tfDb
+        .prepare(
+          `INSERT OR IGNORE INTO child_board_registrations (parent_board_id, person_id, child_board_id)
+           VALUES (?, ?, ?)`,
+        )
+        .run(parentBoard.id, personId, existingElsewhere.child_board_id);
+
+      // Update the parent's board_people notification_group_jid to point to the existing child group
+      tfDb
+        .prepare(
+          `UPDATE board_people SET notification_group_jid = ?
+           WHERE board_id = ? AND person_id = ?`,
+        )
+        .run(existingElsewhere.group_jid, parentBoard.id, personId);
+
+      // Retroactively link any existing tasks assigned to this person on the parent board
+      tfDb
+        .prepare(
+          `UPDATE tasks SET child_exec_board_id = ?, child_exec_enabled = 1, child_exec_person_id = ?
+           WHERE board_id = ? AND assignee = ? AND child_exec_board_id IS NULL AND column != 'done'`,
+        )
+        .run(existingElsewhere.child_board_id, personId, parentBoard.id, personId);
+
+      logger.info(
+        { parentBoardId: parentBoard.id, personId, childBoardId: existingElsewhere.child_board_id },
+        'provision_child_board: existing board linked successfully',
+      );
+      return;
+    }
+
     // --- 5. Compute child values ---
     const childLevel = parentBoard.hierarchy_level + 1;
 
