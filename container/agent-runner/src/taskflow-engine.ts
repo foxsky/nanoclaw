@@ -4580,13 +4580,19 @@ export class TaskflowEngine {
 
     /** Build a one-line summary for a person's tasks in a column */
     const summarizeTasks = (personTasks: any[], col: string): string => {
-      const overdue = personTasks.filter((t: any) => t.due_date && daysDiff(t.due_date) < 0);
-      const dueSoon = personTasks.filter((t: any) => t.due_date && daysDiff(t.due_date) >= 0 && daysDiff(t.due_date) <= 7);
+      let overdue = 0;
+      let dueSoon = 0;
+      for (const t of personTasks) {
+        if (!t.due_date) continue;
+        const d = daysDiff(t.due_date);
+        if (d < 0) overdue++;
+        else if (d <= 7) dueSoon++;
+      }
       const meetings = personTasks.filter((t: any) => t.type === 'meeting');
       const projects = personTasks.filter((t: any) => t.type === 'project');
       const parts: string[] = [];
-      if (overdue.length > 0) parts.push(`${overdue.length} atrasada(s)`);
-      if (dueSoon.length > 0) parts.push(`${dueSoon.length} com prazo esta semana`);
+      if (overdue > 0) parts.push(`${overdue} atrasada(s)`);
+      if (dueSoon > 0) parts.push(`${dueSoon} com prazo esta semana`);
       if (meetings.length > 0) parts.push(`${meetings.length} reunião(ões)`);
       if (projects.length > 0) parts.push(`${projects.length} projeto(s)`);
       if (col === 'waiting') {
@@ -4741,10 +4747,29 @@ export class TaskflowEngine {
       `🗂️ Coluna: ${task.column}`,
       `🕒 Última atualização: ${task.updated_at.slice(0, 10)}`,
     ];
+    const renderStaleTasks = (
+      staleTasks: Array<{ id: string; title: string; assignee_name?: string | null; column: string; updated_at: string }>,
+      label: string,
+    ): void => {
+      lines.push('', `*${label}*`);
+      if (staleTasks.length < 3) {
+        for (const task of staleTasks) lines.push(...taskLine(task, staleExtras(task)));
+      } else {
+        const byPerson = new Map<string, number>();
+        for (const t of staleTasks) {
+          const name = t.assignee_name ?? 'Sem responsável';
+          byPerson.set(name, (byPerson.get(name) ?? 0) + 1);
+        }
+        const summary = [...byPerson.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .map(([name, count]) => `${count} de ${name}`)
+          .join(', ');
+        lines.push(`_${staleTasks.length} tarefas paradas: ${summary}_`);
+      }
+    };
 
     if (type === 'digest') {
       /* ====== SECTION 1: Celebration — lead with wins ====== */
-      const completedCount = data.completed_today.length;
       const streak = (data as any).completion_streak ?? 0;
       const yesterdayCount = (data as any).completed_yesterday_count ?? 0;
 
@@ -4812,23 +4837,7 @@ export class TaskflowEngine {
           }
         }
         if (data.stale_24h && data.stale_24h.length > 0) {
-          lines.push('', '*💤 Sem atualização (24h+):*');
-          if (data.stale_24h.length < 3) {
-            for (const task of data.stale_24h) {
-              lines.push(...taskLine(task, staleExtras(task)));
-            }
-          } else {
-            const byPerson = new Map<string, number>();
-            for (const t of data.stale_24h) {
-              const name = t.assignee_name ?? 'Sem responsável';
-              byPerson.set(name, (byPerson.get(name) ?? 0) + 1);
-            }
-            const summary = [...byPerson.entries()]
-              .sort((a, b) => b[1] - a[1])
-              .map(([name, count]) => `${count} de ${name}`)
-              .join(', ');
-            lines.push(`_${data.stale_24h.length} tarefas paradas: ${summary}_`);
-          }
+          renderStaleTasks(data.stale_24h, '💤 Sem atualização (24h+):');
         }
       }
 
@@ -4929,23 +4938,7 @@ export class TaskflowEngine {
         for (const task of data.waiting_5d.slice(0, 10)) lines.push(...taskLine(task));
       }
       if (data.stale_tasks && data.stale_tasks.length > 0) {
-        lines.push('', '*💤 Sem atualização (3d+):*');
-        if (data.stale_tasks.length < 3) {
-          for (const task of data.stale_tasks) {
-            lines.push(...taskLine(task, staleExtras(task)));
-          }
-        } else {
-          const byPerson = new Map<string, number>();
-          for (const t of data.stale_tasks) {
-            const name = t.assignee_name ?? 'Sem responsável';
-            byPerson.set(name, (byPerson.get(name) ?? 0) + 1);
-          }
-          const summary = [...byPerson.entries()]
-            .sort((a, b) => b[1] - a[1])
-            .map(([name, count]) => `${count} de ${name}`)
-            .join(', ');
-          lines.push(`_${data.stale_tasks.length} tarefas paradas: ${summary}_`);
-        }
+        renderStaleTasks(data.stale_tasks, '💤 Sem atualização (3d+):');
       }
     }
 

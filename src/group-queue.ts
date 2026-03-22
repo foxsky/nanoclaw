@@ -127,7 +127,11 @@ export class GroupQueue {
         if (!state.taskStarvationTimer) {
           state.taskStarvationTimer = setTimeout(() => {
             state.taskStarvationTimer = null;
-            if (state.active && !state.idleWaiting && state.pendingTasks.length > 0) {
+            if (
+              state.active &&
+              !state.idleWaiting &&
+              state.pendingTasks.length > 0
+            ) {
               logger.warn(
                 { groupJid, taskId, pendingCount: state.pendingTasks.length },
                 'Task starvation: container busy too long, forcing close',
@@ -274,18 +278,7 @@ export class GroupQueue {
       logger.error({ groupJid, err }, 'Error processing messages for group');
       this.scheduleRetry(groupJid, state);
     } finally {
-      state.active = false;
-      state.pendingClose = false;
-      if (state.taskStarvationTimer) {
-        clearTimeout(state.taskStarvationTimer);
-        state.taskStarvationTimer = null;
-      }
-      state.process = null;
-      state.containerName = null;
-      state.groupFolder = null;
-      state.inputDir = null;
-      this.activeCount--;
-      this.drainGroup(groupJid);
+      this.cleanupRun(groupJid, state);
     }
   }
 
@@ -307,21 +300,25 @@ export class GroupQueue {
     } catch (err) {
       logger.error({ groupJid, taskId: task.id, err }, 'Error running task');
     } finally {
-      state.active = false;
-      state.pendingClose = false;
-      if (state.taskStarvationTimer) {
-        clearTimeout(state.taskStarvationTimer);
-        state.taskStarvationTimer = null;
-      }
       state.isTaskContainer = false;
       state.runningTaskId = null;
-      state.process = null;
-      state.containerName = null;
-      state.groupFolder = null;
-      state.inputDir = null;
-      this.activeCount--;
-      this.drainGroup(groupJid);
+      this.cleanupRun(groupJid, state);
     }
+  }
+
+  private cleanupRun(groupJid: string, state: GroupState): void {
+    state.active = false;
+    state.pendingClose = false;
+    if (state.taskStarvationTimer) {
+      clearTimeout(state.taskStarvationTimer);
+      state.taskStarvationTimer = null;
+    }
+    state.process = null;
+    state.containerName = null;
+    state.groupFolder = null;
+    state.inputDir = null;
+    this.activeCount--;
+    this.drainGroup(groupJid);
   }
 
   private scheduleRetry(groupJid: string, state: GroupState): void {
