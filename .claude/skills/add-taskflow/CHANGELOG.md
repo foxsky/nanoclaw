@@ -1,5 +1,32 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-03-22
+
+### UX Overhaul — Board Readability
+- **Compact board header**: Digest/weekly reports replace full Kanban board with column counts, cutting message length ~50%
+- **Smart board view**: Standup/on-demand board shows summaries for 3+ tasks per person, details for fewer; board owner first
+- **Motivational message**: Separate send_message after digest/weekly — celebration line + warm human summary
+- **Person briefing**: "Tarefas do Rafael" returns structured dispatch view grouped by urgency, projects expanded with subtasks
+- **Stale summaries**: 3+ stale tasks show per-person counts instead of individual listings
+- **Parent project context**: Subtasks display parent project (📁 P24 — Agência INOVATHE / P24.1)
+- **Notification layout**: Unified format with single separator, removed redundant actor names
+- **Separator cleanup**: Confirmations use one separator after title, no double separators
+
+### Direct Transitions
+- **wait/review/return** accept more source columns — no intermediate chaining, one move = one notification
+- **waiting_for cleanup**: Cleared on any exit from waiting column, not just resume/done/review
+
+### Container Reliability
+- **No busy preemption**: Scheduled tasks wait for idle containers instead of killing mid-query
+- **Starvation timer**: 2-minute timeout forces close if container never goes idle
+- **pendingClose leak fix**: Stale close requests don't carry to next container run
+
+### Code Quality
+- Extracted `fetchActiveTasks`, `renderStaleTasks`, `cleanupRun` shared helpers
+- Hoisted SEP to class constant
+- Fixed 17 pre-existing test failures (Portuguese localization)
+- Added 15 new tests (compact board, direct transitions, starvation, drain lifecycle)
+
 ## 2026-03-18
 
 ### Fixed

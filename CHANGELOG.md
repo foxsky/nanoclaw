@@ -4,6 +4,40 @@ All notable changes to NanoClaw will be documented in this file.
 
 ## [Unreleased]
 
+### UX Improvements
+- **feat:** Compact board header for digest/weekly reports — column counts instead of full board, cutting message length ~50%
+- **feat:** Smart board view — summaries for 3+ tasks per person, details for fewer; board owner always listed first
+- **feat:** Motivational message sent as separate message after every digest/weekly — celebration line + warm human summary
+- **feat:** Person briefing for 1:1 meetings — "Tarefas do Rafael" returns a structured dispatch view grouped by urgency, with projects expanded
+- **feat:** Stale task summaries in digest/weekly — per-person counts instead of listing each task when 3+
+- **feat:** Subtasks always show parent project context (e.g., `📁 P24 — Agência INOVATHE / P24.1 — Criação da Agência`)
+- **style:** Unified notification layout — all move, rejection, and parent board notifications use consistent format
+- **style:** Single separator line after title in confirmations; removed double separators
+- **style:** Removed redundant actor name from task moved confirmations
+
+### Direct Transitions
+- **feat:** Tasks can move directly to target column without intermediate steps — `wait` from inbox/next_action, `review` from inbox/next_action/waiting, `return` from waiting/review
+- **fix:** `waiting_for` cleared when returning task from waiting column (was leaving stale data)
+
+### Container Reliability
+- **fix:** Don't preempt busy containers — scheduled tasks wait for idle before closing; prevents data loss where confirmations were sent but DB writes never persisted
+- **fix:** Task starvation safeguard — 2-minute timeout forces close if container never goes idle
+- **fix:** Clear `pendingClose` on container exit to prevent stale close requests leaking to next run
+- **fix:** Extracted `cleanupRun` helper for consistent container state cleanup
+
+### Code Quality
+- **refactor:** Extracted `fetchActiveTasks` shared helper — eliminates duplicated task-fetching/orphan-promotion logic
+- **refactor:** Hoisted SEP separator to class-level constant
+- **refactor:** Extracted `renderStaleTasks` helper for digest/weekly stale summarization
+- **fix:** Fixed 17 pre-existing test failures — Portuguese localization + behavioral changes (inbox auto-assign, WIP on reassignment)
+- **test:** Added 15 new tests — compact board, direct transitions, regression guards, starvation timer, drain lifecycle
+
+### Data Fixes (production)
+- Fixed sec-secti board crash loop — cleared corrupted session, restored service
+- Fixed Giovanni's board: T14 concluded, T3/T13/T15 moved to waiting with notes/due dates, T20/T21/T24 recreated with notes
+- Fixed Rafael's board: T50 moved to in_progress, P16.1 next_action updated
+- Sent overdue confirmations to Alexandre for T-006/T31/T46
+
 - **fix:** Require approval by default before delegated assignees can close tasks; delegated `conclude` now moves to `review` instead of `done`
 - **fix:** Suppress duplicate parent-board notifications when creator and parent notification targets resolve to the same group
 - **fix:** Self-heal stale TaskFlow `board_id_counters` during task creation so `taskflow_create` can recover from counter drift without SQLite write fallbacks
