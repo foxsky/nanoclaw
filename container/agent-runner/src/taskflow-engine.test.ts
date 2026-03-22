@@ -1633,6 +1633,114 @@ describe('TaskflowEngine', () => {
       expect(task.column).toBe('next_action');
       expect(task.current_cycle).toBe('1');
     });
+
+    it('wait directly from next_action', () => {
+      db.exec(
+        `UPDATE tasks SET column = 'next_action', assignee = 'person-1' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'wait',
+        reason: 'Aguardando resposta',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      const task = engine.getTask('T-001');
+      expect(task.column).toBe('waiting');
+      expect(task.waiting_for).toBe('Aguardando resposta');
+    });
+
+    it('wait directly from inbox', () => {
+      db.exec(
+        `UPDATE tasks SET column = 'inbox', assignee = 'person-1' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'wait',
+        reason: 'Esperando aprovação',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      const task = engine.getTask('T-001');
+      expect(task.column).toBe('waiting');
+    });
+
+    it('review directly from next_action', () => {
+      db.exec(
+        `UPDATE tasks SET column = 'next_action', assignee = 'person-1' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'review',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      const task = engine.getTask('T-001');
+      expect(task.column).toBe('review');
+    });
+
+    it('review directly from waiting', () => {
+      db.exec(
+        `UPDATE tasks SET column = 'waiting', assignee = 'person-1' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'review',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      const task = engine.getTask('T-001');
+      expect(task.column).toBe('review');
+    });
+
+    it('return directly from waiting', () => {
+      db.exec(
+        `UPDATE tasks SET column = 'waiting', assignee = 'person-1' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'return',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      const task = engine.getTask('T-001');
+      expect(task.column).toBe('next_action');
+    });
+
+    it('return directly from review', () => {
+      db.exec(
+        `UPDATE tasks SET column = 'review', assignee = 'person-1' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'return',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      const task = engine.getTask('T-001');
+      expect(task.column).toBe('next_action');
+    });
+
+    it('review directly from inbox', () => {
+      db.exec(
+        `UPDATE tasks SET column = 'inbox', assignee = 'person-1' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'review',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      const task = engine.getTask('T-001');
+      expect(task.column).toBe('review');
+    });
   });
 
   /* ---------------------------------------------------------------- */
