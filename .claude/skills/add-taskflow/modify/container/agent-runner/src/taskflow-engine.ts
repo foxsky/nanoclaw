@@ -4813,8 +4813,21 @@ export class TaskflowEngine {
         }
         if (data.stale_24h && data.stale_24h.length > 0) {
           lines.push('', '*💤 Sem atualização (24h+):*');
-          for (const task of data.stale_24h.slice(0, 10)) {
-            lines.push(...taskLine(task, staleExtras(task)));
+          if (data.stale_24h.length < 3) {
+            for (const task of data.stale_24h) {
+              lines.push(...taskLine(task, staleExtras(task)));
+            }
+          } else {
+            const byPerson = new Map<string, number>();
+            for (const t of data.stale_24h) {
+              const name = t.assignee_name ?? 'Sem responsável';
+              byPerson.set(name, (byPerson.get(name) ?? 0) + 1);
+            }
+            const summary = [...byPerson.entries()]
+              .sort((a, b) => b[1] - a[1])
+              .map(([name, count]) => `${count} de ${name}`)
+              .join(', ');
+            lines.push(`_${data.stale_24h.length} tarefas paradas: ${summary}_`);
           }
         }
       }
@@ -4917,8 +4930,21 @@ export class TaskflowEngine {
       }
       if (data.stale_tasks && data.stale_tasks.length > 0) {
         lines.push('', '*💤 Sem atualização (3d+):*');
-        for (const task of data.stale_tasks.slice(0, 10)) {
-          lines.push(...taskLine(task, staleExtras(task)));
+        if (data.stale_tasks.length < 3) {
+          for (const task of data.stale_tasks) {
+            lines.push(...taskLine(task, staleExtras(task)));
+          }
+        } else {
+          const byPerson = new Map<string, number>();
+          for (const t of data.stale_tasks) {
+            const name = t.assignee_name ?? 'Sem responsável';
+            byPerson.set(name, (byPerson.get(name) ?? 0) + 1);
+          }
+          const summary = [...byPerson.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .map(([name, count]) => `${count} de ${name}`)
+            .join(', ');
+          lines.push(`_${data.stale_tasks.length} tarefas paradas: ${summary}_`);
         }
       }
     }
