@@ -1074,6 +1074,8 @@ export class TaskflowEngine {
   private static readonly TASK_BY_BOARD_SQL =
     `SELECT tasks.*, tasks.board_id AS owning_board_id FROM tasks WHERE board_id = ? AND id = ?`;
 
+  private static readonly SEP = '━━━━━━━━━━━━━━';
+
   /** Fetch a single active task by its id. Handles board-prefixed IDs (e.g. SEC-T10). */
   getTask(taskId: string): any {
     const { boardId: targetBoardId, rawId } = this.resolveInputTaskId(taskId);
@@ -4350,14 +4352,17 @@ export class TaskflowEngine {
   }
 
   /* ---------------------------------------------------------------- */
-  /*  Compact board header (for digest/weekly reports)                  */
+  /*  Shared task-fetching for board views                              */
   /* ---------------------------------------------------------------- */
 
-  private formatCompactBoard(completedCount: number, completedLabel: 'hoje' | 'na semana'): string {
-    const todayStr = today();
-    const [y, m, d] = todayStr.split('-');
-    const SEP = '━━━━━━━━━━━━━━';
-
+  private fetchActiveTasks(): {
+    allTasks: any[];
+    topLevel: any[];
+    subtaskMap: Map<string, any[]>;
+    taskCount: number;
+    projectCount: number;
+    subtaskCount: number;
+  } {
     const allTasks: any[] = this.db
       .prepare(
         `SELECT * FROM tasks WHERE ${this.visibleTaskScope()} AND column != 'done' ORDER BY id`,
@@ -4366,13 +4371,14 @@ export class TaskflowEngine {
 
     const topLevel = allTasks.filter((t: any) => !t.parent_task_id);
 
-    // Orphan subtask promotion (same logic as formatBoardView)
     const subtaskMap = new Map<string, any[]>();
     for (const t of allTasks.filter((t: any) => t.parent_task_id)) {
       const arr = subtaskMap.get(t.parent_task_id);
       if (arr) arr.push(t);
       else subtaskMap.set(t.parent_task_id, [t]);
     }
+
+    // Orphan subtask promotion: fetch parent from other board
     const topLevelIds = new Set(topLevel.map((t: any) => t.id));
     for (const [parentId, subs] of subtaskMap.entries()) {
       if (!topLevelIds.has(parentId)) {
@@ -4391,6 +4397,18 @@ export class TaskflowEngine {
     const subtaskCount = allTasks.filter((t: any) => t.parent_task_id).length;
     const taskCount = topLevel.length;
 
+    return { allTasks, topLevel, subtaskMap, taskCount, projectCount, subtaskCount };
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  Compact board header (for digest/weekly reports)                  */
+  /* ---------------------------------------------------------------- */
+
+  private formatCompactBoard(completedCount: number, type: 'digest' | 'weekly'): string {
+    const todayStr = today();
+    const [y, m, d] = todayStr.split('-');
+    const { topLevel, taskCount, projectCount, subtaskCount } = this.fetchActiveTasks();
+
     const byColumn = new Map<string, number>();
     for (const t of topLevel) {
       byColumn.set(t.column, (byColumn.get(t.column) ?? 0) + 1);
@@ -4399,7 +4417,7 @@ export class TaskflowEngine {
     const lines: string[] = [];
     lines.push(`📋 *TASKFLOW BOARD* — ${d}/${m}/${y}`);
     lines.push(`📊 ${taskCount} tarefas • ${projectCount} projetos • ${subtaskCount} subtarefas`);
-    lines.push(SEP);
+    lines.push(TaskflowEngine.SEP);
 
     const compactCols: Array<[string, string, string]> = [
       ['inbox', '📥', 'inbox'],
@@ -4413,6 +4431,7 @@ export class TaskflowEngine {
       if (count > 0) lines.push(`  ${emoji} ${count} ${label}`);
     }
     if (completedCount > 0) {
+      const completedLabel = type === 'digest' ? 'hoje' : 'na semana';
       lines.push(`  ✅ ${completedCount} concluída(s) ${completedLabel}`);
     }
 
@@ -4446,41 +4465,8 @@ export class TaskflowEngine {
       return sc ? `${sc}-${task.id}` : task.id;
     };
 
-    /* --- Fetch tasks (exclude done) --- */
-    const allTasks = this.db
-      .prepare(
-        `SELECT * FROM tasks WHERE ${this.visibleTaskScope()} AND column != 'done' ORDER BY id`,
-      )
-      .all(...this.visibleTaskParams()) as any[];
-
-    /* --- Split top-level vs subtasks --- */
-    const topLevel = allTasks.filter((t) => !t.parent_task_id);
-    const subtaskMap = new Map<string, any[]>();
-    for (const t of allTasks.filter((t) => t.parent_task_id)) {
-      const arr = subtaskMap.get(t.parent_task_id);
-      if (arr) arr.push(t);
-      else subtaskMap.set(t.parent_task_id, [t]);
-    }
-
-    /* --- Promote orphaned subtasks: fetch parent from other board --- */
-    const topLevelIds = new Set(topLevel.map((t) => t.id));
-    for (const [parentId, subs] of subtaskMap.entries()) {
-      if (!topLevelIds.has(parentId)) {
-        const parentBoardId = subs[0].owning_board_id ?? subs[0].board_id;
-        const parent = this.db
-          .prepare(TaskflowEngine.TASK_BY_BOARD_SQL)
-          .get(parentBoardId, parentId) as any | undefined;
-        if (parent) {
-          topLevel.push(parent);
-          topLevelIds.add(parent.id);
-        }
-      }
-    }
-
-    /* --- Counts --- */
-    const projectCount = topLevel.filter((t) => t.type === 'project').length;
-    const subtaskCount = allTasks.filter((t) => t.parent_task_id).length;
-    const taskCount = topLevel.length;
+    const { allTasks, topLevel, subtaskMap, taskCount, projectCount, subtaskCount } =
+      this.fetchActiveTasks();
 
     /* --- Group top-level by column --- */
     const byColumn = new Map<string, any[]>();
@@ -4550,7 +4536,7 @@ export class TaskflowEngine {
     /* --- Build output --- */
     const urgent: string[] = [];
     const lines: string[] = [];
-    const SEP = '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501';
+    const SEP = TaskflowEngine.SEP;
 
     /* Header */
     const [y, m, d] = todayStr.split('-');
@@ -4686,9 +4672,8 @@ export class TaskflowEngine {
     const completedCount = type === 'digest'
       ? data.completed_today.length
       : (data.completed_week?.length ?? 0);
-    const completedLabel = type === 'digest' ? 'hoje' as const : 'na semana' as const;
-    const lines: string[] = [this.formatCompactBoard(completedCount, completedLabel)];
-    const SEP = '━━━━━━━━━━━━━━';
+    const lines: string[] = [this.formatCompactBoard(completedCount, type)];
+    const SEP = TaskflowEngine.SEP;
     const tz = this.boardTz;
     const taskLine = (
       task: { id: string; title: string; assignee_name?: string | null; due_date?: string; waiting_for?: string | null; column?: string; updated_at?: string },
