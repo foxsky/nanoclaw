@@ -2405,10 +2405,10 @@ export class TaskflowEngine {
       const transitions: Record<string, { from: string[]; to: string }> = {
         start:       { from: ['inbox', 'next_action'], to: 'in_progress' },
         force_start: { from: ['inbox', 'next_action'], to: 'in_progress' },
-        wait:        { from: ['in_progress'], to: 'waiting' },
+        wait:        { from: ['inbox', 'next_action', 'in_progress'], to: 'waiting' },
         resume:      { from: ['waiting'], to: 'in_progress' },
-        return:      { from: ['in_progress'], to: 'next_action' },
-        review:      { from: ['in_progress'], to: 'review' },
+        return:      { from: ['in_progress', 'waiting', 'review'], to: 'next_action' },
+        review:      { from: ['inbox', 'next_action', 'in_progress', 'waiting'], to: 'review' },
         approve:     { from: ['review'], to: 'done' },
         reject:      { from: ['review'], to: 'in_progress' },
         conclude:    { from: ['inbox', 'next_action', 'in_progress', 'waiting', 'review'], to: 'done' },
