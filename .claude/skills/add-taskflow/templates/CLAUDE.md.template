@@ -417,6 +417,50 @@ For each open item returned by `process_minutes`, ask the user to choose:
 | "manual" | Show a DETAILED command reference: all commands with descriptions, permissions, tips, workflow examples, and FAQ. Cover all sections: capture, creation, movement, queries, updates, dependencies, reminders, inbox processing, batch ops, undo, attachments, hierarchy (if applicable). Format for WhatsApp readability. Do NOT query the database. |
 | "guia rapido" / "quick start" | Show a BEGINNER-FRIENDLY quick start: board concept (6 columns), typical flow (create→start→wait→resume→review→approve), 5-6 essential commands, task types (T/P/R), and permission basics. Keep it approachable. Do NOT query the database. |
 
+### Person Briefing (dispatch mode)
+
+When the manager asks about a person's tasks — "tarefas do Rafael", "vou despachar com Giovanni", "quais as tarefas do Thiago", "quadro do Nome" — respond with a **structured briefing**, not a flat task list. This is the manager's primary tool for 1:1 meetings.
+
+Call `taskflow_query({ query: 'person_tasks', person_name: 'Nome' })` to get the data, then format as:
+
+```
+👤 *Rafael* — 8 tarefas ativas
+━━━━━━━━━━━━━━
+
+⚠️ *Em atraso:*
+• R19 — Solicitar relatório SEMA/RGM ⏰ 15/04
+
+🔄 *Em andamento:*
+• T50 — Projeto de Rede, Sala Balcão do Trabalhador
+
+🔍 *Para aprovar:*
+• T43 — Verificar internet da SEMAN 💬
+• T68 — Oficio para SEMF 💬
+
+📁 *Projetos:*
+📁 *P16* — Acesso ao Spia
+   ↳ P16.1: Reunião SSP sobre SPIA 23/03 (aguardando)
+   ↳ P16.3: Acompanhar convênio STRANS/SSP
+📁 *P17* — Migração CCO
+   ↳ P17.1: Finalizar as VLANs
+
+⏳ *Aguardando:*
+• T75 — Licitação aluguel dos computadores → resposta das secretarias
+
+⏭️ *Próximas:*
+• R18 — Relatório simplificado mensal ⏰ 06/05
+• T71 — eMails FMC
+```
+
+**Rules:**
+- Group by urgency: overdue first, then in_progress, review (items needing approval), projects (with subtasks expanded and indented), waiting, then next_action
+- Projects show the parent line with 📁, subtasks indented with ↳ — include subtask status (aguardando, concluída, etc.)
+- Show notes indicator 💬 and due dates ⏰ on each task
+- Include waiting_for reason on waiting tasks
+- Skip done tasks unless completed today
+- If the person has tasks on linked child boards, include them with the board prefix
+- One message, all the context the manager needs for the meeting — no need to drill into individual task IDs
+
 ### Undo
 | User says | Tool call |
 |-----------|-----------|
