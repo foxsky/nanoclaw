@@ -280,7 +280,7 @@ describe('GroupQueue', () => {
 
   // --- Idle preemption ---
 
-  it('preempts active message container when a task is enqueued even before idle', async () => {
+  it('does not preempt busy container when task is enqueued — waits for idle', async () => {
     const fs = await import('fs');
     let resolveProcess: () => void;
 
@@ -309,12 +309,12 @@ describe('GroupQueue', () => {
     const taskFn = vi.fn(async () => {});
     queue.enqueueTask('group1@g.us', 'task-1', taskFn);
 
-    // _close SHOULD be written so the message container winds down promptly
+    // _close should NOT be written — container is busy, let it finish
     const writeFileSync = vi.mocked(fs.default.writeFileSync);
     const closeWrites = writeFileSync.mock.calls.filter(
       (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
     );
-    expect(closeWrites).toHaveLength(1);
+    expect(closeWrites).toHaveLength(0);
 
     resolveProcess!();
     await vi.advanceTimersByTimeAsync(10);
@@ -363,7 +363,7 @@ describe('GroupQueue', () => {
     await vi.advanceTimersByTimeAsync(10);
   });
 
-  it('sendMessage resets idleWaiting but a subsequent task enqueue still preempts the active message container', async () => {
+  it('sendMessage resets idleWaiting — subsequent task enqueue does not preempt busy container', async () => {
     const fs = await import('fs');
     let resolveProcess: () => void;
 
@@ -387,10 +387,10 @@ describe('GroupQueue', () => {
     // Container becomes idle
     queue.notifyIdle('group1@g.us');
 
-    // A new user message arrives — resets idleWaiting
+    // A new user message arrives — resets idleWaiting, container is now busy
     queue.sendMessage('group1@g.us', 'hello');
 
-    // Task enqueued after message reset still preempts under the new rule
+    // Task enqueued while container is busy processing the message — no preemption
     const writeFileSync = vi.mocked(fs.default.writeFileSync);
     writeFileSync.mockClear();
 
@@ -400,7 +400,7 @@ describe('GroupQueue', () => {
     const closeWrites = writeFileSync.mock.calls.filter(
       (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
     );
-    expect(closeWrites).toHaveLength(1);
+    expect(closeWrites).toHaveLength(0);
 
     resolveProcess!();
     await vi.advanceTimersByTimeAsync(10);
@@ -530,7 +530,7 @@ describe('GroupQueue', () => {
     queue.enqueueMessageCheck('group1@g.us');
     await vi.advanceTimersByTimeAsync(10);
 
-    // Register process and enqueue a task (preemption now happens immediately)
+    // Register process and enqueue a task (no preemption while busy)
     queue.registerProcess(
       'group1@g.us',
       {} as any,
@@ -547,7 +547,7 @@ describe('GroupQueue', () => {
     let closeWrites = writeFileSync.mock.calls.filter(
       (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
     );
-    expect(closeWrites).toHaveLength(1);
+    expect(closeWrites).toHaveLength(0); // busy — no preemption yet
 
     // Now container becomes idle — should preempt because task is pending
     writeFileSync.mockClear();
@@ -556,7 +556,7 @@ describe('GroupQueue', () => {
     closeWrites = writeFileSync.mock.calls.filter(
       (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
     );
-    expect(closeWrites).toHaveLength(1);
+    expect(closeWrites).toHaveLength(1); // idle with pending task — preempt now
 
     resolveProcess!();
     await vi.advanceTimersByTimeAsync(10);
