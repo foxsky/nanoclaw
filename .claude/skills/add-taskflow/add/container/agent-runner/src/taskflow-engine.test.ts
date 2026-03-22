@@ -798,7 +798,7 @@ describe('TaskflowEngine', () => {
       expect(task.title).toBe('Buy supplies');
       expect(task.type).toBe('simple'); // inbox stored as simple
       expect(task.column).toBe('inbox');
-      expect(task.assignee).toBeNull();
+      expect(task.assignee).toBe('person-2'); // engine auto-assigns sender
     });
 
     it('creates assigned task', () => {
@@ -851,7 +851,7 @@ describe('TaskflowEngine', () => {
       });
       expect(r.success).toBe(true);
       expect(r.task_id).toBe('P1');
-      expect(r.column).toBe('inbox'); // no assignee → inbox
+      expect(r.column).toBe('next_action'); // auto-assigns sender → next_action
 
       const task = engine.getTask('P1');
       expect(task.type).toBe('project');
@@ -860,9 +860,9 @@ describe('TaskflowEngine', () => {
         .prepare(`SELECT id, title, column FROM tasks WHERE board_id = ? AND parent_task_id = ? ORDER BY id`)
         .all(BOARD_ID, 'P1') as Array<{ id: string; title: string; column: string }>;
       expect(subtaskRows).toHaveLength(3);
-      expect(subtaskRows[0]).toMatchObject({ id: 'P1.1', title: 'Design', column: 'inbox' });
-      expect(subtaskRows[1]).toMatchObject({ id: 'P1.2', title: 'Implement', column: 'inbox' });
-      expect(subtaskRows[2]).toMatchObject({ id: 'P1.3', title: 'Test', column: 'inbox' });
+      expect(subtaskRows[0]).toMatchObject({ id: 'P1.1', title: 'Design', column: 'next_action' });
+      expect(subtaskRows[1]).toMatchObject({ id: 'P1.2', title: 'Implement', column: 'next_action' });
+      expect(subtaskRows[2]).toMatchObject({ id: 'P1.3', title: 'Test', column: 'next_action' });
     });
 
     it('creates subtask rows with child-board linkage for delegated assignees', () => {
@@ -1917,7 +1917,7 @@ describe('TaskflowEngine', () => {
       expect(r.error).toContain('Permission denied');
     });
 
-    it('no WIP check on reassignment', () => {
+    it('WIP check on reassignment', () => {
       // person-2 (Giovanni) has wip_limit=3; put 3 tasks in_progress for them
       const now = new Date().toISOString();
       db.exec(
@@ -1941,12 +1941,9 @@ describe('TaskflowEngine', () => {
         sender_name: 'Alexandre',
         confirmed: true,
       });
-      // Should succeed despite WIP limit — by design
-      expect(r.success).toBe(true);
-      expect(r.tasks_affected).toHaveLength(1);
-
-      const task = engine.getTask('T-001');
-      expect(task.assignee).toBe('person-2');
+      // Engine now enforces WIP limits on reassignment
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('WIP limit exceeded');
     });
   });
 
@@ -1964,7 +1961,7 @@ describe('TaskflowEngine', () => {
       });
       expect(r.success).toBe(true);
       expect(r.task_id).toBe('T-001');
-      expect(r.changes).toContain('Title changed to "Fix login bug v2"');
+      expect(r.changes).toContain('Título alterado para "Fix login bug v2"');
 
       const task = engine.getTask('T-001');
       expect(task.title).toBe('Fix login bug v2');
@@ -1978,7 +1975,7 @@ describe('TaskflowEngine', () => {
         updates: { priority: 'urgent' },
       });
       expect(r.success).toBe(true);
-      expect(r.changes).toContain('Priority set to urgent');
+      expect(r.changes).toContain('Prioridade: urgent');
 
       const task = engine.getTask('T-001');
       expect(task.priority).toBe('urgent');
@@ -1993,7 +1990,7 @@ describe('TaskflowEngine', () => {
       });
 
       expect(r.success).toBe(true);
-      expect(r.changes).toContain('Close approval is now required');
+      expect(r.changes).toContain('Aprovação para concluir ativada');
       expect(engine.getTask('T-002')?.requires_close_approval).toBe(1);
     });
 
@@ -2072,7 +2069,7 @@ describe('TaskflowEngine', () => {
         updates: { due_date: '2026-12-31' },
       });
       expect(r.success).toBe(true);
-      expect(r.changes).toContain('Due date set to 2026-12-31');
+      expect(r.changes).toContain('Prazo definido: 2026-12-31');
 
       const task = engine.getTask('T-001');
       expect(task.due_date).toBe('2026-12-31');
@@ -2091,7 +2088,7 @@ describe('TaskflowEngine', () => {
         updates: { due_date: null },
       });
       expect(r.success).toBe(true);
-      expect(r.changes).toContain('Due date removed');
+      expect(r.changes).toContain('Prazo removido');
 
       const task = engine.getTask('T-001');
       expect(task.due_date).toBeNull();
@@ -2105,7 +2102,7 @@ describe('TaskflowEngine', () => {
         updates: { add_label: 'frontend' },
       });
       expect(r1.success).toBe(true);
-      expect(r1.changes).toContain('Label "frontend" added');
+      expect(r1.changes).toContain('Etiqueta "frontend" adicionada');
 
       // Add same label again — should be idempotent, no duplicate
       const r2 = engine.update({
@@ -2137,7 +2134,7 @@ describe('TaskflowEngine', () => {
         updates: { remove_label: 'frontend' },
       });
       expect(r.success).toBe(true);
-      expect(r.changes).toContain('Label "frontend" removed');
+      expect(r.changes).toContain('Etiqueta "frontend" removida');
 
       const task = engine.getTask('T-001');
       const labels = JSON.parse(task.labels);
@@ -2188,7 +2185,7 @@ describe('TaskflowEngine', () => {
         updates: { edit_note: { id: 1, text: 'Edited text' } },
       });
       expect(r.success).toBe(true);
-      expect(r.changes).toContain('Note #1 edited');
+      expect(r.changes).toContain('Nota #1 editada: Edited text');
 
       const task = engine.getTask('T-001');
       const notes = JSON.parse(task.notes);
@@ -2209,7 +2206,7 @@ describe('TaskflowEngine', () => {
         updates: { remove_note: 2 },
       });
       expect(r.success).toBe(true);
-      expect(r.changes).toContain('Note #2 removed');
+      expect(r.changes).toContain('Nota #2 removida');
 
       const task = engine.getTask('T-001');
       const notes = JSON.parse(task.notes);
@@ -2250,7 +2247,7 @@ describe('TaskflowEngine', () => {
         updates: { title: 'Updated by assignee' },
       });
       expect(r.success).toBe(true);
-      expect(r.changes).toContain('Title changed to "Updated by assignee"');
+      expect(r.changes).toContain('Título alterado para "Updated by assignee"');
     });
 
     it('permission: manager can update any task', () => {
@@ -2262,7 +2259,7 @@ describe('TaskflowEngine', () => {
         updates: { priority: 'high' },
       });
       expect(r.success).toBe(true);
-      expect(r.changes).toContain('Priority set to high');
+      expect(r.changes).toContain('Prioridade: high');
     });
 
     it('permission: non-owner/non-manager -> denied', () => {
@@ -2293,7 +2290,7 @@ describe('TaskflowEngine', () => {
       expect(history).toHaveLength(1);
       expect(history[0].by).toBe('Alexandre');
       const details = JSON.parse(history[0].details);
-      expect(details.changes).toContain('Title changed to "History test"');
+      expect(details.changes).toContain('Título alterado para "History test"');
     });
 
     it('notification: update by non-assignee returns notification', () => {
@@ -3353,7 +3350,7 @@ describe('TaskflowEngine', () => {
         {
           id: 'P1.2',
           parent_task_id: 'P1',
-          assignee: null,
+          assignee: 'person-1', // inherited from project (auto-assigned to sender)
           child_exec_enabled: 0,
           child_exec_board_id: null,
         },
@@ -4026,7 +4023,7 @@ describe('TaskflowEngine', () => {
         updates: { max_cycles: 12 },
       });
       expect(r.success).toBe(true);
-      expect(r.changes).toContain('max_cycles set to 12');
+      expect(r.changes).toContain('Limite de ciclos: 12');
 
       const task = engine.getTask('R-UM1');
       expect(task.max_cycles).toBe(12);
