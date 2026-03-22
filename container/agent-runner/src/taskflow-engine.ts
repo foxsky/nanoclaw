@@ -4569,6 +4569,33 @@ export class TaskflowEngine {
       ['review', '\ud83d\udd0d *REVIS\u00c3O*'],
     ];
 
+    /* Board manager (owner) — listed first in each column */
+    const managerRow = this.db
+      .prepare(`SELECT person_id FROM board_admins WHERE board_id = ? AND admin_role = 'manager' LIMIT 1`)
+      .get(this.boardId) as { person_id: string } | undefined;
+    const managerId = managerRow?.person_id ?? null;
+
+    /** Threshold: 3+ tasks → summary line; < 3 → show individual tasks */
+    const SUMMARY_THRESHOLD = 3;
+
+    /** Build a one-line summary for a person's tasks in a column */
+    const summarizeTasks = (personTasks: any[], col: string): string => {
+      const overdue = personTasks.filter((t: any) => t.due_date && daysDiff(t.due_date) < 0);
+      const dueSoon = personTasks.filter((t: any) => t.due_date && daysDiff(t.due_date) >= 0 && daysDiff(t.due_date) <= 7);
+      const meetings = personTasks.filter((t: any) => t.type === 'meeting');
+      const projects = personTasks.filter((t: any) => t.type === 'project');
+      const parts: string[] = [];
+      if (overdue.length > 0) parts.push(`${overdue.length} atrasada(s)`);
+      if (dueSoon.length > 0) parts.push(`${dueSoon.length} com prazo esta semana`);
+      if (meetings.length > 0) parts.push(`${meetings.length} reunião(ões)`);
+      if (projects.length > 0) parts.push(`${projects.length} projeto(s)`);
+      if (col === 'waiting') {
+        const withReason = personTasks.filter((t: any) => t.waiting_for);
+        if (withReason.length > 0) parts.push(`aguardando respostas externas`);
+      }
+      return parts.length > 0 ? `  _${parts.join(', ')}_` : '';
+    };
+
     for (const [col, label] of colOrder) {
       const tasks = byColumn.get(col);
       if (!tasks || tasks.length === 0) continue;
@@ -4577,7 +4604,14 @@ export class TaskflowEngine {
 
       if (col === 'inbox') {
         lines.push(`${label} (${tasks.length})`, '');
-        for (const t of tasks) lines.push(`\u2022 ${dId(t)}: ${t.title}`);
+        if (tasks.length < SUMMARY_THRESHOLD) {
+          for (const t of tasks) lines.push(`\u2022 ${dId(t)}: ${t.title}`);
+        } else {
+          const overdue = tasks.filter((t: any) => t.due_date && daysDiff(t.due_date) < 0);
+          const parts: string[] = [`${tasks.length} itens para processar`];
+          if (overdue.length > 0) parts.push(`${overdue.length} atrasado(s)`);
+          lines.push(`_${parts.join(', ')}_`);
+        }
         continue;
       }
 
@@ -4590,7 +4624,7 @@ export class TaskflowEngine {
         else byPerson.set(key, [t]);
       }
 
-      /* Sort persons by earliest date (due_date or scheduled_at for meetings) */
+      /* Sort persons: board owner first, then by earliest date */
       const earliest = (list: any[]) =>
         list.reduce(
           (mn: string | null, t: any) => {
@@ -4605,9 +4639,12 @@ export class TaskflowEngine {
         if (b) return 1;
         return 0;
       };
-      const persons = [...byPerson.entries()].sort((a, b) =>
-        cmpDateNullable(earliest(a[1]), earliest(b[1])),
-      );
+      const persons = [...byPerson.entries()].sort((a, b) => {
+        // Board owner always first
+        if (a[0] === managerId && b[0] !== managerId) return -1;
+        if (b[0] === managerId && a[0] !== managerId) return 1;
+        return cmpDateNullable(earliest(a[1]), earliest(b[1]));
+      });
 
       lines.push(label, '');
 
@@ -4619,21 +4656,16 @@ export class TaskflowEngine {
         );
         lines.push(`\ud83d\udc64 *${nm}* (${pTasks.length + subCount})`);
 
-        /* Sort tasks by date (due_date, or scheduled_at for meetings) */
+        /* Sort tasks by date */
         const sorted = [...pTasks].sort((a, b) =>
           cmpDateNullable(sortDate(a), sortDate(b)),
         );
 
+        /* Track urgency for ALL tasks (even summarized) */
         for (const t of sorted) {
-          const tid = dId(t);
-          let line = `${pfx(t)}${tid}: ${t.title}${meetingSfx(t)}${dueSfx(t)}${notesSfx(t)}`;
-          if (col === 'waiting' && t.waiting_for)
-            line += ` \u2192 _${t.waiting_for}_`;
-          lines.push(line);
-
-          /* Track urgency */
           if (t.due_date) {
             const dd = daysDiff(t.due_date);
+            const tid = dId(t);
             if (dd <= 2) {
               if (dd < 0)
                 urgent.push(`\u26a0\ufe0f *${tid} (${nm}) atrasada!*`);
@@ -4643,14 +4675,29 @@ export class TaskflowEngine {
                 );
             }
           }
+        }
 
-          /* Subtasks */
-          const subs = subtaskMap.get(t.id);
-          if (subs) {
-            for (const st of subs) {
-              lines.push(
-                `   \u21b3 ${dId(st)}: ${st.title}${dueSfx(st)}${notesSfx(st)}`,
-              );
+        if (sorted.length >= SUMMARY_THRESHOLD) {
+          /* Summary mode */
+          const summary = summarizeTasks(sorted, col);
+          if (summary) lines.push(summary);
+        } else {
+          /* Detail mode — show individual tasks */
+          for (const t of sorted) {
+            const tid = dId(t);
+            let line = `${pfx(t)}${tid}: ${t.title}${meetingSfx(t)}${dueSfx(t)}${notesSfx(t)}`;
+            if (col === 'waiting' && t.waiting_for)
+              line += ` \u2192 _${t.waiting_for}_`;
+            lines.push(line);
+
+            /* Subtasks */
+            const subs = subtaskMap.get(t.id);
+            if (subs) {
+              for (const st of subs) {
+                lines.push(
+                  `   \u21b3 ${dId(st)}: ${st.title}${dueSfx(st)}${notesSfx(st)}`,
+                );
+              }
             }
           }
         }
