@@ -4350,6 +4350,76 @@ export class TaskflowEngine {
   }
 
   /* ---------------------------------------------------------------- */
+  /*  Compact board header (for digest/weekly reports)                  */
+  /* ---------------------------------------------------------------- */
+
+  private formatCompactBoard(completedCount: number, completedLabel: 'hoje' | 'na semana'): string {
+    const todayStr = today();
+    const [y, m, d] = todayStr.split('-');
+    const SEP = '━━━━━━━━━━━━━━';
+
+    const allTasks: any[] = this.db
+      .prepare(
+        `SELECT * FROM tasks WHERE ${this.visibleTaskScope()} AND column != 'done' ORDER BY id`,
+      )
+      .all(...this.visibleTaskParams());
+
+    const topLevel = allTasks.filter((t: any) => !t.parent_task_id);
+
+    // Orphan subtask promotion (same logic as formatBoardView)
+    const subtaskMap = new Map<string, any[]>();
+    for (const t of allTasks.filter((t: any) => t.parent_task_id)) {
+      const arr = subtaskMap.get(t.parent_task_id);
+      if (arr) arr.push(t);
+      else subtaskMap.set(t.parent_task_id, [t]);
+    }
+    const topLevelIds = new Set(topLevel.map((t: any) => t.id));
+    for (const [parentId, subs] of subtaskMap.entries()) {
+      if (!topLevelIds.has(parentId)) {
+        const parentBoardId = subs[0].owning_board_id ?? subs[0].board_id;
+        const parent = this.db
+          .prepare(TaskflowEngine.TASK_BY_BOARD_SQL)
+          .get(parentBoardId, parentId) as any;
+        if (parent) {
+          topLevel.push(parent);
+          topLevelIds.add(parent.id);
+        }
+      }
+    }
+
+    const projectCount = topLevel.filter((t: any) => t.type === 'project').length;
+    const subtaskCount = allTasks.filter((t: any) => t.parent_task_id).length;
+    const taskCount = topLevel.length;
+
+    const byColumn = new Map<string, number>();
+    for (const t of topLevel) {
+      byColumn.set(t.column, (byColumn.get(t.column) ?? 0) + 1);
+    }
+
+    const lines: string[] = [];
+    lines.push(`📋 *TASKFLOW BOARD* — ${d}/${m}/${y}`);
+    lines.push(`📊 ${taskCount} tarefas • ${projectCount} projetos • ${subtaskCount} subtarefas`);
+    lines.push(SEP);
+
+    const compactCols: Array<[string, string, string]> = [
+      ['inbox', '📥', 'inbox'],
+      ['next_action', '⏭️', 'próximas'],
+      ['in_progress', '🔄', 'andamento'],
+      ['waiting', '⏳', 'aguardando'],
+      ['review', '🔍', 'revisão'],
+    ];
+    for (const [col, emoji, label] of compactCols) {
+      const count = byColumn.get(col) ?? 0;
+      if (count > 0) lines.push(`  ${emoji} ${count} ${label}`);
+    }
+    if (completedCount > 0) {
+      lines.push(`  ✅ ${completedCount} concluída(s) ${completedLabel}`);
+    }
+
+    return lines.join('\n');
+  }
+
+  /* ---------------------------------------------------------------- */
   /*  Pre-formatted board view                                         */
   /* ---------------------------------------------------------------- */
 
@@ -4613,7 +4683,11 @@ export class TaskflowEngine {
     type: 'digest' | 'weekly',
     data: NonNullable<ReportResult['data']>,
   ): string {
-    const lines: string[] = [this.formatBoardView('board')];
+    const completedCount = type === 'digest'
+      ? data.completed_today.length
+      : (data.completed_week?.length ?? 0);
+    const completedLabel = type === 'digest' ? 'hoje' as const : 'na semana' as const;
+    const lines: string[] = [this.formatCompactBoard(completedCount, completedLabel)];
     const SEP = '━━━━━━━━━━━━━━';
     const tz = this.boardTz;
     const taskLine = (
@@ -4737,6 +4811,7 @@ export class TaskflowEngine {
           lines.push(`• ${suggestion}`);
         }
       }
+
       return lines.join('\n');
     }
 
@@ -4846,6 +4921,7 @@ export class TaskflowEngine {
         lines.push(`• *${person.name}* — ${parts.join(' • ')}`);
       }
     }
+
     return lines.join('\n');
   }
 

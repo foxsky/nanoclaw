@@ -3688,7 +3688,7 @@ describe('TaskflowEngine', () => {
 
       // Should NOT have weekly stats
       expect(r.data!.stats).toBeUndefined();
-      expect(r.data!.formatted_report).toContain('📊 *Resumo Executivo*');
+      expect(r.data!.formatted_report).toContain('🎉');
       expect(r.data!.formatted_report).toContain('*T-001*');
       expect(r.data!.formatted_report).toContain('*T-002*');
     });
@@ -3743,7 +3743,7 @@ describe('TaskflowEngine', () => {
       expect(r.data!.completed_today).toBeDefined();
       expect(r.data!.blocked).toBeDefined();
       expect(r.data!.changes_today_count).toBeGreaterThanOrEqual(0);
-      expect(r.data!.formatted_report).toContain('📊 *Revisão Semanal*');
+      expect(r.data!.formatted_report).toContain('🏆 *Revisão Semanal*');
       expect(r.data!.formatted_report).toContain('*✅ Concluídas na semana:*');
       expect(r.data!.formatted_report).toContain('*T-001*');
       expect(r.data!.formatted_report).toContain('*Alexandre*');
@@ -3762,8 +3762,96 @@ describe('TaskflowEngine', () => {
       const digest = engine.report({ board_id: BOARD_ID, type: 'digest' });
       const weekly = engine.report({ board_id: BOARD_ID, type: 'weekly' });
 
-      expect(digest.data!.formatted_report).toContain('SEC-T9');
-      expect(weekly.data!.formatted_report).toContain('SEC-T9');
+      // Compact header doesn't list individual tasks — check that the board query still shows them
+      const board = engine.query({ board_id: BOARD_ID, query: 'board' });
+      expect(board.success).toBe(true);
+      expect((board as any).data.formatted_board).toContain('SEC-T9');
+
+      // Digest/weekly compact header shows column counts, not individual task IDs
+      expect(digest.data!.formatted_report).toContain('próximas');
+      expect(weekly.data!.formatted_report).toContain('próximas');
+    });
+
+    it('digest uses compact board header instead of full board', () => {
+      const now = new Date().toISOString();
+      db.exec(`UPDATE tasks SET column = 'done' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`);
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+         VALUES ('${BOARD_ID}', 'T-001', 'conclude', 'person-1', '${now}', '${JSON.stringify({ from: 'in_progress', to: 'done' })}')`,
+      );
+
+      const r = engine.report({ board_id: BOARD_ID, type: 'digest' });
+      expect(r.success).toBe(true);
+      const report = r.data!.formatted_report!;
+
+      expect(report).toContain('📋 *TASKFLOW BOARD*');
+      expect(report).toContain('tarefas');
+      expect(report).toMatch(/📥 \d+ inbox/);
+      const headerEnd = report.indexOf('🎉');
+      const headerSection = headerEnd > 0 ? report.slice(0, headerEnd) : report.slice(0, 200);
+      expect(headerSection).not.toContain('👤');
+      expect(report).toContain('concluída(s) hoje');
+    });
+
+    it('weekly uses compact board header instead of full board', () => {
+      const now = new Date().toISOString();
+      db.exec(`UPDATE tasks SET column = 'done' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`);
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+         VALUES ('${BOARD_ID}', 'T-001', 'conclude', 'person-1', '${now}', '${JSON.stringify({ from: 'in_progress', to: 'done' })}')`,
+      );
+
+      const r = engine.report({ board_id: BOARD_ID, type: 'weekly' });
+      expect(r.success).toBe(true);
+      const report = r.data!.formatted_report!;
+
+      expect(report).toContain('📋 *TASKFLOW BOARD*');
+      const headerEnd = report.indexOf('🏆');
+      const headerSection = headerEnd > 0 ? report.slice(0, headerEnd) : report.slice(0, 200);
+      expect(headerSection).not.toContain('👤');
+      expect(report).toContain('concluída(s) na semana');
+    });
+
+    it('standup still uses full board view with person groupings', () => {
+      const r = engine.report({ board_id: BOARD_ID, type: 'standup' });
+      expect(r.success).toBe(true);
+      const board = r.data!.formatted_board!;
+
+      expect(board).toContain('👤');
+      expect(board).toContain('T-001');
+      expect(board).toContain('T-002');
+    });
+
+    it('digest compact header omits completed line when zero completions', () => {
+      const r = engine.report({ board_id: BOARD_ID, type: 'digest' });
+      expect(r.success).toBe(true);
+      const report = r.data!.formatted_report!;
+
+      expect(report).toContain('📋 *TASKFLOW BOARD*');
+      expect(report).not.toContain('concluída(s) hoje');
+    });
+
+    it('digest compact header on empty board shows zero counts', () => {
+      db.exec(`DELETE FROM tasks WHERE board_id = '${BOARD_ID}'`);
+
+      const r = engine.report({ board_id: BOARD_ID, type: 'digest' });
+      expect(r.success).toBe(true);
+      const report = r.data!.formatted_report!;
+
+      expect(report).toContain('📋 *TASKFLOW BOARD*');
+      expect(report).toContain('0 tarefas');
+      expect(report).not.toContain('📥');
+      expect(report).not.toContain('⏭️');
+      expect(report).not.toContain('🔄');
+    });
+
+    it('on-demand board query still uses full board view', () => {
+      const r = engine.query({ board_id: BOARD_ID, query: 'board' });
+      expect(r.success).toBe(true);
+      const board = (r as any).data.formatted_board;
+
+      expect(board).toContain('👤');
+      expect(board).toContain('T-001');
     });
 
     it('empty board returns valid structure', () => {
