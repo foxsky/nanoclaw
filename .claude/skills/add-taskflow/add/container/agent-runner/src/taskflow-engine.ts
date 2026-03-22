@@ -551,16 +551,16 @@ export class TaskflowEngine {
   }
 
   private static readonly moveActionLabels: Record<MoveParams['action'], string> = {
-    start: 'movida para 🔄 Em Andamento',
-    wait: 'movida para ⏳ Aguardando',
-    resume: 'retomada → 🔄 Em Andamento',
-    return: 'devolvida → ⏭️ Próximas Ações',
-    review: 'enviada para 🔍 Revisão',
-    approve: '✅ aprovada',
-    reject: '↩️ rejeitada — retrabalho necessário',
-    conclude: '✅ concluída',
-    reopen: 'reaberta → ⏭️ Próximas Ações',
-    force_start: 'forçada para 🔄 Em Andamento',
+    start: 'Movida para 🔄 Em Andamento',
+    wait: 'Movida para ⏳ Aguardando',
+    resume: 'Retomada → 🔄 Em Andamento',
+    return: 'Devolvida → ⏭️ Próximas Ações',
+    review: 'Enviada para 🔍 Revisão',
+    approve: '✅ Aprovada',
+    reject: '↩️ Rejeitada — retrabalho necessário',
+    conclude: '✅ Concluída',
+    reopen: 'Reaberta → ⏭️ Próximas Ações',
+    force_start: 'Forçada para 🔄 Em Andamento',
   };
 
   constructor(
@@ -1521,7 +1521,7 @@ export class TaskflowEngine {
     const did = this.displayId(task, viewerBoard);
     return {
       ...target,
-      message: `🔔 *Atualização na sua tarefa*\n\n*${did}* — ${task.title}\n*Por:* ${modName}\n*Ação:* ${desc}\n\nDigite \`${did}\` para ver detalhes.`,
+      message: `🔔 *Atualização na sua tarefa*\n\n*${did}* — ${task.title}\n*Por:* ${modName}\n\n• ${desc}\n\nDigite \`${did}\` para ver detalhes.`,
     };
   }
 
@@ -2749,7 +2749,7 @@ export class TaskflowEngine {
             notifications.push({
               target_person_id: task.child_exec_person_id,
               notification_group_jid: childPerson.notification_group_jid,
-              message: `↩️ *${task.id}* — ${task.title}\nRevisão rejeitada por ${senderDisplayName}. Ajustes necessários antes de nova aprovação.`,
+              message: `🔔 *Atualização na sua tarefa*\n\n*${task.id}* — ${task.title}\n*Por:* ${senderDisplayName}\n\n• ↩️ Rejeitada — ajustes necessários antes de nova aprovação\n\nDigite \`${task.id}\` para ver detalhes.`,
             });
           }
         }
@@ -2760,7 +2760,7 @@ export class TaskflowEngine {
       const statusText = TaskflowEngine.columnLabel(toColumn);
       const parentNotification = this.buildParentNotification(
         task,
-        `${emoji} *${task.id}* — ${task.title}\n*Movida para:* ${statusText}\n*Por:* ${senderDisplayName}`,
+        `🔔 *Atualização na tarefa*\n\n*${task.id}* — ${task.title}\n*Por:* ${senderDisplayName}\n\n• ${emoji} ${statusText}`,
       );
 
       if (parentNotification) {
