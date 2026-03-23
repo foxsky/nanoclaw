@@ -10,6 +10,7 @@ import {
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
+  TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
 import './channels/index.js';
@@ -71,6 +72,11 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import { resolveExternalDm, getTaskflowDb } from './dm-routing.js';
+import {
+  extractSessionCommand,
+  handleSessionCommand,
+  isSessionCommandAllowed,
+} from './session-commands.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -325,6 +331,41 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (missedMessages.length === 0) return true;
 
+  // --- Session command interception (before trigger check) ---
+  const cmdResult = await handleSessionCommand({
+    missedMessages,
+    isMainGroup,
+    groupName: group.name,
+    triggerPattern: TRIGGER_PATTERN,
+    timezone: TIMEZONE,
+    deps: {
+      sendMessage: (text) => channel.sendMessage(chatJid, text),
+      setTyping: (typing) =>
+        channel.setTyping?.(chatJid, typing) ?? Promise.resolve(),
+      runAgent: (prompt, onOutput) =>
+        runAgent(group, prompt, chatJid, onOutput),
+      closeStdin: () => queue.closeStdin(chatJid),
+      advanceCursor: (ts) => {
+        lastAgentTimestamp[chatJid] = ts;
+        saveState();
+      },
+      formatMessages,
+      canSenderInteract: (msg) => {
+        const hasTrigger = TRIGGER_PATTERN.test(msg.content.trim());
+        const reqTrigger = !isMainGroup && group.requiresTrigger !== false;
+        return (
+          isMainGroup ||
+          !reqTrigger ||
+          (hasTrigger &&
+            (msg.is_from_me ||
+              isTriggerAllowed(chatJid, msg.sender, loadSenderAllowlist())))
+        );
+      },
+    },
+  });
+  if (cmdResult.handled) return cmdResult.success;
+  // --- End session command interception ---
+
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
     if (!hasTriggerMessage(missedMessages, chatJid, group)) return true;
@@ -377,7 +418,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           ? result.result
           : JSON.stringify(result.result);
       const text = stripInternalTags(raw);
-      logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
+      logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
       if (text) {
         await channel.sendMessage(chatJid, text, groupSender);
         outputSentToUser = true;
@@ -575,6 +616,33 @@ async function startMessageLoop(): Promise<void> {
           }
 
           const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
+
+          // --- Session command interception (message loop) ---
+          // Scan ALL messages in the batch for a session command.
+          const loopCmdMsg = groupMessages.find(
+            (m) => extractSessionCommand(m.content, TRIGGER_PATTERN) !== null,
+          );
+
+          if (loopCmdMsg) {
+            // Only close active container if the sender is authorized — otherwise an
+            // untrusted user could kill in-flight work by sending /compact (DoS).
+            // closeStdin no-ops internally when no container is active.
+            if (
+              isSessionCommandAllowed(
+                isMainGroup,
+                loopCmdMsg.is_from_me === true,
+              )
+            ) {
+              queue.closeStdin(chatJid);
+            }
+            // Enqueue so processGroupMessages handles auth + cursor advancement.
+            // Don't pipe via IPC — slash commands need a fresh container with
+            // string prompt (not MessageStream) for SDK recognition.
+            queue.enqueueMessageCheck(chatJid);
+            continue;
+          }
+          // --- End session command interception ---
+
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
 
           // For non-main groups, only act on trigger messages.
@@ -734,9 +802,19 @@ function recoverPendingMessages(): void {
       ASSISTANT_NAME,
       getGroupSenderName(group.trigger),
     );
-    if (pending.length > 0) {
+    // Apply the same noise filter used in the message loop so that
+    // stale processing indicators / typing markers don't trigger a
+    // spurious container start on restart.
+    const substantive = pending.filter((msg) => {
+      const text = msg.content.trim();
+      if (!text) return false;
+      if (NOISE_VOICE_PROCESSING.test(text)) return false;
+      if (NOISE_TYPING_INDICATOR.test(text)) return false;
+      return true;
+    });
+    if (substantive.length > 0) {
       logger.info(
-        { group: group.name, pendingCount: pending.length },
+        { group: group.name, pendingCount: substantive.length },
         'Recovery: found unprocessed messages',
       );
       queue.enqueueMessageCheck(chatJid);
@@ -764,6 +842,9 @@ async function main(): Promise<void> {
     'ANTHROPIC_API_KEY',
     'CONTEXT_SUMMARIZER',
     'CONTEXT_SUMMARIZER_MODEL',
+    'CONTEXT_OLLAMA_HOST',
+    'CONTEXT_FALLBACK_MODEL',
+    'CONTEXT_FALLBACK_OLLAMA_HOST',
     'CONTEXT_RETAIN_DAYS',
   ]);
 
@@ -777,6 +858,7 @@ async function main(): Promise<void> {
       path.join(DATA_DIR, 'embeddings', 'embeddings.db'),
       skillEnv.OLLAMA_HOST,
       skillEnv.EMBEDDING_MODEL || 'bge-m3',
+      skillEnv.CONTEXT_FALLBACK_OLLAMA_HOST,
     );
     embeddingService.startIndexer();
     logger.info(
@@ -811,7 +893,9 @@ async function main(): Promise<void> {
         summarizer:
           (skillEnv.CONTEXT_SUMMARIZER as 'ollama' | 'claude') || 'ollama',
         summarizerModel: skillEnv.CONTEXT_SUMMARIZER_MODEL,
-        ollamaHost: skillEnv.OLLAMA_HOST,
+        fallbackModel: skillEnv.CONTEXT_FALLBACK_MODEL,
+        ollamaHost: skillEnv.CONTEXT_OLLAMA_HOST || skillEnv.OLLAMA_HOST,
+        fallbackOllamaHost: skillEnv.CONTEXT_FALLBACK_OLLAMA_HOST,
         anthropicApiKey: skillEnv.ANTHROPIC_API_KEY,
         retainDays: parseInt(skillEnv.CONTEXT_RETAIN_DAYS || '90'),
       },
@@ -997,7 +1081,8 @@ async function main(): Promise<void> {
       );
     },
     getAvailableGroups,
-    writeGroupsSnapshot,
+    writeGroupsSnapshot: (gf, im, ag, rj) =>
+      writeGroupsSnapshot(gf, im, ag, rj),
     createGroup: (subject, participants) => {
       const ch = channels.find((c) => c.createGroup);
       if (!ch?.createGroup)
@@ -1009,6 +1094,21 @@ async function main(): Promise<void> {
       if (!ch?.resolvePhoneJid)
         throw new Error('No channel supports phone JID resolution');
       return ch.resolvePhoneJid(phone);
+    },
+    onTasksChanged: () => {
+      const tasks = getAllTasks();
+      const taskRows = tasks.map((t) => ({
+        id: t.id,
+        groupFolder: t.group_folder,
+        prompt: t.prompt,
+        schedule_type: t.schedule_type,
+        schedule_value: t.schedule_value,
+        status: t.status,
+        next_run: t.next_run,
+      }));
+      for (const group of Object.values(registeredGroups)) {
+        writeTasksSnapshot(group.folder, group.isMain === true, taskRows);
+      }
     },
   });
   queue.setProcessMessagesFn(processGroupMessages);

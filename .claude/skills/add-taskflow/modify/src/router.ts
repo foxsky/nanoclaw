@@ -20,8 +20,9 @@ export function formatMessages(messages: NewMessage[]): string {
 export function stripInternalTags(text: string): string {
   // Strip properly closed <internal>...</internal> blocks
   let result = text.replace(/<internal>[\s\S]*?<\/internal>/g, '');
-  // Strip unclosed <internal> tags (model hallucinated wrong closing tag)
-  result = result.replace(/<internal>[\s\S]*/g, '');
+  // Strip unclosed <internal> tags — only consume non-< chars to avoid
+  // destroying content after a literal "<internal>" in prose text
+  result = result.replace(/<internal>[^<]*/g, '');
   return result.trim();
 }
 

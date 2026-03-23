@@ -16,7 +16,10 @@ Added optional `sender` parameter to `sendMessage()` so TaskFlow groups can use 
 
 ### createGroup method
 - Added: `createGroup(subject, participants)` — creates a WhatsApp group using `sock.groupCreate()`
-- Returns `{ jid, subject }` for IPC plugin use (provision-root-board, provision-child-board, create-group)
+- Returns `{ jid, subject, inviteLink?, droppedParticipants? }` for IPC plugin use
+- Participant verification: checks by count first (avoids LID JID false misses), then falls back to JID matching with `p.phoneNumber`/`p.lid` from metadata
+- 2-second delay before verification to let WhatsApp propagate additions
+- Generates invite link only when participant count truly doesn't match
 
 ### Voice message transcription (from voice-transcription skill)
 - Imports: `isVoiceMessage`, `transcribeAudioMessage` from `../transcription.js`

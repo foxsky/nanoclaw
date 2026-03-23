@@ -13,6 +13,8 @@ interface QueuedTask {
 
 const MAX_RETRIES = 5;
 const BASE_RETRY_MS = 5000;
+/** Max time a queued task waits for a busy container before forcing close */
+const TASK_STARVATION_MS = 120_000; // 2 minutes
 
 interface GroupState {
   active: boolean;
@@ -28,6 +30,7 @@ interface GroupState {
   retryCount: number;
   retryTimer: ReturnType<typeof setTimeout> | null;
   pendingClose: boolean;
+  taskStarvationTimer: ReturnType<typeof setTimeout> | null;
 }
 
 export class GroupQueue {
@@ -55,6 +58,7 @@ export class GroupQueue {
         retryCount: 0,
         retryTimer: null,
         pendingClose: false,
+        taskStarvationTimer: null,
       };
       this.groups.set(groupJid, state);
     }
@@ -108,12 +112,34 @@ export class GroupQueue {
 
     if (state.active) {
       state.pendingTasks.push({ id: taskId, groupJid, fn });
-      if (!state.isTaskContainer) {
+      if (!state.isTaskContainer && state.idleWaiting) {
         logger.debug(
-          { groupJid, taskId, idleWaiting: state.idleWaiting },
-          'Preempting active group container so queued task can run next',
+          { groupJid, taskId },
+          'Container idle, closing so queued task can run next',
         );
         this.closeStdin(groupJid);
+      } else if (!state.isTaskContainer && !state.idleWaiting) {
+        logger.debug(
+          { groupJid, taskId },
+          'Container busy processing, task queued — will run after current query',
+        );
+        // Start starvation timer — if container doesn't go idle in time, force close
+        if (!state.taskStarvationTimer) {
+          state.taskStarvationTimer = setTimeout(() => {
+            state.taskStarvationTimer = null;
+            if (
+              state.active &&
+              !state.idleWaiting &&
+              state.pendingTasks.length > 0
+            ) {
+              logger.warn(
+                { groupJid, taskId, pendingCount: state.pendingTasks.length },
+                'Task starvation: container busy too long, forcing close',
+              );
+              this.closeStdin(groupJid);
+            }
+          }, TASK_STARVATION_MS);
+        }
       } else {
         logger.debug(
           { groupJid, taskId },
@@ -168,6 +194,11 @@ export class GroupQueue {
   notifyIdle(groupJid: string): void {
     const state = this.getGroup(groupJid);
     state.idleWaiting = true;
+    // Clear starvation timer — container went idle naturally
+    if (state.taskStarvationTimer) {
+      clearTimeout(state.taskStarvationTimer);
+      state.taskStarvationTimer = null;
+    }
     if (state.pendingTasks.length > 0) {
       this.closeStdin(groupJid);
     }
@@ -247,13 +278,7 @@ export class GroupQueue {
       logger.error({ groupJid, err }, 'Error processing messages for group');
       this.scheduleRetry(groupJid, state);
     } finally {
-      state.active = false;
-      state.process = null;
-      state.containerName = null;
-      state.groupFolder = null;
-      state.inputDir = null;
-      this.activeCount--;
-      this.drainGroup(groupJid);
+      this.cleanupRun(groupJid, state);
     }
   }
 
@@ -275,16 +300,25 @@ export class GroupQueue {
     } catch (err) {
       logger.error({ groupJid, taskId: task.id, err }, 'Error running task');
     } finally {
-      state.active = false;
       state.isTaskContainer = false;
       state.runningTaskId = null;
-      state.process = null;
-      state.containerName = null;
-      state.groupFolder = null;
-      state.inputDir = null;
-      this.activeCount--;
-      this.drainGroup(groupJid);
+      this.cleanupRun(groupJid, state);
     }
+  }
+
+  private cleanupRun(groupJid: string, state: GroupState): void {
+    state.active = false;
+    state.pendingClose = false;
+    if (state.taskStarvationTimer) {
+      clearTimeout(state.taskStarvationTimer);
+      state.taskStarvationTimer = null;
+    }
+    state.process = null;
+    state.containerName = null;
+    state.groupFolder = null;
+    state.inputDir = null;
+    this.activeCount--;
+    this.drainGroup(groupJid);
   }
 
   private scheduleRetry(groupJid: string, state: GroupState): void {
@@ -388,7 +422,7 @@ export class GroupQueue {
     // via idle timeout or container timeout. The --rm flag cleans them up on exit.
     // This prevents WhatsApp reconnection restarts from killing working agents.
     const activeContainers: string[] = [];
-    for (const [jid, state] of this.groups) {
+    for (const [_jid, state] of this.groups) {
       if (state.process && !state.process.killed && state.containerName) {
         activeContainers.push(state.containerName);
       }

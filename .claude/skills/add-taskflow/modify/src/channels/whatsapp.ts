@@ -128,28 +128,38 @@ export class WhatsAppChannel implements Channel {
           }
           this.reconnecting = true;
           logger.info('Reconnecting...');
-          this.connectInternal()
-            .catch((err) => {
-              logger.error({ err }, 'Failed to reconnect, retrying in 5s');
-              return new Promise<void>((resolve) => {
-                setTimeout(() => {
-                  this.connectInternal()
-                    .catch((err2) => {
-                      logger.error({ err: err2 }, 'Reconnection retry failed');
-                    })
-                    .finally(resolve);
-                }, 5000);
-              });
-            })
-            .finally(() => {
-              this.reconnecting = false;
-            });
+          // Retry loop with exponential backoff. Only clear `reconnecting`
+          // on success (connection='open' handler) — NOT in finally.
+          const attemptReconnect = async (attempt = 1, maxAttempts = 5) => {
+            for (let i = attempt; i <= maxAttempts; i++) {
+              try {
+                await this.connectInternal();
+                return; // success — reconnecting cleared by connection='open' handler
+              } catch (err) {
+                const delay = Math.min(5000 * Math.pow(2, i - 1), 60000);
+                logger.error(
+                  { err, attempt: i, maxAttempts, retryInMs: delay },
+                  'Reconnection attempt failed',
+                );
+                if (i < maxAttempts) {
+                  await new Promise((r) => setTimeout(r, delay));
+                }
+              }
+            }
+            // All attempts exhausted — allow future reconnection attempts
+            this.reconnecting = false;
+            logger.error('All reconnection attempts exhausted');
+          };
+          attemptReconnect().catch(() => {
+            this.reconnecting = false;
+          });
         } else {
           logger.info('Logged out. Run /setup to re-authenticate.');
           process.exit(78); // EX_CONFIG — systemd RestartPreventExitStatus stops restart loop
         }
       } else if (connection === 'open') {
         this.connected = true;
+        this.reconnecting = false; // clear reconnecting flag on successful connection
         logger.info('Connected to WhatsApp');
 
         // Announce availability so WhatsApp relays subsequent presence updates (typing indicators)
@@ -491,65 +501,84 @@ export class WhatsAppChannel implements Channel {
     }
     if (allAdded)
       try {
+        // Brief delay to let WhatsApp propagate participant additions
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+
         const meta = await this.sock.groupMetadata(groupJid);
-        // Build member set with both raw IDs and phone-number equivalents.
-        // Group metadata may return LID JIDs (@lid) for participants that were
-        // added by phone JID (@s.whatsapp.net). Translate LIDs to phone JIDs
-        // so the comparison works across both formats.
-        const memberIds = new Set<string>();
-        for (const p of meta.participants) {
-          memberIds.add(p.id);
-          if (p.id.endsWith('@lid')) {
-            const phoneJid = await this.translateJid(p.id);
-            if (phoneJid !== p.id) memberIds.add(phoneJid);
-          }
-        }
-        const missing = participants.filter((p) => !memberIds.has(p));
-        if (missing.length > 0) {
+        // Expected members: requested participants + the bot itself
+        const expectedCount = participants.length + 1;
+
+        // First check: does the member count match?
+        // WhatsApp may return LID JIDs that we can't translate back to phone
+        // JIDs, causing false "missing" detections. If the count matches,
+        // all participants were added — skip JID-level verification.
+        if (meta.participants.length >= expectedCount) {
           logger.info(
-            { groupJid, missing },
-            'Participants not added at creation, retrying',
+            {
+              groupJid,
+              expected: expectedCount,
+              actual: meta.participants.length,
+            },
+            'Group participant count matches — all added',
           );
-          try {
-            await this.sock.groupParticipantsUpdate(groupJid, missing, 'add');
-          } catch (retryErr) {
-            allAdded = false;
-            droppedParticipants = missing;
-            logger.warn(
-              { err: retryErr, groupJid, missing },
-              'Failed to add missing participants',
-            );
+        } else {
+          // Count doesn't match — build member set using all available JID formats
+          const memberIds = new Set<string>();
+          for (const p of meta.participants) {
+            memberIds.add(p.id);
+            // Use phoneNumber from metadata if available (Baileys exposes it)
+            if ((p as any).phoneNumber) {
+              memberIds.add(`${(p as any).phoneNumber}@s.whatsapp.net`);
+            }
+            // Use lid field if available
+            if ((p as any).lid) {
+              memberIds.add((p as any).lid);
+            }
+            if (p.id.endsWith('@lid')) {
+              const phoneJid = await this.translateJid(p.id);
+              if (phoneJid !== p.id) memberIds.add(phoneJid);
+            }
           }
-          // Only re-verify if the retry didn't throw
-          if (allAdded) {
+          const missing = participants.filter((p) => !memberIds.has(p));
+          if (missing.length > 0) {
+            logger.info(
+              { groupJid, missing },
+              'Participants not added at creation, retrying',
+            );
             try {
-              const meta2 = await this.sock.groupMetadata(groupJid);
-              const memberIds2 = new Set<string>();
-              for (const p of meta2.participants) {
-                memberIds2.add(p.id);
-                if (p.id.endsWith('@lid')) {
-                  const phoneJid = await this.translateJid(p.id);
-                  if (phoneJid !== p.id) memberIds2.add(phoneJid);
-                }
-              }
-              const stillMissing = missing.filter((p) => !memberIds2.has(p));
-              if (stillMissing.length > 0) {
-                allAdded = false;
-                droppedParticipants = stillMissing;
-                logger.warn(
-                  { groupJid, stillMissing },
-                  'Participants still missing after retry',
-                );
-              }
-            } catch {
-              // Re-verify failed — can't confirm participants were added.
-              // Mark as not all added so invite link is generated.
+              await this.sock.groupParticipantsUpdate(groupJid, missing, 'add');
+            } catch (retryErr) {
               allAdded = false;
               droppedParticipants = missing;
               logger.warn(
-                { groupJid, missing },
-                'Could not re-verify participants after retry',
+                { err: retryErr, groupJid, missing },
+                'Failed to add missing participants',
               );
+            }
+            // Re-verify by count after retry
+            if (allAdded) {
+              try {
+                const meta2 = await this.sock.groupMetadata(groupJid);
+                if (meta2.participants.length < expectedCount) {
+                  allAdded = false;
+                  droppedParticipants = missing;
+                  logger.warn(
+                    {
+                      groupJid,
+                      expected: expectedCount,
+                      actual: meta2.participants.length,
+                    },
+                    'Participants still missing after retry (count mismatch)',
+                  );
+                }
+              } catch {
+                allAdded = false;
+                droppedParticipants = missing;
+                logger.warn(
+                  { groupJid, missing },
+                  'Could not re-verify participants after retry',
+                );
+              }
             }
           }
         }

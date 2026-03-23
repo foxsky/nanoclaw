@@ -59,6 +59,32 @@ export function computeNextRun(task: ScheduledTask): string | null {
   return null;
 }
 
+/**
+ * Check if a cron task already ran in the current cron slot.
+ * Prevents re-execution on process restart when `inFlightTaskIds` is lost.
+ * Returns true if `last_run` falls within [currentSlot, nextSlot).
+ */
+export function cronSlotAlreadyRan(task: ScheduledTask): boolean {
+  if (task.schedule_type !== 'cron' || !task.last_run) return false;
+  try {
+    const interval = CronExpressionParser.parse(task.schedule_value, {
+      tz: TIMEZONE,
+    });
+    const nextSlot = interval.next().toDate();
+    // Current slot = the slot that just passed (prev from next)
+    const prevInterval = CronExpressionParser.parse(task.schedule_value, {
+      tz: TIMEZONE,
+      currentDate: nextSlot,
+    });
+    // Go back to get the current slot start
+    const currentSlot = prevInterval.prev().toDate();
+    const lastRun = new Date(task.last_run);
+    return lastRun >= currentSlot && lastRun < nextSlot;
+  } catch {
+    return false;
+  }
+}
+
 async function runTask(
   task: ScheduledTask,
   deps: SchedulerDependencies,
@@ -250,7 +276,20 @@ async function runTask(
 
   // Recompute next_run after execution so it's based on post-run time.
   // (The pre-execution advancement was just to prevent double-pickup.)
-  const nextRun = computeNextRun(task);
+  let nextRun: string | null = null;
+  try {
+    nextRun = computeNextRun(task);
+  } catch (computeErr) {
+    // Malformed schedule_value (bad cron, non-numeric interval) → pause to prevent
+    // infinite error loop. Record last_run so the task doesn't appear stale.
+    logger.error(
+      { taskId: task.id, scheduleValue: task.schedule_value, err: computeErr },
+      'computeNextRun failed — pausing task to prevent retry churn',
+    );
+    updateTaskAfterRun(task.id, null, `Error: computeNextRun failed`);
+    updateTask(task.id, { status: 'paused' });
+    return;
+  }
 
   const resultSummary = error
     ? `Error: ${error}`
@@ -298,6 +337,17 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
               status: currentTask?.status,
             },
             'Skipping due task after status re-check',
+          );
+          continue;
+        }
+
+        // Idempotency guard: skip if this cron slot already ran (e.g., after process restart)
+        if (cronSlotAlreadyRan(currentTask)) {
+          const nextRun = computeNextRun(currentTask);
+          if (nextRun) updateTask(currentTask.id, { next_run: nextRun });
+          logger.debug(
+            { taskId: currentTask.id },
+            'Skipping cron task — already ran in this slot',
           );
           continue;
         }

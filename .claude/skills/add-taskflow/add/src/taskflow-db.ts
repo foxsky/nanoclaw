@@ -592,18 +592,25 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
       'ALTER TABLE board_config ADD COLUMN next_recurring_number INTEGER DEFAULT 1',
     );
   } catch {}
-  // Seed new counters from existing task IDs (one-time migration)
+  // Seed new counters from existing task IDs (one-time migration).
+  // Split into two independent statements so one counter's default doesn't
+  // trigger a regression of the other counter (e.g., deleted P-tasks causing
+  // next_project_number to regress when only next_recurring_number = 1).
   db.exec(`
     UPDATE board_config SET
       next_project_number = COALESCE((
         SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) + 1
         FROM tasks WHERE tasks.board_id = board_config.board_id AND id GLOB 'P[0-9]*' AND id NOT GLOB 'P*.*'
-      ), next_project_number),
+      ), next_project_number)
+    WHERE next_project_number = 1
+  `);
+  db.exec(`
+    UPDATE board_config SET
       next_recurring_number = COALESCE((
         SELECT MAX(CAST(SUBSTR(id, 2) AS INTEGER)) + 1
         FROM tasks WHERE tasks.board_id = board_config.board_id AND id GLOB 'R[0-9]*'
       ), next_recurring_number)
-    WHERE next_project_number = 1 OR next_recurring_number = 1
+    WHERE next_recurring_number = 1
   `);
   migrateLegacyProjectSubtasks(db);
   reconcileDelegationLinks(db);

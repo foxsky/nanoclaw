@@ -8,7 +8,9 @@ export function getTaskflowDb(dataDir: string): Database.Database | null {
   if (_taskflowDb) return _taskflowDb;
   const dbPath = path.join(dataDir, 'taskflow', 'taskflow.db');
   try {
-    _taskflowDb = new Database(dbPath);
+    _taskflowDb = new Database(dbPath, { fileMustExist: true });
+    _taskflowDb.pragma('journal_mode = WAL');
+    _taskflowDb.pragma('busy_timeout = 5000');
     return _taskflowDb;
   } catch {
     return null;

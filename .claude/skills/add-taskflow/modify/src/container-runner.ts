@@ -31,6 +31,15 @@ import {
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
+// --- add-long-term-context skill: module-level setter ---
+import type { ContextService } from './context-service.js';
+let _contextService: ContextService | null = null;
+
+/** Set by index.ts after creating the ContextService. Used by the capture hook. */
+export function setContextService(svc: ContextService | null): void {
+  _contextService = svc;
+}
+
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
@@ -79,7 +88,9 @@ const CORE_AGENT_RUNNER_FILES = [
   'ipc-tooling.ts',
   'runtime-config.ts',
   'taskflow-engine.ts',
+  'db-util.ts',
   'embedding-reader.ts',
+  'context-reader.ts',
   path.join('mcp-plugins', 'create-group.ts'),
 ] as const;
 
@@ -224,6 +235,17 @@ function buildVolumeMounts(
   mounts.push({
     hostPath: embeddingsDir,
     containerPath: '/workspace/embeddings',
+    readonly: true,
+  });
+
+  // --- add-long-term-context skill ---
+  // Context DB — read-only mount for conversation history preamble and MCP tools.
+  // Mounts the directory (not the file) so SQLite WAL/SHM files are visible.
+  const contextDir = path.join(DATA_DIR, 'context');
+  fs.mkdirSync(contextDir, { recursive: true });
+  mounts.push({
+    hostPath: contextDir,
+    containerPath: '/workspace/context',
     readonly: true,
   });
 
@@ -551,7 +573,14 @@ export async function runContainerAgent(
             }
             // Call onOutput for all markers (including null results)
             // so idle timers start even for "silent" query completions.
-            outputChain = outputChain.then(() => onOutput(parsed));
+            outputChain = outputChain.then(() =>
+              onOutput(parsed).catch((err: unknown) => {
+                logger.warn(
+                  { group: group.name, err },
+                  'onOutput callback failed',
+                );
+              }),
+            );
           } catch (err) {
             logger.warn(
               { group: group.name, error: err },
@@ -628,6 +657,20 @@ export async function runContainerAgent(
       clearTimeout(timeout);
       const duration = Date.now() - startTime;
 
+      // --- add-long-term-context skill: capture turns on container exit ---
+      // Fire-and-forget — safe even on error paths. Must be before branching
+      // so capture happens regardless of exit reason (timeout, error, success).
+      // Capture ref before async to prevent race with shutdown nulling _contextService.
+      const ctxSvc = _contextService;
+      const ctxSessionId = newSessionId;
+      if (ctxSvc && ctxSessionId) {
+        import('./context-sync.js')
+          .then(({ captureAgentTurn }) =>
+            captureAgentTurn(ctxSvc, group.folder, ctxSessionId),
+          )
+          .catch(() => {});
+      }
+
       if (timedOut) {
         const ts = new Date().toISOString().replace(/[:.]/g, '-');
         const timeoutLog = path.join(logsDir, `container-${ts}.log`);
@@ -695,10 +738,20 @@ export async function runContainerAgent(
       const isError = code !== 0;
 
       if (isVerbose || isError) {
+        // On error, log input metadata only — not the full prompt.
+        // Full input is only included at verbose level to avoid
+        // persisting user conversation content on every non-zero exit.
+        if (isVerbose) {
+          logLines.push(`=== Input ===`, JSON.stringify(input, null, 2), ``);
+        } else {
+          logLines.push(
+            `=== Input Summary ===`,
+            `Prompt length: ${input.prompt.length} chars`,
+            `Session ID: ${input.sessionId || 'new'}`,
+            ``,
+          );
+        }
         logLines.push(
-          `=== Input ===`,
-          JSON.stringify(input, null, 2),
-          ``,
           `=== Container Args ===`,
           containerArgs.join(' '),
           ``,
@@ -880,7 +933,7 @@ export function writeGroupsSnapshot(
   groupFolder: string,
   isMain: boolean,
   groups: AvailableGroup[],
-  registeredJids: Set<string>,
+  _registeredJids: Set<string>,
 ): void {
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
   fs.mkdirSync(groupIpcDir, { recursive: true });
