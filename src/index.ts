@@ -1081,7 +1081,8 @@ async function main(): Promise<void> {
       );
     },
     getAvailableGroups,
-    writeGroupsSnapshot,
+    writeGroupsSnapshot: (gf, im, ag, rj) =>
+      writeGroupsSnapshot(gf, im, ag, rj),
     createGroup: (subject, participants) => {
       const ch = channels.find((c) => c.createGroup);
       if (!ch?.createGroup)

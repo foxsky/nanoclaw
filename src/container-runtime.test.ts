@@ -122,7 +122,12 @@ describe('cleanupOrphans', () => {
     expect(mockExecSync).toHaveBeenCalledTimes(2);
     expect(mockExecSync).toHaveBeenNthCalledWith(
       2,
-      `${CONTAINER_RUNTIME_BIN} stop nanoclaw-group1-111 nanoclaw-group2-222`,
+      `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-group1-111`,
+      { stdio: 'pipe' },
+    );
+    expect(mockExecSync).toHaveBeenNthCalledWith(
+      3,
+      `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-group2-222`,
       { stdio: 'pipe' },
     );
     expect(logger.info).toHaveBeenCalledWith(

@@ -892,6 +892,5 @@ export async function processTaskIpc(
   if (handler) {
     await handler(data, sourceGroup, isMain, deps);
   } else {
-    logger.warn({ type }, 'Unknown IPC task type');
-  }
+    logger.warn({ type }, 'Unknown IPC task type');  }
 }
