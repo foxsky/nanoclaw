@@ -4,6 +4,17 @@ All notable changes to NanoClaw will be documented in this file.
 
 ## [Unreleased]
 
+### Upstream Merge (1.2.21 → deee4b2)
+- Docker stop timeout fix (`-t 1`) for faster container restarts
+- Task snapshot refresh after IPC mutations (`onTasksChanged`)
+- Security: stop logging user prompt content on container errors
+- Remote control stdin fix for service restarts
+- ESLint config with error-handling rules
+- New skills: Claw CLI, Slack formatting, capabilities/status
+- Opt-in diagnostics via PostHog (setup/update only)
+- `cleanupOrphans` uses individual stops with `-t 1` (aligned with `stopContainer`)
+- Removed duplicate `openai` dependency in package.json
+
 ### Board Provisioning
 - **fix:** Seed `available_groups.json` during board provisioning — newly provisioned boards were missing this file until their first agent invocation, causing container warnings
 - **fix:** Fix `fixOwnership` on child board provisioning to include `data/ipc/{folder}` (root board already did this)

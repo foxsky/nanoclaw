@@ -2,6 +2,12 @@
 
 ## 2026-03-23
 
+### Upstream Merge Compatibility
+- Synced all skill modify/ and add/ copies after upstream merge (deee4b2)
+- `cleanupOrphans` aligned with `stopContainer` — individual stops with `-t 1`
+- Resolved merge conflicts in container-runtime.ts (kept command injection fix), index.ts (kept stripInternalTags + createGroup deps), ipc.ts (kept handler registry)
+- WhatsApp participant verification fix tracked in modify/ with updated intent file
+
 ### Board Provisioning Fixes
 - **fix:** Seed `available_groups.json` during provisioning via new `seedAvailableGroupsJson()` helper
 - **fix:** Include IPC dir in `fixOwnership` for child boards (was only fixing groups/ dir)

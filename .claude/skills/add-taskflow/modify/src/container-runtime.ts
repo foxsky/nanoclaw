@@ -129,12 +129,12 @@ export function cleanupOrphans(): void {
       .map((n) => (n.startsWith('/') ? n.slice(1) : n))
       .filter((n) => VALID_CONTAINER_NAME.test(n));
     if (validOrphans.length > 0) {
-      try {
-        execSync(`${CONTAINER_RUNTIME_BIN} stop ${validOrphans.join(' ')}`, {
-          stdio: 'pipe',
-        });
-      } catch {
-        /* some may already be stopped */
+      for (const name of validOrphans) {
+        try {
+          execSync(stopContainer(name), { stdio: 'pipe' });
+        } catch {
+          /* may already be stopped */
+        }
       }
       logger.info(
         { count: orphans.length, names: orphans },
