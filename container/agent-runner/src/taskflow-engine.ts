@@ -4544,7 +4544,6 @@ export class TaskflowEngine {
     };
 
     /* --- Build output --- */
-    const urgent: string[] = [];
     const lines: string[] = [];
     const SEP = TaskflowEngine.SEP;
 
@@ -4677,21 +4676,6 @@ export class TaskflowEngine {
           cmpDateNullable(sortDate(a), sortDate(b)),
         );
 
-        /* Track urgency for ALL tasks (even summarized) */
-        for (const t of sorted) {
-          if (t.due_date) {
-            const dd = daysDiff(t.due_date);
-            const tid = dId(t);
-            if (dd <= 2) {
-              if (dd < 0)
-                urgent.push(`\u26a0\ufe0f *${tid} (${nm}) atrasada!*`);
-              else
-                urgent.push(
-                  `\u26a0\ufe0f *${tid} (${nm}) vence em ${dd} dias!*`,
-                );
-            }
-          }
-        }
 
         if (sorted.length >= SUMMARY_THRESHOLD) {
           /* Summary mode */
@@ -4720,10 +4704,6 @@ export class TaskflowEngine {
         lines.push('');
       }
     }
-
-    /* Footer */
-    lines.push(SEP);
-    for (const u of urgent) lines.push(u);
 
     return lines.join('\n');
   }

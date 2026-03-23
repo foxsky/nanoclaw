@@ -698,7 +698,7 @@ Meetings do NOT count against WIP limits.
 Call `taskflow_report({ type: 'standup' })` — the result includes `formatted_board` (use as-is) plus structured data for the attention footer.
 
 - **Skip if empty:** If no tasks exist on the board, do NOT send. Perform housekeeping silently.
-- After the formatted board, add attention footer for urgent items: `⚠️ *[ID] vence em N dias (DD/MM — [weekday]). [person], alguma atualização?*`
+- The board already marks overdue tasks with `⚠️` in their column sections. Do NOT add a separate overdue/urgent footer or follow-up questions — it duplicates information already visible in the board.
 - If upcoming meetings exist for today, include: `📅 *Reuniões hoje:* M1 14:00 — Alinhamento semanal (3 participantes)`
 
 ### Displaying `my_tasks` / `person_tasks`
