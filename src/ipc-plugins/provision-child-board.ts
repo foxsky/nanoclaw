@@ -165,14 +165,18 @@ const handleProvisionChildBoard: IpcHandler = async (
              JOIN boards b ON b.id = cbr.child_board_id
              JOIN board_people bp ON bp.board_id = cbr.child_board_id AND bp.person_id = cbr.person_id
              WHERE bp.phone IS NOT NULL
-               AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(bp.phone, '+', ''), '-', ''), ' ', ''), '(', ''), ')', '') = ?
+               AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(bp.phone, '+', ''), '-', ''), ' ', ''), '(', ''), ')', ''), '.', '') = ?
                AND cbr.parent_board_id != ?
              LIMIT 1`,
           )
           .get(phoneDigits, parentBoard.id) as ExistingBoardMatch | undefined;
         if (existingElsewhere) {
           logger.info(
-            { personId, matchedPersonId: existingElsewhere.person_id, phone: phoneDigits },
+            {
+              personId,
+              matchedPersonId: existingElsewhere.person_id,
+              phone: phoneDigits,
+            },
             'provision_child_board: matched existing board by phone number',
           );
         }
@@ -202,26 +206,43 @@ const handleProvisionChildBoard: IpcHandler = async (
           );
           // Check for PK collision before updating
           const alreadyExists = tfDb
-            .prepare(`SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?`)
+            .prepare(
+              `SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?`,
+            )
             .get(parentBoard.id, existingPersonId);
           if (alreadyExists) {
             // Person already exists with the target ID — delete the duplicate
             tfDb
-              .prepare(`DELETE FROM board_people WHERE board_id = ? AND person_id = ?`)
+              .prepare(
+                `DELETE FROM board_people WHERE board_id = ? AND person_id = ?`,
+              )
               .run(parentBoard.id, personId);
           } else {
             tfDb
-              .prepare(`UPDATE board_people SET person_id = ? WHERE board_id = ? AND person_id = ?`)
+              .prepare(
+                `UPDATE board_people SET person_id = ? WHERE board_id = ? AND person_id = ?`,
+              )
               .run(existingPersonId, parentBoard.id, personId);
           }
           // Update tasks (all columns, including done)
           tfDb
-            .prepare(`UPDATE tasks SET assignee = ? WHERE board_id = ? AND assignee = ?`)
+            .prepare(
+              `UPDATE tasks SET assignee = ? WHERE board_id = ? AND assignee = ?`,
+            )
             .run(existingPersonId, parentBoard.id, personId);
-          // Update board_admins
-          tfDb
-            .prepare(`UPDATE OR IGNORE board_admins SET person_id = ? WHERE board_id = ? AND person_id = ?`)
-            .run(existingPersonId, parentBoard.id, personId);
+          // Update board_admins — delete old row if target already exists to avoid PK collision
+          const existingAdmin = tfDb
+            .prepare(`SELECT 1 FROM board_admins WHERE board_id = ? AND person_id = ?`)
+            .get(parentBoard.id, existingPersonId);
+          if (existingAdmin) {
+            tfDb
+              .prepare(`DELETE FROM board_admins WHERE board_id = ? AND person_id = ?`)
+              .run(parentBoard.id, personId);
+          } else {
+            tfDb
+              .prepare(`UPDATE board_admins SET person_id = ? WHERE board_id = ? AND person_id = ?`)
+              .run(existingPersonId, parentBoard.id, personId);
+          }
         }
 
         const unifiedId = existingPersonId;
@@ -236,7 +257,9 @@ const handleProvisionChildBoard: IpcHandler = async (
 
         // Set notification_group_jid
         tfDb
-          .prepare(`UPDATE board_people SET notification_group_jid = ? WHERE board_id = ? AND person_id = ?`)
+          .prepare(
+            `UPDATE board_people SET notification_group_jid = ? WHERE board_id = ? AND person_id = ?`,
+          )
           .run(existingElsewhere!.group_jid, parentBoard.id, unifiedId);
 
         // Retroactively link unlinked tasks
@@ -245,13 +268,21 @@ const handleProvisionChildBoard: IpcHandler = async (
             `UPDATE tasks SET child_exec_board_id = ?, child_exec_enabled = 1, child_exec_person_id = ?
              WHERE board_id = ? AND assignee = ? AND child_exec_board_id IS NULL`,
           )
-          .run(existingElsewhere!.child_board_id, unifiedId, parentBoard.id, unifiedId);
+          .run(
+            existingElsewhere!.child_board_id,
+            unifiedId,
+            parentBoard.id,
+            unifiedId,
+          );
       });
 
       try {
         linkTransaction();
         logger.info(
-          { parentBoardId: parentBoard.id, childBoardId: existingElsewhere.child_board_id },
+          {
+            parentBoardId: parentBoard.id,
+            childBoardId: existingElsewhere.child_board_id,
+          },
           'provision_child_board: existing board linked successfully',
         );
       } catch (err) {

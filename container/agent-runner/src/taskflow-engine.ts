@@ -3669,7 +3669,7 @@ export class TaskflowEngine {
           } else {
             // Contact never messaged the bot — generate a forwardable invite
             const meetingDate = updates.scheduled_at ?? task.scheduled_at;
-            const localTime = meetingDate ? utcToLocal(meetingDate, this.boardTz) : '';
+            const localTime = meetingDate ? utcToLocal(meetingDate, tz) : '';
             const timeStr = localTime ? ` em ${localTime}` : '';
 
             notifications.push({

@@ -322,7 +322,7 @@ External participants are people outside the board invited to a specific meeting
 | "adicionar participante externo M1: Maria, telefone 5585999991234" | `taskflow_update({ task_id: 'M1', updates: { add_external_participant: { name: 'Maria', phone: '5585999991234' } }, sender_name: SENDER })` |
 | "convidar cliente para M1: Maria, 5585999991234" | `taskflow_update({ task_id: 'M1', updates: { add_external_participant: { name: 'Maria', phone: '5585999991234' } }, sender_name: SENDER })` |
 | "remover participante externo M1: Maria" | `taskflow_update({ task_id: 'M1', updates: { remove_external_participant: { name: 'Maria' } }, sender_name: SENDER })` |
-| "reenviar convite M1: Maria" | `taskflow_update({ task_id: 'M1', updates: { reinvite_external_participant: { name: 'Maria' } }, sender_name: SENDER })` |
+| "reenviar convite M1: Maria" | First look up Maria's phone in `external_contacts` via SQL, then: `taskflow_update({ task_id: 'M1', updates: { reinvite_external_participant: { phone: '5585999991234' } }, sender_name: SENDER })` |
 
 **Rules:**
 - Only organizer (assignee) or manager can add/remove external participants.
@@ -334,7 +334,7 @@ External participants are people outside the board invited to a specific meeting
 
 "Katia e Ismael foram registrados como participantes externos. Como eles nunca conversaram com o assistente, o convite direto não pode ser enviado. Peça para eles enviarem uma mensagem (ex: 'oi') para este número, e depois use _reconvidar participante Katia_ para reenviar o convite."
 
-Check the `notifications` array in the tool response — if it contains `target_kind: 'group'` with "Convite pendente", the invite was NOT sent as a DM.
+Check the `notifications` array in the tool response — if it contains `target_kind: 'group'` with "Convite pendente" or "Reconvite pendente", the invite was NOT sent as a DM. The engine generates a ready-to-forward message in the notification — relay it to the group as-is.
 
 ### DM Context (External Participants)
 
