@@ -3667,15 +3667,22 @@ export class TaskflowEngine {
               message: buildExternalInviteMessage(task.id, task.title, updates.scheduled_at ?? task.scheduled_at, organizerName, tz),
             });
           } else {
-            // Contact never messaged the bot — notify the group instead
+            // Contact never messaged the bot — generate a forwardable invite
+            const meetingDate = updates.scheduled_at ?? task.scheduled_at;
+            const localTime = meetingDate ? utcToLocal(meetingDate, this.boardTz) : '';
+            const timeStr = localTime ? ` em ${localTime}` : '';
+
             notifications.push({
               target_kind: 'group',
               message:
-                `\u{1f4c5} *Convite pendente — ${displayName}*\n\n` +
-                `Para ${task.id} — ${task.title}\n\n` +
-                `${displayName} ainda n\u00e3o tem conversa com o assistente. ` +
-                `Pe\u00e7a para enviar qualquer mensagem (ex: "oi") para este n\u00famero, ` +
-                `depois repita o convite ou use: _reconvidar participante ${displayName}_`,
+                `\u{1f4c5} *Convite pendente \u2014 ${displayName}*\n\n` +
+                `Encaminhe a mensagem abaixo para ${displayName}:\n\n` +
+                `\u2014\u2014\u2014\n` +
+                `Ol\u00e1, ${displayName}! ${organizerName} est\u00e1 te convidando para a reuni\u00e3o *${task.title}*${timeStr}.\n\n` +
+                `Para acessar a pauta e confirmar presen\u00e7a, envie uma mensagem (ex: "oi") para este n\u00famero e depois digite:\n` +
+                `*aceitar convite ${task.id}*\n` +
+                `\u2014\u2014\u2014\n\n` +
+                `Depois que ${displayName} responder, use: _reconvidar participante ${displayName}_`,
             });
           }
 
