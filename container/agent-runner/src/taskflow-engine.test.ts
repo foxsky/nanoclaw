@@ -3796,7 +3796,9 @@ describe('TaskflowEngine', () => {
       expect(r.data!.stats).toBeUndefined();
       expect(r.data!.formatted_report).toContain('🎉');
       expect(r.data!.formatted_report).toContain('*T-001*');
-      expect(r.data!.formatted_report).toContain('*T-002*');
+      // T-002 is blocked but digest no longer shows pendências (no-stress evening)
+      // Blocked tasks are still in data.blocked for the agent to use if needed
+      expect(r.data!.blocked).toHaveLength(1);
     });
 
     it('weekly includes stats and trend', () => {
@@ -3819,11 +3821,15 @@ describe('TaskflowEngine', () => {
          VALUES ('${BOARD_ID}', 'T-003', 'created', 'person-1', '${now}', 'task created')`,
       );
 
-      // Add a "completed last week" entry for trend comparison
+      // Add a "completed last week" entry for trend comparison.
+      // Compute last week's Wednesday dynamically to guarantee it always
+      // falls in the previous ISO week (Mon-Sun), regardless of which
+      // day of the week the test runs.
       const lastWeekDate = new Date();
-      const day = lastWeekDate.getDay();
-      const diff = day === 0 ? 6 : day - 1;
-      lastWeekDate.setDate(lastWeekDate.getDate() - diff - 3); // mid last week
+      const dow = lastWeekDate.getUTCDay(); // 0=Sun … 6=Sat
+      const daysSinceMonday = dow === 0 ? 6 : dow - 1;
+      // Go to this Monday, then back 4 days = last Wednesday
+      lastWeekDate.setUTCDate(lastWeekDate.getUTCDate() - daysSinceMonday - 4);
       const lwStr = lastWeekDate.toISOString();
 
       db.exec(
