@@ -501,65 +501,84 @@ export class WhatsAppChannel implements Channel {
     }
     if (allAdded)
       try {
+        // Brief delay to let WhatsApp propagate participant additions
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+
         const meta = await this.sock.groupMetadata(groupJid);
-        // Build member set with both raw IDs and phone-number equivalents.
-        // Group metadata may return LID JIDs (@lid) for participants that were
-        // added by phone JID (@s.whatsapp.net). Translate LIDs to phone JIDs
-        // so the comparison works across both formats.
-        const memberIds = new Set<string>();
-        for (const p of meta.participants) {
-          memberIds.add(p.id);
-          if (p.id.endsWith('@lid')) {
-            const phoneJid = await this.translateJid(p.id);
-            if (phoneJid !== p.id) memberIds.add(phoneJid);
-          }
-        }
-        const missing = participants.filter((p) => !memberIds.has(p));
-        if (missing.length > 0) {
+        // Expected members: requested participants + the bot itself
+        const expectedCount = participants.length + 1;
+
+        // First check: does the member count match?
+        // WhatsApp may return LID JIDs that we can't translate back to phone
+        // JIDs, causing false "missing" detections. If the count matches,
+        // all participants were added — skip JID-level verification.
+        if (meta.participants.length >= expectedCount) {
           logger.info(
-            { groupJid, missing },
-            'Participants not added at creation, retrying',
+            {
+              groupJid,
+              expected: expectedCount,
+              actual: meta.participants.length,
+            },
+            'Group participant count matches — all added',
           );
-          try {
-            await this.sock.groupParticipantsUpdate(groupJid, missing, 'add');
-          } catch (retryErr) {
-            allAdded = false;
-            droppedParticipants = missing;
-            logger.warn(
-              { err: retryErr, groupJid, missing },
-              'Failed to add missing participants',
-            );
+        } else {
+          // Count doesn't match — build member set using all available JID formats
+          const memberIds = new Set<string>();
+          for (const p of meta.participants) {
+            memberIds.add(p.id);
+            // Use phoneNumber from metadata if available (Baileys exposes it)
+            if ((p as any).phoneNumber) {
+              memberIds.add(`${(p as any).phoneNumber}@s.whatsapp.net`);
+            }
+            // Use lid field if available
+            if ((p as any).lid) {
+              memberIds.add((p as any).lid);
+            }
+            if (p.id.endsWith('@lid')) {
+              const phoneJid = await this.translateJid(p.id);
+              if (phoneJid !== p.id) memberIds.add(phoneJid);
+            }
           }
-          // Only re-verify if the retry didn't throw
-          if (allAdded) {
+          const missing = participants.filter((p) => !memberIds.has(p));
+          if (missing.length > 0) {
+            logger.info(
+              { groupJid, missing },
+              'Participants not added at creation, retrying',
+            );
             try {
-              const meta2 = await this.sock.groupMetadata(groupJid);
-              const memberIds2 = new Set<string>();
-              for (const p of meta2.participants) {
-                memberIds2.add(p.id);
-                if (p.id.endsWith('@lid')) {
-                  const phoneJid = await this.translateJid(p.id);
-                  if (phoneJid !== p.id) memberIds2.add(phoneJid);
-                }
-              }
-              const stillMissing = missing.filter((p) => !memberIds2.has(p));
-              if (stillMissing.length > 0) {
-                allAdded = false;
-                droppedParticipants = stillMissing;
-                logger.warn(
-                  { groupJid, stillMissing },
-                  'Participants still missing after retry',
-                );
-              }
-            } catch {
-              // Re-verify failed — can't confirm participants were added.
-              // Mark as not all added so invite link is generated.
+              await this.sock.groupParticipantsUpdate(groupJid, missing, 'add');
+            } catch (retryErr) {
               allAdded = false;
               droppedParticipants = missing;
               logger.warn(
-                { groupJid, missing },
-                'Could not re-verify participants after retry',
+                { err: retryErr, groupJid, missing },
+                'Failed to add missing participants',
               );
+            }
+            // Re-verify by count after retry
+            if (allAdded) {
+              try {
+                const meta2 = await this.sock.groupMetadata(groupJid);
+                if (meta2.participants.length < expectedCount) {
+                  allAdded = false;
+                  droppedParticipants = missing;
+                  logger.warn(
+                    {
+                      groupJid,
+                      expected: expectedCount,
+                      actual: meta2.participants.length,
+                    },
+                    'Participants still missing after retry (count mismatch)',
+                  );
+                }
+              } catch {
+                allAdded = false;
+                droppedParticipants = missing;
+                logger.warn(
+                  { groupJid, missing },
+                  'Could not re-verify participants after retry',
+                );
+              }
             }
           }
         }
