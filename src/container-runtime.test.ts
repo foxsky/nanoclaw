@@ -108,18 +108,19 @@ describe('ensureContainerRuntimeRunning', () => {
 // --- cleanupOrphans ---
 
 describe('cleanupOrphans', () => {
-  it('stops orphaned nanoclaw containers in a single command', () => {
+  it('stops orphaned nanoclaw containers individually', () => {
     // docker ps returns container names, one per line
     mockExecSync.mockReturnValueOnce(
       'nanoclaw-group1-111\nnanoclaw-group2-222\n',
     );
-    // batch stop succeeds
+    // individual stops succeed
+    mockExecSync.mockReturnValueOnce('');
     mockExecSync.mockReturnValueOnce('');
 
     cleanupOrphans();
 
-    // ps + 1 batch stop call
-    expect(mockExecSync).toHaveBeenCalledTimes(2);
+    // ps + 2 individual stop calls
+    expect(mockExecSync).toHaveBeenCalledTimes(3);
     expect(mockExecSync).toHaveBeenNthCalledWith(
       2,
       `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-group1-111`,
@@ -158,16 +159,17 @@ describe('cleanupOrphans', () => {
     );
   });
 
-  it('logs even when batch stop partially fails', () => {
+  it('logs even when individual stop partially fails', () => {
     mockExecSync.mockReturnValueOnce('nanoclaw-a-1\nnanoclaw-b-2\n');
-    // batch stop fails (some already stopped)
+    // first stop fails (already stopped), second succeeds
     mockExecSync.mockImplementationOnce(() => {
-      throw new Error('some containers already stopped');
+      throw new Error('container already stopped');
     });
+    mockExecSync.mockReturnValueOnce('');
 
     cleanupOrphans(); // should not throw
 
-    expect(mockExecSync).toHaveBeenCalledTimes(2);
+    expect(mockExecSync).toHaveBeenCalledTimes(3);
     expect(logger.info).toHaveBeenCalledWith(
       { count: 2, names: ['nanoclaw-a-1', 'nanoclaw-b-2'] },
       'Stopped orphaned containers',
