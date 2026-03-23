@@ -4798,40 +4798,7 @@ export class TaskflowEngine {
       lines.push(`• ${data.in_progress.length} em andamento`);
       lines.push(`• ${data.changes_today_count} movimentações hoje`);
 
-      /* ====== SECTION 3: Pendências — what needs attention ====== */
-      const hasPendencies = data.overdue.length > 0
-        || (data.next_48h && data.next_48h.length > 0)
-        || data.blocked.length > 0
-        || data.waiting.length > 0
-        || (data.stale_24h && data.stale_24h.length > 0);
-
-      if (hasPendencies) {
-        lines.push('', SEP, '🔧 *Pendências*', SEP);
-        if (data.overdue.length > 0) {
-          lines.push('', '*⚠️ Em atraso:*');
-          for (const task of data.overdue) lines.push(...taskLine(task));
-        }
-        if (data.next_48h && data.next_48h.length > 0) {
-          lines.push('', '*⏰ Próximas 48h:*');
-          for (const task of data.next_48h) lines.push(...taskLine(task));
-        }
-        if (data.blocked.length > 0 || data.waiting.length > 0) {
-          lines.push('', '*🚧 Aguardando / Bloqueadas:*');
-          for (const task of data.waiting) lines.push(...taskLine(task));
-          for (const task of data.blocked) {
-            const blockers =
-              task.blocked_by.length > 0
-                ? [`🚫 Dependências: ${task.blocked_by.join(', ')}`]
-                : [];
-            lines.push(...taskLine(task, blockers));
-          }
-        }
-        if (data.stale_24h && data.stale_24h.length > 0) {
-          renderStaleTasks(data.stale_24h, '💤 Sem atualização (24h+):');
-        }
-      }
-
-      /* ====== SECTION 4: Meetings ====== */
+      /* ====== SECTION 3: Meetings (tomorrow) ====== */
       const meetings48h = (data.upcoming_meetings ?? []).filter((meeting) => {
         const delta = new Date(meeting.scheduled_at).getTime() - Date.now();
         return delta >= 0 && delta <= 48 * 60 * 60 * 1000;
@@ -4843,18 +4810,9 @@ export class TaskflowEngine {
         }
       }
 
-      /* ====== SECTION 5: Next actions ====== */
-      const suggestions: string[] = [];
-      if (data.overdue.length > 0) suggestions.push('Atacar as tarefas em atraso primeiro');
-      if (data.blocked.length > 0 || data.waiting.length > 0) suggestions.push('Destravar dependências pendentes');
-      if (meetings48h.length > 0) suggestions.push('Confirmar pendências antes das próximas reuniões');
-      if (data.stale_24h && data.stale_24h.length > 0) suggestions.push('Cobrar atualização das tarefas sem avanço');
-      if (suggestions.length > 0) {
-        lines.push('', '*➡️ Prioridades para amanhã:*');
-        for (const suggestion of suggestions.slice(0, 3)) {
-          lines.push(`• ${suggestion}`);
-        }
-      }
+      /* No pendências, overdue, stale, or priority suggestions in the
+       * evening digest — this is the last message before closing work.
+       * Operational pressure belongs in the morning standup. */
 
       return lines.join('\n');
     }
