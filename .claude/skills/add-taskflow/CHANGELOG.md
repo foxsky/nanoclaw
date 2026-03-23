@@ -2,6 +2,13 @@
 
 ## 2026-03-23
 
+### Evening Digest — No-Stress Mode
+- Digest stripped of pendências/overdue/stale/priorities — calm evening closing
+- Removed duplicate overdue footer from board view (⚠️ in columns is enough)
+- Date injection in scheduled prompts — prevents wrong day-of-week in messages
+- CLAUDE.md regenerated for all 12 boards
+- Stabilized flaky weekly trend test
+
 ### Upstream Merge Compatibility
 - Synced all skill modify/ and add/ copies after upstream merge (deee4b2)
 - `cleanupOrphans` aligned with `stopContainer` — individual stops with `-t 1`

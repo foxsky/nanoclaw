@@ -4,6 +4,13 @@ All notable changes to NanoClaw will be documented in this file.
 
 ## [Unreleased]
 
+### Evening Digest — No-Stress Mode
+- **feat:** Evening digest stripped of operational pressure — no pendências, overdue, stale, or priority suggestions. Keep only compact board summary, celebrations, momentum, and upcoming meetings. Operational pressure stays in the morning standup.
+- **fix:** Removed duplicate overdue footer from board view — tasks already marked with ⚠️ in their column sections
+- **fix:** Inject current date/day-of-week into all scheduled task prompts — prevents agent from using stale session context (e.g., "weekend is coming" on a Monday)
+- **fix:** Stabilized flaky weekly trend test — day-of-week-dependent date computation replaced with deterministic ISO week arithmetic
+- **fix:** CLAUDE.md regenerated for all 12 active boards after template updates
+
 ### Upstream Merge (1.2.21 → deee4b2)
 - Docker stop timeout fix (`-t 1`) for faster container restarts
 - Task snapshot refresh after IPC mutations (`onTasksChanged`)
