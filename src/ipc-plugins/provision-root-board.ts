@@ -15,6 +15,7 @@ import {
   sanitizeFolder,
   scheduleOnboarding,
   scheduleRunners,
+  seedAvailableGroupsJson,
   TASKFLOW_DB_PATH,
   TASKFLOW_SUFFIX,
   uniqueFolder,
@@ -399,6 +400,16 @@ const handleProvisionRootBoard: IpcHandler = async (
       logger.error(
         { err },
         'provision_root_board: failed to write settings.json',
+      );
+    }
+
+    // --- 10b. Seed initial available_groups.json in IPC dir ---
+    try {
+      seedAvailableGroupsJson(groupFolder);
+    } catch (err) {
+      logger.warn(
+        { err, groupFolder },
+        'provision_root_board: failed to seed available_groups.json',
       );
     }
 

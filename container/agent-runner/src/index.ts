@@ -594,7 +594,7 @@ async function main(): Promise<void> {
         const tfDb = new Database(tfDbPath, { readonly: true });
         try {
           const { TaskflowEngine } = await import('./taskflow-engine.js');
-          const engine = new TaskflowEngine(tfDb, containerInput.taskflowBoardId);
+          const engine = new TaskflowEngine(tfDb, containerInput.taskflowBoardId, { readonly: true });
           const preamble = engine.buildContextSummary(queryVector, reader);
           if (preamble) {
             prompt = preamble + '\n\n' + prompt;

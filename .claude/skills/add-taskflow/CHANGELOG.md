@@ -1,5 +1,12 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-03-23
+
+### Board Provisioning Fixes
+- **fix:** Seed `available_groups.json` during provisioning via new `seedAvailableGroupsJson()` helper
+- **fix:** Include IPC dir in `fixOwnership` for child boards (was only fixing groups/ dir)
+- **fix:** Skip TaskflowEngine schema migrations when opened readonly — fixes `SqliteError` on context preamble for new boards
+
 ## 2026-03-22
 
 ### UX Overhaul — Board Readability

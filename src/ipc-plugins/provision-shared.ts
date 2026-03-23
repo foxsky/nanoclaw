@@ -6,6 +6,7 @@ import path from 'path';
 
 import { DATA_DIR, PROJECT_ROOT } from '../config.js';
 import { createTask } from '../db.js';
+import { resolveGroupIpcPath } from '../group-folder.js';
 import { logger } from '../logger.js';
 
 export const TASKFLOW_DB_PATH = path.join(DATA_DIR, 'taskflow', 'taskflow.db');
@@ -359,6 +360,16 @@ export function createBoardFilesystem(
       throw templateErr;
     }
   }
+}
+
+/** Seed an empty available_groups.json so the container always finds one. */
+export function seedAvailableGroupsJson(groupFolder: string): void {
+  const ipcDir = resolveGroupIpcPath(groupFolder);
+  fs.mkdirSync(ipcDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(ipcDir, 'available_groups.json'),
+    JSON.stringify({ groups: [], lastSync: new Date().toISOString() }),
+  );
 }
 
 export function fixOwnership(...paths: string[]): void {

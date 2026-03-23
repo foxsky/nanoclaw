@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 
-import { getGroupSenderName, PROJECT_ROOT } from '../config.js';
+import { DATA_DIR, getGroupSenderName, PROJECT_ROOT } from '../config.js';
 import { isValidGroupFolder } from '../group-folder.js';
 import type { IpcHandler } from '../ipc.js';
 import { logger } from '../logger.js';
@@ -15,6 +15,7 @@ import {
   sanitizeFolder,
   scheduleOnboarding,
   scheduleRunners,
+  seedAvailableGroupsJson,
   TASKFLOW_DB_PATH,
   uniqueFolder,
 } from './provision-shared.js';
@@ -232,15 +233,21 @@ const handleProvisionChildBoard: IpcHandler = async (
             .run(existingPersonId, parentBoard.id, personId);
           // Update board_admins — delete old row if target already exists to avoid PK collision
           const existingAdmin = tfDb
-            .prepare(`SELECT 1 FROM board_admins WHERE board_id = ? AND person_id = ?`)
+            .prepare(
+              `SELECT 1 FROM board_admins WHERE board_id = ? AND person_id = ?`,
+            )
             .get(parentBoard.id, existingPersonId);
           if (existingAdmin) {
             tfDb
-              .prepare(`DELETE FROM board_admins WHERE board_id = ? AND person_id = ?`)
+              .prepare(
+                `DELETE FROM board_admins WHERE board_id = ? AND person_id = ?`,
+              )
               .run(parentBoard.id, personId);
           } else {
             tfDb
-              .prepare(`UPDATE board_admins SET person_id = ? WHERE board_id = ? AND person_id = ?`)
+              .prepare(
+                `UPDATE board_admins SET person_id = ? WHERE board_id = ? AND person_id = ?`,
+              )
               .run(existingPersonId, parentBoard.id, personId);
           }
         }
@@ -580,6 +587,16 @@ const handleProvisionChildBoard: IpcHandler = async (
       // Continue — group and DB are already provisioned
     }
 
+    // --- 9b. Seed initial available_groups.json in IPC dir ---
+    try {
+      seedAvailableGroupsJson(childGroupFolder);
+    } catch (err) {
+      logger.warn(
+        { err, childGroupFolder },
+        'provision_child_board: failed to seed available_groups.json',
+      );
+    }
+
     // --- 10. Schedule runners ---
     try {
       scheduleRunners({
@@ -602,7 +619,10 @@ const handleProvisionChildBoard: IpcHandler = async (
     }
 
     // --- 11. Fix ownership ---
-    fixOwnership(path.join(PROJECT_ROOT, 'groups', childGroupFolder));
+    fixOwnership(
+      path.join(PROJECT_ROOT, 'groups', childGroupFolder),
+      path.join(DATA_DIR, 'ipc', childGroupFolder),
+    );
 
     // --- 12. Send confirmation ---
     if (sourceGroupJid) {

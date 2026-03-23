@@ -4,6 +4,15 @@ All notable changes to NanoClaw will be documented in this file.
 
 ## [Unreleased]
 
+### Board Provisioning
+- **fix:** Seed `available_groups.json` during board provisioning — newly provisioned boards were missing this file until their first agent invocation, causing container warnings
+- **fix:** Fix `fixOwnership` on child board provisioning to include `data/ipc/{folder}` (root board already did this)
+- **refactor:** Extract `seedAvailableGroupsJson()` shared helper in `provision-shared.ts` — used by both root and child board provisioners
+
+### Container Agent
+- **fix:** Skip schema migrations when TaskflowEngine is opened readonly — context preamble was failing with `SqliteError: attempt to write a readonly database` on new boards
+- **fix:** Pass `{ readonly: true }` to TaskflowEngine in context preamble builder to match the readonly DB connection
+
 ### UX Improvements
 - **feat:** Compact board header for digest/weekly reports — column counts instead of full board, cutting message length ~50%
 - **feat:** Smart board view — summaries for 3+ tasks per person, details for fewer; board owner always listed first
