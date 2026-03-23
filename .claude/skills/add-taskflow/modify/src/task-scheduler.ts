@@ -194,7 +194,7 @@ async function runTask(
     const output = await runContainerAgent(
       group,
       {
-        prompt: task.prompt,
+        prompt: `[Current date: ${new Date().toLocaleDateString('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: TIMEZONE })}] ${task.prompt}`,
         sessionId,
         groupFolder: task.group_folder,
         chatJid: task.chat_jid,
