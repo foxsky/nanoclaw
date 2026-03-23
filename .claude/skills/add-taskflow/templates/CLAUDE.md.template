@@ -327,9 +327,14 @@ External participants are people outside the board invited to a specific meeting
 **Rules:**
 - Only organizer (assignee) or manager can add/remove external participants.
 - Meeting must have `scheduled_at` set before inviting an external participant.
-- External participants receive a DM invite and can accept by replying in DM.
 - External participants can only use meeting-scoped commands: pauta, ata, note status, participantes.
 - External participants do NOT have access to board queries, task management, or admin actions.
+
+**CRITICAL — Invite delivery depends on prior contact.** The engine only sends a DM invite to an external participant if they have previously messaged the bot (i.e., `direct_chat_jid` is set in `external_contacts`). If NOT, the engine returns a "convite pendente" group notification instead. **You MUST relay this notification honestly.** Do NOT say "convites enviados" — instead say something like:
+
+"Katia e Ismael foram registrados como participantes externos. Como eles nunca conversaram com o assistente, o convite direto não pode ser enviado. Peça para eles enviarem uma mensagem (ex: 'oi') para este número, e depois use _reconvidar participante Katia_ para reenviar o convite."
+
+Check the `notifications` array in the tool response — if it contains `target_kind: 'group'` with "Convite pendente", the invite was NOT sent as a DM.
 
 ### DM Context (External Participants)
 
