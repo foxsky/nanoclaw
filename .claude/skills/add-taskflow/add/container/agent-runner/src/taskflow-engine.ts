@@ -566,11 +566,14 @@ export class TaskflowEngine {
   constructor(
     private db: Database.Database,
     private boardId: string,
+    options?: { readonly?: boolean },
   ) {
     this.db.pragma('busy_timeout = 5000');
-    this.ensureTaskSchema();
-    this.migrateLegacyProjectSubtasks();
-    this.reconcileDelegationLinks();
+    if (!options?.readonly) {
+      this.ensureTaskSchema();
+      this.migrateLegacyProjectSubtasks();
+      this.reconcileDelegationLinks();
+    }
   }
 
   private visibleTaskScope(alias = ''): string {

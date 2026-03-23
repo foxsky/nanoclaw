@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 
-import { getGroupSenderName, PROJECT_ROOT } from '../config.js';
+import { DATA_DIR, getGroupSenderName, PROJECT_ROOT } from '../config.js';
 import { isValidGroupFolder } from '../group-folder.js';
 import type { IpcHandler } from '../ipc.js';
 import { logger } from '../logger.js';
@@ -15,6 +15,7 @@ import {
   sanitizeFolder,
   scheduleOnboarding,
   scheduleRunners,
+  seedAvailableGroupsJson,
   TASKFLOW_DB_PATH,
   uniqueFolder,
 } from './provision-shared.js';
@@ -131,6 +132,172 @@ const handleProvisionChildBoard: IpcHandler = async (
         { parentBoardId: parentBoard.id, personId },
         'provision_child_board: child board already registered for this person',
       );
+      return;
+    }
+
+    // --- 4b. Check if person already has a board under a DIFFERENT parent ---
+    // Match by person_id first, then fallback to phone (most reliable).
+    // Name-only matching is intentionally NOT used — too high risk of false
+    // positives (e.g., two different "João" on different boards).
+    type ExistingBoardMatch = {
+      child_board_id: string;
+      person_id: string;
+      group_jid: string;
+      group_folder: string;
+    };
+    let existingElsewhere = tfDb
+      .prepare(
+        `SELECT cbr.child_board_id, cbr.person_id, b.group_jid, b.group_folder
+         FROM child_board_registrations cbr
+         JOIN boards b ON b.id = cbr.child_board_id
+         WHERE cbr.person_id = ? AND cbr.parent_board_id != ?
+         LIMIT 1`,
+      )
+      .get(personId, parentBoard.id) as ExistingBoardMatch | undefined;
+
+    // Fallback: match by phone number (strip ALL non-digits on both sides)
+    if (!existingElsewhere && personPhone) {
+      const phoneDigits = personPhone.replace(/\D/g, '');
+      if (phoneDigits.length >= 8) {
+        existingElsewhere = tfDb
+          .prepare(
+            `SELECT cbr.child_board_id, cbr.person_id, b.group_jid, b.group_folder
+             FROM child_board_registrations cbr
+             JOIN boards b ON b.id = cbr.child_board_id
+             JOIN board_people bp ON bp.board_id = cbr.child_board_id AND bp.person_id = cbr.person_id
+             WHERE bp.phone IS NOT NULL
+               AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(bp.phone, '+', ''), '-', ''), ' ', ''), '(', ''), ')', ''), '.', '') = ?
+               AND cbr.parent_board_id != ?
+             LIMIT 1`,
+          )
+          .get(phoneDigits, parentBoard.id) as ExistingBoardMatch | undefined;
+        if (existingElsewhere) {
+          logger.info(
+            {
+              personId,
+              matchedPersonId: existingElsewhere.person_id,
+              phone: phoneDigits,
+            },
+            'provision_child_board: matched existing board by phone number',
+          );
+        }
+      }
+    }
+
+    if (existingElsewhere) {
+      const existingPersonId = existingElsewhere.person_id;
+
+      logger.info(
+        {
+          parentBoardId: parentBoard.id,
+          personId,
+          existingPersonId,
+          existingBoard: existingElsewhere.child_board_id,
+        },
+        'provision_child_board: person already has a board under another parent — linking instead of creating',
+      );
+
+      // Wrap the entire link+unify in a transaction for atomicity
+      const linkTransaction = tfDb.transaction(() => {
+        // If the person_id differs, unify on this parent board
+        if (existingPersonId !== personId) {
+          logger.info(
+            { from: personId, to: existingPersonId },
+            'provision_child_board: unifying person_id to match existing board',
+          );
+          // Check for PK collision before updating
+          const alreadyExists = tfDb
+            .prepare(
+              `SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?`,
+            )
+            .get(parentBoard.id, existingPersonId);
+          if (alreadyExists) {
+            // Person already exists with the target ID — delete the duplicate
+            tfDb
+              .prepare(
+                `DELETE FROM board_people WHERE board_id = ? AND person_id = ?`,
+              )
+              .run(parentBoard.id, personId);
+          } else {
+            tfDb
+              .prepare(
+                `UPDATE board_people SET person_id = ? WHERE board_id = ? AND person_id = ?`,
+              )
+              .run(existingPersonId, parentBoard.id, personId);
+          }
+          // Update tasks (all columns, including done)
+          tfDb
+            .prepare(
+              `UPDATE tasks SET assignee = ? WHERE board_id = ? AND assignee = ?`,
+            )
+            .run(existingPersonId, parentBoard.id, personId);
+          // Update board_admins — delete old row if target already exists to avoid PK collision
+          const existingAdmin = tfDb
+            .prepare(
+              `SELECT 1 FROM board_admins WHERE board_id = ? AND person_id = ?`,
+            )
+            .get(parentBoard.id, existingPersonId);
+          if (existingAdmin) {
+            tfDb
+              .prepare(
+                `DELETE FROM board_admins WHERE board_id = ? AND person_id = ?`,
+              )
+              .run(parentBoard.id, personId);
+          } else {
+            tfDb
+              .prepare(
+                `UPDATE board_admins SET person_id = ? WHERE board_id = ? AND person_id = ?`,
+              )
+              .run(existingPersonId, parentBoard.id, personId);
+          }
+        }
+
+        const unifiedId = existingPersonId;
+
+        // Register the cross-parent link
+        tfDb
+          .prepare(
+            `INSERT OR IGNORE INTO child_board_registrations (parent_board_id, person_id, child_board_id)
+             VALUES (?, ?, ?)`,
+          )
+          .run(parentBoard.id, unifiedId, existingElsewhere!.child_board_id);
+
+        // Set notification_group_jid
+        tfDb
+          .prepare(
+            `UPDATE board_people SET notification_group_jid = ? WHERE board_id = ? AND person_id = ?`,
+          )
+          .run(existingElsewhere!.group_jid, parentBoard.id, unifiedId);
+
+        // Retroactively link unlinked tasks
+        tfDb
+          .prepare(
+            `UPDATE tasks SET child_exec_board_id = ?, child_exec_enabled = 1, child_exec_person_id = ?
+             WHERE board_id = ? AND assignee = ? AND child_exec_board_id IS NULL`,
+          )
+          .run(
+            existingElsewhere!.child_board_id,
+            unifiedId,
+            parentBoard.id,
+            unifiedId,
+          );
+      });
+
+      try {
+        linkTransaction();
+        logger.info(
+          {
+            parentBoardId: parentBoard.id,
+            childBoardId: existingElsewhere.child_board_id,
+          },
+          'provision_child_board: existing board linked successfully',
+        );
+      } catch (err) {
+        logger.error(
+          { err, parentBoardId: parentBoard.id, personId },
+          'provision_child_board: failed to link existing board',
+        );
+      }
       return;
     }
 
@@ -420,6 +587,16 @@ const handleProvisionChildBoard: IpcHandler = async (
       // Continue — group and DB are already provisioned
     }
 
+    // --- 9b. Seed initial available_groups.json in IPC dir ---
+    try {
+      seedAvailableGroupsJson(childGroupFolder);
+    } catch (err) {
+      logger.warn(
+        { err, childGroupFolder },
+        'provision_child_board: failed to seed available_groups.json',
+      );
+    }
+
     // --- 10. Schedule runners ---
     try {
       scheduleRunners({
@@ -442,7 +619,10 @@ const handleProvisionChildBoard: IpcHandler = async (
     }
 
     // --- 11. Fix ownership ---
-    fixOwnership(path.join(PROJECT_ROOT, 'groups', childGroupFolder));
+    fixOwnership(
+      path.join(PROJECT_ROOT, 'groups', childGroupFolder),
+      path.join(DATA_DIR, 'ipc', childGroupFolder),
+    );
 
     // --- 12. Send confirmation ---
     if (sourceGroupJid) {
