@@ -52,6 +52,22 @@ All notable changes to NanoClaw will be documented in this file.
 - **fix:** Clear `pendingClose` on container exit to prevent stale close requests leaking to next run
 - **fix:** Extracted `cleanupRun` helper for consistent container state cleanup
 
+### Board Provisioning — Cross-Board Person Matching
+- **fix:** Reuse existing child board when person already has one under a different parent — prevents duplicate WhatsApp groups and boards
+- **fix:** Phone-based fuzzy matching (digits only, 8+ chars) when person_id doesn't match across branches
+- **fix:** Automatic person_id unification in transaction — updates board_people, tasks, board_admins
+- **fix:** Hardened per Codex review: PK collision handling, `board_admins` delete-then-insert, dot stripping in phone SQL
+
+### WhatsApp
+- **fix:** Verify group participants by count first, not just JID matching — fixes false "missing participant" from LID JID mismatch that caused unnecessary invite links on every group creation
+- **fix:** 2-second delay before verification + enriched JID matching with `p.phoneNumber`/`p.lid` from metadata
+- **feat:** Forwardable invite message for external meeting participants — includes organizer name and meeting details, ready for manager to forward
+- **fix:** Honest external invite status — agent no longer claims "convites enviados" when invites are actually pending (contact hasn't messaged the bot)
+
+### Template & Formatting
+- **style:** Always include task title when referencing by ID (e.g., `P24.1 — Criação da Agência`, not just `P24.1`)
+- **style:** Subtask display shows parent project first, subtask indented below
+
 ### Code Quality
 - **refactor:** Extracted `fetchActiveTasks` shared helper — eliminates duplicated task-fetching/orphan-promotion logic
 - **refactor:** Hoisted SEP separator to class-level constant

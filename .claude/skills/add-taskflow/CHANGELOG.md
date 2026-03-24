@@ -9,6 +9,20 @@
 - CLAUDE.md regenerated for all 12 boards
 - Stabilized flaky weekly trend test
 
+### Board Provisioning
+- Cross-board person matching: reuse existing board by phone number, auto-unify person_id
+- Hardened: transaction wrapping, PK collision handling, board_admins cleanup
+- Forwardable invite for external meeting participants with organizer name
+- Honest invite status (pending vs sent)
+
+### WhatsApp
+- Participant count verification fixes false LID JID mismatches
+- 2s delay + enriched JID matching from metadata
+
+### Template
+- Always include task title when referencing by ID
+- Parent project shown first for subtask display
+
 ### Upstream Merge Compatibility
 - Synced all skill modify/ and add/ copies after upstream merge (deee4b2)
 - `cleanupOrphans` aligned with `stopContainer` — individual stops with `-t 1`
