@@ -3795,7 +3795,9 @@ describe('TaskflowEngine', () => {
       // Should NOT have weekly stats
       expect(r.data!.stats).toBeUndefined();
       expect(r.data!.formatted_report).toContain('🎉');
-      expect(r.data!.formatted_report).toContain('*T-001*');
+      // Celebration shows per-person summary, not individual task list
+      expect(r.data!.formatted_report).toContain('Alexandre');
+      expect(r.data!.formatted_report).toContain('concluída(s)');
       // T-002 is blocked but digest no longer shows pendências (no-stress evening)
       // Blocked tasks are still in data.blocked for the agent to use if needed
       expect(r.data!.blocked).toHaveLength(1);

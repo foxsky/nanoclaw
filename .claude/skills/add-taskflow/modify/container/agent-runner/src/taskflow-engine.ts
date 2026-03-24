@@ -4764,19 +4764,27 @@ export class TaskflowEngine {
       const yesterdayCount = (data as any).completed_yesterday_count ?? 0;
 
       if (completedCount > 0) {
+        // Get board owner name to attribute unassigned tasks
+        const ownerRow = this.db
+          .prepare(
+            `SELECT bp.name FROM board_admins ba JOIN board_people bp
+             ON bp.board_id = ba.board_id AND bp.person_id = ba.person_id
+             WHERE ba.board_id = ? AND ba.admin_role = 'manager' LIMIT 1`,
+          )
+          .get(this.boardId) as { name: string } | undefined;
+        const ownerName = ownerRow?.name ?? 'Gestor';
+
         lines.push('', SEP, `🎉 *${completedCount} tarefa(s) concluída(s) hoje!*`, SEP);
-        for (const task of data.completed_today) lines.push(...taskLine(task));
-        // Per-person recognition
+
+        // Per-person recognition (attribute unassigned to board owner)
         const byPerson = new Map<string, number>();
         for (const t of data.completed_today) {
-          const name = t.assignee_name ?? 'Sem responsável';
+          const name = t.assignee_name ?? ownerName;
           byPerson.set(name, (byPerson.get(name) ?? 0) + 1);
         }
-        if (byPerson.size > 1) {
-          lines.push('');
-          for (const [name, count] of [...byPerson.entries()].sort((a, b) => b[1] - a[1])) {
-            lines.push(`  👤 ${name}: ${count} concluída(s)`);
-          }
+        // Show per-person summary (no individual task list — the motivational message covers the narrative)
+        for (const [name, count] of [...byPerson.entries()].sort((a, b) => b[1] - a[1])) {
+          lines.push(`  👤 ${name}: ${count} concluída(s)`);
         }
       } else {
         lines.push('', SEP, '📊 *Resumo do Dia*', SEP);
