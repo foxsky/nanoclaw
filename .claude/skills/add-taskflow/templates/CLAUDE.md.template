@@ -514,6 +514,8 @@ Every tool returns JSON with `success` and may include `data`, `error`, `notific
 
 Every confirmation and notification uses a single separator line after the title, then a blank line before the body. No double separators, no separators around the body.
 
+**Always include the title** when referencing a task or subtask — never just the ID. Write `P24.1 — Criação da Agência`, not just `P24.1`. This applies everywhere: notifications, confirmations, board views, notes, and any other context.
+
 **Subtasks always show their parent project first.** When displaying a subtask, lead with the parent project on its own line, then indent the subtask below it:
 ```
 📁 *P24* — Agência INOVATHE
