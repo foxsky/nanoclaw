@@ -15,52 +15,17 @@ All topologies rely on already-implemented runtime support (SQLite DB, IPC auth,
 
 **v2 Architecture:** All mutation logic and common queries are implemented as MCP tools in `container/agent-runner/src/taskflow-engine.ts`. The CLAUDE.md template (~400 lines) serves as a natural language router: parse user intent → call the right tool → present the result. The agent retains full SQLite read-write access as a fallback for edge cases.
 
-Before provisioning or regenerating TaskFlow boards, apply the bundled runtime changes:
+TaskFlow is distributed as a git branch. To install, merge the branch:
 
 ```bash
-npx tsx scripts/apply-skill.ts .claude/skills/add-taskflow
+git fetch origin skill/taskflow
+git merge origin/skill/taskflow --no-edit
+npm install
+npm run build
+./container/build.sh
 ```
 
-This installs the TaskFlow engine, updates the container runtime wiring, and keeps the SQLite MCP fallback available. `NANOCLAW_TASKFLOW_BOARD_ID` is resolved from the canonical TaskFlow board mapping at runtime; it must not be inferred from the group folder name.
-
-### Post-apply patches
-
-After copying the `modify/` files, apply these small changes to files not bundled as full copies:
-
-1. **Rename `syncGroupMetadata` → `syncGroups` in IPC test mocks** (3 files):
-   - `src/ipc-auth.test.ts` — in the mock IpcDeps object
-   - `src/ipc-plugins/create-group.test.ts` — in the mock IpcDeps object
-   - `src/ipc-plugins/provision-child-board.test.ts` — in the mock IpcDeps object
-
-2. **Freeze `DEFAULT_CONFIG` in `src/sender-allowlist.ts`** — replace the `DEFAULT_CONFIG` declaration with:
-   ```typescript
-   const DEFAULT_CONFIG: Readonly<SenderAllowlistConfig> = Object.freeze({
-     default: Object.freeze({ allow: '*' as const, mode: 'trigger' as const }),
-     chats: Object.freeze({}),
-     logDenied: true,
-   });
-   ```
-
-3. **Add TTL cache to `src/sender-allowlist.ts`** — after the `DEFAULT_CONFIG` constant, add:
-   ```typescript
-   const CACHE_TTL_MS = 30_000; // 30 seconds
-   let cachedConfig: SenderAllowlistConfig | null = null;
-   let cacheTimestamp = 0;
-   ```
-   In `loadSenderAllowlist()`, before the `fs.readFileSync` call, add:
-   ```typescript
-   const now = Date.now();
-   if (!pathOverride && cachedConfig && now - cacheTimestamp < CACHE_TTL_MS) {
-     return cachedConfig;
-   }
-   ```
-   Before the final `return` statement, add:
-   ```typescript
-   if (!pathOverride) {
-     cachedConfig = result;
-     cacheTimestamp = now;
-   }
-   ```
+This brings in the TaskFlow engine, board provisioning, container runtime wiring, and all supporting code. No manual patches needed — the branch contains everything.
 
 ## Phase 1: Configuration
 

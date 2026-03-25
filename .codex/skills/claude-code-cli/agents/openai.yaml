@@ -1,0 +1,7 @@
+interface:
+  display_name: "Claude Code CLI"
+  short_description: "Invoke local Claude Code from Codex"
+  default_prompt: "Use $claude-code-cli to run the local Claude Code CLI for a bounded analysis, edit, or session resume task."
+
+policy:
+  allow_implicit_invocation: false
