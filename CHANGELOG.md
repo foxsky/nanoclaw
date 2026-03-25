@@ -27,6 +27,16 @@ All notable changes to NanoClaw will be documented in this file.
 - **fix:** Fix `fixOwnership` on child board provisioning to include `data/ipc/{folder}` (root board already did this)
 - **refactor:** Extract `seedAvailableGroupsJson()` shared helper in `provision-shared.ts` — used by both root and child board provisioners
 
+### Board View Fixes
+- **fix:** Empty summary for 3+ tasks — shows "N tarefa(s)" when nothing notable (no overdue/dates/meetings/projects)
+- **fix:** `__none__` display name replaced with board owner name for unassigned tasks
+
+### Data Fixes (production, 2026-03-25)
+- Assigned 28 unassigned tasks to board owner (were showing as `__none__`)
+- Deleted 11 test/heartbeat tasks from sec-secti board
+- Added Mauro Cesar, Lucas Batista, Reginaldo Graça to sec-secti board_people
+- Recreated accidentally deleted T-002, T-004
+
 ### Container Agent
 - **fix:** Skip schema migrations when TaskflowEngine is opened readonly — context preamble was failing with `SqliteError: attempt to write a readonly database` on new boards
 - **fix:** Pass `{ readonly: true }` to TaskflowEngine in context preamble builder to match the readonly DB connection
