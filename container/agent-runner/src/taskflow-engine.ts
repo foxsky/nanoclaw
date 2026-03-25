@@ -4608,7 +4608,11 @@ export class TaskflowEngine {
         const withReason = personTasks.filter((t: any) => t.waiting_for);
         if (withReason.length > 0) parts.push(`aguardando respostas externas`);
       }
-      return parts.length > 0 ? `  _${parts.join(', ')}_` : '';
+      if (parts.length === 0) {
+        // Default summary when nothing specific is notable
+        parts.push(`${personTasks.length} tarefa(s)`);
+      }
+      return `  _${parts.join(', ')}_`;
     };
 
     for (const [col, label] of colOrder) {
@@ -4664,7 +4668,9 @@ export class TaskflowEngine {
       lines.push(label, '');
 
       for (const [personId, pTasks] of persons) {
-        const nm = pName(personId) ?? personId;
+        const nm = personId === '__none__'
+          ? (pName(managerId ?? '') ?? 'Sem responsável')
+          : (pName(personId) ?? personId);
         const subCount = pTasks.reduce(
           (n, t) => n + (subtaskMap.get(t.id)?.length ?? 0),
           0,
