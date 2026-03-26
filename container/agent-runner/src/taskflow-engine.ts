@@ -4464,14 +4464,26 @@ export class TaskflowEngine {
     const nameOf = new Map(people.map((p) => [p.person_id, p.name]));
     const pName = (id: string | null) => (id ? nameOf.get(id) ?? id : null);
 
+    /* --- Cross-board person name cache (avoids repeated lookups for the same delegate) --- */
+    const extNameCache = new Map<string, string>();
+    const extName = (personId: string): string => {
+      const cached = extNameCache.get(personId);
+      if (cached !== undefined) return cached;
+      const row = this.db
+        .prepare(`SELECT name FROM board_people WHERE person_id = ? LIMIT 1`)
+        .get(personId) as { name: string } | undefined;
+      const name = row?.name ?? personId;
+      extNameCache.set(personId, name);
+      return name;
+    };
+
     /* --- Delegation lookup: for assignees not on this board, find the last
      *     internal assignee from task_history (the accountable person) --- */
-    const delegatedFrom = new Map<string, { taskId: string; accountable: string; delegateName: string }>();
+    const delegatedFrom = new Map<string, { accountable: string; delegateName: string }>();
     const findAccountable = (taskId: string, assignee: string): string => {
-      if (nameOf.has(assignee)) return assignee; // already on this board
+      if (nameOf.has(assignee)) return assignee;
       const cached = delegatedFrom.get(taskId);
       if (cached) return cached.accountable;
-      // Look up the reassignment chain in task_history
       const hist = this.db
         .prepare(
           `SELECT details FROM task_history
@@ -4483,23 +4495,22 @@ export class TaskflowEngine {
         try {
           const d = JSON.parse(h.details);
           if (d.from_assignee && nameOf.has(d.from_assignee)) {
-            // Also look up the delegate's name from any board
-            const delegateRow = this.db
-              .prepare(`SELECT name FROM board_people WHERE person_id = ? LIMIT 1`)
-              .get(assignee) as { name: string } | undefined;
             delegatedFrom.set(taskId, {
-              taskId,
               accountable: d.from_assignee,
-              delegateName: delegateRow?.name ?? assignee,
+              delegateName: extName(assignee),
             });
             return d.from_assignee;
           }
         } catch {}
       }
-      return assignee; // fallback: no history found
+      return assignee;
     };
-    const isDelegated = (taskId: string) => delegatedFrom.has(taskId);
     const delegateInfo = (taskId: string) => delegatedFrom.get(taskId);
+    const delegateSfx = (taskId: string, assignee: string | null): string => {
+      if (assignee) findAccountable(taskId, assignee);
+      const del = delegateInfo(taskId);
+      return del ? ` \u2192 _${del.delegateName}_` : '';
+    };
 
     /* --- Short-code cache for displayId (avoids N+1 per-task DB queries) --- */
     const shortCodes = new Map<string, string | null>();
@@ -4732,20 +4743,15 @@ export class TaskflowEngine {
             let line = `${pfx(t)}${tid}: ${t.title}${meetingSfx(t)}${dueSfx(t)}${notesSfx(t)}`;
             if (col === 'waiting' && t.waiting_for)
               line += ` \u2192 _${t.waiting_for}_`;
-            const del = delegateInfo(t.id);
-            if (del) line += ` \u2192 _${del.delegateName}_`;
+            line += delegateSfx(t.id, t.assignee);
             lines.push(line);
 
             /* Subtasks */
             const subs = subtaskMap.get(t.id);
             if (subs) {
               for (const st of subs) {
-                // Resolve delegation for subtasks too
-                if (st.assignee) findAccountable(st.id, st.assignee);
-                const stDel = delegateInfo(st.id);
-                const stDelSfx = stDel ? ` \u2192 _${stDel.delegateName}_` : '';
                 lines.push(
-                  `   \u21b3 ${dId(st)}: ${st.title}${dueSfx(st)}${notesSfx(st)}${stDelSfx}`,
+                  `   \u21b3 ${dId(st)}: ${st.title}${dueSfx(st)}${notesSfx(st)}${delegateSfx(st.id, st.assignee)}`,
                 );
               }
             }
@@ -5260,12 +5266,10 @@ export class TaskflowEngine {
           }
           // Include delegation chain when assignee is not on this board
           if (task.assignee) {
-            const localPeople = this.db
-              .prepare(`SELECT person_id FROM board_people WHERE board_id = ?`)
-              .all(this.boardId) as Array<{ person_id: string }>;
-            const localIds = new Set(localPeople.map((p) => p.person_id));
-            if (!localIds.has(task.assignee)) {
-              // Build delegation chain from task_history
+            const isLocal = !!this.db
+              .prepare(`SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?`)
+              .get(this.boardId, task.assignee);
+            if (!isLocal) {
               const chain: Array<{ person_id: string; name: string }> = [];
               const reassigns = this.db
                 .prepare(
@@ -5278,16 +5282,12 @@ export class TaskflowEngine {
                 try {
                   const d = JSON.parse(h.details);
                   if (d.from_assignee && chain.length === 0) {
-                    const fromName = this.db
-                      .prepare(`SELECT name FROM board_people WHERE person_id = ? LIMIT 1`)
-                      .get(d.from_assignee) as { name: string } | undefined;
-                    chain.push({ person_id: d.from_assignee, name: fromName?.name ?? d.from_assignee });
+                    const n = this.db.prepare(`SELECT name FROM board_people WHERE person_id = ? LIMIT 1`).get(d.from_assignee) as { name: string } | undefined;
+                    chain.push({ person_id: d.from_assignee, name: n?.name ?? d.from_assignee });
                   }
                   if (d.to_assignee) {
-                    const toName = this.db
-                      .prepare(`SELECT name FROM board_people WHERE person_id = ? LIMIT 1`)
-                      .get(d.to_assignee) as { name: string } | undefined;
-                    chain.push({ person_id: d.to_assignee, name: toName?.name ?? d.to_assignee });
+                    const n = this.db.prepare(`SELECT name FROM board_people WHERE person_id = ? LIMIT 1`).get(d.to_assignee) as { name: string } | undefined;
+                    chain.push({ person_id: d.to_assignee, name: n?.name ?? d.to_assignee });
                   }
                 } catch {}
               }
