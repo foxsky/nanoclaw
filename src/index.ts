@@ -1,14 +1,22 @@
 import fs from 'fs';
 import path from 'path';
 
+// OneCLI is optional — only used if ONECLI_URL is configured and @onecli-sh/sdk is installed
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const OneCLI: any = (() => { try { return require('@onecli-sh/sdk').OneCLI; } catch { return null; } })();
+
 import {
   ASSISTANT_NAME,
   buildTriggerPattern,
   CREDENTIAL_PROXY_PORT,
   DATA_DIR,
+  DEFAULT_TRIGGER,
   getGroupSenderName,
+  getTriggerPattern,
+  GROUPS_DIR,
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
+  ONECLI_URL,
   POLL_INTERVAL,
   TIMEZONE,
   TRIGGER_PATTERN,
@@ -114,6 +122,27 @@ let stagedDmMaxTimestamp = '';
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
+const onecli = new OneCLI({ url: ONECLI_URL });
+
+function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
+  if (group.isMain) return;
+  const identifier = group.folder.toLowerCase().replace(/_/g, '-');
+  onecli.ensureAgent({ name: group.name, identifier }).then(
+    (res: any) => {
+      logger.info(
+        { jid, identifier, created: res.created },
+        'OneCLI agent ensured',
+      );
+    },
+    (err: any) => {
+      logger.debug(
+        { jid, identifier, err: String(err) },
+        'OneCLI agent ensure skipped',
+      );
+    },
+  );
+}
+
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
   lastDmTimestamp = getRouterState('last_dm_timestamp') || '';
@@ -160,7 +189,30 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
     // Create group folder
     fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
+    // Copy CLAUDE.md template into the new group folder so agents have
+    // identity and instructions from the first run.  (Fixes #1391)
+    const groupMdFile = path.join(groupDir, 'CLAUDE.md');
+    if (!fs.existsSync(groupMdFile)) {
+      const templateFile = path.join(
+        GROUPS_DIR,
+        group.isMain ? 'main' : 'global',
+        'CLAUDE.md',
+      );
+      if (fs.existsSync(templateFile)) {
+        let content = fs.readFileSync(templateFile, 'utf-8');
+        if (ASSISTANT_NAME !== 'Andy') {
+          content = content.replace(/^# Andy$/m, `# ${ASSISTANT_NAME}`);
+          content = content.replace(/You are Andy/g, `You are ${ASSISTANT_NAME}`);
+        }
+        fs.writeFileSync(groupMdFile, content);
+        logger.info({ folder: group.folder }, 'Created CLAUDE.md from template');
+      }
+    }
+
     registeredGroups[jid] = group;
+
+    // Ensure a corresponding OneCLI agent exists (best-effort, non-blocking)
+    ensureOneCLIAgent(jid, group);
   } catch (err) {
     if (persisted) {
       try {
@@ -494,6 +546,7 @@ async function runAgent(
       id: t.id,
       groupFolder: t.group_folder,
       prompt: t.prompt,
+      script: t.script || undefined,
       schedule_type: t.schedule_type,
       schedule_value: t.schedule_value,
       status: t.status,
@@ -567,7 +620,7 @@ async function startMessageLoop(): Promise<void> {
   }
   messageLoopRunning = true;
 
-  logger.info(`NanoClaw running (trigger: @${ASSISTANT_NAME})`);
+  logger.info(`NanoClaw running (default trigger: ${DEFAULT_TRIGGER})`);
 
   while (true) {
     try {
@@ -832,6 +885,13 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
+
+  // Ensure OneCLI agents exist for all registered groups.
+  // Recovers from missed creates (e.g. OneCLI was down at registration time).
+  for (const [jid, group] of Object.entries(registeredGroups)) {
+    ensureOneCLIAgent(jid, group);
+  }
+
   restoreRemoteControl();
 
   // --- Shared env for embeddings + long-term context (single .env parse) ---
@@ -1101,6 +1161,7 @@ async function main(): Promise<void> {
         id: t.id,
         groupFolder: t.group_folder,
         prompt: t.prompt,
+        script: t.script || undefined,
         schedule_type: t.schedule_type,
         schedule_value: t.schedule_value,
         status: t.status,

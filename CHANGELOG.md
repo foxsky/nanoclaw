@@ -2,127 +2,143 @@
 
 All notable changes to NanoClaw will be documented in this file.
 
-## [Unreleased]
+For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
-### Cross-Board Delegation Display
-- **fix:** Child board agents can delegate parent board tasks to subordinates without leaking external people onto parent board
-- **feat:** Parent board shows delegated tasks under accountable person with `➤ _delegateName_` indicator
-- **feat:** Summary mode includes delegation count (`_1 delegada(s)_`)
-- **feat:** `task_details` includes `delegation_chain` for full assignment path visibility
-- **refactor:** Cross-board name cache, extracted `delegateSfx` helper
+## [1.2.35] - 2026-03-26
 
-### Skill Format Migration
-- **refactor:** Migrated `add-long-term-context` and `add-embeddings` to branch-based skill format (`skill/long-term-context`, `skill/embeddings`)
-- Removed ~12,300 lines of duplicate code from `add/`, `modify/`, `manifest.yaml`
-- Code now lives directly in the source tree — no more manual syncing after changes
+- [BREAKING] OneCLI Agent Vault replaces the built-in credential proxy. Existing `.env` credentials must be migrated to the vault. Run `/init-onecli` to install OneCLI and migrate credentials.
 
-### Evening Digest — No-Stress Mode
-- **feat:** Evening digest stripped of operational pressure — no pendências, overdue, stale, or priority suggestions. Keep only compact board summary, celebrations, momentum, and upcoming meetings. Operational pressure stays in the morning standup.
-- **fix:** Removed duplicate overdue footer from board view — tasks already marked with ⚠️ in their column sections
-- **fix:** Inject current date/day-of-week into all scheduled task prompts — prevents agent from using stale session context (e.g., "weekend is coming" on a Monday)
-- **fix:** Stabilized flaky weekly trend test — day-of-week-dependent date computation replaced with deterministic ISO week arithmetic
-- **fix:** CLAUDE.md regenerated for all 12 active boards after template updates
+## [1.2.21] - 2026-03-22
 
-### Upstream Merge (1.2.21 → deee4b2)
-- Docker stop timeout fix (`-t 1`) for faster container restarts
-- Task snapshot refresh after IPC mutations (`onTasksChanged`)
-- Security: stop logging user prompt content on container errors
-- Remote control stdin fix for service restarts
-- ESLint config with error-handling rules
-- New skills: Claw CLI, Slack formatting, capabilities/status
-- Opt-in diagnostics via PostHog (setup/update only)
-- `cleanupOrphans` uses individual stops with `-t 1` (aligned with `stopContainer`)
-- Removed duplicate `openai` dependency in package.json
+- Added opt-in diagnostics via PostHog with explicit user consent (Yes / No / Never ask again)
 
-### Board Provisioning
-- **fix:** Seed `available_groups.json` during board provisioning — newly provisioned boards were missing this file until their first agent invocation, causing container warnings
-- **fix:** Fix `fixOwnership` on child board provisioning to include `data/ipc/{folder}` (root board already did this)
-- **refactor:** Extract `seedAvailableGroupsJson()` shared helper in `provision-shared.ts` — used by both root and child board provisioners
+## [1.2.20] - 2026-03-21
 
-### Board View Fixes
-- **fix:** Empty summary for 3+ tasks — shows "N tarefa(s)" when nothing notable (no overdue/dates/meetings/projects)
-- **fix:** `__none__` display name replaced with board owner name for unassigned tasks
+- Added ESLint configuration with error-handling rules
 
-### Data Fixes (production, 2026-03-25)
-- Assigned 28 unassigned tasks to board owner (were showing as `__none__`)
-- Deleted 11 test/heartbeat tasks from sec-secti board
-- Added Mauro Cesar, Lucas Batista, Reginaldo Graça to sec-secti board_people
-- Recreated accidentally deleted T-002, T-004
+## [1.2.19] - 2026-03-19
 
-### Container Agent
-- **fix:** Skip schema migrations when TaskflowEngine is opened readonly — context preamble was failing with `SqliteError: attempt to write a readonly database` on new boards
-- **fix:** Pass `{ readonly: true }` to TaskflowEngine in context preamble builder to match the readonly DB connection
+- Reduced `docker stop` timeout for faster container restarts (`-t 1` flag)
 
-### UX Improvements
-- **feat:** Compact board header for digest/weekly reports — column counts instead of full board, cutting message length ~50%
-- **feat:** Smart board view — summaries for 3+ tasks per person, details for fewer; board owner always listed first
-- **feat:** Motivational message sent as separate message after every digest/weekly — celebration line + warm human summary
-- **feat:** Person briefing for 1:1 meetings — "Tarefas do Rafael" returns a structured dispatch view grouped by urgency, with projects expanded
-- **feat:** Stale task summaries in digest/weekly — per-person counts instead of listing each task when 3+
-- **feat:** Subtasks always show parent project context (e.g., `📁 P24 — Agência INOVATHE / P24.1 — Criação da Agência`)
-- **style:** Unified notification layout — all move, rejection, and parent board notifications use consistent format
-- **style:** Single separator line after title in confirmations; removed double separators
-- **style:** Removed redundant actor name from task moved confirmations
+## [1.2.18] - 2026-03-19
 
-### Direct Transitions
-- **feat:** Tasks can move directly to target column without intermediate steps — `wait` from inbox/next_action, `review` from inbox/next_action/waiting, `return` from waiting/review
-- **fix:** `waiting_for` cleared when returning task from waiting column (was leaving stale data)
+- User prompt content no longer logged on container errors — only input metadata
+- Added Japanese README translation
 
-### Container Reliability
-- **fix:** Don't preempt busy containers — scheduled tasks wait for idle before closing; prevents data loss where confirmations were sent but DB writes never persisted
-- **fix:** Task starvation safeguard — 2-minute timeout forces close if container never goes idle
-- **fix:** Clear `pendingClose` on container exit to prevent stale close requests leaking to next run
-- **fix:** Extracted `cleanupRun` helper for consistent container state cleanup
+## [1.2.17] - 2026-03-18
 
-### Board Provisioning — Cross-Board Person Matching
-- **fix:** Reuse existing child board when person already has one under a different parent — prevents duplicate WhatsApp groups and boards
-- **fix:** Phone-based fuzzy matching (digits only, 8+ chars) when person_id doesn't match across branches
-- **fix:** Automatic person_id unification in transaction — updates board_people, tasks, board_admins
-- **fix:** Hardened per Codex review: PK collision handling, `board_admins` delete-then-insert, dot stripping in phone SQL
+- Added `/capabilities` and `/status` container-agent skills
 
-### WhatsApp
-- **fix:** Verify group participants by count first, not just JID matching — fixes false "missing participant" from LID JID mismatch that caused unnecessary invite links on every group creation
-- **fix:** 2-second delay before verification + enriched JID matching with `p.phoneNumber`/`p.lid` from metadata
-- **feat:** Forwardable invite message for external meeting participants — includes organizer name and meeting details, ready for manager to forward
-- **fix:** Honest external invite status — agent no longer claims "convites enviados" when invites are actually pending (contact hasn't messaged the bot)
+## [1.2.16] - 2026-03-18
 
-### Template & Formatting
-- **style:** Always include task title when referencing by ID (e.g., `P24.1 — Criação da Agência`, not just `P24.1`)
-- **style:** Subtask display shows parent project first, subtask indented below
+- Tasks snapshot now refreshes immediately after IPC task mutations
 
-### Code Quality
-- **refactor:** Extracted `fetchActiveTasks` shared helper — eliminates duplicated task-fetching/orphan-promotion logic
-- **refactor:** Hoisted SEP separator to class-level constant
-- **refactor:** Extracted `renderStaleTasks` helper for digest/weekly stale summarization
-- **fix:** Fixed 17 pre-existing test failures — Portuguese localization + behavioral changes (inbox auto-assign, WIP on reassignment)
-- **test:** Added 15 new tests — compact board, direct transitions, regression guards, starvation timer, drain lifecycle
+## [1.2.15] - 2026-03-16
 
-### Data Fixes (production)
-- Fixed sec-secti board crash loop — cleared corrupted session, restored service
-- Fixed Giovanni's board: T14 concluded, T3/T13/T15 moved to waiting with notes/due dates, T20/T21/T24 recreated with notes
-- Fixed Rafael's board: T50 moved to in_progress, P16.1 next_action updated
-- Sent overdue confirmations to Alexandre for T-006/T31/T46
+- Fixed remote-control prompt auto-accept to prevent immediate exit
+- Added `KillMode=process` so remote-control survives service restarts
 
-- **fix:** Require approval by default before delegated assignees can close tasks; delegated `conclude` now moves to `review` instead of `done`
-- **fix:** Suppress duplicate parent-board notifications when creator and parent notification targets resolve to the same group
-- **fix:** Self-heal stale TaskFlow `board_id_counters` during task creation so `taskflow_create` can recover from counter drift without SQLite write fallbacks
-- **fix:** Harden custom trigger bot-message detection and external DM routing safety
-- **feat:** Add TaskFlow schema support for external meeting participants
-- **feat:** BGE-M3 embedding service via Ollama — generic host service + container reader for semantic indexing
-- **feat:** TaskFlow embeddings integration — semantic search, duplicate detection (0.85 threshold), context preamble injection
-- **fix:** Inbox processing promotes tasks in-place via `taskflow_reassign` instead of create-new + cancel-original
-- **fix:** Implicit inbox promotion — auto-assign to board owner when user reports progress on unassigned inbox task
-- **fix:** 61+ bugs fixed across 14 files (3 rounds of 20 subagents)
-- **fix:** WhatsApp group plugin — 7 bugs from 37-bug audit (null guard, participant cap, LID verify, stale socket, JID normalization, droppedParticipants tracking, re-verify catch)
-- **fix:** WhatsApp message queue re-queues on send failure instead of losing messages
-- **fix:** WhatsApp LID translation for group message senders with `participantAlt` fallback
-- **fix:** Sender allowlist device suffix normalization (`:N@s.whatsapp.net` → `@s.whatsapp.net`)
-- **feat:** Hierarchical long-term context skill — DAG summarization, FTS5 search, incremental byte-offset cursor, conversation recap preamble, context_search/recall MCP tools
-- **fix:** Cron idempotency guard — `cronSlotAlreadyRan()` prevents re-execution on process restart
-- **fix:** IPC transient error retry (5 attempts) + error directory eviction (7 days / 1000 files cap)
-- **fix:** 18 bugs fixed across 4 rounds of 20 subagents — subtask ID collision, counter seeding regression, WhatsApp reconnection race, DM duplicate delivery, FTS5 MATCH injection, Docker option injection, cleanupOrphans command injection, SDK errors as success, stripInternalTags regex, embedding indexer re-entrancy, DM routing WAL mismatch, delegated task duplication, group name dedup, shutdown retry timer leak, monthly rollup orphans, NFD Unicode in topics, scheduler infinite loop, outputChain hang
+## [1.2.14] - 2026-03-14
 
-## [1.2.0](https://github.com/qwibitai/nanoclaw/compare/v1.1.6...v1.2.0)
+- Added `/remote-control` command for host-level Claude Code access from within containers
 
-[BREAKING] WhatsApp removed from core, now a skill. Run `/add-whatsapp` to re-add (existing auth/groups preserved).
-- **fix:** Prevent scheduled tasks from executing twice when container runtime exceeds poll interval (#138, #669)
+## [1.2.13] - 2026-03-14
+
+**Breaking:** Skills are now git branches, channels are separate fork repos.
+
+- Skills live as `skill/*` git branches merged via `git merge`
+- Added Docker Sandboxes support
+- Fixed setup registration to use correct CLI commands
+
+## [1.2.12] - 2026-03-08
+
+- Added `/compact` skill for manual context compaction
+- Enhanced container environment isolation via credential proxy
+
+## [1.2.11] - 2026-03-08
+
+- Added PDF reader, image vision, and WhatsApp reactions skills
+- Fixed task container to close promptly when agent uses IPC-only messaging
+
+## [1.2.10] - 2026-03-06
+
+- Added `LIMIT` to unbounded message history queries for better performance
+
+## [1.2.9] - 2026-03-06
+
+- Agent prompts now include timezone context for accurate time references
+
+## [1.2.8] - 2026-03-06
+
+- Fixed misleading `send_message` tool description for scheduled tasks
+
+## [1.2.7] - 2026-03-06
+
+- Added `/add-ollama` skill for local model inference
+- Added `update_task` tool and return task ID from `schedule_task`
+
+## [1.2.6] - 2026-03-04
+
+- Updated `claude-agent-sdk` to 0.2.68
+
+## [1.2.5] - 2026-03-04
+
+- CI formatting fix
+
+## [1.2.4] - 2026-03-04
+
+- Fixed `_chatJid` rename to `chatJid` in `onMessage` callback
+
+## [1.2.3] - 2026-03-04
+
+- Added sender allowlist for per-chat access control
+
+## [1.2.2] - 2026-03-04
+
+- Added `/use-local-whisper` skill for local voice transcription
+- Atomic task claims prevent scheduled tasks from executing twice
+
+## [1.2.1] - 2026-03-02
+
+- Version bump (no functional changes)
+
+## [1.2.0] - 2026-03-02
+
+**Breaking:** WhatsApp removed from core, now a skill. Run `/add-whatsapp` to re-add.
+
+- Channel registry: channels self-register at startup via `registerChannel()` factory pattern
+- `isMain` flag replaces folder-name-based main group detection
+- `ENABLED_CHANNELS` removed — channels detected by credential presence
+- Prevent scheduled tasks from executing twice when container runtime exceeds poll interval
+
+## [1.1.6] - 2026-03-01
+
+- Added CJK font support for Chromium screenshots
+
+## [1.1.5] - 2026-03-01
+
+- Fixed wrapped WhatsApp message normalization
+
+## [1.1.4] - 2026-03-01
+
+- Added third-party model support
+- Added `/update-nanoclaw` skill for syncing with upstream
+
+## [1.1.3] - 2026-02-25
+
+- Added `/add-slack` skill
+- Restructured Gmail skill for new architecture
+
+## [1.1.2] - 2026-02-24
+
+- Improved error handling for WhatsApp Web version fetch
+
+## [1.1.1] - 2026-02-24
+
+- Added Qodo skills and codebase intelligence
+- Fixed WhatsApp 405 connection failures
+
+## [1.1.0] - 2026-02-23
+
+- Added `/update` skill to pull upstream changes from within Claude Code
+- Enhanced container environment isolation via credential proxy

@@ -12,21 +12,12 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 |------|---------|
 | `src/index.ts` | Orchestrator: state, message loop, agent invocation |
 | `src/channels/registry.ts` | Channel registry (self-registration at startup) |
-| `src/ipc.ts` | IPC watcher, task processing, transient retry + error eviction |
+| `src/ipc.ts` | IPC watcher and task processing |
 | `src/router.ts` | Message formatting and outbound routing |
 | `src/config.ts` | Trigger pattern, paths, intervals |
 | `src/container-runner.ts` | Spawns agent containers with mounts |
-| `src/task-scheduler.ts` | Runs scheduled tasks with cron idempotency guard |
+| `src/task-scheduler.ts` | Runs scheduled tasks |
 | `src/db.ts` | SQLite operations |
-| `src/context-service.ts` | Long-term context: DAG summarization, rollups, retention |
-| `src/context-sync.ts` | JSONL transcript capture, byte-offset cursor, background compaction |
-| `src/embedding-service.ts` | BGE-M3 embedding service via Ollama |
-| `src/taskflow-embedding-sync.ts` | TaskFlow → embedding sync adapter |
-| `container/agent-runner/src/context-reader.ts` | Container-side context reader (FTS5 search, recall) |
-| `container/agent-runner/src/embedding-reader.ts` | Container-side embedding reader (cosine similarity) |
-| `container/agent-runner/src/db-util.ts` | Shared readonly DB open/close utilities |
-| `container/agent-runner/src/taskflow-engine.ts` | TaskFlow engine (task lifecycle, WIP, notifications) |
-| `container/agent-runner/src/ipc-mcp-stdio.ts` | MCP tools (taskflow_*, context_search, context_recall) |
 | `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |
 | `container/skills/` | Skills loaded inside agent containers (browser, status, formatting) |
 
@@ -49,9 +40,7 @@ Four types of skills exist in NanoClaw. See [CONTRIBUTING.md](CONTRIBUTING.md) f
 | `/customize` | Adding channels, integrations, changing behavior |
 | `/debug` | Container issues, logs, troubleshooting |
 | `/update-nanoclaw` | Bring upstream NanoClaw updates into a customized install |
-| `/add-taskflow` | Kanban+GTD task management for team coordination via WhatsApp |
-| `/add-embeddings` | Generic BGE-M3 embedding service via Ollama |
-| `/add-long-term-context` | Hierarchical conversation history with DAG summarization and FTS5 search |
+| `/init-onecli` | Install OneCLI Agent Vault and migrate `.env` credentials to it |
 | `/qodo-pr-resolver` | Fetch and fix Qodo PR review issues interactively or in batch |
 | `/get-qodo-rules` | Load org- and repo-level coding rules from Qodo before code tasks |
 
