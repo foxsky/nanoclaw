@@ -1,5 +1,17 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-03-26
+
+### Cross-Board Delegation Display
+- Child board agents can reassign parent board tasks to subordinates (delegation allowed)
+- Parent board displays delegated tasks under the accountable person (last internal assignee)
+- Delegation indicator `➤ _delegateName_` on individual task lines
+- Delegation count in summary mode (`_4 tarefa(s), 1 delegada(s)_`)
+- `task_details` includes `delegation_chain` array showing full assignment path
+- Subordinates never added to parent board's `board_people`
+- Cross-board name cache (`extName`) avoids repeated lookups
+- Production data cleanup: reverted leaked external assignees on SEC board
+
 ## 2026-03-23
 
 ### Evening Digest — No-Stress Mode

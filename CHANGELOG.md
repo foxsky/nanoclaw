@@ -4,6 +4,13 @@ All notable changes to NanoClaw will be documented in this file.
 
 ## [Unreleased]
 
+### Cross-Board Delegation Display
+- **fix:** Child board agents can delegate parent board tasks to subordinates without leaking external people onto parent board
+- **feat:** Parent board shows delegated tasks under accountable person with `➤ _delegateName_` indicator
+- **feat:** Summary mode includes delegation count (`_1 delegada(s)_`)
+- **feat:** `task_details` includes `delegation_chain` for full assignment path visibility
+- **refactor:** Cross-board name cache, extracted `delegateSfx` helper
+
 ### Evening Digest — No-Stress Mode
 - **feat:** Evening digest stripped of operational pressure — no pendências, overdue, stale, or priority suggestions. Keep only compact board summary, celebrations, momentum, and upcoming meetings. Operational pressure stays in the morning standup.
 - **fix:** Removed duplicate overdue footer from board view — tasks already marked with ⚠️ in their column sections
