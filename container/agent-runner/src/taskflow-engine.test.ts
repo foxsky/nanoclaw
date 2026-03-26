@@ -1900,10 +1900,7 @@ describe('TaskflowEngine', () => {
       db.exec(
         `INSERT INTO child_board_registrations VALUES ('${ownerBoardId}', 'person-2', 'child-board-giovanni')`,
       );
-      // Register person-2 on the parent board so cross-board guard passes
-      db.exec(
-        `INSERT INTO board_people VALUES ('${ownerBoardId}', 'person-2', 'Giovanni', '5585999990002', 'Dev', 3, NULL)`,
-      );
+      // (person-2 already exists on BOARD_ID from seedTestDb)
 
       // Reassign T-910 from person-1 to Giovanni, from the child board engine
       const r = engine.reassign({
@@ -1927,7 +1924,7 @@ describe('TaskflowEngine', () => {
       expect(task.child_exec_person_id).toBe('person-2');
     });
 
-    it('reassign delegated task to person not on parent board → error', () => {
+    it('reassign delegated task to person not on parent board → succeeds, parent board shows under accountable person', () => {
       const { ownerBoardId, taskId } = seedLinkedTask(db, BOARD_ID, {
         taskId: 'T-920',
         assignee: 'person-1',
@@ -1945,13 +1942,30 @@ describe('TaskflowEngine', () => {
         confirmed: true,
       });
 
-      expect(r.success).toBe(false);
-      expect(r.error).toContain('quadro superior');
+      // Reassignment succeeds — delegation is allowed
+      expect(r.success).toBe(true);
 
+      // DB has the new assignee
       const task = db
         .prepare(`SELECT * FROM tasks WHERE board_id = ? AND id = ?`)
         .get(ownerBoardId, taskId) as any;
-      expect(task.assignee).toBe('person-1');
+      expect(task.assignee).toBe('person-ext');
+
+      // On the PARENT board, formatBoardView should show the task under person-1 (Alexandre)
+      // with a delegation indicator, not under person-ext (Reginaldo)
+      const parentEngine = new TaskflowEngine(db, ownerBoardId);
+      // Add person-1 to parent board so the board has someone
+      db.exec(
+        `INSERT OR IGNORE INTO board_people VALUES ('${ownerBoardId}', 'person-1', 'Alexandre', '5585999990001', 'Dev', 3, NULL)`,
+      );
+      db.exec(
+        `INSERT OR IGNORE INTO board_admins VALUES ('${ownerBoardId}', 'person-1', '5585999990001', 'manager', 1)`,
+      );
+      const boardView = (parentEngine as any).formatBoardView('board');
+      // Task should appear under Alexandre (accountable), not Reginaldo
+      expect(boardView).toContain('Alexandre');
+      // Should show delegation indicator with Reginaldo's name
+      expect(boardView).toContain('Reginaldo');
     });
 
     it('reassign delegated task to person on both child and parent board → succeeds', () => {
@@ -2590,7 +2604,7 @@ describe('TaskflowEngine', () => {
       expect(childEngine.getTask('P1.1')).toBeNull();
     });
 
-    it('assign_subtask on delegated project to person not on parent board → error', () => {
+    it('assign_subtask on delegated project to person not on parent board → succeeds (delegation allowed)', () => {
       const now = new Date().toISOString();
       const parentBoardId = 'board-parent-sub';
       db.exec(
@@ -2617,11 +2631,14 @@ describe('TaskflowEngine', () => {
         },
       });
 
-      expect(r.success).toBe(false);
-      expect(r.error).toContain('quadro superior');
+      expect(r.success).toBe(true);
+      const sub = db
+        .prepare(`SELECT assignee FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(parentBoardId, 'P-100.1') as any;
+      expect(sub.assignee).toBe('person-ext');
     });
 
-    it('add_participant on delegated meeting to person not on parent board → error', () => {
+    it('add_participant on delegated meeting to person not on parent board → succeeds (delegation allowed)', () => {
       const now = new Date().toISOString();
       const parentBoardId = 'board-parent-mtg';
       db.exec(
@@ -2644,8 +2661,7 @@ describe('TaskflowEngine', () => {
         },
       });
 
-      expect(r.success).toBe(false);
-      expect(r.error).toContain('quadro superior');
+      expect(r.success).toBe(true);
     });
   });
 

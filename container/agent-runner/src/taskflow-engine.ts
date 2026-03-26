@@ -2858,18 +2858,6 @@ export class TaskflowEngine {
           return { success: false, error: `Task ${params.task_id} is already assigned to ${targetPerson.name}.` };
         }
 
-        /* --- Cross-board guard: prevent assigning to person unknown to the task's board --- */
-        const owningBoard = this.taskBoardId(task);
-        if (owningBoard !== this.boardId) {
-          const targetOnOwningBoard = this.resolvePerson(targetPerson.person_id, owningBoard);
-          if (!targetOnOwningBoard) {
-            return {
-              success: false,
-              error: `"${targetPerson.name}" não está cadastrado(a) no quadro superior. A tarefa pertence ao quadro ${owningBoard} e só pode ser atribuída a membros desse quadro.`,
-            };
-          }
-        }
-
         tasksToReassign = [task];
       } else {
         /* --- Bulk transfer --- */
@@ -3542,16 +3530,6 @@ export class TaskflowEngine {
         }
         const person = this.resolvePerson(updates.add_participant);
         if (!person) return this.buildOfferRegisterError(updates.add_participant);
-        /* Cross-board guard */
-        if (taskBoardId !== this.boardId) {
-          const personOnOwningBoard = this.resolvePerson(person.person_id, taskBoardId);
-          if (!personOnOwningBoard) {
-            return {
-              success: false,
-              error: `"${person.name}" não está cadastrado(a) no quadro superior (${taskBoardId}). Participantes de reuniões do quadro superior devem ser membros desse quadro.`,
-            };
-          }
-        }
         const participants: string[] = JSON.parse(task.participants ?? '[]');
         if (!participants.includes(person.person_id)) {
           participants.push(person.person_id);
@@ -3956,16 +3934,6 @@ export class TaskflowEngine {
         if (!check.success) return check;
         const subPerson = this.resolvePerson(updates.assign_subtask.assignee);
         if (!subPerson) return this.buildOfferRegisterError(updates.assign_subtask.assignee);
-        /* Cross-board guard */
-        if (taskBoardId !== this.boardId) {
-          const personOnOwningBoard = this.resolvePerson(subPerson.person_id, taskBoardId);
-          if (!personOnOwningBoard) {
-            return {
-              success: false,
-              error: `"${subPerson.name}" não está cadastrado(a) no quadro superior (${taskBoardId}). Subtarefas de projetos do quadro superior só podem ser atribuídas a membros desse quadro.`,
-            };
-          }
-        }
         const childLink = this.linkedChildBoardFor(taskBoardId, subPerson.person_id);
         this.db
           .prepare(`UPDATE tasks SET assignee = ?, child_exec_enabled = ?, child_exec_board_id = ?, child_exec_person_id = ?, column = CASE WHEN column = 'inbox' THEN 'next_action' ELSE column END, updated_at = ? WHERE board_id = ? AND id = ?`)
@@ -4496,6 +4464,43 @@ export class TaskflowEngine {
     const nameOf = new Map(people.map((p) => [p.person_id, p.name]));
     const pName = (id: string | null) => (id ? nameOf.get(id) ?? id : null);
 
+    /* --- Delegation lookup: for assignees not on this board, find the last
+     *     internal assignee from task_history (the accountable person) --- */
+    const delegatedFrom = new Map<string, { taskId: string; accountable: string; delegateName: string }>();
+    const findAccountable = (taskId: string, assignee: string): string => {
+      if (nameOf.has(assignee)) return assignee; // already on this board
+      const cached = delegatedFrom.get(taskId);
+      if (cached) return cached.accountable;
+      // Look up the reassignment chain in task_history
+      const hist = this.db
+        .prepare(
+          `SELECT details FROM task_history
+           WHERE board_id = ? AND task_id = ? AND action = 'reassigned'
+           ORDER BY at DESC`,
+        )
+        .all(this.boardId, taskId) as Array<{ details: string }>;
+      for (const h of hist) {
+        try {
+          const d = JSON.parse(h.details);
+          if (d.from_assignee && nameOf.has(d.from_assignee)) {
+            // Also look up the delegate's name from any board
+            const delegateRow = this.db
+              .prepare(`SELECT name FROM board_people WHERE person_id = ? LIMIT 1`)
+              .get(assignee) as { name: string } | undefined;
+            delegatedFrom.set(taskId, {
+              taskId,
+              accountable: d.from_assignee,
+              delegateName: delegateRow?.name ?? assignee,
+            });
+            return d.from_assignee;
+          }
+        } catch {}
+      }
+      return assignee; // fallback: no history found
+    };
+    const isDelegated = (taskId: string) => delegatedFrom.has(taskId);
+    const delegateInfo = (taskId: string) => delegatedFrom.get(taskId);
+
     /* --- Short-code cache for displayId (avoids N+1 per-task DB queries) --- */
     const shortCodes = new Map<string, string | null>();
     const allBoards = this.db.prepare(`SELECT id, short_code FROM boards`).all() as Array<{ id: string; short_code: string | null }>;
@@ -4666,10 +4671,11 @@ export class TaskflowEngine {
         continue;
       }
 
-      /* Group by person */
+      /* Group by person (resolve delegated tasks to their accountable person) */
       const byPerson = new Map<string, any[]>();
       for (const t of tasks) {
-        const key = t.assignee ?? '__none__';
+        const raw = t.assignee ?? '__none__';
+        const key = raw === '__none__' ? raw : findAccountable(t.id, raw);
         const arr = byPerson.get(key);
         if (arr) arr.push(t);
         else byPerson.set(key, [t]);
@@ -4726,14 +4732,20 @@ export class TaskflowEngine {
             let line = `${pfx(t)}${tid}: ${t.title}${meetingSfx(t)}${dueSfx(t)}${notesSfx(t)}`;
             if (col === 'waiting' && t.waiting_for)
               line += ` \u2192 _${t.waiting_for}_`;
+            const del = delegateInfo(t.id);
+            if (del) line += ` \u2192 _${del.delegateName}_`;
             lines.push(line);
 
             /* Subtasks */
             const subs = subtaskMap.get(t.id);
             if (subs) {
               for (const st of subs) {
+                // Resolve delegation for subtasks too
+                if (st.assignee) findAccountable(st.id, st.assignee);
+                const stDel = delegateInfo(st.id);
+                const stDelSfx = stDel ? ` \u2192 _${stDel.delegateName}_` : '';
                 lines.push(
-                  `   \u21b3 ${dId(st)}: ${st.title}${dueSfx(st)}${notesSfx(st)}`,
+                  `   \u21b3 ${dId(st)}: ${st.title}${dueSfx(st)}${notesSfx(st)}${stDelSfx}`,
                 );
               }
             }
@@ -5245,6 +5257,44 @@ export class TaskflowEngine {
           // Include external participants for meetings
           if (task.type === 'meeting') {
             data.external_participants = this.getActiveExternalParticipants(this.taskBoardId(task), task.id);
+          }
+          // Include delegation chain when assignee is not on this board
+          if (task.assignee) {
+            const localPeople = this.db
+              .prepare(`SELECT person_id FROM board_people WHERE board_id = ?`)
+              .all(this.boardId) as Array<{ person_id: string }>;
+            const localIds = new Set(localPeople.map((p) => p.person_id));
+            if (!localIds.has(task.assignee)) {
+              // Build delegation chain from task_history
+              const chain: Array<{ person_id: string; name: string }> = [];
+              const reassigns = this.db
+                .prepare(
+                  `SELECT details FROM task_history
+                   WHERE board_id = ? AND task_id = ? AND action = 'reassigned'
+                   ORDER BY at ASC`,
+                )
+                .all(this.taskBoardId(task), task.id) as Array<{ details: string }>;
+              for (const h of reassigns) {
+                try {
+                  const d = JSON.parse(h.details);
+                  if (d.from_assignee && chain.length === 0) {
+                    const fromName = this.db
+                      .prepare(`SELECT name FROM board_people WHERE person_id = ? LIMIT 1`)
+                      .get(d.from_assignee) as { name: string } | undefined;
+                    chain.push({ person_id: d.from_assignee, name: fromName?.name ?? d.from_assignee });
+                  }
+                  if (d.to_assignee) {
+                    const toName = this.db
+                      .prepare(`SELECT name FROM board_people WHERE person_id = ? LIMIT 1`)
+                      .get(d.to_assignee) as { name: string } | undefined;
+                    chain.push({ person_id: d.to_assignee, name: toName?.name ?? d.to_assignee });
+                  }
+                } catch {}
+              }
+              if (chain.length > 0) {
+                data.delegation_chain = chain;
+              }
+            }
           }
           return { success: true, data };
         }
