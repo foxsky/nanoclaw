@@ -34,9 +34,17 @@ ollama pull bge-m3
 
 ## Phase 2: Apply Code Changes
 
-The code changes are already merged into main. Verify the following files exist:
+Merge the skill branch:
 
-**New files (add-embeddings owned):**
+```bash
+git merge skill/embeddings
+npm run build
+./container/build.sh
+```
+
+Code lives directly in the source tree on the `skill/embeddings` branch.
+
+**Files owned by this skill:**
 - `src/embedding-service.ts` — generic embedding service (host, read-write)
 - `src/embedding-service.test.ts` — tests
 - `container/agent-runner/src/embedding-reader.ts` — read-only query client (container)
