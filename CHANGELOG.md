@@ -11,6 +11,11 @@ All notable changes to NanoClaw will be documented in this file.
 - **feat:** `task_details` includes `delegation_chain` for full assignment path visibility
 - **refactor:** Cross-board name cache, extracted `delegateSfx` helper
 
+### Skill Format Migration
+- **refactor:** Migrated `add-long-term-context` and `add-embeddings` to branch-based skill format (`skill/long-term-context`, `skill/embeddings`)
+- Removed ~12,300 lines of duplicate code from `add/`, `modify/`, `manifest.yaml`
+- Code now lives directly in the source tree — no more manual syncing after changes
+
 ### Evening Digest — No-Stress Mode
 - **feat:** Evening digest stripped of operational pressure — no pendências, overdue, stale, or priority suggestions. Keep only compact board summary, celebrations, momentum, and upcoming meetings. Operational pressure stays in the morning standup.
 - **fix:** Removed duplicate overdue footer from board view — tasks already marked with ⚠️ in their column sections
