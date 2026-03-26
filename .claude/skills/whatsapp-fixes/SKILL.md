@@ -1,42 +1,51 @@
 ---
 name: whatsapp-fixes
-description: "Bug fixes for the WhatsApp channel: LID participant verification, reconnection with exponential backoff, multi-trigger bot detection. Fixes group creation always generating invite links, tight reconnection loops, and bot responding to its own messages in custom-trigger groups."
+description: "WhatsApp channel extensions: LID verification, reconnection backoff, multi-trigger detection, DM routing for external meeting participants, unified auth script."
 ---
 
-# WhatsApp Channel Fixes
+# WhatsApp Channel Extensions
 
-Bug fixes for `src/channels/whatsapp.ts` that benefit all WhatsApp users. These are improvements to the upstream WhatsApp skill, not new features.
+Bug fixes and local extensions for the WhatsApp channel.
 
 ## Installation
 
 ```bash
-git fetch upstream skill/whatsapp-fixes
-git merge upstream/skill/whatsapp-fixes --no-edit
+git merge skill/whatsapp-fixes
 npm run build
 ```
 
-## Fixes Included
+Code lives directly in the source tree on the `skill/whatsapp-fixes` branch.
+
+## Files Owned
+
+**Added by this skill:**
+- `src/dm-routing.ts` — DM routing for external meeting participants (reads taskflow.db for participant lookup)
+- `src/dm-routing.test.ts` — tests
+- `src/whatsapp-auth.ts` — unified auth script (QR + pairing code via `--pairing-code` flag)
+
+**Modified by this skill:**
+- `src/channels/whatsapp.ts` — LID verification, reconnection backoff, multi-trigger detection
+
+## Fixes
 
 ### 1. LID Participant Verification (createGroup)
 
-**Problem:** When creating WhatsApp groups, the bot verifies participants were added by fetching group metadata and matching JIDs. WhatsApp returns LID JIDs for newly added participants that the bot can't translate back to phone JIDs (not cached). This caused ALL participants to appear as "missing", triggering unnecessary invite links on every group creation.
-
-**Fix:** Verify by participant count first — if `meta.participants.length >= expectedCount`, all were added. Falls back to enriched JID matching using `p.phoneNumber`/`p.lid` from metadata. Adds 2-second delay before verification to let WhatsApp propagate additions.
-
-**File:** `src/channels/whatsapp.ts` — `createGroup` method
+Verify by participant count first. Falls back to enriched JID matching using `p.phoneNumber`/`p.lid` from metadata. Adds 2-second delay before verification.
 
 ### 2. Reconnection with Exponential Backoff
 
-**Problem:** On transient connection errors, the bot could enter tight reconnection loops, hammering the WhatsApp servers and potentially getting rate-limited or banned. No guard against duplicate reconnection attempts.
-
-**Fix:** `attemptReconnect` retries up to 5 times with exponential backoff (5s, 10s, 20s, 40s, 60s cap). Guards against duplicate reconnect attempts with a `reconnecting` flag. Only clears the flag on successful reconnection (connection='open' handler), not in finally blocks.
-
-**File:** `src/channels/whatsapp.ts` — connection error handler
+Retries up to 5 times with exponential backoff (5s→60s cap). Guards against duplicate reconnect attempts.
 
 ### 3. Multi-Trigger Bot Detection
 
-**Problem:** Bot message detection only checked `ASSISTANT_NAME` (e.g., "Kipp"). Groups with custom trigger names (e.g., "Case") would cause the bot to process its own messages as user input, creating echo loops.
+Checks all registered group trigger patterns for self-message detection, not just `ASSISTANT_NAME`.
 
-**Fix:** Bot message detection now checks all registered group trigger patterns, not just `ASSISTANT_NAME`. A message prefixed with any registered trigger is correctly identified as a bot message and skipped.
+## Features
 
-**File:** `src/channels/whatsapp.ts` — `messages.upsert` handler
+### 4. External DM Routing
+
+Routes WhatsApp direct messages from external meeting participants to the correct TaskFlow group. Reads `taskflow.db` for participant/meeting lookup.
+
+### 5. Unified Auth Script
+
+`src/whatsapp-auth.ts` — single script for both QR code and pairing code auth. Use `--pairing-code <phone>` for server-friendly auth without QR.
