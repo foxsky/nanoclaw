@@ -23,28 +23,15 @@ If Ollama is not reachable, ask the user for the correct `OLLAMA_HOST` URL.
 
 ## Phase 2: Apply Code Changes
 
-The code changes are already merged into main. Verify the following files exist:
-
-**New files (add-long-term-context owned):**
-- `src/context-service.ts` — host-side ContextService (SQLite write ops, summarization, DAG compaction, retention)
-- `src/context-service.test.ts` — tests
-- `src/context-sync.ts` — JSONL transcript parser, incremental capture, background compaction timer
-- `src/context-sync.test.ts` — tests
-- `container/agent-runner/src/context-reader.ts` — container-side read-only client (preamble + MCP tools)
-- `container/agent-runner/src/context-reader.test.ts` — tests
-
-**Modified files (add-long-term-context touches):**
-- `src/container-runner.ts` — CORE_AGENT_RUNNER_FILES, context mount, capture hook on container exit
-- `src/index.ts` — service initialization, sync timer, shutdown cleanup
-- `container/agent-runner/src/index.ts` — conversation recap preamble injection (after embedding preamble)
-- `container/agent-runner/src/ipc-mcp-stdio.ts` — context_search, context_recall MCP tools (+ progressive unlock)
-
-### Build and deploy
+Merge the skill branch:
 
 ```bash
+git merge skill/long-term-context
 npm run build
 ./container/build.sh
 ```
+
+Code lives directly in the source tree on the `skill/long-term-context` branch — no separate file copies needed.
 
 ## Phase 3: Configure
 
