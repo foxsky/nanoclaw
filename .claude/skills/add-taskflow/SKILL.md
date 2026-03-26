@@ -18,8 +18,8 @@ All topologies rely on already-implemented runtime support (SQLite DB, IPC auth,
 TaskFlow is distributed as a git branch. To install, merge the branch:
 
 ```bash
-git fetch origin skill/taskflow
-git merge origin/skill/taskflow --no-edit
+git fetch upstream skill/taskflow
+git merge upstream/skill/taskflow --no-edit
 npm install
 npm run build
 ./container/build.sh

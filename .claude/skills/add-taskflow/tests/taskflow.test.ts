@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import Database from 'better-sqlite3';
 import { pathToFileURL } from 'url';
-import { TaskflowEngine, normalizePhone } from '../add/container/agent-runner/src/taskflow-engine.js';
+import { TaskflowEngine, normalizePhone } from '../../../../container/agent-runner/src/taskflow-engine.js';
 
 const BOARD_ID = 'board-test-001';
 const skillDir = path.resolve(__dirname, '..');
@@ -60,14 +60,11 @@ function seedTestDb(db: Database.Database, boardId: string) {
 }
 
 describe('taskflow skill package', () => {
-  it('has a valid manifest', () => {
-    const manifestPath = path.join(skillDir, 'manifest.yaml');
-    expect(fs.existsSync(manifestPath)).toBe(true);
-
-    const content = fs.readFileSync(manifestPath, 'utf-8');
-    expect(content).toContain('skill: taskflow');
-    expect(content).toMatch(/version:\s+\d+\.\d+\.\d+/);
-    expect(content).toContain('taskflow-engine.ts');
+  it('has required skill files (branch-based format)', () => {
+    expect(fs.existsSync(path.join(skillDir, 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(skillDir, 'templates', 'CLAUDE.md.template'))).toBe(true);
+    // Source code lives in the source tree, not in add/modify
+    expect(fs.existsSync(path.resolve(skillDir, '..', '..', '..', '..', 'container', 'agent-runner', 'src', 'taskflow-engine.ts'))).toBe(true);
   });
 
   it('has SKILL.md with required frontmatter', () => {
@@ -182,7 +179,7 @@ describe('taskflow skill package', () => {
     expect(fs.existsSync(path.join(templatesDir, 'CLAUDE.md.template'))).toBe(true);
 
     const files = fs.readdirSync(templatesDir).sort();
-    expect(files).toEqual(['CLAUDE.md.template', 'CLAUDE.md.template.v1']);
+    expect(files).toEqual(['CLAUDE.md.template']);
   });
 
   it('CLAUDE.md.template has all required sections', () => {
@@ -1190,7 +1187,7 @@ describe('taskflow skill package', () => {
 
   it('generate-claude-md uses the root board for sec-secti control prompts', () => {
     const script = fs.readFileSync(
-      path.join(skillDir, 'add/scripts/generate-claude-md.mjs'),
+      path.resolve(skillDir, '..', '..', '..', '..', 'scripts', 'generate-claude-md.mjs'),
       'utf-8',
     );
     const secSectiBlock =
@@ -1206,7 +1203,7 @@ describe('taskflow skill package', () => {
 
   it('generate-claude-md covers laizys, thiago, and test taskflow groups', () => {
     const script = fs.readFileSync(
-      path.join(skillDir, 'add/scripts/generate-claude-md.mjs'),
+      path.resolve(skillDir, '..', '..', '..', '..', 'scripts', 'generate-claude-md.mjs'),
       'utf-8',
     );
 
@@ -1239,7 +1236,7 @@ describe('taskflow skill package', () => {
 
   it('generate-claude-md covers e2e and setec taskflow groups', () => {
     const script = fs.readFileSync(
-      path.join(skillDir, 'add/scripts/generate-claude-md.mjs'),
+      path.resolve(skillDir, '..', '..', '..', '..', 'scripts', 'generate-claude-md.mjs'),
       'utf-8',
     );
 
@@ -2099,7 +2096,7 @@ describe('taskflow skill package', () => {
   it('ID generation uses per-prefix counters (T/P/R) in engine and db schema', () => {
     // Engine maps each prefix to its own counter column
     const engine = fs.readFileSync(
-      path.resolve(skillDir, 'add/container/agent-runner/src/taskflow-engine.ts'),
+      path.resolve(skillDir, '..', '..', '..', '..', 'container', 'agent-runner', 'src', 'taskflow-engine.ts'),
       'utf-8',
     );
     expect(engine).toContain('next_task_number');
@@ -4935,7 +4932,7 @@ describe('meeting notes', () => {
       // The engine supports manage_holidays as an admin action.
       // The MCP schema must include it so agents can actually call it.
       const mcpContent = fs.readFileSync(
-        path.resolve(skillDir, 'modify/container/agent-runner/src/ipc-mcp-stdio.ts'),
+        path.resolve(skillDir, '..', '..', '..', '..', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
         'utf-8',
       );
       // Verify the action enum includes manage_holidays
