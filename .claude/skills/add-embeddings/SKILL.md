@@ -50,7 +50,8 @@ Code lives directly in the source tree on the `skill/embeddings` branch.
 - `container/agent-runner/src/embedding-reader.ts` — read-only query client (container)
 - `container/agent-runner/src/embedding-reader.test.ts` — baseline tests
 
-**Modified files (add-embeddings owned):**
+**Modified files (add-embeddings touches):**
+- `src/index.ts` — EmbeddingService startup
 - `src/container-runner.ts` — ContainerInput fields, embeddings mount, env vars, queryVector hook
 - `container/agent-runner/src/runtime-config.ts` — ContainerInput fields, MCP env vars
 
