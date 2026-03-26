@@ -2858,6 +2858,18 @@ export class TaskflowEngine {
           return { success: false, error: `Task ${params.task_id} is already assigned to ${targetPerson.name}.` };
         }
 
+        /* --- Cross-board guard: prevent assigning to person unknown to the task's board --- */
+        const owningBoard = this.taskBoardId(task);
+        if (owningBoard !== this.boardId) {
+          const targetOnOwningBoard = this.resolvePerson(targetPerson.person_id, owningBoard);
+          if (!targetOnOwningBoard) {
+            return {
+              success: false,
+              error: `"${targetPerson.name}" não está cadastrado(a) no quadro superior. A tarefa pertence ao quadro ${owningBoard} e só pode ser atribuída a membros desse quadro.`,
+            };
+          }
+        }
+
         tasksToReassign = [task];
       } else {
         /* --- Bulk transfer --- */
@@ -3530,6 +3542,16 @@ export class TaskflowEngine {
         }
         const person = this.resolvePerson(updates.add_participant);
         if (!person) return this.buildOfferRegisterError(updates.add_participant);
+        /* Cross-board guard */
+        if (taskBoardId !== this.boardId) {
+          const personOnOwningBoard = this.resolvePerson(person.person_id, taskBoardId);
+          if (!personOnOwningBoard) {
+            return {
+              success: false,
+              error: `"${person.name}" não está cadastrado(a) no quadro superior (${taskBoardId}). Participantes de reuniões do quadro superior devem ser membros desse quadro.`,
+            };
+          }
+        }
         const participants: string[] = JSON.parse(task.participants ?? '[]');
         if (!participants.includes(person.person_id)) {
           participants.push(person.person_id);
@@ -3934,6 +3956,16 @@ export class TaskflowEngine {
         if (!check.success) return check;
         const subPerson = this.resolvePerson(updates.assign_subtask.assignee);
         if (!subPerson) return this.buildOfferRegisterError(updates.assign_subtask.assignee);
+        /* Cross-board guard */
+        if (taskBoardId !== this.boardId) {
+          const personOnOwningBoard = this.resolvePerson(subPerson.person_id, taskBoardId);
+          if (!personOnOwningBoard) {
+            return {
+              success: false,
+              error: `"${subPerson.name}" não está cadastrado(a) no quadro superior (${taskBoardId}). Subtarefas de projetos do quadro superior só podem ser atribuídas a membros desse quadro.`,
+            };
+          }
+        }
         const childLink = this.linkedChildBoardFor(taskBoardId, subPerson.person_id);
         this.db
           .prepare(`UPDATE tasks SET assignee = ?, child_exec_enabled = ?, child_exec_board_id = ?, child_exec_person_id = ?, column = CASE WHEN column = 'inbox' THEN 'next_action' ELSE column END, updated_at = ? WHERE board_id = ? AND id = ?`)

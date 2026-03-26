@@ -1900,8 +1900,10 @@ describe('TaskflowEngine', () => {
       db.exec(
         `INSERT INTO child_board_registrations VALUES ('${ownerBoardId}', 'person-2', 'child-board-giovanni')`,
       );
-      // Also register person-2 on the parent board so resolvePerson works
-      // (person-2 already exists on BOARD_ID from seedTestDb)
+      // Register person-2 on the parent board so cross-board guard passes
+      db.exec(
+        `INSERT INTO board_people VALUES ('${ownerBoardId}', 'person-2', 'Giovanni', '5585999990002', 'Dev', 3, NULL)`,
+      );
 
       // Reassign T-910 from person-1 to Giovanni, from the child board engine
       const r = engine.reassign({
@@ -1923,6 +1925,58 @@ describe('TaskflowEngine', () => {
       expect(task.child_exec_enabled).toBe(1);
       expect(task.child_exec_board_id).toBe('child-board-giovanni');
       expect(task.child_exec_person_id).toBe('person-2');
+    });
+
+    it('reassign delegated task to person not on parent board → error', () => {
+      const { ownerBoardId, taskId } = seedLinkedTask(db, BOARD_ID, {
+        taskId: 'T-920',
+        assignee: 'person-1',
+      });
+
+      db.exec(
+        `INSERT INTO board_people VALUES ('${BOARD_ID}', 'person-ext', 'Reginaldo', '5585999990099', 'Analista', 3, NULL)`,
+      );
+
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: taskId,
+        target_person: 'Reginaldo',
+        sender_name: 'Alexandre',
+        confirmed: true,
+      });
+
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('quadro superior');
+
+      const task = db
+        .prepare(`SELECT * FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(ownerBoardId, taskId) as any;
+      expect(task.assignee).toBe('person-1');
+    });
+
+    it('reassign delegated task to person on both child and parent board → succeeds', () => {
+      const { ownerBoardId, taskId } = seedLinkedTask(db, BOARD_ID, {
+        taskId: 'T-940',
+        assignee: 'person-1',
+      });
+
+      db.exec(
+        `INSERT INTO board_people VALUES ('${ownerBoardId}', 'person-2', 'Giovanni', '5585999990002', 'Dev', 3, NULL)`,
+      );
+
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: taskId,
+        target_person: 'Giovanni',
+        sender_name: 'Alexandre',
+        confirmed: true,
+      });
+
+      expect(r.success).toBe(true);
+      const task = db
+        .prepare(`SELECT assignee FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(ownerBoardId, taskId) as any;
+      expect(task.assignee).toBe('person-2');
     });
 
     it('bulk transfer all tasks', () => {
@@ -2534,6 +2588,64 @@ describe('TaskflowEngine', () => {
 
       const childEngine = new TaskflowEngine(db, 'board-child-gio');
       expect(childEngine.getTask('P1.1')).toBeNull();
+    });
+
+    it('assign_subtask on delegated project to person not on parent board → error', () => {
+      const now = new Date().toISOString();
+      const parentBoardId = 'board-parent-sub';
+      db.exec(
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'parent@g.us', 'parent-group', 'standard', 0, 1, NULL, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, child_exec_enabled, child_exec_board_id, child_exec_person_id, created_at, updated_at)
+         VALUES ('P-100', '${parentBoardId}', 'project', 'Parent project', 'person-1', 'in_progress', 1, 1, '${BOARD_ID}', 'person-1', '${now}', '${now}')`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, parent_task_id, requires_close_approval, child_exec_enabled, child_exec_board_id, child_exec_person_id, created_at, updated_at)
+         VALUES ('P-100.1', '${parentBoardId}', 'simple', 'Sub task', 'person-1', 'next_action', 'P-100', 0, 1, '${BOARD_ID}', 'person-1', '${now}', '${now}')`,
+      );
+      db.exec(
+        `INSERT INTO board_people VALUES ('${BOARD_ID}', 'person-ext', 'Reginaldo', '5585999990099', 'Analista', 3, NULL)`,
+      );
+
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'P-100',
+        sender_name: 'Alexandre',
+        updates: {
+          assign_subtask: { id: 'P-100.1', assignee: 'Reginaldo' },
+        },
+      });
+
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('quadro superior');
+    });
+
+    it('add_participant on delegated meeting to person not on parent board → error', () => {
+      const now = new Date().toISOString();
+      const parentBoardId = 'board-parent-mtg';
+      db.exec(
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'parent@g.us', 'parent-group-mtg', 'standard', 0, 1, NULL, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, child_exec_enabled, child_exec_board_id, child_exec_person_id, participants, created_at, updated_at)
+         VALUES ('M-100', '${parentBoardId}', 'meeting', 'Team sync', 'person-1', 'next_action', 1, 1, '${BOARD_ID}', 'person-1', '[]', '${now}', '${now}')`,
+      );
+      db.exec(
+        `INSERT OR IGNORE INTO board_people VALUES ('${BOARD_ID}', 'person-ext', 'Reginaldo', '5585999990099', 'Analista', 3, NULL)`,
+      );
+
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'M-100',
+        sender_name: 'Alexandre',
+        updates: {
+          add_participant: 'Reginaldo',
+        },
+      });
+
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('quadro superior');
     });
   });
 
