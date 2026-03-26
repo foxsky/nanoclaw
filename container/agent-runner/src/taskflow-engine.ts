@@ -4509,7 +4509,7 @@ export class TaskflowEngine {
     const delegateSfx = (taskId: string, assignee: string | null): string => {
       if (assignee) findAccountable(taskId, assignee);
       const del = delegateInfo(taskId);
-      return del ? ` \u2192 _${del.delegateName}_` : '';
+      return del ? ` \u27a4 _${del.delegateName}_` : '';
     };
 
     /* --- Short-code cache for displayId (avoids N+1 per-task DB queries) --- */
@@ -4656,8 +4656,9 @@ export class TaskflowEngine {
         const withReason = personTasks.filter((t: any) => t.waiting_for);
         if (withReason.length > 0) parts.push(`aguardando respostas externas`);
       }
+      const delegated = personTasks.filter((t: any) => delegateInfo(t.id));
+      if (delegated.length > 0) parts.push(`${delegated.length} delegada(s)`);
       if (parts.length === 0) {
-        // Default summary when nothing specific is notable
         parts.push(`${personTasks.length} tarefa(s)`);
       }
       return `  _${parts.join(', ')}_`;
