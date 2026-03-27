@@ -591,6 +591,10 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
 
     /** Write IPC message files for any notifications returned by the engine. */
     function dispatchNotifications(result: Record<string, unknown>): void {
+      // Track which group JIDs already received a notification so we can
+      // skip the parent_notification when it would be a duplicate.
+      const notifiedJids = new Set<string>();
+
       if (Array.isArray(result.notifications)) {
         for (const notif of result.notifications as Array<{
           target_kind?: 'group' | 'dm';
@@ -612,6 +616,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
               groupFolder,
               timestamp: new Date().toISOString(),
             });
+            notifiedJids.add(targetJid);
           } else if (notif.target_kind !== 'dm' && notif.target_person_id) {
             // Person has no notification group yet (board being provisioned).
             // Write a deferred notification — the orchestrator will dispatch
@@ -626,9 +631,9 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           }
         }
       }
-      // Keep the parent_notification block unchanged
+      // Send parent notification only if that group didn't already get one above
       const pn = result.parent_notification as ParentNotification | undefined;
-      if (pn?.parent_group_jid && pn.message) {
+      if (pn?.parent_group_jid && pn.message && !notifiedJids.has(pn.parent_group_jid)) {
         writeIpcFile(MESSAGES_DIR, {
           type: 'message',
           chatJid: pn.parent_group_jid,

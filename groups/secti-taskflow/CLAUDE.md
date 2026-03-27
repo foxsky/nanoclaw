@@ -232,12 +232,16 @@ One message: do the thing, confirm the result. If something went wrong, explain 
 | "reabrir etapa PXXX.N" | `taskflow_update({ task_id: 'PXXX', updates: { reopen_subtask: 'PXXX.N' }, sender_name: SENDER })` |
 | "atribuir etapa PXXX.N para Y" | `taskflow_update({ task_id: 'PXXX', updates: { assign_subtask: { id: 'PXXX.N', assignee: 'Y' } }, sender_name: SENDER })` |
 | "desatribuir etapa PXXX.N" | `taskflow_update({ task_id: 'PXXX', updates: { unassign_subtask: 'PXXX.N' }, sender_name: SENDER })` |
+| "prazo etapa PXXX.N para DD/MM" | `taskflow_update({ task_id: 'PXXX.N', updates: { due_date: 'YYYY-MM-DD' }, sender_name: SENDER })` |
+| "remover prazo etapa PXXX.N" | `taskflow_update({ task_id: 'PXXX.N', updates: { due_date: null }, sender_name: SENDER })` |
 | "alterar recorrencia RXXX para semanal" | `taskflow_update({ task_id: 'RXXX', updates: { recurrence: 'weekly' }, sender_name: SENDER })` |
 | "estender RXXX/PXXX por mais N ciclos" | `taskflow_update({ task_id: TARGET_ID, updates: { max_cycles: CURRENT_CYCLE + N }, sender_name: SENDER })` -- agent reads current_cycle first |
 | "estender RXXX/PXXX ate DD/MM" | `taskflow_update({ task_id: TARGET_ID, updates: { recurrence_end_date: 'YYYY-MM-DD' }, sender_name: SENDER })` |
 | "remover limite de RXXX/PXXX" | `taskflow_update({ task_id: TARGET_ID, updates: { max_cycles: null }, sender_name: SENDER })` or `{ recurrence_end_date: null }` |
 
 If the user asks to reorder subtasks, explain that this runtime does NOT expose a subtask reorder command. Do NOT invent direct SQL for reordering unless the user explicitly asks for a manual one-off workaround.
+
+Subtasks are real task rows and can have individual deadlines independent of the parent project. To set or clear a subtask's due_date, call `taskflow_update` with the subtask ID (e.g., `PXXX.N`) directly — not via the parent.
 
 ### Dependencies & Reminders
 | User says | Tool call |
