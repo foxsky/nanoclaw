@@ -4,24 +4,34 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
-## [1.2.35] - 2026-03-26
+## [1.2.41] - 2026-03-27
 
-- [BREAKING] OneCLI Agent Vault replaces the built-in credential proxy. Existing `.env` credentials must be migrated to the vault. Run `/init-onecli` to install OneCLI and migrate credentials.
-
-## Local - 2026-03-27
+### Upstream (1.2.35 → 1.2.41)
+- Replace pino with built-in logger
+- Prevent message history overflow via `MAX_MESSAGES_PER_PROMPT`
+- `stopContainer` uses `execFileSync` (no shell injection)
+- Preserve `isMain` on IPC updates
+- Fix single-char `.env` crash
+- Remove unused deps (yaml, zod, pino, pino-pretty)
+- Ollama skill: opt-in model management tools
 
 ### WhatsApp Reconnection Fix
-- Fixed reconnection deadlock: `connectInternal()` now awaits `connection='open'` before returning, preventing the reconnect loop from exiting prematurely and leaving `reconnecting=true` permanently
-- Fixed half-dead socket stall: `sendMessage()` failures on connected sockets now trigger reconnection instead of silently queuing messages forever
-- Extracted `reconnect()` into a standalone method for reuse
-- LoggedOut (401) during reconnect exits immediately instead of burning through retries
+- Fixed reconnection deadlock: `connectInternal()` now awaits `connection='open'` before returning, preventing the reconnect loop from exiting prematurely (8h production outage)
+- Fixed half-dead socket stall: `sendMessage()` transport failures now trigger reconnection (filtered to avoid false reconnects on application errors)
+- Initial connect retries with backoff on transient startup failures
+- LoggedOut (401) during reconnect exits immediately
 
-### Post-Merge Test Fixes (1.2.23 → 1.2.35)
-- Fixed OneCLI null-safety: `new OneCLI()` no longer crashes when SDK isn't installed
-- Updated TaskFlow test paths from old `add/`/`modify/` dirs to source tree (branch-based migration)
-- Exported `groups`, `renderGroup`, `checkGroup` from `generate-claude-md.mjs` for test imports
-- Fixed ISO date assertions (`.000Z` suffix) and English→Portuguese string expectations
-- Fixed external participant grant expiry, DM notification prerequisites, and board view sort tests
+### Logger Baileys Compatibility
+- Added `level`, `child()`, `trace()` to built-in logger for Baileys `ILogger` interface — prevents runtime crash after pino removal
+
+### TaskFlow Isolation
+- Moved `getGroupSenderName()` from `config.ts` to `src/group-sender.ts`
+- Moved `resolveTaskflowBoardId()` from `container-runner.ts` to `src/taskflow-db.ts`
+- Reduces upstream merge conflicts — TaskFlow code no longer modifies core upstream files
+
+### Post-Merge Test Fixes
+- Fixed OneCLI null-safety, TaskFlow test paths, ISO date assertions, English→Portuguese strings
+- 883 tests passing across 40 test files
 
 ## [1.2.21] - 2026-03-22
 
