@@ -2,6 +2,19 @@
 
 ## 2026-03-27
 
+### Reparent Task
+- New `reparent_task` admin action: move standalone tasks under existing projects as subtasks
+- Preserves all metadata (due_date, priority, notes, history, column)
+- Task keeps its original ID (no broken references)
+- Undoable within 60 seconds
+- Manager-only operation with guards: target must be a project, task must not already be a subtask
+
+### Duplicate Notification Fix
+- Cross-board notifications no longer send duplicates when assignee is on the parent board
+
+### Subtask Deadlines
+- Agents can now set individual due_date on subtasks (template documentation gap fixed)
+
 ### Post-Merge Test Fixes (1.2.23 → 1.2.35)
 - Updated test file paths from old `add/`/`modify/` skill dirs to source tree (branch-based migration)
 - Exported `groups`, `renderGroup`, `checkGroup` from `generate-claude-md.mjs` for test imports
