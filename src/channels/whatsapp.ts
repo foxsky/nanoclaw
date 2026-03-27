@@ -54,12 +54,10 @@ export class WhatsAppChannel implements Channel {
   }
 
   async connect(): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      this.connectInternal(resolve).catch(reject);
-    });
+    await this.connectInternal();
   }
 
-  private async connectInternal(onFirstOpen?: () => void): Promise<void> {
+  private async connectInternal(): Promise<void> {
     // Tear down old socket before creating a new one to prevent
     // stacked event listeners from firing on the old emitter
     if (this.sock) {
@@ -93,117 +91,7 @@ export class WhatsAppChannel implements Channel {
       browser: Browsers.macOS('Chrome'),
     });
 
-    this.sock.ev.on('connection.update', (update) => {
-      const { connection, lastDisconnect, qr } = update;
-
-      if (qr) {
-        const msg =
-          'WhatsApp authentication required. Run /setup in Claude Code.';
-        logger.error(msg);
-        exec(
-          `osascript -e 'display notification "${msg}" with title "NanoClaw" sound name "Basso"'`,
-        );
-        setTimeout(() => process.exit(1), 1000);
-      }
-
-      if (connection === 'close') {
-        this.connected = false;
-        const reason = (
-          lastDisconnect?.error as { output?: { statusCode?: number } }
-        )?.output?.statusCode;
-        const shouldReconnect = reason !== DisconnectReason.loggedOut;
-        logger.info(
-          {
-            reason,
-            shouldReconnect,
-            queuedMessages: this.outgoingQueue.length,
-          },
-          'Connection closed',
-        );
-
-        if (shouldReconnect) {
-          if (this.reconnecting) {
-            logger.warn('Reconnect already in progress, skipping duplicate');
-            return;
-          }
-          this.reconnecting = true;
-          logger.info('Reconnecting...');
-          // Retry loop with exponential backoff. Only clear `reconnecting`
-          // on success (connection='open' handler) — NOT in finally.
-          const attemptReconnect = async (attempt = 1, maxAttempts = 5) => {
-            for (let i = attempt; i <= maxAttempts; i++) {
-              try {
-                await this.connectInternal();
-                return; // success — reconnecting cleared by connection='open' handler
-              } catch (err) {
-                const delay = Math.min(5000 * Math.pow(2, i - 1), 60000);
-                logger.error(
-                  { err, attempt: i, maxAttempts, retryInMs: delay },
-                  'Reconnection attempt failed',
-                );
-                if (i < maxAttempts) {
-                  await new Promise((r) => setTimeout(r, delay));
-                }
-              }
-            }
-            // All attempts exhausted — allow future reconnection attempts
-            this.reconnecting = false;
-            logger.error('All reconnection attempts exhausted');
-          };
-          attemptReconnect().catch(() => {
-            this.reconnecting = false;
-          });
-        } else {
-          logger.info('Logged out. Run /setup to re-authenticate.');
-          process.exit(78); // EX_CONFIG — systemd RestartPreventExitStatus stops restart loop
-        }
-      } else if (connection === 'open') {
-        this.connected = true;
-        this.reconnecting = false; // clear reconnecting flag on successful connection
-        logger.info('Connected to WhatsApp');
-
-        // Announce availability so WhatsApp relays subsequent presence updates (typing indicators)
-        this.sock.sendPresenceUpdate('available').catch((err) => {
-          logger.warn({ err }, 'Failed to send presence update');
-        });
-
-        // Build LID to phone mapping from auth state for self-chat translation
-        if (this.sock.user) {
-          const phoneUser = this.sock.user.id.split(':')[0];
-          const lidUser = this.sock.user.lid?.split(':')[0];
-          if (lidUser && phoneUser) {
-            this.lidToPhoneMap[lidUser] = `${phoneUser}@s.whatsapp.net`;
-            logger.debug({ lidUser, phoneUser }, 'LID to phone mapping set');
-          }
-        }
-
-        // Flush any messages queued while disconnected
-        this.flushOutgoingQueue().catch((err) =>
-          logger.error({ err }, 'Failed to flush outgoing queue'),
-        );
-
-        // Sync group metadata on startup (respects 24h cache)
-        this.syncGroupMetadata().catch((err) =>
-          logger.error({ err }, 'Initial group sync failed'),
-        );
-        // Set up daily sync timer (only once)
-        if (!this.groupSyncTimerStarted) {
-          this.groupSyncTimerStarted = true;
-          setInterval(() => {
-            this.syncGroupMetadata().catch((err) =>
-              logger.error({ err }, 'Periodic group sync failed'),
-            );
-          }, GROUP_SYNC_INTERVAL_MS);
-        }
-
-        // Signal first connection to caller
-        if (onFirstOpen) {
-          onFirstOpen();
-          onFirstOpen = undefined;
-        }
-      }
-    });
-
+    // Register credential and message handlers before waiting for connection
     this.sock.ev.on('creds.update', saveCreds);
 
     this.sock.ev.on('messages.upsert', async ({ messages }) => {
@@ -318,6 +206,147 @@ export class WhatsAppChannel implements Channel {
         }
       }
     });
+
+    // Wait for the socket to actually open (or fail).
+    // Previous code resolved immediately, causing the reconnect loop to exit
+    // before the connection was established — leading to a permanent deadlock.
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+
+      this.sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+          const msg =
+            'WhatsApp authentication required. Run /setup in Claude Code.';
+          logger.error(msg);
+          exec(
+            `osascript -e 'display notification "${msg}" with title "NanoClaw" sound name "Basso"'`,
+          );
+          setTimeout(() => process.exit(1), 1000);
+        }
+
+      if (connection === 'close') {
+        this.connected = false;
+        const reason = (
+          lastDisconnect?.error as { output?: { statusCode?: number } }
+        )?.output?.statusCode;
+        const shouldReconnect = reason !== DisconnectReason.loggedOut;
+        logger.info(
+          {
+            reason,
+            shouldReconnect,
+            queuedMessages: this.outgoingQueue.length,
+          },
+          'Connection closed',
+        );
+
+        if (!settled) {
+          // Connection failed before opening — reject so the caller
+          // (reconnect loop or initial connect) can handle the failure.
+          settled = true;
+          if (!shouldReconnect) {
+            // LoggedOut (401) during a reconnect attempt — exit immediately
+            // instead of burning through all retry attempts.
+            logger.info('Logged out. Run /setup to re-authenticate.');
+            process.exit(78);
+          }
+          reject(
+            new Error(`Connection closed before open (reason: ${reason})`),
+          );
+          return;
+        }
+
+        // Disconnected after being connected — trigger reconnection
+        if (shouldReconnect) {
+          this.reconnect();
+        } else {
+          logger.info('Logged out. Run /setup to re-authenticate.');
+          process.exit(78); // EX_CONFIG — systemd RestartPreventExitStatus stops restart loop
+        }
+      } else if (connection === 'open') {
+        this.connected = true;
+        this.reconnecting = false;
+        logger.info('Connected to WhatsApp');
+
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+
+        // Announce availability so WhatsApp relays subsequent presence updates (typing indicators)
+        this.sock.sendPresenceUpdate('available').catch((err) => {
+          logger.warn({ err }, 'Failed to send presence update');
+        });
+
+        // Build LID to phone mapping from auth state for self-chat translation
+        if (this.sock.user) {
+          const phoneUser = this.sock.user.id.split(':')[0];
+          const lidUser = this.sock.user.lid?.split(':')[0];
+          if (lidUser && phoneUser) {
+            this.lidToPhoneMap[lidUser] = `${phoneUser}@s.whatsapp.net`;
+            logger.debug({ lidUser, phoneUser }, 'LID to phone mapping set');
+          }
+        }
+
+        // Flush any messages queued while disconnected
+        this.flushOutgoingQueue().catch((err) =>
+          logger.error({ err }, 'Failed to flush outgoing queue'),
+        );
+
+        // Sync group metadata on startup (respects 24h cache)
+        this.syncGroupMetadata().catch((err) =>
+          logger.error({ err }, 'Initial group sync failed'),
+        );
+        // Set up daily sync timer (only once)
+        if (!this.groupSyncTimerStarted) {
+          this.groupSyncTimerStarted = true;
+          setInterval(() => {
+            this.syncGroupMetadata().catch((err) =>
+              logger.error({ err }, 'Periodic group sync failed'),
+            );
+          }, GROUP_SYNC_INTERVAL_MS);
+        }
+      }
+      });
+    });
+  }
+
+  /**
+   * Trigger reconnection with exponential backoff.
+   * connectInternal() now awaits connection open, so each attempt
+   * only returns on success or throws on failure — no more deadlock.
+   */
+  private reconnect(): void {
+    if (this.reconnecting) {
+      logger.warn('Reconnect already in progress, skipping duplicate');
+      return;
+    }
+    this.reconnecting = true;
+    logger.info('Reconnecting...');
+
+    const attemptReconnect = async (maxAttempts = 5) => {
+      for (let i = 1; i <= maxAttempts; i++) {
+        try {
+          await this.connectInternal();
+          return; // success — connectInternal resolved on 'open', reconnecting cleared there
+        } catch (err) {
+          const delay = Math.min(5000 * Math.pow(2, i - 1), 60000);
+          logger.error(
+            { err, attempt: i, maxAttempts, retryInMs: delay },
+            'Reconnection attempt failed',
+          );
+          if (i < maxAttempts) {
+            await new Promise((r) => setTimeout(r, delay));
+          }
+        }
+      }
+      this.reconnecting = false;
+      logger.error('All reconnection attempts exhausted');
+    };
+    attemptReconnect().catch(() => {
+      this.reconnecting = false;
+    });
   }
 
   async sendMessage(jid: string, text: string, sender?: string): Promise<void> {
@@ -348,6 +377,12 @@ export class WhatsAppChannel implements Channel {
         { jid, err, queueSize: this.outgoingQueue.length },
         'Failed to send, message queued',
       );
+      // Half-dead socket: sends fail but connection='close' never fires.
+      // Mark disconnected and trigger reconnection so the queue flushes.
+      if (this.connected) {
+        this.connected = false;
+        this.reconnect();
+      }
     }
   }
 

@@ -69,7 +69,9 @@ function createFakeSocket() {
     sendMessage: vi.fn().mockResolvedValue(undefined),
     sendPresenceUpdate: vi.fn().mockResolvedValue(undefined),
     groupFetchAllParticipating: vi.fn().mockResolvedValue({}),
-    end: vi.fn(),
+    // end() removes listeners to simulate real socket teardown —
+    // prevents stale handlers from firing after connectInternal() creates a new socket.
+    end: vi.fn().mockImplementation(() => ev.removeAllListeners()),
     // Expose the event emitter for triggering events in tests
     _ev: ev,
   };
@@ -309,6 +311,54 @@ describe('WhatsAppChannel', () => {
 
       // The channel sets a 5s retry — just verify it doesn't crash
       await new Promise((r) => setTimeout(r, 100));
+    });
+
+    it('recovers from reconnect deadlock (close before open on retry socket)', async () => {
+      // This is the core bug: connectInternal used to resolve immediately,
+      // so the retry loop exited thinking success. Then a second close event
+      // was blocked by the reconnecting guard → permanent deadlock.
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+      expect(channel.isConnected()).toBe(true);
+
+      // First disconnect — triggers reconnect()
+      triggerDisconnect(428);
+      expect(channel.isConnected()).toBe(false);
+
+      // Flush microtasks so connectInternal sets up new listeners
+      await new Promise((r) => setTimeout(r, 0));
+
+      // The retry socket also fails before opening — this used to deadlock
+      triggerDisconnect(428);
+
+      // Flush microtasks for the next retry
+      await new Promise((r) => setTimeout(r, 0));
+
+      // Now the second retry socket succeeds
+      triggerConnection('open');
+
+      // Flush microtasks for the reconnect to settle
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(channel.isConnected()).toBe(true);
+    });
+
+    it('triggers reconnection on send failure (half-dead socket)', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+      expect(channel.isConnected()).toBe(true);
+
+      // Make sendMessage fail — simulates half-dead socket
+      fakeSocket.sendMessage.mockRejectedValueOnce(new Error('Write timeout'));
+
+      await channel.sendMessage('test@g.us', 'Will fail');
+
+      // Should mark disconnected and trigger reconnection
+      expect(channel.isConnected()).toBe(false);
     });
   });
 
