@@ -59,17 +59,32 @@ function log(
   }
 }
 
-export const logger = {
-  debug: (dataOrMsg: Record<string, unknown> | string, msg?: string) =>
-    log('debug', dataOrMsg, msg),
-  info: (dataOrMsg: Record<string, unknown> | string, msg?: string) =>
-    log('info', dataOrMsg, msg),
-  warn: (dataOrMsg: Record<string, unknown> | string, msg?: string) =>
-    log('warn', dataOrMsg, msg),
-  error: (dataOrMsg: Record<string, unknown> | string, msg?: string) =>
-    log('error', dataOrMsg, msg),
-  fatal: (dataOrMsg: Record<string, unknown> | string, msg?: string) =>
-    log('fatal', dataOrMsg, msg),
+type LogFn = (dataOrMsg: Record<string, unknown> | string, msg?: string) => void;
+
+interface Logger {
+  debug: LogFn;
+  info: LogFn;
+  warn: LogFn;
+  error: LogFn;
+  fatal: LogFn;
+  trace: LogFn;
+  level: string;
+  child(): Logger;
+}
+
+export const logger: Logger = {
+  debug: (dataOrMsg, msg) => log('debug', dataOrMsg, msg),
+  info: (dataOrMsg, msg) => log('info', dataOrMsg, msg),
+  warn: (dataOrMsg, msg) => log('warn', dataOrMsg, msg),
+  error: (dataOrMsg, msg) => log('error', dataOrMsg, msg),
+  fatal: (dataOrMsg, msg) => log('fatal', dataOrMsg, msg),
+  // Baileys (ILogger) requires these — child() returns the same logger,
+  // level is read for filtering, trace() maps to debug.
+  trace: (dataOrMsg, msg) => log('debug', dataOrMsg, msg),
+  level: (process.env.LOG_LEVEL as Level) || 'info',
+  child() {
+    return logger;
+  },
 };
 
 // Route uncaught errors through logger so they get timestamps in stderr

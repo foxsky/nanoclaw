@@ -345,20 +345,40 @@ describe('WhatsAppChannel', () => {
       expect(channel.isConnected()).toBe(true);
     });
 
-    it('triggers reconnection on send failure (half-dead socket)', async () => {
+    it('triggers reconnection on transport send failure (half-dead socket)', async () => {
       const opts = createTestOpts();
       const channel = new WhatsAppChannel(opts);
 
       await connectChannel(channel);
       expect(channel.isConnected()).toBe(true);
 
-      // Make sendMessage fail — simulates half-dead socket
-      fakeSocket.sendMessage.mockRejectedValueOnce(new Error('Write timeout'));
+      // Transport error — simulates half-dead socket
+      fakeSocket.sendMessage.mockRejectedValueOnce(
+        new Error('Connection timed out'),
+      );
 
       await channel.sendMessage('test@g.us', 'Will fail');
 
       // Should mark disconnected and trigger reconnection
       expect(channel.isConnected()).toBe(false);
+    });
+
+    it('does not reconnect on application send failure', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+      expect(channel.isConnected()).toBe(true);
+
+      // Application error — invalid JID, not a transport issue
+      fakeSocket.sendMessage.mockRejectedValueOnce(
+        new Error('Invalid JID format'),
+      );
+
+      await channel.sendMessage('bad-jid', 'Will fail');
+
+      // Should stay connected — not a transport error
+      expect(channel.isConnected()).toBe(true);
     });
   });
 

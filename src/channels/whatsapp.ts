@@ -54,7 +54,22 @@ export class WhatsAppChannel implements Channel {
   }
 
   async connect(): Promise<void> {
-    await this.connectInternal();
+    // Retry initial connection with backoff — transient failures at startup
+    // (e.g. network not ready) should not abort the process.
+    for (let i = 1; i <= 5; i++) {
+      try {
+        await this.connectInternal();
+        return;
+      } catch (err) {
+        if (i === 5) throw err;
+        const delay = Math.min(5000 * Math.pow(2, i - 1), 60000);
+        logger.warn(
+          { err, attempt: i, retryInMs: delay },
+          'Initial connection failed, retrying',
+        );
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
   }
 
   private async connectInternal(): Promise<void> {
@@ -87,7 +102,7 @@ export class WhatsAppChannel implements Channel {
         keys: makeCacheableSignalKeyStore(state.keys, logger as any),
       },
       printQRInTerminal: false,
-      logger: logger as any,
+      logger,
       browser: Browsers.macOS('Chrome'),
     });
 
@@ -378,8 +393,14 @@ export class WhatsAppChannel implements Channel {
         'Failed to send, message queued',
       );
       // Half-dead socket: sends fail but connection='close' never fires.
-      // Mark disconnected and trigger reconnection so the queue flushes.
-      if (this.connected) {
+      // Only reconnect on transport errors — not application errors like
+      // invalid JIDs or permission issues which would reconnect needlessly.
+      const isTransportError =
+        err instanceof Error &&
+        /connection|socket|timed?\s*out|ECONNR|EPIPE|stream/i.test(
+          err.message,
+        );
+      if (isTransportError && this.connected) {
         this.connected = false;
         this.reconnect();
       }
