@@ -17,32 +17,38 @@
 
 - [ ] **Step 1: Add describe block with test cases**
 
-Add a new top-level `describe('reparent_task', ...)` block after the existing `undo WIP guard exempts meetings` block (around line 5330). Import `initTaskflowDb` if not already imported.
+Add a new top-level `describe('reparent_task', ...)` block after the existing `undo WIP guard exempts meetings` block (around line 5330). Uses the same `Database`, `SCHEMA`, and `seedTestDb` pattern as the rest of the file (already imported).
 
 ```typescript
 describe('reparent_task', () => {
+  const REPARENT_BOARD = 'board-reparent';
+
   function setupBoard() {
-    const db = initTaskflowDb(':memory:');
-    db.prepare(`INSERT INTO boards (id, group_jid, group_folder) VALUES (?, ?, ?)`).run('b1', 'jid1', 'test-board');
-    db.prepare(`INSERT INTO board_people (board_id, person_id, display_name, phone) VALUES (?, ?, ?, ?)`).run('b1', 'mgr1', 'Manager', '+5500000000000');
-    db.prepare(`INSERT INTO board_admins (board_id, person_id, admin_role) VALUES (?, ?, ?)`).run('b1', 'mgr1', 'manager');
+    const db = new Database(':memory:');
+    db.exec(SCHEMA);
+    db.exec(`INSERT INTO boards VALUES ('${REPARENT_BOARD}', 'test@g.us', 'reparent-test', 'standard', 0, 1, NULL, NULL)`);
+    db.exec(`INSERT INTO board_config VALUES ('${REPARENT_BOARD}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 4, 1, 1, 1)`);
+    db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${REPARENT_BOARD}')`);
+    db.exec(`INSERT INTO board_people VALUES ('${REPARENT_BOARD}', 'mgr1', 'Manager', '5585999990001', 'Gestor', 3, NULL)`);
+    db.exec(`INSERT INTO board_admins VALUES ('${REPARENT_BOARD}', 'mgr1', '5585999990001', 'manager', 1)`);
     // standalone task
-    db.prepare(`INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at) VALUES (?, ?, 'simple', ?, ?, 'next_action', ?, ?)`).run('T5', 'b1', 'Standalone Task', 'mgr1', new Date().toISOString(), new Date().toISOString());
+    const now = new Date().toISOString();
+    db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at) VALUES ('T5', '${REPARENT_BOARD}', 'simple', 'Standalone Task', 'mgr1', 'next_action', '${now}', '${now}')`);
     // project with one subtask
-    db.prepare(`INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at) VALUES (?, ?, 'project', ?, ?, 'next_action', ?, ?)`).run('P1', 'b1', 'Test Project', 'mgr1', new Date().toISOString(), new Date().toISOString());
-    db.prepare(`INSERT INTO tasks (id, board_id, type, title, assignee, column, parent_task_id, created_at, updated_at) VALUES (?, ?, 'simple', ?, ?, 'next_action', ?, ?, ?)`).run('P1.1', 'b1', 'Existing Subtask', 'mgr1', 'P1', new Date().toISOString(), new Date().toISOString());
+    db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at) VALUES ('P1', '${REPARENT_BOARD}', 'project', 'Test Project', 'mgr1', 'next_action', '${now}', '${now}')`);
+    db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, parent_task_id, created_at, updated_at) VALUES ('P1.1', '${REPARENT_BOARD}', 'simple', 'Existing Subtask', 'mgr1', 'next_action', 'P1', '${now}', '${now}')`);
     // another standalone
-    db.prepare(`INSERT INTO tasks (id, board_id, type, title, assignee, column, due_date, priority, created_at, updated_at) VALUES (?, ?, 'simple', ?, ?, 'in_progress', ?, ?, ?, ?)`).run('T10', 'b1', 'Task With Metadata', 'mgr1', '2026-04-15', 'high', new Date().toISOString(), new Date().toISOString());
+    db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, due_date, priority, created_at, updated_at) VALUES ('T10', '${REPARENT_BOARD}', 'simple', 'Task With Metadata', 'mgr1', 'in_progress', '2026-04-15', 'high', '${now}', '${now}')`);
     // non-project task
-    db.prepare(`INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at) VALUES (?, ?, 'simple', ?, ?, 'next_action', ?, ?)`).run('T20', 'b1', 'Not A Project', 'mgr1', new Date().toISOString(), new Date().toISOString());
+    db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at) VALUES ('T20', '${REPARENT_BOARD}', 'simple', 'Not A Project', 'mgr1', 'next_action', '${now}', '${now}')`);
     return db;
   }
 
   it('moves standalone task under a project', () => {
     const db = setupBoard();
-    const engine = new TaskflowEngine(db, 'b1');
+    const engine = new TaskflowEngine(db, REPARENT_BOARD);
     const result = engine.admin({
-      board_id: 'b1',
+      board_id: REPARENT_BOARD,
       action: 'reparent_task',
       task_id: 'T5',
       target_parent_id: 'P1',
@@ -56,9 +62,9 @@ describe('reparent_task', () => {
 
   it('preserves due_date, priority, column, and notes after reparent', () => {
     const db = setupBoard();
-    const engine = new TaskflowEngine(db, 'b1');
+    const engine = new TaskflowEngine(db, REPARENT_BOARD);
     const result = engine.admin({
-      board_id: 'b1',
+      board_id: REPARENT_BOARD,
       action: 'reparent_task',
       task_id: 'T10',
       target_parent_id: 'P1',
@@ -75,9 +81,9 @@ describe('reparent_task', () => {
 
   it('rejects reparent when target is not a project', () => {
     const db = setupBoard();
-    const engine = new TaskflowEngine(db, 'b1');
+    const engine = new TaskflowEngine(db, REPARENT_BOARD);
     const result = engine.admin({
-      board_id: 'b1',
+      board_id: REPARENT_BOARD,
       action: 'reparent_task',
       task_id: 'T5',
       target_parent_id: 'T20',
@@ -90,9 +96,9 @@ describe('reparent_task', () => {
 
   it('rejects reparent when task is already a subtask', () => {
     const db = setupBoard();
-    const engine = new TaskflowEngine(db, 'b1');
+    const engine = new TaskflowEngine(db, REPARENT_BOARD);
     const result = engine.admin({
-      board_id: 'b1',
+      board_id: REPARENT_BOARD,
       action: 'reparent_task',
       task_id: 'P1.1',
       target_parent_id: 'P1',
@@ -105,10 +111,10 @@ describe('reparent_task', () => {
 
   it('rejects non-manager sender', () => {
     const db = setupBoard();
-    db.prepare(`INSERT INTO board_people (board_id, person_id, display_name, phone) VALUES (?, ?, ?, ?)`).run('b1', 'user1', 'Regular User', '+5500000000001');
-    const engine = new TaskflowEngine(db, 'b1');
+    db.exec(`INSERT INTO board_people VALUES ('${REPARENT_BOARD}', 'user1', 'Regular User', '5500000000001', 'member', 3, NULL)`);
+    const engine = new TaskflowEngine(db, REPARENT_BOARD);
     const result = engine.admin({
-      board_id: 'b1',
+      board_id: REPARENT_BOARD,
       action: 'reparent_task',
       task_id: 'T5',
       target_parent_id: 'P1',
@@ -149,7 +155,7 @@ describe('reparent_task', () => {
     // Task is now a subtask
     expect((db.prepare(`SELECT parent_task_id FROM tasks WHERE id = 'T5'`).get() as any).parent_task_id).toBe('P1');
     // Undo
-    const undoResult = engine.undo({ board_id: 'b1', sender_name: 'Manager' });
+    const undoResult = engine.undo({ board_id: REPARENT_BOARD, sender_name: 'Manager' });
     expect(undoResult.success).toBe(true);
     // Task is standalone again
     expect((db.prepare(`SELECT parent_task_id FROM tasks WHERE id = 'T5'`).get() as any).parent_task_id).toBeNull();
@@ -166,7 +172,7 @@ describe('reparent_task', () => {
       target_parent_id: 'P1',
       sender_name: 'Manager',
     });
-    const subtasks = db.prepare(`SELECT id FROM tasks WHERE board_id = 'b1' AND parent_task_id = 'P1' ORDER BY id`).all() as any[];
+    const subtasks = db.prepare(`SELECT id FROM tasks WHERE board_id = ? AND parent_task_id = 'P1' ORDER BY id`).all(REPARENT_BOARD) as any[];
     const ids = subtasks.map((s: any) => s.id);
     expect(ids).toContain('P1.1');
     expect(ids).toContain('T5');
@@ -214,9 +220,7 @@ Find the `default:` case in the `admin()` method's switch statement (around line
 ```typescript
         /* ---- reparent_task ---- */
         case 'reparent_task': {
-          if (!isMgr) {
-            return { success: false, error: `Permission denied: only managers can reparent tasks.` };
-          }
+          // Permission: manager-only enforced by blanket guard at admin() entry (line ~5895)
           if (!params.task_id) {
             return { success: false, error: 'Missing required parameter: task_id' };
           }
@@ -339,10 +343,10 @@ git commit -m "feat(taskflow): expose reparent_task in MCP schema"
 
 - [ ] **Step 1: Add reparent_task row to the template**
 
-Find the Updates section (around line 228-244) where task operations are documented. Add after the subtask deadline rows (that were added earlier today):
+Find the Admin section (around line 257-265, after `"restaurar TXXX"` row and before `"processar inbox"`). Add a new row for reparent:
 
 ```markdown
-| "mover TXXX para projeto PYYY" | `taskflow_admin({ action: 'reparent_task', task_id: 'TXXX', target_parent_id: 'PYYY', sender_name: SENDER })` |
+| "mover TXXX para projeto PYYY" | `taskflow_admin({ action: 'reparent_task', task_id: 'TXXX', target_parent_id: 'PYYY', sender_name: SENDER })` — moves an existing standalone task under a project as a subtask. Task keeps its original ID. Target must be a `type='project'` task. |
 ```
 
 - [ ] **Step 2: Regenerate group CLAUDE.md files**
