@@ -648,6 +648,15 @@ describe('taskflow skill package', () => {
     expect(content).toContain('cancel_task');
   });
 
+  it('CLAUDE.md.template documents reparent_task for moving tasks to projects', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    expect(content).toContain('reparent_task');
+    expect(content).toContain('target_parent_id');
+  });
+
   it('CLAUDE.md.template statistics display section exists', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
@@ -2701,6 +2710,15 @@ describe('taskflow skill package', () => {
     );
     expect(content).toContain('process_minutes');
     expect(content).toContain('process_minutes_decision');
+  });
+
+  it('MCP schema includes reparent_task in taskflow_admin', () => {
+    const content = fs.readFileSync(
+      path.resolve(skillDir, '..', '..', '..', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
+      'utf-8',
+    );
+    expect(content).toContain("'reparent_task'");
+    expect(content).toContain('target_parent_id');
   });
 
 });
