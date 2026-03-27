@@ -6744,3 +6744,204 @@ describe('external participant full flow', () => {
     expect(grant.invite_status).toBe('expired');
   });
 });
+
+/* ------------------------------------------------------------------ */
+/*  reparent_task                                                      */
+/* ------------------------------------------------------------------ */
+describe('reparent_task', () => {
+  const REPARENT_BOARD = 'board-reparent';
+  let db: Database.Database;
+  let engine: TaskflowEngine;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.exec(SCHEMA);
+
+    db.exec(
+      `INSERT INTO boards VALUES ('${REPARENT_BOARD}', 'reparent@g.us', 'reparent', 'standard', 0, 1, NULL, NULL)`,
+    );
+    db.exec(
+      `INSERT INTO board_config VALUES ('${REPARENT_BOARD}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 20, 10, 1, 1)`,
+    );
+    db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${REPARENT_BOARD}')`);
+    db.exec(
+      `INSERT INTO board_admins VALUES ('${REPARENT_BOARD}', 'person-mgr', '5585999990001', 'manager', 1)`,
+    );
+    db.exec(
+      `INSERT INTO board_people VALUES ('${REPARENT_BOARD}', 'person-mgr', 'Manager', '5585999990001', 'Gestor', 3, NULL)`,
+    );
+    db.exec(
+      `INSERT INTO board_people VALUES ('${REPARENT_BOARD}', 'person-dev', 'Developer', '5585999990002', 'Dev', 3, NULL)`,
+    );
+
+    const now = new Date().toISOString();
+
+    // P1 — project
+    db.exec(
+      `INSERT INTO tasks (id, board_id, type, title, column, created_at, updated_at)
+       VALUES ('P1', '${REPARENT_BOARD}', 'project', 'Website Redesign', 'in_progress', '${now}', '${now}')`,
+    );
+
+    // P1.1 — existing subtask of P1
+    db.exec(
+      `INSERT INTO tasks (id, board_id, type, title, column, parent_task_id, created_at, updated_at)
+       VALUES ('P1.1', '${REPARENT_BOARD}', 'simple', 'Design mockups', 'next_action', 'P1', '${now}', '${now}')`,
+    );
+
+    // T5 — standalone simple task
+    db.exec(
+      `INSERT INTO tasks (id, board_id, type, title, column, created_at, updated_at)
+       VALUES ('T5', '${REPARENT_BOARD}', 'simple', 'Implement login page', 'inbox', '${now}', '${now}')`,
+    );
+
+    // T10 — standalone task with metadata
+    db.exec(
+      `INSERT INTO tasks (id, board_id, type, title, column, due_date, priority, created_at, updated_at)
+       VALUES ('T10', '${REPARENT_BOARD}', 'simple', 'Write unit tests', 'in_progress', '2026-04-15', 'high', '${now}', '${now}')`,
+    );
+
+    // T20 — another standalone simple task (used as invalid target)
+    db.exec(
+      `INSERT INTO tasks (id, board_id, type, title, column, created_at, updated_at)
+       VALUES ('T20', '${REPARENT_BOARD}', 'simple', 'Fix CSS layout', 'next_action', '${now}', '${now}')`,
+    );
+
+    engine = new TaskflowEngine(db, REPARENT_BOARD);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('moves standalone task under a project', () => {
+    const result = engine.admin({
+      board_id: REPARENT_BOARD,
+      action: 'reparent_task',
+      task_id: 'T5',
+      target_parent_id: 'P1',
+      sender_name: 'Manager',
+    });
+    expect(result.success).toBe(true);
+
+    const task = db.prepare(`SELECT parent_task_id FROM tasks WHERE board_id = ? AND id = ?`).get(REPARENT_BOARD, 'T5') as any;
+    expect(task.parent_task_id).toBe('P1');
+  });
+
+  it('preserves due_date, priority, column after reparent', () => {
+    const result = engine.admin({
+      board_id: REPARENT_BOARD,
+      action: 'reparent_task',
+      task_id: 'T10',
+      target_parent_id: 'P1',
+      sender_name: 'Manager',
+    });
+    expect(result.success).toBe(true);
+
+    const task = db.prepare(`SELECT due_date, priority, column FROM tasks WHERE board_id = ? AND id = ?`).get(REPARENT_BOARD, 'T10') as any;
+    expect(task.due_date).toBe('2026-04-15');
+    expect(task.priority).toBe('high');
+    expect(task.column).toBe('in_progress');
+  });
+
+  it('rejects reparent when target is not a project', () => {
+    const result = engine.admin({
+      board_id: REPARENT_BOARD,
+      action: 'reparent_task',
+      task_id: 'T5',
+      target_parent_id: 'T20',
+      sender_name: 'Manager',
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('not a project');
+  });
+
+  it('rejects reparent when task is already a subtask', () => {
+    const result = engine.admin({
+      board_id: REPARENT_BOARD,
+      action: 'reparent_task',
+      task_id: 'P1.1',
+      target_parent_id: 'P1',
+      sender_name: 'Manager',
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('already a subtask');
+  });
+
+  it('rejects non-manager sender', () => {
+    const result = engine.admin({
+      board_id: REPARENT_BOARD,
+      action: 'reparent_task',
+      task_id: 'T5',
+      target_parent_id: 'P1',
+      sender_name: 'Developer',
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Permission denied');
+  });
+
+  it('records history on both task and project', () => {
+    engine.admin({
+      board_id: REPARENT_BOARD,
+      action: 'reparent_task',
+      task_id: 'T5',
+      target_parent_id: 'P1',
+      sender_name: 'Manager',
+    });
+
+    const taskHistory = db.prepare(
+      `SELECT action, details FROM task_history WHERE board_id = ? AND task_id = ? AND action = 'reparented'`,
+    ).get(REPARENT_BOARD, 'T5') as any;
+    expect(taskHistory).toBeTruthy();
+    expect(taskHistory.action).toBe('reparented');
+
+    const projectHistory = db.prepare(
+      `SELECT action, details FROM task_history WHERE board_id = ? AND task_id = ? AND action = 'subtask_added'`,
+    ).get(REPARENT_BOARD, 'P1') as any;
+    expect(projectHistory).toBeTruthy();
+    expect(projectHistory.action).toBe('subtask_added');
+  });
+
+  it('is undoable within 60 seconds', () => {
+    engine.admin({
+      board_id: REPARENT_BOARD,
+      action: 'reparent_task',
+      task_id: 'T5',
+      target_parent_id: 'P1',
+      sender_name: 'Manager',
+    });
+
+    // Verify task is now a subtask
+    const before = db.prepare(`SELECT parent_task_id FROM tasks WHERE board_id = ? AND id = ?`).get(REPARENT_BOARD, 'T5') as any;
+    expect(before.parent_task_id).toBe('P1');
+
+    // Undo
+    const undoResult = engine.undo({
+      board_id: REPARENT_BOARD,
+      sender_name: 'Manager',
+    });
+    expect(undoResult.success).toBe(true);
+
+    // Verify parent_task_id is null again
+    const after = db.prepare(`SELECT parent_task_id FROM tasks WHERE board_id = ? AND id = ?`).get(REPARENT_BOARD, 'T5') as any;
+    expect(after.parent_task_id).toBeNull();
+  });
+
+  it('reparented task appears in subtask query', () => {
+    // Reparent T5 under P1 (P1.1 already exists as a subtask)
+    engine.admin({
+      board_id: REPARENT_BOARD,
+      action: 'reparent_task',
+      task_id: 'T5',
+      target_parent_id: 'P1',
+      sender_name: 'Manager',
+    });
+
+    const subtasks = db.prepare(
+      `SELECT id FROM tasks WHERE board_id = ? AND parent_task_id = ? ORDER BY id`,
+    ).all(REPARENT_BOARD, 'P1') as any[];
+
+    expect(subtasks).toHaveLength(2);
+    expect(subtasks.map((r: any) => r.id)).toContain('P1.1');
+    expect(subtasks.map((r: any) => r.id)).toContain('T5');
+  });
+});
