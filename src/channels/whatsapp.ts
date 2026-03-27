@@ -226,88 +226,88 @@ export class WhatsAppChannel implements Channel {
           setTimeout(() => process.exit(1), 1000);
         }
 
-      if (connection === 'close') {
-        this.connected = false;
-        const reason = (
-          lastDisconnect?.error as { output?: { statusCode?: number } }
-        )?.output?.statusCode;
-        const shouldReconnect = reason !== DisconnectReason.loggedOut;
-        logger.info(
-          {
-            reason,
-            shouldReconnect,
-            queuedMessages: this.outgoingQueue.length,
-          },
-          'Connection closed',
-        );
-
-        if (!settled) {
-          // Connection failed before opening — reject so the caller
-          // (reconnect loop or initial connect) can handle the failure.
-          settled = true;
-          if (!shouldReconnect) {
-            // LoggedOut (401) during a reconnect attempt — exit immediately
-            // instead of burning through all retry attempts.
-            logger.info('Logged out. Run /setup to re-authenticate.');
-            process.exit(78);
-          }
-          reject(
-            new Error(`Connection closed before open (reason: ${reason})`),
+        if (connection === 'close') {
+          this.connected = false;
+          const reason = (
+            lastDisconnect?.error as { output?: { statusCode?: number } }
+          )?.output?.statusCode;
+          const shouldReconnect = reason !== DisconnectReason.loggedOut;
+          logger.info(
+            {
+              reason,
+              shouldReconnect,
+              queuedMessages: this.outgoingQueue.length,
+            },
+            'Connection closed',
           );
-          return;
-        }
 
-        // Disconnected after being connected — trigger reconnection
-        if (shouldReconnect) {
-          this.reconnect();
-        } else {
-          logger.info('Logged out. Run /setup to re-authenticate.');
-          process.exit(78); // EX_CONFIG — systemd RestartPreventExitStatus stops restart loop
-        }
-      } else if (connection === 'open') {
-        this.connected = true;
-        this.reconnecting = false;
-        logger.info('Connected to WhatsApp');
+          if (!settled) {
+            // Connection failed before opening — reject so the caller
+            // (reconnect loop or initial connect) can handle the failure.
+            settled = true;
+            if (!shouldReconnect) {
+              // LoggedOut (401) during a reconnect attempt — exit immediately
+              // instead of burning through all retry attempts.
+              logger.info('Logged out. Run /setup to re-authenticate.');
+              process.exit(78);
+            }
+            reject(
+              new Error(`Connection closed before open (reason: ${reason})`),
+            );
+            return;
+          }
 
-        if (!settled) {
-          settled = true;
-          resolve();
-        }
+          // Disconnected after being connected — trigger reconnection
+          if (shouldReconnect) {
+            this.reconnect();
+          } else {
+            logger.info('Logged out. Run /setup to re-authenticate.');
+            process.exit(78); // EX_CONFIG — systemd RestartPreventExitStatus stops restart loop
+          }
+        } else if (connection === 'open') {
+          this.connected = true;
+          this.reconnecting = false;
+          logger.info('Connected to WhatsApp');
 
-        // Announce availability so WhatsApp relays subsequent presence updates (typing indicators)
-        this.sock.sendPresenceUpdate('available').catch((err) => {
-          logger.warn({ err }, 'Failed to send presence update');
-        });
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
 
-        // Build LID to phone mapping from auth state for self-chat translation
-        if (this.sock.user) {
-          const phoneUser = this.sock.user.id.split(':')[0];
-          const lidUser = this.sock.user.lid?.split(':')[0];
-          if (lidUser && phoneUser) {
-            this.lidToPhoneMap[lidUser] = `${phoneUser}@s.whatsapp.net`;
-            logger.debug({ lidUser, phoneUser }, 'LID to phone mapping set');
+          // Announce availability so WhatsApp relays subsequent presence updates (typing indicators)
+          this.sock.sendPresenceUpdate('available').catch((err) => {
+            logger.warn({ err }, 'Failed to send presence update');
+          });
+
+          // Build LID to phone mapping from auth state for self-chat translation
+          if (this.sock.user) {
+            const phoneUser = this.sock.user.id.split(':')[0];
+            const lidUser = this.sock.user.lid?.split(':')[0];
+            if (lidUser && phoneUser) {
+              this.lidToPhoneMap[lidUser] = `${phoneUser}@s.whatsapp.net`;
+              logger.debug({ lidUser, phoneUser }, 'LID to phone mapping set');
+            }
+          }
+
+          // Flush any messages queued while disconnected
+          this.flushOutgoingQueue().catch((err) =>
+            logger.error({ err }, 'Failed to flush outgoing queue'),
+          );
+
+          // Sync group metadata on startup (respects 24h cache)
+          this.syncGroupMetadata().catch((err) =>
+            logger.error({ err }, 'Initial group sync failed'),
+          );
+          // Set up daily sync timer (only once)
+          if (!this.groupSyncTimerStarted) {
+            this.groupSyncTimerStarted = true;
+            setInterval(() => {
+              this.syncGroupMetadata().catch((err) =>
+                logger.error({ err }, 'Periodic group sync failed'),
+              );
+            }, GROUP_SYNC_INTERVAL_MS);
           }
         }
-
-        // Flush any messages queued while disconnected
-        this.flushOutgoingQueue().catch((err) =>
-          logger.error({ err }, 'Failed to flush outgoing queue'),
-        );
-
-        // Sync group metadata on startup (respects 24h cache)
-        this.syncGroupMetadata().catch((err) =>
-          logger.error({ err }, 'Initial group sync failed'),
-        );
-        // Set up daily sync timer (only once)
-        if (!this.groupSyncTimerStarted) {
-          this.groupSyncTimerStarted = true;
-          setInterval(() => {
-            this.syncGroupMetadata().catch((err) =>
-              logger.error({ err }, 'Periodic group sync failed'),
-            );
-          }, GROUP_SYNC_INTERVAL_MS);
-        }
-      }
       });
     });
   }

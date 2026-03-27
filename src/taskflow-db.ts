@@ -632,3 +632,46 @@ if (isMain) {
   console.log(`Tables: ${tables.map((t) => t.name).join(', ')}`);
   db.close();
 }
+
+/**
+ * Resolve the TaskFlow board ID from the database.
+ * The group folder (e.g. "sec-secti") is not the board ID — we need to look up
+ * the actual board ID (e.g. "board-sec-taskflow") from the boards table.
+ */
+export function resolveTaskflowBoardId(
+  groupFolder: string,
+  taskflowManaged: boolean,
+  explicitBoardId?: string,
+): string | undefined {
+  if (explicitBoardId) return explicitBoardId;
+  if (!taskflowManaged) return undefined;
+
+  const dbPath = path.join(DATA_DIR, 'taskflow', 'taskflow.db');
+  if (!fs.existsSync(dbPath)) {
+    return undefined;
+  }
+
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    db.pragma('busy_timeout = 5000');
+
+    const direct = db
+      .prepare(`SELECT id FROM boards WHERE group_folder = ? LIMIT 1`)
+      .get(groupFolder) as { id: string } | undefined;
+    if (direct?.id) {
+      return direct.id;
+    }
+
+    const mapped = db
+      .prepare(
+        `SELECT board_id FROM board_groups WHERE group_folder = ? LIMIT 1`,
+      )
+      .get(groupFolder) as { board_id: string } | undefined;
+    return mapped?.board_id;
+  } catch {
+    return undefined;
+  } finally {
+    db?.close();
+  }
+}

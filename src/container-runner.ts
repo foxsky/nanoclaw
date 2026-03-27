@@ -2,8 +2,7 @@
  * Container Runner for NanoClaw
  * Spawns agent execution in containers and handles IPC
  */
-import { ChildProcess, exec, spawn } from 'child_process';
-import Database from 'better-sqlite3';
+import { ChildProcess, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -21,6 +20,7 @@ import {
 import { readEnvFile } from './env.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
+import { resolveTaskflowBoardId } from './taskflow-db.js';
 import {
   CONTAINER_HOST_GATEWAY,
   CONTAINER_RUNTIME_BIN,
@@ -328,51 +328,6 @@ function readEmbeddingConfig(): {
   };
 }
 
-/**
- * Resolve the TaskFlow board ID from the database.
- * The group folder (e.g. "sec-secti") is not the board ID — we need to look up
- * the actual board ID (e.g. "board-sec-taskflow") from the boards table.
- */
-function resolveTaskflowBoardId(
-  group: RegisteredGroup,
-  explicitBoardId?: string,
-): string | undefined {
-  if (explicitBoardId) return explicitBoardId;
-  if (group.taskflowManaged !== true) return undefined;
-
-  const dbPath = path.join(DATA_DIR, 'taskflow', 'taskflow.db');
-  if (!fs.existsSync(dbPath)) {
-    return undefined;
-  }
-
-  let db: Database.Database | undefined;
-  try {
-    db = new Database(dbPath, { readonly: true, fileMustExist: true });
-    db.pragma('busy_timeout = 5000');
-
-    const direct = db
-      .prepare(`SELECT id FROM boards WHERE group_folder = ? LIMIT 1`)
-      .get(group.folder) as { id: string } | undefined;
-    if (direct?.id) {
-      return direct.id;
-    }
-
-    const mapped = db
-      .prepare(
-        `SELECT board_id FROM board_groups WHERE group_folder = ? LIMIT 1`,
-      )
-      .get(group.folder) as { board_id: string } | undefined;
-    return mapped?.board_id;
-  } catch (err) {
-    logger.warn(
-      { err, groupFolder: group.folder },
-      'Failed to resolve TaskFlow board ID',
-    );
-    return undefined;
-  } finally {
-    db?.close();
-  }
-}
 
 function buildContainerArgs(
   mounts: VolumeMount[],
@@ -427,7 +382,8 @@ export async function runContainerAgent(
 
   if (group.taskflowManaged === true) {
     input.taskflowBoardId = resolveTaskflowBoardId(
-      group,
+      group.folder,
+      true,
       input.taskflowBoardId,
     );
     if (!input.taskflowBoardId) {

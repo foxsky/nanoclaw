@@ -6,7 +6,7 @@ import { spawnSync } from 'child_process';
 import { describe, expect, it } from 'vitest';
 
 describe('claw skill script', () => {
-  it('exits zero after successful structured output even if the runtime is terminated', () => {
+  it('exits zero after successful structured output even if the runtime is terminated', { timeout: 20000 }, () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claw-skill-test-'));
 
     const binDir = path.join(tempDir, 'bin');
@@ -42,5 +42,5 @@ sleep 30
     expect(result.signal).toBeNull();
     expect(result.stdout).toContain('4');
     expect(result.stderr).toContain('[session: sess-1]');
-  }, 20000);
+  });
 });

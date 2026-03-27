@@ -239,7 +239,13 @@ describe('getMessagesSince', () => {
     expect(recovered).toBe('2024-01-01T00:00:03.000Z');
 
     // Using recovered cursor: only gets messages after the bot reply
-    const msgs = getMessagesSince('group@g.us', recovered!, 'Andy', undefined, 10);
+    const msgs = getMessagesSince(
+      'group@g.us',
+      recovered!,
+      'Andy',
+      undefined,
+      10,
+    );
     // m4 (third, 00:00:04) + new-1 — skips all 50 old messages and m1/m2
     expect(msgs).toHaveLength(2);
     expect(msgs[0].content).toBe('third');
@@ -263,7 +269,13 @@ describe('getMessagesSince', () => {
     expect(recovered).toBe('2024-01-01T00:00:03.000Z');
 
     // With limit=10, only the 10 most recent are returned
-    const msgs = getMessagesSince('group@g.us', recovered!, 'Andy', undefined, 10);
+    const msgs = getMessagesSince(
+      'group@g.us',
+      recovered!,
+      'Andy',
+      undefined,
+      10,
+    );
     expect(msgs).toHaveLength(10);
     // Most recent 10: pending-21 through pending-30
     expect(msgs[0].content).toBe('pending message 21');
