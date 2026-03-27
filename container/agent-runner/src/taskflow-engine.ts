@@ -195,7 +195,7 @@ export interface UndoResult extends TaskflowResult {
 
 export interface AdminParams {
   board_id: string;
-  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision' | 'accept_external_invite';
+  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision' | 'accept_external_invite' | 'reparent_task';
   sender_name: string;
   person_name?: string;
   phone?: string;
@@ -219,6 +219,7 @@ export interface AdminParams {
     labels?: string[];
   };
   sender_external_id?: string;
+  target_parent_id?: string;
 }
 
 export interface AdminResult extends TaskflowResult {
@@ -6487,6 +6488,62 @@ export class TaskflowEngine {
           ).run(this.boardId, task.id, params.sender_external_id, acceptNow, 'External participant accepted invite');
 
           return { success: true, message: `Convite aceito para ${task.id} — ${task.title}` };
+        }
+
+        /* ---- reparent_task ---- */
+        case 'reparent_task': {
+          if (!params.task_id) {
+            return { success: false, error: 'Missing required parameter: task_id' };
+          }
+          if (!params.target_parent_id) {
+            return { success: false, error: 'Missing required parameter: target_parent_id' };
+          }
+
+          const task = this.requireTask(params.task_id);
+          const taskBoardId = this.taskBoardId(task);
+          const now = new Date().toISOString();
+
+          if (task.parent_task_id) {
+            return { success: false, error: `Task ${task.id} is already a subtask of ${task.parent_task_id}.` };
+          }
+
+          const parent = this.requireTask(params.target_parent_id);
+          if (parent.type !== 'project') {
+            return { success: false, error: `Target ${params.target_parent_id} is not a project (type: ${parent.type}).` };
+          }
+
+          const parentBoardId = this.taskBoardId(parent);
+          if (taskBoardId !== parentBoardId) {
+            return { success: false, error: `Task ${task.id} and project ${parent.id} are on different boards.` };
+          }
+
+          const reparentSnapshot = JSON.stringify({
+            action: 'reparented',
+            by: params.sender_name,
+            at: now,
+            snapshot: { parent_task_id: task.parent_task_id },
+          });
+
+          this.db
+            .prepare(`UPDATE tasks SET parent_task_id = ?, _last_mutation = ?, updated_at = ? WHERE board_id = ? AND id = ?`)
+            .run(parent.id, reparentSnapshot, now, taskBoardId, task.id);
+
+          this.recordHistory(task.id, 'reparented', params.sender_name,
+            JSON.stringify({ parent_task_id: parent.id, parent_title: parent.title }),
+            taskBoardId);
+
+          this.recordHistory(parent.id, 'subtask_added', params.sender_name,
+            JSON.stringify({ subtask_id: task.id, subtask_title: task.title }),
+            parentBoardId);
+
+          return {
+            success: true,
+            task_id: task.id,
+            data: {
+              parent_task_id: parent.id,
+              parent_title: parent.title,
+            },
+          };
         }
 
         default:
