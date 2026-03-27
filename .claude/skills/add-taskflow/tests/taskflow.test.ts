@@ -64,7 +64,7 @@ describe('taskflow skill package', () => {
     expect(fs.existsSync(path.join(skillDir, 'SKILL.md'))).toBe(true);
     expect(fs.existsSync(path.join(skillDir, 'templates', 'CLAUDE.md.template'))).toBe(true);
     // Source code lives in the source tree, not in add/modify
-    expect(fs.existsSync(path.resolve(skillDir, '..', '..', '..', '..', 'container', 'agent-runner', 'src', 'taskflow-engine.ts'))).toBe(true);
+    expect(fs.existsSync(path.resolve(skillDir, '..', '..', '..', 'container', 'agent-runner', 'src', 'taskflow-engine.ts'))).toBe(true);
   });
 
   it('has SKILL.md with required frontmatter', () => {
@@ -90,7 +90,7 @@ describe('taskflow skill package', () => {
 
   it('generated sec-secti prompt stays aligned to the root board mapping', async () => {
     const generatorModule = await import(
-      pathToFileURL(path.join(skillDir, 'add', 'scripts', 'generate-claude-md.mjs')).href
+      pathToFileURL(path.resolve(skillDir, '..', '..', '..', 'scripts', 'generate-claude-md.mjs')).href
     );
     const secGroup = generatorModule.groups.find((group: any) => group.folder === 'sec-secti');
 
@@ -107,7 +107,7 @@ describe('taskflow skill package', () => {
 
   it('all generator-managed TaskFlow group prompts stay aligned to the current template output', async () => {
     const generatorModule = await import(
-      pathToFileURL(path.join(skillDir, 'add', 'scripts', 'generate-claude-md.mjs')).href
+      pathToFileURL(path.resolve(skillDir, '..', '..', '..', 'scripts', 'generate-claude-md.mjs')).href
     );
 
     const staleGroups = generatorModule.groups
@@ -122,7 +122,7 @@ describe('taskflow skill package', () => {
 
   it('generated TaskFlow prompts prefer taskflow_query over sqlite reads for normal inspection', async () => {
     const generatorModule = await import(
-      pathToFileURL(path.join(skillDir, 'add', 'scripts', 'generate-claude-md.mjs')).href
+      pathToFileURL(path.resolve(skillDir, '..', '..', '..', 'scripts', 'generate-claude-md.mjs')).href
     );
 
     for (const group of generatorModule.groups) {
@@ -1187,7 +1187,7 @@ describe('taskflow skill package', () => {
 
   it('generate-claude-md uses the root board for sec-secti control prompts', () => {
     const script = fs.readFileSync(
-      path.resolve(skillDir, '..', '..', '..', '..', 'scripts', 'generate-claude-md.mjs'),
+      path.resolve(skillDir, '..', '..', '..', 'scripts', 'generate-claude-md.mjs'),
       'utf-8',
     );
     const secSectiBlock =
@@ -1203,7 +1203,7 @@ describe('taskflow skill package', () => {
 
   it('generate-claude-md covers laizys, thiago, and test taskflow groups', () => {
     const script = fs.readFileSync(
-      path.resolve(skillDir, '..', '..', '..', '..', 'scripts', 'generate-claude-md.mjs'),
+      path.resolve(skillDir, '..', '..', '..', 'scripts', 'generate-claude-md.mjs'),
       'utf-8',
     );
 
@@ -1236,7 +1236,7 @@ describe('taskflow skill package', () => {
 
   it('generate-claude-md covers e2e and setec taskflow groups', () => {
     const script = fs.readFileSync(
-      path.resolve(skillDir, '..', '..', '..', '..', 'scripts', 'generate-claude-md.mjs'),
+      path.resolve(skillDir, '..', '..', '..', 'scripts', 'generate-claude-md.mjs'),
       'utf-8',
     );
 
@@ -2096,7 +2096,7 @@ describe('taskflow skill package', () => {
   it('ID generation uses per-prefix counters (T/P/R) in engine and db schema', () => {
     // Engine maps each prefix to its own counter column
     const engine = fs.readFileSync(
-      path.resolve(skillDir, '..', '..', '..', '..', 'container', 'agent-runner', 'src', 'taskflow-engine.ts'),
+      path.resolve(skillDir, '..', '..', '..', 'container', 'agent-runner', 'src', 'taskflow-engine.ts'),
       'utf-8',
     );
     expect(engine).toContain('next_task_number');
@@ -2193,9 +2193,9 @@ describe('taskflow skill package', () => {
       'utf-8',
     );
     expect(content).toContain("taskflow_admin({ action: 'process_inbox', sender_name: SENDER })");
-    expect(content).toContain('CREATE a new task from the inbox title');
-    expect(content).toContain('Ask whether to remove the original inbox capture');
-    expect(content).toContain('summarize the mapping from old inbox IDs to new task IDs');
+    expect(content).toContain('CRITICAL: Promote inbox items IN-PLACE');
+    expect(content).toContain('ask explicit confirmation and then cancel');
+    expect(content).toContain('summarize what was processed');
     expect(content).toContain('discard an inbox item entirely');
     expect(content).toContain('batch instruction');
   });
@@ -2314,7 +2314,7 @@ describe('taskflow skill package', () => {
 
   it('test schema includes bounded recurrence columns', () => {
     const content = fs.readFileSync(
-      path.join(skillDir, 'add', 'container', 'agent-runner', 'src', 'taskflow-engine.test.ts'),
+      path.resolve(skillDir, '..', '..', '..', 'container', 'agent-runner', 'src', 'taskflow-engine.test.ts'),
       'utf-8',
     );
     expect(content).toContain('max_cycles INTEGER');
@@ -2510,7 +2510,7 @@ describe('taskflow skill package', () => {
 
   it('skill packaged taskflow-db snapshot adds linked-parent index for rollup queries', () => {
     const dbModule = fs.readFileSync(
-      path.join(skillDir, 'add', 'src', 'taskflow-db.ts'),
+      path.resolve(skillDir, '..', '..', '..', 'src', 'taskflow-db.ts'),
       'utf-8',
     );
     expect(dbModule).toContain('idx_tasks_linked_parent');
@@ -2520,7 +2520,7 @@ describe('taskflow skill package', () => {
 
   it('bundled and source taskflow-db schemas include all engine-expected columns and tables', () => {
     const bundled = fs.readFileSync(
-      path.join(skillDir, 'add', 'src', 'taskflow-db.ts'),
+      path.resolve(skillDir, '..', '..', '..', 'src', 'taskflow-db.ts'),
       'utf-8',
     );
     const source = fs.readFileSync(
@@ -2541,7 +2541,7 @@ describe('taskflow skill package', () => {
 
   it('skill packaged engine snapshot uses owning board IDs for delegated subtask updates', () => {
     const engineModule = fs.readFileSync(
-      path.join(skillDir, 'add', 'container', 'agent-runner', 'src', 'taskflow-engine.ts'),
+      path.resolve(skillDir, '..', '..', '..', 'container', 'agent-runner', 'src', 'taskflow-engine.ts'),
       'utf-8',
     );
     expect(engineModule).toContain(".run(updates.rename_subtask.title, now, taskBoardId, updates.rename_subtask.id)");
@@ -2671,7 +2671,7 @@ describe('taskflow skill package', () => {
 
   it('MCP schema includes meeting type in taskflow_create', () => {
     const content = fs.readFileSync(
-      path.join(skillDir, 'modify', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
+      path.resolve(skillDir, '..', '..', '..', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
       'utf-8',
     );
     expect(content).toContain("'meeting'");
@@ -2681,7 +2681,7 @@ describe('taskflow skill package', () => {
 
   it('MCP schema includes meeting queries in taskflow_query', () => {
     const content = fs.readFileSync(
-      path.join(skillDir, 'modify', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
+      path.resolve(skillDir, '..', '..', '..', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
       'utf-8',
     );
     expect(content).toContain('meetings');
@@ -2696,7 +2696,7 @@ describe('taskflow skill package', () => {
 
   it('MCP schema includes process_minutes in taskflow_admin', () => {
     const content = fs.readFileSync(
-      path.join(skillDir, 'modify', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
+      path.resolve(skillDir, '..', '..', '..', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
       'utf-8',
     );
     expect(content).toContain('process_minutes');
@@ -2731,7 +2731,7 @@ describe('meeting notes', () => {
 
   it('bundled taskflow-db snapshot includes meeting schema columns', () => {
     const content = fs.readFileSync(
-      path.join(skillDir, 'add', 'src', 'taskflow-db.ts'),
+      path.resolve(skillDir, '..', '..', '..', 'src', 'taskflow-db.ts'),
       'utf-8',
     );
     expect(content).toContain('recurrence_anchor TEXT');
@@ -2797,7 +2797,7 @@ describe('meeting notes', () => {
       const task = db
         .prepare(`SELECT scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
         .get(BOARD_ID, result.task_id) as { scheduled_at: string };
-      expect(task.scheduled_at).toBe('2026-03-15T17:00:00Z');
+      expect(task.scheduled_at).toBe('2026-03-15T17:00:00.000Z');
     });
 
     it('creates meeting without scheduled_at (unscheduled draft)', () => {
@@ -2828,8 +2828,8 @@ describe('meeting notes', () => {
         .prepare(`SELECT recurrence, recurrence_anchor, scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
         .get(BOARD_ID, result.task_id) as { recurrence: string; recurrence_anchor: string; scheduled_at: string };
       expect(task.recurrence).toBe('weekly');
-      expect(task.recurrence_anchor).toBe('2026-03-15T17:00:00Z');
-      expect(task.scheduled_at).toBe('2026-03-15T17:00:00Z');
+      expect(task.recurrence_anchor).toBe('2026-03-15T17:00:00.000Z');
+      expect(task.scheduled_at).toBe('2026-03-15T17:00:00.000Z');
     });
 
     it('rejects recurring meeting without scheduled_at', () => {
@@ -3136,7 +3136,8 @@ describe('meeting notes', () => {
       expect(notif).toBeDefined();
       expect(notif!.message).toContain('adicionado(a) a uma reunião');
       expect(notif!.message).toContain(r.task_id!);
-      expect(notif!.message).toContain('2026-04-01T10:00:00Z');
+      // The notification formats scheduled_at via utcToLocal (America/Fortaleza, UTC-3)
+      expect(notif!.message).toContain('01/04/2026');
     });
 
     it('remove_participant removes a person', () => {
@@ -3200,7 +3201,7 @@ describe('meeting notes', () => {
       const task = db
         .prepare(`SELECT scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
         .get(BOARD_ID, meetingId) as { scheduled_at: string };
-      expect(task.scheduled_at).toBe('2026-03-20T14:00:00Z');
+      expect(task.scheduled_at).toBe('2026-03-20T14:00:00.000Z');
     });
 
     it('clearing due_date on a meeting does not wipe scheduled_at-based reminders', () => {
@@ -3819,7 +3820,7 @@ describe('meeting notes', () => {
       expect(task).toBeTruthy();
       expect(task.type).toBe('meeting');
       expect(task.column).toBe('next_action');
-      expect(task.scheduled_at).toBe('2026-03-15T17:00:00Z');
+      expect(task.scheduled_at).toBe('2026-03-15T17:00:00.000Z');
       expect(task.assignee).toBe('person-1');
       const participants = JSON.parse(task.participants);
       expect(participants).toContain('person-2');
@@ -4258,7 +4259,7 @@ describe('meeting notes', () => {
 
     it('bundled engine uses createTaskInternal for process_minutes_decision', () => {
       const content = fs.readFileSync(
-        path.join(skillDir, 'add', 'container', 'agent-runner', 'src', 'taskflow-engine.ts'),
+        path.resolve(skillDir, '..', '..', '..', 'container', 'agent-runner', 'src', 'taskflow-engine.ts'),
         'utf-8',
       );
       expect(content).toContain('private createTaskInternal(params: CreateParams): CreateResult');
@@ -4321,6 +4322,8 @@ describe('meeting notes', () => {
     });
 
     it('sorts meetings by scheduled_at among tasks with due_date', () => {
+      // Cancel the seeded T-001 so Alexandre has < 3 tasks in in_progress (avoids summary mode)
+      engine.admin({ board_id: BOARD_ID, action: 'cancel_task', task_id: 'T-001', sender_name: 'Alexandre' });
       // Create a task with a far-future due date
       engine.create({
         board_id: BOARD_ID,
@@ -4396,8 +4399,8 @@ describe('meeting notes', () => {
       expect(parts).toContain('person-2');
 
       // Verify scheduled_at advanced
-      expect(task.scheduled_at).not.toBe('2026-03-10T14:00:00Z');
-      expect(task.recurrence_anchor).toBe('2026-03-10T14:00:00Z');
+      expect(task.scheduled_at).not.toBe('2026-03-10T14:00:00.000Z');
+      expect(task.recurrence_anchor).toBe('2026-03-10T14:00:00.000Z');
 
       // Verify archived occurrence preserves notes and metadata
       const occurrences = db.prepare(
@@ -4406,8 +4409,8 @@ describe('meeting notes', () => {
       expect(occurrences.length).toBe(1);
       const details = JSON.parse((occurrences[0] as any).details);
       expect(details.snapshot.notes).toBeDefined();
-      expect(details.snapshot.scheduled_at).toBe('2026-03-10T14:00:00Z');
-      expect(details.snapshot.recurrence_anchor).toBe('2026-03-10T14:00:00Z');
+      expect(details.snapshot.scheduled_at).toBe('2026-03-10T14:00:00.000Z');
+      expect(details.snapshot.recurrence_anchor).toBe('2026-03-10T14:00:00.000Z');
     });
 
     it('recurring meeting advance does NOT fire unprocessed_minutes_warning (notes already archived)', () => {
@@ -4470,8 +4473,8 @@ describe('meeting notes', () => {
 
       // Verify scheduled_at drifted but anchor stayed
       const before = db.prepare(`SELECT scheduled_at, recurrence_anchor FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
-      expect(before.scheduled_at).toBe('2026-03-10T10:00:00Z');
-      expect(before.recurrence_anchor).toBe('2026-03-09T10:00:00Z');
+      expect(before.scheduled_at).toBe('2026-03-10T10:00:00.000Z');
+      expect(before.recurrence_anchor).toBe('2026-03-09T10:00:00.000Z');
 
       // Conclude the meeting (triggers advance)
       engine.move({ board_id: BOARD_ID, task_id: meetingId, action: 'start', sender_name: 'Alexandre' });
@@ -4483,7 +4486,7 @@ describe('meeting notes', () => {
       // Anchor 2026-03-09 + 7 days = 2026-03-16 (Monday)
       const task = db.prepare(`SELECT scheduled_at, recurrence_anchor FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD_ID, meetingId) as any;
       expect(task.scheduled_at).toContain('2026-03-16');
-      expect(task.recurrence_anchor).toBe('2026-03-09T10:00:00Z');
+      expect(task.recurrence_anchor).toBe('2026-03-09T10:00:00.000Z');
     });
 
     it('recurring meeting advances correctly across multiple cycles', () => {
@@ -4932,7 +4935,7 @@ describe('meeting notes', () => {
       // The engine supports manage_holidays as an admin action.
       // The MCP schema must include it so agents can actually call it.
       const mcpContent = fs.readFileSync(
-        path.resolve(skillDir, '..', '..', '..', '..', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
+        path.resolve(skillDir, '..', '..', '..', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
         'utf-8',
       );
       // Verify the action enum includes manage_holidays
@@ -5051,7 +5054,7 @@ describe('meeting notes', () => {
       const afterUpdate = db
         .prepare(`SELECT scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
         .get(BOARD_ID, meetingId) as { scheduled_at: string };
-      expect(afterUpdate.scheduled_at).toBe('2026-03-20T14:00:00Z');
+      expect(afterUpdate.scheduled_at).toBe('2026-03-20T14:00:00.000Z');
 
       // Undo the reschedule
       const undoResult = engine.undo({
@@ -5064,7 +5067,7 @@ describe('meeting notes', () => {
       const afterUndo = db
         .prepare(`SELECT scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
         .get(BOARD_ID, meetingId) as { scheduled_at: string };
-      expect(afterUndo.scheduled_at).toBe('2026-03-15T17:00:00Z');
+      expect(afterUndo.scheduled_at).toBe('2026-03-15T17:00:00.000Z');
     });
   });
 
@@ -5098,7 +5101,7 @@ describe('meeting notes', () => {
       const notesBefore = JSON.parse(beforeConclude.notes);
       expect(notesBefore.length).toBe(1);
       expect(notesBefore[0].text).toBe('Discuss roadmap priorities');
-      expect(beforeConclude.scheduled_at).toBe('2026-03-08T10:00:00Z');
+      expect(beforeConclude.scheduled_at).toBe('2026-03-08T10:00:00.000Z');
 
       // Conclude the meeting — this triggers advanceRecurringTask
       const concludeResult = engine.move({
@@ -5117,7 +5120,7 @@ describe('meeting notes', () => {
         .get(BOARD_ID, meetingId) as { notes: string; scheduled_at: string; current_cycle: string; column: string };
       expect(afterAdvance.column).toBe('next_action');
       expect(afterAdvance.notes).toBe('[]');
-      expect(afterAdvance.scheduled_at).not.toBe('2026-03-08T10:00:00Z');
+      expect(afterAdvance.scheduled_at).not.toBe('2026-03-08T10:00:00.000Z');
       expect(afterAdvance.current_cycle).toBe('1');
 
       // Undo the conclude
@@ -5134,7 +5137,7 @@ describe('meeting notes', () => {
       // Column should be restored to the pre-conclude value
       expect(afterUndo.column).toBe('next_action'); // meetings start in next_action
       // scheduled_at should be the original, not the advanced one
-      expect(afterUndo.scheduled_at).toBe('2026-03-08T10:00:00Z');
+      expect(afterUndo.scheduled_at).toBe('2026-03-08T10:00:00.000Z');
       // notes should be restored (not empty)
       const notesAfterUndo = JSON.parse(afterUndo.notes);
       expect(notesAfterUndo.length).toBe(1);
@@ -5630,7 +5633,7 @@ describe('add_external_participant', () => {
       },
     });
     expect(result.success).toBe(true);
-    expect(result.changes).toContain('External participant Maria Silva invited');
+    expect(result.changes).toContain('Participante externo Maria Silva convidado');
 
     // Verify external_contacts row
     const contact = db.prepare(
@@ -5647,7 +5650,7 @@ describe('add_external_participant', () => {
     expect(grant).toBeTruthy();
     expect(grant.invite_status).toBe('invited');
     expect(grant.board_id).toBe(BOARD_ID);
-    expect(grant.occurrence_scheduled_at).toBe('2026-03-15T17:00:00Z');
+    expect(grant.occurrence_scheduled_at).toBe('2026-03-15T17:00:00.000Z');
     expect(grant.access_expires_at).toBeTruthy();
 
     // Verify audit trail
@@ -5693,6 +5696,14 @@ describe('add_external_participant', () => {
   });
 
   it('emits DM invite notification', () => {
+    // Pre-insert the external contact with a direct_chat_jid so the engine sends a DM
+    // (without direct_chat_jid, the engine sends a group-level forwardable invite instead)
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO external_contacts (external_id, display_name, phone, direct_chat_jid, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'active', ?, ?)`
+    ).run('ext-preexisting', 'Maria Silva', '5585999991234', '5585999991234@s.whatsapp.net', now, now);
+
     const meetingId = createScheduledMeeting();
     const result = engine.update({
       board_id: BOARD_ID,
@@ -5816,7 +5827,7 @@ describe('remove_external_participant', () => {
     });
 
     expect(result.success).toBe(true);
-    expect(result.changes).toContain('External participant removed');
+    expect(result.changes).toContain('Participante externo removido');
 
     const grant = db.prepare(
       `SELECT invite_status FROM meeting_external_participants WHERE meeting_task_id = ? AND external_id = ?`
@@ -5885,11 +5896,18 @@ describe('reinvite_external_participant', () => {
   });
 
   function createMeetingWithRevokedExternal(): { meetingId: string; externalId: string } {
+    // Pre-insert the contact with direct_chat_jid so the engine sends DM notifications
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT OR IGNORE INTO external_contacts (external_id, display_name, phone, direct_chat_jid, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'active', ?, ?)`
+    ).run('ext-reinvite', 'Maria Silva', '5585999991234', '5585999991234@s.whatsapp.net', now, now);
+
     const result = engine.create({
       board_id: BOARD_ID,
       type: 'meeting',
       title: 'Sprint review',
-      scheduled_at: '2026-03-15T17:00:00Z',
+      scheduled_at: '2027-06-15T17:00:00Z',
       participants: ['Giovanni'],
       sender_name: 'Alexandre',
     });
@@ -5935,7 +5953,7 @@ describe('reinvite_external_participant', () => {
     });
 
     expect(result.success).toBe(true);
-    expect(result.changes).toContain('External participant Maria Silva reinvited');
+    expect(result.changes).toContain('Participante externo Maria Silva reconvidado');
 
     // Verify invite_status is back to 'invited'
     const grant = db.prepare(
@@ -6054,7 +6072,7 @@ describe('occurrence key cascade on reschedule', () => {
     ).get(meetingId, externalId) as any;
 
     expect(grant).toBeTruthy();
-    expect(grant.occurrence_scheduled_at).toBe('2026-03-15T14:00:00Z');
+    expect(grant.occurrence_scheduled_at).toBe('2026-03-15T14:00:00.000Z');
   });
 
   it('recalculates access_expires_at on reschedule', () => {
@@ -6108,7 +6126,7 @@ describe('occurrence key cascade on reschedule', () => {
 
     expect(grant).toBeTruthy();
     // Revoked grant should retain the original occurrence_scheduled_at
-    expect(grant.occurrence_scheduled_at).toBe('2026-03-12T14:00:00Z');
+    expect(grant.occurrence_scheduled_at).toBe('2026-03-12T14:00:00.000Z');
   });
 });
 
@@ -6131,7 +6149,7 @@ describe('accept_external_invite', () => {
       board_id: BOARD_ID,
       type: 'meeting',
       title: 'Reunião de Alinhamento',
-      scheduled_at: '2026-03-20T14:00:00Z',
+      scheduled_at: '2027-06-15T14:00:00Z',
       participants: ['Giovanni'],
       sender_name: 'Alexandre',
     });
@@ -6271,7 +6289,7 @@ describe('external participant note operations', () => {
       board_id: BOARD_ID,
       type: 'meeting',
       title: 'External Note Meeting',
-      scheduled_at: '2026-03-20T14:00:00Z',
+      scheduled_at: '2027-06-15T14:00:00Z',
       participants: ['Giovanni'],
       sender_name: 'Alexandre',
     });
@@ -6394,7 +6412,7 @@ describe('external participant note operations', () => {
     });
 
     expect(result.success).toBe(true);
-    expect(result.changes).toContain(`Note #${note.id} edited`);
+    expect(result.changes).toContain(`Nota #${note.id} editada: Updated text`);
   });
 
   it('allows external participant to remove their own note', () => {
@@ -6423,7 +6441,7 @@ describe('external participant note operations', () => {
     });
 
     expect(result.success).toBe(true);
-    expect(result.changes).toContain(`Note #${note.id} removed`);
+    expect(result.changes).toContain(`Nota #${note.id} removida`);
   });
 
   it('allows external participant to set note status', () => {
@@ -6452,7 +6470,7 @@ describe('external participant note operations', () => {
     });
 
     expect(result.success).toBe(true);
-    expect(result.changes).toContain(`Note #${note.id} status set to checked`);
+    expect(result.changes).toContain(`Nota #${note.id} status: checked`);
   });
 
   it('blocks external participant without accepted grant from adding notes', () => {
@@ -6461,7 +6479,7 @@ describe('external participant note operations', () => {
       board_id: BOARD_ID,
       type: 'meeting',
       title: 'Pending Invite Meeting',
-      scheduled_at: '2026-03-20T14:00:00Z',
+      scheduled_at: '2027-06-15T14:00:00Z',
       participants: ['Giovanni'],
       sender_name: 'Alexandre',
     });
@@ -6538,7 +6556,7 @@ describe('external participant full flow', () => {
       board_id: BOARD_ID,
       type: 'meeting',
       title: 'Client Alignment',
-      scheduled_at: '2026-03-12T14:00:00Z',
+      scheduled_at: '2027-06-15T14:00:00Z',
       participants: ['Giovanni'],
       sender_name: 'Alexandre',
     });
@@ -6550,6 +6568,13 @@ describe('external participant full flow', () => {
   });
 
   it('complete invite → accept → interact → revoke → block → reinvite flow', () => {
+    // Pre-insert the contact with direct_chat_jid so the engine sends DM notifications
+    const preNow = new Date().toISOString();
+    db.prepare(
+      `INSERT OR IGNORE INTO external_contacts (external_id, display_name, phone, direct_chat_jid, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'active', ?, ?)`
+    ).run('ext-flow', 'Maria', '5585999991234', '5585999991234@s.whatsapp.net', preNow, preNow);
+
     // 1. Add external participant
     const addResult = engine.update({
       board_id: BOARD_ID,

@@ -3,7 +3,13 @@ import path from 'path';
 
 // OneCLI is optional — only used if ONECLI_URL is configured and @onecli-sh/sdk is installed
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const OneCLI: any = (() => { try { return require('@onecli-sh/sdk').OneCLI; } catch { return null; } })();
+const OneCLI: any = (() => {
+  try {
+    return require('@onecli-sh/sdk').OneCLI;
+  } catch {
+    return null;
+  }
+})();
 
 import {
   ASSISTANT_NAME,
@@ -122,10 +128,11 @@ let stagedDmMaxTimestamp = '';
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
-const onecli = new OneCLI({ url: ONECLI_URL });
+const onecli = OneCLI ? new OneCLI({ url: ONECLI_URL }) : null;
 
 function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
   if (group.isMain) return;
+  if (!onecli) return;
   const identifier = group.folder.toLowerCase().replace(/_/g, '-');
   onecli.ensureAgent({ name: group.name, identifier }).then(
     (res: any) => {
@@ -202,10 +209,16 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
         let content = fs.readFileSync(templateFile, 'utf-8');
         if (ASSISTANT_NAME !== 'Andy') {
           content = content.replace(/^# Andy$/m, `# ${ASSISTANT_NAME}`);
-          content = content.replace(/You are Andy/g, `You are ${ASSISTANT_NAME}`);
+          content = content.replace(
+            /You are Andy/g,
+            `You are ${ASSISTANT_NAME}`,
+          );
         }
         fs.writeFileSync(groupMdFile, content);
-        logger.info({ folder: group.folder }, 'Created CLAUDE.md from template');
+        logger.info(
+          { folder: group.folder },
+          'Created CLAUDE.md from template',
+        );
       }
     }
 

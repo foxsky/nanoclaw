@@ -8,6 +8,21 @@ For detailed release notes, see the [full changelog on the documentation site](h
 
 - [BREAKING] OneCLI Agent Vault replaces the built-in credential proxy. Existing `.env` credentials must be migrated to the vault. Run `/init-onecli` to install OneCLI and migrate credentials.
 
+## Local - 2026-03-27
+
+### WhatsApp Reconnection Fix
+- Fixed reconnection deadlock: `connectInternal()` now awaits `connection='open'` before returning, preventing the reconnect loop from exiting prematurely and leaving `reconnecting=true` permanently
+- Fixed half-dead socket stall: `sendMessage()` failures on connected sockets now trigger reconnection instead of silently queuing messages forever
+- Extracted `reconnect()` into a standalone method for reuse
+- LoggedOut (401) during reconnect exits immediately instead of burning through retries
+
+### Post-Merge Test Fixes (1.2.23 → 1.2.35)
+- Fixed OneCLI null-safety: `new OneCLI()` no longer crashes when SDK isn't installed
+- Updated TaskFlow test paths from old `add/`/`modify/` dirs to source tree (branch-based migration)
+- Exported `groups`, `renderGroup`, `checkGroup` from `generate-claude-md.mjs` for test imports
+- Fixed ISO date assertions (`.000Z` suffix) and English→Portuguese string expectations
+- Fixed external participant grant expiry, DM notification prerequisites, and board view sort tests
+
 ## [1.2.21] - 2026-03-22
 
 - Added opt-in diagnostics via PostHog with explicit user consent (Yes / No / Never ask again)

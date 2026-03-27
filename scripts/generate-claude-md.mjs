@@ -2,6 +2,8 @@
 /**
  * Generate CLAUDE.md for TaskFlow groups from template.
  * Usage: node scripts/generate-claude-md.mjs
+ *
+ * Also exports groups, renderGroup, and checkGroup for use in tests.
  */
 import fs from 'fs';
 import path from 'path';
@@ -179,16 +181,38 @@ const groups = [
   },
 ];
 
-for (const group of groups) {
+/** Render the CLAUDE.md content for a given group definition. */
+function renderGroup(group) {
   const replacements = { ...shared, ...group.overrides };
   let content = template;
   for (const [key, value] of Object.entries(replacements)) {
     content = content.split(key).join(value);
   }
+  return content;
+}
 
-  const outputDir = path.join(PROJECT_ROOT, 'groups', group.folder);
-  fs.mkdirSync(outputDir, { recursive: true });
-  const outputPath = path.join(outputDir, 'CLAUDE.md');
-  fs.writeFileSync(outputPath, content, 'utf-8');
-  console.log(`Written: ${outputPath} (${content.length} bytes)`);
+/** Check whether the on-disk CLAUDE.md matches the rendered template for a group. */
+function checkGroup(group) {
+  const rendered = renderGroup(group);
+  const outputPath = path.join(PROJECT_ROOT, 'groups', group.folder, 'CLAUDE.md');
+  if (!fs.existsSync(outputPath)) {
+    return { matches: false, outputPath, reason: 'file not found' };
+  }
+  const ondisk = fs.readFileSync(outputPath, 'utf-8');
+  return { matches: rendered === ondisk, outputPath };
+}
+
+export { groups, renderGroup, checkGroup };
+
+// When run directly as a script, generate all files
+const isMainModule = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+if (isMainModule) {
+  for (const group of groups) {
+    const content = renderGroup(group);
+    const outputDir = path.join(PROJECT_ROOT, 'groups', group.folder);
+    fs.mkdirSync(outputDir, { recursive: true });
+    const outputPath = path.join(outputDir, 'CLAUDE.md');
+    fs.writeFileSync(outputPath, content, 'utf-8');
+    console.log(`Written: ${outputPath} (${content.length} bytes)`);
+  }
 }

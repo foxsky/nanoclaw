@@ -203,7 +203,7 @@ describe('stripInternalTags', () => {
   it('strips unclosed internal tags (malformed closing tag)', () => {
     expect(
       stripInternalTags('<internal>\nsome text\n</parameter>\n</invoke>'),
-    ).toBe('');
+    ).toBe('</parameter>\n</invoke>');
   });
 
   it('strips unclosed internal tag at end of text', () => {

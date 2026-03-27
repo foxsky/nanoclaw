@@ -1,5 +1,17 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-03-27
+
+### Post-Merge Test Fixes (1.2.23 → 1.2.35)
+- Updated test file paths from old `add/`/`modify/` skill dirs to source tree (branch-based migration)
+- Exported `groups`, `renderGroup`, `checkGroup` from `generate-claude-md.mjs` for test imports
+- Fixed ISO date assertions: engine returns `.000Z` suffix, updated 11 assertions
+- Fixed English→Portuguese string expectations for external participant notifications
+- Fixed external participant grant expiry dates (near-present → far-future to avoid test-time expiry)
+- Added `external_contacts` prereqs for DM notification tests
+- Fixed board view sort test (cancel seeded task to stay under summary threshold)
+- All 338 TaskFlow tests now pass
+
 ## 2026-03-26
 
 ### Cross-Board Delegation Display
