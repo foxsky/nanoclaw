@@ -104,10 +104,3 @@ function resolveConfigTimezone(): string {
 }
 export const TIMEZONE = resolveConfigTimezone();
 
-/**
- * Derive the display name for outbound messages from a group's trigger pattern.
- * "@Case" → "Case", undefined → ASSISTANT_NAME.
- */
-export function getGroupSenderName(trigger?: string): string {
-  return trigger?.replace(/^@/, '') || ASSISTANT_NAME;
-}

@@ -1,7 +1,8 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 
-import { DATA_DIR, getGroupSenderName, PROJECT_ROOT } from '../config.js';
+import { DATA_DIR, PROJECT_ROOT } from '../config.js';
+import { getGroupSenderName } from '../group-sender.js';
 import { isValidGroupFolder } from '../group-folder.js';
 import type { IpcHandler } from '../ipc.js';
 import { logger } from '../logger.js';

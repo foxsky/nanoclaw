@@ -17,7 +17,6 @@ import {
   CREDENTIAL_PROXY_PORT,
   DATA_DIR,
   DEFAULT_TRIGGER,
-  getGroupSenderName,
   getTriggerPattern,
   GROUPS_DIR,
   IDLE_TIMEOUT,
@@ -71,6 +70,7 @@ import {
   formatOutbound,
   stripInternalTags,
 } from './router.js';
+import { getGroupSenderName } from './group-sender.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';

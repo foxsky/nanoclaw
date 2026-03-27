@@ -3,11 +3,11 @@ import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
 import {
-  getGroupSenderName,
   MAIN_GROUP_FOLDER,
   SCHEDULER_POLL_INTERVAL,
   TIMEZONE,
 } from './config.js';
+import { getGroupSenderName } from './group-sender.js';
 import {
   ContainerOutput,
   runContainerAgent,

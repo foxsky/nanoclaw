@@ -5,7 +5,6 @@ import { CronExpressionParser } from 'cron-parser';
 
 import {
   DATA_DIR,
-  getGroupSenderName,
   IPC_POLL_INTERVAL,
   MAIN_GROUP_FOLDER,
   TIMEZONE,
@@ -13,6 +12,7 @@ import {
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { resolveExternalDm, getTaskflowDb } from './dm-routing.js';
+import { getGroupSenderName } from './group-sender.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
