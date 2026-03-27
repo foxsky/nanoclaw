@@ -21,6 +21,7 @@ import {
   GROUPS_DIR,
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
+  MAX_MESSAGES_PER_PROMPT,
   ONECLI_URL,
   POLL_INTERVAL,
   TIMEZONE,
@@ -51,6 +52,7 @@ import {
   getAllSessions,
   getAllTasks,
   getDmMessages,
+  getLastBotMessageTimestamp,
   getMessagesSince,
   getNewMessages,
   getRouterState,
@@ -166,6 +168,27 @@ function loadState(): void {
     { groupCount: Object.keys(registeredGroups).length },
     'State loaded',
   );
+}
+
+/**
+ * Return the message cursor for a group, recovering from the last bot reply
+ * if lastAgentTimestamp is missing (new group, corrupted state, restart).
+ */
+function getOrRecoverCursor(chatJid: string): string {
+  const existing = lastAgentTimestamp[chatJid];
+  if (existing) return existing;
+
+  const botTs = getLastBotMessageTimestamp(chatJid, ASSISTANT_NAME);
+  if (botTs) {
+    logger.info(
+      { chatJid, recoveredFrom: botTs },
+      'Recovered message cursor from last bot reply',
+    );
+    lastAgentTimestamp[chatJid] = botTs;
+    saveState();
+    return botTs;
+  }
+  return '';
 }
 
 function saveState(): void {
@@ -322,12 +345,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
 
-  const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
   const missedMessages = getMessagesSince(
     chatJid,
-    sinceTimestamp,
+    getOrRecoverCursor(chatJid),
     ASSISTANT_NAME,
     getGroupSenderName(group.trigger),
+    MAX_MESSAGES_PER_PROMPT,
   );
 
   // Check for pending external DM prompts (trigger-bypassed path)
@@ -722,9 +745,10 @@ async function startMessageLoop(): Promise<void> {
           // context that accumulated between triggers is included.
           const allPending = getMessagesSince(
             chatJid,
-            lastAgentTimestamp[chatJid] || '',
+            getOrRecoverCursor(chatJid),
             ASSISTANT_NAME,
             getGroupSenderName(group.trigger),
+            MAX_MESSAGES_PER_PROMPT,
           );
 
           // If allPending is empty, the agent has already processed all
@@ -861,12 +885,12 @@ async function startMessageLoop(): Promise<void> {
  */
 function recoverPendingMessages(): void {
   for (const [chatJid, group] of Object.entries(registeredGroups)) {
-    const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
     const pending = getMessagesSince(
       chatJid,
-      sinceTimestamp,
+      getOrRecoverCursor(chatJid),
       ASSISTANT_NAME,
       getGroupSenderName(group.trigger),
+      MAX_MESSAGES_PER_PROMPT,
     );
     // Apply the same noise filter used in the message loop so that
     // stale processing indicators / typing markers don't trigger a

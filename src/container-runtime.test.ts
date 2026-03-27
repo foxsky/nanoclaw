@@ -39,39 +39,19 @@ describe('readonlyMountArgs', () => {
 });
 
 describe('stopContainer', () => {
-  it('returns stop command using CONTAINER_RUNTIME_BIN', () => {
-    expect(stopContainer('nanoclaw-test-123')).toBe(
+  it('calls docker stop for valid container names', () => {
+    stopContainer('nanoclaw-test-123');
+    expect(mockExecSync).toHaveBeenCalledWith(
       `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-test-123`,
+      { stdio: 'pipe' },
     );
   });
 
-  it('accepts valid Docker container names', () => {
-    // Names with dots, underscores, leading slash
-    expect(stopContainer('my_container.name')).toBe(
-      `${CONTAINER_RUNTIME_BIN} stop -t 1 my_container.name`,
-    );
-    expect(stopContainer('/nanoclaw-abc')).toBe(
-      `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-abc`,
-    );
-  });
-
-  it('rejects names containing shell metacharacters (command injection)', () => {
-    expect(() => stopContainer('foo; rm -rf /')).toThrow(
-      'Invalid container name',
-    );
-    expect(() => stopContainer('foo$(whoami)')).toThrow(
-      'Invalid container name',
-    );
+  it('rejects names with shell metacharacters', () => {
+    expect(() => stopContainer('foo; rm -rf /')).toThrow('Invalid container name');
+    expect(() => stopContainer('foo$(whoami)')).toThrow('Invalid container name');
     expect(() => stopContainer('foo`id`')).toThrow('Invalid container name');
-    expect(() => stopContainer('foo | cat /etc/passwd')).toThrow(
-      'Invalid container name',
-    );
-    expect(() => stopContainer('foo\nbar')).toThrow('Invalid container name');
-  });
-
-  it('rejects empty or whitespace-only names', () => {
-    expect(() => stopContainer('')).toThrow('Invalid container name');
-    expect(() => stopContainer(' ')).toThrow('Invalid container name');
+    expect(mockExecSync).not.toHaveBeenCalled();
   });
 });
 

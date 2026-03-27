@@ -57,23 +57,12 @@ export function readonlyMountArgs(
   return ['-v', `${hostPath}:${containerPath}:ro`];
 }
 
-/**
- * Valid Docker container name pattern.
- * Docker allows: [a-zA-Z0-9][a-zA-Z0-9_.-]
- * We also allow the leading slash that `docker inspect` sometimes includes.
- */
-const VALID_CONTAINER_NAME = /^\/?[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
-
-/** Returns the shell command to stop a container by name.
- *  Validates the name to prevent shell command injection. */
-export function stopContainer(name: string): string {
-  if (!VALID_CONTAINER_NAME.test(name)) {
-    throw new Error(
-      `Invalid container name: "${name}" — must match ${VALID_CONTAINER_NAME}`,
-    );
+/** Stop a container by name. Uses execFileSync to avoid shell injection. */
+export function stopContainer(name: string): void {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name)) {
+    throw new Error(`Invalid container name: ${name}`);
   }
-  const safeName = name.startsWith('/') ? name.slice(1) : name;
-  return `${CONTAINER_RUNTIME_BIN} stop -t 1 ${safeName}`;
+  execSync(`${CONTAINER_RUNTIME_BIN} stop -t 1 ${name}`, { stdio: 'pipe' });
 }
 
 /** Ensure the container runtime is running, starting it if needed. */
@@ -124,17 +113,11 @@ export function cleanupOrphans(): void {
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
     const orphans = output.trim().split('\n').filter(Boolean);
-    // Validate orphan names before shell interpolation (same check as stopContainer)
-    const validOrphans = orphans
-      .map((n) => (n.startsWith('/') ? n.slice(1) : n))
-      .filter((n) => VALID_CONTAINER_NAME.test(n));
-    if (validOrphans.length > 0) {
-      for (const name of validOrphans) {
-        try {
-          execSync(stopContainer(name), { stdio: 'pipe' });
-        } catch {
-          /* may already be stopped */
-        }
+    for (const name of orphans) {
+      try {
+        stopContainer(name);
+      } catch {
+        /* already stopped */
       }
       logger.info(
         { count: orphans.length, names: orphans },

@@ -395,22 +395,41 @@ export function getMessagesSince(
   sinceTimestamp: string,
   botPrefix: string,
   extraBotPrefix?: string,
+  limit: number = 200,
 ): NewMessage[] {
   // Filter bot messages using both the is_bot_message flag AND the content
   // prefix as a backstop for messages written before the migration ran.
+  // Subquery takes the N most recent, outer query re-sorts chronologically.
   const hasExtra = extraBotPrefix && extraBotPrefix !== botPrefix;
   const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp
-    FROM messages
-    WHERE chat_jid = ? AND timestamp > ?
-      AND is_bot_message = 0 AND content NOT LIKE ?
-      ${hasExtra ? 'AND content NOT LIKE ?' : ''}
-      AND content != '' AND content IS NOT NULL
-    ORDER BY timestamp
+    SELECT * FROM (
+      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
+      FROM messages
+      WHERE chat_jid = ? AND timestamp > ?
+        AND is_bot_message = 0 AND content NOT LIKE ?
+        ${hasExtra ? 'AND content NOT LIKE ?' : ''}
+        AND content != '' AND content IS NOT NULL
+      ORDER BY timestamp DESC
+      LIMIT ?
+    ) ORDER BY timestamp
   `;
   const params: any[] = [chatJid, sinceTimestamp, `${botPrefix}:%`];
   if (hasExtra) params.push(`${extraBotPrefix}:%`);
+  params.push(limit);
   return db.prepare(sql).all(...params) as NewMessage[];
+}
+
+export function getLastBotMessageTimestamp(
+  chatJid: string,
+  botPrefix: string,
+): string | undefined {
+  const row = db
+    .prepare(
+      `SELECT MAX(timestamp) as ts FROM messages
+       WHERE chat_jid = ? AND (is_bot_message = 1 OR content LIKE ?)`,
+    )
+    .get(chatJid, `${botPrefix}:%`) as { ts: string | null } | undefined;
+  return row?.ts ?? undefined;
 }
 
 export function createTask(
