@@ -42,6 +42,14 @@ For detailed release notes, see the [full changelog on the documentation site](h
 - Fixed duplicate cross-board notifications when assignee is on the parent board
 - Template: save notes before completing tasks, multi-assignee guidance, task splitting pattern, archive fallback on "Task not found", enforce reparent over copy+cancel
 
+### Cross-Board Project Rollup
+- `refresh_rollup` now counts subtasks of tagged projects, not just directly-tagged tasks
+- Auto-triggers rollup from `move()`, `cancel_task`, and `restore_task` when any task with an upward link changes status
+- Parent board sees real-time progress of child board project subtasks
+- Extracted shared `computeAndApplyRollup` helper — eliminates 80 lines of duplication
+- Change-detection guard prevents history spam on no-op rollups
+- Added indexes on `linked_parent_board_id`/`linked_parent_task_id` for query performance
+
 ### Deploy Safety
 - New `scripts/deploy.sh` with pre-flight import verification on local and production before restarting
 
