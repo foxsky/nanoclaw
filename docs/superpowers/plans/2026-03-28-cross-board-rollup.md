@@ -4,7 +4,11 @@
 
 **Goal:** When a child board converts a delegated task into a project with subtasks, the parent board's task automatically receives rollup updates as subtasks change status.
 
-**Architecture:** Two changes: (1) Expand `refresh_rollup` counting to include subtasks of tagged projects, not just directly-tagged tasks. (2) Auto-trigger rollup from `move()` when a task or its parent project has `linked_parent_task_id`. Extract rollup logic into a reusable private helper called from both `hierarchy('refresh_rollup')` and `move()`.
+**Architecture:** Three changes: (1) Expand `refresh_rollup` counting to include subtasks of tagged projects, not just directly-tagged tasks. (2) Extract rollup into a reusable private helper. (3) Auto-trigger rollup from `move()`, `cancel_task`, and `restore_task` when a task or its parent project has `linked_parent_task_id`. The helper loads the parent task via direct SQL (not `requireTask()`) to avoid dependency on visibility rules.
+
+**Known limitations:**
+- Archive table has no `parent_task_id` column — cancelled subtask counts for tagged projects will be 0. `cancelled_needs_decision` won't trigger for indirectly-linked subtasks.
+- `undo()` does not re-trigger rollup — manual `refresh_rollup` needed after undo (rare, 60s window).
 
 **Tech Stack:** TypeScript, better-sqlite3, vitest
 
@@ -181,7 +185,7 @@ WHERE board_id = ?
 
 The parameters become: `now.slice(0, 10), childBoardId, taskBoardId, task.id, childBoardId, taskBoardId, task.id`
 
-Do the same for the archive/cancelled counting query — add `OR linked_parent_task_id IN (SELECT ...)` subquery.
+**Note:** The archive/cancelled counting query CANNOT be expanded the same way — the `archive` table has no `parent_task_id` column. Cancelled subtasks of tagged projects won't be counted. Accept as known limitation — a proper fix would require an `archive` schema migration.
 
 - [ ] **Step 2: Run tests**
 
@@ -214,7 +218,8 @@ The method should:
 - Check the task's own `linked_parent_board_id`/`linked_parent_task_id`
 - If not set, check its `parent_task_id` (is it a subtask?) and then check the parent's `linked_parent_board_id`/`linked_parent_task_id`
 - If neither has a linked parent, return silently (no rollup needed)
-- Load the parent task from the parent board and run the rollup count+update
+- Load the parent task via **direct SQL** (`this.db.prepare('SELECT ... FROM tasks WHERE board_id = ? AND id = ?').get(parentBoardId, parentTaskId)`), NOT via `requireTask()` — this avoids depending on board-scoped visibility rules for a purely internal operation
+- Run the rollup count+update using the parent task's `child_exec_board_id`
 
 - [ ] **Step 2: Call the helper from hierarchy('refresh_rollup')**
 
@@ -239,33 +244,45 @@ git commit -m "refactor(taskflow): extract rollup logic into reusable helper"
 **Files:**
 - Modify: `container/agent-runner/src/taskflow-engine.ts`
 
-- [ ] **Step 1: Add auto-rollup call at the end of move()**
+- [ ] **Step 1: Remove the inline rollup in move() and replace with helper**
 
-After the existing `parentNotification` block (around line 2780), add:
+Remove the existing inline rollup at lines 2772-2779 that hardcodes `child_exec_rollup_status = 'ready_for_review'` for directly-delegated tasks moved to done. Replace with the helper call. This unifies the rollup path — both directly-delegated tasks and project subtasks now use the same counting logic.
+
+After the `parentNotification` block (around line 2780), add:
 
 ```typescript
 // Auto-refresh upward rollup for tasks linked to a parent board
 // (either directly via linked_parent_task_id, or via parent project's link)
-this.autoRefreshLinkedParentRollup(task, taskBoardId, params.sender_name ?? 'system');
+this.refreshLinkedParentRollup(task, taskBoardId, params.sender_name ?? 'system');
 ```
 
-The `autoRefreshLinkedParentRollup` method (from Task 3) handles the lookup chain: task → parent project → linked parent board. It no-ops if no upward link exists.
+- [ ] **Step 2: Add auto-rollup to cancel_task and restore_task in admin()**
 
-- [ ] **Step 2: Run tests**
+In the `cancel_task` case (around line 6154), after `this.archiveTask(task, 'cancelled')` and before the notification block, add:
+
+```typescript
+this.refreshLinkedParentRollup(task, taskBoardId, params.sender_name);
+```
+
+In the `restore_task` case, after the task is restored to the `tasks` table, add the same call.
+
+This ensures cancelled/restored subtasks also trigger parent rollup updates.
+
+- [ ] **Step 3: Run tests**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts -t 'cross-board project rollup'`
 Expected: All 6 tests pass
 
-- [ ] **Step 3: Run full test suite for regressions**
+- [ ] **Step 4: Run full test suite for regressions**
 
 Run: `npx vitest run .claude/skills/add-taskflow/tests/taskflow.test.ts`
 Expected: All 360+ tests pass
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add container/agent-runner/src/taskflow-engine.ts
-git commit -m "feat(taskflow): auto-trigger cross-board rollup on move"
+git commit -m "feat(taskflow): auto-trigger cross-board rollup on move, cancel, restore"
 ```
 
 ---
