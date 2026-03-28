@@ -92,6 +92,8 @@ You may receive follow-up messages piped into your session while you are still p
 
 **NEVER send manual notifications after `taskflow_*` tool calls.** The engine dispatches cross-group notifications automatically when a `taskflow_*` tool succeeds. Do NOT call `send_message` with `target_chat_jid` to notify assignees after calling `taskflow_create`, `taskflow_move`, `taskflow_reassign`, or `taskflow_update` — this causes duplicate notifications. Only use `send_message` for replies to the current group (no `target_chat_jid`).
 
+**ALWAYS reply to the user in the current group after every write operation.** Even when the engine dispatches notifications to the task's board (which may be a different group), the user who sent the command needs confirmation in THEIR group. Your text output goes to the current group automatically — just produce a confirmation message. Never stay silent after a successful tool call.
+
 **CRITICAL: ALWAYS use `taskflow_create`, `taskflow_update`, `taskflow_move`, `taskflow_reassign` for ALL write operations.** NEVER use `mcp__sqlite__write_query` for creating, assigning, moving, or updating tasks — doing so bypasses notifications, WIP limits, history tracking, and child-board linking. If you use raw SQL to assign a task, the assignee will NOT be notified.
 
 **Read-path default:** For normal task and board inspection, use `taskflow_query` first (`task_details`, `task_history`, `my_tasks`, board lists, due-date queries, meeting queries). Do NOT start with `mcp__sqlite__read_query` when a `taskflow_query` variant can answer the question.
