@@ -59,7 +59,10 @@ function log(
   }
 }
 
-type LogFn = (dataOrMsg: Record<string, unknown> | string, msg?: string) => void;
+type LogFn = (
+  dataOrMsg: Record<string, unknown> | string,
+  msg?: string,
+) => void;
 
 interface Logger {
   debug: LogFn;
@@ -69,7 +72,7 @@ interface Logger {
   fatal: LogFn;
   trace: LogFn;
   level: string;
-  child(): Logger;
+  child(obj?: Record<string, unknown>): Logger;
 }
 
 export const logger: Logger = {
@@ -82,7 +85,7 @@ export const logger: Logger = {
   // level is read for filtering, trace() maps to debug.
   trace: (dataOrMsg, msg) => log('debug', dataOrMsg, msg),
   level: (process.env.LOG_LEVEL as Level) || 'info',
-  child() {
+  child(_obj?: Record<string, unknown>) {
     return logger;
   },
 };

@@ -647,10 +647,6 @@ export function resolveTaskflowBoardId(
   if (!taskflowManaged) return undefined;
 
   const dbPath = path.join(DATA_DIR, 'taskflow', 'taskflow.db');
-  if (!fs.existsSync(dbPath)) {
-    return undefined;
-  }
-
   let db: Database.Database | undefined;
   try {
     db = new Database(dbPath, { readonly: true, fileMustExist: true });

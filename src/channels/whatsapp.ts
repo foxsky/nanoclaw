@@ -29,6 +29,8 @@ import {
 import { registerChannel, ChannelOpts } from './registry.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const TRANSPORT_ERROR_RE =
+  /connection|socket|timed?\s*out|ECONNR|EPIPE|stream/i;
 
 export interface WhatsAppChannelOpts {
   onMessage: OnInboundMessage;
@@ -99,7 +101,7 @@ export class WhatsAppChannel implements Channel {
       version,
       auth: {
         creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger as any),
+        keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
       printQRInTerminal: false,
       logger,
@@ -396,10 +398,7 @@ export class WhatsAppChannel implements Channel {
       // Only reconnect on transport errors — not application errors like
       // invalid JIDs or permission issues which would reconnect needlessly.
       const isTransportError =
-        err instanceof Error &&
-        /connection|socket|timed?\s*out|ECONNR|EPIPE|stream/i.test(
-          err.message,
-        );
+        err instanceof Error && TRANSPORT_ERROR_RE.test(err.message);
       if (isTransportError && this.connected) {
         this.connected = false;
         this.reconnect();
