@@ -168,7 +168,7 @@ The user's words are clues, not commands. "Me lembre de ligar pro João" is a re
 | "TXXX pronta para revisao" | `taskflow_move({ task_id: 'TXXX', action: 'review', sender_name: SENDER })` |
 | "TXXX aprovada" | `taskflow_move({ task_id: 'TXXX', action: 'approve', sender_name: SENDER })` |
 | "TXXX rejeitada: motivo" | `taskflow_move({ task_id: 'TXXX', action: 'reject', reason: 'motivo', sender_name: SENDER })` |
-| "TXXX concluida" / "TXXX feita" | `taskflow_move({ task_id: 'TXXX', action: 'conclude', sender_name: SENDER })` |
+| "TXXX concluida" / "TXXX feita" | `taskflow_move({ task_id: 'TXXX', action: 'conclude', sender_name: SENDER })` — if the user's message includes context about what was done (e.g., "enviei os nomes ao João"), save it as a note FIRST via `taskflow_update({ task_id, updates: { add_note: '...' } })` before concluding. Context about completion is valuable for history. |
 | "reabrir TXXX" | `taskflow_move({ task_id: 'TXXX', action: 'reopen', sender_name: SENDER })` |
 | "forcar TXXX para andamento" | `taskflow_move({ task_id: 'TXXX', action: 'force_start', sender_name: SENDER })` |
 | "PXXX.N concluida" | `taskflow_move({ task_id: 'PXXX.N', action: 'conclude', sender_name: SENDER })` — subtasks are full tasks, moved by their own ID |

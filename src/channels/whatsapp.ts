@@ -15,6 +15,7 @@ import makeWASocket, {
 import {
   ASSISTANT_HAS_OWN_NUMBER,
   ASSISTANT_NAME,
+  DATA_DIR,
   STORE_DIR,
 } from '../config.js';
 import { getLastGroupSync, setLastGroupSync, updateChatName } from '../db.js';
@@ -49,11 +50,47 @@ export class WhatsAppChannel implements Channel {
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
   private groupSyncTimerStarted = false;
+  private static readonly QUEUE_PATH = path.join(
+    DATA_DIR,
+    'whatsapp-outgoing-queue.json',
+  );
 
   private opts: WhatsAppChannelOpts;
 
   constructor(opts: WhatsAppChannelOpts) {
     this.opts = opts;
+    this.loadQueue();
+  }
+
+  /** Load persisted outgoing queue from disk (survives restarts). */
+  private loadQueue(): void {
+    try {
+      const data = fs.readFileSync(WhatsAppChannel.QUEUE_PATH, 'utf-8');
+      const parsed = JSON.parse(data);
+      if (Array.isArray(parsed)) {
+        this.outgoingQueue = parsed;
+        if (parsed.length > 0) {
+          logger.info(
+            { count: parsed.length },
+            'Restored outgoing queue from disk',
+          );
+        }
+      }
+    } catch {
+      // File doesn't exist or is invalid — start empty
+    }
+  }
+
+  /** Persist outgoing queue to disk. */
+  private saveQueue(): void {
+    try {
+      fs.writeFileSync(
+        WhatsAppChannel.QUEUE_PATH,
+        JSON.stringify(this.outgoingQueue),
+      );
+    } catch (err) {
+      logger.warn({ err }, 'Failed to persist outgoing queue');
+    }
   }
 
   async connect(): Promise<void> {
@@ -236,7 +273,9 @@ export class WhatsAppChannel implements Channel {
       const timer = setTimeout(() => {
         if (!settled) {
           settled = true;
-          reject(new Error('Connection timeout — socket did not open or close'));
+          reject(
+            new Error('Connection timeout — socket did not open or close'),
+          );
         }
       }, CONNECT_TIMEOUT_MS);
 
@@ -386,6 +425,7 @@ export class WhatsAppChannel implements Channel {
 
     if (!this.connected) {
       this.outgoingQueue.push({ jid, text: prefixed });
+      this.saveQueue();
       logger.info(
         { jid, length: prefixed.length, queueSize: this.outgoingQueue.length },
         'WA disconnected, message queued',
@@ -398,6 +438,7 @@ export class WhatsAppChannel implements Channel {
     } catch (err) {
       // If send fails, queue it for retry on reconnect
       this.outgoingQueue.push({ jid, text: prefixed });
+      this.saveQueue();
       logger.warn(
         { jid, err, queueSize: this.outgoingQueue.length },
         'Failed to send, message queued',
@@ -685,15 +726,16 @@ export class WhatsAppChannel implements Channel {
       );
       while (this.outgoingQueue.length > 0) {
         const item = this.outgoingQueue.shift()!;
-        // Send directly — queued items are already prefixed by sendMessage
         try {
           await this.sock.sendMessage(item.jid, { text: item.text });
+          this.saveQueue();
           logger.info(
             { jid: item.jid, length: item.text.length },
             'Queued message sent',
           );
         } catch (err) {
           this.outgoingQueue.unshift(item);
+          this.saveQueue();
           logger.warn(
             { jid: item.jid, err, queueSize: this.outgoingQueue.length },
             'Failed to send queued message, will retry on reconnect',
