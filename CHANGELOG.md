@@ -40,7 +40,7 @@ For detailed release notes, see the [full changelog on the documentation site](h
 - `detach_task`: detach subtasks from projects back to standalone (preserves all metadata, undoable)
 - Subtask individual deadlines: agents can now set `due_date` on subtasks independently of the parent project
 - Fixed duplicate cross-board notifications when assignee is on the parent board
-- Template: save notes before completing tasks, multi-assignee guidance, task splitting pattern, archive fallback on "Task not found", enforce reparent over copy+cancel
+- Template: save notes before completing tasks, multi-assignee guidance, task splitting pattern, archive fallback on "Task not found", enforce reparent over copy+cancel, always confirm write operations in sender's group, link child board projects to parent tasks
 
 ### Cross-Board Project Rollup
 - `refresh_rollup` now counts subtasks of tagged projects, not just directly-tagged tasks
