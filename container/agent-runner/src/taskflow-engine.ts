@@ -736,6 +736,8 @@ export class TaskflowEngine {
       `CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(board_id, parent_task_id)
        WHERE parent_task_id IS NOT NULL`,
     );
+    try { this.db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_linked_parent ON tasks(board_id, linked_parent_board_id, linked_parent_task_id) WHERE linked_parent_board_id IS NOT NULL`); } catch {}
+    try { this.db.exec(`CREATE INDEX IF NOT EXISTS idx_archive_linked_parent ON archive(board_id, linked_parent_board_id, linked_parent_task_id)`); } catch {}
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS board_holidays (
@@ -6161,7 +6163,7 @@ export class TaskflowEngine {
           this.recordHistory(task.id, 'cancelled', params.sender_name);
 
           /* Refresh linked parent rollup */
-          this.refreshLinkedParentRollup(task, task.board_id ?? this.boardId, params.sender_name);
+          this.refreshLinkedParentRollup(task, this.taskBoardId(task), params.sender_name);
 
           /* Notify on cancellation */
           const cancelNotifications: AdminResult['notifications'] = [];
@@ -7354,150 +7356,24 @@ export class TaskflowEngine {
           const childBoardId = task.child_exec_board_id;
           const lastRollupAt = task.child_exec_last_rollup_at ?? '1970-01-01T00:00:00.000Z';
 
-          /* Step 1 — Count active child work (includes subtasks of tagged projects) */
-          const counts = this.db
-            .prepare(
-              `SELECT
-                 COUNT(*) AS total_count,
-                 SUM(CASE WHEN "column" != 'done' THEN 1 ELSE 0 END) AS open_count,
-                 SUM(CASE WHEN "column" = 'waiting' THEN 1 ELSE 0 END) AS waiting_count,
-                 SUM(CASE
-                   WHEN due_date IS NOT NULL AND due_date < ? AND "column" != 'done'
-                   THEN 1 ELSE 0 END) AS overdue_count,
-                 MAX(updated_at) AS latest_child_update_at
-               FROM tasks
-               WHERE board_id = ?
-                 AND (
-                   (linked_parent_board_id = ? AND linked_parent_task_id = ?)
-                   OR parent_task_id IN (
-                     SELECT id FROM tasks WHERE board_id = ? AND linked_parent_board_id = ? AND linked_parent_task_id = ?
-                   )
-                 )`,
-            )
-            .get(now.slice(0, 10), childBoardId, taskBoardId, task.id, childBoardId, taskBoardId, task.id) as any;
-
-          /* Step 2 — Count cancelled work since last rollup */
-          const cancelRow = this.db
-            .prepare(
-              `SELECT COUNT(*) AS cancelled_count
-               FROM archive
-               WHERE board_id = ?
-                 AND linked_parent_board_id = ?
-                 AND linked_parent_task_id = ?
-                 AND archive_reason = 'cancelled'
-                 AND archived_at > ?`,
-            )
-            .get(childBoardId, taskBoardId, task.id, lastRollupAt) as any;
-
-          const totalCount = counts.total_count ?? 0;
-          const openCount = counts.open_count ?? 0;
-          const waitingCount = counts.waiting_count ?? 0;
-          const overdueCount = counts.overdue_count ?? 0;
-          const cancelledCount = cancelRow.cancelled_count ?? 0;
-
-          /* Step 3 — Apply mapping rules (priority order) */
-          let rollupStatus: string;
-          let newColumn: string | null = null;
-          let waitingForValue: string | null = null;
-
-          if (cancelledCount > 0 && openCount === 0) {
-            rollupStatus = 'cancelled_needs_decision';
-            // Keep current column
-          } else if (totalCount > 0 && openCount === 0 && cancelledCount === 0) {
-            rollupStatus = 'ready_for_review';
-            newColumn = 'review';
-          } else if (waitingCount > 0) {
-            rollupStatus = 'blocked';
-            newColumn = 'waiting';
-            waitingForValue = `Quadro filho: ${waitingCount} tarefa(s) aguardando`;
-          } else if (overdueCount > 0) {
-            rollupStatus = 'at_risk';
-            newColumn = 'in_progress';
-          } else if (openCount > 0) {
-            rollupStatus = 'active';
-            newColumn = 'in_progress';
-          } else if (totalCount === 0 && cancelledCount === 0) {
-            rollupStatus = 'no_work_yet';
-            // Keep current column (next_action)
-          } else {
-            rollupStatus = 'active';
-            newColumn = 'in_progress';
-          }
-
-          /* Build summary */
-          const parts: string[] = [];
-          if (openCount > 0) parts.push(`${openCount} ativo(s)`);
-          if (waitingCount > 0) parts.push(`${waitingCount} aguardando`);
-          if (overdueCount > 0) parts.push(`${overdueCount} atrasado(s)`);
-          if (cancelledCount > 0) parts.push(`${cancelledCount} cancelado(s)`);
-          const doneCount = totalCount - openCount;
-          if (doneCount > 0) parts.push(`${doneCount} concluído(s)`);
-          const summary = parts.length > 0 ? parts.join(', ') : 'Sem atividade';
-
-          /* Step 4 — Update parent task */
-          if (newColumn) {
-            this.db
-              .prepare(
-                `UPDATE tasks SET
-                   child_exec_rollup_status = ?,
-                   child_exec_last_rollup_at = ?,
-                   child_exec_last_rollup_summary = ?,
-                   "column" = ?,
-                   waiting_for = CASE WHEN ? = 'waiting' THEN ? ELSE NULL END,
-                   updated_at = ?
-                 WHERE board_id = ? AND id = ?`,
-              )
-              .run(rollupStatus, now, summary, newColumn, newColumn, waitingForValue, now, taskBoardId, task.id);
-          } else {
-            this.db
-              .prepare(
-                `UPDATE tasks SET
-                   child_exec_rollup_status = ?,
-                   child_exec_last_rollup_at = ?,
-                   child_exec_last_rollup_summary = ?,
-                   updated_at = ?
-                 WHERE board_id = ? AND id = ?`,
-              )
-              .run(rollupStatus, now, summary, now, taskBoardId, task.id);
-          }
-
-          this.recordHistory(task.id, 'child_rollup_updated', params.sender_name,
-            JSON.stringify({ rollup_status: rollupStatus, summary, new_column: newColumn }), taskBoardId);
-          if (task.child_exec_rollup_status !== rollupStatus) {
-            const statusActionMap: Record<string, string> = {
-              blocked: 'child_rollup_blocked',
-              at_risk: 'child_rollup_at_risk',
-              ready_for_review: 'child_rollup_completed',
-              cancelled_needs_decision: 'child_rollup_cancelled',
-            };
-            const statusAction = statusActionMap[rollupStatus];
-            if (statusAction) {
-              this.recordHistory(
-                task.id,
-                statusAction,
-                params.sender_name,
-                JSON.stringify({
-                  from: task.child_exec_rollup_status ?? null,
-                  to: rollupStatus,
-                }),
-                taskBoardId,
-              );
-            }
-          }
+          const result = this.computeAndApplyRollup(
+            taskBoardId, task.id, childBoardId,
+            task.child_exec_rollup_status ?? null, lastRollupAt, params.sender_name,
+          );
 
           return {
             success: true,
             task_id: task.id,
-            rollup_status: rollupStatus,
-            rollup_summary: summary,
-            new_column: newColumn ?? task.column,
+            rollup_status: result.rollupStatus,
+            rollup_summary: result.summary,
+            new_column: result.newColumn ?? task.column,
             data: {
-              total: totalCount,
-              open: openCount,
-              waiting: waitingCount,
-              overdue: overdueCount,
-              cancelled: cancelledCount,
-              done: doneCount,
+              total: result.totalCount,
+              open: result.openCount,
+              waiting: result.waitingCount,
+              overdue: result.overdueCount,
+              cancelled: result.cancelledCount,
+              done: result.doneCount,
             },
           };
         }
@@ -7649,6 +7525,154 @@ export class TaskflowEngine {
   }
 
   /* ---------------------------------------------------------------- */
+  /*  computeAndApplyRollup — shared rollup logic                     */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Count child work, compute rollup status, UPDATE the parent task, and
+   * record history (only when the status actually changed).
+   * Used by both `refresh_rollup` (hierarchy action) and
+   * `refreshLinkedParentRollup` (auto-rollup after moves/cancels).
+   */
+  private computeAndApplyRollup(
+    parentBoardId: string,
+    parentTaskId: string,
+    childBoardId: string,
+    currentRollupStatus: string | null,
+    lastRollupAt: string,
+    senderName: string,
+  ): { rollupStatus: string; summary: string; newColumn: string | null; totalCount: number; openCount: number; doneCount: number; waitingCount: number; overdueCount: number; cancelledCount: number } {
+    const now = new Date().toISOString();
+
+    /* 1. Count active child work (includes subtasks of tagged projects) */
+    const counts = this.db
+      .prepare(
+        `SELECT
+           COUNT(*) AS total_count,
+           SUM(CASE WHEN "column" != 'done' THEN 1 ELSE 0 END) AS open_count,
+           SUM(CASE WHEN "column" = 'waiting' THEN 1 ELSE 0 END) AS waiting_count,
+           SUM(CASE
+             WHEN due_date IS NOT NULL AND due_date < ? AND "column" != 'done'
+             THEN 1 ELSE 0 END) AS overdue_count,
+           MAX(updated_at) AS latest_child_update_at
+         FROM tasks
+         WHERE board_id = ?
+           AND (
+             (linked_parent_board_id = ? AND linked_parent_task_id = ?)
+             OR parent_task_id IN (
+               SELECT id FROM tasks WHERE board_id = ? AND linked_parent_board_id = ? AND linked_parent_task_id = ?
+             )
+           )`,
+      )
+      .get(now.slice(0, 10), childBoardId, parentBoardId, parentTaskId, childBoardId, parentBoardId, parentTaskId) as any;
+
+    /* 2. Count cancelled work since last rollup */
+    const cancelRow = this.db
+      .prepare(
+        `SELECT COUNT(*) AS cancelled_count
+         FROM archive
+         WHERE board_id = ?
+           AND linked_parent_board_id = ?
+           AND linked_parent_task_id = ?
+           AND archive_reason = 'cancelled'
+           AND archived_at > ?`,
+      )
+      .get(childBoardId, parentBoardId, parentTaskId, lastRollupAt) as any;
+
+    const totalCount = counts.total_count ?? 0;
+    const openCount = counts.open_count ?? 0;
+    const waitingCount = counts.waiting_count ?? 0;
+    const overdueCount = counts.overdue_count ?? 0;
+    const cancelledCount = cancelRow.cancelled_count ?? 0;
+
+    /* 3. Apply mapping rules (priority order) */
+    let rollupStatus: string;
+    let newColumn: string | null = null;
+    let waitingForValue: string | null = null;
+
+    if (cancelledCount > 0 && openCount === 0) {
+      rollupStatus = 'cancelled_needs_decision';
+      // Keep current column
+    } else if (totalCount > 0 && openCount === 0 && cancelledCount === 0) {
+      rollupStatus = 'ready_for_review';
+      newColumn = 'review';
+    } else if (waitingCount > 0) {
+      rollupStatus = 'blocked';
+      newColumn = 'waiting';
+      waitingForValue = `Quadro filho: ${waitingCount} tarefa(s) aguardando`;
+    } else if (overdueCount > 0) {
+      rollupStatus = 'at_risk';
+      newColumn = 'in_progress';
+    } else if (openCount > 0) {
+      rollupStatus = 'active';
+      newColumn = 'in_progress';
+    } else if (totalCount === 0 && cancelledCount === 0) {
+      rollupStatus = 'no_work_yet';
+      // Keep current column (next_action)
+    } else {
+      rollupStatus = 'active';
+      newColumn = 'in_progress';
+    }
+
+    /* Build summary */
+    const parts: string[] = [];
+    if (openCount > 0) parts.push(`${openCount} ativo(s)`);
+    if (waitingCount > 0) parts.push(`${waitingCount} aguardando`);
+    if (overdueCount > 0) parts.push(`${overdueCount} atrasado(s)`);
+    if (cancelledCount > 0) parts.push(`${cancelledCount} cancelado(s)`);
+    const doneCount = totalCount - openCount;
+    if (doneCount > 0) parts.push(`${doneCount} concluído(s)`);
+    const summary = parts.length > 0 ? parts.join(', ') : 'Sem atividade';
+
+    /* 4. Update parent task */
+    if (newColumn) {
+      this.db
+        .prepare(
+          `UPDATE tasks SET
+             child_exec_rollup_status = ?,
+             child_exec_last_rollup_at = ?,
+             child_exec_last_rollup_summary = ?,
+             "column" = ?,
+             waiting_for = CASE WHEN ? = 'waiting' THEN ? ELSE NULL END,
+             updated_at = ?
+           WHERE board_id = ? AND id = ?`,
+        )
+        .run(rollupStatus, now, summary, newColumn, newColumn, waitingForValue, now, parentBoardId, parentTaskId);
+    } else {
+      this.db
+        .prepare(
+          `UPDATE tasks SET
+             child_exec_rollup_status = ?,
+             child_exec_last_rollup_at = ?,
+             child_exec_last_rollup_summary = ?,
+             updated_at = ?
+           WHERE board_id = ? AND id = ?`,
+        )
+        .run(rollupStatus, now, summary, now, parentBoardId, parentTaskId);
+    }
+
+    /* 5. Record history only when status changed */
+    if (rollupStatus !== currentRollupStatus) {
+      this.recordHistory(parentTaskId, 'child_rollup_updated', senderName,
+        JSON.stringify({ rollup_status: rollupStatus, summary, new_column: newColumn }), parentBoardId);
+
+      const statusActionMap: Record<string, string> = {
+        blocked: 'child_rollup_blocked',
+        at_risk: 'child_rollup_at_risk',
+        ready_for_review: 'child_rollup_completed',
+        cancelled_needs_decision: 'child_rollup_cancelled',
+      };
+      const statusAction = statusActionMap[rollupStatus];
+      if (statusAction) {
+        this.recordHistory(parentTaskId, statusAction, senderName,
+          JSON.stringify({ from: currentRollupStatus ?? null, to: rollupStatus }), parentBoardId);
+      }
+    }
+
+    return { rollupStatus, summary, newColumn, totalCount, openCount, doneCount, waitingCount, overdueCount, cancelledCount };
+  }
+
+  /* ---------------------------------------------------------------- */
   /*  refreshLinkedParentRollup — auto-rollup for linked parent tasks  */
   /* ---------------------------------------------------------------- */
 
@@ -7685,116 +7709,12 @@ export class TaskflowEngine {
     if (parentTask.child_exec_enabled !== 1 || !parentTask.child_exec_board_id) return;
 
     const childBoardId = parentTask.child_exec_board_id;
-    const now = new Date().toISOString();
     const lastRollupAt = parentTask.child_exec_last_rollup_at ?? '1970-01-01T00:00:00.000Z';
 
-    /* 4. Count active child work (same expanded SQL as refresh_rollup) */
-    const counts = this.db
-      .prepare(
-        `SELECT
-           COUNT(*) AS total_count,
-           SUM(CASE WHEN "column" != 'done' THEN 1 ELSE 0 END) AS open_count,
-           SUM(CASE WHEN "column" = 'waiting' THEN 1 ELSE 0 END) AS waiting_count,
-           SUM(CASE
-             WHEN due_date IS NOT NULL AND due_date < ? AND "column" != 'done'
-             THEN 1 ELSE 0 END) AS overdue_count,
-           MAX(updated_at) AS latest_child_update_at
-         FROM tasks
-         WHERE board_id = ?
-           AND (
-             (linked_parent_board_id = ? AND linked_parent_task_id = ?)
-             OR parent_task_id IN (
-               SELECT id FROM tasks WHERE board_id = ? AND linked_parent_board_id = ? AND linked_parent_task_id = ?
-             )
-           )`,
-      )
-      .get(now.slice(0, 10), childBoardId, parentBoardId, parentTaskId, childBoardId, parentBoardId, parentTaskId) as any;
-
-    /* 5. Count cancelled work since last rollup */
-    const cancelRow = this.db
-      .prepare(
-        `SELECT COUNT(*) AS cancelled_count
-         FROM archive
-         WHERE board_id = ?
-           AND linked_parent_board_id = ?
-           AND linked_parent_task_id = ?
-           AND archive_reason = 'cancelled'
-           AND archived_at > ?`,
-      )
-      .get(childBoardId, parentBoardId, parentTaskId, lastRollupAt) as any;
-
-    const totalCount = counts.total_count ?? 0;
-    const openCount = counts.open_count ?? 0;
-    const waitingCount = counts.waiting_count ?? 0;
-    const overdueCount = counts.overdue_count ?? 0;
-    const cancelledCount = cancelRow.cancelled_count ?? 0;
-
-    /* 6. Apply mapping rules (same as refresh_rollup) */
-    let rollupStatus: string;
-    let newColumn: string | null = null;
-    let waitingForValue: string | null = null;
-
-    if (cancelledCount > 0 && openCount === 0) {
-      rollupStatus = 'cancelled_needs_decision';
-    } else if (totalCount > 0 && openCount === 0 && cancelledCount === 0) {
-      rollupStatus = 'ready_for_review';
-      newColumn = 'review';
-    } else if (waitingCount > 0) {
-      rollupStatus = 'blocked';
-      newColumn = 'waiting';
-      waitingForValue = `Quadro filho: ${waitingCount} tarefa(s) aguardando`;
-    } else if (overdueCount > 0) {
-      rollupStatus = 'at_risk';
-      newColumn = 'in_progress';
-    } else if (openCount > 0) {
-      rollupStatus = 'active';
-      newColumn = 'in_progress';
-    } else if (totalCount === 0 && cancelledCount === 0) {
-      rollupStatus = 'no_work_yet';
-    } else {
-      rollupStatus = 'active';
-      newColumn = 'in_progress';
-    }
-
-    /* Build summary */
-    const parts: string[] = [];
-    if (openCount > 0) parts.push(`${openCount} ativo(s)`);
-    if (waitingCount > 0) parts.push(`${waitingCount} aguardando`);
-    if (overdueCount > 0) parts.push(`${overdueCount} atrasado(s)`);
-    if (cancelledCount > 0) parts.push(`${cancelledCount} cancelado(s)`);
-    const doneCount = totalCount - openCount;
-    if (doneCount > 0) parts.push(`${doneCount} concluído(s)`);
-    const summary = parts.length > 0 ? parts.join(', ') : 'Sem atividade';
-
-    /* 7. Update parent task */
-    if (newColumn) {
-      this.db
-        .prepare(
-          `UPDATE tasks SET
-             child_exec_rollup_status = ?,
-             child_exec_last_rollup_at = ?,
-             child_exec_last_rollup_summary = ?,
-             "column" = ?,
-             waiting_for = CASE WHEN ? = 'waiting' THEN ? ELSE NULL END,
-             updated_at = ?
-           WHERE board_id = ? AND id = ?`,
-        )
-        .run(rollupStatus, now, summary, newColumn, newColumn, waitingForValue, now, parentBoardId, parentTaskId);
-    } else {
-      this.db
-        .prepare(
-          `UPDATE tasks SET
-             child_exec_rollup_status = ?,
-             child_exec_last_rollup_at = ?,
-             child_exec_last_rollup_summary = ?,
-             updated_at = ?
-           WHERE board_id = ? AND id = ?`,
-        )
-        .run(rollupStatus, now, summary, now, parentBoardId, parentTaskId);
-    }
-
-    this.recordHistory(parentTaskId, 'child_rollup_updated', senderName,
-      JSON.stringify({ rollup_status: rollupStatus, summary, new_column: newColumn }), parentBoardId);
+    this.computeAndApplyRollup(
+      parentBoardId, parentTaskId, childBoardId,
+      parentTask.child_exec_rollup_status ?? null, lastRollupAt, senderName,
+    );
   }
 
   /* ---------------------------------------------------------------- */
