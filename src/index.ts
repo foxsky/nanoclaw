@@ -375,22 +375,28 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     const channel = findChannel(channels, chatJid);
     if (channel) await channel.setTyping?.(chatJid, true);
 
-    const output = await runAgent(group, dmPrompt, chatJid, [], async (result) => {
-      if (result.result) {
-        const raw =
-          typeof result.result === 'string'
-            ? result.result
-            : JSON.stringify(result.result);
-        const text = stripInternalTags(raw);
-        if (text && channel) {
-          await channel.sendMessage(
-            chatJid,
-            text,
-            getGroupSenderName(group.trigger),
-          );
+    const output = await runAgent(
+      group,
+      dmPrompt,
+      chatJid,
+      [],
+      async (result) => {
+        if (result.result) {
+          const raw =
+            typeof result.result === 'string'
+              ? result.result
+              : JSON.stringify(result.result);
+          const text = stripInternalTags(raw);
+          if (text && channel) {
+            await channel.sendMessage(
+              chatJid,
+              text,
+              getGroupSenderName(group.trigger),
+            );
+          }
         }
-      }
-    });
+      },
+    );
 
     if (channel) await channel.setTyping?.(chatJid, false);
 
@@ -500,34 +506,40 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Falls back to global ASSISTANT_NAME for groups without a custom trigger.
   const groupSender = getGroupSenderName(group.trigger);
 
-  const output = await runAgent(group, prompt, chatJid, imageAttachments, async (result) => {
-    // Streaming output callback — called for each agent result
-    if (result.result) {
-      const raw =
-        typeof result.result === 'string'
-          ? result.result
-          : JSON.stringify(result.result);
-      const text = stripInternalTags(raw);
-      logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
-      if (text) {
-        await channel.sendMessage(chatJid, text, groupSender);
-        outputSentToUser = true;
+  const output = await runAgent(
+    group,
+    prompt,
+    chatJid,
+    imageAttachments,
+    async (result) => {
+      // Streaming output callback — called for each agent result
+      if (result.result) {
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        const text = stripInternalTags(raw);
+        logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
+        if (text) {
+          await channel.sendMessage(chatJid, text, groupSender);
+          outputSentToUser = true;
+        }
+        // Only reset idle timer on actual results, not session-update markers (result: null)
+        resetIdleTimer();
       }
-      // Only reset idle timer on actual results, not session-update markers (result: null)
-      resetIdleTimer();
-    }
 
-    if (result.status === 'success') {
-      // Pause typing after each result so the user doesn't see
-      // "typing..." indefinitely when the next result is internal-only.
-      await channel.setTyping?.(chatJid, false);
-      queue.notifyIdle(chatJid);
-    }
+      if (result.status === 'success') {
+        // Pause typing after each result so the user doesn't see
+        // "typing..." indefinitely when the next result is internal-only.
+        await channel.setTyping?.(chatJid, false);
+        queue.notifyIdle(chatJid);
+      }
 
-    if (result.status === 'error') {
-      hadError = true;
-    }
-  });
+      if (result.status === 'error') {
+        hadError = true;
+      }
+    },
+  );
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);

@@ -20,7 +20,8 @@ import {
   STORE_DIR,
 } from '../config.js';
 import { getLastGroupSync, setLastGroupSync, updateChatName } from '../db.js';
-import { isImageMessage, processImage } from '../image.js';
+import { resolveGroupFolderPath } from '../group-folder.js';
+import { processImage } from '../image.js';
 import { logger } from '../logger.js';
 import { transcribeAudioMessage } from '../transcription.js';
 import {
@@ -194,13 +195,10 @@ export class WhatsAppChannel implements Channel {
               '';
 
             // Image attachment: download, resize, save to group workspace
-            if (isImageMessage(msg) && groups[chatJid]) {
+            if (normalized.imageMessage && groups[chatJid]) {
               try {
                 const buffer = await downloadMediaMessage(msg, 'buffer', {});
-                const groupDir = path.join(
-                  path.resolve('groups'),
-                  groups[chatJid].folder,
-                );
+                const groupDir = resolveGroupFolderPath(groups[chatJid].folder);
                 const caption = normalized.imageMessage?.caption ?? '';
                 const result = await processImage(
                   buffer as Buffer,
@@ -291,6 +289,7 @@ export class WhatsAppChannel implements Channel {
     // before the connection was established — leading to a permanent deadlock.
     return new Promise<void>((resolve, reject) => {
       let settled = false;
+      let opened = false;
 
       // Timeout: if the socket never emits open or close, reject so the
       // reconnect loop can retry instead of hanging forever.
@@ -331,7 +330,10 @@ export class WhatsAppChannel implements Channel {
             'Connection closed',
           );
 
-          if (!settled) {
+          if (!opened) {
+            if (settled) {
+              return;
+            }
             settled = true;
             clearTimeout(timer);
             if (!shouldReconnect) {
@@ -352,6 +354,9 @@ export class WhatsAppChannel implements Channel {
             process.exit(78); // EX_CONFIG — systemd RestartPreventExitStatus stops restart loop
           }
         } else if (connection === 'open') {
+          // Ignore stale open from a timed-out socket or duplicate open events
+          if (settled || opened) return;
+          opened = true;
           this.connected = true;
           this.reconnecting = false;
           logger.info('Connected to WhatsApp');

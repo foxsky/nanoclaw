@@ -20,6 +20,12 @@ For detailed release notes, see the [full changelog on the documentation site](h
 - Fixed half-dead socket stall: `sendMessage()` transport failures now trigger reconnection (filtered to avoid false reconnects on application errors)
 - Initial connect retries with backoff on transient startup failures
 - LoggedOut (401) during reconnect exits immediately
+- 30s timeout on `connectInternal()` — prevents reconnect loop from hanging forever on silent socket failures
+- Outgoing message queue persisted to disk — survives process restarts (29 messages lost in Mar 27 incident)
+
+### Image Vision
+- Wired end-to-end: WhatsApp image download → sharp resize → base64 → Claude multimodal content blocks
+- Handles wrapped images (viewOnceMessageV2, ephemeralMessage)
 
 ### Logger Baileys Compatibility
 - Added `level`, `child()`, `trace()` to built-in logger for Baileys `ILogger` interface — prevents runtime crash after pino removal
@@ -34,6 +40,7 @@ For detailed release notes, see the [full changelog on the documentation site](h
 - `detach_task`: detach subtasks from projects back to standalone (preserves all metadata, undoable)
 - Subtask individual deadlines: agents can now set `due_date` on subtasks independently of the parent project
 - Fixed duplicate cross-board notifications when assignee is on the parent board
+- Template: save notes before completing tasks, multi-assignee guidance, task splitting pattern, archive fallback on "Task not found", enforce reparent over copy+cancel
 
 ### Deploy Safety
 - New `scripts/deploy.sh` with pre-flight import verification on local and production before restarting

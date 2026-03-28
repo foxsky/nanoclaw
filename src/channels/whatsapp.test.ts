@@ -1,6 +1,16 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 
+function mockNormalizeMessageContent(content: any) {
+  if (content?.ephemeralMessage?.message) {
+    return mockNormalizeMessageContent(content.ephemeralMessage.message);
+  }
+  if (content?.viewOnceMessageV2?.message) {
+    return mockNormalizeMessageContent(content.viewOnceMessageV2.message);
+  }
+  return content;
+}
+
 // --- Mocks ---
 
 // Mock config
@@ -98,7 +108,7 @@ vi.mock('@whiskeysockets/baileys', () => {
     fetchLatestWaWebVersion: vi
       .fn()
       .mockResolvedValue({ version: [2, 3000, 0] }),
-    normalizeMessageContent: vi.fn((content: unknown) => content),
+    normalizeMessageContent: vi.fn(mockNormalizeMessageContent),
     makeCacheableSignalKeyStore: vi.fn((keys: unknown) => keys),
     useMultiFileAuthState: vi.fn().mockResolvedValue({
       state: {
@@ -314,36 +324,76 @@ describe('WhatsAppChannel', () => {
       await new Promise((r) => setTimeout(r, 100));
     });
 
+    it('ignores a late open from a timed-out initial socket and retries', async () => {
+      vi.useFakeTimers();
+      try {
+        const opts = createTestOpts();
+        const channel = new WhatsAppChannel(opts);
+        const firstSocket = fakeSocket;
+
+        const connectPromise = channel.connect();
+
+        // Flush microtasks so connectInternal registers listeners.
+        await vi.advanceTimersByTimeAsync(0);
+
+        // First attempt times out without open/close.
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(channel.isConnected()).toBe(false);
+
+        // A stale open from the timed-out socket must not flip connection state.
+        firstSocket._ev.emit('connection.update', { connection: 'open' });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(channel.isConnected()).toBe(false);
+
+        // Next retry should use a fresh socket and connect normally.
+        fakeSocket = createFakeSocket();
+        await vi.advanceTimersByTimeAsync(5_000);
+        await vi.advanceTimersByTimeAsync(0);
+        triggerConnection('open');
+
+        await expect(connectPromise).resolves.toBeUndefined();
+        expect(channel.isConnected()).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('recovers from reconnect deadlock (close before open on retry socket)', async () => {
       // This is the core bug: connectInternal used to resolve immediately,
       // so the retry loop exited thinking success. Then a second close event
       // was blocked by the reconnecting guard → permanent deadlock.
-      const opts = createTestOpts();
-      const channel = new WhatsAppChannel(opts);
+      vi.useFakeTimers();
+      try {
+        const opts = createTestOpts();
+        const channel = new WhatsAppChannel(opts);
 
-      await connectChannel(channel);
-      expect(channel.isConnected()).toBe(true);
+        const initialConnect = channel.connect();
+        await vi.advanceTimersByTimeAsync(0);
+        triggerConnection('open');
+        await expect(initialConnect).resolves.toBeUndefined();
+        expect(channel.isConnected()).toBe(true);
 
-      // First disconnect — triggers reconnect()
-      triggerDisconnect(428);
-      expect(channel.isConnected()).toBe(false);
+        // First disconnect — triggers reconnect()
+        triggerDisconnect(428);
+        expect(channel.isConnected()).toBe(false);
 
-      // Flush microtasks so connectInternal sets up new listeners
-      await new Promise((r) => setTimeout(r, 0));
+        // Flush microtasks so connectInternal sets up new listeners
+        await vi.advanceTimersByTimeAsync(0);
 
-      // The retry socket also fails before opening — this used to deadlock
-      triggerDisconnect(428);
+        // The retry socket also fails before opening — this used to deadlock
+        triggerDisconnect(428);
+        await vi.advanceTimersByTimeAsync(0);
 
-      // Flush microtasks for the next retry
-      await new Promise((r) => setTimeout(r, 0));
+        // Wait for the 5s retry backoff, then let the next attempt open.
+        await vi.advanceTimersByTimeAsync(5_000);
+        await vi.advanceTimersByTimeAsync(0);
+        triggerConnection('open');
+        await vi.advanceTimersByTimeAsync(0);
 
-      // Now the second retry socket succeeds
-      triggerConnection('open');
-
-      // Flush microtasks for the reconnect to settle
-      await new Promise((r) => setTimeout(r, 50));
-
-      expect(channel.isConnected()).toBe(true);
+        expect(channel.isConnected()).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('triggers reconnection on transport send failure (half-dead socket)', async () => {
@@ -553,6 +603,45 @@ describe('WhatsAppChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
         expect.objectContaining({ content: 'Check this photo' }),
+      );
+    });
+
+    it('extracts caption from wrapped imageMessage', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await triggerMessages([
+        {
+          key: {
+            id: 'msg-6b',
+            remoteJid: 'registered@g.us',
+            participant: '5551234@s.whatsapp.net',
+            fromMe: false,
+          },
+          message: {
+            ephemeralMessage: {
+              message: {
+                viewOnceMessageV2: {
+                  message: {
+                    imageMessage: {
+                      caption: 'Wrapped photo',
+                      mimetype: 'image/jpeg',
+                    },
+                  },
+                },
+              },
+            },
+          },
+          pushName: 'Diana',
+          messageTimestamp: Math.floor(Date.now() / 1000),
+        },
+      ]);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({ content: 'Wrapped photo' }),
       );
     });
 

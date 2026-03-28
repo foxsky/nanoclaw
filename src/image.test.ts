@@ -13,30 +13,13 @@ vi.mock('sharp', () => {
 
 vi.mock('fs');
 
-import { processImage, parseImageReferences, isImageMessage } from './image.js';
+import { processImage, parseImageReferences } from './image.js';
 
 describe('image processing', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(fs.mkdirSync).mockReturnValue(undefined);
     vi.mocked(fs.writeFileSync).mockReturnValue(undefined);
-  });
-
-  describe('isImageMessage', () => {
-    it('returns true for image messages', () => {
-      const msg = { message: { imageMessage: { mimetype: 'image/jpeg' } } };
-      expect(isImageMessage(msg as any)).toBe(true);
-    });
-
-    it('returns false for non-image messages', () => {
-      const msg = { message: { conversation: 'hello' } };
-      expect(isImageMessage(msg as any)).toBe(false);
-    });
-
-    it('returns false for null message', () => {
-      const msg = { message: null };
-      expect(isImageMessage(msg as any)).toBe(false);
-    });
   });
 
   describe('processImage', () => {
