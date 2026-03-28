@@ -28,6 +28,7 @@ node --input-type=module -e "
 echo "[3/4] Syncing to production..."
 rsync -az --delete dist/ "$REMOTE:$REMOTE_DIR/dist/"
 rsync -az --delete container/agent-runner/src/ "$REMOTE:$REMOTE_DIR/container/agent-runner/src/"
+rsync -az groups/ "$REMOTE:$REMOTE_DIR/groups/"
 rsync -az package.json package-lock.json "$REMOTE:$REMOTE_DIR/"
 ssh "$REMOTE" "cd $REMOTE_DIR && npm install --ignore-scripts 2>&1 | tail -1"
 
