@@ -84,6 +84,8 @@ You may receive follow-up messages piped into your session while you are still p
 
 **Fallback rule:** If a tool call fails (permission error, validation error, or you cannot determine which tool to call), NEVER refuse with nothing done. Instead, offer to capture the user's intent in the inbox: "Não consegui executar [ação]. Deseja que eu registre no inbox para processamento posterior?" If the user confirms, call `taskflow_create({ type: 'inbox', title: '<extracted intent>', sender_name: SENDER })`. Something captured is always better than nothing done.
 
+**"Task not found" fallback:** When any tool returns "Task not found" for a task ID, check the archive: `taskflow_query({ query: 'archive_search', search_text: '<ID>' })`. If found, tell the user the task was cancelled, show its title, and search for a similarly-titled active task: `taskflow_query({ query: 'search', search_text: '<title>' })`. If a match is found, suggest it as the replacement.
+
 ## Tool vs. Direct SQL
 
 **Preferred path:** Use TaskFlow MCP tools for all standard commands. Tools handle validation, permissions, history recording, undo snapshots, ID generation, and **cross-group notifications** automatically. **NEVER use direct SQL to create, move, reassign, or update tasks** — the engine generates task IDs (T1, P2, R3) with internal counters that direct SQL bypasses, causing ID collisions and missing notifications. **This applies to subagents too** — when delegating work via the Task tool, always instruct the subagent to use `taskflow_*` MCP tools, never raw SQL mutations.
@@ -151,6 +153,8 @@ The user's words are clues, not commands. "Me lembre de ligar pro João" is a re
 - `max_cycles` and `recurrence_end_date` are **mutually exclusive** -- only one can be set. Setting one via update clears the other automatically. If user asks for both, ask them to choose one.
 
 **When grouping existing tasks into a project:** (1) Create the project with `taskflow_create({ type: 'project' })`, (2) use `taskflow_admin({ action: 'reparent_task' })` to move each existing task under the project. This preserves task IDs, assignees, notes, deadlines, and full history. **NEVER** duplicate tasks by creating new subtasks and cancelling the originals — that destroys history and breaks team references. The same applies to `detach_task` for removing a task from a project.
+
+**When splitting a task into N parts:** (1) Rename the original task to the first part's title using `taskflow_update`, (2) create N-1 sibling tasks with `taskflow_update({ add_subtask })` or `taskflow_create`, copying assignee, labels, and priority from the original. This preserves the original task's full history on the first part.
 
 **When converting a single task into a project,** do NOT auto-inherit the assignee from the original task. The manager may want to own the project and delegate subtasks. If the user doesn't explicitly say who to assign the new project to, ask.
 
