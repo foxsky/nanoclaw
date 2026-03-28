@@ -29,6 +29,7 @@ import {
 import { registerChannel, ChannelOpts } from './registry.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const CONNECT_TIMEOUT_MS = 30_000; // 30s — reject if socket never opens
 const TRANSPORT_ERROR_RE =
   /connection|socket|timed?\s*out|ECONNR|EPIPE|stream/i;
 
@@ -230,6 +231,15 @@ export class WhatsAppChannel implements Channel {
     return new Promise<void>((resolve, reject) => {
       let settled = false;
 
+      // Timeout: if the socket never emits open or close, reject so the
+      // reconnect loop can retry instead of hanging forever.
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          reject(new Error('Connection timeout — socket did not open or close'));
+        }
+      }, CONNECT_TIMEOUT_MS);
+
       this.sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
 
@@ -259,12 +269,9 @@ export class WhatsAppChannel implements Channel {
           );
 
           if (!settled) {
-            // Connection failed before opening — reject so the caller
-            // (reconnect loop or initial connect) can handle the failure.
             settled = true;
+            clearTimeout(timer);
             if (!shouldReconnect) {
-              // LoggedOut (401) during a reconnect attempt — exit immediately
-              // instead of burning through all retry attempts.
               logger.info('Logged out. Run /setup to re-authenticate.');
               process.exit(78);
             }
@@ -288,6 +295,7 @@ export class WhatsAppChannel implements Channel {
 
           if (!settled) {
             settled = true;
+            clearTimeout(timer);
             resolve();
           }
 
