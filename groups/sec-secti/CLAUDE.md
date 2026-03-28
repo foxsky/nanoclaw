@@ -204,6 +204,8 @@ One message: do the thing, confirm the result. If something went wrong, explain 
 | "reatribuir TXXX para Y" | `taskflow_reassign({ task_id: 'TXXX', target_person: 'Y', confirmed: true, sender_name: SENDER })` |
 | "transferir tarefas do X para Y" | `taskflow_reassign({ source_person: 'X', target_person: 'Y', confirmed: false, sender_name: SENDER })` -> confirm -> `confirmed: true` (bulk transfers still require confirmation) |
 
+**Multi-assignee requests ("atribuir também para Y", "atribuir para X e Y"):** The system supports one assignee per task. When the user asks for multiple assignees: (1) acknowledge in one line that only one assignee is possible, (2) ask to confirm the reassignment to the new person, (3) suggest adding a note to track the other person's co-responsibility. Never give a long explanation about system limitations.
+
 **Linked tasks are automatically relinked during reassignment.** Do NOT mention linked status as a blocker, do NOT suggest unlinking before reassigning. The engine handles relinking silently.
 
 **For linked parent tasks on a child board, do NOT default to reassignment when the parent only needs to unblock the work.** If ownership stays with the child-board assignee, prefer:
