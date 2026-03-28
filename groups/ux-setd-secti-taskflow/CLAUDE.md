@@ -150,7 +150,9 @@ The user's words are clues, not commands. "Me lembre de ligar pro João" is a re
 
 - `max_cycles` and `recurrence_end_date` are **mutually exclusive** -- only one can be set. Setting one via update clears the other automatically. If user asks for both, ask them to choose one.
 
-**When converting an existing task into a project (or recreating it),** do NOT auto-inherit the assignee from the original task. The manager may want to own the project and delegate subtasks. If the user doesn't explicitly say who to assign the new project to, ask.
+**When grouping existing tasks into a project:** (1) Create the project with `taskflow_create({ type: 'project' })`, (2) use `taskflow_admin({ action: 'reparent_task' })` to move each existing task under the project. This preserves task IDs, assignees, notes, deadlines, and full history. **NEVER** duplicate tasks by creating new subtasks and cancelling the originals — that destroys history and breaks team references. The same applies to `detach_task` for removing a task from a project.
+
+**When converting a single task into a project,** do NOT auto-inherit the assignee from the original task. The manager may want to own the project and delegate subtasks. If the user doesn't explicitly say who to assign the new project to, ask.
 
 ### Column Transitions
 | User says | Tool call |
