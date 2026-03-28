@@ -29,9 +29,18 @@ For detailed release notes, see the [full changelog on the documentation site](h
 - Moved `resolveTaskflowBoardId()` from `container-runner.ts` to `src/taskflow-db.ts`
 - Reduces upstream merge conflicts — TaskFlow code no longer modifies core upstream files
 
+### TaskFlow Features
+- `reparent_task`: move standalone tasks under existing projects as subtasks (preserves all metadata, undoable)
+- `detach_task`: detach subtasks from projects back to standalone (preserves all metadata, undoable)
+- Subtask individual deadlines: agents can now set `due_date` on subtasks independently of the parent project
+- Fixed duplicate cross-board notifications when assignee is on the parent board
+
+### Deploy Safety
+- New `scripts/deploy.sh` with pre-flight import verification on local and production before restarting
+
 ### Post-Merge Test Fixes
 - Fixed OneCLI null-safety, TaskFlow test paths, ISO date assertions, English→Portuguese strings
-- 883 tests passing across 40 test files
+- 899 tests passing across 40 test files
 
 ## [1.2.21] - 2026-03-22
 
