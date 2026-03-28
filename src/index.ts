@@ -73,6 +73,7 @@ import {
   stripInternalTags,
 } from './router.js';
 import { getGroupSenderName } from './group-sender.js';
+import { parseImageReferences } from './image.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
@@ -374,7 +375,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     const channel = findChannel(channels, chatJid);
     if (channel) await channel.setTyping?.(chatJid, true);
 
-    const output = await runAgent(group, dmPrompt, chatJid, async (result) => {
+    const output = await runAgent(group, dmPrompt, chatJid, [], async (result) => {
       if (result.result) {
         const raw =
           typeof result.result === 'string'
@@ -431,7 +432,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       setTyping: (typing) =>
         channel.setTyping?.(chatJid, typing) ?? Promise.resolve(),
       runAgent: (prompt, onOutput) =>
-        runAgent(group, prompt, chatJid, onOutput),
+        runAgent(group, prompt, chatJid, [], onOutput),
       closeStdin: () => queue.closeStdin(chatJid),
       advanceCursor: (ts) => {
         lastAgentTimestamp[chatJid] = ts;
@@ -460,6 +461,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   const prompt = formatMessages(missedMessages);
+  const imageAttachments = parseImageReferences(missedMessages);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -498,7 +500,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Falls back to global ASSISTANT_NAME for groups without a custom trigger.
   const groupSender = getGroupSenderName(group.trigger);
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
+  const output = await runAgent(group, prompt, chatJid, imageAttachments, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw =
@@ -557,6 +559,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  imageAttachments: Array<{ relativePath: string; mediaType: string }>,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
@@ -623,6 +626,7 @@ async function runAgent(
         taskflowHierarchyLevel: group.taskflowHierarchyLevel,
         taskflowMaxDepth: group.taskflowMaxDepth,
         assistantName: getGroupSenderName(group.trigger),
+        ...(imageAttachments.length > 0 && { imageAttachments }),
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),

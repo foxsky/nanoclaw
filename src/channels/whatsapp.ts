@@ -5,6 +5,7 @@ import path from 'path';
 import makeWASocket, {
   Browsers,
   DisconnectReason,
+  downloadMediaMessage,
   WASocket,
   fetchLatestWaWebVersion,
   makeCacheableSignalKeyStore,
@@ -19,6 +20,7 @@ import {
   STORE_DIR,
 } from '../config.js';
 import { getLastGroupSync, setLastGroupSync, updateChatName } from '../db.js';
+import { isImageMessage, processImage } from '../image.js';
 import { logger } from '../logger.js';
 import { transcribeAudioMessage } from '../transcription.js';
 import {
@@ -184,12 +186,34 @@ export class WhatsAppChannel implements Channel {
           const groups = this.opts.registeredGroups();
           const isDm = !isGroup;
           if (groups[chatJid] || isDm) {
-            const content =
+            let content =
               normalized.conversation ||
               normalized.extendedTextMessage?.text ||
               normalized.imageMessage?.caption ||
               normalized.videoMessage?.caption ||
               '';
+
+            // Image attachment: download, resize, save to group workspace
+            if (isImageMessage(msg) && groups[chatJid]) {
+              try {
+                const buffer = await downloadMediaMessage(msg, 'buffer', {});
+                const groupDir = path.join(
+                  path.resolve('groups'),
+                  groups[chatJid].folder,
+                );
+                const caption = normalized.imageMessage?.caption ?? '';
+                const result = await processImage(
+                  buffer as Buffer,
+                  groupDir,
+                  caption,
+                );
+                if (result) {
+                  content = result.content;
+                }
+              } catch (err) {
+                logger.warn({ err, jid: chatJid }, 'Image download failed');
+              }
+            }
 
             // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
             // but allow voice messages through for transcription.
