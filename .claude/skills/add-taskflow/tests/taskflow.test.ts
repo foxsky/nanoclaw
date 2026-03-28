@@ -7058,3 +7058,185 @@ describe('detach_task', () => {
     db.close();
   });
 });
+
+/* ================================================================== */
+/*  Cross-board project rollup                                        */
+/* ================================================================== */
+
+describe('cross-board project rollup', () => {
+  const PARENT_BOARD = 'board-parent';
+  const CHILD_BOARD = 'board-child';
+
+  function setupCrossBoard(): { db: Database.Database; parentEngine: TaskflowEngine; childEngine: TaskflowEngine } {
+    const db = new Database(':memory:');
+    db.exec(SCHEMA);
+    const now = new Date().toISOString();
+
+    // Parent board setup
+    db.exec(`INSERT INTO boards VALUES ('${PARENT_BOARD}', 'parent@g.us', 'parent', 'standard', 0, 2, NULL, 'PAR')`);
+    db.exec(`INSERT INTO board_config VALUES ('${PARENT_BOARD}', '["inbox","next_action","in_progress","waiting","review","done"]', 5, 2, 1, 1, 1)`);
+    db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${PARENT_BOARD}')`);
+    db.exec(`INSERT INTO board_admins VALUES ('${PARENT_BOARD}', 'mgr-1', '5585999990001', 'manager', 1)`);
+    db.exec(`INSERT INTO board_people VALUES ('${PARENT_BOARD}', 'mgr-1', 'Manager', '5585999990001', 'Gestor', 5, NULL)`);
+    db.exec(`INSERT INTO board_groups VALUES ('${PARENT_BOARD}', 'parent@g.us', 'parent', 'team')`);
+
+    // T1 on parent — delegated to child board
+    db.prepare(
+      `INSERT INTO tasks (id, board_id, type, title, column, child_exec_enabled, child_exec_board_id, requires_close_approval, created_at, updated_at)
+       VALUES ('T1', ?, 'simple', 'Parent Deliverable', 'in_progress', 1, ?, 0, ?, ?)`,
+    ).run(PARENT_BOARD, CHILD_BOARD, now, now);
+
+    // Child board setup
+    db.exec(`INSERT INTO boards VALUES ('${CHILD_BOARD}', 'child@g.us', 'child', 'standard', 1, 2, '${PARENT_BOARD}', 'CHI')`);
+    db.exec(`INSERT INTO board_config VALUES ('${CHILD_BOARD}', '["inbox","next_action","in_progress","waiting","review","done"]', 5, 4, 2, 1, 1)`);
+    db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${CHILD_BOARD}')`);
+    db.exec(`INSERT INTO board_admins VALUES ('${CHILD_BOARD}', 'child-mgr', '5585999990010', 'manager', 1)`);
+    db.exec(`INSERT INTO board_people VALUES ('${CHILD_BOARD}', 'child-mgr', 'ChildMgr', '5585999990010', 'Gestor', 5, NULL)`);
+    db.exec(`INSERT INTO board_people VALUES ('${CHILD_BOARD}', 'worker-1', 'Worker', '5585999990011', 'Dev', 3, NULL)`);
+    db.exec(`INSERT INTO board_groups VALUES ('${CHILD_BOARD}', 'child@g.us', 'child', 'team')`);
+
+    // P1 on child — project linked to T1 on parent
+    db.prepare(
+      `INSERT INTO tasks (id, board_id, type, title, column, linked_parent_board_id, linked_parent_task_id, requires_close_approval, created_at, updated_at)
+       VALUES ('P1', ?, 'project', 'Child Project', 'in_progress', ?, 'T1', 0, ?, ?)`,
+    ).run(CHILD_BOARD, PARENT_BOARD, now, now);
+
+    // Subtasks of P1
+    db.prepare(
+      `INSERT INTO tasks (id, board_id, type, title, column, parent_task_id, assignee, requires_close_approval, created_at, updated_at)
+       VALUES ('P1.1', ?, 'simple', 'Subtask 1', 'next_action', 'P1', 'worker-1', 0, ?, ?)`,
+    ).run(CHILD_BOARD, now, now);
+    db.prepare(
+      `INSERT INTO tasks (id, board_id, type, title, column, parent_task_id, assignee, requires_close_approval, created_at, updated_at)
+       VALUES ('P1.2', ?, 'simple', 'Subtask 2', 'next_action', 'P1', 'worker-1', 0, ?, ?)`,
+    ).run(CHILD_BOARD, now, now);
+    db.prepare(
+      `INSERT INTO tasks (id, board_id, type, title, column, parent_task_id, assignee, requires_close_approval, created_at, updated_at)
+       VALUES ('P1.3', ?, 'simple', 'Subtask 3', 'next_action', 'P1', 'worker-1', 0, ?, ?)`,
+    ).run(CHILD_BOARD, now, now);
+
+    const parentEngine = new TaskflowEngine(db, PARENT_BOARD);
+    const childEngine = new TaskflowEngine(db, CHILD_BOARD);
+
+    return { db, parentEngine, childEngine };
+  }
+
+  it('refresh_rollup counts subtasks of tagged project', () => {
+    const { db, parentEngine } = setupCrossBoard();
+
+    // Conclude P1.1 on child board
+    db.prepare(`UPDATE tasks SET "column" = 'done' WHERE board_id = ? AND id = 'P1.1'`).run(CHILD_BOARD);
+
+    // Call hierarchy refresh_rollup on T1 from parent engine
+    const result = parentEngine.hierarchy({
+      board_id: PARENT_BOARD,
+      action: 'refresh_rollup',
+      task_id: 'T1',
+      sender_name: 'Manager',
+    });
+
+    expect(result.success).toBe(true);
+    // Total includes P1 (project) + P1.1 + P1.2 + P1.3 = 4
+    expect(result.data.total).toBeGreaterThanOrEqual(3);
+    expect(result.data.done).toBe(1);
+    // Open includes P1 (in_progress) + P1.2 + P1.3 = 3
+    expect(result.data.open).toBe(3);
+
+    db.close();
+  });
+
+  it('refresh_rollup marks ready_for_review when all subtasks done', () => {
+    const { db, parentEngine } = setupCrossBoard();
+
+    // Conclude all 3 subtasks AND the project itself
+    db.prepare(`UPDATE tasks SET "column" = 'done' WHERE board_id = ? AND id IN ('P1', 'P1.1', 'P1.2', 'P1.3')`).run(CHILD_BOARD);
+
+    const result = parentEngine.hierarchy({
+      board_id: PARENT_BOARD,
+      action: 'refresh_rollup',
+      task_id: 'T1',
+      sender_name: 'Manager',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.rollup_status).toBe('ready_for_review');
+    expect(result.new_column).toBe('review');
+
+    // Verify T1 was actually updated in the DB
+    const t1 = db.prepare(`SELECT * FROM tasks WHERE board_id = ? AND id = 'T1'`).get(PARENT_BOARD) as any;
+    expect(t1.column).toBe('review');
+    expect(t1.child_exec_rollup_status).toBe('ready_for_review');
+
+    db.close();
+  });
+
+  it('move() auto-triggers rollup when subtask completes', () => {
+    const { db, childEngine } = setupCrossBoard();
+
+    // Start P1.1 then conclude it via engine move
+    childEngine.move({ board_id: CHILD_BOARD, task_id: 'P1.1', action: 'start', sender_name: 'Worker' });
+    childEngine.move({ board_id: CHILD_BOARD, task_id: 'P1.1', action: 'conclude', sender_name: 'Worker' });
+
+    // Check T1 on parent board got rollup
+    const t1 = db.prepare(`SELECT * FROM tasks WHERE board_id = ? AND id = 'T1'`).get(PARENT_BOARD) as any;
+    expect(t1.child_exec_rollup_status).toBe('active');
+    expect(t1.child_exec_last_rollup_summary).toContain('concluído');
+
+    db.close();
+  });
+
+  it('move() auto-triggers rollup when all subtasks complete', () => {
+    const { db, childEngine } = setupCrossBoard();
+
+    // Conclude all 3 subtasks via engine moves
+    for (const id of ['P1.1', 'P1.2', 'P1.3']) {
+      childEngine.move({ board_id: CHILD_BOARD, task_id: id, action: 'start', sender_name: 'Worker' });
+      childEngine.move({ board_id: CHILD_BOARD, task_id: id, action: 'conclude', sender_name: 'Worker' });
+    }
+
+    // Also conclude the parent project P1 itself (in real workflows the agent does this)
+    childEngine.move({ board_id: CHILD_BOARD, task_id: 'P1', action: 'conclude', sender_name: 'ChildMgr' });
+
+    // Check T1 on parent board — all done means ready_for_review
+    const t1 = db.prepare(`SELECT * FROM tasks WHERE board_id = ? AND id = 'T1'`).get(PARENT_BOARD) as any;
+    expect(t1.column).toBe('review');
+    expect(t1.child_exec_rollup_status).toBe('ready_for_review');
+
+    db.close();
+  });
+
+  it('move() auto-triggers rollup when subtask moves to waiting', () => {
+    const { db, childEngine } = setupCrossBoard();
+
+    // Start P1.1, then move to waiting
+    childEngine.move({ board_id: CHILD_BOARD, task_id: 'P1.1', action: 'start', sender_name: 'Worker' });
+    childEngine.move({ board_id: CHILD_BOARD, task_id: 'P1.1', action: 'wait', sender_name: 'Worker', reason: 'Blocked on external' });
+
+    // Check T1 on parent board — should be blocked
+    const t1 = db.prepare(`SELECT * FROM tasks WHERE board_id = ? AND id = 'T1'`).get(PARENT_BOARD) as any;
+    expect(t1.child_exec_rollup_status).toBe('blocked');
+
+    db.close();
+  });
+
+  it('does not crash for directly delegated tasks', () => {
+    const { db, childEngine } = setupCrossBoard();
+
+    // Create T2 on child with direct linked_parent_task_id (no project wrapper)
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO tasks (id, board_id, type, title, column, linked_parent_board_id, linked_parent_task_id, assignee, requires_close_approval, created_at, updated_at)
+       VALUES ('T2', ?, 'simple', 'Direct Delegated', 'next_action', ?, 'T1', 'worker-1', 0, ?, ?)`,
+    ).run(CHILD_BOARD, PARENT_BOARD, now, now);
+
+    // Conclude T2 via engine move
+    childEngine.move({ board_id: CHILD_BOARD, task_id: 'T2', action: 'start', sender_name: 'Worker' });
+    childEngine.move({ board_id: CHILD_BOARD, task_id: 'T2', action: 'conclude', sender_name: 'Worker' });
+
+    // T1 should have a rollup status set
+    const t1 = db.prepare(`SELECT * FROM tasks WHERE board_id = ? AND id = 'T1'`).get(PARENT_BOARD) as any;
+    expect(t1.child_exec_rollup_status).toBeTruthy();
+
+    db.close();
+  });
+});
