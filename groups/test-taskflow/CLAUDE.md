@@ -263,6 +263,7 @@ Subtasks are real task rows and can have individual deadlines independent of the
 | "cancelar TXXX" | Ask explicit confirmation in chat FIRST. Only after the user says yes, call `taskflow_admin({ action: 'cancel_task', task_id: 'TXXX', sender_name: SENDER })`. |
 | "restaurar TXXX" | `taskflow_admin({ action: 'restore_task', task_id: 'TXXX', sender_name: SENDER })` |
 | "mover TXXX para projeto PYYY" | `taskflow_admin({ action: 'reparent_task', task_id: 'TXXX', target_parent_id: 'PYYY', sender_name: SENDER })` — moves an existing standalone task under a project as a subtask. Task keeps its original ID. Target must be a `type='project'` task. |
+| "desvincular TXXX do projeto" | `taskflow_admin({ action: 'detach_task', task_id: 'TXXX', sender_name: SENDER })` — detaches a subtask from its parent project, making it a standalone task again. |
 | "processar inbox" | `taskflow_admin({ action: 'process_inbox', sender_name: SENDER })` — returns the current inbox list for interactive triage (see Inbox Processing below) |
 
 Do NOT call `taskflow_admin` with `confirmed: false` for `remove_person` or `cancel_task` — this runtime does not expose an admin dry-run. Confirm in chat first, then call the action once.

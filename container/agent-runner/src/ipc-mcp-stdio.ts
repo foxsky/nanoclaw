@@ -903,7 +903,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       'taskflow_admin',
       'Board administration: register/remove people, manage roles, set WIP limits, cancel/restore tasks, process inbox, manage holidays.',
       {
-        action: z.enum(['register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin', 'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays', 'process_minutes', 'process_minutes_decision', 'accept_external_invite', 'reparent_task']).describe('Admin action'),
+        action: z.enum(['register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin', 'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays', 'process_minutes', 'process_minutes_decision', 'accept_external_invite', 'reparent_task', 'detach_task']).describe('Admin action'),
         sender_name: z.string().describe('Name of the person performing the admin action'),
         person_name: z.string().optional().describe('Person name (for person-related actions)'),
         phone: z.string().optional().describe('Phone number (for register_person)'),

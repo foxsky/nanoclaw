@@ -195,7 +195,7 @@ export interface UndoResult extends TaskflowResult {
 
 export interface AdminParams {
   board_id: string;
-  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision' | 'accept_external_invite' | 'reparent_task';
+  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision' | 'accept_external_invite' | 'reparent_task' | 'detach_task';
   sender_name: string;
   person_name?: string;
   phone?: string;
@@ -6542,6 +6542,52 @@ export class TaskflowEngine {
             data: {
               parent_task_id: parent.id,
               parent_title: parent.title,
+            },
+          };
+        }
+
+        /* ---- detach_task ---- */
+        case 'detach_task': {
+          if (!params.task_id) {
+            return { success: false, error: 'Missing required parameter: task_id' };
+          }
+
+          const task = this.requireTask(params.task_id);
+          const taskBoardId = this.taskBoardId(task);
+          const now = new Date().toISOString();
+
+          if (!task.parent_task_id) {
+            return { success: false, error: `Task ${task.id} is not a subtask — nothing to detach.` };
+          }
+
+          const parentId = task.parent_task_id;
+          const parent = this.requireTask(parentId);
+
+          const detachSnapshot = JSON.stringify({
+            action: 'detached',
+            by: params.sender_name,
+            at: now,
+            snapshot: { parent_task_id: task.parent_task_id },
+          });
+
+          this.db
+            .prepare(`UPDATE tasks SET parent_task_id = NULL, _last_mutation = ?, updated_at = ? WHERE board_id = ? AND id = ?`)
+            .run(detachSnapshot, now, taskBoardId, task.id);
+
+          this.recordHistory(task.id, 'detached', params.sender_name,
+            JSON.stringify({ from_parent: parentId, from_parent_title: parent.title }),
+            taskBoardId);
+
+          this.recordHistory(parentId, 'subtask_removed', params.sender_name,
+            JSON.stringify({ subtask_id: task.id, subtask_title: task.title }),
+            taskBoardId);
+
+          return {
+            success: true,
+            task_id: task.id,
+            data: {
+              detached_from: parentId,
+              detached_from_title: parent.title,
             },
           };
         }

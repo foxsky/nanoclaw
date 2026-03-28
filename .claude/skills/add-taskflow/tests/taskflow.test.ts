@@ -6963,3 +6963,98 @@ describe('reparent_task', () => {
     expect(subtasks.map((r: any) => r.id)).toContain('T5');
   });
 });
+
+describe('detach_task', () => {
+  const DETACH_BOARD = 'board-detach';
+
+  function setupBoard() {
+    const db = new Database(':memory:');
+    db.exec(SCHEMA);
+    db.exec(`INSERT INTO boards VALUES ('${DETACH_BOARD}', 'test@g.us', 'detach-test', 'standard', 0, 1, NULL, NULL)`);
+    db.exec(`INSERT INTO board_config VALUES ('${DETACH_BOARD}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 4, 1, 1, 1)`);
+    db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${DETACH_BOARD}')`);
+    db.exec(`INSERT INTO board_people VALUES ('${DETACH_BOARD}', 'mgr1', 'Manager', '5585999990001', 'Gestor', 3, NULL)`);
+    db.exec(`INSERT INTO board_admins VALUES ('${DETACH_BOARD}', 'mgr1', '5585999990001', 'manager', 1)`);
+    const now = new Date().toISOString();
+    db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at) VALUES ('P1', '${DETACH_BOARD}', 'project', 'Test Project', 'mgr1', 'next_action', '${now}', '${now}')`);
+    db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, parent_task_id, due_date, priority, created_at, updated_at) VALUES ('P1.1', '${DETACH_BOARD}', 'simple', 'Subtask One', 'mgr1', 'in_progress', 'P1', '2026-04-15', 'high', '${now}', '${now}')`);
+    db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at) VALUES ('T5', '${DETACH_BOARD}', 'simple', 'Standalone', 'mgr1', 'next_action', '${now}', '${now}')`);
+    return db;
+  }
+
+  it('detaches a subtask from its parent project', () => {
+    const db = setupBoard();
+    const engine = new TaskflowEngine(db, DETACH_BOARD);
+    const result = engine.admin({
+      board_id: DETACH_BOARD,
+      action: 'detach_task',
+      task_id: 'P1.1',
+      sender_name: 'Manager',
+    });
+    expect(result.success).toBe(true);
+    expect(result.data.detached_from).toBe('P1');
+    const task = db.prepare(`SELECT parent_task_id FROM tasks WHERE id = 'P1.1'`).get() as any;
+    expect(task.parent_task_id).toBeNull();
+    db.close();
+  });
+
+  it('preserves metadata after detach', () => {
+    const db = setupBoard();
+    const engine = new TaskflowEngine(db, DETACH_BOARD);
+    engine.admin({ board_id: DETACH_BOARD, action: 'detach_task', task_id: 'P1.1', sender_name: 'Manager' });
+    const task = db.prepare(`SELECT parent_task_id, due_date, priority, column FROM tasks WHERE id = 'P1.1'`).get() as any;
+    expect(task.parent_task_id).toBeNull();
+    expect(task.due_date).toBe('2026-04-15');
+    expect(task.priority).toBe('high');
+    expect(task.column).toBe('in_progress');
+    db.close();
+  });
+
+  it('rejects detach on standalone task', () => {
+    const db = setupBoard();
+    const engine = new TaskflowEngine(db, DETACH_BOARD);
+    const result = engine.admin({
+      board_id: DETACH_BOARD,
+      action: 'detach_task',
+      task_id: 'T5',
+      sender_name: 'Manager',
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('not a subtask');
+    db.close();
+  });
+
+  it('records history on both task and project', () => {
+    const db = setupBoard();
+    const engine = new TaskflowEngine(db, DETACH_BOARD);
+    engine.admin({ board_id: DETACH_BOARD, action: 'detach_task', task_id: 'P1.1', sender_name: 'Manager' });
+    const taskHist = db.prepare(`SELECT * FROM task_history WHERE task_id = 'P1.1' AND action = 'detached'`).get() as any;
+    expect(taskHist).toBeTruthy();
+    const projHist = db.prepare(`SELECT * FROM task_history WHERE task_id = 'P1' AND action = 'subtask_removed'`).get() as any;
+    expect(projHist).toBeTruthy();
+    db.close();
+  });
+
+  it('is undoable (re-attaches to parent)', () => {
+    const db = setupBoard();
+    const engine = new TaskflowEngine(db, DETACH_BOARD);
+    engine.admin({ board_id: DETACH_BOARD, action: 'detach_task', task_id: 'P1.1', sender_name: 'Manager' });
+    expect((db.prepare(`SELECT parent_task_id FROM tasks WHERE id = 'P1.1'`).get() as any).parent_task_id).toBeNull();
+    const undoResult = engine.undo({ board_id: DETACH_BOARD, sender_name: 'Manager' });
+    expect(undoResult.success).toBe(true);
+    expect((db.prepare(`SELECT parent_task_id FROM tasks WHERE id = 'P1.1'`).get() as any).parent_task_id).toBe('P1');
+    db.close();
+  });
+
+  it('roundtrip: reparent then detach', () => {
+    const db = setupBoard();
+    const engine = new TaskflowEngine(db, DETACH_BOARD);
+    // Reparent T5 under P1
+    engine.admin({ board_id: DETACH_BOARD, action: 'reparent_task', task_id: 'T5', target_parent_id: 'P1', sender_name: 'Manager' });
+    expect((db.prepare(`SELECT parent_task_id FROM tasks WHERE id = 'T5'`).get() as any).parent_task_id).toBe('P1');
+    // Detach T5
+    engine.admin({ board_id: DETACH_BOARD, action: 'detach_task', task_id: 'T5', sender_name: 'Manager' });
+    expect((db.prepare(`SELECT parent_task_id FROM tasks WHERE id = 'T5'`).get() as any).parent_task_id).toBeNull();
+    db.close();
+  });
+});
