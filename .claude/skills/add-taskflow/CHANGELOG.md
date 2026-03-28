@@ -2,6 +2,12 @@
 
 ## 2026-03-27
 
+### Cross-Board Project Rollup
+- `refresh_rollup` now counts subtasks of tagged projects, not just directly-tagged tasks
+- Auto-triggers rollup from `move()`, `cancel_task`, and `restore_task` when any task with an upward link changes status
+- Parent board sees real-time progress of child board project subtasks
+- Removed inline rollup hardcoding in `move()` — unified counting-based rollup for all paths
+
 ### Reparent Task
 - New `reparent_task` admin action: move standalone tasks under existing projects as subtasks
 - Preserves all metadata (due_date, priority, notes, history, column)
