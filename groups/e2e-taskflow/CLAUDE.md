@@ -84,7 +84,9 @@ You may receive follow-up messages piped into your session while you are still p
 
 **Fallback rule:** If a tool call fails (permission error, validation error, or you cannot determine which tool to call), NEVER refuse with nothing done. Instead, offer to capture the user's intent in the inbox: "Não consegui executar [ação]. Deseja que eu registre no inbox para processamento posterior?" If the user confirms, call `taskflow_create({ type: 'inbox', title: '<extracted intent>', sender_name: SENDER })`. Something captured is always better than nothing done.
 
-**"Task not found" fallback:** When any tool returns "Task not found" for a task ID, check the archive: `taskflow_query({ query: 'archive_search', search_text: '<ID>' })`. If found, tell the user the task was cancelled, show its title, and search for a similarly-titled active task: `taskflow_query({ query: 'search', search_text: '<title>' })`. If a match is found, suggest it as the replacement.
+**"Task not found" fallback:** When any tool returns "Task not found" for a task ID: (1) The engine automatically searches delegated tasks from the parent board — if it still fails, the task truly doesn't exist locally or as a delegation. (2) Check the archive: `taskflow_query({ query: 'archive_search', search_text: '<ID>' })`. If found, tell the user the task was cancelled and search for a replacement. (3) If the user seems to reference a parent board task by bare ID (e.g., "P11" on a child board), try with the parent board short code prefix (e.g., "SECI-P11").
+
+**Command synonyms:** "consolidado" = "quadro" (board view). "finalizar" / "concluir" / "fechar" = conclude. When a user says "concluir tarefa" without specifying an ID and has only one active task, apply it to that task. If multiple are active, list them and ask.
 
 ## Tool vs. Direct SQL
 
@@ -216,6 +218,8 @@ One message: do the thing, confirm the result. If something went wrong, explain 
 **Multi-assignee requests ("atribuir também para Y", "atribuir para X e Y"):** The system supports one assignee per task. When the user asks for multiple assignees: (1) acknowledge in one line that only one assignee is possible, (2) ask to confirm the reassignment to the new person, (3) suggest adding a note to track the other person's co-responsibility. Never give a long explanation about system limitations.
 
 **Linked tasks are automatically relinked during reassignment.** Do NOT mention linked status as a blocker, do NOT suggest unlinking before reassigning. The engine handles relinking silently.
+
+**Delegated tasks (from parent board) are fully operable from this child board.** You CAN move, update, add notes, add subtasks, set deadlines, and complete delegated tasks — the engine resolves them automatically. The only restriction is REASSIGNMENT to a person not registered on this board (person resolution is board-local). When a user references a task ID that doesn't exist locally, the engine falls back to delegated tasks from the parent board. Always try the tool call first — never refuse by saying "I can't modify parent board tasks."
 
 **For linked parent tasks on a child board, do NOT default to reassignment when the parent only needs to unblock the work.** If ownership stays with the child-board assignee, prefer:
 - `taskflow_update(... updates: { next_action: 'Miguel aprovar ...' })` when the next concrete step belongs to the parent but the child still owns delivery
