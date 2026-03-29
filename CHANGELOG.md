@@ -40,7 +40,22 @@ For detailed release notes, see the [full changelog on the documentation site](h
 - `detach_task`: detach subtasks from projects back to standalone (preserves all metadata, undoable)
 - Subtask individual deadlines: agents can now set `due_date` on subtasks independently of the parent project
 - Fixed duplicate cross-board notifications when assignee is on the parent board
-- Template: save notes before completing tasks, multi-assignee guidance, task splitting pattern, archive fallback on "Task not found", enforce reparent over copy+cancel, always confirm write operations in sender's group, link child board projects to parent tasks
+- Template: save notes before completing tasks, multi-assignee guidance, task splitting pattern, archive fallback on "Task not found", enforce reparent over copy+cancel, always confirm write operations in sender's group, link child board projects to parent tasks, delegated tasks fully operable from child boards, "consolidado" synonym, contextual task inference
+
+### Child Board Cross-Board Operations Fix
+- Child boards can now modify delegated parent board tasks (move, update, add subtasks, complete)
+- Root cause: template led agents to infer a blanket "can't modify parent board" restriction that doesn't exist in the engine
+- Caused all CI-SECI (Mauro) failures: 7 missing subtasks, 2 missed renames, 1 missing subtask
+
+### Data Corrections (interaction review)
+- SECI: 65 task histories migrated from old T-ids to P-subtask ids after copy+cancel migration
+- SECI: P1.4 assignee fixed (lucas), P1.2 assignee fixed (ana-beatriz), P1.10/P20.4 deadlines set
+- SECI: P1 (Laizys) linked back to T41 via tag_parent
+- TEC: T1 approved (stuck in review 7 days)
+- SEC: T80 completed (Thiago's request from Mar 25)
+- Thiago: T15 note added ("enviado ao João os nomes")
+- Mauro: 7 P2 subtasks created, P3.4 created, P11 renamed "Estratégia", P13 renamed "Ecossistema de Inovação"
+- Lucas: T1/T2 orphans archived, P5.5 created for ReadyTI February payment
 
 ### Cross-Board Project Rollup
 - `refresh_rollup` now counts subtasks of tagged projects, not just directly-tagged tasks
