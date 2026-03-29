@@ -173,9 +173,9 @@ results.summary = { totalMessages, writeRequests, noResponse, delayedResponse, r
 msgDb.close();
 tfDb.close();
 
-// Decide whether to wake agent
+// Decide whether to wake agent — only when issues found (zero AI cost on clean days)
 const hasIssues = noResponse > 0 || delayedResponse > 0 || refusals > 0 || potentialFailures > 0;
-const output = { wakeAgent: true, data: results };
+const output = { wakeAgent: hasIssues, data: results };
 console.log(JSON.stringify(output));
 '
 ```
@@ -245,17 +245,21 @@ If zero issues: 📊 *Resumo: N solicitações, todas atendidas. Nenhum problema
 
 - [ ] **Step 2: Insert the scheduled task on production**
 
+The `script` field is a tiny wrapper that calls the real script file (avoids fragile SQL escaping):
+
 ```bash
 ssh nanoclaw@192.168.2.63 "sqlite3 /home/nanoclaw/nanoclaw/store/messages.db \"
 INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, script, schedule_type, schedule_value, context_mode, status, created_at)
 VALUES (
   'auditor-daily',
-  'whatsapp_main',
-  '558699916064@s.whatsapp.net',
+  'main',
+  '120363408855255405@g.us',
   '<prompt from auditor-prompt.txt>',
-  '<contents of auditor-script.sh>',
+  '#!/usr/bin/env bash
+set -euo pipefail
+bash /workspace/project/container/agent-runner/src/auditor-script.sh',
   'cron',
-  '0 7 * * *',
+  '0 4 * * *',
   'isolated',
   'active',
   datetime('now')
@@ -263,7 +267,7 @@ VALUES (
 \""
 ```
 
-Note: The `schedule_value` is `0 7 * * *` (07:00 UTC = 04:00 BRT). The `script` field contains the full bash script. The `prompt` field contains the analysis instructions.
+Note: The `schedule_value` is `0 4 * * *` (04:00 local — cron is parsed in configured timezone `America/Fortaleza`). The `script` field is a tiny wrapper that calls the real script from `/workspace/project/`. The `prompt` field contains the analysis instructions.
 
 - [ ] **Step 3: Verify the task was created**
 
@@ -271,7 +275,7 @@ Note: The `schedule_value` is `0 7 * * *` (07:00 UTC = 04:00 BRT). The `script` 
 ssh nanoclaw@192.168.2.63 "sqlite3 /home/nanoclaw/nanoclaw/store/messages.db \"SELECT id, group_folder, schedule_value, status FROM scheduled_tasks WHERE id='auditor-daily'\""
 ```
 
-Expected: `auditor-daily|whatsapp_main|0 7 * * *|active`
+Expected: `auditor-daily|main|0 4 * * *|active`
 
 - [ ] **Step 4: Commit reference files**
 
@@ -303,7 +307,7 @@ ssh nanoclaw@192.168.2.63 "sqlite3 /home/nanoclaw/nanoclaw/store/messages.db \"S
 Check the main group for the auditor message:
 
 ```bash
-ssh nanoclaw@192.168.2.63 "sqlite3 /home/nanoclaw/nanoclaw/store/messages.db \"SELECT timestamp, substr(content, 1, 300) FROM messages WHERE chat_jid='558699916064@s.whatsapp.net' AND is_bot_message=1 ORDER BY timestamp DESC LIMIT 1\""
+ssh nanoclaw@192.168.2.63 "sqlite3 /home/nanoclaw/nanoclaw/store/messages.db \"SELECT timestamp, substr(content, 1, 300) FROM messages WHERE chat_jid='120363408855255405@g.us' AND is_bot_message=1 ORDER BY timestamp DESC LIMIT 1\""
 ```
 
 Expected: A message containing "Revisão de Interações" or "Resumo" with the audit findings.
