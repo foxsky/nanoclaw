@@ -704,6 +704,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     trigger_pattern: string;
     added_at: string;
     container_config: string | null;
+    is_main: number | null;
     requires_trigger: number | null;
     taskflow_managed: number | null;
     taskflow_hierarchy_level: number | null;
@@ -723,6 +724,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       folder: row.folder,
       trigger: row.trigger_pattern,
       added_at: row.added_at,
+      isMain: row.is_main === 1,
       containerConfig: row.container_config
         ? JSON.parse(row.container_config)
         : undefined,
