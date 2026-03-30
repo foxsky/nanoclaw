@@ -53,6 +53,7 @@ export class WhatsAppChannel implements Channel {
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
   private groupSyncTimerStarted = false;
+  private healthCheckTimer?: ReturnType<typeof setInterval>;
   private static readonly QUEUE_PATH = path.join(
     DATA_DIR,
     'whatsapp-outgoing-queue.json',
@@ -102,7 +103,7 @@ export class WhatsAppChannel implements Channel {
     for (let i = 1; i <= 5; i++) {
       try {
         await this.connectInternal();
-        return;
+        break;
       } catch (err) {
         if (i === 5) throw err;
         const delay = Math.min(5000 * Math.pow(2, i - 1), 60000);
@@ -113,6 +114,16 @@ export class WhatsAppChannel implements Channel {
         await new Promise((r) => setTimeout(r, delay));
       }
     }
+
+    // Safety net: periodically check connection health.
+    // If WA is disconnected and no reconnect is in progress, trigger one.
+    if (this.healthCheckTimer) clearInterval(this.healthCheckTimer);
+    this.healthCheckTimer = setInterval(() => {
+      if (!this.connected && !this.reconnecting) {
+        logger.warn('Health check: WA disconnected with no active reconnect — triggering recovery');
+        this.reconnect();
+      }
+    }, 120_000); // check every 2 minutes
   }
 
   private async connectInternal(): Promise<void> {
@@ -407,8 +418,8 @@ export class WhatsAppChannel implements Channel {
 
   /**
    * Trigger reconnection with exponential backoff.
-   * connectInternal() now awaits connection open, so each attempt
-   * only returns on success or throws on failure — no more deadlock.
+   * Never gives up — after initial burst of 5 fast retries, keeps
+   * retrying every 2 minutes indefinitely until reconnected.
    */
   private reconnect(): void {
     if (this.reconnecting) {
@@ -418,28 +429,35 @@ export class WhatsAppChannel implements Channel {
     this.reconnecting = true;
     logger.info('Reconnecting...');
 
-    const attemptReconnect = async (maxAttempts = 5) => {
-      for (let i = 1; i <= maxAttempts; i++) {
+    const attemptReconnect = async () => {
+      let attempt = 0;
+      while (!this.connected) {
+        attempt++;
         try {
           await this.connectInternal();
           return; // success — connectInternal resolved on 'open', reconnecting cleared there
         } catch (err) {
-          const delay = Math.min(5000 * Math.pow(2, i - 1), 60000);
+          // First 5 attempts: exponential backoff 5s→60s
+          // After that: fixed 2-minute intervals
+          const delay =
+            attempt <= 5
+              ? Math.min(5000 * Math.pow(2, attempt - 1), 60000)
+              : 120_000;
           logger.error(
-            { err, attempt: i, maxAttempts, retryInMs: delay },
+            { err, attempt, retryInMs: delay },
             'Reconnection attempt failed',
           );
-          if (i < maxAttempts) {
-            await new Promise((r) => setTimeout(r, delay));
-          }
+          await new Promise((r) => setTimeout(r, delay));
         }
       }
-      this.reconnecting = false;
-      logger.error('All reconnection attempts exhausted');
     };
-    attemptReconnect().catch(() => {
-      this.reconnecting = false;
-    });
+    attemptReconnect()
+      .catch((err) => {
+        logger.error({ err }, 'Unexpected reconnection loop error');
+      })
+      .finally(() => {
+        this.reconnecting = false;
+      });
   }
 
   async sendMessage(jid: string, text: string, sender?: string): Promise<void> {

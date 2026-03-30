@@ -685,6 +685,18 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
   if (!isValidGroupFolder(group.folder)) {
     throw new Error(`Invalid group folder "${group.folder}" for JID ${jid}`);
   }
+  // When requiresTrigger is undefined, preserve the existing DB value
+  // to prevent INSERT OR REPLACE from silently resetting it to 1.
+  let resolvedRequiresTrigger: number;
+  if (group.requiresTrigger === undefined) {
+    const existing = db
+      .prepare('SELECT requires_trigger FROM registered_groups WHERE jid = ?')
+      .get(jid) as { requires_trigger: number | null } | undefined;
+    resolvedRequiresTrigger = existing?.requires_trigger ?? 1;
+  } else {
+    resolvedRequiresTrigger = group.requiresTrigger ? 1 : 0;
+  }
+
   db.prepare(
     `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, is_main, taskflow_managed, taskflow_hierarchy_level, taskflow_max_depth)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -695,7 +707,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.trigger,
     group.added_at,
     group.containerConfig ? JSON.stringify(group.containerConfig) : null,
-    group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
+    resolvedRequiresTrigger,
     group.isMain ? 1 : 0,
     group.taskflowManaged === undefined ? null : group.taskflowManaged ? 1 : 0,
     group.taskflowHierarchyLevel ?? null,

@@ -4,6 +4,18 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## [1.2.43] - 2026-03-30
+
+### WhatsApp Reconnection Resilience
+- Reconnect loop now retries indefinitely (exponential backoff 5s→60s, then 2-min intervals) instead of giving up after 5 attempts
+- Added 2-minute health check watchdog: detects silently dead connections and triggers recovery
+- Stored health check timer handle to prevent duplicate intervals
+
+### Fix: TaskFlow groups silently re-requiring trigger
+- MCP `register_group` tool now passes `requiresTrigger` (defaults to `false` for TaskFlow groups)
+- `setRegisteredGroup` preserves existing `requires_trigger` value when the field is undefined, instead of resetting to `1` via `INSERT OR REPLACE`
+- Root cause: any agent re-registering a group would silently flip `requires_trigger` back to `1` because the MCP tool omitted the field
+
 ## [1.2.41] - 2026-03-27
 
 ### Upstream (1.2.35 → 1.2.41)
