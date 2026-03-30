@@ -72,5 +72,9 @@ export function buildNanoclawMcpEnv(
     }
   }
 
+  if (containerInput.assistantName) {
+    env.NANOCLAW_ASSISTANT_NAME = containerInput.assistantName;
+  }
+
   return env;
 }

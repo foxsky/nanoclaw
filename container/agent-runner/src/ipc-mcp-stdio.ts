@@ -480,6 +480,7 @@ server.tool(
       args.subject,
       args.participants,
     );
+
     if (!normalized) {
       return {
         content: [
@@ -701,6 +702,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
     );
 
+
     server.tool(
       'taskflow_create',
       'Create a new task on the TaskFlow board.',
@@ -782,6 +784,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
     );
 
+
     server.tool(
       'taskflow_move',
       'Move a task through workflow stages (start, wait, resume, review, approve, reject, conclude, reopen, etc.).',
@@ -802,6 +805,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
     );
 
+
     server.tool(
       'taskflow_reassign',
       'Reassign a task or all tasks from one person to another.',
@@ -821,6 +825,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         };
       },
     );
+
 
     server.tool(
       'taskflow_update',
@@ -882,6 +887,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
     );
 
+
     server.tool(
       'taskflow_dependency',
       'Manage task dependencies and reminders. Add/remove blocking dependencies or due-date reminders.',
@@ -900,6 +906,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         };
       },
     );
+
 
     server.tool(
       'taskflow_admin',
@@ -966,6 +973,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
     );
 
+
     server.tool(
       'taskflow_undo',
       'Undo the last mutation on the board. Can only undo the most recent action.',
@@ -981,6 +989,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         };
       },
     );
+
 
     server.tool(
       'taskflow_hierarchy',
@@ -1001,6 +1010,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
     );
 
+
     server.tool(
       'taskflow_report',
       'Generate a TaskFlow report: standup (daily summary), digest (detailed overview), or weekly (week summary).',
@@ -1015,6 +1025,35 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         };
       },
     );
+
+    server.tool(
+      'send_board_chat',
+      'Send a reply to the board web chat UI (visible in TaskFlow dashboard, not WhatsApp). Use this for web-originated conversations.',
+      {
+        content: z.string().describe('Message content to send to board chat'),
+      },
+      async (args) => {
+        if (!args.content || !boardId) {
+          return {
+            content: [{ type: 'text', text: 'Error: content and boardId required' }],
+            isError: true,
+          };
+        }
+        const dbPath = '/workspace/taskflow/taskflow.db';
+        const chatDb = new Database(dbPath);
+        try {
+          chatDb.prepare(
+            `INSERT INTO board_chat (board_id, sender_name, sender_type, content, created_at)
+             VALUES (?, ?, 'agent', ?, strftime('%Y-%m-%d %H:%M:%S', 'now'))`
+          ).run(boardId, process.env.NANOCLAW_ASSISTANT_NAME || 'Agent', String(args.content));
+          return { content: [{ type: 'text', text: 'Chat reply sent to board UI.' }] };
+        } finally {
+          chatDb.close();
+        }
+      },
+    );
+
+
   }
 }
 
@@ -1145,6 +1184,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       },
     );
 
+
     server.tool(
       'context_topics',
       'List distinct topics from conversation history with frequency and last seen date.',
@@ -1158,6 +1198,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         };
       },
     );
+
   }
 
   // Cleanup reader on process exit
