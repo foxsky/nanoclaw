@@ -155,6 +155,16 @@ function buildVolumeMounts(
     }
   }
 
+  // Messages store (read-only, needed by scheduled task scripts like the auditor)
+  const storePath = path.join(PROJECT_ROOT, 'store');
+  if (fs.existsSync(storePath)) {
+    mounts.push({
+      hostPath: storePath,
+      containerPath: '/workspace/store',
+      readonly: true,
+    });
+  }
+
   // Per-group Claude sessions directory (isolated from other groups)
   // Each group gets their own .claude/ to prevent cross-group session access
   const groupSessionsDir = path.join(

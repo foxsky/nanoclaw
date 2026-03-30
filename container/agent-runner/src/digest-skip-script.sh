@@ -9,7 +9,6 @@ cat > /tmp/digest-skip.js << 'SCRIPT_EOF'
 const TZ_OFFSET_HOURS = -3; // America/Fortaleza
 
 const now = new Date();
-const localHour = now.getUTCHours() + TZ_OFFSET_HOURS;
 const adjustedNow = new Date(now.getTime() + TZ_OFFSET_HOURS * 3600000);
 const dow = adjustedNow.getDay(); // 0=Sun, 5=Fri
 
@@ -21,7 +20,7 @@ if (dow !== 5) {
 
 // On Friday: check if any user messages since ~4 hours ago (review window)
 const fs = require("fs");
-const MESSAGES_DB = "/workspace/project/store/messages.db";
+const MESSAGES_DB = "/workspace/store/messages.db";
 
 if (!fs.existsSync(MESSAGES_DB)) {
   // Can't check — wake agent to be safe

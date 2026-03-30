@@ -703,12 +703,16 @@ async function main(): Promise<void> {
 
   // Script phase: run script before waking agent
   if (containerInput.script && containerInput.isScheduledTask) {
+    // Expose chat JID to scripts (not set as Docker -e flag, only in MCP env)
+    process.env.NANOCLAW_CHAT_JID = containerInput.chatJid;
     log('Running task script...');
     const scriptResult = await runScript(containerInput.script);
 
-    if (!scriptResult || !scriptResult.wakeAgent) {
-      const reason = scriptResult ? 'wakeAgent=false' : 'script error/no output';
-      log(`Script decided not to wake agent: ${reason}`);
+    if (!scriptResult) {
+      // Script error — fall through to wake agent as safe default
+      log('Script error/no output — waking agent anyway (safe default)');
+    } else if (!scriptResult.wakeAgent) {
+      log('Script decided not to wake agent: wakeAgent=false');
       writeOutput({
         status: 'success',
         result: null,

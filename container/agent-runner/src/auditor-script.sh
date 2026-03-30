@@ -12,7 +12,7 @@ cat > /tmp/auditor.js << 'SCRIPT_EOF'
 const Database = require("better-sqlite3");
 const fs = require("fs");
 
-const MESSAGES_DB = "/workspace/project/store/messages.db";
+const MESSAGES_DB = "/workspace/store/messages.db";
 const TASKFLOW_DB = "/workspace/taskflow/taskflow.db";
 
 // Timezone offset for America/Fortaleza (UTC-3, no DST)
