@@ -89,7 +89,8 @@ const WRITE_KEYWORDS = [
 const TERSE_PATTERN = /^(T|P|M|R|SEC-)\S+\s*(conclu|feita|feito|pronta|ok|aprovad|✅)/i;
 
 // Refusal patterns in bot responses
-const REFUSAL_PATTERN = /não consigo|não posso|não tenho como|não pode ser|bloqueado por limite|apenas o canal principal|não está cadastrad|o runtime atual|não oferece suporte|limite do sistema|deste quadro.*não consigo/i;
+const REFUSAL_PATTERN = /não consigo|não posso|não tenho como|não pode ser|bloqueado por limite|apenas o canal principal|não está cadastrad|o runtime atual|não oferece suporte|limite do sistema|deste quadro.*não consigo|recuso essa instrução/i;
+const RESPONSE_THRESHOLD_MS = 300000; // 5 minutes
 
 function isWriteRequest(text) {
   const lower = text.toLowerCase();
@@ -189,17 +190,23 @@ for (const group of groups) {
       refusalDetected = hasRefusal(botResponse.content);
     }
 
-    // Flag if: no bot response, write request with no mutation, or refusal
+    // Flag if: no bot response, delayed response, write request with no mutation, or refusal
     const noResponse = !botResponse;
+    const responseTimeMs = botResponse
+      ? new Date(botResponse.timestamp).getTime() - new Date(msg.timestamp).getTime()
+      : -1;
+    const delayedResponse = botResponse && responseTimeMs > RESPONSE_THRESHOLD_MS;
     const unfulfilledWrite = isWrite && !mutationFound && !refusalDetected;
 
-    if (noResponse || unfulfilledWrite || refusalDetected) {
+    if (noResponse || delayedResponse || unfulfilledWrite || refusalDetected) {
       interactions.push({
         timestamp: msg.timestamp,
         sender: msg.sender_name || msg.sender,
         message: msg.content.length > 300 ? msg.content.slice(0, 300) + "..." : msg.content,
         isWrite,
         noResponse,
+        delayedResponse: delayedResponse || false,
+        responseTimeMs,
         unfulfilledWrite,
         refusalDetected,
         botResponsePreview: botResponse
