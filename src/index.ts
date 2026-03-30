@@ -89,6 +89,7 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import { resolveExternalDm, getTaskflowDb } from './dm-routing.js';
+import { resolveTaskflowBoardId } from './taskflow-db.js';
 import {
   extractSessionCommand,
   handleSessionCommand,
@@ -97,6 +98,40 @@ import {
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
+
+function isWebOriginMessage(message: NewMessage): boolean {
+  return message.sender.startsWith('web:') || message.sender_name.startsWith('web:');
+}
+
+function appendAgentOutputToBoardChat(
+  taskflowDb: ReturnType<typeof getTaskflowDb>,
+  group: RegisteredGroup,
+  content: string,
+): boolean {
+  if (!taskflowDb || !content.trim()) return false;
+
+  const boardId = resolveTaskflowBoardId(
+    group.folder,
+    group.taskflowManaged === true,
+  );
+  if (!boardId) return false;
+
+  try {
+    taskflowDb
+      .prepare(
+        `INSERT INTO board_chat (board_id, sender_name, sender_type, content, created_at)
+         VALUES (?, ?, 'agent', ?, datetime('now'))`,
+      )
+      .run(boardId, getGroupSenderName(group.trigger), content);
+    return true;
+  } catch (err) {
+    logger.warn(
+      { err, boardId, group: group.name },
+      'Failed to append agent output to board_chat',
+    );
+    return false;
+  }
+}
 
 /** Check if any message in the batch contains a trigger from an allowed sender. */
 function hasTriggerMessage(
@@ -461,8 +496,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (cmdResult.handled) return cmdResult.success;
   // --- End session command interception ---
 
+  const isWebOrigin = missedMessages.some((msg) => isWebOriginMessage(msg));
+
   // For non-main groups, check if trigger is required and present
-  if (!isMainGroup && group.requiresTrigger !== false) {
+  if (!isMainGroup && group.requiresTrigger !== false && !isWebOrigin) {
     if (!hasTriggerMessage(missedMessages, chatJid, group)) return true;
   }
 
@@ -501,6 +538,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
+  const taskflowDb = isWebOrigin ? getTaskflowDb(DATA_DIR) : null;
 
   // Derive group-specific sender name from trigger (e.g. "@Case" → "Case").
   // Falls back to global ASSISTANT_NAME for groups without a custom trigger.
@@ -521,7 +559,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         const text = stripInternalTags(raw);
         logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
         if (text) {
-          await channel.sendMessage(chatJid, text, groupSender);
+          const routedToBoardChat =
+            isWebOrigin && appendAgentOutputToBoardChat(taskflowDb, group, text);
+          if (!routedToBoardChat) {
+            await channel.sendMessage(chatJid, text, groupSender);
+          }
           outputSentToUser = true;
         }
         // Only reset idle timer on actual results, not session-update markers (result: null)
@@ -748,11 +790,13 @@ async function startMessageLoop(): Promise<void> {
           }
           // --- End session command interception ---
 
-          const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
+          const hasWebOrigin = groupMessages.some((msg) => isWebOriginMessage(msg));
+          const needsTrigger = !isMainGroup && group.requiresTrigger !== false && !hasWebOrigin;
 
           // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
+          // Web-originated messages (sender starts with 'web:') bypass the trigger requirement.
           if (needsTrigger) {
             if (!hasTriggerMessage(groupMessages, chatJid, group)) continue;
           }
