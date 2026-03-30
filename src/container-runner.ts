@@ -93,6 +93,9 @@ const CORE_AGENT_RUNNER_FILES = [
   'db-util.ts',
   'embedding-reader.ts',
   'context-reader.ts',
+  'auditor-script.sh',
+  'auditor-prompt.txt',
+  'digest-skip-script.sh',
   path.join('mcp-plugins', 'create-group.ts'),
 ] as const;
 
