@@ -82,7 +82,7 @@ const WRITE_KEYWORDS = [
   "processar inbox", "para inbox", "nota", "anotar", "lembrar",
   "lembrete", "prazo", "próximo passo", "próxima ação", "descrição",
   "começando", "comecando", "aguardando", "retomada", "devolver",
-  "done", "feita", "feito", "pronta", "ok", "inbox"
+  "done", "feita", "feito", "pronta"
 ];
 
 // Terse task-ref + action pattern

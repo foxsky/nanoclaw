@@ -81,6 +81,7 @@ function createSchema(database: Database.Database): void {
       added_at TEXT NOT NULL,
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1,
+      is_main INTEGER DEFAULT 0,
       taskflow_managed INTEGER DEFAULT 0,
       taskflow_hierarchy_level INTEGER,
       taskflow_max_depth INTEGER
@@ -148,6 +149,15 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `UPDATE chats SET channel = 'telegram', is_group = 0 WHERE jid LIKE 'tg:%'`,
     );
+  }
+
+  // Add is_main column if it doesn't exist
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN is_main INTEGER DEFAULT 0`,
+    );
+  } catch {
+    /* column already exists */
   }
 
   // Add taskflow columns if they don't exist
