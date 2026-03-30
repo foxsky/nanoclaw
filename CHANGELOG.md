@@ -78,6 +78,7 @@ For detailed release notes, see the [full changelog on the documentation site](h
 - Fixed `ContainerInput.script` type (was missing, broke all container agents)
 - Fixed `is_main` mapping: added to schema, migration, `getAllRegisteredGroups`, and `setRegisteredGroup`
 - Fixed scheduler `isMain` resolution: uses `group.isMain` DB flag instead of folder string comparison
+- Fixed null dereference in agent-runner when script errors: prompt enrichment now guarded by `else` block
 - Context summarizer switched to `qwen3.5:cloud` primary with `qwen3-coder:latest` fallback
 
 ### Post-Merge Test Fixes

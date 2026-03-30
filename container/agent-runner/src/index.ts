@@ -718,11 +718,11 @@ async function main(): Promise<void> {
         result: null,
       });
       return;
+    } else {
+      // Script says wake agent — enrich prompt with script data
+      log(`Script wakeAgent=true, enriching prompt with data`);
+      prompt = `[SCHEDULED TASK]\n\nScript output:\n${JSON.stringify(scriptResult.data, null, 2)}\n\nInstructions:\n${containerInput.prompt}`;
     }
-
-    // Script says wake agent — enrich prompt with script data
-    log(`Script wakeAgent=true, enriching prompt with data`);
-    prompt = `[SCHEDULED TASK]\n\nScript output:\n${JSON.stringify(scriptResult.data, null, 2)}\n\nInstructions:\n${containerInput.prompt}`;
   }
 
   // --- Slash command handling ---
