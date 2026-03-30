@@ -65,8 +65,20 @@ For detailed release notes, see the [full changelog on the documentation site](h
 - Change-detection guard prevents history spam on no-op rollups
 - Added indexes on `linked_parent_board_id`/`linked_parent_task_id` for query performance
 
-### Deploy Safety
-- New `scripts/deploy.sh` with pre-flight import verification on local and production before restarting
+### Daily Interaction Auditor
+- Automated daily review of all board interactions at 04:00 BRT
+- Script phase gathers data from both DBs (messages + TaskFlow) inside container
+- AI phase analyzes findings: unfulfilled requests, delays, refusals, template gaps, missing features
+- Zero AI cost on clean days (`wakeAgent: false`)
+- Detects delayed responses (>5min), agent refusals, write requests without DB mutations
+- Weekend catch-up: Monday reviews Fri+Sat+Sun
+
+### Infrastructure
+- New `scripts/deploy.sh` with pre-flight import verification on local and production
+- Fixed `ContainerInput.script` type (was missing, broke all container agents)
+- Fixed `is_main` mapping: added to schema, migration, `getAllRegisteredGroups`, and `setRegisteredGroup`
+- Fixed scheduler `isMain` resolution: uses `group.isMain` DB flag instead of folder string comparison
+- Context summarizer switched to `qwen3.5:cloud` primary with `qwen3-coder:latest` fallback
 
 ### Post-Merge Test Fixes
 - Fixed OneCLI null-safety, TaskFlow test paths, ISO date assertions, English→Portuguese strings
