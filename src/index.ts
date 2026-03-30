@@ -100,7 +100,9 @@ import {
 export { escapeXml, formatMessages } from './router.js';
 
 function isWebOriginMessage(message: NewMessage): boolean {
-  return message.sender.startsWith('web:') || message.sender_name.startsWith('web:');
+  return (
+    message.sender.startsWith('web:') || message.sender_name.startsWith('web:')
+  );
 }
 
 function appendAgentOutputToBoardChat(
@@ -560,7 +562,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
         if (text) {
           const routedToBoardChat =
-            isWebOrigin && appendAgentOutputToBoardChat(taskflowDb, group, text);
+            isWebOrigin &&
+            appendAgentOutputToBoardChat(taskflowDb, group, text);
           if (!routedToBoardChat) {
             await channel.sendMessage(chatJid, text, groupSender);
           }
@@ -790,8 +793,11 @@ async function startMessageLoop(): Promise<void> {
           }
           // --- End session command interception ---
 
-          const hasWebOrigin = groupMessages.some((msg) => isWebOriginMessage(msg));
-          const needsTrigger = !isMainGroup && group.requiresTrigger !== false && !hasWebOrigin;
+          const hasWebOrigin = groupMessages.some((msg) =>
+            isWebOriginMessage(msg),
+          );
+          const needsTrigger =
+            !isMainGroup && group.requiresTrigger !== false && !hasWebOrigin;
 
           // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
