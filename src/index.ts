@@ -50,7 +50,6 @@ import {
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
-  deleteSession,
   getAllTasks,
   getDmMessages,
   getLastBotMessageTimestamp,
@@ -704,7 +703,9 @@ async function runAgent(
       const isStaleSession =
         sessionId &&
         output.error &&
-        /no conversation found|ENOENT.*\.jsonl|session.*not found/i.test(output.error);
+        /no conversation found|ENOENT.*\.jsonl|session.*not found/i.test(
+          output.error,
+        );
 
       if (isStaleSession) {
         logger.warn(
