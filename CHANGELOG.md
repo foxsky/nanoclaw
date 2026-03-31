@@ -4,7 +4,23 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
-## [1.2.43] - 2026-03-30
+## [1.2.43] - 2026-03-31
+
+### Upstream (1.2.42 → 1.2.43)
+- Stale session auto-recovery: detects `no conversation found|ENOENT|session.*not found` errors and clears broken session IDs so the next retry starts fresh
+- npm audit fixes (dependency updates)
+
+### TaskFlow Web Channel
+- `send_board_chat` MCP tool: agents can write messages to `board_chat` table for web UI consumption
+- `NANOCLAW_ASSISTANT_NAME` env var injected into containers for agent self-identification
+- Web origin trigger bypass: messages with `web:` sender prefix skip `requiresTrigger` check
+- Web origin output routing: agent responses routed to `board_chat` table instead of WhatsApp for web-originated messages, with WhatsApp fallback on error
+
+### Production Incident (2026-03-30)
+- **Root cause:** null dereference in agent-runner `scriptResult.data` (committed in previous session) caused TypeScript strict mode (`TS18047`) to reject compilation inside every container
+- **Impact:** all 12 boards down from ~08:00 to 08:15 BRT — zero morning standups delivered, user messages unanswered
+- **Resolution:** deployed the `else` block fix, manually re-triggered 18 standup tasks by clearing `last_run` (the `cronSlotAlreadyRan` idempotency guard was blocking re-runs)
+- **Lesson:** deploy script should validate container-side TypeScript compilation, not just host-side `tsc`
 
 ### WhatsApp Reconnection Resilience
 - Reconnect loop now retries indefinitely (exponential backoff 5s→60s, then 2-min intervals) instead of giving up after 5 attempts
