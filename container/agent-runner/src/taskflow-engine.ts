@@ -586,6 +586,17 @@ export class TaskflowEngine {
     return [this.boardId, this.boardId];
   }
 
+  /** SQL fragment: exclude tasks whose status is managed by an active child-board rollup. */
+  private static excludeActiveRollup(alias = ''): string {
+    const p = alias ? `${alias}.` : '';
+    return `AND NOT (${p}child_exec_enabled = 1 AND ${p}child_exec_rollup_status IS NOT NULL AND ${p}child_exec_rollup_status != 'no_work_yet')`;
+  }
+
+  /** JS predicate: true when a task's status is managed by an active child-board rollup. */
+  private static isRollupActive(task: any): boolean {
+    return task.child_exec_enabled === 1 && !!task.child_exec_rollup_status && task.child_exec_rollup_status !== 'no_work_yet';
+  }
+
   private taskBoardId(task: any): string {
     return task?.owning_board_id ?? task?.board_id ?? this.boardId;
   }
@@ -981,23 +992,25 @@ export class TaskflowEngine {
   }
 
   private reconcileDelegationLinks(): void {
+    /* Reconcile ALL tasks on this board with an assignee — not just subtasks/recurring.
+       Top-level tasks also get child_exec_enabled via auto-link on create/assign,
+       so they must be reconciled when child board registrations change.
+       Scoped to this.boardId so we only touch tasks owned by this board. */
     const rows = this.db
       .prepare(
-        `SELECT id, board_id, assignee, child_exec_enabled, child_exec_board_id, child_exec_person_id
+        `SELECT id, board_id, assignee, child_exec_enabled, child_exec_board_id, child_exec_person_id,
+                child_exec_rollup_status
            FROM tasks
-          WHERE assignee IS NOT NULL
-            AND (
-              parent_task_id IS NOT NULL
-              OR recurrence IS NOT NULL
-            )`,
+          WHERE board_id = ? AND assignee IS NOT NULL`,
       )
-      .all() as Array<{
+      .all(this.boardId) as Array<{
       id: string;
       board_id: string;
       assignee: string | null;
       child_exec_enabled: number;
       child_exec_board_id: string | null;
       child_exec_person_id: string | null;
+      child_exec_rollup_status: string | null;
     }>;
 
     const update = this.db.prepare(
@@ -1006,8 +1019,26 @@ export class TaskflowEngine {
         WHERE board_id = ? AND id = ?`,
     );
 
+    /* When a delegation link is broken (child board removed), also clear stale rollup
+       metadata so the task reappears in stale/waiting reports. */
+    const clearRollup = this.db.prepare(
+      `UPDATE tasks
+          SET child_exec_rollup_status = NULL, child_exec_last_rollup_at = NULL,
+              child_exec_last_rollup_summary = NULL
+        WHERE board_id = ? AND id = ?`,
+    );
+
+    /* Track explicitly unlinked tasks to avoid re-linking them on startup */
+    const unlinkedTaskIds = new Set(
+      (this.db.prepare(
+        `SELECT DISTINCT task_id FROM task_history WHERE board_id = ? AND action = 'child_board_unlinked'`,
+      ).all(this.boardId) as Array<{ task_id: string }>).map((r) => r.task_id),
+    );
+
     for (const row of rows) {
       const expected = this.linkedChildBoardFor(row.board_id, row.assignee ?? null);
+      /* Skip re-linking tasks that were explicitly unlinked by a user */
+      if (row.child_exec_enabled === 0 && expected.child_exec_enabled === 1 && unlinkedTaskIds.has(row.id)) continue;
       if (
         row.child_exec_enabled !== expected.child_exec_enabled ||
         (row.child_exec_board_id ?? null) !== expected.child_exec_board_id ||
@@ -1020,6 +1051,13 @@ export class TaskflowEngine {
           row.board_id,
           row.id,
         );
+        /* Clear stale rollup data when delegation is removed OR child board changed */
+        if (row.child_exec_rollup_status && (
+          expected.child_exec_enabled === 0 ||
+          (row.child_exec_board_id ?? null) !== expected.child_exec_board_id
+        )) {
+          clearRollup.run(row.board_id, row.id);
+        }
       }
     }
   }
@@ -3006,6 +3044,10 @@ export class TaskflowEngine {
           newChildExecPersonId = null;
         }
 
+        /* --- Clear stale rollup data when child board changes or delegation removed --- */
+        const childBoardChanged = (task.child_exec_board_id ?? null) !== newChildExecBoardId;
+        const clearRollupFields = task.child_exec_rollup_status && (newChildExecEnabled === 0 || childBoardChanged);
+
         /* --- Auto-move inbox→next_action when assigning --- */
         const newColumn = task.column === 'inbox' ? 'next_action' : task.column;
 
@@ -3013,7 +3055,11 @@ export class TaskflowEngine {
         this.db
           .prepare(
             `UPDATE tasks SET assignee = ?, column = ?, child_exec_enabled = ?, child_exec_board_id = ?,
-             child_exec_person_id = ?, _last_mutation = ?, updated_at = ?
+             child_exec_person_id = ?,
+             child_exec_rollup_status = CASE WHEN ? THEN NULL ELSE child_exec_rollup_status END,
+             child_exec_last_rollup_at = CASE WHEN ? THEN NULL ELSE child_exec_last_rollup_at END,
+             child_exec_last_rollup_summary = CASE WHEN ? THEN NULL ELSE child_exec_last_rollup_summary END,
+             _last_mutation = ?, updated_at = ?
              WHERE board_id = ? AND id = ?`,
           )
           .run(
@@ -3022,6 +3068,9 @@ export class TaskflowEngine {
             newChildExecEnabled,
             newChildExecBoardId,
             newChildExecPersonId,
+            clearRollupFields ? 1 : 0,
+            clearRollupFields ? 1 : 0,
+            clearRollupFields ? 1 : 0,
             snapshot,
             now,
             this.taskBoardId(task),
@@ -3931,13 +3980,22 @@ export class TaskflowEngine {
         const subPerson = this.resolvePerson(updates.assign_subtask.assignee);
         if (!subPerson) return this.buildOfferRegisterError(updates.assign_subtask.assignee);
         const childLink = this.linkedChildBoardFor(taskBoardId, subPerson.person_id);
+        const subChildBoardChanged = (check.subTask.child_exec_board_id ?? null) !== childLink.child_exec_board_id;
+        const subClearRollup = check.subTask.child_exec_rollup_status && (childLink.child_exec_enabled === 0 || subChildBoardChanged);
         this.db
-          .prepare(`UPDATE tasks SET assignee = ?, child_exec_enabled = ?, child_exec_board_id = ?, child_exec_person_id = ?, column = CASE WHEN column = 'inbox' THEN 'next_action' ELSE column END, updated_at = ? WHERE board_id = ? AND id = ?`)
+          .prepare(`UPDATE tasks SET assignee = ?, child_exec_enabled = ?, child_exec_board_id = ?, child_exec_person_id = ?,
+            child_exec_rollup_status = CASE WHEN ? THEN NULL ELSE child_exec_rollup_status END,
+            child_exec_last_rollup_at = CASE WHEN ? THEN NULL ELSE child_exec_last_rollup_at END,
+            child_exec_last_rollup_summary = CASE WHEN ? THEN NULL ELSE child_exec_last_rollup_summary END,
+            column = CASE WHEN column = 'inbox' THEN 'next_action' ELSE column END, updated_at = ? WHERE board_id = ? AND id = ?`)
           .run(
             subPerson.person_id,
             childLink.child_exec_enabled,
             childLink.child_exec_board_id,
             childLink.child_exec_person_id,
+            subClearRollup ? 1 : 0,
+            subClearRollup ? 1 : 0,
+            subClearRollup ? 1 : 0,
             now,
             taskBoardId,
             updates.assign_subtask.id,
@@ -4654,6 +4712,8 @@ export class TaskflowEngine {
       }
       const delegated = personTasks.filter((t: any) => delegateInfo(t.id));
       if (delegated.length > 0) parts.push(`${delegated.length} delegada(s)`);
+      const rollupManaged = personTasks.filter(TaskflowEngine.isRollupActive);
+      if (rollupManaged.length > 0) parts.push(`${rollupManaged.length} com progresso no quadro filho`);
       if (parts.length === 0) {
         parts.push(`${personTasks.length} tarefa(s)`);
       }
@@ -4738,7 +4798,9 @@ export class TaskflowEngine {
           for (const t of sorted) {
             const tid = dId(t);
             let line = `${pfx(t)}${tid}: ${t.title}${meetingSfx(t)}${dueSfx(t)}${notesSfx(t)}`;
-            if (col === 'waiting' && t.waiting_for)
+            if (TaskflowEngine.isRollupActive(t) && t.child_exec_last_rollup_summary)
+              line += ` → _📊 ${t.child_exec_last_rollup_summary}_`;
+            else if (col === 'waiting' && t.waiting_for)
               line += ` \u2192 _${t.waiting_for}_`;
             line += delegateSfx(t.id, t.assignee);
             lines.push(line);
@@ -5250,9 +5312,11 @@ export class TaskflowEngine {
           if (task.type === 'project') {
             data.subtask_rows = this.getSubtaskRows(task.id, this.taskBoardId(task));
           }
-          // Include parent project info for subtasks
+          // Include parent project info for subtasks — always use the subtask's owning board
+          // to avoid picking up a same-ID task from the local board.
           if (task.parent_task_id) {
-            const parent = this.getTask(task.parent_task_id);
+            const parentBoardId = this.taskBoardId(task);
+            const parent = this.db.prepare(TaskflowEngine.TASK_BY_BOARD_SQL).get(parentBoardId, task.parent_task_id) as any ?? null;
             if (parent) {
               data.parent_project = { id: parent.id, title: parent.title, column: parent.column };
             }
@@ -6565,7 +6629,9 @@ export class TaskflowEngine {
           }
 
           const parentId = task.parent_task_id;
-          const parent = this.requireTask(parentId);
+          // Look up parent on the subtask's owning board to avoid same-ID collision on the local board
+          const parent = this.db.prepare(TaskflowEngine.TASK_BY_BOARD_SQL).get(taskBoardId, parentId) as any;
+          if (!parent) return { success: false, error: `Parent task ${parentId} not found on board ${taskBoardId}.` };
 
           const detachSnapshot = JSON.stringify({
             action: 'detached',
@@ -6688,11 +6754,12 @@ export class TaskflowEngine {
           .all(...this.visibleTaskParams(), todayStr, nextWeekStr) as typeof nextWeekDeadlines;
       }
 
-      /* --- Waiting tasks --- */
+      /* --- Waiting tasks (exclude delegated tasks where the child board has active work — rollups manage their status) --- */
       const waiting = this.db
         .prepare(
           `SELECT id, board_id, title, assignee, waiting_for, type, updated_at FROM tasks
            WHERE ${this.visibleTaskScope()} AND column = 'waiting'
+             ${TaskflowEngine.excludeActiveRollup()}
            ORDER BY id`,
         )
         .all(...this.visibleTaskParams()) as Array<{ id: string; title: string; assignee: string | null; waiting_for: string | null; type: string; updated_at: string }>;
@@ -6847,7 +6914,9 @@ export class TaskflowEngine {
         stale24h = this.db
           .prepare(
             `SELECT id, board_id, title, assignee, column, updated_at FROM tasks
-             WHERE ${this.visibleTaskScope()} AND column IN ('next_action', 'in_progress', 'review') AND updated_at < ?
+             WHERE ${this.visibleTaskScope()} AND column IN ('next_action', 'in_progress', 'review')
+               ${TaskflowEngine.excludeActiveRollup()}
+               AND updated_at < ?
              ORDER BY updated_at ASC`,
           )
           .all(...this.visibleTaskParams(), cutoffIso) as typeof stale24h;
@@ -7008,7 +7077,7 @@ export class TaskflowEngine {
         };
       }
 
-      /* --- Stale tasks: no update 3+ days (weekly only) --- */
+      /* --- Stale tasks: no update 3+ days (weekly only, exclude delegated tasks with active child-board work) --- */
       let staleTasks: Array<{ id: string; title: string; assignee: string | null; column: string; updated_at: string }> = [];
       if (isWeekly) {
         const cutoff = new Date();
@@ -7017,7 +7086,9 @@ export class TaskflowEngine {
         staleTasks = this.db
           .prepare(
             `SELECT id, board_id, title, assignee, column, updated_at FROM tasks
-             WHERE ${this.visibleTaskScope()} AND column IN ('next_action', 'in_progress', 'review') AND updated_at < ?
+             WHERE ${this.visibleTaskScope()} AND column IN ('next_action', 'in_progress', 'review')
+               ${TaskflowEngine.excludeActiveRollup()}
+               AND updated_at < ?
              ORDER BY updated_at ASC`,
           )
           .all(...this.visibleTaskParams(), cutoffIso) as typeof staleTasks;

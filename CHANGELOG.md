@@ -16,6 +16,17 @@ For detailed release notes, see the [full changelog on the documentation site](h
 - Web origin trigger bypass: messages with `web:` sender prefix skip `requiresTrigger` check
 - Web origin output routing: agent responses routed to `board_chat` table instead of WhatsApp for web-originated messages, with WhatsApp fallback on error
 
+### Scheduled Task Prompt Simplification
+- Replaced verbose inline prompts for standup/digest/weekly with bare tags (`[TF-STANDUP]`, `[TF-DIGEST]`, `[TF-REVIEW]`)
+- Added "Scheduled Task Tags" section to CLAUDE.md template mapping tags to their instruction sections
+- Single source of truth: all report behavior defined in the template, not duplicated in 55 DB prompts
+- **Before:** agents queried raw SQL and dumped every task → wall of stress on large boards
+- **After:** agents call `taskflow_report()` → engine-formatted concise digest with counts, top items, and 3 actionable suggestions
+
+### Template Improvements
+- CRITICAL rule: never display task details from memory — always query DB first (prevents hallucinated task info persisting through session resume)
+- Bare task ID mapping: "TXXX" triggers `task_details` query automatically
+
 ### Production Incident (2026-03-30)
 - **Root cause:** null dereference in agent-runner `scriptResult.data` (committed in previous session) caused TypeScript strict mode (`TS18047`) to reject compilation inside every container
 - **Impact:** all 12 boards down from ~08:00 to 08:15 BRT — zero morning standups delivered, user messages unanswered

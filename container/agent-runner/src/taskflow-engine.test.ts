@@ -4123,6 +4123,187 @@ describe('TaskflowEngine', () => {
       expect(rw.data!.stats!.created_week).toBe(0);
       expect(rw.data!.stats!.trend).toBe('same');
     });
+
+    it('excludes delegated tasks with active rollup from stale_24h', () => {
+      const staleDate = new Date();
+      staleDate.setDate(staleDate.getDate() - 2);
+      const staleIso = staleDate.toISOString();
+
+      // T-001 is in_progress — make it stale and delegated with active rollup
+      db.exec(
+        `UPDATE tasks SET updated_at = '${staleIso}', child_exec_enabled = 1,
+         child_exec_board_id = 'board-child', child_exec_rollup_status = 'active',
+         child_exec_last_rollup_summary = '2 ativo(s)'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      // T-002 is next_action — make it stale but NOT delegated
+      db.exec(
+        `UPDATE tasks SET updated_at = '${staleIso}'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-002'`,
+      );
+
+      const r = engine.report({ board_id: BOARD_ID, type: 'digest' });
+      expect(r.success).toBe(true);
+      const staleIds = (r.data as any).stale_24h.map((t: any) => t.id);
+      expect(staleIds).toContain('T-002');
+      expect(staleIds).not.toContain('T-001');
+    });
+
+    it('includes delegated tasks with no_work_yet rollup in stale_24h', () => {
+      const staleDate = new Date();
+      staleDate.setDate(staleDate.getDate() - 2);
+      const staleIso = staleDate.toISOString();
+
+      // Delegated but child hasn't started work
+      db.exec(
+        `UPDATE tasks SET updated_at = '${staleIso}', child_exec_enabled = 1,
+         child_exec_board_id = 'board-child', child_exec_rollup_status = 'no_work_yet'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+
+      const r = engine.report({ board_id: BOARD_ID, type: 'digest' });
+      expect(r.success).toBe(true);
+      const staleIds = (r.data as any).stale_24h.map((t: any) => t.id);
+      expect(staleIds).toContain('T-001');
+    });
+
+    it('includes delegated tasks with null rollup in stale_24h', () => {
+      const staleDate = new Date();
+      staleDate.setDate(staleDate.getDate() - 2);
+      const staleIso = staleDate.toISOString();
+
+      // Delegated but rollup never ran
+      db.exec(
+        `UPDATE tasks SET updated_at = '${staleIso}', child_exec_enabled = 1,
+         child_exec_board_id = 'board-child'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+
+      const r = engine.report({ board_id: BOARD_ID, type: 'digest' });
+      expect(r.success).toBe(true);
+      const staleIds = (r.data as any).stale_24h.map((t: any) => t.id);
+      expect(staleIds).toContain('T-001');
+    });
+
+    it('excludes delegated tasks with active rollup from waiting list', () => {
+      // Put T-001 in waiting with active rollup
+      db.exec(
+        `UPDATE tasks SET column = 'waiting', waiting_for = 'Child board',
+         child_exec_enabled = 1, child_exec_board_id = 'board-child',
+         child_exec_rollup_status = 'blocked',
+         child_exec_last_rollup_summary = '1 aguardando'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      // Put T-002 in waiting without delegation
+      db.exec(
+        `UPDATE tasks SET column = 'waiting', waiting_for = 'Client reply'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-002'`,
+      );
+
+      const r = engine.report({ board_id: BOARD_ID, type: 'standup' });
+      expect(r.success).toBe(true);
+      const waitingIds = r.data!.waiting.map((t: any) => t.id);
+      expect(waitingIds).toContain('T-002');
+      expect(waitingIds).not.toContain('T-001');
+    });
+
+    it('excludes delegated tasks with active rollup from weekly stale_tasks', () => {
+      const staleDate = new Date();
+      staleDate.setDate(staleDate.getDate() - 4);
+      const staleIso = staleDate.toISOString();
+
+      db.exec(
+        `UPDATE tasks SET updated_at = '${staleIso}', child_exec_enabled = 1,
+         child_exec_board_id = 'board-child', child_exec_rollup_status = 'active'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      db.exec(
+        `UPDATE tasks SET updated_at = '${staleIso}'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-002'`,
+      );
+
+      const r = engine.report({ board_id: BOARD_ID, type: 'weekly' });
+      expect(r.success).toBe(true);
+      const staleIds = (r.data as any).stale_tasks.map((t: any) => t.id);
+      expect(staleIds).toContain('T-002');
+      expect(staleIds).not.toContain('T-001');
+    });
+
+    it('formatted board shows rollup summary for delegated tasks', () => {
+      db.exec(
+        `UPDATE tasks SET column = 'waiting', child_exec_enabled = 1,
+         child_exec_board_id = 'board-child', child_exec_rollup_status = 'active',
+         child_exec_last_rollup_summary = '2 ativo(s), 1 concluído(s)'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+
+      const r = engine.report({ board_id: BOARD_ID, type: 'standup' });
+      expect(r.success).toBe(true);
+      expect(r.data!.formatted_board).toContain('📊 2 ativo(s), 1 concluído(s)');
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  reconcileDelegationLinks                                         */
+  /* ---------------------------------------------------------------- */
+
+  describe('reconcileDelegationLinks', () => {
+    it('clears stale rollup when child board registration is removed', () => {
+      const now = new Date().toISOString();
+      // Set up child board registration
+      seedChildBoard(db, {
+        parentBoardId: BOARD_ID,
+        childBoardId: 'board-child-recon',
+        personId: 'person-2',
+        name: 'Giovanni',
+      });
+      db.exec(
+        `INSERT INTO child_board_registrations VALUES ('${BOARD_ID}', 'person-2', 'board-child-recon')`,
+      );
+      // T-002 is assigned to person-2 — set delegation + rollup
+      db.exec(
+        `UPDATE tasks SET child_exec_enabled = 1, child_exec_board_id = 'board-child-recon',
+         child_exec_person_id = 'person-2', child_exec_rollup_status = 'active',
+         child_exec_last_rollup_at = '${now}', child_exec_last_rollup_summary = '1 ativo(s)'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-002'`,
+      );
+
+      // Now remove the child board registration (simulating board deletion)
+      db.exec(
+        `DELETE FROM child_board_registrations WHERE parent_board_id = '${BOARD_ID}' AND person_id = 'person-2'`,
+      );
+
+      // Re-create engine to trigger reconciliation
+      const freshEngine = new TaskflowEngine(db, BOARD_ID);
+
+      // T-002 should have delegation cleared
+      const task = freshEngine.getTask('T-002');
+      expect(task.child_exec_enabled).toBe(0);
+      expect(task.child_exec_board_id).toBeNull();
+      // Rollup metadata should also be cleared
+      expect(task.child_exec_rollup_status).toBeNull();
+      expect(task.child_exec_last_rollup_summary).toBeNull();
+    });
+
+    it('reconciles top-level tasks, not just subtasks', () => {
+      const now = new Date().toISOString();
+      // T-001 is a top-level task (no parent_task_id, no recurrence)
+      // Set stale delegation metadata
+      db.exec(
+        `UPDATE tasks SET child_exec_enabled = 1, child_exec_board_id = 'board-ghost',
+         child_exec_person_id = 'person-1', child_exec_rollup_status = 'active'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+      // No child_board_registrations row for person-1 → delegation is stale
+
+      // Re-create engine to trigger reconciliation
+      const freshEngine = new TaskflowEngine(db, BOARD_ID);
+
+      const task = freshEngine.getTask('T-001');
+      expect(task.child_exec_enabled).toBe(0);
+      expect(task.child_exec_board_id).toBeNull();
+      expect(task.child_exec_rollup_status).toBeNull();
+    });
   });
 
   /* ---------------------------------------------------------------- */

@@ -100,6 +100,8 @@ You may receive follow-up messages piped into your session while you are still p
 
 **Read-path default:** For normal task and board inspection, use `taskflow_query` first (`task_details`, `task_history`, `my_tasks`, board lists, due-date queries, meeting queries). Do NOT start with `mcp__sqlite__read_query` when a `taskflow_query` variant can answer the question.
 
+**CRITICAL — NEVER display task details from memory.** When a user mentions a task ID (e.g. "P1.9", "T41", "detalhes T3"), you MUST call `taskflow_query({ query: 'task_details', task_id: '...' })` BEFORE showing any task information (title, assignee, column, dates, notes). NEVER generate task titles, descriptions, or status from memory or conversation history — always read from the database first. Hallucinated task details propagate through session resume and context summaries, causing persistent wrong information. This rule has NO exceptions.
+
 **SQL fallback:** Use `mcp__sqlite__read_query` only for ad-hoc reporting, schema inspection, or novel cross-table questions that have NO `taskflow_query` equivalent. Use `mcp__sqlite__write_query` only as a last resort for operations that have NO `taskflow_*` equivalent, such as:
 - Ad-hoc questions combining data in novel ways
 - Manager requests a one-off operation not covered by tools
@@ -419,6 +421,7 @@ For each open item returned by `process_minutes`, ask the user to choose:
 | "aguardando do Nome" | `taskflow_query({ query: 'person_waiting', person_name: 'Nome' })` |
 | "concluidas do Nome" | `taskflow_query({ query: 'person_completed', person_name: 'Nome' })` |
 | "em revisao do Nome" | `taskflow_query({ query: 'person_review', person_name: 'Nome' })` |
+| "TXXX" (bare task ID) | `taskflow_query({ query: 'task_details', task_id: 'TXXX' })` — ALWAYS query first, never respond from memory |
 | "detalhes TXXX" | `taskflow_query({ query: 'task_details', task_id: 'TXXX' })` |
 | "historico TXXX" | `taskflow_query({ query: 'task_history', task_id: 'TXXX' })` |
 | "listar arquivo" | `taskflow_query({ query: 'archive' })` |
@@ -716,6 +719,13 @@ Meetings do NOT count against WIP limits.
 - For outputs that do not include `formatted_board` or `formatted_report`, keep responses compact for mobile reading
 - If a custom response would exceed roughly 120 lines or become hard to scan, summarize first and offer follow-up detail by task/person/filter
 - Prefer splitting long ad-hoc SQL results into: top summary + the 5-10 most relevant rows, instead of dumping everything
+
+### Scheduled Task Tags
+
+When your prompt is a bare tag, follow the corresponding section:
+- `[TF-STANDUP]` → Follow "Standup-specific behavior" below
+- `[TF-DIGEST]` → Follow "Digest (Evening)" below
+- `[TF-REVIEW]` → Follow "Weekly Review (Friday)" below
 
 ### Standup-specific behavior
 

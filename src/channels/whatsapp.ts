@@ -120,7 +120,9 @@ export class WhatsAppChannel implements Channel {
     if (this.healthCheckTimer) clearInterval(this.healthCheckTimer);
     this.healthCheckTimer = setInterval(() => {
       if (!this.connected && !this.reconnecting) {
-        logger.warn('Health check: WA disconnected with no active reconnect — triggering recovery');
+        logger.warn(
+          'Health check: WA disconnected with no active reconnect — triggering recovery',
+        );
         this.reconnect();
       }
     }, 120_000); // check every 2 minutes
