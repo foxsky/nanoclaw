@@ -18,6 +18,11 @@ For detailed release notes, see the [full changelog on the documentation site](h
 - Web origin filter: messages from `web:` prefix senders (QA/test) skipped in auditor — eliminates SEC-SECTI test noise
 - Command synonyms: added "consolidar", "atividades", "cancelar" to template
 
+### Schedule Alignment
+- Aligned all 18 boards to same BRT times: 08:00 standup, 18:00 digest, 14:00 Friday review (newer boards were 3h late)
+- Staggered bursts across 6-minute windows (6 boards at :00, :03, :06) to prevent API rate limit exhaustion
+- Fixed `board_runtime_config` source data (19 rows) — new child boards now inherit correct times from provisioning
+
 ### Anti-Hallucination Safeguards (refined)
 - Post-write verification moved outside `db.transaction()` — now verifies after commit, not inside the transaction where it was dead code (better-sqlite3 guarantees visibility within synchronous transactions)
 
