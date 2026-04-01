@@ -25,7 +25,11 @@ For detailed release notes, see the [full changelog on the documentation site](h
 
 ### Template Improvements
 - CRITICAL rule: never display task details from memory — always query DB first (prevents hallucinated task info persisting through session resume)
+- CRITICAL rule: post-write verification — after any write operation, verify tool response for `success: true` and valid task ID before reporting success to user (prevents phantom task creation where agent claims success but DB has no record)
 - Bare task ID mapping: "TXXX" triggers `task_details` query automatically
+
+### Auditor Fix
+- Fixed auditor `chat_jid` mismatch: task pointed to old group JID (`120363408855255405@g.us`) instead of registered main channel (`558699916064@s.whatsapp.net`) — reports were sent to a non-existent group and silently lost
 
 ### Production Incident (2026-03-30)
 - **Root cause:** null dereference in agent-runner `scriptResult.data` (committed in previous session) caused TypeScript strict mode (`TS18047`) to reject compilation inside every container
