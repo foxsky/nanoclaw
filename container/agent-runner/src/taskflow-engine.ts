@@ -2176,6 +2176,14 @@ export class TaskflowEngine {
         }
       }
 
+      /* --- Post-write verification --- */
+      const verify = this.db
+        .prepare('SELECT id FROM tasks WHERE id = ? AND board_id = ?')
+        .get(taskId, this.boardId) as { id: string } | undefined;
+      if (!verify) {
+        return { success: false, error: `Task ${taskId} was not persisted — INSERT may have been rolled back.` };
+      }
+
       return {
         success: true,
         task_id: taskId,

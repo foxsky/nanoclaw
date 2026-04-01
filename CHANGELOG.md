@@ -23,9 +23,10 @@ For detailed release notes, see the [full changelog on the documentation site](h
 - **Before:** agents queried raw SQL and dumped every task → wall of stress on large boards
 - **After:** agents call `taskflow_report()` → engine-formatted concise digest with counts, top items, and 3 actionable suggestions
 
-### Template Improvements
-- CRITICAL rule: never display task details from memory — always query DB first (prevents hallucinated task info persisting through session resume)
-- CRITICAL rule: post-write verification — after any write operation, verify tool response for `success: true` and valid task ID before reporting success to user (prevents phantom task creation where agent claims success but DB has no record)
+### Anti-Hallucination Safeguards
+- **Engine-level post-write verification:** `createTaskInternal()` now SELECT-verifies the inserted row before returning `success: true` — if the INSERT was rolled back or lost, the tool returns `success: false` instead of silently lying
+- Template: never display task details from memory — always query DB first (prevents hallucinated task info persisting through session resume)
+- Template: post-write verification — agents must check tool response for `success: true` before confirming to user
 - Bare task ID mapping: "TXXX" triggers `task_details` query automatically
 
 ### Auditor Fix
