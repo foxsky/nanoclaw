@@ -4,6 +4,23 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## [1.2.45] - 2026-04-01
+
+### Upstream (1.2.43 → 1.2.45)
+- Prettier/ESLint formatting on `src/` and `container/agent-runner/src/` (no logic changes)
+
+### Queue Priority + Concurrency
+- User messages now drain before scheduled tasks in the group queue — prevents 2h+ delays when scheduled task backlog fills all container slots after a restart
+- `MAX_CONCURRENT_CONTAINERS` raised from 5 to 12 — accommodates all TaskFlow boards firing simultaneously while staying within 8 GB RAM bounds
+
+### Auditor Improvements
+- Parent board mutation check: `task_history` query now checks both child and parent board IDs — eliminates false `unfulfilledWrite` flags for delegated task operations (ASSE-SECI, Ana Beatriz boards)
+- Web origin filter: messages from `web:` prefix senders (QA/test) skipped in auditor — eliminates SEC-SECTI test noise
+- Command synonyms: added "consolidar", "atividades", "cancelar" to template
+
+### Anti-Hallucination Safeguards (refined)
+- Post-write verification moved outside `db.transaction()` — now verifies after commit, not inside the transaction where it was dead code (better-sqlite3 guarantees visibility within synchronous transactions)
+
 ## [1.2.43] - 2026-03-31
 
 ### Upstream (1.2.42 → 1.2.43)

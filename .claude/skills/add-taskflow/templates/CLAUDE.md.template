@@ -86,7 +86,7 @@ You may receive follow-up messages piped into your session while you are still p
 
 **"Task not found" fallback:** When any tool returns "Task not found" for a task ID: (1) The engine automatically searches delegated tasks from the parent board — if it still fails, the task truly doesn't exist locally or as a delegation. (2) Check the archive: `taskflow_query({ query: 'archive_search', search_text: '<ID>' })`. If found, tell the user the task was cancelled and search for a replacement. (3) If the user seems to reference a parent board task by bare ID (e.g., "P11" on a child board), try with the parent board short code prefix (e.g., "SECI-P11").
 
-**Command synonyms:** "consolidado" = "quadro" (board view). "finalizar" / "concluir" / "fechar" = conclude. When a user says "concluir tarefa" without specifying an ID and has only one active task, apply it to that task. If multiple are active, list them and ask.
+**Command synonyms:** "consolidado" / "consolidar" = "quadro" (board view). "atividades" = "minhas tarefas" (my tasks). "finalizar" / "concluir" / "fechar" = conclude. "cancelar" (bare, no task ID) = ask which task to cancel or what to cancel. When a user says "concluir tarefa" without specifying an ID and has only one active task, apply it to that task. If multiple are active, list them and ask.
 
 ## Tool vs. Direct SQL
 

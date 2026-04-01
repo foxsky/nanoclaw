@@ -1913,11 +1913,22 @@ export class TaskflowEngine {
   /* ---------------------------------------------------------------- */
 
   create(params: CreateParams): CreateResult {
+    let result: CreateResult;
     try {
-      return this.db.transaction(() => this.createTaskInternal(params))();
+      result = this.db.transaction(() => this.createTaskInternal(params))();
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }
+    // Post-commit verification: confirm the row actually persisted
+    if (result.success && result.task_id) {
+      const verify = this.db
+        .prepare('SELECT id FROM tasks WHERE id = ? AND board_id = ?')
+        .get(result.task_id, this.boardId) as { id: string } | undefined;
+      if (!verify) {
+        return { success: false, error: `Task ${result.task_id} was not persisted after commit.` };
+      }
+    }
+    return result;
   }
 
   private createTaskInternal(params: CreateParams): CreateResult {
@@ -2174,14 +2185,6 @@ export class TaskflowEngine {
           );
           if (notif) notifications.push(notif);
         }
-      }
-
-      /* --- Post-write verification --- */
-      const verify = this.db
-        .prepare('SELECT id FROM tasks WHERE id = ? AND board_id = ?')
-        .get(taskId, this.boardId) as { id: string } | undefined;
-      if (!verify) {
-        return { success: false, error: `Task ${taskId} was not persisted — INSERT may have been rolled back.` };
       }
 
       return {

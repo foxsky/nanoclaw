@@ -137,12 +137,14 @@ const boards = [];
 let totalIssues = 0;
 
 for (const group of groups) {
-  // Get the board_id for this group
+  // Get the board_id for this group (and parent board for delegated tasks)
   const board = tfDb.prepare(
-    "SELECT id FROM boards WHERE group_folder = ?"
+    "SELECT id, parent_board_id FROM boards WHERE group_folder = ?"
   ).get(group.folder);
 
   if (!board) continue;
+  const boardIds = [board.id];
+  if (board.parent_board_id) boardIds.push(board.parent_board_id);
 
   // Fetch non-bot user messages in the review period
   const userMessages = msgDb.prepare(
@@ -159,6 +161,10 @@ for (const group of groups) {
   const interactions = [];
 
   for (const msg of userMessages) {
+    // Skip web-origin test/QA messages (web: prefix senders)
+    const senderStr = msg.sender_name || msg.sender || '';
+    if (senderStr.startsWith('web:')) continue;
+
     // Find bot response within 10 minutes
     const tenMinLater = new Date(new Date(msg.timestamp).getTime() + 600000).toISOString();
     const botResponse = msgDb.prepare(
@@ -176,11 +182,13 @@ for (const group of groups) {
     // For write requests, check task_history for matching mutations
     if (isWrite) {
       // Window: from message time to 10 min after
+      // Check both own board and parent board (delegated tasks land on parent)
+      const placeholders = boardIds.map(() => '?').join(',');
       const mutations = tfDb.prepare(
         `SELECT action, task_id, at FROM task_history
-         WHERE board_id = ? AND at >= ? AND at <= ?
+         WHERE board_id IN (${placeholders}) AND at >= ? AND at <= ?
          ORDER BY at ASC`
-      ).all(board.id, msg.timestamp, tenMinLater);
+      ).all(...boardIds, msg.timestamp, tenMinLater);
 
       mutationFound = mutations.length > 0;
     }
