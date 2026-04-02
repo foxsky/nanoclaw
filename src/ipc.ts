@@ -40,6 +40,7 @@ export interface IpcDeps {
     droppedParticipants?: string[];
   }>;
   resolvePhoneJid?: (phone: string) => Promise<string>;
+  lookupPhoneJid?: (phone: string) => Promise<string | null>;
   onTasksChanged: () => void;
 }
 
@@ -57,6 +58,7 @@ const ALLOWED_IPC_PLUGIN_FILES = new Set([
   'create-group.js',
   'provision-child-board.js',
   'provision-root-board.js',
+  'send-otp.js',
 ]);
 
 function parseOptionalNonNegativeInteger(value: unknown): number | undefined {
@@ -737,6 +739,7 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
       const isTaskflow = sourceGroupEntry?.taskflowManaged === true;
       const messagesDir = path.join(ipcBaseDir, sourceGroup, 'messages');
       const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
+      const otpDir = path.join(ipcBaseDir, sourceGroup, 'otp');
 
       // Process messages from this group's IPC directory
       try {
@@ -865,6 +868,33 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
         }
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
+      }
+
+      // Process OTP task files from this group's IPC directory
+      try {
+        if (fs.existsSync(otpDir)) {
+          const otpFiles = fs
+            .readdirSync(otpDir)
+            .filter((f) => f.endsWith('.json'))
+            .sort();
+          for (const file of otpFiles) {
+            const filePath = path.join(otpDir, file);
+            try {
+              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              await processTaskIpc(data, sourceGroup, isMain, deps);
+              fs.unlinkSync(filePath);
+              ipcRetryCounts.delete(filePath);
+            } catch (err) {
+              logger.error(
+                { file, sourceGroup, err },
+                'Error processing IPC OTP task',
+              );
+              handleIpcFileError(filePath, file, sourceGroup, err, ipcBaseDir);
+            }
+          }
+        }
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error reading IPC OTP directory');
       }
     }
 
