@@ -604,15 +604,25 @@ export class WhatsAppChannel implements Channel {
     return jid;
   }
 
+  async lookupPhoneJid(phone: string): Promise<string | null> {
+    const normalizedPhone = phone.replace(/\D/g, '');
+    const results = await this.sock.onWhatsApp(normalizedPhone);
+    const existingJid = results?.find((result) => result.exists && result.jid)
+      ?.jid;
+    if (!existingJid) {
+      return null;
+    }
+    // Normalize to @s.whatsapp.net — onWhatsApp may return @c.us (legacy)
+    // or other suffixes. Strip any suffix and reconstruct.
+    if (!existingJid.endsWith('@s.whatsapp.net')) {
+      return existingJid.replace(/@.*$/, '') + '@s.whatsapp.net';
+    }
+    return existingJid;
+  }
+
   async resolvePhoneJid(phone: string): Promise<string> {
-    const results = await this.sock.onWhatsApp(phone);
-    if (results?.length && results[0].exists) {
-      const jid = results[0].jid;
-      // Normalize to @s.whatsapp.net — onWhatsApp may return @c.us (legacy)
-      // or other suffixes. Strip any suffix and reconstruct.
-      if (jid && !jid.endsWith('@s.whatsapp.net')) {
-        return jid.replace(/@.*$/, '') + '@s.whatsapp.net';
-      }
+    const jid = await this.lookupPhoneJid(phone);
+    if (jid) {
       return jid;
     }
     // Fallback: use raw digits

@@ -104,6 +104,8 @@ export interface Channel {
   }>;
   // Optional: resolve a phone number to a JID. Channels that support it implement it.
   resolvePhoneJid?(phone: string): Promise<string>;
+  // Optional: resolve only existing WhatsApp numbers to a JID.
+  lookupPhoneJid?(phone: string): Promise<string | null>;
   // Optional: sync groups from the channel. Channels that support it implement it.
   syncGroups?(force: boolean): Promise<void>;
 }

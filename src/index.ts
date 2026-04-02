@@ -1278,6 +1278,12 @@ async function main(): Promise<void> {
         throw new Error('No channel supports phone JID resolution');
       return ch.resolvePhoneJid(phone);
     },
+    lookupPhoneJid: (phone) => {
+      const ch = channels.find((c) => c.lookupPhoneJid);
+      if (!ch?.lookupPhoneJid)
+        throw new Error('No channel supports strict phone JID lookup');
+      return ch.lookupPhoneJid(phone);
+    },
     onTasksChanged: () => {
       const tasks = getAllTasks();
       const taskRows = tasks.map((t) => ({
