@@ -505,7 +505,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (!hasTriggerMessage(missedMessages, chatJid, group)) return true;
   }
 
-  const prompt = formatMessages(missedMessages);
+  const prompt = formatMessages(missedMessages, TIMEZONE);
   const imageAttachments = parseImageReferences(missedMessages);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
@@ -842,7 +842,7 @@ async function startMessageLoop(): Promise<void> {
           // re-sending already-processed messages and rolling the cursor back.
           if (allPending.length === 0) continue;
 
-          const formatted = formatMessages(allPending);
+          const formatted = formatMessages(allPending, TIMEZONE);
 
           if (queue.sendMessage(chatJid, formatted)) {
             logger.debug(
@@ -916,7 +916,7 @@ async function startMessageLoop(): Promise<void> {
             }
 
             // Format as external participant message with metadata
-            const formatted = formatMessages([msg]);
+            const formatted = formatMessages([msg], TIMEZONE);
             const externalContext = `[External participant: ${route.displayName} (${route.externalId}), active grants: ${route.grants.map((g) => g.meetingTaskId).join(', ')}]\n${formatted}`;
 
             // Try piping to active container first.

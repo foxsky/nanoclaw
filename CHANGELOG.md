@@ -4,6 +4,14 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## [1.2.46] - 2026-04-02
+
+### Upstream Merge (1.2.45 → 1.2.46)
+- Reply/quoted message context: messages now store `reply_to_message_id`, `reply_to_message_content`, `reply_to_sender_name` — DB migration adds 3 columns, `formatMessages` renders `<quoted_message>` XML when a message is a reply
+- `getNewMessages` gains subquery pagination with configurable `limit` (default 200)
+- `formatMessages` now uses `formatLocalTime` with configured timezone (America/Fortaleza) instead of raw ISO timestamps
+- Code of Conduct added upstream
+
 ## [1.2.45] - 2026-04-01
 
 ### Upstream (1.2.43 → 1.2.45)
