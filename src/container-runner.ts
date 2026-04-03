@@ -4,7 +4,6 @@
  */
 import { ChildProcess, spawn } from 'child_process';
 import fs from 'fs';
-import { fileURLToPath } from 'node:url';
 import path from 'path';
 
 import {
@@ -19,6 +18,7 @@ import {
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
+import { PROJECT_ROOT } from './paths.js';
 import {
   CONTAINER_RUNTIME_BIN,
   hostGatewayArgs,
@@ -30,19 +30,6 @@ import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL });
-
-/**
- * Resolve the project root from the source file location rather than
- * process.cwd(). This is reliable regardless of the working directory
- * the process was started from (e.g., systemd, cron, wrapper scripts).
- */
-function resolveProjectRoot(moduleUrl = import.meta.url): string {
-  const modulePath = fileURLToPath(moduleUrl);
-  // src/container-runner.ts -> project root is one level up
-  return path.resolve(path.dirname(modulePath), '..');
-}
-
-const PROJECT_ROOT = resolveProjectRoot();
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
