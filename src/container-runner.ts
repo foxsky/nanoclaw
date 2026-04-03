@@ -4,6 +4,7 @@
  */
 import { ChildProcess, spawn } from 'child_process';
 import fs from 'fs';
+import { fileURLToPath } from 'node:url';
 import path from 'path';
 
 import {
@@ -29,6 +30,19 @@ import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL });
+
+/**
+ * Resolve the project root from the source file location rather than
+ * process.cwd(). This is reliable regardless of the working directory
+ * the process was started from (e.g., systemd, cron, wrapper scripts).
+ */
+function resolveProjectRoot(moduleUrl = import.meta.url): string {
+  const modulePath = fileURLToPath(moduleUrl);
+  // src/container-runner.ts -> project root is one level up
+  return path.resolve(path.dirname(modulePath), '..');
+}
+
+const PROJECT_ROOT = resolveProjectRoot();
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -63,7 +77,6 @@ function buildVolumeMounts(
   isMain: boolean,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
-  const projectRoot = process.cwd();
   const groupDir = resolveGroupFolderPath(group.folder);
 
   if (isMain) {
@@ -73,14 +86,14 @@ function buildVolumeMounts(
     // (src/, dist/, package.json, etc.) which would bypass the sandbox
     // entirely on next restart.
     mounts.push({
-      hostPath: projectRoot,
+      hostPath: PROJECT_ROOT,
       containerPath: '/workspace/project',
       readonly: true,
     });
 
     // Shadow .env so the agent cannot read secrets from the mounted project root.
     // Credentials are injected by the OneCLI gateway, never exposed to containers.
-    const envFile = path.join(projectRoot, '.env');
+    const envFile = path.join(PROJECT_ROOT, '.env');
     if (fs.existsSync(envFile)) {
       mounts.push({
         hostPath: '/dev/null',
@@ -91,7 +104,7 @@ function buildVolumeMounts(
 
     // Main gets writable access to the store (SQLite DB) so it can
     // query and write to the database directly.
-    const storeDir = path.join(projectRoot, 'store');
+    const storeDir = path.join(PROJECT_ROOT, 'store');
     mounts.push({
       hostPath: storeDir,
       containerPath: '/workspace/project/store',
@@ -158,7 +171,7 @@ function buildVolumeMounts(
   }
 
   // Sync skills from container/skills/ into each group's .claude/skills/
-  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
+  const skillsSrc = path.join(PROJECT_ROOT, 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');
   if (fs.existsSync(skillsSrc)) {
     for (const skillDir of fs.readdirSync(skillsSrc)) {
@@ -190,7 +203,7 @@ function buildVolumeMounts(
   // can customize it (add tools, change behavior) without affecting other
   // groups. Recompiled on container startup via entrypoint.sh.
   const agentRunnerSrc = path.join(
-    projectRoot,
+    PROJECT_ROOT,
     'container',
     'agent-runner',
     'src',
