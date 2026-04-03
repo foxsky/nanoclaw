@@ -4,6 +4,14 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## [1.2.47] - 2026-04-03
+
+### Upstream Merge (1.2.46 → 1.2.47)
+- Mount `store/` read-write for main agent — direct SQLite DB access from the main container
+- Shadow `.env` in main container mount (security: credentials via proxy only)
+- `requiresTrigger` param added to `register_group` MCP tool (was host-IPC only)
+- Breaking change detection relaxed to match `[BREAKING]` anywhere in changelog lines
+
 ## [1.2.46] - 2026-04-02
 
 ### Upstream Merge (1.2.45 → 1.2.46)
@@ -158,6 +166,14 @@ For detailed release notes, see the [full changelog on the documentation site](h
 ### Post-Merge Test Fixes
 - Fixed OneCLI null-safety, TaskFlow test paths, ISO date assertions, English→Portuguese strings
 - 899 tests passing across 40 test files
+
+## [1.2.36] - 2026-03-26
+
+- [BREAKING] Replaced pino logger with built-in logger. WhatsApp users must re-merge the WhatsApp fork to pick up the Baileys logger compatibility fix: `git fetch whatsapp main && git merge whatsapp/main`. If the `whatsapp` remote is not configured: `git remote add whatsapp https://github.com/qwibitai/nanoclaw-whatsapp.git`.
+
+## [1.2.35] - 2026-03-26
+
+- [BREAKING] OneCLI Agent Vault replaces the built-in credential proxy. Check your runtime: `grep CONTAINER_RUNTIME_BIN src/container-runtime.ts` — if it shows `'container'` you are on Apple Container, if `'docker'` you are on Docker. Docker users: run `/init-onecli` to install OneCLI and migrate `.env` credentials to the vault. Apple Container users: re-merge the skill branch (`git fetch upstream skill/apple-container && git merge upstream/skill/apple-container`) then run `/convert-to-apple-container` and follow all instructions (configures credential proxy networking) — do NOT run `/init-onecli`, it requires Docker.
 
 ## [1.2.21] - 2026-03-22
 
