@@ -607,8 +607,9 @@ export class WhatsAppChannel implements Channel {
   async lookupPhoneJid(phone: string): Promise<string | null> {
     const normalizedPhone = phone.replace(/\D/g, '');
     const results = await this.sock.onWhatsApp(normalizedPhone);
-    const existingJid = results?.find((result) => result.exists && result.jid)
-      ?.jid;
+    const existingJid = results?.find(
+      (result) => result.exists && result.jid,
+    )?.jid;
     if (!existingJid) {
       return null;
     }

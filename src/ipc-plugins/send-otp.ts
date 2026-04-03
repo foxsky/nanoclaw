@@ -15,7 +15,10 @@ function normalizeMessage(message: unknown): string | null {
 
 const handleSendOtp: IpcHandler = async (data, sourceGroup, isMain, deps) => {
   if (!isMain) {
-    logger.warn({ sourceGroup }, 'send_otp: only main group may send OTP messages');
+    logger.warn(
+      { sourceGroup },
+      'send_otp: only main group may send OTP messages',
+    );
     return;
   }
 

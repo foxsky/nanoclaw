@@ -12,6 +12,10 @@ For detailed release notes, see the [full changelog on the documentation site](h
 - `requiresTrigger` param added to `register_group` MCP tool (was host-IPC only)
 - Breaking change detection relaxed to match `[BREAKING]` anywhere in changelog lines
 
+### Holidays Calendar
+- Populated `board_holidays` with 14 feriados for 2026 (12 nacionais + Batalha do Jenipapo PI + Aniversário de Teresina) across all 18 boards in the hierarchy
+- Annual renewal already scheduled: `TF-HOLIDAY-SEEKER` cron fires Dec 15 to search and propose next year's holidays
+
 ## [1.2.46] - 2026-04-02
 
 ### Upstream Merge (1.2.45 → 1.2.46)

@@ -98,7 +98,7 @@ describe('send_otp IPC plugin', () => {
     await handler(
       {
         type: 'send_otp',
-        phone: '   ' ,
+        phone: '   ',
         message: '',
       },
       'main',
