@@ -1,0 +1,10 @@
+# Prevent host-side node_modules / dist from clobbering the image's own
+# freshly-installed copies. The Dockerfile's `COPY agent-runner/ ./` happens
+# AFTER `RUN npm install`, so anything present in agent-runner/ on the host
+# would overwrite the image's node_modules — shipping stale dependencies.
+# See commit that introduced this file for the full incident writeup.
+agent-runner/node_modules
+agent-runner/dist
+
+# Docs aren't needed at runtime
+agent-runner/docs

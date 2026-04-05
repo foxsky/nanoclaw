@@ -30,7 +30,7 @@ rsync -az --delete dist/ "$REMOTE:$REMOTE_DIR/dist/"
 rsync -az --delete container/agent-runner/src/ "$REMOTE:$REMOTE_DIR/container/agent-runner/src/"
 rsync -az container/agent-runner/package.json container/agent-runner/package-lock.json \
   "$REMOTE:$REMOTE_DIR/container/agent-runner/"
-rsync -az container/Dockerfile container/build.sh "$REMOTE:$REMOTE_DIR/container/"
+rsync -az container/Dockerfile container/build.sh container/.dockerignore "$REMOTE:$REMOTE_DIR/container/"
 rsync -az groups/ "$REMOTE:$REMOTE_DIR/groups/"
 rsync -az package.json package-lock.json "$REMOTE:$REMOTE_DIR/"
 ssh "$REMOTE" "cd $REMOTE_DIR && npm install --ignore-scripts 2>&1 | tail -1"
