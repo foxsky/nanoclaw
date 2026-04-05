@@ -17,6 +17,7 @@ import {
   IDLE_TIMEOUT,
   TIMEZONE,
 } from './config.js';
+import { detectAuthMode } from './credential-proxy.js';
 import { readEnvFile } from './env.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
@@ -370,6 +371,22 @@ function buildContainerArgs(
     '-e',
     `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
   );
+
+  // Mirror the host's auth method with a placeholder value. The claude-code
+  // CLI in SDK 0.2.80+ does a local auth-state check before any HTTP call,
+  // so it needs SOMETHING in its env to satisfy that check — the real
+  // credential then gets substituted by the credential proxy:
+  //   API key mode: SDK sends x-api-key=placeholder, proxy replaces with real key.
+  //   OAuth mode:   SDK exchanges placeholder token for a temp API key; proxy
+  //                 injects the real OAuth token on that exchange request,
+  //                 subsequent requests carry the temp key unchanged.
+  // Matches upstream/skill/native-credential-proxy container-runner.ts.
+  const authMode = detectAuthMode();
+  if (authMode === 'api-key') {
+    args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
+  } else {
+    args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+  }
 
   // On Linux, resolve host.docker.internal
   args.push(...hostGatewayArgs());
