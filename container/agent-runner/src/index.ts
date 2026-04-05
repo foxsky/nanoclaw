@@ -43,9 +43,17 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
+type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+const IMAGE_MEDIA_TYPES: readonly ImageMediaType[] = [
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+];
+
 interface ImageContentBlock {
   type: 'image';
-  source: { type: 'base64'; media_type: string; data: string };
+  source: { type: 'base64'; media_type: ImageMediaType; data: string };
 }
 
 interface TextContentBlock {
@@ -395,16 +403,20 @@ async function runQuery(
     const blocks: ContentBlock[] = [];
     for (const att of containerInput.imageAttachments) {
       const filePath = path.join('/workspace/group', att.relativePath);
-      if (fs.existsSync(filePath)) {
-        const data = fs.readFileSync(filePath).toString('base64');
-        blocks.push({
-          type: 'image',
-          source: { type: 'base64', media_type: att.mediaType, data },
-        });
-        log(`Loaded image: ${att.relativePath} (${Math.round(data.length * 0.75 / 1024)}KB)`);
-      } else {
+      if (!fs.existsSync(filePath)) {
         log(`Image not found: ${filePath}`);
+        continue;
       }
+      if (!IMAGE_MEDIA_TYPES.includes(att.mediaType as ImageMediaType)) {
+        log(`Skipping image with unsupported media_type: ${att.mediaType} (${att.relativePath})`);
+        continue;
+      }
+      const data = fs.readFileSync(filePath).toString('base64');
+      blocks.push({
+        type: 'image',
+        source: { type: 'base64', media_type: att.mediaType as ImageMediaType, data },
+      });
+      log(`Loaded image: ${att.relativePath} (${Math.round(data.length * 0.75 / 1024)}KB)`);
     }
     if (blocks.length > 0) {
       blocks.push({ type: 'text', text: 'Images attached above were sent in the conversation.' });
