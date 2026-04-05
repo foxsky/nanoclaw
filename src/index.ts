@@ -1008,6 +1008,19 @@ async function main(): Promise<void> {
   ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');
+  // Run the TaskFlow schema init at startup so any pending idempotent
+  // schema migrations (e.g. DROP TABLE task_comments to fix the FK bug
+  // documented in src/taskflow-db.ts initTaskflowDb) are applied before
+  // any container spawns and opens the DB. Close the handle immediately
+  // so containers can still attach to the file.
+  try {
+    const { initTaskflowDb } = await import('./taskflow-db.js');
+    const tfDb = initTaskflowDb();
+    tfDb.close();
+    logger.info('TaskFlow DB schema checked');
+  } catch (err) {
+    logger.warn({ err }, 'TaskFlow DB schema init skipped');
+  }
   loadState();
 
   // Ensure OneCLI agents exist for all registered groups.
