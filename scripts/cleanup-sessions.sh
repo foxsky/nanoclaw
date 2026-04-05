@@ -90,7 +90,7 @@ for group_dir in "$SESSIONS_DIR"/*/; do
   done
 done
 
-# --- Prune debug logs (>3 days, skip files named after active sessions) ---
+# --- Prune debug logs (>7 days, skip files named after active sessions) ---
 
 for group_dir in "$SESSIONS_DIR"/*/; do
   debug_dir="$group_dir/.claude/debug"
@@ -102,7 +102,7 @@ for group_dir in "$SESSIONS_DIR"/*/; do
   done < <(find "$debug_dir" -type f -mtime +7 ! -name "latest" -print0 2>/dev/null)
 done
 
-# --- Prune todo files (>3 days, skip files named after active sessions) ---
+# --- Prune todo files (>7 days, skip files named after active sessions) ---
 
 for group_dir in "$SESSIONS_DIR"/*/; do
   todos_dir="$group_dir/.claude/todos"
@@ -119,7 +119,7 @@ for group_dir in "$SESSIONS_DIR"/*/; do
   done < <(find "$todos_dir" -type f -mtime +7 -print0 2>/dev/null)
 done
 
-# --- Prune telemetry (>7 days, skip files named after active sessions) ---
+# --- Prune telemetry (>30 days, skip files named after active sessions) ---
 
 for group_dir in "$SESSIONS_DIR"/*/; do
   telem_dir="$group_dir/.claude/telemetry"
@@ -135,7 +135,7 @@ for group_dir in "$SESSIONS_DIR"/*/; do
   done < <(find "$telem_dir" -type f -mtime +30 -print0 2>/dev/null)
 done
 
-# --- Prune group logs (>7 days) ---
+# --- Prune group logs (>30 days) ---
 
 while IFS= read -r -d '' f; do
   remove "$f"

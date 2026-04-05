@@ -33,14 +33,21 @@ rsync -az container/agent-runner/package.json container/agent-runner/package-loc
 rsync -az container/Dockerfile container/build.sh container/.dockerignore "$REMOTE:$REMOTE_DIR/container/"
 rsync -az groups/ "$REMOTE:$REMOTE_DIR/groups/"
 rsync -az package.json package-lock.json "$REMOTE:$REMOTE_DIR/"
-ssh "$REMOTE" "cd $REMOTE_DIR && npm install --ignore-scripts 2>&1 | tail -1"
+ssh "$REMOTE" "cd $REMOTE_DIR && npm install --ignore-scripts" 2>&1 | tail -1 \
+  || { echo "ABORT: npm install failed on remote."; exit 1; }
 
 # 4. Rebuild the agent container image if container inputs changed.
-#    Skipped when the Docker image already matches the current
-#    container/agent-runner/package.json + Dockerfile (hashed fingerprint).
-#    A stale image is the silent failure mode for SDK bumps.
+#    Fingerprint covers everything the Dockerfile COPY steps consume:
+#    Dockerfile itself, .dockerignore, build.sh, agent-runner package files,
+#    agent-runner source, and tsconfig.json. A change to ANY of these
+#    should trigger a rebuild — the previous fingerprint only hashed
+#    Dockerfile + package.json + package-lock.json, which missed source-
+#    only changes (caught by Codex review 2026-04-05).
 echo "[4/5] Checking if agent container needs rebuild..."
-LOCAL_FP=$(cat container/Dockerfile container/agent-runner/package.json container/agent-runner/package-lock.json 2>/dev/null | sha256sum | awk '{print $1}')
+LOCAL_FP=$(cat container/Dockerfile container/.dockerignore container/build.sh \
+  container/agent-runner/package.json container/agent-runner/package-lock.json \
+  container/agent-runner/tsconfig.json container/agent-runner/src/*.ts 2>/dev/null \
+  | sha256sum | awk '{print $1}')
 REMOTE_FP=$(ssh "$REMOTE" "cat $REMOTE_DIR/container/.build-fingerprint 2>/dev/null || echo none")
 if [ "$LOCAL_FP" != "$REMOTE_FP" ]; then
   echo "  Container inputs changed — rebuilding nanoclaw-agent image on remote..."
