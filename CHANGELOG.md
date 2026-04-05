@@ -4,6 +4,22 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## [1.2.50] - 2026-04-05
+
+### Upstream Merge (1.2.47 → 1.2.50)
+- **Agent SDK 0.2.76 → 0.2.92**: 1M context window and 200k-token auto-compact support. Container image rebuild required to pick up new SDK.
+- **Auto-compact threshold** set to 165k tokens via new `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var injected into `sdkEnv` in `container/agent-runner/src/index.ts` — keeps headroom below the 200k boundary
+- **Session artifact pruning** (`src/session-cleanup.ts` + `scripts/cleanup-sessions.sh`): daily cleanup of stale JSONL session transcripts (7d), debug logs (3d), todo files (3d), telemetry (7d), and group logs (7d). Active session IDs read from the DB are always preserved. Runs 30s after startup, then every 24h.
+- New skills: `/add-karpathy-llm-wiki` (persistent wiki knowledge base), `/migrate-from-openclaw` (OpenClaw import), `/migrate-nanoclaw` (intent-based upgrade path that replaces merge-based upgrades for far-behind forks)
+- `setup` and `update-nanoclaw` skills gained diagnostic telemetry entries
+- Upstream reverted an unrelated `src/db.ts` formatting change
+
+### Conflict Resolution (local)
+- Secret-injection loop removed from `container/agent-runner/src/index.ts` — unreachable dead code in the credential-proxy model (ANTHROPIC_BASE_URL routes all auth through the host proxy at port 3001). Upstream's `sdkEnv` literal taken verbatim. Orphan `secrets?:` field dropped from `runtime-config.ts`; `readSecrets()` + `input.secrets` wiring dropped from `src/container-runner.ts`.
+
+### Deploy Script
+- `scripts/deploy.sh` now syncs `container/agent-runner/package{,-lock}.json` + `container/Dockerfile` + `container/build.sh`, and rebuilds the `nanoclaw-agent` Docker image on the remote when container inputs change (fingerprinted via sha256 of Dockerfile + agent-runner package files). Prevents stale-image silent failures on SDK bumps.
+
 ## [1.2.47] - 2026-04-03
 
 ### Upstream Merge (1.2.46 → 1.2.47)

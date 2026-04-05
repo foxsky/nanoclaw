@@ -11,7 +11,6 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
-  secrets?: Record<string, string>;
   script?: string;
   queryVector?: string; // base64-encoded Float32Array
   ollamaHost?: string;
