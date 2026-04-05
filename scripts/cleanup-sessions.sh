@@ -6,11 +6,11 @@
 # Usage:  ./scripts/cleanup-sessions.sh [--dry-run]
 #
 # Retention:
-#   Session JSONLs + tool-results:  7 days  (active session always kept)
-#   Debug logs:                     3 days
-#   Todo files:                     3 days
-#   Telemetry:                      7 days
-#   Group logs:                     7 days
+#   Session JSONLs + tool-results: 30 days  (active session always kept)
+#   Debug logs:                     7 days
+#   Todo files:                     7 days
+#   Telemetry:                     30 days
+#   Group logs:                    30 days
 
 set -euo pipefail
 
@@ -81,8 +81,8 @@ for group_dir in "$SESSIONS_DIR"/*/; do
       continue
     fi
 
-    # Only delete if older than 7 days
-    if [ -n "$(find "$jsonl" -mtime +7 2>/dev/null)" ]; then
+    # Only delete if older than 30 days
+    if [ -n "$(find "$jsonl" -mtime +30 2>/dev/null)" ]; then
       remove "$jsonl"
       # Remove matching tool-results directory
       [ -d "$jsonl_dir/$id" ] && remove "$jsonl_dir/$id"
@@ -99,7 +99,7 @@ for group_dir in "$SESSIONS_DIR"/*/; do
     fname=$(basename "$f" .txt)
     is_active "$fname" && continue
     remove "$f"
-  done < <(find "$debug_dir" -type f -mtime +3 ! -name "latest" -print0 2>/dev/null)
+  done < <(find "$debug_dir" -type f -mtime +7 ! -name "latest" -print0 2>/dev/null)
 done
 
 # --- Prune todo files (>3 days, skip files named after active sessions) ---
@@ -116,7 +116,7 @@ for group_dir in "$SESSIONS_DIR"/*/; do
       fi
     done
     remove "$f"
-  done < <(find "$todos_dir" -type f -mtime +3 -print0 2>/dev/null)
+  done < <(find "$todos_dir" -type f -mtime +7 -print0 2>/dev/null)
 done
 
 # --- Prune telemetry (>7 days, skip files named after active sessions) ---
@@ -132,14 +132,14 @@ for group_dir in "$SESSIONS_DIR"/*/; do
       fi
     done
     remove "$f"
-  done < <(find "$telem_dir" -type f -mtime +7 -print0 2>/dev/null)
+  done < <(find "$telem_dir" -type f -mtime +30 -print0 2>/dev/null)
 done
 
 # --- Prune group logs (>7 days) ---
 
 while IFS= read -r -d '' f; do
   remove "$f"
-done < <(find "$GROUPS_DIR"/*/logs -type f -mtime +7 -print0 2>/dev/null)
+done < <(find "$GROUPS_DIR"/*/logs -type f -mtime +30 -print0 2>/dev/null)
 
 # --- Summary ---
 
