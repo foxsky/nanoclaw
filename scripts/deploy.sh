@@ -44,7 +44,10 @@ LOCAL_FP=$(cat container/Dockerfile container/agent-runner/package.json containe
 REMOTE_FP=$(ssh "$REMOTE" "cat $REMOTE_DIR/container/.build-fingerprint 2>/dev/null || echo none")
 if [ "$LOCAL_FP" != "$REMOTE_FP" ]; then
   echo "  Container inputs changed — rebuilding nanoclaw-agent image on remote..."
-  ssh "$REMOTE" "cd $REMOTE_DIR && ./container/build.sh 2>&1 | tail -5" \
+  # Do NOT pipe through tail here — the pipeline exit code would become tail's,
+  # masking a failed build. Let the full build output stream through so errors
+  # are visible, and let ssh's real exit code propagate.
+  ssh "$REMOTE" "cd $REMOTE_DIR && ./container/build.sh" 2>&1 \
     || { echo "ABORT: container build failed on remote. Service NOT restarted."; exit 1; }
   ssh "$REMOTE" "echo '$LOCAL_FP' > $REMOTE_DIR/container/.build-fingerprint"
   echo "  Image rebuilt."
