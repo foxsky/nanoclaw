@@ -1184,36 +1184,47 @@ export class TaskflowEngine {
   /*  Private helpers                                                  */
   /* ---------------------------------------------------------------- */
 
-  private getAllActiveTasks(): any[] {
-    return this.db
-      .prepare(`SELECT * FROM tasks WHERE ${this.visibleTaskScope()} ORDER BY id`)
-      .all(...this.visibleTaskParams());
-  }
-
-  private getTasksByColumn(column: string): any[] {
-    return this.db
-      .prepare(
-        `SELECT * FROM tasks WHERE ${this.visibleTaskScope()} AND column = ? ORDER BY id`,
-      )
-      .all(...this.visibleTaskParams(), column);
-  }
-
-  private getTasksByAssignee(personId: string): any[] {
+  /**
+   * Query visible tasks with parent_title resolved via LEFT JOIN.
+   * All task-returning queries should use this to avoid LLM hallucination
+   * of parent project names when parent_task_id is set but no title is provided.
+   */
+  private queryVisibleTasks(
+    extraWhere = '',
+    extraParams: any[] = [],
+    orderBy = 'ORDER BY t.id',
+  ): any[] {
     return this.db
       .prepare(
         `SELECT t.*, pt.title AS parent_title
          FROM tasks t
          LEFT JOIN tasks pt ON pt.board_id = t.board_id AND pt.id = t.parent_task_id
-         WHERE ${this.visibleTaskScope('t')} AND t.assignee = ?
-         ORDER BY t.id`,
+         WHERE ${this.visibleTaskScope('t')} ${extraWhere}
+         ${orderBy}`,
       )
-      .all(...this.visibleTaskParams(), personId);
+      .all(...this.visibleTaskParams(), ...extraParams);
+  }
+
+  private getAllActiveTasks(): any[] {
+    return this.queryVisibleTasks();
+  }
+
+  private getTasksByColumn(column: string): any[] {
+    return this.queryVisibleTasks('AND t.column = ?', [column]);
+  }
+
+  private getTasksByAssignee(personId: string): any[] {
+    return this.queryVisibleTasks('AND t.assignee = ?', [personId]);
   }
 
   private getSubtaskRows(parentTaskId: string, boardId = this.boardId): any[] {
     return this.db
       .prepare(
-        `SELECT * FROM tasks WHERE board_id = ? AND parent_task_id = ? ORDER BY id`,
+        `SELECT t.*, pt.title AS parent_title
+         FROM tasks t
+         LEFT JOIN tasks pt ON pt.board_id = t.board_id AND pt.id = t.parent_task_id
+         WHERE t.board_id = ? AND t.parent_task_id = ?
+         ORDER BY t.id`,
       )
       .all(boardId, parentTaskId);
   }
@@ -1221,9 +1232,11 @@ export class TaskflowEngine {
   private getLinkedTasks(): any[] {
     return this.db
       .prepare(
-        `SELECT * FROM tasks
-         WHERE child_exec_board_id = ? AND child_exec_enabled = 1
-         ORDER BY id`,
+        `SELECT t.*, pt.title AS parent_title
+         FROM tasks t
+         LEFT JOIN tasks pt ON pt.board_id = t.board_id AND pt.id = t.parent_task_id
+         WHERE t.child_exec_board_id = ? AND t.child_exec_enabled = 1
+         ORDER BY t.id`,
       )
       .all(this.boardId);
   }
@@ -4442,11 +4455,9 @@ export class TaskflowEngine {
     projectCount: number;
     subtaskCount: number;
   } {
-    const allTasks: any[] = this.db
-      .prepare(
-        `SELECT * FROM tasks WHERE ${this.visibleTaskScope()} AND column != 'done' ORDER BY id`,
-      )
-      .all(...this.visibleTaskParams());
+    const allTasks: any[] = this.queryVisibleTasks(
+      "AND t.column != 'done'",
+    );
 
     const topLevel = allTasks.filter((t: any) => !t.parent_task_id);
 
@@ -5158,60 +5169,36 @@ export class TaskflowEngine {
 
         /* ---------- Due-date filters ---------- */
 
-        case 'overdue': {
-          const tasks = this.db
-            .prepare(
-              `SELECT * FROM tasks
-               WHERE ${this.visibleTaskScope()} AND due_date < ? AND column != 'done'
-               ORDER BY due_date, id`,
-            )
-            .all(...this.visibleTaskParams(), today());
-          return { success: true, data: tasks };
-        }
+        case 'overdue':
+          return { success: true, data: this.queryVisibleTasks(
+            "AND t.due_date < ? AND t.column != 'done'",
+            [today()],
+            'ORDER BY t.due_date, t.id',
+          ) };
 
-        case 'due_today': {
-          const tasks = this.db
-            .prepare(
-              `SELECT * FROM tasks
-               WHERE ${this.visibleTaskScope()} AND due_date = ?
-               ORDER BY id`,
-            )
-            .all(...this.visibleTaskParams(), today());
-          return { success: true, data: tasks };
-        }
+        case 'due_today':
+          return { success: true, data: this.queryVisibleTasks(
+            'AND t.due_date = ?', [today()],
+          ) };
 
-        case 'due_tomorrow': {
-          const tasks = this.db
-            .prepare(
-              `SELECT * FROM tasks
-               WHERE ${this.visibleTaskScope()} AND due_date = ?
-               ORDER BY id`,
-            )
-            .all(...this.visibleTaskParams(), tomorrow());
-          return { success: true, data: tasks };
-        }
+        case 'due_tomorrow':
+          return { success: true, data: this.queryVisibleTasks(
+            'AND t.due_date = ?', [tomorrow()],
+          ) };
 
-        case 'due_this_week': {
-          const tasks = this.db
-            .prepare(
-              `SELECT * FROM tasks
-               WHERE ${this.visibleTaskScope()} AND due_date >= ? AND due_date <= ?
-               ORDER BY due_date, id`,
-            )
-            .all(...this.visibleTaskParams(), weekStart(), weekEnd());
-          return { success: true, data: tasks };
-        }
+        case 'due_this_week':
+          return { success: true, data: this.queryVisibleTasks(
+            'AND t.due_date >= ? AND t.due_date <= ?',
+            [weekStart(), weekEnd()],
+            'ORDER BY t.due_date, t.id',
+          ) };
 
-        case 'next_7_days': {
-          const tasks = this.db
-            .prepare(
-              `SELECT * FROM tasks
-               WHERE ${this.visibleTaskScope()} AND due_date >= ? AND due_date <= ?
-               ORDER BY due_date, id`,
-            )
-            .all(...this.visibleTaskParams(), today(), sevenDaysFromNow());
-          return { success: true, data: tasks };
-        }
+        case 'next_7_days':
+          return { success: true, data: this.queryVisibleTasks(
+            'AND t.due_date >= ? AND t.due_date <= ?',
+            [today(), sevenDaysFromNow()],
+            'ORDER BY t.due_date, t.id',
+          ) };
 
         /* ---------- Search & filters ---------- */
 
@@ -5221,13 +5208,10 @@ export class TaskflowEngine {
           }
           const escapedText = params.search_text.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
           const pattern = `%${escapedText}%`;
-          const textMatches = this.db
-            .prepare(
-              `SELECT * FROM tasks
-               WHERE ${this.visibleTaskScope()} AND (title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')
-               ORDER BY id`,
-            )
-            .all(...this.visibleTaskParams(), pattern, pattern) as any[];
+          const textMatches = this.queryVisibleTasks(
+            "AND (t.title LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\')",
+            [pattern, pattern],
+          ) as any[];
           /* Also try resolving search_text as a task ID (raw or prefixed) */
           const idMatch = this.getTask(params.search_text);
 
@@ -5283,42 +5267,24 @@ export class TaskflowEngine {
           return { success: true, data: textMatches };
         }
 
-        case 'urgent': {
-          const tasks = this.db
-            .prepare(
-              `SELECT * FROM tasks
-               WHERE ${this.visibleTaskScope()} AND priority = 'urgent'
-               ORDER BY id`,
-            )
-            .all(...this.visibleTaskParams());
-          return { success: true, data: tasks };
-        }
+        case 'urgent':
+          return { success: true, data: this.queryVisibleTasks(
+            "AND t.priority = 'urgent'",
+          ) };
 
-        case 'high_priority': {
-          const tasks = this.db
-            .prepare(
-              `SELECT * FROM tasks
-               WHERE ${this.visibleTaskScope()} AND priority IN ('urgent', 'high')
-               ORDER BY id`,
-            )
-            .all(...this.visibleTaskParams());
-          return { success: true, data: tasks };
-        }
+        case 'high_priority':
+          return { success: true, data: this.queryVisibleTasks(
+            "AND t.priority IN ('urgent', 'high')",
+          ) };
 
         case 'by_label': {
           if (!params.label) {
             return { success: false, error: 'Missing required parameter: label' };
           }
-          // Use LIKE on the JSON text — matches labels containing the value
           const pattern = `%"${params.label}"%`;
-          const tasks = this.db
-            .prepare(
-              `SELECT * FROM tasks
-               WHERE ${this.visibleTaskScope()} AND labels LIKE ?
-               ORDER BY id`,
-            )
-            .all(...this.visibleTaskParams(), pattern);
-          return { success: true, data: tasks };
+          return { success: true, data: this.queryVisibleTasks(
+            'AND t.labels LIKE ?', [pattern],
+          ) };
         }
 
         /* ---------- Task details & history ---------- */
@@ -5458,41 +5424,24 @@ export class TaskflowEngine {
 
         case 'agenda': {
           const t = today();
-          const overdue = this.db
-            .prepare(
-              `SELECT * FROM tasks
-               WHERE ${this.visibleTaskScope()} AND due_date < ? AND column != 'done'
-               ORDER BY due_date, id`,
-            )
-            .all(...this.visibleTaskParams(), t);
-          const dueToday = this.db
-            .prepare(
-              `SELECT * FROM tasks
-               WHERE ${this.visibleTaskScope()} AND due_date = ?
-               ORDER BY id`,
-            )
-            .all(...this.visibleTaskParams(), t);
-          const inProgress = this.getTasksByColumn('in_progress');
           return {
             success: true,
             data: {
-              overdue,
-              due_today: dueToday,
-              in_progress: inProgress,
+              overdue: this.queryVisibleTasks(
+                "AND t.due_date < ? AND t.column != 'done'", [t], 'ORDER BY t.due_date, t.id',
+              ),
+              due_today: this.queryVisibleTasks('AND t.due_date = ?', [t]),
+              in_progress: this.getTasksByColumn('in_progress'),
             },
           };
         }
 
-        case 'agenda_week': {
-          const tasks = this.db
-            .prepare(
-              `SELECT * FROM tasks
-               WHERE ${this.visibleTaskScope()} AND due_date >= ? AND due_date <= ?
-               ORDER BY due_date, id`,
-            )
-            .all(...this.visibleTaskParams(), weekStart(), weekEnd());
-          return { success: true, data: tasks };
-        }
+        case 'agenda_week':
+          return { success: true, data: this.queryVisibleTasks(
+            'AND t.due_date >= ? AND t.due_date <= ?',
+            [weekStart(), weekEnd()],
+            'ORDER BY t.due_date, t.id',
+          ) };
 
         /* ---------- Change history ---------- */
 
@@ -5675,16 +5624,12 @@ export class TaskflowEngine {
 
         /* ---------- Meetings ---------- */
 
-        case 'meetings': {
-          const tasks = this.db
-            .prepare(
-              `SELECT * FROM tasks
-               WHERE ${this.visibleTaskScope()} AND type = 'meeting' AND column != 'done'
-               ORDER BY scheduled_at, id`,
-            )
-            .all(...this.visibleTaskParams());
-          return { success: true, data: tasks };
-        }
+        case 'meetings':
+          return { success: true, data: this.queryVisibleTasks(
+            "AND t.type = 'meeting' AND t.column != 'done'",
+            [],
+            'ORDER BY t.scheduled_at, t.id',
+          ) };
 
         case 'meeting_agenda': {
           if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
@@ -5715,18 +5660,12 @@ export class TaskflowEngine {
           return { success: true, data: { task, notes }, formatted };
         }
 
-        case 'upcoming_meetings': {
-          const nowIso = new Date().toISOString();
-          const tasks = this.db
-            .prepare(
-              `SELECT * FROM tasks
-               WHERE ${this.visibleTaskScope()} AND type = 'meeting' AND column != 'done'
-                 AND scheduled_at IS NOT NULL AND scheduled_at >= ?
-               ORDER BY scheduled_at ASC`,
-            )
-            .all(...this.visibleTaskParams(), nowIso);
-          return { success: true, data: tasks };
-        }
+        case 'upcoming_meetings':
+          return { success: true, data: this.queryVisibleTasks(
+            "AND t.type = 'meeting' AND t.column != 'done' AND t.scheduled_at IS NOT NULL AND t.scheduled_at >= ?",
+            [new Date().toISOString()],
+            'ORDER BY t.scheduled_at ASC',
+          ) };
 
         case 'meeting_participants': {
           if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
