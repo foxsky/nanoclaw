@@ -4,6 +4,15 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## [1.2.52] - 2026-04-05
+
+### Upstream Merge (1.2.50 → 1.2.52)
+- Writable `/workspace/global` mount for main agent �� enables global memory writes from the main container
+- `ONECLI_URL` default removed — `undefined` when unset (aligns with native credential proxy)
+- `.npmrc` with 7-day minimum npm release age (supply-chain safety)
+- Setup telemetry + diagnostics improvements
+- `groups/main/CLAUDE.md` global memory path corrected to `/workspace/global/CLAUDE.md`
+
 ## [1.2.50] - 2026-04-05
 
 ### Upstream Merge (1.2.47 → 1.2.50)
