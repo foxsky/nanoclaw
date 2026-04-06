@@ -64,7 +64,6 @@ export interface ContainerInput {
   taskflowBoardId?: string;
   isScheduledTask?: boolean;
   assistantName?: string;
-  secrets?: Record<string, string>;
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
   queryVector?: string; // base64-encoded Float32Array
   ollamaHost?: string;

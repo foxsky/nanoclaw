@@ -9,7 +9,7 @@ For detailed release notes, see the [full changelog on the documentation site](h
 ### Upstream Merge (1.2.47 → 1.2.50)
 - **Agent SDK 0.2.76 → 0.2.92**: 1M context window and 200k-token auto-compact support. Container image rebuild required to pick up new SDK.
 - **Auto-compact threshold** set to 165k tokens via new `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var injected into `sdkEnv` in `container/agent-runner/src/index.ts` — keeps headroom below the 200k boundary
-- **Session artifact pruning** (`src/session-cleanup.ts` + `scripts/cleanup-sessions.sh`): daily cleanup of stale JSONL session transcripts (7d), debug logs (3d), todo files (3d), telemetry (7d), and group logs (7d). Active session IDs read from the DB are always preserved. Runs 30s after startup, then every 24h.
+- **Session artifact pruning** (`src/session-cleanup.ts` + `scripts/cleanup-sessions.sh`): daily cleanup of stale JSONL session transcripts (30d), debug logs (7d), todo files (7d), telemetry (30d), and group logs (30d). Active session IDs read from the DB are always preserved. Runs 30s after startup, then every 24h.
 - New skills: `/add-karpathy-llm-wiki` (persistent wiki knowledge base), `/migrate-from-openclaw` (OpenClaw import), `/migrate-nanoclaw` (intent-based upgrade path that replaces merge-based upgrades for far-behind forks)
 - `setup` and `update-nanoclaw` skills gained diagnostic telemetry entries
 - Upstream reverted an unrelated `src/db.ts` formatting change

@@ -43,13 +43,13 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
-type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
-const IMAGE_MEDIA_TYPES: readonly ImageMediaType[] = [
+const IMAGE_MEDIA_TYPES = [
   'image/jpeg',
   'image/png',
   'image/gif',
   'image/webp',
-];
+] as const;
+type ImageMediaType = (typeof IMAGE_MEDIA_TYPES)[number];
 
 interface ImageContentBlock {
   type: 'image';
@@ -603,7 +603,7 @@ async function main(): Promise<void> {
   try {
     const stdinData = await readStdin();
     containerInput = JSON.parse(stdinData);
-    // Delete the temp file the entrypoint wrote — it contains secrets
+    // Clean up the temp file the entrypoint wrote
     try { fs.unlinkSync('/tmp/input.json'); } catch { /* may not exist */ }
     log(`Received input for group: ${containerInput.groupFolder}`);
   } catch (err) {

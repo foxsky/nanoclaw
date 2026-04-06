@@ -615,24 +615,9 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   migrateLegacyProjectSubtasks(db);
   reconcileDelegationLinks(db);
 
-  // Drop the orphan task_comments table if present.
-  //
-  // Background: very early versions of TaskFlow created a task_comments table
-  // with `FOREIGN KEY (task_id) REFERENCES tasks(id)` — a single-column FK.
-  // Later, tasks gained a composite primary key `(board_id, id)` (ids like T1
-  // are intentionally reused across boards), which makes that FK target
-  // non-unique. SQLite accepts the schema at CREATE time but rejects every
-  // DELETE on `tasks` at runtime with:
-  //     foreign key mismatch - "task_comments" referencing "tasks"
-  //
-  // The table is not referenced anywhere in our current codebase (no writes,
-  // no reads, no MCP tool, not in TASKFLOW_SCHEMA) and any rows in it are
-  // legacy QA leftovers. Dropping it is the correct fix: it eliminates the
-  // blocker with zero functional loss, and is idempotent (IF EXISTS), so
-  // fresh installs are no-ops.
-  //
-  // Discovered 2026-04-05 via E2E Test 3 write-round-trip. See
-  // memory/project_taskflow_delete_fk_bug.md for the full incident report.
+  // Drop orphan task_comments table — its single-column FK to the
+  // composite-PK tasks table blocks all DELETE FROM tasks at runtime.
+  // The table has no code consumers and no schema definition.
   db.exec(`DROP TABLE IF EXISTS task_comments`);
 
   return db;

@@ -122,8 +122,11 @@ export function startCredentialProxy(
   });
 }
 
-/** Detect which auth mode the host is configured for. */
+/** Detect which auth mode the host is configured for (cached after first call). */
+let cachedAuthMode: AuthMode | undefined;
 export function detectAuthMode(): AuthMode {
+  if (cachedAuthMode) return cachedAuthMode;
   const secrets = readEnvFile(['ANTHROPIC_API_KEY']);
-  return secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
+  cachedAuthMode = secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
+  return cachedAuthMode;
 }
