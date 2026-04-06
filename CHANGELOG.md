@@ -7,18 +7,28 @@ For detailed release notes, see the [full changelog on the documentation site](h
 ## [1.2.50] - 2026-04-05
 
 ### Upstream Merge (1.2.47 → 1.2.50)
-- **Agent SDK 0.2.76 → 0.2.92**: 1M context window and 200k-token auto-compact support. Container image rebuild required to pick up new SDK.
-- **Auto-compact threshold** set to 165k tokens via new `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var injected into `sdkEnv` in `container/agent-runner/src/index.ts` — keeps headroom below the 200k boundary
-- **Session artifact pruning** (`src/session-cleanup.ts` + `scripts/cleanup-sessions.sh`): daily cleanup of stale JSONL session transcripts (30d), debug logs (7d), todo files (7d), telemetry (30d), and group logs (30d). Active session IDs read from the DB are always preserved. Runs 30s after startup, then every 24h.
-- New skills: `/add-karpathy-llm-wiki` (persistent wiki knowledge base), `/migrate-from-openclaw` (OpenClaw import), `/migrate-nanoclaw` (intent-based upgrade path that replaces merge-based upgrades for far-behind forks)
+- **Agent SDK 0.2.76 → 0.2.92**: 1M context window, 200k-token auto-compact support
+- **Auto-compact threshold** set to 165k tokens via `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var in `sdkEnv`
+- **Session artifact pruning** (`src/session-cleanup.ts` + `scripts/cleanup-sessions.sh`): daily cleanup of stale session transcripts (30d), debug logs (7d), todos (7d), telemetry (30d), group logs (30d). Active sessions always preserved.
+- New skills: `/add-karpathy-llm-wiki`, `/migrate-from-openclaw`, `/migrate-nanoclaw`
 - `setup` and `update-nanoclaw` skills gained diagnostic telemetry entries
-- Upstream reverted an unrelated `src/db.ts` formatting change
 
-### Conflict Resolution (local)
-- Secret-injection loop removed from `container/agent-runner/src/index.ts` — unreachable dead code in the credential-proxy model (ANTHROPIC_BASE_URL routes all auth through the host proxy at port 3001). Upstream's `sdkEnv` literal taken verbatim. Orphan `secrets?:` field dropped from `runtime-config.ts`; `readSecrets()` + `input.secrets` wiring dropped from `src/container-runner.ts`.
+### Auth (native credential proxy)
+- Placeholder auth args (`-e CLAUDE_CODE_OAUTH_TOKEN=placeholder` or `ANTHROPIC_API_KEY=placeholder`) added to container `docker run` args — SDK 0.2.80+ does a local auth-state check before HTTP; the credential proxy substitutes the real token during the OAuth exchange. Matches `upstream/skill/native-credential-proxy` pattern. `readSecrets()` stdin injection removed (replaced by the placeholder).
+- `detectAuthMode()` result cached after first call to avoid re-reading `.env` on every container spawn.
+
+### Container Build
+- `container/.dockerignore` added — excludes `agent-runner/node_modules`, `agent-runner/dist`, `agent-runner/docs`. Prevents the Dockerfile's `COPY agent-runner/ ./` from overwriting freshly-installed dependencies with stale host-side copies.
+- `ImageContentBlock.source.media_type` narrowed from `string` to SDK 0.2.92's literal union (`image/jpeg | image/png | image/gif | image/webp`) with runtime guard.
+
+### TaskFlow
+- Dropped orphan `task_comments` table at service startup — its single-column FK to composite-PK `tasks` was blocking all task deletes. The table had no code consumers; 44 rows were abandoned QA data.
+- `initTaskflowDb()` now called from `main()` at service startup to apply pending schema migrations before containers open the DB.
 
 ### Deploy Script
-- `scripts/deploy.sh` now syncs `container/agent-runner/package{,-lock}.json` + `container/Dockerfile` + `container/build.sh`, and rebuilds the `nanoclaw-agent` Docker image on the remote when container inputs change (fingerprinted via sha256 of Dockerfile + agent-runner package files). Prevents stale-image silent failures on SDK bumps.
+- `scripts/deploy.sh` syncs container build inputs (Dockerfile, .dockerignore, build.sh, agent-runner package files) and rebuilds the Docker image on the remote when a sha256 fingerprint changes. Fingerprint covers all Dockerfile COPY inputs including source and tsconfig, computed via `find | sort` for deterministic ordering.
+- Build failure propagation fixed — removed `| tail` pipe that masked remote exit codes.
+- `npm install` failure on remote now aborts the deploy.
 
 ## [1.2.47] - 2026-04-03
 
