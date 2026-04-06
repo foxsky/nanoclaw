@@ -1201,7 +1201,11 @@ export class TaskflowEngine {
   private getTasksByAssignee(personId: string): any[] {
     return this.db
       .prepare(
-        `SELECT * FROM tasks WHERE ${this.visibleTaskScope()} AND assignee = ? ORDER BY id`,
+        `SELECT t.*, pt.title AS parent_title
+         FROM tasks t
+         LEFT JOIN tasks pt ON pt.board_id = t.board_id AND pt.id = t.parent_task_id
+         WHERE ${this.visibleTaskScope('t')} AND t.assignee = ?
+         ORDER BY t.id`,
       )
       .all(...this.visibleTaskParams(), personId);
   }
@@ -5116,9 +5120,11 @@ export class TaskflowEngine {
           const person = this.requirePerson(params.person_name, 'person_name');
           const tasks = this.db
             .prepare(
-              `SELECT * FROM tasks
-               WHERE ${this.visibleTaskScope()} AND assignee = ? AND column = 'waiting'
-               ORDER BY id`,
+              `SELECT t.*, pt.title AS parent_title
+               FROM tasks t
+               LEFT JOIN tasks pt ON pt.board_id = t.board_id AND pt.id = t.parent_task_id
+               WHERE ${this.visibleTaskScope('t')} AND t.assignee = ? AND t.column = 'waiting'
+               ORDER BY t.id`,
             )
             .all(...this.visibleTaskParams(), person.person_id);
           return { success: true, data: tasks };
@@ -5140,9 +5146,11 @@ export class TaskflowEngine {
           const person = this.requirePerson(params.person_name, 'person_name');
           const tasks = this.db
             .prepare(
-              `SELECT * FROM tasks
-               WHERE ${this.visibleTaskScope()} AND assignee = ? AND column = 'review'
-               ORDER BY id`,
+              `SELECT t.*, pt.title AS parent_title
+               FROM tasks t
+               LEFT JOIN tasks pt ON pt.board_id = t.board_id AND pt.id = t.parent_task_id
+               WHERE ${this.visibleTaskScope('t')} AND t.assignee = ? AND t.column = 'review'
+               ORDER BY t.id`,
             )
             .all(...this.visibleTaskParams(), person.person_id);
           return { success: true, data: tasks };
