@@ -253,6 +253,32 @@ describe('TaskflowEngine', () => {
       expect(r.success).toBe(true);
       expect(r.data.some((t: any) => t.id === 'T-902')).toBe(true);
     });
+
+    it('includes parent_title for subtasks with parent_task_id', () => {
+      const now = new Date().toISOString();
+      // Create a parent project
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at)
+         VALUES ('P-100', '${BOARD_ID}', 'project', 'My Project', 'person-1', 'next_action', 0, '${now}', '${now}')`,
+      );
+      // Create a subtask under that project
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, parent_task_id, created_at, updated_at)
+         VALUES ('P-100.1', '${BOARD_ID}', 'simple', 'Subtask A', 'person-1', 'next_action', 0, 'P-100', '${now}', '${now}')`,
+      );
+
+      const r = engine.query({ query: 'person_tasks', person_name: 'Alexandre' });
+      expect(r.success).toBe(true);
+      const subtask = r.data.find((t: any) => t.id === 'P-100.1');
+      expect(subtask).toBeDefined();
+      expect(subtask.parent_task_id).toBe('P-100');
+      expect(subtask.parent_title).toBe('My Project');
+
+      // Top-level tasks should have null parent_title
+      const topLevel = r.data.find((t: any) => t.id === 'T-001');
+      expect(topLevel).toBeDefined();
+      expect(topLevel.parent_title).toBeNull();
+    });
   });
 
   /* ---------------------------------------------------------------- */

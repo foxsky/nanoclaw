@@ -5129,16 +5129,9 @@ export class TaskflowEngine {
 
         case 'person_waiting': {
           const person = this.requirePerson(params.person_name, 'person_name');
-          const tasks = this.db
-            .prepare(
-              `SELECT t.*, pt.title AS parent_title
-               FROM tasks t
-               LEFT JOIN tasks pt ON pt.board_id = t.board_id AND pt.id = t.parent_task_id
-               WHERE ${this.visibleTaskScope('t')} AND t.assignee = ? AND t.column = 'waiting'
-               ORDER BY t.id`,
-            )
-            .all(...this.visibleTaskParams(), person.person_id);
-          return { success: true, data: tasks };
+          return { success: true, data: this.queryVisibleTasks(
+            "AND t.assignee = ? AND t.column = 'waiting'", [person.person_id],
+          ) };
         }
 
         case 'person_completed': {
@@ -5155,16 +5148,9 @@ export class TaskflowEngine {
 
         case 'person_review': {
           const person = this.requirePerson(params.person_name, 'person_name');
-          const tasks = this.db
-            .prepare(
-              `SELECT t.*, pt.title AS parent_title
-               FROM tasks t
-               LEFT JOIN tasks pt ON pt.board_id = t.board_id AND pt.id = t.parent_task_id
-               WHERE ${this.visibleTaskScope('t')} AND t.assignee = ? AND t.column = 'review'
-               ORDER BY t.id`,
-            )
-            .all(...this.visibleTaskParams(), person.person_id);
-          return { success: true, data: tasks };
+          return { success: true, data: this.queryVisibleTasks(
+            "AND t.assignee = ? AND t.column = 'review'", [person.person_id],
+          ) };
         }
 
         /* ---------- Due-date filters ---------- */
