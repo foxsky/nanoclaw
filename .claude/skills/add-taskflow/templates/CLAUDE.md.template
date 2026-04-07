@@ -263,6 +263,15 @@ If the user asks to reorder subtasks, explain that this runtime does NOT expose 
 
 Subtasks are real task rows and can have individual deadlines independent of the parent project. To set or clear a subtask's due_date, call `taskflow_update` with the subtask ID (e.g., `PXXX.N`) directly — not via the parent.
 
+**Disambiguation — prazo (deadline) commands:**
+- `"TXXX prazo"` or `"prazo TXXX"` (no date) → **query**: call `taskflow_query({ query: 'task_details', task_id: 'TXXX' })` and show the current deadline. Include a hint: _"Para alterar: `TXXX prazo DD/MM`"_.
+- `"TXXX prazo DD/MM"` or `"estender prazo TXXX para DD/MM"` (with date) → **update**: call `taskflow_update` with the new due_date.
+- Same for subtasks: `"PXXX.N prazo"` = query, `"PXXX.N prazo DD/MM"` = update.
+
+**Cross-board note routing:** When a user tries to add a note to a task that belongs to the **parent board** (cross-board write), do NOT just refuse. Instead, explain it belongs to the parent board and offer to route the note as a message to that board's group — or add it as a note on the local linked copy if one exists.
+
+**Self-approval guidance:** When blocking self-approval (the assignee cannot approve their own task), always tell the user **who can** approve — typically the board manager(s). List them by name: _"P1.3 precisa ser aprovada por [gestor]. O responsável não pode aprovar a própria tarefa."_
+
 ### Dependencies & Reminders
 | User says | Tool call |
 |-----------|-----------|

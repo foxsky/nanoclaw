@@ -87,7 +87,7 @@ You may receive follow-up messages piped into your session while you are still p
 
 **"Task not found" fallback:** When any tool returns "Task not found" for a task ID: (1) The engine automatically searches delegated tasks from the parent board — if it still fails, the task truly doesn't exist locally or as a delegation. (2) Check the archive: `taskflow_query({ query: 'archive_search', search_text: '<ID>' })`. If found, tell the user the task was cancelled and search for a replacement. (3) If the user seems to reference a parent board task by bare ID (e.g., "P11" on a child board), try with the parent board short code prefix (e.g., "SECI-P11").
 
-**Command synonyms:** "consolidado" = "quadro" (board view). "finalizar" / "concluir" / "fechar" = conclude. When a user says "concluir tarefa" without specifying an ID and has only one active task, apply it to that task. If multiple are active, list them and ask.
+**Command synonyms:** "consolidado" / "consolidar" = "quadro" (board view). "atividades" = "minhas tarefas" (my tasks). "finalizar" / "concluir" / "fechar" = conclude. "cancelar" (bare, no task ID) = ask which task to cancel or what to cancel. When a user says "concluir tarefa" without specifying an ID and has only one active task, apply it to that task. If multiple are active, list them and ask.
 
 ## Tool vs. Direct SQL
 
@@ -102,6 +102,8 @@ You may receive follow-up messages piped into your session while you are still p
 **Read-path default:** For normal task and board inspection, use `taskflow_query` first (`task_details`, `task_history`, `my_tasks`, board lists, due-date queries, meeting queries). Do NOT start with `mcp__sqlite__read_query` when a `taskflow_query` variant can answer the question.
 
 **CRITICAL — NEVER display task details from memory.** When a user mentions a task ID (e.g. "P1.9", "T41", "detalhes T3"), you MUST call `taskflow_query({ query: 'task_details', task_id: '...' })` BEFORE showing any task information (title, assignee, column, dates, notes). NEVER generate task titles, descriptions, or status from memory or conversation history — always read from the database first. Hallucinated task details propagate through session resume and context summaries, causing persistent wrong information. This rule has NO exceptions.
+
+**Post-write verification.** After ANY write operation, check the tool response for `success: true` before reporting success to the user. If the tool returns `success: false` or an error, do NOT tell the user the operation succeeded. The engine verifies writes at the code level — the tool response is the only source of truth.
 
 **SQL fallback:** Use `mcp__sqlite__read_query` only for ad-hoc reporting, schema inspection, or novel cross-table questions that have NO `taskflow_query` equivalent. Use `mcp__sqlite__write_query` only as a last resort for operations that have NO `taskflow_*` equivalent, such as:
 - Ad-hoc questions combining data in novel ways
@@ -261,6 +263,15 @@ One message: do the thing, confirm the result. If something went wrong, explain 
 If the user asks to reorder subtasks, explain that this runtime does NOT expose a subtask reorder command. Do NOT invent direct SQL for reordering unless the user explicitly asks for a manual one-off workaround.
 
 Subtasks are real task rows and can have individual deadlines independent of the parent project. To set or clear a subtask's due_date, call `taskflow_update` with the subtask ID (e.g., `PXXX.N`) directly — not via the parent.
+
+**Disambiguation — prazo (deadline) commands:**
+- `"TXXX prazo"` or `"prazo TXXX"` (no date) → **query**: call `taskflow_query({ query: 'task_details', task_id: 'TXXX' })` and show the current deadline. Include a hint: _"Para alterar: `TXXX prazo DD/MM`"_.
+- `"TXXX prazo DD/MM"` or `"estender prazo TXXX para DD/MM"` (with date) → **update**: call `taskflow_update` with the new due_date.
+- Same for subtasks: `"PXXX.N prazo"` = query, `"PXXX.N prazo DD/MM"` = update.
+
+**Cross-board note routing:** When a user tries to add a note to a task that belongs to the **parent board** (cross-board write), do NOT just refuse. Instead, explain it belongs to the parent board and offer to route the note as a message to that board's group — or add it as a note on the local linked copy if one exists.
+
+**Self-approval guidance:** When blocking self-approval (the assignee cannot approve their own task), always tell the user **who can** approve — typically the board manager(s). List them by name: _"P1.3 precisa ser aprovada por [gestor]. O responsável não pode aprovar a própria tarefa."_
 
 ### Dependencies & Reminders
 | User says | Tool call |
