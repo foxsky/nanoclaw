@@ -4,6 +4,18 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## [1.2.52] - 2026-04-06
+
+### TaskFlow: parent_title fix
+- `taskflow_query` person_tasks (and 21 other query paths) now include `parent_title` via LEFT JOIN — prevents agent hallucination of project names when subtasks have `parent_task_id` but no parent context (e.g., "Spia Patrimonial" instead of "Dados Abertos e Internos")
+- New `queryVisibleTasks()` shared helper centralizes the JOIN pattern across all task-returning queries (net -61 lines from dedup)
+- Unit test added: asserts `parent_title` is present on subtasks and null on top-level tasks
+
+### TaskFlow: template improvements (auditor report 2026-04-06)
+- Prazo disambiguation: bare `[task] prazo` now defaults to showing the deadline (query), not asking "consultar ou alterar?"
+- Cross-board note routing: bot now explains parent board ownership and offers to route instead of just refusing
+- Self-approval guidance: bot now names who can approve when blocking self-approval
+
 ## [1.2.52] - 2026-04-05
 
 ### Upstream Merge (1.2.50 → 1.2.52)
