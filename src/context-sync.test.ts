@@ -837,6 +837,65 @@ describe('captureAgentTurn', () => {
     svc.close();
   });
 
+  it('skips scheduled-task turns but still advances cursor', async () => {
+    const svc = makeSvc();
+    const sessionId = 'test-session-sched';
+    const groupFolder = 'test-group';
+    const filePath = jsonlPath(groupFolder, sessionId);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+
+    const lines = [
+      // Turn 1: scheduled task (should be skipped)
+      JSON.stringify({
+        type: 'queue-operation', operation: 'dequeue',
+        timestamp: '2026-03-15T08:00:00.000Z', sessionId,
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'text', text: '[SCHEDULED TASK - automated]\n\n[TF-STANDUP]' }] },
+        uuid: 'u-sched', timestamp: '2026-03-15T08:00:01.000Z',
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Board is empty. Skip.' }] },
+        uuid: 'a-sched', timestamp: '2026-03-15T08:00:05.000Z',
+      }),
+      // Turn 2: human message (should be captured)
+      JSON.stringify({
+        type: 'queue-operation', operation: 'dequeue',
+        timestamp: '2026-03-15T10:00:00.000Z', sessionId,
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'text', text: 'atividades Wanderlan' }] },
+        uuid: 'u-human', timestamp: '2026-03-15T10:00:01.000Z',
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Wanderlan has 2 tasks.' }] },
+        uuid: 'a-human', timestamp: '2026-03-15T10:00:05.000Z',
+      }),
+    ];
+    fs.writeFileSync(filePath, lines.join('\n') + '\n');
+
+    await captureAgentTurn(svc, groupFolder, sessionId);
+
+    // Only the human turn should be captured
+    const nodes = svc.db
+      .prepare("SELECT * FROM context_nodes WHERE group_folder = ? AND level = 0")
+      .all(groupFolder) as any[];
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].id).toContain('2026-03-15T10:00:00');
+
+    // But cursor should advance past BOTH turns
+    const cursor = svc.db
+      .prepare("SELECT * FROM context_cursors WHERE group_folder = ?")
+      .get(groupFolder) as any;
+    expect(cursor.last_entry_index).toBe(6); // past all 6 lines
+
+    svc.close();
+  });
+
   it('resumes from cursor position on second call', async () => {
     const svc = makeSvc();
 

@@ -362,10 +362,16 @@ export async function captureAgentTurn(
     const newCursorIndex = lastTurn.endIndex;
     const newAssistantUuid = lastTurn.lastAssistantUuid ?? null;
 
-    // Insert all turns and update cursor in one transaction
+    // Insert all turns and update cursor in one transaction.
+    // Skip scheduled-task turns — they're automation noise (TF-STANDUP,
+    // TF-DIGEST, TF-REVIEW) that pollutes the recency preamble with
+    // self-referential runner chatter instead of useful human conversation.
+    const humanTurns = turns.filter(
+      (t) => !t.userMessage.includes('[SCHEDULED TASK'),
+    );
     const now = new Date().toISOString();
     service.db.transaction(() => {
-      for (const turn of turns) {
+      for (const turn of humanTurns) {
         service.insertTurn(groupFolder, sessionId, {
           userMessage: turn.userMessage,
           agentResponse: turn.agentResponse,
@@ -403,8 +409,9 @@ export async function captureAgentTurn(
         );
     })();
 
+    const skipped = turns.length - humanTurns.length;
     logger.info(
-      { groupFolder, sessionId, turns: turns.length, cursor: newCursorIndex },
+      { groupFolder, sessionId, captured: humanTurns.length, skipped, cursor: newCursorIndex },
       'Captured agent turns',
     );
   } catch (err) {
