@@ -4,7 +4,12 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
-## [1.2.52] - 2026-04-06
+## [1.2.52] - 2026-04-07
+
+### Long-term context: filter automation noise
+- Scheduled-task turns (`TF-STANDUP`, `TF-DIGEST`, `TF-REVIEW`) are now excluded from conversation capture — the recency preamble was dominated by self-referential runner chatter instead of human interactions
+- Cursor still advances past filtered turns; Ollama summarization workload reduced by ~75%
+- Summarization model switched from `qwen3.5:cloud` (401 Unauthorized / broken output) to `qwen3-coder:latest` (local, 30.5B, 3s/summary, excellent quality)
 
 ### TaskFlow: parent_title fix
 - `taskflow_query` person_tasks (and 21 other query paths) now include `parent_title` via LEFT JOIN — prevents agent hallucination of project names when subtasks have `parent_task_id` but no parent context (e.g., "Spia Patrimonial" instead of "Dados Abertos e Internos")
