@@ -210,7 +210,18 @@ export class GroupQueue {
    */
   sendMessage(groupJid: string, text: string): boolean {
     const state = this.getGroup(groupJid);
-    if (!state.active || !state.inputDir || state.isTaskContainer) return false;
+    if (!state.active) {
+      logger.debug({ groupJid }, 'sendMessage: no active container');
+      return false;
+    }
+    if (!state.inputDir) {
+      logger.debug({ groupJid }, 'sendMessage: inputDir not set');
+      return false;
+    }
+    if (state.isTaskContainer) {
+      logger.debug({ groupJid }, 'sendMessage: container running a task');
+      return false;
+    }
     state.idleWaiting = false; // Agent is about to receive work, no longer idle
 
     try {
@@ -220,7 +231,8 @@ export class GroupQueue {
       fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
       fs.renameSync(tempPath, filepath);
       return true;
-    } catch {
+    } catch (err) {
+      logger.warn({ groupJid, err }, 'sendMessage: failed to write IPC file');
       return false;
     }
   }
@@ -239,8 +251,8 @@ export class GroupQueue {
     state.pendingClose = false;
     try {
       fs.writeFileSync(path.join(state.inputDir, '_close'), '');
-    } catch {
-      // ignore
+    } catch (err) {
+      logger.warn({ groupJid, err }, 'closeStdin: failed to write _close sentinel');
     }
   }
 

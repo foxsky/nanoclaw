@@ -4,6 +4,14 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## [1.2.52] - 2026-04-09
+
+### Fix: zombie container on null agent result
+- When an agent query returned null (e.g., API rate limit), the idle timer was never started — the container hung forever as a zombie, silently dropping all follow-up user messages
+- Root cause: `resetIdleTimer()` was inside `if (result.result)`, skipping null results; moved into `if (result.status === 'success')` so ALL successful query completions start the idle countdown
+- `IDLE_TIMEOUT` reduced from 6h to 30min — zombie window capped at 30 minutes instead of indefinite
+- Added diagnostic logging to `sendMessage()` and `closeStdin()` in group-queue — failures now log which condition failed instead of silently returning false
+
 ## [1.2.52] - 2026-04-07
 
 ### Long-term context: filter automation noise

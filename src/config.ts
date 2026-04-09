@@ -65,9 +65,9 @@ export const CREDENTIAL_PROXY_PORT = parseInt(
   10,
 );
 export const IDLE_TIMEOUT = parseInt(
-  process.env.IDLE_TIMEOUT || '21600000',
+  process.env.IDLE_TIMEOUT || '1800000',
   10,
-); // 6 hours — how long to keep container alive after last result
+); // 30 min — how long to keep container alive after last result
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '12', 10) || 12,

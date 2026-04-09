@@ -570,11 +570,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           }
           outputSentToUser = true;
         }
-        // Only reset idle timer on actual results, not session-update markers (result: null)
-        resetIdleTimer();
       }
 
       if (result.status === 'success') {
+        // Always reset idle timer on success — not just for non-null results.
+        // Without this, a null-result query (e.g. rate-limited) leaves the
+        // container hanging forever because closeStdin is never scheduled.
+        resetIdleTimer();
         // Pause typing after each result so the user doesn't see
         // "typing..." indefinitely when the next result is internal-only.
         await channel.setTyping?.(chatJid, false);

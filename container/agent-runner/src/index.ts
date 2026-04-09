@@ -855,8 +855,8 @@ async function main(): Promise<void> {
       containerInput.imageAttachments = undefined;
 
       // If _close was consumed during the query, exit immediately.
-      // Don't emit a session-update marker (it would reset the host's
-      // idle timer and cause a 30-min delay before the next _close).
+      // No need for a session-update marker since the host already
+      // initiated shutdown.
       if (queryResult.closedDuringQuery) {
         log('Close sentinel consumed during query, exiting');
         break;
