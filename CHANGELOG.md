@@ -6,6 +6,13 @@ For detailed release notes, see the [full changelog on the documentation site](h
 
 ## [1.2.52] - 2026-04-09
 
+### Design: cross-board subtask creation
+- Design spec for enabling child boards to create subtasks on delegated parent board tasks
+- Code review revealed the engine already supports this — the bot was self-censoring, not engine-blocked
+- Phase 1 (template fix): add explicit guidance to CLAUDE.md template allowing `add_subtask` on delegated tasks
+- Phase 2 (deferred): optional IPC approval workflow if governance is required
+- Spec: `docs/superpowers/specs/2026-04-09-cross-board-subtask-approval-design.md`
+
 ### Fix: zombie container on null agent result
 - When an agent query returned null (e.g., API rate limit), the idle timer was never started — the container hung forever as a zombie, silently dropping all follow-up user messages
 - Root cause: `resetIdleTimer()` was inside `if (result.result)`, skipping null results; moved into `if (result.status === 'success')` so ALL successful query completions start the idle countdown
