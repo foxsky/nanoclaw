@@ -3473,6 +3473,79 @@ describe('TaskflowEngine', () => {
       expect(engine.resolvePerson('Observer')).toBeTruthy();
     });
 
+    it('register person on hierarchy board missing all three (phone + group_name + group_folder) → error lists all three', () => {
+      // Regression guard: when multiple fields are missing, the dynamic
+      // `missing.join(', ')` in the error message should include every
+      // missing field so the bot can ask for them in a single prompt
+      // instead of discovering them one-by-one across multiple retries.
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'register_person',
+        sender_name: 'Alexandre',
+        person_name: 'Edilson',
+        // no phone, no group_name, no group_folder — bare 1-field call
+        role: 'Scrum Master',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('phone');
+      expect(r.error).toContain('group_name');
+      expect(r.error).toContain('group_folder');
+      expect(engine.resolvePerson('Edilson')).toBeNull();
+    });
+
+    it('register person on legacy board with max_depth=NULL → canDelegateDown is false, 3-field form allowed', () => {
+      // Pre-hierarchy boards (created before the hierarchy schema was
+      // introduced) have max_depth = NULL in the `boards` table. Per
+      // canDelegateDown() at L1110, NULL max_depth returns false, so the
+      // board is treated as a leaf and the new validation does not fire.
+      // Guard against accidentally breaking legacy single-level installs.
+      db.exec(
+        `UPDATE boards SET max_depth = NULL WHERE id = '${BOARD_ID}'`,
+      );
+
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'register_person',
+        sender_name: 'Alexandre',
+        person_name: 'Legacy',
+        phone: '5585999990222',
+        role: 'Dev',
+        // no group_name / group_folder — legacy non-hierarchical board
+      });
+      expect(r.success).toBe(true);
+      expect(r.person_id).toBe('legacy');
+      expect(engine.resolvePerson('Legacy')).toBeTruthy();
+    });
+
+    it('offer_register on a LEAF board does NOT include the division/sigla ask', () => {
+      // Regression guard for buildOfferRegisterError's hierarchy branch at
+      // L1824. On hierarchy boards the method appends the sigla ask; on
+      // leaf boards it MUST NOT, otherwise the bot would ask the user for
+      // a division/sector that doesn't exist in a flat single-level setup.
+      // Counterpart to the 'returns offer_register for unknown assignee'
+      // test that asserts the sigla ask IS present on the hierarchy fixture.
+      db.exec(
+        `UPDATE boards SET hierarchy_level = 1, max_depth = 1 WHERE id = '${BOARD_ID}'`,
+      );
+
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Some task',
+        assignee: 'Rafael',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.offer_register).toBeTruthy();
+      expect(r.offer_register!.message).toContain('não está cadastrado');
+      // The base 3-field wording is still there
+      expect(r.offer_register!.message).toContain('telefone');
+      expect(r.offer_register!.message).toContain('cargo');
+      // But the hierarchy sigla ask MUST NOT be present on a leaf
+      expect(r.offer_register!.message).not.toContain('sigla da divisão/setor');
+      expect(r.offer_register!.message).not.toContain('SETD');
+    });
+
     it('remove person → lists tasks to reassign', () => {
       // person-1 (Alexandre) has T-001 in in_progress
       const r = engine.admin({

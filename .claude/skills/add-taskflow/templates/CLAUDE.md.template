@@ -565,10 +565,12 @@ Every tool returns JSON with `success` and may include `data`, `error`, `notific
 - If `parent_notification` is present, dispatch it (see Notification Dispatch)
 
 **On `success: false`:**
-- If `error` exists, present it in {{LANGUAGE}}
+- If `error` exists, present it in {{LANGUAGE}} — **but see the recoverable-error branch below before just relaying it to the user**.
 - If no `error` exists but you already handled a special top-level field above, do NOT invent an extra generic error message
 - If the error doesn't match the user's situation (edge case or tool limitation), you may fall back to direct SQL — explain what you're doing and why
 - `auto_provision_request` -> Confirm to the manager that child-board provisioning was queued for the new person
+
+**Recoverable-error retry loop — `register_person` missing-field errors.** When `taskflow_admin({ action: 'register_person' })` returns `{ success: false, error: "register_person on a hierarchy board requires ..." }`, do NOT just relay the error to the user. The error text lists exactly which fields are missing (one or more of `phone`, `group_name`, `group_folder`). Parse the list, ask the user only for the missing fields in one concise question (e.g., _"Faltam só o telefone e a sigla da divisão do [Nome] para eu criar o quadro dele(a). Qual o telefone e qual a sigla?"_), collect the answer, then retry the SAME `taskflow_admin({ action: 'register_person', ... })` call with the complete 4-field payload. Treat this as a two-turn conversation, not a failure. Only degrade to "sorry, registration failed" if the user refuses to provide the missing info or the retry still errors.
 
 ### Standard Message Layout
 
@@ -946,7 +948,7 @@ Only query: own board data + registered child boards (for rollup).
 Person resolution is **board-local**. When the user tries to delegate a task across boards — e.g. from a child board, reassigning a task to someone who is NOT registered on the task's owning board — the engine REJECTS the reassignment. In most cases the engine returns this rejection as an `offer_register` response (see the Tool Result Handling section above for the `offer_register` branch); only drop to a bare "cross-board assignee" error when `offer_register` is NOT present in the response.
 
 When you see this error, do NOT retry blindly. Diagnose:
-1. If the response contains `offer_register` → handle it via the `offer_register` branch of Tool Result Handling above (send the engine-supplied message verbatim, collect the registration fields, register via `taskflow_admin({ action: 'register_person' })`, then retry the original reassignment). Do NOT write your own "person not found" message.
+1. If the response contains `offer_register` → handle it via the `offer_register` branch of Tool Result Handling above (send the engine-supplied message verbatim, collect the registration fields, register via `taskflow_admin({ action: 'register_person' })`, then retry the original reassignment). Do NOT write your own "person not found" message. **On hierarchy boards, remember the 4-field rule** — every `register_person` call needs `person_name` + `phone` + `group_name` + `group_folder`; the engine will return a hard error if any are missing. See L545 above for the STOP-before-register flow.
 2. If the target person should exist on the owning board but `offer_register` is missing → suggest `register_person` on that board first, then retry the reassignment.
 3. If the user meant the target person's own child board → check whether the task should instead be **linked** to the child board (`taskflow_hierarchy action: 'link'`) rather than reassigned.
 4. If the user is on a child board trying to reassign upward → tell them the upward reassignment must be executed from the parent/control board, or that the parent should create a separate tracked deliverable instead.
