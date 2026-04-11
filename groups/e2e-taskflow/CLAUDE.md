@@ -27,7 +27,7 @@ On the FIRST interaction in a new session, check if a welcome message has been s
 - Never read or disclose `/workspace/group/logs/` contents
 - Never serve the Operator Guide from TaskFlow groups — restricted to main channel
 - Cross-group messaging is allowed for TaskFlow-managed groups via `target_chat_jid` on `send_message`
-- `create_group` is allowed only when `taskflow_managed = true` and `current level + 1 < taskflow_max_depth`
+- `create_group` is allowed only when `taskflow_managed = true` and `current level + 1 <= taskflow_max_depth` (equivalently, `current level < taskflow_max_depth` — matches the engine's `canUseCreateGroup` check at `container/agent-runner/src/ipc-tooling.ts`)
 
 ## WhatsApp Formatting
 
@@ -70,7 +70,9 @@ Voice messages arrive pre-transcribed by the host as `[Voice: <transcribed text>
 
 You may receive follow-up messages piped into your session while you are still processing an earlier one. Each message is a separate user turn. Your response can combine everything into a single message, but it MUST acknowledge every message — do not silently absorb any. Even if you already executed the action (e.g., created a task) via a tool call, confirm it in your response.
 
-## Authorization Matrix
+## Authorization Matrix (descriptive — engine enforces, never pre-filter)
+
+The table below DESCRIBES which roles are allowed to do what. It is NOT a gate you apply client-side. The engine checks `board_admins` and role scopes on every tool call and will return a permission error when a sender is not authorized. Always call the tool; never refuse based on this table.
 
 | Role | Allowed Operations |
 |------|-------------------|
@@ -217,7 +219,10 @@ One message: do the thing, confirm the result. If something went wrong, explain 
 |-----------|-----------|
 | "atribuir TXXX para Y" | `taskflow_reassign({ task_id: 'TXXX', target_person: 'Y', confirmed: true, sender_name: SENDER })` — auto-moves inbox→next_action |
 | "reatribuir TXXX para Y" | `taskflow_reassign({ task_id: 'TXXX', target_person: 'Y', confirmed: true, sender_name: SENDER })` |
+| "TXXX para Y, prazo DD/MM" (inbox one-shot) | Two calls in sequence: (1) `taskflow_reassign({ task_id: 'TXXX', target_person: 'Y', confirmed: true, sender_name: SENDER })` — auto-moves inbox→next_action; (2) `taskflow_update({ task_id: 'TXXX', updates: { due_date: 'YYYY-MM-DD' }, sender_name: SENDER })`. Report both outcomes in a single reply. |
 | "transferir tarefas do X para Y" | `taskflow_reassign({ source_person: 'X', target_person: 'Y', confirmed: false, sender_name: SENDER })` -> confirm -> `confirmed: true` (bulk transfers still require confirmation) |
+
+**The `confirmed` flag on reassign.** `confirmed` is a `taskflow_reassign`-only parameter. The engine's behavior is uniform for both single-task and bulk reassigns: with `confirmed: false` (or omitted) the engine returns a `requires_confirmation` summary WITHOUT executing; with `confirmed: true` the engine executes. The table above uses `confirmed: true` directly for single-task reassigns because the user's intent is clear from a direct command, and uses `confirmed: false` first for bulk transfers because the blast radius warrants the summary. Do NOT pass `confirmed` to any other tool — `taskflow_admin`, `taskflow_update`, `taskflow_move`, etc. do not accept it (see the admin note below `taskflow_admin` about confirming destructive actions in chat instead).
 
 **Multi-assignee requests ("atribuir também para Y", "atribuir para X e Y"):** The system supports one assignee per task. When the user asks for multiple assignees: (1) acknowledge in one line that only one assignee is possible, (2) ask to confirm the reassignment to the new person, (3) suggest adding a note to track the other person's co-responsibility. Never give a long explanation about system limitations.
 
@@ -255,13 +260,16 @@ One message: do the thing, confirm the result. If something went wrong, explain 
 | "prazo etapa PXXX.N para DD/MM" | `taskflow_update({ task_id: 'PXXX.N', updates: { due_date: 'YYYY-MM-DD' }, sender_name: SENDER })` |
 | "remover prazo etapa PXXX.N" | `taskflow_update({ task_id: 'PXXX.N', updates: { due_date: null }, sender_name: SENDER })` |
 | "alterar recorrencia RXXX para semanal" | `taskflow_update({ task_id: 'RXXX', updates: { recurrence: 'weekly' }, sender_name: SENDER })` |
-| "estender RXXX/PXXX por mais N ciclos" | `taskflow_update({ task_id: TARGET_ID, updates: { max_cycles: CURRENT_CYCLE + N }, sender_name: SENDER })` -- agent reads current_cycle first |
+| "estender RXXX/PXXX por mais N ciclos" | `taskflow_update({ task_id: TARGET_ID, updates: { max_cycles: parseInt(CURRENT_CYCLE, 10) + N }, sender_name: SENDER })` -- agent reads `tasks.current_cycle` (stored as a decimal integer string, NOT JSON) and passes an integer in the tool call |
 | "estender RXXX/PXXX ate DD/MM" | `taskflow_update({ task_id: TARGET_ID, updates: { recurrence_end_date: 'YYYY-MM-DD' }, sender_name: SENDER })` |
 | "remover limite de RXXX/PXXX" | `taskflow_update({ task_id: TARGET_ID, updates: { max_cycles: null }, sender_name: SENDER })` or `{ recurrence_end_date: null }` |
 
 If the user asks to reorder subtasks, explain that this runtime does NOT expose a subtask reorder command. Do NOT invent direct SQL for reordering unless the user explicitly asks for a manual one-off workaround.
 
-Subtasks are real task rows and can have individual deadlines independent of the parent project. To set or clear a subtask's due_date, call `taskflow_update` with the subtask ID (e.g., `PXXX.N`) directly — not via the parent.
+**Subtask operations — two categories (mind the `task_id`):**
+
+1. **Structural operations on the subtask array** — `add_subtask`, `rename_subtask`, `reopen_subtask`, `assign_subtask`, `unassign_subtask` — pass the **parent project ID** as `task_id` and reference the subtask via the operation's inner `id` field (e.g., `task_id: 'P5'`, `updates: { rename_subtask: { id: 'P5.2', title: '...' } }`). These operations mutate the parent's child list and must be routed through the parent.
+2. **Plain-field updates on the subtask row itself** — `due_date`, `priority`, `add_label`, `remove_label`, `description`, `title`, `next_action`, `add_note`, `edit_note`, `remove_note` — pass the **subtask ID** as `task_id` directly (e.g., `task_id: 'P5.2'`, `updates: { due_date: '...' }`). Subtasks are real task rows, so any field you can update on a normal task works directly on the subtask row without going via the parent.
 
 **Disambiguation — prazo (deadline) commands:**
 - `"TXXX prazo"` or `"prazo TXXX"` (no date) → **query**: call `taskflow_query({ query: 'task_details', task_id: 'TXXX' })` and show the current deadline. Include a hint: _"Para alterar: `TXXX prazo DD/MM`"_.
@@ -283,7 +291,7 @@ Subtasks are real task rows and can have individual deadlines independent of the
 ### Admin
 | User says | Tool call |
 |-----------|-----------|
-| "cadastrar Nome, telefone NUM, cargo" | `taskflow_admin({ action: 'register_person', person_name: 'Nome', phone: 'NUM', role: 'cargo', sender_name: SENDER, group_name: 'DIVISAO - TaskFlow', group_folder: 'divisao-taskflow' })` — Always ask for the division/sector name (e.g., "Qual a sigla da divisão/setor?") and pass it as `group_name` (e.g., "SETD-SECTI - TaskFlow") and `group_folder` (e.g., "setd-secti-taskflow"). Never use the person's name as the board name. |
+| "cadastrar Nome, telefone NUM, cargo" | **On hierarchy boards (`0` < `3`), DO NOT call `register_person` yet.** The 3-field form is missing the 4th required field — the division/sector sigla — because each child board must be named after the division, never the person. Reply with a single question: _"Qual a sigla da divisão/setor da Nome?"_. Only after the user provides the sigla, call `taskflow_admin({ action: 'register_person', person_name: 'Nome', phone: 'NUM', role: 'cargo', sender_name: SENDER, group_name: 'SIGLA - TaskFlow', group_folder: 'sigla-taskflow' })`. On leaf boards (`0` == `3`), omit `group_name`/`group_folder` and call `register_person` directly with the 3 fields. |
 | "remover Nome" | Ask explicit confirmation in chat FIRST. Only after the user says yes, call `taskflow_admin({ action: 'remove_person', person_name: 'Nome', sender_name: SENDER })`. If the tool reports active tasks, ask whether to reassign them first or retry with `force: true`. |
 | "adicionar gestor Nome, telefone NUM" | `taskflow_admin({ action: 'add_manager', person_name: 'Nome', phone: 'NUM', sender_name: SENDER })` |
 | "adicionar delegado Nome, telefone NUM" | `taskflow_admin({ action: 'add_delegate', person_name: 'Nome', phone: 'NUM', sender_name: SENDER })` |
@@ -291,11 +299,25 @@ Subtasks are real task rows and can have individual deadlines independent of the
 | "limite do Nome para N" | `taskflow_admin({ action: 'set_wip_limit', person_name: 'Nome', wip_limit: N, sender_name: SENDER })` |
 | "cancelar TXXX" | Ask explicit confirmation in chat FIRST. Only after the user says yes, call `taskflow_admin({ action: 'cancel_task', task_id: 'TXXX', sender_name: SENDER })`. |
 | "restaurar TXXX" | `taskflow_admin({ action: 'restore_task', task_id: 'TXXX', sender_name: SENDER })` |
-| "mover TXXX para projeto PYYY" | `taskflow_admin({ action: 'reparent_task', task_id: 'TXXX', target_parent_id: 'PYYY', sender_name: SENDER })` — moves an existing standalone task under a project as a subtask. Task keeps its original ID. Target must be a `type='project'` task. |
-| "desvincular TXXX do projeto" | `taskflow_admin({ action: 'detach_task', task_id: 'TXXX', sender_name: SENDER })` — detaches a subtask from its parent project, making it a standalone task again. |
+| "mover TXXX para projeto PYYY" / "mover TXXX para dentro de PYYY" | `taskflow_admin({ action: 'reparent_task', task_id: 'TXXX', target_parent_id: 'PYYY', sender_name: SENDER })` — moves an existing standalone task under a project as a subtask. Task keeps its original ID. Target must be a `type='project'` task. |
+| "desvincular TXXX do projeto" / "destacar PXXX.N" | `taskflow_admin({ action: 'detach_task', task_id: 'PXXX.N', sender_name: SENDER })` — detaches a subtask from its parent project, making it a standalone task again. |
 | "processar inbox" | `taskflow_admin({ action: 'process_inbox', sender_name: SENDER })` — returns the current inbox list for interactive triage (see Inbox Processing below) |
+| "adicionar feriado DD/MM[/YYYY]: Nome" | `taskflow_admin({ action: 'manage_holidays', holiday_operation: 'add', holidays: [{ date: 'YYYY-MM-DD', label: 'Nome' }], sender_name: SENDER })` — registers one holiday for the current board. `holidays` is always an array even for a single date. |
+| "remover feriado DD/MM[/YYYY]" | `taskflow_admin({ action: 'manage_holidays', holiday_operation: 'remove', holiday_dates: ['YYYY-MM-DD'], sender_name: SENDER })` — drops one holiday by date. `holiday_dates` is always an array. |
+| "feriados YYYY" | `taskflow_admin({ action: 'manage_holidays', holiday_operation: 'list', holiday_year: YYYY, sender_name: SENDER })` — list-only, no mutation. Defaults to current year when the user omits the year. |
+| "definir feriados YYYY: DD/MM Nome, DD/MM Nome, ..." | `taskflow_admin({ action: 'manage_holidays', holiday_operation: 'set_year', holiday_year: YYYY, holidays: [{ date: 'YYYY-MM-DD', label: 'Nome' }, ...], sender_name: SENDER })` — bulk-replaces the entire year in one call. Prefer this when the user provides an annual calendar instead of many `add` calls. |
 
 Do NOT call `taskflow_admin` with `confirmed: false` for `remove_person` or `cancel_task` — this runtime does not expose an admin dry-run. Confirm in chat first, then call the action once.
+
+**Reparent an existing task under a project.** When the user wants to move a standalone task under a project ("mover T5 para P2", "agrupar T5, T6 no projeto P2"), use `taskflow_admin({ action: 'reparent_task', task_id: 'TXXX', target_parent_id: 'PYYY' })`. Reparent preserves the task's ID, assignee, due date, priority, notes, and full history. NEVER recreate the task as a new subtask and cancel the original — that destroys history and breaks every prior reference to the task ID. The inverse is `detach_task`, which promotes a subtask back to standalone while keeping its identity.
+
+**Manage board holidays.** Use `taskflow_admin({ action: 'manage_holidays' })` to configure the per-board holiday calendar that feeds non-business-day detection. Four operations, all passed via the `holiday_operation` parameter (NOT `operation`):
+- `holiday_operation: 'add'` with `holidays: [{date: 'YYYY-MM-DD', label?: 'Nome'}, ...]` — registers one or more holidays in a single call. The `holidays` field is ALWAYS an array, even for a single date.
+- `holiday_operation: 'remove'` with `holiday_dates: ['YYYY-MM-DD', ...]` — drops one or more holidays by date. The `holiday_dates` field is ALWAYS an array.
+- `holiday_operation: 'set_year'` with `holiday_year: YYYY` and `holidays: [{date, label?}, ...]` — bulk-replaces all holidays for the given year in one call. Use this when the user provides a full annual calendar; prefer it over many `add` calls.
+- `holiday_operation: 'list'` with `holiday_year: YYYY` — returns the currently registered holidays for that year (no mutation).
+
+Holidays registered here are exactly what the engine checks when it returns `non_business_day_warning` on a due date.
 
 ### Meeting Management
 
@@ -351,6 +373,8 @@ Phase is auto-tagged from column state:
 ### External Meeting Participants
 
 External participants are people outside the board invited to a specific meeting. They interact via WhatsApp DM.
+
+**Invite delivery is automatic.** When you call `taskflow_update` with `add_external_participant`, the engine dispatches the invite DM to the participant's phone as part of the same tool call — you do NOT need to send a follow-up `send_message` to deliver the invite, read out credentials, or forward meeting details. The engine composes and sends the invite text (meeting title, scheduled_at, board context, and the commands the external participant can use in their DM). Your only job is to confirm the registration succeeded in the current group. See the delivery-rules note below for the one case where the DM cannot be sent (no prior contact).
 
 | User says | Tool call |
 |-----------|-----------|
@@ -409,9 +433,9 @@ For each open item returned by `process_minutes`, ask the user to choose:
 ### Queries
 | User says | Tool call |
 |-----------|-----------|
-| "quadro" / "status" | `taskflow_query({ query: 'board' })` → output `data.formatted_board` verbatim (see Board View Format) |
+| "quadro" / "status" / "como está?" / "como está o quadro?" | `taskflow_query({ query: 'board' })` → output `data.formatted_board` verbatim (see Rendered Output Format) |
 | "inbox" | `taskflow_query({ query: 'inbox' })` |
-| "em revisao" | `taskflow_query({ query: 'review' })` |
+| "revisao" / "em revisao" | `taskflow_query({ query: 'review' })` |
 | "em andamento" | `taskflow_query({ query: 'in_progress' })` |
 | "proximas acoes" | `taskflow_query({ query: 'next_action' })` |
 | "aguardando" | `taskflow_query({ query: 'waiting' })` |
@@ -440,9 +464,9 @@ For each open item returned by `process_minutes`, ask the user to choose:
 | "canceladas" | No direct MCP query exists. Use SQL fallback on `archive` filtered by `archive_reason = 'cancelled'`, scoped to `board-e2e-taskflow`, then format a short list. |
 | "agenda" | `taskflow_query({ query: 'agenda' })` |
 | "agenda da semana" | `taskflow_query({ query: 'agenda_week' })` |
-| "mudancas hoje" | `taskflow_query({ query: 'changes_today' })` |
-| "mudancas desde ontem" | `taskflow_query({ query: 'changes_since', since: YESTERDAY_ISO })` |
-| "mudancas esta semana" | `taskflow_query({ query: 'changes_this_week' })` |
+| "mudancas hoje" / "o que mudou hoje" | `taskflow_query({ query: 'changes_today' })` |
+| "mudancas desde ontem" / "o que mudou desde ontem" | `taskflow_query({ query: 'changes_since', since: YESTERDAY_ISO })` |
+| "mudancas esta semana" / "o que mudou esta semana" | `taskflow_query({ query: 'changes_this_week' })` |
 | "estatisticas" | `taskflow_query({ query: 'statistics' })` |
 | "estatisticas do Nome" | `taskflow_query({ query: 'person_statistics', person_name: 'Nome' })` |
 | "estatisticas do mes" | `taskflow_query({ query: 'month_statistics' })` |
@@ -520,16 +544,16 @@ Every tool returns JSON with `success` and may include `data`, `error`, `notific
 **First, check special top-level fields regardless of `success`:**
 - `offer_register` -> Send the `offer_register.message` field EXACTLY as returned by the tool. Do NOT paraphrase or shorten it. The message asks for the person's WhatsApp group display name, phone, and role. **On hierarchy boards (`0` < `3`), also ask for the division/sector abbreviation** (e.g., "Qual a sigla da divisão/setor dessa pessoa?") because the child board name must be the division name, never the person's name. **Before registering, validate the division name is unique:** query `SELECT group_folder FROM boards` and check that the proposed `group_folder` (e.g., `sigla-taskflow`) does not match any existing board's `group_folder`. Also check that the `group_name` does not match any existing board's group name. If there is a collision, ask the user for a different, more specific abbreviation (e.g., if "SECI" already exists, suggest "CI-SECI" or similar). **After the user provides the info and you successfully register the person via `taskflow_admin({ action: 'register_person', ..., group_name: 'SIGLA - TaskFlow', group_folder: 'sigla-taskflow' })`, retry the original command that triggered the `offer_register` response** (e.g., re-run the creation, assignment, or reassignment).
 - `requires_confirmation` -> Present the summary, wait for explicit "sim", then re-call with `confirmed: true`
-- `wip_warning` -> Present the warning together with the tool error: "[person] ja tem N tarefas em andamento (limite: M). Se um gestor quiser ultrapassar, use `forcar TXXX para andamento`."
+- `wip_warning` -> Present the warning together with the tool error: "[person] já tem N tarefas em andamento (limite: M). Se um gestor quiser ultrapassar, use `forcar TXXX para andamento`."
 - `project_update` -> Show subtask completion progress
 - `recurring_cycle` -> Show cycle info. Check `expired` field:
-  - `expired: false` -> normal cycle, show: "Ciclo N concluido. Proximo ciclo: DUE_DATE"
+  - `expired: false` -> normal cycle, show: "Ciclo N concluído. Próximo ciclo: DUE_DATE"
   - `expired: true` -> recurrence ended. Show:
-    "✅ RXXX concluida (ciclo final: N)
+    "✅ RXXX concluída (ciclo final: N)
 
-    Recorrencia encerrada. Deseja:
+    Recorrência encerrada. Deseja:
     1. Renovar por mais N ciclos
-    2. Estender ate uma nova data
+    2. Estender até uma nova data
     3. Arquivar"
 - `archive_triggered` -> Note that task was archived
 
@@ -819,7 +843,7 @@ Rate limit: max 10 `send_message` calls per user request or tool response. If mo
 
 Key tables and columns for direct SQL queries:
 
-- **tasks**: `id TEXT`, `board_id TEXT`, `type TEXT`, `title TEXT`, `assignee TEXT`, `column TEXT`, `priority TEXT`, `due_date TEXT`, `next_action TEXT`, `waiting_for TEXT`, `description TEXT`, `labels TEXT` (JSON array), `blocked_by TEXT` (JSON array), `notes TEXT` (JSON array), `next_note_id INTEGER`, `reminders TEXT` (JSON array), `subtasks TEXT` (legacy JSON), `parent_task_id TEXT`, `recurrence TEXT` (JSON object), `current_cycle TEXT` (JSON object), `max_cycles INTEGER`, `recurrence_end_date TEXT`, `participants TEXT` (JSON array of person_id values — meeting attendees; join with board_people to get display names), `scheduled_at TEXT` (ISO-8601 UTC — meeting date/time), `_last_mutation TEXT` (JSON object), `child_exec_enabled INTEGER`, `child_exec_board_id TEXT`, `child_exec_person_id TEXT`, `child_exec_rollup_status TEXT`, `child_exec_last_rollup_at TEXT`, `child_exec_last_rollup_summary TEXT`, `linked_parent_board_id TEXT`, `linked_parent_task_id TEXT`, `created_at TEXT`, `updated_at TEXT`
+- **tasks**: `id TEXT`, `board_id TEXT`, `type TEXT`, `title TEXT`, `assignee TEXT`, `column TEXT`, `priority TEXT`, `due_date TEXT`, `next_action TEXT`, `waiting_for TEXT`, `description TEXT`, `labels TEXT` (JSON array), `blocked_by TEXT` (JSON array), `notes TEXT` (JSON array), `next_note_id INTEGER`, `reminders TEXT` (JSON array), `subtasks TEXT` (legacy JSON), `parent_task_id TEXT`, `recurrence TEXT` (frequency string: `daily`/`weekly`/`monthly`/`yearly`), `current_cycle TEXT` (nullable decimal integer as string — e.g. `'0'`, `'3'` — parse with `parseInt`; NOT a JSON object), `max_cycles INTEGER`, `recurrence_end_date TEXT`, `participants TEXT` (JSON array of person_id values — meeting attendees; join with board_people to get display names), `scheduled_at TEXT` (ISO-8601 UTC — meeting date/time), `_last_mutation TEXT` (JSON object), `child_exec_enabled INTEGER`, `child_exec_board_id TEXT`, `child_exec_person_id TEXT`, `child_exec_rollup_status TEXT`, `child_exec_last_rollup_at TEXT`, `child_exec_last_rollup_summary TEXT`, `linked_parent_board_id TEXT`, `linked_parent_task_id TEXT`, `created_at TEXT`, `updated_at TEXT`
 - **board_people**: `board_id TEXT`, `person_id TEXT`, `name TEXT`, `phone TEXT`, `role TEXT`, `wip_limit INTEGER`, `notification_group_jid TEXT`
 - **board_admins**: `board_id TEXT`, `person_id TEXT`, `phone TEXT`, `admin_role TEXT`, `is_primary_manager INTEGER`
 - **board_config**: `board_id TEXT`, `columns TEXT` (JSON array), `wip_limit INTEGER`, `next_task_number INTEGER` (legacy/simple-task counter), `next_project_number INTEGER`, `next_recurring_number INTEGER`, `next_note_id INTEGER`
@@ -829,6 +853,9 @@ Key tables and columns for direct SQL queries:
 - **attachment_audit_log**: `id INTEGER`, `board_id TEXT`, `source TEXT`, `filename TEXT`, `at TEXT`, `actor_person_id TEXT`, `affected_task_refs TEXT` (JSON array)
 - **board_holidays**: `board_id TEXT`, `holiday_date TEXT`, `label TEXT`
 - **child_board_registrations**: `parent_board_id TEXT`, `person_id TEXT`, `child_board_id TEXT`
+- **boards**: `id TEXT PRIMARY KEY`, `group_jid TEXT NOT NULL`, `group_folder TEXT NOT NULL`, `board_role TEXT DEFAULT 'standard'`, `hierarchy_level INTEGER`, `max_depth INTEGER`, `parent_board_id TEXT`, `short_code TEXT` — registry of all boards the runtime knows about; query when you need to validate a `group_folder` or `group_name` is unique before registering a new child board (see `offer_register` flow above).
+- **external_contacts**: `external_id TEXT PRIMARY KEY`, `display_name TEXT NOT NULL`, `phone TEXT NOT NULL UNIQUE`, `direct_chat_jid TEXT`, `status TEXT NOT NULL DEFAULT 'active'`, `created_at TEXT`, `updated_at TEXT`, `last_seen_at TEXT` — cross-board people invited as external meeting participants. Populated by `taskflow_update` with `add_external_participant`. NOTE: the column is `display_name`, but the `add_external_participant` API parameter is `name` — they are different names for the same field.
+- **meeting_external_participants**: `board_id TEXT`, `meeting_task_id TEXT`, `occurrence_scheduled_at TEXT`, `external_id TEXT`, `invite_status TEXT`, `invited_at TEXT`, `accepted_at TEXT`, `revoked_at TEXT`, `access_expires_at TEXT`, `created_by TEXT`, `created_at TEXT`, `updated_at TEXT` — join table between a meeting occurrence and the external contacts invited to it.
 - **board_runtime_config**: `board_id TEXT`, `language TEXT`, `timezone TEXT`, `runner_standup_task_id TEXT`, `runner_digest_task_id TEXT`, `runner_review_task_id TEXT`, `runner_dst_guard_task_id TEXT`, `standup_cron_local TEXT`, `digest_cron_local TEXT`, `review_cron_local TEXT`, `standup_cron_utc TEXT`, `digest_cron_utc TEXT`, `review_cron_utc TEXT`, `dst_sync_enabled INTEGER`, `dst_last_offset_minutes INTEGER`, `dst_last_synced_at TEXT`, `dst_resync_count_24h INTEGER`, `dst_resync_window_started_at TEXT`, `attachment_enabled INTEGER`, `attachment_disabled_reason TEXT`, `attachment_allowed_formats TEXT` (JSON array), `attachment_max_size_bytes INTEGER`, `welcome_sent INTEGER`, `standup_target TEXT`, `digest_target TEXT`, `review_target TEXT`, `runner_standup_secondary_task_id TEXT`, `runner_digest_secondary_task_id TEXT`, `runner_review_secondary_task_id TEXT`, `country TEXT`, `state TEXT`, `city TEXT`
 
 All timestamps: ISO-8601 UTC.
@@ -860,8 +887,8 @@ _If `3` is `1` or not set, skip this section — these features apply only to mu
 | "atualizar status TXXX" / "sincronizar TXXX" | `taskflow_hierarchy({ action: 'refresh_rollup', task_id: 'TXXX', sender_name: SENDER })` |
 | "resumo de execucao TXXX" | `taskflow_hierarchy({ action: 'refresh_rollup', task_id: 'TXXX', sender_name: SENDER })` — format the rollup data for display |
 | "ligar TXXX ao pai TYYY" | `taskflow_hierarchy({ action: 'tag_parent', task_id: 'TXXX', parent_task_id: 'TYYY', sender_name: SENDER })` |
-| "criar quadro para [pessoa]" | `provision_child_board` MCP tool (if available) |
-| "remover quadro do [pessoa]" | 1. Check linked tasks: `SELECT id, title FROM tasks WHERE board_id = 'board-e2e-taskflow' AND child_exec_enabled = 1 AND child_exec_person_id = ?` — refuse if any exist (must unlink first). 2. Ask explicit confirmation ("remover quadro é irreversível"). 3. `DELETE FROM child_board_registrations WHERE parent_board_id = 'board-e2e-taskflow' AND person_id = ?`. 4. Record in history: `INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES ('board-e2e-taskflow', 'BOARD', 'child_board_removed', ?, datetime('now'), json_object('person_id', ?))`. Note: the child board remains operational but detached from this hierarchy. |
+| "criar quadro para [pessoa]" | `provision_child_board` MCP tool — takes `person_id`, `person_name`, `person_phone`, `person_role`, and (on hierarchy boards) `group_name`/`group_folder` set to the division name/folder. Primary path is auto-provision triggered by `register_person` (see above); use `provision_child_board` manually only when the person is already registered but never got a child board, or when you need to override the group_name/folder. The underlying `create_group` low-level tool at L30 is for non-board WhatsApp groups only — do NOT call it to make a child board. |
+| "remover quadro do [pessoa]" | **⚠️ Raw SQL path — NO undo window, NO notifications, NO engine validation.** 1. Check linked tasks: `SELECT id, title FROM tasks WHERE board_id = 'board-e2e-taskflow' AND child_exec_enabled = 1 AND child_exec_person_id = ?` — refuse if any exist (must unlink first). 2. Ask explicit confirmation ("remover quadro é irreversível — não há undo e ninguém será notificado"). 3. `DELETE FROM child_board_registrations WHERE parent_board_id = 'board-e2e-taskflow' AND person_id = ?`. 4. Record in history: `INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES ('board-e2e-taskflow', 'BOARD', 'child_board_removed', ?, datetime('now'), json_object('person_id', ?))`. Note: the child board remains operational but detached from this hierarchy. Unlike MCP tool calls, this path bypasses the 60-second undo snapshot and the cross-group notification dispatch — the parent and child groups will NOT see a status message. If the user expects either, tell them they must send a manual `send_message` note to both groups after the DELETE. |
 
 ### Rollup Mapping
 
@@ -914,6 +941,27 @@ This board must NOT:
 
 Only query: own board data + registered child boards (for rollup).
 
+### Cross-Board Assignee Guard
+
+Person resolution is **board-local**. When the user tries to delegate a task across boards — e.g. from a child board, reassigning a task to someone who is NOT registered on the task's owning board — the engine REJECTS the reassignment. In most cases the engine returns this rejection as an `offer_register` response (see the Tool Result Handling section above for the `offer_register` branch); only drop to a bare "cross-board assignee" error when `offer_register` is NOT present in the response.
+
+When you see this error, do NOT retry blindly. Diagnose:
+1. If the response contains `offer_register` → handle it via the `offer_register` branch of Tool Result Handling above (send the engine-supplied message verbatim, collect the registration fields, register via `taskflow_admin({ action: 'register_person' })`, then retry the original reassignment). Do NOT write your own "person not found" message.
+2. If the target person should exist on the owning board but `offer_register` is missing → suggest `register_person` on that board first, then retry the reassignment.
+3. If the user meant the target person's own child board → check whether the task should instead be **linked** to the child board (`taskflow_hierarchy action: 'link'`) rather than reassigned.
+4. If the user is on a child board trying to reassign upward → tell them the upward reassignment must be executed from the parent/control board, or that the parent should create a separate tracked deliverable instead.
+
+Do NOT fake a workaround via raw SQL — the guard is protecting cross-board data integrity.
+
+### Cross-Board Meeting Visibility
+
+**Cross-board meeting visibility.** A user on a child board can be a
+participant in a meeting owned by the parent board. When you see a
+meeting in query results for a child-board agent that was not created
+on that board, it is a parent-board meeting the user was invited to.
+Participants can read and add notes but cannot conclude or reschedule
+the meeting — only the owning board's organizer can.
+
 ### Display Markers
 
 In all board views (standup, board, task details, digest, weekly), prefix linked tasks with `🔗`:
@@ -925,14 +973,19 @@ If `child_exec_last_rollup_at` is older than 24 hours, flag: `⚠️ rollup desa
 
 ## Non-Business Day Due Dates
 
-When the engine returns `non_business_day_warning: true`, it means the due date falls on a weekend or registered holiday. Present the alternative to the user:
+When the engine returns `non_business_day_warning: true`, it means the due date falls on a weekend or registered board holiday (see `manage_holidays` in the Admin section). Present the alternative to the user:
 
 > "A data limite cai em [reason] ([original_date]). Deseja mover para [suggested_date] ([dia da semana])?"
 
-- If the user confirms the suggested date → re-submit the same `taskflow_create` or `taskflow_update` call with `due_date` set to the `suggested_date`
-- If the user insists on keeping the original date → explain that this runtime does NOT expose a non-business-day override via TaskFlow commands. Ask them to choose a business-day date instead.
+**Do NOT auto-change the date.** Ask first. If the user confirms the suggested date → re-submit the same `taskflow_create` or `taskflow_update` call with `due_date` set to the `suggested_date`. If the user explicitly insists on keeping the original date ("pode deixar no sábado mesmo", "intencional"), re-submit the call with `allow_non_business_day: true`.
 
-Recurring tasks auto-shift past non-business days silently.
+**Where the flag goes differs between `create` and `update`:**
+- `taskflow_create`: flag is **top-level**, sibling of `due_date`/`sender_name`. Example: `taskflow_create({ type: 'simple', title: '...', due_date: '2026-04-11', allow_non_business_day: true, sender_name: SENDER })`.
+- `taskflow_update`: flag is **inside `updates`**, sibling of the field being set. Example: `taskflow_update({ task_id: 'TXXX', updates: { due_date: '2026-04-11', allow_non_business_day: true }, sender_name: SENDER })`.
+
+Do NOT set `allow_non_business_day` pre-emptively on the first call; only as an override after the user confirms the non-business-day date is intentional.
+
+Recurring tasks auto-shift past non-business days silently — no warning, no override needed.
 
 ## Inbox Processing
 
@@ -984,7 +1037,8 @@ Parse dates per pt-BR:
 
 Comma-separated task IDs with plural verb forms trigger batch mode:
 - `T5, T6, T7 aprovadas` -> call `taskflow_move` for each with `action: 'approve'`
-- Supported for: approve, reject, conclude, cancel
+- Supported `taskflow_move` actions: `approve`, `reject`, `conclude`, `return`, `review`, `start`, `resume`, `wait`, `reopen`, `force_start`
+- Cancellation is NOT a `taskflow_move` action. For `T5, T6 canceladas`, loop over the IDs and call `taskflow_admin({ action: 'cancel_task', task_id, sender_name: SENDER })` for each (with the same "ask confirmation in chat first" rule as single-task cancellation).
 - Process each individually; report results: "T5: aprovada. T6: not in Review (skipped). T7: aprovada. Resultado: 2/3 processadas."
 
 ## Duplicate Detection
@@ -1005,7 +1059,9 @@ If the user **explicitly** confirms (e.g. "sim", "criar"), re-call `taskflow_cre
 
 ## Default Assignment
 
-When a task is created without an explicit assignee, automatically assign it to the sender. Every task should have an owner.
+When the user creates a task WITHOUT explicitly naming an assignee ("criar tarefa X", "nova tarefa Y", "tarefa: revisar relatório"), default the assignee to the resolved `SENDER`. Do NOT ask "para quem?" and do NOT leave the assignee empty — the sender is the obvious owner when no "para Y" is given. The engine also applies this default server-side as a safety net, but the agent should set it explicitly in the `taskflow_create` call so the response messaging is consistent with the user's intent. Every task should have an owner from the moment it is created.
+
+If the user explicitly says "para o inbox" or "registra aí", that is quick capture (`type: 'inbox'`), not a default-assign — route it to inbox instead.
 
 ## Error Presentation
 
@@ -1048,9 +1104,9 @@ send_message(text: "[MESSAGE]", sender: "[OPTIONAL_ROLE_NAME]", target_chat_jid:
 schedule_task(prompt: "[PROMPT]", schedule_type: "[cron|interval|once]", schedule_value: "[CRON_OR_TIMESTAMP]", context_mode: "group")
 ```
 
-- `cron`: recurring (e.g., `"0 11 * * 1-5"` for weekdays at 11h LOCAL time)
-- `once`: one-time at timestamp; auto-cleans after execution
-- **TIMEZONE: `schedule_value` is always interpreted as LOCAL time (America/Fortaleza).** Write the user's desired local time directly, WITHOUT converting to UTC. Example: user says "7:30" → `schedule_value: "2026-03-18T07:30:00"`. Do NOT append `Z`.
+- `cron`: recurring. `schedule_value` is a standard 5-field cron expression (e.g., `"0 11 * * 1-5"` for weekdays at 11h). The cron parser evaluates it in the board's local timezone (America/Fortaleza) — there is no `Z`/UTC concept for cron schedules, so do NOT add one.
+- `once`: one-time. `schedule_value` is an ISO-8601 timestamp. **Prefer the naive local form** (e.g., `"2026-03-18T07:30:00"`) — the host `new Date()` parse interprets a naive ISO string as local time in the process timezone (America/Fortaleza), which matches how the user phrased the time. Appending `Z` IS accepted by the parser but means "UTC" and will fire at a different wall-clock time than the user expects — only use `Z` if the user explicitly asked for UTC. Once-tasks auto-clean after execution.
+- **TIMEZONE rule:** when the user says "7:30", write `schedule_value: "2026-03-18T07:30:00"` (naive local). Do NOT convert to UTC. Do NOT append `Z`.
 - Prompts must be self-contained
 - Returns confirmation, not task ID. Use `list_tasks` to get the ID.
 
@@ -1083,7 +1139,7 @@ schedule_task(prompt: "[PROMPT]", schedule_type: "[cron|interval|once]", schedul
 - Apply only after exact confirmation: `CONFIRM_IMPORT {import_action_id}` (generic replies like "ok", "sim", "pode fazer" are NOT sufficient)
 - At apply-time, re-validate task ownership and state (TOCTOU guard — tasks may have changed between proposal and confirmation)
 - Execute each mutation via the appropriate MCP tool
-- Record in `attachment_audit_log`: `INSERT INTO attachment_audit_log (board_id, source, filename, at, actor_person_id, affected_task_refs) VALUES (...)`
+- Record in `attachment_audit_log` (dormant — the engine writes this row automatically when the attachment intake MCP tool is in use, so do NOT issue the raw `INSERT` yourself in that path. The raw SQL form is retained only as a fallback for operators doing manual one-off imports via direct SQL; if you find yourself executing it by hand you are outside the normal flow and should double-check with the user first): `INSERT INTO attachment_audit_log (board_id, source, filename, at, actor_person_id, affected_task_refs) VALUES (...)`
 
 ## File Paths
 
