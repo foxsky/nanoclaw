@@ -1,5 +1,25 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-04-11 (later, template cross-doc drift backfill)
+
+### CLAUDE.md.template — 7 HIGH cross-doc drift fixes (follow-up to 626debd)
+After shipping the 5 HIGH bugs in 626debd (`manage_holidays` params + 4 internal inconsistencies), the same three-agent review surfaced 7 additional HIGH items that drift between the template, engine source, and the meetings reference doc. All 7 have a canonical source in the engine or user manual.
+
+- **H1** L426 — accept bare `"revisao"` as alias for the Review-column query alongside `"em revisao"` (matches user-manual phrasing from the 2026-04 interaction corpus).
+- **H2** L294-L295 — add `"mover TXXX para dentro de PYYY"` as an equivalent trigger for `reparent_task`, and `"destacar PXXX.N"` as an equivalent trigger for `detach_task`. Both phrasings appear in prod interaction history but had no template row.
+- **H3** L286 — rewrite the `"cadastrar Nome, telefone NUM, cargo"` row to make the 2-step flow explicit: on hierarchy boards (`HIERARCHY_LEVEL < MAX_DEPTH`), STOP after the 3-field form and ask for the division/sector sigla first; only after receiving it call `register_person` with `group_name`/`group_folder`. On leaf boards (`HIERARCHY_LEVEL == MAX_DEPTH`), call `register_person` directly with the 3 fields. Previously conflated these paths and buried the ask in a trailing note.
+- **H4** L220 (new row) — add inbox one-shot shortcut `"TXXX para Y, prazo DD/MM"` that fires `taskflow_reassign` (auto-moves inbox→next_action) then `taskflow_update` with `due_date` in a single agent turn, reporting both outcomes in one reply.
+- **H5** docs/taskflow-meetings-reference.md L82, L103 — `add_external_participant` parameter renamed `display_name` → `name` to match engine `taskflow-engine.ts:144` (`add_external_participant?: { name: string; phone: string }`).
+- **H6** docs/taskflow-meetings-reference.md L92 — `remove_external_participant` shape corrected from bare `external_id` to `{ external_id?, phone?, name? }` to match engine `taskflow-engine.ts:145`.
+- **H7** docs/taskflow-meetings-reference.md L13, L43, L163, L192 — clarified `scheduled_at` input format. Engine at `taskflow-engine.ts:387` (`localToUtc`) accepts naive local-time (no `Z`/offset) and converts via board timezone; `Z`/offset inputs are kept as-is; the DB always stores UTC. Updated overview, create-option table, and both Common Examples to use naive local strings so the canonical pattern is consistent.
+
+### CLAUDE.md.template — 5 HIGH-severity fixes (shipped in 626debd, backfilled here)
+- **manage_holidays params** L302-L306 — `operation` → `holiday_operation`, `dates/year` → `holidays[]/holiday_dates[]/holiday_year` arrays. Also documented the `list` operation. Evidence: `ipc-mcp-stdio.ts:940-943` + `taskflow-engine.ts:6289-6366`. Pre-fix every `"adicionar feriado"` would error with `Missing required parameter: holiday_operation`.
+- **taskflow_move action list** L1017 — removed `cancel` from the listed move actions (cancellation is `taskflow_admin({ action: 'cancel_task' })`, not a move action).
+- **Rendered Output Format reference** L424 — `(see Board View Format)` → `(see Rendered Output Format)` to match the section it links to.
+- **Hierarchy depth off-by-one** L30 — `current level + 1 < taskflow_max_depth` → `current level + 1 <= taskflow_max_depth` to match engine `ipc-tooling.ts:31`.
+- **Cycle arithmetic + schema nullable** L258 + L833 — `CURRENT_CYCLE + N` → `parseInt(CURRENT_CYCLE, 10) + N` (stored as decimal-integer string, not JSON); `current_cycle TEXT (JSON object)` → `nullable decimal integer as string — parse with parseInt; NOT a JSON object`. Also corrected adjacent `recurrence TEXT` description from "JSON object" to "frequency string: daily/weekly/monthly/yearly".
+
 ## 2026-04-11 (later)
 
 ### Auditor — scheduled_tasks + read-query + intent exemptions (follow-up to 910f87f)

@@ -10,9 +10,11 @@ Meetings are a dedicated TaskFlow task type:
 - ID prefix: `M`
 - Organizer: stored in `assignee`
 - Participants: stored separately in `participants`
-- Schedule field: `scheduled_at` (ISO-8601 UTC)
+- Schedule field: `scheduled_at` (stored as ISO-8601 UTC; see _Input format_ below)
 
 By default, `due_date` is not the primary field for meetings. Scheduling, reminders, upcoming-meeting queries, and start notifications all use `scheduled_at`.
+
+**Input format for `scheduled_at`:** callers may pass a **naive local-time** string (e.g. `"2026-03-12T14:00:00"`) and the engine converts it to UTC using the board's configured timezone via `localToUtc()`. A date-only value (`"2026-03-12"`) is treated as midnight local. If the input already carries a `Z` suffix or an explicit `±HH:MM` offset, the engine keeps it as-is. The DB always stores UTC.
 
 ## Query Resources
 
@@ -40,7 +42,7 @@ Meeting-relevant options:
 | `type` | `'meeting'` | Required |
 | `title` | `string` | Required |
 | `assignee` | `string` | Optional explicit organizer; defaults to sender when omitted |
-| `scheduled_at` | `string` | Optional ISO-8601 UTC datetime |
+| `scheduled_at` | `string` | Optional ISO-8601 datetime. Naive local strings (no `Z`/offset) are treated as local time in the board's timezone and normalized to UTC by the engine; `Z`/offset inputs are accepted as-is. Stored in DB as UTC. |
 | `participants` | `string[]` | Optional participant names |
 | `priority` | `'low' \| 'normal' \| 'high' \| 'urgent'` | Optional |
 | `labels` | `string[]` | Optional |
@@ -79,7 +81,7 @@ Supported meeting note statuses:
 
 External meeting participants — people outside the board's registered
 team — can be invited to a meeting. Use `taskflow_update` with
-`add_external_participant: { display_name, phone }` to register them.
+`add_external_participant: { name, phone }` to register them.
 The engine stores the external contact in the `external_contacts` and
 `meeting_external_participants` tables, then automatically dispatches
 a WhatsApp direct-message invitation to the provided phone.
@@ -89,7 +91,9 @@ meeting notes or confirm attendance. Their access is scoped to the
 invited meeting only and expires when the meeting concludes.
 
 To remove an external participant, use
-`update(remove_external_participant: external_id)`.
+`update(remove_external_participant: { external_id?, phone?, name? })`.
+Any one of the three identifiers is sufficient — the engine resolves
+the matching row via the fields you provide.
 
 Example — invite an external participant to `M1`:
 
@@ -99,7 +103,7 @@ taskflow_update({
   "sender_name": "Rafael",
   "updates": {
     "add_external_participant": {
-      "display_name": "Marina Souza",
+      "name": "Marina Souza",
       "phone": "+5585999990000"
     }
   }
@@ -155,13 +159,13 @@ Phase is derived automatically from the meeting column:
 
 ## Common Examples
 
-Create a one-off meeting:
+Create a one-off meeting (naive local time — engine converts to UTC using the board's timezone):
 
 ```json
 taskflow_create({
   "type": "meeting",
   "title": "Planning sync",
-  "scheduled_at": "2026-03-12T14:00:00Z",
+  "scheduled_at": "2026-03-12T14:00:00",
   "participants": ["Alexandre", "Giovanni"],
   "sender_name": "Rafael"
 })
@@ -186,14 +190,14 @@ taskflow_update({
 })
 ```
 
-Reschedule a meeting:
+Reschedule a meeting (naive local time — engine converts to UTC):
 
 ```json
 taskflow_update({
   "task_id": "M1",
   "sender_name": "Rafael",
   "updates": {
-    "scheduled_at": "2026-03-13T15:30:00Z"
+    "scheduled_at": "2026-03-13T15:30:00"
   }
 })
 ```

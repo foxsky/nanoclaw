@@ -4,6 +4,28 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-11 (later) — TaskFlow CLAUDE.md.template cross-doc drift fixes
+
+Follow-up to 626debd (5 HIGH internal-inconsistency fixes). The three-agent template review surfaced 7 more HIGH items that drift between the template, engine source, and the meetings reference doc. All 7 ship in this commit.
+
+- **H1** `.claude/skills/add-taskflow/templates/CLAUDE.md.template:426` — accept bare `"revisao"` alongside `"em revisao"` for the Review-column query.
+- **H2** `.claude/skills/add-taskflow/templates/CLAUDE.md.template:294-295` — add `"mover TXXX para dentro de PYYY"` (reparent) and `"destacar PXXX.N"` (detach) as equivalent triggers to the existing rows.
+- **H3** `.claude/skills/add-taskflow/templates/CLAUDE.md.template:286` — rewrite `"cadastrar Nome, telefone NUM, cargo"` row to make the 2-step flow explicit: on hierarchy boards (`HIERARCHY_LEVEL < MAX_DEPTH`), ask for the division sigla FIRST, then call `register_person`; on leaf boards, call directly with 3 fields.
+- **H4** `.claude/skills/add-taskflow/templates/CLAUDE.md.template:220` — new row for inbox one-shot shortcut `"TXXX para Y, prazo DD/MM"` that fires `taskflow_reassign` then `taskflow_update` with `due_date` in a single turn.
+- **H5** `docs/taskflow-meetings-reference.md` — `add_external_participant` parameter renamed `display_name` → `name` to match engine `taskflow-engine.ts:144`.
+- **H6** `docs/taskflow-meetings-reference.md` — `remove_external_participant` shape corrected from bare `external_id` to `{ external_id?, phone?, name? }` to match engine `taskflow-engine.ts:145`.
+- **H7** `docs/taskflow-meetings-reference.md` — `scheduled_at` documented as accepting naive local-time strings (engine converts via `localToUtc` at `taskflow-engine.ts:387`); updated Common Examples from `"…Z"` to naive local form.
+
+## 2026-04-11 — TaskFlow CLAUDE.md.template 5 HIGH bugs (Codex-verified)
+
+Three-agent template review + Codex second pass flagged 5 HIGH-severity bugs in the rendered-per-group template. All 5 ship in 626debd.
+
+- `manage_holidays` params (`operation` → `holiday_operation`, arrays for `holidays`/`holiday_dates`/`holiday_year`) to match `ipc-mcp-stdio.ts:940-943` + `taskflow-engine.ts:6289-6366`. Pre-fix: every `"adicionar feriado"` would error.
+- `taskflow_move` action list: removed `cancel` (cancellation is `taskflow_admin({ action: 'cancel_task' })`, not a move action).
+- Internal Rendered-Output-Format reference fixed (`Board View Format` → `Rendered Output Format`).
+- Hierarchy depth off-by-one: `current level + 1 < max_depth` → `current level + 1 <= max_depth` to match engine `ipc-tooling.ts:31`.
+- Cycle arithmetic + schema nullable: `CURRENT_CYCLE + N` → `parseInt(CURRENT_CYCLE, 10) + N`; schema row rewritten from "JSON object" to "nullable decimal integer as string".
+
 ## 2026-04-11 — TaskFlow feature audit backfill
 
 The 2026-04-11 TaskFlow feature-audit pass confirmed these 38 shipped
