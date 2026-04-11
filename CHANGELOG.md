@@ -4,6 +4,14 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-11 (later) — deploy.sh regenerates group CLAUDE.md
+
+`scripts/deploy.sh` gains a new pre-sync step that runs `node scripts/generate-claude-md.mjs` before the rsync to production. This makes the per-group rendered copies in `groups/*/CLAUDE.md` always consistent with the canonical template at `.claude/skills/add-taskflow/templates/CLAUDE.md.template` on every deploy — removes the manual "did I remember to regen?" footgun.
+
+- Step ordering: `[1/5]…[5/5]` → `[1/6]…[6/6]`. New step `[3/6]` regenerates group CLAUDE.md; the old sync step is now `[4/6]`, container rebuild is `[5/6]`, production import check is `[6/6]`.
+- Regen is idempotent — no diff if the template hasn't changed since last deploy, so rsync's delta sync produces no network traffic for unchanged files.
+- Regen failure aborts the deploy BEFORE any remote changes happen, matching the existing fail-fast pattern for build and import errors.
+
 ## 2026-04-11 (later) — TaskFlow CLAUDE.md.template pt-BR output polish
 
 Partial LOW pass focused on pt-BR accent correctness in bot-output strings. Input-side command synonyms (left column of command tables) intentionally stay unaccented to match WhatsApp user input; only the OUTPUT strings the agent emits to users were corrected.

@@ -10,12 +10,12 @@ echo "=== Pre-flight checks ==="
 
 # 1. Build locally (tsc may emit type warnings for dev-only files; that's OK
 #    as long as dist/index.js is produced — step 2 validates it actually works)
-echo "[1/5] Building..."
+echo "[1/6] Building..."
 npm run build 2>&1 || true
 
 # 2. Verify the compiled entry point can at least be parsed by Node
 #    (catches missing runtime deps like the baileys incident)
-echo "[2/5] Verifying dist/index.js imports..."
+echo "[2/6] Verifying dist/index.js imports..."
 node --input-type=module -e "
   // Dynamic import resolves all top-level imports without executing main()
   import('$(pwd)/dist/index.js').then(
@@ -24,8 +24,19 @@ node --input-type=module -e "
   );
 " 2>&1 || { echo "ABORT: entry point has unresolvable imports. Fix before deploying."; exit 1; }
 
-# 3. Sync files
-echo "[3/5] Syncing to production..."
+# 3. Regenerate group CLAUDE.md files from the canonical template.
+#    The template at .claude/skills/add-taskflow/templates/CLAUDE.md.template
+#    is the source of truth; per-group rendered copies in groups/*/CLAUDE.md
+#    MUST match the template (minus mustache variable substitution) at every
+#    deploy. Always regen before the rsync so production picks up whatever
+#    landed in the template since the last deploy. Script is idempotent — no
+#    diff if the template hasn't changed.
+echo "[3/6] Regenerating group CLAUDE.md from template..."
+node scripts/generate-claude-md.mjs 2>&1 \
+  || { echo "ABORT: group CLAUDE.md regen failed. Fix the template or script before deploying."; exit 1; }
+
+# 4. Sync files
+echo "[4/6] Syncing to production..."
 rsync -az --delete dist/ "$REMOTE:$REMOTE_DIR/dist/"
 rsync -az --delete container/agent-runner/src/ "$REMOTE:$REMOTE_DIR/container/agent-runner/src/"
 rsync -az container/agent-runner/package.json container/agent-runner/package-lock.json \
@@ -36,9 +47,9 @@ rsync -az package.json package-lock.json "$REMOTE:$REMOTE_DIR/"
 ssh "$REMOTE" "cd $REMOTE_DIR && npm install --ignore-scripts" 2>&1 | tail -1 \
   || { echo "ABORT: npm install failed on remote."; exit 1; }
 
-# 4. Rebuild the agent container image if container inputs changed.
+# 5. Rebuild the agent container image if container inputs changed.
 #    Fingerprint covers everything the Dockerfile COPY steps consume.
-echo "[4/5] Checking if agent container needs rebuild..."
+echo "[5/6] Checking if agent container needs rebuild..."
 LOCAL_FP=$(find container/Dockerfile container/.dockerignore container/build.sh \
   container/agent-runner/package.json container/agent-runner/package-lock.json \
   container/agent-runner/tsconfig.json container/agent-runner/src/ \
@@ -57,8 +68,8 @@ else
   echo "  Fingerprint matches — skipping rebuild."
 fi
 
-# 5. Verify imports on production before restarting
-echo "[5/5] Verifying imports on production..."
+# 6. Verify imports on production before restarting
+echo "[6/6] Verifying imports on production..."
 ssh "$REMOTE" "cd $REMOTE_DIR && node --input-type=module -e \"
   import('./dist/index.js').then(
     () => console.log('  OK: production imports resolved'),
@@ -66,12 +77,12 @@ ssh "$REMOTE" "cd $REMOTE_DIR && node --input-type=module -e \"
   );
 \"" 2>&1 || { echo "ABORT: production import check failed. Service NOT restarted."; exit 1; }
 
-# 6. Restart service
+# 7. Restart service
 echo "=== Restarting service ==="
 ssh "$REMOTE" "systemctl --user restart nanoclaw"
 sleep 4
 
-# 7. Verify service is running
+# 8. Verify service is running
 STATUS=$(ssh "$REMOTE" "systemctl --user is-active nanoclaw" 2>&1)
 if [ "$STATUS" = "active" ]; then
   echo "=== Deploy successful === (service: $STATUS)"
