@@ -46,16 +46,43 @@ const TERSE_PATTERN = /^(T|P|M|R|SEC-)\S+\s*(conclu|feita|feito|pronta|ok|aprova
 const READ_QUERY_HARD_PATTERN = /^\s*(?:qual|quais|quantos?|quantas?)\b/i;
 const READ_QUERY_SOFT_PATTERN = /^\s*(?:que|quando|onde|quem)\b/i;
 
+// Imperative verb detector — used to disqualify SOFT comma-less reads.
+// The first-pass fix treated "Quando concluir T5 avise o João" (no comma,
+// no `?`) as a read query because it couldn't tell the subordinator form
+// from a real question. Codex second-pass flagged this as a recall gap:
+// informal Portuguese often drops the comma. This pattern catches the
+// 2nd/3rd person singular/plural imperative forms of TaskFlow task verbs
+// so isReadQuery can veto the no-comma branch when any command verb
+// appears in the message.
+//
+// Word-boundary matched (`\b...\b`) to avoid substring false positives
+// like "criança" → "cria" or "extremos" → "mov". Verb list curated to
+// task-write and send-intent verbs only; generic Portuguese verbs like
+// "vai", "faz", "dá" are intentionally out-of-scope.
+const IMPERATIVE_VERB_PATTERN = /\b(?:conclu[ai]m?|atribu[aei]m?|cri[ae]m?|cancel[ea]m?|adicion[ea]m?|aprov[ea]m?|descart[ea]m?|mov[ae]m?|adi[ae]m?|alter[ea]m?|remov[ae]m?|renomei[ea]m?|finaliz[ea]m?|process[ea]m?|devolv[ae]m?|retom[ae]m?|delegu[ea]m?|registr[ea]m?|avis[ea]m?|alert[ea]m?|inform[ea]m?|comuniqu[ea]m?|notifiqu[ea]m?|peç[ao]m?|pe[cç]am?)\b/i;
+
 // First-person future-tense declarations. The user is describing THEIR own
 // upcoming action, not commanding the bot: "vou concluir T5" means "I will
-// conclude T5", not "conclude T5 (imperative)". Allows 0-2 intervening
-// adverbs between the modal and the infinitive ("vou já concluir",
-// "pretendo também atualizar") — Codex flagged these as false negatives
-// in the first revision. Uses `\S+`/`\S*` (not `\w+`/`\w*`) because
-// `\w` is ASCII-only in JS regex and would fail on Portuguese accented
-// adverbs like "já" and "também". Must still end in -ar/-er/-ir to
-// avoid matching "vou ali", "vou embora", etc.
-const INTENT_DECLARATION_PATTERN = /\b(?:vou|vamos|pretendo|estou\s+indo|estamos\s+indo)\s+(?:\S+\s+){0,2}\S*(?:ar|er|ir)\b/i;
+// conclude T5", not "conclude T5 (imperative)".
+//
+// Four alternatives, all first-person:
+// 1. Periphrastic future — `vou/vamos/pretendo/estou indo/estamos indo`
+//    + 0-2 intervening adverbs + infinitive (-ar/-er/-ir). Uses `\S+`/
+//    `\S*` (not `\w+`/`\w*`) because JS regex `\w` is ASCII-only and
+//    would fail on Portuguese accented adverbs like "já" and "também".
+// 2. Synthetic future 1sg — 3+ char stem + (a|e|i) + "rei"
+//    (e.g. "concluirei", "atualizarei", "finalizarei", "criarei").
+//    `\S{3,}` prevents matching "rei" (king) and "Rei" (name).
+// 3. Synthetic future 1pl — 3+ char stem + (a|e|i) + "remos"
+//    (e.g. "concluiremos", "atualizaremos", "finalizaremos").
+// 4. Future perfect 1sg/1pl — `terei`/`teremos` + 0-2 adverbs + past
+//    participle ending in `ado|ido|ído|to|so`. The `ído` variant covers
+//    accented forms like "concluído".
+//
+// Residual known gap: irregular-stem single-char synthetic futures
+// ("farei", "serei", "direi", "darei") don't match because the stem is
+// only 1-2 chars. These are rare in WhatsApp task contexts; accept.
+const INTENT_DECLARATION_PATTERN = /\b(?:vou|vamos|pretendo|estou\s+indo|estamos\s+indo)\s+(?:\S+\s+){0,2}\S*(?:ar|er|ir)\b|\b\S{3,}(?:a|e|i)rei\b|\b\S{3,}(?:a|e|i)remos\b|\b(?:terei|teremos)\s+(?:\S+\s+){0,2}\S+(?:ado|ido|ído|to|so)\b/i;
 
 // Multi-clause disqualifier for intent exemption. A message like
 // "Vou concluir T5 depois, mas cria P2 agora" has a real imperative
@@ -86,10 +113,15 @@ function isTaskWriteRequest(text: string): boolean {
 function isReadQuery(text: string): boolean {
   if (READ_QUERY_HARD_PATTERN.test(text)) return true;
   if (READ_QUERY_SOFT_PATTERN.test(text)) {
-    // Soft interrogatives count as read only if the message is a clear
-    // single-clause question: ends with `?` OR has no comma (not a
-    // subordinate clause wrapping an imperative).
-    return /\?\s*$/.test(text) || !text.includes(',');
+    // Soft interrogative counted as read only when the message is a
+    // clear single-clause question:
+    //   - ends with `?`, OR
+    //   - has no comma AND no imperative verb (not a subordinate
+    //     clause wrapping a command — catches "Quando concluir T5
+    //     avise o João" where the comma is dropped informally).
+    if (/\?\s*$/.test(text)) return true;
+    if (text.includes(',')) return false;
+    return !IMPERATIVE_VERB_PATTERN.test(text);
   }
   return false;
 }
@@ -289,6 +321,14 @@ describe('auditor DM-send detection', () => {
       'Quem concluir T5, avise a equipe',
       'Onde houver prazo, atribua pra Rodrigo',
       'Que tarefa você quiser, concluir depois',
+      // Codex second-pass 2026-04-11: soft + no-comma MUST be vetoed
+      // when an imperative verb appears in the message. Informal
+      // Portuguese often drops the comma before the command clause.
+      'Quando concluir T5 avise o João',
+      'Quem concluir T5 avise a equipe',
+      'Onde houver prazo atribua pra Rodrigo',
+      'Quando puder conclua T5',
+      'Onde vir o P10 cancele',
     ];
     for (const text of negatives) {
       it(`NOT read query: "${text.slice(0, 60)}"`, () => {
@@ -325,6 +365,18 @@ describe('auditor DM-send detection', () => {
       // Compound declarations (both clauses declarations, no imperative)
       'Vou concluir T5 e criar P2',
       'Se eu não conseguir, vou concluir T5 amanhã',
+      // Codex second-pass 2026-04-11: Portuguese synthetic future (1sg
+      // and 1pl) and future perfect. These are more formal than the
+      // periphrastic `vou + infinitive` form but DO appear in
+      // administrative WhatsApp contexts.
+      'Concluirei T5 amanhã',
+      'Atualizarei a descrição amanhã',
+      'Finalizarei o P10 até sexta',
+      'Criaremos as subtarefas hoje',
+      'Atualizaremos a descrição depois',
+      'Terei finalizado P10 até amanhã',
+      'Terei concluído T5 até o fim do dia',
+      'Teremos atualizado tudo até sexta',
     ];
     for (const text of positives) {
       it(`is intent declaration: "${text.slice(0, 60)}"`, () => {
@@ -353,6 +405,16 @@ describe('auditor DM-send detection', () => {
       'Vou concluir T5 depois, mas cria P2 agora',
       'Pretendo revisar depois; pode concluir T5 agora?',
       'Vamos terminar o P10 hoje, porém atribua o T8 pro Rodrigo',
+      // Codex second-pass 2026-04-11: false-positive guards for the
+      // synthetic-future alternatives.
+      // "rei" alone (king) must not match as a verb.
+      'O rei do pop',
+      // "remos" alone (rowers) must not match as 1pl future.
+      'Os remos do barco',
+      // "extremos" (adjective/noun) must not match as 1pl future.
+      'Esses casos são extremos',
+      // "criança" must not match as "cria" imperative.
+      'A criança está ansiosa',
     ];
     for (const text of negatives) {
       it(`NOT intent declaration: "${text.slice(0, 60)}"`, () => {
@@ -472,6 +534,7 @@ describe('auditor DM-send detection', () => {
     for (const [name, pattern] of [
       ['READ_QUERY_HARD_PATTERN', READ_QUERY_HARD_PATTERN],
       ['READ_QUERY_SOFT_PATTERN', READ_QUERY_SOFT_PATTERN],
+      ['IMPERATIVE_VERB_PATTERN', IMPERATIVE_VERB_PATTERN],
       ['INTENT_DECLARATION_PATTERN', INTENT_DECLARATION_PATTERN],
       ['INTENT_MULTI_CLAUSE_PATTERN', INTENT_MULTI_CLAUSE_PATTERN],
       ['REFUSAL_PATTERN', REFUSAL_PATTERN],
