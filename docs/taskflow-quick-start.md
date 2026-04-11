@@ -70,13 +70,13 @@ Gestor aprova            →  @Case T001 aprovada
 @Case tarefa: [descricao]
 ```
 
-Se usar "tarefa" sem indicar responsavel (sem "para [pessoa]"), vai para o Inbox como captura rapida.
+Se usar "tarefa" sem indicar responsavel (sem "para [pessoa]"), vai para o Inbox como captura rapida. Se voce nao especificar quem, a tarefa e atribuida automaticamente a voce.
 
 ### Mover Tarefas
 
 | Comando | O que faz |
 |---------|-----------|
-| `@Case comecando TXXX` | Comeca a trabalhar (verifica limite WIP) |
+| `@Case comecando TXXX` | Comeca a trabalhar (verifica limite WIP; funciona tambem a partir do Inbox, pulando Proxima Acao) |
 | `@Case TXXX aguardando [motivo]` | Marca como bloqueada |
 | `@Case TXXX retomada` | Volta a trabalhar |
 | `@Case TXXX pronta para revisao` | Envia para revisao do gestor |
@@ -115,7 +115,10 @@ Se usar "tarefa" sem indicar responsavel (sem "para [pessoa]"), vai para o Inbox
 @Case diario para [pessoa]: [descricao]
 @Case semanal para [pessoa]: [descricao] toda segunda
 @Case mensal para [pessoa]: [descricao] todo dia [N]
+@Case adicionar subtarefa a PXXX: [descricao]
 ```
+
+`adicionar subtarefa` cria uma nova etapa dentro de um projeto existente (PXXX vira PXXX.N).
 
 ### Reunioes
 
@@ -132,6 +135,7 @@ Se usar "tarefa" sem indicar responsavel (sem "para [pessoa]"), vai para o Inbox
 | Comando | O que faz |
 |---------|-----------|
 | `@Case reatribuir TXXX para [pessoa]` | Muda responsavel (pede confirmacao) |
+| `@Case reatribuir T1,T2,T3 para [pessoa]` | Reatribui varias tarefas de uma vez |
 
 ### Gestao (gestor)
 
@@ -139,8 +143,9 @@ Se usar "tarefa" sem indicar responsavel (sem "para [pessoa]"), vai para o Inbox
 |---------|-----------|
 | `@Case processar inbox` | Processa itens pendentes |
 | `@Case estender prazo TXXX para [data]` | Altera prazo |
-| `@Case cancelar TXXX` | Cancela e arquiva |
+| `@Case cancelar TXXX` | Cancela e arquiva (desfazivel em 60s com `desfazer`) |
 | `@Case T005, T006, T007 aprovadas` | Operacoes em lote |
+| `@Case adicionar feriado 25/12` | Cadastra feriado do quadro (aceita tambem `remover feriado` e `feriados do ano`) |
 
 ---
 
@@ -187,6 +192,7 @@ Comandos como `processar inbox`, `reatribuir`, `cancelar` e `estatisticas` funci
 ## Dicas
 
 - Datas: use `hoje`, `amanha`, `sexta`, `15/03` ou `proxima segunda`
+- Prazos em fim de semana ou feriado geram aviso e sugestao do proximo dia util
 - Prioridade: `@Case prioridade TXXX: urgente` (baixa, normal, alta, urgente)
 - Rotulos: `@Case rotulo TXXX: financeiro` para agrupar tarefas
 - Notas: `@Case nota TXXX: cliente pediu ajuste` para comentar
