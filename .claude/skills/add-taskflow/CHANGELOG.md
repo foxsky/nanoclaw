@@ -1,5 +1,20 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-04-11 (later)
+
+### Auditor — scheduled_tasks + read-query + intent exemptions (follow-up to 910f87f)
+- **Problem**: Kipp's 2026-04-10 audit flagged 9 interactions across 7 boards. After investigation, ZERO were real bot bugs — all were auditor structural false positives from the same root cause: the auditor's only mutation-detection path checks `task_history` in `taskflow.db`, which misses every legitimate non-mutation action path.
+- **Four false-positive classes surfaced and fixed**:
+  1. **Scheduled tasks (2 🔴)**: reminder requests (`"lembrar na segunda às 7h30 de X"`) create rows in `store/messages.db → scheduled_tasks`, never in `task_history`. Verified in prod — both SECI-SECTI flags corresponded to `active` scheduled_tasks rows with correct schedule/content/target. Fix: new `scheduledTasksStmt` query against `messages.db`, rolled into `mutationFound`.
+  2. **Read-query (1 ⚪)**: `"quais tarefas tem o prazo pra essa semana?"` is a pure info request, but `prazo` is a WRITE_KEYWORD. Fix: `isReadQuery()` with HARD/SOFT split — `qual`/`quais`/`quantos`/`quantas` always read; `que`/`quando`/`onde`/`quem` only when message ends with `?` OR has no comma (not a subordinate clause wrapping an imperative like `"Quando concluir T5, avise o João"`).
+  3. **User-intent declaration (1 ⚪)**: `"Vou concluir T5 depois"` is user announcing own action, not commanding bot. Fix: `isUserIntentDeclaration()` with first-person modal (`vou`/`vamos`/`pretendo`/`estou indo`/`estamos indo`) + 0-2 intervening adverbs + infinitive verb. Uses `\S` (not `\w`) for Unicode safety on accented Portuguese adverbs like `já`/`também`. Multi-clause disqualifier `\b(?:mas|porém)\b|;` so compound "declaration + real command" still flags.
+  4. **Refusal false positive (1 🟡)**: `"não está cadastrad"` removed from `REFUSAL_PATTERN`. The bot emits it in HELPER OFFERS after successful work (`"✅ T5 atualizada. X não está cadastrada. Quer que eu crie uma tarefa no inbox?"`). Real refusals still match via `não consigo`/`não posso`/etc.
+- **Flagging logic**: `writeNeedsMutation = !isRead && !isIntent && (isTaskWrite || (isWrite && !isDmSend))`
+- **Interaction record**: now emits `isRead` and `isIntent` alongside `isDmSend` so Kipp can reason about suppression reasons narratively.
+- **Prompt updates**: `schedule_task` added to supported-engine list; the cadastrad removal + all 5 intent bits documented in rule 4.
+- **Tests**: 66 → 126 tests. +5 drift guards (HARD, SOFT, INTENT, INTENT_MULTI_CLAUSE, REFUSAL patterns byte-identical with flag check, mutationFound composition, interaction-record shape, scheduled_tasks `<=` upper bound).
+- **Review**: Codex (gpt-5, high, read-only sandbox) first pass flagged HIGH/MEDIUM/LOW/LOW — all four addressed in the same commit: read-query hard/soft split, intent multi-clause disqualifier, scheduled_tasks `<=` boundary match, drift guard tightening.
+
 ## 2026-03-27
 
 ### Cross-Board Project Rollup
