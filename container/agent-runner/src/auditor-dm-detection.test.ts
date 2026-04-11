@@ -10,10 +10,10 @@ import path from 'path';
  */
 
 const DM_SEND_PATTERNS = [
-  /\b(?:mand[ea]r?|envi[ea]r?|escrev[ea]r?)\s+(?:(?:um|uma|o|a|os|as)\s+)?(?:msg|mensagem|recado|aviso|alerta|lembrete|nota|email|e-?mail|notifica[cç][aã]o)\s+(?:a|ao|à|para|pro|pra|com)\s+\S/i,
-  /\b(?:avis(?:e|a|ar|em|ando)|notifi(?:que|car|cando)|alert(?:e|a|ar|em|ando)|comuniqu(?:e|ar|ando)|inform(?:e|ar|ando))\s+(?:o|a|os|as|ao|à|aos|às)(?=[\s.,;!?]|$)/i,
-  /\b(?:diga|conte|conta|fale|fala|pergunte|pergunta|peç[ao]|pe[cç]a)\s+(?:a|ao|à|para|pro|pra|com)(?=[\s.,;!?]|$)/i,
-  /\b(?:mand[ae]|envi[ae]|avis[ae]|alert[ae]|comunic[ae]|inform[ae]|pede|pergunt[ae]|peç[ao]|diga|fale|fala|conta|conte)\s+(?:pro|pra|ao|à)\s+\S/i,
+  /\b(?:mand(?:ar|em|e|a)|envi(?:ar|em|e|a)|escrev(?:er|am|e|a))\s+(?:(?:um|uma|o|a|os|as)\s+)?(?:msg|mensagem|recado|aviso|alerta|lembrete|nota|email|e-?mail|notifica[cç][aã]o)\s+(?:a|ao|à|para|pro|pra|com)\s+\S/i,
+  /\b(?:avis(?:e|a|ar|em|ando)|notifi(?:que|quem|car|cando)|alert(?:e|a|ar|em|ando)|comuniqu(?:e|em|ar|ando)|inform(?:e|em|ar|ando))\s+(?:o|a|os|as|ao|à|aos|às)(?=[\s.,;!?]|$)/i,
+  /\b(?:diga|digam|conte|contem|conta|fale|falem|fala|pergunte|perguntem|pergunta|peç[ao]|peçam|pe[cç]a|pecam)\s+(?:a|ao|à|para|pro|pra|com)(?=[\s.,;!?]|$)/i,
+  /\b(?:mand[ae]|mandem|envi[ae]|enviem|avis[ae]|avisem|alert[ae]|alertem|comunic[ae]|comuniquem|inform[ae]|informem|pede|pedem|pergunt[ae]|perguntem|peç[ao]|peçam|pecam|diga|digam|fale|falem|fala|conta|contem|conte)\s+(?:pro|pra|ao|à)\s+\S/i,
 ];
 
 const TASK_KEYWORDS = [
@@ -70,6 +70,20 @@ describe('auditor DM-send detection', () => {
       'mande pro Reginaldo',
       'conta pro time que vamos adiar',
       'fala pro gestor',
+      // Plural imperative forms (Codex review 2026-04-11). These were the
+      // recall gap that escaped the first fix: group-addressed messages
+      // like "Mandem mensagem pro João sobre o prazo" kept the auditor
+      // false-positive alive because `mand[ea]r?` missed `mandem`.
+      'Mandem mensagem pro João sobre o prazo',
+      'Enviem msg pra equipe sobre o prazo',
+      'Escrevam um aviso pro time sobre o prazo',
+      'Notifiquem o gestor sobre o prazo',
+      'Comuniquem a equipe sobre a mudança',
+      'Informem o Rodrigo sobre o novo prazo',
+      'Falem com o João sobre isso',
+      'Peçam ao João para revisar',
+      'Digam à equipe que a reunião mudou',
+      'Perguntem ao Lucas se ele pode atender',
     ];
 
     for (const text of positives) {
@@ -100,6 +114,11 @@ describe('auditor DM-send detection', () => {
       'T12 adicionar nota sobre o cliente',
       // "mande" without a message noun
       'Mandaram a tarefa pra mim',
+      // Past-tense (perfect) forms must not match the plural-imperative
+      // slots — e.g. `mand(?:ar|em|e|a)` must reject "mandaram" cleanly.
+      'Enviaram o documento ontem',
+      'Escreveram o relatório da T5',
+      'Notificaram sobre o prazo de amanhã',
       // Locative "na/no" must NOT false-match as DM-send — these are
       // legitimate task-write operations, not cross-group sends.
       'Escreva uma nota na T5',
@@ -154,11 +173,17 @@ describe('auditor DM-send detection', () => {
     const script = fs.readFileSync(scriptPath, 'utf-8');
 
     it('auditor-script.sh contains the same DM_SEND_PATTERNS as this test', () => {
+      // Byte-identical check includes the trailing `/i` flag — dropping
+      // case-insensitivity from the shell-script regex is a silent
+      // regression path that an `includes(pattern.source)` check misses.
       for (const pattern of DM_SEND_PATTERNS) {
+        expect(pattern.flags).toBe('i');
+        const literal = `/${pattern.source}/${pattern.flags}`;
         expect(
-          script.includes(pattern.source),
-          `Pattern "${pattern.source}" missing from auditor-script.sh. ` +
-            `Keep DM_SEND_PATTERNS in this test file byte-identical to the one in the shell script.`,
+          script.includes(literal),
+          `Regex literal ${literal} missing from auditor-script.sh. ` +
+            `Keep DM_SEND_PATTERNS (source AND flags) byte-identical between this ` +
+            `test file and the shell script — including the trailing /i.`,
         ).toBe(true);
       }
     });

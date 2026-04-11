@@ -4,6 +4,20 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## [1.2.52] - 2026-04-11
+
+### Fix: auditor DM-send plural-imperative recall gap (TaskFlow follow-up)
+- Second-pass Codex review of commit `391226b` surfaced a recall gap in `DM_SEND_PATTERNS`: plural imperative forms (`Mandem mensagem pro João sobre o prazo`, `Enviem msg pra equipe...`, `Escrevam um aviso pro time...`, `Notifiquem o gestor...`, `Falem com o João...`, `Peçam ao João...`) all evaluated to `isWrite=true`, `isTaskWrite=false`, `isDmSend=false` — meaning the original false-positive path (`writeNeedsMutation=true` → flag as `unfulfilledWrite`) was still reachable for group-addressed DM requests containing shared vocabulary like `prazo`.
+- Root cause: first-pass regex roots like `mand[ea]r?` / `envi[ea]r?` / `escrev[ea]r?` covered singular (`mande`, `envie`) and infinitive (`mandar`) forms but not the plural imperative / present-subjunctive `-em` / `-am` endings used when addressing a group (`mandem`, `enviem`, `escrevam`). Same gap in patterns 2-4: `notifi(?:que|car|cando)` was missing `quem`, `comuniqu(?:e|ar|ando)` was missing `em`, `inform(?:e|ar|ando)` was missing `em`, and patterns 3/4 had no plural-form alternatives at all (`falem`, `digam`, `peçam`, `contem`, `perguntem`).
+- Expanded all four patterns to include plural forms:
+    - Pattern 1: `mand(?:ar|em|e|a)` / `envi(?:ar|em|e|a)` / `escrev(?:er|am|e|a)`
+    - Pattern 2: added `notifi(?:quem)`, `comuniqu(?:em)`, `inform(?:em)`
+    - Pattern 3: added `digam`, `contem`, `falem`, `perguntem`, `peçam` / `pecam`
+    - Pattern 4: same plurals + `pedem`, `comuniquem`, `informem`
+- Past-tense perfect (`mandaram`, `enviaram`, `escreveram`, `notificaram`) continues not to match — the surrounding `\s+` after the verb slot blocks it cleanly; three new negative tests lock this in.
+- Tightened the drift guard at `auditor-dm-detection.test.ts:156` to check `/${pattern.source}/${pattern.flags}` instead of just `pattern.source`. The previous form would silently accept removing `/i` from the shell-script regex (a real regression path). New check asserts both that every `DM_SEND_PATTERNS` entry has `flags === 'i'` AND that the full `/.../i` literal appears byte-for-byte in `auditor-script.sh`.
+- Tests: `auditor-dm-detection.test.ts` grew from 53 to 66 tests (+10 plural positives, +3 past-tense negatives). Full agent-runner suite: 328/329 pass (1 pre-existing todo).
+
 ## [1.2.52] - 2026-04-10
 
 ### Fix: auditor false-positive on DM-send requests (TaskFlow)

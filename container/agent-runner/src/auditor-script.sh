@@ -105,26 +105,34 @@ const TERSE_PATTERN = /^(T|P|M|R|SEC-)\S+\s*(conclu|feita|feito|pronta|ok|aprova
 // Cross-group send-intent patterns (Portuguese). Detected so we can
 // exclude them from `unfulfilledWrite` — `send_message` never writes
 // task_history, so requiring a mutation there would always false-positive.
+//
+// Each verb slot covers singular AND plural imperative forms. The plural
+// (-em/-am/-quem) matters in WhatsApp group chats where a user addresses the
+// bot-team or a group ("Mandem mensagem pro João", "Notifiquem o gestor").
+// Missing plurals were a Codex-flagged recall gap in the first fix.
 const DM_SEND_PATTERNS = [
-  // "mande/envie/escreva [um|uma|o|a|os|as] mensagem/msg/... <prep> <recipient>".
+  // "mande/manda/mandem/mandar [um|uma|o|a|os|as] mensagem/msg/... <prep> <recipient>".
   // Requiring a directional preposition + recipient AFTER the noun prevents
   // false positives on "escreva uma nota na T5" / "mande um lembrete na
   // tarefa T3" / "escreva um aviso na descrição da P4" — those use the
   // locative "na/no" (where), not a directional "a/ao/pra/..." (to whom).
-  /\b(?:mand[ea]r?|envi[ea]r?|escrev[ea]r?)\s+(?:(?:um|uma|o|a|os|as)\s+)?(?:msg|mensagem|recado|aviso|alerta|lembrete|nota|email|e-?mail|notifica[cç][aã]o)\s+(?:a|ao|à|para|pro|pra|com)\s+\S/i,
-  // "avise/notifique/alerte/comunique/informe [o|a|ao|à|aos|às] <recipient>".
+  /\b(?:mand(?:ar|em|e|a)|envi(?:ar|em|e|a)|escrev(?:er|am|e|a))\s+(?:(?:um|uma|o|a|os|as)\s+)?(?:msg|mensagem|recado|aviso|alerta|lembrete|nota|email|e-?mail|notifica[cç][aã]o)\s+(?:a|ao|à|para|pro|pra|com)\s+\S/i,
+  // "avise/avisem/notifique/notifiquem/alerte/alertem/comunique/comuniquem/informe/informem
+  //  [o|a|ao|à|aos|às] <recipient>".
   // Trailing lookahead instead of \b so `à`/`às` (non-word chars in JS regex)
   // still count as the end of the match.
-  /\b(?:avis(?:e|a|ar|em|ando)|notifi(?:que|car|cando)|alert(?:e|a|ar|em|ando)|comuniqu(?:e|ar|ando)|inform(?:e|ar|ando))\s+(?:o|a|os|as|ao|à|aos|às)(?=[\s.,;!?]|$)/i,
-  // "diga/fale/pergunte/conte/peça [a|ao|à|para|pro|pra|com] <recipient>".
+  /\b(?:avis(?:e|a|ar|em|ando)|notifi(?:que|quem|car|cando)|alert(?:e|a|ar|em|ando)|comuniqu(?:e|em|ar|ando)|inform(?:e|em|ar|ando))\s+(?:o|a|os|as|ao|à|aos|às)(?=[\s.,;!?]|$)/i,
+  // "diga/digam/fale/falem/pergunte/perguntem/conte/contem/peça/peçam
+  //  [a|ao|à|para|pro|pra|com] <recipient>".
   // Same lookahead trick for `à`.
-  /\b(?:diga|conte|conta|fale|fala|pergunte|pergunta|peç[ao]|pe[cç]a)\s+(?:a|ao|à|para|pro|pra|com)(?=[\s.,;!?]|$)/i,
+  /\b(?:diga|digam|conte|contem|conta|fale|falem|fala|pergunte|perguntem|pergunta|peç[ao]|peçam|pe[cç]a|pecam)\s+(?:a|ao|à|para|pro|pra|com)(?=[\s.,;!?]|$)/i,
   // Informal WhatsApp shorthand: communication verb + directional preposition
   // + recipient, no noun required. Covers "avisa pro João", "pede pro Lucas",
   // "mande pro Reginaldo", "conta pro time", etc. Verb list kept curated to
   // communication/notification verbs to avoid matching generic movement verbs
-  // like "vai/anda pro X".
-  /\b(?:mand[ae]|envi[ae]|avis[ae]|alert[ae]|comunic[ae]|inform[ae]|pede|pergunt[ae]|peç[ao]|diga|fale|fala|conta|conte)\s+(?:pro|pra|ao|à)\s+\S/i,
+  // like "vai/anda pro X". Plural forms (mandem/enviem/peçam/...) included
+  // for group-addressed imperatives.
+  /\b(?:mand[ae]|mandem|envi[ae]|enviem|avis[ae]|avisem|alert[ae]|alertem|comunic[ae]|comuniquem|inform[ae]|informem|pede|pedem|pergunt[ae]|perguntem|peç[ao]|peçam|pecam|diga|digam|fale|falem|fala|conta|contem|conte)\s+(?:pro|pra|ao|à)\s+\S/i,
 ];
 
 // Refusal patterns in bot responses
