@@ -370,6 +370,20 @@ matches the feature-matrix inventory.
 - Restored `dist/` with correct build, restarted serve from `dist/`
 - Deploy freeze enforced — no agent deploys without operator approval
 
+## 2026-04-11 — Verifiable send_message audit trail (architectural)
+
+### Auditor — replace DM-send regex exemption with send_message_log
+- **Motivation**: Every auditor round this session surfaced a new Portuguese conjugation gap in `DM_SEND_PATTERNS` (singular → plural, infinitive → synthetic future, subordinator clauses, etc.). The root cause is using regex to **infer** whether the bot sent a message, instead of checking whether it actually did. This commit replaces the inference with a verifiable audit trail.
+- **Host (new `send_message_log` table)**: `src/db.ts` adds the table via `CREATE TABLE IF NOT EXISTS` (idempotent, no migration needed). `src/ipc.ts` writes a row after every successful `deps.sendMessage()` in both the authorized-group and authorized-DM branches, recording `source_group_folder`, `target_chat_jid`, `target_kind` (group|dm), `sender_label`, `content_preview` (200-char truncated), `delivered_at`. Write is wrapped in try/catch so a schema error never breaks IPC delivery.
+- **Auditor (container-side consumer)**: new `sendMessageLogStmt` queries the table within the same 10-minute window as task_history and scheduled_tasks. The flagging logic splits mutation evidence into two buckets:
+  - `taskMutationFound`: task_history row OR scheduled_tasks row — task-level evidence
+  - `crossGroupSendLogged`: send_message_log row — delivery evidence
+  - `mutationFound = isTaskWrite ? taskMutationFound : (taskMutationFound || crossGroupSendLogged)` — unambiguous task writes still demand a real task mutation, so mixed-intent messages like "avise a equipe e concluir T5" still flag if the T5 conclusion didn't happen.
+- **writeNeedsMutation simplified**: was `!isRead && !isIntent && (isTaskWrite || (isWrite && !isDmSend))`, now `!isRead && !isIntent && isWrite`. The `!isDmSend` regex gate is gone — authoritative DM-send evidence now comes from the log. `DM_SEND_PATTERNS` stays compiled and `isDmSend` stays in the interaction record as a narrative classifier for Kipp's rule 4 reasoning, but it no longer gates anything.
+- **Interaction record** now exposes `taskMutationFound` and `crossGroupSendLogged` alongside the five existing bits (`isWrite`, `isTaskWrite`, `isDmSend`, `isRead`, `isIntent`). Kipp's rule 4 rewritten around the 7-signal matrix, with the mixed-intent exception made explicit.
+- **Tests**: drift guards extended to pin the new SQL shape (`WHERE source_group_folder = ? AND delivered_at >= ? AND delivered_at <= ?`), the three-way `if (isWrite)` query block that consults all three tables, the `taskMutationFound` / `mutationFound` composition, and the new interaction-record fields. A guard blocks re-introduction of `!isDmSend` in `writeNeedsMutation`. `auditor-dm-detection.test.ts` stays at 144 tests (no new runtime tests — the regex helpers unchanged), full container agent-runner suite 406/407 pass (1 pre-existing todo).
+- **Rollout**: Host changes must deploy before the auditor changes to populate the log. Transition is self-healing: the auditor's 10-minute window means old pre-deploy interactions use the old regex path one last time, and everything after deploy uses the verified path.
+
 ## 2026-04-10
 
 ### TaskFlow API — Codex Review Fixes (6 issues, 5 regression tests)

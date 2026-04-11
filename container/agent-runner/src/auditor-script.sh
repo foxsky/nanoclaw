@@ -316,6 +316,21 @@ const scheduledTasksStmt = msgDb.prepare(
    LIMIT 1`
 );
 
+// `send_message_log` is the verifiable audit trail for cross-group and
+// DM `send_message` deliveries. Populated by src/ipc.ts after each
+// successful `deps.sendMessage()` call. Replaces the older regex-based
+// DM-send exemption (DM_SEND_PATTERNS) as the authoritative evidence
+// that a cross-group send actually happened. A hit here satisfies the
+// mutation requirement for shared-vocabulary writes (e.g. "mande
+// mensagem pro X sobre o prazo"), but does NOT satisfy an unambiguous
+// task-write intent (e.g. "concluir T5") — those still require a real
+// task_history or scheduled_tasks mutation.
+const sendMessageLogStmt = msgDb.prepare(
+  `SELECT id FROM send_message_log
+   WHERE source_group_folder = ? AND delivered_at >= ? AND delivered_at <= ?
+   LIMIT 1`
+);
+
 // task_history placeholders depend on boardIds.length (1 or 2),
 // so prepare one statement per arity and reuse across groups.
 const taskHistoryStmts = {
@@ -357,19 +372,32 @@ for (const group of groups) {
     const isDmSend = isDmSendRequest(msg.content);
     const isRead = isReadQuery(msg.content);
     const isIntent = isUserIntentDeclaration(msg.content);
-    let mutationFound = false;
+    let taskMutationFound = false;
+    let crossGroupSendLogged = false;
     let refusalDetected = false;
 
-    // Run on every isWrite — mixed messages ("avise a equipe e concluir T5")
-    // must still check task mutations. DM-send / read / intent exemptions
-    // live in the flagging step below, not here. Both tables are
-    // consulted: task_history for direct task mutations, scheduled_tasks
-    // for reminder / schedule_task tool invocations.
+    // Run on every isWrite. Three evidence sources for "something happened":
+    //   - task_history row (real task mutation in taskflow.db)
+    //   - scheduled_tasks row (reminder / schedule_task in messages.db)
+    //   - send_message_log row (cross-group DM delivery in messages.db)
+    //
+    // For unambiguous task writes (isTaskWrite=true), ONLY the first two
+    // satisfy the mutation requirement — a send_message_log row doesn't
+    // prove the task was concluded. For shared-vocabulary writes (isWrite
+    // && !isTaskWrite, e.g. "mande mensagem pro X sobre o prazo"), any of
+    // the three sources is enough.
     if (isWrite) {
       const mutations = taskHistoryStmt.all(...boardIds, msg.timestamp, tenMinLater);
       const scheduledTaskCreated = scheduledTasksStmt.get(group.folder, msg.timestamp, tenMinLater) !== undefined;
-      mutationFound = mutations.length > 0 || scheduledTaskCreated;
+      taskMutationFound = mutations.length > 0 || scheduledTaskCreated;
+      crossGroupSendLogged = sendMessageLogStmt.get(group.folder, msg.timestamp, tenMinLater) !== undefined;
     }
+    // `mutationFound` is the generalized "satisfied" boolean used by the
+    // flagging decision below. Unambiguous task writes demand a real
+    // task-level mutation; shared-vocab writes also accept a send-log row.
+    const mutationFound = isTaskWrite
+      ? taskMutationFound
+      : (taskMutationFound || crossGroupSendLogged);
 
     if (botResponse) {
       refusalDetected = hasRefusal(botResponse.content);
@@ -380,15 +408,16 @@ for (const group of groups) {
       ? new Date(botResponse.timestamp).getTime() - new Date(msg.timestamp).getTime()
       : -1;
     const delayedResponse = botResponse && responseTimeMs > RESPONSE_THRESHOLD_MS;
-    // A message demands a task mutation ONLY if:
+    // A message demands evidence of the bot doing SOMETHING when:
     //   - it's not a pure information request (isRead), AND
     //   - it's not the user describing their own upcoming action (isIntent), AND
-    //   - it's either an unambiguous task write, OR a shared-vocabulary
-    //     write that isn't a DM-send.
-    // The read / intent exemptions eliminate false positives on messages
-    // like "quais tarefas tem o prazo?" or "vou concluir T5 depois". The
-    // DM-send carve-out keeps "mande mensagem pro X sobre o prazo" clean.
-    const writeNeedsMutation = !isRead && !isIntent && (isTaskWrite || (isWrite && !isDmSend));
+    //   - it is a write intent (isWrite).
+    //
+    // The DM-send regex exemption (the old `!isDmSend` gate) was removed:
+    // the authoritative signal is `send_message_log`, which is checked via
+    // `mutationFound` above. `isDmSend` is now only informational and kept
+    // in the interaction record for Kipp's narrative layer.
+    const writeNeedsMutation = !isRead && !isIntent && isWrite;
     const unfulfilledWrite = writeNeedsMutation && !mutationFound && !refusalDetected;
 
     if (noResponse || delayedResponse || unfulfilledWrite || refusalDetected) {
@@ -401,6 +430,8 @@ for (const group of groups) {
         isDmSend,
         isRead,
         isIntent,
+        taskMutationFound,
+        crossGroupSendLogged,
         noResponse,
         delayedResponse: delayedResponse || false,
         responseTimeMs,
