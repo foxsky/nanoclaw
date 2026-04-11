@@ -15,6 +15,46 @@ All topologies rely on already-implemented runtime support (SQLite DB, IPC auth,
 
 **v2 Architecture:** All mutation logic and common queries are implemented as MCP tools in `container/agent-runner/src/taskflow-engine.ts`. The CLAUDE.md template (~400 lines) serves as a natural language router: parse user intent → call the right tool → present the result. The agent retains full SQLite read-write access as a fallback for edge cases.
 
+## Capabilities
+
+Beyond the core Kanban board and quick capture, the TaskFlow agent exposes the following user-facing features via natural-language commands. All mutations go through the MCP tool surface and are recorded in `task_history` with 60-second undo.
+
+**Task editing:**
+- update task title, priority, labels, or description
+- add, edit, or remove task notes
+- set or change the due date
+- cancel a task (soft-delete, undoable within 60 s)
+
+**Task creation shortcuts:**
+- default-assign new tasks to the sender when no assignee is given
+- start a task directly from the inbox (skip the `next_action` column)
+- skip non-business days when computing due dates (uses the configured board holiday calendar)
+
+**Bulk & project operations:**
+- bulk reassign many tasks from one person to another in a single command
+- remove a subtask from its parent project
+
+**Meetings:**
+- add or remove internal meeting participants
+- triage meeting notes (set status on pre/meeting/post notes) and transition meetings through their workflow states
+- query the 8 meeting-specific views (upcoming, today, overdue, by status, etc.)
+- add external meeting participants by name and phone, and send them an invite via DM
+
+**Cross-board hierarchy:**
+- auto-update cross-board rollup status on child-subtask changes (updated / blocked / at_risk / completed signals propagate up)
+- guard against cross-board reassignment to a person who is not on the target board
+
+**Digest & briefing:**
+- compact board view rendering in the evening digest
+- person briefing dispatch grouped by urgency (DM each person their own slice)
+- stale-task summaries: 3+ idle tasks collapse to per-person counts to keep digests short
+
+**Semantic search & embeddings:**
+- semantic search, duplicate detection on task create (0.85 similarity threshold), and automatic context-preamble injection ranked by embeddings
+
+**Admin:**
+- manage board holidays (add, remove, or bulk-set per year) — the non-business-day engine reads these entries
+
 TaskFlow is distributed as a git branch. To install, merge the branch:
 
 ```bash
