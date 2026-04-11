@@ -9,6 +9,7 @@ import {
   NewMessage,
   RegisteredGroup,
   ScheduledTask,
+  SendTargetKind,
   TaskRunLog,
 } from './types.js';
 
@@ -809,7 +810,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
 export interface SendMessageLogEntry {
   sourceGroupFolder: string;
   targetChatJid: string;
-  targetKind: 'group' | 'dm';
+  targetKind: SendTargetKind;
   senderLabel?: string | null;
   contentPreview: string;
   deliveredAt: string;
@@ -822,10 +823,6 @@ export interface SendMessageLogEntry {
  * delivery (rather than regex-matching on the user message and hoping).
  */
 export function recordSendMessageLog(entry: SendMessageLogEntry): void {
-  const preview =
-    entry.contentPreview.length > 200
-      ? entry.contentPreview.slice(0, 200)
-      : entry.contentPreview;
   db.prepare(
     `INSERT INTO send_message_log
        (source_group_folder, target_chat_jid, target_kind, sender_label, content_preview, delivered_at)
@@ -835,7 +832,7 @@ export function recordSendMessageLog(entry: SendMessageLogEntry): void {
     entry.targetChatJid,
     entry.targetKind,
     entry.senderLabel ?? null,
-    preview,
+    entry.contentPreview.slice(0, 200),
     entry.deliveredAt,
   );
 }

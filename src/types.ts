@@ -1,3 +1,10 @@
+/**
+ * Where an IPC `send_message` ended up. `'group'` is a registered group
+ * JID; `'dm'` is an external contact DM. Shared by the IPC authorization
+ * result in src/ipc.ts and by `send_message_log.target_kind` in src/db.ts.
+ */
+export type SendTargetKind = 'group' | 'dm';
+
 export interface AdditionalMount {
   hostPath: string; // Absolute path on host (supports ~ for home)
   containerPath?: string; // Optional — defaults to basename of hostPath. Mounted at /workspace/extra/{value}

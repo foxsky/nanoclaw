@@ -376,25 +376,16 @@ for (const group of groups) {
     let crossGroupSendLogged = false;
     let refusalDetected = false;
 
-    // Run on every isWrite. Three evidence sources for "something happened":
-    //   - task_history row (real task mutation in taskflow.db)
-    //   - scheduled_tasks row (reminder / schedule_task in messages.db)
-    //   - send_message_log row (cross-group DM delivery in messages.db)
-    //
-    // For unambiguous task writes (isTaskWrite=true), ONLY the first two
-    // satisfy the mutation requirement — a send_message_log row doesn't
-    // prove the task was concluded. For shared-vocabulary writes (isWrite
-    // && !isTaskWrite, e.g. "mande mensagem pro X sobre o prazo"), any of
-    // the three sources is enough.
+    // Asymmetric rule below: unambiguous task writes (isTaskWrite=true)
+    // demand a real task-level mutation — a send_message_log row doesn't
+    // prove the task was concluded. Shared-vocab writes ("mande mensagem
+    // pro X sobre o prazo") also accept a send-log row as evidence.
     if (isWrite) {
       const mutations = taskHistoryStmt.all(...boardIds, msg.timestamp, tenMinLater);
       const scheduledTaskCreated = scheduledTasksStmt.get(group.folder, msg.timestamp, tenMinLater) !== undefined;
       taskMutationFound = mutations.length > 0 || scheduledTaskCreated;
       crossGroupSendLogged = sendMessageLogStmt.get(group.folder, msg.timestamp, tenMinLater) !== undefined;
     }
-    // `mutationFound` is the generalized "satisfied" boolean used by the
-    // flagging decision below. Unambiguous task writes demand a real
-    // task-level mutation; shared-vocab writes also accept a send-log row.
     const mutationFound = isTaskWrite
       ? taskMutationFound
       : (taskMutationFound || crossGroupSendLogged);
@@ -408,15 +399,9 @@ for (const group of groups) {
       ? new Date(botResponse.timestamp).getTime() - new Date(msg.timestamp).getTime()
       : -1;
     const delayedResponse = botResponse && responseTimeMs > RESPONSE_THRESHOLD_MS;
-    // A message demands evidence of the bot doing SOMETHING when:
-    //   - it's not a pure information request (isRead), AND
-    //   - it's not the user describing their own upcoming action (isIntent), AND
-    //   - it is a write intent (isWrite).
-    //
-    // The DM-send regex exemption (the old `!isDmSend` gate) was removed:
-    // the authoritative signal is `send_message_log`, which is checked via
-    // `mutationFound` above. `isDmSend` is now only informational and kept
-    // in the interaction record for Kipp's narrative layer.
+    // `!isDmSend` gate removed: authoritative DM-send evidence is now
+    // `send_message_log`, checked via `mutationFound` above. `isDmSend`
+    // survives only as an informational bit in the interaction record.
     const writeNeedsMutation = !isRead && !isIntent && isWrite;
     const unfulfilledWrite = writeNeedsMutation && !mutationFound && !refusalDetected;
 

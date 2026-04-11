@@ -21,7 +21,7 @@ import { resolveExternalDm, getTaskflowDb } from './dm-routing.js';
 import { getGroupSenderName } from './group-sender.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
-import { RegisteredGroup } from './types.js';
+import { RegisteredGroup, SendTargetKind } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string, sender?: string) => Promise<void>;
@@ -776,33 +776,21 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                   registeredGroups,
                 });
 
+                // Track the kind that actually got delivered so the
+                // single post-send audit-log write below can reuse it.
+                // `null` means the send was blocked (unauthorized, DM
+                // disambiguation failure) — nothing to log.
+                let deliveredKind: SendTargetKind | null = null;
+                let deliveredSender: string | undefined;
+
                 if (authResult === 'group') {
                   const targetGroup = registeredGroups[data.chatJid];
-                  const sender =
+                  deliveredSender =
                     typeof data.sender === 'string'
                       ? data.sender
                       : getGroupSenderName(targetGroup.trigger);
-                  await deps.sendMessage(data.chatJid, data.text, sender);
-                  // Persistent audit trail for the TaskFlow daily auditor.
-                  // The auditor queries `send_message_log` to verify that
-                  // DM-send requests ("mande mensagem pro X") actually
-                  // resulted in a delivery — replaces the older regex-based
-                  // `isDmSend` exemption heuristic.
-                  try {
-                    recordSendMessageLog({
-                      sourceGroupFolder: sourceGroup,
-                      targetChatJid: data.chatJid,
-                      targetKind: 'group',
-                      senderLabel: sender ?? null,
-                      contentPreview: data.text,
-                      deliveredAt: new Date().toISOString(),
-                    });
-                  } catch (err) {
-                    logger.warn(
-                      { chatJid: data.chatJid, sourceGroup, err },
-                      'recordSendMessageLog failed after group send',
-                    );
-                  }
+                  await deps.sendMessage(data.chatJid, data.text, deliveredSender);
+                  deliveredKind = 'group';
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
                     'IPC message sent',
@@ -828,24 +816,10 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                       'IPC DM blocked: route unavailable or grants in multiple groups',
                     );
                   } else {
-                    const sender =
+                    deliveredSender =
                       typeof data.sender === 'string' ? data.sender : undefined;
-                    await deps.sendMessage(data.chatJid, data.text, sender);
-                    try {
-                      recordSendMessageLog({
-                        sourceGroupFolder: sourceGroup,
-                        targetChatJid: data.chatJid,
-                        targetKind: 'dm',
-                        senderLabel: sender ?? null,
-                        contentPreview: data.text,
-                        deliveredAt: new Date().toISOString(),
-                      });
-                    } catch (err) {
-                      logger.warn(
-                        { chatJid: data.chatJid, sourceGroup, err },
-                        'recordSendMessageLog failed after DM send',
-                      );
-                    }
+                    await deps.sendMessage(data.chatJid, data.text, deliveredSender);
+                    deliveredKind = 'dm';
                     logger.info(
                       { chatJid: data.chatJid, sourceGroup },
                       'IPC DM message sent to external contact',
@@ -864,6 +838,24 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                     { chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC message attempt blocked',
                   );
+                }
+
+                if (deliveredKind !== null) {
+                  try {
+                    recordSendMessageLog({
+                      sourceGroupFolder: sourceGroup,
+                      targetChatJid: data.chatJid,
+                      targetKind: deliveredKind,
+                      senderLabel: deliveredSender ?? null,
+                      contentPreview: data.text,
+                      deliveredAt: new Date().toISOString(),
+                    });
+                  } catch (err) {
+                    logger.warn(
+                      { chatJid: data.chatJid, sourceGroup, targetKind: deliveredKind, err },
+                      'recordSendMessageLog failed after send',
+                    );
+                  }
                 }
               }
               fs.unlinkSync(filePath);
