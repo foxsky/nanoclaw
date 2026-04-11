@@ -1,5 +1,23 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-04-11 (later, Edilson premature-registration fix)
+
+### Engine + template — prevent person-named child boards on hierarchy boards
+Ground-truth investigation of Kipp's 2026-04-11 audit report found a real bug in the SETD-SECTI flow on 2026-04-10: a meeting-participant add for "Edilson" caused the bot to call `register_person` with only 3 fields (name/phone/role) on a hierarchy board, and the host's `src/ipc-plugins/provision-child-board.ts` fell back at L308-L317 to `sanitizeFolder(personId) + '-taskflow'`, creating a child board literally named "Edilson - TaskFlow" instead of the division name. Three-part fix, Codex-verified (gpt-5.4 high, clean review):
+
+- **Engine** `container/agent-runner/src/taskflow-engine.ts` `buildOfferRegisterError` (L1824): now calls `canDelegateDown()` and appends the division/sigla ask to the base message on hierarchy boards. Leaf boards keep the unchanged 3-field wording. This removes the compliance burden from the bot — the engine-provided verbatim message already contains all four asks.
+- **Engine** `container/agent-runner/src/taskflow-engine.ts` `register_person` case (L5907): hard validation at the top. If `canDelegateDown()` AND either `group_name` or `group_folder` is missing or whitespace-only, returns `{ success: false, error: 'register_person on a hierarchy board requires both group_name and group_folder...' }` BEFORE any INSERT into board_people. Leaf boards skip this validation. This is the safety net: even if the bot ignores the prompt instruction, the engine refuses the incomplete call.
+- **Template** `.claude/skills/add-taskflow/templates/CLAUDE.md.template` L545: strengthened the offer_register handler with "you MUST STOP and NOT call register_person until the user has given you all four fields" language and a note that the engine will now return a hard error if called without group_name/group_folder on a hierarchy board.
+
+**Tests** `container/agent-runner/src/taskflow-engine.test.ts` — 5 new cases at the top of the admin describe (L3321):
+1. Happy path: hierarchy board register_person with group_name + group_folder succeeds
+2. Regression guard: hierarchy board without group_name/group_folder → rejected, no row created
+3. Whitespace-only group_name/group_folder → rejected (symmetric check)
+4. Leaf board without group_name/group_folder → allowed (validation does NOT over-fire)
+5. Hierarchy with group_name/group_folder but no phone → allowed, no auto-provision emitted (documents pre-existing behavior; Codex noted this as a residual gap — not in scope for this fix)
+
+Also updated the existing `offer_register for unknown assignee` test to assert the division ask is present in the hierarchy-fixture message, and fixed several stale drift-check tests in `.claude/skills/add-taskflow/tests/taskflow.test.ts` that still expected old template wording from before 626debd / 7c444ec / aca7940.
+
 ## 2026-04-11 (later, template LOW polish)
 
 ### CLAUDE.md.template — pt-BR accent polish on bot-output strings

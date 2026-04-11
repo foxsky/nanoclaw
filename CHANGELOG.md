@@ -4,6 +4,18 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-11 (later) — Edilson premature-registration fix (engine + template)
+
+Kipp's 2026-04-11 audit report flagged a "race condition" in SETD-SECTI. Ground-truth investigation of the 2026-04-10 Edilson flow showed it was NOT a race condition — it was `register_person` accepting a 3-field call on a hierarchy board, then the host's `src/ipc-plugins/provision-child-board.ts` fallback at L308-L317 naming the child board "Edilson - TaskFlow" (person name) instead of the division. Three-part fix, Codex gpt-5.4 high-effort review clean:
+
+- **Engine** `container/agent-runner/src/taskflow-engine.ts` — `buildOfferRegisterError` (L1824) now appends the division/sigla ask on hierarchy boards so the verbatim offer_register message already contains all four asks; bot no longer has to "remember" to add it.
+- **Engine** `container/agent-runner/src/taskflow-engine.ts` — `register_person` case (L5907) rejects calls on hierarchy boards missing either `group_name` or `group_folder` (or with whitespace-only values) BEFORE any INSERT into board_people. Leaf boards skip the validation.
+- **Template** `.claude/skills/add-taskflow/templates/CLAUDE.md.template` L545 — `offer_register` handler strengthened with STOP-before-register language and a reference to the new engine hard error.
+
+**Test coverage:** `container/agent-runner/src/taskflow-engine.test.ts` gains 5 new cases (happy path, hierarchy rejection, whitespace rejection, leaf-board allowed, phone-missing documented) + one assertion added to the existing offer_register test. All 410 container tests pass. Several stale drift-check tests in `.claude/skills/add-taskflow/tests/taskflow.test.ts` updated to match post-626debd/7c444ec/aca7940 template wording.
+
+Note: Codex flagged a pre-existing residual gap — `phone` is optional for `register_person` and `auto_provision_request` only fires when phone is truthy. This is documented in a test case but NOT fixed here; it's a separate decision about whether staff registrations without phone should be allowed.
+
 ## 2026-04-11 (later) — deploy.sh regenerates group CLAUDE.md
 
 `scripts/deploy.sh` gains a new pre-sync step that runs `node scripts/generate-claude-md.mjs` before the rsync to production. This makes the per-group rendered copies in `groups/*/CLAUDE.md` always consistent with the canonical template at `.claude/skills/add-taskflow/templates/CLAUDE.md.template` on every deploy — removes the manual "did I remember to regen?" footgun.

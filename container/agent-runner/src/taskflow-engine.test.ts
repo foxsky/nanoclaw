@@ -865,6 +865,10 @@ describe('TaskflowEngine', () => {
       expect(r.offer_register!.message).toContain('não está cadastrado');
       expect(r.offer_register!.message).toContain('Alexandre');
       expect(r.offer_register!.message).toContain('Giovanni');
+      // Fixture is a hierarchy board (level 0, max_depth 1) → message MUST
+      // include the division/sector ask so the bot's verbatim-send covers
+      // all four required fields. Prior gap: Edilson 2026-04-10 SETD-SECTI.
+      expect(r.offer_register!.message).toContain('sigla da divisão/setor');
     });
 
     it('creates project with subtasks', () => {
@@ -3318,7 +3322,9 @@ describe('TaskflowEngine', () => {
   /* ---------------------------------------------------------------- */
 
   describe('admin', () => {
-    it('register person', () => {
+    it('register person (hierarchy board requires group_name + group_folder)', () => {
+      // Fixture is level 0, max_depth 1 — canDelegateDown() is true, so both
+      // group_name and group_folder must be supplied or the engine rejects.
       const r = engine.admin({
         board_id: BOARD_ID,
         action: 'register_person',
@@ -3326,6 +3332,8 @@ describe('TaskflowEngine', () => {
         person_name: 'Carlos Silva',
         phone: '5585999990003',
         role: 'Dev',
+        group_name: 'CARLOS-DIV - TaskFlow',
+        group_folder: 'carlos-div-taskflow',
       });
       expect(r.success).toBe(true);
       expect(r.person_id).toBe('carlos-silva');
@@ -3335,6 +3343,109 @@ describe('TaskflowEngine', () => {
       const person = engine.resolvePerson('Carlos Silva');
       expect(person).toBeTruthy();
       expect(person!.person_id).toBe('carlos-silva');
+    });
+
+    it('register person on hierarchy board without group_name/group_folder → rejected', () => {
+      // Regression guard for the Edilson 2026-04-10 bug: calling
+      // register_person on a hierarchy board without group_name/group_folder
+      // used to half-register the person and fall through to the host's
+      // provision-child-board.ts fallback, which named the child board after
+      // the person. Now the engine refuses before touching board_people.
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'register_person',
+        sender_name: 'Alexandre',
+        person_name: 'Edilson',
+        phone: '5585999990099',
+        role: 'Scrum Master',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('group_name');
+      expect(r.error).toContain('group_folder');
+      expect(r.error).toContain('division');
+
+      // Verify no row was created in board_people
+      const person = engine.resolvePerson('Edilson');
+      expect(person).toBeNull();
+    });
+
+    it('register person on hierarchy board with whitespace-only group_name → rejected', () => {
+      // The validation uses trim().length > 0, so whitespace-only strings
+      // are equivalent to missing. Guard against a bot that might pass a
+      // literal space as a placeholder when it doesn't know the sigla yet.
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'register_person',
+        sender_name: 'Alexandre',
+        person_name: 'Edilson',
+        phone: '5585999990099',
+        role: 'Scrum Master',
+        group_name: '   ',
+        group_folder: 'edilson-taskflow',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('group_name');
+
+      // Also the symmetric case
+      const r2 = engine.admin({
+        board_id: BOARD_ID,
+        action: 'register_person',
+        sender_name: 'Alexandre',
+        person_name: 'Edilson',
+        phone: '5585999990099',
+        role: 'Scrum Master',
+        group_name: 'EDI - TaskFlow',
+        group_folder: '\t\n',
+      });
+      expect(r2.success).toBe(false);
+      expect(r2.error).toContain('group_folder');
+
+      // Neither attempt should have created a row
+      expect(engine.resolvePerson('Edilson')).toBeNull();
+    });
+
+    it('register person on a LEAF board without group_name/group_folder → allowed', () => {
+      // Flip the fixture to a leaf configuration (level == max_depth) so
+      // canDelegateDown() returns false, then verify the validation does NOT
+      // trigger and the 3-field form still succeeds. This is the explicit
+      // regression guard against a validation that over-fires on leaves.
+      db.exec(
+        `UPDATE boards SET hierarchy_level = 1, max_depth = 1 WHERE id = '${BOARD_ID}'`,
+      );
+
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'register_person',
+        sender_name: 'Alexandre',
+        person_name: 'Leaf Only',
+        phone: '5585999990111',
+        role: 'Dev',
+      });
+      expect(r.success).toBe(true);
+      expect(r.person_id).toBe('leaf-only');
+      expect(engine.resolvePerson('Leaf Only')).toBeTruthy();
+    });
+
+    it('register person on hierarchy board with group_name/group_folder but no phone → allowed, no auto-provision', () => {
+      // Documents current behavior (Codex 2026-04-11 noted this as a
+      // pre-existing residual gap, NOT part of the Edilson fix): phone is
+      // optional for register_person, and auto-provision only fires when
+      // phone is truthy. Keeping the behavior locked so a future change
+      // surfaces it instead of silently breaking it.
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'register_person',
+        sender_name: 'Alexandre',
+        person_name: 'Staff Only',
+        // no phone
+        role: 'Coordinator',
+        group_name: 'STAFF - TaskFlow',
+        group_folder: 'staff-taskflow',
+      });
+      expect(r.success).toBe(true);
+      expect(r.person_id).toBe('staff-only');
+      // auto_provision_request is only emitted when phone is present
+      expect(r.auto_provision_request).toBeUndefined();
     });
 
     it('remove person → lists tasks to reassign', () => {

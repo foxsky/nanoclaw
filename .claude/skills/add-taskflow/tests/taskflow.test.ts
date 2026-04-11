@@ -1624,11 +1624,12 @@ describe('taskflow skill package', () => {
       'utf-8',
     );
     // v2: engine handles cycle reset behavior
-    // Schema shows the relevant fields
+    // Schema shows the relevant fields. Recurrence and current_cycle are
+    // stored as stringly-typed TEXT columns — NOT JSON objects. See 626debd.
     expect(content).toContain('`notes TEXT` (JSON array)');
     expect(content).toContain('next_note_id');
-    expect(content).toContain('`recurrence TEXT` (JSON object)');
-    expect(content).toContain('`current_cycle TEXT` (JSON object)');
+    expect(content).toContain('`recurrence TEXT` (frequency string');
+    expect(content).toContain('`current_cycle TEXT` (nullable decimal integer as string');
   });
 
   it('CLAUDE.md.template has hierarchy features section', () => {
@@ -2092,14 +2093,23 @@ describe('taskflow skill package', () => {
     expect(content).not.toContain('TASKS.json');
   });
 
-  it('CLAUDE.md.template avoids unsupported holiday and non-business-day tool calls', () => {
+  it('CLAUDE.md.template documents holiday and non-business-day tool calls', () => {
+    // Both features ARE supported by the engine now. The prior test asserted
+    // the opposite under the older assumption that they weren't. Updated:
+    // - 626debd fixed manage_holidays param names and added the full block
+    // - M11 (7c444ec) documented allow_non_business_day placement per-tool
+    // - M14 (7c444ec) added user-level holiday command rows
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    expect(content).not.toContain("action: 'manage_holidays'");
-    expect(content).not.toContain('allow_non_business_day: true');
-    expect(content).toContain('does NOT expose a non-business-day override');
+    expect(content).toContain("action: 'manage_holidays'");
+    expect(content).toContain('holiday_operation');
+    expect(content).toContain('allow_non_business_day: true');
+    // The allow_non_business_day override IS supported, but only as a
+    // second-call override after the user confirms the non-business-day
+    // date is intentional. Verify the instructional prose is in place.
+    expect(content).toContain('Do NOT set `allow_non_business_day` pre-emptively');
   });
 
   it('ID generation uses per-prefix counters (T/P/R) in engine and db schema', () => {
@@ -2137,9 +2147,12 @@ describe('taskflow skill package', () => {
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
     );
-    // v2: recurrence is stored as TEXT containing JSON in SQLite
-    expect(content).toContain('`recurrence TEXT` (JSON object)');
-    expect(content).toContain('`current_cycle TEXT` (JSON object)');
+    // v2: recurrence is stored as TEXT in SQLite — `recurrence` is a
+    // frequency string (daily/weekly/monthly/yearly) and `current_cycle`
+    // is a nullable decimal integer stored as a string. Neither is JSON.
+    // See 626debd for the corrected schema documentation.
+    expect(content).toContain('`recurrence TEXT` (frequency string');
+    expect(content).toContain('`current_cycle TEXT` (nullable decimal integer as string');
   });
 
   it('CLAUDE.md.template digest format uses taskflow_report digest type', () => {
@@ -2272,7 +2285,8 @@ describe('taskflow skill package', () => {
     expect(content).toContain('max_cycles');
     expect(content).toContain('recurrence_end_date');
     expect(content).toContain('ciclo final');
-    expect(content).toContain('Recorrencia encerrada');
+    // Output string uses proper pt-BR accent — see aca7940.
+    expect(content).toContain('Recorrência encerrada');
   });
 
   it('CLAUDE.md.template documents bounded recurrence exclusivity', () => {
@@ -3174,7 +3188,9 @@ describe('meeting notes', () => {
     });
 
     it('add_participant + remove_participant in same update call preserves both changes', () => {
-      // Register a third person
+      // Register a third person. The test fixture is a hierarchy board
+      // (level 0, max_depth 1) so register_person now requires group_name +
+      // group_folder (regression guard for the Edilson 2026-04-10 bug).
       engine.admin({
         board_id: BOARD_ID,
         action: 'register_person',
@@ -3182,6 +3198,8 @@ describe('meeting notes', () => {
         person_name: 'Ana',
         phone: '5585999990003',
         role: 'QA',
+        group_name: 'ANA-DIV - TaskFlow',
+        group_folder: 'ana-div-taskflow',
       });
 
       // meetingId has Giovanni (person-2) as participant from beforeEach

@@ -1824,11 +1824,20 @@ export class TaskflowEngine {
   /** Build an offer_register error when a person isn't registered. */
   private buildOfferRegisterError(name: string): { success: false; offer_register: { name: string; message: string } } {
     const teamNames = this.listTeamNames();
+    /* On hierarchy boards the new person's child board must be named after the
+     * division/sector — never after the person — so the register_person call
+     * needs a 4th field. Include the division ask directly in the verbatim
+     * message the bot will relay, so the bot doesn't have to "remember" to
+     * tack it on itself (prior incidents: Edilson 2026-04-10 SETD-SECTI). */
+    const isHierarchy = this.canDelegateDown();
+    const baseAsk = 'Preciso do *nome exibido no grupo* (display name do WhatsApp), telefone e cargo';
+    const hierAsk = ', *e a sigla da divisão/setor* dele(a) (ex: SETD, SECI, SEAF) — o quadro filho será criado com o nome da divisão, nunca com o nome da pessoa';
+    const ask = isHierarchy ? `${baseAsk}${hierAsk}.` : `${baseAsk}.`;
     return {
       success: false,
       offer_register: {
         name,
-        message: `${name} não está cadastrado(a). Membros atuais: ${teamNames.join(', ')}. Quer cadastrar? Preciso do *nome exibido no grupo* (display name do WhatsApp), telefone e cargo.`,
+        message: `${name} não está cadastrado(a). Membros atuais: ${teamNames.join(', ')}. Quer cadastrar? ${ask}`,
       },
     };
   }
@@ -5907,6 +5916,23 @@ export class TaskflowEngine {
         case 'register_person': {
           if (!params.person_name) {
             return { success: false, error: 'Missing required parameter: person_name' };
+          }
+
+          /* On hierarchy boards, require group_name + group_folder BEFORE
+           * touching board_people. Otherwise a half-registered person row is
+           * left on the parent board and the auto-provision fallback in
+           * src/ipc-plugins/provision-child-board.ts creates a child board
+           * named after the person instead of the division. Historical bug:
+           * Edilson 2026-04-10 on SETD-SECTI → "Edilson - TaskFlow" group. */
+          if (this.canDelegateDown()) {
+            const groupNameOk = typeof params.group_name === 'string' && params.group_name.trim().length > 0;
+            const groupFolderOk = typeof params.group_folder === 'string' && params.group_folder.trim().length > 0;
+            if (!groupNameOk || !groupFolderOk) {
+              return {
+                success: false,
+                error: `register_person on a hierarchy board requires both group_name and group_folder — the child board must be named after the division/sector, never the person. Ask the user for the division sigla (ex: "SETD", "SECI") before retrying the call with group_name="SIGLA - TaskFlow" and group_folder="sigla-taskflow".`,
+              };
+            }
           }
 
           /* Slugify name to create person_id */
