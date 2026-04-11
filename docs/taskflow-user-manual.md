@@ -33,6 +33,10 @@ O TaskFlow pode ser usado de duas formas:
 
 Se houver mais de um grupo, **não existe sincronização automática entre eles**. Cada grupo é tratado como um quadro separado.
 
+### Grupo de Controle (Opcional)
+
+Na instalação, o gestor pode ativar um **grupo de controle** privado que compartilha o mesmo quadro do grupo da equipe. Ele permite que o gestor use comandos administrativos (`processar inbox`, `reatribuir`, `cancelar`, `estatisticas`) sem que as mensagens apareçam para a equipe. Automações (standup, resumo, revisão) podem ser direcionadas para o grupo da equipe, o grupo de controle ou ambos. Consulte `docs/taskflow-quick-start.md` para o passo a passo.
+
 ## O Quadro
 
 Cada tarefa está em exatamente uma coluna:
