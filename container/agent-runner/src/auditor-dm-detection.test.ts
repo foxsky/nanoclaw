@@ -486,39 +486,53 @@ describe('auditor DM-send detection', () => {
       expect(script).toContain('const isTaskWrite = isTaskWriteRequest(msg.content)');
       expect(script).toContain('const isRead = isReadQuery(msg.content)');
       expect(script).toContain('const isIntent = isUserIntentDeclaration(msg.content)');
-      // writeNeedsMutation = !isRead && !isIntent && (isTaskWrite || (isWrite && !isDmSend))
+      // writeNeedsMutation = !isRead && !isIntent && isWrite
+      // The `!isDmSend` gate was removed — the authoritative DM-send
+      // evidence is now `send_message_log`, not the regex. isDmSend
+      // stays as an informational bit in the interaction record for
+      // Kipp's narrative layer.
       expect(script).toMatch(
-        /writeNeedsMutation\s*=\s*!isRead\s*&&\s*!isIntent\s*&&\s*\(isTaskWrite\s*\|\|\s*\(isWrite\s*&&\s*!isDmSend\)\)/,
+        /writeNeedsMutation\s*=\s*!isRead\s*&&\s*!isIntent\s*&&\s*isWrite\b/,
       );
+      // Guard against accidentally re-introducing the !isDmSend gate
+      // in writeNeedsMutation. The log-based check supersedes it.
+      expect(script).not.toMatch(/writeNeedsMutation[^;]*!isDmSend/);
       expect(script).toMatch(/unfulfilledWrite\s*=\s*writeNeedsMutation\s*&&\s*!mutationFound\s*&&\s*!refusalDetected/);
     });
 
-    it('auditor-script.sh queries both task_history AND scheduled_tasks when isWrite', () => {
+    it('auditor-script.sh queries task_history, scheduled_tasks, AND send_message_log when isWrite', () => {
       // Mixed-intent messages must still check task mutations; the
       // DM-send exemption belongs in the flagging step, not here.
       // Guard against the regression where `isWrite && !isDmSend`
       // becomes the query gate again.
       expect(script).not.toMatch(/if\s*\(\s*isWrite\s*&&\s*!isDmSend\s*\)/);
-      // Both tables must be consulted inside the single `if (isWrite)`
-      // block — reminders go to scheduled_tasks (in messages.db), task
-      // mutations go to task_history (in taskflow.db). Missing the
-      // scheduled_tasks check reintroduces the 2026-04-10 SECI-SECTI
-      // lembrete false positive.
-      expect(script).toMatch(/if\s*\(\s*isWrite\s*\)\s*\{[\s\S]*?taskHistoryStmt\.all[\s\S]*?scheduledTasksStmt\.get/);
-      // scheduledTasksStmt must be prepared against msgDb (messages.db),
-      // not tfDb — scheduled_tasks lives in the host store database.
+      // All three tables must be consulted inside the single
+      // `if (isWrite)` block — task_history for direct task mutations,
+      // scheduled_tasks for reminders, send_message_log for cross-group
+      // DM deliveries.
+      expect(script).toMatch(
+        /if\s*\(\s*isWrite\s*\)\s*\{[\s\S]*?taskHistoryStmt\.all[\s\S]*?scheduledTasksStmt\.get[\s\S]*?sendMessageLogStmt\.get/,
+      );
+      // Both scheduledTasksStmt AND sendMessageLogStmt must be prepared
+      // against msgDb (messages.db), not tfDb.
       expect(script).toMatch(/const scheduledTasksStmt = msgDb\.prepare\(/);
+      expect(script).toMatch(/const sendMessageLogStmt = msgDb\.prepare\(/);
       // Upper bound must be `<=` to match task_history's boundary
-      // convention — a reminder created exactly at the 10-minute mark
-      // must still count (Codex LOW, 2026-04-11).
+      // convention (Codex LOW, 2026-04-11).
       expect(script).toMatch(/FROM scheduled_tasks\s+WHERE group_folder = \?\s+AND created_at >= \? AND created_at <= \?/);
-      // Both mutation signals must be OR-combined into mutationFound;
-      // missing the `|| scheduledTaskCreated` term silently drops the
-      // reminder coverage even if the query runs.
-      expect(script).toMatch(/mutationFound\s*=\s*mutations\.length\s*>\s*0\s*\|\|\s*scheduledTaskCreated/);
+      expect(script).toMatch(/FROM send_message_log\s+WHERE source_group_folder = \?\s+AND delivered_at >= \? AND delivered_at <= \?/);
+      // Split mutationFound: task writes only satisfy via
+      // task_history/scheduled_tasks; shared-vocab writes can also be
+      // satisfied by send_message_log.
+      expect(script).toMatch(
+        /taskMutationFound\s*=\s*mutations\.length\s*>\s*0\s*\|\|\s*scheduledTaskCreated/,
+      );
+      expect(script).toMatch(
+        /mutationFound\s*=\s*isTaskWrite\s*\?\s*taskMutationFound\s*:\s*\(taskMutationFound\s*\|\|\s*crossGroupSendLogged\)/,
+      );
     });
 
-    it('auditor-script.sh emits isRead and isIntent in each flagged interaction', () => {
+    it('auditor-script.sh emits isRead, isIntent, taskMutationFound, and crossGroupSendLogged in each flagged interaction', () => {
       // Kipp's narrative layer uses these bits to classify false
       // positives it still encounters. Removing them from the payload
       // breaks the auditor-prompt.txt rule-4 reasoning path even if
@@ -529,6 +543,8 @@ describe('auditor DM-send detection', () => {
       expect(body).toMatch(/\bisRead\b/);
       expect(body).toMatch(/\bisIntent\b/);
       expect(body).toMatch(/\bisDmSend\b/);
+      expect(body).toMatch(/\btaskMutationFound\b/);
+      expect(body).toMatch(/\bcrossGroupSendLogged\b/);
     });
 
     for (const [name, pattern] of [
