@@ -45,6 +45,7 @@ inventory at `docs/taskflow-feature-matrix.md`.
 ### TaskFlow — Meetings
 - **Add/remove meeting participants (internal)** — manage internal meeting participant lists alongside the assignee (R037).
 - **Meeting workflow state transitions** — `start`, `wait`, `resume`, `conclude` transitions specific to `type=meeting` tasks (R040).
+- **Meeting WIP exemption** — meetings bypass the per-person WIP cap since they represent scheduled events rather than active execution work (R043).
 
 ### TaskFlow — Auditor
 - **Detect delayed response (>5 min threshold)** — auditor heuristic flagging agent replies that arrive more than 5 minutes after the triggering user message (R046).

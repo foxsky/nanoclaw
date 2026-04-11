@@ -44,6 +44,7 @@ matches the feature-matrix inventory.
 
 ### Cross-board
 - **Cross-board assignee guard** — prevents child boards from reassigning parent-board tasks to people unknown to the parent.
+- **Cross-board meeting visibility** — child-board users invited to parent-board meetings can see and participate in them (2026-03-18 timezone-and-crossboard-meeting-fixes plan).
 
 ### Digest and standup
 - **Weekly review** — Friday automatic report summarizing the week across the board.

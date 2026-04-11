@@ -58,6 +58,8 @@ Cada tarefa está em exatamente uma coluna:
 
 Cada pessoa tem um limite de tarefas simultâneas em "Em Andamento" (padrão: 3). Se o limite for atingido, o assistente avisa e não permite mover mais tarefas para andamento até que uma seja concluída ou mova para aguardando.
 
+Reuniões não contam para o limite WIP — você pode ter várias reuniões em andamento simultaneamente sem bloquear suas tarefas regulares.
+
 O gestor pode forçar com: `@Case forcar TXXX para andamento`
 
 ### Tipos de Tarefa
@@ -241,6 +243,8 @@ Em reuniões, a mesma estrutura de notas é usada para pauta, ata e pós-reuniã
 **Triagem de itens da ata:** `processar ata M001` entra em modo de triagem interativa dos itens ainda em aberto. Para cada item, o assistente pede uma decisão: `marcar item M001 #3 como resolvido`, `reabrir item M001 #3` ou `descartar item M001 #3`. Itens resolvidos saem do painel de pendências; itens descartados ficam registrados no histórico mas não entram no relatório da próxima reunião recorrente.
 
 **Participantes externos em reunião:** Quando alguém de fora da equipe precisa ser convidado, use `adicionar participante externo M001: Maria, 5511988887777` — nome e telefone no formato internacional. O assistente envia o convite diretamente por mensagem privada (DM) para o número informado com os detalhes da reunião (título, data, hora, pauta). A pessoa pode responder pela mesma DM e o assistente registra a confirmação na reunião. Use `remover participante externo M001: Maria` se o convite for cancelado.
+
+**Reuniões entre quadros:** Quando alguém do seu quadro filho é convidado para uma reunião do quadro pai, essa reunião aparece nas suas consultas e você pode ler/adicionar notas como qualquer participante. A reunião continua pertencendo ao quadro pai — só o organizador lá pode concluir, cancelar ou reagendar.
 
 ### Operações em Lote
 

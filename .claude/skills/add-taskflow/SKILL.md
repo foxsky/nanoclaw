@@ -39,6 +39,8 @@ Beyond the core Kanban board and quick capture, the TaskFlow agent exposes the f
 - triage meeting notes (set status on pre/meeting/post notes) and transition meetings through their workflow states
 - query the 8 meeting-specific views (upcoming, today, overdue, by status, etc.)
 - add external meeting participants by name and phone, and send them an invite via DM
+- meetings are exempt from the per-person WIP (Work-In-Progress) limit — you can have multiple meetings in progress without blocking other work
+- cross-board meeting visibility — a child-board user invited to a parent-board meeting sees that meeting in their queries and can read/update its notes
 
 **Cross-board hierarchy:**
 - auto-update cross-board rollup status on child-subtask changes (updated / blocked / at_risk / completed signals propagate up)

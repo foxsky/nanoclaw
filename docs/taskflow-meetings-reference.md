@@ -129,6 +129,15 @@ Meeting-specific behavior:
 - `conclude` applies the normal done flow with a soft warning if open notes remain
 - Recurring meetings archive the current occurrence before advancing to the next one
 
+### Cross-board visibility
+
+When a user on a child board is invited as a participant to a meeting owned
+by the parent board, the meeting appears in their `taskflow_query` results
+(via the cross-board branch in `getTask()`). They can read the meeting,
+add notes, and update their own participation status, but they do not own
+the meeting — only the parent-board organizer can conclude, cancel, or
+reschedule it.
+
 ## Notes Model
 
 Meeting notes reuse the normal notes array, with extra metadata:

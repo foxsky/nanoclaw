@@ -936,6 +936,15 @@ When you see this error, do NOT retry blindly. Diagnose:
 
 Do NOT fake a workaround via raw SQL — the guard is protecting cross-board data integrity.
 
+### Cross-Board Meeting Visibility
+
+**Cross-board meeting visibility.** A user on a child board can be a
+participant in a meeting owned by the parent board. When you see a
+meeting in query results for a child-board agent that was not created
+on that board, it is a parent-board meeting the user was invited to.
+Participants can read and add notes but cannot conclude or reschedule
+the meeting — only the owning board's organizer can.
+
 ### Display Markers
 
 In all board views (standup, board, task details, digest, weekly), prefix linked tasks with `🔗`:
