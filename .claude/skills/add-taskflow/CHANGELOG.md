@@ -9,11 +9,79 @@
   2. **Read-query (1 ⚪)**: `"quais tarefas tem o prazo pra essa semana?"` is a pure info request, but `prazo` is a WRITE_KEYWORD. Fix: `isReadQuery()` with HARD/SOFT split — `qual`/`quais`/`quantos`/`quantas` always read; `que`/`quando`/`onde`/`quem` only when message ends with `?` OR has no comma (not a subordinate clause wrapping an imperative like `"Quando concluir T5, avise o João"`).
   3. **User-intent declaration (1 ⚪)**: `"Vou concluir T5 depois"` is user announcing own action, not commanding bot. Fix: `isUserIntentDeclaration()` with first-person modal (`vou`/`vamos`/`pretendo`/`estou indo`/`estamos indo`) + 0-2 intervening adverbs + infinitive verb. Uses `\S` (not `\w`) for Unicode safety on accented Portuguese adverbs like `já`/`também`. Multi-clause disqualifier `\b(?:mas|porém)\b|;` so compound "declaration + real command" still flags.
   4. **Refusal false positive (1 🟡)**: `"não está cadastrad"` removed from `REFUSAL_PATTERN`. The bot emits it in HELPER OFFERS after successful work (`"✅ T5 atualizada. X não está cadastrada. Quer que eu crie uma tarefa no inbox?"`). Real refusals still match via `não consigo`/`não posso`/etc.
-- **Flagging logic**: `writeNeedsMutation = !isRead && !isIntent && (isTaskWrite || (isWrite && !isDmSend))`
+- **Flagging logic (interim form, later superseded by the architectural cleanup)**: `writeNeedsMutation = !isRead && !isIntent && (isTaskWrite || (isWrite && !isDmSend))`
 - **Interaction record**: now emits `isRead` and `isIntent` alongside `isDmSend` so Kipp can reason about suppression reasons narratively.
 - **Prompt updates**: `schedule_task` added to supported-engine list; the cadastrad removal + all 5 intent bits documented in rule 4.
 - **Tests**: 66 → 126 tests. +5 drift guards (HARD, SOFT, INTENT, INTENT_MULTI_CLAUSE, REFUSAL patterns byte-identical with flag check, mutationFound composition, interaction-record shape, scheduled_tasks `<=` upper bound).
 - **Review**: Codex (gpt-5, high, read-only sandbox) first pass flagged HIGH/MEDIUM/LOW/LOW — all four addressed in the same commit: read-query hard/soft split, intent multi-clause disqualifier, scheduled_tasks `<=` boundary match, drift guard tightening.
+
+### Auditor — verifiable send_message audit trail (architectural follow-up, supersedes regex DM exemption)
+- Parallel to the scheduled_tasks fix: the regex-based DM-send exemption (`DM_SEND_PATTERNS` → `!isDmSend` gate) had been the source of every auditor false-positive round this session. Replaced with a verifiable `send_message_log` table populated host-side after every successful delivery.
+- **Host-side** (src/db.ts + src/ipc.ts): new `send_message_log` table in `store/messages.db`, `recordSendMessageLog()` helper, wiring in the two IPC delivery branches (group + DM). Schema migration is idempotent via `CREATE TABLE IF NOT EXISTS`.
+- **Auditor-side** (auditor-script.sh): new `sendMessageLogStmt` queried alongside `task_history` and `scheduled_tasks`. Split evidence model:
+    - `taskMutationFound = mutations.length > 0 || scheduledTaskCreated`
+    - `crossGroupSendLogged = sendMessageLogStmt.get(...) !== undefined`
+    - `mutationFound = isTaskWrite ? taskMutationFound : (taskMutationFound || crossGroupSendLogged)` — task-write messages STILL require a real task mutation, preserving mixed-intent correctness ("avise a equipe e concluir T5" still flags if T5 didn't get concluded).
+- `writeNeedsMutation` simplified to `!isRead && !isIntent && isWrite`. `!isDmSend` gate removed entirely. `DM_SEND_PATTERNS` is still compiled but `isDmSend` is now purely informational in the interaction record for Kipp's narrative layer.
+- Interaction record gains `taskMutationFound` and `crossGroupSendLogged` fields (seven-signal matrix total with the five existing intent bits).
+- **Follow-up /simplify pass**: three parallel review agents (reuse, quality, efficiency) then produced four concrete refinements — extracted `SendTargetKind = 'group' | 'dm'` type alias into `src/types.ts` (eliminates stringly-typed duplication), consolidated the two `recordSendMessageLog` call sites in `ipc.ts` using a `deliveredKind` discriminator (30 → 20 lines, one try/catch), collapsed preview-truncation ternary to plain `.slice(0, 200)`, trimmed 22 lines of narrating comments in `auditor-script.sh`.
+- **Rollout**: host commit ships before the auditor-side consumer; the schema exists and is populated before any reader queries it, and the auditor's 10-minute window makes the transition self-healing within a day of deploy.
+
+## 2026-04-11 — Feature audit backfill
+
+The 2026-04-11 TaskFlow feature audit found these shipped and validated
+features had no skill-CHANGELOG coverage. They were introduced earlier in
+the 2026-02-24 → 2026-04-11 window as part of foundational work but were
+not individually logged at the time. Backfilled here so the CHANGELOG
+matches the feature-matrix inventory.
+
+### Tasks (foundational)
+- **Create simple task with assignee** — base `taskflow_create` path (top-20 usage across boards).
+- **Create project with subtasks** — `type=project` with nested subtasks, foundation for the hierarchical delegation model.
+- **Quick capture to inbox** — `column=inbox` create path for frictionless capture before triage.
+- **Start task — move to in_progress** — `action=start` transition (top-20).
+- **Force start task** — `action=force_start` manager override that bypasses WIP limits.
+- **Resume task from waiting** — `action=resume` transition back to in_progress.
+- **Approve task — done from review** — `action=approve` transition (top-20).
+- **Reject task — back from review** — `action=reject` transition returning to in_progress.
+- **Conclude task — done without review** — `action=conclude` transition for review-less completion (top-20).
+- **Reopen task from done** — `action=reopen` transition for post-done corrections.
+- **Reassign task** — single-task reassignment through `taskflow_update` (top-20).
+- **Update task fields** — title, priority, labels, description edits via `taskflow_update` (highest usage of any action at 685 executions).
+- **Add, edit, and remove task notes** — notes branch of `taskflow_update`.
+- **Cancel task** — soft-delete with 60-second undo window (top-20).
+- **Add subtask to project** — `subtask_added` admin action (top-20, tied).
+- **Remove subtask from project** — `subtask_removed` admin action.
+- **Detach subtask — promote to standalone** — `detached` admin action that severs the parent link without deleting the task.
+- **Bulk reassign tasks** — multi-task reassignment in a single call (top-20).
+
+### Recurrence
+- **Simple recurring tasks** — diário, semanal, mensal, anual cadences via `advanceRecurringTask`.
+- **Skip non-business days on due date** — holiday-aware rounding with 252 holidays configured; used by every due-date calculation.
+
+### Meetings
+- **Meeting workflow state transitions** — start, wait, resume, and conclude transitions on the `meeting` task type (complementing the meeting-notes feature already logged on 2026-03-08).
+
+### Auditor (2026-03-29 daily audit subsystem)
+- **Daily auditor run at 04:00 BRT** — cron-driven run over the previous day's interactions.
+- **Detect unfulfilled write requests** — flags messages that requested a mutation but produced no matching `task_history` row.
+- **Detect delayed response** — flags responses that took more than 5 minutes.
+- **Detect agent refusal** — pattern match on known refusal phrases.
+- **Classify interactions by severity** — 5 emoji buckets (🔴🟠🟡🔵⚪) applied by `auditor-prompt.txt`.
+
+### Cross-board
+- **Cross-board assignee guard** — prevents child boards from reassigning parent-board tasks to people unknown to the parent.
+- **Cross-board meeting visibility** — child-board users invited to parent-board meetings can see and participate in them (2026-03-18 timezone-and-crossboard-meeting-fixes plan).
+
+### Digest and standup
+- **Weekly review** — Friday automatic report summarizing the week across the board.
+
+### External participants
+- **Send external invite via DM** — cross-group invitation flow that DMs external meeting participants from an organizer-authenticated context.
+
+### Admin and config
+- **Manage board holidays** — add, remove, and bulk `set_year` operations on `board_holidays` (feeds R034 rounding).
+- **Scheduled task cron management** — register, edit, and remove cron-based scheduled runners through the IPC `scheduled_task` plugin.
 
 ## 2026-03-27
 
@@ -329,6 +397,20 @@
 - **fix:** DevOps agent broke dashboard with `rsync --delete` flattening `dist/` structure
 - Restored `dist/` with correct build, restarted serve from `dist/`
 - Deploy freeze enforced — no agent deploys without operator approval
+
+## 2026-04-11 — Verifiable send_message audit trail (architectural)
+
+### Auditor — replace DM-send regex exemption with send_message_log
+- **Motivation**: Every auditor round this session surfaced a new Portuguese conjugation gap in `DM_SEND_PATTERNS` (singular → plural, infinitive → synthetic future, subordinator clauses, etc.). The root cause is using regex to **infer** whether the bot sent a message, instead of checking whether it actually did. This commit replaces the inference with a verifiable audit trail.
+- **Host (new `send_message_log` table)**: `src/db.ts` adds the table via `CREATE TABLE IF NOT EXISTS` (idempotent, no migration needed). `src/ipc.ts` writes a row after every successful `deps.sendMessage()` in both the authorized-group and authorized-DM branches, recording `source_group_folder`, `target_chat_jid`, `target_kind` (group|dm), `sender_label`, `content_preview` (200-char truncated), `delivered_at`. Write is wrapped in try/catch so a schema error never breaks IPC delivery.
+- **Auditor (container-side consumer)**: new `sendMessageLogStmt` queries the table within the same 10-minute window as task_history and scheduled_tasks. The flagging logic splits mutation evidence into two buckets:
+  - `taskMutationFound`: task_history row OR scheduled_tasks row — task-level evidence
+  - `crossGroupSendLogged`: send_message_log row — delivery evidence
+  - `mutationFound = isTaskWrite ? taskMutationFound : (taskMutationFound || crossGroupSendLogged)` — unambiguous task writes still demand a real task mutation, so mixed-intent messages like "avise a equipe e concluir T5" still flag if the T5 conclusion didn't happen.
+- **writeNeedsMutation simplified**: was `!isRead && !isIntent && (isTaskWrite || (isWrite && !isDmSend))`, now `!isRead && !isIntent && isWrite`. The `!isDmSend` regex gate is gone — authoritative DM-send evidence now comes from the log. `DM_SEND_PATTERNS` stays compiled and `isDmSend` stays in the interaction record as a narrative classifier for Kipp's rule 4 reasoning, but it no longer gates anything.
+- **Interaction record** now exposes `taskMutationFound` and `crossGroupSendLogged` alongside the five existing bits (`isWrite`, `isTaskWrite`, `isDmSend`, `isRead`, `isIntent`). Kipp's rule 4 rewritten around the 7-signal matrix, with the mixed-intent exception made explicit.
+- **Tests**: drift guards extended to pin the new SQL shape (`WHERE source_group_folder = ? AND delivered_at >= ? AND delivered_at <= ?`), the three-way `if (isWrite)` query block that consults all three tables, the `taskMutationFound` / `mutationFound` composition, and the new interaction-record fields. A guard blocks re-introduction of `!isDmSend` in `writeNeedsMutation`. `auditor-dm-detection.test.ts` stays at 144 tests (no new runtime tests — the regex helpers unchanged), full container agent-runner suite 406/407 pass (1 pre-existing todo).
+- **Rollout**: Host changes must deploy before the auditor changes to populate the log. Transition is self-healing: the auditor's 10-minute window means old pre-deploy interactions use the old regex path one last time, and everything after deploy uses the verified path.
 
 ## 2026-04-10
 

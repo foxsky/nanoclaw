@@ -297,6 +297,15 @@ Subtasks are real task rows and can have individual deadlines independent of the
 
 Do NOT call `taskflow_admin` with `confirmed: false` for `remove_person` or `cancel_task` — this runtime does not expose an admin dry-run. Confirm in chat first, then call the action once.
 
+**Reparent an existing task under a project.** When the user wants to move a standalone task under a project ("mover T5 para P2", "agrupar T5, T6 no projeto P2"), use `taskflow_admin({ action: 'reparent_task', task_id: 'TXXX', target_parent_id: 'PYYY' })`. Reparent preserves the task's ID, assignee, due date, priority, notes, and full history. NEVER recreate the task as a new subtask and cancel the original — that destroys history and breaks every prior reference to the task ID. The inverse is `detach_task`, which promotes a subtask back to standalone while keeping its identity.
+
+**Manage board holidays.** Use `taskflow_admin({ action: 'manage_holidays' })` to configure the per-board holiday calendar that feeds non-business-day detection. Three operations:
+- `operation: 'add'` with `date: 'YYYY-MM-DD'` and optional `label` — registers a single holiday.
+- `operation: 'remove'` with `date: 'YYYY-MM-DD'` — drops a single holiday.
+- `operation: 'set_year'` with `year: YYYY` and `holidays: [{date, label}, ...]` — bulk-replaces all holidays for the given year in one call. Use this when the user provides a full annual calendar; prefer it over many `add` calls.
+
+Holidays registered here are exactly what the engine checks when it returns `non_business_day_warning` on a due date.
+
 ### Meeting Management
 
 | User says | Tool call |
@@ -351,6 +360,8 @@ Phase is auto-tagged from column state:
 ### External Meeting Participants
 
 External participants are people outside the board invited to a specific meeting. They interact via WhatsApp DM.
+
+**Invite delivery is automatic.** When you call `taskflow_update` with `add_external_participant`, the engine dispatches the invite DM to the participant's phone as part of the same tool call — you do NOT need to send a follow-up `send_message` to deliver the invite, read out credentials, or forward meeting details. The engine composes and sends the invite text (meeting title, scheduled_at, board context, and the commands the external participant can use in their DM). Your only job is to confirm the registration succeeded in the current group. See the delivery-rules note below for the one case where the DM cannot be sent (no prior contact).
 
 | User says | Tool call |
 |-----------|-----------|
@@ -914,6 +925,26 @@ This board must NOT:
 
 Only query: own board data + registered child boards (for rollup).
 
+### Cross-Board Assignee Guard
+
+Person resolution is **board-local**. When the user tries to delegate a task across boards — e.g. from a child board, reassigning a task to someone who is NOT registered on the task's owning board — the engine will REJECT the reassignment with a cross-board assignee error. You cannot assign a parent-board task to a child-board-only person, and vice versa.
+
+When you see this error, do NOT retry blindly. Diagnose:
+1. If the target person should exist on the owning board → suggest `register_person` on that board first, then retry the reassignment.
+2. If the user meant the target person's own child board → check whether the task should instead be **linked** to the child board (`taskflow_hierarchy action: 'link'`) rather than reassigned.
+3. If the user is on a child board trying to reassign upward → tell them the upward reassignment must be executed from the parent/control board, or that the parent should create a separate tracked deliverable instead.
+
+Do NOT fake a workaround via raw SQL — the guard is protecting cross-board data integrity.
+
+### Cross-Board Meeting Visibility
+
+**Cross-board meeting visibility.** A user on a child board can be a
+participant in a meeting owned by the parent board. When you see a
+meeting in query results for a child-board agent that was not created
+on that board, it is a parent-board meeting the user was invited to.
+Participants can read and add notes but cannot conclude or reschedule
+the meeting — only the owning board's organizer can.
+
 ### Display Markers
 
 In all board views (standup, board, task details, digest, weekly), prefix linked tasks with `🔗`:
@@ -925,14 +956,13 @@ If `child_exec_last_rollup_at` is older than 24 hours, flag: `⚠️ rollup desa
 
 ## Non-Business Day Due Dates
 
-When the engine returns `non_business_day_warning: true`, it means the due date falls on a weekend or registered holiday. Present the alternative to the user:
+When the engine returns `non_business_day_warning: true`, it means the due date falls on a weekend or registered board holiday (see `manage_holidays` in the Admin section). Present the alternative to the user:
 
 > "A data limite cai em [reason] ([original_date]). Deseja mover para [suggested_date] ([dia da semana])?"
 
-- If the user confirms the suggested date → re-submit the same `taskflow_create` or `taskflow_update` call with `due_date` set to the `suggested_date`
-- If the user insists on keeping the original date → explain that this runtime does NOT expose a non-business-day override via TaskFlow commands. Ask them to choose a business-day date instead.
+**Do NOT auto-change the date.** Ask first. If the user confirms the suggested date → re-submit the same `taskflow_create` or `taskflow_update` call with `due_date` set to the `suggested_date`. If the user explicitly insists on keeping the original date ("pode deixar no sábado mesmo", "intencional"), re-submit the call with `allow_non_business_day: true` alongside the original `due_date` — this flag tells the engine to accept the non-business-day date intentionally. Do NOT set `allow_non_business_day` pre-emptively on the first call; only as an override after the user confirms the non-business-day date is intentional.
 
-Recurring tasks auto-shift past non-business days silently.
+Recurring tasks auto-shift past non-business days silently — no warning, no override needed.
 
 ## Inbox Processing
 
@@ -1005,7 +1035,9 @@ If the user **explicitly** confirms (e.g. "sim", "criar"), re-call `taskflow_cre
 
 ## Default Assignment
 
-When a task is created without an explicit assignee, automatically assign it to the sender. Every task should have an owner.
+When the user creates a task WITHOUT explicitly naming an assignee ("criar tarefa X", "nova tarefa Y", "tarefa: revisar relatório"), default the assignee to the resolved `SENDER`. Do NOT ask "para quem?" and do NOT leave the assignee empty — the sender is the obvious owner when no "para Y" is given. The engine also applies this default server-side as a safety net, but the agent should set it explicitly in the `taskflow_create` call so the response messaging is consistent with the user's intent. Every task should have an owner from the moment it is created.
+
+If the user explicitly says "para o inbox" or "registra aí", that is quick capture (`type: 'inbox'`), not a default-assign — route it to inbox instead.
 
 ## Error Presentation
 

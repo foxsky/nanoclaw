@@ -75,6 +75,37 @@ Supported meeting note statuses:
 - `inbox_created`
 - `dismissed`
 
+## External Participants
+
+External meeting participants — people outside the board's registered
+team — can be invited to a meeting. Use `taskflow_update` with
+`add_external_participant: { display_name, phone }` to register them.
+The engine stores the external contact in the `external_contacts` and
+`meeting_external_participants` tables, then automatically dispatches
+a WhatsApp direct-message invitation to the provided phone.
+
+After the invite, the external participant can reply in DM to add
+meeting notes or confirm attendance. Their access is scoped to the
+invited meeting only and expires when the meeting concludes.
+
+To remove an external participant, use
+`update(remove_external_participant: external_id)`.
+
+Example — invite an external participant to `M1`:
+
+```json
+taskflow_update({
+  "task_id": "M1",
+  "sender_name": "Rafael",
+  "updates": {
+    "add_external_participant": {
+      "display_name": "Marina Souza",
+      "phone": "+5585999990000"
+    }
+  }
+})
+```
+
 ## Workflow Options
 
 Meetings use the normal `taskflow_move` workflow actions:
@@ -97,6 +128,15 @@ Meeting-specific behavior:
 - `wait` / `resume` are supported for interrupted meetings
 - `conclude` applies the normal done flow with a soft warning if open notes remain
 - Recurring meetings archive the current occurrence before advancing to the next one
+
+### Cross-board visibility
+
+When a user on a child board is invited as a participant to a meeting owned
+by the parent board, the meeting appears in their `taskflow_query` results
+(via the cross-board branch in `getTask()`). They can read the meeting,
+add notes, and update their own participation status, but they do not own
+the meeting — only the parent-board organizer can conclude, cancel, or
+reschedule it.
 
 ## Notes Model
 
