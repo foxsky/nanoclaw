@@ -3426,12 +3426,12 @@ describe('TaskflowEngine', () => {
       expect(engine.resolvePerson('Leaf Only')).toBeTruthy();
     });
 
-    it('register person on hierarchy board with group_name/group_folder but no phone → allowed, no auto-provision', () => {
-      // Documents current behavior (Codex 2026-04-11 noted this as a
-      // pre-existing residual gap, NOT part of the Edilson fix): phone is
-      // optional for register_person, and auto-provision only fires when
-      // phone is truthy. Keeping the behavior locked so a future change
-      // surfaces it instead of silently breaking it.
+    it('register person on hierarchy board with group_name/group_folder but no phone → rejected', () => {
+      // Tightening of the Edilson fix (Codex 2026-04-11 flagged this as a
+      // residual gap). Without phone, auto_provision_request never fires
+      // (it's gated on `params.phone` at taskflow-engine.ts:5971), so a
+      // user who typed the sigla expecting a child board would silently
+      // get a no-op. The engine now refuses the call instead.
       const r = engine.admin({
         board_id: BOARD_ID,
         action: 'register_person',
@@ -3442,10 +3442,35 @@ describe('TaskflowEngine', () => {
         group_name: 'STAFF - TaskFlow',
         group_folder: 'staff-taskflow',
       });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('phone');
+      expect(r.error).toContain('auto-provisioned');
+
+      // Verify no row was created in board_people
+      expect(engine.resolvePerson('Staff Only')).toBeNull();
+    });
+
+    it('register person on a LEAF board without phone → allowed (phone optional on leaves)', () => {
+      // Phone optionality is preserved on leaf boards, where register_person
+      // is not coupled to auto-provisioning. This keeps the legitimate
+      // "observer / stakeholder without WhatsApp" flow working on flat
+      // single-level boards. Counterpart to the earlier leaf-board test
+      // that covered group_name/group_folder optionality.
+      db.exec(
+        `UPDATE boards SET hierarchy_level = 1, max_depth = 1 WHERE id = '${BOARD_ID}'`,
+      );
+
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'register_person',
+        sender_name: 'Alexandre',
+        person_name: 'Observer',
+        // no phone
+        role: 'Observer',
+      });
       expect(r.success).toBe(true);
-      expect(r.person_id).toBe('staff-only');
-      // auto_provision_request is only emitted when phone is present
-      expect(r.auto_provision_request).toBeUndefined();
+      expect(r.person_id).toBe('observer');
+      expect(engine.resolvePerson('Observer')).toBeTruthy();
     });
 
     it('remove person → lists tasks to reassign', () => {

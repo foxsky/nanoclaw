@@ -5918,19 +5918,45 @@ export class TaskflowEngine {
             return { success: false, error: 'Missing required parameter: person_name' };
           }
 
-          /* On hierarchy boards, require group_name + group_folder BEFORE
-           * touching board_people. Otherwise a half-registered person row is
-           * left on the parent board and the auto-provision fallback in
-           * src/ipc-plugins/provision-child-board.ts creates a child board
-           * named after the person instead of the division. Historical bug:
-           * Edilson 2026-04-10 on SETD-SECTI → "Edilson - TaskFlow" group. */
+          /* On hierarchy boards, `register_person` is the bot-facing path to
+           * add a new team member — and on hierarchy boards every team
+           * member gets an auto-provisioned child board. That flow needs
+           * three things in addition to the name: phone (for the DM invite),
+           * group_name, and group_folder (both for the child board identity;
+           * the board must be named after the division/sector, never the
+           * person). Reject the call BEFORE any INSERT into board_people if
+           * any of these are missing or whitespace-only; otherwise the
+           * engine would leave a half-registered row on the parent board
+           * and — when group_name/group_folder are missing — the host's
+           * src/ipc-plugins/provision-child-board.ts fallback at L308-L317
+           * would name the child board after the person.
+           *
+           * Historical bugs this validation closes:
+           *  - Edilson 2026-04-10 SETD-SECTI: missing group_name/group_folder
+           *    → child board named "Edilson - TaskFlow" instead of the
+           *    division.
+           *  - Phone-silently-dropped: group_name/group_folder present but
+           *    phone omitted → person row created but `auto_provision_request`
+           *    never emitted (it's gated on `params.phone` at L5971 below),
+           *    so the user typed the sigla expecting a child board and
+           *    silently got a no-op.
+           *
+           * Managers/delegates that should NOT have their own child board
+           * must be added via direct SQL in `provision-root-board.ts` or via
+           * `add_manager`/`add_delegate` (which operate on an EXISTING
+           * board_people row), not through `register_person`. */
           if (this.canDelegateDown()) {
             const groupNameOk = typeof params.group_name === 'string' && params.group_name.trim().length > 0;
             const groupFolderOk = typeof params.group_folder === 'string' && params.group_folder.trim().length > 0;
-            if (!groupNameOk || !groupFolderOk) {
+            const phoneOk = typeof params.phone === 'string' && params.phone.trim().length > 0;
+            if (!groupNameOk || !groupFolderOk || !phoneOk) {
+              const missing: string[] = [];
+              if (!phoneOk) missing.push('phone');
+              if (!groupNameOk) missing.push('group_name');
+              if (!groupFolderOk) missing.push('group_folder');
               return {
                 success: false,
-                error: `register_person on a hierarchy board requires both group_name and group_folder — the child board must be named after the division/sector, never the person. Ask the user for the division sigla (ex: "SETD", "SECI") before retrying the call with group_name="SIGLA - TaskFlow" and group_folder="sigla-taskflow".`,
+                error: `register_person on a hierarchy board requires ${missing.join(', ')} alongside person_name — every new team member gets an auto-provisioned child board named after the division/sector, which needs the phone for the DM invite and group_name/group_folder for the board identity. Ask the user for the missing field(s) before retrying. (If the person is a manager/delegate who should NOT have their own child board, use add_manager/add_delegate on an existing board_people row instead of register_person.)`,
               };
             }
           }
