@@ -135,8 +135,52 @@ const DM_SEND_PATTERNS = [
   /\b(?:mand[ae]|mandem|envi[ae]|enviem|avis[ae]|avisem|alert[ae]|alertem|comunic[ae]|comuniquem|inform[ae]|informem|pede|pedem|pergunt[ae]|perguntem|peç[ao]|peçam|pecam|diga|digam|fale|falem|fala|conta|contem|conte)\s+(?:pro|pra|ao|à)\s+\S/i,
 ];
 
-// Refusal patterns in bot responses
-const REFUSAL_PATTERN = /não consigo|não posso|não tenho como|não pode ser|bloqueado por limite|apenas o canal principal|não está cadastrad|o runtime atual|não oferece suporte|limite do sistema|deste quadro.*não consigo|recuso essa instrução/i;
+// Read-query detector — split into HARD and SOFT interrogatives so
+// Portuguese subordinate clauses don't exempt real commands.
+//
+// HARD interrogatives (`qual`, `quais`, `quanto(s)`, `quanta(s)`) are
+// never used as subordinators in Portuguese — if they start a message,
+// it IS a question. Safe to treat as read-only unconditionally.
+//
+// SOFT interrogatives (`que`, `quando`, `onde`, `quem`) CAN introduce
+// subordinate clauses that wrap imperatives. Example:
+//   "Quando concluir T5, avise o João"  ← NOT a read query; `quando`
+//                                          is temporal subordinator and
+//                                          the real command is `avise`.
+// For these, require the message to be a clean single-clause question:
+// either ends with `?` OR contains no comma (disqualifier for clause
+// splits). This matches "Que tarefas têm prazo?" and "Onde está a P10"
+// while rejecting the subordinator forms.
+const READ_QUERY_HARD_PATTERN = /^\s*(?:qual|quais|quantos?|quantas?)\b/i;
+const READ_QUERY_SOFT_PATTERN = /^\s*(?:que|quando|onde|quem)\b/i;
+
+// First-person future-tense declarations. The user is describing THEIR own
+// upcoming action, not commanding the bot: "vou concluir T5" means "I will
+// conclude T5", not "conclude T5 (imperative)". Allows 0-2 intervening
+// adverbs between the modal and the infinitive ("vou já concluir",
+// "pretendo também atualizar") — Codex flagged these as false negatives
+// in the first revision. Uses `\S+`/`\S*` (not `\w+`/`\w*`) because
+// `\w` is ASCII-only in JS regex and would fail on Portuguese accented
+// adverbs like "já" and "também". Must still end in -ar/-er/-ir to
+// avoid matching "vou ali", "vou embora", etc.
+const INTENT_DECLARATION_PATTERN = /\b(?:vou|vamos|pretendo|estou\s+indo|estamos\s+indo)\s+(?:\S+\s+){0,2}\S*(?:ar|er|ir)\b/i;
+
+// Multi-clause disqualifier for intent exemption. A message like
+// "Vou concluir T5 depois, mas cria P2 agora" has a real imperative
+// ("cria P2") AFTER the declaration clause — the exemption must NOT
+// hide that. Uses contrast markers (`mas`, `porém`, semicolon) rather
+// than plain comma, so compound pure declarations like "Vou atualizar
+// ainda hoje, estou indo concluir uma das tarefas agora" still qualify
+// for exemption.
+const INTENT_MULTI_CLAUSE_PATTERN = /\b(?:mas|porém)\b|;/i;
+
+// Refusal patterns in bot responses. NOTE: "não está cadastrad" was
+// intentionally removed — the bot uses that phrase in HELPER OFFERS when
+// mentioning an unregistered person while still doing real work
+// ("✅ T5 atualizada. Terciane não está cadastrada. Quer que eu crie..."),
+// and the old regex flagged every such response as a refusal. Genuine
+// refusals still match via `não consigo` / `não posso` / etc.
+const REFUSAL_PATTERN = /não consigo|não posso|não tenho como|não pode ser|bloqueado por limite|apenas o canal principal|o runtime atual|não oferece suporte|limite do sistema|deste quadro.*não consigo|recuso essa instrução/i;
 const RESPONSE_THRESHOLD_MS = 300000; // 5 minutes
 
 function isWriteRequest(text) {
@@ -151,6 +195,25 @@ function isTaskWriteRequest(text) {
 
 function isDmSendRequest(text) {
   return DM_SEND_PATTERNS.some((p) => p.test(text));
+}
+
+function isReadQuery(text) {
+  if (READ_QUERY_HARD_PATTERN.test(text)) return true;
+  if (READ_QUERY_SOFT_PATTERN.test(text)) {
+    // Soft interrogatives count as read only if the message is a clear
+    // single-clause question: ends with `?` OR has no comma (not a
+    // subordinate clause wrapping an imperative).
+    return /\?\s*$/.test(text) || !text.includes(',');
+  }
+  return false;
+}
+
+function isUserIntentDeclaration(text) {
+  if (!INTENT_DECLARATION_PATTERN.test(text)) return false;
+  // Only exempt single-clause declarations. Multi-clause messages
+  // ("vou X depois, mas cria Y agora") may still contain a real command
+  // after the declaration — those need to run through the mutation check.
+  return !INTENT_MULTI_CLAUSE_PATTERN.test(text);
 }
 
 function hasRefusal(text) {
@@ -208,6 +271,19 @@ const botResponseStmt = msgDb.prepare(
    ORDER BY timestamp ASC LIMIT 1`
 );
 
+// `scheduled_tasks` lives in messages.db (host store), NOT taskflow.db —
+// reminder requests ("lembrar na segunda às 7h30 de X") create rows here
+// via the `schedule_task` tool, never in task_history. Any row created by
+// the group within the bot's 10-minute response window counts as a
+// mutation for audit purposes. Upper bound is inclusive (`<=`) to match
+// task_history's boundary convention — a reminder created exactly at the
+// 10-minute mark must still count.
+const scheduledTasksStmt = msgDb.prepare(
+  `SELECT id FROM scheduled_tasks
+   WHERE group_folder = ? AND created_at >= ? AND created_at <= ?
+   LIMIT 1`
+);
+
 // task_history placeholders depend on boardIds.length (1 or 2),
 // so prepare one statement per arity and reuse across groups.
 const taskHistoryStmts = {
@@ -247,15 +323,20 @@ for (const group of groups) {
     const isWrite = isWriteRequest(msg.content);
     const isTaskWrite = isTaskWriteRequest(msg.content);
     const isDmSend = isDmSendRequest(msg.content);
+    const isRead = isReadQuery(msg.content);
+    const isIntent = isUserIntentDeclaration(msg.content);
     let mutationFound = false;
     let refusalDetected = false;
 
     // Run on every isWrite — mixed messages ("avise a equipe e concluir T5")
-    // must still check task mutations. DM-send exemption is in the flagging
-    // step below, not here.
+    // must still check task mutations. DM-send / read / intent exemptions
+    // live in the flagging step below, not here. Both tables are
+    // consulted: task_history for direct task mutations, scheduled_tasks
+    // for reminder / schedule_task tool invocations.
     if (isWrite) {
       const mutations = taskHistoryStmt.all(...boardIds, msg.timestamp, tenMinLater);
-      mutationFound = mutations.length > 0;
+      const scheduledTaskCreated = scheduledTasksStmt.get(group.folder, msg.timestamp, tenMinLater) !== undefined;
+      mutationFound = mutations.length > 0 || scheduledTaskCreated;
     }
 
     if (botResponse) {
@@ -267,11 +348,15 @@ for (const group of groups) {
       ? new Date(botResponse.timestamp).getTime() - new Date(msg.timestamp).getTime()
       : -1;
     const delayedResponse = botResponse && responseTimeMs > RESPONSE_THRESHOLD_MS;
-    // A message demands a task mutation if it's an unambiguous task write,
-    // OR a shared-vocabulary write that isn't also a DM send. The shared-
-    // vocabulary carve-out is what prevents DM-send false positives on
-    // "mande mensagem pro X alertando sobre o prazo".
-    const writeNeedsMutation = isTaskWrite || (isWrite && !isDmSend);
+    // A message demands a task mutation ONLY if:
+    //   - it's not a pure information request (isRead), AND
+    //   - it's not the user describing their own upcoming action (isIntent), AND
+    //   - it's either an unambiguous task write, OR a shared-vocabulary
+    //     write that isn't a DM-send.
+    // The read / intent exemptions eliminate false positives on messages
+    // like "quais tarefas tem o prazo?" or "vou concluir T5 depois". The
+    // DM-send carve-out keeps "mande mensagem pro X sobre o prazo" clean.
+    const writeNeedsMutation = !isRead && !isIntent && (isTaskWrite || (isWrite && !isDmSend));
     const unfulfilledWrite = writeNeedsMutation && !mutationFound && !refusalDetected;
 
     if (noResponse || delayedResponse || unfulfilledWrite || refusalDetected) {
@@ -282,6 +367,8 @@ for (const group of groups) {
         isWrite,
         isTaskWrite,
         isDmSend,
+        isRead,
+        isIntent,
         noResponse,
         delayedResponse: delayedResponse || false,
         responseTimeMs,
