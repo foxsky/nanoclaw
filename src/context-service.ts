@@ -9,7 +9,7 @@ import { logger } from './logger.js';
 /* ------------------------------------------------------------------ */
 
 /** DAG hierarchy levels */
-export const Level = {
+const Level = {
   LEAF: 0,
   DAILY: 1,
   WEEKLY: 2,
@@ -21,7 +21,7 @@ const CLAUDE_API_MODEL = 'claude-haiku-4-5-20251001';
 const CLAUDE_DISPLAY_NAME = 'haiku-4.5';
 
 /** Estimate token count from text length. Calibrated at 3.5 chars/token for Portuguese/English. */
-export function estimateTokens(text: string): number {
+function estimateTokens(text: string): number {
   return Math.ceil(text.length / 3.5);
 }
 
