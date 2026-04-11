@@ -36,11 +36,16 @@ messages_db_probes:
   row_count: 0
   dispatch_step: N/A
 external_drift_accepted:
-  commit: 911abbf74f0955a09b9abc94c7ea00f1ef701bfa
-  author: Miguel Oliveira
-  date: 2026-04-11T13:22:03-03:00
-  files: container/agent-runner/src/auditor-dm-detection.test.ts, container/agent-runner/src/auditor-prompt.txt, container/agent-runner/src/auditor-script.sh
-  impact: R044–R048 Shipped file:line pointers may have shifted. Low blast radius — all 5 rows are classified executed-only and their pointers are not used for Phase 4 doc edits. Decision table is unchanged (no new action enum values). Phase 4 proceeds with an allowlist exception accepting this commit.
+  - commit: 911abbf74f0955a09b9abc94c7ea00f1ef701bfa
+    author: Miguel Oliveira
+    date: 2026-04-11T13:22:03-03:00
+    files: container/agent-runner/src/auditor-dm-detection.test.ts, container/agent-runner/src/auditor-prompt.txt, container/agent-runner/src/auditor-script.sh
+    impact: R044–R048 Shipped file:line pointers may have shifted. Low blast radius — all 5 rows are classified executed-only and their pointers are not used for Phase 4 doc edits. Decision table is unchanged (no new action enum values).
+  - commit: 19b598996445818646b84d55e6cf7f76a60fe4c1
+    author: Miguel Oliveira
+    date: 2026-04-11T14:05:49-03:00
+    files: container/agent-runner/src/auditor-dm-detection.test.ts, container/agent-runner/src/auditor-script.sh
+    impact: Second-pass Codex residual fixes (imperative gate + synthetic future). Same pattern and same blast radius as the first drift. R044–R048 classification unchanged.
 
 ## Docs bitmap legend
 
