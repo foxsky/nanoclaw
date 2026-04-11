@@ -4,6 +4,69 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-11 — TaskFlow feature audit backfill
+
+The 2026-04-11 TaskFlow feature-audit pass confirmed these 38 shipped
+and validated TaskFlow features had no coverage in the project CHANGELOG.
+They were introduced progressively across 2026-02-24 → 2026-04-11 as part
+of foundational work but were not individually logged in CHANGELOG at the
+time. Backfilled here so the project CHANGELOG matches the feature-matrix
+inventory at `docs/taskflow-feature-matrix.md`.
+
+### TaskFlow — Tasks
+- **Create simple task with assignee** — base task-creation handler accepting title, assignee, priority, labels, description (R001; 438 prod events).
+- **Create project with subtasks** — `type=project` creation path for hierarchical work with child subtasks (R002).
+- **Quick capture to inbox** — lightweight capture into the `inbox` column for later triage (R003).
+- **Start task (move to in_progress)** — `action=start` transition from next_action/inbox into in_progress, respecting WIP (R004).
+- **Force start task (WIP override)** — `action=force_start` bypass of per-person WIP limits for urgent work (R005).
+- **Wait task (move to waiting)** — `action=wait` transition parking a task in the waiting column (R006).
+- **Resume task (from waiting)** — `action=resume` transition bringing a waiting task back into in_progress (R007).
+- **Return task (back to queue)** — `action=return` transition pushing a task back to next_action (R008).
+- **Submit task for review** — `action=review` transition into the review column (R009).
+- **Approve task (done from review)** — `action=approve` transition marking a reviewed task as done (R010).
+- **Reject task (back from review)** — `action=reject` transition returning a review task to in_progress (R011).
+- **Conclude task (done without review)** — `action=conclude` transition marking a task done directly (R012; 100 prod events).
+- **Reopen task (from done)** — `action=reopen` transition bringing a done task back into in_progress (R013).
+- **Reassign task** — change a task's assignee, preserving history and notifications (R014; 195 prod events).
+- **Update task fields** — edit title, priority, labels, and description on existing tasks (R015; 685 prod events — highest usage).
+- **Add/edit/remove task notes** — freeform note management on tasks (R016).
+- **Undo last mutation (60s window)** — `undo_last` restoring the sender's most recent task mutation within 60 seconds (R020).
+- **Cancel task (soft-delete, undoable)** — `cancel` action soft-deleting a task with 60-second undo window (R021; 128 prod events).
+- **Reparent task across boards** — `reparent` action moving a task between boards while preserving history (R023).
+- **Add subtask to project** — attach a new or existing task as a subtask of a project (R024).
+- **Remove subtask from project** — detach a subtask from its parent project (R025).
+- **Detach subtask (promote to standalone)** — promote a subtask to a standalone task (R026).
+- **Bulk reassign tasks** — reassign multiple tasks in a single operation (R028; 189 prod events).
+
+### TaskFlow — Recurrence
+- **Simple recurring tasks** — `diario`, `semanal`, `mensal`, `anual` recurrence with automatic next-cycle creation (R031).
+- **Skip non-business days on due date** — holiday-aware rounding of due dates forward past weekends and configured holidays (R034; 252 holiday lookups).
+
+### TaskFlow — Meetings
+- **Add/remove meeting participants (internal)** — manage internal meeting participant lists alongside the assignee (R037).
+- **Meeting workflow state transitions** — `start`, `wait`, `resume`, `conclude` transitions specific to `type=meeting` tasks (R040).
+
+### TaskFlow — Auditor
+- **Detect delayed response (>5 min threshold)** — auditor heuristic flagging agent replies that arrive more than 5 minutes after the triggering user message (R046).
+- **Detect agent refusal** — auditor heuristic pattern-matching refusal phrases in bot responses (R047).
+- **Classify interactions by severity (5 emoji buckets)** — auditor rubric bucketing every interaction into one of five severity levels (red/orange/yellow/blue/white) (R048).
+
+### TaskFlow — Cross-board
+- **Cross-board rollup update** — child boards emit `child_rollup_updated` events that surface on the parent board (R050).
+- **Cross-board rollup blocked signal** — `child_rollup_blocked` signal propagating a blocker from child to parent (R051).
+- **Cross-board rollup at_risk signal** — `child_rollup_at_risk` signal surfacing at-risk child work on the parent (R052).
+- **Cross-board rollup completed signal** — `child_rollup_completed` signal closing the loop when delegated child work finishes (R053).
+- **Cross-board assignee guard** — reassignment guard preventing a child-board task from being reassigned to someone off that board (R054).
+
+### TaskFlow — Digest & standup
+- **Weekly review (Friday automatic report)** — `type=weekly` automated report summarizing the week's completed, pending, and blocked work (R058).
+
+### TaskFlow — External participants
+- **Send external invite via DM** — dispatcher sending meeting invites to external participants as DMs using their stored phone number (R070).
+
+### TaskFlow — Admin & config
+- **Manage board holidays (add/remove/set_year)** — admin action maintaining the per-board holiday list that feeds non-business-day due-date rounding (R077; 252 holiday rows).
+
 ## [1.2.52] - 2026-04-11
 
 ### Fix: auditor DM-send plural-imperative recall gap (TaskFlow follow-up)
