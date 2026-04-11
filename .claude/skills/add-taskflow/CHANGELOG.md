@@ -1,5 +1,60 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-04-11 — Feature audit backfill
+
+The 2026-04-11 TaskFlow feature audit found these shipped and validated
+features had no skill-CHANGELOG coverage. They were introduced earlier in
+the 2026-02-24 → 2026-04-11 window as part of foundational work but were
+not individually logged at the time. Backfilled here so the CHANGELOG
+matches the feature-matrix inventory.
+
+### Tasks (foundational)
+- **Create simple task with assignee** — base `taskflow_create` path (top-20 usage across boards).
+- **Create project with subtasks** — `type=project` with nested subtasks, foundation for the hierarchical delegation model.
+- **Quick capture to inbox** — `column=inbox` create path for frictionless capture before triage.
+- **Start task — move to in_progress** — `action=start` transition (top-20).
+- **Force start task** — `action=force_start` manager override that bypasses WIP limits.
+- **Resume task from waiting** — `action=resume` transition back to in_progress.
+- **Approve task — done from review** — `action=approve` transition (top-20).
+- **Reject task — back from review** — `action=reject` transition returning to in_progress.
+- **Conclude task — done without review** — `action=conclude` transition for review-less completion (top-20).
+- **Reopen task from done** — `action=reopen` transition for post-done corrections.
+- **Reassign task** — single-task reassignment through `taskflow_update` (top-20).
+- **Update task fields** — title, priority, labels, description edits via `taskflow_update` (highest usage of any action at 685 executions).
+- **Add, edit, and remove task notes** — notes branch of `taskflow_update`.
+- **Cancel task** — soft-delete with 60-second undo window (top-20).
+- **Add subtask to project** — `subtask_added` admin action (top-20, tied).
+- **Remove subtask from project** — `subtask_removed` admin action.
+- **Detach subtask — promote to standalone** — `detached` admin action that severs the parent link without deleting the task.
+- **Bulk reassign tasks** — multi-task reassignment in a single call (top-20).
+
+### Recurrence
+- **Simple recurring tasks** — diário, semanal, mensal, anual cadences via `advanceRecurringTask`.
+- **Skip non-business days on due date** — holiday-aware rounding with 252 holidays configured; used by every due-date calculation.
+
+### Meetings
+- **Meeting workflow state transitions** — start, wait, resume, and conclude transitions on the `meeting` task type (complementing the meeting-notes feature already logged on 2026-03-08).
+
+### Auditor (2026-03-29 daily audit subsystem)
+- **Daily auditor run at 04:00 BRT** — cron-driven run over the previous day's interactions.
+- **Detect unfulfilled write requests** — flags messages that requested a mutation but produced no matching `task_history` row.
+- **Detect delayed response** — flags responses that took more than 5 minutes.
+- **Detect agent refusal** — pattern match on known refusal phrases.
+- **Classify interactions by severity** — 5 emoji buckets (🔴🟠🟡🔵⚪) applied by `auditor-prompt.txt`.
+
+### Cross-board
+- **Cross-board assignee guard** — prevents child boards from reassigning parent-board tasks to people unknown to the parent.
+
+### Digest and standup
+- **Weekly review** — Friday automatic report summarizing the week across the board.
+
+### External participants
+- **Send external invite via DM** — cross-group invitation flow that DMs external meeting participants from an organizer-authenticated context.
+
+### Admin and config
+- **Manage board holidays** — add, remove, and bulk `set_year` operations on `board_holidays` (feeds R034 rounding).
+- **Scheduled task cron management** — register, edit, and remove cron-based scheduled runners through the IPC `scheduled_task` plugin.
+
 ## 2026-03-27
 
 ### Cross-Board Project Rollup
