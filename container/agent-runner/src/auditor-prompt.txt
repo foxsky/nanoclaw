@@ -14,12 +14,13 @@ Para cada interação flaggeada, classifique como:
 
 ## Regras
 
-1. ANTES de classificar algo como 🔵 (feature ausente), verifique se o TaskFlow engine realmente não suporta a operação. O engine suporta: criar/mover/concluir/aprovar tarefas, atribuir, definir prazo, notas, subtarefas, reuniões, recorrência, labels, prioridades, processar inbox, delegar, devolver.
+1. ANTES de classificar algo como 🔵 (feature ausente), verifique se o TaskFlow engine realmente não suporta a operação. O engine suporta: criar/mover/concluir/aprovar tarefas, atribuir, definir prazo, notas, subtarefas, reuniões, recorrência, labels, prioridades, processar inbox, delegar, devolver, **e enviar mensagens cross-group via `send_message`** (para avisar pessoas em outros quadros).
 2. Se o bot recusou explicitamente (padrão de recusa detectado), analise SE a recusa foi correta ou incorreta.
 3. Se não houve resposta do bot (noResponse=true), verifique se a mensagem realmente precisava de resposta (pode ser só uma confirmação casual, "ok", "beleza" sem contexto de tarefa).
-4. Agrupe por quadro (board). Dentro de cada quadro, ordene por severidade (🔴 > 🟠 > 🟡 > 🔵 > ⚪).
-5. Use formatação WhatsApp markdown (negrito com *, itálico com _, monospace com ```)
-6. Escreva em português.
+4. **Interações com `isDmSend=true` são pedidos de envio de mensagem cross-group** (ex: _"mande mensagem pro Reginaldo"_, _"avise o João sobre o prazo"_). O script de auditoria NÃO consegue verificar esses envios pelo `task_history` — eles nunca aparecem lá porque o `send_message` não muta tarefas. Portanto: **não acuse o bot de ter "falsamente afirmado envio" só porque `unfulfilledWrite` é falso** — esse sinal simplesmente não se aplica a envios cross-group. Exceção importante: quando `isTaskWrite=true` junto com `isDmSend=true` (mensagem mista, ex: _"avise a equipe e concluir T5"_), o auditor ainda verifica a parte de mutação de tarefa — se `unfulfilledWrite=true` nesse caso, a parte de task mutation realmente não aconteceu, então sinalize. Só ignore o sinal quando a interação for puramente DM (isDmSend=true e isTaskWrite=false). Para qualquer caso, também considere se a resposta do bot contradiz sua afirmação, e se `noResponse=true` considere a possibilidade de o container estar offline.
+5. Agrupe por quadro (board). Dentro de cada quadro, ordene por severidade (🔴 > 🟠 > 🟡 > 🔵 > ⚪).
+6. Use formatação WhatsApp markdown (negrito com *, itálico com _, monospace com ```)
+7. Escreva em português.
 
 ## Formato de saída
 

@@ -251,3 +251,92 @@
 - **MCP schema**: meeting type in `taskflow_create`, 8 queries in `taskflow_query`, meeting fields in `taskflow_update`, `process_minutes`/`process_minutes_decision` in `taskflow_admin`
 - **CLAUDE.md template**: meeting commands, notes, scheduling, participants, movement, triage, queries, display, schema reference
 - **Participant permissions**: meeting participants can add/triage notes without being assignee or manager
+
+## 2026-04-09
+
+### TaskFlow Web API — WhatsApp Notifications
+- **feat:** Web dashboard task events now trigger WhatsApp notifications via NanoClaw IPC
+- Supported events: task create (assignee notified), move/status change, reassign, comment
+- Uses `deferred_notification` IPC type — NanoClaw watcher resolves `target_person_id` → `notification_group_jid` automatically
+- Self-comment suppression: assignee not notified when they comment on their own task
+- Notification messages in Portuguese with WhatsApp markdown formatting
+- Error logging via `logger.warning` instead of silent `except: pass`
+
+### TaskFlow Web API — Unified Task ID Counters
+- **fix:** `next_task_id()` now uses `board_id_counters` table (same as NanoClaw engine)
+- Previously used `board_config.next_task_number` — separate counter caused UNIQUE constraint failures
+- Supports per-prefix counters (T, P, R, M) matching NanoClaw's `getNextNumberForPrefix()`
+- First-use fallback: computes from existing tasks if counter row doesn't exist yet
+
+### TaskFlow Web API — User Profile & Auth
+- **feat:** `/auth/me` now resolves `person_id`, `role`, and `primary_board_id` from `board_people` via phone number matching (last 8 digits)
+- Auto-populates `users.name` from `board_people.name` if empty on login
+- Profile page shows actual role (e.g. Gestor) instead of hardcoded Membro
+
+### TaskFlow Web API — Board Filtering by Ownership
+- **feat:** `/boards` endpoint filters by `owner_person_id` + all descendant boards (BFS traversal)
+- Added `owner_person_id` column to boards table
+- Each logged-in user sees only their boards and children — root owner sees everything
+- Test/seed boards no longer visible to authenticated users
+
+### TaskFlow Web API — Parent Task Title
+- **feat:** `fetch_tasks` includes `parent_task_title` via correlated subquery (cross-board)
+- Enables dashboard to show project context on subtask cards (e.g. P1 - Migração SEI)
+
+### TaskFlow Dashboard — Kanban Layout Restoration
+- **fix:** Restored last-week's kanban layout that agents had broken via deploy drift
+- Columns default expanded (not auto-collapsed when empty)
+- Gray `bg-slate-200` backdrop restored behind kanban
+- Horizontal scrollbar pinned at viewport bottom via `height: calc(100vh - 262px)`
+- Columns sized to content via `items-start`, capped at viewport height via per-column `maxHeight`
+- Vertical scrollbar restored on columns with many tasks
+- People panel scrollbar added for large teams (e.g. Seci with 13 members)
+- Negative margins moved to wrapper div to fix scrollbar start position
+- Cancelled column removed from `TASK_COLUMNS` (kept in type for future use)
+
+### TaskFlow Dashboard — Personal Board Task Aggregation
+- **feat:** Personal boards (hierarchy with `parent_board_id`) aggregate tasks assigned to the owner from parent board
+- Orphan subtasks (parent not in same column) render as top-level cards
+- Deduplication: parent board tasks not shown twice if also on own board
+
+### TaskFlow Dashboard — Owner Name UX
+- **feat:** Board owner's name hidden on their own task cards (redundant info)
+- Uses `owner_person_id` from board config, resolves via `people` list + `matchesAssigneeName`
+- Works across all boards, not just personal boards
+
+### TaskFlow Dashboard — Delegation Chain Display
+- **feat:** Non-member assignees resolved to board member via subtask assignees (cross-column)
+- P27/P24 on Sec Secti show Carlos Giovanni (delegator) instead of Mauro (delegate's delegate)
+- `resolvedAssignees` map computed in BoardDetail, passed to KanbanColumn
+- TaskCard now displays `assigneeAvatarName` (resolved) instead of raw `task.assignee`
+
+### TaskFlow Dashboard — Deploy Incident Fix
+- **fix:** DevOps agent broke dashboard with `rsync --delete` flattening `dist/` structure
+- Restored `dist/` with correct build, restarted serve from `dist/`
+- Deploy freeze enforced — no agent deploys without operator approval
+
+## 2026-04-10
+
+### TaskFlow API — Codex Review Fixes (6 issues, 5 regression tests)
+- **fix:** Schema migrations: `boards.owner_person_id` column + `board_id_counters` table added to `ensure_support_tables` for fresh installs and legacy DB upgrades
+- **fix:** `/auth/me` backfill UPDATE now runs on separate read-write connection after read conn closes — prevents write-on-read-only errors
+- **fix:** `_resolve_person_id` rewritten — requires 9+ digits, pre-filters last 9 in SQL, confirms full-digit equivalence in Python, returns None on ambiguity (no silent LIMIT 1 mis-mapping)
+- **fix:** `TaskNotePayload.normalize_fields` strips whitespace before emptiness check
+- **fix:** Debug `traceback.print_exc()` replaced with `logger.exception()`
+- 76 tests pass (71 original + 5 new regression tests)
+
+### Gateway Agent Recovery
+- Gateway Agent heartbeat was stale since Apr 8 — reset wake_attempts, sent manual heartbeat, now online
+- Board agent heartbeat intervals doubled (PF 30m, PB 30m, Architect 20m, QA-Unit 20m, QA-E2E 20m, DevOps 40m)
+- Supervisor kept at 5m, Gateway Agent kept at 10m
+- MC DB heartbeat_config synced to match gateway config
+
+## 2026-04-10
+
+### Auditor — DM-send false positive fix
+- **Problem**: `auditor-script.sh`'s `isWriteRequest()` matched messages containing shared vocabulary like `"prazo"`, `"lembrar"`, `"lembrete"`, `"nota"` as write requests, then expected a matching `task_history` row. DM-send requests (`mande mensagem pro X alertando sobre o prazo`) never touch `task_history` — they call `send_message`. Result: every cross-group DM with a deadline/reminder was guaranteed to trip `unfulfilledWrite=true`, and Kipp's report then accused the bot of lying about sending. Confirmed structurally by tracing the 2026-04-09 audit: Thiago's DM in `thiago-taskflow` actually did land in Reginaldo's PO board at 18:04:43, the bot's `send_message` calls fired correctly, but the auditor couldn't verify any of it.
+- **Fix (regex)**: added `DM_SEND_PATTERNS` (4 patterns) covering explicit "send a message/reminder/note to X" constructions, notify/alert verbs, conversational "say to / ask X" verbs, and informal WhatsApp shorthand (`avisa pro João`, `pede pro Lucas`, `mande pro X`). Pattern 1 requires a trailing directional preposition so locative patterns (`escreva uma nota na T5`) don't false-match. Pattern 4 handles `msg` abbreviation and verb+preposition shorthand.
+- **Fix (logic)**: introduced `TASK_KEYWORDS` — a strict subset of `WRITE_KEYWORDS` with shared vocabulary (`nota`, `anotar`, `lembrar`, `lembrete`, `prazo`, `próximo passo`, `próxima ação`, `descrição`) excluded — and `isTaskWriteRequest()`. The `task_history` query now ALWAYS runs when `isWrite=true`, and the flagging decision splits: unambiguous task writes (`isTaskWrite`) still demand a mutation even when `isDmSend` is also true; shared-vocabulary writes are only exempted when they're also DM sends.
+- **Fix (prompt)**: `auditor-prompt.txt` rule 1 now lists `send_message` as an engine-supported operation (no more "feature ausente" misclassification); rule 4 explains the `isDmSend`/`isTaskWrite` split so Kipp doesn't accuse the bot of false send claims on pure DM interactions but still surfaces genuine task-mutation failures in mixed messages.
+- **Tests**: new `container/agent-runner/src/auditor-dm-detection.test.ts` with 53 tests — DM-send positives (including `msg` abbreviation and informal shorthand), task-write negatives (including the Codex-flagged `na/no` locative cases), mixed-intent `isTaskWrite` cases, shared-vocabulary carve-out validation, and drift guards that force the regex and wiring in `auditor-script.sh` to stay in sync with the test literals. All 53 pass, 315/316 pass across the full agent-runner suite.
+- **Review**: validated by Codex (gpt-5.4, high reasoning) which flagged three real regressions in the first pass — pattern 1 overreach on locative phrasings, mixed-intent whole-message bypass, and missing informal shorthand — all three addressed in this commit. Architectural follow-up to emit a verifiable audit trail for `send_message` tool calls (rather than regex-exempting) is deferred.

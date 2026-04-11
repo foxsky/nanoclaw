@@ -85,8 +85,47 @@ const WRITE_KEYWORDS = [
   "done", "feita", "feito", "pronta"
 ];
 
+// Strict subset of WRITE_KEYWORDS, with shared DM/task vocabulary
+// ("prazo", "lembrete", "nota", "anotar", "lembrar", "próximo passo",
+// "próxima ação", "descrição") excluded. Matching one of these means
+// the message demands a task mutation even when also a DM-send intent.
+const TASK_KEYWORDS = [
+  "concluir", "concluída", "concluido", "finalizar", "finalizado",
+  "criar", "adicionar", "atribuir", "aprovar", "aprovada", "aprovado",
+  "descartar", "cancelar", "mover", "adiar", "renomear", "alterar",
+  "remover", "em andamento", "para aguardando", "para revisão",
+  "processar inbox", "para inbox",
+  "começando", "comecando", "aguardando", "retomada", "devolver",
+  "done", "feita", "feito", "pronta"
+];
+
 // Terse task-ref + action pattern
 const TERSE_PATTERN = /^(T|P|M|R|SEC-)\S+\s*(conclu|feita|feito|pronta|ok|aprovad|✅)/i;
+
+// Cross-group send-intent patterns (Portuguese). Detected so we can
+// exclude them from `unfulfilledWrite` — `send_message` never writes
+// task_history, so requiring a mutation there would always false-positive.
+const DM_SEND_PATTERNS = [
+  // "mande/envie/escreva [um|uma|o|a|os|as] mensagem/msg/... <prep> <recipient>".
+  // Requiring a directional preposition + recipient AFTER the noun prevents
+  // false positives on "escreva uma nota na T5" / "mande um lembrete na
+  // tarefa T3" / "escreva um aviso na descrição da P4" — those use the
+  // locative "na/no" (where), not a directional "a/ao/pra/..." (to whom).
+  /\b(?:mand[ea]r?|envi[ea]r?|escrev[ea]r?)\s+(?:(?:um|uma|o|a|os|as)\s+)?(?:msg|mensagem|recado|aviso|alerta|lembrete|nota|email|e-?mail|notifica[cç][aã]o)\s+(?:a|ao|à|para|pro|pra|com)\s+\S/i,
+  // "avise/notifique/alerte/comunique/informe [o|a|ao|à|aos|às] <recipient>".
+  // Trailing lookahead instead of \b so `à`/`às` (non-word chars in JS regex)
+  // still count as the end of the match.
+  /\b(?:avis(?:e|a|ar|em|ando)|notifi(?:que|car|cando)|alert(?:e|a|ar|em|ando)|comuniqu(?:e|ar|ando)|inform(?:e|ar|ando))\s+(?:o|a|os|as|ao|à|aos|às)(?=[\s.,;!?]|$)/i,
+  // "diga/fale/pergunte/conte/peça [a|ao|à|para|pro|pra|com] <recipient>".
+  // Same lookahead trick for `à`.
+  /\b(?:diga|conte|conta|fale|fala|pergunte|pergunta|peç[ao]|pe[cç]a)\s+(?:a|ao|à|para|pro|pra|com)(?=[\s.,;!?]|$)/i,
+  // Informal WhatsApp shorthand: communication verb + directional preposition
+  // + recipient, no noun required. Covers "avisa pro João", "pede pro Lucas",
+  // "mande pro Reginaldo", "conta pro time", etc. Verb list kept curated to
+  // communication/notification verbs to avoid matching generic movement verbs
+  // like "vai/anda pro X".
+  /\b(?:mand[ae]|envi[ae]|avis[ae]|alert[ae]|comunic[ae]|inform[ae]|pede|pergunt[ae]|peç[ao]|diga|fale|fala|conta|conte)\s+(?:pro|pra|ao|à)\s+\S/i,
+];
 
 // Refusal patterns in bot responses
 const REFUSAL_PATTERN = /não consigo|não posso|não tenho como|não pode ser|bloqueado por limite|apenas o canal principal|não está cadastrad|o runtime atual|não oferece suporte|limite do sistema|deste quadro.*não consigo|recuso essa instrução/i;
@@ -94,11 +133,16 @@ const RESPONSE_THRESHOLD_MS = 300000; // 5 minutes
 
 function isWriteRequest(text) {
   const lower = text.toLowerCase();
-  for (const kw of WRITE_KEYWORDS) {
-    if (lower.includes(kw)) return true;
-  }
-  if (TERSE_PATTERN.test(text)) return true;
-  return false;
+  return WRITE_KEYWORDS.some((kw) => lower.includes(kw)) || TERSE_PATTERN.test(text);
+}
+
+function isTaskWriteRequest(text) {
+  const lower = text.toLowerCase();
+  return TASK_KEYWORDS.some((kw) => lower.includes(kw)) || TERSE_PATTERN.test(text);
+}
+
+function isDmSendRequest(text) {
+  return DM_SEND_PATTERNS.some((p) => p.test(text));
 }
 
 function hasRefusal(text) {
@@ -136,26 +180,49 @@ const period = getReviewPeriod();
 const boards = [];
 let totalIssues = 0;
 
-for (const group of groups) {
-  // Get the board_id for this group (and parent board for delegated tasks)
-  const board = tfDb.prepare(
-    "SELECT id, parent_board_id FROM boards WHERE group_folder = ?"
-  ).get(group.folder);
+// Statements that don't depend on group context — prepared once.
+const boardStmt = tfDb.prepare(
+  "SELECT id, parent_board_id FROM boards WHERE group_folder = ?"
+);
+const userMessagesStmt = msgDb.prepare(
+  `SELECT id, sender, sender_name, content, timestamp
+   FROM messages
+   WHERE chat_jid = ? AND timestamp >= ? AND timestamp < ?
+     AND is_bot_message = 0 AND is_from_me = 0
+     AND content IS NOT NULL AND content != ''
+   ORDER BY timestamp`
+);
+const botResponseStmt = msgDb.prepare(
+  `SELECT content, timestamp FROM messages
+   WHERE chat_jid = ? AND timestamp > ? AND timestamp <= ?
+     AND (is_bot_message = 1 OR is_from_me = 1)
+     AND content IS NOT NULL AND content != ''
+   ORDER BY timestamp ASC LIMIT 1`
+);
 
+// task_history placeholders depend on boardIds.length (1 or 2),
+// so prepare one statement per arity and reuse across groups.
+const taskHistoryStmts = {
+  1: tfDb.prepare(
+    `SELECT action, task_id, at FROM task_history
+     WHERE board_id IN (?) AND at >= ? AND at <= ?
+     ORDER BY at ASC`
+  ),
+  2: tfDb.prepare(
+    `SELECT action, task_id, at FROM task_history
+     WHERE board_id IN (?, ?) AND at >= ? AND at <= ?
+     ORDER BY at ASC`
+  ),
+};
+
+for (const group of groups) {
+  const board = boardStmt.get(group.folder);
   if (!board) continue;
   const boardIds = [board.id];
   if (board.parent_board_id) boardIds.push(board.parent_board_id);
+  const taskHistoryStmt = taskHistoryStmts[boardIds.length];
 
-  // Fetch non-bot user messages in the review period
-  const userMessages = msgDb.prepare(
-    `SELECT id, sender, sender_name, content, timestamp
-     FROM messages
-     WHERE chat_jid = ? AND timestamp >= ? AND timestamp < ?
-       AND is_bot_message = 0 AND is_from_me = 0
-       AND content IS NOT NULL AND content != ''
-     ORDER BY timestamp`
-  ).all(group.jid, period.startIso, period.endIso);
-
+  const userMessages = userMessagesStmt.all(group.jid, period.startIso, period.endIso);
   if (userMessages.length === 0) continue;
 
   const interactions = [];
@@ -167,44 +234,37 @@ for (const group of groups) {
 
     // Find bot response within 10 minutes
     const tenMinLater = new Date(new Date(msg.timestamp).getTime() + 600000).toISOString();
-    const botResponse = msgDb.prepare(
-      `SELECT content, timestamp FROM messages
-       WHERE chat_jid = ? AND timestamp > ? AND timestamp <= ?
-         AND (is_bot_message = 1 OR is_from_me = 1)
-         AND content IS NOT NULL AND content != ''
-       ORDER BY timestamp ASC LIMIT 1`
-    ).get(group.jid, msg.timestamp, tenMinLater);
+    const botResponse = botResponseStmt.get(group.jid, msg.timestamp, tenMinLater);
 
     const isWrite = isWriteRequest(msg.content);
+    const isTaskWrite = isTaskWriteRequest(msg.content);
+    const isDmSend = isDmSendRequest(msg.content);
     let mutationFound = false;
     let refusalDetected = false;
 
-    // For write requests, check task_history for matching mutations
+    // Run on every isWrite — mixed messages ("avise a equipe e concluir T5")
+    // must still check task mutations. DM-send exemption is in the flagging
+    // step below, not here.
     if (isWrite) {
-      // Window: from message time to 10 min after
-      // Check both own board and parent board (delegated tasks land on parent)
-      const placeholders = boardIds.map(() => '?').join(',');
-      const mutations = tfDb.prepare(
-        `SELECT action, task_id, at FROM task_history
-         WHERE board_id IN (${placeholders}) AND at >= ? AND at <= ?
-         ORDER BY at ASC`
-      ).all(...boardIds, msg.timestamp, tenMinLater);
-
+      const mutations = taskHistoryStmt.all(...boardIds, msg.timestamp, tenMinLater);
       mutationFound = mutations.length > 0;
     }
 
-    // Check for refusals in bot response
     if (botResponse) {
       refusalDetected = hasRefusal(botResponse.content);
     }
 
-    // Flag if: no bot response, delayed response, write request with no mutation, or refusal
     const noResponse = !botResponse;
     const responseTimeMs = botResponse
       ? new Date(botResponse.timestamp).getTime() - new Date(msg.timestamp).getTime()
       : -1;
     const delayedResponse = botResponse && responseTimeMs > RESPONSE_THRESHOLD_MS;
-    const unfulfilledWrite = isWrite && !mutationFound && !refusalDetected;
+    // A message demands a task mutation if it's an unambiguous task write,
+    // OR a shared-vocabulary write that isn't also a DM send. The shared-
+    // vocabulary carve-out is what prevents DM-send false positives on
+    // "mande mensagem pro X alertando sobre o prazo".
+    const writeNeedsMutation = isTaskWrite || (isWrite && !isDmSend);
+    const unfulfilledWrite = writeNeedsMutation && !mutationFound && !refusalDetected;
 
     if (noResponse || delayedResponse || unfulfilledWrite || refusalDetected) {
       interactions.push({
@@ -212,6 +272,8 @@ for (const group of groups) {
         sender: msg.sender_name || msg.sender,
         message: msg.content.length > 300 ? msg.content.slice(0, 300) + "..." : msg.content,
         isWrite,
+        isTaskWrite,
+        isDmSend,
         noResponse,
         delayedResponse: delayedResponse || false,
         responseTimeMs,
