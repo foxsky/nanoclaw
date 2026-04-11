@@ -4,6 +4,24 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-11 (later) — TaskFlow CLAUDE.md.template 15 MEDIUM cleanups
+
+Follow-up to a49c292. Fifteen MEDIUM items from the three-agent template review — all template-side polish with clear canonical sources (engine code, user manual, feature matrix). Template file only; no engine or docs-side changes.
+
+- **M1** Reconciled three "create child board" names (`create_group`, `provision_child_board`, auto-provision via `register_person`) into one canonical path with explicit scopes for each.
+- **M2** Normalized subtask update operations into two clear categories: structural operations use the parent-project ID + operation's inner `id`; plain-field updates pass the subtask ID directly (subtasks are real task rows).
+- **M3 / M4** Added `boards`, `external_contacts`, and `meeting_external_participants` tables to the Schema Reference for ad-hoc SQL.
+- **M5** Authorization Matrix heading now explicitly marks the table as descriptive-not-prescriptive.
+- **M6 / M7** Documented the `confirmed` flag as `taskflow_reassign`-only and the engine's uniform dry-run semantics (`!confirmed → summary; confirmed: true → execute` for both single and bulk).
+- **M8** Cross-Board Assignee Guard now routes through the `offer_register` response path when the engine returns one, instead of having the agent compose its own "person not found" message.
+- **M9** Cron vs once scheduling semantics clarified: cron has no `Z`/UTC concept; `once` accepts `Z` but naive local is the canonical form. Matches `src/ipc.ts:156` and `src/task-scheduler.ts:50-57`.
+- **M10** Raw `DELETE FROM child_board_registrations` path now carries a ⚠️ warning naming the three missing guarantees (no undo, no notifications, no engine validation) and updated confirmation prompt wording.
+- **M11** `allow_non_business_day` placement documented separately for create (top-level) vs update (inside `updates`), matching engine interfaces at `taskflow-engine.ts:65` and `:156`.
+- **M12** `o que mudou hoje|desde ontem|esta semana` accepted as alternate phrasings to `mudancas hoje|desde ontem|esta semana`.
+- **M13** `como está?` / `como está o quadro?` added as quadro query aliases.
+- **M14** Four user-level holiday command rows added to the Admin section (`adicionar feriado`, `remover feriado`, `feriados YYYY`, `definir feriados YYYY`), all using the corrected `manage_holidays` + `holiday_operation` shape from 626debd.
+- **M15** Raw `INSERT INTO attachment_audit_log` marked dormant — the engine writes this row automatically through the MCP attachment intake path; the raw SQL form is retained only as a manual-import fallback.
+
 ## 2026-04-11 (later) — TaskFlow CLAUDE.md.template cross-doc drift fixes
 
 Follow-up to 626debd (5 HIGH internal-inconsistency fixes). The three-agent template review surfaced 7 more HIGH items that drift between the template, engine source, and the meetings reference doc. All 7 ship in this commit.
