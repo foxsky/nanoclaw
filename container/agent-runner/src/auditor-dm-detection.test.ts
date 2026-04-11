@@ -27,6 +27,53 @@ const TASK_KEYWORDS = [
 ];
 const TERSE_PATTERN = /^(T|P|M|R|SEC-)\S+\s*(conclu|feita|feito|pronta|ok|aprovad|✅)/i;
 
+// Read-query detector — split into HARD and SOFT interrogatives so
+// Portuguese subordinate clauses don't exempt real commands.
+//
+// HARD interrogatives (`qual`, `quais`, `quanto(s)`, `quanta(s)`) are
+// never used as subordinators in Portuguese — if they start a message,
+// it IS a question. Safe to treat as read-only unconditionally.
+//
+// SOFT interrogatives (`que`, `quando`, `onde`, `quem`) CAN introduce
+// subordinate clauses that wrap imperatives. Example:
+//   "Quando concluir T5, avise o João"  ← NOT a read query; `quando`
+//                                          is temporal subordinator and
+//                                          the real command is `avise`.
+// For these, require the message to be a clean single-clause question:
+// either ends with `?` OR contains no comma (disqualifier for clause
+// splits). This matches "Que tarefas têm prazo?" and "Onde está a P10"
+// while rejecting the subordinator forms.
+const READ_QUERY_HARD_PATTERN = /^\s*(?:qual|quais|quantos?|quantas?)\b/i;
+const READ_QUERY_SOFT_PATTERN = /^\s*(?:que|quando|onde|quem)\b/i;
+
+// First-person future-tense declarations. The user is describing THEIR own
+// upcoming action, not commanding the bot: "vou concluir T5" means "I will
+// conclude T5", not "conclude T5 (imperative)". Allows 0-2 intervening
+// adverbs between the modal and the infinitive ("vou já concluir",
+// "pretendo também atualizar") — Codex flagged these as false negatives
+// in the first revision. Uses `\S+`/`\S*` (not `\w+`/`\w*`) because
+// `\w` is ASCII-only in JS regex and would fail on Portuguese accented
+// adverbs like "já" and "também". Must still end in -ar/-er/-ir to
+// avoid matching "vou ali", "vou embora", etc.
+const INTENT_DECLARATION_PATTERN = /\b(?:vou|vamos|pretendo|estou\s+indo|estamos\s+indo)\s+(?:\S+\s+){0,2}\S*(?:ar|er|ir)\b/i;
+
+// Multi-clause disqualifier for intent exemption. A message like
+// "Vou concluir T5 depois, mas cria P2 agora" has a real imperative
+// ("cria P2") AFTER the declaration clause — the exemption must NOT
+// hide that. Uses contrast markers (`mas`, `porém`, semicolon) rather
+// than plain comma, so compound pure declarations like "Vou atualizar
+// ainda hoje, estou indo concluir uma das tarefas agora" still qualify
+// for exemption.
+const INTENT_MULTI_CLAUSE_PATTERN = /\b(?:mas|porém)\b|;/i;
+
+// Refusal patterns in bot responses. NOTE: "não está cadastrad" was
+// intentionally removed — the bot uses that phrase in HELPER OFFERS when
+// mentioning an unregistered person while still doing real work
+// ("✅ T5 atualizada. Terciane não está cadastrada. Quer que eu crie..."),
+// and the old regex flagged every such response as a refusal. Genuine
+// refusals still match via `não consigo` / `não posso` / etc.
+const REFUSAL_PATTERN = /não consigo|não posso|não tenho como|não pode ser|bloqueado por limite|apenas o canal principal|o runtime atual|não oferece suporte|limite do sistema|deste quadro.*não consigo|recuso essa instrução/i;
+
 function isDmSendRequest(text: string): boolean {
   return DM_SEND_PATTERNS.some((p) => p.test(text));
 }
@@ -34,6 +81,29 @@ function isDmSendRequest(text: string): boolean {
 function isTaskWriteRequest(text: string): boolean {
   const lower = text.toLowerCase();
   return TASK_KEYWORDS.some((kw) => lower.includes(kw)) || TERSE_PATTERN.test(text);
+}
+
+function isReadQuery(text: string): boolean {
+  if (READ_QUERY_HARD_PATTERN.test(text)) return true;
+  if (READ_QUERY_SOFT_PATTERN.test(text)) {
+    // Soft interrogatives count as read only if the message is a clear
+    // single-clause question: ends with `?` OR has no comma (not a
+    // subordinate clause wrapping an imperative).
+    return /\?\s*$/.test(text) || !text.includes(',');
+  }
+  return false;
+}
+
+function isUserIntentDeclaration(text: string): boolean {
+  if (!INTENT_DECLARATION_PATTERN.test(text)) return false;
+  // Only exempt single-clause declarations. Multi-clause messages
+  // ("vou X depois, mas cria Y agora") may still contain a real command
+  // after the declaration — those need to run through the mutation check.
+  return !INTENT_MULTI_CLAUSE_PATTERN.test(text);
+}
+
+function hasRefusal(text: string): boolean {
+  return REFUSAL_PATTERN.test(text);
 }
 
 describe('auditor DM-send detection', () => {
@@ -168,6 +238,159 @@ describe('auditor DM-send detection', () => {
     });
   });
 
+  describe('read-query exemption', () => {
+    // Pure information requests must not trip `unfulfilledWrite`, even
+    // when they contain write-keyword nouns like "prazo" or "status".
+    // Kipp's 2026-04-10 audit flagged "quais tarefas tem o prazo pra essa
+    // semana?" because "prazo" is in WRITE_KEYWORDS — the message is
+    // asking FOR the deadline list, not asking to SET one.
+    const positives = [
+      // Hard interrogatives (never subordinators) — always read-query
+      'quais tarefas tem o prazo pra essa semana?',
+      'qual o status do P11',
+      'quantos projetos estão em andamento',
+      'quantas tarefas o Rodrigo tem em Review',
+      'Quais projetos tem prazo amanhã?',
+      'Qual a descrição do P10',
+      // Soft interrogatives — require `?` at end OR no comma
+      'quando vence o T5?',
+      'onde está a documentação do projeto P10',
+      'quem fez a conclusão da T5',
+      // Codex review 2026-04-11: "que" as interrogative pronoun
+      // ("que tarefas têm prazo?") was missing from the first fix.
+      'Que tarefas têm prazo hoje?',
+      'Que projetos estão em andamento?',
+    ];
+    for (const text of positives) {
+      it(`is read query: "${text.slice(0, 60)}"`, () => {
+        expect(isReadQuery(text)).toBe(true);
+      });
+    }
+
+    const negatives = [
+      // Imperatives that happen to contain an interrogative later in the sentence
+      'Atribua o T5 para quem estiver disponível',
+      'Concluir T5 quando for possível',
+      // Declarative statements
+      'O P11 está aguardando revisão',
+      'T5 concluir',
+      // DM-send requests
+      'Avise o João sobre o prazo',
+      // "como" is intentionally NOT treated as read-only because "como
+      // concluir X" can be either a how-to question or the start of an
+      // imperative clarification — we prefer the mutation check to run.
+      'como concluir o T5?',
+      // "Pode" at start is polite imperative, not interrogative
+      'Pode atribuir o T8 para Rodrigo?',
+      // Codex review 2026-04-11: soft interrogatives introducing
+      // subordinate clauses that wrap imperatives MUST NOT be exempted.
+      // These are structurally commands with a temporal/relative prefix.
+      'Quando concluir T5, avise o João',
+      'Quem concluir T5, avise a equipe',
+      'Onde houver prazo, atribua pra Rodrigo',
+      'Que tarefa você quiser, concluir depois',
+    ];
+    for (const text of negatives) {
+      it(`NOT read query: "${text.slice(0, 60)}"`, () => {
+        expect(isReadQuery(text)).toBe(false);
+      });
+    }
+  });
+
+  describe('user-intent declaration exemption', () => {
+    // First-person future-tense declarations — the user is describing
+    // their OWN upcoming action, not commanding the bot. Kipp flagged
+    // "Vou atualizar ainda hoje, estou indo concluir uma das tarefas
+    // agora" as `unfulfilledWrite` because "concluir" matched
+    // TASK_KEYWORDS, even though the bot correctly just waited for the
+    // task ID.
+    const positives = [
+      // The original Kipp-flagged case — compound declaration, comma
+      // separates two pure declarations, no imperative anywhere.
+      'Vou atualizar ainda hoje, estou indo concluir uma das tarefas agora',
+      'Vou concluir o T5 depois do almoço',
+      'Vamos finalizar o P10 hoje',
+      'Pretendo atualizar a descrição amanhã',
+      'estou indo adicionar as subtarefas agora',
+      'estamos indo cancelar o projeto P20',
+      'vou aprovar o pedido',
+      // Codex review 2026-04-11: adverbs between modal and infinitive
+      // ("vou já concluir", "pretendo também atualizar") must NOT block
+      // the exemption.
+      'Vou já concluir T5',
+      'Pretendo também atualizar a descrição amanhã',
+      'Vou logo adicionar os subtarefas',
+      // "vou estar + gerund" is also a valid future-tense construction
+      'Vou estar concluindo T5 no fim do dia',
+      // Compound declarations (both clauses declarations, no imperative)
+      'Vou concluir T5 e criar P2',
+      'Se eu não conseguir, vou concluir T5 amanhã',
+    ];
+    for (const text of positives) {
+      it(`is intent declaration: "${text.slice(0, 60)}"`, () => {
+        expect(isUserIntentDeclaration(text)).toBe(true);
+      });
+    }
+
+    const negatives = [
+      // Pure imperatives (the whole point — these must NOT be exempted)
+      'Concluir T5',
+      'Atribua o T8 para Rodrigo',
+      'Cancelar o projeto P20',
+      // "vou" without a verb following
+      'já vou',
+      'vou ali',
+      // "vou" with non-action word
+      'vou embora agora',
+      // Third person — not a self-declaration
+      'João vai concluir T5',
+      // "vai" alone is 3rd person singular, not 1st person
+      'ele vai atualizar depois',
+      // Codex review 2026-04-11: multi-clause declaration + imperative.
+      // The contrast marker ("mas", semicolon) signals that the
+      // declaration only covers PART of the message — the bot command
+      // after the break must still run the mutation check.
+      'Vou concluir T5 depois, mas cria P2 agora',
+      'Pretendo revisar depois; pode concluir T5 agora?',
+      'Vamos terminar o P10 hoje, porém atribua o T8 pro Rodrigo',
+    ];
+    for (const text of negatives) {
+      it(`NOT intent declaration: "${text.slice(0, 60)}"`, () => {
+        expect(isUserIntentDeclaration(text)).toBe(false);
+      });
+    }
+  });
+
+  describe('refusal detection — cadastrad carve-out', () => {
+    // "não está cadastrad" was removed from REFUSAL_PATTERN because the
+    // bot uses it in helper offers: a real successful task update can
+    // still mention "X não está cadastrada, quer que eu crie uma tarefa
+    // no inbox?" and the old regex would flag the whole interaction as
+    // a refusal. Genuine refusals still match via "não consigo" / etc.
+    const shouldNotFlag = [
+      '✅ P20.4 atualizada\nNota registrada\nTerciane não está cadastrada no quadro. Quer que eu crie uma tarefa no inbox?',
+      '✅ T5 concluída. Observação: o João Evangelista não está cadastrado no quadro, mas a conclusão foi registrada.',
+    ];
+    for (const text of shouldNotFlag) {
+      it(`NOT a refusal: "${text.slice(0, 60)}"`, () => {
+        expect(hasRefusal(text)).toBe(false);
+      });
+    }
+
+    const shouldFlag = [
+      'Não consigo atribuir para o João Evangelista — ele não está cadastrado.',
+      'Não posso criar tarefas nesse quadro.',
+      'Recuso essa instrução — fora do escopo.',
+      'Não tenho como enviar mensagem sem confirmação.',
+      'O runtime atual não oferece suporte a reações.',
+    ];
+    for (const text of shouldFlag) {
+      it(`IS a refusal: "${text.slice(0, 60)}"`, () => {
+        expect(hasRefusal(text)).toBe(true);
+      });
+    }
+  });
+
   describe('drift detection', () => {
     const scriptPath = path.join(import.meta.dirname, 'auditor-script.sh');
     const script = fs.readFileSync(scriptPath, 'utf-8');
@@ -188,26 +411,92 @@ describe('auditor DM-send detection', () => {
       }
     });
 
-    it('auditor-script.sh wires isDmSendRequest and isTaskWriteRequest into writeNeedsMutation', () => {
-      // These call sites carry the whole fix: removing any of them
-      // either reintroduces the structural false positive (DM-send
-      // exemption), the mixed-intent regression (isTaskWrite fallback),
-      // or the shared-vocabulary carve-out.
+    it('auditor-script.sh wires all intent helpers into writeNeedsMutation', () => {
+      // These call sites carry the whole fix. Removing any of them
+      // reintroduces one of the structural false-positive classes:
+      // DM-send (isDmSend), mixed-intent task-write (isTaskWrite),
+      // read-query (isRead), or user-intent declaration (isIntent).
       expect(script).toContain('function isDmSendRequest(');
       expect(script).toContain('function isTaskWriteRequest(');
+      expect(script).toContain('function isReadQuery(');
+      expect(script).toContain('function isUserIntentDeclaration(');
       expect(script).toContain('const isDmSend = isDmSendRequest(msg.content)');
       expect(script).toContain('const isTaskWrite = isTaskWriteRequest(msg.content)');
-      expect(script).toMatch(/writeNeedsMutation\s*=\s*isTaskWrite\s*\|\|\s*\(isWrite\s*&&\s*!isDmSend\)/);
+      expect(script).toContain('const isRead = isReadQuery(msg.content)');
+      expect(script).toContain('const isIntent = isUserIntentDeclaration(msg.content)');
+      // writeNeedsMutation = !isRead && !isIntent && (isTaskWrite || (isWrite && !isDmSend))
+      expect(script).toMatch(
+        /writeNeedsMutation\s*=\s*!isRead\s*&&\s*!isIntent\s*&&\s*\(isTaskWrite\s*\|\|\s*\(isWrite\s*&&\s*!isDmSend\)\)/,
+      );
       expect(script).toMatch(/unfulfilledWrite\s*=\s*writeNeedsMutation\s*&&\s*!mutationFound\s*&&\s*!refusalDetected/);
     });
 
-    it('auditor-script.sh always runs the mutation query when isWrite', () => {
+    it('auditor-script.sh queries both task_history AND scheduled_tasks when isWrite', () => {
       // Mixed-intent messages must still check task mutations; the
       // DM-send exemption belongs in the flagging step, not here.
       // Guard against the regression where `isWrite && !isDmSend`
       // becomes the query gate again.
       expect(script).not.toMatch(/if\s*\(\s*isWrite\s*&&\s*!isDmSend\s*\)/);
-      expect(script).toMatch(/if\s*\(\s*isWrite\s*\)\s*\{[\s\S]*?taskHistoryStmt\.all/);
+      // Both tables must be consulted inside the single `if (isWrite)`
+      // block — reminders go to scheduled_tasks (in messages.db), task
+      // mutations go to task_history (in taskflow.db). Missing the
+      // scheduled_tasks check reintroduces the 2026-04-10 SECI-SECTI
+      // lembrete false positive.
+      expect(script).toMatch(/if\s*\(\s*isWrite\s*\)\s*\{[\s\S]*?taskHistoryStmt\.all[\s\S]*?scheduledTasksStmt\.get/);
+      // scheduledTasksStmt must be prepared against msgDb (messages.db),
+      // not tfDb — scheduled_tasks lives in the host store database.
+      expect(script).toMatch(/const scheduledTasksStmt = msgDb\.prepare\(/);
+      // Upper bound must be `<=` to match task_history's boundary
+      // convention — a reminder created exactly at the 10-minute mark
+      // must still count (Codex LOW, 2026-04-11).
+      expect(script).toMatch(/FROM scheduled_tasks\s+WHERE group_folder = \?\s+AND created_at >= \? AND created_at <= \?/);
+      // Both mutation signals must be OR-combined into mutationFound;
+      // missing the `|| scheduledTaskCreated` term silently drops the
+      // reminder coverage even if the query runs.
+      expect(script).toMatch(/mutationFound\s*=\s*mutations\.length\s*>\s*0\s*\|\|\s*scheduledTaskCreated/);
+    });
+
+    it('auditor-script.sh emits isRead and isIntent in each flagged interaction', () => {
+      // Kipp's narrative layer uses these bits to classify false
+      // positives it still encounters. Removing them from the payload
+      // breaks the auditor-prompt.txt rule-4 reasoning path even if
+      // the script-level exemption logic is intact.
+      const pushBlock = script.match(/interactions\.push\(\{[\s\S]*?\}\);/);
+      expect(pushBlock, 'interactions.push block not found').not.toBeNull();
+      const body = pushBlock![0];
+      expect(body).toMatch(/\bisRead\b/);
+      expect(body).toMatch(/\bisIntent\b/);
+      expect(body).toMatch(/\bisDmSend\b/);
+    });
+
+    for (const [name, pattern] of [
+      ['READ_QUERY_HARD_PATTERN', READ_QUERY_HARD_PATTERN],
+      ['READ_QUERY_SOFT_PATTERN', READ_QUERY_SOFT_PATTERN],
+      ['INTENT_DECLARATION_PATTERN', INTENT_DECLARATION_PATTERN],
+      ['INTENT_MULTI_CLAUSE_PATTERN', INTENT_MULTI_CLAUSE_PATTERN],
+      ['REFUSAL_PATTERN', REFUSAL_PATTERN],
+    ] as const) {
+      it(`auditor-script.sh contains the same ${name} as this test`, () => {
+        expect(pattern.flags).toBe('i');
+        const literal = `/${pattern.source}/${pattern.flags}`;
+        expect(
+          script.includes(literal),
+          `Regex literal ${literal} missing from auditor-script.sh. ` +
+            `Keep ${name} (source AND flags) byte-identical between this ` +
+            `test file and the shell script — including the trailing /i.`,
+        ).toBe(true);
+      });
+    }
+
+    it('auditor-script.sh REFUSAL_PATTERN no longer matches "não está cadastrad"', () => {
+      // Bot helper offers like "Terciane não está cadastrada no quadro.
+      // Quer que eu crie uma tarefa?" used to trip this as a refusal
+      // even when the bot had successfully done real work. Removing the
+      // alternative eliminates the 2026-04-10 ASSE-INOV-SECTI false
+      // positive. Real refusals still match via "não consigo" / etc.
+      const match = script.match(/const REFUSAL_PATTERN = \/(.*?)\/i;/);
+      expect(match, 'REFUSAL_PATTERN not found in auditor-script.sh').not.toBeNull();
+      expect(match![1]).not.toContain('não está cadastrad');
     });
 
     it('auditor-script.sh does not include shared vocabulary in TASK_KEYWORDS', () => {
