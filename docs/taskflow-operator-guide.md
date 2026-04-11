@@ -126,7 +126,7 @@ If automatic creation is not practical:
 
 ### SQLite Database
 
-All board data is stored in `data/taskflow/taskflow.db`. The database is created by `src/taskflow-db.ts` and contains 10 tables (see the Database Schema section below).
+All board data is stored in `data/taskflow/taskflow.db`. The database is created by `src/taskflow-db.ts` and contains 9 actively used tables (see the Database Schema section below).
 
 Key data stored per board:
 
@@ -138,7 +138,8 @@ Key data stored per board:
 - Completed/cancelled tasks in `archive`
 - Runner IDs and cron schedules in `board_runtime_config`
 - DST sync state in `board_runtime_config`
-- Attachment audit trail in `attachment_audit_log`
+
+Note: the `attachment_audit_log` table exists in the schema but is not currently populated in production — attachment auditing is not an active feature. Operators should not rely on it for audit trails.
 
 Important implications:
 
@@ -248,6 +249,23 @@ If enabled:
 - Replaces the core runners if the offset changed
 - Updates DST sync state in `board_runtime_config`
 
+### Daily Auditor
+
+A scheduled task runs at 04:00 BRT every day to review the previous day's WhatsApp interactions against `task_history` and `scheduled_tasks`. The script is defined at `container/agent-runner/src/auditor-script.sh`; tune it via the following hooks:
+
+- **Cron schedule**: edit the `scheduled_tasks` row for the auditor runner in `data/store/messages.db`. Default is `0 4 * * *` (Fortaleza local time). Operators can also adjust the severity threshold for which interactions appear in the report.
+- **Unfulfilled write-request detection**: the auditor flags user requests that should have produced a `task_history` mutation but did not. Tune the request-pattern lists in `auditor-script.sh` if coverage drifts.
+- **Delayed-response threshold**: the 5-minute response threshold is currently hardcoded via the `RESPONSE_THRESHOLD_MS` constant (default 300000 ms / 5 minutes) in `auditor-script.sh`. Operators should be aware this is a compile-time value — changing it requires editing the script and rebuilding the container.
+- **Refusal patterns**: the `REFUSAL_PATTERN` regex in the same file matches bot phrases that count as refusals. Tune if false positives appear on legitimate refusals (e.g. permission denials).
+- **Severity classification**: the auditor rubric assigns one of 5 severity emoji to each flagged interaction so operators can triage audit reports:
+  - 🔴 unfulfilled write request (highest priority)
+  - 🟠 template/coverage gap
+  - 🟡 delayed response (>5 min)
+  - 🔵 missing feature / not implemented
+  - ⚪ UX suggestion (lowest priority)
+
+The daily auditor is distinct from the TaskFlow board runners (standup, digest, weekly review). It is a separate operator-owned scheduled task — manage it via the general scheduled-task workflow in "Day-2 Operations" below.
+
 ## Task Semantics
 
 Operator-relevant task rules:
@@ -326,6 +344,28 @@ Use task-level operations on the runner IDs stored in `board_runtime_config`.
 
 Do not confuse runner tasks with normal board tasks.
 
+### Manage Board Holidays
+
+Each hierarchy board has its own holiday calendar in the `board_holidays` table. Holidays affect due-date rollover — tasks that fall on a holiday are pushed forward to the next business day. Operators can pre-populate or bulk-replace the calendar via the `manage_holidays` admin action from inside the group (full-manager only):
+
+- `manage_holidays add` — add a single date (with optional label) to the current board's calendar.
+- `manage_holidays remove` — delete a single date from the calendar.
+- `manage_holidays set_year` — replace the entire calendar for a given year in one atomic operation. Use this to seed a board from an annual holiday list or to wipe and reload after a policy change.
+
+All three variants record an entry in `task_history` and are scoped to the board where the command runs. For audit purposes, the `board_holidays` table can also be inspected or edited directly via SQLite if the agent is unavailable, but prefer the admin action when possible so the history row is written.
+
+### Scheduled Task Cron Management (General)
+
+Beyond TaskFlow runners (standup, digest, weekly review, DST guard) and the daily auditor, operators may add, edit, or remove any `scheduled_tasks` row directly to wire up new automations or tune existing ones:
+
+1. Insert the row with `context_mode='group'` and a valid non-null `next_run`, or the scheduler loop will never pick it up.
+2. Express cron in the server timezone (resolve `process.env.TZ` or the host timezone — do not assume UTC).
+3. After insertion, verify `status='active'` and that `next_run` is in the future.
+4. To edit an existing row, update the cron expression and recompute `next_run` manually — the scheduler does not recompute on its own.
+5. To pause or remove, flip `status` to `inactive` or delete the row outright.
+
+This is the fallback path for any automation not covered by the board-runner helpers. Reserve it for operator-level maintenance; end users should continue interacting with TaskFlow via board commands rather than SQL edits.
+
 ## Board Display Format
 
 The CLAUDE.md template prescribes a standard visual format for the `quadro` command:
@@ -401,7 +441,7 @@ To provision a hierarchy board, run `/add-taskflow` and select the "Hierarchy (D
 
 The wizard:
 
-1. Creates the SQLite database at `data/taskflow/taskflow.db` via `node dist/taskflow-db.js` (10 tables, WAL mode, foreign keys).
+1. Creates the SQLite database at `data/taskflow/taskflow.db` via `node dist/taskflow-db.js` (9 actively used tables, WAL mode, foreign keys).
 2. Writes `.mcp.json` to the group folder to configure the `mcp-server-sqlite-npx` MCP server.
 3. Seeds the root board data into `boards`, `board_config`, `board_runtime_config`, and `board_admins`.
 4. Stores runner scheduled task IDs in `board_runtime_config` (columns: `runner_standup_task_id`, `runner_digest_task_id`, `runner_review_task_id`, `runner_dst_guard_task_id`).
@@ -503,7 +543,7 @@ This provides `read_query`, `write_query`, `list_tables`, `describe_table`, and 
 
 ### Database Schema
 
-The SQLite database contains 10 tables. Created by `src/taskflow-db.ts` via `node dist/taskflow-db.js`:
+The SQLite database contains 9 actively used tables (plus an unused `attachment_audit_log` table in the schema that is not populated in production). Created by `src/taskflow-db.ts` via `node dist/taskflow-db.js`:
 
 | Table | Purpose |
 |-------|---------|
@@ -515,7 +555,6 @@ The SQLite database contains 10 tables. Created by `src/taskflow-db.ts` via `nod
 | `task_history` | Full event stream per task (cap at 50 active) |
 | `archive` | Completed/cancelled tasks with snapshot and history slice (20 entries) |
 | `board_runtime_config` | Language, timezone, runner IDs, cron schedules, DST guard, attachment policy |
-| `attachment_audit_log` | Confirmed attachment imports per board |
 | `board_config` | Columns, WIP limit, ID counters (next_task_number, etc.) |
 
 Key hierarchy columns on `tasks`:

@@ -118,11 +118,11 @@ Position (left-to-right, 8 chars): `S` SKILL.md · `C` skill CHANGELOG · `U` us
 
 | ID | Feature | Designed | Shipped | Prod evidence | Outcome signal | Docs present | Docs expected | Status | Notes |
 |---|---|---|---|---|---|---|---|---|---|
-| R044 | Daily auditor run (04:00 BRT via cron) | 2026-03-29-daily-auditor.md | auditor-script.sh | {0;0;executed-only} | executed-only | `.C.....C` | `.C.O...C` | shipped-undocumented | Root CHANGELOG L9–31 mentions improvements; skill CHANGELOG and operator-guide silent on the auditor cron itself |
-| R045 | Detect unfulfilled write request | 2026-03-29-daily-auditor.md | auditor-script.sh:322-323 | {0;0;executed-only} | executed-only | `.C.....C` | `.C.O...C` | shipped-undocumented | Root CHANGELOG L9–19 covers DM-send detection |
-| R046 | Detect delayed response (>5 min) | 2026-03-29-daily-auditor.md | auditor-script.sh:313 | {0;0;executed-only} | executed-only | `.C......` | `.C.O...C` | shipped-undocumented | Heuristic nowhere documented |
-| R047 | Detect agent refusal | 2026-03-29-daily-auditor.md | auditor-script.sh:305-306 | {0;0;executed-only} | executed-only | `.C......` | `.C.O...C` | shipped-undocumented | Heuristic nowhere documented |
-| R048 | Classify interactions by severity (5 emoji buckets) | 2026-03-29-daily-auditor.md | auditor-prompt.txt:7-13 | {0;0;executed-only} | executed-only | `.C......` | `.C.O...C` | shipped-undocumented | Emoji rubric nowhere documented |
+| R044 | Daily auditor run (04:00 BRT via cron) | 2026-03-29-daily-auditor.md | auditor-script.sh | {0;0;executed-only} | executed-only | `.C.O...C` | `.C.O...C` | shipped-undocumented | Root CHANGELOG L9–31 mentions improvements; skill CHANGELOG and operator-guide silent on the auditor cron itself |
+| R045 | Detect unfulfilled write request | 2026-03-29-daily-auditor.md | auditor-script.sh:322-323 | {0;0;executed-only} | executed-only | `.C.O...C` | `.C.O...C` | shipped-undocumented | Root CHANGELOG L9–19 covers DM-send detection |
+| R046 | Detect delayed response (>5 min) | 2026-03-29-daily-auditor.md | auditor-script.sh:313 | {0;0;executed-only} | executed-only | `.C.O....` | `.C.O...C` | shipped-undocumented | Heuristic nowhere documented |
+| R047 | Detect agent refusal | 2026-03-29-daily-auditor.md | auditor-script.sh:305-306 | {0;0;executed-only} | executed-only | `.C.O....` | `.C.O...C` | shipped-undocumented | Heuristic nowhere documented |
+| R048 | Classify interactions by severity (5 emoji buckets) | 2026-03-29-daily-auditor.md | auditor-prompt.txt:7-13 | {0;0;executed-only} | executed-only | `.C.O....` | `.C.O...C` | shipped-undocumented | Emoji rubric nowhere documented |
 
 ## Cross-board (R049–R055)
 
@@ -153,7 +153,7 @@ Position (left-to-right, 8 chars): `S` SKILL.md · `C` skill CHANGELOG · `U` us
 |---|---|---|---|---|---|---|---|---|---|
 | R062 | PDF attachment import to task | 2026-02-24-taskflow-implementation.md | taskflow-engine.ts (log_attachment admin) | {0;0;-} | none | `S.U...T.` | `SCU...TC` | docs-describe-missing | SKILL.md L36–38 and user-manual L419–444 describe; attachment_audit_log has 0 rows |
 | R063 | Image attachment import | 2026-02-24-taskflow-implementation.md | taskflow-engine.ts (log_attachment admin) | {0;0;-} | none | `..U...T.` | `SCU...TC` | docs-describe-missing | User-manual L419–444 describes; zero prod rows |
-| R064 | Attachment audit log | 2026-03-10-taskflow-no-direct-sql-writes-plan.md | taskflow-engine.ts:5881 (log_attachment) | {0;0;-} | none | `...O..T.` | `SCU...TC` | docs-describe-missing | Operator-guide L141,518 describes; table empty |
+| R064 | Attachment audit log | 2026-03-10-taskflow-no-direct-sql-writes-plan.md | taskflow-engine.ts:5881 (log_attachment) | {0;0;-} | none | `......T.` | `SCU...TC` | docs-describe-missing | Operator-guide L141,518 describes; table empty |
 
 ## Embeddings & search (R065–R067)
 
@@ -181,9 +181,9 @@ Position (left-to-right, 8 chars): `S` SKILL.md · `C` skill CHANGELOG · `U` us
 | R074 | Register/remove team member | 2026-03-04-taskflow-mcp-tools-design.md | taskflow-engine.ts:5881 (register/remove) | {1;0;2026-03-09} | executed-only | `..UO..T.` | `SCUO..TC` | stale-in-prod | No 30-day usage; user-manual and operator-guide describe |
 | R075 | Assign manager/delegate role | 2026-03-04-taskflow-mcp-tools-design.md | taskflow-engine.ts:5881 (add_manager/delegate) | {24;0;-} | none | `..UO..T.` | `SCUOQ.TC` | stale-in-prod | Top-20 by historical total; no 30-day usage (roles set at board creation) |
 | R076 | Adjust WIP limits per person | 2026-03-04-taskflow-mcp-tools-design.md | taskflow-engine.ts:5881 (set_wip_limit) | {22;0;-} | none | `SCUOQ.T.` | `SCUOQ.TC` | stale-in-prod | Top-20; fully documented but no 30-day change events |
-| R077 | Manage board holidays (add/remove/set_year) | 2026-03-06-non-business-day-due-dates-design.md | taskflow-engine.ts:5881 (manage_holidays) | {252;18;2026-12-25} | executed-only | `SCU...T.` | `SCUOQ.TC` | shipped-undocumented | Top-20; absent from every doc |
+| R077 | Manage board holidays (add/remove/set_year) | 2026-03-06-non-business-day-due-dates-design.md | taskflow-engine.ts:5881 (manage_holidays) | {252;18;2026-12-25} | executed-only | `SCUO..T.` | `SCUOQ.TC` | shipped-undocumented | Top-20; absent from every doc |
 | R078 | Cross-group notifications via send_message | 2026-02-24-taskflow-design.md | taskflow notification dispatcher | {0;0;executed-only} | executed-only | `SCUO..TC` | `SCUO..TC` | shipped-undocumented | SKILL.md L114 and operator-guide L528–563 cover; user-manual silent |
-| R079 | Scheduled task cron management | 2026-02-24-taskflow-implementation.md | IPC scheduled_task plugin | {0;0;executed-only} | executed-only | `SCU.Q.TC` | `SCUO..TC` | shipped-undocumented | Skill CHANGELOG and operator-guide silent on scheduled task configuration |
+| R079 | Scheduled task cron management | 2026-02-24-taskflow-implementation.md | IPC scheduled_task plugin | {0;0;executed-only} | executed-only | `SCUOQ.TC` | `SCUO..TC` | shipped-undocumented | Skill CHANGELOG and operator-guide silent on scheduled task configuration |
 
 ## Broken features
 
