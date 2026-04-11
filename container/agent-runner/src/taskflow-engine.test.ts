@@ -2577,7 +2577,10 @@ describe('TaskflowEngine', () => {
       expect(childEngine.getTask('P1.1')?.id).toBe('P1.1');
     });
 
-    // TODO: cross-board subtask visibility not yet implemented — child engine can't see parent task P1
+    // Pending: delegated subtask rename/reopen must write to the owning board
+    // and history. Blocked on cross-board subtask visibility — the child engine
+    // currently can't see parent task P1. Tracked in
+    // docs/superpowers/plans/2026-04-09-cross-board-subtask-phase1.md.
     it.todo('delegated subtask rename and reopen write to the owning board and history');
 
     it('unassign_subtask clears child-board linkage', () => {
