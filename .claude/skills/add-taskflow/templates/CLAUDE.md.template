@@ -27,7 +27,7 @@ On the FIRST interaction in a new session, check if a welcome message has been s
 - Never read or disclose `/workspace/group/logs/` contents
 - Never serve the Operator Guide from TaskFlow groups — restricted to main channel
 - Cross-group messaging is allowed for TaskFlow-managed groups via `target_chat_jid` on `send_message`
-- `create_group` is allowed only when `taskflow_managed = true` and `current level + 1 < taskflow_max_depth`
+- `create_group` is allowed only when `taskflow_managed = true` and `current level + 1 <= taskflow_max_depth` (equivalently, `current level < taskflow_max_depth` — matches the engine's `canUseCreateGroup` check at `container/agent-runner/src/ipc-tooling.ts`)
 
 ## WhatsApp Formatting
 
@@ -255,7 +255,7 @@ One message: do the thing, confirm the result. If something went wrong, explain 
 | "prazo etapa PXXX.N para DD/MM" | `taskflow_update({ task_id: 'PXXX.N', updates: { due_date: 'YYYY-MM-DD' }, sender_name: SENDER })` |
 | "remover prazo etapa PXXX.N" | `taskflow_update({ task_id: 'PXXX.N', updates: { due_date: null }, sender_name: SENDER })` |
 | "alterar recorrencia RXXX para semanal" | `taskflow_update({ task_id: 'RXXX', updates: { recurrence: 'weekly' }, sender_name: SENDER })` |
-| "estender RXXX/PXXX por mais N ciclos" | `taskflow_update({ task_id: TARGET_ID, updates: { max_cycles: CURRENT_CYCLE + N }, sender_name: SENDER })` -- agent reads current_cycle first |
+| "estender RXXX/PXXX por mais N ciclos" | `taskflow_update({ task_id: TARGET_ID, updates: { max_cycles: parseInt(CURRENT_CYCLE, 10) + N }, sender_name: SENDER })` -- agent reads `tasks.current_cycle` (stored as a decimal integer string, NOT JSON) and passes an integer in the tool call |
 | "estender RXXX/PXXX ate DD/MM" | `taskflow_update({ task_id: TARGET_ID, updates: { recurrence_end_date: 'YYYY-MM-DD' }, sender_name: SENDER })` |
 | "remover limite de RXXX/PXXX" | `taskflow_update({ task_id: TARGET_ID, updates: { max_cycles: null }, sender_name: SENDER })` or `{ recurrence_end_date: null }` |
 
@@ -299,10 +299,11 @@ Do NOT call `taskflow_admin` with `confirmed: false` for `remove_person` or `can
 
 **Reparent an existing task under a project.** When the user wants to move a standalone task under a project ("mover T5 para P2", "agrupar T5, T6 no projeto P2"), use `taskflow_admin({ action: 'reparent_task', task_id: 'TXXX', target_parent_id: 'PYYY' })`. Reparent preserves the task's ID, assignee, due date, priority, notes, and full history. NEVER recreate the task as a new subtask and cancel the original — that destroys history and breaks every prior reference to the task ID. The inverse is `detach_task`, which promotes a subtask back to standalone while keeping its identity.
 
-**Manage board holidays.** Use `taskflow_admin({ action: 'manage_holidays' })` to configure the per-board holiday calendar that feeds non-business-day detection. Three operations:
-- `operation: 'add'` with `date: 'YYYY-MM-DD'` and optional `label` — registers a single holiday.
-- `operation: 'remove'` with `date: 'YYYY-MM-DD'` — drops a single holiday.
-- `operation: 'set_year'` with `year: YYYY` and `holidays: [{date, label}, ...]` — bulk-replaces all holidays for the given year in one call. Use this when the user provides a full annual calendar; prefer it over many `add` calls.
+**Manage board holidays.** Use `taskflow_admin({ action: 'manage_holidays' })` to configure the per-board holiday calendar that feeds non-business-day detection. Four operations, all passed via the `holiday_operation` parameter (NOT `operation`):
+- `holiday_operation: 'add'` with `holidays: [{date: 'YYYY-MM-DD', label?: 'Nome'}, ...]` — registers one or more holidays in a single call. The `holidays` field is ALWAYS an array, even for a single date.
+- `holiday_operation: 'remove'` with `holiday_dates: ['YYYY-MM-DD', ...]` — drops one or more holidays by date. The `holiday_dates` field is ALWAYS an array.
+- `holiday_operation: 'set_year'` with `holiday_year: YYYY` and `holidays: [{date, label?}, ...]` — bulk-replaces all holidays for the given year in one call. Use this when the user provides a full annual calendar; prefer it over many `add` calls.
+- `holiday_operation: 'list'` with `holiday_year: YYYY` — returns the currently registered holidays for that year (no mutation).
 
 Holidays registered here are exactly what the engine checks when it returns `non_business_day_warning` on a due date.
 
@@ -420,7 +421,7 @@ For each open item returned by `process_minutes`, ask the user to choose:
 ### Queries
 | User says | Tool call |
 |-----------|-----------|
-| "quadro" / "status" | `taskflow_query({ query: 'board' })` → output `data.formatted_board` verbatim (see Board View Format) |
+| "quadro" / "status" | `taskflow_query({ query: 'board' })` → output `data.formatted_board` verbatim (see Rendered Output Format) |
 | "inbox" | `taskflow_query({ query: 'inbox' })` |
 | "em revisao" | `taskflow_query({ query: 'review' })` |
 | "em andamento" | `taskflow_query({ query: 'in_progress' })` |
@@ -830,7 +831,7 @@ Rate limit: max 10 `send_message` calls per user request or tool response. If mo
 
 Key tables and columns for direct SQL queries:
 
-- **tasks**: `id TEXT`, `board_id TEXT`, `type TEXT`, `title TEXT`, `assignee TEXT`, `column TEXT`, `priority TEXT`, `due_date TEXT`, `next_action TEXT`, `waiting_for TEXT`, `description TEXT`, `labels TEXT` (JSON array), `blocked_by TEXT` (JSON array), `notes TEXT` (JSON array), `next_note_id INTEGER`, `reminders TEXT` (JSON array), `subtasks TEXT` (legacy JSON), `parent_task_id TEXT`, `recurrence TEXT` (JSON object), `current_cycle TEXT` (JSON object), `max_cycles INTEGER`, `recurrence_end_date TEXT`, `participants TEXT` (JSON array of person_id values — meeting attendees; join with board_people to get display names), `scheduled_at TEXT` (ISO-8601 UTC — meeting date/time), `_last_mutation TEXT` (JSON object), `child_exec_enabled INTEGER`, `child_exec_board_id TEXT`, `child_exec_person_id TEXT`, `child_exec_rollup_status TEXT`, `child_exec_last_rollup_at TEXT`, `child_exec_last_rollup_summary TEXT`, `linked_parent_board_id TEXT`, `linked_parent_task_id TEXT`, `created_at TEXT`, `updated_at TEXT`
+- **tasks**: `id TEXT`, `board_id TEXT`, `type TEXT`, `title TEXT`, `assignee TEXT`, `column TEXT`, `priority TEXT`, `due_date TEXT`, `next_action TEXT`, `waiting_for TEXT`, `description TEXT`, `labels TEXT` (JSON array), `blocked_by TEXT` (JSON array), `notes TEXT` (JSON array), `next_note_id INTEGER`, `reminders TEXT` (JSON array), `subtasks TEXT` (legacy JSON), `parent_task_id TEXT`, `recurrence TEXT` (frequency string: `daily`/`weekly`/`monthly`/`yearly`), `current_cycle TEXT` (nullable decimal integer as string — e.g. `'0'`, `'3'` — parse with `parseInt`; NOT a JSON object), `max_cycles INTEGER`, `recurrence_end_date TEXT`, `participants TEXT` (JSON array of person_id values — meeting attendees; join with board_people to get display names), `scheduled_at TEXT` (ISO-8601 UTC — meeting date/time), `_last_mutation TEXT` (JSON object), `child_exec_enabled INTEGER`, `child_exec_board_id TEXT`, `child_exec_person_id TEXT`, `child_exec_rollup_status TEXT`, `child_exec_last_rollup_at TEXT`, `child_exec_last_rollup_summary TEXT`, `linked_parent_board_id TEXT`, `linked_parent_task_id TEXT`, `created_at TEXT`, `updated_at TEXT`
 - **board_people**: `board_id TEXT`, `person_id TEXT`, `name TEXT`, `phone TEXT`, `role TEXT`, `wip_limit INTEGER`, `notification_group_jid TEXT`
 - **board_admins**: `board_id TEXT`, `person_id TEXT`, `phone TEXT`, `admin_role TEXT`, `is_primary_manager INTEGER`
 - **board_config**: `board_id TEXT`, `columns TEXT` (JSON array), `wip_limit INTEGER`, `next_task_number INTEGER` (legacy/simple-task counter), `next_project_number INTEGER`, `next_recurring_number INTEGER`, `next_note_id INTEGER`
@@ -1014,7 +1015,8 @@ Parse dates per {{LANGUAGE}}:
 
 Comma-separated task IDs with plural verb forms trigger batch mode:
 - `T5, T6, T7 aprovadas` -> call `taskflow_move` for each with `action: 'approve'`
-- Supported for: approve, reject, conclude, cancel
+- Supported `taskflow_move` actions: `approve`, `reject`, `conclude`, `return`, `review`, `start`, `resume`, `wait`, `reopen`, `force_start`
+- Cancellation is NOT a `taskflow_move` action. For `T5, T6 canceladas`, loop over the IDs and call `taskflow_admin({ action: 'cancel_task', task_id, sender_name: SENDER })` for each (with the same "ask confirmation in chat first" rule as single-task cancellation).
 - Process each individually; report results: "T5: aprovada. T6: not in Review (skipped). T7: aprovada. Resultado: 2/3 processadas."
 
 ## Duplicate Detection
