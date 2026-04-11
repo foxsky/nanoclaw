@@ -172,6 +172,18 @@ Observações importantes:
 | `@Case reatribuir T001 para Rafael` | Muda o responsável da tarefa (responsável ou gestor, pede confirmação) |
 | `@Case cancelar T001` | Cancela e arquiva (gestor, pede confirmação) |
 | `@Case restaurar T001` | Restaura uma tarefa arquivada para Próxima Ação (gestor) |
+| `@Case mover T001 para dentro de T002` | Reparenta T001 como subtarefa de T002, preservando histórico, prazo e notas |
+| `@Case destacar T001.1` | Destaca a subtarefa T001.1 do projeto pai e a transforma em tarefa independente |
+
+**Cancelar tarefa (exclusão suave):** `cancelar T001` faz uma exclusão suave — a tarefa sai do quadro e vai para o arquivo, mas o histórico é preservado. Se o gestor se arrepender, pode usar `@Case desfazer` em até 60 segundos para reverter, ou `restaurar T001` depois para trazer a tarefa de volta para Próxima Ação. Antes de confirmar, o assistente avisa quais dependências e lembretes serão afetados.
+
+**Reparentar tarefa entre quadros:** `mover T001 para dentro de T002` transforma T001 em subtarefa de T002, preservando histórico, prazo, notas e responsável. A operação funciona mesmo quando T002 está em outro quadro dentro da hierarquia — os registros de histórico ficam acessíveis em ambos os lados.
+
+**Destacar subtarefa:** `destacar T001.1` promove uma subtarefa para tarefa independente do quadro, desligando-a do projeto pai. O novo ID segue a numeração de tarefas simples e o histórico da subtarefa é mantido.
+
+**Atribuição padrão ao autor:** Ao criar uma tarefa com `tarefa: [descrição]` (ou usando a captura rápida) sem especificar destinatário, o assistente atribui automaticamente a quem enviou a mensagem. Se o remetente não estiver cadastrado como membro da equipe, a tarefa cai no Inbox para triagem.
+
+**Prazos em dias úteis:** Quando um prazo cai em fim de semana ou feriado cadastrado no quadro (ver `@Case adicionar feriado`), o assistente empurra automaticamente o vencimento para o próximo dia útil e registra o ajuste no histórico. Standup e resumo do gestor já consideram a data ajustada ao listar atrasos.
 
 ### Reuniões
 
@@ -215,8 +227,16 @@ Em reuniões, a mesma estrutura de notas é usada para pauta, ata e pós-reuniã
 | `@Case remover participante M001: Giovanni` | Remove participante |
 | `@Case participantes M001` | Mostra organizador e participantes |
 | `@Case processar ata M001` | Abre a triagem dos itens ainda abertos da reunião |
+| `@Case adicionar participante externo M001: Maria, 5511988887777` | Adiciona um participante externo à reunião (nome + telefone) |
+| `@Case remover participante externo M001: Maria` | Remove participante externo da reunião |
 
 `pauta M001` sem dois-pontos consulta a pauta. `pauta M001: texto` adiciona um item novo.
+
+**Transições de estado da reunião:** Reuniões seguem o mesmo fluxo do quadro (Próxima Ação → Em Andamento → Aguardando → Revisão → Concluída), mas cada coluna tem um papel próprio: pauta antes, ata durante, desdobramentos depois. Use `começando M001` quando a reunião inicia, `M001 aguardando [motivo]` se for interrompida, `M001 retomada` para continuar e `M001 concluida` ao finalizar. Ao concluir, se ainda houver itens de ata marcados como abertos, o assistente avisa e sugere `processar ata M001`.
+
+**Triagem de itens da ata:** `processar ata M001` entra em modo de triagem interativa dos itens ainda em aberto. Para cada item, o assistente pede uma decisão: `marcar item M001 #3 como resolvido`, `reabrir item M001 #3` ou `descartar item M001 #3`. Itens resolvidos saem do painel de pendências; itens descartados ficam registrados no histórico mas não entram no relatório da próxima reunião recorrente.
+
+**Participantes externos em reunião:** Quando alguém de fora da equipe precisa ser convidado, use `adicionar participante externo M001: Maria, 5511988887777` — nome e telefone no formato internacional. O assistente envia o convite diretamente por mensagem privada (DM) para o número informado com os detalhes da reunião (título, data, hora, pauta). A pessoa pode responder pela mesma DM e o assistente registra a confirmação na reunião. Use `remover participante externo M001: Maria` se o convite for cancelado.
 
 ### Operações em Lote
 
@@ -273,7 +293,7 @@ Limitações: não desfaz criação (use `cancelar`), arquivamento, avanço de r
 | `@Case vencem amanha` | Tarefas com prazo para amanhã |
 | `@Case vencem esta semana` | Tarefas com prazo até o fim da semana atual |
 | `@Case proximos 7 dias` | Tarefas com prazo nos próximos 7 dias |
-| `@Case buscar contrato` | Busca texto em título, próxima ação, aguardando e notas |
+| `@Case buscar contrato` | Busca texto em título, próxima ação, aguardando e notas (busca semântica quando disponível) |
 | `@Case buscar contrato com rotulo financeiro` | Busca texto, mas somente em tarefas com um rótulo específico |
 | `@Case urgentes` | Somente tarefas com prioridade urgente |
 | `@Case prioridade alta` | Somente tarefas com prioridade alta |
@@ -307,6 +327,14 @@ Limitações: não desfaz criação (use `cancelar`), arquivamento, avanço de r
 | `@Case ajuda` | Resumo curto dos comandos (~20 linhas) |
 | `@Case manual` | Referência detalhada de todos os comandos, com descrições, permissões e dicas |
 | `@Case guia rapido` | Guia para iniciantes: conceito do quadro, fluxo típico, primeiros passos |
+
+### Busca Semântica e Detecção de Duplicatas
+
+Quando o serviço de embeddings está ativo, a busca do TaskFlow vai além da correspondência literal: `@Case buscar contrato` devolve também tarefas cujo texto é semanticamente próximo da consulta (por exemplo, "acordo com fornecedor" para "contrato"), ordenadas por relevância. A busca literal continua funcionando como fallback quando o serviço está indisponível.
+
+Ao criar uma tarefa nova, o assistente compara o título com as tarefas já existentes usando o mesmo índice semântico. Se encontrar uma correspondência com similaridade alta (a partir de 0,85), avisa o remetente antes de confirmar a criação, citando a tarefa possivelmente duplicada. Isso ajuda a evitar que a mesma pendência seja registrada duas vezes.
+
+O histórico recente do grupo é usado automaticamente como contexto: antes de cada resposta, o assistente anexa um resumo das interações mais relevantes (ranqueadas pela mesma busca semântica), o que melhora a coerência entre mensagens dentro da mesma conversa. Esse contexto é transparente para o usuário — não é preciso nenhum comando.
 
 ### Estatísticas
 
@@ -413,6 +441,12 @@ Se a tarefa for cancelada, os lembretes ativos também são cancelados antes do 
 | `@Case remover gestor Maria` | Remove um gestor ou delegado (gestor, pede confirmação; o último gestor não pode ser removido) |
 | `@Case remover prazo T001` | Remove prazo da tarefa (gestor) |
 | `@Case transferir tarefas do Alexandre para Rafael` | Transfere todas as tarefas ativas de uma pessoa para outra (gestor, pede confirmação) |
+| `@Case adicionar feriado 21/04: Tiradentes` | Cadastra um feriado no calendário do quadro (gestor) |
+| `@Case remover feriado 21/04` | Remove um feriado do calendário do quadro (gestor) |
+| `@Case feriados 2026` | Lista os feriados cadastrados em um ano |
+| `@Case definir feriados 2026: 01/01, 21/04, 01/05, 07/09, 12/10, 02/11, 15/11, 25/12` | Substitui a lista de feriados de um ano inteiro de uma vez |
+
+**Gerenciar feriados do quadro:** Cada quadro mantém seu próprio calendário de feriados. Quando uma tarefa é criada com prazo que cai em um desses feriados (ou num fim de semana), o assistente empurra automaticamente o vencimento para o próximo dia útil. Isso vale também para recorrências — a próxima ocorrência de uma tarefa recorrente nunca cai em dia não útil sem ajuste.
 
 ---
 
@@ -468,6 +502,12 @@ Enviado automaticamente nos dias úteis à noite. Consolida:
 - 💤 Sem atualização há 24h+
 - ✅ Concluídas hoje
 - 3 sugestões de ação
+
+**Visão compacta do quadro:** Quando o quadro fica grande, o digest noturno usa uma visão compacta — cada coluna aparece em uma única linha com contagens e IDs resumidos em vez de listar todas as tarefas. Assim a mensagem cabe no WhatsApp sem perder a visão geral.
+
+**Resumos condensados:** Quando uma pessoa tem 3 ou mais tarefas numa mesma categoria (ex.: 3+ atrasadas), o resumo colapsa a lista em uma contagem com os títulos mais importantes, em vez de repetir linha por linha. Isso mantém a mensagem curta quando o volume aumenta.
+
+**Briefing por pessoa:** Além do resumo geral, o TaskFlow pode despachar um briefing individual para cada membro da equipe, agrupando suas pendências por urgência (vencidas, vencem hoje, em andamento, aguardando). No modo hierárquico, cada briefing é enviado ao grupo de trabalho da pessoa, não ao quadro pai.
 
 ### Revisão Semanal (Sexta)
 
@@ -897,6 +937,16 @@ Quando uma tarefa é vinculada ao quadro de uma pessoa, o quadro pai recebe atua
 
 O rollup é sempre entre níveis adjacentes — o nível 1 consulta o nível 2, o nível 2 consulta o nível 3. Nenhum nível acessa quadros mais distantes.
 
+**Sinais automáticos do rollup:** O quadro pai recebe notificações espontâneas quando o status agregado de um quadro filho muda. Os três sinais mais comuns:
+
+- **Bloqueado** — uma ou mais tarefas vinculadas caíram em Aguardando por dependência externa; o gestor do pai é avisado para intervir.
+- **Em risco** — o quadro filho tem pelo menos uma tarefa com prazo vencido dentro do conjunto vinculado; aparece destacado no próximo standup e no resumo do gestor.
+- **Concluído** — todas as tarefas vinculadas daquele agrupamento chegaram a Concluída; a entrega global pode ser marcada como pronta pelo gestor do pai.
+
+Os sinais são disparados automaticamente pelo próprio TaskFlow durante a atualização de rollup — o usuário não precisa rodar comando nenhum.
+
+**Proteção de atribuição cross-board:** Quando uma tarefa está vinculada a um quadro filho, o TaskFlow impede que ela seja reatribuída diretamente para uma pessoa de um quadro não relacionado. A reatribuição só funciona dentro do mesmo quadro ou para uma pessoa que já tenha quadro na mesma linha da hierarquia. Se o gestor tentar reatribuir para alguém fora dessa linha, o assistente recusa e explica o motivo.
+
 No quadro que recebe a tarefa vinculada, ela continua acionável: a pessoa pode usar os comandos normais (`TXXX em andamento`, `TXXX concluida`, etc.) para tocar o trabalho.
 
 Use `@Case atualizar status TXXX` apenas quando esse mesmo quadro tiver delegado a entrega para um quadro filho e precisar puxar o progresso agregado de volta.
@@ -934,6 +984,8 @@ Além desses, todos os comandos normais do TaskFlow continuam funcionando em qua
 ### Notificações entre Grupos
 
 No modo hierárquico, quando uma tarefa é atribuída a uma pessoa no quadro pai, a notificação é enviada para o grupo de trabalho dessa pessoa (o quadro filho), não apenas para o grupo do quadro pai. Isso garante que a pessoa veja a notificação no grupo certo.
+
+O despacho entre grupos é feito internamente pelo TaskFlow usando o mecanismo de envio de mensagens do NanoClaw — cada notificação sai do processo principal e chega ao grupo de destino sem precisar de nenhum comando do usuário. Isso é usado também para avisos de rollup (bloqueado, em risco, concluído) enviados do quadro filho para o quadro pai, e para convites de reunião enviados a participantes externos por mensagem privada.
 
 ### Vínculo Automático
 
