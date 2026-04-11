@@ -4,6 +4,15 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-11 (later) — TaskFlow CLAUDE.md.template pt-BR output polish
+
+Partial LOW pass focused on pt-BR accent correctness in bot-output strings. Input-side command synonyms (left column of command tables) intentionally stay unaccented to match WhatsApp user input; only the OUTPUT strings the agent emits to users were corrected.
+
+- `wip_warning` output — `"ja tem"` → `"já tem"` (L547).
+- `recurring_cycle` output strings — `"concluido"` → `"concluído"`, `"Proximo"` → `"Próximo"`, `"concluida"` → `"concluída"`, `"Recorrencia"` → `"Recorrência"`, `"ate"` → `"até"` (L550-L556).
+
+Note: partial pass — the original three-agent review flagged ~17 LOW items but the review output wasn't persisted, so only the subset I could re-surface in a focused search ships here.
+
 ## 2026-04-11 (later) — TaskFlow CLAUDE.md.template 15 MEDIUM cleanups
 
 Follow-up to a49c292. Fifteen MEDIUM items from the three-agent template review — all template-side polish with clear canonical sources (engine code, user manual, feature matrix). Template file only; no engine or docs-side changes.

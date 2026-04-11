@@ -1,5 +1,18 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-04-11 (later, template LOW polish)
+
+### CLAUDE.md.template — pt-BR accent polish on bot-output strings
+Small polish pass focused on output-side Portuguese strings that were missing accents. Input-side command synonyms in the left column of command tables INTENTIONALLY stay unaccented (to match what users type in WhatsApp, which often drops accents) and were NOT touched.
+
+- **L547** (`wip_warning` response handler) — `"[person] ja tem N tarefas em andamento"` → `"[person] já tem N tarefas em andamento"`. The backticked command reference `` `forcar TXXX para andamento` `` stays unaccented to match the canonical command-synonym row at L185 (users copy-paste the form they see).
+- **L550** (`recurring_cycle` non-expired output) — `"Ciclo N concluido. Proximo ciclo: DUE_DATE"` → `"Ciclo N concluído. Próximo ciclo: DUE_DATE"`.
+- **L552** (`recurring_cycle` expired output) — `"✅ RXXX concluida (ciclo final: N)"` → `"✅ RXXX concluída (ciclo final: N)"`.
+- **L554** (`recurring_cycle` expired output) — `"Recorrencia encerrada. Deseja:"` → `"Recorrência encerrada. Deseja:"`.
+- **L556** (`recurring_cycle` expired option 2) — `"2. Estender ate uma nova data"` → `"2. Estender até uma nova data"`.
+
+Note: this is a partial LOW pass. The original three-agent review flagged ~17 LOW items but the review output wasn't persisted as a file, so only the items I could re-surface concretely in a focused search ship here. A deeper LOW-sweep remains open for a future commit if the user wants one.
+
 ## 2026-04-11 (later, template MEDIUM cleanups)
 
 ### CLAUDE.md.template — 15 MEDIUM template-side cleanups (follow-up to a49c292)
