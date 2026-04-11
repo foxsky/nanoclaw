@@ -65,6 +65,23 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_task_run_logs ON task_run_logs(task_id, run_at);
 
+    -- Persistent audit trail for every cross-group / DM send_message
+    -- delivery. Populated by ipc.ts after deps.sendMessage() succeeds,
+    -- read by the TaskFlow daily auditor to verify that DM-send requests
+    -- actually resulted in a delivery (instead of regex-matching on the
+    -- user message and hoping the bot did the right thing).
+    CREATE TABLE IF NOT EXISTS send_message_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_group_folder TEXT NOT NULL,
+      target_chat_jid TEXT NOT NULL,
+      target_kind TEXT NOT NULL,
+      sender_label TEXT,
+      content_preview TEXT NOT NULL,
+      delivered_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_send_message_log_source_at
+      ON send_message_log(source_group_folder, delivered_at);
+
     CREATE TABLE IF NOT EXISTS router_state (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -785,6 +802,42 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     };
   }
   return result;
+}
+
+// --- send_message_log ---
+
+export interface SendMessageLogEntry {
+  sourceGroupFolder: string;
+  targetChatJid: string;
+  targetKind: 'group' | 'dm';
+  senderLabel?: string | null;
+  contentPreview: string;
+  deliveredAt: string;
+}
+
+/**
+ * Append a row to `send_message_log` recording a successful delivery
+ * through `deps.sendMessage()`. Read by the TaskFlow daily auditor to
+ * verify that DM-send requests actually resulted in a cross-group
+ * delivery (rather than regex-matching on the user message and hoping).
+ */
+export function recordSendMessageLog(entry: SendMessageLogEntry): void {
+  const preview =
+    entry.contentPreview.length > 200
+      ? entry.contentPreview.slice(0, 200)
+      : entry.contentPreview;
+  db.prepare(
+    `INSERT INTO send_message_log
+       (source_group_folder, target_chat_jid, target_kind, sender_label, content_preview, delivered_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    entry.sourceGroupFolder,
+    entry.targetChatJid,
+    entry.targetKind,
+    entry.senderLabel ?? null,
+    preview,
+    entry.deliveredAt,
+  );
 }
 
 // --- JSON migration ---

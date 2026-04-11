@@ -10,7 +10,13 @@ import {
   TIMEZONE,
 } from './config.js';
 import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import {
+  createTask,
+  deleteTask,
+  getTaskById,
+  recordSendMessageLog,
+  updateTask,
+} from './db.js';
 import { resolveExternalDm, getTaskflowDb } from './dm-routing.js';
 import { getGroupSenderName } from './group-sender.js';
 import { isValidGroupFolder } from './group-folder.js';
@@ -777,6 +783,26 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                       ? data.sender
                       : getGroupSenderName(targetGroup.trigger);
                   await deps.sendMessage(data.chatJid, data.text, sender);
+                  // Persistent audit trail for the TaskFlow daily auditor.
+                  // The auditor queries `send_message_log` to verify that
+                  // DM-send requests ("mande mensagem pro X") actually
+                  // resulted in a delivery — replaces the older regex-based
+                  // `isDmSend` exemption heuristic.
+                  try {
+                    recordSendMessageLog({
+                      sourceGroupFolder: sourceGroup,
+                      targetChatJid: data.chatJid,
+                      targetKind: 'group',
+                      senderLabel: sender ?? null,
+                      contentPreview: data.text,
+                      deliveredAt: new Date().toISOString(),
+                    });
+                  } catch (err) {
+                    logger.warn(
+                      { chatJid: data.chatJid, sourceGroup, err },
+                      'recordSendMessageLog failed after group send',
+                    );
+                  }
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
                     'IPC message sent',
@@ -805,6 +831,21 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                     const sender =
                       typeof data.sender === 'string' ? data.sender : undefined;
                     await deps.sendMessage(data.chatJid, data.text, sender);
+                    try {
+                      recordSendMessageLog({
+                        sourceGroupFolder: sourceGroup,
+                        targetChatJid: data.chatJid,
+                        targetKind: 'dm',
+                        senderLabel: sender ?? null,
+                        contentPreview: data.text,
+                        deliveredAt: new Date().toISOString(),
+                      });
+                    } catch (err) {
+                      logger.warn(
+                        { chatJid: data.chatJid, sourceGroup, err },
+                        'recordSendMessageLog failed after DM send',
+                      );
+                    }
                     logger.info(
                       { chatJid: data.chatJid, sourceGroup },
                       'IPC DM message sent to external contact',
