@@ -4805,6 +4805,168 @@ describe('TaskflowEngine', () => {
   });
 
   /* ---------------------------------------------------------------- */
+  /*  merge_project                                                     */
+  /* ---------------------------------------------------------------- */
+
+  describe('merge_project', () => {
+    const MERGE_BOARD = 'board-merge';
+    let db: Database.Database;
+    let engine: TaskflowEngine;
+
+    beforeEach(() => {
+      db = new Database(':memory:');
+      db.exec(SCHEMA);
+
+      db.exec(`INSERT INTO boards VALUES ('${MERGE_BOARD}', 'merge@g.us', 'merge', 'standard', 0, 1, NULL, NULL)`);
+      db.exec(`INSERT INTO board_config VALUES ('${MERGE_BOARD}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 10, 5, 1, 1)`);
+      db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${MERGE_BOARD}')`);
+      db.exec(`INSERT INTO board_admins VALUES ('${MERGE_BOARD}', 'person-mgr', '5585999990001', 'manager', 1)`);
+      db.exec(`INSERT INTO board_people VALUES ('${MERGE_BOARD}', 'person-mgr', 'Manager', '5585999990001', 'Gestor', 3, NULL)`);
+      db.exec(`INSERT INTO board_people VALUES ('${MERGE_BOARD}', 'person-dev', 'Developer', '5585999990002', 'Dev', 3, NULL)`);
+
+      const now = new Date().toISOString();
+
+      // Target project P1 with one existing subtask P1.1
+      db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, created_at, updated_at)
+               VALUES ('P1', '${MERGE_BOARD}', 'project', 'Target Project', 'person-mgr', 'in_progress', '${now}', '${now}')`);
+      db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, parent_task_id, created_at, updated_at)
+               VALUES ('P1.1', '${MERGE_BOARD}', 'simple', 'Existing subtask', 'person-dev', 'next_action', 'P1', '${now}', '${now}')`);
+
+      // Source project P2 with two subtasks P2.1, P2.2
+      db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, priority, created_at, updated_at)
+               VALUES ('P2', '${MERGE_BOARD}', 'project', 'Source Project', 'person-dev', 'in_progress', 'high', '${now}', '${now}')`);
+      db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, parent_task_id, due_date, notes, next_note_id, created_at, updated_at)
+               VALUES ('P2.1', '${MERGE_BOARD}', 'simple', 'Migrate subtask A', 'person-dev', 'in_progress', 'P2', '2026-04-20', '[]', 1, '${now}', '${now}')`);
+      db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, parent_task_id, blocked_by, notes, next_note_id, created_at, updated_at)
+               VALUES ('P2.2', '${MERGE_BOARD}', 'simple', 'Migrate subtask B', 'person-mgr', 'next_action', 'P2', '["P2.1"]', '[{"id":1,"text":"existing note","at":"${now}","by":"Manager"}]', 2, '${now}', '${now}')`);
+
+      // History for subtasks
+      db.exec(`INSERT INTO task_history (board_id, task_id, action, by, at, details)
+               VALUES ('${MERGE_BOARD}', 'P2.1', 'created', 'Manager', '${now}', '{}')`);
+      db.exec(`INSERT INTO task_history (board_id, task_id, action, by, at, details)
+               VALUES ('${MERGE_BOARD}', 'P2.2', 'created', 'Manager', '${now}', '{}')`);
+
+      // Source project also has notes
+      db.exec(`UPDATE tasks SET notes = '[{"id":1,"text":"project-level note","at":"${now}","by":"Manager"}]', next_note_id = 2
+               WHERE board_id = '${MERGE_BOARD}' AND id = 'P2'`);
+
+      engine = new TaskflowEngine(db, MERGE_BOARD);
+    });
+
+    afterEach(() => { db.close(); });
+
+    it('merges source subtasks into target project with new IDs', () => {
+      const r = engine.admin({
+        board_id: MERGE_BOARD,
+        action: 'merge_project',
+        source_project_id: 'P2',
+        target_project_id: 'P1',
+        sender_name: 'Manager',
+      });
+      expect(r.success).toBe(true);
+      expect(r.merged).toEqual({ 'P2.1': 'P1.2', 'P2.2': 'P1.3' });
+      expect(r.source_archived).toBe('P2');
+
+      // P1.2 exists on same board with P2.1's title and metadata
+      const p12 = db.prepare(`SELECT * FROM tasks WHERE board_id = ? AND id = 'P1.2'`).get(MERGE_BOARD) as any;
+      expect(p12).toBeTruthy();
+      expect(p12.title).toBe('Migrate subtask A');
+      expect(p12.parent_task_id).toBe('P1');
+      expect(p12.due_date).toBe('2026-04-20');
+
+      // P1.3 exists with P2.2's existing notes + migration note appended
+      const p13 = db.prepare(`SELECT * FROM tasks WHERE board_id = ? AND id = 'P1.3'`).get(MERGE_BOARD) as any;
+      expect(p13).toBeTruthy();
+      expect(p13.title).toBe('Migrate subtask B');
+      const notes = JSON.parse(p13.notes);
+      expect(notes.length).toBeGreaterThanOrEqual(2);
+      expect(notes.some((n: any) => n.text.includes('Migrada de P2.2'))).toBe(true);
+
+      // Old IDs no longer exist
+      expect(db.prepare(`SELECT 1 FROM tasks WHERE id = 'P2.1'`).get()).toBeUndefined();
+      expect(db.prepare(`SELECT 1 FROM tasks WHERE id = 'P2.2'`).get()).toBeUndefined();
+
+      // History rekeyed
+      const hist = db.prepare(`SELECT * FROM task_history WHERE task_id = 'P1.2'`).all();
+      expect(hist.length).toBeGreaterThanOrEqual(1);
+
+      // Source project archived
+      const archived = db.prepare(`SELECT * FROM archive WHERE task_id = 'P2'`).get() as any;
+      expect(archived).toBeTruthy();
+      expect(archived.archive_reason).toBe('merged');
+    });
+
+    it('rekeys blocked_by references from old subtask IDs to new ones', () => {
+      engine.admin({
+        board_id: MERGE_BOARD,
+        action: 'merge_project',
+        source_project_id: 'P2',
+        target_project_id: 'P1',
+        sender_name: 'Manager',
+      });
+
+      // P2.2 had blocked_by: ["P2.1"]. After merge, P1.3 should have blocked_by: ["P1.2"]
+      const p13 = db.prepare(`SELECT blocked_by FROM tasks WHERE board_id = ? AND id = 'P1.3'`).get(MERGE_BOARD) as any;
+      const blockedBy = JSON.parse(p13.blocked_by);
+      expect(blockedBy).toContain('P1.2');
+      expect(blockedBy).not.toContain('P2.1');
+    });
+
+    it('adds migration notes on target project', () => {
+      engine.admin({
+        board_id: MERGE_BOARD,
+        action: 'merge_project',
+        source_project_id: 'P2',
+        target_project_id: 'P1',
+        sender_name: 'Manager',
+      });
+
+      const p1 = db.prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = 'P1'`).get(MERGE_BOARD) as any;
+      const notes = JSON.parse(p1.notes);
+      expect(notes.some((n: any) => n.text.includes('mesclado') || n.text.includes('Migrada'))).toBe(true);
+      expect(notes.some((n: any) => n.text.includes('project-level note') || n.text.includes('[de P2]'))).toBe(true);
+    });
+
+    it('rejects when source is not a project', () => {
+      db.exec(`INSERT INTO tasks (id, board_id, type, title, column, created_at, updated_at)
+               VALUES ('T5', '${MERGE_BOARD}', 'simple', 'Not a project', 'inbox', '${new Date().toISOString()}', '${new Date().toISOString()}')`);
+
+      const r = engine.admin({
+        board_id: MERGE_BOARD,
+        action: 'merge_project',
+        source_project_id: 'T5',
+        target_project_id: 'P1',
+        sender_name: 'Manager',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('project');
+    });
+
+    it('rejects when source equals target', () => {
+      const r = engine.admin({
+        board_id: MERGE_BOARD,
+        action: 'merge_project',
+        source_project_id: 'P1',
+        target_project_id: 'P1',
+        sender_name: 'Manager',
+      });
+      expect(r.success).toBe(false);
+    });
+
+    it('rejects for non-managers', () => {
+      const r = engine.admin({
+        board_id: MERGE_BOARD,
+        action: 'merge_project',
+        source_project_id: 'P2',
+        target_project_id: 'P1',
+        sender_name: 'Developer',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('manager');
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
   /*  cross-board subtask mode                                         */
   /* ---------------------------------------------------------------- */
 

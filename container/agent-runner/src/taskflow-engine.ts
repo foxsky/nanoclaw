@@ -195,7 +195,7 @@ export interface UndoResult extends TaskflowResult {
 
 export interface AdminParams {
   board_id: string;
-  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision' | 'accept_external_invite' | 'reparent_task' | 'detach_task';
+  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision' | 'accept_external_invite' | 'reparent_task' | 'detach_task' | 'merge_project';
   sender_name: string;
   person_name?: string;
   phone?: string;
@@ -220,6 +220,8 @@ export interface AdminParams {
   };
   sender_external_id?: string;
   target_parent_id?: string;
+  source_project_id?: string;
+  target_project_id?: string;
 }
 
 export interface AdminResult extends TaskflowResult {
@@ -6681,6 +6683,195 @@ export class TaskflowEngine {
               detached_from: parentId,
               detached_from_title: parent.title,
             },
+          };
+        }
+
+        /* ---- merge_project ---- */
+        case 'merge_project': {
+          if (!params.source_project_id || !params.target_project_id) {
+            return { success: false, error: 'Missing required parameters: source_project_id and target_project_id' };
+          }
+          if (params.source_project_id === params.target_project_id) {
+            return { success: false, error: 'source_project_id and target_project_id must be different.' };
+          }
+
+          // Manager-only (the outer permission check handles process_inbox/external;
+          // merge_project must be explicitly manager-restricted)
+          const mergeSender = this.resolvePerson(params.sender_name);
+          const mergeSenderId = mergeSender?.person_id ?? params.sender_name;
+          const isMergeMgr = this.db
+            .prepare(`SELECT 1 FROM board_admins WHERE board_id = ? AND person_id = ? AND admin_role = 'manager'`)
+            .get(this.boardId, mergeSenderId);
+          if (!isMergeMgr) {
+            return { success: false, error: 'Only managers can merge projects.' };
+          }
+
+          const source = this.getTask(params.source_project_id);
+          if (!source) return { success: false, error: `Source project ${params.source_project_id} not found.` };
+          if (source.type !== 'project') return { success: false, error: `${params.source_project_id} is not a project (type=${source.type}).` };
+
+          const target = this.getTask(params.target_project_id);
+          if (!target) return { success: false, error: `Target project ${params.target_project_id} not found.` };
+          if (target.type !== 'project') return { success: false, error: `${params.target_project_id} is not a project (type=${target.type}).` };
+
+          const sourceBoardId = this.taskBoardId(source);
+          const targetBoardId = this.taskBoardId(target);
+          const now = new Date().toISOString();
+
+          // Get source subtasks
+          const sourceSubtasks = this.getSubtaskRows(source.id, sourceBoardId);
+          if (sourceSubtasks.length === 0) {
+            return { success: false, error: `Source project ${source.id} has no subtasks to merge.` };
+          }
+
+          // Get target's current max subtask number
+          const targetSubtasks = this.getSubtaskRows(target.id, targetBoardId);
+          let nextNum = targetSubtasks.reduce((max: number, s: { id: string }) => {
+            const parts = s.id.split('.');
+            const num = parseInt(parts[parts.length - 1], 10);
+            return Number.isNaN(num) ? max : Math.max(max, num);
+          }, 0) + 1;
+
+          // Build old→new ID mapping first (needed for blocked_by rekey)
+          const idMap: Record<string, string> = {};
+          for (const sub of sourceSubtasks) {
+            const newId = `${target.id}.${nextNum}`;
+            idMap[sub.id] = newId;
+            nextNum++;
+          }
+
+          const merged: Record<string, string> = {};
+          let notesAdded = 0;
+
+          // For each source subtask: UPDATE in place
+          for (const sub of sourceSubtasks) {
+            const newId = idMap[sub.id];
+            merged[sub.id] = newId;
+
+            // Compute child_exec wiring for the target board
+            const childLink = this.linkedChildBoardFor(targetBoardId, sub.assignee);
+
+            // Add migration note to the subtask's existing notes
+            const subNotes: Array<any> = JSON.parse(sub.notes ?? '[]');
+            const subNoteId = sub.next_note_id ?? 1;
+            subNotes.push({
+              id: subNoteId,
+              text: `Migrada de ${sub.id} (projeto ${source.id} mesclado em ${target.id})`,
+              at: now,
+              by: params.sender_name,
+            });
+            notesAdded++;
+
+            // Pre-existence check
+            const exists = this.db
+              .prepare(`SELECT 1 FROM tasks WHERE board_id = ? AND id = ?`)
+              .get(targetBoardId, newId);
+            if (exists) {
+              return { success: false, error: `Target ID ${newId} already exists on board ${targetBoardId}. Subtask ID collision.` };
+            }
+
+            // UPDATE the subtask row in place
+            this.db.prepare(`
+              UPDATE tasks SET
+                board_id = ?,
+                id = ?,
+                parent_task_id = ?,
+                child_exec_enabled = ?,
+                child_exec_board_id = ?,
+                child_exec_person_id = ?,
+                notes = ?,
+                next_note_id = ?,
+                updated_at = ?
+              WHERE board_id = ? AND id = ?
+            `).run(
+              targetBoardId, newId, target.id,
+              childLink.child_exec_enabled,
+              childLink.child_exec_board_id,
+              childLink.child_exec_person_id,
+              JSON.stringify(subNotes), subNoteId + 1, now,
+              sourceBoardId, sub.id,
+            );
+
+            // Rekey task_history
+            this.db.prepare(`
+              UPDATE task_history SET board_id = ?, task_id = ?
+              WHERE board_id = ? AND task_id = ?
+            `).run(targetBoardId, newId, sourceBoardId, sub.id);
+          }
+
+          // Rekey blocked_by references across ALL tasks
+          for (const [oldId, newId] of Object.entries(idMap)) {
+            const rows = this.db.prepare(
+              `SELECT board_id, id, blocked_by FROM tasks WHERE blocked_by LIKE ?`,
+            ).all(`%"${oldId}"%`) as Array<{ board_id: string; id: string; blocked_by: string }>;
+
+            for (const row of rows) {
+              const blockedBy: string[] = JSON.parse(row.blocked_by);
+              const updated = blockedBy.map((dep) => dep === oldId ? newId : dep);
+              this.db.prepare(`UPDATE tasks SET blocked_by = ? WHERE board_id = ? AND id = ?`)
+                .run(JSON.stringify(updated), row.board_id, row.id);
+            }
+          }
+
+          // Add merge summary note on the target project
+          const targetNotes: Array<any> = JSON.parse(target.notes ?? '[]');
+          let targetNoteId = target.next_note_id ?? 1;
+
+          // Copy source project-level notes with prefix
+          const sourceNotes: Array<any> = JSON.parse(source.notes ?? '[]');
+          for (const sn of sourceNotes) {
+            targetNotes.push({
+              id: targetNoteId,
+              text: `[de ${source.id}] ${sn.text}`,
+              at: sn.at,
+              by: sn.by,
+            });
+            targetNoteId++;
+            notesAdded++;
+          }
+
+          // Merge summary
+          const mapping = Object.entries(merged).map(([o, n]) => `${o}→${n}`).join(', ');
+          targetNotes.push({
+            id: targetNoteId,
+            text: `Projeto ${source.id} mesclado — subtarefas migradas: ${mapping}`,
+            at: now,
+            by: params.sender_name,
+          });
+          targetNoteId++;
+          notesAdded++;
+
+          this.db.prepare(`UPDATE tasks SET notes = ?, next_note_id = ?, updated_at = ? WHERE board_id = ? AND id = ?`)
+            .run(JSON.stringify(targetNotes), targetNoteId, now, targetBoardId, target.id);
+
+          // Add farewell note on source project before archiving
+          const srcNotes: Array<any> = JSON.parse(source.notes ?? '[]');
+          const srcNoteId = source.next_note_id ?? 1;
+          srcNotes.push({
+            id: srcNoteId,
+            text: `Projeto mesclado em ${target.id} — todas as subtarefas migradas`,
+            at: now,
+            by: params.sender_name,
+          });
+          this.db.prepare(`UPDATE tasks SET notes = ?, next_note_id = ?, updated_at = ? WHERE board_id = ? AND id = ?`)
+            .run(JSON.stringify(srcNotes), srcNoteId + 1, now, sourceBoardId, source.id);
+          notesAdded++;
+
+          // Re-read source with updated notes for archive snapshot
+          const sourceForArchive = this.getTask(params.source_project_id);
+          if (sourceForArchive) {
+            this.archiveTask(sourceForArchive, 'merged');
+          }
+
+          // Delete the source project row (archiveTask snapshots but may not delete in all code paths)
+          this.db.prepare(`DELETE FROM tasks WHERE board_id = ? AND id = ?`).run(sourceBoardId, source.id);
+
+          return {
+            success: true,
+            merged,
+            source_archived: params.source_project_id,
+            notes_added: notesAdded,
+            data: { message: `Projeto ${params.source_project_id} mesclado em ${params.target_project_id}. ${Object.keys(merged).length} subtarefa(s) migrada(s).` },
           };
         }
 
