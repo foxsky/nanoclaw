@@ -100,13 +100,15 @@ describe('GroupQueue', () => {
 
   // --- Tasks prioritized over messages ---
 
-  it('drains tasks before messages for same group', async () => {
+  it('drains messages before tasks for same group (messages-first priority, commit 03b9e97)', async () => {
+    // Queue priority was flipped from tasks-first to messages-first on
+    // 2026-04-01 to prevent 2h+ delays after service restart when a task
+    // backlog filled container slots. User messages must drain first.
     const executionOrder: string[] = [];
     let resolveFirst: () => void;
 
     const processMessages = vi.fn(async (_groupJid: string) => {
       if (executionOrder.length === 0) {
-        // First call: block until we release it
         await new Promise<void>((resolve) => {
           resolveFirst = resolve;
         });
@@ -117,25 +119,20 @@ describe('GroupQueue', () => {
 
     queue.setProcessMessagesFn(processMessages);
 
-    // Start processing messages (takes the active slot)
     queue.enqueueMessageCheck('group1@g.us');
     await vi.advanceTimersByTimeAsync(10);
 
-    // While active, enqueue both a task and pending messages
     const taskFn = vi.fn(async () => {
       executionOrder.push('task');
     });
     queue.enqueueTask('group1@g.us', 'task-1', taskFn);
     queue.enqueueMessageCheck('group1@g.us');
 
-    // Release the first processing
     resolveFirst!();
     await vi.advanceTimersByTimeAsync(10);
 
-    // Task should have run before the second message check
-    expect(executionOrder[0]).toBe('messages'); // first call
-    expect(executionOrder[1]).toBe('task'); // task runs first in drain
-    // Messages would run after task completes
+    expect(executionOrder[0]).toBe('messages'); // first (blocking) call
+    expect(executionOrder[1]).toBe('messages'); // second message check drains before the task
   });
 
   // --- Retry with backoff on failure ---
