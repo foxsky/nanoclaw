@@ -12,8 +12,16 @@
 - Rekeys `task_history` and `blocked_by` JSON references to match new IDs.
 - Adds migration notes on every affected entity: each migrated subtask ("Migrada de P2.1"), the target project (merge summary + copied source notes with `[de P2]` prefix), and the source project (farewell note before archive).
 - Archives the empty source project with `archive_reason: 'merged'`.
+- **Source must be local** to the current board — rejects delegated (non-local) source projects. Codex gpt-5.4 review found that `archiveTask` uses `this.boardId` for the archive INSERT, so a delegated source would land the archive row on the wrong board and bypass the parent board's authorization.
 - Manager-only. Works for same-board merges too.
 - IPC Zod schema updated: `merge_project` added to action enum + `source_project_id`/`target_project_id` params.
+
+### /simplify refactor
+- Extracted `nextSubtaskNum()` helper — eliminated duplicate subtask-ID max+1 reduce() in both `add_subtask` and `merge_project`.
+- Replaced raw manager SQL check in `merge_project` with existing `isManager()` helper.
+- Removed redundant pre-existence check (UNIQUE constraint handles collision inside transaction).
+- Removed redundant DELETE after `archiveTask` (archiveTask already handles row deletion).
+- Removed redundant re-read of source before archive (pass computed srcNotes via spread instead).
 
 ### Template updates
 - Cross-board subtask mode guidance after the delegated-tasks block (mode-aware error handling for `blocked`/`approval`).
@@ -23,8 +31,9 @@
 
 ### Tests
 - 4 new engine tests for cross-board subtask mode (open, blocked, approval, same-board bypass).
-- 6 new engine tests for `merge_project` (happy path, blocked_by rekey, migration notes, reject non-project, reject same-ID, reject non-manager).
+- 7 new engine tests for `merge_project` (happy path, blocked_by rekey, migration notes, reject non-project, reject same-ID, reject non-manager, reject delegated source).
 - 2 new skill drift-guard tests (template content + MCP schema).
+- 229 engine tests / 898 project tests pass.
 
 ## 2026-04-11 (later, Edilson premature-registration fix)
 

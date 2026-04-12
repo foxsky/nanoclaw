@@ -7,9 +7,10 @@ For detailed release notes, see the [full changelog on the documentation site](h
 ## 2026-04-12 — Cross-board subtask Phase 1
 
 - **`cross_board_subtask_mode` flag** — new `board_runtime_config` column (`TEXT NOT NULL DEFAULT 'open'`). Three values: `open` (direct creation), `approval` (stub for Phase 2), `blocked` (refuse with guidance). Engine check in `add_subtask` path reads the PARENT board's mode; only fires cross-board, same-board always allowed.
-- **`merge_project` admin action** — UPDATE-in-place merge of source project subtasks into target project. Rekeys task_history + blocked_by references, adds migration notes on every affected entity, archives source with `reason='merged'`. Manager-only. IPC Zod updated with new action + params.
-- **Template** — mode-aware guidance, mode-change admin commands, merge command row, schema reference update.
-- **Tests** — 4 mode tests + 6 merge tests + 2 drift-guard tests. 898 project tests pass (1 pre-existing unrelated failure).
+- **`merge_project` admin action** — UPDATE-in-place merge of source project subtasks into target project. Rekeys task_history + blocked_by references, adds migration notes on every affected entity, archives source with `reason='merged'`. Manager-only. Source must be local to the current board (Codex review finding: `archiveTask` uses `this.boardId` for archive rows, so delegated sources would land on the wrong board). IPC Zod updated with new action + params.
+- **`nextSubtaskNum` helper** — extracted from the duplicated subtask-ID max+1 computation in both `add_subtask` and `merge_project` (/simplify review).
+- **Template** — mode-aware guidance after delegated-tasks block, mode-change admin commands (`"modo subtarefa cross-board: aberto|aprovação|bloqueado"`), merge command row (`"mesclar PXXX em PYYY"`), `cross_board_subtask_mode` in schema reference.
+- **Tests** — 4 mode tests + 7 merge tests (incl. delegated-source rejection) + 2 drift-guard tests. 229 engine / 898 project tests pass.
 
 ## 2026-04-11 (later) — Edilson premature-registration fix (engine + template)
 
