@@ -23,12 +23,12 @@ import {
 } from './provision-shared.js';
 
 // Default cron schedules (America/Fortaleza, UTC-3)
-const DEFAULT_STANDUP_LOCAL = '0 8 * * 1-5';
-const DEFAULT_DIGEST_LOCAL = '0 18 * * 1-5';
-const DEFAULT_REVIEW_LOCAL = '0 11 * * 5';
-const DEFAULT_STANDUP_UTC = '0 11 * * 1-5';
-const DEFAULT_DIGEST_UTC = '0 21 * * 1-5';
-const DEFAULT_REVIEW_UTC = '0 17 * * 5';
+export const DEFAULT_STANDUP_LOCAL = '0 8 * * 1-5';
+export const DEFAULT_DIGEST_LOCAL = '0 18 * * 1-5';
+export const DEFAULT_REVIEW_LOCAL = '0 11 * * 5';
+export const DEFAULT_STANDUP_UTC = '0 11 * * 1-5';
+export const DEFAULT_DIGEST_UTC = '0 21 * * 1-5';
+export const DEFAULT_REVIEW_UTC = '0 14 * * 5';
 
 const handleProvisionRootBoard: IpcHandler = async (
   data,
