@@ -1,5 +1,9 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+
+import { DATA_DIR } from './config.js';
 import {
   _initTestDatabase,
   createTask,
@@ -674,5 +678,72 @@ describe('register_group success', () => {
     );
 
     expect(getRegisteredGroup('partial@g.us')).toBeUndefined();
+  });
+});
+
+// --- deferred_notification TTL safety ---
+//
+// Regression: if a deferred_notification payload is missing/invalid
+// `timestamp`, the TTL guard was skipped. When the target person's board
+// wasn't yet provisioned (or the taskflow DB was unavailable), the handler
+// would re-queue the same payload every poll cycle forever — burning CPU
+// and never expiring. The fix stamps `data.timestamp` when missing so the
+// next cycle can TTL-expire the notification.
+
+describe('deferred_notification TTL stamping', () => {
+  const TEST_SOURCE_GROUP = 'ipc-test-deferred-notification';
+  const testTasksDir = path.join(
+    DATA_DIR,
+    'ipc',
+    TEST_SOURCE_GROUP,
+    'tasks',
+  );
+
+  afterEach(() => {
+    try {
+      fs.rmSync(path.join(DATA_DIR, 'ipc', TEST_SOURCE_GROUP), {
+        recursive: true,
+        force: true,
+      });
+    } catch {
+      // best-effort cleanup
+    }
+  });
+
+  it('stamps timestamp on re-queue when original payload lacks one', async () => {
+    fs.mkdirSync(testTasksDir, { recursive: true });
+
+    // Process a deferred_notification with NO timestamp field. Because the
+    // taskflow DB is not present in the test env, the handler will hit the
+    // `tfDb === null` branch and call reQueueDeferredNotification. Without
+    // the fix, the re-queued payload would still lack a timestamp and
+    // never TTL-expire.
+    await processTaskIpc(
+      {
+        type: 'deferred_notification',
+        target_person_id: 'person-123',
+        text: 'hello',
+        // no `timestamp` field on purpose
+      },
+      TEST_SOURCE_GROUP,
+      false,
+      deps,
+    );
+
+    const files = fs
+      .readdirSync(testTasksDir)
+      .filter((f) => f.endsWith('.json'));
+    expect(files.length).toBe(1);
+
+    const requeued = JSON.parse(
+      fs.readFileSync(path.join(testTasksDir, files[0]), 'utf-8'),
+    );
+    expect(requeued.type).toBe('deferred_notification');
+    expect(requeued.target_person_id).toBe('person-123');
+    expect(typeof requeued.timestamp).toBe('string');
+    const stamped = new Date(requeued.timestamp as string).getTime();
+    expect(Number.isFinite(stamped)).toBe(true);
+    // The stamp should be close to "now" (within a few seconds).
+    expect(Math.abs(Date.now() - stamped)).toBeLessThan(5000);
   });
 });

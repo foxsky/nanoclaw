@@ -470,12 +470,16 @@ const handleDeferredNotification: IpcHandler = async (
   const text = data.text as string | undefined;
   if (!personId || !text) return;
 
-  // TTL guard: drop notifications older than 5 minutes
-  const createdAt =
-    typeof data.timestamp === 'string' ? new Date(data.timestamp).getTime() : 0;
-  if (createdAt > 0 && Date.now() - createdAt > DEFERRED_NOTIFICATION_TTL_MS) {
+  // TTL guard: drop notifications older than 5 minutes.
+  // If the timestamp is missing or malformed, stamp it now so that future
+  // re-queue cycles can expire the notification instead of looping forever.
+  const parsedTimestamp =
+    typeof data.timestamp === 'string' ? new Date(data.timestamp).getTime() : NaN;
+  if (!Number.isFinite(parsedTimestamp) || parsedTimestamp <= 0) {
+    data.timestamp = new Date().toISOString();
+  } else if (Date.now() - parsedTimestamp > DEFERRED_NOTIFICATION_TTL_MS) {
     logger.warn(
-      { personId, sourceGroup, age: Date.now() - createdAt },
+      { personId, sourceGroup, age: Date.now() - parsedTimestamp },
       'Deferred notification expired (TTL exceeded), dropping',
     );
     return;
