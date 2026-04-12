@@ -17,6 +17,24 @@ export interface ContainerInput {
   embeddingModel?: string;
 }
 
+/**
+ * Session-level slash commands that are intercepted by the agent-runner
+ * and forwarded to the SDK as-is (bypassing normal prompt processing).
+ *
+ * These must be matched against the ORIGINAL user prompt, NOT against
+ * any prompt that has been mutated with prepended context (e.g. recent
+ * conversation recap or embedding preambles). Otherwise a user sending
+ * `/compact` with recent context history present would have the prompt
+ * silently rewritten to `<recap>\n\n/compact`, and slash-command
+ * detection would fail — shipping the compact literal as a chat message
+ * instead of triggering session compaction.
+ */
+const KNOWN_SESSION_COMMANDS = new Set(['/compact']);
+
+export function isSessionSlashCommand(rawPrompt: string): boolean {
+  return KNOWN_SESSION_COMMANDS.has(rawPrompt.trim());
+}
+
 export const NANOCLAW_ALLOWED_TOOLS = [
   'Bash',
   'Read',

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildNanoclawMcpEnv,
+  isSessionSlashCommand,
   NANOCLAW_ALLOWED_TOOLS,
 } from './runtime-config.js';
 
@@ -30,6 +31,30 @@ describe('agent-runner runtime config', () => {
       NANOCLAW_TASKFLOW_BOARD_ID: 'board-taskflow-root',
       NANOCLAW_TASKFLOW_HIERARCHY_LEVEL: '0',
       NANOCLAW_TASKFLOW_MAX_DEPTH: '3',
+    });
+  });
+
+  describe('isSessionSlashCommand', () => {
+    it('matches /compact on its own', () => {
+      expect(isSessionSlashCommand('/compact')).toBe(true);
+      expect(isSessionSlashCommand('  /compact  \n')).toBe(true);
+    });
+
+    it('does NOT match when prompt has been mutated with prepended context', () => {
+      // Regression: context recap / embedding preamble are prepended to the
+      // prompt before slash-command detection. If detection runs on the
+      // mutated prompt, /compact is silently demoted to a chat message.
+      const recap = '--- Recent conversation history ---\n[Apr 10 10:00] Prior chat\n---';
+      const mutated = `${recap}\n\n/compact`;
+      expect(isSessionSlashCommand(mutated)).toBe(false);
+      // But the ORIGINAL prompt still matches, which is the whole point:
+      // callers must pass the raw user prompt, not the mutated one.
+      expect(isSessionSlashCommand('/compact')).toBe(true);
+    });
+
+    it('does not match unknown slash commands', () => {
+      expect(isSessionSlashCommand('/unknown')).toBe(false);
+      expect(isSessionSlashCommand('hello /compact world')).toBe(false);
     });
   });
 

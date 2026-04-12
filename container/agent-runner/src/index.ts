@@ -22,6 +22,7 @@ import { fileURLToPath } from 'url';
 import {
   buildNanoclawMcpEnv,
   ContainerInput,
+  isSessionSlashCommand,
   NANOCLAW_ALLOWED_TOOLS,
 } from './runtime-config.js';
 
@@ -740,11 +741,12 @@ async function main(): Promise<void> {
   // --- Slash command handling ---
   // Only known session slash commands are handled here. This prevents
   // accidental interception of user prompts that happen to start with '/'.
-  const KNOWN_SESSION_COMMANDS = new Set(['/compact']);
-  const trimmedPrompt = prompt.trim();
-  const isSessionSlashCommand = KNOWN_SESSION_COMMANDS.has(trimmedPrompt);
+  // Check the ORIGINAL prompt, not `prompt`, because context preambles
+  // (recent conversation recap, embedding context) are prepended above
+  // and would otherwise hide `/compact` from detection.
+  const trimmedPrompt = containerInput.prompt.trim();
 
-  if (isSessionSlashCommand) {
+  if (isSessionSlashCommand(containerInput.prompt)) {
     log(`Handling session command: ${trimmedPrompt}`);
     let slashSessionId: string | undefined;
     let compactBoundarySeen = false;
