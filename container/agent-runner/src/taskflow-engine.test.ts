@@ -343,6 +343,31 @@ describe('TaskflowEngine', () => {
       expect(r.data.recent_history).toHaveLength(1);
       expect(r.data.recent_history[0].board_id).toBe(ownerBoardId);
     });
+
+    it('orders project subtasks numerically (not lexicographically) when there are 10+', () => {
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at)
+         VALUES ('P-500', '${BOARD_ID}', 'project', 'Big Project', 'person-1', 'next_action', 0, '${now}', '${now}')`,
+      );
+      // Insert subtasks in reverse order to guard against "happens to be insert order" passes.
+      for (let i = 12; i >= 1; i--) {
+        db.exec(
+          `INSERT INTO tasks (id, board_id, type, title, column, requires_close_approval, parent_task_id, created_at, updated_at)
+           VALUES ('P-500.${i}', '${BOARD_ID}', 'simple', 'Sub ${i}', 'next_action', 0, 'P-500', '${now}', '${now}')`,
+        );
+      }
+
+      const r = engine.query({ query: 'task_details', task_id: 'P-500' });
+      expect(r.success).toBe(true);
+      const ids = r.data.subtask_rows.map((s: any) => s.id);
+      // Lexicographic order would yield: P-500.1, P-500.10, P-500.11, P-500.12, P-500.2, ...
+      // Numeric order must yield: P-500.1, P-500.2, ..., P-500.12.
+      expect(ids).toEqual([
+        'P-500.1', 'P-500.2', 'P-500.3', 'P-500.4', 'P-500.5', 'P-500.6',
+        'P-500.7', 'P-500.8', 'P-500.9', 'P-500.10', 'P-500.11', 'P-500.12',
+      ]);
+    });
   });
 
   /* ---------------------------------------------------------------- */

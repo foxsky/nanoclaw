@@ -1260,13 +1260,17 @@ export class TaskflowEngine {
   }
 
   private getSubtaskRows(parentTaskId: string, boardId = this.boardId): any[] {
+    // Subtask IDs are `{parent_id}.{N}` (e.g. P10.1, P10.2, ..., P10.10).
+    // Lexicographic ORDER BY t.id would put P10.10 before P10.2 — sort the
+    // numeric suffix after the last dot so ordering matches subtask creation
+    // order (used by project "next subtask" logic and task_details display).
     return this.db
       .prepare(
         `SELECT t.*, pt.title AS parent_title
          FROM tasks t
          LEFT JOIN tasks pt ON pt.board_id = t.board_id AND pt.id = t.parent_task_id
          WHERE t.board_id = ? AND t.parent_task_id = ?
-         ORDER BY t.id`,
+         ORDER BY CAST(SUBSTR(t.id, LENGTH(t.parent_task_id) + 2) AS INTEGER), t.id`,
       )
       .all(boardId, parentTaskId);
   }
