@@ -8,9 +8,9 @@
 
 When a project (e.g., P24) lives on a parent board (SEC) and is delegated to a child board (SECI) via `child_exec`, users on the child board believe they cannot create subtasks on it. The bot refuses with "P24 pertence ao quadro pai".
 
-**However, code review revealed the engine already supports this.** The `add_subtask` action works on delegated tasks: `requireTask()` finds them via `child_exec`, permission passes for the assignee, `insertSubtaskRow` creates the subtask on the parent board with `board_id = parent_board_id`, and `linkedChildBoardFor` auto-delegates it back to the child board.
+**However, code review revealed the engine already supports this.** The `add_subtask` action works on delegated tasks: `requireTask()` calls `getTask()`, which falls back to `child_exec_board_id = this.boardId` at `taskflow-engine.ts:1136-1145` when no local row exists. The `update()` `add_subtask` branch at L3961-3974 generates the subtask ID via `getSubtaskRows()` + max+1, then calls `insertSubtaskRow()` with `board_id = taskBoardId(task)` (the parent board's ID, not the child's). `linkedChildBoardFor` auto-delegates the new subtask back to the child board.
 
-The refusal is not from the engine or CLAUDE.md templates — it's the LLM's own conservative inference. No code in the engine blocks `add_subtask` on delegated tasks (only `cancel_task` has an explicit cross-board guard at `taskflow-engine.ts:6163`).
+The refusal is not from the engine or CLAUDE.md templates — it's the LLM's own conservative inference. The template at L231 already says delegated tasks are "fully operable" including "add subtasks". No code in the engine blocks `add_subtask` on delegated tasks. (Note: other cross-board guards DO exist for `cancel_task` at L6214, `restore_task` at L6270, and `reparent_task` at L6579 — but `add_subtask` and `detach_task` have none.)
 
 ## Design: Per-Board Flag
 
@@ -38,14 +38,15 @@ Idempotent via the existing `try { ALTER ... } catch {}` pattern in the engine's
 
 ### Engine check (all modes)
 
-In the `add_subtask` path, after `requireTask()` resolves a delegated task:
+In the `update()` method's `add_subtask` branch (after `requireTask()` resolves a delegated task via `getTask()` → child_exec fallback at L1136-1145), use `taskBoardId(task)` to get the parent board's ID and query its runtime_config. The engine already queries other boards' config in the same way (e.g., `getBoardTimezone(db, boardId)` at L456-461):
 
 ```
 if (task.board_id !== this.boardId) {
-  // Task is delegated — check the parent board's subtask mode
-  const parentMode = db.prepare(
+  // Task is delegated — check the PARENT board's subtask mode
+  const owningBoardId = this.taskBoardId(task);
+  const parentMode = this.db.prepare(
     `SELECT cross_board_subtask_mode FROM board_runtime_config WHERE board_id = ?`
-  ).get(task.board_id)?.cross_board_subtask_mode ?? 'open';
+  ).get(owningBoardId)?.cross_board_subtask_mode ?? 'open';
 
   if (parentMode === 'blocked') {
     return { success: false, error: 'O quadro pai não permite criação de subtarefas por quadros filhos. Peça ao gestor do quadro pai para adicionar a subtarefa.' };
@@ -60,13 +61,20 @@ if (task.board_id !== this.boardId) {
 
 ### Admin command to change the mode
 
+No `set_config` admin action exists in the engine today — runtime config changes are done via direct SQL in provisioning/runtime code (e.g., `welcome_sent` at `provision-root-board.ts:480`, runner IDs at `provision-shared.ts:246`). Follow the same pattern:
+
 ```
-"modo subtarefa cross-board: aberto" → taskflow_admin({ action: 'set_config', key: 'cross_board_subtask_mode', value: 'open' })
-"modo subtarefa cross-board: aprovação" → taskflow_admin({ action: 'set_config', key: 'cross_board_subtask_mode', value: 'approval' })
-"modo subtarefa cross-board: bloqueado" → taskflow_admin({ action: 'set_config', key: 'cross_board_subtask_mode', value: 'blocked' })
+"modo subtarefa cross-board: aberto" →
+  mcp__sqlite__write_query("UPDATE board_runtime_config SET cross_board_subtask_mode = 'open' WHERE board_id = '{{BOARD_ID}}'")
+
+"modo subtarefa cross-board: aprovação" →
+  mcp__sqlite__write_query("UPDATE board_runtime_config SET cross_board_subtask_mode = 'approval' WHERE board_id = '{{BOARD_ID}}'")
+
+"modo subtarefa cross-board: bloqueado" →
+  mcp__sqlite__write_query("UPDATE board_runtime_config SET cross_board_subtask_mode = 'blocked' WHERE board_id = '{{BOARD_ID}}'")
 ```
 
-Manager-only. The template teaches the admin commands; the engine validates the value is one of the three allowed strings.
+Manager-only (template instruction enforces via authorization matrix). The template validates the value is one of the three allowed strings BEFORE executing the SQL — refuse anything else. Record the change in task_history with action `'config_changed'`.
 
 ## Solution: Two Phases (unchanged, now flag-gated)
 
@@ -96,22 +104,22 @@ Add the `cross_board_subtask_mode` check as shown in the Design section above. F
 
 ### Child board template (`add-taskflow/templates/CLAUDE.md.template`)
 
-Add to subtask creation rules:
+The existing template at L231 already says delegated tasks are "fully operable" and explicitly includes "add subtasks". No new guidance needed for `'open'` mode — Phase 1 is a template no-op for the base permission.
+
+Add mode-aware handling for the other two values after the existing delegated-tasks block:
 
 ```
-Delegated tasks (tasks where board_id ≠ this board, visible via child_exec):
-- You CAN create subtasks on delegated tasks using taskflow_update add_subtask.
-  The engine creates the subtask on the parent board and auto-delegates it back.
-- You CAN assign subtasks to members of this board.
-- You CANNOT cancel or delete delegated tasks (only the owning board can).
-- For bulk operations ("copiar todas"), create each subtask individually.
-- If the parent board has set `cross_board_subtask_mode = 'approval'`, the engine
-  will return a pending-approval response instead of creating the subtask directly.
-  Present the approval status to the user and explain it needs the parent board
-  manager's approval.
-- If the parent board has set `cross_board_subtask_mode = 'blocked'`, the engine
-  will refuse. Explain that the parent board does not allow subtask creation from
-  child boards and suggest asking the parent board manager directly.
+Cross-board subtask mode — The parent board controls whether child boards can
+create subtasks on delegated projects via `cross_board_subtask_mode` in
+board_runtime_config. When you call `add_subtask` on a delegated task:
+- Mode 'open' (default): subtask is created directly. No action needed beyond
+  the normal flow.
+- Mode 'approval': the engine returns { success: false, pending_approval: true,
+  request_id: '...' }. Tell the user the subtask request was sent to the parent
+  board for approval and they will be notified when it's resolved.
+- Mode 'blocked': the engine returns { success: false, error: '...' }. Tell the
+  user the parent board does not allow subtask creation from child boards and
+  suggest asking the parent board manager directly.
 ```
 
 ### What this enables
@@ -219,13 +227,19 @@ taskflow_admin({
 
 **Manager-only.** Both projects must be visible from the current board (source is local, target is local or delegated via child_exec).
 
-**Algorithm (validated by subagent review 2026-04-12, zero blockers):**
+**Engine plumbing required (Codex gpt-5.4 review 2026-04-12):**
+- Add `'merge_project'` to the engine's admin action union type at `taskflow-engine.ts:198`
+- Add `'merge_project'` to the IPC Zod enum at `ipc-mcp-stdio.ts:920`
+- Add new Zod params: `source_project_id: z.string()`, `target_project_id: z.string()` (both optional, only used for this action)
+- New engine `case 'merge_project':` block in the `admin()` switch
+
+**Algorithm (validated by subagent review 2026-04-12, zero blockers; attributions corrected by Codex review):**
 
 The entire operation runs inside `db.transaction()` for atomicity.
 
 1. **Resolve both projects.** `requireTask(source)` and `requireTask(target)`. Target must be `type='project'`. Source must be `type='project'`. Fail if either doesn't exist or isn't a project.
 
-2. **Compute new subtask IDs.** Read the target project's existing subtasks via `getSubtaskRows()`, take `max(N) + 1` for the next subtask number (same pattern as `insertSubtaskRow` at taskflow-engine.ts ~L3961). This avoids ID collisions.
+2. **Compute new subtask IDs.** Read the target project's existing subtasks via `getSubtaskRows()`, take `max(N) + 1` for the next subtask number (same pattern as the `update()` `add_subtask` branch at `taskflow-engine.ts:3961-3969` — note: the ID generation logic lives there, not inside `insertSubtaskRow` itself). This avoids ID collisions. Race condition with concurrent add_subtask calls is prevented by `db.transaction()` + PK constraint rejection on collision.
 
 3. **For each source subtask, UPDATE in place:**
    ```sql
