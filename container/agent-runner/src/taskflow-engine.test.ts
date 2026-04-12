@@ -2662,6 +2662,45 @@ describe('TaskflowEngine', () => {
       expect(childEngine.getTask('P1.1')).toBeNull();
     });
 
+    it('unassign_subtask on delegated subtask writes history to owning board', () => {
+      // Regression: recordHistory was called without the taskBoardId argument,
+      // so history for a cross-board subtask was incorrectly written to
+      // this.boardId instead of the owning (parent) board.
+      const now = new Date().toISOString();
+      const parentBoardId = 'board-parent-unassign';
+      db.exec(
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'parent-u@g.us', 'parent-unassign', 'standard', 0, 1, NULL, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, child_exec_enabled, child_exec_board_id, child_exec_person_id, created_at, updated_at)
+         VALUES ('P-200', '${parentBoardId}', 'project', 'Parent project', 'person-1', 'in_progress', 1, 1, '${BOARD_ID}', 'person-1', '${now}', '${now}')`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, parent_task_id, requires_close_approval, child_exec_enabled, child_exec_board_id, child_exec_person_id, created_at, updated_at)
+         VALUES ('P-200.1', '${parentBoardId}', 'simple', 'Sub task', 'person-1', 'next_action', 'P-200', 0, 1, '${BOARD_ID}', 'person-1', '${now}', '${now}')`,
+      );
+
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'P-200',
+        sender_name: 'Alexandre',
+        updates: {
+          unassign_subtask: 'P-200.1',
+        },
+      });
+
+      expect(r.success).toBe(true);
+
+      // History row for the subtask unassign must live on the OWNING board.
+      const hist = db
+        .prepare(
+          `SELECT board_id FROM task_history WHERE task_id = ? AND action = 'unassigned'`,
+        )
+        .get('P-200.1') as { board_id: string } | undefined;
+      expect(hist).toBeDefined();
+      expect(hist?.board_id).toBe(parentBoardId);
+    });
+
     it('assign_subtask on delegated project to person not on parent board → succeeds (delegation allowed)', () => {
       const now = new Date().toISOString();
       const parentBoardId = 'board-parent-sub';

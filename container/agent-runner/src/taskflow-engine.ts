@@ -4189,7 +4189,7 @@ export class TaskflowEngine {
           .prepare(`UPDATE tasks SET assignee = NULL, child_exec_enabled = 0, child_exec_board_id = NULL, child_exec_person_id = NULL, updated_at = ? WHERE board_id = ? AND id = ?`)
           .run(now, taskBoardId, updates.unassign_subtask);
         this.recordHistory(updates.unassign_subtask, 'unassigned', params.sender_name,
-          JSON.stringify({ from_assignee: check.subTask.assignee }));
+          JSON.stringify({ from_assignee: check.subTask.assignee }), taskBoardId);
         changes.push(`Subtarefa ${updates.unassign_subtask} desatribuída`);
       }
 
