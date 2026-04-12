@@ -195,7 +195,7 @@ export interface UndoResult extends TaskflowResult {
 
 export interface AdminParams {
   board_id: string;
-  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision' | 'accept_external_invite' | 'reparent_task' | 'detach_task' | 'merge_project';
+  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision' | 'accept_external_invite' | 'reparent_task' | 'detach_task' | 'merge_project' | 'handle_subtask_approval';
   sender_name: string;
   person_name?: string;
   phone?: string;
@@ -211,7 +211,6 @@ export interface AdminParams {
   holiday_dates?: string[];
   holiday_year?: number;
   note_id?: number;
-  decision?: 'create_task' | 'create_inbox';
   create?: {
     type: string;
     title: string;
@@ -222,6 +221,9 @@ export interface AdminParams {
   target_parent_id?: string;
   source_project_id?: string;
   target_project_id?: string;
+  request_id?: string;
+  decision?: 'approve' | 'reject' | 'create_task' | 'create_inbox';
+  reason?: string;
 }
 
 export interface AdminResult extends TaskflowResult {
@@ -808,6 +810,28 @@ export class TaskflowEngine {
         PRIMARY KEY (board_id, meeting_task_id, occurrence_scheduled_at, external_id)
       )
     `);
+
+    // Cross-board subtask approval requests (Phase 2 of cross_board_subtask_mode).
+    // Only used when a parent board has set mode='approval'. Stores pending
+    // requests from child boards so they survive agent restarts.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS subtask_requests (
+        request_id TEXT PRIMARY KEY,
+        source_board_id TEXT NOT NULL,
+        target_board_id TEXT NOT NULL,
+        parent_task_id TEXT NOT NULL,
+        subtasks_json TEXT NOT NULL,
+        requested_by TEXT NOT NULL,
+        requested_by_person_id TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        resolved_by TEXT,
+        resolved_at TEXT,
+        reason TEXT,
+        created_at TEXT NOT NULL,
+        created_subtask_ids TEXT
+      )
+    `);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_subtask_requests_status ON subtask_requests(status, target_board_id)`);
 
     // Migrate legacy per-column counters into the new table (one-time)
     const hasLegacy = (() => {
@@ -3987,10 +4011,55 @@ export class TaskflowEngine {
             };
           }
           if (mode === 'approval') {
+            // Persist the request and return pending_approval with the formatted
+            // message the child-board agent should relay to the parent board.
+            const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            const senderPerson = this.resolvePerson(params.sender_name);
+            const parentBoard = this.db
+              .prepare(`SELECT group_jid, group_folder FROM boards WHERE id = ?`)
+              .get(owningBoardId) as { group_jid: string; group_folder: string } | undefined;
+
+            this.db.prepare(`
+              INSERT INTO subtask_requests (
+                request_id, source_board_id, target_board_id, parent_task_id,
+                subtasks_json, requested_by, requested_by_person_id,
+                status, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+            `).run(
+              requestId, this.boardId, owningBoardId, task.id,
+              JSON.stringify([{ title: updates.add_subtask, assignee: task.assignee ?? null }]),
+              params.sender_name, senderPerson?.person_id ?? null,
+              now,
+            );
+
+            const thisBoard = this.db
+              .prepare(`SELECT group_folder, short_code FROM boards WHERE id = ?`)
+              .get(this.boardId) as { group_folder: string; short_code: string | null } | undefined;
+            const sourceLabel = thisBoard?.short_code ?? thisBoard?.group_folder ?? this.boardId;
+
+            const requestMessage = [
+              '🔔 *Solicitação de subtarefa*',
+              '',
+              `Quadro solicitante: ${sourceLabel}`,
+              `Projeto pai: *${task.id}* — ${task.title}`,
+              `Subtarefa proposta: "${updates.add_subtask}"`,
+              `Responsável proposto: ${task.assignee ?? 'não definido'}`,
+              `Solicitado por: ${params.sender_name}`,
+              `ID: \`${requestId}\``,
+              '',
+              `Para aprovar: \`aprovar ${requestId}\``,
+              `Para rejeitar: \`rejeitar ${requestId} [motivo]\``,
+            ].join('\n');
+
             return {
               success: false,
-              error: 'Criação de subtarefas em projetos delegados requer aprovação do quadro pai. Funcionalidade de aprovação ainda não implementada — peça ao gestor do quadro pai para adicionar a subtarefa diretamente.',
-            };
+              pending_approval: {
+                request_id: requestId,
+                target_chat_jid: parentBoard?.group_jid ?? null,
+                message: requestMessage,
+                parent_board_id: owningBoardId,
+              },
+            } as any;
           }
           // mode === 'open' → fall through to existing logic
         }
@@ -6860,6 +6929,95 @@ export class TaskflowEngine {
             notes_added: notesAdded,
             data: { message: `Projeto ${params.source_project_id} mesclado em ${params.target_project_id}. ${Object.keys(merged).length} subtarefa(s) migrada(s).` },
           };
+        }
+
+        /* ---- handle_subtask_approval ---- */
+        case 'handle_subtask_approval': {
+          if (!params.request_id || !params.decision) {
+            return { success: false, error: 'Missing required parameters: request_id and decision' };
+          }
+          if (params.decision !== 'approve' && params.decision !== 'reject') {
+            return { success: false, error: 'decision must be "approve" or "reject"' };
+          }
+          if (!this.isManager(params.sender_name)) {
+            return { success: false, error: 'Only managers of the target board can approve/reject subtask requests.' };
+          }
+
+          const req = this.db
+            .prepare(`SELECT * FROM subtask_requests WHERE request_id = ? AND target_board_id = ?`)
+            .get(params.request_id, this.boardId) as any;
+          if (!req) {
+            return { success: false, error: `Request ${params.request_id} not found on this board.` };
+          }
+          if (req.status !== 'pending') {
+            return { success: false, error: `Request ${params.request_id} already ${req.status} (by ${req.resolved_by ?? 'unknown'} at ${req.resolved_at ?? 'unknown'}).` };
+          }
+
+          const hsaNow = new Date().toISOString();
+          const subtasksToCreate: Array<{ title: string; assignee?: string | null }> = JSON.parse(req.subtasks_json);
+
+          // Look up the source board's group_jid for the notification-back
+          const sourceBoardRow = this.db
+            .prepare(`SELECT group_jid FROM boards WHERE id = ?`)
+            .get(req.source_board_id) as { group_jid: string } | undefined;
+
+          if (params.decision === 'reject') {
+            this.db.prepare(`
+              UPDATE subtask_requests SET status = 'rejected', resolved_by = ?, resolved_at = ?, reason = ?
+              WHERE request_id = ?
+            `).run(params.sender_name, hsaNow, params.reason ?? null, req.request_id);
+
+            const reasonText = params.reason ? ` — ${params.reason}` : '';
+            const rejectNotice = `❌ *Solicitação rejeitada*\n\nID: \`${req.request_id}\`\nProjeto: ${req.parent_task_id}\nRejeitada por: ${params.sender_name}${reasonText}`;
+
+            return {
+              success: true,
+              data: { decision: 'reject', request_id: req.request_id, message: `Solicitação ${req.request_id} rejeitada.` },
+              notifications: sourceBoardRow ? [{ target_chat_jid: sourceBoardRow.group_jid, message: rejectNotice } as any] : [],
+            } as any;
+          }
+
+          // Approve path: create each subtask on this (target/parent) board
+          const parentTask = this.getTask(req.parent_task_id);
+          if (!parentTask || parentTask.type !== 'project') {
+            return { success: false, error: `Parent task ${req.parent_task_id} is no longer a valid project on this board.` };
+          }
+
+          const createdIds: string[] = [];
+          const existingForParent = this.getSubtaskRows(parentTask.id, this.boardId);
+          let nextSubNum = this.nextSubtaskNum(existingForParent);
+
+          for (const s of subtasksToCreate) {
+            const subtaskId = `${parentTask.id}.${nextSubNum}`;
+            const assignee = s.assignee ?? parentTask.assignee ?? null;
+            const subColumn = assignee ? 'next_action' : 'inbox';
+            this.insertSubtaskRow({
+              boardId: this.boardId,
+              subtaskId,
+              title: s.title,
+              assignee,
+              column: subColumn,
+              parentTaskId: parentTask.id,
+              priority: parentTask.priority ?? null,
+              senderName: params.sender_name,
+              now: hsaNow,
+            });
+            createdIds.push(subtaskId);
+            nextSubNum++;
+          }
+
+          this.db.prepare(`
+            UPDATE subtask_requests SET status = 'approved', resolved_by = ?, resolved_at = ?, created_subtask_ids = ?
+            WHERE request_id = ?
+          `).run(params.sender_name, hsaNow, JSON.stringify(createdIds), req.request_id);
+
+          const approveNotice = `✅ *Solicitação aprovada*\n\nID: \`${req.request_id}\`\nProjeto: ${req.parent_task_id}\nSubtarefas criadas: ${createdIds.join(', ')}\nAprovada por: ${params.sender_name}`;
+
+          return {
+            success: true,
+            data: { decision: 'approve', request_id: req.request_id, created_subtask_ids: createdIds, message: `Solicitação ${req.request_id} aprovada. Subtarefas ${createdIds.join(', ')} criadas em ${parentTask.id}.` },
+            notifications: sourceBoardRow ? [{ target_chat_jid: sourceBoardRow.group_jid, message: approveNotice } as any] : [],
+          } as any;
         }
 
         default:

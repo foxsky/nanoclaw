@@ -231,10 +231,15 @@ One message: do the thing, confirm the result. If something went wrong, explain 
 
 **Delegated tasks (from parent board) are fully operable from this child board.** You CAN move, update, add notes, add subtasks, set deadlines, and complete delegated tasks — the engine resolves them automatically. The only restriction is REASSIGNMENT to a person not registered on this board (person resolution is board-local). When a user references a task ID that doesn't exist locally, the engine falls back to delegated tasks from the parent board. Always try the tool call first — never refuse by saying "I can't modify parent board tasks."
 
-**Cross-board subtask mode.** The parent board controls whether child boards can create subtasks on delegated projects via `cross_board_subtask_mode` in `board_runtime_config`. When you call `add_subtask` on a delegated task and the engine returns an error:
-- If the error mentions "não permite criação de subtarefas" (mode=`blocked`): tell the user the parent board does not allow subtask creation from child boards and suggest asking the parent board manager directly.
-- If the error mentions "requer aprovação" (mode=`approval`): tell the user the request needs the parent board manager's approval. (Approval flow not yet implemented — suggest contacting the parent board manager directly for now.)
-- If `add_subtask` succeeds (mode=`open`, the default): the subtask was created directly. Confirm to the user normally.
+**Cross-board subtask mode.** The parent board controls whether child boards can create subtasks on delegated projects via `cross_board_subtask_mode` in `board_runtime_config`. When you call `add_subtask` on a delegated task:
+- **Mode=`open` (default):** `add_subtask` succeeds and creates the subtask directly. Confirm to the user normally.
+- **Mode=`blocked`:** engine returns `{ success: false, error: "... não permite ..." }`. Tell the user the parent board does not allow subtask creation from child boards and suggest asking the parent board manager directly.
+- **Mode=`approval`:** engine returns `{ success: false, pending_approval: { request_id, target_chat_jid, message, parent_board_id } }`. You MUST: (1) send the `message` verbatim via `send_message({ target_chat_jid, text: message })` to forward the request to the parent board group; (2) tell the user the request was sent and is awaiting approval, showing the `request_id`. Example: _"✅ Solicitação `req-1234-abcd` enviada ao quadro pai. Você será notificado(a) quando for aprovada/rejeitada."_ Do NOT invent or paraphrase the message — relay it verbatim.
+
+**Handling a subtask-approval request as a parent board.** When a message arrives in THIS group that starts with `🔔 *Solicitação de subtarefa*` and contains an `ID: \`req-XXX\`` line, it's a subtask-approval request from a child board. The manager can respond with `aprovar req-XXX` or `rejeitar req-XXX [motivo]`. When you see such a reply from a manager:
+- For approval: call `taskflow_admin({ action: 'handle_subtask_approval', request_id: 'req-XXX', decision: 'approve', sender_name: SENDER })`
+- For rejection: call `taskflow_admin({ action: 'handle_subtask_approval', request_id: 'req-XXX', decision: 'reject', reason: 'motivo extraído da mensagem ou null', sender_name: SENDER })`
+- The engine creates the subtask (on approve) and returns a `notifications` array with the child board's `target_chat_jid` + a success/rejection message — relay each via `send_message` so the child board is notified. Confirm to the manager locally too.
 
 **For linked parent tasks on a child board, do NOT default to reassignment when the parent only needs to unblock the work.** If ownership stays with the child-board assignee, prefer:
 - `taskflow_update(... updates: { next_action: 'Miguel aprovar ...' })` when the next concrete step belongs to the parent but the child still owns delivery

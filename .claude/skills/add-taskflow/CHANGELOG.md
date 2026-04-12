@@ -1,5 +1,37 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-04-12 (later) — Cross-board subtask Phase 2 (approval flow)
+
+All changes stay within the skill's territory (container/agent-runner + templates + tests). Zero host-side code touched.
+
+### Schema
+- New `subtask_requests` table + `idx_subtask_requests_status` index in engine DB init (idempotent `CREATE TABLE IF NOT EXISTS`). Persists pending requests across agent restarts per the spec.
+
+### Engine — `add_subtask` approval-mode branch
+- Was: returned stub error "approval flow not implemented"
+- Now: when parent board's `cross_board_subtask_mode = 'approval'`, engine generates `request_id`, inserts a row into `subtask_requests`, looks up the parent board's `group_jid`, composes a formatted request message, and returns `{ success: false, pending_approval: { request_id, target_chat_jid, message, parent_board_id } }`. The child-board agent relays the message verbatim via `send_message` to the parent group.
+
+### Engine — new `handle_subtask_approval` admin action
+- Parent-board-only (manager check via `isManager()`).
+- Reads the request from `subtask_requests`, validates it's still `pending`, creates the subtask(s) on approve (uses `insertSubtaskRow` — same-board operation bypasses the cross-board mode check naturally).
+- Returns a `notifications` array with the child-board's `target_chat_jid` + success/rejection message for the agent to relay back.
+- Rejects: unknown request_id, non-pending requests (idempotency), non-managers, missing request_id/decision.
+
+### IPC Zod schema
+- `handle_subtask_approval` added to `taskflow_admin` action enum.
+- `decision` enum widened to include `'approve'` and `'reject'` alongside the existing `'create_task'|'create_inbox'` for `process_minutes_decision`.
+- New `request_id: string` and `reason: string` optional params.
+
+### Template guidance
+- Child-board side: when `add_subtask` returns `pending_approval`, the bot MUST send the `message` field verbatim to `target_chat_jid` via `send_message`, then confirm to the user with the `request_id`.
+- Parent-board side: when a message matching `🔔 *Solicitação de subtarefa*` with an `ID: \`req-XXX\`` line arrives, and a manager replies `aprovar req-XXX` or `rejeitar req-XXX [motivo]`, call `taskflow_admin({ action: 'handle_subtask_approval', ... })` and relay the returned notifications.
+
+### Tests
+- 5 new engine tests for `handle_subtask_approval`: approve (creates subtask + notifies child), reject with reason, idempotency on non-pending, unknown request_id, non-manager.
+- 1 updated mode=approval test: validates the new `pending_approval` shape and verifies the request persists in `subtask_requests`.
+- 3 new skill drift-guard tests: template contains pending_approval/handle_subtask_approval/aprovar req-/rejeitar req-, MCP schema contains the new action + params, engine source contains the `subtask_requests` schema.
+- 234 engine tests / 901 project tests pass.
+
 ## 2026-04-12 — Cross-board subtask Phase 1
 
 ### Per-board `cross_board_subtask_mode` flag

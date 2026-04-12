@@ -5070,7 +5070,7 @@ describe('TaskflowEngine', () => {
       expect(subtask).toBeUndefined();
     });
 
-    it('mode=approval: child board gets pending response', () => {
+    it('mode=approval: creates pending request with parent board target_chat_jid', () => {
       db.exec(`UPDATE board_runtime_config SET cross_board_subtask_mode = 'approval' WHERE board_id = '${PARENT_BOARD}'`);
 
       const r = childEngine.update({
@@ -5080,9 +5080,169 @@ describe('TaskflowEngine', () => {
         updates: { add_subtask: 'Implement login page' },
       });
       expect(r.success).toBe(false);
-      expect(r.error).toContain('aprovação');
+      expect((r as any).pending_approval).toBeTruthy();
+      expect((r as any).pending_approval.request_id).toMatch(/^req-\d+-[a-z0-9]+$/);
+      expect((r as any).pending_approval.target_chat_jid).toBe('parent@g.us');
+      expect((r as any).pending_approval.parent_board_id).toBe(PARENT_BOARD);
+      expect((r as any).pending_approval.message).toContain('🔔 *Solicitação de subtarefa*');
+      expect((r as any).pending_approval.message).toContain('Implement login page');
+      expect((r as any).pending_approval.message).toContain('aprovar');
+      expect((r as any).pending_approval.message).toContain('rejeitar');
+
+      // No subtask created yet
       const subtask = db.prepare(`SELECT * FROM tasks WHERE id = 'P1.2'`).get();
       expect(subtask).toBeUndefined();
+
+      // Request persisted
+      const req = db.prepare(`SELECT * FROM subtask_requests WHERE request_id = ?`).get((r as any).pending_approval.request_id) as any;
+      expect(req).toBeTruthy();
+      expect(req.source_board_id).toBe(CHILD_BOARD);
+      expect(req.target_board_id).toBe(PARENT_BOARD);
+      expect(req.parent_task_id).toBe('P1');
+      expect(req.status).toBe('pending');
+      expect(req.requested_by).toBe('Giovanni');
+      const subtasks = JSON.parse(req.subtasks_json);
+      expect(subtasks[0].title).toBe('Implement login page');
+    });
+
+    it('handle_subtask_approval approve: creates subtask on parent board + notifies child', () => {
+      db.exec(`UPDATE board_runtime_config SET cross_board_subtask_mode = 'approval' WHERE board_id = '${PARENT_BOARD}'`);
+
+      // Child creates the request
+      const pending = childEngine.update({
+        board_id: CHILD_BOARD,
+        task_id: 'P1',
+        sender_name: 'Giovanni',
+        updates: { add_subtask: 'Review docs' },
+      });
+      const requestId = (pending as any).pending_approval.request_id;
+
+      // Parent manager approves
+      const parentEngine = new TaskflowEngine(db, PARENT_BOARD);
+      const r = parentEngine.admin({
+        board_id: PARENT_BOARD,
+        action: 'handle_subtask_approval',
+        sender_name: 'Miguel',
+        request_id: requestId,
+        decision: 'approve',
+      });
+      expect(r.success).toBe(true);
+      expect((r as any).data.decision).toBe('approve');
+      expect((r as any).data.created_subtask_ids).toContain('P1.2');
+      expect((r as any).notifications).toBeDefined();
+      expect((r as any).notifications[0].target_chat_jid).toBe('child@g.us');
+
+      // Subtask created on parent board
+      const sub = db.prepare(`SELECT * FROM tasks WHERE board_id = ? AND id = 'P1.2'`).get(PARENT_BOARD) as any;
+      expect(sub).toBeTruthy();
+      expect(sub.title).toBe('Review docs');
+      expect(sub.parent_task_id).toBe('P1');
+
+      // Request marked approved
+      const req = db.prepare(`SELECT * FROM subtask_requests WHERE request_id = ?`).get(requestId) as any;
+      expect(req.status).toBe('approved');
+      expect(req.resolved_by).toBe('Miguel');
+    });
+
+    it('handle_subtask_approval reject: marks rejected, no subtask, notifies child with reason', () => {
+      db.exec(`UPDATE board_runtime_config SET cross_board_subtask_mode = 'approval' WHERE board_id = '${PARENT_BOARD}'`);
+
+      const pending = childEngine.update({
+        board_id: CHILD_BOARD,
+        task_id: 'P1',
+        sender_name: 'Giovanni',
+        updates: { add_subtask: 'Useless task' },
+      });
+      const requestId = (pending as any).pending_approval.request_id;
+
+      const parentEngine = new TaskflowEngine(db, PARENT_BOARD);
+      const r = parentEngine.admin({
+        board_id: PARENT_BOARD,
+        action: 'handle_subtask_approval',
+        sender_name: 'Miguel',
+        request_id: requestId,
+        decision: 'reject',
+        reason: 'fora de escopo',
+      });
+      expect(r.success).toBe(true);
+      expect((r as any).data.decision).toBe('reject');
+      expect((r as any).notifications[0].message).toContain('fora de escopo');
+
+      // No subtask
+      expect(db.prepare(`SELECT * FROM tasks WHERE id = 'P1.2'`).get()).toBeUndefined();
+
+      const req = db.prepare(`SELECT * FROM subtask_requests WHERE request_id = ?`).get(requestId) as any;
+      expect(req.status).toBe('rejected');
+      expect(req.reason).toBe('fora de escopo');
+    });
+
+    it('handle_subtask_approval rejects non-pending requests (idempotency)', () => {
+      db.exec(`UPDATE board_runtime_config SET cross_board_subtask_mode = 'approval' WHERE board_id = '${PARENT_BOARD}'`);
+
+      const pending = childEngine.update({
+        board_id: CHILD_BOARD,
+        task_id: 'P1',
+        sender_name: 'Giovanni',
+        updates: { add_subtask: 'T' },
+      });
+      const requestId = (pending as any).pending_approval.request_id;
+
+      const parentEngine = new TaskflowEngine(db, PARENT_BOARD);
+      parentEngine.admin({
+        board_id: PARENT_BOARD,
+        action: 'handle_subtask_approval',
+        sender_name: 'Miguel',
+        request_id: requestId,
+        decision: 'approve',
+      });
+
+      // Second attempt → rejected
+      const r = parentEngine.admin({
+        board_id: PARENT_BOARD,
+        action: 'handle_subtask_approval',
+        sender_name: 'Miguel',
+        request_id: requestId,
+        decision: 'reject',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('already approved');
+    });
+
+    it('handle_subtask_approval rejects unknown request_id', () => {
+      const parentEngine = new TaskflowEngine(db, PARENT_BOARD);
+      const r = parentEngine.admin({
+        board_id: PARENT_BOARD,
+        action: 'handle_subtask_approval',
+        sender_name: 'Miguel',
+        request_id: 'req-does-not-exist',
+        decision: 'approve',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('not found');
+    });
+
+    it('handle_subtask_approval rejects non-managers', () => {
+      db.exec(`UPDATE board_runtime_config SET cross_board_subtask_mode = 'approval' WHERE board_id = '${PARENT_BOARD}'`);
+
+      const pending = childEngine.update({
+        board_id: CHILD_BOARD,
+        task_id: 'P1',
+        sender_name: 'Giovanni',
+        updates: { add_subtask: 'T' },
+      });
+      const requestId = (pending as any).pending_approval.request_id;
+
+      // Giovanni is a person on the parent board but NOT a manager
+      const parentEngine = new TaskflowEngine(db, PARENT_BOARD);
+      const r = parentEngine.admin({
+        board_id: PARENT_BOARD,
+        action: 'handle_subtask_approval',
+        sender_name: 'Giovanni',
+        request_id: requestId,
+        decision: 'approve',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('manager');
     });
 
     it('mode check only fires for cross-board — same-board add_subtask always allowed', () => {

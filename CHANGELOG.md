@@ -4,6 +4,17 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-12 (later) — Cross-board subtask Phase 2 (approval flow)
+
+Phase 2 activates on `cross_board_subtask_mode = 'approval'` — previously a stub error, now a real approval workflow. All changes stay within the add-taskflow skill (container/agent-runner + .claude/skills/add-taskflow), no host-side code touched.
+
+- **Schema** — `subtask_requests` table + status index in engine DB init. Persists pending requests across agent restarts.
+- **Engine** — `add_subtask` approval-mode branch now inserts a request row and returns `{ success: false, pending_approval: { request_id, target_chat_jid, message, parent_board_id } }` instead of the stub error. The child-board agent relays the formatted message to the parent board's group via `send_message`.
+- **Engine** — new `handle_subtask_approval` admin action: parent-board manager approves/rejects pending requests. Approve creates the subtask(s) on the parent board via the existing `insertSubtaskRow` path (no mode-check concern — same-board operation). Reject marks the request rejected with reason. Either way, returns `notifications` with the child-board's `target_chat_jid` + success/rejection text for the agent to relay.
+- **IPC Zod** — `handle_subtask_approval` added to action enum. `decision` widened to `'approve'|'reject'|'create_task'|'create_inbox'` (shared with process_minutes_decision). New `request_id` and `reason` params.
+- **Template** — child-board guidance for the `pending_approval` response (send message verbatim, show request_id to user). Parent-board guidance for incoming `🔔 *Solicitação de subtarefa*` messages (parse, handle manager's `aprovar req-XXX` / `rejeitar req-XXX [motivo]` reply, relay notifications back).
+- **Tests** — 5 new engine tests for handle_subtask_approval (approve, reject with reason, idempotency on non-pending, unknown request_id, non-manager rejected) + 1 updated mode=approval test (validates pending_approval shape + persistence). 234 engine tests / 901 project tests pass. 3 new skill drift-guard tests.
+
 ## 2026-04-12 — Cross-board subtask Phase 1
 
 - **`cross_board_subtask_mode` flag** — new `board_runtime_config` column (`TEXT NOT NULL DEFAULT 'open'`). Three values: `open` (direct creation), `approval` (stub for Phase 2), `blocked` (refuse with guidance). Engine check in `add_subtask` path reads the PARENT board's mode; only fires cross-board, same-board always allowed.

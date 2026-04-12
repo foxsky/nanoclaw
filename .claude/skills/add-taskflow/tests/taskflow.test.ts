@@ -2756,6 +2756,38 @@ describe('taskflow skill package', () => {
     expect(ipcSrc).toContain('target_project_id');
   });
 
+  it('CLAUDE.md.template documents cross-board subtask approval flow (Phase 2)', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    expect(content).toContain('pending_approval');
+    expect(content).toContain('handle_subtask_approval');
+    expect(content).toContain('aprovar req-');
+    expect(content).toContain('rejeitar req-');
+    expect(content).toContain('Solicitação de subtarefa');
+  });
+
+  it('MCP schema includes handle_subtask_approval in taskflow_admin', () => {
+    const ipcSrc = fs.readFileSync(
+      path.resolve(skillDir, '..', '..', '..', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
+      'utf-8',
+    );
+    expect(ipcSrc).toContain("'handle_subtask_approval'");
+    expect(ipcSrc).toContain('request_id');
+    expect(ipcSrc).toContain("'approve'");
+    expect(ipcSrc).toContain("'reject'");
+  });
+
+  it('engine defines subtask_requests table', () => {
+    const engineSrc = fs.readFileSync(
+      path.resolve(skillDir, '..', '..', '..', 'container', 'agent-runner', 'src', 'taskflow-engine.ts'),
+      'utf-8',
+    );
+    expect(engineSrc).toContain('CREATE TABLE IF NOT EXISTS subtask_requests');
+    expect(engineSrc).toContain('idx_subtask_requests_status');
+  });
+
 });
 
 describe('meeting notes', () => {
