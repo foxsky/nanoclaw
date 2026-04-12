@@ -726,14 +726,34 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
   }
   // When requiresTrigger is undefined, preserve the existing DB value
   // to prevent INSERT OR REPLACE from silently resetting it to 1.
+  // Same applies to isMain: undefined must NOT silently downgrade the
+  // main control group to a regular group on an unrelated update
+  // (e.g. a rename that doesn't pass isMain through).
   let resolvedRequiresTrigger: number;
-  if (group.requiresTrigger === undefined) {
+  let resolvedIsMain: number;
+  if (group.requiresTrigger === undefined || group.isMain === undefined) {
     const existing = db
-      .prepare('SELECT requires_trigger FROM registered_groups WHERE jid = ?')
-      .get(jid) as { requires_trigger: number | null } | undefined;
-    resolvedRequiresTrigger = existing?.requires_trigger ?? 1;
+      .prepare(
+        'SELECT requires_trigger, is_main FROM registered_groups WHERE jid = ?',
+      )
+      .get(jid) as
+      | { requires_trigger: number | null; is_main: number | null }
+      | undefined;
+    resolvedRequiresTrigger =
+      group.requiresTrigger === undefined
+        ? (existing?.requires_trigger ?? 1)
+        : group.requiresTrigger
+          ? 1
+          : 0;
+    resolvedIsMain =
+      group.isMain === undefined
+        ? (existing?.is_main ?? 0)
+        : group.isMain
+          ? 1
+          : 0;
   } else {
     resolvedRequiresTrigger = group.requiresTrigger ? 1 : 0;
+    resolvedIsMain = group.isMain ? 1 : 0;
   }
 
   db.prepare(
@@ -747,7 +767,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.added_at,
     group.containerConfig ? JSON.stringify(group.containerConfig) : null,
     resolvedRequiresTrigger,
-    group.isMain ? 1 : 0,
+    resolvedIsMain,
     group.taskflowManaged === undefined ? null : group.taskflowManaged ? 1 : 0,
     group.taskflowHierarchyLevel ?? null,
     group.taskflowMaxDepth ?? null,

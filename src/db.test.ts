@@ -704,4 +704,32 @@ describe('registered group round-trip', () => {
     expect(group).toBeDefined();
     expect(group.folder).toBe('whatsapp_family-chat');
   });
+
+  it('preserves isMain=true on update when isMain is undefined', () => {
+    // Initial save with isMain=true (the main control group)
+    setRegisteredGroup('main@g.us', {
+      name: 'Main Control',
+      folder: 'whatsapp_main',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+      isMain: true,
+    });
+
+    let groups = getAllRegisteredGroups();
+    expect(groups['main@g.us'].isMain).toBe(true);
+
+    // Subsequent update WITHOUT setting isMain (e.g. renaming the group).
+    // This must NOT silently downgrade the group from main to non-main.
+    setRegisteredGroup('main@g.us', {
+      name: 'Main Control Renamed',
+      folder: 'whatsapp_main',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+      // isMain intentionally omitted
+    });
+
+    groups = getAllRegisteredGroups();
+    expect(groups['main@g.us'].name).toBe('Main Control Renamed');
+    expect(groups['main@g.us'].isMain).toBe(true);
+  });
 });
