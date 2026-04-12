@@ -4964,6 +4964,34 @@ describe('TaskflowEngine', () => {
       expect(r.success).toBe(false);
       expect(r.error).toContain('manager');
     });
+
+    it('rejects when source is a delegated (non-local) project', () => {
+      // Regression guard for Codex gpt-5.4 review finding: archiveTask uses
+      // this.boardId for the archive INSERT, so a delegated source would land
+      // the archive row on the wrong board. The guard ensures only local
+      // projects can be merged as the source.
+      const PARENT = 'board-merge-parent';
+      db.exec(`INSERT INTO boards VALUES ('${PARENT}', 'p@g.us', 'mp', 'standard', 0, 2, NULL, NULL)`);
+      db.exec(`INSERT INTO board_config VALUES ('${PARENT}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 1, 5, 1, 1)`);
+      db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${PARENT}')`);
+      const now = new Date().toISOString();
+      // Project on PARENT board, delegated to MERGE_BOARD via child_exec
+      db.exec(`INSERT INTO tasks (id, board_id, type, title, column, child_exec_enabled, child_exec_board_id, created_at, updated_at)
+               VALUES ('P9', '${PARENT}', 'project', 'Delegated proj', 'in_progress', 1, '${MERGE_BOARD}', '${now}', '${now}')`);
+      db.exec(`INSERT INTO tasks (id, board_id, type, title, column, parent_task_id, created_at, updated_at)
+               VALUES ('P9.1', '${PARENT}', 'simple', 'Delegated sub', 'next_action', 'P9', '${now}', '${now}')`);
+
+      // Try to merge the delegated P9 (non-local to MERGE_BOARD) into local P1
+      const r = engine.admin({
+        board_id: MERGE_BOARD,
+        action: 'merge_project',
+        source_project_id: 'P9',
+        target_project_id: 'P1',
+        sender_name: 'Manager',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('not local');
+    });
   });
 
   /* ---------------------------------------------------------------- */

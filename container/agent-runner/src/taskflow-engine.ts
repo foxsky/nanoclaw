@@ -6704,6 +6704,13 @@ export class TaskflowEngine {
           const source = this.getTask(params.source_project_id);
           if (!source) return { success: false, error: `Source project ${params.source_project_id} not found.` };
           if (source.type !== 'project') return { success: false, error: `${params.source_project_id} is not a project (type=${source.type}).` };
+          // Source must be LOCAL to this board. archiveTask uses this.boardId for
+          // the archive INSERT, and manager authorization is checked on this.boardId.
+          // Allowing a delegated source would archive on the wrong board and bypass
+          // the parent board's authorization. (Codex gpt-5.4 review 2026-04-12)
+          if (source.board_id !== this.boardId && this.taskBoardId(source) !== this.boardId) {
+            return { success: false, error: `Source project ${params.source_project_id} is not local to this board. Merge must be initiated from the board that owns the source project.` };
+          }
 
           const target = this.getTask(params.target_project_id);
           if (!target) return { success: false, error: `Target project ${params.target_project_id} not found.` };
