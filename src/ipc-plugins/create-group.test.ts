@@ -243,6 +243,29 @@ describe('create_group IPC plugin', () => {
     expect(createGroup).not.toHaveBeenCalled();
   });
 
+  it('deduplicates participants after phone resolution', async () => {
+    // Simulate WhatsApp mapping two distinct input phone numbers to the same
+    // canonical JID (e.g. number migration / aliased account).
+    deps.resolvePhoneJid = async () => '5585000000000@s.whatsapp.net';
+
+    await handler(
+      {
+        subject: 'Ops',
+        participants: [
+          '5585111111111@s.whatsapp.net',
+          '5585222222222@s.whatsapp.net',
+        ],
+      },
+      'main',
+      true,
+      deps,
+    );
+
+    expect(createGroup).toHaveBeenCalledOnce();
+    const forwarded = createGroup.mock.calls[0][1] as string[];
+    expect(forwarded).toEqual(['5585000000000@s.whatsapp.net']);
+  });
+
   it('rejects blank subjects', async () => {
     await handler(
       {

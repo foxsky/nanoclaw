@@ -119,6 +119,16 @@ const handleCreateGroup: IpcHandler = async (
           return deps.resolvePhoneJid!(phone);
         }),
       );
+      // Two distinct input JIDs can resolve to the same canonical JID (e.g.
+      // phone-number migration on WhatsApp, or aliased numbers). WhatsApp's
+      // groupCreate rejects or silently drops duplicate participants, so
+      // dedupe after resolution while preserving input order.
+      const seenResolved = new Set<string>();
+      resolvedParticipants = resolvedParticipants.filter((jid) => {
+        if (seenResolved.has(jid)) return false;
+        seenResolved.add(jid);
+        return true;
+      });
     }
 
     const result = await deps.createGroup(subject, resolvedParticipants);
