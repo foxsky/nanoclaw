@@ -1,7 +1,8 @@
 # Cross-Board Subtask Creation with Approval
 
 **Date:** 2026-04-09
-**Status:** Design revised after code review — two-phase approach
+**Revised:** 2026-04-12 — added per-board `cross_board_subtask_mode` flag
+**Status:** Design revised — flag-gated approach (Phase 1 + configurable Phase 2)
 
 ## Problem
 
@@ -11,24 +12,87 @@ When a project (e.g., P24) lives on a parent board (SEC) and is delegated to a c
 
 The refusal is not from the engine or CLAUDE.md templates — it's the LLM's own conservative inference. No code in the engine blocks `add_subtask` on delegated tasks (only `cancel_task` has an explicit cross-board guard at `taskflow-engine.ts:6163`).
 
-## Solution: Two Phases
+## Design: Per-Board Flag
 
-### Phase 1: Template fix (enables direct subtask creation)
+Instead of a binary Phase 1 (always open) vs Phase 2 (always require approval), a per-board flag lets the organization configure each board independently — some open, some gated, some blocked.
 
-Add explicit CLAUDE.md guidance telling the bot that `add_subtask` IS allowed on delegated tasks. Zero engine changes. The existing code path handles everything correctly:
+### Flag: `cross_board_subtask_mode`
+
+Lives in `board_runtime_config` (parent board's row). Three values:
+
+| Value | Behavior | When to use |
+|---|---|---|
+| `'open'` (default) | Child board can create subtasks directly on delegated projects. No approval needed. | Trust-based orgs, small teams, fast iteration. Matches Phase 1. |
+| `'approval'` | Child board subtask creation is blocked by the engine; routed to an IPC-based approval flow where the parent board manager approves/rejects. | Governance-heavy orgs, regulated environments, large hierarchies. Matches Phase 2. |
+| `'blocked'` | Child board subtask creation is blocked; no approval flow, just a refusal message directing the user to ask the parent board directly. | Strict top-down orgs where only the parent board creates project structure. |
+
+**The flag is on the PARENT board** (the project owner), not the child board. The parent decides how its projects may be extended. A child board's bot reads the parent board's flag when the user tries to `add_subtask` on a delegated task.
+
+### Schema migration
+
+```sql
+ALTER TABLE board_runtime_config ADD COLUMN cross_board_subtask_mode TEXT NOT NULL DEFAULT 'open';
+```
+
+Idempotent via the existing `try { ALTER ... } catch {}` pattern in the engine's DB init.
+
+### Engine check (all modes)
+
+In the `add_subtask` path, after `requireTask()` resolves a delegated task:
+
+```
+if (task.board_id !== this.boardId) {
+  // Task is delegated — check the parent board's subtask mode
+  const parentMode = db.prepare(
+    `SELECT cross_board_subtask_mode FROM board_runtime_config WHERE board_id = ?`
+  ).get(task.board_id)?.cross_board_subtask_mode ?? 'open';
+
+  if (parentMode === 'blocked') {
+    return { success: false, error: 'O quadro pai não permite criação de subtarefas por quadros filhos. Peça ao gestor do quadro pai para adicionar a subtarefa.' };
+  }
+  if (parentMode === 'approval') {
+    // Route to the approval flow (see Phase 2 below)
+    return this.requestParentSubtaskApproval(task, subtaskTitle, senderName);
+  }
+  // parentMode === 'open' → fall through to existing add_subtask logic
+}
+```
+
+### Admin command to change the mode
+
+```
+"modo subtarefa cross-board: aberto" → taskflow_admin({ action: 'set_config', key: 'cross_board_subtask_mode', value: 'open' })
+"modo subtarefa cross-board: aprovação" → taskflow_admin({ action: 'set_config', key: 'cross_board_subtask_mode', value: 'approval' })
+"modo subtarefa cross-board: bloqueado" → taskflow_admin({ action: 'set_config', key: 'cross_board_subtask_mode', value: 'blocked' })
+```
+
+Manager-only. The template teaches the admin commands; the engine validates the value is one of the three allowed strings.
+
+## Solution: Two Phases (unchanged, now flag-gated)
+
+### Phase 1: Template fix + `'open'` mode (enables direct subtask creation)
+
+Add explicit CLAUDE.md guidance telling the bot that `add_subtask` IS allowed on delegated tasks. The engine check above fires but falls through for `'open'` mode. Zero approval overhead.
 
 1. Child board calls `add_subtask` on delegated task
-2. Engine creates subtask with `board_id = parent_board_id`
-3. `linkedChildBoardFor` auto-delegates back to child board
-4. Rollup and notifications flow via existing mechanisms
+2. Engine checks `cross_board_subtask_mode` on parent board → `'open'`
+3. Engine creates subtask with `board_id = parent_board_id`
+4. `linkedChildBoardFor` auto-delegates back to child board
+5. Rollup and notifications flow via existing mechanisms
 
-### Phase 2: Optional approval workflow (governance)
+**Ship Phase 1 immediately.** Default flag value is `'open'`, so all existing boards get the current behavior (direct creation) without any configuration change.
 
-If the organization requires that parent board managers approve new subtasks created by child boards, add an IPC-based approval flow. This is additive — Phase 1 works without it.
+### Phase 2: Approval workflow (activates on `'approval'` mode)
+
+Only fires when the parent board's flag is set to `'approval'`. This is additive — boards that never set the flag continue with Phase 1 behavior.
 
 ---
 
-## Phase 1: Template Changes
+## Phase 1: Template Changes + Engine Flag Check
+
+### Engine: flag check in `add_subtask` path
+
+Add the `cross_board_subtask_mode` check as shown in the Design section above. For Phase 1, the check fires but the default `'open'` value falls through to the existing logic. No behavior change for any board until a manager explicitly sets the flag to `'approval'` or `'blocked'`.
 
 ### Child board template (`add-taskflow/templates/CLAUDE.md.template`)
 
@@ -41,11 +105,18 @@ Delegated tasks (tasks where board_id ≠ this board, visible via child_exec):
 - You CAN assign subtasks to members of this board.
 - You CANNOT cancel or delete delegated tasks (only the owning board can).
 - For bulk operations ("copiar todas"), create each subtask individually.
+- If the parent board has set `cross_board_subtask_mode = 'approval'`, the engine
+  will return a pending-approval response instead of creating the subtask directly.
+  Present the approval status to the user and explain it needs the parent board
+  manager's approval.
+- If the parent board has set `cross_board_subtask_mode = 'blocked'`, the engine
+  will refuse. Explain that the parent board does not allow subtask creation from
+  child boards and suggest asking the parent board manager directly.
 ```
 
 ### What this enables
 
-Giovanni on SECI, with P24 delegated from SEC:
+Giovanni on SECI, with P24 delegated from SEC (default `'open'` mode):
 ```
 Giovanni: "P24 adicionar subtarefa Elaborar plano XYZ"
 Bot: "✅ P24.4 — Elaborar plano XYZ criada e delegada para este quadro."
@@ -55,13 +126,13 @@ No IPC, no approval, no waiting. The engine already does the right thing.
 
 ---
 
-## Phase 2: Approval Workflow (if governance required)
+## Phase 2: Approval Workflow (activates on `cross_board_subtask_mode = 'approval'`)
 
-Only implement if the organization decides child boards should NOT unilaterally create subtasks on parent board projects.
+Only fires when the parent board manager sets the flag to `'approval'`. Boards that keep the default `'open'` are unaffected.
 
 ### Prerequisite
 
-Add an engine guard to `add_subtask` that blocks child boards from creating subtasks on delegated tasks directly. Without this guard, Phase 2 has no enforcement — the bot could bypass the approval by calling `add_subtask` directly.
+**Already handled by the flag check in Phase 1.** When `cross_board_subtask_mode = 'approval'`, the engine's `add_subtask` path does NOT fall through — it routes to `requestParentSubtaskApproval()` instead. No separate engine guard needed; the same check serves both enforcement and routing.
 
 ### User Flow
 
@@ -132,6 +203,95 @@ CREATE TABLE IF NOT EXISTS subtask_requests (
 );
 ```
 
+### `merge_project` admin action (ships with Phase 1)
+
+Merges a LOCAL duplicate project into a DELEGATED (or any other target) project. The subtasks are UPDATE'd in place — no content copying, no zombie rows.
+
+**Call shape:**
+```
+taskflow_admin({
+  action: 'merge_project',
+  source_project_id: 'P5',     // local duplicate → will be archived
+  target_project_id: 'P24',    // delegated project → receives subtasks
+  sender_name: SENDER
+})
+```
+
+**Manager-only.** Both projects must be visible from the current board (source is local, target is local or delegated via child_exec).
+
+**Algorithm (validated by subagent review 2026-04-12, zero blockers):**
+
+The entire operation runs inside `db.transaction()` for atomicity.
+
+1. **Resolve both projects.** `requireTask(source)` and `requireTask(target)`. Target must be `type='project'`. Source must be `type='project'`. Fail if either doesn't exist or isn't a project.
+
+2. **Compute new subtask IDs.** Read the target project's existing subtasks via `getSubtaskRows()`, take `max(N) + 1` for the next subtask number (same pattern as `insertSubtaskRow` at taskflow-engine.ts ~L3961). This avoids ID collisions.
+
+3. **For each source subtask, UPDATE in place:**
+   ```sql
+   UPDATE tasks
+   SET board_id = :target_board_id,
+       id = :new_subtask_id,           -- e.g., P24.5
+       parent_task_id = :target_project_id,
+       child_exec_enabled = :ce_enabled,
+       child_exec_board_id = :ce_board,
+       child_exec_person_id = :ce_person,
+       updated_at = :now
+   WHERE board_id = :source_board_id AND id = :old_subtask_id;
+   ```
+   - `child_exec` fields computed via `linkedChildBoardFor(target_board_id, assignee)` — must be set explicitly because `linkedChildBoardFor` only fires on INSERT, not UPDATE.
+   - **Pre-existence check:** verify the target (board_id, new_subtask_id) doesn't already exist before the UPDATE.
+
+4. **Rekey task_history:**
+   ```sql
+   UPDATE task_history SET board_id = :target_board_id, task_id = :new_subtask_id
+   WHERE board_id = :source_board_id AND task_id = :old_subtask_id;
+   ```
+   Safe — `task_history.id` is AUTOINCREMENT, unaffected by the board_id/task_id change.
+
+5. **Rekey blocked_by references.** Scan the board's tasks for `blocked_by LIKE '%"P5.1"%'`, parse the JSON array, replace old ID → new ID, re-serialize. O(N) but acceptable for typical board sizes.
+
+6. **Add migration notes** (so there's a trail of what happened):
+   - On each migrated subtask: _"Migrada de P5.2 (projeto P5 mesclado em P24)"_
+   - On the target project: _"Projeto P5 mesclado — subtarefas migradas: P5.1→P24.5, P5.2→P24.6, P5.3→P24.7"_
+   - On the source project (before archiving): _"Projeto mesclado em P24 — todas as subtarefas migradas"_
+
+7. **Merge project-level notes.** Any notes on the source project (not on subtasks) are appended to the target project's notes array with a `[de P5]` prefix so the target project retains the context.
+
+8. **Archive the empty source project shell** with `archive_reason: 'merged'` and full snapshot. **MUST happen AFTER subtask migration** — if done before, the archive snapshot would include the subtask rows and the DELETE would remove them.
+
+9. **Return result:**
+   ```json
+   {
+     "success": true,
+     "merged": { "P5.1": "P24.5", "P5.2": "P24.6", "P5.3": "P24.7" },
+     "source_archived": "P5",
+     "notes_added": 5
+   }
+   ```
+
+**Same-board merge also works.** If source and target are on the same board (two local projects, no cross-board involved), only `id` and `parent_task_id` change — `board_id` stays the same. The algorithm is identical.
+
+**Template guidance for the bot:**
+```
+"mesclar P5 em P24" / "juntar P5 com P24" →
+  taskflow_admin({ action: 'merge_project', source_project_id: 'P5',
+                   target_project_id: 'P24', sender_name: SENDER })
+```
+
+The bot should confirm the mapping to the user:
+```
+✅ *Projeto P5 mesclado em P24*
+━━━━━━━━━━━━━━
+
+Subtarefas migradas:
+• P5.1 → P24.5 — Elaborar plano XYZ
+• P5.2 → P24.6 — Revisar documento ABC
+• P5.3 → P24.7 — Agendar reunião DEF
+
+Projeto P5 arquivado. Notas do P5 copiadas para P24.
+```
+
 ### Engine changes (Phase 2 only)
 
 1. **New guard on `add_subtask`**: Reject when `task.board_id !== this.boardId` and task is delegated. Return error message guiding the user to the approval flow.
@@ -165,10 +325,16 @@ Start with 2-level support. Extend to 3+ levels as follow-up if the hierarchy re
 - Existing `child_exec` delegation mechanism (unchanged)
 - Existing `linked_parent_*` tagging (unchanged)
 - Existing rollup mechanism (unchanged)
-- Tasks table composite PK architecture (unchanged)
+- Tasks table composite PK architecture (unchanged — `merge_project` uses UPDATE on the PK, not schema changes)
 
 ## Implementation Priority
 
-**Phase 1 is the immediate fix.** Template-only change, no code, unblocks Giovanni today. Ship as part of the next CLAUDE.md template regeneration.
+**Phase 1 is the immediate fix.** Template change + engine flag-check scaffolding. Unblocks Giovanni today. Default flag value `'open'` means zero behavior change for existing boards. Ship as part of the next deploy.
 
-**Phase 2 is deferred** until the organization explicitly requires approval governance for cross-board subtask creation. The engine changes, persistence table, and IPC routing make it a multi-day effort.
+- Template: add the delegated-subtask guidance + mode-aware error handling
+- Engine: add `cross_board_subtask_mode` column to `board_runtime_config` (idempotent `ALTER TABLE`), add the flag check in the `add_subtask` code path
+- Tests: cover `'open'` (fall-through), `'blocked'` (refuse), and `'approval'` (route to approval or stub error until Phase 2 ships)
+
+**Phase 2 is deferred** until a board manager sets `cross_board_subtask_mode = 'approval'`. The engine changes, persistence table (`subtask_requests`), and IPC routing make it a multi-day effort — but the flag means it can ship incrementally without forcing governance on boards that don't want it.
+
+**Rollout strategy:** Ship Phase 1, let all boards default to `'open'`. If a specific board needs governance, the manager runs `"modo subtarefa cross-board: aprovação"` and that board switches to the approval flow. No redeployment needed — just an admin command.
