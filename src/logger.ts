@@ -16,11 +16,30 @@ const FULL_RESET = '\x1b[0m';
 const threshold =
   LEVELS[(process.env.LOG_LEVEL as Level) || 'info'] ?? LEVELS.info;
 
+// JSON.stringify replacer that swaps already-seen objects for a marker
+// so circular references (common in Baileys socket/auth objects passed to
+// the logger) don't crash the process.
+function safeStringify(v: unknown): string {
+  const seen = new WeakSet<object>();
+  try {
+    return JSON.stringify(v, (_key, value) => {
+      if (typeof value === 'object' && value !== null) {
+        if (seen.has(value as object)) return '[Circular]';
+        seen.add(value as object);
+      }
+      return value;
+    });
+  } catch {
+    // Fallback for anything else JSON.stringify refuses (e.g. BigInt)
+    return `"[Unserializable: ${Object.prototype.toString.call(v)}]"`;
+  }
+}
+
 function formatErr(err: unknown): string {
   if (err instanceof Error) {
     return `{\n      "type": "${err.constructor.name}",\n      "message": "${err.message}",\n      "stack":\n          ${err.stack}\n    }`;
   }
-  return JSON.stringify(err);
+  return safeStringify(err);
 }
 
 function formatData(data: Record<string, unknown>): string {
@@ -29,7 +48,7 @@ function formatData(data: Record<string, unknown>): string {
     if (k === 'err') {
       out += `\n    ${KEY_COLOR}err${RESET}: ${formatErr(v)}`;
     } else {
-      out += `\n    ${KEY_COLOR}${k}${RESET}: ${JSON.stringify(v)}`;
+      out += `\n    ${KEY_COLOR}${k}${RESET}: ${safeStringify(v)}`;
     }
   }
   return out;
