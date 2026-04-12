@@ -262,6 +262,7 @@ server.tool(
     } catch (err) {
       return {
         content: [{ type: 'text' as const, text: `Error reading tasks: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
       };
     }
   },
