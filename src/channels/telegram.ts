@@ -1,7 +1,11 @@
 import https from 'https';
 import { Api, Bot } from 'grammy';
 
-import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import {
+  ASSISTANT_NAME,
+  DEFAULT_TRIGGER,
+  getTriggerPattern,
+} from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
@@ -101,9 +105,18 @@ export class TelegramChannel implements Channel {
           ? senderName
           : (ctx.chat as any).title || chatJid;
 
-      // Translate Telegram @bot_username mentions into TRIGGER_PATTERN format.
-      // Telegram @mentions (e.g., @andy_ai_bot) won't match TRIGGER_PATTERN
-      // (e.g., ^@Andy\b), so we prepend the trigger when the bot is @mentioned.
+      // Translate Telegram @bot_username mentions into trigger format.
+      // Telegram @mentions (e.g., @andy_ai_bot) won't match the group's
+      // trigger pattern (e.g., ^@Andy\b), so we prepend the trigger when
+      // the bot is @mentioned. Use the per-group trigger when available —
+      // TaskFlow groups override the global trigger, so prepending the
+      // global ASSISTANT_NAME would be ignored by the orchestrator.
+      const groupTrigger =
+        this.opts.registeredGroups()[chatJid]?.trigger || DEFAULT_TRIGGER;
+      const triggerPattern = getTriggerPattern(groupTrigger);
+      const triggerPrefix = groupTrigger.startsWith('@')
+        ? groupTrigger
+        : `@${groupTrigger}`;
       const botUsername = ctx.me?.username?.toLowerCase();
       if (botUsername) {
         const entities = ctx.message.entities || [];
@@ -116,8 +129,8 @@ export class TelegramChannel implements Channel {
           }
           return false;
         });
-        if (isBotMentioned && !TRIGGER_PATTERN.test(content)) {
-          content = `@${ASSISTANT_NAME} ${content}`;
+        if (isBotMentioned && !triggerPattern.test(content)) {
+          content = `${triggerPrefix} ${content}`;
         }
       }
 
