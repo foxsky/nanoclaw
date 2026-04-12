@@ -4803,4 +4803,109 @@ describe('TaskflowEngine', () => {
       expect(task.max_cycles).toBe(5);
     });
   });
+
+  /* ---------------------------------------------------------------- */
+  /*  cross-board subtask mode                                         */
+  /* ---------------------------------------------------------------- */
+
+  describe('cross-board subtask mode', () => {
+    const PARENT_BOARD = 'board-parent-xbs';
+    const CHILD_BOARD = 'board-child-xbs';
+    let db: Database.Database;
+    let childEngine: TaskflowEngine;
+
+    beforeEach(() => {
+      db = new Database(':memory:');
+      db.exec(SCHEMA);
+
+      // Parent board (level 0, max_depth 2)
+      db.exec(`INSERT INTO boards VALUES ('${PARENT_BOARD}', 'parent@g.us', 'parent', 'standard', 0, 2, NULL, 'PAR')`);
+      db.exec(`INSERT INTO board_config VALUES ('${PARENT_BOARD}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 1, 2, 1, 1)`);
+      db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${PARENT_BOARD}')`);
+      db.exec(`INSERT INTO board_people VALUES ('${PARENT_BOARD}', 'person-dev', 'Giovanni', '5585999990002', 'Dev', 3, NULL)`);
+      db.exec(`INSERT INTO board_admins VALUES ('${PARENT_BOARD}', 'person-mgr', '5585999990001', 'manager', 1)`);
+      db.exec(`INSERT INTO board_people VALUES ('${PARENT_BOARD}', 'person-mgr', 'Miguel', '5585999990001', 'Gestor', 3, NULL)`);
+
+      // Child board (level 1, max_depth 2)
+      db.exec(`INSERT INTO boards VALUES ('${CHILD_BOARD}', 'child@g.us', 'child', 'standard', 1, 2, '${PARENT_BOARD}', 'CHI')`);
+      db.exec(`INSERT INTO board_config VALUES ('${CHILD_BOARD}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 1, 1, 1, 1)`);
+      db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${CHILD_BOARD}')`);
+      db.exec(`INSERT INTO board_people VALUES ('${CHILD_BOARD}', 'person-dev', 'Giovanni', '5585999990002', 'Dev', 3, NULL)`);
+      db.exec(`INSERT INTO board_admins VALUES ('${CHILD_BOARD}', 'person-dev', '5585999990002', 'manager', 1)`);
+
+      // Link child board registration
+      db.exec(`INSERT INTO child_board_registrations VALUES ('${PARENT_BOARD}', 'person-dev', '${CHILD_BOARD}')`);
+
+      const now = new Date().toISOString();
+
+      // P1 — project on parent board, delegated to child board via child_exec
+      db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, child_exec_enabled, child_exec_board_id, child_exec_person_id, created_at, updated_at)
+               VALUES ('P1', '${PARENT_BOARD}', 'project', 'Website Redesign', 'person-dev', 'in_progress', 1, '${CHILD_BOARD}', 'person-dev', '${now}', '${now}')`);
+
+      // P1.1 — existing subtask, also delegated
+      db.exec(`INSERT INTO tasks (id, board_id, type, title, assignee, column, parent_task_id, child_exec_enabled, child_exec_board_id, child_exec_person_id, created_at, updated_at)
+               VALUES ('P1.1', '${PARENT_BOARD}', 'simple', 'Design mockups', 'person-dev', 'next_action', 'P1', 1, '${CHILD_BOARD}', 'person-dev', '${now}', '${now}')`);
+
+      // Child board engine instance
+      childEngine = new TaskflowEngine(db, CHILD_BOARD);
+    });
+
+    afterEach(() => { db.close(); });
+
+    it('mode=open (default): child board can add subtask to delegated project', () => {
+      const r = childEngine.update({
+        board_id: CHILD_BOARD,
+        task_id: 'P1',
+        sender_name: 'Giovanni',
+        updates: { add_subtask: 'Implement login page' },
+      });
+      expect(r.success).toBe(true);
+      // Subtask created on PARENT board with ID P1.2
+      const subtask = db.prepare(`SELECT * FROM tasks WHERE id = 'P1.2' AND board_id = ?`).get(PARENT_BOARD);
+      expect(subtask).toBeTruthy();
+    });
+
+    it('mode=blocked: child board cannot add subtask to delegated project', () => {
+      db.exec(`UPDATE board_runtime_config SET cross_board_subtask_mode = 'blocked' WHERE board_id = '${PARENT_BOARD}'`);
+
+      const r = childEngine.update({
+        board_id: CHILD_BOARD,
+        task_id: 'P1',
+        sender_name: 'Giovanni',
+        updates: { add_subtask: 'Implement login page' },
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('não permite');
+      const subtask = db.prepare(`SELECT * FROM tasks WHERE id = 'P1.2'`).get();
+      expect(subtask).toBeUndefined();
+    });
+
+    it('mode=approval: child board gets pending response', () => {
+      db.exec(`UPDATE board_runtime_config SET cross_board_subtask_mode = 'approval' WHERE board_id = '${PARENT_BOARD}'`);
+
+      const r = childEngine.update({
+        board_id: CHILD_BOARD,
+        task_id: 'P1',
+        sender_name: 'Giovanni',
+        updates: { add_subtask: 'Implement login page' },
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('aprovação');
+      const subtask = db.prepare(`SELECT * FROM tasks WHERE id = 'P1.2'`).get();
+      expect(subtask).toBeUndefined();
+    });
+
+    it('mode check only fires for cross-board — same-board add_subtask always allowed', () => {
+      db.exec(`UPDATE board_runtime_config SET cross_board_subtask_mode = 'blocked' WHERE board_id = '${PARENT_BOARD}'`);
+      const parentEngine = new TaskflowEngine(db, PARENT_BOARD);
+
+      const r = parentEngine.update({
+        board_id: PARENT_BOARD,
+        task_id: 'P1',
+        sender_name: 'Miguel',
+        updates: { add_subtask: 'Implement login page' },
+      });
+      expect(r.success).toBe(true);
+    });
+  });
 });

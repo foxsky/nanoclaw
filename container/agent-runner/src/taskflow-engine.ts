@@ -3959,6 +3959,31 @@ export class TaskflowEngine {
         if (task.type !== 'project') {
           return { success: false, error: 'Subtasks can only be added to project tasks.' };
         }
+
+        // Cross-board subtask mode gate: when a child board tries to add a subtask
+        // to a delegated task, check the PARENT board's cross_board_subtask_mode.
+        if (task.board_id !== this.boardId) {
+          const owningBoardId = this.taskBoardId(task);
+          const modeRow = this.db.prepare(
+            `SELECT cross_board_subtask_mode FROM board_runtime_config WHERE board_id = ?`,
+          ).get(owningBoardId) as { cross_board_subtask_mode: string } | undefined;
+          const mode = modeRow?.cross_board_subtask_mode ?? 'open';
+
+          if (mode === 'blocked') {
+            return {
+              success: false,
+              error: 'O quadro pai não permite criação de subtarefas por quadros filhos. Peça ao gestor do quadro pai para adicionar a subtarefa.',
+            };
+          }
+          if (mode === 'approval') {
+            return {
+              success: false,
+              error: 'Criação de subtarefas em projetos delegados requer aprovação do quadro pai. Funcionalidade de aprovação ainda não implementada — peça ao gestor do quadro pai para adicionar a subtarefa diretamente.',
+            };
+          }
+          // mode === 'open' → fall through to existing logic
+        }
+
         const existingSubtasks = this.getSubtaskRows(task.id, taskBoardId);
         // Use max existing suffix, not count, to prevent ID collision after subtask deletion
         const maxNum = existingSubtasks.reduce((max: number, s: { id: string }) => {
