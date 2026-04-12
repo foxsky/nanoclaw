@@ -2785,7 +2785,6 @@ describe('taskflow skill package', () => {
       'utf-8',
     );
     expect(engineSrc).toContain('CREATE TABLE IF NOT EXISTS subtask_requests');
-    expect(engineSrc).toContain('idx_subtask_requests_status');
   });
 
 });

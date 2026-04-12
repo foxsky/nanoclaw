@@ -162,6 +162,12 @@ export interface UpdateResult extends TaskflowResult {
   title?: string;
   changes?: string[];      // human-readable list of what changed
   offer_register?: { name: string; message: string };
+  pending_approval?: {
+    request_id: string;
+    target_chat_jid: string;
+    message: string;
+    parent_board_id: string;
+  };
   notifications?: NotificationEntry[];
   parent_notification?: ParentNotification;
 }
@@ -239,6 +245,10 @@ export interface AdminResult extends TaskflowResult {
     group_folder?: string;
     message: string;
   };
+  offer_register?: { name: string; message: string };
+  merged?: Record<string, string>;
+  source_archived?: string;
+  notes_added?: number;
   notifications?: NotificationEntry[];
 }
 
@@ -831,7 +841,9 @@ export class TaskflowEngine {
         created_subtask_ids TEXT
       )
     `);
-    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_subtask_requests_status ON subtask_requests(status, target_board_id)`);
+    // No secondary index — the dominant query is the PK lookup on request_id,
+    // and pending-request scans by board are not in the hot path. Add an index
+    // later if a pending-request bulk query materializes.
 
     // Migrate legacy per-column counters into the new table (one-time)
     const hasLegacy = (() => {
@@ -4066,11 +4078,11 @@ export class TaskflowEngine {
               success: false,
               pending_approval: {
                 request_id: requestId,
-                target_chat_jid: parentBoard?.group_jid ?? null,
+                target_chat_jid: parentBoard.group_jid,
                 message: requestMessage,
                 parent_board_id: owningBoardId,
               },
-            } as any;
+            };
           }
           // mode === 'open' → fall through to existing logic
         }
@@ -6990,8 +7002,8 @@ export class TaskflowEngine {
             return {
               success: true,
               data: { decision: 'reject', request_id: req.request_id, message: `Solicitação ${req.request_id} rejeitada.` },
-              notifications: sourceBoardRow ? [{ target_chat_jid: sourceBoardRow.group_jid, message: rejectNotice } as any] : [],
-            } as any;
+              notifications: sourceBoardRow ? [{ target_chat_jid: sourceBoardRow.group_jid, message: rejectNotice }] : [],
+            };
           }
 
           // Approve path: create each subtask on this (target/parent) board
@@ -7012,7 +7024,7 @@ export class TaskflowEngine {
                 success: false,
                 error: `Responsável "${proposedAssignee}" não está cadastrado(a) neste quadro. Cadastre-o(a) primeiro via \`taskflow_admin register_person\` antes de aprovar esta solicitação.`,
                 offer_register: { name: proposedAssignee, message: `${proposedAssignee} precisa ser cadastrado(a) neste quadro antes que a solicitação ${req.request_id} possa ser aprovada.` },
-              } as any;
+              };
             }
           }
 
@@ -7058,8 +7070,8 @@ export class TaskflowEngine {
           return {
             success: true,
             data: { decision: 'approve', request_id: req.request_id, created_subtask_ids: createdIds, message: `Solicitação ${req.request_id} aprovada. Subtarefas ${createdIds.join(', ')} criadas em ${parentTask.id}.` },
-            notifications: sourceBoardRow ? [{ target_chat_jid: sourceBoardRow.group_jid, message: approveNotice } as any] : [],
-          } as any;
+            notifications: sourceBoardRow ? [{ target_chat_jid: sourceBoardRow.group_jid, message: approveNotice }] : [],
+          };
         }
 
         default:
