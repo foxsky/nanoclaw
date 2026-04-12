@@ -1,5 +1,31 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-04-12 — Cross-board subtask Phase 1
+
+### Per-board `cross_board_subtask_mode` flag
+- New `board_runtime_config` column (`TEXT NOT NULL DEFAULT 'open'`). Three values: `open` (default, direct creation), `approval` (stub — Phase 2), `blocked` (refuse).
+- Engine check in `add_subtask` path: when a child board calls `add_subtask` on a delegated task, reads the PARENT board's mode. Only fires for cross-board operations; same-board `add_subtask` is always allowed.
+- Admin command via direct SQL: `"modo subtarefa cross-board: aberto|aprovação|bloqueado"`.
+
+### `merge_project` admin action
+- Merges a source project's subtasks into a target project by UPDATE-in-place on the task rows — no content copying, no zombie rows.
+- Rekeys `task_history` and `blocked_by` JSON references to match new IDs.
+- Adds migration notes on every affected entity: each migrated subtask ("Migrada de P2.1"), the target project (merge summary + copied source notes with `[de P2]` prefix), and the source project (farewell note before archive).
+- Archives the empty source project with `archive_reason: 'merged'`.
+- Manager-only. Works for same-board merges too.
+- IPC Zod schema updated: `merge_project` added to action enum + `source_project_id`/`target_project_id` params.
+
+### Template updates
+- Cross-board subtask mode guidance after the delegated-tasks block (mode-aware error handling for `blocked`/`approval`).
+- Mode-change admin command rows.
+- `"mesclar PXXX em PYYY"` merge command row.
+- `cross_board_subtask_mode` added to Schema Reference.
+
+### Tests
+- 4 new engine tests for cross-board subtask mode (open, blocked, approval, same-board bypass).
+- 6 new engine tests for `merge_project` (happy path, blocked_by rekey, migration notes, reject non-project, reject same-ID, reject non-manager).
+- 2 new skill drift-guard tests (template content + MCP schema).
+
 ## 2026-04-11 (later, Edilson premature-registration fix)
 
 ### Engine + template — prevent person-named child boards on hierarchy boards

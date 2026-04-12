@@ -2735,6 +2735,27 @@ describe('taskflow skill package', () => {
     expect(content).toContain('target_parent_id');
   });
 
+  it('CLAUDE.md.template documents cross-board subtask mode', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    expect(content).toContain('cross_board_subtask_mode');
+    expect(content).toContain('merge_project');
+    expect(content).toContain("action: 'merge_project'");
+    expect(content).toContain('mesclar');
+  });
+
+  it('MCP schema includes merge_project in taskflow_admin', () => {
+    const ipcSrc = fs.readFileSync(
+      path.resolve(skillDir, '..', '..', '..', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
+      'utf-8',
+    );
+    expect(ipcSrc).toContain("'merge_project'");
+    expect(ipcSrc).toContain('source_project_id');
+    expect(ipcSrc).toContain('target_project_id');
+  });
+
 });
 
 describe('meeting notes', () => {

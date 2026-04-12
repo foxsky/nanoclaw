@@ -4,6 +4,13 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-12 — Cross-board subtask Phase 1
+
+- **`cross_board_subtask_mode` flag** — new `board_runtime_config` column (`TEXT NOT NULL DEFAULT 'open'`). Three values: `open` (direct creation), `approval` (stub for Phase 2), `blocked` (refuse with guidance). Engine check in `add_subtask` path reads the PARENT board's mode; only fires cross-board, same-board always allowed.
+- **`merge_project` admin action** — UPDATE-in-place merge of source project subtasks into target project. Rekeys task_history + blocked_by references, adds migration notes on every affected entity, archives source with `reason='merged'`. Manager-only. IPC Zod updated with new action + params.
+- **Template** — mode-aware guidance, mode-change admin commands, merge command row, schema reference update.
+- **Tests** — 4 mode tests + 6 merge tests + 2 drift-guard tests. 898 project tests pass (1 pre-existing unrelated failure).
+
 ## 2026-04-11 (later) — Edilson premature-registration fix (engine + template)
 
 Kipp's 2026-04-11 audit report flagged a "race condition" in SETD-SECTI. Ground-truth investigation of the 2026-04-10 Edilson flow showed it was NOT a race condition — it was `register_person` accepting a 3-field call on a hierarchy board, then the host's `src/ipc-plugins/provision-child-board.ts` fallback at L308-L317 naming the child board "Edilson - TaskFlow" (person name) instead of the division. Three-part fix, Codex gpt-5.4 high-effort review clean:
