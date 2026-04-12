@@ -1232,6 +1232,15 @@ export class TaskflowEngine {
       .all(boardId, parentTaskId);
   }
 
+  /** Next subtask suffix number for a parent task, based on the max existing suffix. */
+  private nextSubtaskNum(subtasks: Array<{ id: string }>): number {
+    return subtasks.reduce((max, s) => {
+      const parts = s.id.split('.');
+      const num = parseInt(parts[parts.length - 1], 10);
+      return Number.isNaN(num) ? max : Math.max(max, num);
+    }, 0) + 1;
+  }
+
   private getLinkedTasks(): any[] {
     return this.db
       .prepare(
@@ -3987,14 +3996,7 @@ export class TaskflowEngine {
         }
 
         const existingSubtasks = this.getSubtaskRows(task.id, taskBoardId);
-        // Use max existing suffix, not count, to prevent ID collision after subtask deletion
-        const maxNum = existingSubtasks.reduce((max: number, s: { id: string }) => {
-          const parts = s.id.split('.');
-          const num = parseInt(parts[parts.length - 1], 10);
-          return Number.isNaN(num) ? max : Math.max(max, num);
-        }, 0);
-        const nextNum = maxNum + 1;
-        const subtaskId = `${task.id}.${nextNum}`;
+        const subtaskId = `${task.id}.${this.nextSubtaskNum(existingSubtasks)}`;
         const subColumn = task.assignee ? 'next_action' : 'inbox';
         this.insertSubtaskRow({
           boardId: taskBoardId,
@@ -6695,14 +6697,7 @@ export class TaskflowEngine {
             return { success: false, error: 'source_project_id and target_project_id must be different.' };
           }
 
-          // Manager-only (the outer permission check handles process_inbox/external;
-          // merge_project must be explicitly manager-restricted)
-          const mergeSender = this.resolvePerson(params.sender_name);
-          const mergeSenderId = mergeSender?.person_id ?? params.sender_name;
-          const isMergeMgr = this.db
-            .prepare(`SELECT 1 FROM board_admins WHERE board_id = ? AND person_id = ? AND admin_role = 'manager'`)
-            .get(this.boardId, mergeSenderId);
-          if (!isMergeMgr) {
+          if (!this.isManager(params.sender_name)) {
             return { success: false, error: 'Only managers can merge projects.' };
           }
 
@@ -6724,19 +6719,12 @@ export class TaskflowEngine {
             return { success: false, error: `Source project ${source.id} has no subtasks to merge.` };
           }
 
-          // Get target's current max subtask number
+          // Build old→new ID mapping (needed for blocked_by rekey)
           const targetSubtasks = this.getSubtaskRows(target.id, targetBoardId);
-          let nextNum = targetSubtasks.reduce((max: number, s: { id: string }) => {
-            const parts = s.id.split('.');
-            const num = parseInt(parts[parts.length - 1], 10);
-            return Number.isNaN(num) ? max : Math.max(max, num);
-          }, 0) + 1;
-
-          // Build old→new ID mapping first (needed for blocked_by rekey)
+          let nextNum = this.nextSubtaskNum(targetSubtasks);
           const idMap: Record<string, string> = {};
           for (const sub of sourceSubtasks) {
-            const newId = `${target.id}.${nextNum}`;
-            idMap[sub.id] = newId;
+            idMap[sub.id] = `${target.id}.${nextNum}`;
             nextNum++;
           }
 
@@ -6762,15 +6750,7 @@ export class TaskflowEngine {
             });
             notesAdded++;
 
-            // Pre-existence check
-            const exists = this.db
-              .prepare(`SELECT 1 FROM tasks WHERE board_id = ? AND id = ?`)
-              .get(targetBoardId, newId);
-            if (exists) {
-              return { success: false, error: `Target ID ${newId} already exists on board ${targetBoardId}. Subtask ID collision.` };
-            }
-
-            // UPDATE the subtask row in place
+            // UNIQUE(board_id, id) constraint rejects collisions inside the transaction
             this.db.prepare(`
               UPDATE tasks SET
                 board_id = ?,
@@ -6857,14 +6837,14 @@ export class TaskflowEngine {
             .run(JSON.stringify(srcNotes), srcNoteId + 1, now, sourceBoardId, source.id);
           notesAdded++;
 
-          // Re-read source with updated notes for archive snapshot
-          const sourceForArchive = this.getTask(params.source_project_id);
-          if (sourceForArchive) {
-            this.archiveTask(sourceForArchive, 'merged');
-          }
-
-          // Delete the source project row (archiveTask snapshots but may not delete in all code paths)
-          this.db.prepare(`DELETE FROM tasks WHERE board_id = ? AND id = ?`).run(sourceBoardId, source.id);
+          // Archive the empty source shell with the farewell note included in the
+          // snapshot. Pass srcNotes directly instead of re-reading from DB — we
+          // already have the updated notes in memory. archiveTask handles deletion
+          // of the row + any remaining subtask rows at L2336-2343.
+          this.archiveTask(
+            { ...source, board_id: sourceBoardId, notes: JSON.stringify(srcNotes), next_note_id: srcNoteId + 1 },
+            'merged',
+          );
 
           return {
             success: true,
