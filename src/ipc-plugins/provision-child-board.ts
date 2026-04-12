@@ -137,32 +137,47 @@ const handleProvisionChildBoard: IpcHandler = async (
     }
 
     // --- 4b. Check if person already has a board under a DIFFERENT parent ---
-    // Match by person_id first, then fallback to phone (most reliable).
-    // Name-only matching is intentionally NOT used — too high risk of false
-    // positives (e.g., two different "João" on different boards).
+    // person_id is only unique within a single parent board — two unrelated
+    // people on different parent boards can share the same person_id string
+    // (e.g., "joao"). Matching on person_id alone would cross-link unrelated
+    // people, so we require phone agreement: either person_id match AND phone
+    // match, or phone-only match. Name-only matching is intentionally NOT used.
     type ExistingBoardMatch = {
       child_board_id: string;
       person_id: string;
       group_jid: string;
       group_folder: string;
     };
-    let existingElsewhere = tfDb
-      .prepare(
-        `SELECT cbr.child_board_id, cbr.person_id, b.group_jid, b.group_folder
-         FROM child_board_registrations cbr
-         JOIN boards b ON b.id = cbr.child_board_id
-         WHERE cbr.person_id = ? AND cbr.parent_board_id != ?
-         LIMIT 1`,
-      )
-      .get(personId, parentBoard.id) as ExistingBoardMatch | undefined;
+    const phoneDigits = personPhone.replace(/\D/g, '');
+    const hasUsablePhone = phoneDigits.length >= 8;
+    let existingElsewhere: ExistingBoardMatch | undefined;
 
-    // Fallback: match by phone number (strip ALL non-digits on both sides)
-    if (!existingElsewhere && personPhone) {
-      const phoneDigits = personPhone.replace(/\D/g, '');
-      if (phoneDigits.length >= 8) {
-        existingElsewhere = tfDb
-          .prepare(
-            `SELECT cbr.child_board_id, cbr.person_id, b.group_jid, b.group_folder
+    // Primary match: person_id + phone (both must agree, since person_id alone
+    // is NOT globally unique across parent boards).
+    if (hasUsablePhone) {
+      existingElsewhere = tfDb
+        .prepare(
+          `SELECT cbr.child_board_id, cbr.person_id, b.group_jid, b.group_folder
+           FROM child_board_registrations cbr
+           JOIN boards b ON b.id = cbr.child_board_id
+           JOIN board_people bp ON bp.board_id = cbr.child_board_id AND bp.person_id = cbr.person_id
+           WHERE cbr.person_id = ?
+             AND cbr.parent_board_id != ?
+             AND bp.phone IS NOT NULL
+             AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(bp.phone, '+', ''), '-', ''), ' ', ''), '(', ''), ')', ''), '.', '') = ?
+           LIMIT 1`,
+        )
+        .get(personId, parentBoard.id, phoneDigits) as
+        | ExistingBoardMatch
+        | undefined;
+    }
+
+    // Fallback: match by phone number alone (different person_id string,
+    // but same physical phone — still the same person).
+    if (!existingElsewhere && hasUsablePhone) {
+      existingElsewhere = tfDb
+        .prepare(
+          `SELECT cbr.child_board_id, cbr.person_id, b.group_jid, b.group_folder
              FROM child_board_registrations cbr
              JOIN boards b ON b.id = cbr.child_board_id
              JOIN board_people bp ON bp.board_id = cbr.child_board_id AND bp.person_id = cbr.person_id
@@ -170,18 +185,17 @@ const handleProvisionChildBoard: IpcHandler = async (
                AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(bp.phone, '+', ''), '-', ''), ' ', ''), '(', ''), ')', ''), '.', '') = ?
                AND cbr.parent_board_id != ?
              LIMIT 1`,
-          )
-          .get(phoneDigits, parentBoard.id) as ExistingBoardMatch | undefined;
-        if (existingElsewhere) {
-          logger.info(
-            {
-              personId,
-              matchedPersonId: existingElsewhere.person_id,
-              phone: phoneDigits,
-            },
-            'provision_child_board: matched existing board by phone number',
-          );
-        }
+        )
+        .get(phoneDigits, parentBoard.id) as ExistingBoardMatch | undefined;
+      if (existingElsewhere) {
+        logger.info(
+          {
+            personId,
+            matchedPersonId: existingElsewhere.person_id,
+            phone: phoneDigits,
+          },
+          'provision_child_board: matched existing board by phone number',
+        );
       }
     }
 
