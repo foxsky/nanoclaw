@@ -335,6 +335,10 @@ function migrateLegacyProjectSubtasks(db: Database.Database): void {
           ? subtask.assignee
           : row.assignee;
       const column = legacySubtaskColumn(subtask);
+      const priority =
+        typeof subtask.priority === 'string' && subtask.priority.trim() !== ''
+          ? subtask.priority
+          : (row.priority ?? null);
       const childLink = linkedChildBoardFor(db, row.board_id, assignee ?? null);
       const existing = subtaskRow.get(row.board_id, subtaskId) as
         | {
@@ -358,7 +362,7 @@ function migrateLegacyProjectSubtasks(db: Database.Database): void {
           assignee ?? null,
           column,
           row.id,
-          row.priority ?? null,
+          priority,
           childLink.child_exec_enabled,
           childLink.child_exec_board_id,
           childLink.child_exec_person_id,
@@ -372,7 +376,7 @@ function migrateLegacyProjectSubtasks(db: Database.Database): void {
           assignee ?? null,
           column,
           row.id,
-          row.priority ?? null,
+          priority,
           childLink.child_exec_enabled,
           childLink.child_exec_board_id,
           childLink.child_exec_person_id,
