@@ -844,6 +844,9 @@ export class TaskflowEngine {
     // No secondary index — the dominant query is the PK lookup on request_id,
     // and pending-request scans by board are not in the hot path. Add an index
     // later if a pending-request bulk query materializes.
+    // Idempotent DROP picks up production DBs that saw the earlier (unused)
+    // index before the /simplify pass removed it from init.
+    this.db.exec(`DROP INDEX IF EXISTS idx_subtask_requests_status`);
 
     // Migrate legacy per-column counters into the new table (one-time)
     const hasLegacy = (() => {
@@ -6622,7 +6625,7 @@ export class TaskflowEngine {
 
           if (!createResult.success) {
             const errorMsg = createResult.error
-              ?? (createResult as any).offer_register?.message
+              ?? createResult.offer_register?.message
               ?? 'Unknown error creating task from meeting note';
             throw new Error(`Failed to create task: ${errorMsg}`);
           }
