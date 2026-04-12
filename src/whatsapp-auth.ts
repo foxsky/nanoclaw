@@ -32,6 +32,21 @@ const logger = pino({
 const usePairingCode = process.argv.includes('--pairing-code');
 const phoneArg = process.argv.find((_, i, arr) => arr[i - 1] === '--phone');
 
+/**
+ * Sanitize a phone number for Baileys' requestPairingCode, which requires
+ * digits only (country code + number, no `+`, spaces, dashes, or parentheses).
+ * Returns null if the cleaned input is empty, too short to be a real number,
+ * or contains a leading 0 (which usually means the country code was omitted).
+ */
+export function sanitizePhoneNumber(input: string | undefined): string | null {
+  if (!input) return null;
+  const digits = input.replace(/\D+/g, '');
+  if (digits.length < 8) return null;
+  // A leading 0 is a trunk prefix from a national format — country code is missing.
+  if (digits.startsWith('0')) return null;
+  return digits;
+}
+
 function askQuestion(prompt: string): Promise<string> {
   const rl = readline.createInterface({
     input: process.stdin,
@@ -83,7 +98,7 @@ async function connectSocket(
     // Only on first connect (not reconnect after 515)
     setTimeout(async () => {
       try {
-        const code = await sock.requestPairingCode(phoneNumber!);
+        const code = await sock.requestPairingCode(phoneNumber);
         console.log(`\n🔗 Your pairing code: ${code}\n`);
         console.log('  1. Open WhatsApp on your phone');
         console.log('  2. Tap Settings → Linked Devices → Link a Device');
@@ -162,11 +177,23 @@ async function authenticate(): Promise<void> {
     fs.unlinkSync(STATUS_FILE);
   } catch {}
 
-  let phoneNumber = phoneArg;
+  let phoneNumber: string | undefined = phoneArg;
   if (usePairingCode && !phoneNumber) {
     phoneNumber = await askQuestion(
       'Enter your phone number (with country code, no + or spaces, e.g. 14155551234): ',
     );
+  }
+
+  if (usePairingCode) {
+    const sanitized = sanitizePhoneNumber(phoneNumber);
+    if (!sanitized) {
+      console.error(
+        '✗ Invalid phone number. Use country code + digits only (e.g. 14155551234).',
+      );
+      fs.writeFileSync(STATUS_FILE, 'failed:invalid_phone');
+      process.exit(1);
+    }
+    phoneNumber = sanitized;
   }
 
   console.log('Starting WhatsApp authentication...\n');
