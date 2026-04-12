@@ -165,7 +165,14 @@ export class WhatsAppChannel implements Channel {
     // Register credential and message handlers before waiting for connection
     this.sock.ev.on('creds.update', saveCreds);
 
-    this.sock.ev.on('messages.upsert', async ({ messages }) => {
+    this.sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      // Baileys emits 'messages.upsert' with type='notify' for new/live
+      // messages and type='append' for historical messages replayed during
+      // app-state sync (e.g. after a reconnect). Processing 'append' here
+      // causes already-seen messages to be delivered to the agent again —
+      // duplicate replies, duplicate scheduled tasks, stale timestamps in
+      // chat metadata. Only 'notify' is a live message we must act on.
+      if (type !== 'notify') return;
       for (const msg of messages) {
         try {
           if (!msg.message) continue;

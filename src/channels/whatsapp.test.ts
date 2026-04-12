@@ -157,8 +157,11 @@ function triggerDisconnect(statusCode: number) {
   });
 }
 
-async function triggerMessages(messages: unknown[]) {
-  fakeSocket._ev.emit('messages.upsert', { messages });
+async function triggerMessages(
+  messages: unknown[],
+  type: 'notify' | 'append' = 'notify',
+) {
+  fakeSocket._ev.emit('messages.upsert', { messages, type });
   // Flush microtasks so the async messages.upsert handler completes
   await new Promise((r) => setTimeout(r, 0));
 }
@@ -771,6 +774,37 @@ describe('WhatsAppChannel', () => {
           content: '[Voice Message - transcription failed]',
         }),
       );
+    });
+
+    it("ignores 'append' upsert type (historical messages from app-state sync)", async () => {
+      // Regression: Baileys re-emits old messages with type='append' during
+      // history sync after reconnect. Those have already been processed;
+      // re-delivering them would cause duplicate agent invocations, duplicate
+      // replies, and stale timestamps in chat metadata.
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await triggerMessages(
+        [
+          {
+            key: {
+              id: 'msg-historical',
+              remoteJid: 'registered@g.us',
+              participant: '5551234@s.whatsapp.net',
+              fromMe: false,
+            },
+            message: { conversation: 'Old message replayed by sync' },
+            pushName: 'Alice',
+            messageTimestamp: Math.floor(Date.now() / 1000),
+          },
+        ],
+        'append',
+      );
+
+      expect(opts.onMessage).not.toHaveBeenCalled();
+      expect(opts.onChatMetadata).not.toHaveBeenCalled();
     });
 
     it('uses sender JID when pushName is absent', async () => {
