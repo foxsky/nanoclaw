@@ -453,6 +453,122 @@ describe('auditor DM-send detection', () => {
     }
   });
 
+  describe('web-origin filter', () => {
+    // The auditor skips web-origin test/QA messages (sender or sender_name
+    // prefixed with `web:`) so SEC-SECTI / secti-taskflow QA harness
+    // injections don't pollute the daily audit.
+    //
+    // The main codebase's `isWebOriginMessage` (src/index.ts) checks
+    // BOTH fields via OR: a message counts as web-origin when EITHER
+    // `sender` OR `sender_name` starts with `web:`. The auditor MUST
+    // match that contract — otherwise QA injections where only one of
+    // the two fields carries the prefix (e.g. `sender = 'web:e2e-1'`
+    // with a human-readable `sender_name = 'QA Bot'`) leak into the
+    // audit and produce false `noResponse`/`unfulfilledWrite` flags.
+    //
+    // The original shell script only checked whichever field won the
+    // `||` fallback — `sender_name || sender || ''` — so a non-empty
+    // `sender_name` without the prefix masked a web-prefixed `sender`.
+    // This is the regression guard for that gap.
+    function isWebOriginSender(msg: {
+      sender: string | null | undefined;
+      sender_name: string | null | undefined;
+    }): boolean {
+      return (
+        (msg.sender ?? '').startsWith('web:') ||
+        (msg.sender_name ?? '').startsWith('web:')
+      );
+    }
+
+    it('flags web-prefixed sender even when sender_name is a real name', () => {
+      // This is the case that used to leak: QA harness sets sender to a
+      // `web:...` ID but populates sender_name with a human-readable
+      // label ("QA Bot", "E2E Tester") so the message renders nicely
+      // in any debug view. Old auditor skipped on sender_name alone.
+      expect(
+        isWebOriginSender({ sender: 'web:e2e-1', sender_name: 'QA Bot' }),
+      ).toBe(true);
+      expect(
+        isWebOriginSender({
+          sender: 'web:secti-qa-harness',
+          sender_name: 'Test User',
+        }),
+      ).toBe(true);
+    });
+
+    it('flags web-prefixed sender_name even when sender is a phone JID', () => {
+      // Symmetric case: the other field carries the prefix.
+      expect(
+        isWebOriginSender({
+          sender: '5585999999999@s.whatsapp.net',
+          sender_name: 'web:injected',
+        }),
+      ).toBe(true);
+    });
+
+    it('flags messages where both fields are web-prefixed', () => {
+      expect(
+        isWebOriginSender({ sender: 'web:a', sender_name: 'web:b' }),
+      ).toBe(true);
+    });
+
+    it('does NOT flag real user messages', () => {
+      expect(
+        isWebOriginSender({
+          sender: '5585999999999@s.whatsapp.net',
+          sender_name: 'João',
+        }),
+      ).toBe(false);
+      expect(isWebOriginSender({ sender: '', sender_name: '' })).toBe(false);
+      expect(
+        isWebOriginSender({ sender: null, sender_name: null }),
+      ).toBe(false);
+    });
+
+    it('auditor-script.sh checks BOTH sender and sender_name for web: prefix', () => {
+      const scriptPath = path.join(import.meta.dirname, 'auditor-script.sh');
+      const script = fs.readFileSync(scriptPath, 'utf-8');
+
+      // The old bug was `sender_name || sender || ''` followed by a
+      // single `.startsWith('web:')` — one field could mask the other.
+      // The fix must evaluate the prefix against BOTH fields
+      // independently. We guard by requiring at least TWO references
+      // to `.startsWith('web:')` in the skip block, OR an explicit
+      // OR-of-prefixes check against both `sender` and `sender_name`.
+      const skipBlock = script.match(
+        /\/\/ Skip web-origin[\s\S]{0,1200}?continue;/,
+      );
+      expect(skipBlock, 'web-origin skip block not found').not.toBeNull();
+      const body = skipBlock![0];
+
+      // Both fields must appear in the skip block.
+      expect(body).toMatch(/\bsender\b/);
+      expect(body).toMatch(/\bsender_name\b/);
+
+      // And the prefix check must apply to each field, not just the
+      // winner of a `||` fallback. The old code did
+      //   const senderStr = msg.sender_name || msg.sender || '';
+      //   if (senderStr.startsWith('web:')) continue;
+      // which only checks ONE field (whichever wins the fallback) — a
+      // non-empty `sender_name` masks a `web:`-prefixed `sender`.
+      //
+      // The fix must apply `.startsWith('web:')` (or an equivalent
+      // regex) to BOTH fields independently. Simplest portable guard:
+      // require at least two `.startsWith('web:')` calls inside the
+      // skip block — one per field.
+      const startsWithCount = (body.match(/\.startsWith\(['"]web:['"]\)/g) ?? [])
+        .length;
+      expect(
+        startsWithCount,
+        'Auditor web-origin filter must check BOTH sender and sender_name ' +
+          'for the `web:` prefix (see src/index.ts isWebOriginMessage). ' +
+          'Current block only checks one field via the `||` fallback, which ' +
+          'misses QA injections where only one of the two fields carries ' +
+          'the prefix. Call `.startsWith("web:")` on each field.',
+      ).toBeGreaterThanOrEqual(2);
+    });
+  });
+
   describe('drift detection', () => {
     const scriptPath = path.join(import.meta.dirname, 'auditor-script.sh');
     const script = fs.readFileSync(scriptPath, 'utf-8');

@@ -359,9 +359,16 @@ for (const group of groups) {
   const interactions = [];
 
   for (const msg of userMessages) {
-    // Skip web-origin test/QA messages (web: prefix senders)
-    const senderStr = msg.sender_name || msg.sender || '';
-    if (senderStr.startsWith('web:')) continue;
+    // Skip web-origin test/QA messages (web: prefix senders). Mirrors
+    // `isWebOriginMessage` in src/index.ts: a message is web-origin when
+    // EITHER `sender` OR `sender_name` starts with `web:`. The old check
+    // (`sender_name || sender || ''`, then one `.startsWith`) only
+    // inspected whichever field won the fallback — a non-empty human
+    // `sender_name` masked a `web:`-prefixed `sender`, leaking QA
+    // injections (e.g. secti-taskflow harness) into the audit.
+    const senderField = msg.sender || '';
+    const senderNameField = msg.sender_name || '';
+    if (senderField.startsWith('web:') || senderNameField.startsWith('web:')) continue;
 
     // Find bot response within 10 minutes
     const tenMinLater = new Date(new Date(msg.timestamp).getTime() + 600000).toISOString();
