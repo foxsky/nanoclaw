@@ -412,3 +412,46 @@ describe('container-runner legacy mode output parsing', () => {
     expect(result.newSessionId).toBe('session-solo');
   });
 });
+
+describe('container-runner stdin error handling', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('handles stdin EPIPE errors without crashing (container exits early)', async () => {
+    // Regression: without a stdin 'error' listener, an EPIPE from the
+    // container exiting before reading stdin would crash Node.
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    // Give the runner a microtask so its stdin.on('error') listener attaches
+    // before we simulate the pipe break.
+    await vi.advanceTimersByTimeAsync(1);
+
+    // Simulate EPIPE by emitting an error on stdin. With no listener, this
+    // would throw synchronously and bubble as an unhandled error; with the
+    // listener in place, it's absorbed and logged.
+    const epipeErr = Object.assign(new Error('write EPIPE'), {
+      code: 'EPIPE',
+    });
+    expect(() => fakeProc.stdin.emit('error', epipeErr)).not.toThrow();
+
+    // Container then exits with non-zero code (simulating the crash that
+    // caused the EPIPE in the first place).
+    fakeProc.emit('close', 1);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('error');
+  });
+});

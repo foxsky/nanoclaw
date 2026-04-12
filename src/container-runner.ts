@@ -536,6 +536,17 @@ export async function runContainerAgent(
 
     // Container auth flows through the credential proxy (ANTHROPIC_BASE_URL),
     // so the input JSON carries no secrets — it's safe to pipe directly.
+    // Guard against EPIPE crashes: if the container exits before we finish
+    // writing (spawn failed, image missing, OOM-kill), the write pipe emits
+    // 'error' on stdin. Without a listener, Node elevates it to an unhandled
+    // error event and crashes the process. Log and let the 'close'/'error'
+    // handlers below resolve the promise.
+    container.stdin.on('error', (err) => {
+      logger.warn(
+        { group: group.name, containerName, err },
+        'Container stdin error (likely container exited before input was consumed)',
+      );
+    });
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
 
