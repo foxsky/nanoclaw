@@ -593,6 +593,51 @@ describe('GroupQueue', () => {
     expect(taskFn).toHaveBeenCalledTimes(1);
   });
 
+  it('shutdown clears pending task starvation timers', async () => {
+    const fs = await import('fs');
+    let resolveProcess: () => void;
+
+    const processMessages = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        resolveProcess = resolve;
+      });
+      return true;
+    });
+
+    queue.setProcessMessagesFn(processMessages);
+    queue.enqueueMessageCheck('group1@g.us');
+    await vi.advanceTimersByTimeAsync(10);
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'container-1',
+      'test-group',
+    );
+
+    // Enqueue task while busy — starts 2-minute starvation timer
+    const taskFn = vi.fn(async () => {});
+    queue.enqueueTask('group1@g.us', 'task-1', taskFn);
+
+    const writeFileSync = vi.mocked(fs.default.writeFileSync);
+    writeFileSync.mockClear();
+
+    // Shutdown BEFORE starvation timer fires — must clear the timer so it
+    // doesn't fire post-shutdown and write to the filesystem of a dead queue.
+    await queue.shutdown(1000);
+
+    // Advance past the starvation timeout
+    await vi.advanceTimersByTimeAsync(120_001);
+
+    // No _close should have been written — starvation timer was cancelled on shutdown
+    const closeWrites = writeFileSync.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
+    );
+    expect(closeWrites).toHaveLength(0);
+
+    resolveProcess!();
+    await vi.advanceTimersByTimeAsync(10);
+  });
+
   it('starvation timer forces close after timeout', async () => {
     const fs = await import('fs');
     let resolveProcess: () => void;

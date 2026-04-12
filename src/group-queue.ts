@@ -423,11 +423,17 @@ export class GroupQueue {
   async shutdown(_gracePeriodMs: number): Promise<void> {
     this.shuttingDown = true;
 
-    // Cancel all pending retry timers to allow clean event-loop drain
+    // Cancel all pending retry and starvation timers to allow clean
+    // event-loop drain and prevent post-shutdown filesystem writes
+    // (the starvation timer fires closeStdin, which writes a _close sentinel).
     for (const [, state] of this.groups) {
       if (state.retryTimer !== null) {
         clearTimeout(state.retryTimer);
         state.retryTimer = null;
+      }
+      if (state.taskStarvationTimer !== null) {
+        clearTimeout(state.taskStarvationTimer);
+        state.taskStarvationTimer = null;
       }
     }
 
