@@ -98,6 +98,57 @@ describe('task scheduler', () => {
     expect(computeNextRun(task)).toBeNull();
   });
 
+  it('pauses cron tasks with invalid schedule_value instead of throwing', async () => {
+    // A cron task with an invalid schedule_value — computeNextRun throws.
+    // The scheduler must catch this and pause the task to prevent an infinite retry loop.
+    createTask({
+      id: 'task-invalid-cron',
+      group_folder: 'valid-folder',
+      chat_jid: 'valid@g.us',
+      prompt: 'run',
+      schedule_type: 'cron',
+      schedule_value: 'not-a-cron-expression',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 60_000).toISOString(),
+      status: 'active',
+      created_at: '2026-02-22T00:00:00.000Z',
+    });
+
+    const enqueueTask = vi.fn(
+      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+        // Run the task fn and swallow any error — we want to observe that
+        // the scheduler correctly marks the task as paused rather than letting
+        // the error escape to the queue.
+        void fn().catch(() => {});
+      },
+    );
+
+    startSchedulerLoop({
+      registeredGroups: () => ({
+        'valid@g.us': {
+          jid: 'valid@g.us',
+          name: 'valid',
+          folder: 'valid-folder',
+          channel: 'whatsapp',
+          trigger: '@Tars',
+          isMain: false,
+        } as any,
+      }),
+      getSessions: () => ({}),
+      queue: { enqueueTask } as any,
+      onProcess: () => {},
+      sendMessage: async () => {},
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+    // Allow microtasks for the async fn() to resolve.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const task = getTaskById('task-invalid-cron');
+    expect(task?.status).toBe('paused');
+  });
+
   it('computeNextRun skips missed intervals without infinite loop', () => {
     // Task was due 10 intervals ago (missed)
     const ms = 60000;

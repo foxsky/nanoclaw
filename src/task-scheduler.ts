@@ -143,7 +143,31 @@ async function runTask(
 
   // Advance next_run BEFORE executing so the scheduler loop won't
   // re-enqueue this task while it's still running or after a restart.
-  const precomputedNextRun = computeNextRun(task);
+  let precomputedNextRun: string | null;
+  try {
+    precomputedNextRun = computeNextRun(task);
+  } catch (computeErr) {
+    // Malformed schedule_value (bad cron, non-numeric interval) → pause to
+    // prevent an infinite retry loop. Without this guard, the error would
+    // propagate up through runTask, the task would never be paused, and
+    // every subsequent poll cycle would pick it up again.
+    const error =
+      computeErr instanceof Error ? computeErr.message : String(computeErr);
+    updateTask(task.id, { status: 'paused' });
+    logger.error(
+      { taskId: task.id, scheduleValue: task.schedule_value, error },
+      'Task has invalid schedule_value — paused to prevent retry churn',
+    );
+    logTaskRun({
+      task_id: task.id,
+      run_at: new Date().toISOString(),
+      duration_ms: Date.now() - startTime,
+      status: 'error',
+      result: null,
+      error: `Invalid schedule_value: ${error}`,
+    });
+    return;
+  }
   if (precomputedNextRun) {
     updateTask(task.id, { next_run: precomputedNextRun });
   } else if (task.schedule_type === 'once') {
