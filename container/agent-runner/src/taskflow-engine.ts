@@ -764,6 +764,7 @@ export class TaskflowEngine {
     try { this.db.exec(`ALTER TABLE board_runtime_config ADD COLUMN country TEXT`); } catch {}
     try { this.db.exec(`ALTER TABLE board_runtime_config ADD COLUMN state TEXT`); } catch {}
     try { this.db.exec(`ALTER TABLE board_runtime_config ADD COLUMN city TEXT`); } catch {}
+    try { this.db.exec(`ALTER TABLE board_runtime_config ADD COLUMN cross_board_subtask_mode TEXT NOT NULL DEFAULT 'open'`); } catch {}
 
     // Per-prefix counters table (extensible for any future task type prefixes)
     this.db.exec(`

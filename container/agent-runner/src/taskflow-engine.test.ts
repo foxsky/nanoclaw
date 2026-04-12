@@ -3322,6 +3322,14 @@ describe('TaskflowEngine', () => {
   /* ---------------------------------------------------------------- */
 
   describe('admin', () => {
+    it('board_runtime_config has cross_board_subtask_mode column after engine init', () => {
+      const row = db
+        .prepare(`SELECT cross_board_subtask_mode FROM board_runtime_config WHERE board_id = ?`)
+        .get(BOARD_ID) as { cross_board_subtask_mode: string } | undefined;
+      expect(row).toBeTruthy();
+      expect(row!.cross_board_subtask_mode).toBe('open');
+    });
+
     it('register person (hierarchy board requires group_name + group_folder)', () => {
       // Fixture is level 0, max_depth 1 — canDelegateDown() is true, so both
       // group_name and group_folder must be supplied or the engine rejects.
