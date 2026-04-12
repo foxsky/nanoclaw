@@ -278,6 +278,19 @@ describe('stripInternalTags', () => {
   it('strips unclosed internal tag at end of text', () => {
     expect(stripInternalTags('hello <internal>trailing text')).toBe('hello');
   });
+
+  it('strips internal tags regardless of case (data-leak regression)', () => {
+    // If the LLM emits uppercase or mixed-case <Internal>/<INTERNAL> tags,
+    // the contents are still hidden reasoning and must not leak to the channel.
+    expect(
+      stripInternalTags('hello <INTERNAL>secret</INTERNAL> world'),
+    ).toBe('hello  world');
+    expect(
+      stripInternalTags('hello <Internal>secret</Internal> world'),
+    ).toBe('hello  world');
+    // Unclosed mixed-case tag must also be stripped.
+    expect(stripInternalTags('hello <INTERNAL>trailing secret')).toBe('hello');
+  });
 });
 
 describe('formatOutbound', () => {

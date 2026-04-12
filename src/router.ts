@@ -32,11 +32,13 @@ export function formatMessages(
 }
 
 export function stripInternalTags(text: string): string {
-  // Strip properly closed <internal>...</internal> blocks
-  let result = text.replace(/<internal>[\s\S]*?<\/internal>/g, '');
+  // Strip properly closed <internal>...</internal> blocks.
+  // Case-insensitive so mixed-case variants (<Internal>, <INTERNAL>) from the
+  // LLM cannot leak hidden reasoning to the outbound channel.
+  let result = text.replace(/<internal>[\s\S]*?<\/internal>/gi, '');
   // Strip unclosed <internal> tags — only consume non-< chars to avoid
   // destroying content after a literal "<internal>" in prose text
-  result = result.replace(/<internal>[^<]*/g, '');
+  result = result.replace(/<internal>[^<]*/gi, '');
   return result.trim();
 }
 
