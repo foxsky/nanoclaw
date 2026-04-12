@@ -917,7 +917,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
       'taskflow_admin',
       'Board administration: register/remove people, manage roles, set WIP limits, cancel/restore tasks, process inbox, manage holidays.',
       {
-        action: z.enum(['register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin', 'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays', 'process_minutes', 'process_minutes_decision', 'accept_external_invite', 'reparent_task', 'detach_task']).describe('Admin action'),
+        action: z.enum(['register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin', 'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays', 'process_minutes', 'process_minutes_decision', 'accept_external_invite', 'reparent_task', 'detach_task', 'merge_project']).describe('Admin action'),
         sender_name: z.string().describe('Name of the person performing the admin action'),
         person_name: z.string().optional().describe('Person name (for person-related actions)'),
         phone: z.string().optional().describe('Phone number (for register_person)'),
@@ -929,6 +929,8 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         force: z.boolean().optional().describe('Force flag (bypasses safety checks)'),
         group_name: z.string().optional().describe('Division/sector name for child board WhatsApp group (for register_person on hierarchy boards, e.g., "SETD-SECTI - TaskFlow")'),
         group_folder: z.string().optional().describe('Division/sector folder name for child board (for register_person on hierarchy boards, e.g., "setd-secti-taskflow")'),
+        source_project_id: z.string().optional().describe('Source project ID to merge FROM (for merge_project, e.g., "P5")'),
+        target_project_id: z.string().optional().describe('Target project ID to merge INTO (for merge_project, e.g., "P24")'),
         note_id: z.number().optional().describe('Note ID for process_minutes_decision'),
         decision: z.enum(['create_task', 'create_inbox']).optional().describe('Decision for process_minutes_decision'),
         create: z.object({
