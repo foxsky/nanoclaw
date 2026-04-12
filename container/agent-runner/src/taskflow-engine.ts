@@ -4013,11 +4013,22 @@ export class TaskflowEngine {
           if (mode === 'approval') {
             // Persist the request and return pending_approval with the formatted
             // message the child-board agent should relay to the parent board.
-            const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-            const senderPerson = this.resolvePerson(params.sender_name);
+            // Look up the parent board's group_jid FIRST — if we can't
+            // find it, refuse the request creation instead of persisting
+            // a row that nobody can be notified about.
+            // (Codex review 2026-04-12 finding I.)
             const parentBoard = this.db
               .prepare(`SELECT group_jid, group_folder FROM boards WHERE id = ?`)
               .get(owningBoardId) as { group_jid: string; group_folder: string } | undefined;
+            if (!parentBoard || !parentBoard.group_jid) {
+              return {
+                success: false,
+                error: `Não foi possível enviar a solicitação para o quadro pai: registro do quadro ${owningBoardId} não encontrado ou sem group_jid. Peça ao gestor para verificar o cadastro do quadro.`,
+              };
+            }
+
+            const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            const senderPerson = this.resolvePerson(params.sender_name);
 
             this.db.prepare(`
               INSERT INTO subtask_requests (
@@ -6962,10 +6973,16 @@ export class TaskflowEngine {
             .get(req.source_board_id) as { group_jid: string } | undefined;
 
           if (params.decision === 'reject') {
-            this.db.prepare(`
+            // Compare-and-swap on status='pending' to survive a cross-process
+            // race where two managers approve/reject at the same time.
+            // (Codex review 2026-04-12 finding H.)
+            const rejectResult = this.db.prepare(`
               UPDATE subtask_requests SET status = 'rejected', resolved_by = ?, resolved_at = ?, reason = ?
-              WHERE request_id = ?
+              WHERE request_id = ? AND status = 'pending'
             `).run(params.sender_name, hsaNow, params.reason ?? null, req.request_id);
+            if (rejectResult.changes === 0) {
+              return { success: false, error: `Request ${req.request_id} was resolved by another process. Re-query status.` };
+            }
 
             const reasonText = params.reason ? ` — ${params.reason}` : '';
             const rejectNotice = `❌ *Solicitação rejeitada*\n\nID: \`${req.request_id}\`\nProjeto: ${req.parent_task_id}\nRejeitada por: ${params.sender_name}${reasonText}`;
@@ -6981,6 +6998,22 @@ export class TaskflowEngine {
           const parentTask = this.getTask(req.parent_task_id);
           if (!parentTask || parentTask.type !== 'project') {
             return { success: false, error: `Parent task ${req.parent_task_id} is no longer a valid project on this board.` };
+          }
+
+          // Validate each proposed assignee is registered on THIS (parent) board.
+          // The request was authored by the child board, so the assignee might be
+          // someone not registered here. Bypassing the check would create a dangling
+          // assignee row and skip the normal offer_register flow.
+          // (Codex review 2026-04-12 finding C.)
+          for (const s of subtasksToCreate) {
+            const proposedAssignee = s.assignee ?? parentTask.assignee ?? null;
+            if (proposedAssignee && !this.resolvePerson(proposedAssignee)) {
+              return {
+                success: false,
+                error: `Responsável "${proposedAssignee}" não está cadastrado(a) neste quadro. Cadastre-o(a) primeiro via \`taskflow_admin register_person\` antes de aprovar esta solicitação.`,
+                offer_register: { name: proposedAssignee, message: `${proposedAssignee} precisa ser cadastrado(a) neste quadro antes que a solicitação ${req.request_id} possa ser aprovada.` },
+              } as any;
+            }
           }
 
           const createdIds: string[] = [];
@@ -7006,10 +7039,19 @@ export class TaskflowEngine {
             nextSubNum++;
           }
 
-          this.db.prepare(`
+          // Compare-and-swap on status='pending' (Codex finding H).
+          const approveResult = this.db.prepare(`
             UPDATE subtask_requests SET status = 'approved', resolved_by = ?, resolved_at = ?, created_subtask_ids = ?
-            WHERE request_id = ?
+            WHERE request_id = ? AND status = 'pending'
           `).run(params.sender_name, hsaNow, JSON.stringify(createdIds), req.request_id);
+          if (approveResult.changes === 0) {
+            // Race: another process resolved this request between our SELECT and UPDATE.
+            // The subtasks we already created are orphans — roll them back.
+            for (const id of createdIds) {
+              this.db.prepare(`DELETE FROM tasks WHERE board_id = ? AND id = ?`).run(this.boardId, id);
+            }
+            return { success: false, error: `Request ${req.request_id} was resolved by another process during approval. Created subtasks rolled back.` };
+          }
 
           const approveNotice = `✅ *Solicitação aprovada*\n\nID: \`${req.request_id}\`\nProjeto: ${req.parent_task_id}\nSubtarefas criadas: ${createdIds.join(', ')}\nAprovada por: ${params.sender_name}`;
 

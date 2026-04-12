@@ -5221,6 +5221,63 @@ describe('TaskflowEngine', () => {
       expect(r.error).toContain('not found');
     });
 
+    it('handle_subtask_approval approve rejects when proposed assignee is not registered on parent board', () => {
+      // Seed child board with a person not registered on parent board
+      db.exec(`INSERT INTO board_people VALUES ('${CHILD_BOARD}', 'person-new', 'Ana', '5585999990003', 'QA', 3, NULL)`);
+      db.exec(`UPDATE board_runtime_config SET cross_board_subtask_mode = 'approval' WHERE board_id = '${PARENT_BOARD}'`);
+
+      // Create a request where the child thinks Ana is the assignee
+      // (we manually insert since the normal flow uses task.assignee)
+      const now = new Date().toISOString();
+      const reqId = 'req-test-ana';
+      db.exec(`INSERT INTO subtask_requests VALUES (
+        '${reqId}', '${CHILD_BOARD}', '${PARENT_BOARD}', 'P1',
+        '[{"title":"Task for Ana","assignee":"Ana"}]',
+        'Giovanni', 'person-dev', 'pending', NULL, NULL, NULL, '${now}', NULL
+      )`);
+
+      const parentEngine = new TaskflowEngine(db, PARENT_BOARD);
+      const r = parentEngine.admin({
+        board_id: PARENT_BOARD,
+        action: 'handle_subtask_approval',
+        sender_name: 'Miguel',
+        request_id: reqId,
+        decision: 'approve',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('Ana');
+      expect(r.error).toContain('não está cadastrad');
+      expect((r as any).offer_register).toBeTruthy();
+
+      // Request stays pending so it can be retried after registration
+      const req = db.prepare(`SELECT status FROM subtask_requests WHERE request_id = ?`).get(reqId) as any;
+      expect(req.status).toBe('pending');
+    });
+
+    it('approval mode refuses if parent board has no boards row or group_jid', () => {
+      // Drop the parent board's registry row to simulate data integrity issue
+      db.exec(`DELETE FROM boards WHERE id = '${PARENT_BOARD}'`);
+      // Re-add it but with NULL group_jid... actually NOT NULL so use empty string
+      // Simulating by setting the row to a missing board case: just removing and
+      // not re-adding is the realistic case.
+
+      db.exec(`UPDATE board_runtime_config SET cross_board_subtask_mode = 'approval' WHERE board_id = '${PARENT_BOARD}'`);
+
+      const r = childEngine.update({
+        board_id: CHILD_BOARD,
+        task_id: 'P1',
+        sender_name: 'Giovanni',
+        updates: { add_subtask: 'Test' },
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toContain('quadro pai');
+      expect((r as any).pending_approval).toBeUndefined();
+
+      // No request was persisted
+      const reqCount = db.prepare(`SELECT COUNT(*) as c FROM subtask_requests`).get() as any;
+      expect(reqCount.c).toBe(0);
+    });
+
     it('handle_subtask_approval rejects non-managers', () => {
       db.exec(`UPDATE board_runtime_config SET cross_board_subtask_mode = 'approval' WHERE board_id = '${PARENT_BOARD}'`);
 
