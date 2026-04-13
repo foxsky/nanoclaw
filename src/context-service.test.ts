@@ -739,7 +739,16 @@ describe('ContextService — rollupDaily', () => {
     svc.close();
   });
 
-  it('adopts late-arriving orphans into existing rollup', async () => {
+  // Contract updated 2026-04-13 (Task 1a per docs/superpowers/plans/
+  // 2026-04-13-lcm-lossless-claw-improvements.md rev 4). Pre-change,
+  // rollup() adopted orphans but did NOT re-summarize — the daily
+  // summary the weekly layer consumed could stay permanently stale
+  // (leaf arriving at 23:59:50 misses the first rollup; adopted later;
+  // its content never reaches the weekly). New contract: when new
+  // orphans arrive for an existing parent, UPDATE the parent summary
+  // with a fresh rollup that includes the full child set. No-op when
+  // no orphans are adopted (idempotent).
+  it('re-summarizes existing parent when late-arriving orphans are adopted', async () => {
     const svc = new ContextService(TEST_DB, {
       summarizer: 'ollama',
       ollamaHost: 'http://localhost:11434',
@@ -762,22 +771,30 @@ describe('ContextService — rollupDaily', () => {
         now,
       );
 
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ response: 'Daily rollup summary.' }),
-    });
-    global.fetch = mockFetch as any;
+    // First rollup call — creates a daily with v1 summary. Use a long
+    // enough response because the engine rejects summaries with length
+    // <= 20 as garbage.
+    let whichCall = 0;
+    const v1Text =
+      'Version-one summary describing the early leaf and morning activity.';
+    const v2Text =
+      'Version-two summary describing the full day including the late orphan.';
+    global.fetch = vi.fn().mockImplementation(async () => {
+      whichCall++;
+      return {
+        ok: true,
+        json: async () => ({ response: whichCall === 1 ? v1Text : v2Text }),
+      };
+    }) as any;
 
     const dailyId = await svc.rollupDaily('grp', date);
     expect(dailyId).toBeTruthy();
+    const v1 = svc.db
+      .prepare('SELECT summary FROM context_nodes WHERE id = ?')
+      .get(dailyId) as any;
+    expect(v1.summary).toBe(v1Text);
 
-    // Verify first leaf is linked
-    const earlyLeaf = svc.db
-      .prepare('SELECT parent_id FROM context_nodes WHERE id = ?')
-      .get(`leaf:grp:${date}T09:00:00.000Z`) as any;
-    expect(earlyLeaf.parent_id).toBe(dailyId);
-
-    // Now insert a late-arriving orphan (summarized after the rollup was created)
+    // Insert late-arriving orphan
     svc.db
       .prepare(
         `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
@@ -790,9 +807,9 @@ describe('ContextService — rollupDaily', () => {
         now,
       );
 
-    // Re-run rollup — should adopt the orphan, not create a new daily
+    // Re-run rollup — should adopt the orphan AND re-summarize
     const second = await svc.rollupDaily('grp', date);
-    expect(second).toBeNull(); // still returns null (existing rollup)
+    expect(second).toBe(dailyId); // returns the same parent ID (UPDATE, not new row)
 
     // Verify the orphan was adopted
     const lateLeaf = svc.db
@@ -800,11 +817,64 @@ describe('ContextService — rollupDaily', () => {
       .get(`leaf:grp:${date}T21:00:00.000Z`) as any;
     expect(lateLeaf.parent_id).toBe(dailyId);
 
-    // Total children should be 2
+    // Total children should be 2 (no duplicate parents)
     const children = svc.db
       .prepare('SELECT COUNT(*) as cnt FROM context_nodes WHERE parent_id = ?')
       .get(dailyId) as any;
     expect(children.cnt).toBe(2);
+    const parentCount = svc.db
+      .prepare(
+        "SELECT COUNT(*) as cnt FROM context_nodes WHERE level = 1 AND group_folder = 'grp'",
+      )
+      .get() as any;
+    expect(parentCount.cnt).toBe(1);
+
+    // Summary was updated (reflects the fresh LLM call)
+    const v2 = svc.db
+      .prepare('SELECT summary FROM context_nodes WHERE id = ?')
+      .get(dailyId) as any;
+    expect(v2.summary).toBe(v2Text);
+
+    svc.close();
+  });
+
+  it('is idempotent when re-run with no new orphans (does not re-summarize)', async () => {
+    const svc = new ContextService(TEST_DB, {
+      summarizer: 'ollama',
+      ollamaHost: 'http://localhost:11434',
+      retainDays: 90,
+    });
+    const date = '2026-03-14';
+    const now = new Date().toISOString();
+    svc.db
+      .prepare(
+        `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
+       VALUES (?, 'grp', 0, 'only leaf', ?, ?, 10, 'test', ?)`,
+      )
+      .run(
+        `leaf:grp:${date}T09:00:00.000Z`,
+        `${date}T09:00:00.000Z`,
+        `${date}T09:00:00.000Z`,
+        now,
+      );
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        response:
+          'Daily-one summary long enough to bypass the 20-character guard.',
+      }),
+    });
+    global.fetch = fetchMock as any;
+
+    const first = await svc.rollupDaily('grp', date);
+    expect(first).toBeTruthy();
+    const callsAfterFirst = fetchMock.mock.calls.length;
+
+    // Re-run with no new orphans — should NOT invoke the LLM again.
+    const second = await svc.rollupDaily('grp', date);
+    expect(second).toBeNull();
+    expect(fetchMock.mock.calls.length).toBe(callsAfterFirst);
 
     svc.close();
   });

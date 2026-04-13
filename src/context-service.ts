@@ -244,6 +244,8 @@ export class ContextService {
   private readonly stmtInsertRollupNode: Database.Statement;
   private readonly stmtSetParent: Database.Statement;
   private readonly stmtSelectExistingNode: Database.Statement;
+  private readonly stmtUpdateRollupSummary: Database.Statement;
+  private readonly stmtSelectAdoptedChildren: Database.Statement;
   private readonly stmtPruneNodes: Database.Statement;
   private readonly stmtPruneSessions: Database.Statement;
   private readonly stmtVacuum: Database.Statement;
@@ -316,6 +318,25 @@ export class ContextService {
 
     this.stmtSelectExistingNode = this.db.prepare(`
       SELECT id FROM context_nodes WHERE id = ?
+    `);
+
+    // Task 1a (2026-04-13): when new orphans arrive after the first rollup,
+    // we UPDATE the parent's summary with a fresh LLM call over the full
+    // child set (adopted + newly-adopted). Pre-change, rollup() only adopted
+    // orphans and never refreshed the summary — leaves arriving at 23:59:50
+    // missed the first rollup and their content never reached the weekly
+    // layer. See docs/superpowers/plans/2026-04-13-lcm-lossless-claw-
+    // improvements.md (rev 4).
+    this.stmtUpdateRollupSummary = this.db.prepare(`
+      UPDATE context_nodes
+         SET summary = ?, token_count = ?, model = ?, time_end = ?
+       WHERE id = ?
+    `);
+
+    this.stmtSelectAdoptedChildren = this.db.prepare(`
+      SELECT id, summary FROM context_nodes
+      WHERE parent_id = ? AND summary IS NOT NULL AND pruned_at IS NULL
+      ORDER BY time_start ASC
     `);
 
     this.stmtPruneNodes = this.db.prepare(`
@@ -467,31 +488,32 @@ export class ContextService {
     rangeEnd: string,
   ): Promise<string | null> {
     const existing = this.stmtSelectExistingNode.get(parentId);
-    if (existing) {
-      const orphans = this.stmtSelectChildrenForRollup.all(
-        groupFolder,
-        childLevel,
-        rangeStart,
-        rangeEnd,
-      ) as Array<{ id: string; summary: string }>;
-      if (orphans.length > 0) {
-        for (const orphan of orphans) {
-          this.stmtSetParent.run(parentId, orphan.id);
-        }
-        logger.info(
-          { parentId, adopted: orphans.length },
-          'Adopted orphaned children into existing rollup',
-        );
-      }
-      return null;
-    }
-
-    const children = this.stmtSelectChildrenForRollup.all(
+    const orphans = this.stmtSelectChildrenForRollup.all(
       groupFolder,
       childLevel,
       rangeStart,
       rangeEnd,
     ) as Array<{ id: string; summary: string }>;
+
+    // Existing parent + no new orphans → idempotent no-op (keeps cron from
+    // re-paying LLM cost on every 60s tick).
+    if (existing && orphans.length === 0) return null;
+
+    // Determine the full child set that will be summarized. When updating
+    // an existing parent, include both already-adopted children and the
+    // new orphans (the orphans will be adopted in the same transaction).
+    let children: Array<{ id: string; summary: string }>;
+    if (existing) {
+      const adopted = this.stmtSelectAdoptedChildren.all(parentId) as Array<{
+        id: string;
+        summary: string;
+      }>;
+      children = [...adopted, ...orphans].sort((a, b) =>
+        a.id.localeCompare(b.id),
+      );
+    } else {
+      children = orphans;
+    }
 
     if (children.length === 0) return null;
 
@@ -523,17 +545,34 @@ export class ContextService {
     const timeEnd = lastDay + 'T23:59:59.999Z';
 
     this.db.transaction(() => {
-      this.stmtInsertRollupNode.run(
-        parentId,
-        groupFolder,
-        parentLevel,
-        summary,
-        timeStart,
-        timeEnd,
-        tokenCount,
-        model,
-        now,
-      );
+      if (existing) {
+        this.stmtUpdateRollupSummary.run(
+          summary,
+          tokenCount,
+          model,
+          timeEnd,
+          parentId,
+        );
+        logger.info(
+          { parentId, orphansAdopted: orphans.length, totalChildren: children.length },
+          'Re-summarized existing rollup after adopting late-arriving orphans',
+        );
+      } else {
+        this.stmtInsertRollupNode.run(
+          parentId,
+          groupFolder,
+          parentLevel,
+          summary,
+          timeStart,
+          timeEnd,
+          tokenCount,
+          model,
+          now,
+        );
+      }
+      // Adopt any currently-unparented children (either the full set on
+      // INSERT path, or only the orphans on UPDATE path — stmtSetParent
+      // is idempotent on already-linked rows).
       for (const child of children) {
         this.stmtSetParent.run(parentId, child.id);
       }
