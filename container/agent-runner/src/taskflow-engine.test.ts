@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { TaskflowEngine } from './taskflow-engine.js';
+import { TaskflowEngine, normalizePhone } from './taskflow-engine.js';
 
 const BOARD_ID = 'board-test-001';
 
@@ -5425,4 +5425,28 @@ describe('TaskflowEngine', () => {
       expect(r.success).toBe(true);
     });
   });
+});
+
+// Parity guard: this fixture table MUST match src/phone.test.ts exactly.
+// If either the engine or the host normalizePhone is changed, both copies
+// and both fixture tables must be updated together — otherwise the host
+// will write rows the engine can't look up (or vice versa).
+describe('normalizePhone parity with host src/phone.ts', () => {
+  const fixtures: Array<[string, string]> = [
+    ['5585999991234', '5585999991234'],
+    ['+55 (85) 99999-1234', '5585999991234'],
+    ['86999986334', '5586999986334'],
+    ['8688080333', '558688080333'],
+    ['558699487547', '558699487547'],
+    ['', ''],
+    ['   ---', ''],
+    ['1234567', '1234567'],
+    ['08599991234', '08599991234'],
+    ['442079460958', '442079460958'],
+  ];
+  for (const [input, expected] of fixtures) {
+    it(`${JSON.stringify(input)} → ${JSON.stringify(expected)}`, () => {
+      expect(normalizePhone(input)).toBe(expected);
+    });
+  }
 });

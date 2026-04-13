@@ -6,6 +6,7 @@ import { getGroupSenderName } from '../group-sender.js';
 import { isValidGroupFolder } from '../group-folder.js';
 import type { IpcHandler } from '../ipc.js';
 import { logger } from '../logger.js';
+import { normalizePhone } from '../phone.js';
 
 import {
   BoardConfigRow,
@@ -148,51 +149,55 @@ const handleProvisionChildBoard: IpcHandler = async (
       group_jid: string;
       group_folder: string;
     };
-    const phoneDigits = personPhone.replace(/\D/g, '');
-    const hasUsablePhone = phoneDigits.length >= 8;
+    // Canonicalize both the incoming phone and the stored phones so the
+    // match survives 55-prefix inconsistencies (Brazilian numbers get stored
+    // with and without the country code, and the old REPLACE chain only
+    // stripped separators — not the CC). See src/phone.ts.
+    const canonicalPhone = normalizePhone(personPhone);
+    const hasUsablePhone = canonicalPhone.length >= 10;
     let existingElsewhere: ExistingBoardMatch | undefined;
 
     // Primary match: person_id + phone (both must agree, since person_id alone
     // is NOT globally unique across parent boards).
     if (hasUsablePhone) {
-      existingElsewhere = tfDb
+      const candidates = tfDb
         .prepare(
-          `SELECT cbr.child_board_id, cbr.person_id, b.group_jid, b.group_folder
+          `SELECT cbr.child_board_id, cbr.person_id, b.group_jid, b.group_folder, bp.phone
            FROM child_board_registrations cbr
            JOIN boards b ON b.id = cbr.child_board_id
            JOIN board_people bp ON bp.board_id = cbr.child_board_id AND bp.person_id = cbr.person_id
            WHERE cbr.person_id = ?
              AND cbr.parent_board_id != ?
-             AND bp.phone IS NOT NULL
-             AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(bp.phone, '+', ''), '-', ''), ' ', ''), '(', ''), ')', ''), '.', '') = ?
-           LIMIT 1`,
+             AND bp.phone IS NOT NULL`,
         )
-        .get(personId, parentBoard.id, phoneDigits) as
-        | ExistingBoardMatch
-        | undefined;
+        .all(personId, parentBoard.id) as Array<ExistingBoardMatch & { phone: string }>;
+      existingElsewhere = candidates.find(
+        (c) => normalizePhone(c.phone) === canonicalPhone,
+      );
     }
 
     // Fallback: match by phone number alone (different person_id string,
     // but same physical phone — still the same person).
     if (!existingElsewhere && hasUsablePhone) {
-      existingElsewhere = tfDb
+      const candidates = tfDb
         .prepare(
-          `SELECT cbr.child_board_id, cbr.person_id, b.group_jid, b.group_folder
+          `SELECT cbr.child_board_id, cbr.person_id, b.group_jid, b.group_folder, bp.phone
              FROM child_board_registrations cbr
              JOIN boards b ON b.id = cbr.child_board_id
              JOIN board_people bp ON bp.board_id = cbr.child_board_id AND bp.person_id = cbr.person_id
              WHERE bp.phone IS NOT NULL
-               AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(bp.phone, '+', ''), '-', ''), ' ', ''), '(', ''), ')', ''), '.', '') = ?
-               AND cbr.parent_board_id != ?
-             LIMIT 1`,
+               AND cbr.parent_board_id != ?`,
         )
-        .get(phoneDigits, parentBoard.id) as ExistingBoardMatch | undefined;
+        .all(parentBoard.id) as Array<ExistingBoardMatch & { phone: string }>;
+      existingElsewhere = candidates.find(
+        (c) => normalizePhone(c.phone) === canonicalPhone,
+      );
       if (existingElsewhere) {
         logger.info(
           {
             personId,
             matchedPersonId: existingElsewhere.person_id,
-            phone: phoneDigits,
+            phone: canonicalPhone,
           },
           'provision_child_board: matched existing board by phone number',
         );
@@ -372,7 +377,7 @@ const handleProvisionChildBoard: IpcHandler = async (
     try {
       const participantJid = deps.resolvePhoneJid
         ? await deps.resolvePhoneJid(personPhone)
-        : personPhone + '@s.whatsapp.net';
+        : (canonicalPhone || personPhone) + '@s.whatsapp.net';
       const result = await deps.createGroup(childGroupName, [participantJid]);
       childGroupJid = result.jid;
       logger.info(
@@ -461,7 +466,7 @@ const handleProvisionChildBoard: IpcHandler = async (
         .prepare(
           'INSERT INTO board_admins (board_id, person_id, phone, admin_role, is_primary_manager) VALUES (?, ?, ?, ?, ?)',
         )
-        .run(childBoardId, personId, personPhone, 'manager', 1);
+        .run(childBoardId, personId, canonicalPhone || personPhone, 'manager', 1);
 
       tfDb
         .prepare(
@@ -471,7 +476,7 @@ const handleProvisionChildBoard: IpcHandler = async (
           childBoardId,
           personId,
           personName,
-          personPhone,
+          canonicalPhone || personPhone,
           personRole,
           parentConfig.wip_limit,
           null,

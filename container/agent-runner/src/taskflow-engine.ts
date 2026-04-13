@@ -523,8 +523,24 @@ function advanceDateTimeByRecurrence(
 /*  Utility Functions                                                  */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Canonicalize a phone number to Brazilian E164 digits (no '+', no separators).
+ * See `src/phone.ts` in the host package for the full contract and rationale —
+ * both copies must stay in sync.
+ *
+ * Fixed-point: canonicalizing an already-canonical string returns it unchanged,
+ * so this is safe on migration data.
+ */
 export function normalizePhone(phone: string): string {
-  return phone.replace(/\D/g, '');
+  const digits = phone.replace(/\D/g, '');
+  if (!digits) return '';
+  if ((digits.length === 12 || digits.length === 13) && digits.startsWith('55')) {
+    return digits;
+  }
+  if ((digits.length === 10 || digits.length === 11) && digits[0] !== '0') {
+    return '55' + digits;
+  }
+  return digits;
 }
 
 /** External participant access window: 7 days after scheduled occurrence. */
@@ -6108,6 +6124,13 @@ export class TaskflowEngine {
             return { success: false, error: `Person "${params.person_name}" (${personId}) already exists on this board.` };
           }
 
+          // Canonicalize at the write boundary so stored rows are comparable
+          // across boards without per-read prefix normalization. See
+          // src/phone.ts on the host side for the full contract.
+          const normalizedPhone = params.phone
+            ? normalizePhone(params.phone) || params.phone
+            : null;
+
           this.db
             .prepare(
               `INSERT INTO board_people (board_id, person_id, name, phone, role, wip_limit)
@@ -6117,7 +6140,7 @@ export class TaskflowEngine {
               this.boardId,
               personId,
               params.person_name,
-              params.phone ?? null,
+              normalizedPhone,
               params.role ?? 'member',
               params.wip_limit ?? null,
             );
@@ -6127,7 +6150,7 @@ export class TaskflowEngine {
             autoProvisionRequest = {
               person_id: personId,
               person_name: params.person_name,
-              person_phone: params.phone,
+              person_phone: normalizedPhone ?? params.phone,
               person_role: params.role ?? 'member',
               group_name: params.group_name,
               group_folder: params.group_folder,
@@ -6221,12 +6244,16 @@ export class TaskflowEngine {
             )
             .get(this.boardId, person.person_id) as { phone: string | null } | undefined;
 
+          const managerPhoneRaw = personRow?.phone ?? params.phone ?? '';
+          const managerPhone = managerPhoneRaw
+            ? normalizePhone(managerPhoneRaw) || managerPhoneRaw
+            : '';
           this.db
             .prepare(
               `INSERT INTO board_admins (board_id, person_id, phone, admin_role)
                VALUES (?, ?, ?, 'manager')`,
             )
-            .run(this.boardId, person.person_id, personRow?.phone ?? params.phone ?? '');
+            .run(this.boardId, person.person_id, managerPhone);
 
           return {
             success: true,
@@ -6257,12 +6284,16 @@ export class TaskflowEngine {
             )
             .get(this.boardId, person.person_id) as { phone: string | null } | undefined;
 
+          const delegatePhoneRaw = personRow?.phone ?? params.phone ?? '';
+          const delegatePhone = delegatePhoneRaw
+            ? normalizePhone(delegatePhoneRaw) || delegatePhoneRaw
+            : '';
           this.db
             .prepare(
               `INSERT INTO board_admins (board_id, person_id, phone, admin_role)
                VALUES (?, ?, ?, 'delegate')`,
             )
-            .run(this.boardId, person.person_id, personRow?.phone ?? params.phone ?? '');
+            .run(this.boardId, person.person_id, delegatePhone);
 
           return {
             success: true,

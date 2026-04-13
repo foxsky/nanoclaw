@@ -7,6 +7,7 @@ import { getGroupSenderName } from '../group-sender.js';
 import { isValidGroupFolder } from '../group-folder.js';
 import type { IpcHandler } from '../ipc.js';
 import { logger } from '../logger.js';
+import { normalizePhone } from '../phone.js';
 
 import {
   createBoardFilesystem,
@@ -91,7 +92,9 @@ const handleProvisionRootBoard: IpcHandler = async (
   const participants = Array.isArray(data.participants)
     ? data.participants
     : [];
-  const phoneJid = personPhone + '@s.whatsapp.net';
+  // Canonicalize so the JID carries the country-code prefix. A raw
+  // 11-digit Brazilian phone would otherwise produce an invalid JID.
+  const phoneJid = (normalizePhone(personPhone) || personPhone) + '@s.whatsapp.net';
   const allParticipants = new Set<string>([phoneJid]);
   for (const p of participants) {
     if (typeof p === 'string' && PARTICIPANT_JID_PATTERN.test(p.trim())) {
@@ -278,11 +281,15 @@ const handleProvisionRootBoard: IpcHandler = async (
           1, // dst_sync_enabled
         );
 
+      // Canonicalize phone at the write boundary so stored rows are always
+      // comparable without prefix juggling at read time. See src/phone.ts.
+      const canonicalPhone = normalizePhone(personPhone) || personPhone;
+
       tfDb
         .prepare(
           'INSERT INTO board_admins (board_id, person_id, phone, admin_role, is_primary_manager) VALUES (?, ?, ?, ?, ?)',
         )
-        .run(boardId, personId, personPhone, 'manager', 1);
+        .run(boardId, personId, canonicalPhone, 'manager', 1);
 
       tfDb
         .prepare(
@@ -292,7 +299,7 @@ const handleProvisionRootBoard: IpcHandler = async (
           boardId,
           personId,
           personName,
-          personPhone,
+          canonicalPhone,
           personRole,
           wipLimit,
           null,

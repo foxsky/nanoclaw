@@ -658,4 +658,103 @@ describe('initTaskflowDb', () => {
 
     db.close();
   });
+
+  it('canonicalizes pre-existing phone rows across board_people, board_admins, external_contacts', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'taskflow-db-test-'));
+    tempDirs.push(tempDir);
+
+    const dbPath = path.join(tempDir, 'taskflow.db');
+    const legacyDb = new Database(dbPath);
+    legacyDb.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY);
+      CREATE TABLE board_people (
+        board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT NULL, phone TEXT,
+        role TEXT DEFAULT 'member', wip_limit INTEGER,
+        PRIMARY KEY (board_id, person_id)
+      );
+      CREATE TABLE board_admins (
+        board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL,
+        admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0,
+        PRIMARY KEY (board_id, person_id, admin_role)
+      );
+      CREATE TABLE external_contacts (
+        external_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, phone TEXT,
+        status TEXT, direct_chat_jid TEXT, created_at TEXT, updated_at TEXT
+      );
+      INSERT INTO boards (id) VALUES ('b-1');
+      -- Pre-fix storage: same person on two boards, one with CC and one without.
+      INSERT INTO board_people VALUES ('b-1', 'reg', 'Reginaldo', '5586999986334', 'member', NULL);
+      INSERT INTO board_admins VALUES ('b-1', 'reg', '86999986334', 'manager', 1);
+      INSERT INTO external_contacts (external_id, display_name, phone) VALUES
+        ('ext-1', 'Maria', '+55 (85) 99999-1234'),
+        ('ext-2', 'João',  '86999032890');
+    `);
+    legacyDb.close();
+
+    const db = initTaskflowDb(dbPath);
+
+    const person = db
+      .prepare('SELECT phone FROM board_people WHERE person_id = ?')
+      .get('reg') as { phone: string };
+    const admin = db
+      .prepare('SELECT phone FROM board_admins WHERE person_id = ?')
+      .get('reg') as { phone: string };
+    const maria = db
+      .prepare('SELECT phone FROM external_contacts WHERE external_id = ?')
+      .get('ext-1') as { phone: string };
+    const joao = db
+      .prepare('SELECT phone FROM external_contacts WHERE external_id = ?')
+      .get('ext-2') as { phone: string };
+
+    expect(person.phone).toBe('5586999986334');  // already canonical, untouched
+    expect(admin.phone).toBe('5586999986334');   // 11d → prepended 55
+    expect(maria.phone).toBe('5585999991234');   // stripped formatting
+    expect(joao.phone).toBe('5586999032890');    // 11d → prepended 55
+
+    // Second run is a fixed-point (idempotent migration).
+    db.close();
+    const db2 = initTaskflowDb(dbPath);
+    const person2 = db2
+      .prepare('SELECT phone FROM board_people WHERE person_id = ?')
+      .get('reg') as { phone: string };
+    expect(person2.phone).toBe('5586999986334');
+    db2.close();
+  });
+
+  it('migration skips (does NOT crash) when canonicalization would violate external_contacts UNIQUE', () => {
+    // external_contacts.phone is UNIQUE. If two rows canonicalize to the
+    // same value, rewriting one would raise a SQLite constraint error and
+    // abort all of init. The migration must skip colliding rows instead.
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'taskflow-db-test-'));
+    tempDirs.push(tempDir);
+
+    const dbPath = path.join(tempDir, 'taskflow.db');
+    const legacyDb = new Database(dbPath);
+    legacyDb.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY);
+      CREATE TABLE external_contacts (
+        external_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, phone TEXT NOT NULL UNIQUE,
+        status TEXT, direct_chat_jid TEXT, created_at TEXT, updated_at TEXT
+      );
+      -- Alice already canonical; Bob has the same phone without CC prefix.
+      INSERT INTO external_contacts (external_id, display_name, phone) VALUES
+        ('ext-alice', 'Alice', '5585999991234'),
+        ('ext-bob',   'Bob',   '85999991234');
+    `);
+    legacyDb.close();
+
+    // Must not throw.
+    const db = initTaskflowDb(dbPath);
+
+    const alice = db
+      .prepare('SELECT phone FROM external_contacts WHERE external_id = ?')
+      .get('ext-alice') as { phone: string };
+    const bob = db
+      .prepare('SELECT phone FROM external_contacts WHERE external_id = ?')
+      .get('ext-bob') as { phone: string };
+
+    expect(alice.phone).toBe('5585999991234');  // canonical — untouched
+    expect(bob.phone).toBe('85999991234');      // SKIPPED — would have collided
+    db.close();
+  });
 });

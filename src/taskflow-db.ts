@@ -12,6 +12,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR } from './config.js';
+import { normalizePhone } from './phone.js';
 
 const TASKFLOW_SCHEMA = `
 CREATE TABLE IF NOT EXISTS boards (
@@ -624,7 +625,67 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   // The table has no code consumers and no schema definition.
   db.exec(`DROP TABLE IF EXISTS task_comments`);
 
+  canonicalizePhoneColumns(db);
+
   return db;
+}
+
+/**
+ * One-time idempotent migration: canonicalize phone storage in
+ * board_people, board_admins, and external_contacts. Pre-fix rows stored
+ * phones verbatim — the same person could appear on one board with the
+ * 55 country-code prefix and on another without it, breaking cross-board
+ * match queries. `normalizePhone` is a fixed point on already-canonical
+ * strings, so running this migration repeatedly is safe.
+ */
+function canonicalizePhoneColumns(db: Database.Database): void {
+  const targets: Array<{ table: string; pk: string[] }> = [
+    { table: 'board_people', pk: ['board_id', 'person_id'] },
+    { table: 'board_admins', pk: ['board_id', 'person_id', 'admin_role'] },
+    { table: 'external_contacts', pk: ['external_id'] },
+  ];
+
+  const existingTables = new Set(
+    (db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all() as Array<{
+      name: string;
+    }>).map((r) => r.name),
+  );
+
+  for (const { table, pk } of targets) {
+    if (!existingTables.has(table)) continue;
+    const cols = (
+      db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+    ).map((c) => c.name);
+    if (!cols.includes('phone') || !pk.every((c) => cols.includes(c))) continue;
+    const rows = db
+      .prepare(
+        `SELECT ${pk.join(', ')}, phone FROM ${table} WHERE phone IS NOT NULL AND phone != ''`,
+      )
+      .all() as Array<Record<string, string>>;
+    const update = db.prepare(
+      `UPDATE ${table} SET phone = ? WHERE ${pk.map((c) => `${c} = ?`).join(' AND ')}`,
+    );
+    // external_contacts.phone is UNIQUE, so a canonicalization that would
+    // collide with an already-canonical row must be skipped rather than
+    // crashing init. Check per-row before update.
+    const collisionCheck = db.prepare(
+      `SELECT 1 FROM ${table} WHERE phone = ? AND NOT (${pk.map((c) => `${c} = ?`).join(' AND ')}) LIMIT 1`,
+    );
+    const tx = db.transaction(() => {
+      for (const row of rows) {
+        const canonical = normalizePhone(row.phone);
+        if (!canonical || canonical === row.phone) continue;
+        const collides = collisionCheck.get(canonical, ...pk.map((c) => row[c]));
+        if (collides) {
+          // Duplicate human already stored under the canonical form. Leave
+          // this row alone; manual merge may be needed. Never block startup.
+          continue;
+        }
+        update.run(canonical, ...pk.map((c) => row[c]));
+      }
+    });
+    tx();
+  }
 }
 
 // CLI entry point: node dist/taskflow-db.js [dbPath]

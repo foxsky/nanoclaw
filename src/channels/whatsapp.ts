@@ -23,6 +23,7 @@ import { getLastGroupSync, setLastGroupSync, updateChatName } from '../db.js';
 import { resolveGroupFolderPath } from '../group-folder.js';
 import { processImage } from '../image.js';
 import { logger } from '../logger.js';
+import { normalizePhone } from '../phone.js';
 import { transcribeAudioMessage } from '../transcription.js';
 import {
   Channel,
@@ -612,7 +613,9 @@ export class WhatsAppChannel implements Channel {
   }
 
   async lookupPhoneJid(phone: string): Promise<string | null> {
-    const normalizedPhone = phone.replace(/\D/g, '');
+    // Canonicalize so a Brazilian phone without the 55 prefix still reaches
+    // the right JID — Baileys' onWhatsApp expects E164-ish digits.
+    const normalizedPhone = normalizePhone(phone);
     const results = await this.sock.onWhatsApp(normalizedPhone);
     const existingJid = results?.find(
       (result) => result.exists && result.jid,
@@ -633,8 +636,9 @@ export class WhatsAppChannel implements Channel {
     if (jid) {
       return jid;
     }
-    // Fallback: use raw digits
-    return phone.replace(/\D/g, '') + '@s.whatsapp.net';
+    // Fallback: construct a JID from the canonical digits. Without this,
+    // a 10/11-digit BR number would yield an invalid JID missing the CC.
+    return normalizePhone(phone) + '@s.whatsapp.net';
   }
 
   async createGroup(
