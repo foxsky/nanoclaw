@@ -721,6 +721,46 @@ describe('initTaskflowDb', () => {
     db2.close();
   });
 
+  it('migration canonicalizes non-UNIQUE board_people rows that share a human across boards', () => {
+    // Regression from the first prod deploy: the migration was overly
+    // conservative and skipped when any other row had the canonical phone,
+    // which left Reginaldo's third row uncanonicalized because his other
+    // two rows already held the canonical form. board_people.phone is NOT
+    // UNIQUE — multiple rows sharing a canonical phone is the whole point
+    // of cross-board matching.
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'taskflow-db-test-'));
+    tempDirs.push(tempDir);
+
+    const dbPath = path.join(tempDir, 'taskflow.db');
+    const legacyDb = new Database(dbPath);
+    legacyDb.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY);
+      CREATE TABLE board_people (
+        board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT NULL, phone TEXT,
+        role TEXT DEFAULT 'member', wip_limit INTEGER,
+        PRIMARY KEY (board_id, person_id)
+      );
+      INSERT INTO boards (id) VALUES ('b-1'), ('b-2'), ('b-3');
+      -- Reginaldo on 3 boards: 2 canonical, 1 not. Old migration skipped the
+      -- third because the canonical form 'already existed' on b-1/b-2.
+      INSERT INTO board_people VALUES ('b-1', 'reg', 'Reginaldo', '5586999986334', 'member', NULL);
+      INSERT INTO board_people VALUES ('b-2', 'reg', 'Reginaldo', '5586999986334', 'member', NULL);
+      INSERT INTO board_people VALUES ('b-3', 'reg', 'Reginaldo', '86999986334',   'member', NULL);
+    `);
+    legacyDb.close();
+
+    const db = initTaskflowDb(dbPath);
+    const phones = db
+      .prepare('SELECT board_id, phone FROM board_people WHERE person_id = ? ORDER BY board_id')
+      .all('reg') as Array<{ board_id: string; phone: string }>;
+    expect(phones).toEqual([
+      { board_id: 'b-1', phone: '5586999986334' },
+      { board_id: 'b-2', phone: '5586999986334' },
+      { board_id: 'b-3', phone: '5586999986334' },  // now canonicalized
+    ]);
+    db.close();
+  });
+
   it('migration skips (does NOT crash) when canonicalization would violate external_contacts UNIQUE', () => {
     // external_contacts.phone is UNIQUE. If two rows canonicalize to the
     // same value, rewriting one would raise a SQLite constraint error and

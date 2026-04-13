@@ -639,10 +639,15 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
  * strings, so running this migration repeatedly is safe.
  */
 function canonicalizePhoneColumns(db: Database.Database): void {
-  const targets: Array<{ table: string; pk: string[] }> = [
-    { table: 'board_people', pk: ['board_id', 'person_id'] },
-    { table: 'board_admins', pk: ['board_id', 'person_id', 'admin_role'] },
-    { table: 'external_contacts', pk: ['external_id'] },
+  // phoneIsUnique marks tables where the phone column carries a UNIQUE
+  // constraint — canonicalizing a row could collide with an existing
+  // canonical row and crash init. For non-UNIQUE tables (board_people,
+  // board_admins) multiple rows sharing a phone is expected (same human
+  // on multiple boards) and must NOT be skipped.
+  const targets: Array<{ table: string; pk: string[]; phoneIsUnique: boolean }> = [
+    { table: 'board_people', pk: ['board_id', 'person_id'], phoneIsUnique: false },
+    { table: 'board_admins', pk: ['board_id', 'person_id', 'admin_role'], phoneIsUnique: false },
+    { table: 'external_contacts', pk: ['external_id'], phoneIsUnique: true },
   ];
 
   const existingTables = new Set(
@@ -651,7 +656,7 @@ function canonicalizePhoneColumns(db: Database.Database): void {
     }>).map((r) => r.name),
   );
 
-  for (const { table, pk } of targets) {
+  for (const { table, pk, phoneIsUnique } of targets) {
     if (!existingTables.has(table)) continue;
     const cols = (
       db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
@@ -665,21 +670,22 @@ function canonicalizePhoneColumns(db: Database.Database): void {
     const update = db.prepare(
       `UPDATE ${table} SET phone = ? WHERE ${pk.map((c) => `${c} = ?`).join(' AND ')}`,
     );
-    // external_contacts.phone is UNIQUE, so a canonicalization that would
-    // collide with an already-canonical row must be skipped rather than
-    // crashing init. Check per-row before update.
-    const collisionCheck = db.prepare(
-      `SELECT 1 FROM ${table} WHERE phone = ? AND NOT (${pk.map((c) => `${c} = ?`).join(' AND ')}) LIMIT 1`,
-    );
+    const collisionCheck = phoneIsUnique
+      ? db.prepare(
+          `SELECT 1 FROM ${table} WHERE phone = ? AND NOT (${pk.map((c) => `${c} = ?`).join(' AND ')}) LIMIT 1`,
+        )
+      : null;
     const tx = db.transaction(() => {
       for (const row of rows) {
         const canonical = normalizePhone(row.phone);
         if (!canonical || canonical === row.phone) continue;
-        const collides = collisionCheck.get(canonical, ...pk.map((c) => row[c]));
-        if (collides) {
-          // Duplicate human already stored under the canonical form. Leave
-          // this row alone; manual merge may be needed. Never block startup.
-          continue;
+        if (collisionCheck) {
+          const collides = collisionCheck.get(canonical, ...pk.map((c) => row[c]));
+          if (collides) {
+            // UNIQUE-constrained column: another row already holds the
+            // canonical form. Skip rather than abort init.
+            continue;
+          }
         }
         update.run(canonical, ...pk.map((c) => row[c]));
       }
