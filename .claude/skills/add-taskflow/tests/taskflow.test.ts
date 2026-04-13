@@ -298,6 +298,50 @@ describe('taskflow skill package', () => {
     expect(content).toContain("requires_close_approval: false");
   });
 
+  it('CLAUDE.md.template drives offer_register conversations to completion (Kipp 2026-04-13 SETEC-SECTI gap)', () => {
+    // Pins the guidance added after Kipp's audit flagged "pediu
+    // esclarecimento — mas a resposta ficou em aberto, sem mutação
+    // concluída" on SETEC-SECTI. The bot must not leave an assignment
+    // request dangling after sending the verbatim offer_register message.
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    expect(content).toContain('Drive offer_register conversations to completion');
+    expect(content).toContain('never drop an assignment silently');
+    // Must honor the hierarchy-board STOP rule — do not call
+    // register_person with partial fields. This is the Codex-flagged
+    // contradiction guard: new guidance cannot override the earlier STOP.
+    expect(content).toContain('ask only for the missing fields in one concise question');
+    expect(content).toContain('the hierarchy-board STOP rule above still applies');
+    // Redirect case must actually complete the new mutation, not just ack.
+    expect(content).toContain('actually perform the Carlos assignment');
+  });
+
+  it('CLAUDE.md.template groups my_tasks output by column without demanding a keyword (Kipp 2026-04-13 EST-SECTI UX)', () => {
+    // Pins the guidance added after Kipp's audit flagged the bot framing
+    // column grouping as a "system layout limitation" and demanding the
+    // keyword "quadro completo". Column grouping is the default layout
+    // for personal task lists; any kanban-stage rewording ("a fazer /
+    // fazendo / feito") must be confirmed and adopted.
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    expect(content).toContain('Default layout: group by column');
+    expect(content).toContain('Never claim column grouping is impossible');
+    expect(content).toContain('a fazer / fazendo / feito');
+    // The negative-guidance phrase must still be present — it tells the
+    // bot what NOT to say. Pin the full warning so a careless cleanup
+    // can't silently delete the rationale.
+    expect(content).toContain("do NOT tell the user it's a \"system limitation\"");
+    // Explicit user preferences must still override the default.
+    expect(content).toContain('Explicit user formatting preferences still override the default');
+    // Completed tasks excluded by default, but included on explicit request.
+    expect(content).toContain('Completed tasks are excluded by default');
+    expect(content).toContain('if the user explicitly asks for completed/concluded tasks');
+  });
+
   it('CLAUDE.md.template schema reference matches SQLite storage and runtime columns', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
