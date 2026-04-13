@@ -77,6 +77,21 @@ Files preserved under `/tmp/` during the 2026-04-13 session (not checked in):
 
 Re-run procedure documented at the top of this file so anyone can repeat with fresh production data.
 
+## Task 1c live idempotency proof — 2026-04-13
+
+Task 1c adds `{previous_context}` to the daily prompt (d1-only, matching lossless-claw). The concern from plan rev 2 was drift: feeding the LLM's own summary back each re-rollup could produce "summary of summary of summary" degradation.
+
+Live Ollama run (`qwen3-coder:latest`, `temperature=0.2`, `seed=42`) on the thiago W13 daily-23 children, simulating two consecutive rollups with the same child set:
+
+- **Run 1** (`previous_context = "(none — first rollup for this day)"`): 86 words, 7 bullet lines. Anchors: M10/T14/T16/M11/T76/T77/standups/lembretes.
+- **Run 2** (`previous_context = Run 1's output`, same child set, same seed): 79 words, 8 bullet lines. Same anchors, slightly reordered, one added meta-line ("Nenhuma nova tarefa criada além das mencionadas").
+
+**Verdict: no drift.** Word count went DOWN (-7), not up. Content anchors preserved. No "summary of summary" degradation observed. Task 1c safe to deploy.
+
+The one minor observation — Run 2 added a meta-observation line — is expected given the prompt instructs "add new events and refine events whose status changed". On a no-change re-run the model has nothing new to add, so it sometimes comments on the absence of change. Acceptable.
+
+Repeat procedure: `python3 /tmp/lcm-idempotency.py` (saved in session). For production re-verification, re-fetch the daily inputs from prod DB and run the script against a fresh Ollama instance.
+
 ## Open items (from Codex rev-4 review)
 
 - **A (late-leaf staleness):** not addressed by Task 1b. Tasks 1a + 1c are un-deferred in plan rev 4.

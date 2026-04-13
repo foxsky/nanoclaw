@@ -191,6 +191,9 @@ const ROLLUP_PROMPTS: Record<string, string> = {
 
 You are summarizing a day of agent-assisted work for a single WhatsApp group.
 
+Previous summary of this day (if any, from an earlier rollup — may be "(none)" on first run):
+{previous_context}
+
 Today's events (each line is a session summary, in chronological order):
 {summaries}
 
@@ -198,6 +201,8 @@ Write a concise factual recap in the same language as the sessions above: What c
 - Terse bullet lines, one per distinct event.
 - Include actor names, task IDs, and outcomes.
 - Target 80-word total.
+
+If a previous summary is given, merge its content with the new events — do NOT repeat every fact from the previous summary; add new events and refine events whose status changed. If no previous summary is given ("(none)"), just write the recap from today's events.
 
 Do NOT editorialize. Do NOT use thematic language.`,
 
@@ -317,7 +322,7 @@ export class ContextService {
     `);
 
     this.stmtSelectExistingNode = this.db.prepare(`
-      SELECT id FROM context_nodes WHERE id = ?
+      SELECT id, summary FROM context_nodes WHERE id = ?
     `);
 
     // Task 1a (2026-04-13): when new orphans arrive after the first rollup,
@@ -487,7 +492,9 @@ export class ContextService {
     rangeStart: string,
     rangeEnd: string,
   ): Promise<string | null> {
-    const existing = this.stmtSelectExistingNode.get(parentId);
+    const existing = this.stmtSelectExistingNode.get(parentId) as
+      | { id: string; summary: string | null }
+      | undefined;
     const orphans = this.stmtSelectChildrenForRollup.all(
       groupFolder,
       childLevel,
@@ -524,10 +531,18 @@ export class ContextService {
           ? 'week'
           : 'month';
     const combinedSummaries = children.map((c) => c.summary).join('\n\n');
-    const prompt = ROLLUP_PROMPTS[levelName].replace(
+    // {previous_context} is d1-only (matches lossless-claw — see
+    // src/summarize.ts buildD1Prompt; d2/d3+ explicitly drop the param
+    // to avoid summary-of-summary drift at higher depths).
+    let prompt = ROLLUP_PROMPTS[levelName].replace(
       '{summaries}',
       combinedSummaries,
     );
+    if (parentLevel === Level.DAILY) {
+      const priorContext =
+        existing?.summary?.trim() || '(none — first rollup for this day)';
+      prompt = prompt.replace('{previous_context}', priorContext);
+    }
 
     const summary = await this.callSummarizer(prompt);
     if (!summary || summary.length <= 20) return null;

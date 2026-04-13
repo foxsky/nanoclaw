@@ -1400,6 +1400,104 @@ describe('ContextService — depth-aware rollup prompts', () => {
     svc.close();
   });
 
+  it('passes previous_context on daily re-rollup (d1-only, matches lossless-claw)', async () => {
+    // Task 1c: re-rollup after Task 1a unblocked the UPDATE path. The
+    // daily prompt includes a {previous_context} slot; when re-rolling
+    // up, the existing daily summary is substituted so the LLM adds
+    // incremental content instead of restating.
+    const svc = new ContextService(TEST_DB, {
+      summarizer: 'ollama',
+      ollamaHost: 'http://localhost:11434',
+      retainDays: 90,
+    });
+
+    const date = '2026-03-14';
+    const now = new Date().toISOString();
+
+    // First leaf + first rollup
+    svc.db
+      .prepare(
+        `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
+         VALUES (?, 'grp', 0, 'morning leaf', ?, ?, 10, 'test', ?)`,
+      )
+      .run(`leaf:grp:${date}T09:00:00.000Z`, `${date}T09:00:00.000Z`, `${date}T09:00:00.000Z`, now);
+
+    const prompts: string[] = [];
+    global.fetch = vi.fn().mockImplementation(async (_url, init) => {
+      prompts.push(JSON.parse((init as any).body).prompt);
+      return {
+        ok: true,
+        json: async () => ({
+          response:
+            prompts.length === 1
+              ? 'PARENT-V1 original summary describing the early leaf event.'
+              : 'PARENT-V2 refreshed summary including the late arrival content.',
+        }),
+      };
+    }) as any;
+
+    await svc.rollupDaily('grp', date);
+    // First call should NOT contain a previous summary — it says "(none ...)"
+    expect(prompts[0]).toContain('(none — first rollup for this day)');
+    expect(prompts[0]).not.toContain('PARENT-V1');
+
+    // Insert orphan and re-run
+    svc.db
+      .prepare(
+        `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
+         VALUES (?, 'grp', 0, 'late leaf', ?, ?, 10, 'test', ?)`,
+      )
+      .run(`leaf:grp:${date}T22:00:00.000Z`, `${date}T22:00:00.000Z`, `${date}T22:00:00.000Z`, now);
+
+    await svc.rollupDaily('grp', date);
+    // Second call SHOULD contain the prior summary as previous_context
+    expect(prompts[1]).toContain('PARENT-V1 original summary');
+    expect(prompts[1]).not.toContain('(none — first rollup for this day)');
+
+    svc.close();
+  });
+
+  it('weekly rollup does NOT receive previous_context (d1-only scope)', async () => {
+    // Matches lossless-claw's d1-only application. If weekly received
+    // previous_context, every weekly re-rollup would feed its own
+    // output back in and risk summary-of-summary drift.
+    const svc = new ContextService(TEST_DB, {
+      summarizer: 'ollama',
+      ollamaHost: 'http://localhost:11434',
+      retainDays: 90,
+    });
+
+    const now = new Date().toISOString();
+    for (let day = 9; day <= 11; day++) {
+      const d = `2026-03-${String(day).padStart(2, '0')}`;
+      svc.db
+        .prepare(
+          `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
+           VALUES (?, 'grp', 1, ?, ?, ?, 30, 'test', ?)`,
+        )
+        .run(`daily:grp:${d}`, `Daily ${d} narrative.`, `${d}T00:00:00.000Z`, `${d}T23:59:59.999Z`, now);
+    }
+
+    let captured: string | null = null;
+    global.fetch = vi.fn().mockImplementation(async (_url, init) => {
+      captured = JSON.parse((init as any).body).prompt;
+      return {
+        ok: true,
+        json: async () => ({
+          response:
+            'Weekly summary describing arcs and recurring themes for the sampled week.',
+        }),
+      };
+    }) as any;
+    await svc.rollupWeekly('grp', '2026-03-09');
+
+    expect(captured).not.toContain('{previous_context}'); // no unfilled slot leaked
+    expect(captured).not.toContain('Previous summary of this');
+    expect(captured).not.toContain('(none — first rollup');
+
+    svc.close();
+  });
+
   it('daily and weekly prompts carry CRITICAL LANGUAGE RULE to prevent en/pt-BR regression', async () => {
     // Live Ollama verification on thiago W13 + sec-secti W14 (2026-04-13)
     // showed qwen3-coder silently regressed pt-BR inputs to English output
