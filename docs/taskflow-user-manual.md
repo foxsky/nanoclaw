@@ -110,19 +110,32 @@ Somente um gestor pode usar os comandos de criação completa (`tarefa para [pes
 @Case projeto para Alexandre: migração do servidor. Etapas: 1. backup dos dados, 2. instalar novo SO, 3. migrar serviços, 4. testes
 ```
 
-Você pode atribuir etapas a diferentes pessoas da equipe:
+O projeto recebe um ID do tipo `P001` e cada etapa vira uma sub-tarefa numerada sequencialmente: `P001.1`, `P001.2`, `P001.3`, `P001.4`. Sub-etapas são listadas na ordem numérica de criação (não alfabética) — `P001.10` aparece depois de `P001.9`, não entre `P001.1` e `P001.2`.
+
+**Atribuir etapas a diferentes pessoas na criação.** Coloque o nome da pessoa entre parênteses após o texto da etapa. Etapas sem parênteses herdam o responsável do projeto (no exemplo abaixo, "Revisão final" fica com Alexandre):
 
 ```
 @Case projeto para Alexandre: relatório trimestral. Etapas: 1. Coleta de dados (Giovanni), 2. Análise (Rafael), 3. Revisão final
 ```
 
-Cada responsável de etapa recebe notificação e pode marcar sua etapa como concluída. Etapas atribuídas contam no limite WIP do responsável.
+Cada responsável de etapa recebe notificação e pode marcar sua etapa como concluída. Etapas atribuídas contam no limite WIP do responsável (não do dono do projeto).
 
-Projetos também podem ser recorrentes. As etapas são reiniciadas automaticamente a cada ciclo:
+**Atribuir ou mudar responsável depois da criação.** Use `@Case atribuir etapa P001.2 para Giovanni` (gestor ou dono do projeto). Para remover a atribuição e devolver a etapa ao dono do projeto: `@Case desatribuir etapa P001.2`.
+
+**Projetos recorrentes.** As etapas são recriadas automaticamente a cada ciclo (as atribuições originais são preservadas):
 
 ```
 @Case projeto recorrente para Alexandre: revisão de infraestrutura. Etapas: 1. backup, 2. atualização, 3. testes. todo mensal
 ```
+
+**Mesclar dois projetos em um só.** Se dois projetos cobrem o mesmo escopo e devem virar um só, o gestor pode consolidá-los:
+
+```
+@Case mesclar P001 em P002
+@Case juntar P001 com P002
+```
+
+O assistente move todas as sub-etapas de `P001` para `P002` (renumerando os IDs para seguir a sequência de `P002`), copia notas, preserva o histórico, e arquiva `P001` com motivo `merged`. O gestor vê o mapeamento de IDs antigos → novos na resposta. Restrições: o projeto origem deve pertencer ao quadro onde o comando é dado (não pode ser projeto delegado de um quadro pai).
 
 ### Criar Tarefa Recorrente
 
@@ -453,6 +466,12 @@ Se a tarefa for cancelada, os lembretes ativos também são cancelados antes do 
 | `@Case remover feriado 21/04` | Remove um feriado do calendário do quadro (gestor) |
 | `@Case feriados 2026` | Lista os feriados cadastrados em um ano |
 | `@Case definir feriados 2026: 01/01, 21/04, 01/05, 07/09, 12/10, 02/11, 15/11, 25/12` | Substitui a lista de feriados de um ano inteiro de uma vez |
+| `@Case mesclar P001 em P002` / `@Case juntar P001 com P002` | Mescla todas as sub-etapas de P001 em P002, arquiva P001 e preserva histórico. Os IDs das sub-etapas são renumerados para seguir a sequência de P002. Gestor apenas; o projeto origem deve pertencer a este quadro. |
+| `@Case modo subtarefa cross-board: aberto` | Permite que quadros filhos criem sub-etapas em projetos delegados deste quadro (padrão). |
+| `@Case modo subtarefa cross-board: aprovação` | Quadros filhos que tentarem criar sub-etapas em projetos delegados enviam uma solicitação que o gestor deste quadro aprova com `aprovar req-XXX` ou rejeita com `rejeitar req-XXX [motivo]`. |
+| `@Case modo subtarefa cross-board: bloqueado` | Bloqueia criação de sub-etapas em projetos delegados a partir de quadros filhos. |
+| `@Case aprovar req-ab12cd34` | Aprova uma solicitação de sub-etapa pendente. O assistente cria a sub-etapa no quadro filho e notifica o solicitante. |
+| `@Case rejeitar req-ab12cd34 prazo apertado` | Rejeita uma solicitação de sub-etapa pendente com motivo opcional. O solicitante é notificado. |
 
 **Gerenciar feriados do quadro:** Cada quadro mantém seu próprio calendário de feriados. Quando uma tarefa é criada com prazo que cai em um desses feriados (ou num fim de semana), o assistente empurra automaticamente o vencimento para o próximo dia útil. Isso vale também para recorrências — a próxima ocorrência de uma tarefa recorrente nunca cai em dia não útil sem ajuste.
 
@@ -828,7 +847,13 @@ Sim. Você pode usar `@Case adicionar etapa P001: ...`, `@Case renomear etapa P0
 Na ordem de criação numérica (P1.1, P1.2, ..., P1.9, P1.10, P1.11, ...). Antes de 2026-04-12 a listagem aparecia em ordem lexicográfica (P1.1, P1.10, P1.11, ..., P1.2, P1.3), o que confundia a "próxima etapa" sugerida quando você fechava uma. Agora a ordenação é sempre pelo número da etapa.
 
 **Posso atribuir etapas de um projeto a diferentes pessoas?**
-Sim. Use `@Case atribuir etapa P001.2 para Giovanni` para atribuir uma etapa a outro membro da equipe. O responsável da etapa recebe notificação e pode marcá-la como concluída. Use `@Case desatribuir etapa P001.2` para remover a atribuição. Etapas também podem ser atribuídas na criação do projeto: `@Case projeto para Alexandre: X. Etapas: 1. A (Giovanni), 2. B (Rafael)`.
+Sim. Use `@Case atribuir etapa P001.2 para Giovanni` para atribuir uma etapa a outro membro da equipe. O responsável da etapa recebe notificação e pode marcá-la como concluída. Use `@Case desatribuir etapa P001.2` para remover a atribuição. Etapas também podem ser atribuídas na criação do projeto: `@Case projeto para Alexandre: X. Etapas: 1. A (Giovanni), 2. B (Rafael)`. Etapas sem `(pessoa)` herdam o responsável do projeto.
+
+**Dois projetos cobrem o mesmo escopo — dá para juntar em um só?**
+Sim. O gestor pode usar `@Case mesclar P001 em P002` (ou `@Case juntar P001 com P002`). O assistente move todas as sub-etapas de `P001` para `P002`, renumerando os IDs para seguir a sequência do projeto destino, preserva notas e histórico, e arquiva `P001` com motivo `merged`. A resposta inclui o mapeamento de IDs antigos → novos. Só funciona quando o projeto origem pertence ao quadro onde o comando é dado — projetos delegados de um quadro pai precisam ser mesclados no próprio quadro pai.
+
+**O quadro filho pode adicionar sub-etapas em projetos delegados?**
+Depende do modo configurado pelo gestor do quadro pai. Padrão é `aberto` (pode livremente). Em `aprovação`, o filho envia uma solicitação e o gestor do pai decide. Em `bloqueado`, o filho não pode — precisa pedir ao gestor do pai para criar. Veja ["Sub-Etapas em Projetos Delegados"](#sub-etapas-em-projetos-delegados-cross-board) na seção de Modo Hierárquico.
 
 **Posso criar tarefas recorrentes semanais ou diárias?**
 Sim. Use `diario`, `semanal`, `mensal` ou `anual` ao criar a tarefa recorrente. Exemplo: `@Case semanal para Rafael: backup do servidor toda segunda`.
@@ -1017,6 +1042,35 @@ O gestor pode desvincular a qualquer momento com `desvincular TXXX`.
 - A reatribuição pode ser feita pelo responsável da tarefa ou pelo gestor — não é necessário verificar limite WIP.
 - Se o quadro pai apenas precisa aprovar, decidir ou desbloquear algo, prefira `Próxima Ação`, ou `Aguardando` se a tarefa já estiver em andamento, em vez de reatribuir a tarefa.
 - Se o gestor rejeitar uma tarefa em revisão que está vinculada, o rollup reseta para "ativo" e o quadro filho é notificado.
+
+### Sub-Etapas em Projetos Delegados (Cross-Board)
+
+Quando um projeto do quadro pai é delegado a uma pessoa com quadro filho, a pessoa opera esse projeto a partir do próprio quadro: mover, adicionar notas, mudar prazos, concluir. **Criar sub-etapas novas** é um caso especial — o gestor do quadro pai escolhe entre três modos:
+
+| Modo | Comportamento |
+|---|---|
+| `aberto` (padrão) | O quadro filho pode criar sub-etapas livremente. A sub-etapa aparece no projeto do quadro pai sem precisar de aprovação. |
+| `aprovação` | A criação de sub-etapa a partir do quadro filho envia uma solicitação ao grupo do quadro pai. O gestor do pai aprova ou rejeita. |
+| `bloqueado` | O quadro filho não pode criar sub-etapas em projetos delegados — se precisar, pede ao gestor do pai para criar diretamente. |
+
+**Mudar o modo (gestor do quadro pai):**
+
+```
+@Case modo subtarefa cross-board: aberto
+@Case modo subtarefa cross-board: aprovação
+@Case modo subtarefa cross-board: bloqueado
+```
+
+**Fluxo de aprovação (modo `aprovação`):**
+
+1. No quadro filho, o usuário pede para adicionar uma sub-etapa em um projeto delegado (ex.: `adicionar etapa P003: testar em homologação`).
+2. O assistente do quadro filho responde: _"✅ Solicitação `req-ab12cd34` enviada ao quadro pai. Você será notificado(a) quando for aprovada/rejeitada."_
+3. No grupo do quadro pai aparece uma mensagem `🔔 *Solicitação de subtarefa*` com o `req-ab12cd34`, o título proposto e o nome do solicitante.
+4. O gestor do quadro pai responde no próprio grupo:
+   - `@Case aprovar req-ab12cd34` — cria a sub-etapa e notifica o quadro filho.
+   - `@Case rejeitar req-ab12cd34 prazo apertado` — rejeita com motivo opcional; notifica o quadro filho.
+
+Solicitações são idempotentes: aprovar ou rejeitar duas vezes a mesma `req-` não tem efeito na segunda chamada.
 
 ### Quadros Folha
 

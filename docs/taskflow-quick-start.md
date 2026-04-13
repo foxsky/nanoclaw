@@ -112,13 +112,25 @@ Se usar "tarefa" sem indicar responsavel (sem "para [pessoa]"), vai para o Inbox
 ```
 @Case tarefa para [pessoa]: [descricao] ate [data]
 @Case projeto para [pessoa]: [descricao]. Etapas: 1. ..., 2. ...
+@Case projeto para [pessoa]: [descricao]. Etapas: 1. A (Giovanni), 2. B (Rafael), 3. C
 @Case diario para [pessoa]: [descricao]
 @Case semanal para [pessoa]: [descricao] toda segunda
 @Case mensal para [pessoa]: [descricao] todo dia [N]
 @Case adicionar subtarefa a PXXX: [descricao]
 ```
 
+**Etapas com responsavel.** Coloque `(nome)` apos o texto da etapa para atribuir a outro membro (como na segunda linha acima). Etapas sem parenteses ficam com o dono do projeto. Sub-etapas sao numeradas sequencialmente (`P001.1`, `P001.2`, ...) e listadas em ordem numerica, nao alfabetica.
+
 `adicionar subtarefa` cria uma nova etapa dentro de um projeto existente (PXXX vira PXXX.N).
+
+**Mesclar dois projetos (gestor).** Se dois projetos cobrem o mesmo escopo:
+
+```
+@Case mesclar P001 em P002
+@Case juntar P001 com P002
+```
+
+Move todas as sub-etapas de P001 para P002 (renumeradas), preserva notas e historico, arquiva P001.
 
 ### Reunioes
 
@@ -230,6 +242,23 @@ Quadros filhos sao criados automaticamente:
 Tarefas vinculadas aparecem com 🔗 no quadro. O rollup mostra o status agregado do quadro filho (ativo, bloqueado, em risco, pronto para revisao).
 
 Atribuir e vincular sao a mesma operacao — ao reatribuir uma tarefa vinculada, o vinculo e transferido automaticamente para o quadro da nova pessoa.
+
+### Sub-etapas em projetos delegados (gestor do quadro pai)
+
+Por padrao, quadros filhos podem criar sub-etapas em projetos delegados livremente. Se quiser exigir aprovacao ou bloquear:
+
+```
+@Case modo subtarefa cross-board: aberto      # padrao, criacao direta
+@Case modo subtarefa cross-board: aprovacao   # manda solicitacao para o gestor aprovar
+@Case modo subtarefa cross-board: bloqueado   # nega criacao pelo filho
+```
+
+No modo `aprovacao`, o gestor recebe uma mensagem `🔔 Solicitacao de subtarefa` com um `req-XXX` e responde no proprio grupo:
+
+```
+@Case aprovar req-ab12cd34
+@Case rejeitar req-ab12cd34 prazo apertado
+```
 
 Se o quadro pai so precisa destravar uma tarefa vinculada, nao reatribua por padrao. Prefira:
 

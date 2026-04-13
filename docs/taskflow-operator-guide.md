@@ -643,6 +643,62 @@ All TaskFlow boards use SQLite exclusively — no JSON files.
 - Restart NanoClaw to reload group cache
 - Verify `.mcp.json` exists in the group folder
 
+### Cross-Board Subtask Mode
+
+Each parent board carries a `cross_board_subtask_mode` column in `board_runtime_config` (`TEXT NOT NULL DEFAULT 'open'`). It controls what happens when a child-board agent calls `add_subtask` on a project that was delegated from the parent:
+
+| Mode | Engine behavior in `add_subtask` path |
+|---|---|
+| `open` (default) | Subtask is inserted directly on the parent's board row. No approval step. |
+| `blocked` | Engine returns `{ success: false, error: 'O quadro pai não permite criar sub-etapas a partir de quadros filhos neste momento.' }`. |
+| `approval` | Engine generates `req-XXX`, inserts a pending row into `subtask_requests`, and returns `{ success: false, pending_approval: { request_id, target_chat_jid, message, parent_board_id } }`. The child-board agent relays `message` verbatim to `target_chat_jid`. Parent's manager responds with `aprovar req-XXX` / `rejeitar req-XXX [motivo]`, which the agent dispatches via `taskflow_admin({ action: 'handle_subtask_approval', ... })`. |
+
+The mode is set per parent board via an admin command from that board: `@Case modo subtarefa cross-board: aberto | aprovação | bloqueado`. The command runs `UPDATE board_runtime_config SET cross_board_subtask_mode = '...' WHERE board_id = '<parent_board>'` and inserts a `config_changed` row in `task_history`.
+
+Same-board `add_subtask` calls (not cross-board) bypass the mode check — this only fires when a child board operates a project owned by its parent.
+
+**`subtask_requests` table** (created by engine DB init on first use):
+```sql
+CREATE TABLE IF NOT EXISTS subtask_requests (
+  request_id TEXT PRIMARY KEY,
+  parent_board_id TEXT NOT NULL,
+  parent_task_id TEXT NOT NULL,
+  child_board_id TEXT NOT NULL,
+  child_chat_jid TEXT NOT NULL,
+  requester_name TEXT NOT NULL,
+  subtask_title TEXT NOT NULL,
+  status TEXT NOT NULL,  -- 'pending' | 'approved' | 'rejected'
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  reason TEXT
+);
+```
+
+Pending requests persist across container restarts. Operators can inspect pending requests with:
+
+```bash
+sqlite3 data/taskflow/taskflow.db "SELECT request_id, parent_board_id, requester_name, subtask_title, created_at FROM subtask_requests WHERE status = 'pending' ORDER BY created_at DESC;"
+```
+
+### Project Merge (`merge_project`)
+
+Managers can consolidate two projects with `@Case mesclar P001 em P002` or `@Case juntar P001 com P002`. The engine runs an `UPDATE`-in-place merge (chosen over INSERT+copy to preserve history attribution and avoid zombie rows):
+
+1. Every subtask of the source project (`P001.N`) is rekeyed to `P002.M` where `M` is the next sequential ID on the target.
+2. `task_history` rows pointing at the old subtask IDs are updated to the new IDs.
+3. `blocked_by` references across the board that point at source-subtask IDs are rewritten.
+4. Notes (structured or free-form) are moved with the subtasks.
+5. A migration-note row is appended to each affected subtask and to the target project summarizing the merge.
+6. The source project is archived with `reason = 'merged'` and `linked_parent_task_id = target_project_id`.
+
+Restrictions enforced by the engine:
+
+- **Manager-only** (`isManager()` check).
+- **Source must be local**: the source project's `board_id` must equal the calling board. The engine rejects delegated sources because `archiveTask` uses `this.boardId` for the archive row — archiving a delegated project would land the archive on the wrong board. If you need to merge a project that is delegated from a parent board, run the command on the parent board instead.
+- **Target must exist and be a project** on the same board.
+
+The response includes an `id_mapping` field (e.g. `{ "P001.1": "P002.5", "P001.2": "P002.6" }`) so the agent can relay the new IDs to the user. Audit trails in both `task_history` and the migration notes make the merge reversible in principle (manual rework — no automatic undo).
+
 ## Phone Canonicalization
 
 TaskFlow canonicalizes every phone number at the write boundary (INSERT/UPDATE into `board_people`, `board_admins`, `external_contacts`). Operators do not need to format inputs manually — the agent accepts any input shape and the engine normalizes it before storage.
