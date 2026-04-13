@@ -1235,6 +1235,147 @@ describe('ContextService — vacuum', () => {
 });
 
 /* ================================================================== */
+/*  depth-aware rollup prompts (daily vs weekly)                       */
+/* ================================================================== */
+
+// Borrowed from martian-engineering/lossless-claw (specs/depth-aware-prompts-
+// and-rewrite.md + src/summarize.ts buildD1Prompt/buildD2Prompt). Production
+// audit 2026-04-13 confirmed weekly summaries were restating daily content
+// near-verbatim (thiago W13 repeated daily 03-23 / 03-27 text directly;
+// sec-secti W14 lifted exact inbox counts). Monthly summaries already produce
+// distinct thematic output, so this pass only touches daily and weekly.
+describe('ContextService — depth-aware rollup prompts', () => {
+  it('daily rollup prompt asks for factual recap with word cap', async () => {
+    const svc = new ContextService(TEST_DB, {
+      summarizer: 'ollama',
+      ollamaHost: 'http://localhost:11434',
+      summarizerModel: 'test',
+      retainDays: 90,
+    });
+
+    const date = '2026-03-14';
+    for (let i = 0; i < 2; i++) {
+      const ts = `${date}T${String(10 + i).padStart(2, '0')}:00:00.000Z`;
+      svc.db
+        .prepare(
+          `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
+           VALUES (?, 'grp', 0, ?, ?, ?, 20, 'test', ?)`,
+        )
+        .run(
+          `leaf:grp:${ts}`,
+          `Summary ${i}`,
+          ts,
+          ts,
+          new Date().toISOString(),
+        );
+    }
+
+    let capturedPrompt: string | null = null;
+    const mockFetch = vi.fn().mockImplementation(async (_url, init) => {
+      capturedPrompt = JSON.parse((init as any).body).prompt;
+      return { ok: true, json: async () => ({ response: 'Daily ok.' }) };
+    });
+    global.fetch = mockFetch as any;
+
+    await svc.rollupDaily('grp', date);
+
+    expect(capturedPrompt).toBeTruthy();
+    expect(capturedPrompt!).toContain('What concretely happened');
+    expect(capturedPrompt!).toContain('80-word');
+    expect(capturedPrompt!).not.toContain('arcs'); // arcs are the weekly voice
+
+    svc.close();
+  });
+
+  it('weekly rollup prompt asks for arc narrative and forbids day restatement', async () => {
+    const svc = new ContextService(TEST_DB, {
+      summarizer: 'ollama',
+      ollamaHost: 'http://localhost:11434',
+      summarizerModel: 'test',
+      retainDays: 90,
+    });
+
+    const now = new Date().toISOString();
+    const weekStart = '2026-03-02';
+    for (let day = 2; day <= 4; day++) {
+      const date = `2026-03-${String(day).padStart(2, '0')}`;
+      svc.db
+        .prepare(
+          `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
+           VALUES (?, 'grp', 1, ?, ?, ?, 30, 'test', ?)`,
+        )
+        .run(
+          `daily:grp:${date}`,
+          `Daily ${date}: T42 movida para concluída.`,
+          `${date}T00:00:00.000Z`,
+          `${date}T23:59:59.999Z`,
+          now,
+        );
+    }
+
+    let capturedPrompt: string | null = null;
+    const mockFetch = vi.fn().mockImplementation(async (_url, init) => {
+      capturedPrompt = JSON.parse((init as any).body).prompt;
+      return { ok: true, json: async () => ({ response: 'Weekly ok.' }) };
+    });
+    global.fetch = mockFetch as any;
+
+    await svc.rollupWeekly('grp', weekStart);
+
+    expect(capturedPrompt).toBeTruthy();
+    expect(capturedPrompt!).toContain('arcs emerged');
+    expect(capturedPrompt!).toContain('do NOT restate');
+    expect(capturedPrompt!).toContain('180-word');
+
+    svc.close();
+  });
+
+  it('monthly rollup prompt is UNCHANGED (empirical audit showed it already produces thematic output)', async () => {
+    const svc = new ContextService(TEST_DB, {
+      summarizer: 'ollama',
+      ollamaHost: 'http://localhost:11434',
+      summarizerModel: 'test',
+      retainDays: 90,
+    });
+
+    const now = new Date().toISOString();
+    const month = '2026-02';
+    // Insert 2 weekly nodes inside the month. rollupMonthly uses rangeStart/End
+    // 2026-02-01 .. 2026-03-01 (exclusive). Use weeks that fall fully inside.
+    for (const [id, wkStart, wkEnd] of [
+      ['weekly:grp:2026-W06', '2026-02-02T00:00:00.000Z', '2026-02-08T23:59:59.999Z'],
+      ['weekly:grp:2026-W07', '2026-02-09T00:00:00.000Z', '2026-02-15T23:59:59.999Z'],
+    ]) {
+      svc.db
+        .prepare(
+          `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
+           VALUES (?, 'grp', 2, ?, ?, ?, 40, 'test', ?)`,
+        )
+        .run(id, `Weekly ${id} — arcs and progress.`, wkStart, wkEnd, now);
+    }
+
+    let capturedPrompt: string | null = null;
+    const mockFetch = vi.fn().mockImplementation(async (_url, init) => {
+      capturedPrompt = JSON.parse((init as any).body).prompt;
+      return { ok: true, json: async () => ({ response: 'Monthly ok.' }) };
+    });
+    global.fetch = mockFetch as any;
+
+    await svc.rollupMonthly('grp', month);
+
+    expect(capturedPrompt).toBeTruthy();
+    // Sanity-check the current monthly prompt wording. If this assertion breaks
+    // in the future it means somebody changed the monthly prompt without
+    // updating this test — the empirical justification for leaving it alone
+    // needs to be re-verified.
+    expect(capturedPrompt!).toContain('Major milestones');
+    expect(capturedPrompt!).not.toContain('80-word');
+
+    svc.close();
+  });
+});
+
+/* ================================================================== */
 /*  close()                                                            */
 /* ================================================================== */
 

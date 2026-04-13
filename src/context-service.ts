@@ -171,26 +171,37 @@ Tools called: {tool_names}
 
 Write a concise summary in the same language as the conversation.`;
 
+// Depth-aware rollup prompts. Borrowed from martian-engineering/lossless-claw
+// where different depths get different framings (recency/persistence axis).
+// Production audit 2026-04-13 showed our weekly summaries were restating
+// daily content near-verbatim because all three rollups shared the same
+// "Summarize the X from these Y" shape. New daily prompt emphasizes factual
+// bullets with a word cap; new weekly prompt emphasizes arcs and explicitly
+// forbids per-day restatement. Monthly prompt left UNCHANGED — empirical
+// audit confirmed it already produces distinct thematic output.
 const ROLLUP_PROMPTS: Record<string, string> = {
-  day: `Summarize the day's activity from these session summaries. Group by theme, not chronologically. Highlight:
-- Tasks created, completed, or moved
-- Key decisions and their rationale
-- Open questions or pending items
-- Notable interactions
+  day: `You are summarizing a day of agent-assisted work for a single WhatsApp group.
 
+Today's events (each line is a session summary, in chronological order):
 {summaries}
 
-Write a concise daily summary in the same language as the sessions.`,
+Write a concise factual recap: What concretely happened today?
+- Terse bullet lines, one per distinct event.
+- Include actor names, task IDs, and outcomes.
+- Target 80-word total.
 
-  week: `Summarize the week's activity from these daily summaries. Focus on:
-- Overall progress and velocity
-- Key accomplishments
-- Recurring themes or blockers
-- Status changes across the week
+Do NOT editorialize. Do NOT use thematic language. Match the language of the source summaries.`,
 
+  week: `You are summarizing a week of agent-assisted work for a single WhatsApp group.
+
+Daily summaries from this week, in chronological order:
 {summaries}
 
-Write a concise weekly summary in the same language as the sessions.`,
+Write a narrative recap: What arcs emerged this week?
+- Recurring topics, blockers that persisted across days, decisions that shaped the week.
+- Target 180-word narrative prose (not bullets).
+
+Assume the reader has already seen the daily summaries: do NOT restate each day's events. Reference a specific day only when it anchors an arc (e.g., "on Tuesday the SETEC board was provisioned"). Connect days into a story instead of concatenating them. Match the language of the source summaries.`,
 
   month: `Summarize the month's activity from these weekly summaries. Capture:
 - Major milestones and deliverables
