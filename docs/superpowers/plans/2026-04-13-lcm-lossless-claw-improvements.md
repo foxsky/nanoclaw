@@ -2,7 +2,17 @@
 
 > **Revision 2 (2026-04-13):** First draft had three load-bearing errors caught by three skeptic reviews. This revision splits Task 1 into 1a/1b/1c, narrows scope to daily→weekly (empirical data shows monthly already works), fixes the test mock pattern, and decouples Tasks 1 and 2. Added tasks for three lossless-claw patterns the first draft missed.
 >
-> **Revision 3 (2026-04-13, mid-implementation):** Further scope cut. Tasks 1a + 1c were designed to support re-rollups when late leaves arrive AFTER a day's rollup completes. Checking the existing test at `src/context-service.test.ts:742` ("adopts late-arriving orphans into existing rollup") confirmed this is INTENTIONAL — daily rollup adopts orphans without re-summarizing. The empirically-observed bug (weekly restating daily content) exists independent of re-rollups; it's a single-shot weekly-prompt quality issue fixed by Task 1b alone. Tasks 1a and 1c are deferred; reopen only if we see late-leaf re-rollup problems in production data.
+> **Revision 3 (2026-04-13, mid-implementation):** Further scope cut. Tasks 1a + 1c were designed to support re-rollups when late leaves arrive AFTER a day's rollup completes. The empirically-observed bug (weekly restating daily content) was believed to exist independent of re-rollups, so Tasks 1a/1c were deferred and Task 1b (single-shot weekly prompt change) was shipped alone in commit `3a1593e`.
+>
+> **Revision 4 (2026-04-13, post-ship Codex review):** Codex gpt-5.4 high found FIVE load-bearing errors in Rev 3's justifications:
+> - **A (FALSE):** The deferral rationale is wrong. Late-leaf staleness is a real production class — commit `e7a1e22` already recovered 15 orphaned leaves. A leaf arriving at 23:59:50 misses the first post-midnight daily rollup and gets only orphan-adopted later; its content NEVER reaches the weekly summary regardless of how good the weekly prompt is. Tasks 1a/1c are NOT optional; they address a bug Task 1b cannot touch.
+> - **G (FALSE):** The "L742 test documents INTENTIONAL adopt-only behavior" claim was wrong. `git blame` shows the test was added in `957b1eb` as a regression test for fix `e7a1e22`. The commit message documents what was fixed (adoption); it does NOT say "we intentionally never re-summarize". The test codifies the code path, not a design decision.
+> - **F (FALSE):** Task 1b and Task 2 are NOT as decoupled as Rev 3 claimed. Task 1b's daily prompt grew from ~91 to ~126 estimated tokens; weekly grew from ~77 to ~183. When Task 2 lands, its `output_tokens >= input_tokens` heuristic must measure CHILD-SUMMARY bytes only, not whole-prompt bytes, or short inputs will trip false positives from the prompt scaffolding. Rev 2's ship-order note covered only the `previous_context` interaction; it missed the static-prompt-size inflation.
+> - **C (FALSE):** "4 groups, 2 chains" is spot check, not audit. Workspace has 17 group folders. No audit artifact is checked in. "Monthly already works" is not falsifiable from the plan alone.
+> - **D (FALSE):** The 3 new tests verify prompt SUBSTRINGS, not output QUALITY. A mediocre unchanged weekly summary still passes. No live-model signal loop exists for "is Task 1b working".
+> - **B (FALSE) + E (PARTIAL):** No empirical proof qwen3-coder obeys "do NOT restate" negative instructions. The borrow is shallow — only 2 of 3 depths; `previousSummary`, oversize retry, and hard cap not ported.
+>
+> **Rev 4 corrective actions (below):** Live Ollama before/after validation is required BEFORE Task 1b is declared done. Task 1a/1c are un-deferred with a revised framing (late-leaf re-summarize, not the "previous_context chaining" framing Rev 2 used). Task 2's input-token accounting is specified to exclude prompt scaffolding. An audit-artifact checkpoint is added.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -12,7 +22,7 @@
 
 **Tech Stack:** TypeScript, better-sqlite3, Ollama (qwen3-coder:latest + minimax-m2.1:cloud fallback), Claude Agent SDK in per-group Docker containers, vitest.
 
-**Empirical foundation (skeptic 1 check):** Audit of 4 production groups + 2 full parent-child chains confirmed — weekly rollups DO restate daily content near-verbatim (thiago W13 repeats daily 03-23 and 03-27 text directly; sec-secti W14 lifts exact inbox counts from its dailies). Monthly rollups DO already produce genuinely distinct thematic content ("velocidade decrescente", priority shift across weeks). **Task 1's scope is narrowed to daily→weekly**; monthly template stays unchanged.
+**Empirical foundation (spot check, 2026-04-13):** Spot-checked 4 production groups + 2 parent-child chains out of an unknown total (workspace has 17 group folders). Sample: weekly rollups DO restate daily content near-verbatim (thiago W13 repeats daily 03-23 and 03-27 text directly; sec-secti W14 lifts exact inbox counts). The 2 monthly chains sampled looked distinct (thiago 2026-03 "velocidade decrescente"), but sample size does NOT support a universal claim. Task 1's scope stays narrowed to daily→weekly as a **hypothesis**, not a proven universal. **Audit artifact pending** — see "Audit checkpoint" below.
 
 **Non-goals:** In-process context engine replacing SDK compaction, OpenClaw plugin slots, Go TUI, full delegation-auth primitives (we use container isolation instead), data-driven token-chunked leaf rollups.
 
@@ -43,18 +53,32 @@ First-draft tasks assumed UPSERT semantics that don't exist. Corrected observati
 
 ## Scope Map
 
-| # | Task | Files | Effort | Ship order | Risk |
-|---|------|-------|--------|------------|------|
-| **1a** | Rewrite `rollup()` to UPDATE-in-place on existing parents (prerequisite) | `src/context-service.ts`, `src/context-service.test.ts` | 0.5d | **First** | Low — mostly refactor |
-| **1b** | Depth-aware prompts for daily→weekly only (voice win, no chaining) | `src/context-service.ts`, `src/context-service.test.ts` | 0.5d | Second | Low — additive prompt change |
-| **1c** | `previous_context` chaining (d1-only, matching lossless-claw) + idempotency test | `src/context-service.ts`, `src/context-service.test.ts` | 1-2d | Third | Medium — needs live Ollama verification |
-| **2** | Size-regression (`output_tokens >= input_tokens`) + aggressive retry + hard cap | `src/context-service.ts`, `src/context-service.test.ts` | 4-6h | Fourth | Low |
-| **3** | XML-wrapped preamble with descendant_count + "Expand for details about: X, Y, Z" footer | `container/agent-runner/src/context-reader.ts`, `container/agent-runner/src/index.ts`, tests | 2-3h | Fifth | Low |
-| **4** | JSONL bootstrap reconciliation (stat-past-EOF → anchor scan) | `src/context-sync.ts`, `src/context-sync.test.ts` | 1d | Sixth | Medium — cursor is live state |
-| **5** | Session pattern ignore/stateless filters (glob-based, env-configurable) | `src/context-sync.ts`, `src/config.ts`, `src/context-sync.test.ts` | 0.5d | Seventh | Low |
-| **6** | `context_describe` MCP tool (descendant subtree manifest) | `container/agent-runner/src/context-reader.ts`, `container/agent-runner/src/ipc-mcp-stdio.ts`, tests | 1-2d | Eighth | Low |
-| **7** | Timestamp injection at leaf pass (zero-LLM-cost quality win — new, from skeptic 3) | `src/context-service.ts`, `src/context-service.test.ts` | 2-3h | Any time after 1b | Low |
-| **8 (OPTIONAL)** | `context_expand_query` bounded sub-agent | `container/agent-runner/src/ipc-mcp-stdio.ts`, new spawn plumbing | 3-5d | Last — decide after 1-7 live 2+ weeks | High |
+| # | Task | Status | Files | Effort | Risk |
+|---|------|--------|-------|--------|------|
+| **1b** | Depth-aware prompts for daily→weekly (single-shot, no chaining) | ✅ **SHIPPED** `3a1593e` — validation pending | `src/context-service.ts`, `src/context-service.test.ts` | 0.5d | Low — additive prompt change |
+| **1b-validate** | Live Ollama before/after on the thiago W13 inputs that motivated 1b | ⏳ **Required next** — Task 1b not "done" until this runs | `scripts/validate-lcm-prompts.ts` (new, throwaway) or interactive | 1-2h | None (read-only on prod DB) |
+| **1a** | Rewrite `rollup()` to support re-summarize on new leaves (un-deferred after Codex review) | 📅 Next after 1b-validate | `src/context-service.ts`, `src/context-service.test.ts` | 1d | Medium — changes `rollup()` early-return and existing regression test at L742. Requires updating that test to match the new contract. |
+| **1c** | `previous_context` chaining (d1-only) — needs 1a | 📅 After 1a | `src/context-service.ts`, tests | 1-2d | Medium — idempotency must be verified with live Ollama (3 runs same input → stable output) |
+| **2** | Size-regression (`output_tokens >= input_child_bytes`) + aggressive retry + hard cap | 📅 After 1c | `src/context-service.ts`, tests | 4-6h | Low, BUT see note below |
+| **3** | XML-wrapped preamble with descendant_count + expand_hints footer | 📅 | `container/agent-runner/src/context-reader.ts`, `container/agent-runner/src/index.ts`, tests | 2-3h | Low |
+| **4** | JSONL bootstrap reconciliation (stat-past-EOF → anchor scan) | 📅 | `src/context-sync.ts`, tests | 1d | Medium — cursor is live state |
+| **5** | Session pattern ignore/stateless filters (glob-based, env-configurable) | 📅 | `src/context-sync.ts`, `src/config.ts`, tests | 0.5d | Low |
+| **6** | `context_describe` MCP tool (descendant subtree manifest) | 📅 | `container/agent-runner/src/context-reader.ts`, `container/agent-runner/src/ipc-mcp-stdio.ts`, tests | 1-2d | Low |
+| **7** | Timestamp injection at leaf pass | 📅 | `src/context-service.ts`, tests | 2-3h | Low |
+| **8 (OPTIONAL)** | `context_expand_query` bounded sub-agent | 🤔 | `container/agent-runner/src/ipc-mcp-stdio.ts`, new spawn plumbing | 3-5d | High |
+
+### Audit checkpoint (before declaring Task 1b + 1a + 1c collectively done)
+
+Produce a checked-in file `docs/superpowers/plans/2026-04-13-lcm-audit-fixture.md` containing:
+- The actual SQL query used to sample groups (so anyone can re-run it).
+- List of ALL groups with rollup data (count, earliest, latest), not just the 4 sampled.
+- Full text of BEFORE and AFTER weekly summaries for 3+ real groups (post-1a/1c live runs).
+- Full text of 2+ monthly summaries from different groups to check the "already distinct" hypothesis.
+- A go/no-go declaration on whether the monthly prompt change is deferred indefinitely or added as a Task 1d.
+
+### Task 2's input-token accounting (critical — was wrong in Rev 2)
+
+Task 2's oversize heuristic is `output_tokens >= input_tokens`. **`input_tokens` must be computed from the CONCATENATED CHILD SUMMARIES payload only, not the full rendered prompt.** Otherwise Task 1b's static scaffolding (~126 tokens daily, ~183 weekly) floods short inputs and produces false negatives. Implementation: pass `{summaries}` string length through to `callSummarizer` as a separate `inputPayloadTokens` param, not derived from `prompt.length`.
 
 ---
 
