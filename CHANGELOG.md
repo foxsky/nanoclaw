@@ -4,6 +4,49 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-12 (evening) — Brazilian phone canonicalization at write boundaries
+
+Production audit of `data/taskflow/taskflow.db` found 22 of 72 phone rows (30%) stored without the `55` country-code prefix — the same human could appear on two boards with different prefixes, silently breaking cross-board person matching and external_contacts lookup. Reginaldo's rows on three boards confirmed the active impact.
+
+- **New canonical helper** — `src/phone.ts` exports a Brazilian-aware `normalizePhone`: strip non-digits → 12-13 digits starting with `55` kept → 10-11 digits with non-zero first digit get `55` prepended → otherwise returned unchanged (international, trunk-prefixed, too short/long). Idempotent fixed-point on already-canonical input. `container/agent-runner/src/taskflow-engine.ts` ships an identical copy (container/host isolation preserved); parity-fixture tests in both suites prevent drift.
+- **Write-site canonicalization** — 7 INSERT/UPDATE sites across `src/ipc-plugins/provision-root-board.ts`, `src/ipc-plugins/provision-child-board.ts`, `container/agent-runner/src/taskflow-engine.ts` (`register_person`, `add_manager`, `add_delegate`, `external_contacts`) now canonicalize at the boundary instead of storing raw agent input. Three fallback JID builders (`provision-*.ts`, `channels/whatsapp.ts`) also switched to canonical digits — previously they would produce invalid `85999991234@s.whatsapp.net` JIDs missing the CC.
+- **One-time DB migration** — `canonicalizePhoneColumns()` runs in `initTaskflowDb()` after schema migrations. Idempotent. `external_contacts.phone` is UNIQUE-aware (skips on would-collide); `board_people` / `board_admins` are NOT UNIQUE and must canonicalize every row (the whole point of cross-board matching is multiple rows sharing a canonical phone). A first prod deploy had this inverted — fix in commit `26db08c` caught via post-deploy verification that left 8 rows uncanonicalized.
+- **provision-child-board cross-board match** — dropped the brittle SQL `REPLACE(REPLACE(...))` chain. Match now fetches candidates and filters in JS with `normalizePhone`, avoiding per-site duplication of separator-stripping rules.
+- **Codex gpt-5.4 high review** — reviewed the staged diff before commit (per `feedback_review_before_deploy`). Flagged: missing canonicalization in `add_manager` / `add_delegate` board_admins insert paths, `external_contacts.phone` UNIQUE collision hazard, and two raw-fallback JID builders in provision plugins. All three addressed before commit.
+- **Post-deploy verification** — production `board_people` / `board_admins` / `external_contacts` now 100% canonical (was 70%). Reginaldo's three rows all converged on `5586999986334`.
+
+Test coverage: 962 host tests (+25), 456 container tests (+10), clean build. Memory `feedback_canonicalize_at_write.md` saved.
+
+## 2026-04-12 (evening) — Regression tests for cross-board match + subtask ordering
+
+Two Codex-flagged concerns from the 20-commit bug-hunt review turned into pinning tests. Neither was a new bug; both document the existing contract so a future refactor cannot silently re-introduce the original problem.
+
+- **`src/ipc-plugins/provision-child-board.test.ts`** — two new tests around the cross-board person match tightened in `6e3b210`. (1) Phone-only fallback for rename case: different `person_id` + same phone → links and unifies. (2) Both person_id AND phone differ → new board created (intentional false negative; name matching stays excluded).
+- **`container/agent-runner/src/taskflow-engine.test.ts`** — legacy-subtask-suffix regression test for `getSubtaskRows`. Production has 8 anomalous rows (reparented subtasks whose IDs don't match the canonical `{parent}.{N}` naming). `CAST(SUBSTR(...))` returns 0 for empty-suffix rows and the numeric suffix for same-length-prefix reparented rows. Test pins the interleaving behavior — strictly no-worse than pre-fix lex order, and the canonical case is fixed.
+
+## 2026-04-12 (evening) — 20-subagent bug hunt (19 real bugs + 1 dead-test fix)
+
+Parallel bug hunt across the codebase, 4 batches of 5 subagents each. All 20 commits reviewed by Codex gpt-5.4 high: 17 real bugs + correct fixes, 2 with concerns (addressed with pinning tests above), 1 dead-test correction. Zero false positives. Highlights:
+
+- `eea67fb` — container.stdin lacks `'error'` listener, EPIPE crashes orchestrator
+- `98fb3a5` — `handleDeferredNotification` re-queues without stamping timestamp, TTL expiry disabled
+- `182d204` — `schedule_value` parse failure before `computeNextRun` loops forever
+- `e4cfc97` — `/compact` slash detection runs on preamble-mutated prompt, demotes to chat
+- `6b38008` — `stripInternalTags` case-sensitive, reasoning leaks when LLM emits `<INTERNAL>`
+- `092cdda` — `setRegisteredGroup(isMain: undefined)` silently writes `is_main = 0`, demotes main group
+- `6ae3d6c` — WhatsApp `messages.upsert` with `type='append'` is history replay; processing duplicates agent actions
+- `9efe8cb` — `JSON.stringify` on cyclic Baileys objects throws inside log callbacks
+- `8257b4f` — Telegram bot-mention rewrite used global `TRIGGER_PATTERN` for per-group trigger overrides, silently drops mentions
+- `e65d285` — `DEFAULT_REVIEW_UTC` was `0 17 * * 1` (14:00 local) when the intent was 11:00 local (Fortaleza is UTC-3 year-round, correct UTC is `0 14`)
+- `9812787` — `create_group` forwards duplicate participant JIDs when phone resolution maps two inputs to the same canonical JID; WhatsApp silently drops duplicates
+- `2ddcf62` — `getSubtaskRows` lexicographic `ORDER BY t.id` places `P10.10` before `P10.2` for projects with 10+ subtasks
+- `9886330` — `unassign_subtask` calls `recordHistory` without `taskBoardId`, history lands on executing board instead of owning board for delegated subtasks
+- `3597901` — auditor web-origin filter used `sender_name || sender` OR precedence instead of checking both independently
+- `6e3b210` — cross-board person match on `person_id` alone cross-linked unrelated humans sharing an aliased person_id string; now requires `person_id + phone` with phone-only fallback
+- `69a4ab7` — WhatsApp pairing-code auth passes raw user phone to Baileys; sanitize to digits + reject obviously-invalid inputs
+
+Full list in the git log between `fd2b217` and `9886330`. Test suites: 933 host / 445 container pass.
+
 ## 2026-04-12 (later) — Cross-board subtask Phase 2 (approval flow)
 
 Phase 2 activates on `cross_board_subtask_mode = 'approval'` — previously a stub error, now a real approval workflow. All changes stay within the add-taskflow skill (container/agent-runner + .claude/skills/add-taskflow), no host-side code touched.

@@ -1,5 +1,26 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-04-12 (evening) — Phone canonicalization at engine write boundaries
+
+Production-data cleanup: 30% of stored phones were missing the `55` country-code prefix, breaking cross-board person matching for the mixed-format humans. Engine-side changes:
+
+- `container/agent-runner/src/taskflow-engine.ts` — `normalizePhone` upgraded from `replace(/\D/g, '')` to a Brazilian-aware canonicalizer (12-13 digits starting with 55 kept; 10-11 digits with non-zero first digit get `55` prepended; otherwise unchanged). Idempotent fixed-point.
+- `register_person` INSERT, `add_manager` board_admins INSERT, `add_delegate` board_admins INSERT all canonicalize `params.phone` at write. `external_contacts` INSERT already canonicalized.
+- `auto_provision_request.person_phone` in the response now carries the canonical form so host-side `provision_child_board` doesn't need to re-normalize.
+- Parity with the host copy (`src/phone.ts`) enforced by fixture tests in both suites; any change to one must be matched in the other.
+
+### Subtask ordering + delegated history (from the parallel bug hunt)
+
+- `getSubtaskRows` — `ORDER BY t.id` was lexicographic, placing `P10.10` before `P10.2`. Changed to `ORDER BY CAST(SUBSTR(t.id, LENGTH(t.parent_task_id) + 2) AS INTEGER), t.id` for numeric ordering. Legacy reparented subtasks (`M1`/`T84` with `parent_task_id = 'P11'`) cast to 0 and cluster at the start — strictly no-worse than pre-fix.
+- `unassign_subtask` `recordHistory` — previously omitted the `taskBoardId` argument, so history for a delegated subtask unassign was written to `this.boardId` (executing board) instead of the owning board. Now passes `taskBoardId` like every other recordHistory call in the delegated-subtask update path.
+
+### Test coverage
+
+- 10 new parity-fixture tests in `container/agent-runner/src/taskflow-engine.test.ts` mirror the host `src/phone.test.ts` fixtures.
+- Regression test: `getSubtaskRows` orders 12 subtasks numerically (inserted in reverse).
+- Regression test: legacy non-`{parent}.{N}` suffix subtasks don't crash the CAST and sort predictably.
+- Regression test: `unassign_subtask` on a delegated subtask writes history to the parent (owning) board.
+
 ## 2026-04-12 (later) — Cross-board subtask Phase 2 (approval flow)
 
 All changes stay within the skill's territory (container/agent-runner + templates + tests). Zero host-side code touched.
