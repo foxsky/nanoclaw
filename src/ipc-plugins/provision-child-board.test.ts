@@ -465,4 +465,84 @@ describe('provision_child_board cross-board person matching', () => {
     verify.close();
     expect(row?.child_board_id).toBe('board-parent-b-joao');
   });
+
+  it('falls back to phone-only match when person_id differs but phone is the same (rename case)', () => {
+    // Codex flagged this as the compensating behavior for the
+    // "same person_id + different phone → no link" rule. The other
+    // direction — "different person_id + same phone" — MUST link, because
+    // person_ids get renamed (e.g. 'joao' → 'joao_silva') while the phone
+    // stays stable. Pin this fallback so the query isn't silently dropped.
+    const db = openTestDb();
+    seedBoards(db);
+    db.close();
+
+    return handler(
+      {
+        person_id: 'joao_silva',            // renamed from 'joao'
+        person_name: 'João Silva',
+        person_phone: '5522222222222',      // same phone as Parent B's joao
+        person_role: 'desenvolvedor',
+      },
+      'parent-a-taskflow',
+      false,
+      deps,
+    ).then(() => {
+      // Handler must take the link path (NOT createGroup).
+      expect(createGroup).not.toHaveBeenCalled();
+
+      // The handler unifies the person_id to match the existing child board
+      // (so tasks across parents stay consistent). Registration is written
+      // under the unified ID ('joao'), not the originally-passed
+      // ('joao_silva') — verify both the link target and the unification.
+      const verify = new Database(TEST_DB_PATH, { readonly: true });
+      const row = verify
+        .prepare(
+          `SELECT person_id, child_board_id FROM child_board_registrations
+           WHERE parent_board_id = 'board-parent-a'`,
+        )
+        .get() as { person_id: string; child_board_id: string } | undefined;
+      verify.close();
+      expect(row?.child_board_id).toBe('board-parent-b-joao');
+      expect(row?.person_id).toBe('joao');
+    });
+  });
+
+  it('creates a new board when BOTH person_id and phone differ (intentional false negative)', async () => {
+    // Codex concern: if a person changes BOTH phone and person_id while
+    // moving across parent boards, we have no reliable signal that they
+    // are the same human (name matching is intentionally excluded because
+    // it produced worse collisions than creating a fresh board). This test
+    // pins the current policy: different person_id AND different phone →
+    // create a fresh child board, even if by chance the human is the same.
+    // Reverting this policy would re-open the original cross-link bug.
+    const db = openTestDb();
+    seedBoards(db);
+    db.close();
+
+    await handler(
+      {
+        person_id: 'joao_silva',           // different from Parent B's 'joao'
+        person_name: 'João Silva',          // Parent B has 'Joana Santos'
+        person_phone: '5511111111111',      // Parent B has 5522222222222
+        person_role: 'desenvolvedor',
+      },
+      'parent-a-taskflow',
+      false,
+      deps,
+    );
+
+    // Must take the create path — our stub createGroup throws, ending here.
+    expect(createGroup).toHaveBeenCalledOnce();
+
+    const verify = new Database(TEST_DB_PATH, { readonly: true });
+    const row = verify
+      .prepare(
+        `SELECT child_board_id FROM child_board_registrations
+         WHERE parent_board_id = 'board-parent-a' AND person_id = 'joao_silva'`,
+      )
+      .get() as { child_board_id: string } | undefined;
+    verify.close();
+    // No link to Parent B's existing joao board was written.
+    expect(row?.child_board_id).not.toBe('board-parent-b-joao');
+  });
 });
