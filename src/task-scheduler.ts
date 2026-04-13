@@ -252,10 +252,14 @@ async function runTask(
               await deps.sendMessage(task.chat_jid, visible);
             }
           }
-          scheduleClose();
         }
         if (streamedOutput.status === 'success') {
           deps.queue.notifyIdle(task.chat_jid);
+          // Always schedule close on success, even when result is null.
+          // Tasks whose agent emitted output via send_message MCP (e.g. the
+          // TF-STANDUP) return no result text, and without this the task
+          // container would stay alive forever, blocking follow-up messages.
+          scheduleClose();
         }
         if (streamedOutput.status === 'error') {
           error = streamedOutput.error || 'Unknown error';

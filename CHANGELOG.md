@@ -4,6 +4,16 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-13 — Task container leak when agent result is null
+
+Production incident: sec-secti container had been `Up 2 hours` since the 08:00 TF-STANDUP fired. Miguel sent "Anotar: Reparo do boile, para: Alexandre, prazo: hoje" at 08:35 BRT; the router logged `Container active, message queued` and the message stuck in `pendingMessages` for 1.5h — never reached the container because task containers refuse `sendMessage` IPC (`isTaskContainer` guard).
+
+- **Root cause** — `src/task-scheduler.ts` called `scheduleClose()` only when `streamedOutput.result` was truthy. The standup agent emits its board output via `send_message` MCP (not a final assistant text), so the SDK result is `null`, `scheduleClose` never fires, and the agent-runner loop in the container keeps awaiting more IPC input indefinitely. The message path (`src/index.ts:579`) already handles this correctly by resetting the idle timer on every `status === 'success'` regardless of result text.
+- **Fix** — moved `scheduleClose()` into the `status === 'success'` branch so task containers always close promptly after completion, whether the agent returned text or only emitted `send_message` calls.
+- **Recovery** — wrote `_close` sentinel into `data/ipc/sec-secti/input/` to release the stuck container; `drainGroup` then ran Miguel's queued message and created task **T94 "Reparo do boiler" → Alexandre** on `board-sec-taskflow`.
+
+Memory `feedback_task_container_close.md` saved.
+
 ## 2026-04-12 (evening) — Brazilian phone canonicalization at write boundaries
 
 Production audit of `data/taskflow/taskflow.db` found 22 of 72 phone rows (30%) stored without the `55` country-code prefix — the same human could appear on two boards with different prefixes, silently breaking cross-board person matching and external_contacts lookup. Reginaldo's rows on three boards confirmed the active impact.
