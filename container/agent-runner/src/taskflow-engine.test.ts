@@ -368,6 +368,52 @@ describe('TaskflowEngine', () => {
         'P-500.7', 'P-500.8', 'P-500.9', 'P-500.10', 'P-500.11', 'P-500.12',
       ]);
     });
+
+    it('handles legacy subtasks without {parent}.{N} suffix safely', () => {
+      // Production has rows whose `parent_task_id` was reassigned without
+      // renaming the task ID — e.g. `M1` (meeting) or `T84` (simple task)
+      // linked under project P11, or `P10.1` (originally a subtask of P10)
+      // reparented under P11. These are pre-existing data-integrity issues
+      // unrelated to the ordering bug being fixed here; the query must not
+      // throw on them, and canonical subtasks must still sort numerically.
+      //
+      // CAST(SUBSTR(id, LENGTH(parent)+2) AS INTEGER) uses the character
+      // AFTER parent-length+dot. For M1/T42 (id shorter than the offset)
+      // SUBSTR is empty → CAST=0. For P-600.3 under parent P-700 (same-
+      // length prefix), SUBSTR yields '3' → CAST=3, so it interleaves
+      // with canonical P-700.3 by lex tiebreak. This is strictly no worse
+      // than pre-fix lex ordering, and the canonical case is fixed.
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at)
+         VALUES ('P-700', '${BOARD_ID}', 'project', 'Mixed legacy parents', 'person-1', 'next_action', 0, '${now}', '${now}')`,
+      );
+      const ids = [
+        'P-700.11', 'P-700.2', 'P-700.1', // canonical, inserted out of order
+        'M9',                              // meeting linked as child of P-700
+        'T42',                             // simple task linked as child of P-700
+        'P-600.3',                         // reparented subtask (same-length prefix)
+      ];
+      for (const id of ids) {
+        db.exec(
+          `INSERT INTO tasks (id, board_id, type, title, column, requires_close_approval, parent_task_id, created_at, updated_at)
+           VALUES ('${id}', '${BOARD_ID}', 'simple', 'Sub ${id}', 'next_action', 0, 'P-700', '${now}', '${now}')`,
+        );
+      }
+
+      const r = engine.query({ query: 'task_details', task_id: 'P-700' });
+      expect(r.success).toBe(true);
+      const orderedIds = r.data.subtask_rows.map((s: any) => s.id);
+      // Sort keys: M9=0, T42=0, P-700.1=1, P-700.2=2, P-600.3=3, P-700.11=11.
+      // Ties tie-break by t.id (lex).
+      expect(orderedIds).toEqual([
+        'M9', 'T42',             // CAST=0 cluster, lex tiebreak
+        'P-700.1',               // CAST=1
+        'P-700.2',               // CAST=2
+        'P-600.3',               // CAST=3 (foreign-parent with numeric suffix)
+        'P-700.11',              // CAST=11
+      ]);
+    });
   });
 
   /* ---------------------------------------------------------------- */
