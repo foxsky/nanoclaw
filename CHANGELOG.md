@@ -4,6 +4,15 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-13 (later) — Kipp audit: offer_register completion + my_tasks column layout
+
+Two template-only fixes from Kipp's 2026-04-13 daily audit on SETEC-SECTI and EST-SECTI boards.
+
+- **SETEC-SECTI — offer_register dropped silently.** User said "Atribuir para João evangelista"; bot correctly fired `offer_register` but after the user's follow-up reply, never called `register_person` and never re-asked for missing fields. The assignment task was lost. New "Drive offer_register conversations to completion" guidance block spells out three terminal states (success / explicit cancel / redirect-and-complete), how to handle partial replies (capture what was given, ask only for missing fields, honor the hierarchy-board STOP rule), subject-change handling that actually performs the new mutation instead of just acknowledging, and a floor rule that the bot's last message must always state what is needed to close the task. Codex gpt-5.4 high review caught that the first draft contradicted the earlier hierarchy-board STOP rule (by calling `register_person` with partial fields) — rewrite reconciles both.
+- **EST-SECTI — bot called column grouping a "system limitation".** User asked for tasks split "em a fazer / fazendo / feito" by default; bot deflected and demanded the keyword "quadro completo". Wrong — data is already column-labeled. Rewrote the `my_tasks` / `person_tasks` display section: default layout is now explicitly grouped by Kanban column (INBOX / PRÓXIMAS AÇÕES / EM ANDAMENTO / AGUARDANDO / REVISÃO). Pins "Never claim column grouping is impossible" and the exact "system limitation" phrase to avoid. Completed tasks excluded by default, but explicit request ("tarefas concluídas", "o que eu finalizei?") adds a ✅ CONCLUÍDAS section. Explicit user formatting preferences still override the default (Codex-flagged escape hatch).
+
+Two drift-guard tests pin the key phrases from each guidance block (including the STOP-rule reconciliation and redirect-completion requirement). 367/367 skill tests pass; 13 group CLAUDE.md copies regenerated via `scripts/generate-claude-md.mjs`.
+
 ## 2026-04-13 (later) — Prompt-injection defense in TaskFlow template
 
 Snyk researcher Luca Beurer-Kellner disclosed that a spoofed email asked OpenClaw (upstream) to share its configuration file and the agent complied, leaking API keys and the gateway token. Same attack surface exists on NanoClaw: gmail skill, PDF/image attachments, web-fetched URLs, forwarded cross-group messages, meeting notes added by external participants. Five-pillar defense added to `.claude/skills/add-taskflow/templates/CLAUDE.md.template` Security section:
