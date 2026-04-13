@@ -16,6 +16,13 @@ const Level = {
   MONTHLY: 3,
 } as const;
 
+type RollupLevelName = 'day' | 'week' | 'month';
+const LEVEL_NAME: Record<number, RollupLevelName> = {
+  [Level.DAILY]: 'day',
+  [Level.WEEKLY]: 'week',
+  [Level.MONTHLY]: 'month',
+};
+
 const DEFAULT_OLLAMA_MODEL = 'qwen3-coder:latest';
 const CLAUDE_API_MODEL = 'claude-haiku-4-5-20251001';
 const CLAUDE_DISPLAY_NAME = 'haiku-4.5';
@@ -171,21 +178,8 @@ Tools called: {tool_names}
 
 Write a concise summary in the same language as the conversation.`;
 
-// Depth-aware rollup prompts. Borrowed from martian-engineering/lossless-claw
-// where different depths get different framings (recency/persistence axis).
-// Production audit 2026-04-13 showed our weekly summaries were restating
-// daily content near-verbatim because all three rollups shared the same
-// "Summarize the X from these Y" shape. New daily prompt emphasizes factual
-// bullets with a word cap; new weekly prompt emphasizes arcs and explicitly
-// forbids per-day restatement. Monthly prompt left UNCHANGED — empirical
-// audit confirmed it already produces distinct thematic output.
-//
-// CRITICAL LANGUAGE RULE at prompt top: first Ollama run (3a1593e) regressed
-// pt-BR inputs to English output because the new narrative framing (English
-// instructions, longer prompt) outweighed the old single-line "same language"
-// footer. Verified with live qwen3-coder calls on thiago W13 and sec-secti
-// W14 — language-first framing restores pt-BR preservation while keeping the
-// arc-recap voice.
+// Language rule must sit at the TOP of each prompt: longer English framing
+// overrides qwen3-coder's pt-BR fidelity when the directive is only a footer.
 const ROLLUP_PROMPTS: Record<string, string> = {
   day: `CRITICAL LANGUAGE RULE: The session summaries below are in a specific language. Your output MUST be in the SAME language. Do NOT translate.
 
@@ -325,13 +319,6 @@ export class ContextService {
       SELECT id, summary FROM context_nodes WHERE id = ?
     `);
 
-    // Task 1a (2026-04-13): when new orphans arrive after the first rollup,
-    // we UPDATE the parent's summary with a fresh LLM call over the full
-    // child set (adopted + newly-adopted). Pre-change, rollup() only adopted
-    // orphans and never refreshed the summary — leaves arriving at 23:59:50
-    // missed the first rollup and their content never reached the weekly
-    // layer. See docs/superpowers/plans/2026-04-13-lcm-lossless-claw-
-    // improvements.md (rev 4).
     this.stmtUpdateRollupSummary = this.db.prepare(`
       UPDATE context_nodes
          SET summary = ?, token_count = ?, model = ?, time_end = ?
@@ -423,15 +410,9 @@ export class ContextService {
     for (const row of pending) {
       try {
         const messages = JSON.parse(row.messages) as SessionMessage[];
-        // Task 7 (2026-04-13): prepend ISO-minute timestamp to each
-        // message. Borrowed from lossless-claw's leaf pass — gives the
-        // summarizer a free timeline with zero LLM cost so it can write
-        // temporal references ("early morning", "after lunch") without
-        // inferring order from content. Trim to minute precision because
-        // second-level noise bloats the prompt and is rarely useful.
         const userMsg = messages
           .map((m) => {
-            const iso = m.timestamp?.slice(0, 16); // YYYY-MM-DDTHH:MM
+            const iso = m.timestamp?.slice(0, 16);
             return iso ? `[${iso} UTC] ${m.content}` : m.content;
           })
           .join('\n');
@@ -513,13 +494,9 @@ export class ContextService {
       rangeEnd,
     ) as Array<{ id: string; summary: string }>;
 
-    // Existing parent + no new orphans → idempotent no-op (keeps cron from
-    // re-paying LLM cost on every 60s tick).
+    // Idempotent no-op when nothing changed since the last rollup tick.
     if (existing && orphans.length === 0) return null;
 
-    // Determine the full child set that will be summarized. When updating
-    // an existing parent, include both already-adopted children and the
-    // new orphans (the orphans will be adopted in the same transaction).
     let children: Array<{ id: string; summary: string }>;
     if (existing) {
       const adopted = this.stmtSelectAdoptedChildren.all(parentId) as Array<{
@@ -527,7 +504,7 @@ export class ContextService {
         summary: string;
       }>;
       children = [...adopted, ...orphans].sort((a, b) =>
-        a.id.localeCompare(b.id),
+        a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
       );
     } else {
       children = orphans;
@@ -535,20 +512,13 @@ export class ContextService {
 
     if (children.length === 0) return null;
 
-    const levelName =
-      parentLevel === Level.DAILY
-        ? 'day'
-        : parentLevel === Level.WEEKLY
-          ? 'week'
-          : 'month';
     const combinedSummaries = children.map((c) => c.summary).join('\n\n');
-    // {previous_context} is d1-only (matches lossless-claw — see
-    // src/summarize.ts buildD1Prompt; d2/d3+ explicitly drop the param
-    // to avoid summary-of-summary drift at higher depths).
-    let prompt = ROLLUP_PROMPTS[levelName].replace(
+    let prompt = ROLLUP_PROMPTS[LEVEL_NAME[parentLevel]].replace(
       '{summaries}',
       combinedSummaries,
     );
+    // {previous_context} is d1-only to bound chaining depth (at d2+ the model
+    // would eventually summarize its own summary each re-rollup — drift).
     if (parentLevel === Level.DAILY) {
       const priorContext =
         existing?.summary?.trim() || '(none — first rollup for this day)';
@@ -596,9 +566,7 @@ export class ContextService {
           now,
         );
       }
-      // Adopt any currently-unparented children (either the full set on
-      // INSERT path, or only the orphans on UPDATE path — stmtSetParent
-      // is idempotent on already-linked rows).
+      // stmtSetParent is idempotent on already-linked rows.
       for (const child of children) {
         this.stmtSetParent.run(parentId, child.id);
       }
