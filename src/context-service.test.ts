@@ -1330,6 +1330,67 @@ describe('ContextService — depth-aware rollup prompts', () => {
     svc.close();
   });
 
+  it('daily and weekly prompts carry CRITICAL LANGUAGE RULE to prevent en/pt-BR regression', async () => {
+    // Live Ollama verification on thiago W13 + sec-secti W14 (2026-04-13)
+    // showed qwen3-coder silently regressed pt-BR inputs to English output
+    // when the new narrative framing was added without a prominent language
+    // directive. Language rule must sit at the TOP of each depth-aware prompt
+    // (before the framing and body) to override qwen's default-to-English
+    // tendency on English instructions.
+    const svc = new ContextService(TEST_DB, {
+      summarizer: 'ollama',
+      ollamaHost: 'http://localhost:11434',
+      summarizerModel: 'test',
+      retainDays: 90,
+    });
+
+    const date = '2026-03-14';
+    svc.db
+      .prepare(
+        `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
+         VALUES (?, 'grp', 0, 'Leaf em português', ?, ?, 20, 'test', ?)`,
+      )
+      .run(
+        `leaf:grp:${date}T10:00:00.000Z`,
+        `${date}T10:00:00.000Z`,
+        `${date}T10:00:00.000Z`,
+        new Date().toISOString(),
+      );
+
+    let capturedDaily: string | null = null;
+    global.fetch = vi.fn().mockImplementation(async (_url, init) => {
+      capturedDaily = JSON.parse((init as any).body).prompt;
+      return { ok: true, json: async () => ({ response: 'ok' }) };
+    }) as any;
+    await svc.rollupDaily('grp', date);
+
+    expect(capturedDaily!).toMatch(/^CRITICAL LANGUAGE RULE:/);
+    expect(capturedDaily!).toContain('Do NOT translate');
+
+    // Seed dailies for a weekly test and capture that prompt too.
+    const now = new Date().toISOString();
+    for (let day = 9; day <= 11; day++) {
+      const d = `2026-03-${String(day).padStart(2, '0')}`;
+      svc.db
+        .prepare(
+          `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
+           VALUES (?, 'grp', 1, ?, ?, ?, 30, 'test', ?)`,
+        )
+        .run(`daily:grp:${d}`, `Daily ${d}`, `${d}T00:00:00.000Z`, `${d}T23:59:59.999Z`, now);
+    }
+    let capturedWeekly: string | null = null;
+    global.fetch = vi.fn().mockImplementation(async (_url, init) => {
+      capturedWeekly = JSON.parse((init as any).body).prompt;
+      return { ok: true, json: async () => ({ response: 'ok' }) };
+    }) as any;
+    await svc.rollupWeekly('grp', '2026-03-09');
+
+    expect(capturedWeekly!).toMatch(/^CRITICAL LANGUAGE RULE:/);
+    expect(capturedWeekly!).toContain('If they are in Portuguese, respond in Portuguese');
+
+    svc.close();
+  });
+
   it('monthly rollup prompt is UNCHANGED (empirical audit showed it already produces thematic output)', async () => {
     const svc = new ContextService(TEST_DB, {
       summarizer: 'ollama',

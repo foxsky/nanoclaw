@@ -179,29 +179,40 @@ Write a concise summary in the same language as the conversation.`;
 // bullets with a word cap; new weekly prompt emphasizes arcs and explicitly
 // forbids per-day restatement. Monthly prompt left UNCHANGED — empirical
 // audit confirmed it already produces distinct thematic output.
+//
+// CRITICAL LANGUAGE RULE at prompt top: first Ollama run (3a1593e) regressed
+// pt-BR inputs to English output because the new narrative framing (English
+// instructions, longer prompt) outweighed the old single-line "same language"
+// footer. Verified with live qwen3-coder calls on thiago W13 and sec-secti
+// W14 — language-first framing restores pt-BR preservation while keeping the
+// arc-recap voice.
 const ROLLUP_PROMPTS: Record<string, string> = {
-  day: `You are summarizing a day of agent-assisted work for a single WhatsApp group.
+  day: `CRITICAL LANGUAGE RULE: The session summaries below are in a specific language. Your output MUST be in the SAME language. Do NOT translate.
+
+You are summarizing a day of agent-assisted work for a single WhatsApp group.
 
 Today's events (each line is a session summary, in chronological order):
 {summaries}
 
-Write a concise factual recap: What concretely happened today?
+Write a concise factual recap in the same language as the sessions above: What concretely happened today?
 - Terse bullet lines, one per distinct event.
 - Include actor names, task IDs, and outcomes.
 - Target 80-word total.
 
-Do NOT editorialize. Do NOT use thematic language. Match the language of the source summaries.`,
+Do NOT editorialize. Do NOT use thematic language.`,
 
-  week: `You are summarizing a week of agent-assisted work for a single WhatsApp group.
+  week: `CRITICAL LANGUAGE RULE: The daily summaries below are in a specific language. Your output MUST be in the SAME language as the daily summaries. If they are in Portuguese, respond in Portuguese. If in English, respond in English. Do NOT translate.
+
+You are summarizing a week of agent-assisted work for a single WhatsApp group.
 
 Daily summaries from this week, in chronological order:
 {summaries}
 
-Write a narrative recap: What arcs emerged this week?
+Write a narrative recap in the same language as the daily summaries above: What arcs emerged this week?
 - Recurring topics, blockers that persisted across days, decisions that shaped the week.
 - Target 180-word narrative prose (not bullets).
 
-Assume the reader has already seen the daily summaries: do NOT restate each day's events. Reference a specific day only when it anchors an arc (e.g., "on Tuesday the SETEC board was provisioned"). Connect days into a story instead of concatenating them. Match the language of the source summaries.`,
+Assume the reader has already seen the daily summaries: do NOT restate each day's events. Reference a specific day only when it anchors an arc (e.g., "on Tuesday the SETEC board was provisioned"). Connect days into a story instead of concatenating them.`,
 
   month: `Summarize the month's activity from these weekly summaries. Capture:
 - Major milestones and deliverables
