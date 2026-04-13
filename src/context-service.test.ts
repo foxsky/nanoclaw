@@ -1400,6 +1400,76 @@ describe('ContextService — depth-aware rollup prompts', () => {
     svc.close();
   });
 
+  it('prepends ISO minute timestamp to each user message in the leaf summarize prompt', async () => {
+    // Task 7 (2026-04-13): borrow the timestamp-injection pattern from
+    // lossless-claw's leaf pass. Zero-LLM-cost quality win — gives the
+    // summarizer a free timeline so it can write temporal references
+    // ("early morning", "after lunch") without needing extra inference
+    // to reconstruct order.
+    const svc = new ContextService(TEST_DB, {
+      summarizer: 'ollama',
+      ollamaHost: 'http://localhost:11434',
+      retainDays: 90,
+    });
+
+    const now = new Date().toISOString();
+    const nodeId = 'leaf:grp:2026-03-14T09:15:00.000Z';
+    svc.db
+      .prepare(
+        `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, created_at)
+         VALUES (?, 'grp', 0, NULL, ?, ?, ?)`,
+      )
+      .run(nodeId, '2026-03-14T09:15:00.000Z', '2026-03-14T09:15:00.000Z', now);
+
+    const messages = [
+      {
+        sender: 'Alice',
+        content: 'Please create T42 for the quarterly report.',
+        timestamp: '2026-03-14T09:15:30.123Z',
+      },
+      {
+        sender: 'Alice',
+        content: 'And assign it to Bob.',
+        timestamp: '2026-03-14T09:17:45.999Z',
+      },
+    ];
+    svc.db
+      .prepare(
+        `INSERT INTO context_sessions (id, group_folder, session_id, messages, agent_response, tool_calls, created_at)
+         VALUES (?, 'grp', 'sess-1', ?, ?, ?, ?)`,
+      )
+      .run(
+        nodeId,
+        JSON.stringify(messages),
+        'Task T42 created and assigned to Bob.',
+        JSON.stringify([{ tool: 'taskflow_create', resultSummary: 'ok' }]),
+        now,
+      );
+
+    let capturedPrompt: string | null = null;
+    global.fetch = vi.fn().mockImplementation(async (_url, init) => {
+      capturedPrompt = JSON.parse((init as any).body).prompt;
+      return {
+        ok: true,
+        json: async () => ({
+          response: 'Alice asked and Bob got assigned the quarterly report task.',
+        }),
+      };
+    }) as any;
+
+    await svc.summarizePending();
+
+    expect(capturedPrompt).toBeTruthy();
+    // Each message gets an ISO-minute timestamp prefix (YYYY-MM-DDTHH:MM UTC).
+    expect(capturedPrompt!).toContain('[2026-03-14T09:15 UTC]');
+    expect(capturedPrompt!).toContain('[2026-03-14T09:17 UTC]');
+    // Raw content still visible after the prefix.
+    expect(capturedPrompt!).toContain('Please create T42');
+    expect(capturedPrompt!).toContain('And assign it to Bob');
+
+    svc.close();
+  });
+
   it('passes previous_context on daily re-rollup (d1-only, matches lossless-claw)', async () => {
     // Task 1c: re-rollup after Task 1a unblocked the UPDATE path. The
     // daily prompt includes a {previous_context} slot; when re-rolling

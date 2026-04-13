@@ -423,7 +423,18 @@ export class ContextService {
     for (const row of pending) {
       try {
         const messages = JSON.parse(row.messages) as SessionMessage[];
-        const userMsg = messages.map((m) => m.content).join('\n');
+        // Task 7 (2026-04-13): prepend ISO-minute timestamp to each
+        // message. Borrowed from lossless-claw's leaf pass — gives the
+        // summarizer a free timeline with zero LLM cost so it can write
+        // temporal references ("early morning", "after lunch") without
+        // inferring order from content. Trim to minute precision because
+        // second-level noise bloats the prompt and is rarely useful.
+        const userMsg = messages
+          .map((m) => {
+            const iso = m.timestamp?.slice(0, 16); // YYYY-MM-DDTHH:MM
+            return iso ? `[${iso} UTC] ${m.content}` : m.content;
+          })
+          .join('\n');
         const tools = row.tool_calls
           ? (JSON.parse(row.tool_calls) as ToolCallSummary[])
           : [];
