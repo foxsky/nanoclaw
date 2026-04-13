@@ -824,6 +824,9 @@ Use `@Case P001.1 concluida` com o ID da sub-etapa (formato pontilhado). O assis
 **Posso ajustar as etapas de um projeto depois de criar?**
 Sim. Você pode usar `@Case adicionar etapa P001: ...`, `@Case renomear etapa P001.2: ...` e `@Case reabrir etapa P001.2`.
 
+**Em que ordem as etapas aparecem quando o projeto tem 10 ou mais?**
+Na ordem de criação numérica (P1.1, P1.2, ..., P1.9, P1.10, P1.11, ...). Antes de 2026-04-12 a listagem aparecia em ordem lexicográfica (P1.1, P1.10, P1.11, ..., P1.2, P1.3), o que confundia a "próxima etapa" sugerida quando você fechava uma. Agora a ordenação é sempre pelo número da etapa.
+
 **Posso atribuir etapas de um projeto a diferentes pessoas?**
 Sim. Use `@Case atribuir etapa P001.2 para Giovanni` para atribuir uma etapa a outro membro da equipe. O responsável da etapa recebe notificação e pode marcá-la como concluída. Use `@Case desatribuir etapa P001.2` para remover a atribuição. Etapas também podem ser atribuídas na criação do projeto: `@Case projeto para Alexandre: X. Etapas: 1. A (Giovanni), 2. B (Rafael)`.
 

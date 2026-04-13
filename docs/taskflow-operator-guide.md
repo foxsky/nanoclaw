@@ -65,7 +65,7 @@ There is no mirrored “shared board + private per-user view” mode, and there 
 During setup, collect:
 
 - Manager name
-- Manager phone (digits only — automatically resolved to the correct WhatsApp JID format via `onWhatsApp()` lookup)
+- Manager phone (any format — canonicalized at the write boundary to Brazilian E164 digits: `55` + DDD + subscriber. See [Phone Canonicalization](#phone-canonicalization) below.)
 - Output language
 - TaskFlow timezone
 - Board topology
@@ -642,6 +642,62 @@ All TaskFlow boards use SQLite exclusively — no JSON files.
 - Check `registered_groups` has the correct `taskflow_hierarchy_level` and `taskflow_max_depth`
 - Restart NanoClaw to reload group cache
 - Verify `.mcp.json` exists in the group folder
+
+## Phone Canonicalization
+
+TaskFlow canonicalizes every phone number at the write boundary (INSERT/UPDATE into `board_people`, `board_admins`, `external_contacts`). Operators do not need to format inputs manually — the agent accepts any input shape and the engine normalizes it before storage.
+
+### Canonical form
+
+Brazilian E164 digits, no `+`, no separators: `55` + 2-digit DDD + 8- or 9-digit subscriber number.
+
+| Example input | Canonical stored form |
+|---|---|
+| `+55 (85) 99999-1234` | `5585999991234` |
+| `86999986334` | `5586999986334` |
+| `8688080333` | `558688080333` |
+| `558688983914` | `558688983914` (kept; 12-digit landline) |
+| `5585999991234` | `5585999991234` (kept) |
+
+### Rules (see `src/phone.ts`)
+
+1. Strip all non-digit characters.
+2. If the result is 12–13 digits and starts with `55` → keep as-is.
+3. If the result is 10–11 digits and the first digit is not `0` → prepend `55`.
+4. Otherwise return digits unchanged (international, trunk-prefixed `0XX...`, too short, too long).
+
+Rule 3 has a documented false-positive: a 10-digit NANP (US/Canada) number whose area code is 11–99 will get `55` prepended. Accepted trade-off — TaskFlow is used exclusively by Brazilian teams.
+
+### Implications for operators
+
+- **Manual DB fixes**: when writing SQL directly against `board_people.phone` or `board_admins.phone`, always use the canonical form. Mixed-format rows will silently break cross-board person matching.
+- **Migration**: `initTaskflowDb()` runs `canonicalizePhoneColumns()` on startup — idempotent, safe to re-run. Non-UNIQUE tables canonicalize all rows; `external_contacts.phone` (UNIQUE) skips on collision and leaves the duplicate for manual review.
+- **Cross-board match**: `provision-child-board.ts` matches candidates by `person_id + canonical phone` with a phone-only fallback for rename cases. Matches survive inconsistent input because both sides are canonicalized at comparison time.
+- **JID construction**: `resolvePhoneJid` fallback uses the canonical form — an 11-digit Brazilian number like `85999991234` now produces a valid `5585999991234@s.whatsapp.net` JID. Pre-fix, it would produce an invalid JID missing the CC.
+
+### Detecting mixed-format rows
+
+```sql
+SELECT
+  CASE
+    WHEN LENGTH(phone) = 13 AND SUBSTR(phone,1,2) = '55' THEN 'E164_BR_mobile (13d)'
+    WHEN LENGTH(phone) = 12 AND SUBSTR(phone,1,2) = '55' THEN 'E164_BR_landline (12d)'
+    WHEN LENGTH(phone) = 11 AND SUBSTR(phone,1,1) != '0' THEN 'BR_no_CC_mobile (11d) — MIGRATION PENDING'
+    WHEN LENGTH(phone) = 10 AND SUBSTR(phone,1,1) != '0' THEN 'BR_no_CC_landline (10d) — MIGRATION PENDING'
+    ELSE 'OTHER'
+  END AS fmt,
+  COUNT(*) AS n
+FROM (
+  SELECT phone FROM board_people WHERE phone IS NOT NULL AND phone != ''
+  UNION ALL
+  SELECT phone FROM board_admins WHERE phone IS NOT NULL AND phone != ''
+  UNION ALL
+  SELECT phone FROM external_contacts WHERE phone IS NOT NULL AND phone != ''
+)
+GROUP BY fmt;
+```
+
+If rows appear under the `MIGRATION PENDING` buckets, restart the service — `initTaskflowDb()` runs at startup and will canonicalize them.
 
 ## Change Control
 

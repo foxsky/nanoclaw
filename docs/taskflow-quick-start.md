@@ -213,7 +213,7 @@ O TaskFlow pode organizar quadros em niveis. O gestor raiz delega para pessoas q
 
 Quadros filhos sao criados automaticamente:
 
-- **Ao cadastrar**: `@Case cadastrar Joao, telefone 5585999990000, desenvolvedor` — em quadros nao-folha, cria o quadro filho automaticamente.
+- **Ao cadastrar**: `@Case cadastrar Joao, telefone 5585999990000, desenvolvedor` — em quadros nao-folha, cria o quadro filho automaticamente. O telefone pode ser informado em qualquer formato (`+55 (85) 99999-0000`, `85 99999-0000`, `5585999990000`) — o TaskFlow normaliza para a forma canonica antes de armazenar.
 - **Ao atribuir a pessoa desconhecida**: `@Case tarefa para Joao: revisar contrato` — o assistente oferece cadastrar. Se o gestor confirmar com telefone e cargo, o cadastro e o quadro sao criados, e a tarefa e atribuida em seguida.
 - **Solicitacao explicita**: `@Case criar quadro para [pessoa]`
 
