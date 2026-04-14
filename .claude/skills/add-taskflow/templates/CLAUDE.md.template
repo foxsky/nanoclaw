@@ -1029,21 +1029,21 @@ In all board views (standup, board, task details, digest, weekly), prefix linked
 
 If `child_exec_last_rollup_at` is older than 24 hours, flag: `⚠️ rollup desatualizado — ultimo refresh ha Xh`
 
-## Non-Business Day Due Dates
+## Non-Business Day Due Dates and Meetings
 
-When the engine returns `non_business_day_warning: true`, it means the due date falls on a weekend or registered board holiday (see `manage_holidays` in the Admin section). Present the alternative to the user:
+When the engine returns `non_business_day_warning: true`, the date falls on a weekend or a registered board holiday (see `manage_holidays` in the Admin section). Applies to **both** task `due_date` and meeting `scheduled_at`. Present the alternative to the user:
 
-> "A data limite cai em [reason] ([original_date]). Deseja mover para [suggested_date] ([dia da semana])?"
+> "A data cai em [reason] ([original_date]). Deseja mover para [suggested_date] ([dia da semana])?"
 
-**Do NOT auto-change the date.** Ask first. If the user confirms the suggested date → re-submit the same `taskflow_create` or `taskflow_update` call with `due_date` set to the `suggested_date`. If the user explicitly insists on keeping the original date ("pode deixar no sábado mesmo", "intencional"), re-submit the call with `allow_non_business_day: true`.
+**Do NOT auto-change the date.** Ask first. If the user confirms the suggested date → re-submit the same `taskflow_create` or `taskflow_update` call with the date field set to `suggested_date`. If the user explicitly insists on keeping the original date ("pode deixar no sábado mesmo", "intencional"), re-submit with `allow_non_business_day: true`.
 
 **Where the flag goes differs between `create` and `update`:**
-- `taskflow_create`: flag is **top-level**, sibling of `due_date`/`sender_name`. Example: `taskflow_create({ type: 'simple', title: '...', due_date: '2026-04-11', allow_non_business_day: true, sender_name: SENDER })`.
-- `taskflow_update`: flag is **inside `updates`**, sibling of the field being set. Example: `taskflow_update({ task_id: 'TXXX', updates: { due_date: '2026-04-11', allow_non_business_day: true }, sender_name: SENDER })`.
+- `taskflow_create`: flag is **top-level**, sibling of `due_date`/`scheduled_at`/`sender_name`. Example: `taskflow_create({ type: 'meeting', title: '...', scheduled_at: '2026-04-18T10:00:00', allow_non_business_day: true, sender_name: SENDER })`.
+- `taskflow_update`: flag is **inside `updates`**, sibling of the field being set. Example: `taskflow_update({ task_id: 'MXXX', updates: { scheduled_at: '2026-04-18T10:00:00', allow_non_business_day: true }, sender_name: SENDER })`.
 
 Do NOT set `allow_non_business_day` pre-emptively on the first call; only as an override after the user confirms the non-business-day date is intentional.
 
-Recurring tasks auto-shift past non-business days silently — no warning, no override needed.
+Recurring tasks auto-shift past non-business days silently — no warning, no override needed. Meetings do NOT auto-shift (they honor the exact local time the user asked for, pending confirmation).
 
 ## Inbox Processing
 
@@ -1090,6 +1090,10 @@ Parse dates per {{LANGUAGE}}:
 - en-US -> MM/DD (month first)
 - Accept natural dates when unambiguous ("sexta", "amanha", "Friday", "tomorrow")
 - When a date could be ambiguous, ask a clarification question before mutating data
+
+**Every user message carries a `<context timezone="..." today="YYYY-MM-DD" weekday="..." />` header.** Use `today` and `weekday` as the ground truth when resolving relative dates ("quinta-feira", "amanhã", "próxima semana"). Do NOT derive the weekday from the date yourself — read it from the header. Example: header says `today="2026-04-14" weekday="terça-feira"`, user says "quinta-feira" → target date is `2026-04-16` (terça + 2 days = quinta).
+
+**`intended_weekday` is REQUIRED when the user mentions a weekday name.** If the user says "alterar M1 para quinta-feira 11h", include `intended_weekday: "quinta-feira"` in your `taskflow_update` call alongside `scheduled_at`. The engine validates that the resolved `scheduled_at`/`due_date` actually lands on that weekday in board timezone and returns `weekday_mismatch` if not. On `weekday_mismatch`, do NOT retry blindly — re-read the `<context>` header, recompute the correct date, and confirm with the user before mutating. Applies to both meeting scheduling (`scheduled_at`) and task deadlines (`due_date`).
 
 ## Batch Operations
 

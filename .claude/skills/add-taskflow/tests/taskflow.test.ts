@@ -2958,14 +2958,14 @@ describe('meeting notes', () => {
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'Planning',
-        scheduled_at: '2026-03-15T17:00:00Z',
+        scheduled_at: '2026-03-16T17:00:00Z',
         sender_name: 'Alexandre',
       });
       expect(result.success).toBe(true);
       const task = db
         .prepare(`SELECT scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
         .get(BOARD_ID, result.task_id) as { scheduled_at: string };
-      expect(task.scheduled_at).toBe('2026-03-15T17:00:00.000Z');
+      expect(task.scheduled_at).toBe('2026-03-16T17:00:00.000Z');
     });
 
     it('creates meeting without scheduled_at (unscheduled draft)', () => {
@@ -2987,7 +2987,7 @@ describe('meeting notes', () => {
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'Weekly sync',
-        scheduled_at: '2026-03-15T17:00:00Z',
+        scheduled_at: '2026-03-16T17:00:00Z',
         recurrence: 'weekly',
         sender_name: 'Alexandre',
       });
@@ -2996,8 +2996,8 @@ describe('meeting notes', () => {
         .prepare(`SELECT recurrence, recurrence_anchor, scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
         .get(BOARD_ID, result.task_id) as { recurrence: string; recurrence_anchor: string; scheduled_at: string };
       expect(task.recurrence).toBe('weekly');
-      expect(task.recurrence_anchor).toBe('2026-03-15T17:00:00.000Z');
-      expect(task.scheduled_at).toBe('2026-03-15T17:00:00.000Z');
+      expect(task.recurrence_anchor).toBe('2026-03-16T17:00:00.000Z');
+      expect(task.scheduled_at).toBe('2026-03-16T17:00:00.000Z');
     });
 
     it('rejects recurring meeting without scheduled_at', () => {
@@ -3046,7 +3046,7 @@ describe('meeting notes', () => {
         type: 'meeting',
         title: 'Meeting with due_date',
         due_date: '2026-03-10',
-        scheduled_at: '2026-03-15T17:00:00Z',
+        scheduled_at: '2026-03-16T17:00:00Z',
         sender_name: 'Alexandre',
       });
       expect(result.success).toBe(false);
@@ -3075,7 +3075,7 @@ describe('meeting notes', () => {
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'Test meeting',
-        scheduled_at: '2026-03-15T17:00:00Z',
+        scheduled_at: '2026-03-16T17:00:00Z',
         participants: ['Giovanni'],
         sender_name: 'Alexandre',
       });
@@ -3874,7 +3874,7 @@ describe('meeting notes', () => {
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'Move test meeting',
-        scheduled_at: '2026-03-15T17:00:00Z',
+        scheduled_at: '2026-03-16T17:00:00Z',
         participants: ['Giovanni'],
         sender_name: 'Alexandre',
       });
@@ -3992,7 +3992,7 @@ describe('meeting notes', () => {
       expect(task).toBeTruthy();
       expect(task.type).toBe('meeting');
       expect(task.column).toBe('next_action');
-      expect(task.scheduled_at).toBe('2026-03-15T17:00:00.000Z');
+      expect(task.scheduled_at).toBe('2026-03-16T17:00:00.000Z');
       expect(task.assignee).toBe('person-1');
       const participants = JSON.parse(task.participants);
       expect(participants).toContain('person-2');
@@ -4150,8 +4150,8 @@ describe('meeting notes', () => {
       // Manually inject notes without phase (simulating data migration / non-standard column)
       const task = engine.query({ query: 'meeting_minutes', task_id: meetingId }).data.task;
       const notes = [
-        { id: 1, text: 'Top-level item', at: '2026-03-15T17:00:00Z', by: 'Alexandre', status: 'open' },
-        { id: 2, text: 'Reply to top-level', at: '2026-03-15T17:05:00Z', by: 'Giovanni', parent_note_id: 1, status: 'open' },
+        { id: 1, text: 'Top-level item', at: '2026-03-16T17:00:00Z', by: 'Alexandre', status: 'open' },
+        { id: 2, text: 'Reply to top-level', at: '2026-03-16T17:05:00Z', by: 'Giovanni', parent_note_id: 1, status: 'open' },
       ];
       // Write notes directly to the DB to bypass phase assignment
       const db = (engine as any).db;
@@ -4310,7 +4310,7 @@ describe('meeting notes', () => {
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'Triage meeting',
-        scheduled_at: '2026-03-15T17:00:00Z',
+        scheduled_at: '2026-03-16T17:00:00Z',
         participants: ['Giovanni'],
         sender_name: 'Alexandre',
       });
@@ -4446,7 +4446,7 @@ describe('meeting notes', () => {
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'Alinhamento semanal',
-        scheduled_at: '2026-03-15T17:00:00Z',
+        scheduled_at: '2026-03-16T17:00:00Z',
         participants: ['Giovanni'],
         sender_name: 'Alexandre',
       });
@@ -4738,7 +4738,7 @@ describe('meeting notes', () => {
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'Past meeting',
-        scheduled_at: '2026-03-01T10:00:00Z',
+        scheduled_at: '2026-03-02T10:00:00Z',
         sender_name: 'Alexandre',
       });
       engine.update({ board_id: BOARD_ID, task_id: r.task_id!, sender_name: 'Alexandre', updates: { add_note: 'Unresolved item' } });
@@ -4932,7 +4932,7 @@ describe('meeting notes', () => {
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'Notif meeting',
-        scheduled_at: '2026-03-15T17:00:00Z',
+        scheduled_at: '2026-03-16T17:00:00Z',
         participants: ['Giovanni'],
         sender_name: 'Alexandre',
       });
@@ -5155,7 +5155,7 @@ describe('meeting notes', () => {
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'Undo participant test',
-        scheduled_at: '2026-03-15T17:00:00Z',
+        scheduled_at: '2026-03-16T17:00:00Z',
         participants: ['Giovanni'],
         sender_name: 'Alexandre',
       });
@@ -5206,7 +5206,7 @@ describe('meeting notes', () => {
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'Undo reschedule test',
-        scheduled_at: '2026-03-15T17:00:00Z',
+        scheduled_at: '2026-03-16T17:00:00Z',
         participants: ['Giovanni'],
         sender_name: 'Alexandre',
       });
@@ -5239,7 +5239,7 @@ describe('meeting notes', () => {
       const afterUndo = db
         .prepare(`SELECT scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
         .get(BOARD_ID, meetingId) as { scheduled_at: string };
-      expect(afterUndo.scheduled_at).toBe('2026-03-15T17:00:00.000Z');
+      expect(afterUndo.scheduled_at).toBe('2026-03-16T17:00:00.000Z');
     });
   });
 
@@ -5250,7 +5250,7 @@ describe('meeting notes', () => {
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'Weekly sync',
-        scheduled_at: '2026-03-08T10:00:00Z',
+        scheduled_at: '2026-03-09T10:00:00Z',
         participants: ['Giovanni'],
         sender_name: 'Alexandre',
         recurrence: 'weekly',
@@ -5273,7 +5273,7 @@ describe('meeting notes', () => {
       const notesBefore = JSON.parse(beforeConclude.notes);
       expect(notesBefore.length).toBe(1);
       expect(notesBefore[0].text).toBe('Discuss roadmap priorities');
-      expect(beforeConclude.scheduled_at).toBe('2026-03-08T10:00:00.000Z');
+      expect(beforeConclude.scheduled_at).toBe('2026-03-09T10:00:00.000Z');
 
       // Conclude the meeting — this triggers advanceRecurringTask
       const concludeResult = engine.move({
@@ -5292,7 +5292,7 @@ describe('meeting notes', () => {
         .get(BOARD_ID, meetingId) as { notes: string; scheduled_at: string; current_cycle: string; column: string };
       expect(afterAdvance.column).toBe('next_action');
       expect(afterAdvance.notes).toBe('[]');
-      expect(afterAdvance.scheduled_at).not.toBe('2026-03-08T10:00:00.000Z');
+      expect(afterAdvance.scheduled_at).not.toBe('2026-03-09T10:00:00.000Z');
       expect(afterAdvance.current_cycle).toBe('1');
 
       // Undo the conclude
@@ -5309,7 +5309,7 @@ describe('meeting notes', () => {
       // Column should be restored to the pre-conclude value
       expect(afterUndo.column).toBe('next_action'); // meetings start in next_action
       // scheduled_at should be the original, not the advanced one
-      expect(afterUndo.scheduled_at).toBe('2026-03-08T10:00:00.000Z');
+      expect(afterUndo.scheduled_at).toBe('2026-03-09T10:00:00.000Z');
       // notes should be restored (not empty)
       const notesAfterUndo = JSON.parse(afterUndo.notes);
       expect(notesAfterUndo.length).toBe(1);
@@ -5326,7 +5326,7 @@ describe('meeting notes', () => {
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'Budget review',
-        scheduled_at: '2026-03-15T10:00:00Z',
+        scheduled_at: '2026-03-16T10:00:00Z',
         participants: ['Giovanni'],
         sender_name: 'Alexandre',
       });
@@ -5463,7 +5463,7 @@ describe('meeting notes', () => {
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'WIP exempt meeting',
-        scheduled_at: '2026-03-15T10:00:00Z',
+        scheduled_at: '2026-03-16T10:00:00Z',
         participants: ['Giovanni'],
         sender_name: 'Alexandre',
       });
@@ -5787,7 +5787,7 @@ describe('add_external_participant', () => {
       board_id: BOARD_ID,
       type: 'meeting',
       title: 'Sprint review',
-      scheduled_at: '2026-03-15T17:00:00Z',
+      scheduled_at: '2026-03-16T17:00:00Z',
       participants: ['Giovanni'],
       sender_name: 'Alexandre',
     });
@@ -5822,7 +5822,7 @@ describe('add_external_participant', () => {
     expect(grant).toBeTruthy();
     expect(grant.invite_status).toBe('invited');
     expect(grant.board_id).toBe(BOARD_ID);
-    expect(grant.occurrence_scheduled_at).toBe('2026-03-15T17:00:00.000Z');
+    expect(grant.occurrence_scheduled_at).toBe('2026-03-16T17:00:00.000Z');
     expect(grant.access_expires_at).toBeTruthy();
 
     // Verify audit trail
@@ -5964,7 +5964,7 @@ describe('remove_external_participant', () => {
       board_id: BOARD_ID,
       type: 'meeting',
       title: 'Sprint review',
-      scheduled_at: '2026-03-15T17:00:00Z',
+      scheduled_at: '2026-03-16T17:00:00Z',
       participants: ['Giovanni'],
       sender_name: 'Alexandre',
     });
@@ -6034,7 +6034,7 @@ describe('remove_external_participant', () => {
       board_id: BOARD_ID,
       type: 'meeting',
       title: 'Meeting',
-      scheduled_at: '2026-03-15T17:00:00Z',
+      scheduled_at: '2026-03-16T17:00:00Z',
       sender_name: 'Alexandre',
     });
     const meetingId = result.task_id!;
@@ -6165,7 +6165,7 @@ describe('reinvite_external_participant', () => {
       board_id: BOARD_ID,
       type: 'meeting',
       title: 'Meeting',
-      scheduled_at: '2026-03-15T17:00:00Z',
+      scheduled_at: '2026-03-16T17:00:00Z',
       sender_name: 'Alexandre',
     });
     const meetingId = result.task_id!;
@@ -6233,7 +6233,7 @@ describe('occurrence key cascade on reschedule', () => {
       task_id: meetingId,
       sender_name: 'Alexandre',
       updates: {
-        scheduled_at: '2026-03-15T14:00:00Z',
+        scheduled_at: '2026-03-16T14:00:00Z',
       },
     });
 
@@ -6244,7 +6244,7 @@ describe('occurrence key cascade on reschedule', () => {
     ).get(meetingId, externalId) as any;
 
     expect(grant).toBeTruthy();
-    expect(grant.occurrence_scheduled_at).toBe('2026-03-15T14:00:00.000Z');
+    expect(grant.occurrence_scheduled_at).toBe('2026-03-16T14:00:00.000Z');
   });
 
   it('recalculates access_expires_at on reschedule', () => {
@@ -6255,7 +6255,7 @@ describe('occurrence key cascade on reschedule', () => {
       task_id: meetingId,
       sender_name: 'Alexandre',
       updates: {
-        scheduled_at: '2026-03-15T14:00:00Z',
+        scheduled_at: '2026-03-16T14:00:00Z',
       },
     });
 
@@ -6265,7 +6265,7 @@ describe('occurrence key cascade on reschedule', () => {
 
     expect(grant).toBeTruthy();
 
-    const expectedExpiry = new Date(new Date('2026-03-15T14:00:00Z').getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const expectedExpiry = new Date(new Date('2026-03-16T14:00:00Z').getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
     expect(grant.access_expires_at).toBe(expectedExpiry);
   });
 
@@ -6288,7 +6288,7 @@ describe('occurrence key cascade on reschedule', () => {
       task_id: meetingId,
       sender_name: 'Alexandre',
       updates: {
-        scheduled_at: '2026-03-15T14:00:00Z',
+        scheduled_at: '2026-03-16T14:00:00Z',
       },
     });
 

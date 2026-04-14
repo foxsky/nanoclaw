@@ -3008,6 +3008,418 @@ describe('TaskflowEngine', () => {
     });
   });
 
+  /* ---------------------------------------------------------------- */
+  /*  weekday guard (intended_weekday)                                 */
+  /* ---------------------------------------------------------------- */
+
+  describe('weekday guard', () => {
+    // In America/Fortaleza (board default), 2026-04-16 is Thursday, 17 is Friday.
+
+    it('rejects taskflow_create meeting when intended_weekday disagrees with scheduled_at', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Alinhamento',
+        scheduled_at: '2026-04-17T11:00:00', // Friday
+        intended_weekday: 'quinta-feira',    // user asked for Thursday
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/weekday_mismatch/);
+      expect(r.error).toMatch(/quinta-feira/);
+      expect(r.error).toMatch(/sexta-feira/);
+    });
+
+    it('accepts taskflow_create when intended_weekday matches', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Alinhamento',
+        scheduled_at: '2026-04-16T11:00:00', // Thursday
+        intended_weekday: 'quinta-feira',
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(true);
+      expect(r.task_id).toMatch(/^M/);
+    });
+
+    it('accepts create when intended_weekday is omitted (opt-in guard)', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Alinhamento',
+        scheduled_at: '2026-04-17T11:00:00',
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(true);
+    });
+
+    it('accepts create when intended_weekday is an unknown label (graceful skip)', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Alinhamento',
+        scheduled_at: '2026-04-17T11:00:00',
+        intended_weekday: 'gibberish-day',
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(true);
+    });
+
+    it('rejects taskflow_update scheduled_at when intended_weekday disagrees (Giovanni regression)', () => {
+      // Seed a meeting to update.
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, scheduled_at, created_at, updated_at)
+         VALUES ('M-Guard', '${BOARD_ID}', 'meeting', 'Reunião', 'person-1', 'next_action', 0, '2026-04-20T14:00:00.000Z', '${now}', '${now}')`,
+      );
+
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'M-Guard',
+        sender_name: 'Alexandre',
+        updates: {
+          scheduled_at: '2026-04-17T11:00:00', // Friday
+          intended_weekday: 'quinta-feira',    // user said Thursday
+        },
+      });
+
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/weekday_mismatch/);
+    });
+
+    it('accepts taskflow_update when intended_weekday matches the new scheduled_at', () => {
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, scheduled_at, created_at, updated_at)
+         VALUES ('M-Guard-OK', '${BOARD_ID}', 'meeting', 'Reunião', 'person-1', 'next_action', 0, '2026-04-20T14:00:00.000Z', '${now}', '${now}')`,
+      );
+
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'M-Guard-OK',
+        sender_name: 'Alexandre',
+        updates: {
+          scheduled_at: '2026-04-16T11:00:00',
+          intended_weekday: 'quinta',
+        },
+      });
+
+      expect(r.success).toBe(true);
+    });
+
+    it('rejects create task when intended_weekday disagrees with due_date', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Entrega',
+        due_date: '2026-04-17', // Friday
+        intended_weekday: 'quinta-feira',
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/weekday_mismatch/);
+    });
+
+    it('rejects at the board-timezone boundary (UTC-only evaluation would pass)', () => {
+      // 2026-04-17T02:00:00 local (Fortaleza, UTC-3) is still Friday locally
+      // but in UTC is 2026-04-17T05:00:00Z — same day, but evaluating weekday
+      // on the raw local string must use board tz.
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Dawn meeting',
+        scheduled_at: '2026-04-17T02:00:00',
+        intended_weekday: 'quinta-feira',
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/weekday_mismatch/);
+    });
+
+    it('DST round-trip: fall-back, unambiguous, and spring-forward gap in America/New_York', () => {
+      const dstBoardId = 'board-dst-rt';
+      db.exec(
+        `INSERT INTO boards VALUES ('${dstBoardId}', 'dst2@g.us', 'dst2', 'standard', 0, 1, NULL, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO board_config VALUES ('${dstBoardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 1, 1, 1, 1)`,
+      );
+      db.exec(
+        `INSERT INTO board_runtime_config (board_id, timezone) VALUES ('${dstBoardId}', 'America/New_York')`,
+      );
+      db.exec(
+        `INSERT INTO board_people VALUES ('${dstBoardId}', 'person-1', 'Alexandre', '5585999990001', 'Gestor', 3, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO board_admins VALUES ('${dstBoardId}', 'person-1', '5585999990001', 'manager', 1)`,
+      );
+
+      const dstEngine = new TaskflowEngine(db, dstBoardId);
+
+      const storedScheduledAt = (taskId: string): string => {
+        const row = db
+          .prepare(`SELECT scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
+          .get(dstBoardId, taskId) as { scheduled_at: string };
+        return row.scheduled_at;
+      };
+
+      // --- Case 1: Fall-back 02:30 Nov 1 (ambiguous, after transition → EST UTC-5) ---
+      const r1 = dstEngine.create({
+        board_id: dstBoardId,
+        type: 'meeting',
+        title: 'Post fall-back',
+        scheduled_at: '2026-11-01T02:30:00',
+        allow_non_business_day: true,
+        sender_name: 'Alexandre',
+      });
+      expect(r1.success).toBe(true);
+      // 02:30 EST = 07:30Z (NOT 06:30Z which would be 01:30 EST — the pre-fix bug)
+      expect(storedScheduledAt(r1.task_id!)).toBe('2026-11-01T07:30:00.000Z');
+
+      // --- Case 2: Unambiguous 09:00 Nov 2 (well after fall-back, EST UTC-5) ---
+      const r2 = dstEngine.create({
+        board_id: dstBoardId,
+        type: 'meeting',
+        title: 'Morning after',
+        scheduled_at: '2026-11-02T09:00:00',
+        sender_name: 'Alexandre',
+      });
+      // 2026-11-02 is a Monday — business day.
+      expect(r2.success).toBe(true);
+      expect(storedScheduledAt(r2.task_id!)).toBe('2026-11-02T14:00:00.000Z');
+
+      // --- Case 3: Spring-forward gap 02:30 Mar 8 (non-existent — round forward to EDT) ---
+      const r3 = dstEngine.create({
+        board_id: dstBoardId,
+        type: 'meeting',
+        title: 'Spring-forward gap',
+        scheduled_at: '2026-03-08T02:30:00',
+        allow_non_business_day: true, // 2026-03-08 is a Sunday
+        sender_name: 'Alexandre',
+      });
+      expect(r3.success).toBe(true);
+      // Nonexistent 02:30 EST rolls forward into the EDT period — the local
+      // wall-clock that actually exists is 03:30 EDT = 07:30Z.
+      expect(storedScheduledAt(r3.task_id!)).toBe('2026-03-08T07:30:00.000Z');
+
+      // --- Case 4: Ambiguous 01:30 Nov 1 (occurs twice — pick first/EDT) ---
+      const r4 = dstEngine.create({
+        board_id: dstBoardId,
+        type: 'meeting',
+        title: 'Fall-back first occurrence',
+        scheduled_at: '2026-11-01T01:30:00',
+        allow_non_business_day: true,
+        sender_name: 'Alexandre',
+      });
+      expect(r4.success).toBe(true);
+      // 01:30 EDT = 05:30Z (first of two occurrences)
+      expect(storedScheduledAt(r4.task_id!)).toBe('2026-11-01T05:30:00.000Z');
+    });
+
+    it('rejects meeting scheduled on a Saturday without allow_non_business_day', () => {
+      // 2026-04-18 is a Saturday.
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Weekend meeting',
+        scheduled_at: '2026-04-18T10:00:00',
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(false);
+      expect(r.non_business_day_warning).toBe(true);
+      expect(r.original_date).toBe('2026-04-18');
+      expect(r.error).toMatch(/Meeting date/);
+      expect(r.error).toMatch(/sábado/);
+      expect(r.suggested_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    it('accepts weekend meeting when allow_non_business_day is explicit', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Intentional saturday',
+        scheduled_at: '2026-04-18T10:00:00',
+        allow_non_business_day: true,
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(true);
+      expect(r.task_id).toMatch(/^M/);
+    });
+
+    it('rejects meeting scheduled on a registered holiday', () => {
+      // Register a holiday via the engine's own admin path (also primes the cache).
+      db.exec(
+        `CREATE TABLE IF NOT EXISTS board_holidays (board_id TEXT, holiday_date TEXT, label TEXT, PRIMARY KEY (board_id, holiday_date))`,
+      );
+      db.exec(
+        `INSERT OR REPLACE INTO board_holidays (board_id, holiday_date, label) VALUES ('${BOARD_ID}', '2026-04-15', 'Aniversário da cidade')`,
+      );
+      // 2026-04-15 is a Wednesday (not a weekend) so only the holiday triggers.
+      engine = new TaskflowEngine(db, BOARD_ID);
+
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'On a holiday',
+        scheduled_at: '2026-04-15T10:00:00',
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(false);
+      expect(r.non_business_day_warning).toBe(true);
+      expect(r.reason).toMatch(/feriado/);
+    });
+
+    it('rejects update that reschedules meeting onto a Sunday', () => {
+      // 2026-04-19 is a Sunday.
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, scheduled_at, created_at, updated_at)
+         VALUES ('M-Weekend', '${BOARD_ID}', 'meeting', 'Reunião', 'person-1', 'next_action', 0, '2026-04-20T14:00:00.000Z', '${now}', '${now}')`,
+      );
+
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'M-Weekend',
+        sender_name: 'Alexandre',
+        updates: {
+          scheduled_at: '2026-04-19T10:00:00',
+        },
+      });
+
+      expect(r.success).toBe(false);
+      expect(r.non_business_day_warning).toBe(true);
+      expect(r.error).toMatch(/domingo/);
+    });
+
+    it('UTC-suffixed scheduled_at is checked using BOARD-LOCAL calendar date, not the lexical prefix', () => {
+      // 2026-04-18T02:00:00Z is Saturday in UTC but FRIDAY local in Fortaleza (UTC-3):
+      // 02:00Z - 3h = 23:00 local on 2026-04-17 (Friday). The guard should use
+      // the local date (Fri) and accept, not the lexical prefix (Sat) and reject.
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Late Friday briefing',
+        scheduled_at: '2026-04-18T02:00:00Z',
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(true);
+    });
+
+    it('UTC-suffixed scheduled_at IS rejected when the local calendar date is actually a weekend', () => {
+      // 2026-04-19T10:00:00Z is Sunday in UTC AND Sunday local in Fortaleza
+      // (10:00Z - 3h = 07:00 local Sunday). Guard must fire.
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Sunday morning call',
+        scheduled_at: '2026-04-19T10:00:00Z',
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(false);
+      expect(r.non_business_day_warning).toBe(true);
+      expect(r.original_date).toBe('2026-04-19');
+    });
+
+    it('recurring meeting anchored on a weekend with explicit allow_non_business_day succeeds', () => {
+      // 2026-04-18 is a Saturday. With an explicit opt-in the weekly recurrence
+      // should be accepted and subsequent cycle advances should advance from
+      // the Saturday anchor (so the next occurrence is the following Saturday).
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Weekend weekly standup',
+        scheduled_at: '2026-04-18T09:00:00',
+        recurrence: 'weekly',
+        allow_non_business_day: true,
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(true);
+
+      const stored = db
+        .prepare(`SELECT scheduled_at, recurrence, recurrence_anchor FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(BOARD_ID, r.task_id!) as { scheduled_at: string; recurrence: string; recurrence_anchor: string };
+      expect(stored.recurrence).toBe('weekly');
+      // 09:00 local Fortaleza → 12:00Z
+      expect(stored.scheduled_at).toBe('2026-04-18T12:00:00.000Z');
+      expect(stored.recurrence_anchor).toBe('2026-04-18T12:00:00.000Z');
+    });
+
+    it('non-meeting tasks with due_date still use the "Due date" label (back-compat)', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Weekend deadline',
+        due_date: '2026-04-18', // Saturday
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(false);
+      expect(r.non_business_day_warning).toBe(true);
+      expect(r.error).toMatch(/Due date/);
+      expect(r.error).not.toMatch(/Meeting date/);
+    });
+
+    it('honors weekday across DST fall-back in America/New_York', () => {
+      // Seed a board pinned to a DST-observing zone. 2026-11-01 is DST fall-back
+      // Sunday in New York (02:00 EDT → 01:00 EST). 01:30 local is Sunday
+      // regardless of which side of the overlap it resolves to.
+      const dstBoardId = 'board-dst-test';
+      db.exec(
+        `INSERT INTO boards VALUES ('${dstBoardId}', 'dst@g.us', 'dst', 'standard', 0, 1, NULL, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO board_config VALUES ('${dstBoardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 1, 1, 1, 1)`,
+      );
+      db.exec(
+        `INSERT INTO board_runtime_config (board_id, timezone) VALUES ('${dstBoardId}', 'America/New_York')`,
+      );
+      db.exec(
+        `INSERT INTO board_people VALUES ('${dstBoardId}', 'person-1', 'Alexandre', '5585999990001', 'Gestor', 3, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO board_admins VALUES ('${dstBoardId}', 'person-1', '5585999990001', 'manager', 1)`,
+      );
+
+      const dstEngine = new TaskflowEngine(db, dstBoardId);
+
+      const matches = dstEngine.create({
+        board_id: dstBoardId,
+        type: 'meeting',
+        title: 'Fall-back Sunday call',
+        scheduled_at: '2026-11-01T01:30:00',
+        intended_weekday: 'sunday',
+        allow_non_business_day: true,
+        sender_name: 'Alexandre',
+      });
+      expect(matches.success).toBe(true);
+
+      const mismatches = dstEngine.create({
+        board_id: dstBoardId,
+        type: 'meeting',
+        title: 'Wrong weekday on fall-back',
+        scheduled_at: '2026-11-01T01:30:00',
+        intended_weekday: 'monday',
+        allow_non_business_day: true,
+        sender_name: 'Alexandre',
+      });
+      expect(mismatches.success).toBe(false);
+      expect(mismatches.error).toMatch(/weekday_mismatch/);
+    });
+  });
+
   describe('legacy project subtask migration', () => {
     it('migrates JSON subtasks into real rows that the child board can conclude', () => {
       const legacyDb = new Database(':memory:');

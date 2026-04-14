@@ -719,6 +719,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         due_date: z.string().optional().describe('Due date (ISO format)'),
         allow_non_business_day: z.boolean().optional().describe('Allow due_date on weekends/holidays'),
         scheduled_at: z.string().optional().describe('Meeting date/time in LOCAL time (board timezone, e.g. "2026-03-26T08:00:00"). Do NOT append "Z" — the engine converts to UTC automatically.'),
+        intended_weekday: z.string().optional().describe('REQUIRED when the user mentioned a weekday name (e.g. "quinta", "quinta-feira", "sexta", "segunda"). Pass the weekday the user said; the engine rejects if scheduled_at/due_date resolves to a different weekday in board timezone. Example: user says "quinta-feira 11h" → intended_weekday: "quinta-feira".'),
         participants: z.array(z.string()).optional().describe('Participant names for meetings'),
         priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('Task priority'),
         labels: z.array(z.string()).optional().describe('Labels to attach'),
@@ -862,6 +863,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           recurrence_end_date: z.string().nullable().optional().describe('End date for recurrence (null to remove; setting clears max_cycles)'),
           parent_note_id: z.number().optional().describe('Parent note ID for threaded meeting notes'),
           scheduled_at: z.string().optional().describe('Reschedule meeting — LOCAL time (board timezone, e.g. "2026-03-26T08:00:00"). Do NOT append "Z".'),
+          intended_weekday: z.string().optional().describe('REQUIRED when the user mentioned a weekday name (e.g. "quinta", "quinta-feira"). Pass the weekday the user said; the engine rejects if the new scheduled_at/due_date lands on a different weekday in board timezone.'),
           add_participant: z.string().optional().describe('Add a participant to a meeting'),
           remove_participant: z.string().optional().describe('Remove a participant from a meeting'),
           add_external_participant: z.object({

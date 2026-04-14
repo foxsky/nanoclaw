@@ -4,7 +4,25 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
-## 2026-04-14 (latest) — Cross-board meeting visibility for participants (read-only)
+## 2026-04-14 (latest) — Weekday resolution + DST + meeting non-business-day guard
+
+Real production trigger: on 2026-04-14 Giovanni wrote _"alterar M1 para quinta-feira 11h"_ (Thursday, Apr 16) and the bot rescheduled M1 to Apr 17 (Friday), confirming the wrong date AND wrongly labeling Apr 17 as "quinta" in its reply. User reported it has happened before.
+
+Root cause: the agent prompt carried `<context timezone="America/Fortaleza" />` with no explicit "today" or weekday — the LLM had to compute weekday from date, which it does unreliably. Fix is three-layered:
+
+1. **Enriched `<context>` header** (`src/router.ts`). `formatMessages` now emits `<context timezone="..." today="YYYY-MM-DD" weekday="terça-feira" />` computed in the board timezone. Formatters memoized per tz (hot-path: every inbound message goes through `formatMessages`).
+2. **Engine weekday guard** (`container/agent-runner/src/taskflow-engine.ts`). Optional `intended_weekday` parameter on `taskflow_create` + `taskflow_update`; when the user mentions a weekday name, the LLM must echo it and the engine rejects with `weekday_mismatch` if `scheduled_at`/`due_date` resolves to a different weekday in the board timezone. Accepts pt-BR + English forms, accented or not.
+3. **Meeting non-business-day guard**. `checkNonBusinessDay` extended with a `fieldLabel` param and wired onto `scheduled_at` for meetings — same opt-out (`allow_non_business_day: true`) as `due_date`. Uses new `extractLocalDate()` which correctly projects UTC-suffixed values back into board-local calendar date (pre-fix `slice(0, 10)` would flag `2026-04-18T02:00:00Z` as Saturday even though it's Friday 23:00 in Fortaleza).
+
+Also fixed a pre-existing DST bug Codex flagged: `localToUtc`'s single-pass offset calculation mis-handled DST transitions. `2026-11-01T02:30:00 America/New_York` (fall-back) stored as `06:30Z` = `01:30 EST` (wrong; user said 02:30). New 2-pass convergence algorithm + spring-forward-gap round-forward rule. Round-trip tests for fall-back ambiguity (picks first/EDT), unambiguous post-transition, and spring-forward gap (rolls `02:30 EST` forward into `03:30 EDT`).
+
+**Codex gpt-5.4 high reviewed twice.** v1 (weekday+context) verdict: ship with 3 tweaks — applied DST-transition test, flagged pt-BR hardcoded weekday label as non-blocking follow-up. v2 (DST+NBD) verdict: ship with 2 tweaks — fixed bug C (UTC-suffixed local-date extraction) and added weekend-anchored-recurring regression test. /simplify round consolidated a duplicate `WEEKDAY_NAMES_PT` and cached `Intl.DateTimeFormat` per timezone in the router hot-path.
+
+Template updates: "Date Parsing" section teaches the LLM to read `today`/`weekday` from the context header and to pass `intended_weekday` when the user mentions one. "Non-Business Day" section extended to cover meetings. 11 group `CLAUDE.md` files regenerated. 54 pre-existing test fixtures that incidentally used weekend meeting dates shifted to business days.
+
+18 new guard + DST + NBD tests. 480/480 engine + 978/978 host + both typechecks green.
+
+## 2026-04-14 — Cross-board meeting visibility for participants (read-only)
 
 Engine fix for a real gap exposed by the 2026-04-13 incident audit. Ana Beatriz on her child board `asse-seci-taskflow-2` typed `M1` to see a meeting that lives on Carlos's parent board `seci-taskflow` where she's listed as a participant. The bot returned "Task not found" with no response. Carlos independently reported: _"a Ana Beatriz não está visualizando os detalhes da M1"_.
 

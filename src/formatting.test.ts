@@ -9,6 +9,7 @@ import {
   escapeXml,
   formatMessages,
   formatOutbound,
+  localDateAndWeekday,
   stripInternalTags,
 } from './router.js';
 import { NewMessage } from './types.js';
@@ -180,7 +181,55 @@ describe('formatMessages', () => {
     );
     expect(result).toContain('1:30');
     expect(result).toContain('PM');
-    expect(result).toContain('<context timezone="America/New_York" />');
+    // Context header now carries timezone + today (YYYY-MM-DD) + pt-BR weekday
+    expect(result).toMatch(
+      /<context timezone="America\/New_York" today="\d{4}-\d{2}-\d{2}" weekday="[^"]+" \/>/,
+    );
+  });
+
+  it('emits today and weekday derived from the board timezone', () => {
+    const result = formatMessages([makeMsg()], 'America/Fortaleza');
+    const match = result.match(
+      /<context timezone="America\/Fortaleza" today="(\d{4}-\d{2}-\d{2})" weekday="([^"]+)" \/>/,
+    );
+    expect(match).toBeTruthy();
+    const expected = localDateAndWeekday('America/Fortaleza');
+    expect(match![1]).toBe(expected.today);
+    expect(match![2]).toBe(expected.weekday);
+  });
+});
+
+// --- localDateAndWeekday ---
+
+describe('localDateAndWeekday', () => {
+  it('returns pt-BR weekday and YYYY-MM-DD date', () => {
+    // 2026-04-14T14:00:00Z == 11:00 AM in America/Fortaleza (UTC-3) on a Tuesday
+    const out = localDateAndWeekday(
+      'America/Fortaleza',
+      new Date('2026-04-14T14:00:00Z'),
+    );
+    expect(out.today).toBe('2026-04-14');
+    expect(out.weekday).toBe('terça-feira');
+  });
+
+  it('respects timezone crossings — UTC rollover', () => {
+    // 2026-04-15T01:30:00Z == 22:30 PM in America/Fortaleza on 2026-04-14
+    const out = localDateAndWeekday(
+      'America/Fortaleza',
+      new Date('2026-04-15T01:30:00Z'),
+    );
+    expect(out.today).toBe('2026-04-14');
+    expect(out.weekday).toBe('terça-feira');
+  });
+
+  it('falls back to UTC for invalid timezones', () => {
+    const out = localDateAndWeekday(
+      'Not/A_Zone',
+      new Date('2026-04-14T23:00:00Z'),
+    );
+    expect(out.today).toBe('2026-04-14');
+    // UTC weekday of 2026-04-14 is Tuesday
+    expect(out.weekday).toBe('terça-feira');
   });
 });
 

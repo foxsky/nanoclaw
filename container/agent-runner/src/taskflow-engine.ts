@@ -63,6 +63,7 @@ export interface CreateParams {
   scheduled_at?: string;
   sender_name: string;
   allow_non_business_day?: boolean;
+  intended_weekday?: string;
 }
 
 export interface CreateResult extends TaskflowResult {
@@ -154,6 +155,7 @@ export interface UpdateParams {
     max_cycles?: number | null;            // null = remove bound
     recurrence_end_date?: string | null;   // null = remove bound
     allow_non_business_day?: boolean;
+    intended_weekday?: string;
   };
 }
 
@@ -415,31 +417,170 @@ function localToUtc(naive: string, tz: string): string {
   const [, yr, mo, dy, hr, mn, sc = '0'] = match;
 
   try {
-    // Step 1: Create a UTC timestamp with the naive components
-    const utcGuess = Date.UTC(+yr, +mo - 1, +dy, +hr, +mn, +sc);
-
-    // Step 2: Find what local time this UTC instant maps to in the target timezone
     const fmt = new Intl.DateTimeFormat('en-CA', {
       timeZone: tz,
       year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit', second: '2-digit',
       hour12: false,
     });
-    const p = Object.fromEntries(
-      fmt.formatToParts(new Date(utcGuess)).map(x => [x.type, x.value]),
-    );
-    // hour '24' means midnight — advance to next day
-    let localDay = +p.day;
-    let localHour = +p.hour;
-    if (p.hour === '24') { localHour = 0; localDay += 1; }
-    const localAtGuess = Date.UTC(+p.year, +p.month - 1, localDay, localHour, +p.minute, +p.second);
 
-    // Step 3: offset = localAtGuess - utcGuess; actual UTC = utcGuess - offset
-    const offsetMs = localAtGuess - utcGuess;
-    return new Date(utcGuess - offsetMs).toISOString();
+    // Format a UTC instant as local wall-clock in tz, projected back into a
+    // Date.UTC value so we can do arithmetic without fighting DST transitions.
+    const localAsUtc = (instant: number): number => {
+      const p = Object.fromEntries(
+        fmt.formatToParts(new Date(instant)).map(x => [x.type, x.value]),
+      );
+      let lDay = +p.day;
+      let lHour = +p.hour;
+      if (p.hour === '24') { lHour = 0; lDay += 1; }
+      return Date.UTC(+p.year, +p.month - 1, lDay, lHour, +p.minute, +p.second);
+    };
+
+    const desiredUtc = Date.UTC(+yr, +mo - 1, +dy, +hr, +mn, +sc);
+
+    // Iterate to converge across DST boundaries: the offset at the naive
+    // timestamp treated as UTC may not match the offset at the actual local
+    // instant. Two passes suffice for all cases except the spring-forward gap.
+    const offset1 = localAsUtc(desiredUtc) - desiredUtc;
+    const guess1 = desiredUtc - offset1;
+    const offset2 = localAsUtc(guess1) - guess1;
+    if (offset1 === offset2) return new Date(guess1).toISOString();
+
+    const guess2 = desiredUtc - offset2;
+    const offset3 = localAsUtc(guess2) - guess2;
+    if (offset2 === offset3) return new Date(guess2).toISOString();
+
+    // Oscillation means the local time doesn't exist (spring-forward gap).
+    // Round forward to the next valid local time by using the pre-transition
+    // offset — the formatter then rolls over into the post-transition hour.
+    const forwardOffset = Math.min(offset1, offset2);
+    return new Date(desiredUtc - forwardOffset).toISOString();
   } catch {
     return naive; // invalid timezone or other error — return as-is
   }
+}
+
+/**
+ * Extract the LOCAL calendar date (YYYY-MM-DD) of a scheduled_at value in
+ * the board timezone. Handles three input shapes:
+ *   - naive local "YYYY-MM-DDTHH:MM:SS"  → prefix is the user-stated local date
+ *   - UTC-suffixed "...Z" or ±HH:MM      → projected into tz via Intl
+ * Returns null for unparseable input.
+ */
+function extractLocalDate(scheduledAt: string, tz: string): string | null {
+  if (!scheduledAt) return null;
+  const hasZ = /[Zz]$/.test(scheduledAt);
+  const hasOffset = /[+-]\d{2}:?\d{2}$/.test(scheduledAt);
+  if (!hasZ && !hasOffset) {
+    const m = scheduledAt.match(/^(\d{4}-\d{2}-\d{2})/);
+    return m ? m[1] : null;
+  }
+  const d = new Date(scheduledAt);
+  if (Number.isNaN(d.getTime())) return null;
+  try {
+    const fmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+    });
+    const p = Object.fromEntries(fmt.formatToParts(d).map(x => [x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Weekday-name aliases → JS day-of-week (0=Sun..6=Sat).
+ * Accepts pt-BR (primary) and English forms, with or without accents.
+ */
+const WEEKDAY_ALIASES: Record<string, number> = {
+  // Portuguese
+  domingo: 0, dom: 0,
+  'segunda': 1, 'segunda-feira': 1, seg: 1,
+  'terca': 2, 'terça': 2, 'terca-feira': 2, 'terça-feira': 2, ter: 2,
+  'quarta': 3, 'quarta-feira': 3, qua: 3,
+  'quinta': 4, 'quinta-feira': 4, qui: 4,
+  'sexta': 5, 'sexta-feira': 5, sex: 5,
+  'sabado': 6, 'sábado': 6, sab: 6,
+  // English
+  sunday: 0, sun: 0,
+  monday: 1, mon: 1,
+  tuesday: 2, tue: 2, tues: 2,
+  wednesday: 3, wed: 3,
+  thursday: 4, thu: 4, thur: 4, thurs: 4,
+  friday: 5, fri: 5,
+  saturday: 6, sat: 6,
+};
+
+const WEEKDAY_NAMES_PT: Record<number, string> = {
+  0: 'domingo', 1: 'segunda-feira', 2: 'terça-feira', 3: 'quarta-feira',
+  4: 'quinta-feira', 5: 'sexta-feira', 6: 'sábado',
+};
+
+function normalizeWeekdayName(raw: string): number | null {
+  if (!raw) return null;
+  const key = raw.trim().toLowerCase();
+  if (key in WEEKDAY_ALIASES) return WEEKDAY_ALIASES[key];
+  return null;
+}
+
+/**
+ * Compute day-of-week (0=Sun..6=Sat) for a local naive datetime in tz.
+ * Accepts "YYYY-MM-DDTHH:MM:SS" or "YYYY-MM-DD" forms. Returns null when
+ * the input is unparseable.
+ */
+function weekdayInTimezone(localOrIso: string, tz: string): number | null {
+  if (!localOrIso) return null;
+  const utcIso = localToUtc(localOrIso, tz);
+  const d = new Date(utcIso);
+  if (Number.isNaN(d.getTime())) return null;
+  try {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: resolveTimezoneOrUtc(tz),
+      weekday: 'short',
+    });
+    const name = fmt.format(d).toLowerCase();
+    const map: Record<string, number> = {
+      sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
+    };
+    return name in map ? map[name] : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveTimezoneOrUtc(tz: string): string {
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: tz });
+    return tz;
+  } catch {
+    return 'UTC';
+  }
+}
+
+/**
+ * If `intended` is provided and disagrees with the weekday of `scheduledLocal`
+ * in `tz`, return a descriptive error payload. Otherwise return null.
+ */
+function checkIntendedWeekday(
+  scheduledLocal: string,
+  intended: string | undefined,
+  tz: string,
+  fieldLabel: 'scheduled_at' | 'due_date' = 'scheduled_at',
+): { success: false; error: string; expected_weekday: string; actual_weekday: string } | null {
+  if (!intended) return null;
+  const intendedDow = normalizeWeekdayName(intended);
+  if (intendedDow == null) return null; // unknown label → skip
+  const actualDow = weekdayInTimezone(scheduledLocal, tz);
+  if (actualDow == null) return null; // unparseable → engine elsewhere handles
+  if (intendedDow === actualDow) return null;
+  const expected = WEEKDAY_NAMES_PT[intendedDow];
+  const actual = WEEKDAY_NAMES_PT[actualDow];
+  return {
+    success: false,
+    error: `weekday_mismatch: ${fieldLabel} ${scheduledLocal} cai em ${actual}, mas o usuário pediu ${expected}. Confirme a data correta antes de tentar de novo.`,
+    expected_weekday: expected,
+    actual_weekday: actual,
+  };
 }
 
 /**
@@ -666,11 +807,6 @@ export class TaskflowEngine {
     return { boardId: row?.id ?? null, rawId };
   }
 
-  private static readonly WEEKDAY_NAMES_PT: Record<number, string> = {
-    0: 'domingo', 1: 'segunda-feira', 2: 'terça-feira', 3: 'quarta-feira',
-    4: 'quinta-feira', 5: 'sexta-feira', 6: 'sábado',
-  };
-
   private _holidayCache: Map<string, string | null> | null = null;
 
   /** Lazily load all board holidays into a Map<date, label>. Cached per engine instance. */
@@ -713,25 +849,29 @@ export class TaskflowEngine {
     return dateStr;
   }
 
-  /** Validate a due date against weekends/holidays. Returns warning result or null if OK. */
-  private checkNonBusinessDay(dateStr: string, allowOverride: boolean): TaskflowResult | null {
+  /** Validate a date against weekends/holidays. Returns warning result or null if OK. */
+  private checkNonBusinessDay(
+    dateStr: string,
+    allowOverride: boolean,
+    fieldLabel: 'Due date' | 'Meeting date' = 'Due date',
+  ): TaskflowResult | null {
     if (allowOverride) return null;
     const check = this.isNonBusinessDay(dateStr);
     if (!check.weekend && !check.holiday) return null;
-    const dayName = TaskflowEngine.WEEKDAY_NAMES_PT[check.dow];
+    const dayName = WEEKDAY_NAMES_PT[check.dow];
     const reason = check.holiday
       ? (check.label ? `feriado (${check.label})` : 'feriado')
       : dayName;
     const suggested = this.getNextBusinessDay(dateStr);
     const sugDow = new Date(suggested + 'T12:00:00Z').getUTCDay();
-    const sugDayName = TaskflowEngine.WEEKDAY_NAMES_PT[sugDow];
+    const sugDayName = WEEKDAY_NAMES_PT[sugDow];
     return {
       success: false,
       non_business_day_warning: true,
       original_date: dateStr,
       suggested_date: suggested,
       reason,
-      error: `Due date falls on ${reason} (${dateStr}). Suggest ${suggested} (${sugDayName}).`,
+      error: `${fieldLabel} falls on ${reason} (${dateStr}). Suggest ${suggested} (${sugDayName}).`,
     };
   }
 
@@ -2184,6 +2324,27 @@ export class TaskflowEngine {
         }
       }
 
+      /* --- Weekday guard: reject if user-intended weekday disagrees with resolved date --- */
+      if (params.intended_weekday && (params.scheduled_at || params.due_date)) {
+        const dateField = params.scheduled_at ? 'scheduled_at' : 'due_date';
+        const localValue = params.scheduled_at ?? params.due_date!;
+        const mismatch = checkIntendedWeekday(localValue, params.intended_weekday, this.boardTz, dateField);
+        if (mismatch) return mismatch;
+      }
+
+      /* --- Non-business-day check for meeting scheduled_at (local date in board tz) --- */
+      if (params.type === 'meeting' && params.scheduled_at) {
+        const localDate = extractLocalDate(params.scheduled_at, this.boardTz);
+        if (localDate) {
+          const warning = this.checkNonBusinessDay(
+            localDate,
+            !!params.allow_non_business_day,
+            'Meeting date',
+          );
+          if (warning) return warning;
+        }
+      }
+
       /* --- Normalize scheduled_at from local time to UTC --- */
       if (params.scheduled_at) {
         const tz = this.boardTz;
@@ -3331,6 +3492,29 @@ export class TaskflowEngine {
       const task = this.requireTask(params.task_id);
       const taskBoardId = this.taskBoardId(task);
       const tz = getBoardTimezone(this.db, taskBoardId);
+
+      /* --- Weekday guard: reject if user-intended weekday disagrees with resolved date --- */
+      if (updates.intended_weekday && (updates.scheduled_at !== undefined || updates.due_date)) {
+        const dateField = updates.scheduled_at !== undefined ? 'scheduled_at' : 'due_date';
+        const localValue = (updates.scheduled_at !== undefined ? updates.scheduled_at : updates.due_date) as string | null | undefined;
+        if (localValue) {
+          const mismatch = checkIntendedWeekday(localValue, updates.intended_weekday, tz, dateField);
+          if (mismatch) return mismatch;
+        }
+      }
+
+      /* --- Non-business-day check for meeting scheduled_at (local date in board tz) --- */
+      if (task.type === 'meeting' && updates.scheduled_at) {
+        const localDate = extractLocalDate(updates.scheduled_at, tz);
+        if (localDate) {
+          const warning = this.checkNonBusinessDay(
+            localDate,
+            !!updates.allow_non_business_day,
+            'Meeting date',
+          );
+          if (warning) return warning;
+        }
+      }
 
       /* --- Normalize scheduled_at from local time to UTC --- */
       if (updates.scheduled_at !== undefined) {

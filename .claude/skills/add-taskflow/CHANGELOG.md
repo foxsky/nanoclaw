@@ -1,6 +1,24 @@
 # TaskFlow Skill Package Changelog
 
-## 2026-04-14 (latest) — Cross-board meeting visibility for participants
+## 2026-04-14 (latest) — Weekday resolution + DST + meeting non-business-day guard
+
+Real production trigger: on 2026-04-14 Giovanni wrote _"alterar M1 para quinta-feira 11h"_ (Thursday, Apr 16). The LLM called `taskflow_update` with `scheduled_at: "2026-04-17T11:00:00"` — 17/04 is FRIDAY — and then confirmed _"reagendada para quinta, 17/04 às 11:00"_ (doubly wrong). User reported it has happened before. Root cause: the prompt carried only `<context timezone="..." />` with no explicit "today" or weekday, forcing the LLM to do date↔weekday arithmetic that it gets wrong.
+
+Three-layer fix:
+
+1. **Enriched `<context>` header** (`src/router.ts`). `formatMessages` now emits `<context timezone="..." today="YYYY-MM-DD" weekday="terça-feira" />` computed in the board timezone. Formatters memoized per tz (hot-path: every inbound message).
+2. **Engine weekday guard** (`container/agent-runner/src/taskflow-engine.ts`). Optional `intended_weekday` on `CreateParams` + `UpdateParams.updates`; when the user mentions a weekday name, the template requires the LLM to echo it and the engine rejects with `weekday_mismatch` if `scheduled_at`/`due_date` resolves to a different weekday in board tz. Accepts pt-BR + English, accented/unaccented.
+3. **Meeting non-business-day guard**. `checkNonBusinessDay` now runs on `scheduled_at` for meetings (same opt-out `allow_non_business_day: true` as `due_date`). Uses new `extractLocalDate()` which correctly projects UTC-suffixed values back into board-local calendar date (pre-fix `slice(0, 10)` would flag `2026-04-18T02:00:00Z` as Saturday even though it's Friday 23:00 local).
+
+Also fixed a pre-existing DST bug in `localToUtc`: single-pass offset calculation mis-handled DST transitions (e.g. `2026-11-01T02:30:00 America/New_York` stored as `06:30Z` = `01:30 EST`, wrong). New 2-pass convergence + spring-forward-gap round-forward.
+
+**Codex gpt-5.4 high reviewed twice.** v1 (weekday+context) verdict: ship with 3 tweaks — applied DST test, flagged pt-BR hardcoding as non-blocking follow-up. v2 (DST+NBD) verdict: ship with 2 tweaks — fixed bug C (UTC-suffix local-date extraction) and added weekend-anchored-recurring regression test. /simplify round consolidated duplicate `WEEKDAY_NAMES_PT` (was declared twice) and cached `Intl.DateTimeFormat` per timezone in the router hot-path.
+
+Template: "Date Parsing" and "Non-Business Day" sections updated; 11 group `CLAUDE.md` files regenerated. 54 pre-existing test fixtures that incidentally used weekend meeting dates shifted to business days.
+
+18 weekday-guard + DST + NBD tests. 480/480 engine + 978/978 host + both typechecks green.
+
+## 2026-04-14 — Cross-board meeting visibility for participants
 
 Engine fix in `container/agent-runner/src/taskflow-engine.ts`. Splits task lookup into read (`getVisibleTask`) and write (`getTask`) paths. Read path adds lineage-bounded participant visibility for meetings; write path stays strictly local-or-delegated. A child-board user listed as a meeting participant on a parent-board meeting can now read its details, agenda, minutes, participants, open items, and history — but cannot mutate it.
 
