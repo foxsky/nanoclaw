@@ -1,5 +1,11 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-04-14 — Auditor: audit-trail divergence detection
+
+New per-group check in `container/agent-runner/src/auditor-script.sh` that compares `send_message_log` deliveries against `messages.db` bot-row counts. When deliveries ≥ 5 and bot rows < 50% of deliveries, the board gets `auditTrailDivergence: true` and `auditor-prompt.txt` rule #8 instructs Kipp to emit a standalone group-level warning BEFORE listing per-interaction flags. Prevents the 2026-04-13 failure mode where 73/73 `noResponse` flags flooded the daily report because the messages.db persistence layer was broken — the check directly surfaces "persistence layer broken" instead of "bot is silent".
+
+Codex gpt-5.4 high reviewed before ship; three tweaks applied (threshold alignment, standalone-warning wording, complementary indexes on `messages(chat_jid, timestamp)` and `send_message_log(target_chat_jid, delivered_at)`).
+
 ## 2026-04-13 (later) — Prompt-injection defense in template Security section
 
 Five-pillar defense added to `templates/CLAUDE.md.template` Security section against indirect prompt injection (the attack class that compromised OpenClaw upstream per Snyk researcher Luca Beurer-Kellner's disclosure):

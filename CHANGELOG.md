@@ -4,6 +4,35 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-14 (later) — Auditor: detect audit-trail divergence (cross-source check)
+
+Hardens the Kipp auditor so the 2026-04-13 class of bug (messages.db persistence layer broken while the bot runs fine) surfaces as a specific warning instead of drowning real signal in a `noResponse=true` flood.
+
+New check in `container/agent-runner/src/auditor-script.sh`: per audited group, cross-reference `send_message_log` deliveries (ground truth from `deps.sendMessage()`) against `messages.db` bot-row counts. If `deliveriesToGroup >= 5` and `botRowsInGroup < deliveriesToGroup * 0.5`, the board is flagged `auditTrailDivergence: true`. Dry-run against 2026-04-13 prod data: 15 of 22 TaskFlow groups would have flagged (every group with ≥5 deliveries had zero bot rows stored).
+
+`auditor-prompt.txt` rule #8 instructs Kipp to emit a standalone group-level warning BEFORE listing interactions — "🚨 Trilha de auditoria divergente: X entregas registradas, Y linhas de bot" — so ops readers see the persistence-layer suspicion first and don't treat the resulting `noResponse` flags as real bot outages.
+
+**Codex gpt-5.4 high reviewed** before deploy. Three required tweaks applied:
+- Prompt/code threshold mismatch (prompt said `≥10`, code said `≥5`) — aligned to `≥5`
+- Explicit "emit standalone pre-interaction group warning" wording in rule #8
+- Two missing indexes added to `src/db.ts`: `idx_messages_chat_timestamp` on `messages(chat_jid, timestamp)` and `idx_send_message_log_target_at` on `send_message_log(target_chat_jid, delivered_at)`. These are the paths the new divergence queries filter on.
+
+Blast radius: auditor-side only. A false positive would cause alert noise, not user-facing outage. Complementary "send_message_log dead-logger" detection flagged as follow-up per Codex review.
+
+974 host tests pass; TS build clean.
+
+## 2026-04-14 — Self-echo filter regression: restore messages.db audit trail
+
+**P0 incident fix.** Kipp's 2026-04-13 daily audit reported 73/73 user interactions across 9 TaskFlow groups as `noResponse=true`. Investigation revealed two compounding bugs.
+
+- **Bug 1 — self-echo filter too broad** (`cf93d42`). Commit `6ae3d6c` (2026-04-12) added a blanket `if (type !== 'notify') return` at the top of `src/channels/whatsapp.ts` `messages.upsert` handler. Intent: drop historical message replays on reconnect that caused duplicate agent invocations. Side effect: Baileys delivers our own `sendMessage` outputs back via the same event with `type !== 'notify'` on shared-number installs — so self-echoes never reached `onMessage` and `is_from_me=1` rows stopped landing in `messages.db` for ~73h. `send_message_log` proved 91 deliveries on 2026-04-13 (bot WAS sending; audit trail lost). Fix: per-message guard `if (type !== 'notify' && !msg.key?.fromMe) continue;` — preserves duplicate-prevention for incoming replays, lets self-echoes through. `PK (id, chat_jid)` dedups any history-sync replays of the same self-echo ID. Added `Allowing non-notify self-echo` debug log on the pass-through path for future diagnosis. Codex-reviewed before deploy; regression test `persists fromMe self-echoes even when upsert type=append` in `whatsapp.test.ts`.
+
+- **Bug 2 — task-container close skipped on null result** (`00c4753`, 2026-04-13 19:21 BRT). `src/task-scheduler.ts` called `scheduleClose()` only when `streamedOutput.result` was truthy. TF-STANDUP agents emit output via `send_message` MCP and return `null` as final text → `scheduleClose` never fires → container stays up and rejects inbound `sendMessage` IPC via the `isTaskContainer` guard. User messages queue in memory, lost on restart. Impacted ~9 hours of 2026-04-13. Fix: move `scheduleClose()` into the `status === 'success'` branch so success always closes, regardless of result text.
+
+**Incident post-mortem** at `docs/incidents/2026-04-13-silent-bot-responses.md` with full timeline, root causes, impact analysis (including confirmed data-inconsistency case: Alexandre Godinho announced T87/T88/T94 as complete, only T87 landed as `done`), remediation, and 5 lessons. Replay script at `scripts/find-dropped-messages.sql` identifies 9 affected users / 49 dropped messages for manual outreach — reusable for future incidents by updating the window.
+
+Post-fix validation (2026-04-14): 7 `is_from_me=1` rows landed in `messages.db` within 3 minutes of the self-echo deploy, matching 7 `Allowing non-notify self-echo` debug log entries. Empirical confirmation that Baileys emits self-echoes with `type !== 'notify'` on this install.
+
 ## 2026-04-13 (later) — Kipp audit: offer_register completion + my_tasks column layout
 
 Two template-only fixes from Kipp's 2026-04-13 daily audit on SETEC-SECTI and EST-SECTI boards.
