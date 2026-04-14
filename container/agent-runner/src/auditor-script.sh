@@ -362,6 +362,74 @@ const taskHistoryStmts = {
   ),
 };
 
+// Self-correction detector: find pairs of same-user same-task date-field
+// mutations within 60 min. The canonical signal is a user having to fix
+// what the bot just did — e.g. Giovanni 2026-04-14 rescheduled M1 twice
+// in 32 min (first "quinta-feira" resolved to Friday, then explicit
+// "16/04/26"). Scoped to details containing "reagendada" (meeting
+// reschedule) or "Prazo" (due date set/changed) to avoid flagging
+// legitimate iterative edits (notes, labels). The auditor LLM classifies
+// each pair with the triggering user message for context.
+const selfCorrectionStmts = {
+  1: tfDb.prepare(
+    `SELECT a.task_id, a.by, a.at AS first_at, a.details AS first_details,
+            b.at AS second_at, b.details AS second_details
+     FROM task_history a
+     JOIN task_history b ON a.task_id = b.task_id
+       AND a.by = b.by
+       AND a.board_id = b.board_id
+       AND b.at > a.at
+       AND (julianday(b.at) - julianday(a.at)) * 86400 <= 3600
+     WHERE a.board_id IN (?) AND a.at >= ? AND a.at <= ?
+       AND a.action = 'updated' AND b.action = 'updated'
+       AND a.by IS NOT NULL
+       AND a.details <> b.details
+       AND (
+         (a.details LIKE '%"Reunião reagendada%' AND b.details LIKE '%"Reunião reagendada%')
+         OR
+         (a.details LIKE '%"Prazo definido: %' AND b.details LIKE '%"Prazo definido: %')
+       )
+     ORDER BY b.at ASC`
+  ),
+  2: tfDb.prepare(
+    `SELECT a.task_id, a.by, a.at AS first_at, a.details AS first_details,
+            b.at AS second_at, b.details AS second_details
+     FROM task_history a
+     JOIN task_history b ON a.task_id = b.task_id
+       AND a.by = b.by
+       AND a.board_id = b.board_id
+       AND b.at > a.at
+       AND (julianday(b.at) - julianday(a.at)) * 86400 <= 3600
+     WHERE a.board_id IN (?, ?) AND a.at >= ? AND a.at <= ?
+       AND a.action = 'updated' AND b.action = 'updated'
+       AND a.by IS NOT NULL
+       AND a.details <> b.details
+       AND (
+         (a.details LIKE '%"Reunião reagendada%' AND b.details LIKE '%"Reunião reagendada%')
+         OR
+         (a.details LIKE '%"Prazo definido: %' AND b.details LIKE '%"Prazo definido: %')
+       )
+     ORDER BY b.at ASC`
+  ),
+};
+
+// Resolve a task_history.by person_id to a display name via board_people,
+// then filter the trigger-message lookup to messages whose sender_name
+// matches. Without this, a busy chat silently attributes the correction
+// to whoever typed last in the 10-min window.
+const personNameByIdStmt = tfDb.prepare(
+  `SELECT name FROM board_people WHERE board_id = ? AND person_id = ? LIMIT 1`
+);
+
+const triggerMessageStmt = msgDb.prepare(
+  `SELECT content, timestamp, sender_name FROM messages
+   WHERE chat_jid = ? AND timestamp <= ? AND timestamp >= ?
+     AND is_bot_message = 0 AND is_from_me = 0
+     AND content IS NOT NULL AND content != ''
+     AND sender_name LIKE ? ESCAPE '\\'
+   ORDER BY timestamp DESC LIMIT 1`
+);
+
 for (const group of groups) {
   const board = boardStmt.get(group.folder);
   if (!board) continue;
@@ -462,7 +530,44 @@ for (const group of groups) {
   const auditTrailDivergence =
     deliveriesToGroup >= 5 && botRowsInGroup < deliveriesToGroup * 0.5;
 
-  if (interactions.length > 0 || auditTrailDivergence) {
+  // Self-corrections: same-user same-task date-field mutation pairs within
+  // 60 min. Proxies the "user had to fix what the bot did" signal. Each
+  // pair requires `a.details <> b.details` (excludes programmatic
+  // duplicate writes) and fetches the triggering message filtered to the
+  // acting user's display name (board_people.name for pair.by).
+  const correctionPairs = selfCorrectionStmts[boardIds.length]
+    .all(...boardIds, period.startIso, period.endIso);
+  const selfCorrections = correctionPairs.map((pair) => {
+    const windowStart = new Date(new Date(pair.second_at).getTime() - 600000).toISOString();
+    let trigger = null;
+    let displayName = null;
+    for (const bid of boardIds) {
+      const row = personNameByIdStmt.get(bid, pair.by);
+      if (row && row.name) { displayName = row.name; break; }
+    }
+    if (displayName) {
+      // Escape LIKE wildcards in the user-controlled board_people.name
+      // before interpolating into the pattern — otherwise a person named
+      // "50% off" or "foo_bar" would broaden the match unexpectedly.
+      const escaped = displayName.replace(/[\\%_]/g, (ch) => '\\' + ch);
+      const likeName = `%${escaped}%`;
+      trigger = triggerMessageStmt.get(group.jid, pair.second_at, windowStart, likeName);
+    }
+    return {
+      taskId: pair.task_id,
+      by: pair.by,
+      byDisplayName: displayName,
+      firstAt: pair.first_at,
+      secondAt: pair.second_at,
+      windowMinutes: Math.round((new Date(pair.second_at).getTime() - new Date(pair.first_at).getTime()) / 60000),
+      firstDetails: pair.first_details,
+      secondDetails: pair.second_details,
+      triggerMessage: trigger ? (trigger.content.length > 300 ? trigger.content.slice(0, 300) + '...' : trigger.content) : null,
+      triggerSender: trigger ? (trigger.sender_name || null) : null,
+    };
+  });
+
+  if (interactions.length > 0 || auditTrailDivergence || selfCorrections.length > 0) {
     boards.push({
       group: group.name,
       folder: group.folder,
@@ -473,8 +578,10 @@ for (const group of groups) {
       deliveriesToGroup,
       botRowsInGroup,
       interactions,
+      selfCorrections,
     });
     if (auditTrailDivergence) totalIssues++;
+    totalIssues += selfCorrections.length;
   }
 }
 

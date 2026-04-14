@@ -4,7 +4,17 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
-## 2026-04-14 (latest) — Weekday resolution + DST + meeting non-business-day guard
+## 2026-04-14 (later) — Auditor: self-correction detector
+
+Auditor gains its first semantic-flavored check. The Giovanni weekday bug from earlier the same day (see entry below) was a pipeline success and a semantic failure — the bot responded, delivered, persisted a row, payload just had the wrong date. The existing auditor (`noResponse` / `auditTrailDivergence`) had no eyes for this class. Adds a third check: same-user same-task date-field mutation pairs within 60 min.
+
+New detector in `container/agent-runner/src/auditor-script.sh`. SQL self-join on `task_history` scoped to structured engine-emitted prefixes (`"Reunião reagendada` for reschedules, `"Prazo definido: ` for due dates) with `a.details <> b.details` to exclude programmatic duplicate writes. The triggering user message is looked up via `board_people.name` so the attribution ties to the actual corrector in busy group chats. `auditor-prompt.txt` rule #9 teaches Kipp to classify each pair as 🔴 bot error or ⚪ legitimate iteration using the trigger message as ground truth.
+
+Codex gpt-5.4 high reviewed twice: first round fixed the LIKE-body false positives and sender-agnostic trigger lookup; second round shipped LIKE-wildcard escape on the user-controlled display name. /simplify round applied. Dry-run across 14 days of production data: 2 hits, 1 canonical bug (Giovanni M1, 32-min window), 1 marginal (joao-antonio T1 same-minute self-edit). Scope is date fields only for v1; wrong-assignee / wrong-task-targeted corrections deferred to a planned LLM-in-the-loop follow-up.
+
+This converts the auditor from a **pipeline** monitor (did the bot respond?) to a partially **semantic** monitor (did the bot do the right thing, as evidenced by whether the user had to fix it?). True intent-vs-action comparison is a separate future step.
+
+## 2026-04-14 — Weekday resolution + DST + meeting non-business-day guard
 
 Real production trigger: on 2026-04-14 Giovanni wrote _"alterar M1 para quinta-feira 11h"_ (Thursday, Apr 16) and the bot rescheduled M1 to Apr 17 (Friday), confirming the wrong date AND wrongly labeling Apr 17 as "quinta" in its reply. User reported it has happened before.
 

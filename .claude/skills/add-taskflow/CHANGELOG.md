@@ -1,6 +1,18 @@
 # TaskFlow Skill Package Changelog
 
-## 2026-04-14 (latest) — Weekday resolution + DST + meeting non-business-day guard
+## 2026-04-14 (later) — Auditor: self-correction detector
+
+Closes a detection gap exposed by the Giovanni weekday bug earlier the same day: the existing auditor is a **pipeline** monitor (catches `noResponse` and `auditTrailDivergence`) but has no eyes for **semantic** wrongness. Giovanni's "alterar M1 para quinta-feira" → bot scheduled Apr 17 Friday → 32 min later Giovanni manually fixed with explicit "16/04/26" was invisible to the daily audit: bot responded, delivered, persisted a row, payload just wrong.
+
+New detector in `container/agent-runner/src/auditor-script.sh`. Finds pairs of same-user same-task date-field mutations within 60 min where `a.details <> b.details`, scoped to engine-emitted prefixes `"Reunião reagendada` and `"Prazo definido: ` (avoids matching "prazo" inside freeform note bodies). Each pair is annotated with the triggering user message — looked up via `board_people.name` resolution so the attribution sticks to the actual corrector, not just whoever chatted last.
+
+Kipp's prompt (`auditor-prompt.txt`) gets rule #9: classify each pair as 🔴 bot error (user's second message uses explicit DD/MM to fix bot resolution) or ⚪ legitimate iteration (user added/adjusted info).
+
+**Codex gpt-5.4 high reviewed twice.** First round flagged the LIKE-body false positives (fixed via structured prefixes + `a.details <> b.details`), the sender-agnostic trigger lookup (fixed via `personNameByIdStmt` + `sender_name LIKE` filter), and the wake-on-every-correction policy (accepted at observed volume: batched daily, 2 hits across 14 days of production data). Second round asked for final tweaks (shipped: LIKE-wildcard escape on user-controlled `board_people.name` so a name containing `%` or `_` can't broaden the pattern). /simplify round applied.
+
+Dry-run on 14 days of real production data: 2 hits, 1 canonical bug (Giovanni M1), 1 marginal (joao-antonio T1 same-minute self-edit). Zero false positives after tightening. Scope: date fields only for now — wrong-assignee / wrong-task-targeted corrections deferred to the LLM-in-the-loop follow-up.
+
+## 2026-04-14 — Weekday resolution + DST + meeting non-business-day guard
 
 Real production trigger: on 2026-04-14 Giovanni wrote _"alterar M1 para quinta-feira 11h"_ (Thursday, Apr 16). The LLM called `taskflow_update` with `scheduled_at: "2026-04-17T11:00:00"` — 17/04 is FRIDAY — and then confirmed _"reagendada para quinta, 17/04 às 11:00"_ (doubly wrong). User reported it has happened before. Root cause: the prompt carried only `<context timezone="..." />` with no explicit "today" or weekday, forcing the LLM to do date↔weekday arithmetic that it gets wrong.
 

@@ -30,6 +30,13 @@ Para cada interação flaggeada, classifique como:
 7. Escreva em português.
 8. **Divergência de trilha de auditoria** (`auditTrailDivergence=true` no quadro): quando `deliveriesToGroup >= 5` e `botRowsInGroup < deliveriesToGroup * 0.5`, o host registrou várias entregas `send_message` bem-sucedidas para este grupo, mas poucas linhas de bot na `messages.db`. Isso indica que o **audit trail está quebrado** (não que o bot esteja em pane). **EMITA UMA LINHA DE AVISO DO QUADRO como primeiro item, ANTES de listar qualquer interação**, no formato: _"🚨 *Trilha de auditoria divergente*: {deliveriesToGroup} entregas registradas em `send_message_log`, apenas {botRowsInGroup} linhas de bot em `messages.db`. Os flags `noResponse` abaixo provavelmente são falso-positivos causados por bug na camada de persistência — investigue o pipeline de armazenamento antes de concluir que o bot ficou mudo."_ Só depois liste as interações individuais (sem re-classificar cada `noResponse` como 🔴 — o aviso de quadro substitui a análise por-mensagem quando a divergência é detectada). O incidente de 2026-04-13 (commit `6ae3d6c` → `cf93d42`) seria um exemplo clássico: 91 entregas logadas, 0 linhas de bot.
 
+9. **Auto-correções** (`selfCorrections` no quadro): cada entrada é um par de mutações de data (`reagendada` ou `Prazo`) no mesmo `task_id` pelo mesmo usuário (`by`) dentro de 60 min. É o sinal clássico de _"o usuário teve que corrigir o que o bot acabou de fazer"_ — o bot interpretou mal a primeira intenção (tipicamente um dia-da-semana ou data relativa), o usuário notou e re-editou com data explícita. **Classifique cada entrada usando `triggerMessage` (a mensagem do usuário que disparou a segunda mutação) + `firstDetails` / `secondDetails`:**
+   - 🔴 *Correção de erro do bot* — a segunda mensagem do usuário usa data explícita (DD/MM, DD/MM/YYYY) para consertar uma resolução errada. Ex.: primeira _"M1 reagendada para 17/04"_, trigger da segunda _"M1 alterar data para 16/04/26 às 11h"_. A mudança de padrão (natural → explícito) é o tell.
+   - ⚪ *Iteração legítima* — usuário adicionou/ajustou informação (novo horário, novo prazo combinado com o time), não corrigiu erro do bot. Ex.: primeira _"prazo 15/04"_, depois _"mudar prazo para 20/04, combinei com Maria"_.
+   - Se `triggerMessage` é null (não achamos a mensagem disparadora), reporte como ⚪ com nota "sem contexto de mensagem — investigar manualmente".
+
+   Formato: liste logo após a seção de interações do quadro, numa sub-seção _"*Auto-correções detectadas:*"_, uma linha por par.
+
 ## Formato de saída
 
 Para cada quadro com issues:
