@@ -167,16 +167,25 @@ export class WhatsAppChannel implements Channel {
     this.sock.ev.on('creds.update', saveCreds);
 
     this.sock.ev.on('messages.upsert', async ({ messages, type }) => {
-      // Baileys emits 'messages.upsert' with type='notify' for new/live
-      // messages and type='append' for historical messages replayed during
-      // app-state sync (e.g. after a reconnect). Processing 'append' here
-      // causes already-seen messages to be delivered to the agent again —
-      // duplicate replies, duplicate scheduled tasks, stale timestamps in
-      // chat metadata. Only 'notify' is a live message we must act on.
-      if (type !== 'notify') return;
       for (const msg of messages) {
         try {
           if (!msg.message) continue;
+          // type='append' is replay of historical messages during app-state
+          // sync (e.g. after a reconnect). For INCOMING messages, processing
+          // the replay causes duplicate agent invocations and stale chat
+          // metadata. But Baileys delivers OUR OWN bot messages (self-echoes
+          // from sock.sendMessage) via the same upsert event — and empirically
+          // on shared-number installs those carry type='append', not 'notify'.
+          // Dropping them entirely breaks the is_from_me audit trail in
+          // messages.db (src/db.ts). Let fromMe pass regardless of type so
+          // self-echoes persist; block non-notify only for incoming replays.
+          if (type !== 'notify' && !msg.key?.fromMe) continue;
+          if (type !== 'notify' && msg.key?.fromMe) {
+            logger.debug(
+              { type, id: msg.key?.id, remoteJid: msg.key?.remoteJid },
+              'Allowing non-notify self-echo for audit trail',
+            );
+          }
           // Unwrap container types (viewOnceMessageV2, ephemeralMessage,
           // editedMessage, etc.) so that conversation, extendedTextMessage,
           // imageMessage, etc. are accessible at the top level.

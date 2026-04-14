@@ -776,7 +776,7 @@ describe('WhatsAppChannel', () => {
       );
     });
 
-    it("ignores 'append' upsert type (historical messages from app-state sync)", async () => {
+    it("ignores 'append' upsert type for incoming messages (historical app-state sync)", async () => {
       // Regression: Baileys re-emits old messages with type='append' during
       // history sync after reconnect. Those have already been processed;
       // re-delivering them would cause duplicate agent invocations, duplicate
@@ -805,6 +805,42 @@ describe('WhatsAppChannel', () => {
 
       expect(opts.onMessage).not.toHaveBeenCalled();
       expect(opts.onChatMetadata).not.toHaveBeenCalled();
+    });
+
+    it("persists fromMe self-echoes even when upsert type='append' (audit trail)", async () => {
+      // Regression 2026-04-13: on shared-number installs, Baileys delivers
+      // our own sendMessage() echoes via messages.upsert with type='append'
+      // (empirically observed — messages.db recorded zero is_from_me rows
+      // between 2026-04-11 07:02 and 2026-04-14 when the blanket
+      // `if (type !== 'notify') return` was live, even though
+      // send_message_log showed 91 successful deliveries on 04-13). The
+      // `fromMe` guard must let self-echoes through so messages.db keeps a
+      // complete audit trail — the orchestrator downstream suppresses
+      // bot replies on is_from_me=true.
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await triggerMessages(
+        [
+          {
+            key: {
+              id: 'msg-self-echo',
+              remoteJid: 'registered@g.us',
+              fromMe: true,
+            },
+            message: { conversation: 'Case: Confirmação enviada pelo bot' },
+            pushName: 'Case',
+            messageTimestamp: Math.floor(Date.now() / 1000),
+          },
+        ],
+        'append',
+      );
+
+      expect(opts.onMessage).toHaveBeenCalledOnce();
+      const [, message] = (opts.onMessage as any).mock.calls[0];
+      expect(message.is_from_me).toBe(true);
     });
 
     it('uses sender JID when pushName is absent', async () => {
