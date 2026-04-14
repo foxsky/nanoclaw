@@ -37,6 +37,7 @@ function createSchema(database: Database.Database): void {
       FOREIGN KEY (chat_jid) REFERENCES chats(jid)
     );
     CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_messages_chat_timestamp ON messages(chat_jid, timestamp);
 
     CREATE TABLE IF NOT EXISTS scheduled_tasks (
       id TEXT PRIMARY KEY,
@@ -82,6 +83,8 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_send_message_log_source_at
       ON send_message_log(source_group_folder, delivered_at);
+    CREATE INDEX IF NOT EXISTS idx_send_message_log_target_at
+      ON send_message_log(target_chat_jid, delivered_at);
 
     CREATE TABLE IF NOT EXISTS router_state (
       key TEXT PRIMARY KEY,

@@ -331,6 +331,22 @@ const sendMessageLogStmt = msgDb.prepare(
    LIMIT 1`
 );
 
+// Group-level divergence detection: compare bot-deliveries-to-this-group
+// (send_message_log.target_chat_jid) against bot-rows-in-messages.db
+// (is_from_me=1 OR is_bot_message=1). If sends >> stored, the messages.db
+// audit trail itself is broken — not the bot. The 2026-04-13 self-echo
+// filter regression (fixed in cf93d42) would have surfaced immediately
+// with this check: 91 sends logged, 0 bot rows stored.
+const deliveriesToGroupCountStmt = msgDb.prepare(
+  `SELECT COUNT(*) AS n FROM send_message_log
+   WHERE target_chat_jid = ? AND delivered_at >= ? AND delivered_at < ?`
+);
+const botRowsInGroupCountStmt = msgDb.prepare(
+  `SELECT COUNT(*) AS n FROM messages
+   WHERE chat_jid = ? AND timestamp >= ? AND timestamp < ?
+     AND (is_from_me = 1 OR is_bot_message = 1)`
+);
+
 // task_history placeholders depend on boardIds.length (1 or 2),
 // so prepare one statement per arity and reuse across groups.
 const taskHistoryStmts = {
@@ -437,15 +453,28 @@ for (const group of groups) {
     }
   }
 
-  if (interactions.length > 0) {
+  // Audit-trail divergence: if bot deliveries were logged for this group
+  // but few/none landed in messages.db, the noResponse flags are probably
+  // data-layer artifacts, not a real bot outage. Minimum absolute count
+  // of 5 deliveries keeps one-off quiet-day variance from spurious flags.
+  const deliveriesToGroup = deliveriesToGroupCountStmt.get(group.jid, period.startIso, period.endIso).n;
+  const botRowsInGroup = botRowsInGroupCountStmt.get(group.jid, period.startIso, period.endIso).n;
+  const auditTrailDivergence =
+    deliveriesToGroup >= 5 && botRowsInGroup < deliveriesToGroup * 0.5;
+
+  if (interactions.length > 0 || auditTrailDivergence) {
     boards.push({
       group: group.name,
       folder: group.folder,
       boardId: board.id,
       totalUserMessages: userMessages.length,
       flaggedInteractions: interactions.length,
+      auditTrailDivergence,
+      deliveriesToGroup,
+      botRowsInGroup,
       interactions,
     });
+    if (auditTrailDivergence) totalIssues++;
   }
 }
 

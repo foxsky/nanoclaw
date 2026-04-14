@@ -28,6 +28,7 @@ Para cada interação flaggeada, classifique como:
 5. Agrupe por quadro (board). Dentro de cada quadro, ordene por severidade (🔴 > 🟠 > 🟡 > 🔵 > ⚪).
 6. Use formatação WhatsApp markdown (negrito com *, itálico com _, monospace com ```)
 7. Escreva em português.
+8. **Divergência de trilha de auditoria** (`auditTrailDivergence=true` no quadro): quando `deliveriesToGroup >= 5` e `botRowsInGroup < deliveriesToGroup * 0.5`, o host registrou várias entregas `send_message` bem-sucedidas para este grupo, mas poucas linhas de bot na `messages.db`. Isso indica que o **audit trail está quebrado** (não que o bot esteja em pane). **EMITA UMA LINHA DE AVISO DO QUADRO como primeiro item, ANTES de listar qualquer interação**, no formato: _"🚨 *Trilha de auditoria divergente*: {deliveriesToGroup} entregas registradas em `send_message_log`, apenas {botRowsInGroup} linhas de bot em `messages.db`. Os flags `noResponse` abaixo provavelmente são falso-positivos causados por bug na camada de persistência — investigue o pipeline de armazenamento antes de concluir que o bot ficou mudo."_ Só depois liste as interações individuais (sem re-classificar cada `noResponse` como 🔴 — o aviso de quadro substitui a análise por-mensagem quando a divergência é detectada). O incidente de 2026-04-13 (commit `6ae3d6c` → `cf93d42`) seria um exemplo clássico: 91 entregas logadas, 0 linhas de bot.
 
 ## Formato de saída
 
