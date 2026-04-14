@@ -12,12 +12,38 @@ Model: `qwen3-coder:latest` @ `http://192.168.2.13:11434`, `stream: false`, no o
 
 Production context DB: `nanoclaw@192.168.2.63:/home/nanoclaw/nanoclaw/data/context/context.db`.
 
-Groups sampled (2 of 4 originally claimed — the other 2 were inspected by the earlier skeptic 1 review, not re-run here):
+### Reproducible inventory query
 
-| Group | Weekly node | Child daily count | Daily payload bytes |
-|---|---|---|---|
-| `thiago-taskflow` | `weekly:thiago-taskflow:2026-W13` | 5 | 5580 |
-| `sec-secti` | `weekly:sec-secti:2026-W14` | 5 | ~6000 |
+```sql
+SELECT group_folder, level, COUNT(*)
+FROM context_nodes
+WHERE summary IS NOT NULL AND pruned_at IS NULL
+GROUP BY group_folder, level
+ORDER BY group_folder, level;
+```
+
+As of 2026-04-13: 21 groups have rollup data. Distribution at each level: 21 monthlies, 21 weeklies, 21 dailies, ~25-500 leaves per group.
+
+### Groups sampled in the live Ollama validation (2 of 21 = ~10%)
+
+| Group | Weekly node ID | Child IDs (explicit) |
+|---|---|---|
+| `thiago-taskflow` | `weekly:thiago-taskflow:2026-W13` | `daily:thiago-taskflow:2026-03-23`, `2026-03-24`, `2026-03-25`, `2026-03-26`, `2026-03-27` |
+| `sec-secti` | `weekly:sec-secti:2026-W14` | `daily:sec-secti:2026-03-30`, `2026-03-31`, `2026-04-01`, `2026-04-02`, `2026-04-03` |
+
+### Reproduction query for the before-snapshots (exact SQL)
+
+```sql
+-- BEFORE weekly (produced by old prompt, preserved here):
+SELECT summary FROM context_nodes WHERE id = 'weekly:thiago-taskflow:2026-W13';
+
+-- Daily inputs that the weekly rollup consumed:
+SELECT summary FROM context_nodes
+WHERE parent_id = 'weekly:thiago-taskflow:2026-W13'
+ORDER BY time_start;
+```
+
+Sample size honesty: **2/21 is ~10%. The monthly-already-works claim is NOT universally proven.** Codex rev 4 was correct to flag this. Future work: repeat this validation across all 21 groups OR at minimum sample 5 random groups after each prompt change.
 
 ## thiago W13 — BEFORE (currently in prod, produced by OLD prompt)
 

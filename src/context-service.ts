@@ -23,6 +23,10 @@ const LEVEL_NAME: Record<number, RollupLevelName> = {
   [Level.MONTHLY]: 'month',
 };
 
+/** Minimum idle interval before re-rolling up an existing parent — prevents
+ * LLM-call thrashing when orphan leaves trickle in over several minutes. */
+const RE_ROLLUP_GRACE_MS = 10 * 60 * 1000;
+
 const DEFAULT_OLLAMA_MODEL = 'qwen3-coder:latest';
 const CLAUDE_API_MODEL = 'claude-haiku-4-5-20251001';
 const CLAUDE_DISPLAY_NAME = 'haiku-4.5';
@@ -185,9 +189,6 @@ const ROLLUP_PROMPTS: Record<string, string> = {
 
 You are summarizing a day of agent-assisted work for a single WhatsApp group.
 
-Previous summary of this day (if any, from an earlier rollup — may be "(none)" on first run):
-{previous_context}
-
 Today's events (each line is a session summary, in chronological order):
 {summaries}
 
@@ -195,8 +196,6 @@ Write a concise factual recap in the same language as the sessions above: What c
 - Terse bullet lines, one per distinct event.
 - Include actor names, task IDs, and outcomes.
 - Target 80-word total.
-
-If a previous summary is given, merge its content with the new events — do NOT repeat every fact from the previous summary; add new events and refine events whose status changed. If no previous summary is given ("(none)"), just write the recap from today's events.
 
 Do NOT editorialize. Do NOT use thematic language.`,
 
@@ -299,7 +298,7 @@ export class ContextService {
     `);
 
     this.stmtSelectChildrenForRollup = this.db.prepare(`
-      SELECT id, summary FROM context_nodes
+      SELECT id, summary, created_at FROM context_nodes
       WHERE group_folder = ? AND level = ? AND parent_id IS NULL
         AND time_start >= ? AND time_start < ?
         AND summary IS NOT NULL AND pruned_at IS NULL
@@ -412,8 +411,14 @@ export class ContextService {
         const messages = JSON.parse(row.messages) as SessionMessage[];
         const userMsg = messages
           .map((m) => {
-            const iso = m.timestamp?.slice(0, 16);
-            return iso ? `[${iso} UTC] ${m.content}` : m.content;
+            const ts = m.timestamp;
+            if (!ts) return m.content;
+            const iso = ts.slice(0, 16);
+            // Only label as UTC if the source timestamp unambiguously is
+            // (ends with Z). Local/offset timestamps get the prefix with
+            // no timezone claim rather than a wrong one.
+            const suffix = ts.endsWith('Z') ? ' UTC' : '';
+            return `[${iso}${suffix}] ${m.content}`;
           })
           .join('\n');
         const tools = row.tool_calls
@@ -492,10 +497,20 @@ export class ContextService {
       childLevel,
       rangeStart,
       rangeEnd,
-    ) as Array<{ id: string; summary: string }>;
+    ) as Array<{ id: string; created_at: string; summary: string }>;
 
     // Idempotent no-op when nothing changed since the last rollup tick.
     if (existing && orphans.length === 0) return null;
+
+    // Coalesce orphan bursts: if any orphan is still fresh (<10 min), defer
+    // the re-summarize so this rollup runs at most every 10 min regardless
+    // of how fast orphans arrive. Without this, 5 leaves trickling in over
+    // 30 min would fire 5 LLM calls; with it, they batch into ~1.
+    if (existing) {
+      const cutoff = new Date(Date.now() - RE_ROLLUP_GRACE_MS).toISOString();
+      const hasFreshOrphan = orphans.some((o) => o.created_at >= cutoff);
+      if (hasFreshOrphan) return null;
+    }
 
     let children: Array<{ id: string; summary: string }>;
     if (existing) {
@@ -513,17 +528,14 @@ export class ContextService {
     if (children.length === 0) return null;
 
     const combinedSummaries = children.map((c) => c.summary).join('\n\n');
-    let prompt = ROLLUP_PROMPTS[LEVEL_NAME[parentLevel]].replace(
+    const levelName = LEVEL_NAME[parentLevel];
+    if (!levelName) {
+      throw new Error(`rollup() called with unsupported parentLevel ${parentLevel}`);
+    }
+    const prompt = ROLLUP_PROMPTS[levelName].replace(
       '{summaries}',
       combinedSummaries,
     );
-    // {previous_context} is d1-only to bound chaining depth (at d2+ the model
-    // would eventually summarize its own summary each re-rollup — drift).
-    if (parentLevel === Level.DAILY) {
-      const priorContext =
-        existing?.summary?.trim() || '(none — first rollup for this day)';
-      prompt = prompt.replace('{previous_context}', priorContext);
-    }
 
     const summary = await this.callSummarizer(prompt);
     if (!summary || summary.length <= 20) return null;

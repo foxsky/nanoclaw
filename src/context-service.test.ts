@@ -794,7 +794,10 @@ describe('ContextService — rollupDaily', () => {
       .get(dailyId) as any;
     expect(v1.summary).toBe(v1Text);
 
-    // Insert late-arriving orphan
+    // Insert late-arriving orphan with an OLD created_at so it bypasses the
+    // RE_ROLLUP_GRACE_MS window (10 min). Fresh orphans are held back by
+    // design — see separate grace-window test below.
+    const staleTs = new Date(Date.now() - 15 * 60 * 1000).toISOString();
     svc.db
       .prepare(
         `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
@@ -804,7 +807,7 @@ describe('ContextService — rollupDaily', () => {
         `leaf:grp:${date}T21:00:00.000Z`,
         `${date}T21:00:00.000Z`,
         `${date}T21:00:00.000Z`,
-        now,
+        staleTs,
       );
 
     // Re-run rollup — should adopt the orphan AND re-summarize
@@ -875,6 +878,67 @@ describe('ContextService — rollupDaily', () => {
     const second = await svc.rollupDaily('grp', date);
     expect(second).toBeNull();
     expect(fetchMock.mock.calls.length).toBe(callsAfterFirst);
+
+    svc.close();
+  });
+
+  it('defers re-rollup when orphans are still fresh (RE_ROLLUP_GRACE_MS)', async () => {
+    // Coalesces orphan bursts so N leaves arriving over a few minutes batch
+    // into ~1 LLM call instead of N. Without this, the 60s cron could fire a
+    // re-summarize each tick while pending leaves drain.
+    const svc = new ContextService(TEST_DB, {
+      summarizer: 'ollama',
+      ollamaHost: 'http://localhost:11434',
+      retainDays: 90,
+    });
+    const date = '2026-03-14';
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        response:
+          'Daily summary long enough to bypass the 20-character guard.',
+      }),
+    });
+    global.fetch = fetchMock as any;
+
+    // Seed first leaf with stale created_at so first rollup fires.
+    const stale = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    svc.db
+      .prepare(
+        `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
+       VALUES (?, 'grp', 0, 'early', ?, ?, 10, 'test', ?)`,
+      )
+      .run(
+        `leaf:grp:${date}T09:00:00.000Z`,
+        `${date}T09:00:00.000Z`,
+        `${date}T09:00:00.000Z`,
+        stale,
+      );
+    const first = await svc.rollupDaily('grp', date);
+    expect(first).toBeTruthy();
+    const callsAfterFirst = fetchMock.mock.calls.length;
+
+    // Insert FRESH orphan (created_at = now) and re-run.
+    svc.db
+      .prepare(
+        `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
+       VALUES (?, 'grp', 0, 'fresh orphan', ?, ?, 10, 'test', ?)`,
+      )
+      .run(
+        `leaf:grp:${date}T21:00:00.000Z`,
+        `${date}T21:00:00.000Z`,
+        `${date}T21:00:00.000Z`,
+        new Date().toISOString(),
+      );
+    const second = await svc.rollupDaily('grp', date);
+
+    // Deferred — no LLM call, orphan NOT yet adopted.
+    expect(second).toBeNull();
+    expect(fetchMock.mock.calls.length).toBe(callsAfterFirst);
+    const orphanStillUnparented = svc.db
+      .prepare('SELECT parent_id FROM context_nodes WHERE id = ?')
+      .get(`leaf:grp:${date}T21:00:00.000Z`) as any;
+    expect(orphanStillUnparented.parent_id).toBeNull();
 
     svc.close();
   });
@@ -1466,104 +1530,6 @@ describe('ContextService — depth-aware rollup prompts', () => {
     // Raw content still visible after the prefix.
     expect(capturedPrompt!).toContain('Please create T42');
     expect(capturedPrompt!).toContain('And assign it to Bob');
-
-    svc.close();
-  });
-
-  it('passes previous_context on daily re-rollup (d1-only, matches lossless-claw)', async () => {
-    // Task 1c: re-rollup after Task 1a unblocked the UPDATE path. The
-    // daily prompt includes a {previous_context} slot; when re-rolling
-    // up, the existing daily summary is substituted so the LLM adds
-    // incremental content instead of restating.
-    const svc = new ContextService(TEST_DB, {
-      summarizer: 'ollama',
-      ollamaHost: 'http://localhost:11434',
-      retainDays: 90,
-    });
-
-    const date = '2026-03-14';
-    const now = new Date().toISOString();
-
-    // First leaf + first rollup
-    svc.db
-      .prepare(
-        `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
-         VALUES (?, 'grp', 0, 'morning leaf', ?, ?, 10, 'test', ?)`,
-      )
-      .run(`leaf:grp:${date}T09:00:00.000Z`, `${date}T09:00:00.000Z`, `${date}T09:00:00.000Z`, now);
-
-    const prompts: string[] = [];
-    global.fetch = vi.fn().mockImplementation(async (_url, init) => {
-      prompts.push(JSON.parse((init as any).body).prompt);
-      return {
-        ok: true,
-        json: async () => ({
-          response:
-            prompts.length === 1
-              ? 'PARENT-V1 original summary describing the early leaf event.'
-              : 'PARENT-V2 refreshed summary including the late arrival content.',
-        }),
-      };
-    }) as any;
-
-    await svc.rollupDaily('grp', date);
-    // First call should NOT contain a previous summary — it says "(none ...)"
-    expect(prompts[0]).toContain('(none — first rollup for this day)');
-    expect(prompts[0]).not.toContain('PARENT-V1');
-
-    // Insert orphan and re-run
-    svc.db
-      .prepare(
-        `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
-         VALUES (?, 'grp', 0, 'late leaf', ?, ?, 10, 'test', ?)`,
-      )
-      .run(`leaf:grp:${date}T22:00:00.000Z`, `${date}T22:00:00.000Z`, `${date}T22:00:00.000Z`, now);
-
-    await svc.rollupDaily('grp', date);
-    // Second call SHOULD contain the prior summary as previous_context
-    expect(prompts[1]).toContain('PARENT-V1 original summary');
-    expect(prompts[1]).not.toContain('(none — first rollup for this day)');
-
-    svc.close();
-  });
-
-  it('weekly rollup does NOT receive previous_context (d1-only scope)', async () => {
-    // Matches lossless-claw's d1-only application. If weekly received
-    // previous_context, every weekly re-rollup would feed its own
-    // output back in and risk summary-of-summary drift.
-    const svc = new ContextService(TEST_DB, {
-      summarizer: 'ollama',
-      ollamaHost: 'http://localhost:11434',
-      retainDays: 90,
-    });
-
-    const now = new Date().toISOString();
-    for (let day = 9; day <= 11; day++) {
-      const d = `2026-03-${String(day).padStart(2, '0')}`;
-      svc.db
-        .prepare(
-          `INSERT INTO context_nodes (id, group_folder, level, summary, time_start, time_end, token_count, model, created_at)
-           VALUES (?, 'grp', 1, ?, ?, ?, 30, 'test', ?)`,
-        )
-        .run(`daily:grp:${d}`, `Daily ${d} narrative.`, `${d}T00:00:00.000Z`, `${d}T23:59:59.999Z`, now);
-    }
-
-    let captured: string | null = null;
-    global.fetch = vi.fn().mockImplementation(async (_url, init) => {
-      captured = JSON.parse((init as any).body).prompt;
-      return {
-        ok: true,
-        json: async () => ({
-          response:
-            'Weekly summary describing arcs and recurring themes for the sampled week.',
-        }),
-      };
-    }) as any;
-    await svc.rollupWeekly('grp', '2026-03-09');
-
-    expect(captured).not.toContain('{previous_context}'); // no unfilled slot leaked
-    expect(captured).not.toContain('Previous summary of this');
-    expect(captured).not.toContain('(none — first rollup');
 
     svc.close();
   });
