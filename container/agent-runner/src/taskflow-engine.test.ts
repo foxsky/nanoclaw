@@ -2781,6 +2781,206 @@ describe('TaskflowEngine', () => {
       expect(sub.assignee).toBe('person-ext');
     });
 
+    it('query(task_details) resolves a parent-board meeting where a child-board person participates', () => {
+      // Regression 2026-04-13: Ana Beatriz (on child board) typed "M1" to
+      // see a meeting on Carlos's parent board with her as a participant.
+      // task_details only checked local + delegated; meeting-participant
+      // visibility existed for the prefixed-ID path but not the unprefixed
+      // one. Fixed via getVisibleTask() which extends lookup to meetings
+      // on ancestor boards.
+      const now = new Date().toISOString();
+      const parentBoardId = 'board-parent-mtg-visibility';
+      db.exec(
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'parent-mv@g.us', 'parent-mv', 'standard', 0, 1, NULL, NULL)`,
+      );
+      // Link BOARD_ID as a child of the meeting's parent so lineage resolves.
+      db.exec(
+        `UPDATE boards SET parent_board_id = '${parentBoardId}' WHERE id = '${BOARD_ID}'`,
+      );
+      db.exec(
+        `INSERT OR IGNORE INTO board_people VALUES ('${BOARD_ID}', 'ana-beatriz', 'Ana Beatriz', '5585000000001', 'Dev', 3, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, child_exec_enabled, participants, created_at, updated_at)
+         VALUES ('M-Visibility', '${parentBoardId}', 'meeting', 'Parent-board meeting', 'giovanni', 'next_action', 0, 0, '["ana-beatriz"]', '${now}', '${now}')`,
+      );
+
+      const r = engine.query({ query: 'task_details', task_id: 'M-Visibility' });
+      expect(r.success).toBe(true);
+      expect(r.data.task.id).toBe('M-Visibility');
+      expect(r.data.task.board_id).toBe(parentBoardId);
+      expect(r.data.task.type).toBe('meeting');
+    });
+
+    it('does NOT visibility-leak meetings from non-lineage boards (Codex B)', () => {
+      // Guardrail against person_id collisions across unrelated boards:
+      // 'ana-beatriz' may also exist on some completely unrelated board's
+      // meeting. getVisibleTask() must restrict the fallback to ancestors
+      // of this.boardId — i.e. this board's parent_board_id chain.
+      const now = new Date().toISOString();
+      const unrelated = 'board-unrelated';
+      db.exec(
+        `INSERT INTO boards VALUES ('${unrelated}', 'unrelated@g.us', 'unrelated-group', 'standard', 0, 1, NULL, NULL)`,
+      );
+      // BOARD_ID has NO parent link to 'unrelated'.
+      db.exec(
+        `INSERT OR IGNORE INTO board_people VALUES ('${BOARD_ID}', 'ana-beatriz', 'Ana Beatriz', '5585000000001', 'Dev', 3, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, child_exec_enabled, participants, created_at, updated_at)
+         VALUES ('M-OutOfScope', '${unrelated}', 'meeting', 'Stranger meeting', 'outsider', 'next_action', 0, 0, '["ana-beatriz"]', '${now}', '${now}')`,
+      );
+
+      const r = engine.query({ query: 'task_details', task_id: 'M-OutOfScope' });
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/not found/i);
+    });
+
+    it('prefers local simple task over a cross-board meeting with same ID', () => {
+      // Ordering guardrail: getVisibleTask falls back ONLY after the local
+      // and delegated lookups miss, so a real local task always wins.
+      const now = new Date().toISOString();
+      const parentBoardId = 'board-parent-collide';
+      db.exec(
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'collide@g.us', 'collide-group', 'standard', 0, 1, NULL, NULL)`,
+      );
+      db.exec(
+        `UPDATE boards SET parent_board_id = '${parentBoardId}' WHERE id = '${BOARD_ID}'`,
+      );
+      db.exec(
+        `INSERT OR IGNORE INTO board_people VALUES ('${BOARD_ID}', 'ana-beatriz', 'Ana Beatriz', '5585000000001', 'Dev', 3, NULL)`,
+      );
+      // Local simple task 'Z9'.
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at)
+         VALUES ('Z9', '${BOARD_ID}', 'simple', 'Local task', 'person-1', 'next_action', 1, '${now}', '${now}')`,
+      );
+      // Same-ID meeting on ancestor where ana-beatriz participates.
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, participants, created_at, updated_at)
+         VALUES ('Z9', '${parentBoardId}', 'meeting', 'Distractor meeting', 'giovanni', 'next_action', 0, '["ana-beatriz"]', '${now}', '${now}')`,
+      );
+
+      const r = engine.query({ query: 'task_details', task_id: 'Z9' });
+      expect(r.success).toBe(true);
+      expect(r.data.task.board_id).toBe(BOARD_ID);
+      expect(r.data.task.type).toBe('simple');
+    });
+
+    it('malformed participants JSON does not throw — query fails closed', () => {
+      // isBoardMeetingParticipant wraps JSON.parse in try/catch so a
+      // single bad row in a multi-row meeting scan does not abort the
+      // whole request. The candidate is treated as "no local
+      // participants" and we fall through to the next candidate (or
+      // null). Verify by seeding garbage JSON in participants.
+      const now = new Date().toISOString();
+      const parentBoardId = 'board-parent-malformed';
+      db.exec(
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'malformed@g.us', 'malformed-group', 'standard', 0, 1, NULL, NULL)`,
+      );
+      db.exec(
+        `UPDATE boards SET parent_board_id = '${parentBoardId}' WHERE id = '${BOARD_ID}'`,
+      );
+      db.exec(
+        `INSERT OR IGNORE INTO board_people VALUES ('${BOARD_ID}', 'ana-beatriz', 'Ana Beatriz', '5585000000001', 'Dev', 3, NULL)`,
+      );
+      // Bad JSON in participants column.
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, child_exec_enabled, participants, created_at, updated_at)
+         VALUES ('M-Bad', '${parentBoardId}', 'meeting', 'Meeting with bad JSON', 'giovanni', 'next_action', 0, 0, 'not-valid-json{', '${now}', '${now}')`,
+      );
+
+      const r = engine.query({ query: 'task_details', task_id: 'M-Bad' });
+      // Falls through to "not found" rather than throwing.
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/not found/i);
+    });
+
+    it('prefixed-ID write paths still rejected for participant-only access (Codex B/D follow-up)', () => {
+      // First Codex review v2 caught that getTask() still honored
+      // participant visibility on the prefixed-ID branch (e.g. SECI-M1
+      // would resolve from a child board even with no delegation),
+      // re-opening the cross-board mutation hole. Strict getTask() now
+      // refuses prefixed-ID participant lookups; only getVisibleTask()
+      // (read paths) honors them.
+      const now = new Date().toISOString();
+      const parentBoardId = 'board-parent-prefix-write';
+      db.exec(
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'pp@g.us', 'pp', 'standard', 0, 1, NULL, 'PP')`,
+      );
+      db.exec(
+        `UPDATE boards SET parent_board_id = '${parentBoardId}' WHERE id = '${BOARD_ID}'`,
+      );
+      db.exec(
+        `INSERT OR IGNORE INTO board_people VALUES ('${BOARD_ID}', 'ana-beatriz', 'Ana Beatriz', '5585000000001', 'Dev', 3, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, child_exec_enabled, participants, created_at, updated_at)
+         VALUES ('M-PP', '${parentBoardId}', 'meeting', 'Prefixed meeting', 'giovanni', 'next_action', 0, 0, '["ana-beatriz"]', '${now}', '${now}')`,
+      );
+
+      // Read with prefix succeeds (participant on lineage board).
+      const readR = engine.query({ query: 'task_details', task_id: 'PP-M-PP' });
+      expect(readR.success).toBe(true);
+
+      // Write with prefix fails — getTask() refuses.
+      const updR = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'PP-M-PP',
+        sender_name: 'Ana Beatriz',
+        updates: { add_note: 'Trying to mutate via prefix' },
+      });
+      expect(updR.success).toBe(false);
+      expect(updR.error).toMatch(/not found/i);
+    });
+
+    it('mutation paths stay strict — participant cannot update a cross-board meeting (Codex D)', () => {
+      // Visibility is a read-only concession. update()/move()/dependency
+      // must keep using getTask(), which does NOT honor participant
+      // visibility. A child-board participant trying to update meeting
+      // state on the parent board gets "Task not found" and no mutation.
+      const now = new Date().toISOString();
+      const parentBoardId = 'board-parent-mtg-write';
+      db.exec(
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'pw@g.us', 'pw', 'standard', 0, 1, NULL, NULL)`,
+      );
+      db.exec(
+        `UPDATE boards SET parent_board_id = '${parentBoardId}' WHERE id = '${BOARD_ID}'`,
+      );
+      db.exec(
+        `INSERT OR IGNORE INTO board_people VALUES ('${BOARD_ID}', 'ana-beatriz', 'Ana Beatriz', '5585000000001', 'Dev', 3, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, child_exec_enabled, participants, scheduled_at, created_at, updated_at)
+         VALUES ('M-ReadOnly', '${parentBoardId}', 'meeting', 'Parent meeting', 'giovanni', 'next_action', 0, 0, '["ana-beatriz"]', '2026-05-01T14:00:00.000Z', '${now}', '${now}')`,
+      );
+
+      // Read is visible (via task_details).
+      expect(
+        engine.query({ query: 'task_details', task_id: 'M-ReadOnly' }).success,
+      ).toBe(true);
+
+      // Write is rejected — update() uses the strict getTask().
+      const updR = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'M-ReadOnly',
+        sender_name: 'Ana Beatriz',
+        updates: { add_note: 'Ana tried to mutate this' },
+      });
+      expect(updR.success).toBe(false);
+      expect(updR.error).toMatch(/not found/i);
+
+      // Move also rejected.
+      const movR = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'M-ReadOnly',
+        action: 'work',
+        sender_name: 'Ana Beatriz',
+      });
+      expect(movR.success).toBe(false);
+      expect(movR.error).toMatch(/not found/i);
+    });
+
     it('add_participant on delegated meeting to person not on parent board → succeeds (delegation allowed)', () => {
       const now = new Date().toISOString();
       const parentBoardId = 'board-parent-mtg';

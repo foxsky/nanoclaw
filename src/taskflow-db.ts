@@ -553,6 +553,13 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_tasks_linked_parent ON tasks(board_id, linked_parent_board_id, linked_parent_task_id) WHERE linked_parent_board_id IS NOT NULL AND linked_parent_task_id IS NOT NULL`,
   );
+  // Supports cross-board meeting-participant fallback in
+  // TaskflowEngine.getVisibleTask() — WHERE id = ? AND type = 'meeting'
+  // AND board_id IN (...). Partial index keyed on (type, id) limits the
+  // index size to meeting rows only.
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_tasks_meeting_id ON tasks(id) WHERE type = 'meeting'`,
+  );
 
   /* --- Performance indexes for task_history and archive queries --- */
   db.exec(

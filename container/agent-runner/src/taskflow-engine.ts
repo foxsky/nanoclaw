@@ -1178,23 +1178,28 @@ export class TaskflowEngine {
 
   private static readonly SEP = '━━━━━━━━━━━━━━';
 
-  /** Fetch a single active task by its id. Handles board-prefixed IDs (e.g. SEC-T10). */
+  /**
+   * Strict task lookup. Returns the task only when it belongs to this board
+   * OR is delegated here via `child_exec_board_id`. Used by all mutation
+   * paths (update, move, dependency, admin, reassign).
+   *
+   * Meeting-participant visibility is intentionally NOT honored here, even
+   * for prefixed IDs — letting a participant get a write handle to a
+   * meeting on someone else's board would open a class of cross-board
+   * mutation that no permission gate currently checks. Read paths (query)
+   * use `getVisibleTask()` instead.
+   */
   getTask(taskId: string): any {
     const { boardId: targetBoardId, rawId } = this.resolveInputTaskId(taskId);
     if (targetBoardId) {
-      // Short-code resolved — still enforce visibility (local or delegated to this board)
       const task = this.db.prepare(TaskflowEngine.TASK_BY_BOARD_SQL).get(targetBoardId, rawId) as any | undefined;
       if (!task) return null;
       if (task.board_id === this.boardId) return task;
       if (task.child_exec_board_id === this.boardId && task.child_exec_enabled === 1) return task;
-      // Allow cross-board visibility for meeting participants
-      if (task.type === 'meeting' && this.isBoardMeetingParticipant(task)) return task;
       return null;
     }
-    // Prefer local board for ambiguous IDs
     const local = this.db.prepare(TaskflowEngine.TASK_BY_BOARD_SQL).get(this.boardId, rawId);
     if (local) return local;
-    // Fall back to delegated tasks
     return this.db
       .prepare(
         `SELECT tasks.*, tasks.board_id AS owning_board_id FROM tasks
@@ -1204,11 +1209,80 @@ export class TaskflowEngine {
   }
 
   /**
+   * Read-only task lookup. Wraps `getTask()` and adds cross-board meeting
+   * visibility for participants, constrained to the caller's board lineage
+   * (this board + ancestors via `parent_board_id` chain). A child-board
+   * user listed as a meeting participant on a parent-board meeting can
+   * read it, even when the meeting is not delegated via `child_exec_board_id`.
+   *
+   * Used by query paths (task_details, task_history, meeting_*). Mutation
+   * paths MUST continue to call `getTask()` — broader visibility here is
+   * read-only. Cross-board meeting mutation stays gated on explicit
+   * delegation.
+   */
+  private getVisibleTask(taskId: string): any {
+    const direct = this.getTask(taskId);
+    if (direct) return direct;
+    const { boardId: targetBoardId, rawId } = this.resolveInputTaskId(taskId);
+    const lineage = this.getBoardLineage();
+    if (lineage.length === 0) return null;
+    const placeholders = lineage.map(() => '?').join(',');
+    // Prefixed ID: look up that exact (board_id, id) — only succeeds if
+    // the prefixed board is in our lineage AND the row is a meeting AND
+    // someone on this board participates.
+    if (targetBoardId) {
+      if (!lineage.includes(targetBoardId)) return null;
+      const candidate = this.db
+        .prepare(
+          `SELECT tasks.*, tasks.board_id AS owning_board_id FROM tasks
+           WHERE board_id = ? AND id = ? AND type = 'meeting'`,
+        )
+        .get(targetBoardId, rawId) as any | undefined;
+      if (!candidate) return null;
+      return this.isBoardMeetingParticipant(candidate) ? candidate : null;
+    }
+    // Unprefixed ID: scan meetings across the lineage.
+    const meetingRows = this.db
+      .prepare(
+        `SELECT tasks.*, tasks.board_id AS owning_board_id FROM tasks
+         WHERE id = ? AND type = 'meeting' AND board_id IN (${placeholders})`,
+      )
+      .all(rawId, ...lineage) as any[];
+    for (const candidate of meetingRows) {
+      if (this.isBoardMeetingParticipant(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  /** This board + ancestors via parent_board_id chain, capped at 10 levels. */
+  private getBoardLineage(): string[] {
+    const chain: string[] = [this.boardId];
+    let current: string | null = this.boardId;
+    for (let i = 0; i < 10 && current; i++) {
+      const row = this.db
+        .prepare(`SELECT parent_board_id FROM boards WHERE id = ?`)
+        .get(current) as { parent_board_id: string | null } | undefined;
+      const parent = row?.parent_board_id ?? null;
+      if (!parent || chain.includes(parent)) break;
+      chain.push(parent);
+      current = parent;
+    }
+    return chain;
+  }
+
+  /**
    * Check if any person registered on this board is a participant or organizer
    * of the given meeting task (which may belong to a different board).
    */
   private isBoardMeetingParticipant(task: any): boolean {
-    const participants: string[] = JSON.parse(task.participants ?? '[]');
+    let participants: string[] = [];
+    try {
+      const parsed = JSON.parse(task.participants ?? '[]');
+      if (Array.isArray(parsed)) participants = parsed;
+    } catch {
+      // Malformed participants JSON — skip this candidate rather than
+      // throwing inside a query that scans many rows.
+    }
     const involved = [task.assignee, ...participants].filter(Boolean);
     if (involved.length === 0) return false;
     const ph = involved.map(() => '?').join(',');
@@ -1393,6 +1467,18 @@ export class TaskflowEngine {
       throw new Error('Missing required parameter: task_id');
     }
     const task = this.getTask(taskId);
+    if (!task) {
+      throw new Error(`Task not found: ${taskId}`);
+    }
+    return task;
+  }
+
+  /** Read-only variant of requireTask that honors meeting-participant visibility. */
+  private requireVisibleTask(taskId: string | undefined): any {
+    if (!taskId) {
+      throw new Error('Missing required parameter: task_id');
+    }
+    const task = this.getVisibleTask(taskId);
     if (!task) {
       throw new Error(`Task not found: ${taskId}`);
     }
@@ -5430,7 +5516,7 @@ export class TaskflowEngine {
         /* ---------- Task details & history ---------- */
 
         case 'task_details': {
-          const task = this.requireTask(params.task_id);
+          const task = this.requireVisibleTask(params.task_id);
           const history = this.getHistory(task.id, 5, this.taskBoardId(task));
           const data: any = { task, recent_history: history };
           // Include subtask rows for project tasks
@@ -5486,7 +5572,7 @@ export class TaskflowEngine {
         }
 
         case 'task_history': {
-          const task = this.requireTask(params.task_id);
+          const task = this.requireVisibleTask(params.task_id);
           const history = this.getHistory(task.id, undefined, this.taskBoardId(task));
           return { success: true, data: history };
         }
@@ -5773,7 +5859,7 @@ export class TaskflowEngine {
 
         case 'meeting_agenda': {
           if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
-          const task = this.requireTask(params.task_id);
+          const task = this.requireVisibleTask(params.task_id);
           if (task.type !== 'meeting') return { success: false, error: `Task ${params.task_id} is not a meeting.` };
           const notes: Array<any> = JSON.parse(task.notes ?? '[]');
           const preNotes = notes.filter((n: any) => n.phase === 'pre');
@@ -5793,7 +5879,7 @@ export class TaskflowEngine {
 
         case 'meeting_minutes': {
           if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
-          const task = this.requireTask(params.task_id);
+          const task = this.requireVisibleTask(params.task_id);
           if (task.type !== 'meeting') return { success: false, error: `Task ${params.task_id} is not a meeting.` };
           const notes: Array<any> = JSON.parse(task.notes ?? '[]');
           const formatted = this.formatMeetingMinutes(task, notes);
@@ -5809,7 +5895,7 @@ export class TaskflowEngine {
 
         case 'meeting_participants': {
           if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
-          const task = this.requireTask(params.task_id);
+          const task = this.requireVisibleTask(params.task_id);
           if (task.type !== 'meeting') return { success: false, error: `Task ${params.task_id} is not a meeting.` };
           const owningBoard = this.taskBoardId(task);
           const participantIds: string[] = JSON.parse(task.participants ?? '[]');
@@ -5834,7 +5920,7 @@ export class TaskflowEngine {
 
         case 'meeting_open_items': {
           if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
-          const task = this.requireTask(params.task_id);
+          const task = this.requireVisibleTask(params.task_id);
           if (task.type !== 'meeting') return { success: false, error: `Task ${params.task_id} is not a meeting.` };
           const notes: Array<any> = JSON.parse(task.notes ?? '[]');
           const openItems = notes.filter((n: any) => n.status === 'open');
@@ -5843,7 +5929,7 @@ export class TaskflowEngine {
 
         case 'meeting_history': {
           if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
-          const task = this.requireTask(params.task_id);
+          const task = this.requireVisibleTask(params.task_id);
           const history = this.getHistory(task.id, undefined, this.taskBoardId(task));
           return { success: true, data: history };
         }
@@ -5851,7 +5937,7 @@ export class TaskflowEngine {
         case 'meeting_minutes_at': {
           if (!params.task_id) return { success: false, error: 'Missing required parameter: task_id' };
           if (!params.at) return { success: false, error: 'Missing required parameter: at (YYYY-MM-DD)' };
-          const mTask = this.requireTask(params.task_id);
+          const mTask = this.requireVisibleTask(params.task_id);
           const occurrences = this.getHistory(mTask.id, undefined, this.taskBoardId(mTask))
             .filter((h: any) => h.action === 'meeting_occurrence_archived');
 
