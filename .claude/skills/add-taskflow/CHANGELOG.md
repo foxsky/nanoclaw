@@ -1,5 +1,13 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-04-14 (latest) — Cross-board meeting visibility for participants
+
+Engine fix in `container/agent-runner/src/taskflow-engine.ts`. Splits task lookup into read (`getVisibleTask`) and write (`getTask`) paths. Read path adds lineage-bounded participant visibility for meetings; write path stays strictly local-or-delegated. A child-board user listed as a meeting participant on a parent-board meeting can now read its details, agenda, minutes, participants, open items, and history — but cannot mutate it.
+
+Wired into 8 read-only query branches: `task_details`, `task_history`, `meeting_agenda`, `meeting_minutes`, `meeting_participants`, `meeting_open_items`, `meeting_history`, `meeting_minutes_at`. All mutation paths (update, move, dependency, admin, reassign) keep using strict `getTask`.
+
+Real production trigger: Ana Beatriz's "M1" + Carlos Giovanni's escalation on 2026-04-13. Codex gpt-5.4 high reviewed three rounds; v3 verdict ship-as-is. 6 new regression tests including write-rejection guards and malformed-JSON fall-through.
+
 ## 2026-04-14 — Auditor: audit-trail divergence detection
 
 New per-group check in `container/agent-runner/src/auditor-script.sh` that compares `send_message_log` deliveries against `messages.db` bot-row counts. When deliveries ≥ 5 and bot rows < 50% of deliveries, the board gets `auditTrailDivergence: true` and `auditor-prompt.txt` rule #8 instructs Kipp to emit a standalone group-level warning BEFORE listing per-interaction flags. Prevents the 2026-04-13 failure mode where 73/73 `noResponse` flags flooded the daily report because the messages.db persistence layer was broken — the check directly surfaces "persistence layer broken" instead of "bot is silent".

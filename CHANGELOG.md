@@ -4,6 +4,24 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-14 (latest) — Cross-board meeting visibility for participants (read-only)
+
+Engine fix for a real gap exposed by the 2026-04-13 incident audit. Ana Beatriz on her child board `asse-seci-taskflow-2` typed `M1` to see a meeting that lives on Carlos's parent board `seci-taskflow` where she's listed as a participant. The bot returned "Task not found" with no response. Carlos independently reported: _"a Ana Beatriz não está visualizando os detalhes da M1"_.
+
+Root cause: `TaskflowEngine.getTask()` only honored cross-board visibility through `child_exec_board_id` delegation. A bare meeting-participant relationship (no delegation, just listed in `tasks.participants` JSON) wasn't enough. The prefixed-ID path had a partial fix but it was wired into the same lookup mutation paths used — meaning either (a) participants couldn't read meeting details, or (b) they got accidental write access to mutations on a parent board's meeting.
+
+Fix: split read vs write task lookup.
+
+- `getTask()` is now strictly local-or-delegated. Removed participant-visibility branch from the prefixed-ID path that previously let participants get a write handle through `update`/`move`/`dependency`. All mutation paths call `getTask` so this restores the strict permission model.
+- New `getVisibleTask()` adds participant visibility for read paths only, constrained to the caller's board lineage (this board + ancestors via `parent_board_id` chain, max 10 levels with cycle detection). Both prefixed (must resolve to a lineage board) and unprefixed (scans meetings across the lineage) IDs handled.
+- New `requireVisibleTask()` helper wired into 8 read-only query paths: `task_details`, `task_history`, `meeting_agenda`, `meeting_minutes`, `meeting_participants`, `meeting_open_items`, `meeting_history`, `meeting_minutes_at`.
+- `isBoardMeetingParticipant()` JSON.parse now wrapped in try/catch — a single malformed `participants` row in a multi-row scan no longer aborts the whole request.
+- New partial index `idx_tasks_meeting_id ON tasks(id) WHERE type = 'meeting'` (in `src/taskflow-db.ts`) — defensive backstop, though the existing `(board_id, id)` PK already provides point lookups for the lineage scan.
+
+**Codex gpt-5.4 high reviewed three rounds before commit.** v1 found 4 concerns (index, lineage leak, write hole, over-reach). v2 caught B + D weren't actually fixed because the prefixed-ID branch of `getTask` still leaked participant visibility. v3 stripped that branch and consolidated all participant visibility into `getVisibleTask`. v3 verdict: ship as-is.
+
+6 new tests cover: positive case (Ana's M1 visible via task_details), non-lineage leak guard, ordering guard (local task wins over cross-board meeting), prefixed-ID write rejection, unprefixed-ID write rejection on `update` + `move`, malformed-JSON fall-through. 254 engine / 462 container / 974 host tests pass; TS build clean.
+
 ## 2026-04-14 (later) — Auditor: detect audit-trail divergence (cross-source check)
 
 Hardens the Kipp auditor so the 2026-04-13 class of bug (messages.db persistence layer broken while the bot runs fine) surfaces as a specific warning instead of drowning real signal in a `noResponse=true` flood.
