@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   buildPrompt,
+  callOllama,
   deriveContextHeader,
   extractScheduledAtValue,
   parseOllamaResponse,
@@ -206,5 +207,65 @@ describe('parseOllamaResponse', () => {
       '{"intent_matches":"yes","deviation":null,"confidence":"high"}',
     );
     expect(r).toBeNull();
+  });
+});
+
+describe('callOllama', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('returns the raw response text on 200', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ response: '{"intent_matches":false,"deviation":"x","confidence":"high"}' }),
+    });
+    const r = await callOllama('http://ollama:11434', 'test-model:fake', 'test prompt');
+    expect(r).toBe('{"intent_matches":false,"deviation":"x","confidence":"high"}');
+  });
+
+  it('returns null when fetch throws', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('network'));
+    const r = await callOllama('http://ollama:11434', 'test-model:fake', 'test');
+    expect(r).toBeNull();
+  });
+
+  it('returns null on non-OK response', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+    });
+    const r = await callOllama('http://ollama:11434', 'test-model:fake', 'test');
+    expect(r).toBeNull();
+  });
+
+  it('returns null when host is empty (feature off)', async () => {
+    const r = await callOllama('', 'test-model:fake', 'test');
+    expect(r).toBeNull();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('posts to /api/generate WITHOUT format=json (CoT prompt + fenced JSON output)', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ response: '```json\n{}\n```' }),
+    });
+    await callOllama('http://ollama:11434', 'test-model:fake', 'hello');
+    const call = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[0]).toBe('http://ollama:11434/api/generate');
+    const body = JSON.parse(call[1].body);
+    expect(body).toMatchObject({
+      model: 'test-model:fake',
+      prompt: 'hello',
+      stream: false,
+    });
+    // format: 'json' would force strict JSON-only output, blocking the
+    // chain-of-thought reasoning that several models need to compute the
+    // weekday from the date. We deliberately omit it.
+    expect(body.format).toBeUndefined();
   });
 });

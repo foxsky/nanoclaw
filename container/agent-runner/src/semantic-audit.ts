@@ -160,3 +160,29 @@ export function parseOllamaResponse(raw: string): {
     confidence: p.confidence,
   };
 }
+
+export async function callOllama(
+  host: string,
+  model: string,
+  prompt: string,
+  timeoutMs = 30_000,
+): Promise<string | null> {
+  if (!host) return null;
+  try {
+    // Note: NO `format: 'json'`. Strict JSON mode prevents chain-of-thought
+    // reasoning, which several models (gemma4, qwen3.5) need to correctly
+    // derive the stored date's weekday before classifying. The prompt asks
+    // for a fenced JSON block; parseOllamaResponse() handles fences.
+    const resp = await fetch(`${host}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, prompt, stream: false }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as { response?: string };
+    return data.response ?? null;
+  } catch {
+    return null;
+  }
+}
