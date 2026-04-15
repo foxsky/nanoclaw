@@ -109,3 +109,52 @@ describe('deriveContextHeader', () => {
     expect(() => deriveContextHeader('not a timestamp', 'America/Fortaleza')).toThrow(RangeError);
   });
 });
+
+import { buildPrompt } from './semantic-audit.js';
+
+describe('buildPrompt', () => {
+  const mutation: QualifyingMutation = {
+    taskId: 'M1',
+    boardId: 'board-seci-taskflow',
+    action: 'updated',
+    by: 'giovanni',
+    at: '2026-04-14T11:04:11.450Z',
+    details: '{"changes":["Reunião reagendada para 17/04/2026 às 11:00"]}',
+    fieldKind: 'scheduled_at',
+    extractedValue: '2026-04-17T11:00',
+  };
+
+  const context: FactCheckContext = {
+    userMessage: 'alterar M1 para quinta-feira 11h',
+    userDisplayName: 'Carlos Giovanni',
+    messageTimestamp: '2026-04-14T11:03:37.000Z',
+    boardTimezone: 'America/Fortaleza',
+    headerToday: '2026-04-14',
+    headerWeekday: 'terça-feira',
+  };
+
+  it('includes the stored value, user message, and context header', () => {
+    const p = buildPrompt(mutation, context);
+    expect(p).toContain('M1');
+    expect(p).toContain('2026-04-17T11:00');
+    expect(p).toContain('alterar M1 para quinta-feira 11h');
+    expect(p).toContain('2026-04-14');
+    expect(p).toContain('terça-feira');
+    expect(p).toContain('America/Fortaleza');
+  });
+
+  it('asks for fenced JSON output with chain-of-thought reasoning', () => {
+    const p = buildPrompt(mutation, context);
+    expect(p).toMatch(/intent_matches/);
+    expect(p).toMatch(/confidence/);
+    expect(p).toMatch(/deviation/);
+    expect(p).toMatch(/```json/);
+    expect(p).toMatch(/passo a passo/);
+    expect(p).toMatch(/dia da semana/);
+  });
+
+  it('handles a null userMessage gracefully', () => {
+    const p = buildPrompt(mutation, { ...context, userMessage: null });
+    expect(p).toContain('(mensagem do usuário não localizada)');
+  });
+});
