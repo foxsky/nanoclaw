@@ -34,14 +34,7 @@ export interface SemanticDeviation {
   rawResponse: string;
 }
 
-function resolveTimezoneOrUtc(tz: string): string {
-  try {
-    new Intl.DateTimeFormat(undefined, { timeZone: tz });
-    return tz;
-  } catch {
-    return 'UTC';
-  }
-}
+import { resolveTimezoneOrUtc } from './tz-util.js';
 
 export function deriveContextHeader(
   isoTimestamp: string,

@@ -1,4 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import {
+  buildPrompt,
+  deriveContextHeader,
+  extractScheduledAtValue,
+} from './semantic-audit.js';
 import type {
   QualifyingMutation,
   FactCheckContext,
@@ -50,8 +55,6 @@ describe('semantic-audit type surface', () => {
   });
 });
 
-import { extractScheduledAtValue } from './semantic-audit.js';
-
 describe('extractScheduledAtValue', () => {
   it('parses the canonical reagendada string', () => {
     const r = extractScheduledAtValue(
@@ -81,8 +84,6 @@ describe('extractScheduledAtValue', () => {
   });
 });
 
-import { deriveContextHeader } from './semantic-audit.js';
-
 describe('deriveContextHeader', () => {
   it('gives today + pt-BR weekday for a Fortaleza timestamp', () => {
     // 2026-04-14T11:03:37.000Z is 08:03 local in America/Fortaleza (UTC-3) — still Tuesday.
@@ -109,8 +110,6 @@ describe('deriveContextHeader', () => {
     expect(() => deriveContextHeader('not a timestamp', 'America/Fortaleza')).toThrow(RangeError);
   });
 });
-
-import { buildPrompt } from './semantic-audit.js';
 
 describe('buildPrompt', () => {
   const mutation: QualifyingMutation = {

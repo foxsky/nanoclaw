@@ -7,6 +7,7 @@
  * for creating, updating, and managing tasks.
  */
 import Database from 'better-sqlite3';
+import { resolveTimezoneOrUtc } from './tz-util.js';
 
 /* ------------------------------------------------------------------ */
 /*  Public interfaces                                                  */
@@ -548,14 +549,6 @@ function weekdayInTimezone(localOrIso: string, tz: string): number | null {
   }
 }
 
-function resolveTimezoneOrUtc(tz: string): string {
-  try {
-    new Intl.DateTimeFormat(undefined, { timeZone: tz });
-    return tz;
-  } catch {
-    return 'UTC';
-  }
-}
 
 /**
  * If `intended` is provided and disagrees with the weekday of `scheduledLocal`
