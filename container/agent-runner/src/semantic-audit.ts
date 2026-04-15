@@ -136,9 +136,7 @@ export function parseOllamaResponse(raw: string): {
   if (!raw) return null;
 
   let text = raw.trim();
-  // Strip ```json ... ``` fences
-  text = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
-  // Locate the first balanced JSON object
+  text = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
   if (start === -1 || end === -1 || end <= start) return null;
@@ -154,8 +152,7 @@ export function parseOllamaResponse(raw: string): {
   const p = parsed as Record<string, unknown>;
   if (typeof p.intent_matches !== 'boolean') return null;
   if (p.confidence !== 'high' && p.confidence !== 'med' && p.confidence !== 'low') return null;
-  const deviation =
-    typeof p.deviation === 'string' ? p.deviation : p.deviation === null ? null : null;
+  const deviation = typeof p.deviation === 'string' ? p.deviation : null;
 
   return {
     intentMatches: p.intent_matches,
