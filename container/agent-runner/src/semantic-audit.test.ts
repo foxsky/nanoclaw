@@ -5,6 +5,7 @@ import {
   deriveContextHeader,
   extractScheduledAtValue,
   parseOllamaResponse,
+  runSemanticAudit,
 } from './semantic-audit.js';
 import type {
   QualifyingMutation,
@@ -267,5 +268,136 @@ describe('callOllama', () => {
     // chain-of-thought reasoning that several models need to compute the
     // weekday from the date. We deliberately omit it.
     expect(body.format).toBeUndefined();
+  });
+});
+
+import Database from 'better-sqlite3';
+
+function seedAuditDbs() {
+  const tf = new Database(':memory:');
+  tf.exec(`
+    CREATE TABLE boards (id TEXT PRIMARY KEY, parent_board_id TEXT);
+    CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+    CREATE TABLE board_people (board_id TEXT, person_id TEXT, name TEXT, PRIMARY KEY (board_id, person_id));
+    CREATE TABLE task_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      board_id TEXT, task_id TEXT, action TEXT, by TEXT, at TEXT, details TEXT
+    );
+    INSERT INTO boards VALUES ('board-seci-taskflow', NULL);
+    INSERT INTO board_runtime_config VALUES ('board-seci-taskflow', 'America/Fortaleza');
+    INSERT INTO board_people VALUES ('board-seci-taskflow', 'giovanni', 'Carlos Giovanni');
+    INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES
+      ('board-seci-taskflow', 'M1', 'updated', 'giovanni',
+       '2026-04-14T11:04:11.450Z',
+       '{"changes":["Reunião reagendada para 17/04/2026 às 11:00"]}');
+  `);
+
+  const msg = new Database(':memory:');
+  msg.exec(`
+    CREATE TABLE messages (
+      id TEXT, chat_jid TEXT, sender TEXT, sender_name TEXT,
+      content TEXT, timestamp TEXT,
+      is_from_me INTEGER, is_bot_message INTEGER DEFAULT 0,
+      PRIMARY KEY (id, chat_jid)
+    );
+    CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
+    INSERT INTO registered_groups VALUES ('120363407@g.us', 'seci-taskflow', 'SECI-SECTI', 1);
+    INSERT INTO messages VALUES (
+      'msg1', '120363407@g.us', '558688@s.whatsapp.net', 'Carlos Giovanni',
+      'alterar M1 para quinta-feira 11h', '2026-04-14T11:03:37.000Z', 0, 0
+    );
+  `);
+
+  return { tf, msg };
+}
+
+describe('runSemanticAudit', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('returns one deviation for the Giovanni case when Ollama says intent_matches=false', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        response:
+          '{"intent_matches":false,"deviation":"User said quinta (16/04) but stored 17/04","confidence":"high"}',
+      }),
+    });
+
+    const { tf, msg } = seedAuditDbs();
+    const result = await runSemanticAudit({
+      msgDb: msg,
+      tfDb: tf,
+      period: { startIso: '2026-04-14T00:00:00.000Z', endIso: '2026-04-15T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434',
+      ollamaModel: 'test-model:fake',
+    });
+
+    expect(result.deviations).toHaveLength(1);
+    expect(result.deviations[0].taskId).toBe('M1');
+    expect(result.deviations[0].intentMatches).toBe(false);
+    expect(result.deviations[0].confidence).toBe('high');
+    expect(result.deviations[0].userMessage).toContain('quinta-feira');
+    expect(result.deviations[0].storedValue).toBe('2026-04-17T11:00');
+    expect(result.counters).toMatchObject({ examined: 1, noTrigger: 0, boardMapFail: 0, ollamaFail: 0, parseFail: 0 });
+
+    tf.close();
+    msg.close();
+  });
+
+  it('returns empty when no qualifying mutations exist', async () => {
+    const tf = new Database(':memory:');
+    tf.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY, parent_board_id TEXT);
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+      CREATE TABLE board_people (board_id TEXT, person_id TEXT, name TEXT, PRIMARY KEY (board_id, person_id));
+      CREATE TABLE task_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        board_id TEXT, task_id TEXT, action TEXT, by TEXT, at TEXT, details TEXT
+      );
+      INSERT INTO boards VALUES ('board-empty', NULL);
+      INSERT INTO board_runtime_config VALUES ('board-empty', 'America/Fortaleza');
+    `);
+    const msg = new Database(':memory:');
+    msg.exec(`
+      CREATE TABLE messages (id TEXT, chat_jid TEXT, sender TEXT, sender_name TEXT, content TEXT, timestamp TEXT, is_from_me INTEGER, is_bot_message INTEGER DEFAULT 0, PRIMARY KEY (id, chat_jid));
+      CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
+    `);
+    const result = await runSemanticAudit({
+      msgDb: msg,
+      tfDb: tf,
+      period: { startIso: '2026-04-14T00:00:00.000Z', endIso: '2026-04-15T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434',
+      ollamaModel: 'test-model:fake',
+    });
+    expect(result.deviations).toEqual([]);
+    expect(result.counters.examined).toBe(0);
+    expect(global.fetch).not.toHaveBeenCalled();
+    tf.close();
+    msg.close();
+  });
+
+  it('skips a mutation when Ollama returns a malformed response, increments parseFail', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ response: 'not json' }),
+    });
+    const { tf, msg } = seedAuditDbs();
+    const result = await runSemanticAudit({
+      msgDb: msg,
+      tfDb: tf,
+      period: { startIso: '2026-04-14T00:00:00.000Z', endIso: '2026-04-15T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434',
+      ollamaModel: 'test-model:fake',
+    });
+    expect(result.deviations).toEqual([]);
+    expect(result.counters.examined).toBe(1);
+    expect(result.counters.parseFail).toBe(1);
+    tf.close();
+    msg.close();
   });
 });

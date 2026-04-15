@@ -186,3 +186,169 @@ export async function callOllama(
     return null;
   }
 }
+
+import type { Database as BetterSqliteDB } from 'better-sqlite3';
+
+export interface RunSemanticAuditArgs {
+  msgDb: BetterSqliteDB;
+  tfDb: BetterSqliteDB;
+  period: { startIso: string; endIso: string };
+  ollamaHost: string;
+  ollamaModel: string;
+}
+
+export interface SemanticAuditCounters {
+  examined: number;       // qualifying mutations seen
+  noTrigger: number;      // mutation but no triggering user message in window
+  boardMapFail: number;   // board_id → group jid resolution failed
+  ollamaFail: number;     // callOllama returned null (timeout / non-200 / network)
+  parseFail: number;      // Ollama returned text but parseOllamaResponse rejected it
+}
+
+export interface SemanticAuditResult {
+  deviations: SemanticDeviation[];
+  counters: SemanticAuditCounters;
+}
+
+export async function runSemanticAudit(
+  args: RunSemanticAuditArgs,
+): Promise<SemanticAuditResult> {
+  const { msgDb, tfDb, period, ollamaHost, ollamaModel } = args;
+
+  const mutationRows = tfDb
+    .prepare(
+      `SELECT board_id AS boardId, task_id AS taskId, action, by, at, details
+       FROM task_history
+       WHERE at >= ? AND at < ?
+         AND action = 'updated'
+         AND by IS NOT NULL
+         AND details LIKE '%"Reunião reagendada%'`,
+    )
+    .all(period.startIso, period.endIso) as Array<{
+      boardId: string;
+      taskId: string;
+      action: 'updated';
+      by: string;
+      at: string;
+      details: string;
+    }>;
+
+  const counters: SemanticAuditCounters = {
+    examined: mutationRows.length,
+    noTrigger: 0,
+    boardMapFail: 0,
+    ollamaFail: 0,
+    parseFail: 0,
+  };
+
+  if (mutationRows.length === 0) return { deviations: [], counters };
+
+  const tzStmt = tfDb.prepare(
+    `SELECT timezone FROM board_runtime_config WHERE board_id = ?`,
+  );
+  const folderStmt = tfDb.prepare(
+    `SELECT LOWER(REPLACE(id, 'board-', '')) AS folder FROM boards WHERE id = ?`,
+  );
+  const groupStmt = msgDb.prepare(
+    `SELECT jid FROM registered_groups WHERE folder = ?`,
+  );
+  const personStmt = tfDb.prepare(
+    `SELECT name FROM board_people WHERE board_id = ? AND person_id = ? LIMIT 1`,
+  );
+  const triggerStmt = msgDb.prepare(
+    `SELECT content, timestamp, sender_name FROM messages
+     WHERE chat_jid = ? AND timestamp <= ? AND timestamp >= ?
+       AND is_bot_message = 0 AND is_from_me = 0
+       AND content IS NOT NULL AND content != ''
+       AND sender_name LIKE ? ESCAPE '\\'
+     ORDER BY timestamp DESC LIMIT 1`,
+  );
+
+  const deviations: SemanticDeviation[] = [];
+
+  for (const row of mutationRows) {
+    const extractedValue = extractScheduledAtValue(row.details);
+    if (!extractedValue) continue;
+
+    const tzRow = tzStmt.get(row.boardId) as { timezone: string } | undefined;
+    const boardTimezone = tzRow?.timezone ?? 'America/Fortaleza';
+
+    const personRow = personStmt.get(row.boardId, row.by) as { name: string } | undefined;
+    const userDisplayName = personRow?.name ?? null;
+
+    const folderRow = folderStmt.get(row.boardId) as { folder: string } | undefined;
+    const groupRow = folderRow
+      ? (groupStmt.get(folderRow.folder) as { jid: string } | undefined)
+      : undefined;
+    let userMessage: string | null = null;
+    let messageTimestamp: string | null = null;
+    if (!groupRow) {
+      counters.boardMapFail++;
+    } else if (userDisplayName) {
+      const windowStart = new Date(new Date(row.at).getTime() - 600_000).toISOString();
+      const escaped = userDisplayName.replace(/[\\%_]/g, (c) => '\\' + c);
+      const likeName = `%${escaped}%`;
+      const tr = triggerStmt.get(groupRow.jid, row.at, windowStart, likeName) as
+        | { content: string; timestamp: string; sender_name: string }
+        | undefined;
+      if (tr) {
+        userMessage = tr.content;
+        messageTimestamp = tr.timestamp;
+      } else {
+        counters.noTrigger++;
+      }
+    }
+
+    const header = messageTimestamp
+      ? deriveContextHeader(messageTimestamp, boardTimezone)
+      : deriveContextHeader(row.at, boardTimezone);
+
+    const mutation: QualifyingMutation = {
+      taskId: row.taskId,
+      boardId: row.boardId,
+      action: 'updated',
+      by: row.by,
+      at: row.at,
+      details: row.details,
+      fieldKind: 'scheduled_at',
+      extractedValue,
+    };
+
+    const context: FactCheckContext = {
+      userMessage,
+      userDisplayName,
+      messageTimestamp,
+      boardTimezone,
+      headerToday: header.today,
+      headerWeekday: header.weekday,
+    };
+
+    const prompt = buildPrompt(mutation, context);
+    const raw = await callOllama(ollamaHost, ollamaModel, prompt);
+    if (!raw) {
+      counters.ollamaFail++;
+      continue;
+    }
+    const parsed = parseOllamaResponse(raw);
+    if (!parsed) {
+      counters.parseFail++;
+      continue;
+    }
+
+    deviations.push({
+      taskId: row.taskId,
+      boardId: row.boardId,
+      fieldKind: 'scheduled_at',
+      at: row.at,
+      by: row.by,
+      userMessage,
+      storedValue: extractedValue,
+      intentMatches: parsed.intentMatches,
+      deviation: parsed.deviation,
+      confidence: parsed.confidence,
+      rawResponse: raw,
+    });
+  }
+
+  return { deviations, counters };
+}
