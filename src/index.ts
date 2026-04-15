@@ -45,8 +45,10 @@ import {
 } from './container-runtime.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import {
+  countPendingOutbound,
   deleteRegisteredGroup,
   deleteSession,
+  enqueueOutbound,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -57,12 +59,14 @@ import {
   getNewMessages,
   getRouterState,
   initDatabase,
+  OutboundSource,
   setRegisteredGroup,
   setRouterState,
   setSession,
   storeChatMetadata,
   storeMessage,
 } from './db.js';
+import { OutboundDispatcher } from './outbound-dispatcher.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
@@ -168,6 +172,28 @@ let stagedDmMaxTimestamp = '';
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
+
+const outboundDispatcher = new OutboundDispatcher({
+  getChannel: (chatJid: string) => findChannel(channels, chatJid) ?? null,
+});
+
+/**
+ * Persist an agent result to the durable outbound queue and wake the
+ * dispatcher. Used in place of channel.sendMessage on the onOutput path
+ * so that host crashes/SIGKILLs between stdout-parse and WhatsApp-send
+ * cannot drop messages: on the next startup the dispatcher picks up any
+ * pending rows and delivers them.
+ */
+function enqueueAgentOutput(
+  chatJid: string,
+  groupFolder: string | null,
+  text: string,
+  senderLabel: string | null,
+  source: OutboundSource,
+): void {
+  enqueueOutbound({ chatJid, groupFolder, text, senderLabel, source });
+  outboundDispatcher.wake();
+}
 
 const onecli = OneCLI ? new OneCLI({ url: ONECLI_URL }) : null;
 
@@ -425,11 +451,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               ? result.result
               : JSON.stringify(result.result);
           const text = stripInternalTags(raw);
-          if (text && channel) {
-            await channel.sendMessage(
+          if (text) {
+            enqueueAgentOutput(
               chatJid,
+              group.folder,
               text,
               getGroupSenderName(group.trigger),
+              'user',
             );
           }
         }
@@ -566,7 +594,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             isWebOrigin &&
             appendAgentOutputToBoardChat(taskflowDb, group, text);
           if (!routedToBoardChat) {
-            await channel.sendMessage(chatJid, text, groupSender);
+            enqueueAgentOutput(
+              chatJid,
+              group.folder,
+              text,
+              groupSender,
+              'user',
+            );
           }
           outputSentToUser = true;
         }
@@ -1127,6 +1161,20 @@ async function main(): Promise<void> {
         } catch {}
         contextService.close();
       }
+      // Flush any pending outbound rows BEFORE disconnecting channels.
+      // Containers that are still alive may have written results to stdout
+      // that were parsed and enqueued; if we disconnect first, those rows
+      // stay pending until the next boot (which is fine for durability,
+      // but delays delivery for a full restart cycle).
+      const drainResult = await outboundDispatcher.drain(20000);
+      if (!drainResult.drained) {
+        logger.warn(
+          { remaining: drainResult.remaining },
+          'Outbound dispatcher drain deadline elapsed — remaining rows will deliver on next boot',
+        );
+      } else {
+        logger.info('Outbound dispatcher drained cleanly');
+      }
       for (const ch of channels) await ch.disconnect();
     } catch (err) {
       logger.error({ err }, 'Error during shutdown');
@@ -1248,13 +1296,16 @@ async function main(): Promise<void> {
     onProcess: (groupJid, proc, containerName, groupFolder) =>
       queue.registerProcess(groupJid, proc, containerName, groupFolder),
     sendMessage: async (jid, rawText) => {
-      const channel = findChannel(channels, jid);
-      if (!channel) {
-        logger.warn({ jid }, 'No channel owns JID, cannot send message');
-        return;
-      }
       const text = formatOutbound(rawText);
-      if (text) await channel.sendMessage(jid, text);
+      if (!text) return;
+      const group = registeredGroups[jid];
+      enqueueAgentOutput(
+        jid,
+        group?.folder ?? null,
+        text,
+        null,
+        'task',
+      );
     },
   });
   await startIpcWatcher({
@@ -1313,6 +1364,14 @@ async function main(): Promise<void> {
     },
   });
   startSessionCleanup();
+  outboundDispatcher.start();
+  const pendingOnBoot = countPendingOutbound();
+  if (pendingOnBoot > 0) {
+    logger.info(
+      { pending: pendingOnBoot },
+      'Outbound recovery: pending messages found from previous run, dispatcher will deliver',
+    );
+  }
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
   startMessageLoop().catch((err) => {

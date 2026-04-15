@@ -107,6 +107,28 @@ function createSchema(database: Database.Database): void {
       taskflow_hierarchy_level INTEGER,
       taskflow_max_depth INTEGER
     );
+
+    -- Durable outbound message queue. The host's onOutput parser inserts
+    -- a row here before any WhatsApp send; the outbound-dispatcher polls
+    -- pending rows and sends them. Survives host SIGKILL: any result that
+    -- made it out of the container's stdout will be delivered once the
+    -- service restarts. Also gives boot-recovery for free.
+    CREATE TABLE IF NOT EXISTS outbound_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_jid TEXT NOT NULL,
+      group_folder TEXT,
+      text TEXT NOT NULL,
+      sender_label TEXT,
+      source TEXT NOT NULL,
+      enqueued_at TEXT NOT NULL,
+      sent_at TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      abandoned_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_outbound_pending
+      ON outbound_messages(enqueued_at)
+      WHERE sent_at IS NULL AND abandoned_at IS NULL;
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -858,6 +880,103 @@ export function recordSendMessageLog(entry: SendMessageLogEntry): void {
     entry.contentPreview.slice(0, 200),
     entry.deliveredAt,
   );
+}
+
+// --- Outbound durable queue ---
+
+export type OutboundSource = 'user' | 'task' | 'recovery';
+
+export interface OutboundEnqueue {
+  chatJid: string;
+  groupFolder: string | null;
+  text: string;
+  senderLabel: string | null;
+  source: OutboundSource;
+}
+
+export interface OutboundRow {
+  id: number;
+  chat_jid: string;
+  group_folder: string | null;
+  text: string;
+  sender_label: string | null;
+  source: OutboundSource;
+  enqueued_at: string;
+  sent_at: string | null;
+  attempts: number;
+  last_error: string | null;
+  abandoned_at: string | null;
+}
+
+export function enqueueOutbound(msg: OutboundEnqueue): number {
+  const info = db
+    .prepare(
+      `INSERT INTO outbound_messages
+         (chat_jid, group_folder, text, sender_label, source, enqueued_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      msg.chatJid,
+      msg.groupFolder,
+      msg.text,
+      msg.senderLabel,
+      msg.source,
+      new Date().toISOString(),
+    );
+  return Number(info.lastInsertRowid);
+}
+
+export function getPendingOutbound(limit = 50): OutboundRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM outbound_messages
+       WHERE sent_at IS NULL AND abandoned_at IS NULL
+       ORDER BY enqueued_at ASC, id ASC
+       LIMIT ?`,
+    )
+    .all(limit) as OutboundRow[];
+}
+
+export function markOutboundSent(id: number): void {
+  db.prepare(
+    `UPDATE outbound_messages
+       SET sent_at = ?, last_error = NULL
+     WHERE id = ?`,
+  ).run(new Date().toISOString(), id);
+}
+
+export function markOutboundAttemptFailed(
+  id: number,
+  error: string,
+  abandonAfterAttempts: number,
+): { abandoned: boolean; attempts: number } {
+  const updated = db
+    .prepare(
+      `UPDATE outbound_messages
+         SET attempts = attempts + 1,
+             last_error = ?
+       WHERE id = ?
+       RETURNING attempts`,
+    )
+    .get(error.slice(0, 500), id) as { attempts: number } | undefined;
+  const attempts = updated?.attempts ?? 0;
+  if (attempts >= abandonAfterAttempts) {
+    db.prepare(
+      `UPDATE outbound_messages SET abandoned_at = ? WHERE id = ?`,
+    ).run(new Date().toISOString(), id);
+    return { abandoned: true, attempts };
+  }
+  return { abandoned: false, attempts };
+}
+
+export function countPendingOutbound(): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as c FROM outbound_messages
+       WHERE sent_at IS NULL AND abandoned_at IS NULL`,
+    )
+    .get() as { c: number };
+  return row.c;
 }
 
 // --- JSON migration ---
