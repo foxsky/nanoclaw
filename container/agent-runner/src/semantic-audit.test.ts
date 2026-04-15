@@ -3,6 +3,7 @@ import {
   buildPrompt,
   deriveContextHeader,
   extractScheduledAtValue,
+  parseOllamaResponse,
 } from './semantic-audit.js';
 import type {
   QualifyingMutation,
@@ -155,5 +156,55 @@ describe('buildPrompt', () => {
   it('handles a null userMessage gracefully', () => {
     const p = buildPrompt(mutation, { ...context, userMessage: null });
     expect(p).toContain('(mensagem do usuário não localizada)');
+  });
+});
+
+describe('parseOllamaResponse', () => {
+  it('parses a clean JSON response', () => {
+    const r = parseOllamaResponse(
+      '{"intent_matches":false,"deviation":"wrong day","confidence":"high"}',
+    );
+    expect(r).toEqual({
+      intentMatches: false,
+      deviation: 'wrong day',
+      confidence: 'high',
+    });
+  });
+
+  it('strips surrounding code fences', () => {
+    const r = parseOllamaResponse(
+      '```json\n{"intent_matches":true,"deviation":null,"confidence":"high"}\n```',
+    );
+    expect(r).toEqual({
+      intentMatches: true,
+      deviation: null,
+      confidence: 'high',
+    });
+  });
+
+  it('finds the JSON block when surrounded by prose', () => {
+    const r = parseOllamaResponse(
+      'Here is the JSON: {"intent_matches":true,"deviation":null,"confidence":"med"} that is all.',
+    );
+    expect(r?.intentMatches).toBe(true);
+    expect(r?.confidence).toBe('med');
+  });
+
+  it('returns null on unparseable response', () => {
+    expect(parseOllamaResponse('not json at all')).toBeNull();
+  });
+
+  it('returns null when confidence is not in the allowed set', () => {
+    const r = parseOllamaResponse(
+      '{"intent_matches":false,"deviation":"x","confidence":"extreme"}',
+    );
+    expect(r).toBeNull();
+  });
+
+  it('returns null when intent_matches is not boolean', () => {
+    const r = parseOllamaResponse(
+      '{"intent_matches":"yes","deviation":null,"confidence":"high"}',
+    );
+    expect(r).toBeNull();
   });
 });

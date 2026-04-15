@@ -127,3 +127,39 @@ export function buildPrompt(
     '```',
   ].join('\n');
 }
+
+export function parseOllamaResponse(raw: string): {
+  intentMatches: boolean;
+  deviation: string | null;
+  confidence: 'high' | 'med' | 'low';
+} | null {
+  if (!raw) return null;
+
+  let text = raw.trim();
+  // Strip ```json ... ``` fences
+  text = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+  // Locate the first balanced JSON object
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) return null;
+  const candidate = text.slice(start, end + 1);
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(candidate);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const p = parsed as Record<string, unknown>;
+  if (typeof p.intent_matches !== 'boolean') return null;
+  if (p.confidence !== 'high' && p.confidence !== 'med' && p.confidence !== 'low') return null;
+  const deviation =
+    typeof p.deviation === 'string' ? p.deviation : p.deviation === null ? null : null;
+
+  return {
+    intentMatches: p.intent_matches,
+    deviation,
+    confidence: p.confidence,
+  };
+}
