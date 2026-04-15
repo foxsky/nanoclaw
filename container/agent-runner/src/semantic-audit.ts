@@ -49,6 +49,9 @@ export function deriveContextHeader(
 ): { today: string; weekday: string } {
   const tz = resolveTimezoneOrUtc(boardTimezone);
   const at = new Date(isoTimestamp);
+  if (isNaN(at.getTime())) {
+    throw new RangeError(`deriveContextHeader: invalid isoTimestamp "${isoTimestamp}"`);
+  }
   const dateFmt = new Intl.DateTimeFormat('en-CA', {
     timeZone: tz,
     year: 'numeric',

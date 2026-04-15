@@ -97,8 +97,15 @@ describe('deriveContextHeader', () => {
   });
 
   it('falls back to UTC on invalid timezone', () => {
-    const h = deriveContextHeader('2026-04-14T14:00:00.000Z', 'Not/A_Zone');
-    expect(h.today).toBe('2026-04-14');
-    expect(h.weekday).toBe('terça-feira');
+    // 2026-04-15T01:00:00Z is still 2026-04-14 22:00 in America/Fortaleza.
+    // If fallback incorrectly returned America/Fortaleza, today would be '2026-04-14'.
+    // Correct UTC fallback gives '2026-04-15'.
+    const h = deriveContextHeader('2026-04-15T01:00:00.000Z', 'Not/A_Zone');
+    expect(h.today).toBe('2026-04-15');
+    expect(h.weekday).toBe('quarta-feira');
+  });
+
+  it('throws RangeError on invalid isoTimestamp', () => {
+    expect(() => deriveContextHeader('not a timestamp', 'America/Fortaleza')).toThrow(RangeError);
   });
 });
