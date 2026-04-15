@@ -114,6 +114,11 @@ graph LR
         IPC[IPC Watcher]
     end
 
+    subgraph Delivery["Durable Outbound"]
+        OQ[outbound_messages]
+        OD[OutboundDispatcher]
+    end
+
     %% Flow
     WA & TG & SL & DC & New -->|onMessage| ML
     ML --> GQ
@@ -121,12 +126,15 @@ graph LR
     CR --> LC
     LC -->|filesystem IPC| IPC
     IPC -->|tasks & messages| RT
-    RT -->|Channel.sendMessage| Channels
+    RT -->|enqueueOutbound| OQ
+    OQ -->|poll pending| OD
+    OD -->|Channel.sendMessage| Channels
     TS -->|due tasks| CR
 
     %% DB Connections
     DB <--> ML
     DB <--> TS
+    DB <--> OQ
 
     %% Styling for the dynamic channel
     style New stroke-dasharray: 5 5,stroke-width:2px

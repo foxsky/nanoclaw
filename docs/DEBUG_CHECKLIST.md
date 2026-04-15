@@ -121,6 +121,50 @@ grep -E 'Starting container|Container active|concurrency limit' logs/nanoclaw.lo
 sqlite3 store/messages.db "SELECT chat_jid, MAX(timestamp) as latest FROM messages GROUP BY chat_jid ORDER BY latest DESC LIMIT 5;"
 ```
 
+## Silent Board — Writes OK, Responses Missing
+
+Fingerprint: user's mutations (`P15.3 concluir`, `T32 concluida`, etc.) land correctly in TaskFlow state but the bot never replies. Audit flags 100% `noResponse` on one board while other boards are fine. Introduced by the 2026-04-14 incident; mitigated by the durable outbound queue (2026-04-15, commit `56702cf`).
+
+Before chasing template gaps or feature gaps, rule out delivery failure:
+
+```bash
+# 1. Were there any service restarts during the interaction window?
+#    SIGKILLs with "State 'final-sigterm' timed out" are the smoking gun.
+journalctl --user -u nanoclaw --since "2026-04-14" --until "2026-04-15" \
+  | grep -iE 'kill|final-sigterm|remains running'
+
+# 2. Do container logs show long-running user containers that span a restart?
+#    Duration > 30 min on a user container is suspicious.
+ls -la groups/<board-folder>/logs/container-*.log
+grep -E 'Duration:|Exit Code:' groups/<board-folder>/logs/container-2026-04-14*.log
+
+# 3. Count pending rows in the durable outbound queue. Non-zero after a
+#    restart means the dispatcher has unfinished business; it will drain
+#    automatically but the count itself is useful as a delivery-health gauge.
+sqlite3 store/messages.db \
+  "SELECT COUNT(*), source FROM outbound_messages
+   WHERE sent_at IS NULL AND abandoned_at IS NULL
+   GROUP BY source;"
+
+# 4. Any abandoned rows? These are rows that hit the abandon-after-10 cap —
+#    permanently undelivered, worth investigating per-row.
+sqlite3 store/messages.db \
+  "SELECT id, chat_jid, attempts, last_error, substr(text,1,80)
+   FROM outbound_messages WHERE abandoned_at IS NOT NULL
+   ORDER BY abandoned_at DESC LIMIT 10;"
+
+# 5. Sanity: does send_message_log have rows for the silent window?
+#    Zero deliveries logged vs many user messages = delivery hole.
+sqlite3 store/messages.db \
+  "SELECT COUNT(*) FROM send_message_log
+   WHERE target_chat_jid = '<jid>'
+     AND delivered_at BETWEEN '2026-04-14 07:00' AND '2026-04-14 09:00';"
+```
+
+If SIGKILLs are absent and the outbound queue is clean, *then* the symptom is a template/feature gap and not a delivery failure — at that point investigate the specific commands the user sent.
+
+Full post-mortem: [`docs/incidents/2026-04-14-silent-boards-sigkill-mid-container.md`](incidents/2026-04-14-silent-boards-sigkill-mid-container.md).
+
 ## Container Mount Issues
 
 ```bash
