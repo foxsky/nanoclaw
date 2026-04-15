@@ -49,3 +49,34 @@ describe('semantic-audit type surface', () => {
     expect(d.intentMatches).toBe(false);
   });
 });
+
+import { extractScheduledAtValue } from './semantic-audit.js';
+
+describe('extractScheduledAtValue', () => {
+  it('parses the canonical reagendada string', () => {
+    const r = extractScheduledAtValue(
+      '{"changes":["Reunião reagendada para 17/04/2026 às 11:00"]}',
+    );
+    expect(r).toBe('2026-04-17T11:00');
+  });
+
+  it('parses single-digit day/month with zero-padding', () => {
+    const r = extractScheduledAtValue(
+      '{"changes":["Reunião reagendada para 3/5/2026 às 8:30"]}',
+    );
+    expect(r).toBe('2026-05-03T08:30');
+  });
+
+  it('returns null when no reagendada phrase present', () => {
+    const r = extractScheduledAtValue('{"changes":["Prazo definido: 2026-04-15"]}');
+    expect(r).toBeNull();
+  });
+
+  it('returns null on malformed details JSON', () => {
+    expect(extractScheduledAtValue('not json{')).toBeNull();
+  });
+
+  it('returns null on empty/undefined input', () => {
+    expect(extractScheduledAtValue('')).toBeNull();
+  });
+});
