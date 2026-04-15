@@ -34,6 +34,40 @@ export interface SemanticDeviation {
   rawResponse: string;
 }
 
+function resolveTimezoneOrUtc(tz: string): string {
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: tz });
+    return tz;
+  } catch {
+    return 'UTC';
+  }
+}
+
+export function deriveContextHeader(
+  isoTimestamp: string,
+  boardTimezone: string,
+): { today: string; weekday: string } {
+  const tz = resolveTimezoneOrUtc(boardTimezone);
+  const at = new Date(isoTimestamp);
+  const dateFmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const wkFmt = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: tz,
+    weekday: 'long',
+  });
+  const parts = Object.fromEntries(
+    dateFmt.formatToParts(at).map((p) => [p.type, p.value]),
+  );
+  return {
+    today: `${parts.year}-${parts.month}-${parts.day}`,
+    weekday: wkFmt.format(at),
+  };
+}
+
 const REAGENDADA_PATTERN =
   /Reunião reagendada para (\d{1,2})\/(\d{1,2})\/(\d{4}) às (\d{1,2}):(\d{2})/;
 

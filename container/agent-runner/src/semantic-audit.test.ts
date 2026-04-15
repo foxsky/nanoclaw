@@ -80,3 +80,25 @@ describe('extractScheduledAtValue', () => {
     expect(extractScheduledAtValue('')).toBeNull();
   });
 });
+
+import { deriveContextHeader } from './semantic-audit.js';
+
+describe('deriveContextHeader', () => {
+  it('gives today + pt-BR weekday for a Fortaleza timestamp', () => {
+    // 2026-04-14T11:03:37.000Z is 08:03 local in America/Fortaleza (UTC-3) — still Tuesday.
+    const h = deriveContextHeader('2026-04-14T11:03:37.000Z', 'America/Fortaleza');
+    expect(h).toEqual({ today: '2026-04-14', weekday: 'terça-feira' });
+  });
+
+  it('handles a UTC day boundary that sits on the previous local day', () => {
+    // 2026-04-15T02:00:00Z is 2026-04-14 23:00 in Fortaleza — still Tuesday.
+    const h = deriveContextHeader('2026-04-15T02:00:00.000Z', 'America/Fortaleza');
+    expect(h).toEqual({ today: '2026-04-14', weekday: 'terça-feira' });
+  });
+
+  it('falls back to UTC on invalid timezone', () => {
+    const h = deriveContextHeader('2026-04-14T14:00:00.000Z', 'Not/A_Zone');
+    expect(h.today).toBe('2026-04-14');
+    expect(h.weekday).toBe('terça-feira');
+  });
+});
