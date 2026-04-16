@@ -365,7 +365,7 @@ export async function runSemanticAudit(
 
 export function writeDryRunLog(
   deviations: SemanticDeviation[],
-  rootDir = '/workspace/store/audit',
+  rootDir = '/workspace/audit',
   now: Date = new Date(),
 ): void {
   if (deviations.length === 0) return;

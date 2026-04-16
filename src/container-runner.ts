@@ -90,6 +90,8 @@ const CORE_AGENT_RUNNER_FILES = [
   'ipc-tooling.ts',
   'runtime-config.ts',
   'taskflow-engine.ts',
+  'tz-util.ts',
+  'semantic-audit.ts',
   'db-util.ts',
   'embedding-reader.ts',
   'context-reader.ts',
@@ -197,6 +199,18 @@ function buildVolumeMounts(
       readonly: true,
     });
   }
+
+  // Audit output (read-write, needed by semantic-audit dry-run NDJSON logs).
+  // Separate mount instead of making /workspace/store writable — store holds
+  // WhatsApp auth creds and messages.db; containers should not be able to
+  // mutate those.
+  const auditPath = path.join(DATA_DIR, 'audit');
+  fs.mkdirSync(auditPath, { recursive: true });
+  mounts.push({
+    hostPath: auditPath,
+    containerPath: '/workspace/audit',
+    readonly: false,
+  });
 
   // Per-group Claude sessions directory (isolated from other groups)
   // Each group gets their own .claude/ to prevent cross-group session access
