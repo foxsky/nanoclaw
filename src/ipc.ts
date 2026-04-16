@@ -740,8 +740,12 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
   const NOTIF_HOLD_WINDOW_MS = 5_000;
   const pendingNotifications = new Map<string, PendingNotification[]>();
 
-  function isTaskflowNotification(text: string): boolean {
-    return text.startsWith('🔔');
+  function isBufferableNotification(text: string, chatJid: string): boolean {
+    // Only buffer group-targeted TaskFlow notifications (not DMs, not user messages).
+    // DM notifications (chatJid ending @s.whatsapp.net) must be sent immediately —
+    // the flush path only handles group auth.
+    if (chatJid.endsWith('@s.whatsapp.net')) return false;
+    return /^🔔 \*(?:Atualização|Nova tarefa|Tarefa reatribuída|Lembrete)/.test(text);
   }
 
   function extractNotifGroupKey(sourceGroup: string, chatJid: string): string {
@@ -787,8 +791,11 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               if (data.type === 'message' && data.chatJid && data.text) {
-                // Hold TaskFlow notification messages for consolidation
-                if (isTaskflowNotification(data.text)) {
+                // Hold group-targeted TaskFlow notifications for consolidation.
+                // Delete the file immediately to prevent re-buffering on the
+                // next poll (Codex review: held files on disk get re-read every
+                // 1s poll, duplicating the entry in the pending buffer).
+                if (isBufferableNotification(data.text, data.chatJid)) {
                   const key = extractNotifGroupKey(sourceGroup, data.chatJid);
                   if (!pendingNotifications.has(key)) {
                     pendingNotifications.set(key, []);
@@ -801,7 +808,7 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                     isTaskflow,
                     firstSeen: Date.now(),
                   });
-                  // Don't delete yet — will be deleted when flushed
+                  try { fs.unlinkSync(filePath); } catch {}
                   continue;
                 }
                 const authResult = isIpcMessageAuthorized({
@@ -1045,12 +1052,7 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
         }
       }
 
-      // Delete all held IPC files
-      for (const p of pending) {
-        try {
-          fs.unlinkSync(p.filePath);
-        } catch {}
-      }
+      // Files were already deleted at buffer time (prevents re-buffering).
       pendingNotifications.delete(key);
     }
 
