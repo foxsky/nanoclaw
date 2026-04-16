@@ -495,6 +495,10 @@ async function runQuery(
           args: [mcpServerPath],
           env: buildNanoclawMcpEnv(containerInput),
         },
+        qmd: {
+          type: 'http',
+          url: 'http://host.docker.internal:8182/mcp',
+        },
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],

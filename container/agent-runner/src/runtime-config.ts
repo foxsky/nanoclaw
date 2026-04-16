@@ -56,6 +56,7 @@ export const NANOCLAW_ALLOWED_TOOLS = [
   'NotebookEdit',
   'mcp__nanoclaw__*',
   'mcp__sqlite__*',
+  'mcp__qmd__*',
 ] as const;
 
 export function buildNanoclawMcpEnv(
