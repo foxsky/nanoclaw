@@ -349,7 +349,7 @@ describe('runSemanticAudit', () => {
     expect(result.deviations[0].confidence).toBe('high');
     expect(result.deviations[0].userMessage).toContain('quinta-feira');
     expect(result.deviations[0].storedValue).toBe('2026-04-17T11:00');
-    expect(result.counters).toMatchObject({ examined: 1, noTrigger: 0, boardMapFail: 0, ollamaFail: 0, parseFail: 0, skippedCasual: 0 });
+    expect(result.counters).toMatchObject({ examined: 1, noTrigger: 0, boardMapFail: 0, ollamaFail: 0, parseFail: 0, skippedCasual: 0, skippedNoResponse: 0 });
 
     tf.close();
     msg.close();
@@ -714,7 +714,7 @@ describe('runResponseAudit', () => {
     tf.close(); msg.close();
   });
 
-  it('skips interactions with no bot response (already covered by noResponse auditor)', async () => {
+  it('counts skippedNoResponse when bot never replies to a user message', async () => {
     const tf = new Database(':memory:');
     tf.exec(`
       CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT, group_folder TEXT, parent_board_id TEXT);
@@ -738,19 +738,20 @@ describe('runResponseAudit', () => {
     });
 
     expect(result.counters.examined).toBe(0);
+    expect(result.counters.skippedNoResponse).toBe(1);
     expect(result.deviations).toEqual([]);
     expect(global.fetch).not.toHaveBeenCalled();
     tf.close(); msg.close();
   });
 
-  it('pairs each bot response with only ONE user message (dedup)', async () => {
-    // 3 user messages in 10s, then 1 bot response — only the first user
-    // message should be paired (the other two share the same bot response
-    // timestamp and are skipped by the pairedBotTimestamps guard).
+  it('collapses a burst of user messages into ONE interaction with concatenated content', async () => {
+    // 3 user messages in 10s, then 1 bot response — collapse into a single
+    // audited interaction whose userContent includes ALL three messages,
+    // so the decisive intent (often in msg 2 or 3) is never dropped.
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
       json: async () => ({
-        response: '{"intent_matches":true,"deviation":null,"confidence":"high"}',
+        response: '{"intent_matches":false,"deviation":"bot ignored corrections","confidence":"high"}',
       }),
     });
 
@@ -768,8 +769,8 @@ describe('runResponseAudit', () => {
       CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
       INSERT INTO registered_groups VALUES ('120363409@g.us', 'burst-group', 'Burst', 1);
       INSERT INTO messages VALUES ('u1', '120363409@g.us', '558@s.whatsapp.net', 'Alice', 'primeiro pedido', '2026-04-15T10:00:00.000Z', 0, 0);
-      INSERT INTO messages VALUES ('u2', '120363409@g.us', '558@s.whatsapp.net', 'Alice', 'complemento', '2026-04-15T10:00:05.000Z', 0, 0);
-      INSERT INTO messages VALUES ('u3', '120363409@g.us', '558@s.whatsapp.net', 'Alice', 'mais detalhes', '2026-04-15T10:00:10.000Z', 0, 0);
+      INSERT INTO messages VALUES ('u2', '120363409@g.us', '558@s.whatsapp.net', 'Alice', 'na verdade M5 não M3', '2026-04-15T10:00:05.000Z', 0, 0);
+      INSERT INTO messages VALUES ('u3', '120363409@g.us', '558@s.whatsapp.net', 'Alice', 'para quinta-feira', '2026-04-15T10:00:10.000Z', 0, 0);
       INSERT INTO messages VALUES ('b1', '120363409@g.us', 'bot', 'Case', 'Resposta consolidada...', '2026-04-15T10:01:00.000Z', 1, 1);
     `);
 
@@ -779,10 +780,18 @@ describe('runResponseAudit', () => {
       ollamaHost: 'http://ollama:11434', ollamaModel: 'test-model:fake',
     });
 
-    // Only one pair should be examined — the first user message paired with the bot response.
-    // The other two see the same bot timestamp and are skipped.
     expect(result.counters.examined).toBe(1);
     expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(result.deviations).toHaveLength(1);
+    // The audited user content must include ALL three messages
+    expect(result.deviations[0].userMessage).toContain('primeiro pedido');
+    expect(result.deviations[0].userMessage).toContain('na verdade M5 não M3');
+    expect(result.deviations[0].userMessage).toContain('para quinta-feira');
+    // Prompt sent to Ollama must also contain all three
+    const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
+    expect(body.prompt).toContain('primeiro pedido');
+    expect(body.prompt).toContain('na verdade M5 não M3');
+    expect(body.prompt).toContain('para quinta-feira');
     tf.close(); msg.close();
   });
 
@@ -843,6 +852,165 @@ describe('runResponseAudit', () => {
     expect(result.counters.examined).toBe(0);
     expect(result.counters.skippedCasual).toBe(1);
     expect(global.fetch).not.toHaveBeenCalled();
+    tf.close(); msg.close();
+  });
+
+  it('anchors response deviations to the BOT timestamp and stores the audited excerpt', async () => {
+    const longBotResp = 'A'.repeat(1000) + ' PRAZO: 2026-04-20 ' + 'B'.repeat(1000);
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        response: '{"intent_matches":false,"deviation":"desvio","confidence":"high"}',
+      }),
+    });
+
+    const tf = new Database(':memory:');
+    tf.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT, group_folder TEXT, parent_board_id TEXT);
+      CREATE TABLE board_groups (board_id TEXT, group_jid TEXT, group_folder TEXT, PRIMARY KEY (board_id, group_folder));
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+      INSERT INTO boards VALUES ('board-anchor', '120363412@g.us', 'anchor-group', NULL);
+      INSERT INTO board_runtime_config VALUES ('board-anchor', 'America/Fortaleza');
+    `);
+    const msg = new Database(':memory:');
+    msg.prepare(
+      `CREATE TABLE messages (id TEXT, chat_jid TEXT, sender TEXT, sender_name TEXT, content TEXT, timestamp TEXT, is_from_me INTEGER, is_bot_message INTEGER DEFAULT 0, PRIMARY KEY (id, chat_jid));`,
+    ).run();
+    msg.prepare(
+      `CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);`,
+    ).run();
+    msg.prepare(
+      `INSERT INTO registered_groups VALUES ('120363412@g.us', 'anchor-group', 'Anchor', 1);`,
+    ).run();
+    msg.prepare(
+      `INSERT INTO messages VALUES ('u1', '120363412@g.us', '558@s.whatsapp.net', 'Alice', 'qual o prazo de T5?', '2026-04-15T10:00:00.000Z', 0, 0);`,
+    ).run();
+    msg.prepare(
+      `INSERT INTO messages VALUES ('b1', '120363412@g.us', 'bot', 'Case', ?, '2026-04-15T10:01:30.000Z', 1, 1);`,
+    ).run(longBotResp);
+
+    const result = await runResponseAudit({
+      msgDb: msg, tfDb: tf,
+      period: { startIso: '2026-04-15T00:00:00.000Z', endIso: '2026-04-16T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434', ollamaModel: 'test-model:fake',
+    });
+
+    expect(result.deviations).toHaveLength(1);
+    const dev = result.deviations[0];
+    // Deviation is about the bot's response, so .at must match the bot timestamp
+    expect(dev.at).toBe('2026-04-15T10:01:30.000Z');
+    // responsePreview must use truncateKeepEnds (head + tail), not a head-only slice.
+    // The truncated form contains the separator sentinel.
+    expect(dev.responsePreview).toContain('[...truncado...]');
+    // And must preserve the tail (where the real answer lived)
+    expect(dev.responsePreview).toContain('BBBBB');
+    tf.close(); msg.close();
+  });
+
+  it('resolves board deterministically via group_jid (ignores wrong group_folder row)', async () => {
+    // Two boards share a similar group_folder; only one has the matching
+    // group_jid. Resolution must pick the group_jid match, not whichever
+    // group_folder row SQLite returns first.
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        response: '{"intent_matches":false,"deviation":"x","confidence":"high"}',
+      }),
+    });
+
+    const tf = new Database(':memory:');
+    tf.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT, group_folder TEXT, parent_board_id TEXT);
+      CREATE TABLE board_groups (board_id TEXT, group_jid TEXT, group_folder TEXT, PRIMARY KEY (board_id, group_folder));
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+      -- wrong-jid board uses same folder (legacy rename scenario)
+      INSERT INTO boards VALUES ('board-old', 'OLD-JID@g.us', 'shared-folder', NULL);
+      INSERT INTO boards VALUES ('board-new', '120363413@g.us', 'shared-folder', NULL);
+      INSERT INTO board_runtime_config VALUES ('board-new', 'America/Fortaleza');
+      INSERT INTO board_runtime_config VALUES ('board-old', 'America/Fortaleza');
+    `);
+    const msg = new Database(':memory:');
+    msg.exec(`
+      CREATE TABLE messages (id TEXT, chat_jid TEXT, sender TEXT, sender_name TEXT, content TEXT, timestamp TEXT, is_from_me INTEGER, is_bot_message INTEGER DEFAULT 0, PRIMARY KEY (id, chat_jid));
+      CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
+      INSERT INTO registered_groups VALUES ('120363413@g.us', 'shared-folder', 'Shared', 1);
+      INSERT INTO messages VALUES ('u1', '120363413@g.us', '558@s.whatsapp.net', 'Alice', 'pergunta real', '2026-04-15T10:00:00.000Z', 0, 0);
+      INSERT INTO messages VALUES ('b1', '120363413@g.us', 'bot', 'Case', 'resposta', '2026-04-15T10:01:00.000Z', 1, 1);
+    `);
+
+    const result = await runResponseAudit({
+      msgDb: msg, tfDb: tf,
+      period: { startIso: '2026-04-15T00:00:00.000Z', endIso: '2026-04-16T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434', ollamaModel: 'test-model:fake',
+    });
+
+    expect(result.deviations).toHaveLength(1);
+    // Must bind to board-new (jid match), not board-old (folder-only match)
+    expect(result.deviations[0].boardId).toBe('board-new');
+    tf.close(); msg.close();
+  });
+
+  it('counts boardMapFail for registered groups with no matching board', async () => {
+    const tf = new Database(':memory:');
+    tf.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT, group_folder TEXT, parent_board_id TEXT);
+      CREATE TABLE board_groups (board_id TEXT, group_jid TEXT, group_folder TEXT, PRIMARY KEY (board_id, group_folder));
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+    `);
+    const msg = new Database(':memory:');
+    msg.exec(`
+      CREATE TABLE messages (id TEXT, chat_jid TEXT, sender TEXT, sender_name TEXT, content TEXT, timestamp TEXT, is_from_me INTEGER, is_bot_message INTEGER DEFAULT 0, PRIMARY KEY (id, chat_jid));
+      CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
+      INSERT INTO registered_groups VALUES ('120363414@g.us', 'orphan-folder', 'Orphan', 1);
+    `);
+
+    const result = await runResponseAudit({
+      msgDb: msg, tfDb: tf,
+      period: { startIso: '2026-04-15T00:00:00.000Z', endIso: '2026-04-16T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434', ollamaModel: 'test-model:fake',
+    });
+
+    expect(result.counters.boardMapFail).toBe(1);
+    expect(result.counters.examined).toBe(0);
+    tf.close(); msg.close();
+  });
+
+  it('resolves via board_groups join table when boards.group_jid missing', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        response: '{"intent_matches":true,"deviation":null,"confidence":"high"}',
+      }),
+    });
+
+    const tf = new Database(':memory:');
+    tf.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT, group_folder TEXT, parent_board_id TEXT);
+      CREATE TABLE board_groups (board_id TEXT, group_jid TEXT, group_folder TEXT, PRIMARY KEY (board_id, group_folder));
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+      -- board exists but with a DIFFERENT primary group_jid; secondary group
+      -- is wired via board_groups join table.
+      INSERT INTO boards VALUES ('board-multi', 'PRIMARY-JID@g.us', 'primary', NULL);
+      INSERT INTO board_groups VALUES ('board-multi', '120363415@g.us', 'secondary-folder');
+      INSERT INTO board_runtime_config VALUES ('board-multi', 'America/Fortaleza');
+    `);
+    const msg = new Database(':memory:');
+    msg.exec(`
+      CREATE TABLE messages (id TEXT, chat_jid TEXT, sender TEXT, sender_name TEXT, content TEXT, timestamp TEXT, is_from_me INTEGER, is_bot_message INTEGER DEFAULT 0, PRIMARY KEY (id, chat_jid));
+      CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
+      INSERT INTO registered_groups VALUES ('120363415@g.us', 'secondary-folder', 'Secondary', 1);
+      INSERT INTO messages VALUES ('u1', '120363415@g.us', '558@s.whatsapp.net', 'Alice', 'pergunta', '2026-04-15T10:00:00.000Z', 0, 0);
+      INSERT INTO messages VALUES ('b1', '120363415@g.us', 'bot', 'Case', 'resposta', '2026-04-15T10:01:00.000Z', 1, 1);
+    `);
+
+    const result = await runResponseAudit({
+      msgDb: msg, tfDb: tf,
+      period: { startIso: '2026-04-15T00:00:00.000Z', endIso: '2026-04-16T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434', ollamaModel: 'test-model:fake',
+    });
+
+    expect(result.counters.examined).toBe(1);
+    expect(result.counters.boardMapFail).toBe(0);
     tf.close(); msg.close();
   });
 });

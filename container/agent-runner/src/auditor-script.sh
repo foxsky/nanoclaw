@@ -641,6 +641,8 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
             `Semantic audit — responses (${mode}, ${ollamaModel}): ` +
             `examined=${responseAudit.counters.examined} ` +
             `skippedCasual=${responseAudit.counters.skippedCasual} ` +
+            `skippedNoResponse=${responseAudit.counters.skippedNoResponse} ` +
+            `boardMapFail=${responseAudit.counters.boardMapFail} ` +
             `ollamaFail=${responseAudit.counters.ollamaFail} ` +
             `parseFail=${responseAudit.counters.parseFail} ` +
             `deviations=${responseAudit.deviations.length}`,
@@ -653,24 +655,42 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
             writeDryRunLog(allDeviations);
           } else if (mode === 'enabled') {
             // Attach deviations to existing boards AND surface boards that
-            // only have semantic deviations (no heuristic flags). Without this,
-            // a board with 0 heuristic issues + N semantic issues gets dropped.
+            // only have semantic deviations — without this, a board with 0
+            // heuristic issues + N semantic issues gets dropped from the report.
+            const devsByBoard = new Map();
+            for (const d of allDeviations) {
+              const arr = devsByBoard.get(d.boardId) || [];
+              arr.push(d);
+              devsByBoard.set(d.boardId, arr);
+            }
             const boardIdSet = new Set(boards.map(b => b.boardId));
             for (const board of boards) {
-              board.semanticDeviations = allDeviations.filter(d => d.boardId === board.boardId);
-              if (board.semanticDeviations.length > 0) {
-                result.data.summary.totalFlagged += board.semanticDeviations.length;
-              }
+              board.semanticDeviations = devsByBoard.get(board.boardId) || [];
+              result.data.summary.totalFlagged += board.semanticDeviations.length;
             }
-            // Add boards that only have semantic deviations
-            const semanticOnlyBoardIds = new Set(
-              allDeviations.map(d => d.boardId).filter(id => !boardIdSet.has(id)),
-            );
-            for (const boardId of semanticOnlyBoardIds) {
-              const devs = allDeviations.filter(d => d.boardId === boardId);
+            // Synthesize boards for deviations whose boardId isn't in the
+            // heuristic report yet. Look up real group/folder labels so the
+            // report shows "SECI-SECTI" rather than a derived "board-X" → "X".
+            const boardMetaStmt = tfDb.prepare('SELECT group_jid, group_folder FROM boards WHERE id = ?');
+            const groupMetaStmt = msgDb.prepare('SELECT folder, name FROM registered_groups WHERE jid = ?');
+            for (const [boardId, devs] of devsByBoard) {
+              if (boardIdSet.has(boardId)) continue;
+              let folder = boardId.replace(/^board-/, '');
+              let groupName = folder;
+              const boardMeta = boardMetaStmt.get(boardId);
+              if (boardMeta && boardMeta.group_jid) {
+                const groupMeta = groupMetaStmt.get(boardMeta.group_jid);
+                if (groupMeta) {
+                  folder = groupMeta.folder;
+                  groupName = groupMeta.name || groupMeta.folder;
+                } else if (boardMeta.group_folder) {
+                  folder = boardMeta.group_folder;
+                  groupName = boardMeta.group_folder;
+                }
+              }
               boards.push({
-                group: boardId,
-                folder: boardId.replace(/^board-/, ''),
+                group: groupName,
+                folder,
                 boardId,
                 totalUserMessages: 0,
                 flaggedInteractions: 0,
@@ -682,8 +702,8 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
                 semanticDeviations: devs,
               });
               result.data.summary.totalFlagged += devs.length;
-              if (!result.data.summary.boardsWithIssues.includes(boardId.replace(/^board-/, ''))) {
-                result.data.summary.boardsWithIssues.push(boardId.replace(/^board-/, ''));
+              if (!result.data.summary.boardsWithIssues.includes(folder)) {
+                result.data.summary.boardsWithIssues.push(folder);
               }
             }
           }
