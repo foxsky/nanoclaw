@@ -364,6 +364,23 @@ function readEmbeddingConfig(): {
   };
 }
 
+function readSemanticAuditConfig(): {
+  mode: string;
+  cloud: string;
+  model: string;
+} {
+  const env = readEnvFile([
+    'NANOCLAW_SEMANTIC_AUDIT_MODE',
+    'NANOCLAW_SEMANTIC_AUDIT_CLOUD',
+    'NANOCLAW_SEMANTIC_AUDIT_MODEL',
+  ]);
+  return {
+    mode: env.NANOCLAW_SEMANTIC_AUDIT_MODE ?? '',
+    cloud: env.NANOCLAW_SEMANTIC_AUDIT_CLOUD ?? '',
+    model: env.NANOCLAW_SEMANTIC_AUDIT_MODEL ?? '',
+  };
+}
+
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
@@ -494,6 +511,25 @@ export async function runContainerAgent(
       `OLLAMA_HOST=${embedCfg.ollamaHost}`,
       '-e',
       `EMBEDDING_MODEL=${embedCfg.embeddingModel}`,
+    );
+  }
+
+  // Semantic audit config — propagate to container so auditor-script.sh can
+  // activate the LLM-based meeting-reschedule fact-checker when opted in.
+  const semAuditCfg = readSemanticAuditConfig();
+  if (semAuditCfg.mode) {
+    containerArgs.splice(containerArgs.length - 1, 0,
+      '-e', `NANOCLAW_SEMANTIC_AUDIT_MODE=${semAuditCfg.mode}`,
+    );
+  }
+  if (semAuditCfg.cloud) {
+    containerArgs.splice(containerArgs.length - 1, 0,
+      '-e', `NANOCLAW_SEMANTIC_AUDIT_CLOUD=${semAuditCfg.cloud}`,
+    );
+  }
+  if (semAuditCfg.model) {
+    containerArgs.splice(containerArgs.length - 1, 0,
+      '-e', `NANOCLAW_SEMANTIC_AUDIT_MODEL=${semAuditCfg.model}`,
     );
   }
 

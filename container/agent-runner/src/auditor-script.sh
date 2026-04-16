@@ -585,9 +585,6 @@ for (const group of groups) {
   }
 }
 
-msgDb.close();
-tfDb.close();
-
 const hasIssues = totalIssues > 0;
 
 const result = {
@@ -605,7 +602,57 @@ const result = {
   },
 };
 
-console.log(JSON.stringify(result));
+(async () => {
+  try {
+    const mode = process.env.NANOCLAW_SEMANTIC_AUDIT_MODE;
+    if (mode === 'dryrun' || mode === 'enabled') {
+      try {
+        const { runSemanticAudit, writeDryRunLog } = await import('/app/dist/semantic-audit.js');
+        const ollamaHost = process.env.OLLAMA_HOST || '';
+        // Default = local (data-locality first). Cloud requires explicit opt-in.
+        // qwen3-coder:latest disqualified — fails weekday derivation even with CoT.
+        const cloudOptIn = process.env.NANOCLAW_SEMANTIC_AUDIT_CLOUD === '1';
+        const defaultModel = cloudOptIn
+          ? 'minimax-m2.7:cloud'
+          : 'qwen3.5:35b-a3b-coding-nvfp4';
+        const ollamaModel =
+          process.env.NANOCLAW_SEMANTIC_AUDIT_MODEL || defaultModel;
+        if (ollamaHost) {
+          const audit = await runSemanticAudit({
+            msgDb, tfDb, period, ollamaHost, ollamaModel,
+          });
+          console.error(
+            `Semantic audit (${mode}, ${ollamaModel}): ` +
+            `examined=${audit.counters.examined} ` +
+            `noTrigger=${audit.counters.noTrigger} ` +
+            `boardMapFail=${audit.counters.boardMapFail} ` +
+            `ollamaFail=${audit.counters.ollamaFail} ` +
+            `parseFail=${audit.counters.parseFail} ` +
+            `deviations=${audit.deviations.length}`,
+          );
+          if (mode === 'dryrun') {
+            writeDryRunLog(audit.deviations);
+          } else if (mode === 'enabled') {
+            for (const board of boards) {
+              board.semanticDeviations = audit.deviations.filter(d => d.boardId === board.boardId);
+              if (board.semanticDeviations.length > 0) {
+                result.data.summary.totalFlagged += board.semanticDeviations.length;
+              }
+            }
+          }
+        } else {
+          console.error('Semantic audit skipped: OLLAMA_HOST not set');
+        }
+      } catch (err) {
+        console.error('Semantic audit failed:', err && err.message ? err.message : err);
+      }
+    }
+  } finally {
+    try { msgDb.close(); } catch {}
+    try { tfDb.close(); } catch {}
+    console.log(JSON.stringify(result));
+  }
+})();
 SCRIPT_EOF
 
 NODE_PATH=/app/node_modules node /tmp/auditor.js
