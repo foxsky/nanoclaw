@@ -1934,13 +1934,18 @@ export class TaskflowEngine {
 
   private deduplicateNotificationsForParent(
     notifications: NotificationEntry[],
-    parentGroupJid: string,
+    _parentGroupJid: string,
   ): void {
-    const deduped = notifications.filter(
-      (n) => n.notification_group_jid !== parentGroupJid,
-    );
+    // When a parent_notification fires, it broadcasts the change to the parent
+    // board's WhatsApp group. ALL person-targeted notifications for the same
+    // mutation are redundant — the creator/manager IS a member of the parent
+    // group and will see the parent_notification. Clearing the array prevents
+    // double-delivery both when notification_group_jid equals the parent group
+    // (Miguel pattern: same-group redirect) AND when it points to a child
+    // group (Giovanni pattern: cross-group redirect where the person is in
+    // both groups). The old approach (filter only exact-group matches) missed
+    // the cross-group case.
     notifications.length = 0;
-    notifications.push(...deduped);
   }
 
   private meetingNotificationRecipients(task: any): Omit<NotificationEntry, 'message'>[] {

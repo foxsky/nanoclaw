@@ -282,12 +282,19 @@ const handleProvisionChildBoard: IpcHandler = async (
           )
           .run(parentBoard.id, unifiedId, existingElsewhere!.child_board_id);
 
-        // Set notification_group_jid
-        tfDb
-          .prepare(
-            `UPDATE board_people SET notification_group_jid = ? WHERE board_id = ? AND person_id = ?`,
-          )
-          .run(existingElsewhere!.group_jid, parentBoard.id, unifiedId);
+        // Set notification_group_jid — but only if the target group differs
+        // from the parent board's own group. Redirecting to the same group is
+        // always redundant and used to cause double-delivery (the person gets
+        // both the board-level parent_notification AND a person-targeted copy
+        // in the same WhatsApp group).
+        const targetGroupJid = existingElsewhere!.group_jid;
+        if (targetGroupJid && targetGroupJid !== parentBoard.group_jid) {
+          tfDb
+            .prepare(
+              `UPDATE board_people SET notification_group_jid = ? WHERE board_id = ? AND person_id = ?`,
+            )
+            .run(targetGroupJid, parentBoard.id, unifiedId);
+        }
 
         // Retroactively link unlinked tasks
         tfDb

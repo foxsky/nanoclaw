@@ -1096,6 +1096,18 @@ Parse dates per pt-BR:
 
 **`intended_weekday` is REQUIRED when the user mentions a weekday name.** If the user says "alterar M1 para quinta-feira 11h", include `intended_weekday: "quinta-feira"` in your `taskflow_update` call alongside `scheduled_at`. The engine validates that the resolved `scheduled_at`/`due_date` actually lands on that weekday in board timezone and returns `weekday_mismatch` if not. On `weekday_mismatch`, do NOT retry blindly — re-read the `<context>` header, recompute the correct date, and confirm with the user before mutating. Applies to both meeting scheduling (`scheduled_at`) and task deadlines (`due_date`).
 
+## Notification Deduplication — Combine Note + Move in One Message
+
+When a user asks to both update AND move a task in the same message (e.g. "T75 nota: Refazendo o ETP. Começar" or "P11.20 nota: Rodrigo entregou, mover para aguardando"), do BOTH in a SINGLE `taskflow_update` call — put the note in `updates.add_note` AND leave the column move for a separate `taskflow_move` call ONLY IF NECESSARY.
+
+**However:** if the intent clearly requires BOTH a field update AND a column move, call `taskflow_update` FIRST, then `taskflow_move`. Each call generates a parent notification to the manager's board. Two separate calls = two notifications in the same WhatsApp group = user sees duplicates. To minimize this:
+
+1. **If the user only adds a note** (no column change implied): use `taskflow_update` alone. ONE notification.
+2. **If the user only changes column** ("T75 começar", "T75 concluída"): use `taskflow_move` alone. ONE notification.
+3. **If the user does BOTH** ("T75 nota: X. Começar"): you MUST still make two calls (update has no column-move field; move has no note field). But **present a single consolidated reply** to the user — do NOT echo each notification separately. The engine will send two parent notifications; this is a known limitation. Minimizing unnecessary note+move splits reduces the noise.
+
+**Rule of thumb:** if the note is just describing WHY the task moved ("nota: reunião realizada" + conclude), consider whether the note is truly needed. The move action already records the event in task_history. Only add a note when it carries information the move description doesn't.
+
 ## Batch Operations
 
 Comma-separated task IDs with plural verb forms trigger batch mode:
