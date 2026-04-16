@@ -404,6 +404,91 @@ describe('runSemanticAudit', () => {
     msg.close();
   });
 
+  it('increments noTrigger when no user message exists in the 10-min window', async () => {
+    // Giovanni is registered but the seed has no message in the window
+    // before 2026-04-14T11:04:11. Use a mutation with a board_people match
+    // but outside the message window.
+    const tf = new Database(':memory:');
+    tf.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY, parent_board_id TEXT);
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+      CREATE TABLE board_people (board_id TEXT, person_id TEXT, name TEXT, PRIMARY KEY (board_id, person_id));
+      CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT, task_id TEXT, action TEXT, by TEXT, at TEXT, details TEXT);
+      INSERT INTO boards VALUES ('board-seci-taskflow', NULL);
+      INSERT INTO board_runtime_config VALUES ('board-seci-taskflow', 'America/Fortaleza');
+      INSERT INTO board_people VALUES ('board-seci-taskflow', 'giovanni', 'Carlos Giovanni');
+      INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES
+        ('board-seci-taskflow', 'M1', 'updated', 'giovanni',
+         '2026-04-14T11:04:11.450Z',
+         '{"changes":["Reunião reagendada para 17/04/2026 às 11:00"]}');
+    `);
+    const msg = new Database(':memory:');
+    msg.exec(`
+      CREATE TABLE messages (id TEXT, chat_jid TEXT, sender TEXT, sender_name TEXT, content TEXT, timestamp TEXT, is_from_me INTEGER, is_bot_message INTEGER DEFAULT 0, PRIMARY KEY (id, chat_jid));
+      CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
+      INSERT INTO registered_groups VALUES ('120363407@g.us', 'seci-taskflow', 'SECI-SECTI', 1);
+      -- Message is BEFORE the 10-min window (mutation at 11:04:11, window = 10:54:11..11:04:11)
+      INSERT INTO messages VALUES ('m-stale', '120363407@g.us', '558688@s.whatsapp.net', 'Carlos Giovanni', 'some old msg', '2026-04-14T10:00:00.000Z', 0, 0);
+    `);
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ response: '{"intent_matches":true,"deviation":null,"confidence":"high"}' }),
+    });
+    const result = await runSemanticAudit({
+      msgDb: msg,
+      tfDb: tf,
+      period: { startIso: '2026-04-14T00:00:00.000Z', endIso: '2026-04-15T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434',
+      ollamaModel: 'test-model:fake',
+    });
+    expect(result.counters.examined).toBe(1);
+    expect(result.counters.noTrigger).toBe(1);
+    expect(result.counters.boardMapFail).toBe(0);
+    expect(result.deviations[0]?.userMessage).toBeNull();
+    tf.close();
+    msg.close();
+  });
+
+  it('increments boardMapFail when board cannot resolve to a group jid', async () => {
+    const tf = new Database(':memory:');
+    tf.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY, parent_board_id TEXT);
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+      CREATE TABLE board_people (board_id TEXT, person_id TEXT, name TEXT, PRIMARY KEY (board_id, person_id));
+      CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT, task_id TEXT, action TEXT, by TEXT, at TEXT, details TEXT);
+      INSERT INTO boards VALUES ('board-orphan', NULL);
+      INSERT INTO board_runtime_config VALUES ('board-orphan', 'America/Fortaleza');
+      INSERT INTO board_people VALUES ('board-orphan', 'giovanni', 'Carlos Giovanni');
+      INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES
+        ('board-orphan', 'M1', 'updated', 'giovanni',
+         '2026-04-14T11:04:11.450Z',
+         '{"changes":["Reunião reagendada para 17/04/2026 às 11:00"]}');
+    `);
+    const msg = new Database(':memory:');
+    msg.exec(`
+      CREATE TABLE messages (id TEXT, chat_jid TEXT, sender TEXT, sender_name TEXT, content TEXT, timestamp TEXT, is_from_me INTEGER, is_bot_message INTEGER DEFAULT 0, PRIMARY KEY (id, chat_jid));
+      CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
+      -- No registered_groups row for folder 'orphan' — the two-step lookup fails.
+    `);
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ response: '{"intent_matches":true,"deviation":null,"confidence":"high"}' }),
+    });
+    const result = await runSemanticAudit({
+      msgDb: msg,
+      tfDb: tf,
+      period: { startIso: '2026-04-14T00:00:00.000Z', endIso: '2026-04-15T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434',
+      ollamaModel: 'test-model:fake',
+    });
+    expect(result.counters.examined).toBe(1);
+    expect(result.counters.boardMapFail).toBe(1);
+    expect(result.counters.noTrigger).toBe(0);
+    expect(result.deviations[0]?.userMessage).toBeNull();
+    tf.close();
+    msg.close();
+  });
+
   it('skips a mutation when Ollama returns a non-OK response, increments ollamaFail', async () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: false,

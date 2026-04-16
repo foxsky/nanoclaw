@@ -3,6 +3,9 @@ import path from 'path';
 import type { Database as BetterSqliteDB } from 'better-sqlite3';
 import { resolveTimezoneOrUtc } from './tz-util.js';
 
+export const CONFIDENCE_VALUES = ['high', 'med', 'low'] as const;
+export type Confidence = (typeof CONFIDENCE_VALUES)[number];
+
 export type SemanticField = 'scheduled_at' | 'due_date' | 'assignee';
 
 export interface QualifyingMutation {
@@ -35,7 +38,7 @@ export interface SemanticDeviation {
   storedValue: string | null;
   intentMatches: boolean;
   deviation: string | null;
-  confidence: 'high' | 'med' | 'low';
+  confidence: Confidence;
   rawResponse: string;
 }
 
@@ -134,7 +137,7 @@ export function buildPrompt(
 export function parseOllamaResponse(raw: string): {
   intentMatches: boolean;
   deviation: string | null;
-  confidence: 'high' | 'med' | 'low';
+  confidence: Confidence;
 } | null {
   if (!raw) return null;
 
@@ -154,13 +157,13 @@ export function parseOllamaResponse(raw: string): {
   if (!parsed || typeof parsed !== 'object') return null;
   const p = parsed as Record<string, unknown>;
   if (typeof p.intent_matches !== 'boolean') return null;
-  if (p.confidence !== 'high' && p.confidence !== 'med' && p.confidence !== 'low') return null;
+  if (!CONFIDENCE_VALUES.includes(p.confidence as Confidence)) return null;
   const deviation = typeof p.deviation === 'string' ? p.deviation : null;
 
   return {
     intentMatches: p.intent_matches,
     deviation,
-    confidence: p.confidence,
+    confidence: p.confidence as Confidence,
   };
 }
 
@@ -291,6 +294,8 @@ export async function runSemanticAudit(
       counters.boardMapFail++;
     } else if (userDisplayName) {
       const windowStart = new Date(new Date(row.at).getTime() - 600_000).toISOString();
+      // LIKE-wildcard escape + triggerStmt query shape must stay in sync with
+      // the self-correction detector in auditor-script.sh (~L420, L552).
       const escaped = userDisplayName.replace(/[\\%_]/g, (c) => '\\' + c);
       const likeName = `%${escaped}%`;
       const tr = triggerStmt.get(groupRow.jid, row.at, windowStart, likeName) as
