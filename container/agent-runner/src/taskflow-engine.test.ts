@@ -675,6 +675,103 @@ describe('TaskflowEngine', () => {
   });
 
   /* ---------------------------------------------------------------- */
+  /*  query: find_person_in_organization                               */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: find_person_in_organization', () => {
+    function seedOrgTree(db: Database.Database) {
+      // Org tree:
+      //   root (seci-secti) ─┬─ child (BOARD_ID = seci-taskflow)
+      //                      ├─ sibling (thiago-taskflow)
+      //                      └─ sibling2 (setec-secti-taskflow)
+      db.exec(
+        `INSERT INTO boards VALUES ('board-root', 'root@g.us', 'seci-secti', 'standard', 0, 2, NULL, NULL);
+         INSERT INTO boards VALUES ('board-sibling', 'sibling@g.us', 'thiago-taskflow', 'standard', 1, 2, 'board-root', NULL);
+         INSERT INTO boards VALUES ('board-sibling2', 'sibling2@g.us', 'setec-secti-taskflow', 'standard', 1, 2, 'board-root', NULL);
+         UPDATE boards SET parent_board_id = 'board-root', hierarchy_level = 1 WHERE id = '${BOARD_ID}';
+         INSERT INTO board_people VALUES ('board-root', 'rafael', 'RAFAEL AMARAL CHAVES', '558699487547', 'Dev', 3, NULL);
+         INSERT INTO board_people VALUES ('board-root', 'thiago', 'Thiago Carvalho', '5586981512111', 'Dev', 3, NULL);
+         INSERT INTO board_people VALUES ('board-sibling', 'thiago', 'Thiago Carvalho', '5586981512111', 'Dev', 3, 'thiago-override@g.us');
+         INSERT INTO board_people VALUES ('board-sibling2', 'rafael', 'RAFAEL AMARAL CHAVES', '558699487547', 'Dev', 3, NULL);`,
+      );
+    }
+
+    it('finds a person by partial name across the org tree', () => {
+      seedOrgTree(db);
+      const r = engine.query({ query: 'find_person_in_organization', search_text: 'Rafael' });
+      expect(r.success).toBe(true);
+      const rows = r.data as Array<{ board_group_folder: string; name: string }>;
+      expect(rows.map((x) => x.board_group_folder).sort()).toEqual([
+        'seci-secti',
+        'setec-secti-taskflow',
+      ]);
+      expect(rows.every((x) => x.name === 'RAFAEL AMARAL CHAVES')).toBe(true);
+    });
+
+    it('handles multiple comma-separated names', () => {
+      seedOrgTree(db);
+      const r = engine.query({
+        query: 'find_person_in_organization',
+        search_text: 'Rafael, Thiago',
+      });
+      expect(r.success).toBe(true);
+      const names = new Set((r.data as any[]).map((x) => x.name));
+      expect(names).toEqual(new Set(['RAFAEL AMARAL CHAVES', 'Thiago Carvalho']));
+      expect((r.data as any[]).length).toBe(4); // 2 Rafael + 2 Thiago
+    });
+
+    it('prefers notification_group_jid over board.group_jid for routing_jid', () => {
+      seedOrgTree(db);
+      const r = engine.query({ query: 'find_person_in_organization', search_text: 'Thiago' });
+      const siblingMatch = (r.data as any[]).find((x) => x.board_group_folder === 'thiago-taskflow');
+      expect(siblingMatch.routing_jid).toBe('thiago-override@g.us');
+      const rootMatch = (r.data as any[]).find((x) => x.board_group_folder === 'seci-secti');
+      expect(rootMatch.routing_jid).toBe('root@g.us');
+    });
+
+    it('is case-insensitive', () => {
+      seedOrgTree(db);
+      const r = engine.query({ query: 'find_person_in_organization', search_text: 'rafael' });
+      expect((r.data as any[]).length).toBe(2);
+    });
+
+    it('returns empty array for unknown names', () => {
+      seedOrgTree(db);
+      const r = engine.query({
+        query: 'find_person_in_organization',
+        search_text: 'NonexistentPerson',
+      });
+      expect(r.success).toBe(true);
+      expect(r.data).toEqual([]);
+    });
+
+    it('errors when search_text is missing', () => {
+      seedOrgTree(db);
+      const r = engine.query({ query: 'find_person_in_organization' });
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/search_text/);
+    });
+
+    it('errors when search_text is only whitespace/commas', () => {
+      seedOrgTree(db);
+      const r = engine.query({
+        query: 'find_person_in_organization',
+        search_text: ' , , ',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/at least one name/);
+    });
+
+    it('searches the current board too (no hierarchy)', () => {
+      // Default test setup has this board with no parent_board_id; the local
+      // people (Alexandre, Giovanni) must still be findable.
+      const r = engine.query({ query: 'find_person_in_organization', search_text: 'Alexandre' });
+      expect((r.data as any[]).length).toBe(1);
+      expect((r.data as any[])[0].name).toBe('Alexandre');
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
   /*  query: month_statistics                                          */
   /* ---------------------------------------------------------------- */
 

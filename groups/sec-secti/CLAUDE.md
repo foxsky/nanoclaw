@@ -357,9 +357,14 @@ Holidays registered here are exactly what the engine checks when it returns `non
 Pass `scheduled_at` as LOCAL time (America/Fortaleza) directly from the user's date/time expression. Do NOT convert to UTC or append `Z` — the engine handles conversion automatically. This is consistent with `schedule_task`'s `schedule_value`, which also uses local time.
 Organizer (assignee) is auto-set to sender. Meetings always start in `next_action`.
 
-**Participant disambiguation:** When a meeting includes participants who are NOT yet registered in `board_people`, you MUST ask before proceeding: *"[Nome] não está cadastrado(a). É membro da equipe (staff) ou participante externo?"*
-- **Staff**: register first via `taskflow_admin register_person` (requires name, phone, role, division), then create the meeting with the `person_id` in `participants`.
-- **External**: create the meeting first without that participant, then add via `add_external_participant` (requires name and phone).
+**Participant disambiguation:** When a meeting includes participants who are NOT yet registered in `board_people` on THIS board, FIRST check whether they exist elsewhere in the organization tree. Call `taskflow_query({ query: 'find_person_in_organization', search_text: 'Nome1, Nome2' })` — it walks from this board to the root and descends into every sibling/descendant board, returning `[{ person_id, name, phone, board_id, board_group_folder, routing_jid }]` for every match.
+
+- **Found in org tree** (1+ matches per requested name): propose reuse before asking for any info. Example: *"Encontrei Rafael (setec-secti, 558...) e Thiago (thiago-taskflow, 558...) na organização. Mando os detalhes para os quadros deles?"* On user confirmation, use `send_message` with each match's `routing_jid` (the engine's per-person delivery target — prefers `notification_group_jid`, falls back to the board's group_jid). Do NOT call `register_person` — they already exist elsewhere, and registering a duplicate on this board would fragment their identity.
+- **Not found** (zero matches for that name): ONLY THEN ask the disambiguation question: *"[Nome] não está cadastrado(a) na organização. É membro da equipe (staff) ou participante externo?"*
+  - **Staff**: register first via `taskflow_admin register_person` (requires name, phone, role, division), then create the meeting with the `person_id` in `participants`.
+  - **External**: create the meeting first without that participant, then add via `add_external_participant` (requires name and phone).
+
+**Applies beyond meetings too:** Whenever the user refers to a person by name for a message-send / notification / assignment action (e.g., *"enviar os detalhes de M1 para Rafael e Thiago"*), run `find_person_in_organization` BEFORE asking for phone numbers or offering registration. This prevents the bot from re-asking for info the org already has on a sister board.
 
 ### Meeting Notes (Agenda / Minutes / Post-Meeting)
 

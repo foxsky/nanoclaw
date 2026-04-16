@@ -1404,6 +1404,33 @@ export class TaskflowEngine {
   }
 
   /**
+   * Every board in the same organization as this board: find the root via
+   * parent_board_id chain, then collect the root + all descendants. Used by
+   * `find_person_in_organization` to search people across the whole org tree,
+   * so the agent can reuse existing contacts before asking to register new ones.
+   */
+  private getOrgBoardIds(): string[] {
+    const lineage = this.getBoardLineage();
+    const root = lineage[lineage.length - 1];
+    const visited = new Set<string>([root]);
+    const queue: string[] = [root];
+    const parentStmt = this.db.prepare(
+      `SELECT id FROM boards WHERE parent_board_id = ?`,
+    );
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      const children = parentStmt.all(current) as Array<{ id: string }>;
+      for (const { id } of children) {
+        if (!visited.has(id)) {
+          visited.add(id);
+          queue.push(id);
+        }
+      }
+    }
+    return [...visited];
+  }
+
+  /**
    * Check if any person registered on this board is a participant or organizer
    * of the given meeting task (which may belong to a different board).
    */
@@ -6143,6 +6170,67 @@ export class TaskflowEngine {
           }
 
           return { success: false, error: `No meeting occurrence found for ${params.task_id} on ${params.at}` };
+        }
+
+        /* ---------- Org-wide person lookup ---------- */
+        /* Walks from this board to the root, then descends into every
+         * board in that subtree, and returns `board_people` rows whose
+         * name contains any of the requested terms. Used before asking the
+         * user for a phone number: if the person already exists elsewhere
+         * in the org tree, the agent can reuse that contact's routing_jid
+         * instead of re-registering. */
+        case 'find_person_in_organization': {
+          if (!params.search_text) {
+            return {
+              success: false,
+              error: 'Missing required parameter: search_text (comma-separated names)',
+            };
+          }
+          const terms = params.search_text
+            .split(',')
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0);
+          if (terms.length === 0) {
+            return { success: false, error: 'search_text must contain at least one name' };
+          }
+
+          const orgBoardIds = this.getOrgBoardIds();
+          if (orgBoardIds.length === 0) {
+            return { success: true, data: [] };
+          }
+          const boardPh = orgBoardIds.map(() => '?').join(',');
+          // Case-insensitive LIKE '%term%' per term, OR'd together.
+          const likeClauses = terms.map(() => 'LOWER(bp.name) LIKE ?').join(' OR ');
+          const likeBinds = terms.map((t) => `%${t.toLowerCase()}%`);
+
+          const rows = this.db
+            .prepare(
+              `SELECT bp.board_id, bp.person_id, bp.name, bp.phone,
+                      bp.notification_group_jid, b.group_jid, b.group_folder
+                 FROM board_people bp
+                 JOIN boards b ON b.id = bp.board_id
+                WHERE bp.board_id IN (${boardPh}) AND (${likeClauses})
+                ORDER BY b.group_folder, bp.name`,
+            )
+            .all(...orgBoardIds, ...likeBinds) as Array<{
+              board_id: string;
+              person_id: string;
+              name: string;
+              phone: string | null;
+              notification_group_jid: string | null;
+              group_jid: string;
+              group_folder: string;
+            }>;
+
+          const matches = rows.map((r) => ({
+            person_id: r.person_id,
+            name: r.name,
+            phone: r.phone,
+            board_id: r.board_id,
+            board_group_folder: r.group_folder,
+            routing_jid: r.notification_group_jid ?? r.group_jid,
+          }));
+          return { success: true, data: matches };
         }
 
         /* ---------- Unknown ---------- */
