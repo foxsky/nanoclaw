@@ -6,12 +6,16 @@ import {
   extractScheduledAtValue,
   parseOllamaResponse,
   runSemanticAudit,
+  writeDryRunLog,
 } from './semantic-audit.js';
 import type {
   QualifyingMutation,
   FactCheckContext,
   SemanticDeviation,
 } from './semantic-audit.js';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 describe('semantic-audit type surface', () => {
   it('QualifyingMutation carries task_history row + extracted value', () => {
@@ -421,5 +425,61 @@ describe('runSemanticAudit', () => {
     expect(result.counters.parseFail).toBe(0);
     tf.close();
     msg.close();
+  });
+});
+
+describe('writeDryRunLog', () => {
+  let tmpRoot: string;
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'semantic-dryrun-'));
+  });
+  afterEach(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('creates a dated NDJSON file and appends one line per deviation', () => {
+    const deviations: SemanticDeviation[] = [
+      {
+        taskId: 'M1', boardId: 'b1', fieldKind: 'scheduled_at',
+        at: '2026-04-14T11:04:11.450Z', by: 'giovanni',
+        userMessage: 'alterar M1 para quinta-feira', storedValue: '2026-04-17T11:00',
+        intentMatches: false, deviation: 'wrong day', confidence: 'high',
+        rawResponse: '{"intent_matches":false}',
+      },
+      {
+        taskId: 'M2', boardId: 'b1', fieldKind: 'scheduled_at',
+        at: '2026-04-14T12:00:00.000Z', by: 'alexandre',
+        userMessage: null, storedValue: '2026-04-16T10:00',
+        intentMatches: true, deviation: null, confidence: 'high',
+        rawResponse: '{"intent_matches":true}',
+      },
+    ];
+    writeDryRunLog(deviations, tmpRoot, new Date('2026-04-14T20:00:00.000Z'));
+    const file = path.join(tmpRoot, 'semantic-dryrun-2026-04-14.ndjson');
+    const lines = fs.readFileSync(file, 'utf-8').trim().split('\n');
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[0]).taskId).toBe('M1');
+    expect(JSON.parse(lines[1]).taskId).toBe('M2');
+  });
+
+  it('is a no-op on empty array', () => {
+    writeDryRunLog([], tmpRoot);
+    expect(fs.readdirSync(tmpRoot)).toEqual([]);
+  });
+
+  it('appends to an existing file on subsequent calls same day', () => {
+    const dev: SemanticDeviation = {
+      taskId: 'M3', boardId: 'b1', fieldKind: 'scheduled_at',
+      at: '2026-04-14T13:00:00.000Z', by: 'lucas',
+      userMessage: null, storedValue: null,
+      intentMatches: true, deviation: null, confidence: 'low',
+      rawResponse: '{}',
+    };
+    const fixedDate = new Date('2026-04-14T15:00:00.000Z');
+    writeDryRunLog([dev], tmpRoot, fixedDate);
+    writeDryRunLog([dev], tmpRoot, fixedDate);
+    const file = path.join(tmpRoot, 'semantic-dryrun-2026-04-14.ndjson');
+    const lines = fs.readFileSync(file, 'utf-8').trim().split('\n');
+    expect(lines).toHaveLength(2);
   });
 });

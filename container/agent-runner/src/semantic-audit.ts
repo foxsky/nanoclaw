@@ -34,6 +34,8 @@ export interface SemanticDeviation {
   rawResponse: string;
 }
 
+import fs from 'fs';
+import path from 'path';
 import { resolveTimezoneOrUtc } from './tz-util.js';
 
 export function deriveContextHeader(
@@ -355,4 +357,17 @@ export async function runSemanticAudit(
   }
 
   return { deviations, counters };
+}
+
+export function writeDryRunLog(
+  deviations: SemanticDeviation[],
+  rootDir = '/workspace/store/audit',
+  now: Date = new Date(),
+): void {
+  if (deviations.length === 0) return;
+  fs.mkdirSync(rootDir, { recursive: true });
+  const dateStr = now.toISOString().slice(0, 10);
+  const file = path.join(rootDir, `semantic-dryrun-${dateStr}.ndjson`);
+  const lines = deviations.map((d) => JSON.stringify(d)).join('\n') + '\n';
+  fs.appendFileSync(file, lines);
 }
