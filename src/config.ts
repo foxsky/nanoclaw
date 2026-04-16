@@ -5,8 +5,8 @@ import { readEnvFile } from './env.js';
 import { isValidTimezone } from './timezone.js';
 
 // Read config values from .env (falls back to process.env).
-// Secrets are NOT read here — they stay on disk and are loaded only
-// where needed (container-runner.ts) to avoid leaking to child processes.
+// Secrets (API keys, tokens) are NOT read here — they are loaded only
+// by the credential proxy (credential-proxy.ts), never exposed to containers.
 const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
