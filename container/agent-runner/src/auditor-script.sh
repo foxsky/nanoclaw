@@ -609,13 +609,8 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
     const mode = process.env.NANOCLAW_SEMANTIC_AUDIT_MODE;
     if (mode === 'dryrun' || mode === 'enabled') {
       try {
-        const { runSemanticAudit, writeDryRunLog } = await import(SEMANTIC_AUDIT_MODULE_PATH);
+        const { runSemanticAudit, runResponseAudit, writeDryRunLog } = await import(SEMANTIC_AUDIT_MODULE_PATH);
         const ollamaHost = process.env.OLLAMA_HOST || '';
-        // Default = local (data-locality first). Cloud requires explicit opt-in.
-        // qwen3-coder:latest disqualified — fails weekday derivation even with CoT.
-        // Normalize NANOCLAW_SEMANTIC_AUDIT_CLOUD so '1', 'true', 'yes' (case-
-        // insensitive, whitespace-tolerant) all opt in. Bare `=== '1'` silently
-        // treated `NANOCLAW_SEMANTIC_AUDIT_CLOUD=true` as off.
         const rawCloud = (process.env.NANOCLAW_SEMANTIC_AUDIT_CLOUD || '').trim().toLowerCase();
         const cloudOptIn = rawCloud === '1' || rawCloud === 'true' || rawCloud === 'yes';
         const defaultModel = cloudOptIn
@@ -624,23 +619,40 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
         const ollamaModel =
           process.env.NANOCLAW_SEMANTIC_AUDIT_MODEL || defaultModel;
         if (ollamaHost) {
-          const audit = await runSemanticAudit({
+          // Phase 1: mutation-level audit (scheduled_at, due_date, assignee, title)
+          const mutationAudit = await runSemanticAudit({
             msgDb, tfDb, period, ollamaHost, ollamaModel,
           });
           console.error(
-            `Semantic audit (${mode}, ${ollamaModel}): ` +
-            `examined=${audit.counters.examined} ` +
-            `noTrigger=${audit.counters.noTrigger} ` +
-            `boardMapFail=${audit.counters.boardMapFail} ` +
-            `ollamaFail=${audit.counters.ollamaFail} ` +
-            `parseFail=${audit.counters.parseFail} ` +
-            `deviations=${audit.deviations.length}`,
+            `Semantic audit — mutations (${mode}, ${ollamaModel}): ` +
+            `examined=${mutationAudit.counters.examined} ` +
+            `noTrigger=${mutationAudit.counters.noTrigger} ` +
+            `boardMapFail=${mutationAudit.counters.boardMapFail} ` +
+            `ollamaFail=${mutationAudit.counters.ollamaFail} ` +
+            `parseFail=${mutationAudit.counters.parseFail} ` +
+            `deviations=${mutationAudit.deviations.length}`,
           );
+
+          // Phase 2: response-level audit (all user→bot interaction pairs)
+          const responseAudit = await runResponseAudit({
+            msgDb, tfDb, period, ollamaHost, ollamaModel,
+          });
+          console.error(
+            `Semantic audit — responses (${mode}, ${ollamaModel}): ` +
+            `examined=${responseAudit.counters.examined} ` +
+            `ollamaFail=${responseAudit.counters.ollamaFail} ` +
+            `parseFail=${responseAudit.counters.parseFail} ` +
+            `deviations=${responseAudit.deviations.length}`,
+          );
+
+          // Merge both phases
+          const allDeviations = [...mutationAudit.deviations, ...responseAudit.deviations];
+
           if (mode === 'dryrun') {
-            writeDryRunLog(audit.deviations);
+            writeDryRunLog(allDeviations);
           } else if (mode === 'enabled') {
             for (const board of boards) {
-              board.semanticDeviations = audit.deviations.filter(d => d.boardId === board.boardId);
+              board.semanticDeviations = allDeviations.filter(d => d.boardId === board.boardId);
               if (board.semanticDeviations.length > 0) {
                 result.data.summary.totalFlagged += board.semanticDeviations.length;
               }

@@ -9,6 +9,7 @@ import {
   deriveContextHeader,
   extractScheduledAtValue,
   parseOllamaResponse,
+  runResponseAudit,
   runSemanticAudit,
   writeDryRunLog,
 } from './semantic-audit.js';
@@ -632,6 +633,110 @@ describe('runSemanticAudit', () => {
     expect(result.counters.parseFail).toBe(0);
     tf.close();
     msg.close();
+  });
+});
+
+describe('runResponseAudit', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function seedResponseDbs() {
+    const tf = new Database(':memory:');
+    tf.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT, group_folder TEXT, parent_board_id TEXT);
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+      INSERT INTO boards VALUES ('board-seci-taskflow', '120363407@g.us', 'seci-taskflow', NULL);
+      INSERT INTO board_runtime_config VALUES ('board-seci-taskflow', 'America/Fortaleza');
+    `);
+    const msg = new Database(':memory:');
+    msg.exec(`
+      CREATE TABLE messages (id TEXT, chat_jid TEXT, sender TEXT, sender_name TEXT, content TEXT, timestamp TEXT, is_from_me INTEGER, is_bot_message INTEGER DEFAULT 0, PRIMARY KEY (id, chat_jid));
+      CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
+      INSERT INTO registered_groups VALUES ('120363407@g.us', 'seci-taskflow', 'SECI-SECTI', 1);
+      INSERT INTO messages VALUES ('u1', '120363407@g.us', '558@s.whatsapp.net', 'Carlos Giovanni',
+        'não estou falando do caso da M3, mas das atualizações realizadas pelo Lucas em p9.7 e p11.20',
+        '2026-04-15T20:24:27.000Z', 0, 0);
+      INSERT INTO messages VALUES ('b1', '120363407@g.us', 'bot', 'Case',
+        'Encontrei o provável culpado. notification_group_jid apontando para o mesmo grupo...',
+        '2026-04-15T20:26:04.000Z', 1, 1);
+    `);
+    return { tf, msg };
+  }
+
+  it('flags a bot response that ignores user intent (Giovanni redirect case)', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        response: '{"intent_matches":false,"deviation":"User asked about Lucas updates to P9.7/P11.20, bot talked about notification_group_jid config instead","confidence":"high"}',
+      }),
+    });
+
+    const { tf, msg } = seedResponseDbs();
+    const result = await runResponseAudit({
+      msgDb: msg, tfDb: tf,
+      period: { startIso: '2026-04-15T00:00:00.000Z', endIso: '2026-04-16T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434', ollamaModel: 'test-model:fake',
+    });
+
+    expect(result.counters.examined).toBe(1);
+    expect(result.deviations).toHaveLength(1);
+    expect(result.deviations[0].fieldKind).toBe('response');
+    expect(result.deviations[0].by).toBe('Carlos Giovanni');
+    expect(result.deviations[0].intentMatches).toBe(false);
+    expect(result.deviations[0].deviation).toContain('notification_group_jid');
+    tf.close(); msg.close();
+  });
+
+  it('does not record deviations when bot response matches intent', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        response: '{"intent_matches":true,"deviation":null,"confidence":"high"}',
+      }),
+    });
+
+    const { tf, msg } = seedResponseDbs();
+    const result = await runResponseAudit({
+      msgDb: msg, tfDb: tf,
+      period: { startIso: '2026-04-15T00:00:00.000Z', endIso: '2026-04-16T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434', ollamaModel: 'test-model:fake',
+    });
+
+    expect(result.counters.examined).toBe(1);
+    expect(result.deviations).toEqual([]);
+    tf.close(); msg.close();
+  });
+
+  it('skips interactions with no bot response (already covered by noResponse auditor)', async () => {
+    const tf = new Database(':memory:');
+    tf.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT, group_folder TEXT, parent_board_id TEXT);
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+      INSERT INTO boards VALUES ('board-seci-taskflow', '120363407@g.us', 'seci-taskflow', NULL);
+      INSERT INTO board_runtime_config VALUES ('board-seci-taskflow', 'America/Fortaleza');
+    `);
+    const msg = new Database(':memory:');
+    msg.exec(`
+      CREATE TABLE messages (id TEXT, chat_jid TEXT, sender TEXT, sender_name TEXT, content TEXT, timestamp TEXT, is_from_me INTEGER, is_bot_message INTEGER DEFAULT 0, PRIMARY KEY (id, chat_jid));
+      CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
+      INSERT INTO registered_groups VALUES ('120363407@g.us', 'seci-taskflow', 'SECI', 1);
+      INSERT INTO messages VALUES ('u1', '120363407@g.us', '558@s.whatsapp.net', 'Giovanni', 'quadro', '2026-04-15T10:00:00.000Z', 0, 0);
+    `);
+
+    const result = await runResponseAudit({
+      msgDb: msg, tfDb: tf,
+      period: { startIso: '2026-04-15T00:00:00.000Z', endIso: '2026-04-16T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434', ollamaModel: 'test-model:fake',
+    });
+
+    expect(result.counters.examined).toBe(0);
+    expect(result.deviations).toEqual([]);
+    expect(global.fetch).not.toHaveBeenCalled();
+    tf.close(); msg.close();
   });
 });
 

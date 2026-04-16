@@ -6,7 +6,7 @@ import { resolveTimezoneOrUtc } from './tz-util.js';
 export const CONFIDENCE_VALUES = ['high', 'med', 'low'] as const;
 export type Confidence = (typeof CONFIDENCE_VALUES)[number];
 
-export type SemanticField = 'scheduled_at' | 'due_date' | 'assignee';
+export type SemanticField = 'scheduled_at' | 'due_date' | 'assignee' | 'response';
 
 export interface QualifyingMutation {
   taskId: string;
@@ -401,6 +401,182 @@ export async function runSemanticAudit(
       confidence: parsed.confidence,
       rawResponse: raw,
     });
+  }
+
+  return { deviations, counters };
+}
+
+// ---------------------------------------------------------------------------
+// Response-level audit: every user message → bot response pair
+// ---------------------------------------------------------------------------
+
+export interface InteractionPair {
+  userTimestamp: string;
+  userSender: string;
+  userContent: string;
+  botTimestamp: string;
+  botContent: string;
+  chatJid: string;
+}
+
+export function buildResponsePrompt(
+  interaction: InteractionPair,
+  context: { boardTimezone: string; headerToday: string; headerWeekday: string },
+): string {
+  return [
+    'Você é um auditor que verifica se a resposta do bot atendeu à intenção do usuário.',
+    '',
+    'Contexto temporal:',
+    `- Data: ${context.headerToday} (${context.headerWeekday})`,
+    `- Fuso horário: ${context.boardTimezone}`,
+    '',
+    `Mensagem do usuário (${interaction.userSender}, ${interaction.userTimestamp}):`,
+    interaction.userContent,
+    '',
+    `Resposta do bot (${interaction.botTimestamp}):`,
+    interaction.botContent.length > 800
+      ? interaction.botContent.slice(0, 800) + '... [truncado]'
+      : interaction.botContent,
+    '',
+    'Pense passo a passo:',
+    '1. O que o usuário pediu ou perguntou?',
+    '2. O bot respondeu de forma relevante ao pedido? Executou a ação correta?',
+    '3. O bot ignorou a intenção, desviou para outro assunto, ou entendeu errado?',
+    '',
+    'Importante:',
+    '- Se o bot executou a ação E respondeu confirmando, é correto (intent_matches=true).',
+    '- Se o bot pediu esclarecimento antes de agir, é correto (não é desvio).',
+    '- Se o bot respondeu sobre um assunto DIFERENTE do que o usuário pediu, é desvio.',
+    '- Se o bot recusou por limitação técnica legítima, é correto (não é desvio).',
+    '- Mensagens casuais ("ok", "beleza", "obrigado") sem contexto de tarefa → intent_matches=true.',
+    '',
+    'Produza JSON em bloco fenced:',
+    '',
+    '```json',
+    '{ "intent_matches": boolean, "deviation": string|null, "confidence": "high"|"med"|"low" }',
+    '```',
+  ].join('\n');
+}
+
+export async function runResponseAudit(
+  args: RunSemanticAuditArgs,
+): Promise<SemanticAuditResult> {
+  const { msgDb, tfDb, period, ollamaHost, ollamaModel } = args;
+
+  // Get all TaskFlow-managed groups
+  const groups = msgDb
+    .prepare(
+      `SELECT jid, folder, name FROM registered_groups WHERE taskflow_managed = 1`,
+    )
+    .all() as Array<{ jid: string; folder: string; name: string }>;
+
+  // For each group, find user messages with a bot response within 10 min
+  const userMsgStmt = msgDb.prepare(
+    `SELECT id, sender_name, content, timestamp FROM messages
+     WHERE chat_jid = ? AND timestamp >= ? AND timestamp < ?
+       AND is_bot_message = 0 AND is_from_me = 0
+       AND content IS NOT NULL AND content != ''
+     ORDER BY timestamp ASC`,
+  );
+  const botRespStmt = msgDb.prepare(
+    `SELECT content, timestamp FROM messages
+     WHERE chat_jid = ? AND timestamp > ? AND timestamp <= ?
+       AND (is_bot_message = 1 OR is_from_me = 1)
+       AND content IS NOT NULL AND content != ''
+     ORDER BY timestamp ASC LIMIT 1`,
+  );
+
+  const counters: SemanticAuditCounters = {
+    examined: 0,
+    noTrigger: 0,
+    boardMapFail: 0,
+    ollamaFail: 0,
+    parseFail: 0,
+  };
+  const deviations: SemanticDeviation[] = [];
+
+  for (const group of groups) {
+    const boardRow = tfDb
+      .prepare(`SELECT id FROM boards WHERE group_folder = ?`)
+      .get(group.folder) as { id: string } | undefined;
+    if (!boardRow) continue;
+
+    const tzRow = tfDb
+      .prepare(`SELECT timezone FROM board_runtime_config WHERE board_id = ?`)
+      .get(boardRow.id) as { timezone: string } | undefined;
+    const boardTimezone = tzRow?.timezone ?? 'America/Fortaleza';
+
+    const userMessages = userMsgStmt.all(group.jid, period.startIso, period.endIso) as Array<{
+      id: string;
+      sender_name: string;
+      content: string;
+      timestamp: string;
+    }>;
+
+    for (const msg of userMessages) {
+      // Skip web-origin test messages
+      if (msg.sender_name?.startsWith('web:')) continue;
+
+      const tenMinLater = new Date(new Date(msg.timestamp).getTime() + 600_000).toISOString();
+      const botResp = botRespStmt.get(group.jid, msg.timestamp, tenMinLater) as
+        | { content: string; timestamp: string }
+        | undefined;
+
+      if (!botResp) {
+        // No response — already caught by the existing noResponse auditor check.
+        // Don't duplicate that work here.
+        continue;
+      }
+
+      counters.examined++;
+
+      const header = deriveContextHeader(msg.timestamp, boardTimezone);
+      const interaction: InteractionPair = {
+        userTimestamp: msg.timestamp,
+        userSender: msg.sender_name,
+        userContent: msg.content,
+        botTimestamp: botResp.timestamp,
+        botContent: botResp.content,
+        chatJid: group.jid,
+      };
+
+      const prompt = buildResponsePrompt(interaction, {
+        boardTimezone,
+        headerToday: header.today,
+        headerWeekday: header.weekday,
+      });
+
+      const raw = await callOllama(ollamaHost, ollamaModel, prompt);
+      if (!raw) {
+        counters.ollamaFail++;
+        continue;
+      }
+      const parsed = parseOllamaResponse(raw);
+      if (!parsed) {
+        counters.parseFail++;
+        continue;
+      }
+
+      // Only record deviations (intent_matches=false) — don't record every
+      // successful interaction (that would be 50-100 rows/day of noise).
+      if (!parsed.intentMatches) {
+        deviations.push({
+          taskId: '',
+          boardId: boardRow.id,
+          fieldKind: 'response',
+          at: msg.timestamp,
+          by: msg.sender_name,
+          userMessage: msg.content,
+          storedValue: botResp.content.length > 500
+            ? botResp.content.slice(0, 500) + '...'
+            : botResp.content,
+          intentMatches: false,
+          deviation: parsed.deviation,
+          confidence: parsed.confidence,
+          rawResponse: raw,
+        });
+      }
+    }
   }
 
   return { deviations, counters };
