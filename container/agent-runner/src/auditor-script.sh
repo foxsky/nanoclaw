@@ -651,10 +651,38 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
           if (mode === 'dryrun') {
             writeDryRunLog(allDeviations);
           } else if (mode === 'enabled') {
+            // Attach deviations to existing boards AND surface boards that
+            // only have semantic deviations (no heuristic flags). Without this,
+            // a board with 0 heuristic issues + N semantic issues gets dropped.
+            const boardIdSet = new Set(boards.map(b => b.boardId));
             for (const board of boards) {
               board.semanticDeviations = allDeviations.filter(d => d.boardId === board.boardId);
               if (board.semanticDeviations.length > 0) {
                 result.data.summary.totalFlagged += board.semanticDeviations.length;
+              }
+            }
+            // Add boards that only have semantic deviations
+            const semanticOnlyBoardIds = new Set(
+              allDeviations.map(d => d.boardId).filter(id => !boardIdSet.has(id)),
+            );
+            for (const boardId of semanticOnlyBoardIds) {
+              const devs = allDeviations.filter(d => d.boardId === boardId);
+              boards.push({
+                group: boardId,
+                folder: boardId.replace(/^board-/, ''),
+                boardId,
+                totalUserMessages: 0,
+                flaggedInteractions: 0,
+                auditTrailDivergence: false,
+                deliveriesToGroup: 0,
+                botRowsInGroup: 0,
+                interactions: [],
+                selfCorrections: [],
+                semanticDeviations: devs,
+              });
+              result.data.summary.totalFlagged += devs.length;
+              if (!result.data.summary.boardsWithIssues.includes(boardId.replace(/^board-/, ''))) {
+                result.data.summary.boardsWithIssues.push(boardId.replace(/^board-/, ''));
               }
             }
           }
