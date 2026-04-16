@@ -4,6 +4,12 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-15 (later) — Semantic-audit MVP (scheduled_at, dry-run)
+
+First installment of the LLM-in-the-loop semantic discovery feed. New module `container/agent-runner/src/semantic-audit.ts` runs an Ollama fact-check (default `qwen3.5:35b-a3b-coding-nvfp4` local; `NANOCLAW_SEMANTIC_AUDIT_CLOUD=1` opts in to `minimax-m2.7:cloud`) against every meeting-reschedule mutation. Compares user's triggering message to stored ISO value using a chain-of-thought pt-BR prompt validated against 7 real production cases. Primary purpose: structured instrumentation for silent semantic failures (the class detector D cannot see). Long-term path: promote recurring patterns into deterministic engine-side guards (template: `intended_weekday` shipped 2026-04-14). `enabled` mode optional, not the goal.
+
+Gated by `NANOCLAW_SEMANTIC_AUDIT_MODE=dryrun` (unset = off). 35 tests. Codex gpt-5.4 high review found 2 blockers (EROFS on read-only store mount; CORE_AGENT_RUNNER_FILES sync gap for tz-util.ts), both fixed. Plan at `docs/superpowers/plans/2026-04-15-semantic-audit-mvp.md`.
+
 ## 2026-04-15 — Durable outbound queue + boot recovery + SIGTERM drain
 
 On 2026-04-14 the Kipp audit flagged two boards with total silence — David/EST-SECTI 20 of 20, Ana Beatriz/ASSE-SECI-2 4 of 4 — plus several "writes OK, confirmations missing" across other boards. Post-mortem traced every case to the same fingerprint: three nanoclaw service SIGKILLs that morning (08:25, 09:17, 10:22 local) killed the host mid-container. Container stdout had already produced valid results for David (15 `---NANOCLAW_OUTPUT_START---` blocks visible in the container log), but the host process reading stdout and calling `channel.sendMessage` was dead. Writes survived because MCP tools had committed them to the DB before the kill; responses died because they only existed in an in-memory pipe.

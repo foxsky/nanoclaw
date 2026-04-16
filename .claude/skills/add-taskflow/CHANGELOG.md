@@ -1,5 +1,9 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-04-15 — Semantic-audit MVP (scheduled_at, dry-run)
+
+LLM-in-the-loop fact-check for meeting-reschedule mutations. New `semantic-audit.ts` module in the container agent runner. Ollama CoT prompt compares user intent to stored state; dry-run mode writes NDJSON to `/workspace/audit/`. Default local model; cloud opt-in. 35 tests, Codex reviewed. See project CHANGELOG for full details.
+
 ## 2026-04-14 (later) — Auditor: self-correction detector
 
 Closes a detection gap exposed by the Giovanni weekday bug earlier the same day: the existing auditor is a **pipeline** monitor (catches `noResponse` and `auditTrailDivergence`) but has no eyes for **semantic** wrongness. Giovanni's "alterar M1 para quinta-feira" → bot scheduled Apr 17 Friday → 32 min later Giovanni manually fixed with explicit "16/04/26" was invisible to the daily audit: bot responded, delivered, persisted a row, payload just wrong.
