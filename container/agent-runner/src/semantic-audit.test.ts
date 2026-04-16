@@ -1,3 +1,7 @@
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import Database from 'better-sqlite3';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   buildPrompt,
@@ -13,9 +17,6 @@ import type {
   FactCheckContext,
   SemanticDeviation,
 } from './semantic-audit.js';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
 
 describe('semantic-audit type surface', () => {
   it('QualifyingMutation carries task_history row + extracted value', () => {
@@ -274,8 +275,6 @@ describe('callOllama', () => {
     expect(body.format).toBeUndefined();
   });
 });
-
-import Database from 'better-sqlite3';
 
 function seedAuditDbs() {
   const tf = new Database(':memory:');

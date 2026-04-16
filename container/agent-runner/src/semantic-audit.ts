@@ -1,3 +1,8 @@
+import fs from 'fs';
+import path from 'path';
+import type { Database as BetterSqliteDB } from 'better-sqlite3';
+import { resolveTimezoneOrUtc } from './tz-util.js';
+
 export type SemanticField = 'scheduled_at' | 'due_date' | 'assignee';
 
 export interface QualifyingMutation {
@@ -33,10 +38,6 @@ export interface SemanticDeviation {
   confidence: 'high' | 'med' | 'low';
   rawResponse: string;
 }
-
-import fs from 'fs';
-import path from 'path';
-import { resolveTimezoneOrUtc } from './tz-util.js';
 
 export function deriveContextHeader(
   isoTimestamp: string,
@@ -188,8 +189,6 @@ export async function callOllama(
     return null;
   }
 }
-
-import type { Database as BetterSqliteDB } from 'better-sqlite3';
 
 export interface RunSemanticAuditArgs {
   msgDb: BetterSqliteDB;
