@@ -489,6 +489,129 @@ describe('runSemanticAudit', () => {
     msg.close();
   });
 
+  it('covers due_date mutations (Prazo definido)', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        response: '{"intent_matches":true,"deviation":null,"confidence":"high"}',
+      }),
+    });
+
+    const tf = new Database(':memory:');
+    tf.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY, parent_board_id TEXT);
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+      CREATE TABLE board_people (board_id TEXT, person_id TEXT, name TEXT, PRIMARY KEY (board_id, person_id));
+      CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT, task_id TEXT, action TEXT, by TEXT, at TEXT, details TEXT);
+      INSERT INTO boards VALUES ('board-seci-taskflow', NULL);
+      INSERT INTO board_runtime_config VALUES ('board-seci-taskflow', 'America/Fortaleza');
+      INSERT INTO board_people VALUES ('board-seci-taskflow', 'lucas', 'Lucas Batista');
+      INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES
+        ('board-seci-taskflow', 'P11.20', 'updated', 'lucas',
+         '2026-04-15T11:38:06.000Z',
+         '{"changes":["Prazo definido: 2026-04-15"]}');
+    `);
+    const msg = new Database(':memory:');
+    msg.exec(`
+      CREATE TABLE messages (id TEXT, chat_jid TEXT, sender TEXT, sender_name TEXT, content TEXT, timestamp TEXT, is_from_me INTEGER, is_bot_message INTEGER DEFAULT 0, PRIMARY KEY (id, chat_jid));
+      CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
+      INSERT INTO registered_groups VALUES ('120363407@g.us', 'seci-taskflow', 'SECI', 1);
+      INSERT INTO messages VALUES ('m1', '120363407@g.us', '558@s.whatsapp.net', 'Lucas Batista', 'alterar prazo para 15/04', '2026-04-15T11:37:00.000Z', 0, 0);
+    `);
+
+    const result = await runSemanticAudit({
+      msgDb: msg, tfDb: tf,
+      period: { startIso: '2026-04-15T00:00:00.000Z', endIso: '2026-04-16T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434', ollamaModel: 'test-model:fake',
+    });
+    expect(result.deviations).toHaveLength(1);
+    expect(result.deviations[0].fieldKind).toBe('due_date');
+    expect(result.deviations[0].storedValue).toContain('Prazo definido');
+    tf.close(); msg.close();
+  });
+
+  it('covers reassignment mutations', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        response: '{"intent_matches":true,"deviation":null,"confidence":"high"}',
+      }),
+    });
+
+    const tf = new Database(':memory:');
+    tf.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY, parent_board_id TEXT);
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+      CREATE TABLE board_people (board_id TEXT, person_id TEXT, name TEXT, PRIMARY KEY (board_id, person_id));
+      CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT, task_id TEXT, action TEXT, by TEXT, at TEXT, details TEXT);
+      INSERT INTO boards VALUES ('board-setec', NULL);
+      INSERT INTO board_runtime_config VALUES ('board-setec', 'America/Fortaleza');
+      INSERT INTO board_people VALUES ('board-setec', 'rafael', 'RAFAEL AMARAL CHAVES');
+      INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES
+        ('board-setec', 'T24', 'reassigned', 'rafael',
+         '2026-04-15T18:04:54.000Z',
+         '{"from_assignee":"rafael","to_assignee":"joao-evangelista"}');
+    `);
+    const msg = new Database(':memory:');
+    msg.exec(`
+      CREATE TABLE messages (id TEXT, chat_jid TEXT, sender TEXT, sender_name TEXT, content TEXT, timestamp TEXT, is_from_me INTEGER, is_bot_message INTEGER DEFAULT 0, PRIMARY KEY (id, chat_jid));
+      CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
+      INSERT INTO registered_groups VALUES ('120363408@g.us', 'setec', 'SETEC', 1);
+      INSERT INTO messages VALUES ('m1', '120363408@g.us', '558@s.whatsapp.net', 'RAFAEL AMARAL CHAVES', 'atribuir para joão', '2026-04-15T18:04:41.000Z', 0, 0);
+    `);
+
+    const result = await runSemanticAudit({
+      msgDb: msg, tfDb: tf,
+      period: { startIso: '2026-04-15T00:00:00.000Z', endIso: '2026-04-16T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434', ollamaModel: 'test-model:fake',
+    });
+    expect(result.deviations).toHaveLength(1);
+    expect(result.deviations[0].fieldKind).toBe('assignee');
+    expect(result.deviations[0].storedValue).toContain('joao-evangelista');
+    tf.close(); msg.close();
+  });
+
+  it('covers created mutations with scheduled_at', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        response: '{"intent_matches":true,"deviation":null,"confidence":"high"}',
+      }),
+    });
+
+    const tf = new Database(':memory:');
+    tf.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY, parent_board_id TEXT);
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+      CREATE TABLE board_people (board_id TEXT, person_id TEXT, name TEXT, PRIMARY KEY (board_id, person_id));
+      CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT, task_id TEXT, action TEXT, by TEXT, at TEXT, details TEXT);
+      INSERT INTO boards VALUES ('board-thiago', NULL);
+      INSERT INTO board_runtime_config VALUES ('board-thiago', 'America/Fortaleza');
+      INSERT INTO board_people VALUES ('board-thiago', 'thiago', 'Thiago Carvalho');
+      INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES
+        ('board-thiago', 'M20', 'created', 'thiago',
+         '2026-04-15T14:03:43.000Z',
+         '{"type":"meeting","title":"Apresentação final","scheduled_at":"2026-04-23T11:00:00.000Z"}');
+    `);
+    const msg = new Database(':memory:');
+    msg.exec(`
+      CREATE TABLE messages (id TEXT, chat_jid TEXT, sender TEXT, sender_name TEXT, content TEXT, timestamp TEXT, is_from_me INTEGER, is_bot_message INTEGER DEFAULT 0, PRIMARY KEY (id, chat_jid));
+      CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
+      INSERT INTO registered_groups VALUES ('120363423@g.us', 'thiago', 'Thiago', 1);
+      INSERT INTO messages VALUES ('m1', '120363423@g.us', '558@s.whatsapp.net', 'Thiago Carvalho', 'agendar reunião apresentação final 23/04 8h', '2026-04-15T14:03:13.000Z', 0, 0);
+    `);
+
+    const result = await runSemanticAudit({
+      msgDb: msg, tfDb: tf,
+      period: { startIso: '2026-04-15T00:00:00.000Z', endIso: '2026-04-16T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434', ollamaModel: 'test-model:fake',
+    });
+    expect(result.deviations).toHaveLength(1);
+    expect(result.deviations[0].fieldKind).toBe('scheduled_at');
+    expect(result.deviations[0].storedValue).toContain('scheduled_at');
+    tf.close(); msg.close();
+  });
+
   it('skips a mutation when Ollama returns a non-OK response, increments ollamaFail', async () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: false,

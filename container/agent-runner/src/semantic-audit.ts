@@ -219,19 +219,38 @@ export async function runSemanticAudit(
 ): Promise<SemanticAuditResult> {
   const { msgDb, tfDb, period, ollamaHost, ollamaModel } = args;
 
+  // Qualifying mutations: any action where the bot interpreted user intent and
+  // stored a value that could be semantically wrong. Excludes note-only updates
+  // (the note text IS the user's message — no interpretation gap), label/priority
+  // changes (explicit commands), and column moves (handled by taskflow_move with
+  // no ambiguity). Includes:
+  //   - 'updated' with date/time changes (Reunião reagendada, Prazo definido)
+  //   - 'updated' with title changes (Título alterado)
+  //   - 'reassigned' (from_assignee → to_assignee resolution)
+  //   - 'created' with scheduled_at or assignee (initial task creation)
   const mutationRows = tfDb
     .prepare(
       `SELECT board_id AS boardId, task_id AS taskId, action, by, at, details
        FROM task_history
        WHERE at >= ? AND at < ?
-         AND action = 'updated'
          AND by IS NOT NULL
-         AND details LIKE '%"Reunião reagendada%'`,
+         AND (
+           (action = 'updated' AND (
+             details LIKE '%"Reunião reagendada%'
+             OR details LIKE '%"Prazo definido:%'
+             OR details LIKE '%"Título alterado%'
+           ))
+           OR action = 'reassigned'
+           OR (action = 'created' AND (
+             details LIKE '%scheduled_at%'
+             OR details LIKE '%assignee%'
+           ))
+         )`,
     )
     .all(period.startIso, period.endIso) as Array<{
       boardId: string;
       taskId: string;
-      action: 'updated';
+      action: string;
       by: string;
       at: string;
       details: string;
@@ -275,8 +294,32 @@ export async function runSemanticAudit(
   const deviations: SemanticDeviation[] = [];
 
   for (const row of mutationRows) {
-    const extractedValue = extractScheduledAtValue(row.details);
-    if (!extractedValue) continue;
+    // Classify the mutation and extract a human-readable stored value.
+    // For scheduled_at: try the regex extractor (precise ISO). For everything
+    // else: pass the raw details JSON to the LLM — it proved capable of reading
+    // {"changes":["Prazo definido: 2026-04-17"]} and {"from_assignee":"X","to_assignee":"Y"}
+    // in the 2026-04-15 e2e eval.
+    let fieldKind: SemanticField;
+    let storedValue: string | null;
+
+    if (row.details.includes('"Reunião reagendada')) {
+      fieldKind = 'scheduled_at';
+      storedValue = extractScheduledAtValue(row.details) ?? row.details;
+    } else if (row.details.includes('"Prazo definido:')) {
+      fieldKind = 'due_date';
+      storedValue = row.details;
+    } else if (row.action === 'reassigned') {
+      fieldKind = 'assignee';
+      storedValue = row.details;
+    } else if (row.action === 'created') {
+      // Created rows: classify by what's interesting (scheduled_at > assignee)
+      fieldKind = row.details.includes('scheduled_at') ? 'scheduled_at' : 'assignee';
+      storedValue = row.details;
+    } else {
+      // Title changes and other update types
+      fieldKind = 'due_date'; // generic "field update" bucket
+      storedValue = row.details;
+    }
 
     const tzRow = tzStmt.get(row.boardId) as { timezone: string } | undefined;
     const boardTimezone = tzRow?.timezone ?? 'America/Fortaleza';
@@ -316,12 +359,12 @@ export async function runSemanticAudit(
     const mutation: QualifyingMutation = {
       taskId: row.taskId,
       boardId: row.boardId,
-      action: 'updated',
+      action: row.action as 'updated',
       by: row.by,
       at: row.at,
       details: row.details,
-      fieldKind: 'scheduled_at',
-      extractedValue,
+      fieldKind,
+      extractedValue: storedValue,
     };
 
     const context: FactCheckContext = {
@@ -348,11 +391,11 @@ export async function runSemanticAudit(
     deviations.push({
       taskId: row.taskId,
       boardId: row.boardId,
-      fieldKind: 'scheduled_at',
+      fieldKind,
       at: row.at,
       by: row.by,
       userMessage,
-      storedValue: extractedValue,
+      storedValue,
       intentMatches: parsed.intentMatches,
       deviation: parsed.deviation,
       confidence: parsed.confidence,
