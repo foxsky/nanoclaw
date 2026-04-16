@@ -29,13 +29,14 @@ export interface FactCheckContext {
 }
 
 export interface SemanticDeviation {
-  taskId: string;
+  taskId: string | null;
   boardId: string;
   fieldKind: SemanticField;
   at: string;
   by: string;
   userMessage: string | null;
   storedValue: string | null;
+  responsePreview: string | null;
   intentMatches: boolean;
   deviation: string | null;
   confidence: Confidence;
@@ -207,6 +208,7 @@ export interface SemanticAuditCounters {
   boardMapFail: number;   // board_id → group jid resolution failed
   ollamaFail: number;     // callOllama returned null (timeout / non-200 / network)
   parseFail: number;      // Ollama returned text but parseOllamaResponse rejected it
+  skippedCasual: number;  // user message was a casual ack — Ollama call skipped
 }
 
 export interface SemanticAuditResult {
@@ -262,6 +264,7 @@ export async function runSemanticAudit(
     boardMapFail: 0,
     ollamaFail: 0,
     parseFail: 0,
+    skippedCasual: 0,
   };
 
   if (mutationRows.length === 0) return { deviations: [], counters };
@@ -396,6 +399,7 @@ export async function runSemanticAudit(
       by: row.by,
       userMessage,
       storedValue,
+      responsePreview: null,
       intentMatches: parsed.intentMatches,
       deviation: parsed.deviation,
       confidence: parsed.confidence,
@@ -473,6 +477,14 @@ export function buildResponsePrompt(
   ].join('\n');
 }
 
+/**
+ * Short casual acknowledgements that don't need semantic review.
+ * Matches messages that are ONLY a casual ack (with optional trailing punctuation/emoji).
+ * Covers common Portuguese acks, greetings, and single-emoji replies.
+ */
+export const CASUAL_PATTERN =
+  /^(?:ok|beleza|obrigad[oa]|valeu|show|entendi|certo|perfeito|boa|bom dia|boa tarde|boa noite|👍|✅|🤝|💪)[\s!.]*$/i;
+
 export async function runResponseAudit(
   args: RunSemanticAuditArgs,
 ): Promise<SemanticAuditResult> {
@@ -509,13 +521,21 @@ export async function runResponseAudit(
     boardMapFail: 0,
     ollamaFail: 0,
     parseFail: 0,
+    skippedCasual: 0,
   };
   const deviations: SemanticDeviation[] = [];
 
   for (const group of groups) {
-    const boardRow = tfDb
+    let boardRow = tfDb
       .prepare(`SELECT id FROM boards WHERE group_folder = ?`)
       .get(group.folder) as { id: string } | undefined;
+    // Fallback: some boards are registered via the board_groups join table
+    // instead of having group_folder set directly on the boards row.
+    if (!boardRow) {
+      boardRow = tfDb
+        .prepare(`SELECT board_id AS id FROM board_groups WHERE group_folder = ?`)
+        .get(group.folder) as { id: string } | undefined;
+    }
     if (!boardRow) continue;
 
     const tzRow = tfDb
@@ -557,6 +577,14 @@ export async function runResponseAudit(
       if (pairedBotTimestamps.has(botResp.timestamp)) continue;
       pairedBotTimestamps.add(botResp.timestamp);
 
+      // Skip casual acknowledgements — no semantic content to audit.
+      // Saves ~10-15s per message (Ollama round-trip) and adds up for
+      // the 10-20 casual acks that arrive per day across all boards.
+      if (CASUAL_PATTERN.test(msg.content.trim())) {
+        counters.skippedCasual++;
+        continue;
+      }
+
       counters.examined++;
 
       const header = deriveContextHeader(msg.timestamp, boardTimezone);
@@ -589,16 +617,18 @@ export async function runResponseAudit(
       // Only record deviations (intent_matches=false) — don't record every
       // successful interaction (that would be 50-100 rows/day of noise).
       if (!parsed.intentMatches) {
+        const preview = botResp.content.length > 500
+          ? botResp.content.slice(0, 500) + '...'
+          : botResp.content;
         deviations.push({
-          taskId: '',
+          taskId: null,
           boardId: boardRow.id,
           fieldKind: 'response',
           at: msg.timestamp,
           by: msg.sender_name,
           userMessage: msg.content,
-          storedValue: botResp.content.length > 500
-            ? botResp.content.slice(0, 500) + '...'
-            : botResp.content,
+          storedValue: null,
+          responsePreview: preview,
           intentMatches: false,
           deviation: parsed.deviation,
           confidence: parsed.confidence,

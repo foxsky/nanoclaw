@@ -640,6 +640,7 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
           console.error(
             `Semantic audit — responses (${mode}, ${ollamaModel}): ` +
             `examined=${responseAudit.counters.examined} ` +
+            `skippedCasual=${responseAudit.counters.skippedCasual} ` +
             `ollamaFail=${responseAudit.counters.ollamaFail} ` +
             `parseFail=${responseAudit.counters.parseFail} ` +
             `deviations=${responseAudit.deviations.length}`,
