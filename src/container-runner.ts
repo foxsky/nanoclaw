@@ -517,20 +517,15 @@ export async function runContainerAgent(
   // Semantic audit config — propagate to container so auditor-script.sh can
   // activate the LLM-based meeting-reschedule fact-checker when opted in.
   const semAuditCfg = readSemanticAuditConfig();
-  if (semAuditCfg.mode) {
-    containerArgs.splice(containerArgs.length - 1, 0,
-      '-e', `NANOCLAW_SEMANTIC_AUDIT_MODE=${semAuditCfg.mode}`,
-    );
-  }
-  if (semAuditCfg.cloud) {
-    containerArgs.splice(containerArgs.length - 1, 0,
-      '-e', `NANOCLAW_SEMANTIC_AUDIT_CLOUD=${semAuditCfg.cloud}`,
-    );
-  }
-  if (semAuditCfg.model) {
-    containerArgs.splice(containerArgs.length - 1, 0,
-      '-e', `NANOCLAW_SEMANTIC_AUDIT_MODEL=${semAuditCfg.model}`,
-    );
+  const semAuditEnvVars: Array<[string, string]> = [
+    ['NANOCLAW_SEMANTIC_AUDIT_MODE', semAuditCfg.mode],
+    ['NANOCLAW_SEMANTIC_AUDIT_CLOUD', semAuditCfg.cloud],
+    ['NANOCLAW_SEMANTIC_AUDIT_MODEL', semAuditCfg.model],
+  ];
+  for (const [key, val] of semAuditEnvVars) {
+    if (val) {
+      containerArgs.splice(containerArgs.length - 1, 0, '-e', `${key}=${val}`);
+    }
   }
 
   // Embed user message for context-aware features (async, best-effort)

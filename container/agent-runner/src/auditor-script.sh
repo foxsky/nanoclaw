@@ -602,16 +602,22 @@ const result = {
   },
 };
 
+const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
+
 (async () => {
   try {
     const mode = process.env.NANOCLAW_SEMANTIC_AUDIT_MODE;
     if (mode === 'dryrun' || mode === 'enabled') {
       try {
-        const { runSemanticAudit, writeDryRunLog } = await import('/app/dist/semantic-audit.js');
+        const { runSemanticAudit, writeDryRunLog } = await import(SEMANTIC_AUDIT_MODULE_PATH);
         const ollamaHost = process.env.OLLAMA_HOST || '';
         // Default = local (data-locality first). Cloud requires explicit opt-in.
         // qwen3-coder:latest disqualified — fails weekday derivation even with CoT.
-        const cloudOptIn = process.env.NANOCLAW_SEMANTIC_AUDIT_CLOUD === '1';
+        // Normalize NANOCLAW_SEMANTIC_AUDIT_CLOUD so '1', 'true', 'yes' (case-
+        // insensitive, whitespace-tolerant) all opt in. Bare `=== '1'` silently
+        // treated `NANOCLAW_SEMANTIC_AUDIT_CLOUD=true` as off.
+        const rawCloud = (process.env.NANOCLAW_SEMANTIC_AUDIT_CLOUD || '').trim().toLowerCase();
+        const cloudOptIn = rawCloud === '1' || rawCloud === 'true' || rawCloud === 'yes';
         const defaultModel = cloudOptIn
           ? 'minimax-m2.7:cloud'
           : 'qwen3.5:35b-a3b-coding-nvfp4';
@@ -644,7 +650,10 @@ const result = {
           console.error('Semantic audit skipped: OLLAMA_HOST not set');
         }
       } catch (err) {
-        console.error('Semantic audit failed:', err && err.message ? err.message : err);
+        console.error(
+          `Semantic audit failed (module path ${SEMANTIC_AUDIT_MODULE_PATH}):`,
+          err && err.message ? err.message : err,
+        );
       }
     }
   } finally {
