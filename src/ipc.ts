@@ -724,6 +724,30 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
   // Evict old error files on startup
   evictErrorFiles(ipcBaseDir);
 
+  // Notification consolidation: when the LLM makes two tool calls on the same
+  // task in quick succession (note + move → 2 parent_notifications to the same
+  // group), hold notification-type IPC files for a short window and merge them
+  // into a single WhatsApp message before delivery. Non-notification messages
+  // are sent immediately — no hold.
+  interface PendingNotification {
+    filePath: string;
+    data: { chatJid: string; text: string; sender?: string; groupFolder?: string; type: string };
+    sourceGroup: string;
+    isMain: boolean;
+    isTaskflow: boolean;
+    firstSeen: number;
+  }
+  const NOTIF_HOLD_WINDOW_MS = 5_000;
+  const pendingNotifications = new Map<string, PendingNotification[]>();
+
+  function isTaskflowNotification(text: string): boolean {
+    return text.startsWith('🔔');
+  }
+
+  function extractNotifGroupKey(sourceGroup: string, chatJid: string): string {
+    return `${sourceGroup}:${chatJid}`;
+  }
+
   const processIpcFiles = async () => {
     // Scan all group IPC directories (identity determined by directory)
     let groupFolders: string[];
@@ -763,6 +787,23 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               if (data.type === 'message' && data.chatJid && data.text) {
+                // Hold TaskFlow notification messages for consolidation
+                if (isTaskflowNotification(data.text)) {
+                  const key = extractNotifGroupKey(sourceGroup, data.chatJid);
+                  if (!pendingNotifications.has(key)) {
+                    pendingNotifications.set(key, []);
+                  }
+                  pendingNotifications.get(key)!.push({
+                    filePath,
+                    data,
+                    sourceGroup,
+                    isMain,
+                    isTaskflow,
+                    firstSeen: Date.now(),
+                  });
+                  // Don't delete yet — will be deleted when flushed
+                  continue;
+                }
                 const authResult = isIpcMessageAuthorized({
                   chatJid: data.chatJid,
                   sourceGroup,
@@ -933,6 +974,84 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC OTP directory');
       }
+    }
+
+    // Flush held notifications whose hold window has expired.
+    // Multiple notifications to the same chatJid from the same group within
+    // 5 seconds are merged into one WhatsApp message (preserves all content,
+    // reduces buzz count from N to 1). This fixes the two-tool-call pattern
+    // where note + move produce 2 separate parent_notifications.
+    const now = Date.now();
+    for (const [key, pending] of pendingNotifications) {
+      if (pending.length === 0) {
+        pendingNotifications.delete(key);
+        continue;
+      }
+      const oldest = Math.min(...pending.map((p) => p.firstSeen));
+      if (now - oldest < NOTIF_HOLD_WINDOW_MS) continue;
+
+      // Merge all held notifications into one message
+      const first = pending[0];
+      const mergedText =
+        pending.length === 1
+          ? first.data.text
+          : pending.map((p) => p.data.text).join('\n\n━━━━━━━━━━━━━━\n\n');
+
+      const authResult = isIpcMessageAuthorized({
+        chatJid: first.data.chatJid,
+        sourceGroup: first.sourceGroup,
+        isMain: first.isMain,
+        isTaskflow: first.isTaskflow,
+        isKnownExternalDm: false,
+        registeredGroups: deps.registeredGroups(),
+      });
+
+      if (authResult === 'group') {
+        const targetGroup = deps.registeredGroups()[first.data.chatJid];
+        const sender =
+          typeof first.data.sender === 'string'
+            ? first.data.sender
+            : getGroupSenderName(targetGroup?.trigger);
+        try {
+          await deps.sendMessage(first.data.chatJid, mergedText, sender);
+          logger.info(
+            {
+              chatJid: first.data.chatJid,
+              sourceGroup: first.sourceGroup,
+              merged: pending.length,
+            },
+            pending.length > 1
+              ? `IPC notifications consolidated (${pending.length} → 1)`
+              : 'IPC notification sent',
+          );
+          await deps
+            .clearTyping?.(first.data.chatJid)
+            ?.catch(() => {});
+          try {
+            recordSendMessageLog({
+              sourceGroupFolder: first.sourceGroup,
+              targetChatJid: first.data.chatJid,
+              targetKind: 'group',
+              senderLabel: sender ?? null,
+              contentPreview: mergedText,
+              deliveredAt: new Date().toISOString(),
+            });
+          } catch {}
+        } catch (err) {
+          logger.error(
+            { chatJid: first.data.chatJid, sourceGroup: first.sourceGroup, err },
+            'Error sending consolidated notification',
+          );
+        }
+      }
+
+      // Delete all held IPC files
+      for (const p of pending) {
+        try {
+          fs.unlinkSync(p.filePath);
+        } catch {}
+      }
+      pendingNotifications.delete(key);
     }
 
     // Periodic eviction of old error files (every 5 minutes)

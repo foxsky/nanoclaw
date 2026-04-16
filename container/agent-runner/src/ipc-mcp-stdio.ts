@@ -598,20 +598,14 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
     process.on('exit', () => tfDb.close());
     const engine = new TaskflowEngine(tfDb, boardId);
 
-    // Cross-call parent_notification dedup: when the LLM makes two tool calls
-    // on the same task in quick succession (e.g. update({add_note}) then
-    // move({start})), each call produces its own parent_notification to the
-    // same group. The per-call notifiedJids (below) catches within-call
-    // duplication (commit e5ed50c, 2026-03-27). This outer Map catches
-    // cross-call duplication by remembering which task+group combos already
-    // sent a parent_notification within a 30-second window.
-    const recentParentNotifs = new Map<string, number>(); // key: "taskId:groupJid", value: timestamp ms
-    const PARENT_NOTIF_DEDUP_WINDOW_MS = 30_000;
-
     /** Write IPC message files for any notifications returned by the engine. */
     function dispatchNotifications(result: Record<string, unknown>): void {
       // Track which group JIDs already received a notification so we can
       // skip the parent_notification when it would be a duplicate.
+      // (Within-call dedup — commit e5ed50c, 2026-03-27.)
+      // Cross-call dedup for the two-tool-call pattern (note + move in quick
+      // succession) is handled at the HOST level via notification consolidation
+      // in src/ipc.ts — not here.
       const notifiedJids = new Set<string>();
 
       if (Array.isArray(result.notifications)) {
@@ -651,28 +645,15 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         }
       }
       // Send parent notification only if that group didn't already get one above
-      // (within-call dedup via notifiedJids) AND wasn't sent for the same task
-      // in the past 30 seconds (cross-call dedup via recentParentNotifs).
       const pn = result.parent_notification as ParentNotification | undefined;
       if (pn?.parent_group_jid && pn.message && !notifiedJids.has(pn.parent_group_jid)) {
-        const taskId = (result as { task_id?: string }).task_id ?? '';
-        const dedupKey = `${taskId}:${pn.parent_group_jid}`;
-        const now = Date.now();
-        const lastSent = recentParentNotifs.get(dedupKey);
-        if (!lastSent || now - lastSent > PARENT_NOTIF_DEDUP_WINDOW_MS) {
-          writeIpcFile(MESSAGES_DIR, {
-            type: 'message',
-            chatJid: pn.parent_group_jid,
-            text: pn.message,
-            groupFolder,
-            timestamp: new Date().toISOString(),
-          });
-          recentParentNotifs.set(dedupKey, now);
-          // Prune old entries to avoid unbounded growth
-          for (const [key, ts] of recentParentNotifs) {
-            if (now - ts > PARENT_NOTIF_DEDUP_WINDOW_MS) recentParentNotifs.delete(key);
-          }
-        }
+        writeIpcFile(MESSAGES_DIR, {
+          type: 'message',
+          chatJid: pn.parent_group_jid,
+          text: pn.message,
+          groupFolder,
+          timestamp: new Date().toISOString(),
+        });
       }
     }
 
