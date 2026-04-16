@@ -682,40 +682,49 @@ async function main(): Promise<void> {
   // Runs AFTER embedding preamble block. Both prepend to `prompt`, so final order is:
   // conversation recap → embedding preamble → user message.
   // (Both are agent context; ordering between them is not semantically critical.)
-  try {
-    const { ContextReader } = await import('./context-reader.js');
-    const { estimateTokens } = await import('./db-util.js');
-    const ctxReader = new ContextReader('/workspace/context/context.db');
+  //
+  // Skip for script-driven scheduled tasks (e.g. the daily auditor). Their
+  // prompt is a pure function of the script output; leaking prior-session
+  // summaries causes the agent to hallucinate "flagged interactions" from
+  // conversation history when the script actually found nothing.
+  if (containerInput.script && containerInput.isScheduledTask) {
+    log('Context recap skipped: script-driven scheduled task');
+  } else {
     try {
-      const recents = ctxReader.getRecentSummaries(containerInput.groupFolder, 3);
-      if (recents.length > 0) {
-        let budget = 1024;
-        const selected: typeof recents = [];
-        for (const node of recents) {
-          const cost = node.token_count ?? estimateTokens(node.summary ?? '');
-          if (budget - cost < 0 && selected.length > 0) break;
-          selected.push(node);
-          budget -= cost;
-        }
-        if (selected.length > 0) {
-          const lines = selected.reverse().map(n => {
-            const d = new Date(n.time_start);
-            const dateStr = d.toLocaleDateString('pt-BR', {
-              timeZone: process.env.TZ || 'America/Fortaleza',
-              month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+      const { ContextReader } = await import('./context-reader.js');
+      const { estimateTokens } = await import('./db-util.js');
+      const ctxReader = new ContextReader('/workspace/context/context.db');
+      try {
+        const recents = ctxReader.getRecentSummaries(containerInput.groupFolder, 3);
+        if (recents.length > 0) {
+          let budget = 1024;
+          const selected: typeof recents = [];
+          for (const node of recents) {
+            const cost = node.token_count ?? estimateTokens(node.summary ?? '');
+            if (budget - cost < 0 && selected.length > 0) break;
+            selected.push(node);
+            budget -= cost;
+          }
+          if (selected.length > 0) {
+            const lines = selected.reverse().map(n => {
+              const d = new Date(n.time_start);
+              const dateStr = d.toLocaleDateString('pt-BR', {
+                timeZone: process.env.TZ || 'America/Fortaleza',
+                month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+              });
+              return `[${dateStr}] ${n.summary}`;
             });
-            return `[${dateStr}] ${n.summary}`;
-          });
-          const recap = `--- Recent conversation history ---\n${lines.join('\n')}\n---`;
-          prompt = recap + '\n\n' + prompt;
-          log(`Context recap injected (${selected.length} summaries, ${recap.length} chars)`);
+            const recap = `--- Recent conversation history ---\n${lines.join('\n')}\n---`;
+            prompt = recap + '\n\n' + prompt;
+            log(`Context recap injected (${selected.length} summaries, ${recap.length} chars)`);
+          }
         }
+      } finally {
+        ctxReader.close();
       }
-    } finally {
-      ctxReader.close();
+    } catch (err) {
+      log(`Context recap skipped: ${err}`);
     }
-  } catch (err) {
-    log(`Context recap skipped: ${err}`);
   }
 
   // Script phase: run script before waking agent
