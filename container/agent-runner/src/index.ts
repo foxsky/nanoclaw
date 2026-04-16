@@ -738,6 +738,7 @@ async function main(): Promise<void> {
     }
   }
 
+
   // --- Slash command handling ---
   // Only known session slash commands are handled here. This prevents
   // accidental interception of user prompts that happen to start with '/'.
