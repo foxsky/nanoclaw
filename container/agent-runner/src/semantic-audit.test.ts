@@ -400,4 +400,26 @@ describe('runSemanticAudit', () => {
     tf.close();
     msg.close();
   });
+
+  it('skips a mutation when Ollama returns a non-OK response, increments ollamaFail', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+    });
+    const { tf, msg } = seedAuditDbs();
+    const result = await runSemanticAudit({
+      msgDb: msg,
+      tfDb: tf,
+      period: { startIso: '2026-04-14T00:00:00.000Z', endIso: '2026-04-15T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434',
+      ollamaModel: 'test-model:fake',
+    });
+    expect(result.deviations).toEqual([]);
+    expect(result.counters.examined).toBe(1);
+    expect(result.counters.ollamaFail).toBe(1);
+    expect(result.counters.parseFail).toBe(0);
+    tf.close();
+    msg.close();
+  });
 });

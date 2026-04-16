@@ -243,6 +243,10 @@ export async function runSemanticAudit(
 
   if (mutationRows.length === 0) return { deviations: [], counters };
 
+  // Board → group jid resolution is two-step: `boards` lives in tfDb and
+  // `registered_groups` lives in msgDb. SQLite prepared statements cannot
+  // span two database connections, so we derive the folder from tfDb first,
+  // then look up the jid in msgDb. Do NOT collapse these into a single JOIN.
   const tzStmt = tfDb.prepare(
     `SELECT timezone FROM board_runtime_config WHERE board_id = ?`,
   );
