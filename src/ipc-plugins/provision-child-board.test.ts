@@ -33,6 +33,14 @@ vi.mock('./provision-shared.js', async () => {
   return {
     ...actual,
     TASKFLOW_DB_PATH: TEST_DB_PATH,
+    // Stub side-effects that write to the real filesystem outside the
+    // TEST_DB_DIR sandbox (groups/, data/ipc/, chown subprocess). Tests only
+    // need to verify DB state; the post-seed filesystem ops leak into
+    // the repo and confuse git status.
+    createBoardFilesystem: () => {},
+    seedAvailableGroupsJson: () => {},
+    scheduleRunners: () => {},
+    fixOwnership: () => {},
   };
 });
 
@@ -228,7 +236,8 @@ describe('provision_child_board cross-board person matching', () => {
         hierarchy_level INTEGER,
         max_depth INTEGER,
         parent_board_id TEXT,
-        short_code TEXT
+        short_code TEXT,
+        owner_person_id TEXT
       );
       CREATE TABLE IF NOT EXISTS board_people (
         board_id TEXT,
@@ -277,10 +286,21 @@ describe('provision_child_board cross-board person matching', () => {
         board_id TEXT NOT NULL,
         title TEXT,
         assignee TEXT,
+        column TEXT,
+        updated_at TEXT,
         child_exec_enabled INTEGER DEFAULT 0,
         child_exec_board_id TEXT,
         child_exec_person_id TEXT,
         PRIMARY KEY (board_id, id)
+      );
+      CREATE TABLE IF NOT EXISTS task_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        board_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        by TEXT,
+        at TEXT NOT NULL,
+        details TEXT
       );
     `);
     return db;
@@ -544,5 +564,57 @@ describe('provision_child_board cross-board person matching', () => {
     verify.close();
     // No link to Parent B's existing joao board was written.
     expect(row?.child_board_id).not.toBe('board-parent-b-joao');
+  });
+
+  it('writes owner_person_id on the new boards row so downstream lookups stay consistent', async () => {
+    // Every new provision must populate `boards.owner_person_id` in the same
+    // transaction as `child_board_registrations`, or read paths that group
+    // by person_id will fragment.
+    const db = openTestDb();
+    seedBoards(db);
+    db.close();
+
+    // Default fixture throws on createGroup to short-circuit. We need it to
+    // succeed so we reach the seedTransaction.
+    createGroup.mockImplementationOnce(async () => ({
+      jid: 'new-child@g.us',
+      subject: 'NEW - TaskFlow',
+      inviteLink: null,
+    }));
+
+    await handler(
+      {
+        person_id: 'zelia',
+        person_name: 'Zélia Teste',
+        person_phone: '5585987654321',
+        person_role: 'Analista',
+        group_name: 'NEW - TaskFlow',
+        group_folder: 'new-taskflow',
+      },
+      'parent-a-taskflow',
+      false,
+      deps,
+    );
+
+    const verify = new Database(TEST_DB_PATH, { readonly: true });
+    const row = verify
+      .prepare(
+        `SELECT id, group_folder, parent_board_id, owner_person_id
+           FROM boards
+          WHERE group_jid = 'new-child@g.us'`,
+      )
+      .get() as
+      | {
+          id: string;
+          group_folder: string;
+          parent_board_id: string;
+          owner_person_id: string;
+        }
+      | undefined;
+    verify.close();
+
+    expect(row).toBeDefined();
+    expect(row?.owner_person_id).toBe('zelia');
+    expect(row?.parent_board_id).toBe('board-parent-a');
   });
 });

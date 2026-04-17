@@ -7,6 +7,7 @@ const BOARD_ID = 'board-test-001';
 
 const SCHEMA = `
 CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, board_role TEXT DEFAULT 'standard', hierarchy_level INTEGER, max_depth INTEGER, parent_board_id TEXT, short_code TEXT);
+ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
 CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT NULL, phone TEXT, role TEXT DEFAULT 'member', wip_limit INTEGER, notification_group_jid TEXT, PRIMARY KEY (board_id, person_id));
 CREATE TABLE board_admins (board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL, admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
 CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
@@ -23,7 +24,7 @@ function seedTestDb(db: Database.Database, boardId: string) {
   db.exec(SCHEMA);
 
   db.exec(
-    `INSERT INTO boards VALUES ('${boardId}', 'test@g.us', 'test', 'standard', 0, 1, NULL, NULL)`,
+    `INSERT INTO boards VALUES ('${boardId}', 'test@g.us', 'test', 'standard', 0, 1, NULL, NULL, NULL)`,
   );
   db.exec(
     `INSERT INTO board_config VALUES ('${boardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 4, 1, 1, 1)`,
@@ -64,7 +65,7 @@ function seedChildBoard(
   },
 ) {
   db.exec(
-    `INSERT INTO boards VALUES ('${opts.childBoardId}', '${opts.childBoardId}@g.us', '${opts.childBoardId}', 'standard', 1, 1, '${opts.parentBoardId}', NULL)`,
+    `INSERT INTO boards VALUES ('${opts.childBoardId}', '${opts.childBoardId}@g.us', '${opts.childBoardId}', 'standard', 1, 1, '${opts.parentBoardId}', NULL, NULL)`,
   );
   db.exec(
     `INSERT INTO board_config VALUES ('${opts.childBoardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 1, 1, 1, 1)`,
@@ -97,7 +98,7 @@ function seedLinkedTask(
   const now = new Date().toISOString();
 
   db.exec(
-    `INSERT INTO boards VALUES ('${ownerBoardId}', 'parent@g.us', 'parent-group', 'standard', 0, 1, NULL, NULL)`,
+    `INSERT INTO boards VALUES ('${ownerBoardId}', 'parent@g.us', 'parent-group', 'standard', 0, 1, NULL, NULL, NULL)`,
   );
   db.exec(
     `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, child_exec_enabled, child_exec_board_id, child_exec_person_id, created_at, updated_at)
@@ -685,9 +686,9 @@ describe('TaskflowEngine', () => {
       //                      ├─ sibling (thiago-taskflow)
       //                      └─ sibling2 (setec-secti-taskflow)
       db.exec(
-        `INSERT INTO boards VALUES ('board-root', 'root@g.us', 'seci-secti', 'standard', 0, 2, NULL, NULL);
-         INSERT INTO boards VALUES ('board-sibling', 'sibling@g.us', 'thiago-taskflow', 'standard', 1, 2, 'board-root', NULL);
-         INSERT INTO boards VALUES ('board-sibling2', 'sibling2@g.us', 'setec-secti-taskflow', 'standard', 1, 2, 'board-root', NULL);
+        `INSERT INTO boards VALUES ('board-root', 'root@g.us', 'seci-secti', 'standard', 0, 2, NULL, NULL, NULL);
+         INSERT INTO boards VALUES ('board-sibling', 'sibling@g.us', 'thiago-taskflow', 'standard', 1, 2, 'board-root', NULL, 'thiago');
+         INSERT INTO boards VALUES ('board-sibling2', 'sibling2@g.us', 'setec-secti-taskflow', 'standard', 1, 2, 'board-root', NULL, 'rafael');
          UPDATE boards SET parent_board_id = 'board-root', hierarchy_level = 1 WHERE id = '${BOARD_ID}';
          INSERT INTO board_people VALUES ('board-root', 'rafael', 'RAFAEL AMARAL CHAVES', '558699487547', 'Dev', 3, NULL);
          INSERT INTO board_people VALUES ('board-root', 'thiago', 'Thiago Carvalho', '5586981512111', 'Dev', 3, NULL);
@@ -798,8 +799,8 @@ describe('TaskflowEngine', () => {
       // Two unrelated orphan boards both point at 'board-phantom' (a
       // non-existent row). Without root-validation, getOrgBoardIds would
       // pick 'board-phantom' as root and cluster both orphans as one "org".
-      db.exec(`INSERT INTO boards VALUES ('board-orphan-a', 'oa@g.us', 'orphan-a', 'standard', 0, 1, 'board-phantom', NULL);
-               INSERT INTO boards VALUES ('board-orphan-b', 'ob@g.us', 'orphan-b', 'standard', 0, 1, 'board-phantom', NULL);
+      db.exec(`INSERT INTO boards VALUES ('board-orphan-a', 'oa@g.us', 'orphan-a', 'standard', 0, 1, 'board-phantom', NULL, NULL);
+               INSERT INTO boards VALUES ('board-orphan-b', 'ob@g.us', 'orphan-b', 'standard', 0, 1, 'board-phantom', NULL, NULL);
                INSERT INTO board_people VALUES ('board-orphan-a', 'p-a', 'Alice Orphan', '558111111111', 'Dev', 3, NULL);
                INSERT INTO board_people VALUES ('board-orphan-b', 'p-b', 'Bob Orphan', '558222222222', 'Dev', 3, NULL);`);
       const orphanEngine = new TaskflowEngine(db, 'board-orphan-a');
@@ -815,8 +816,8 @@ describe('TaskflowEngine', () => {
     it('handles a parent_board_id cycle without infinite-looping', () => {
       // A cycle A→B→A should terminate lineage walking and still return
       // everyone in the cycle's reachable subtree.
-      db.exec(`INSERT INTO boards VALUES ('board-cyc-a', 'a@g.us', 'cyc-a', 'standard', 0, 1, 'board-cyc-b', NULL);
-               INSERT INTO boards VALUES ('board-cyc-b', 'b@g.us', 'cyc-b', 'standard', 0, 1, 'board-cyc-a', NULL);
+      db.exec(`INSERT INTO boards VALUES ('board-cyc-a', 'a@g.us', 'cyc-a', 'standard', 0, 1, 'board-cyc-b', NULL, NULL);
+               INSERT INTO boards VALUES ('board-cyc-b', 'b@g.us', 'cyc-b', 'standard', 0, 1, 'board-cyc-a', NULL, NULL);
                INSERT INTO board_people VALUES ('board-cyc-a', 'pa', 'Cyc Alice', '558333333333', 'Dev', 3, NULL);
                INSERT INTO board_people VALUES ('board-cyc-b', 'pb', 'Cyc Alice', '558444444444', 'Dev', 3, NULL);`);
       const cycEngine = new TaskflowEngine(db, 'board-cyc-a');
@@ -843,10 +844,38 @@ describe('TaskflowEngine', () => {
       expect(row.phone_masked).toBeNull();
     });
 
+    it('flags home-board rows via is_owner (person_id matches boards.owner_person_id)', () => {
+      // Lets the agent pick the home-board row when one human appears on
+      // multiple boards — its `name` is WhatsApp-canonical.
+      seedOrgTree(db);
+      const r = engine.query({
+        query: 'find_person_in_organization',
+        search_text: 'Rafael, Thiago',
+      });
+      const rows = r.data as Array<{ board_group_folder: string; is_owner: boolean }>;
+      const byFolder = Object.fromEntries(rows.map((x) => [x.board_group_folder, x.is_owner]));
+      expect(byFolder['seci-secti']).toBe(false);            // root — nobody's home
+      expect(byFolder['thiago-taskflow']).toBe(true);        // Thiago's home
+      expect(byFolder['setec-secti-taskflow']).toBe(true);   // Rafael's home
+    });
+
+    it('returns is_owner=false when boards.owner_person_id is NULL', () => {
+      // Must tolerate NULL (un-backfilled boards) without crashing.
+      seedOrgTree(db);
+      db.exec(`UPDATE boards SET owner_person_id = NULL WHERE id = 'board-sibling'`);
+      const r = engine.query({
+        query: 'find_person_in_organization',
+        search_text: 'Thiago',
+      });
+      const rows = r.data as Array<{ board_group_folder: string; is_owner: boolean }>;
+      const thiagoHome = rows.find((x) => x.board_group_folder === 'thiago-taskflow');
+      expect(thiagoHome?.is_owner).toBe(false);
+    });
+
     it('returns all matches when 3+ boards share the same name (ordering)', () => {
       seedOrgTree(db);
       // Add a third Rafael on a fresh descendant
-      db.exec(`INSERT INTO boards VALUES ('board-sibling3', 'sib3@g.us', 'new-sibling', 'standard', 1, 2, 'board-root', NULL);
+      db.exec(`INSERT INTO boards VALUES ('board-sibling3', 'sib3@g.us', 'new-sibling', 'standard', 1, 2, 'board-root', NULL, NULL);
                INSERT INTO board_people VALUES ('board-sibling3', 'rafael', 'RAFAEL AMARAL CHAVES', '558999999999', 'Dev', 3, NULL);`);
       const r = engine.query({
         query: 'find_person_in_organization',
@@ -2922,7 +2951,7 @@ describe('TaskflowEngine', () => {
       const now = new Date().toISOString();
       const parentBoardId = 'board-parent-unassign';
       db.exec(
-        `INSERT INTO boards VALUES ('${parentBoardId}', 'parent-u@g.us', 'parent-unassign', 'standard', 0, 1, NULL, NULL)`,
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'parent-u@g.us', 'parent-unassign', 'standard', 0, 1, NULL, NULL, NULL)`,
       );
       db.exec(
         `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, child_exec_enabled, child_exec_board_id, child_exec_person_id, created_at, updated_at)
@@ -2958,7 +2987,7 @@ describe('TaskflowEngine', () => {
       const now = new Date().toISOString();
       const parentBoardId = 'board-parent-sub';
       db.exec(
-        `INSERT INTO boards VALUES ('${parentBoardId}', 'parent@g.us', 'parent-group', 'standard', 0, 1, NULL, NULL)`,
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'parent@g.us', 'parent-group', 'standard', 0, 1, NULL, NULL, NULL)`,
       );
       db.exec(
         `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, child_exec_enabled, child_exec_board_id, child_exec_person_id, created_at, updated_at)
@@ -2998,7 +3027,7 @@ describe('TaskflowEngine', () => {
       const now = new Date().toISOString();
       const parentBoardId = 'board-parent-mtg-visibility';
       db.exec(
-        `INSERT INTO boards VALUES ('${parentBoardId}', 'parent-mv@g.us', 'parent-mv', 'standard', 0, 1, NULL, NULL)`,
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'parent-mv@g.us', 'parent-mv', 'standard', 0, 1, NULL, NULL, NULL)`,
       );
       // Link BOARD_ID as a child of the meeting's parent so lineage resolves.
       db.exec(
@@ -3027,7 +3056,7 @@ describe('TaskflowEngine', () => {
       const now = new Date().toISOString();
       const unrelated = 'board-unrelated';
       db.exec(
-        `INSERT INTO boards VALUES ('${unrelated}', 'unrelated@g.us', 'unrelated-group', 'standard', 0, 1, NULL, NULL)`,
+        `INSERT INTO boards VALUES ('${unrelated}', 'unrelated@g.us', 'unrelated-group', 'standard', 0, 1, NULL, NULL, NULL)`,
       );
       // BOARD_ID has NO parent link to 'unrelated'.
       db.exec(
@@ -3049,7 +3078,7 @@ describe('TaskflowEngine', () => {
       const now = new Date().toISOString();
       const parentBoardId = 'board-parent-collide';
       db.exec(
-        `INSERT INTO boards VALUES ('${parentBoardId}', 'collide@g.us', 'collide-group', 'standard', 0, 1, NULL, NULL)`,
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'collide@g.us', 'collide-group', 'standard', 0, 1, NULL, NULL, NULL)`,
       );
       db.exec(
         `UPDATE boards SET parent_board_id = '${parentBoardId}' WHERE id = '${BOARD_ID}'`,
@@ -3083,7 +3112,7 @@ describe('TaskflowEngine', () => {
       const now = new Date().toISOString();
       const parentBoardId = 'board-parent-malformed';
       db.exec(
-        `INSERT INTO boards VALUES ('${parentBoardId}', 'malformed@g.us', 'malformed-group', 'standard', 0, 1, NULL, NULL)`,
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'malformed@g.us', 'malformed-group', 'standard', 0, 1, NULL, NULL, NULL)`,
       );
       db.exec(
         `UPDATE boards SET parent_board_id = '${parentBoardId}' WHERE id = '${BOARD_ID}'`,
@@ -3113,7 +3142,7 @@ describe('TaskflowEngine', () => {
       const now = new Date().toISOString();
       const parentBoardId = 'board-parent-prefix-write';
       db.exec(
-        `INSERT INTO boards VALUES ('${parentBoardId}', 'pp@g.us', 'pp', 'standard', 0, 1, NULL, 'PP')`,
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'pp@g.us', 'pp', 'standard', 0, 1, NULL, 'PP', NULL)`,
       );
       db.exec(
         `UPDATE boards SET parent_board_id = '${parentBoardId}' WHERE id = '${BOARD_ID}'`,
@@ -3149,7 +3178,7 @@ describe('TaskflowEngine', () => {
       const now = new Date().toISOString();
       const parentBoardId = 'board-parent-mtg-write';
       db.exec(
-        `INSERT INTO boards VALUES ('${parentBoardId}', 'pw@g.us', 'pw', 'standard', 0, 1, NULL, NULL)`,
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'pw@g.us', 'pw', 'standard', 0, 1, NULL, NULL, NULL)`,
       );
       db.exec(
         `UPDATE boards SET parent_board_id = '${parentBoardId}' WHERE id = '${BOARD_ID}'`,
@@ -3192,7 +3221,7 @@ describe('TaskflowEngine', () => {
       const now = new Date().toISOString();
       const parentBoardId = 'board-parent-mtg';
       db.exec(
-        `INSERT INTO boards VALUES ('${parentBoardId}', 'parent@g.us', 'parent-group-mtg', 'standard', 0, 1, NULL, NULL)`,
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'parent@g.us', 'parent-group-mtg', 'standard', 0, 1, NULL, NULL, NULL)`,
       );
       db.exec(
         `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, child_exec_enabled, child_exec_board_id, child_exec_person_id, participants, created_at, updated_at)
@@ -3353,7 +3382,7 @@ describe('TaskflowEngine', () => {
     it('DST round-trip: fall-back, unambiguous, and spring-forward gap in America/New_York', () => {
       const dstBoardId = 'board-dst-rt';
       db.exec(
-        `INSERT INTO boards VALUES ('${dstBoardId}', 'dst2@g.us', 'dst2', 'standard', 0, 1, NULL, NULL)`,
+        `INSERT INTO boards VALUES ('${dstBoardId}', 'dst2@g.us', 'dst2', 'standard', 0, 1, NULL, NULL, NULL)`,
       );
       db.exec(
         `INSERT INTO board_config VALUES ('${dstBoardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 1, 1, 1, 1)`,
@@ -3585,7 +3614,7 @@ describe('TaskflowEngine', () => {
       // regardless of which side of the overlap it resolves to.
       const dstBoardId = 'board-dst-test';
       db.exec(
-        `INSERT INTO boards VALUES ('${dstBoardId}', 'dst@g.us', 'dst', 'standard', 0, 1, NULL, NULL)`,
+        `INSERT INTO boards VALUES ('${dstBoardId}', 'dst@g.us', 'dst', 'standard', 0, 1, NULL, NULL, NULL)`,
       );
       db.exec(
         `INSERT INTO board_config VALUES ('${dstBoardId}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 1, 1, 1, 1)`,
@@ -3632,6 +3661,7 @@ describe('TaskflowEngine', () => {
       const legacyDb = new Database(':memory:');
       legacyDb.exec(`
         CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, board_role TEXT DEFAULT 'standard', hierarchy_level INTEGER, max_depth INTEGER, parent_board_id TEXT, short_code TEXT);
+ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
         CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT NULL, phone TEXT, role TEXT DEFAULT 'member', wip_limit INTEGER, notification_group_jid TEXT, PRIMARY KEY (board_id, person_id));
         CREATE TABLE board_admins (board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL, admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
         CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
@@ -3676,8 +3706,8 @@ describe('TaskflowEngine', () => {
         CREATE TABLE attachment_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, source TEXT NOT NULL, filename TEXT NOT NULL, at TEXT NOT NULL, actor_person_id TEXT, affected_task_refs TEXT DEFAULT '[]');
         CREATE TABLE board_config (board_id TEXT PRIMARY KEY, columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]', wip_limit INTEGER DEFAULT 5, next_task_number INTEGER DEFAULT 17, next_note_id INTEGER DEFAULT 1);
 
-        INSERT INTO boards VALUES ('board-parent', 'parent@g.us', 'parent', 'standard', 0, 1, NULL, NULL);
-        INSERT INTO boards VALUES ('board-rafael', 'rafael@g.us', 'rafael', 'standard', 1, 1, 'board-parent', NULL);
+        INSERT INTO boards VALUES ('board-parent', 'parent@g.us', 'parent', 'standard', 0, 1, NULL, NULL, NULL);
+        INSERT INTO boards VALUES ('board-rafael', 'rafael@g.us', 'rafael', 'standard', 1, 1, 'board-parent', NULL, NULL);
         INSERT INTO board_config VALUES ('board-parent', '["inbox","next_action","in_progress","waiting","review","done"]', 5, 17, 1);
         INSERT INTO board_config VALUES ('board-rafael', '["inbox","next_action","in_progress","waiting","review","done"]', 5, 1, 1);
         INSERT INTO board_runtime_config (board_id) VALUES ('board-parent');
@@ -3748,6 +3778,7 @@ describe('TaskflowEngine', () => {
       const legacyDb = new Database(':memory:');
       legacyDb.exec(`
         CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, board_role TEXT DEFAULT 'standard', hierarchy_level INTEGER, max_depth INTEGER, parent_board_id TEXT, short_code TEXT);
+ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
         CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT NULL, phone TEXT, role TEXT DEFAULT 'member', wip_limit INTEGER, notification_group_jid TEXT, PRIMARY KEY (board_id, person_id));
         CREATE TABLE board_admins (board_id TEXT, person_id TEXT NOT NULL, phone TEXT NOT NULL, admin_role TEXT NOT NULL, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY (board_id, person_id, admin_role));
         CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
@@ -3792,8 +3823,8 @@ describe('TaskflowEngine', () => {
         CREATE TABLE attachment_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, source TEXT NOT NULL, filename TEXT NOT NULL, at TEXT NOT NULL, actor_person_id TEXT, affected_task_refs TEXT DEFAULT '[]');
         CREATE TABLE board_config (board_id TEXT PRIMARY KEY, columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]', wip_limit INTEGER DEFAULT 5, next_task_number INTEGER DEFAULT 17, next_note_id INTEGER DEFAULT 1);
 
-        INSERT INTO boards VALUES ('board-parent', 'parent@g.us', 'parent', 'standard', 0, 1, NULL, NULL);
-        INSERT INTO boards VALUES ('board-rafael', 'rafael@g.us', 'rafael', 'standard', 1, 1, 'board-parent', NULL);
+        INSERT INTO boards VALUES ('board-parent', 'parent@g.us', 'parent', 'standard', 0, 1, NULL, NULL, NULL);
+        INSERT INTO boards VALUES ('board-rafael', 'rafael@g.us', 'rafael', 'standard', 1, 1, 'board-parent', NULL, NULL);
         INSERT INTO board_config VALUES ('board-parent', '["inbox","next_action","in_progress","waiting","review","done"]', 5, 17, 1);
         INSERT INTO board_config VALUES ('board-rafael', '["inbox","next_action","in_progress","waiting","review","done"]', 5, 1, 1);
         INSERT INTO board_runtime_config (board_id) VALUES ('board-parent');
@@ -3879,10 +3910,10 @@ describe('TaskflowEngine', () => {
         ${SCHEMA}
       `);
       legacyDb.exec(
-        `INSERT INTO boards VALUES ('board-sec-taskflow', 'sec@g.us', 'sec', 'standard', 0, 1, NULL, NULL)`,
+        `INSERT INTO boards VALUES ('board-sec-taskflow', 'sec@g.us', 'sec', 'standard', 0, 1, NULL, NULL, NULL)`,
       );
       legacyDb.exec(
-        `INSERT INTO boards VALUES ('board-setec-secti-taskflow', 'setec@g.us', 'setec', 'standard', 1, 1, 'board-sec-taskflow', NULL)`,
+        `INSERT INTO boards VALUES ('board-setec-secti-taskflow', 'setec@g.us', 'setec', 'standard', 1, 1, 'board-sec-taskflow', NULL, NULL)`,
       );
       legacyDb.exec(
         `INSERT INTO board_config VALUES ('board-sec-taskflow', '["inbox","next_action","in_progress","waiting","review","done"]', 5, 17, 1, 1, 1)`,
@@ -3957,10 +3988,10 @@ describe('TaskflowEngine', () => {
         ${SCHEMA}
       `);
       legacyDb.exec(
-        `INSERT INTO boards VALUES ('board-sec-taskflow', 'sec@g.us', 'sec', 'standard', 0, 1, NULL, NULL)`,
+        `INSERT INTO boards VALUES ('board-sec-taskflow', 'sec@g.us', 'sec', 'standard', 0, 1, NULL, NULL, NULL)`,
       );
       legacyDb.exec(
-        `INSERT INTO boards VALUES ('board-setec-secti-taskflow', 'setec@g.us', 'setec', 'standard', 1, 1, 'board-sec-taskflow', NULL)`,
+        `INSERT INTO boards VALUES ('board-setec-secti-taskflow', 'setec@g.us', 'setec', 'standard', 1, 1, 'board-sec-taskflow', NULL, NULL)`,
       );
       legacyDb.exec(
         `INSERT INTO board_config VALUES ('board-sec-taskflow', '["inbox","next_action","in_progress","waiting","review","done"]', 5, 17, 1, 1, 1)`,
@@ -5746,7 +5777,7 @@ describe('TaskflowEngine', () => {
       db = new Database(':memory:');
       db.exec(SCHEMA);
 
-      db.exec(`INSERT INTO boards VALUES ('${MERGE_BOARD}', 'merge@g.us', 'merge', 'standard', 0, 1, NULL, NULL)`);
+      db.exec(`INSERT INTO boards VALUES ('${MERGE_BOARD}', 'merge@g.us', 'merge', 'standard', 0, 1, NULL, NULL, NULL)`);
       db.exec(`INSERT INTO board_config VALUES ('${MERGE_BOARD}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 10, 5, 1, 1)`);
       db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${MERGE_BOARD}')`);
       db.exec(`INSERT INTO board_admins VALUES ('${MERGE_BOARD}', 'person-mgr', '5585999990001', 'manager', 1)`);
@@ -5900,7 +5931,7 @@ describe('TaskflowEngine', () => {
       // the archive row on the wrong board. The guard ensures only local
       // projects can be merged as the source.
       const PARENT = 'board-merge-parent';
-      db.exec(`INSERT INTO boards VALUES ('${PARENT}', 'p@g.us', 'mp', 'standard', 0, 2, NULL, NULL)`);
+      db.exec(`INSERT INTO boards VALUES ('${PARENT}', 'p@g.us', 'mp', 'standard', 0, 2, NULL, NULL, NULL)`);
       db.exec(`INSERT INTO board_config VALUES ('${PARENT}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 1, 5, 1, 1)`);
       db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${PARENT}')`);
       const now = new Date().toISOString();
@@ -5938,7 +5969,7 @@ describe('TaskflowEngine', () => {
       db.exec(SCHEMA);
 
       // Parent board (level 0, max_depth 2)
-      db.exec(`INSERT INTO boards VALUES ('${PARENT_BOARD}', 'parent@g.us', 'parent', 'standard', 0, 2, NULL, 'PAR')`);
+      db.exec(`INSERT INTO boards VALUES ('${PARENT_BOARD}', 'parent@g.us', 'parent', 'standard', 0, 2, NULL, 'PAR', NULL)`);
       db.exec(`INSERT INTO board_config VALUES ('${PARENT_BOARD}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 1, 2, 1, 1)`);
       db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${PARENT_BOARD}')`);
       db.exec(`INSERT INTO board_people VALUES ('${PARENT_BOARD}', 'person-dev', 'Giovanni', '5585999990002', 'Dev', 3, NULL)`);
@@ -5946,7 +5977,7 @@ describe('TaskflowEngine', () => {
       db.exec(`INSERT INTO board_people VALUES ('${PARENT_BOARD}', 'person-mgr', 'Miguel', '5585999990001', 'Gestor', 3, NULL)`);
 
       // Child board (level 1, max_depth 2)
-      db.exec(`INSERT INTO boards VALUES ('${CHILD_BOARD}', 'child@g.us', 'child', 'standard', 1, 2, '${PARENT_BOARD}', 'CHI')`);
+      db.exec(`INSERT INTO boards VALUES ('${CHILD_BOARD}', 'child@g.us', 'child', 'standard', 1, 2, '${PARENT_BOARD}', 'CHI', NULL)`);
       db.exec(`INSERT INTO board_config VALUES ('${CHILD_BOARD}', '["inbox","next_action","in_progress","waiting","review","done"]', 3, 1, 1, 1, 1)`);
       db.exec(`INSERT INTO board_runtime_config (board_id) VALUES ('${CHILD_BOARD}')`);
       db.exec(`INSERT INTO board_people VALUES ('${CHILD_BOARD}', 'person-dev', 'Giovanni', '5585999990002', 'Dev', 3, NULL)`);

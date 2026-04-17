@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS boards (
   hierarchy_level INTEGER,
   max_depth INTEGER,
   parent_board_id TEXT REFERENCES boards(id),
-  short_code TEXT
+  short_code TEXT,
+  owner_person_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS board_people (
@@ -582,6 +583,9 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   )`);
   try {
     db.exec(`ALTER TABLE boards ADD COLUMN short_code TEXT`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE boards ADD COLUMN owner_person_id TEXT`);
   } catch {}
   try {
     db.exec(`ALTER TABLE board_runtime_config ADD COLUMN country TEXT`);

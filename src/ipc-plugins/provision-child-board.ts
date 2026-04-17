@@ -419,9 +419,10 @@ const handleProvisionChildBoard: IpcHandler = async (
     const now = new Date().toISOString();
 
     const seedTransaction = tfDb.transaction(() => {
+      // Keep `boards.owner_person_id` in sync with `child_board_registrations.person_id`.
       tfDb
         .prepare(
-          'INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code, owner_person_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         )
         .run(
           childBoardId,
@@ -432,6 +433,7 @@ const handleProvisionChildBoard: IpcHandler = async (
           parentBoard.max_depth,
           parentBoard.id,
           shortCode,
+          personId,
         );
 
       tfDb

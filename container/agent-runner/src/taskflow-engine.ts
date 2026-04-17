@@ -6236,7 +6236,8 @@ export class TaskflowEngine {
           const rows = this.db
             .prepare(
               `SELECT bp.board_id, bp.person_id, bp.name, bp.phone,
-                      bp.notification_group_jid, b.group_jid, b.group_folder
+                      bp.notification_group_jid, b.group_jid, b.group_folder,
+                      b.owner_person_id
                  FROM board_people bp
                  JOIN boards b ON b.id = bp.board_id
                 WHERE bp.board_id IN (${boardPh}) AND (${likeClauses})
@@ -6250,6 +6251,7 @@ export class TaskflowEngine {
               notification_group_jid: string | null;
               group_jid: string;
               group_folder: string;
+              owner_person_id: string | null;
             }>;
 
           const matches = rows.map((r) => ({
@@ -6263,6 +6265,10 @@ export class TaskflowEngine {
             board_id: r.board_id,
             board_group_folder: r.group_folder,
             routing_jid: r.notification_group_jid ?? r.group_jid,
+            // True when this row is the person's HOME board. `name` here
+            // is WhatsApp-canonical; rows on other boards carry whatever a
+            // manager typed. Agents should prefer the home row for display.
+            is_owner: r.owner_person_id === r.person_id,
           }));
           return { success: true, data: matches };
         }

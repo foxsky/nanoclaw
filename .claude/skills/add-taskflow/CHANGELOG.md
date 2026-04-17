@@ -1,5 +1,13 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-04-17 — `is_owner` on find_person + owner_person_id backfill
+
+Follow-up to the 2026-04-16 org-wide lookup ship. The engine now joins `boards.owner_person_id` and returns `is_owner: boolean` per row so agents can pick the person's HOME board (where `name` is WhatsApp-canonical) over parent-board mirror rows (where `name` is whatever a manager typed).
+
+Template rewrite replaces the narrow "parent+child hierarchy pattern" framing with a shape-agnostic rule: **any two rows sharing the same `person_id` = one human with multiple registrations** (covers auto-provisioned duplicates AND manual cross-board membership like a root-owner Gestor on a descendant). Pick `is_owner=true` for display; fall back to `notification_group_jid` override. Distinct `person_id`s still trigger homonym disambiguation. Examples now use generic placeholders.
+
+Prod backfill covered 15 child boards missing `boards.owner_person_id`. `provision-child-board.ts` + `taskflow-db.ts` updated so new provisions set the column at creation + old DBs migrate via `ALTER TABLE`. See project CHANGELOG for full detail.
+
 ## 2026-04-16 — Org-wide person lookup (`find_person_in_organization`)
 
 New `taskflow_query` variant that searches `board_people` across the whole org hierarchy — walks from this board up to its root, then descends the entire subtree — so the agent reuses existing contacts instead of re-asking for phone numbers. Returns `routing_jid` (`notification_group_jid` → board `group_jid` fallback) for delivery. Phone masked to last-4 (`•••7547`) to block directory leakage; routing uses JID, never raw phone.
