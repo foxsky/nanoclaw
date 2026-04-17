@@ -677,6 +677,20 @@ export function normalizePhone(phone: string): string {
   return digits;
 }
 
+/**
+ * Mask a phone number for agent-facing display — returns last-4 digits
+ * prefixed with bullets, or null for null input. Used so
+ * `find_person_in_organization` can disambiguate homonyms without leaking
+ * full numbers to callers who don't already know them.
+ */
+export function maskPhoneForDisplay(phone: string | null): string | null {
+  if (!phone) return null;
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length === 0) return null;
+  if (digits.length <= 4) return '•'.repeat(digits.length);
+  return '•••' + digits.slice(-4);
+}
+
 /** External participant access window: 7 days after scheduled occurrence. */
 const ACCESS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -1408,10 +1422,20 @@ export class TaskflowEngine {
    * parent_board_id chain, then collect the root + all descendants. Used by
    * `find_person_in_organization` to search people across the whole org tree,
    * so the agent can reuse existing contacts before asking to register new ones.
+   *
+   * Dangling parent_board_id pointers are tolerated: `getBoardLineage()`
+   * may push a phantom ID as the last element (pointer to a deleted row).
+   * We validate each lineage entry against `boards` and fall back to the
+   * deepest REAL ancestor — so two unrelated orphans sharing the same
+   * phantom parent don't get merged into one fake org.
    */
   private getOrgBoardIds(): string[] {
     const lineage = this.getBoardLineage();
-    const root = lineage[lineage.length - 1];
+    const existsStmt = this.db.prepare(`SELECT 1 AS ok FROM boards WHERE id = ?`);
+    let root = this.boardId;
+    for (const id of lineage) {
+      if (existsStmt.get(id)) root = id;
+    }
     const visited = new Set<string>([root]);
     const queue: string[] = [root];
     const parentStmt = this.db.prepare(
@@ -6199,9 +6223,15 @@ export class TaskflowEngine {
             return { success: true, data: [] };
           }
           const boardPh = orgBoardIds.map(() => '?').join(',');
-          // Case-insensitive LIKE '%term%' per term, OR'd together.
-          const likeClauses = terms.map(() => 'LOWER(bp.name) LIKE ?').join(' OR ');
-          const likeBinds = terms.map((t) => `%${t.toLowerCase()}%`);
+          // Escape LIKE metacharacters in each term so a user typing "%" or
+          // "_" as a name cannot enumerate the directory. `\` is the ESCAPE
+          // char — note the triple-escape for the backslash in the replace.
+          const escapeLike = (s: string): string =>
+            s.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+          const likeClauses = terms
+            .map(() => `LOWER(bp.name) LIKE ? ESCAPE '\\'`)
+            .join(' OR ');
+          const likeBinds = terms.map((t) => `%${escapeLike(t.toLowerCase())}%`);
 
           const rows = this.db
             .prepare(
@@ -6225,7 +6255,11 @@ export class TaskflowEngine {
           const matches = rows.map((r) => ({
             person_id: r.person_id,
             name: r.name,
-            phone: r.phone,
+            // Masked: only the last 4 digits are visible, so the agent can
+            // disambiguate homonyms but cannot quote a full phone number to
+            // a user who doesn't already know it. Delivery goes through
+            // routing_jid, not phone.
+            phone_masked: maskPhoneForDisplay(r.phone),
             board_id: r.board_id,
             board_group_folder: r.group_folder,
             routing_jid: r.notification_group_jid ?? r.group_jid,

@@ -683,7 +683,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         sender_name: z.string().optional().describe('Sender name for my_tasks'),
         person_name: z.string().optional().describe('Person name for person_* queries'),
         task_id: z.string().optional().describe('Task ID for task_details/history'),
-        search_text: z.string().optional().describe('Search text — for `search`, free-text match against tasks. For `find_person_in_organization`, comma-separated person names to locate across the org tree (this board + ancestors + descendants). Returns {person_id, name, phone, board_id, board_group_folder, routing_jid} per match.'),
+        search_text: z.string().optional().describe('Search text — for `search`, free-text match against tasks. For `find_person_in_organization`, comma-separated person names. The query walks from this board up to its root and then descends into every board in that subtree (siblings, cousins, children — the whole org), returning {person_id, name, phone_masked, board_id, board_group_folder, routing_jid} per match. `phone_masked` is last-4 digits only (e.g. "•••4547") — delivery uses `routing_jid`, not phone.'),
         label: z.string().optional().describe('Label filter'),
         since: z.string().optional().describe('ISO date for changes_since'),
         at: z.string().optional().describe('Date (YYYY-MM-DD) for meeting_minutes_at query'),

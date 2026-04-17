@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { TaskflowEngine, normalizePhone } from './taskflow-engine.js';
+import { TaskflowEngine, maskPhoneForDisplay, normalizePhone } from './taskflow-engine.js';
 
 const BOARD_ID = 'board-test-001';
 
@@ -768,6 +768,116 @@ describe('TaskflowEngine', () => {
       const r = engine.query({ query: 'find_person_in_organization', search_text: 'Alexandre' });
       expect((r.data as any[]).length).toBe(1);
       expect((r.data as any[])[0].name).toBe('Alexandre');
+    });
+
+    it('returns phone_masked instead of raw phone', () => {
+      seedOrgTree(db);
+      const r = engine.query({ query: 'find_person_in_organization', search_text: 'Rafael' });
+      const row = (r.data as any[])[0];
+      expect(row).not.toHaveProperty('phone');
+      expect(row.phone_masked).toBe('•••7547');
+    });
+
+    it('escapes LIKE wildcards in search_text (% does not enumerate directory)', () => {
+      seedOrgTree(db);
+      const r = engine.query({ query: 'find_person_in_organization', search_text: '%' });
+      // Without escaping, "%" would match every name in the org. With
+      // escaping + ESCAPE '\', it becomes a literal "%" that appears
+      // nowhere in any name, so zero matches.
+      expect(r.success).toBe(true);
+      expect((r.data as any[]).length).toBe(0);
+    });
+
+    it('escapes underscore wildcard in search_text', () => {
+      seedOrgTree(db);
+      const r = engine.query({ query: 'find_person_in_organization', search_text: '_' });
+      expect((r.data as any[]).length).toBe(0);
+    });
+
+    it('does not cluster orphan boards under a dangling parent_board_id', () => {
+      // Two unrelated orphan boards both point at 'board-phantom' (a
+      // non-existent row). Without root-validation, getOrgBoardIds would
+      // pick 'board-phantom' as root and cluster both orphans as one "org".
+      db.exec(`INSERT INTO boards VALUES ('board-orphan-a', 'oa@g.us', 'orphan-a', 'standard', 0, 1, 'board-phantom', NULL);
+               INSERT INTO boards VALUES ('board-orphan-b', 'ob@g.us', 'orphan-b', 'standard', 0, 1, 'board-phantom', NULL);
+               INSERT INTO board_people VALUES ('board-orphan-a', 'p-a', 'Alice Orphan', '558111111111', 'Dev', 3, NULL);
+               INSERT INTO board_people VALUES ('board-orphan-b', 'p-b', 'Bob Orphan', '558222222222', 'Dev', 3, NULL);`);
+      const orphanEngine = new TaskflowEngine(db, 'board-orphan-a');
+      const r = orphanEngine.query({
+        query: 'find_person_in_organization',
+        search_text: 'Orphan',
+      });
+      // Must NOT return Bob (who lives on the other orphan sharing the phantom parent)
+      const names = (r.data as any[]).map((x) => x.name);
+      expect(names).toEqual(['Alice Orphan']);
+    });
+
+    it('handles a parent_board_id cycle without infinite-looping', () => {
+      // A cycle A→B→A should terminate lineage walking and still return
+      // everyone in the cycle's reachable subtree.
+      db.exec(`INSERT INTO boards VALUES ('board-cyc-a', 'a@g.us', 'cyc-a', 'standard', 0, 1, 'board-cyc-b', NULL);
+               INSERT INTO boards VALUES ('board-cyc-b', 'b@g.us', 'cyc-b', 'standard', 0, 1, 'board-cyc-a', NULL);
+               INSERT INTO board_people VALUES ('board-cyc-a', 'pa', 'Cyc Alice', '558333333333', 'Dev', 3, NULL);
+               INSERT INTO board_people VALUES ('board-cyc-b', 'pb', 'Cyc Alice', '558444444444', 'Dev', 3, NULL);`);
+      const cycEngine = new TaskflowEngine(db, 'board-cyc-a');
+      const r = cycEngine.query({
+        query: 'find_person_in_organization',
+        search_text: 'Cyc Alice',
+      });
+      // Both cycle boards reachable — the cycle-break returns one as "root"
+      // and the descendant walk picks up the other via parent_board_id.
+      expect((r.data as any[]).length).toBe(2);
+    });
+
+    it('returns null phone_masked for people with null phone', () => {
+      seedOrgTree(db);
+      db.exec(
+        `INSERT INTO board_people VALUES ('board-root', 'p-nophone', 'No Phone Person', NULL, 'Dev', 3, NULL);`,
+      );
+      const r = engine.query({
+        query: 'find_person_in_organization',
+        search_text: 'No Phone',
+      });
+      const row = (r.data as any[])[0];
+      expect(row.name).toBe('No Phone Person');
+      expect(row.phone_masked).toBeNull();
+    });
+
+    it('returns all matches when 3+ boards share the same name (ordering)', () => {
+      seedOrgTree(db);
+      // Add a third Rafael on a fresh descendant
+      db.exec(`INSERT INTO boards VALUES ('board-sibling3', 'sib3@g.us', 'new-sibling', 'standard', 1, 2, 'board-root', NULL);
+               INSERT INTO board_people VALUES ('board-sibling3', 'rafael', 'RAFAEL AMARAL CHAVES', '558999999999', 'Dev', 3, NULL);`);
+      const r = engine.query({
+        query: 'find_person_in_organization',
+        search_text: 'Rafael',
+      });
+      // 3 matches, ordered by group_folder, then name
+      const folders = (r.data as any[]).map((x) => x.board_group_folder);
+      expect(folders).toEqual(['new-sibling', 'seci-secti', 'setec-secti-taskflow']);
+    });
+  });
+
+  describe('maskPhoneForDisplay', () => {
+    it('returns null for null input', () => {
+      expect(maskPhoneForDisplay(null)).toBeNull();
+    });
+
+    it('returns null for empty string', () => {
+      expect(maskPhoneForDisplay('')).toBeNull();
+    });
+
+    it('masks long numbers to bullets + last 4 digits', () => {
+      expect(maskPhoneForDisplay('558699487547')).toBe('•••7547');
+    });
+
+    it('strips non-digit characters before masking', () => {
+      expect(maskPhoneForDisplay('+55 (86) 99948-7547')).toBe('•••7547');
+    });
+
+    it('bullets the whole string when fewer than 5 digits', () => {
+      expect(maskPhoneForDisplay('1234')).toBe('••••');
+      expect(maskPhoneForDisplay('12')).toBe('••');
     });
   });
 

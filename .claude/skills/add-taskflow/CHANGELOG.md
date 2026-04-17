@@ -1,5 +1,13 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-04-16 — Org-wide person lookup (`find_person_in_organization`)
+
+New `taskflow_query` variant that searches `board_people` across the whole org hierarchy — walks from this board up to its root, then descends the entire subtree — so the agent reuses existing contacts instead of re-asking for phone numbers. Returns `routing_jid` (`notification_group_jid` → board `group_jid` fallback) for delivery. Phone masked to last-4 (`•••7547`) to block directory leakage; routing uses JID, never raw phone.
+
+Template rewrite at L359 (Participant disambiguation): **3 branches**. (1) Exactly 1 match → propose reuse. (2) 2+ matches for same name (homonyms) → STOP, require explicit user disambiguation, never auto-proceed. (3) Zero matches → fall through to the prior "staff or externo?" flow. Explicit carve-out: does NOT apply to task assignment (which still requires local `board_people` for WIP + notification contracts).
+
+Hardened via Codex gpt-5.4 high: LIKE metacharacter escape (`%`/`_` can't enumerate directory), dangling `parent_board_id` tolerance, cycle-safe BFS, depth-10 cap, null-phone safety. See project CHANGELOG for full detail.
+
 ## 2026-04-15 — Semantic-audit MVP (scheduled_at, dry-run)
 
 LLM-in-the-loop fact-check for meeting-reschedule mutations. New `semantic-audit.ts` module in the container agent runner. Ollama CoT prompt compares user intent to stored state; dry-run mode writes NDJSON to `/workspace/audit/`. Default local model; cloud opt-in. 35 tests, Codex reviewed. See project CHANGELOG for full details.
