@@ -8,6 +8,42 @@ import { TaskflowEngine, normalizePhone } from '../../../../container/agent-runn
 const BOARD_ID = 'board-test-001';
 const skillDir = path.resolve(__dirname, '..');
 
+/**
+ * Return a Date in the future at 14:00 UTC that is NOT a weekend in
+ * America/Fortaleza (the default board_runtime_config timezone). The
+ * engine's non-business-day guard (added 2026-04-14) rejects meeting
+ * creates whose local date is Sat/Sun, and raw `Date.now() + 86400000`
+ * lands on the weekend ~2/7 of the time once UTC rolls past local
+ * midnight (post-21:00 Fortaleza). Use this for every test that creates
+ * a meeting with a "future" scheduled_at.
+ */
+function futureBusinessDate(daysAhead = 1, hourUtc = 14): Date {
+  const d = new Date(Date.now() + daysAhead * 86400000);
+  d.setUTCHours(hourUtc, 0, 0, 0);
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Fortaleza',
+    weekday: 'short',
+  });
+  while (fmt.format(d) === 'Sat' || fmt.format(d) === 'Sun') {
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return d;
+}
+
+/** Mirror of futureBusinessDate for past scheduled_at test fixtures. */
+function pastBusinessDate(daysBack = 1, hourUtc = 14): Date {
+  const d = new Date(Date.now() - daysBack * 86400000);
+  d.setUTCHours(hourUtc, 0, 0, 0);
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Fortaleza',
+    weekday: 'short',
+  });
+  while (fmt.format(d) === 'Sat' || fmt.format(d) === 'Sun') {
+    d.setUTCDate(d.getUTCDate() - 1);
+  }
+  return d;
+}
+
 const SCHEMA = `
 CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, board_role TEXT DEFAULT 'standard', hierarchy_level INTEGER, max_depth INTEGER, parent_board_id TEXT, short_code TEXT);
 CREATE TABLE board_people (board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT NULL, phone TEXT, role TEXT DEFAULT 'member', wip_limit INTEGER, notification_group_jid TEXT, PRIMARY KEY (board_id, person_id));
@@ -4167,7 +4203,7 @@ describe('meeting notes', () => {
 
     it('upcoming_meetings returns meetings sorted by scheduled_at', () => {
       // Use a dynamic future date so this test doesn't become flaky
-      const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 19) + 'Z';
+      const tomorrow = futureBusinessDate().toISOString().slice(0, 19) + 'Z';
       engine.create({
         board_id: BOARD_ID,
         type: 'meeting',
@@ -4183,7 +4219,7 @@ describe('meeting notes', () => {
 
     it('upcoming_meetings excludes meetings scheduled in the past', () => {
       // Create a meeting scheduled in the past (yesterday)
-      const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 19) + 'Z';
+      const yesterday = pastBusinessDate().toISOString().slice(0, 19) + 'Z';
       const pastMeeting = engine.create({
         board_id: BOARD_ID,
         type: 'meeting',
@@ -4194,7 +4230,7 @@ describe('meeting notes', () => {
       expect(pastMeeting.success).toBe(true);
 
       // Create a meeting scheduled in the future (tomorrow)
-      const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 19) + 'Z';
+      const tomorrow = futureBusinessDate().toISOString().slice(0, 19) + 'Z';
       const futureMeeting = engine.create({
         board_id: BOARD_ID,
         type: 'meeting',
@@ -4748,7 +4784,7 @@ describe('meeting notes', () => {
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'Tomorrow meeting',
-        scheduled_at: new Date(Date.now() + 86400000).toISOString(),
+        scheduled_at: futureBusinessDate().toISOString(),
         sender_name: 'Alexandre',
       });
 
@@ -4760,7 +4796,7 @@ describe('meeting notes', () => {
 
     it('report upcoming_meetings excludes past meetings', () => {
       // Create a meeting scheduled in the past (yesterday)
-      const yesterday = new Date(Date.now() - 86400000).toISOString();
+      const yesterday = pastBusinessDate().toISOString();
       const pastMeeting = engine.create({
         board_id: BOARD_ID,
         type: 'meeting',
@@ -4771,7 +4807,7 @@ describe('meeting notes', () => {
       expect(pastMeeting.success).toBe(true);
 
       // Create a meeting scheduled in the future (tomorrow)
-      const tomorrow = new Date(Date.now() + 86400000).toISOString();
+      const tomorrow = futureBusinessDate().toISOString();
       const futureMeeting = engine.create({
         board_id: BOARD_ID,
         type: 'meeting',
@@ -4795,7 +4831,7 @@ describe('meeting notes', () => {
 
     it('report survives malformed participants JSON in upcoming meetings', () => {
       // Create a meeting with valid data, then corrupt participants directly in DB
-      const tomorrow = new Date(Date.now() + 86400000).toISOString();
+      const tomorrow = futureBusinessDate().toISOString();
       const m = engine.create({
         board_id: BOARD_ID,
         type: 'meeting',
@@ -4854,8 +4890,7 @@ describe('meeting notes', () => {
 
   describe('meeting notifications', () => {
     it('meeting reminders are keyed to scheduled_at', () => {
-      const meetingTime = new Date(Date.now() + 86400000);
-      meetingTime.setUTCHours(14, 0, 0, 0);
+      const meetingTime = futureBusinessDate();
       const createResult = engine.create({
         board_id: BOARD_ID,
         type: 'meeting',
