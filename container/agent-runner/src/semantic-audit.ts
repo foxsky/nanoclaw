@@ -74,6 +74,38 @@ export function deriveContextHeader(
 const REAGENDADA_PATTERN =
   /Reunião reagendada para (\d{1,2})\/(\d{1,2})\/(\d{4}) às (\d{1,2}):(\d{2})/;
 
+// Capable LLMs reading a raw UTC ISO like `2026-04-23T11:30:00.000Z` will
+// compare `11:30` against a user-provided local time (`8h30`) literally and
+// flag a deviation that isn't one. This helper replaces every UTC ISO
+// timestamp in a stored-value string with a labeled pair:
+//   `2026-04-23T11:30:00.000Z (local 2026-04-23 08:30 America/Fortaleza)`
+// so the classifier sees the converted value right next to the raw one.
+export function annotateUtcTimestamps(stored: string, boardTimezone: string): string {
+  if (!stored) return stored;
+  const tz = resolveTimezoneOrUtc(boardTimezone);
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  return stored.replace(
+    /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)/g,
+    (iso) => {
+      const at = new Date(iso);
+      if (isNaN(at.getTime())) return iso;
+      const parts = Object.fromEntries(
+        fmt.formatToParts(at).map((p) => [p.type, p.value]),
+      );
+      const local = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+      return `${iso} (local ${local} ${tz})`;
+    },
+  );
+}
+
 export function extractScheduledAtValue(details: string): string | null {
   if (!details) return null;
   let parsed: unknown;
@@ -117,15 +149,22 @@ export function buildPrompt(
     `- Campo: ${mutation.fieldKind}`,
     `- Valor armazenado: ${mutation.extractedValue ?? '(não extraído)'}`,
     '',
+    'SOBRE FUSO HORÁRIO — leia com atenção antes de raciocinar:',
+    `- O usuário fala em horário LOCAL (${context.boardTimezone}).`,
+    '- Valores armazenados com sufixo "Z" (ex: `2026-04-23T11:30:00.000Z`) estão em UTC.',
+    '- Quando um timestamp UTC aparece, o auditor já emitiu a conversão entre parênteses ao lado: `(local 2026-04-23 08:30 America/Fortaleza)`. **Compare sempre o horário local anotado contra o horário que o usuário disse**, nunca o UTC bruto.',
+    '- Exemplo: usuário disse "23/04 às 8h30"; armazenado: `2026-04-23T11:30:00.000Z (local 2026-04-23 08:30 ...)`. Isso É uma correspondência correta (8h30 local = 11:30 UTC em fuso UTC-3). NÃO é divergência.',
+    '',
     'Pense passo a passo antes de responder:',
     '1. Que ação o usuário pediu? Que campos ele especificou (data, hora, nome, título)?',
-    `2. Que valores o bot armazenou? Para datas, derive o dia da semana no fuso (${context.boardTimezone}) e o horário em formato local.`,
-    '3. Os valores armazenados correspondem à intenção do usuário?',
+    '2. Que valores o bot armazenou? Se houver timestamp UTC, use o horário local anotado ao lado. Derive o dia da semana em local.',
+    '3. Os valores armazenados (no horário local) correspondem à intenção do usuário?',
     '',
     'Importante:',
     '- Se o usuário forneceu uma faixa de horário (ex: "9h às 9h30") e o bot armazenou apenas o início, isso é POR DESIGN do TaskFlow (não rastreia horário de fim) — não conta como divergência.',
     '- Se o usuário pediu também algo que vira uma linha SEPARADA no histórico (ex: "me avise um dia antes" → reminder_added), a ausência dessa ação NESTA mutação não é divergência — ela vive em outra linha.',
     '- Se o usuário usou um nome ambíguo mas o bot resolveu corretamente para a única pessoa do quadro com aquele nome, isso é correto.',
+    '- Se o campo = `assignee` e o assignee armazenado bate literalmente com o nome que o usuário pediu (mesmo em minúscula ou com acento removido), é correspondência — não divergência.',
     '',
     'Depois do raciocínio, produza JSON em bloco fenced:',
     '',
@@ -473,6 +512,15 @@ export async function runSemanticAudit(
     const tzRow = tzStmt.get(row.boardId) as { timezone: string } | undefined;
     const boardTimezone = tzRow?.timezone ?? 'America/Fortaleza';
 
+    // For scheduled_at (and any future field that might embed a UTC ISO),
+    // annotate UTC timestamps with a local-time rendering so the classifier
+    // doesn't compare UTC hours against the user's local-time phrasing.
+    // Applied AFTER fieldKind/storedValue are set so `extractScheduledAtValue`
+    // output (already local, no `Z`) passes through unchanged.
+    if (storedValue) {
+      storedValue = annotateUtcTimestamps(storedValue, boardTimezone);
+    }
+
     const personRow = personStmt.get(row.boardId, row.by) as { name: string } | undefined;
     const userDisplayName = personRow?.name ?? null;
 
@@ -582,7 +630,7 @@ export function buildResponsePrompt(
   context: { boardTimezone: string; headerToday: string; headerWeekday: string },
 ): string {
   return [
-    'Você é um auditor que verifica se a resposta do bot ATENDEU COMPLETAMENTE à intenção do usuário.',
+    'Você é um auditor que verifica se o bot introduziu uma DIVERGÊNCIA DE FATO ou se RECUSOU uma ação explícita. O padrão é `intent_matches=true` — só marque `false` quando conseguir citar evidência direta.',
     '',
     'Contexto temporal:',
     `- Data: ${context.headerToday} (${context.headerWeekday})`,
@@ -600,22 +648,42 @@ export function buildResponsePrompt(
     truncateKeepEnds(interaction.botContent, RESPONSE_EXCERPT_MAX),
     '```',
     '',
-    'Pense passo a passo:',
-    '1. O que o usuário pediu, perguntou ou comandou?',
-    '2. O bot respondeu COMPLETAMENTE ao que foi pedido? Entregou a informação solicitada ou executou a ação correta?',
-    '3. O bot ignorou a intenção, desviou para outro assunto, ou deu uma resposta parcial/evasiva?',
+    'REGRAS — siga rigidamente:',
     '',
-    'Critérios de falha (intent_matches=false):',
-    '- Bot respondeu sobre assunto DIFERENTE do que o usuário pediu (desvio de tema).',
-    '- Bot deu resposta parcial: usuário pediu informação X e bot respondeu sobre o mesmo tópico sem entregar X. Ex: "qual o prazo de T5?" → bot responde "T5 está em andamento" sem mencionar o prazo.',
-    '- Bot ignorou um redirecionamento explícito ("não estou falando de X, mas de Y").',
-    '- Bot deu informação factualmente errada sobre a tarefa.',
+    '1. **Padrão = correto.** Qualquer resposta razoável do bot é `intent_matches=true`. Só saia desse padrão se houver EVIDÊNCIA direta de falha, descrita abaixo.',
     '',
-    'Critérios de aprovação (intent_matches=true):',
-    '- Bot executou a ação E confirmou → correto.',
-    '- Bot pediu esclarecimento antes de agir → correto.',
-    '- Bot recusou por limitação técnica legítima → correto.',
-    '- Mensagens casuais ("ok", "beleza", "obrigado") sem contexto de tarefa → correto.',
+    '2. **Para marcar `intent_matches=false`, você DEVE incluir em `deviation`:**',
+    '   - Uma CITAÇÃO LITERAL (entre aspas) da mensagem do usuário mostrando o que ele pediu especificamente, E',
+    '   - Uma CITAÇÃO LITERAL (entre aspas) da resposta do bot que contradiz/nega/ignora esse pedido específico.',
+    '   - Se você não conseguir citar as duas, a resposta NÃO é uma divergência — devolva `intent_matches=true`.',
+    '',
+    '3. **Casos que NÃO são divergência (= intent_matches=true):**',
+    '   - Bot executou a ação E confirmou (ex: "✅ Nota adicionada", "Detalhes enviados", "Reunião criada", "Tarefa concluída").',
+    '   - Bot pediu informação necessária para completar a ação (ex: "qual o telefone de X?" quando X é participante externo que precisa de contato).',
+    '   - Bot detectou conflito legítimo (feriado, dia não útil, conflito de horário) e pediu confirmação antes de agir.',
+    '   - Bot pediu desambiguação de nome/data ambíguos.',
+    '   - Bot recusou por limitação técnica declarada ("não consigo X por Y").',
+    '   - O usuário pediu uma NOTA (ex: "nota: X fazer Y"). A nota é sobre a ação de X, não sobre o bot agir. Bot adicionar a nota = correto.',
+    '   - Usuário disse uma hora LOCAL e o bot confirmou com a MESMA hora local (ex: usuário "8h30", bot "08:30"). **Não é divergência de data mesmo que um timestamp ISO UTC apareça em outro lugar.**',
+    '   - Mensagem casual ("ok", "beleza", "obrigado") — `intent_matches=true` automaticamente.',
+    '',
+    '4. **Casos que SÃO divergência (= intent_matches=false, com citação):**',
+    '   - Bot afirmou um FATO errado sobre a tarefa (ex: bot disse "prazo 15/04" quando é 17/04). Cite ambos.',
+    '   - Bot respondeu sobre assunto completamente não relacionado ao que o usuário pediu (desvio total de tópico, não só informação adicional).',
+    '   - Bot IGNOROU um redirecionamento explícito do usuário ("não estou falando de X, mas de Y") e continuou falando de X.',
+    '   - Bot NEGOU uma capacidade que ele claramente tem (ex: "não posso criar tarefa" quando taskflow permite).',
+    '',
+    '5. **NÃO marque divergência só porque:**',
+    '   - O bot pediu mais informação — isso é progresso, não falha.',
+    '   - Você acha que o bot poderia ter sido mais completo — "poderia ser melhor" ≠ falha.',
+    '   - O bot menciona um item pendente de mensagem anterior — contexto acumulado é esperado.',
+    '   - O bot converteu entre formatos (8h30 local ↔ 11:30 UTC é a mesma hora).',
+    '',
+    'Raciocinio passo a passo:',
+    '1. O usuário pediu o quê, especificamente? Quote exatamente.',
+    '2. O bot contradisse/negou esse pedido, ou entregou/pediu-info/agiu corretamente?',
+    '3. Se contradisse, quote a linha do bot que contradiz.',
+    '4. Se não conseguir quotar uma contradição literal, marque `intent_matches=true`.',
     '',
     'Produza JSON em bloco fenced:',
     '',
