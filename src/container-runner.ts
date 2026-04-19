@@ -379,21 +379,22 @@ function readEmbeddingConfig(): {
   };
 }
 
-function readSemanticAuditConfig(): {
-  mode: string;
-  cloud: string;
-  model: string;
-} {
-  const env = readEnvFile([
-    'NANOCLAW_SEMANTIC_AUDIT_MODE',
-    'NANOCLAW_SEMANTIC_AUDIT_CLOUD',
-    'NANOCLAW_SEMANTIC_AUDIT_MODEL',
-  ]);
-  return {
-    mode: env.NANOCLAW_SEMANTIC_AUDIT_MODE ?? '',
-    cloud: env.NANOCLAW_SEMANTIC_AUDIT_CLOUD ?? '',
-    model: env.NANOCLAW_SEMANTIC_AUDIT_MODEL ?? '',
-  };
+const SEMANTIC_AUDIT_ENV_KEYS = [
+  'NANOCLAW_SEMANTIC_AUDIT_MODE',
+  'NANOCLAW_SEMANTIC_AUDIT_CLOUD',
+  'NANOCLAW_SEMANTIC_AUDIT_MODEL',
+  'NANOCLAW_SEMANTIC_AUDIT_FALLBACK_MODEL',
+  'NANOCLAW_SEMANTIC_AUDIT_OLLAMA_HOST',
+  'NANOCLAW_SEMANTIC_AUDIT_FALLBACK_OLLAMA_HOST',
+] as const;
+
+function readSemanticAuditEnv(): Record<string, string> {
+  const env = readEnvFile([...SEMANTIC_AUDIT_ENV_KEYS]);
+  const out: Record<string, string> = {};
+  for (const k of SEMANTIC_AUDIT_ENV_KEYS) {
+    if (env[k]) out[k] = env[k];
+  }
+  return out;
 }
 
 function buildContainerArgs(
@@ -536,16 +537,8 @@ export async function runContainerAgent(
 
   // Semantic audit config — propagate to container so auditor-script.sh can
   // activate the LLM-based meeting-reschedule fact-checker when opted in.
-  const semAuditCfg = readSemanticAuditConfig();
-  const semAuditEnvVars: Array<[string, string]> = [
-    ['NANOCLAW_SEMANTIC_AUDIT_MODE', semAuditCfg.mode],
-    ['NANOCLAW_SEMANTIC_AUDIT_CLOUD', semAuditCfg.cloud],
-    ['NANOCLAW_SEMANTIC_AUDIT_MODEL', semAuditCfg.model],
-  ];
-  for (const [key, val] of semAuditEnvVars) {
-    if (val) {
-      containerArgs.splice(containerArgs.length - 1, 0, '-e', `${key}=${val}`);
-    }
+  for (const [key, val] of Object.entries(readSemanticAuditEnv())) {
+    containerArgs.splice(containerArgs.length - 1, 0, '-e', `${key}=${val}`);
   }
 
   // Embed user message for context-aware features (async, best-effort)

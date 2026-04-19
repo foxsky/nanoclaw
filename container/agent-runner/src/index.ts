@@ -558,7 +558,7 @@ interface ScriptResult {
   data?: unknown;
 }
 
-const SCRIPT_TIMEOUT_MS = 30_000;
+const SCRIPT_TIMEOUT_MS = 3_600_000;
 
 async function runScript(script: string): Promise<ScriptResult | null> {
   const scriptPath = '/tmp/task-script.sh';

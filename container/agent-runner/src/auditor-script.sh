@@ -610,18 +610,46 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
     if (mode === 'dryrun' || mode === 'enabled') {
       try {
         const { runSemanticAudit, runResponseAudit, writeDryRunLog } = await import(SEMANTIC_AUDIT_MODULE_PATH);
-        const ollamaHost = process.env.OLLAMA_HOST || '';
+        // Audit override takes precedence over the general OLLAMA_HOST so
+        // the cloud-authenticated endpoint isn't forced on embedding/context.
+        const ollamaHost =
+          process.env.NANOCLAW_SEMANTIC_AUDIT_OLLAMA_HOST ||
+          process.env.OLLAMA_HOST ||
+          '';
+        // Fallback host defaults to primary; override when the primary is a
+        // cloud-authed stub that doesn't have the fallback model pulled.
+        const ollamaFallbackHost =
+          process.env.NANOCLAW_SEMANTIC_AUDIT_FALLBACK_OLLAMA_HOST || '';
         const rawCloud = (process.env.NANOCLAW_SEMANTIC_AUDIT_CLOUD || '').trim().toLowerCase();
         const cloudOptIn = rawCloud === '1' || rawCloud === 'true' || rawCloud === 'yes';
+        // Bench data (Apr 2026) on a logged-in Ollama instance, 3-sample
+        // probes with real audit-sized prompts:
+        //   glm-5.1:cloud        p50 ~4s   (100%)  ← fastest, default primary
+        //   minimax-m2.7:cloud   p50 ~22s  (100%)
+        //   qwen3.5:cloud        p50 ~22s  (100%)  — older default
+        //   glm-4.6:cloud        p50 ~23s  (100%)
+        // Lowercase 'm' / exact version tag matter — 'minimax-M2.7:cloud'
+        // and 'minimax-M2:cloud' both 404 on the cloud registry.
         const defaultModel = cloudOptIn
           ? 'minimax-m2.7:cloud'
-          : 'qwen3.5:35b-a3b-coding-nvfp4';
+          : 'glm-5.1:cloud';
         const ollamaModel =
           process.env.NANOCLAW_SEMANTIC_AUDIT_MODEL || defaultModel;
+        // Auto-wire a local fallback whenever the primary looks cloud-routed.
+        // Cloud calls succeed 100% against a logged-in Ollama but ~20% exceed
+        // a 60s lease — without a fallback those tail-latency calls turn into
+        // ollamaFail. Defaults to qwen3-coder:latest, which should live on
+        // NANOCLAW_SEMANTIC_AUDIT_FALLBACK_OLLAMA_HOST (often a different box
+        // than the cloud-authed primary). Non-cloud primaries skip it.
+        const envFallback = process.env.NANOCLAW_SEMANTIC_AUDIT_FALLBACK_MODEL;
+        const ollamaFallbackModel = envFallback === 'none'
+          ? ''
+          : envFallback || (ollamaModel.endsWith(':cloud') ? 'qwen3-coder:latest' : '');
         if (ollamaHost) {
           // Phase 1: mutation-level audit (scheduled_at, due_date, assignee, title)
           const mutationAudit = await runSemanticAudit({
             msgDb, tfDb, period, ollamaHost, ollamaModel,
+            ollamaFallbackHost, ollamaFallbackModel,
           });
           console.error(
             `Semantic audit — mutations (${mode}, ${ollamaModel}): ` +
@@ -636,6 +664,7 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
           // Phase 2: response-level audit (all user→bot interaction pairs)
           const responseAudit = await runResponseAudit({
             msgDb, tfDb, period, ollamaHost, ollamaModel,
+            ollamaFallbackHost, ollamaFallbackModel,
           });
           console.error(
             `Semantic audit — responses (${mode}, ${ollamaModel}): ` +
@@ -705,6 +734,41 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
               if (!result.data.summary.boardsWithIssues.includes(folder)) {
                 result.data.summary.boardsWithIssues.push(folder);
               }
+            }
+            // Emit each deviation as a candidate for manual review, not a
+            // finding — classifier context may be mis-associated by
+            // upstream heuristics. Pairs with auditor-prompt.txt Regra 10
+            // requiring the agent to copy this block verbatim.
+            // Escape WhatsApp markdown meta-characters so user content
+            // can't distort rendering when re-emitted.
+            const escapeMdQuote = (s, limit) => {
+              const flat = String(s).replace(/\r/g, '').replace(/\n+/g, ' ');
+              const capped = flat.length > limit ? flat.slice(0, limit) + '…' : flat;
+              return capped.replace(/([*_`~\\])/g, '\\$1');
+            };
+            for (const board of boards) {
+              const devs = board.semanticDeviations || [];
+              if (devs.length === 0) continue;
+              const lines = [];
+              lines.push(
+                `\n_Possíveis divergências semânticas (${devs.length} candidato${devs.length > 1 ? 's' : ''}` +
+                ` — verificação manual recomendada, heurística de associação em revisão)_\n`,
+              );
+              for (const d of devs) {
+                lines.push(`⚠️ *Candidato* _(confiança ${d.confidence}, ${d.fieldKind}${d.taskId ? `, task ${d.taskId}` : ''})_`);
+                if (d.userMessage) {
+                  lines.push(`> _Mensagem do usuário:_ ${escapeMdQuote(d.userMessage, 320)}`);
+                }
+                const stored = d.storedValue || d.responsePreview || '';
+                if (stored) {
+                  lines.push(`> _Valor armazenado / resposta do bot:_ ${escapeMdQuote(stored, 320)}`);
+                }
+                if (d.deviation) {
+                  lines.push(`> _Apontamento do classificador:_ ${escapeMdQuote(d.deviation, 480)}`);
+                }
+                lines.push('');
+              }
+              board.semanticEvidenceMarkdown = lines.join('\n');
             }
           }
         } else {

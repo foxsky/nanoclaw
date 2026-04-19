@@ -200,6 +200,43 @@ export interface RunSemanticAuditArgs {
   period: { startIso: string; endIso: string };
   ollamaHost: string;
   ollamaModel: string;
+  // Optional secondary model retried when the primary returns null (timeout /
+  // non-200 / network). `ollamaFallbackHost` lets the fallback live on a
+  // separate Ollama box — useful when the primary host is a small
+  // cloud-authed stub that doesn't have the large local model pulled.
+  // Defaults to `ollamaHost`.
+  ollamaFallbackHost?: string;
+  ollamaFallbackModel?: string;
+  ollamaPrimaryTimeoutMs?: number;
+  ollamaFallbackTimeoutMs?: number;
+}
+
+interface OllamaPolicy {
+  host: string;
+  model: string;
+  primaryTimeoutMs: number;
+  fallbackHost: string;
+  fallbackModel: string;
+  fallbackTimeoutMs: number;
+}
+
+function resolveOllamaPolicy(args: RunSemanticAuditArgs): OllamaPolicy {
+  return {
+    host: args.ollamaHost,
+    model: args.ollamaModel,
+    primaryTimeoutMs: args.ollamaPrimaryTimeoutMs ?? 60_000,
+    fallbackHost: args.ollamaFallbackHost || args.ollamaHost,
+    fallbackModel: args.ollamaFallbackModel || '',
+    fallbackTimeoutMs: args.ollamaFallbackTimeoutMs ?? 15_000,
+  };
+}
+
+async function callWithFallback(p: OllamaPolicy, prompt: string): Promise<string | null> {
+  const raw = await callOllama(p.host, p.model, prompt, p.primaryTimeoutMs);
+  if (raw) return raw;
+  if (!p.fallbackModel) return null;
+  if (p.fallbackModel === p.model && p.fallbackHost === p.host) return null;
+  return callOllama(p.fallbackHost, p.fallbackModel, prompt, p.fallbackTimeoutMs);
 }
 
 export interface SemanticAuditCounters {
@@ -220,7 +257,8 @@ export interface SemanticAuditResult {
 export async function runSemanticAudit(
   args: RunSemanticAuditArgs,
 ): Promise<SemanticAuditResult> {
-  const { msgDb, tfDb, period, ollamaHost, ollamaModel } = args;
+  const { msgDb, tfDb, period } = args;
+  const ollama = resolveOllamaPolicy(args);
 
   // Qualifying mutations: any action where the bot interpreted user intent and
   // stored a value that could be semantically wrong. Excludes note-only updates
@@ -382,7 +420,7 @@ export async function runSemanticAudit(
     };
 
     const prompt = buildPrompt(mutation, context);
-    const raw = await callOllama(ollamaHost, ollamaModel, prompt);
+    const raw = await callWithFallback(ollama, prompt);
     if (!raw) {
       counters.ollamaFail++;
       continue;
@@ -498,7 +536,8 @@ function isWebOrigin(msg: { sender?: string | null; sender_name?: string | null 
 export async function runResponseAudit(
   args: RunSemanticAuditArgs,
 ): Promise<SemanticAuditResult> {
-  const { msgDb, tfDb, period, ollamaHost, ollamaModel } = args;
+  const { msgDb, tfDb, period } = args;
+  const ollama = resolveOllamaPolicy(args);
 
   const groups = msgDb
     .prepare(
@@ -620,7 +659,7 @@ export async function runResponseAudit(
         headerWeekday: header.weekday,
       });
 
-      const raw = await callOllama(ollamaHost, ollamaModel, prompt);
+      const raw = await callWithFallback(ollama, prompt);
       if (!raw) {
         counters.ollamaFail++;
         continue;

@@ -4,6 +4,28 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-18 — Kipp audit: stop hallucinating specifics + dual-host Ollama with cloud primary
+
+Today's Kipp audit (run on Friday 04-17 data) emitted a 6300-char report with 18 "high-confidence" findings, of which spot-checking showed ~60% were fabricated: `T40-T42 title-swap in ≤2s sequence` (actual gaps were 27-71s, titles correct), `P11.22 due_date ignored` (DB had 2026-04-17 stored + bot reply confirmed it), `p4.3+p5.7 multi-line ignored` (two independent messages 40s apart, both correctly processed). Three stacked defects (confirmed by Codex gpt-5.4 peer review):
+
+1. **Script misbinds triggers** — `runSemanticAudit` in `semantic-audit.ts` paired each mutation to "latest same-sender msg in prior 10 min", so rapid user sequences collapse all mutations onto the last message. Classifier correctly flags "stored value doesn't match" based on wrong context.
+2. **Script burst-collapses responses** — `runResponseAudit` fuses consecutive same-sender user messages before first bot reply, so two separate "concluída" messages become one fake multi-line interaction.
+3. **Prompt contract missing** — `auditor-prompt.txt` had no rule for the `semanticDeviations` payload (rollout was deferred to enable-time and never landed), so the Claude agent free-composed and invented specifics ("≤2s", "N of M gaps", "prioridade crítica").
+
+**This PR (PR-1) quarantines the blast radius.** Root causes 1+2 remain (planned as follow-up schema + pipeline fixes pending volume observation), but the user-visible hallucinations are stopped:
+
+**Deterministic rendering** — `auditor-script.sh` now pre-renders `board.semanticEvidenceMarkdown` per-board with exact-quoted user message, stored value, classifier deviation text (WhatsApp-markdown-escaped: `*`, `_`, `` ` ``, `~`, `\` escaped so user content can't distort surrounding formatting). Each row is labeled `⚠️ Candidato` — not a severity emoji — because the classifier may be operating on mis-associated context. Content capped at 320 chars (user/bot quotes) / 480 chars (classifier reasoning) with ellipsis.
+
+**Agent lockdown** — `auditor-prompt.txt` Regra 10 requires the agent to emit `semanticEvidenceMarkdown` verbatim, no reformatting, no severity promotion, no invented patterns. Semantic candidates stay out of the 🔴/🟠/🟡/🔵/⚪ severity rollup; the summary line gets an optional "⚠️ N candidatos semânticos pendentes de revisão" counter instead.
+
+**Dual-host Ollama for audit** — today's model-shootout (6 curated Portuguese cases) showed `glm-5.1:cloud` wins correctness 6/6 at p50 25s, but only via a cloud-authenticated instance. Added `NANOCLAW_SEMANTIC_AUDIT_OLLAMA_HOST` + `NANOCLAW_SEMANTIC_AUDIT_FALLBACK_OLLAMA_HOST` env vars so the audit can target a logged-in Ollama at `host.docker.internal:11434` (primary) and fall back to `192.168.2.13:11434` for the local qwen3-coder model, independent of the `OLLAMA_HOST` used for embedding and context-summarization. Default primary is now `glm-5.1:cloud`; cloud-routed primaries auto-wire `qwen3-coder:latest` as fallback; `NANOCLAW_SEMANTIC_AUDIT_FALLBACK_MODEL=none` disables that. Per-call timeouts split: 60s primary (cloud tail), 15s fallback (local ~1s).
+
+**Run-time envelope** — `SCRIPT_TIMEOUT_MS` raised from 30s → 1hr (`container/agent-runner/src/index.ts`). 30s was fine for the mutation-only audit but the now-shipping `runResponseAudit` makes one LLM call per non-casual user message in the period; a busy Friday had ~228 audited items at 15-25s each, well past the old budget. Run 6 this afternoon completed cleanly in 44.8min with 2/70 mutation ollamaFail and 0/158 response ollamaFail.
+
+**Refactors from /simplify pass** — `semantic-audit.ts` now has `resolveOllamaPolicy(args)` + `callWithFallback(policy, prompt)` helpers: removes the twin destructure blocks in `runSemanticAudit` and `runResponseAudit` (each had its own copies of the 60_000/15_000 defaults and the `(fallbackModel !== ollamaModel || fallbackHost !== ollamaHost)` retry guard). `container-runner.ts` uses a single `SEMANTIC_AUDIT_ENV_KEYS` tuple + `readSemanticAuditEnv()` returning `Record<string,string>` of set values, iterated once into the `-e` args — adding a future audit env var is now one-line.
+
+Fallout from a rejected PR-2: I tried and explicitly walked away from a greedy "prior-mutation-excluded window" heuristic for the trigger-binding. Tracing against the real T39-T42 sequence showed it fixes T39/T40 but silently regresses T41/T42 into empty windows because the bot processes messages in FIFO order minutes after they arrive. Any pure-timestamp pairing trades one silent misattribution for another; the proper fix needs an ambient per-inbound-message source context captured at the host/IPC layer and recorded on `task_history` — deferred to PR-2 pending observation of post-ship candidate volume.
+
 ## 2026-04-17 — `is_owner` on find_person + owner_person_id backfill
 
 Resurfaced after running `find_person_in_organization` against production: Ana and Lucas each appear on two boards (parent + their own auto-provisioned child), and Miguel (root-board owner) also appears on a descendant where he's a Gestor rather than owner. The template's "2+ matches = homonym" rule over-triggered on every such case. Root cause: dedupe-by-person_id wasn't in the template, and the engine had no signal to distinguish the home row from the parent-registration mirror.

@@ -37,6 +37,8 @@ Para cada interação flaggeada, classifique como:
 
    Formato: liste logo após a seção de interações do quadro, numa sub-seção _"*Auto-correções detectadas:*"_, uma linha por par.
 
+10. **Divergências semânticas candidatas** (`semanticEvidenceMarkdown` no quadro — string já pré-renderizada pelo script): quando presente, **emita a string EXATAMENTE como veio**, no final da seção do quadro, depois das interações heurísticas e de _Auto-correções detectadas_. NÃO reformate, NÃO adicione emojis de severidade (🔴/🟠/🟡/🔵/⚪), NÃO invente observações sobre padrões ("bug de fila", "≤2s", "N de M gaps", "padrão recorrente", "prioridade crítica"). O classificador opera sobre contexto potencialmente mal-associado (a heurística de trigger-lookup ainda não foi corrigida), então esses itens são **candidatos para verificação manual**, não conclusões. Se o campo não existir no quadro, não há candidato — pule. NÃO conte candidatos nos totais de 🔴/🟠/🟡/🔵/⚪ do resumo final; se quiser mencioná-los na linha de resumo, use uma contagem separada _"⚠️ N candidatos semânticos pendentes de revisão"_.
+
 ## Formato de saída
 
 Para cada quadro com issues:
@@ -48,9 +50,13 @@ Para cada interação:
 > _{mensagem do usuário (truncada)}_
 {análise em 1-2 frases}
 
+Logo após a lista de interações e _Auto-correções detectadas_ (quando houver), se o quadro trouxer `semanticEvidenceMarkdown`, **emita-o verbatim** — é a única forma válida de apresentar divergências semânticas neste relatório até as correções do script landarem. Nada de emojis de severidade, nada de síntese, nada de padrões inventados.
+
 ## Linha final
 
 Termine com uma linha de resumo:
 
 ---
-*Resumo*: {total flaggeadas} interações revisadas em {N} quadros. {🔴 X não atendidas | 🟠 X gaps | 🟡 X atrasadas | 🔵 X features | ⚪ X UX}
+*Resumo*: {total flaggeadas} interações revisadas em {N} quadros. {🔴 X não atendidas | 🟠 X gaps | 🟡 X atrasadas | 🔵 X features | ⚪ X UX}{, ⚠️ X candidatos semânticos pendentes de revisão — se houver}
+
+Candidatos semânticos NÃO entram nos contadores por severidade.
