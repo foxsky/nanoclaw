@@ -261,6 +261,15 @@ function crossGroupSendEvidence(
   return !hasAnyExactCorrelation && sendLogs.length > 0;
 }
 
+function noResponseEvidence(
+  hasBotResponse: boolean,
+  isDmSend: boolean,
+  isTaskWrite: boolean,
+  crossGroupSendLogged: boolean,
+): boolean {
+  return !hasBotResponse && !(isDmSend && crossGroupSendLogged && !isTaskWrite);
+}
+
 describe('auditor DM-send detection', () => {
   describe('matches cross-group DM requests (positive cases)', () => {
     const positives = [
@@ -841,6 +850,18 @@ describe('auditor DM-send detection', () => {
         ),
       ).toBe(true);
     });
+
+    it('does not count a successful pure DM-send without local reply as noResponse', () => {
+      expect(
+        noResponseEvidence(false, true, false, true),
+      ).toBe(false);
+      expect(
+        noResponseEvidence(false, true, true, true),
+      ).toBe(true);
+      expect(
+        noResponseEvidence(false, false, false, false),
+      ).toBe(true);
+    });
   });
 
   describe('drift detection', () => {
@@ -903,7 +924,7 @@ describe('auditor DM-send detection', () => {
       // scheduled_tasks for reminders, send_message_log for cross-group
       // DM deliveries.
       expect(script).toMatch(
-        /if\s*\(\s*isWrite\s*\)\s*\{[\s\S]*?taskHistoryStmt\.all[\s\S]*?scheduledTasksStmt\.get[\s\S]*?sendMessageLogStmt\.all/,
+        /const isDmSend = isDmSendRequest\(msg\.content\)[\s\S]*?if\s*\(\s*isDmSend\s*\)\s*\{[\s\S]*?sendMessageLogStmt\.all[\s\S]*?if\s*\(\s*isWrite\s*\)\s*\{[\s\S]*?taskHistoryStmt\.all[\s\S]*?scheduledTasksStmt\.get/,
       );
       // Both scheduledTasksStmt AND sendMessageLogStmt must be prepared
       // against msgDb (messages.db), not tfDb.
@@ -946,6 +967,9 @@ describe('auditor DM-send detection', () => {
       );
       expect(script).toMatch(
         /const hasAnyExactCorrelation = sendLogs\.some/,
+      );
+      expect(script).toMatch(
+        /noResponse\s*=\s*!botResponse\s*&&\s*!\(isDmSend\s*&&\s*crossGroupSendLogged\s*&&\s*!isTaskWrite\)/,
       );
       expect(script).toMatch(
         /mutationFound\s*=\s*isTaskWrite\s*\?\s*taskMutationFound\s*:\s*\(taskMutationFound\s*\|\|\s*crossGroupSendLogged\)/,
@@ -1008,6 +1032,27 @@ describe('auditor DM-send detection', () => {
       expect(prompt).toContain('triggerTurnId');
       expect(prompt).toContain('triggerMessageIds');
       expect(prompt).toContain('_Refs:');
+      expect(prompt).toContain('apêndice estrutural');
+      expect(prompt).toContain('dryrun NDJSON');
+    });
+
+    it('auditor-script.sh appends a structural refs block outside the agent-visible payload', () => {
+      expect(script).toContain('function buildInteractionRefs(');
+      expect(script).toContain('function buildSelfCorrectionRefs(');
+      expect(script).toContain('function buildRefsAppendBlock(');
+      expect(script).toContain('🔎 *Refs estruturais*');
+      expect(script).toContain('const structuralAppendBlocks = [];');
+      expect(script).toContain('const refsAppendBlock = buildRefsAppendBlock(boards);');
+      expect(script).toContain('result.mandatoryAppendBlocks = structuralAppendBlocks');
+    });
+
+    it('auditor-script.sh writes heuristic correlation refs to an auditor dryrun NDJSON log', () => {
+      expect(script).toContain('function writeAuditDryRunLog(');
+      expect(script).toContain('kind: \'interaction\'');
+      expect(script).toContain('kind: \'self_correction\'');
+      expect(script).toContain('semantic-dryrun-');
+      expect(script).toContain('if (mode === \'dryrun\') {');
+      expect(script).toContain('writeAuditDryRunLog(result.data)');
     });
 
     for (const [name, pattern] of [

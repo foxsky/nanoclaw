@@ -360,6 +360,101 @@ function resolveExactTurnMessages(turnMessages, preferredDisplayName) {
   };
 }
 
+function buildInteractionRefs(interaction) {
+  const refs = [];
+  if (interaction.sourceMessageId) refs.push(`msg ${interaction.sourceMessageId}`);
+  if (interaction.botResponseMessageId) refs.push(`resp ${interaction.botResponseMessageId}`);
+  return refs;
+}
+
+function buildSelfCorrectionRefs(correction) {
+  const refs = [];
+  if (correction.triggerTurnId) refs.push(`turn ${correction.triggerTurnId}`);
+  if (correction.triggerMessageIds && correction.triggerMessageIds.length > 0) {
+    refs.push(`msgs ${correction.triggerMessageIds.join(', ')}`);
+  }
+  return refs;
+}
+
+function escapeMdQuote(text, limit) {
+  const flat = String(text ?? '').replace(/\r/g, '').replace(/\n+/g, ' ');
+  const capped = flat.length > limit ? flat.slice(0, limit) + '…' : flat;
+  return capped.replace(/([*_`~\\])/g, '\\$1');
+}
+
+function buildRefsAppendBlock(boards) {
+  const lines = [];
+  for (const board of boards) {
+    const boardLines = [];
+    for (const interaction of board.interactions || []) {
+      const refs = buildInteractionRefs(interaction);
+      if (refs.length === 0) continue;
+      const sender = interaction.sender || 'desconhecido';
+      boardLines.push(
+        `- Interação ${escapeMdQuote(interaction.timestamp, 64)} (${escapeMdQuote(sender, 80)}): ${escapeMdQuote(refs.join(' | '), 480)}`,
+      );
+    }
+    for (const correction of board.selfCorrections || []) {
+      const refs = buildSelfCorrectionRefs(correction);
+      if (refs.length === 0) continue;
+      const taskId = correction.taskId || 'sem-task';
+      boardLines.push(
+        `- Auto-correção ${escapeMdQuote(taskId, 64)} (${escapeMdQuote(correction.secondAt, 64)}): ${escapeMdQuote(refs.join(' | '), 480)}`,
+      );
+    }
+    if (boardLines.length === 0) continue;
+    lines.push(`*${escapeMdQuote(board.group, 120)}*`);
+    lines.push(...boardLines);
+    lines.push('');
+  }
+  if (lines.length === 0) return null;
+  return [
+    '',
+    '🔎 *Refs estruturais* — _metadados de correlação preservados pelo host_',
+    '',
+    ...lines,
+  ].join('\n');
+}
+
+function writeAuditDryRunLog(data, rootDir = '/workspace/audit', now = new Date()) {
+  const entries = [];
+  for (const board of data.boards || []) {
+    for (const interaction of board.interactions || []) {
+      entries.push({
+        kind: 'interaction',
+        period: data.period,
+        boardId: board.boardId,
+        boardFolder: board.folder,
+        boardGroup: board.group,
+        timestamp: interaction.timestamp,
+        sender: interaction.sender || null,
+        message: interaction.message || null,
+        sourceMessageId: interaction.sourceMessageId || null,
+        botResponseMessageId: interaction.botResponseMessageId || null,
+      });
+    }
+    for (const correction of board.selfCorrections || []) {
+      entries.push({
+        kind: 'self_correction',
+        period: data.period,
+        boardId: board.boardId,
+        boardFolder: board.folder,
+        boardGroup: board.group,
+        taskId: correction.taskId || null,
+        secondAt: correction.secondAt,
+        triggerTurnId: correction.triggerTurnId || null,
+        triggerMessageIds: correction.triggerMessageIds || null,
+      });
+    }
+  }
+  if (entries.length === 0) return;
+  fs.mkdirSync(rootDir, { recursive: true });
+  const dateStr = now.toISOString().slice(0, 10);
+  const file = `${rootDir}/semantic-dryrun-${dateStr}.ndjson`;
+  const lines = entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n';
+  fs.appendFileSync(file, lines);
+}
+
 // ---- Main ----
 
 if (!fs.existsSync(MESSAGES_DB)) {
@@ -661,6 +756,31 @@ for (const group of groups) {
     let crossGroupSendLogged = false;
     let refusalDetected = false;
 
+    if (isDmSend) {
+      const sendLogs = sendMessageLogStmt.all(
+        group.folder,
+        msg.timestamp,
+        tenMinLater,
+      );
+      const directMessageMatch = hasSendMessageTriggerMessageId &&
+        sendLogs.some((row) => row.trigger_message_id === msg.id);
+      const turnMembershipMatch = !directMessageMatch &&
+        sendMessageTurnMatchStmt
+        ? sendMessageTurnMatchStmt.get(
+            group.folder,
+            msg.timestamp,
+            tenMinLater,
+            msg.id,
+          ) !== undefined
+        : false;
+      const hasAnyExactCorrelation = sendLogs.some(
+        (row) => !!row.trigger_message_id || !!row.trigger_turn_id,
+      );
+      crossGroupSendLogged = directMessageMatch ||
+        turnMembershipMatch ||
+        (!hasAnyExactCorrelation && sendLogs.length > 0);
+    }
+
     // Asymmetric rule below: unambiguous task writes (isTaskWrite=true)
     // demand a real task-level mutation — a send_message_log row doesn't
     // prove the task was concluded. Shared-vocab writes ("mande mensagem
@@ -683,30 +803,6 @@ for (const group of groups) {
       const scheduledTaskCreated = reminderLikeWrite &&
         scheduledTasksStmt.get(group.folder, msg.timestamp, tenMinLater) !== undefined;
       taskMutationFound = matchingMutations.length > 0 || scheduledTaskCreated;
-      if (isDmSend) {
-        const sendLogs = sendMessageLogStmt.all(
-          group.folder,
-          msg.timestamp,
-          tenMinLater,
-        );
-        const directMessageMatch = hasSendMessageTriggerMessageId &&
-          sendLogs.some((row) => row.trigger_message_id === msg.id);
-        const turnMembershipMatch = !directMessageMatch &&
-          sendMessageTurnMatchStmt
-          ? sendMessageTurnMatchStmt.get(
-              group.folder,
-              msg.timestamp,
-              tenMinLater,
-              msg.id,
-            ) !== undefined
-          : false;
-        const hasAnyExactCorrelation = sendLogs.some(
-          (row) => !!row.trigger_message_id || !!row.trigger_turn_id,
-        );
-        crossGroupSendLogged = directMessageMatch ||
-          turnMembershipMatch ||
-          (!hasAnyExactCorrelation && sendLogs.length > 0);
-      }
     }
     const mutationFound = isTaskWrite
       ? taskMutationFound
@@ -716,7 +812,8 @@ for (const group of groups) {
       refusalDetected = hasRefusal(botResponse.content);
     }
 
-    const noResponse = !botResponse;
+    const noResponse = !botResponse &&
+      !(isDmSend && crossGroupSendLogged && !isTaskWrite);
     const responseTimeMs = botResponse
       ? new Date(botResponse.timestamp).getTime() - new Date(msg.timestamp).getTime()
       : -1;
@@ -855,6 +952,12 @@ const result = {
   },
 };
 
+const structuralAppendBlocks = [];
+const refsAppendBlock = buildRefsAppendBlock(boards);
+if (refsAppendBlock) {
+  structuralAppendBlocks.push(refsAppendBlock);
+}
+
 const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
 
 (async () => {
@@ -963,14 +1066,6 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
               }
               return boardId;
             };
-            // Escape WhatsApp markdown meta-characters so user content
-            // can't distort rendering when re-emitted.
-            const escapeMdQuote = (s, limit) => {
-              const flat = String(s).replace(/\r/g, '').replace(/\n+/g, ' ');
-              const capped = flat.length > limit ? flat.slice(0, limit) + '…' : flat;
-              return capped.replace(/([*_`~\\])/g, '\\$1');
-            };
-            const appendBlocks = [];
             for (const [boardId, devs] of devsByBoard) {
               if (devs.length === 0) continue;
               const boardName = resolveBoardName(boardId);
@@ -1001,14 +1096,7 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
                 }
                 lines.push('');
               }
-              appendBlocks.push(lines.join('\n'));
-            }
-            if (appendBlocks.length > 0) {
-              result.mandatoryAppendBlocks = appendBlocks;
-              // Ensure the agent runs even when semantic candidates are the
-              // only findings. `wakeAgent` was computed from heuristic
-              // totals before this phase.
-              result.wakeAgent = true;
+              structuralAppendBlocks.push(lines.join('\n'));
             }
           }
         } else {
@@ -1024,6 +1112,17 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
   } finally {
     try { msgDb.close(); } catch {}
     try { tfDb.close(); } catch {}
+    if (mode === 'dryrun') {
+      try { writeAuditDryRunLog(result.data); } catch (err) {
+        console.error('Audit dryrun log failed:', err && err.message ? err.message : err);
+      }
+    }
+    if (structuralAppendBlocks.length > 0) {
+      result.mandatoryAppendBlocks = structuralAppendBlocks;
+      // Structural appendices must survive even if the agent omits inline
+      // refs; this also preserves the semantic candidate quarantine path.
+      result.wakeAgent = true;
+    }
     console.log(JSON.stringify(result));
   }
 })();
