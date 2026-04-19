@@ -55,6 +55,9 @@ describe('semantic-audit type surface', () => {
       at: '2026-04-14T11:04:11.450Z',
       by: 'giovanni',
       userMessage: 'alterar M1 para quinta-feira 11h',
+      sourceTurnId: 'turn-123',
+      sourceMessageIds: ['msg-1', 'msg-2'],
+      responseMessageId: null,
       storedValue: '2026-04-17T11:00',
       responsePreview: null,
       intentMatches: false,
@@ -684,6 +687,99 @@ describe('runSemanticAudit', () => {
     tf.close(); msg.close();
   });
 
+  it('prefers exact trigger_turn_id correlation over the legacy 10-minute sender-name window', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        response: '{"intent_matches":false,"deviation":"mock","confidence":"high"}',
+      }),
+    });
+
+    const tf = new Database(':memory:');
+    tf.exec(`
+      CREATE TABLE boards (
+        id TEXT PRIMARY KEY,
+        group_jid TEXT,
+        group_folder TEXT,
+        parent_board_id TEXT
+      );
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+      CREATE TABLE board_people (board_id TEXT, person_id TEXT, name TEXT, PRIMARY KEY (board_id, person_id));
+      CREATE TABLE task_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        board_id TEXT,
+        task_id TEXT,
+        action TEXT,
+        by TEXT,
+        at TEXT,
+        details TEXT,
+        trigger_turn_id TEXT
+      );
+      INSERT INTO boards VALUES ('board-exact-turn', '120363599@g.us', 'exact-turn-group', NULL);
+      INSERT INTO board_runtime_config VALUES ('board-exact-turn', 'America/Fortaleza');
+      INSERT INTO board_people VALUES ('board-exact-turn', 'alice', 'Alice Example');
+      INSERT INTO task_history (board_id, task_id, action, by, at, details, trigger_turn_id) VALUES
+        ('board-exact-turn', 'M1', 'updated', 'alice',
+         '2026-04-15T11:04:11.450Z',
+         '{"changes":["Reunião reagendada para 17/04/2026 às 11:00"]}',
+         'turn-123');
+    `);
+
+    const msg = new Database(':memory:');
+    msg.exec(`
+      CREATE TABLE messages (
+        id TEXT,
+        chat_jid TEXT,
+        sender TEXT,
+        sender_name TEXT,
+        content TEXT,
+        timestamp TEXT,
+        is_from_me INTEGER,
+        is_bot_message INTEGER DEFAULT 0,
+        PRIMARY KEY (id, chat_jid)
+      );
+      CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
+      CREATE TABLE agent_turn_messages (
+        turn_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        message_chat_jid TEXT NOT NULL,
+        sender TEXT NOT NULL,
+        sender_name TEXT NOT NULL,
+        message_timestamp TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        PRIMARY KEY (turn_id, ordinal)
+      );
+      INSERT INTO registered_groups VALUES ('120363599@g.us', 'exact-turn-group', 'Exact Turn', 1);
+      INSERT INTO messages VALUES
+        ('legacy-window-hit', '120363599@g.us', 'alice@s.whatsapp.net', 'Alice Example',
+         'mensagem errada que só bate pela janela', '2026-04-15T11:04:00.000Z', 0, 0),
+        ('turn-msg-1', '120363599@g.us', 'alice@s.whatsapp.net', 'Alice Example',
+         'primeiro pedido', '2026-04-15T11:03:10.000Z', 0, 0),
+        ('turn-msg-2', '120363599@g.us', 'alice@s.whatsapp.net', 'Alice Example',
+         'na verdade quinta às 11h', '2026-04-15T11:03:20.000Z', 0, 0);
+      INSERT INTO agent_turn_messages VALUES
+        ('turn-123', 'turn-msg-1', '120363599@g.us', 'alice@s.whatsapp.net', 'Alice Example', '2026-04-15T11:03:10.000Z', 0),
+        ('turn-123', 'turn-msg-2', '120363599@g.us', 'alice@s.whatsapp.net', 'Alice Example', '2026-04-15T11:03:20.000Z', 1);
+    `);
+
+    const result = await runSemanticAudit({
+      msgDb: msg,
+      tfDb: tf,
+      period: { startIso: '2026-04-15T00:00:00.000Z', endIso: '2026-04-16T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434',
+      ollamaModel: 'test-model:fake',
+    });
+
+    expect(result.counters.noTrigger).toBe(0);
+    expect(result.deviations).toHaveLength(1);
+    expect(result.deviations[0].userMessage).toContain('primeiro pedido');
+    expect(result.deviations[0].userMessage).toContain('na verdade quinta às 11h');
+    expect(result.deviations[0].userMessage).not.toContain('mensagem errada');
+    expect(result.deviations[0].sourceTurnId).toBe('turn-123');
+    expect(result.deviations[0].sourceMessageIds).toEqual(['turn-msg-1', 'turn-msg-2']);
+    tf.close(); msg.close();
+  });
+
   it('classifies title changes as title, not due_date', async () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
@@ -909,11 +1005,112 @@ describe('runResponseAudit', () => {
     expect(result.deviations[0].userMessage).toContain('primeiro pedido');
     expect(result.deviations[0].userMessage).toContain('na verdade M5 não M3');
     expect(result.deviations[0].userMessage).toContain('para quinta-feira');
+    expect(result.deviations[0].sourceMessageIds).toEqual(['u1', 'u2', 'u3']);
+    expect(result.deviations[0].responseMessageId).toBe('b1');
     // Prompt sent to Ollama must also contain all three
     const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
     expect(body.prompt).toContain('primeiro pedido');
     expect(body.prompt).toContain('na verdade M5 não M3');
     expect(body.prompt).toContain('para quinta-feira');
+    tf.close(); msg.close();
+  });
+
+  it('prefers exact outbound turn correlation over the first bot row in the time window', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        response: '{"intent_matches":false,"deviation":"bot exato ainda divergiu","confidence":"high"}',
+      }),
+    });
+
+    const tf = new Database(':memory:');
+    tf.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT, group_folder TEXT, parent_board_id TEXT);
+      CREATE TABLE board_groups (board_id TEXT, group_jid TEXT, group_folder TEXT, PRIMARY KEY (board_id, group_folder));
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+      INSERT INTO boards VALUES ('board-exact-response', '1203634099@g.us', 'exact-response-group', NULL);
+      INSERT INTO board_runtime_config VALUES ('board-exact-response', 'America/Fortaleza');
+    `);
+    const msg = new Database(':memory:');
+    msg.exec(`
+      CREATE TABLE messages (
+        id TEXT,
+        chat_jid TEXT,
+        sender TEXT,
+        sender_name TEXT,
+        content TEXT,
+        timestamp TEXT,
+        is_from_me INTEGER,
+        is_bot_message INTEGER DEFAULT 0,
+        PRIMARY KEY (id, chat_jid)
+      );
+      CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
+      CREATE TABLE agent_turn_messages (
+        turn_id TEXT,
+        message_id TEXT,
+        message_chat_jid TEXT,
+        sender TEXT,
+        sender_name TEXT,
+        message_timestamp TEXT,
+        ordinal INTEGER
+      );
+      CREATE TABLE outbound_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_jid TEXT NOT NULL,
+        group_folder TEXT,
+        text TEXT NOT NULL,
+        sender_label TEXT,
+        source TEXT NOT NULL,
+        trigger_turn_id TEXT,
+        enqueued_at TEXT NOT NULL,
+        sent_at TEXT,
+        delivered_message_id TEXT,
+        delivered_message_timestamp TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        abandoned_at TEXT
+      );
+      INSERT INTO registered_groups VALUES ('1203634099@g.us', 'exact-response-group', 'Exact Response', 1);
+      INSERT INTO messages VALUES ('u1', '1203634099@g.us', '558@s.whatsapp.net', 'Alice', 'primeiro pedido', '2026-04-15T10:00:00.000Z', 0, 0);
+      INSERT INTO messages VALUES ('u2', '1203634099@g.us', '558@s.whatsapp.net', 'Alice', 'na verdade quero a resposta exata', '2026-04-15T10:00:05.000Z', 0, 0);
+      INSERT INTO messages VALUES ('b-unrelated', '1203634099@g.us', 'bot', 'Case', 'Resposta de outra interação', '2026-04-15T10:00:20.000Z', 1, 1);
+      INSERT INTO messages VALUES ('b-exact', '1203634099@g.us', 'bot', 'Case', 'Resposta exata do turno auditado', '2026-04-15T10:01:00.000Z', 1, 1);
+      INSERT INTO agent_turn_messages VALUES
+        ('turn-response-1', 'u1', '1203634099@g.us', '558@s.whatsapp.net', 'Alice', '2026-04-15T10:00:00.000Z', 0),
+        ('turn-response-1', 'u2', '1203634099@g.us', '558@s.whatsapp.net', 'Alice', '2026-04-15T10:00:05.000Z', 1);
+      INSERT INTO outbound_messages (
+        chat_jid, group_folder, text, sender_label, source, trigger_turn_id,
+        enqueued_at, sent_at, delivered_message_id, delivered_message_timestamp
+      ) VALUES (
+        '1203634099@g.us',
+        'exact-response-group',
+        'Resposta exata do turno auditado',
+        'Case',
+        'user',
+        'turn-response-1',
+        '2026-04-15T10:00:50.000Z',
+        '2026-04-15T10:01:00.000Z',
+        'b-exact',
+        '2026-04-15T10:01:00.000Z'
+      );
+    `);
+
+    const result = await runResponseAudit({
+      msgDb: msg, tfDb: tf,
+      period: { startIso: '2026-04-15T00:00:00.000Z', endIso: '2026-04-16T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434', ollamaModel: 'test-model:fake',
+    });
+
+    expect(result.counters.examined).toBe(1);
+    expect(result.deviations).toHaveLength(1);
+    expect(result.deviations[0].sourceTurnId).toBe('turn-response-1');
+    expect(result.deviations[0].sourceMessageIds).toEqual(['u1', 'u2']);
+    expect(result.deviations[0].responseMessageId).toBe('b-exact');
+    expect(result.deviations[0].at).toBe('2026-04-15T10:01:00.000Z');
+    expect(result.deviations[0].responsePreview).toContain('Resposta exata do turno auditado');
+    const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
+    expect(body.prompt).toContain('Resposta exata do turno auditado');
+    expect(body.prompt).not.toContain('Resposta de outra interação');
     tf.close(); msg.close();
   });
 
@@ -1021,6 +1218,8 @@ describe('runResponseAudit', () => {
     const dev = result.deviations[0];
     // Deviation is about the bot's response, so .at must match the bot timestamp
     expect(dev.at).toBe('2026-04-15T10:01:30.000Z');
+    expect(dev.sourceMessageIds).toEqual(['u1']);
+    expect(dev.responseMessageId).toBe('b1');
     // responsePreview must use truncateKeepEnds (head + tail), not a head-only slice.
     // The truncated form contains the separator sentinel.
     expect(dev.responsePreview).toContain('[...truncado...]');
@@ -1197,6 +1396,7 @@ describe('writeDryRunLog', () => {
         taskId: 'M1', boardId: 'b1', fieldKind: 'scheduled_at',
         at: '2026-04-14T11:04:11.450Z', by: 'giovanni',
         userMessage: 'alterar M1 para quinta-feira', storedValue: '2026-04-17T11:00',
+        sourceTurnId: 'turn-1', sourceMessageIds: ['m1'], responseMessageId: null,
         responsePreview: null,
         intentMatches: false, deviation: 'wrong day', confidence: 'high',
         rawResponse: '{"intent_matches":false}',
@@ -1215,6 +1415,7 @@ describe('writeDryRunLog', () => {
     const lines = fs.readFileSync(file, 'utf-8').trim().split('\n');
     expect(lines).toHaveLength(2);
     expect(JSON.parse(lines[0]).taskId).toBe('M1');
+    expect(JSON.parse(lines[0]).sourceTurnId).toBe('turn-1');
     expect(JSON.parse(lines[1]).taskId).toBe('M2');
   });
 

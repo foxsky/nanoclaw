@@ -104,6 +104,25 @@ function extractToolHandlerBlock(toolName: string): string | null {
 }
 
 describe('ipc-mcp-stdio tool handler shapes', () => {
+  it('send_message includes turn correlation fields from the shared interaction context', () => {
+    const body = extractToolHandlerBlock('send_message');
+    expect(body, 'send_message handler not found in ipc-mcp-stdio.ts').not.toBeNull();
+    expect(body).toContain('...buildTurnContextFields()');
+  });
+
+  it('schedule_task includes turn correlation fields from the shared interaction context', () => {
+    const body = extractToolHandlerBlock('schedule_task');
+    expect(body, 'schedule_task handler not found in ipc-mcp-stdio.ts').not.toBeNull();
+    expect(body).toContain('...buildTurnContextFields()');
+  });
+
+  it('child-board provisioning IPC carries the turn correlation fields', () => {
+    const provisioningCalls = source.match(
+      /type:\s*'provision_child_board'[\s\S]{0,400}?\.\.\.buildTurnContextFields\(\)/g,
+    ) || [];
+    expect(provisioningCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
   it('list_tasks catch block returns isError: true on failure', () => {
     const body = extractToolHandlerBlock('list_tasks');
     expect(body, 'list_tasks handler not found in ipc-mcp-stdio.ts').not.toBeNull();

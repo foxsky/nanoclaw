@@ -720,6 +720,7 @@ function buildExternalInviteMessage(
 export class TaskflowEngine {
   /** Lazily cached board timezone (almost never changes per engine lifetime). */
   private _boardTz: string | null = null;
+  private triggerTurnId: string | null;
 
   /** Get the board timezone, cached after first call. */
   private get boardTz(): string {
@@ -745,8 +746,9 @@ export class TaskflowEngine {
   constructor(
     private db: Database.Database,
     private boardId: string,
-    options?: { readonly?: boolean },
+    options?: { readonly?: boolean; triggerTurnId?: string | null },
   ) {
+    this.triggerTurnId = options?.triggerTurnId ?? null;
     this.db.pragma('busy_timeout = 5000');
     if (!options?.readonly) {
       this.ensureTaskSchema();
@@ -942,6 +944,7 @@ export class TaskflowEngine {
     try { this.db.exec(`ALTER TABLE board_runtime_config ADD COLUMN state TEXT`); } catch {}
     try { this.db.exec(`ALTER TABLE board_runtime_config ADD COLUMN city TEXT`); } catch {}
     try { this.db.exec(`ALTER TABLE board_runtime_config ADD COLUMN cross_board_subtask_mode TEXT NOT NULL DEFAULT 'open'`); } catch {}
+    try { this.db.exec(`ALTER TABLE task_history ADD COLUMN trigger_turn_id TEXT`); } catch {}
 
     // Per-prefix counters table (extensible for any future task type prefixes)
     this.db.exec(`
@@ -1789,10 +1792,18 @@ export class TaskflowEngine {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details, trigger_turn_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(boardId, taskId, action, by, now, details ?? null);
+      .run(
+        boardId,
+        taskId,
+        action,
+        by,
+        now,
+        details ?? null,
+        this.triggerTurnId,
+      );
   }
 
   /** Resolve notification target. Manager→assignee when someone else modifies; assignee→creator when self-modifying. */
@@ -4164,11 +4175,12 @@ export class TaskflowEngine {
           }
 
           // Audit trail
-          this.db.prepare(
-            `INSERT INTO task_history (board_id, task_id, action, by, at, details)
-             VALUES (?, ?, 'add_external_participant', ?, ?, ?)`
-          ).run(this.boardId, task.id, senderPersonId ?? params.sender_name, now,
-            `External participant ${displayName} (${phone}) invited`);
+          this.recordHistory(
+            task.id,
+            'add_external_participant',
+            senderPersonId ?? params.sender_name,
+            `External participant ${displayName} (${phone}) invited`,
+          );
 
           changes.push(`Participante externo ${displayName} convidado`);
         }
@@ -4229,10 +4241,12 @@ export class TaskflowEngine {
           });
         }
 
-        this.db.prepare(
-          `INSERT INTO task_history (board_id, task_id, action, by, at, details)
-           VALUES (?, ?, 'remove_external_participant', ?, ?, ?)`
-        ).run(this.boardId, task.id, senderPersonId ?? params.sender_name, now, `External participant ${externalId} revoked`);
+        this.recordHistory(
+          task.id,
+          'remove_external_participant',
+          senderPersonId ?? params.sender_name,
+          `External participant ${externalId} revoked`,
+        );
 
         changes.push(`Participante externo removido`);
       }
@@ -7104,10 +7118,12 @@ export class TaskflowEngine {
              WHERE rowid = ?`
           ).run(acceptNow, acceptNow, grant.rowid);
 
-          this.db.prepare(
-            `INSERT INTO task_history (board_id, task_id, action, by, at, details)
-             VALUES (?, ?, 'external_invite_accepted', ?, ?, ?)`
-          ).run(this.boardId, task.id, params.sender_external_id, acceptNow, 'External participant accepted invite');
+          this.recordHistory(
+            task.id,
+            'external_invite_accepted',
+            params.sender_external_id,
+            'External participant accepted invite',
+          );
 
           return { success: true, message: `Convite aceito para ${task.id} — ${task.title}` };
         }

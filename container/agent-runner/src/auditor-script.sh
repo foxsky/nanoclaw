@@ -110,7 +110,7 @@ const TASK_KEYWORDS = [
 ];
 
 // Terse task-ref + action pattern
-const TERSE_PATTERN = /^(T|P|M|R|SEC-)\S+\s*(conclu|feita|feito|pronta|ok|aprovad|✅)/i;
+const TERSE_PATTERN = /^(?:(?:[A-Z]{2,}-)?(?:T|P|M|R)\S+|SEC-\S+)\s*(conclu|feita|feito|pronta|ok|aprovad|✅)/i;
 
 // Cross-group send-intent patterns (Portuguese). Detected so we can
 // exclude them from `unfulfilledWrite` — `send_message` never writes
@@ -219,6 +219,34 @@ const INTENT_MULTI_CLAUSE_PATTERN = /\b(?:mas|porém)\b|;/i;
 // refusals still match via `não consigo` / `não posso` / etc.
 const REFUSAL_PATTERN = /não consigo|não posso|não tenho como|não pode ser|bloqueado por limite|apenas o canal principal|o runtime atual|não oferece suporte|limite do sistema|deste quadro.*não consigo|recuso essa instrução/i;
 const RESPONSE_THRESHOLD_MS = 300000; // 5 minutes
+const TASK_REF_PATTERN = /\b(?:[A-Z]{2,}-)?(?:T|P|M|R)\d+(?:\.\d+)*\b|\bSEC-[A-Z0-9]+(?:[.-][A-Z0-9]+)*\b/gi;
+const REMINDER_LIKE_PATTERN = /\b(?:lembr(?:ar|e|ete|etes)|me\s+avise|me\s+lembre|avise-me|avisa\s+me|avisar|lembret[ea]|agendar|agenda(?:r)?)\b/i;
+
+function normalizeForCompare(text) {
+  return String(text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function extractTaskRefs(text) {
+  const matches = text.match(TASK_REF_PATTERN) || [];
+  return new Set(matches.map((m) => m.toUpperCase()));
+}
+
+function isReminderLikeWrite(text) {
+  return REMINDER_LIKE_PATTERN.test(text || '');
+}
+
+function buildTaskIdAliases(taskId, boardId, boardShortCodes) {
+  const rawId = String(taskId || '').toUpperCase();
+  if (!rawId) return [];
+  const aliases = new Set([rawId]);
+  const shortCode = boardId ? boardShortCodes.get(boardId) : null;
+  if (shortCode) aliases.add(`${shortCode}-${rawId}`);
+  return Array.from(aliases);
+}
 
 function isWriteRequest(text) {
   const lower = text.toLowerCase();
@@ -262,6 +290,76 @@ function hasRefusal(text) {
   return REFUSAL_PATTERN.test(text);
 }
 
+function interactionSenderKey(msg) {
+  const sender = (msg.sender || '').trim();
+  if (sender) return `sender:${sender}`;
+  return `name:${(msg.sender_name || '').trim()}`;
+}
+
+function hasTable(db, tableName) {
+  const row = db.prepare(
+    `SELECT 1 AS exists_flag
+       FROM sqlite_master
+      WHERE type = 'table' AND name = ?
+      LIMIT 1`,
+  ).get(tableName);
+  return !!row;
+}
+
+function getTableColumns(db, tableName) {
+  if (!hasTable(db, tableName)) return new Set();
+  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all();
+  return new Set(rows.map((row) => row.name));
+}
+
+function isWebOriginMessage(msg) {
+  const sender = msg.sender || '';
+  const senderName = msg.sender_name || '';
+  return sender.startsWith('web:') || senderName.startsWith('web:');
+}
+
+function resolveExactTurnMessages(turnMessages, preferredDisplayName) {
+  const visible = turnMessages.filter((message) =>
+    message.content &&
+    !isWebOriginMessage(message),
+  );
+  if (visible.length === 0) return null;
+
+  let selected = visible;
+  const actorKey = normalizeForCompare(preferredDisplayName);
+  if (actorKey) {
+    const matched = visible.filter((message) => {
+      return normalizeForCompare(message.sender_name) === actorKey ||
+        normalizeForCompare(message.sender) === actorKey;
+    });
+    if (matched.length > 0) selected = matched;
+  }
+
+  const senderKeys = new Set(selected.map((message) => interactionSenderKey(message)));
+  const sameSender = senderKeys.size <= 1;
+  const triggerMessage = sameSender
+    ? selected.map((message) => message.content.trim()).join('\n')
+    : selected
+        .map((message) => {
+          const senderLabel =
+            (message.sender_name || '').trim() ||
+            (message.sender || '').trim() ||
+            'desconhecido';
+          return `[${senderLabel}] ${message.content.trim()}`;
+        })
+        .join('\n');
+  const lastMessage = selected[selected.length - 1];
+  return {
+    triggerTurnId: lastMessage.turn_id || null,
+    triggerMessageIds: selected.map((message) => message.message_id),
+    triggerMessage,
+    triggerSender:
+      sameSender
+        ? ((lastMessage.sender_name || '').trim() || (lastMessage.sender || '').trim() || null)
+        : null,
+  };
+}
+
 // ---- Main ----
 
 if (!fs.existsSync(MESSAGES_DB)) {
@@ -277,6 +375,13 @@ if (!fs.existsSync(TASKFLOW_DB)) {
 
 const msgDb = new Database(MESSAGES_DB, { readonly: true });
 const tfDb = new Database(TASKFLOW_DB, { readonly: true });
+const taskHistoryColumns = getTableColumns(tfDb, 'task_history');
+const hasTaskHistoryTriggerTurnId = taskHistoryColumns.has('trigger_turn_id');
+const hasAgentTurnMessages =
+  hasTable(msgDb, 'agent_turn_messages') && hasTable(msgDb, 'messages');
+const sendMessageLogColumns = getTableColumns(msgDb, 'send_message_log');
+const hasSendMessageTriggerMessageId = sendMessageLogColumns.has('trigger_message_id');
+const hasSendMessageTriggerTurnId = sendMessageLogColumns.has('trigger_turn_id');
 
 // Get all TaskFlow-managed groups
 const groups = msgDb.prepare(
@@ -306,11 +411,14 @@ const userMessagesStmt = msgDb.prepare(
    ORDER BY timestamp`
 );
 const botResponseStmt = msgDb.prepare(
-  `SELECT content, timestamp FROM messages
+  `SELECT id, content, timestamp FROM messages
    WHERE chat_jid = ? AND timestamp > ? AND timestamp <= ?
      AND (is_bot_message = 1 OR is_from_me = 1)
      AND content IS NOT NULL AND content != ''
    ORDER BY timestamp ASC LIMIT 1`
+);
+const boardShortCodeStmt = tfDb.prepare(
+  `SELECT short_code FROM boards WHERE id = ? LIMIT 1`
 );
 
 // `scheduled_tasks` lives in messages.db (host store), NOT taskflow.db —
@@ -336,10 +444,31 @@ const scheduledTasksStmt = msgDb.prepare(
 // task-write intent (e.g. "concluir T5") — those still require a real
 // task_history or scheduled_tasks mutation.
 const sendMessageLogStmt = msgDb.prepare(
-  `SELECT id FROM send_message_log
+  `SELECT id${
+    hasSendMessageTriggerMessageId
+      ? ', trigger_message_id'
+      : ', NULL AS trigger_message_id'
+  }${
+    hasSendMessageTriggerTurnId
+      ? ', trigger_turn_id'
+      : ', NULL AS trigger_turn_id'
+  } FROM send_message_log
    WHERE source_group_folder = ? AND delivered_at >= ? AND delivered_at <= ?
-   LIMIT 1`
+   ORDER BY delivered_at ASC`
 );
+const sendMessageTurnMatchStmt =
+  hasSendMessageTriggerTurnId && hasAgentTurnMessages
+    ? msgDb.prepare(
+        `SELECT 1
+         FROM send_message_log sml
+         JOIN agent_turn_messages atm ON atm.turn_id = sml.trigger_turn_id
+         WHERE sml.source_group_folder = ?
+           AND sml.delivered_at >= ?
+           AND sml.delivered_at <= ?
+           AND atm.message_id = ?
+         LIMIT 1`,
+      )
+    : null;
 
 // Group-level divergence detection: compare bot-deliveries-to-this-group
 // (send_message_log.target_chat_jid) against bot-rows-in-messages.db
@@ -361,12 +490,12 @@ const botRowsInGroupCountStmt = msgDb.prepare(
 // so prepare one statement per arity and reuse across groups.
 const taskHistoryStmts = {
   1: tfDb.prepare(
-    `SELECT action, task_id, at FROM task_history
+    `SELECT board_id, action, task_id, by, at FROM task_history
      WHERE board_id IN (?) AND at >= ? AND at <= ?
      ORDER BY at ASC`
   ),
   2: tfDb.prepare(
-    `SELECT action, task_id, at FROM task_history
+    `SELECT board_id, action, task_id, by, at FROM task_history
      WHERE board_id IN (?, ?) AND at >= ? AND at <= ?
      ORDER BY at ASC`
   ),
@@ -383,7 +512,11 @@ const taskHistoryStmts = {
 const selfCorrectionStmts = {
   1: tfDb.prepare(
     `SELECT a.task_id, a.by, a.at AS first_at, a.details AS first_details,
-            b.at AS second_at, b.details AS second_details
+            b.at AS second_at, b.details AS second_details${
+              hasTaskHistoryTriggerTurnId
+                ? ', b.trigger_turn_id AS second_trigger_turn_id'
+                : ', NULL AS second_trigger_turn_id'
+            }
      FROM task_history a
      JOIN task_history b ON a.task_id = b.task_id
        AND a.by = b.by
@@ -403,7 +536,11 @@ const selfCorrectionStmts = {
   ),
   2: tfDb.prepare(
     `SELECT a.task_id, a.by, a.at AS first_at, a.details AS first_details,
-            b.at AS second_at, b.details AS second_details
+            b.at AS second_at, b.details AS second_details${
+              hasTaskHistoryTriggerTurnId
+                ? ', b.trigger_turn_id AS second_trigger_turn_id'
+                : ', NULL AS second_trigger_turn_id'
+            }
      FROM task_history a
      JOIN task_history b ON a.task_id = b.task_id
        AND a.by = b.by
@@ -432,19 +569,46 @@ const personNameByIdStmt = tfDb.prepare(
 );
 
 const triggerMessageStmt = msgDb.prepare(
-  `SELECT content, timestamp, sender_name FROM messages
+  `SELECT id, content, timestamp, sender_name FROM messages
    WHERE chat_jid = ? AND timestamp <= ? AND timestamp >= ?
      AND is_bot_message = 0 AND is_from_me = 0
      AND content IS NOT NULL AND content != ''
      AND sender_name LIKE ? ESCAPE '\\'
    ORDER BY timestamp DESC LIMIT 1`
 );
+const exactTurnMessagesStmt = hasAgentTurnMessages
+  ? msgDb.prepare(
+      `SELECT
+         atm.turn_id AS turn_id,
+         atm.message_id AS message_id,
+         m.content AS content,
+         COALESCE(m.timestamp, atm.message_timestamp) AS timestamp,
+         COALESCE(m.sender_name, atm.sender_name) AS sender_name,
+         COALESCE(m.sender, atm.sender) AS sender,
+         atm.ordinal AS ordinal
+       FROM agent_turn_messages atm
+       LEFT JOIN messages m
+         ON m.id = atm.message_id
+        AND m.chat_jid = atm.message_chat_jid
+       WHERE atm.turn_id = ?
+       ORDER BY atm.ordinal ASC`,
+    )
+  : null;
 
 for (const group of groups) {
   const board = boardStmt.get(group.folder);
   if (!board) continue;
   const boardIds = [board.id];
   if (board.parent_board_id) boardIds.push(board.parent_board_id);
+  const boardShortCodes = new Map(
+    boardIds.map((boardId) => {
+      const row = boardShortCodeStmt.get(boardId);
+      const shortCode = typeof row?.short_code === 'string'
+        ? row.short_code.trim().toUpperCase()
+        : null;
+      return [boardId, shortCode];
+    }),
+  );
   const taskHistoryStmt = taskHistoryStmts[boardIds.length];
 
   const userMessages = userMessagesStmt.all(group.jid, period.startIso, period.endIso);
@@ -464,15 +628,35 @@ for (const group of groups) {
     const senderNameField = msg.sender_name || '';
     if (senderField.startsWith('web:') || senderNameField.startsWith('web:')) continue;
 
-    // Find bot response within 10 minutes
+    // Find bot response within 10 minutes. In busy groups, do NOT attribute
+    // the first bot message to this user if another real user speaks before
+    // that reply arrives — the reply may belong to the later speaker.
     const tenMinLater = new Date(new Date(msg.timestamp).getTime() + 600000).toISOString();
-    const botResponse = botResponseStmt.get(group.jid, msg.timestamp, tenMinLater);
+    let botResponse = botResponseStmt.get(group.jid, msg.timestamp, tenMinLater);
+    let interleavedUserBeforeReply = false;
+    if (botResponse) {
+      const headKey = interactionSenderKey(msg);
+      for (const next of userMessages) {
+        if (next.timestamp <= msg.timestamp) continue;
+        if (next.timestamp >= botResponse.timestamp) break;
+        const nextSender = next.sender || '';
+        const nextSenderName = next.sender_name || '';
+        if (nextSender.startsWith('web:') || nextSenderName.startsWith('web:')) continue;
+        if (interactionSenderKey(next) !== headKey) {
+          interleavedUserBeforeReply = true;
+          botResponse = null;
+          break;
+        }
+      }
+    }
 
     const isWrite = isWriteRequest(msg.content);
     const isTaskWrite = isTaskWriteRequest(msg.content);
     const isDmSend = isDmSendRequest(msg.content);
     const isRead = isReadQuery(msg.content);
     const isIntent = isUserIntentDeclaration(msg.content);
+    const messageTaskRefs = extractTaskRefs(msg.content);
+    const reminderLikeWrite = isReminderLikeWrite(msg.content);
     let taskMutationFound = false;
     let crossGroupSendLogged = false;
     let refusalDetected = false;
@@ -483,9 +667,46 @@ for (const group of groups) {
     // pro X sobre o prazo") also accept a send-log row as evidence.
     if (isWrite) {
       const mutations = taskHistoryStmt.all(...boardIds, msg.timestamp, tenMinLater);
-      const scheduledTaskCreated = scheduledTasksStmt.get(group.folder, msg.timestamp, tenMinLater) !== undefined;
-      taskMutationFound = mutations.length > 0 || scheduledTaskCreated;
-      crossGroupSendLogged = sendMessageLogStmt.get(group.folder, msg.timestamp, tenMinLater) !== undefined;
+      const actorKey = normalizeForCompare(msg.sender_name || msg.sender || '');
+      const matchingMutations = mutations.filter((mutation) => {
+        const sameActor = !actorKey || !mutation.by
+          ? true
+          : normalizeForCompare(mutation.by) === actorKey;
+        if (!sameActor) return false;
+        if (messageTaskRefs.size === 0) return true;
+        return buildTaskIdAliases(
+          mutation.task_id,
+          mutation.board_id,
+          boardShortCodes,
+        ).some((alias) => messageTaskRefs.has(alias));
+      });
+      const scheduledTaskCreated = reminderLikeWrite &&
+        scheduledTasksStmt.get(group.folder, msg.timestamp, tenMinLater) !== undefined;
+      taskMutationFound = matchingMutations.length > 0 || scheduledTaskCreated;
+      if (isDmSend) {
+        const sendLogs = sendMessageLogStmt.all(
+          group.folder,
+          msg.timestamp,
+          tenMinLater,
+        );
+        const directMessageMatch = hasSendMessageTriggerMessageId &&
+          sendLogs.some((row) => row.trigger_message_id === msg.id);
+        const turnMembershipMatch = !directMessageMatch &&
+          sendMessageTurnMatchStmt
+          ? sendMessageTurnMatchStmt.get(
+              group.folder,
+              msg.timestamp,
+              tenMinLater,
+              msg.id,
+            ) !== undefined
+          : false;
+        const hasAnyExactCorrelation = sendLogs.some(
+          (row) => !!row.trigger_message_id || !!row.trigger_turn_id,
+        );
+        crossGroupSendLogged = directMessageMatch ||
+          turnMembershipMatch ||
+          (!hasAnyExactCorrelation && sendLogs.length > 0);
+      }
     }
     const mutationFound = isTaskWrite
       ? taskMutationFound
@@ -516,13 +737,18 @@ for (const group of groups) {
         isDmSend,
         isRead,
         isIntent,
+        taskRefs: Array.from(messageTaskRefs),
+        reminderLikeWrite,
         taskMutationFound,
         crossGroupSendLogged,
+        interleavedUserBeforeReply,
+        sourceMessageId: msg.id,
         noResponse,
         delayedResponse: delayedResponse || false,
         responseTimeMs,
         unfulfilledWrite,
         refusalDetected,
+        botResponseMessageId: botResponse ? botResponse.id : null,
         botResponsePreview: botResponse
           ? (botResponse.content.length > 200 ? botResponse.content.slice(0, 200) + "..." : botResponse.content)
           : null,
@@ -550,12 +776,19 @@ for (const group of groups) {
   const selfCorrections = correctionPairs.map((pair) => {
     const windowStart = new Date(new Date(pair.second_at).getTime() - 600000).toISOString();
     let trigger = null;
+    let exactTrigger = null;
     let displayName = null;
     for (const bid of boardIds) {
       const row = personNameByIdStmt.get(bid, pair.by);
       if (row && row.name) { displayName = row.name; break; }
     }
-    if (displayName) {
+    if (pair.second_trigger_turn_id && exactTurnMessagesStmt) {
+      exactTrigger = resolveExactTurnMessages(
+        exactTurnMessagesStmt.all(pair.second_trigger_turn_id),
+        displayName,
+      );
+    }
+    if (!exactTrigger && displayName) {
       // Escape LIKE wildcards in the user-controlled board_people.name
       // before interpolating into the pattern — otherwise a person named
       // "50% off" or "foo_bar" would broaden the match unexpectedly.
@@ -572,8 +805,18 @@ for (const group of groups) {
       windowMinutes: Math.round((new Date(pair.second_at).getTime() - new Date(pair.first_at).getTime()) / 60000),
       firstDetails: pair.first_details,
       secondDetails: pair.second_details,
-      triggerMessage: trigger ? (trigger.content.length > 300 ? trigger.content.slice(0, 300) + '...' : trigger.content) : null,
-      triggerSender: trigger ? (trigger.sender_name || null) : null,
+      triggerTurnId: exactTrigger ? exactTrigger.triggerTurnId : null,
+      triggerMessageIds: exactTrigger
+        ? exactTrigger.triggerMessageIds
+        : (trigger ? [trigger.id] : null),
+      triggerMessage: exactTrigger
+        ? (exactTrigger.triggerMessage.length > 300
+            ? exactTrigger.triggerMessage.slice(0, 300) + '...'
+            : exactTrigger.triggerMessage)
+        : trigger
+          ? (trigger.content.length > 300 ? trigger.content.slice(0, 300) + '...' : trigger.content)
+          : null,
+      triggerSender: exactTrigger ? exactTrigger.triggerSender : (trigger ? (trigger.sender_name || null) : null),
     };
   });
 
@@ -746,6 +989,15 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
                 }
                 if (d.deviation) {
                   lines.push(`> _Apontamento do classificador:_ ${escapeMdQuote(d.deviation, 480)}`);
+                }
+                const refs = [];
+                if (d.sourceTurnId) refs.push(`turn ${d.sourceTurnId}`);
+                if (d.sourceMessageIds && d.sourceMessageIds.length > 0) {
+                  refs.push(`msgs ${d.sourceMessageIds.join(', ')}`);
+                }
+                if (d.responseMessageId) refs.push(`resp ${d.responseMessageId}`);
+                if (refs.length > 0) {
+                  lines.push(`> _Refs:_ ${escapeMdQuote(refs.join(' | '), 480)}`);
                 }
                 lines.push('');
               }

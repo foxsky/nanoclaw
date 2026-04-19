@@ -110,7 +110,8 @@ CREATE TABLE IF NOT EXISTS task_history (
   action TEXT NOT NULL,
   by TEXT,
   at TEXT NOT NULL,
-  details TEXT
+  details TEXT,
+  trigger_turn_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS archive (
@@ -569,6 +570,9 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_task_history_board_at ON task_history(board_id, at)`,
   );
+  try {
+    db.exec(`ALTER TABLE task_history ADD COLUMN trigger_turn_id TEXT`);
+  } catch {}
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_archive_board_assignee ON archive(board_id, assignee)`,
   );

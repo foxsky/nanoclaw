@@ -31,7 +31,7 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { validateAdditionalMounts } from './mount-security.js';
-import { RegisteredGroup } from './types.js';
+import { AgentTurnContext, RegisteredGroup } from './types.js';
 
 // --- add-long-term-context skill: module-level setter ---
 import type { ContextService } from './context-service.js';
@@ -70,6 +70,7 @@ export interface ContainerInput {
   ollamaHost?: string;
   embeddingModel?: string;
   script?: string;
+  turnContext?: AgentTurnContext;
 }
 
 export interface ContainerOutput {

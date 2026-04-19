@@ -2,14 +2,21 @@ import { describe, it, expect, beforeEach } from 'vitest';
 
 import {
   _initTestDatabase,
+  createAgentTurn,
   createTask,
   deleteTask,
   getAllChats,
+  getAgentTurnMessages,
   getAllRegisteredGroups,
   getLastBotMessageTimestamp,
   getMessagesSince,
   getNewMessages,
+  markOutboundSent,
+  enqueueOutbound,
+  reconcileOutboundReceiptByEcho,
+  getSendMessageLogs,
   getTaskById,
+  recordSendMessageLog,
   setRegisteredGroup,
   storeChatMetadata,
   storeMessage,
@@ -583,12 +590,19 @@ describe('task CRUD', () => {
       next_run: '2024-06-01T00:00:00.000Z',
       status: 'active',
       created_at: '2024-01-01T00:00:00.000Z',
+      trigger_message_id: 'msg-42',
+      trigger_chat_jid: 'group@g.us',
+      trigger_sender: '123@s.whatsapp.net',
+      trigger_sender_name: 'Alice',
+      trigger_message_timestamp: '2024-01-01T00:00:01.000Z',
     });
 
     const task = getTaskById('task-1');
     expect(task).toBeDefined();
     expect(task!.prompt).toBe('do something');
     expect(task!.status).toBe('active');
+    expect(task!.trigger_message_id).toBe('msg-42');
+    expect(task!.trigger_sender_name).toBe('Alice');
   });
 
   it('updates task status', () => {
@@ -625,6 +639,145 @@ describe('task CRUD', () => {
 
     deleteTask('task-3');
     expect(getTaskById('task-3')).toBeUndefined();
+  });
+});
+
+describe('send_message_log', () => {
+  it('stores trigger correlation metadata when present', () => {
+    const turn = createAgentTurn({
+      groupFolder: 'main',
+      chatJid: 'group@g.us',
+      messages: [
+        {
+          messageId: 'msg-7',
+          chatJid: 'group@g.us',
+          sender: '123@s.whatsapp.net',
+          senderName: 'Alice',
+          timestamp: '2024-01-01T00:00:01.000Z',
+        },
+      ],
+    });
+    recordSendMessageLog({
+      sourceGroupFolder: 'main',
+      targetChatJid: 'group@g.us',
+      targetKind: 'group',
+      senderLabel: 'Andy',
+      contentPreview: 'hello',
+      deliveredAt: '2024-01-01T00:00:02.000Z',
+      triggerMessage: {
+        messageId: 'msg-7',
+        chatJid: 'group@g.us',
+        sender: '123@s.whatsapp.net',
+        senderName: 'Alice',
+        timestamp: '2024-01-01T00:00:01.000Z',
+      },
+      triggerTurnId: turn.id,
+    });
+
+    expect(getSendMessageLogs()).toEqual([
+      expect.objectContaining({
+        source_group_folder: 'main',
+        target_chat_jid: 'group@g.us',
+        trigger_message_id: 'msg-7',
+        trigger_chat_jid: 'group@g.us',
+        trigger_sender: '123@s.whatsapp.net',
+        trigger_sender_name: 'Alice',
+        trigger_message_timestamp: '2024-01-01T00:00:01.000Z',
+        trigger_turn_id: turn.id,
+      }),
+    ]);
+  });
+});
+
+describe('outbound receipt reconciliation', () => {
+  it('matches the oldest unresolved sent row for the same chat and exact text', () => {
+    const firstId = enqueueOutbound({
+      chatJid: 'group@g.us',
+      groupFolder: 'group',
+      text: 'Andy: Mesmo texto',
+      senderLabel: 'Andy',
+      source: 'user',
+    });
+    const secondId = enqueueOutbound({
+      chatJid: 'group@g.us',
+      groupFolder: 'group',
+      text: 'Andy: Mesmo texto',
+      senderLabel: 'Andy',
+      source: 'user',
+    });
+
+    markOutboundSent(firstId, undefined);
+    markOutboundSent(secondId, undefined);
+
+    const matched = reconcileOutboundReceiptByEcho({
+      chatJid: 'group@g.us',
+      text: 'Andy: Mesmo texto',
+      messageId: 'echo-1',
+      timestamp: new Date().toISOString(),
+    });
+
+    expect(matched).toBe(firstId);
+  });
+
+  it('does not match rows for a different text or already-delivered row', () => {
+    const rowId = enqueueOutbound({
+      chatJid: 'group@g.us',
+      groupFolder: 'group',
+      text: 'Andy: Texto certo',
+      senderLabel: 'Andy',
+      source: 'user',
+    });
+    markOutboundSent(rowId, {
+      messageId: 'already-set',
+      timestamp: '2024-01-01T00:00:00.000Z',
+    });
+
+    const unmatched = reconcileOutboundReceiptByEcho({
+      chatJid: 'group@g.us',
+      text: 'Andy: Outro texto',
+      messageId: 'echo-2',
+      timestamp: new Date().toISOString(),
+    });
+
+    expect(unmatched).toBeNull();
+  });
+});
+
+describe('agent_turns', () => {
+  it('stores exact message membership for a turn', () => {
+    const turn = createAgentTurn({
+      groupFolder: 'main',
+      chatJid: 'group@g.us',
+      messages: [
+        {
+          messageId: 'msg-1',
+          chatJid: 'group@g.us',
+          sender: 'a@s.whatsapp.net',
+          senderName: 'Alice',
+          timestamp: '2024-01-01T00:00:01.000Z',
+        },
+        {
+          messageId: 'msg-2',
+          chatJid: 'group@g.us',
+          sender: 'b@s.whatsapp.net',
+          senderName: 'Bob',
+          timestamp: '2024-01-01T00:00:02.000Z',
+        },
+      ],
+    });
+
+    expect(getAgentTurnMessages(turn.id)).toEqual([
+      expect.objectContaining({
+        turn_id: turn.id,
+        message_id: 'msg-1',
+        ordinal: 0,
+      }),
+      expect.objectContaining({
+        turn_id: turn.id,
+        message_id: 'msg-2',
+        ordinal: 1,
+      }),
+    ]);
   });
 });
 

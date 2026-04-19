@@ -19,7 +19,13 @@ import {
   DATA_DIR,
   STORE_DIR,
 } from '../config.js';
-import { getLastGroupSync, setLastGroupSync, updateChatName } from '../db.js';
+import {
+  getLastGroupSync,
+  reconcileOutboundReceiptByEcho,
+  recordOutboundReceipt,
+  setLastGroupSync,
+  updateChatName,
+} from '../db.js';
 import { resolveGroupFolderPath } from '../group-folder.js';
 import { processImage } from '../image.js';
 import { logger } from '../logger.js';
@@ -30,6 +36,8 @@ import {
   OnInboundMessage,
   OnChatMetadata,
   RegisteredGroup,
+  SendMessageContext,
+  SentMessageReceipt,
 } from '../types.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 
@@ -51,7 +59,11 @@ export class WhatsAppChannel implements Channel {
   private connected = false;
   private reconnecting = false;
   private lidToPhoneMap: Record<string, string> = {};
-  private outgoingQueue: Array<{ jid: string; text: string }> = [];
+  private outgoingQueue: Array<{
+    jid: string;
+    text: string;
+    outboundMessageId?: number;
+  }> = [];
   private flushing = false;
   private groupSyncTimerStarted = false;
   private healthCheckTimer?: ReturnType<typeof setInterval>;
@@ -73,10 +85,28 @@ export class WhatsAppChannel implements Channel {
       const data = fs.readFileSync(WhatsAppChannel.QUEUE_PATH, 'utf-8');
       const parsed = JSON.parse(data);
       if (Array.isArray(parsed)) {
-        this.outgoingQueue = parsed;
+        this.outgoingQueue = parsed
+          .filter(
+            (item): item is {
+              jid: string;
+              text: string;
+              outboundMessageId?: number;
+            } =>
+              !!item &&
+              typeof item === 'object' &&
+              typeof item.jid === 'string' &&
+              typeof item.text === 'string' &&
+              (item.outboundMessageId === undefined ||
+                typeof item.outboundMessageId === 'number'),
+          )
+          .map((item) => ({
+            jid: item.jid,
+            text: item.text,
+            outboundMessageId: item.outboundMessageId,
+          }));
         if (parsed.length > 0) {
           logger.info(
-            { count: parsed.length },
+            { count: this.outgoingQueue.length },
             'Restored outgoing queue from disk',
           );
         }
@@ -273,6 +303,15 @@ export class WhatsAppChannel implements Channel {
                     g.trigger &&
                     content.startsWith(`${g.trigger.replace(/^@/, '')}:`),
                 );
+
+            if (fromMe && isBotMessage && msg.key.id && content) {
+              reconcileOutboundReceiptByEcho({
+                chatJid,
+                text: content,
+                messageId: msg.key.id,
+                timestamp,
+              });
+            }
 
             // Transcribe voice messages before storing
             let finalContent = content;
@@ -480,6 +519,15 @@ export class WhatsAppChannel implements Channel {
   }
 
   async sendMessage(jid: string, text: string, sender?: string): Promise<void> {
+    await this.sendMessageWithReceipt(jid, text, sender);
+  }
+
+  async sendMessageWithReceipt(
+    jid: string,
+    text: string,
+    sender?: string,
+    context?: SendMessageContext,
+  ): Promise<SentMessageReceipt | void> {
     // Prefix bot messages with assistant name so users know who's speaking.
     // On a shared number, prefix is also needed in DMs (including self-chat)
     // to distinguish bot output from user messages.
@@ -490,7 +538,11 @@ export class WhatsAppChannel implements Channel {
       : `${displayName}: ${text}`;
 
     if (!this.connected) {
-      this.outgoingQueue.push({ jid, text: prefixed });
+      this.outgoingQueue.push({
+        jid,
+        text: prefixed,
+        outboundMessageId: context?.outboundMessageId,
+      });
       this.saveQueue();
       logger.info(
         { jid, length: prefixed.length, queueSize: this.outgoingQueue.length },
@@ -499,11 +551,22 @@ export class WhatsAppChannel implements Channel {
       return;
     }
     try {
-      await this.sock.sendMessage(jid, { text: prefixed });
+      const result = await this.sock.sendMessage(jid, { text: prefixed });
       logger.info({ jid, length: prefixed.length }, 'Message sent');
+      const messageId = result?.key?.id;
+      if (typeof messageId === 'string' && messageId.trim()) {
+        return {
+          messageId,
+          timestamp: new Date().toISOString(),
+        };
+      }
     } catch (err) {
       // If send fails, queue it for retry on reconnect
-      this.outgoingQueue.push({ jid, text: prefixed });
+      this.outgoingQueue.push({
+        jid,
+        text: prefixed,
+        outboundMessageId: context?.outboundMessageId,
+      });
       this.saveQueue();
       logger.warn(
         { jid, err, queueSize: this.outgoingQueue.length },
@@ -807,10 +870,25 @@ export class WhatsAppChannel implements Channel {
       while (this.outgoingQueue.length > 0) {
         const item = this.outgoingQueue.shift()!;
         try {
-          await this.sock.sendMessage(item.jid, { text: item.text });
+          const result = await this.sock.sendMessage(item.jid, { text: item.text });
+          const messageId = result?.key?.id;
+          if (
+            item.outboundMessageId !== undefined &&
+            typeof messageId === 'string' &&
+            messageId.trim()
+          ) {
+            recordOutboundReceipt(item.outboundMessageId, {
+              messageId,
+              timestamp: new Date().toISOString(),
+            });
+          }
           this.saveQueue();
           logger.info(
-            { jid: item.jid, length: item.text.length },
+            {
+              jid: item.jid,
+              length: item.text.length,
+              outboundMessageId: item.outboundMessageId,
+            },
             'Queued message sent',
           );
         } catch (err) {

@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -7,8 +8,10 @@ import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
   NewMessage,
+  AgentTurnMessageRef,
   RegisteredGroup,
   ScheduledTask,
+  TriggerMessageContext,
   SendTargetKind,
   TaskRunLog,
 } from './types.js';
@@ -50,7 +53,12 @@ function createSchema(database: Database.Database): void {
       last_run TEXT,
       last_result TEXT,
       status TEXT DEFAULT 'active',
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      trigger_message_id TEXT,
+      trigger_chat_jid TEXT,
+      trigger_sender TEXT,
+      trigger_sender_name TEXT,
+      trigger_message_timestamp TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_next_run ON scheduled_tasks(next_run);
     CREATE INDEX IF NOT EXISTS idx_status ON scheduled_tasks(status);
@@ -79,12 +87,40 @@ function createSchema(database: Database.Database): void {
       target_kind TEXT NOT NULL,
       sender_label TEXT,
       content_preview TEXT NOT NULL,
-      delivered_at TEXT NOT NULL
+      delivered_at TEXT NOT NULL,
+      trigger_message_id TEXT,
+      trigger_chat_jid TEXT,
+      trigger_sender TEXT,
+      trigger_sender_name TEXT,
+      trigger_message_timestamp TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_send_message_log_source_at
       ON send_message_log(source_group_folder, delivered_at);
     CREATE INDEX IF NOT EXISTS idx_send_message_log_target_at
       ON send_message_log(target_chat_jid, delivered_at);
+
+    CREATE TABLE IF NOT EXISTS agent_turns (
+      id TEXT PRIMARY KEY,
+      group_folder TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_turns_group_at
+      ON agent_turns(group_folder, created_at);
+
+    CREATE TABLE IF NOT EXISTS agent_turn_messages (
+      turn_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      message_chat_jid TEXT NOT NULL,
+      sender TEXT NOT NULL,
+      sender_name TEXT NOT NULL,
+      message_timestamp TEXT NOT NULL,
+      ordinal INTEGER NOT NULL,
+      PRIMARY KEY (turn_id, ordinal),
+      FOREIGN KEY (turn_id) REFERENCES agent_turns(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_turn_messages_turn
+      ON agent_turn_messages(turn_id, ordinal);
 
     CREATE TABLE IF NOT EXISTS router_state (
       key TEXT PRIMARY KEY,
@@ -120,8 +156,11 @@ function createSchema(database: Database.Database): void {
       text TEXT NOT NULL,
       sender_label TEXT,
       source TEXT NOT NULL,
+      trigger_turn_id TEXT,
       enqueued_at TEXT NOT NULL,
       sent_at TEXT,
+      delivered_message_id TEXT,
+      delivered_message_timestamp TEXT,
       attempts INTEGER NOT NULL DEFAULT 0,
       last_error TEXT,
       abandoned_at TEXT
@@ -129,6 +168,8 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_outbound_pending
       ON outbound_messages(enqueued_at)
       WHERE sent_at IS NULL AND abandoned_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_outbound_trigger_turn
+      ON outbound_messages(trigger_turn_id, enqueued_at);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -143,6 +184,108 @@ function createSchema(database: Database.Database): void {
   // Add script column if it doesn't exist (migration for existing DBs)
   try {
     database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN script TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN trigger_message_id TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN trigger_chat_jid TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN trigger_sender TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN trigger_sender_name TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN trigger_message_timestamp TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(`ALTER TABLE send_message_log ADD COLUMN trigger_message_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(`ALTER TABLE send_message_log ADD COLUMN trigger_chat_jid TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(`ALTER TABLE send_message_log ADD COLUMN trigger_sender TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(
+      `ALTER TABLE send_message_log ADD COLUMN trigger_sender_name TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(
+      `ALTER TABLE send_message_log ADD COLUMN trigger_message_timestamp TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN trigger_turn_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(`ALTER TABLE send_message_log ADD COLUMN trigger_turn_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(`ALTER TABLE outbound_messages ADD COLUMN trigger_turn_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(`ALTER TABLE outbound_messages ADD COLUMN delivered_message_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(
+      `ALTER TABLE outbound_messages ADD COLUMN delivered_message_timestamp TEXT`,
+    );
   } catch {
     /* column already exists */
   }
@@ -511,8 +654,13 @@ export function createTask(
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, script, schedule_type, schedule_value, context_mode, next_run, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (
+      id, group_folder, chat_jid, prompt, script, schedule_type, schedule_value,
+      context_mode, next_run, status, created_at,
+      trigger_message_id, trigger_chat_jid, trigger_sender,
+      trigger_sender_name, trigger_message_timestamp, trigger_turn_id
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
@@ -526,6 +674,12 @@ export function createTask(
     task.next_run,
     task.status,
     task.created_at,
+    task.trigger_message_id ?? null,
+    task.trigger_chat_jid ?? null,
+    task.trigger_sender ?? null,
+    task.trigger_sender_name ?? null,
+    task.trigger_message_timestamp ?? null,
+    task.trigger_turn_id ?? null,
   );
 }
 
@@ -616,6 +770,83 @@ export function getDueTasks(): ScheduledTask[] {
   `,
     )
     .all(now) as ScheduledTask[];
+}
+
+export interface AgentTurn {
+  id: string;
+  group_folder: string;
+  chat_jid: string;
+  created_at: string;
+}
+
+export interface AgentTurnMessageRow {
+  turn_id: string;
+  message_id: string;
+  message_chat_jid: string;
+  sender: string;
+  sender_name: string;
+  message_timestamp: string;
+  ordinal: number;
+}
+
+export function createAgentTurn(params: {
+  groupFolder: string;
+  chatJid: string;
+  messages: AgentTurnMessageRef[];
+}): AgentTurn {
+  const turn: AgentTurn = {
+    id: randomUUID(),
+    group_folder: params.groupFolder,
+    chat_jid: params.chatJid,
+    created_at: new Date().toISOString(),
+  };
+
+  const insertTurn = db.prepare(
+    `INSERT INTO agent_turns (id, group_folder, chat_jid, created_at)
+     VALUES (?, ?, ?, ?)`,
+  );
+  const insertMessage = db.prepare(
+    `INSERT INTO agent_turn_messages
+       (turn_id, message_id, message_chat_jid, sender, sender_name, message_timestamp, ordinal)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  );
+
+  const tx = db.transaction(() => {
+    insertTurn.run(
+      turn.id,
+      turn.group_folder,
+      turn.chat_jid,
+      turn.created_at,
+    );
+    params.messages.forEach((message, index) => {
+      insertMessage.run(
+        turn.id,
+        message.messageId,
+        message.chatJid,
+        message.sender,
+        message.senderName,
+        message.timestamp,
+        index,
+      );
+    });
+  });
+  tx();
+
+  return turn;
+}
+
+export function getAgentTurn(id: string): AgentTurn | undefined {
+  return db.prepare('SELECT * FROM agent_turns WHERE id = ?').get(id) as
+    | AgentTurn
+    | undefined;
+}
+
+export function getAgentTurnMessages(turnId: string): AgentTurnMessageRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM agent_turn_messages WHERE turn_id = ? ORDER BY ordinal ASC`,
+    )
+    .all(turnId) as AgentTurnMessageRow[];
 }
 
 export function updateTaskAfterRun(
@@ -859,6 +1090,8 @@ export interface SendMessageLogEntry {
   senderLabel?: string | null;
   contentPreview: string;
   deliveredAt: string;
+  triggerMessage?: TriggerMessageContext | null;
+  triggerTurnId?: string | null;
 }
 
 /**
@@ -870,8 +1103,13 @@ export interface SendMessageLogEntry {
 export function recordSendMessageLog(entry: SendMessageLogEntry): void {
   db.prepare(
     `INSERT INTO send_message_log
-       (source_group_folder, target_chat_jid, target_kind, sender_label, content_preview, delivered_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+       (
+         source_group_folder, target_chat_jid, target_kind, sender_label,
+         content_preview, delivered_at,
+         trigger_message_id, trigger_chat_jid, trigger_sender,
+         trigger_sender_name, trigger_message_timestamp, trigger_turn_id
+       )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     entry.sourceGroupFolder,
     entry.targetChatJid,
@@ -879,7 +1117,35 @@ export function recordSendMessageLog(entry: SendMessageLogEntry): void {
     entry.senderLabel ?? null,
     entry.contentPreview.slice(0, 200),
     entry.deliveredAt,
+    entry.triggerMessage?.messageId ?? null,
+    entry.triggerMessage?.chatJid ?? null,
+    entry.triggerMessage?.sender ?? null,
+    entry.triggerMessage?.senderName ?? null,
+    entry.triggerMessage?.timestamp ?? null,
+    entry.triggerTurnId ?? null,
   );
+}
+
+export interface SendMessageLogRow {
+  id: number;
+  source_group_folder: string;
+  target_chat_jid: string;
+  target_kind: SendTargetKind;
+  sender_label: string | null;
+  content_preview: string;
+  delivered_at: string;
+  trigger_message_id: string | null;
+  trigger_chat_jid: string | null;
+  trigger_sender: string | null;
+  trigger_sender_name: string | null;
+  trigger_message_timestamp: string | null;
+  trigger_turn_id: string | null;
+}
+
+export function getSendMessageLogs(): SendMessageLogRow[] {
+  return db
+    .prepare('SELECT * FROM send_message_log ORDER BY id ASC')
+    .all() as SendMessageLogRow[];
 }
 
 // --- Outbound durable queue ---
@@ -892,6 +1158,7 @@ export interface OutboundEnqueue {
   text: string;
   senderLabel: string | null;
   source: OutboundSource;
+  triggerTurnId?: string | null;
 }
 
 export interface OutboundRow {
@@ -901,8 +1168,11 @@ export interface OutboundRow {
   text: string;
   sender_label: string | null;
   source: OutboundSource;
+  trigger_turn_id: string | null;
   enqueued_at: string;
   sent_at: string | null;
+  delivered_message_id: string | null;
+  delivered_message_timestamp: string | null;
   attempts: number;
   last_error: string | null;
   abandoned_at: string | null;
@@ -912,8 +1182,11 @@ export function enqueueOutbound(msg: OutboundEnqueue): number {
   const info = db
     .prepare(
       `INSERT INTO outbound_messages
-         (chat_jid, group_folder, text, sender_label, source, enqueued_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+         (
+           chat_jid, group_folder, text, sender_label, source,
+           trigger_turn_id, enqueued_at
+         )
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       msg.chatJid,
@@ -921,6 +1194,7 @@ export function enqueueOutbound(msg: OutboundEnqueue): number {
       msg.text,
       msg.senderLabel,
       msg.source,
+      msg.triggerTurnId ?? null,
       new Date().toISOString(),
     );
   return Number(info.lastInsertRowid);
@@ -937,12 +1211,79 @@ export function getPendingOutbound(limit = 50): OutboundRow[] {
     .all(limit) as OutboundRow[];
 }
 
-export function markOutboundSent(id: number): void {
+export function markOutboundSent(
+  id: number,
+  receipt?: { messageId: string; timestamp?: string | null },
+): void {
   db.prepare(
     `UPDATE outbound_messages
-       SET sent_at = ?, last_error = NULL
+       SET sent_at = ?,
+           delivered_message_id = COALESCE(?, delivered_message_id),
+           delivered_message_timestamp = COALESCE(?, delivered_message_timestamp),
+           last_error = NULL
      WHERE id = ?`,
-  ).run(new Date().toISOString(), id);
+  ).run(
+    new Date().toISOString(),
+    receipt?.messageId ?? null,
+    receipt?.timestamp ?? null,
+    id,
+  );
+}
+
+export function recordOutboundReceipt(
+  id: number,
+  receipt: { messageId: string; timestamp?: string | null },
+): void {
+  db.prepare(
+    `UPDATE outbound_messages
+       SET delivered_message_id = COALESCE(?, delivered_message_id),
+           delivered_message_timestamp = COALESCE(?, delivered_message_timestamp)
+     WHERE id = ?`,
+  ).run(
+    receipt.messageId,
+    receipt.timestamp ?? null,
+    id,
+  );
+}
+
+export function reconcileOutboundReceiptByEcho(params: {
+  chatJid: string;
+  text: string;
+  messageId: string;
+  timestamp?: string | null;
+  lookbackMs?: number;
+}): number | null {
+  const lookbackMs = params.lookbackMs ?? 15 * 60 * 1000;
+  const echoAt = params.timestamp ? new Date(params.timestamp) : new Date();
+  if (isNaN(echoAt.getTime())) return null;
+  const windowStart = new Date(echoAt.getTime() - lookbackMs).toISOString();
+  const echoTimestamp = echoAt.toISOString();
+  const row = db
+    .prepare(
+      `SELECT id
+       FROM outbound_messages
+       WHERE chat_jid = ?
+         AND text = ?
+         AND sent_at IS NOT NULL
+         AND sent_at >= ?
+         AND sent_at <= ?
+         AND abandoned_at IS NULL
+         AND delivered_message_id IS NULL
+       ORDER BY sent_at ASC, id ASC
+       LIMIT 1`,
+    )
+    .get(
+      params.chatJid,
+      params.text,
+      windowStart,
+      echoTimestamp,
+    ) as { id: number } | undefined;
+  if (!row) return null;
+  recordOutboundReceipt(row.id, {
+    messageId: params.messageId,
+    timestamp: params.timestamp ?? echoTimestamp,
+  });
+  return row.id;
 }
 
 export function markOutboundAttemptFailed(

@@ -31,6 +31,7 @@ const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
 const isMain = process.env.NANOCLAW_IS_MAIN === '1';
 const isTaskflowManaged = process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1';
+const turnId = process.env.NANOCLAW_TURN_ID;
 const taskflowHierarchyLevel =
   process.env.NANOCLAW_TASKFLOW_HIERARCHY_LEVEL !== undefined
     ? Number.parseInt(process.env.NANOCLAW_TASKFLOW_HIERARCHY_LEVEL, 10)
@@ -61,6 +62,12 @@ async function ollamaEmbed(text: string): Promise<Float32Array | null> {
   } catch {
     return null;
   }
+}
+
+function buildTurnContextFields(): Record<string, string | undefined> {
+  return {
+    turnId: turnId || undefined,
+  };
 }
 
 function writeIpcFile(dir: string, data: object): string {
@@ -129,6 +136,7 @@ server.tool(
       sender: args.sender || undefined,
       groupFolder,
       timestamp: new Date().toISOString(),
+      ...buildTurnContextFields(),
     };
 
     writeIpcFile(MESSAGES_DIR, data);
@@ -219,6 +227,7 @@ SCHEDULE VALUE FORMAT:
       targetJid,
       createdBy: groupFolder,
       timestamp: new Date().toISOString(),
+      ...buildTurnContextFields(),
     };
 
     const filename = writeIpcFile(TASKS_DIR, data);
@@ -575,6 +584,7 @@ server.tool(
       groupFolder,
       isMain,
       timestamp: new Date().toISOString(),
+      ...buildTurnContextFields(),
     });
 
     return {
@@ -596,7 +606,9 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
   if (boardId) {
     const tfDb = new Database(dbPath);
     process.on('exit', () => tfDb.close());
-    const engine = new TaskflowEngine(tfDb, boardId);
+    const engine = new TaskflowEngine(tfDb, boardId, {
+      triggerTurnId: turnId ?? null,
+    });
 
     /** Write IPC message files for any notifications returned by the engine. */
     function dispatchNotifications(result: Record<string, unknown>): void {
@@ -628,6 +640,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
               text: notif.message,
               groupFolder,
               timestamp: new Date().toISOString(),
+              ...buildTurnContextFields(),
             });
             notifiedJids.add(targetJid);
           } else if (notif.target_kind !== 'dm' && notif.target_person_id) {
@@ -640,6 +653,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
               text: notif.message,
               groupFolder,
               timestamp: new Date().toISOString(),
+              ...buildTurnContextFields(),
             });
           }
         }
@@ -653,6 +667,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
           text: pn.message,
           groupFolder,
           timestamp: new Date().toISOString(),
+          ...buildTurnContextFields(),
         });
       }
     }
@@ -980,6 +995,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
             groupFolder,
             isMain,
             timestamp: new Date().toISOString(),
+            ...buildTurnContextFields(),
           });
         }
         if (result.success) dispatchNotifications(result);

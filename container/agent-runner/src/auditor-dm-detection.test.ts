@@ -25,7 +25,7 @@ const TASK_KEYWORDS = [
   'começando', 'comecando', 'aguardando', 'retomada', 'devolver',
   'done', 'feita', 'feito', 'pronta',
 ];
-const TERSE_PATTERN = /^(T|P|M|R|SEC-)\S+\s*(conclu|feita|feito|pronta|ok|aprovad|✅)/i;
+const TERSE_PATTERN = /^(?:(?:[A-Z]{2,}-)?(?:T|P|M|R)\S+|SEC-\S+)\s*(conclu|feita|feito|pronta|ok|aprovad|✅)/i;
 
 // Read-query detector — split into HARD and SOFT interrogatives so
 // Portuguese subordinate clauses don't exempt real commands.
@@ -136,6 +136,129 @@ function isUserIntentDeclaration(text: string): boolean {
 
 function hasRefusal(text: string): boolean {
   return REFUSAL_PATTERN.test(text);
+}
+
+function interactionSenderKey(msg: {
+  sender: string | null | undefined;
+  sender_name: string | null | undefined;
+}): string {
+  const sender = (msg.sender ?? '').trim();
+  if (sender) return `sender:${sender}`;
+  return `name:${(msg.sender_name ?? '').trim()}`;
+}
+
+function attributedBotResponse(
+  messages: Array<{
+    sender: string | null | undefined;
+    sender_name: string | null | undefined;
+    timestamp: string;
+    is_bot_message?: boolean;
+    is_from_me?: boolean;
+  }>,
+  headIndex: number,
+): { timestamp: string } | null {
+  const head = messages[headIndex];
+  const tenMinLater = new Date(new Date(head.timestamp).getTime() + 600_000).toISOString();
+  const bot = messages.find((m) =>
+    !!(m.is_bot_message || m.is_from_me) &&
+    m.timestamp > head.timestamp &&
+    m.timestamp <= tenMinLater,
+  );
+  if (!bot) return null;
+  const headKey = interactionSenderKey(head);
+  for (let i = headIndex + 1; i < messages.length; i++) {
+    const next = messages[i];
+    if (next.timestamp >= bot.timestamp) break;
+    const sender = next.sender ?? '';
+    const senderName = next.sender_name ?? '';
+    if (sender.startsWith('web:') || senderName.startsWith('web:')) continue;
+    if (!next.is_bot_message && !next.is_from_me && interactionSenderKey(next) !== headKey) {
+      return null;
+    }
+  }
+  return { timestamp: bot.timestamp };
+}
+
+const TASK_REF_PATTERN = /\b(?:[A-Z]{2,}-)?(?:T|P|M|R)\d+(?:\.\d+)*\b|\bSEC-[A-Z0-9]+(?:[.-][A-Z0-9]+)*\b/gi;
+const REMINDER_LIKE_PATTERN = /\b(?:lembr(?:ar|e|ete|etes)|me\s+avise|me\s+lembre|avise-me|avisa\s+me|avisar|lembret[ea]|agendar|agenda(?:r)?)\b/i;
+
+function normalizeForCompare(text: string | null | undefined): string {
+  return String(text ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function extractTaskRefs(text: string): Set<string> {
+  return new Set((text.match(TASK_REF_PATTERN) ?? []).map((m) => m.toUpperCase()));
+}
+
+function isReminderLikeWrite(text: string): boolean {
+  return REMINDER_LIKE_PATTERN.test(text);
+}
+
+function buildTaskIdAliases(
+  taskId: string | null | undefined,
+  shortCode: string | null | undefined,
+): string[] {
+  const rawId = String(taskId ?? '').toUpperCase();
+  if (!rawId) return [];
+  const aliases = new Set([rawId]);
+  if (shortCode) aliases.add(`${shortCode.toUpperCase()}-${rawId}`);
+  return Array.from(aliases);
+}
+
+function taskMutationEvidence(
+  msg: {
+    content: string;
+    sender: string | null | undefined;
+    sender_name: string | null | undefined;
+  },
+  mutations: Array<{
+    task_id: string | null | undefined;
+    by: string | null | undefined;
+    short_code?: string | null | undefined;
+  }>,
+  scheduledTaskCreated: boolean,
+): boolean {
+  const actorKey = normalizeForCompare(msg.sender_name || msg.sender || '');
+  const taskRefs = extractTaskRefs(msg.content);
+  const matchingMutations = mutations.filter((mutation) => {
+    const sameActor = !actorKey || !mutation.by
+      ? true
+      : normalizeForCompare(mutation.by) === actorKey;
+    if (!sameActor) return false;
+    if (taskRefs.size === 0) return true;
+    return buildTaskIdAliases(mutation.task_id, mutation.short_code).some((alias) =>
+      taskRefs.has(alias),
+    );
+  });
+  const scheduledCounts = isReminderLikeWrite(msg.content) && scheduledTaskCreated;
+  return matchingMutations.length > 0 || scheduledCounts;
+}
+
+function crossGroupSendEvidence(
+  msgId: string,
+  sendLogs: Array<{
+    trigger_message_id?: string | null | undefined;
+    trigger_turn_id?: string | null | undefined;
+  }>,
+  turnMessageIdsByTurnId: Record<string, string[]>,
+): boolean {
+  const directMessageMatch = sendLogs.some(
+    (row) => row.trigger_message_id === msgId,
+  );
+  if (directMessageMatch) return true;
+  const turnMembershipMatch = sendLogs.some((row) => {
+    const turnId = row.trigger_turn_id;
+    return !!turnId && (turnMessageIdsByTurnId[turnId] ?? []).includes(msgId);
+  });
+  if (turnMembershipMatch) return true;
+  const hasAnyExactCorrelation = sendLogs.some(
+    (row) => !!row.trigger_message_id || !!row.trigger_turn_id,
+  );
+  return !hasAnyExactCorrelation && sendLogs.length > 0;
 }
 
 describe('auditor DM-send detection', () => {
@@ -569,9 +692,162 @@ describe('auditor DM-send detection', () => {
     });
   });
 
+  describe('response attribution in busy groups', () => {
+    it('does not attribute a reply across interleaved different-user messages', () => {
+      const messages = [
+        {
+          sender: 'alice@s.whatsapp.net',
+          sender_name: 'Alice',
+          timestamp: '2026-04-15T10:00:00.000Z',
+          is_bot_message: false,
+          is_from_me: false,
+        },
+        {
+          sender: 'bob@s.whatsapp.net',
+          sender_name: 'Bob',
+          timestamp: '2026-04-15T10:00:20.000Z',
+          is_bot_message: false,
+          is_from_me: false,
+        },
+        {
+          sender: 'bot',
+          sender_name: 'Case',
+          timestamp: '2026-04-15T10:00:40.000Z',
+          is_bot_message: true,
+          is_from_me: true,
+        },
+      ];
+
+      expect(attributedBotResponse(messages, 0)).toBeNull();
+      expect(attributedBotResponse(messages, 1)).toEqual({
+        timestamp: '2026-04-15T10:00:40.000Z',
+      });
+    });
+
+    it('keeps attribution when only the same sender adds detail before the reply', () => {
+      const messages = [
+        {
+          sender: 'alice@s.whatsapp.net',
+          sender_name: 'Alice',
+          timestamp: '2026-04-15T10:00:00.000Z',
+          is_bot_message: false,
+          is_from_me: false,
+        },
+        {
+          sender: 'alice@s.whatsapp.net',
+          sender_name: 'Alice',
+          timestamp: '2026-04-15T10:00:10.000Z',
+          is_bot_message: false,
+          is_from_me: false,
+        },
+        {
+          sender: 'bot',
+          sender_name: 'Case',
+          timestamp: '2026-04-15T10:00:40.000Z',
+          is_bot_message: true,
+          is_from_me: true,
+        },
+      ];
+
+      expect(attributedBotResponse(messages, 0)).toEqual({
+        timestamp: '2026-04-15T10:00:40.000Z',
+      });
+    });
+  });
+
+  describe('mutation attribution precision', () => {
+    it('does not count another user’s mutation on a different task as evidence', () => {
+      const msg = {
+        sender: 'carol@s.whatsapp.net',
+        sender_name: 'Carol',
+        content: 'Concluir T5 agora',
+      };
+      const mutations = [
+        { task_id: 'P9', by: 'Dave' },
+      ];
+      expect(taskMutationEvidence(msg, mutations, false)).toBe(false);
+    });
+
+    it('counts same-user same-task mutation as evidence', () => {
+      const msg = {
+        sender: 'carol@s.whatsapp.net',
+        sender_name: 'Carol',
+        content: 'Concluir T5 agora',
+      };
+      const mutations = [
+        { task_id: 'T5', by: 'Carol' },
+      ];
+      expect(taskMutationEvidence(msg, mutations, false)).toBe(true);
+    });
+
+    it('counts same-user mutation when the user referenced a valid board-prefixed task ID', () => {
+      const msg = {
+        sender: 'carol@s.whatsapp.net',
+        sender_name: 'Carol',
+        content: 'Concluir TST-T5 agora',
+      };
+      const mutations = [
+        { task_id: 'T5', by: 'Carol', short_code: 'TST' },
+      ];
+      expect(taskMutationEvidence(msg, mutations, false)).toBe(true);
+    });
+
+    it('does not let unrelated scheduled_tasks satisfy a non-reminder write', () => {
+      const msg = {
+        sender: 'carol@s.whatsapp.net',
+        sender_name: 'Carol',
+        content: 'Concluir T5 agora',
+      };
+      expect(taskMutationEvidence(msg, [], true)).toBe(false);
+      expect(isReminderLikeWrite(msg.content)).toBe(false);
+    });
+
+    it('does let scheduled_tasks satisfy reminder-like writes', () => {
+      const msg = {
+        sender: 'carol@s.whatsapp.net',
+        sender_name: 'Carol',
+        content: 'Me lembre de cobrar o João amanhã às 8h',
+      };
+      expect(taskMutationEvidence(msg, [], true)).toBe(true);
+      expect(isReminderLikeWrite(msg.content)).toBe(true);
+    });
+
+    it('prefers exact send_message_log correlation over unrelated sends in the same time window', () => {
+      expect(
+        crossGroupSendEvidence(
+          'msg-1',
+          [
+            { trigger_message_id: 'msg-2', trigger_turn_id: null },
+          ],
+          {},
+        ),
+      ).toBe(false);
+      expect(
+        crossGroupSendEvidence(
+          'msg-1',
+          [
+            { trigger_message_id: null, trigger_turn_id: 'turn-2' },
+          ],
+          { 'turn-2': ['msg-2'] },
+        ),
+      ).toBe(false);
+      expect(
+        crossGroupSendEvidence(
+          'msg-1',
+          [
+            { trigger_message_id: null, trigger_turn_id: 'turn-1' },
+          ],
+          { 'turn-1': ['msg-1', 'msg-3'] },
+        ),
+      ).toBe(true);
+    });
+  });
+
   describe('drift detection', () => {
     const scriptPath = path.join(import.meta.dirname, 'auditor-script.sh');
     const script = fs.readFileSync(scriptPath, 'utf-8');
+    const promptPath = path.join(import.meta.dirname, 'auditor-prompt.txt');
+    const prompt = fs.readFileSync(promptPath, 'utf-8');
 
     it('auditor-script.sh contains the same DM_SEND_PATTERNS as this test', () => {
       // Byte-identical check includes the trailing `/i` flag — dropping
@@ -627,21 +903,49 @@ describe('auditor DM-send detection', () => {
       // scheduled_tasks for reminders, send_message_log for cross-group
       // DM deliveries.
       expect(script).toMatch(
-        /if\s*\(\s*isWrite\s*\)\s*\{[\s\S]*?taskHistoryStmt\.all[\s\S]*?scheduledTasksStmt\.get[\s\S]*?sendMessageLogStmt\.get/,
+        /if\s*\(\s*isWrite\s*\)\s*\{[\s\S]*?taskHistoryStmt\.all[\s\S]*?scheduledTasksStmt\.get[\s\S]*?sendMessageLogStmt\.all/,
       );
       // Both scheduledTasksStmt AND sendMessageLogStmt must be prepared
       // against msgDb (messages.db), not tfDb.
       expect(script).toMatch(/const scheduledTasksStmt = msgDb\.prepare\(/);
       expect(script).toMatch(/const sendMessageLogStmt = msgDb\.prepare\(/);
+      expect(script).toMatch(/const sendMessageTurnMatchStmt =/);
+      // task_history query must include the `by` column so same-user
+      // attribution is possible.
+      expect(script).toMatch(/SELECT board_id, action, task_id, by, at FROM task_history/);
       // Upper bound must be `<=` to match task_history's boundary
       // convention (Codex LOW, 2026-04-11).
       expect(script).toMatch(/FROM scheduled_tasks\s+WHERE group_folder = \?\s+AND created_at >= \? AND created_at <= \?/);
       expect(script).toMatch(/FROM send_message_log\s+WHERE source_group_folder = \?\s+AND delivered_at >= \? AND delivered_at <= \?/);
       // Split mutationFound: task writes only satisfy via
-      // task_history/scheduled_tasks; shared-vocab writes can also be
-      // satisfied by send_message_log.
+      // sender/task-matched task_history or reminder-like scheduled_tasks;
+      // shared-vocab writes can also be satisfied by send_message_log.
       expect(script).toMatch(
-        /taskMutationFound\s*=\s*mutations\.length\s*>\s*0\s*\|\|\s*scheduledTaskCreated/,
+        /const matchingMutations = mutations\.filter/,
+      );
+      expect(script).toMatch(
+        /normalizeForCompare\(mutation\.by\)\s*===\s*actorKey/,
+      );
+      expect(script).toMatch(
+        /buildTaskIdAliases\(/,
+      );
+      expect(script).toMatch(
+        /const scheduledTaskCreated = reminderLikeWrite &&/,
+      );
+      expect(script).toMatch(
+        /taskMutationFound\s*=\s*matchingMutations\.length\s*>\s*0\s*\|\|\s*scheduledTaskCreated/,
+      );
+      expect(script).toMatch(
+        /const sendLogs = sendMessageLogStmt\.all/,
+      );
+      expect(script).toMatch(
+        /const directMessageMatch = hasSendMessageTriggerMessageId &&/,
+      );
+      expect(script).toMatch(
+        /const turnMembershipMatch = !directMessageMatch &&/,
+      );
+      expect(script).toMatch(
+        /const hasAnyExactCorrelation = sendLogs\.some/,
       );
       expect(script).toMatch(
         /mutationFound\s*=\s*isTaskWrite\s*\?\s*taskMutationFound\s*:\s*\(taskMutationFound\s*\|\|\s*crossGroupSendLogged\)/,
@@ -659,8 +963,51 @@ describe('auditor DM-send detection', () => {
       expect(body).toMatch(/\bisRead\b/);
       expect(body).toMatch(/\bisIntent\b/);
       expect(body).toMatch(/\bisDmSend\b/);
+      expect(body).toMatch(/\btaskRefs\b/);
+      expect(body).toMatch(/\breminderLikeWrite\b/);
       expect(body).toMatch(/\btaskMutationFound\b/);
       expect(body).toMatch(/\bcrossGroupSendLogged\b/);
+      expect(body).toMatch(/\bsourceMessageId\b/);
+      expect(body).toMatch(/\bbotResponseMessageId\b/);
+    });
+
+    it('auditor-script.sh nulls bot attribution when another user speaks before the reply', () => {
+      const attributionBlock = script.match(
+        /\/\/ Find bot response within 10 minutes[\s\S]{0,2200}?const isWrite = isWriteRequest\(msg\.content\);/,
+      );
+      expect(attributionBlock, 'response attribution block not found').not.toBeNull();
+      const body = attributionBlock![0];
+
+      expect(script).toContain('function interactionSenderKey(');
+      expect(body).toContain('let interleavedUserBeforeReply = false');
+      expect(body).toMatch(/interactionSenderKey\(msg\)/);
+      expect(body).toMatch(/interactionSenderKey\(next\)\s*!==\s*headKey/);
+      expect(body).toMatch(/botResponse\s*=\s*null/);
+    });
+
+    it('auditor-script.sh emits interleavedUserBeforeReply in flagged interactions', () => {
+      const pushBlock = script.match(/interactions\.push\(\{[\s\S]*?\}\);/);
+      expect(pushBlock, 'interactions.push block not found').not.toBeNull();
+      expect(pushBlock![0]).toMatch(/\binterleavedUserBeforeReply\b/);
+    });
+
+    it('auditor-script.sh prefers exact trigger_turn_id correlation for self-corrections, with legacy fallback', () => {
+      expect(script).toContain("const hasTaskHistoryTriggerTurnId = taskHistoryColumns.has('trigger_turn_id')");
+      expect(script).toContain('const exactTurnMessagesStmt = hasAgentTurnMessages');
+      expect(script).toContain('FROM agent_turn_messages atm');
+      expect(script).toContain('pair.second_trigger_turn_id && exactTurnMessagesStmt');
+      expect(script).toContain('resolveExactTurnMessages(');
+      expect(script).toContain('if (!exactTrigger && displayName)');
+      expect(script).toContain('triggerTurnId: exactTrigger ? exactTrigger.triggerTurnId : null');
+      expect(script).toContain('triggerMessageIds: exactTrigger');
+    });
+
+    it('auditor-prompt.txt tells the reviewer to emit correlation refs when available', () => {
+      expect(prompt).toContain('sourceMessageId');
+      expect(prompt).toContain('botResponseMessageId');
+      expect(prompt).toContain('triggerTurnId');
+      expect(prompt).toContain('triggerMessageIds');
+      expect(prompt).toContain('_Refs:');
     });
 
     for (const [name, pattern] of [

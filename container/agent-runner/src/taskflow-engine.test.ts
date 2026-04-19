@@ -1440,6 +1440,27 @@ describe('TaskflowEngine', () => {
       expect(details.title).toBe('History test');
     });
 
+    it('records trigger_turn_id in history when present', () => {
+      const engineWithTurn = new TaskflowEngine(db, BOARD_ID, {
+        triggerTurnId: 'turn-123',
+      });
+
+      engineWithTurn.create({
+        board_id: BOARD_ID,
+        type: 'inbox',
+        title: 'Turn-bound history test',
+        sender_name: 'Alexandre',
+      });
+
+      const history = db
+        .prepare(
+          `SELECT trigger_turn_id FROM task_history WHERE board_id = ? AND task_id = 'T4'`,
+        )
+        .all(BOARD_ID) as Array<{ trigger_turn_id: string | null }>;
+      expect(history).toHaveLength(1);
+      expect(history[0].trigger_turn_id).toBe('turn-123');
+    });
+
     it('increments task number', () => {
       const r1 = engine.create({
         board_id: BOARD_ID,

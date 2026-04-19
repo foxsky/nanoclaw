@@ -4,6 +4,7 @@ import path from 'path';
 
 import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
 import { logger } from './logger.js';
+import { AgentTurnContext } from './types.js';
 
 interface QueuedTask {
   id: string;
@@ -76,6 +77,13 @@ export class GroupQueue {
 
     if (state.active) {
       state.pendingMessages = true;
+      if (state.idleWaiting) {
+        logger.debug(
+          { groupJid },
+          'Container idle, closing so queued messages become a fresh exact turn',
+        );
+        this.closeStdin(groupJid);
+      }
       logger.debug({ groupJid }, 'Container active, message queued');
       return;
     }
@@ -201,6 +209,10 @@ export class GroupQueue {
     }
     if (state.pendingTasks.length > 0) {
       this.closeStdin(groupJid);
+      return;
+    }
+    if (state.pendingMessages) {
+      this.closeStdin(groupJid);
     }
   }
 
@@ -208,7 +220,11 @@ export class GroupQueue {
    * Send a follow-up message to the active container via IPC file.
    * Returns true if the message was written, false if no active container.
    */
-  sendMessage(groupJid: string, text: string): boolean {
+  sendMessage(
+    groupJid: string,
+    text: string,
+    turnContext?: AgentTurnContext,
+  ): boolean {
     const state = this.getGroup(groupJid);
     if (!state.active) {
       logger.debug({ groupJid }, 'sendMessage: no active container');
@@ -228,7 +244,14 @@ export class GroupQueue {
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
       const filepath = path.join(state.inputDir, filename);
       const tempPath = `${filepath}.tmp`;
-      fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
+      fs.writeFileSync(
+        tempPath,
+        JSON.stringify({
+          type: 'message',
+          text,
+          turnContext: turnContext ?? undefined,
+        }),
+      );
       fs.renameSync(tempPath, filepath);
       return true;
     } catch (err) {

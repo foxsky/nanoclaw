@@ -34,6 +34,7 @@ Para cada interação flaggeada, classifique como:
    - 🔴 *Correção de erro do bot* — a segunda mensagem do usuário usa data explícita (DD/MM, DD/MM/YYYY) para consertar uma resolução errada. Ex.: primeira _"M1 reagendada para 17/04"_, trigger da segunda _"M1 alterar data para 16/04/26 às 11h"_. A mudança de padrão (natural → explícito) é o tell.
    - ⚪ *Iteração legítima* — usuário adicionou/ajustou informação (novo horário, novo prazo combinado com o time), não corrigiu erro do bot. Ex.: primeira _"prazo 15/04"_, depois _"mudar prazo para 20/04, combinei com Maria"_.
    - Se `triggerMessage` é null (não achamos a mensagem disparadora), reporte como ⚪ com nota "sem contexto de mensagem — investigar manualmente".
+   - Quando houver metadados de correlação (`sourceMessageId`, `botResponseMessageId`, `triggerTurnId`, `triggerMessageIds`), **inclua uma linha curta de referência** no item correspondente, no formato `_Refs: ..._`. Isso serve para investigação manual posterior; não invente IDs ausentes.
 
    Formato: liste logo após a seção de interações do quadro, numa sub-seção _"*Auto-correções detectadas:*"_, uma linha por par.
 
@@ -49,6 +50,7 @@ Para cada interação:
 {emoji} *{classificação}*: {descrição breve}
 > _{mensagem do usuário (truncada)}_
 {análise em 1-2 frases}
+{linha opcional `_Refs: msg ... | resp ...` quando os IDs existirem}
 
 Auto-correções detectadas (quando houver) aparecem logo após as interações do quadro. Nada mais depois disso — o host cuida de anexar qualquer seção de candidatos semânticos.
 

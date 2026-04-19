@@ -35,6 +35,9 @@ export interface SemanticDeviation {
   at: string;
   by: string;
   userMessage: string | null;
+  sourceTurnId?: string | null;
+  sourceMessageIds?: string[] | null;
+  responseMessageId?: string | null;
   storedValue: string | null;
   responsePreview: string | null;
   intentMatches: boolean;
@@ -450,11 +453,191 @@ function interactionSenderKey(msg: {
   return `name:${(msg.sender_name ?? '').trim()}`;
 }
 
+function normalizeForCompare(text: string | null | undefined): string {
+  return String(text ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function isWebOriginMessage(msg: {
+  sender?: string | null;
+  sender_name?: string | null;
+}): boolean {
+  const sender = msg.sender ?? '';
+  const senderName = msg.sender_name ?? '';
+  return sender.startsWith('web:') || senderName.startsWith('web:');
+}
+
+interface ExactTurnMessageRow {
+  message_id: string;
+  content: string | null;
+  timestamp: string;
+  sender_name: string | null;
+  sender: string | null;
+  ordinal: number;
+}
+
+function resolveExactTurnTrigger(
+  turnMessages: ExactTurnMessageRow[],
+  preferredActors: Array<string | null | undefined>,
+): {
+  userMessage: string | null;
+  messageTimestamp: string | null;
+  userDisplayName: string | null;
+  userMessageIds: string[] | null;
+} {
+  const visible = turnMessages.filter(
+    (message) =>
+      !!message.content &&
+      !isWebOriginMessage(message),
+  );
+  if (visible.length === 0) {
+    return {
+      userMessage: null,
+      messageTimestamp: null,
+      userDisplayName: null,
+      userMessageIds: null,
+    };
+  }
+
+  let selected = visible;
+  for (const actor of preferredActors) {
+    const actorKey = normalizeForCompare(actor);
+    if (!actorKey) continue;
+    const matched = visible.filter((message) => {
+      const senderName = normalizeForCompare(message.sender_name);
+      const sender = normalizeForCompare(message.sender);
+      return senderName === actorKey || sender === actorKey;
+    });
+    if (matched.length > 0) {
+      selected = matched;
+      break;
+    }
+  }
+
+  const senderKeys = new Set(selected.map((message) => interactionSenderKey(message)));
+  const sameSender = senderKeys.size <= 1;
+  const userMessage = sameSender
+    ? selected.map((message) => message.content!.trim()).join('\n')
+    : selected
+        .map((message) => {
+          const senderLabel =
+            message.sender_name?.trim() ||
+            message.sender?.trim() ||
+            'desconhecido';
+          return `[${senderLabel}] ${message.content!.trim()}`;
+        })
+        .join('\n');
+  const lastMessage = selected[selected.length - 1];
+  const userDisplayName =
+    sameSender
+      ? lastMessage.sender_name?.trim() || lastMessage.sender?.trim() || null
+      : null;
+
+  return {
+    userMessage,
+    messageTimestamp: lastMessage.timestamp,
+    userDisplayName,
+    userMessageIds: selected.map((message) => message.message_id),
+  };
+}
+
+interface ExactBotResponseRow {
+  id: string;
+  content: string;
+  timestamp: string;
+}
+
+function resolveBurstTurnId(
+  msgDb: BetterSqliteDB,
+  chatJid: string,
+  burstMessageIds: string[],
+): string | null {
+  if (burstMessageIds.length === 0 || !hasTable(msgDb, 'agent_turn_messages')) {
+    return null;
+  }
+  const placeholders = burstMessageIds.map(() => '?').join(', ');
+  const rows = msgDb
+    .prepare(
+      `SELECT turn_id, message_id
+       FROM agent_turn_messages
+       WHERE message_chat_jid = ?
+         AND message_id IN (${placeholders})`,
+    )
+    .all(chatJid, ...burstMessageIds) as Array<{
+      turn_id: string;
+      message_id: string;
+    }>;
+  if (rows.length !== burstMessageIds.length) return null;
+  const turnIds = [...new Set(rows.map((row) => row.turn_id))];
+  if (turnIds.length !== 1) return null;
+  const resolvedIds = new Set(rows.map((row) => row.message_id));
+  if (burstMessageIds.some((id) => !resolvedIds.has(id))) return null;
+  const turnId = turnIds[0];
+  const countRow = msgDb
+    .prepare(
+      `SELECT COUNT(*) AS n
+       FROM agent_turn_messages
+       WHERE turn_id = ?`,
+    )
+    .get(turnId) as { n: number } | undefined;
+  return countRow?.n === burstMessageIds.length ? turnId : null;
+}
+
+function findExactBotResponseForTurn(
+  msgDb: BetterSqliteDB,
+  turnId: string | null,
+  chatJid: string,
+): ExactBotResponseRow | null {
+  if (!turnId || !hasTable(msgDb, 'outbound_messages')) {
+    return null;
+  }
+  const outboundColumns = getTableColumns(msgDb, 'outbound_messages');
+  if (
+    !outboundColumns.has('trigger_turn_id') ||
+    !outboundColumns.has('delivered_message_id')
+  ) {
+    return null;
+  }
+  const row = msgDb
+    .prepare(
+      `SELECT
+         om.delivered_message_id AS id,
+         COALESCE(m.content, om.text) AS content,
+         COALESCE(m.timestamp, om.delivered_message_timestamp, om.sent_at) AS timestamp
+       FROM outbound_messages om
+       LEFT JOIN messages m
+         ON m.id = om.delivered_message_id
+        AND m.chat_jid = om.chat_jid
+       WHERE om.trigger_turn_id = ?
+         AND om.chat_jid = ?
+         AND om.source = 'user'
+         AND om.sent_at IS NOT NULL
+         AND om.abandoned_at IS NULL
+         AND om.delivered_message_id IS NOT NULL
+       ORDER BY COALESCE(m.timestamp, om.delivered_message_timestamp, om.sent_at) ASC, om.id ASC
+       LIMIT 1`,
+    )
+    .get(turnId, chatJid) as
+    | { id: string | null; content: string | null; timestamp: string | null }
+    | undefined;
+  if (!row?.id || !row.content || !row.timestamp) return null;
+  return {
+    id: row.id,
+    content: row.content,
+    timestamp: row.timestamp,
+  };
+}
+
 export async function runSemanticAudit(
   args: RunSemanticAuditArgs,
 ): Promise<SemanticAuditResult> {
   const { msgDb, tfDb, period } = args;
   const ollama = resolveOllamaPolicy(args);
+  const taskHistoryColumns = getTableColumns(tfDb, 'task_history');
+  const hasTaskHistoryTriggerTurnId = taskHistoryColumns.has('trigger_turn_id');
 
   // Qualifying mutations: any action where the bot interpreted user intent and
   // stored a value that could be semantically wrong. Excludes note-only updates
@@ -467,7 +650,11 @@ export async function runSemanticAudit(
   //   - 'created' with scheduled_at or assignee (initial task creation)
   const mutationRows = tfDb
     .prepare(
-      `SELECT board_id AS boardId, task_id AS taskId, action, by, at, details
+      `SELECT board_id AS boardId, task_id AS taskId, action, by, at, details${
+        hasTaskHistoryTriggerTurnId
+          ? ', trigger_turn_id AS triggerTurnId'
+          : ', NULL AS triggerTurnId'
+      }
        FROM task_history
        WHERE at >= ? AND at < ?
          AND by IS NOT NULL
@@ -491,6 +678,7 @@ export async function runSemanticAudit(
       by: string;
       at: string;
       details: string;
+      triggerTurnId: string | null;
     }>;
 
   const counters: SemanticAuditCounters = {
@@ -544,8 +732,26 @@ export async function runSemanticAudit(
   const personStmt = tfDb.prepare(
     `SELECT name FROM board_people WHERE board_id = ? AND person_id = ? LIMIT 1`,
   );
+  const exactTurnMessagesStmt =
+    hasTable(msgDb, 'agent_turn_messages') && hasTable(msgDb, 'messages')
+      ? msgDb.prepare(
+          `SELECT
+             atm.message_id AS message_id,
+             m.content AS content,
+             COALESCE(m.timestamp, atm.message_timestamp) AS timestamp,
+             COALESCE(m.sender_name, atm.sender_name) AS sender_name,
+             COALESCE(m.sender, atm.sender) AS sender,
+             atm.ordinal AS ordinal
+           FROM agent_turn_messages atm
+           LEFT JOIN messages m
+             ON m.id = atm.message_id
+            AND m.chat_jid = atm.message_chat_jid
+           WHERE atm.turn_id = ?
+           ORDER BY atm.ordinal ASC`,
+        )
+      : null;
   const triggerStmt = msgDb.prepare(
-    `SELECT content, timestamp, sender_name FROM messages
+    `SELECT id, content, timestamp, sender_name FROM messages
      WHERE chat_jid = ? AND timestamp <= ? AND timestamp >= ?
        AND is_bot_message = 0 AND is_from_me = 0
        AND content IS NOT NULL AND content != ''
@@ -600,7 +806,7 @@ export async function runSemanticAudit(
     }
 
     const personRow = personStmt.get(row.boardId, row.by) as { name: string } | undefined;
-    const userDisplayName = personRow?.name ?? null;
+    let userDisplayName = personRow?.name ?? null;
 
     const candidateJids: string[] = [];
     const metaRow = boardMetaStmt?.get(row.boardId) as
@@ -628,18 +834,37 @@ export async function runSemanticAudit(
     const resolvedGroupJids = [...new Set(candidateJids)];
     let userMessage: string | null = null;
     let messageTimestamp: string | null = null;
+    let sourceTurnId: string | null = null;
+    let sourceMessageIds: string[] | null = null;
     if (resolvedGroupJids.length === 0) {
       counters.boardMapFail++;
+    } else if (row.triggerTurnId && exactTurnMessagesStmt) {
+      const exactTurnMessages = exactTurnMessagesStmt.all(row.triggerTurnId) as ExactTurnMessageRow[];
+      const exactTrigger = resolveExactTurnTrigger(exactTurnMessages, [
+        userDisplayName,
+        row.by,
+      ]);
+      if (exactTrigger.userMessage) {
+        userMessage = exactTrigger.userMessage;
+        messageTimestamp = exactTrigger.messageTimestamp;
+        userDisplayName = userDisplayName ?? exactTrigger.userDisplayName;
+        sourceTurnId = row.triggerTurnId;
+        sourceMessageIds = exactTrigger.userMessageIds;
+      } else {
+        counters.noTrigger++;
+      }
     } else if (userDisplayName) {
       const windowStart = new Date(new Date(row.at).getTime() - 600_000).toISOString();
       // LIKE-wildcard escape + triggerStmt query shape must stay in sync with
       // the self-correction detector in auditor-script.sh (~L420, L552).
       const escaped = userDisplayName.replace(/[\\%_]/g, (c) => '\\' + c);
       const likeName = `%${escaped}%`;
-      let trigger: { content: string; timestamp: string; sender_name: string } | undefined;
+      let trigger:
+        | { id: string; content: string; timestamp: string; sender_name: string }
+        | undefined;
       for (const groupJid of resolvedGroupJids) {
         const tr = triggerStmt.get(groupJid, row.at, windowStart, likeName) as
-          | { content: string; timestamp: string; sender_name: string }
+          | { id: string; content: string; timestamp: string; sender_name: string }
           | undefined;
         if (tr && (!trigger || tr.timestamp > trigger.timestamp)) {
           trigger = tr;
@@ -648,6 +873,7 @@ export async function runSemanticAudit(
       if (trigger) {
         userMessage = trigger.content;
         messageTimestamp = trigger.timestamp;
+        sourceMessageIds = [trigger.id];
       } else {
         counters.noTrigger++;
       }
@@ -710,6 +936,9 @@ export async function runSemanticAudit(
       at: row.at,
       by: row.by,
       userMessage,
+      sourceTurnId,
+      sourceMessageIds,
+      responseMessageId: null,
       storedValue,
       responsePreview: null,
       intentMatches: parsed.intentMatches,
@@ -861,7 +1090,7 @@ export async function runResponseAudit(
      ORDER BY timestamp ASC`,
   );
   const botRespStmt = msgDb.prepare(
-    `SELECT content, timestamp FROM messages
+    `SELECT id, content, timestamp FROM messages
      WHERE chat_jid = ? AND timestamp > ? AND timestamp <= ?
        AND (is_bot_message = 1 OR is_from_me = 1)
        AND content IS NOT NULL AND content != ''
@@ -906,31 +1135,52 @@ export async function runResponseAudit(
     // detail" sequences drop everything after msg 1 (decisive intent often
     // lives in msg 2 or 3).
     for (let i = 0; i < userMessages.length; i++) {
+      const headIndex = i;
       const head = userMessages[i];
       if (isWebOrigin(head)) continue;
 
       const headKey = interactionSenderKey(head);
       const tenMinLater = new Date(new Date(head.timestamp).getTime() + 600_000).toISOString();
-      const botResp = botRespStmt.get(group.jid, head.timestamp, tenMinLater) as
-        | { content: string; timestamp: string }
-        | undefined;
       const burst = [head];
-      const burstCutoff = botResp?.timestamp ?? tenMinLater;
-      let interleavedUserBeforeReply = false;
       let j = i + 1;
       for (; j < userMessages.length; j++) {
         const next = userMessages[j];
-        if (next.timestamp >= burstCutoff) break;
+        if (next.timestamp >= tenMinLater) break;
         if (isWebOrigin(next)) continue;
-        if (interactionSenderKey(next) !== headKey) {
-          interleavedUserBeforeReply = true;
-          break;
-        }
+        if (interactionSenderKey(next) !== headKey) break;
         burst.push(next);
       }
       i = j - 1;
 
-      if (!botResp || interleavedUserBeforeReply) {
+      const burstTurnId = resolveBurstTurnId(
+        msgDb,
+        group.jid,
+        burst.map((message) => message.id),
+      );
+      const exactBotResp = findExactBotResponseForTurn(msgDb, burstTurnId, group.jid);
+      let botResp = exactBotResp;
+      if (!botResp) {
+        const fallbackBotResp = botRespStmt.get(group.jid, head.timestamp, tenMinLater) as
+          | { id: string; content: string; timestamp: string }
+          | undefined;
+        if (fallbackBotResp) {
+          let interleavedUserBeforeReply = false;
+          for (let k = headIndex + 1; k < userMessages.length; k++) {
+            const next = userMessages[k];
+            if (next.timestamp >= fallbackBotResp.timestamp) break;
+            if (isWebOrigin(next)) continue;
+            if (interactionSenderKey(next) !== headKey) {
+              interleavedUserBeforeReply = true;
+              break;
+            }
+          }
+          if (!interleavedUserBeforeReply) {
+            botResp = fallbackBotResp;
+          }
+        }
+      }
+
+      if (!botResp) {
         counters.skippedNoResponse++;
         continue;
       }
@@ -980,6 +1230,9 @@ export async function runResponseAudit(
           at: botResp.timestamp,
           by: head.sender_name,
           userMessage: burstContent,
+          sourceTurnId: burstTurnId,
+          sourceMessageIds: burst.map((message) => message.id),
+          responseMessageId: botResp.id,
           storedValue: null,
           // Store the exact excerpt the LLM judged so operator review uses
           // the same evidence.

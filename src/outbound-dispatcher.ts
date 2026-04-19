@@ -169,12 +169,22 @@ export class OutboundDispatcher {
       );
     }
     try {
-      await withTimeout(
-        channel.sendMessage(row.chat_jid, row.text, row.sender_label ?? undefined),
+      const sendPromise = channel.sendMessageWithReceipt
+        ? channel.sendMessageWithReceipt(
+            row.chat_jid,
+            row.text,
+            row.sender_label ?? undefined,
+            { outboundMessageId: row.id },
+          )
+        : channel
+            .sendMessage(row.chat_jid, row.text, row.sender_label ?? undefined)
+            .then(() => undefined);
+      const receipt = await withTimeout(
+        sendPromise,
         budget,
         'sendMessage timed out',
       );
-      markOutboundSent(row.id);
+      markOutboundSent(row.id, receipt ?? undefined);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const result = markOutboundAttemptFailed(row.id, msg, ABANDON_AFTER_ATTEMPTS);

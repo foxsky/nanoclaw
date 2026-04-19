@@ -5,7 +5,8 @@
  * Input protocol:
  *   Stdin: Full ContainerInput JSON (read until EOF, like before)
  *   IPC:   Follow-up messages written as JSON files to /workspace/ipc/input/
- *          Files: {type:"message", text:"..."}.json — polled and consumed
+ *          Files: {type:"message", text:"...", turnContext?:{turnId:"..."}}.json
+ *                 — polled and consumed
  *          Sentinel: /workspace/ipc/input/_close — signals session end
  *
  * Stdout protocol:
@@ -74,6 +75,27 @@ interface SDKUserMessage {
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
+
+interface IpcInputMessage {
+  text: string;
+  turnContext?: ContainerInput['turnContext'];
+}
+
+function getTurnId(
+  turnContext: ContainerInput['turnContext'] | undefined,
+): string | undefined {
+  return turnContext?.turnId;
+}
+
+function isValidTurnContext(
+  value: unknown,
+): value is NonNullable<ContainerInput['turnContext']> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as Record<string, unknown>).turnId === 'string'
+  );
+}
 
 /**
  * Push-based async iterable for streaming user messages to the SDK.
@@ -328,26 +350,37 @@ function shouldClose(): boolean {
   return false;
 }
 
-/**
- * Drain all pending IPC input messages.
- * Returns messages found, or empty array.
- */
-function drainIpcInput(): string[] {
+function readIpcInputBatch(): IpcInputMessage[] {
   try {
     fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
     const files = fs.readdirSync(IPC_INPUT_DIR)
       .filter(f => f.endsWith('.json'))
       .sort();
 
-    const messages: string[] = [];
+    const messages: IpcInputMessage[] = [];
+    let selectedTurnId: string | undefined;
     for (const file of files) {
       const filePath = path.join(IPC_INPUT_DIR, file);
       try {
         const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-        fs.unlinkSync(filePath);
         if (data.type === 'message' && data.text) {
-          messages.push(data.text);
+          const message: IpcInputMessage = {
+            text: data.text,
+            turnContext: isValidTurnContext(data.turnContext)
+              ? data.turnContext
+              : undefined,
+          };
+          const messageTurnId = getTurnId(message.turnContext);
+          if (messages.length > 0 && messageTurnId !== selectedTurnId) {
+            // Preserve later files for the next query instead of coalescing
+            // different turns into one prompt and attributing them to the
+            // last turn ID seen.
+            break;
+          }
+          selectedTurnId = messageTurnId;
+          messages.push(message);
         }
+        fs.unlinkSync(filePath);
       } catch (err) {
         log(`Failed to process input file ${file}: ${err instanceof Error ? err.message : String(err)}`);
         try { fs.unlinkSync(filePath); } catch { /* ignore */ }
@@ -364,16 +397,19 @@ function drainIpcInput(): string[] {
  * Wait for a new IPC message or _close sentinel.
  * Returns the messages as a single string, or null if _close.
  */
-function waitForIpcMessage(): Promise<string | null> {
+function waitForIpcMessage(): Promise<IpcInputMessage | null> {
   return new Promise((resolve) => {
     const poll = () => {
       if (shouldClose()) {
         resolve(null);
         return;
       }
-      const messages = drainIpcInput();
+      const messages = readIpcInputBatch();
       if (messages.length > 0) {
-        resolve(messages.join('\n'));
+        resolve({
+          text: messages.map((message) => message.text).join('\n'),
+          turnContext: messages[messages.length - 1]?.turnContext,
+        });
         return;
       }
       setTimeout(poll, IPC_POLL_MS);
@@ -444,11 +480,6 @@ async function runQuery(
       stream.end();
       ipcPolling = false;
       return;
-    }
-    const messages = drainIpcInput();
-    for (const text of messages) {
-      log(`Piping IPC message into active query (${text.length} chars)`);
-      stream.push(text);
     }
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
   };
@@ -658,10 +689,12 @@ async function main(): Promise<void> {
   if (containerInput.isScheduledTask) {
     prompt = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${prompt}`;
   }
-  const pending = drainIpcInput();
+  const pending = readIpcInputBatch();
   if (pending.length > 0) {
     log(`Draining ${pending.length} pending IPC messages into initial prompt`);
-    prompt += '\n' + pending.join('\n');
+    containerInput.turnContext =
+      pending[pending.length - 1]?.turnContext ?? containerInput.turnContext;
+    prompt += '\n' + pending.map((message) => message.text).join('\n');
   }
 
   // Build context preamble from embeddings (if available)
@@ -920,8 +953,9 @@ async function main(): Promise<void> {
         break;
       }
 
-      log(`Got new message (${nextMessage.length} chars), starting new query`);
-      prompt = nextMessage;
+      log(`Got new message (${nextMessage.text.length} chars), starting new query`);
+      prompt = nextMessage.text;
+      containerInput.turnContext = nextMessage.turnContext;
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);

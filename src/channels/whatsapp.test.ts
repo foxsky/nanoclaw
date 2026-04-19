@@ -34,6 +34,8 @@ vi.mock('../logger.js', () => ({
 // Mock db
 vi.mock('../db.js', () => ({
   getLastGroupSync: vi.fn(() => null),
+  reconcileOutboundReceiptByEcho: vi.fn(),
+  recordOutboundReceipt: vi.fn(),
   setLastGroupSync: vi.fn(),
   updateChatName: vi.fn(),
 }));
@@ -77,7 +79,7 @@ function createFakeSocket() {
       id: '1234567890:1@s.whatsapp.net',
       lid: '9876543210:1@lid',
     },
-    sendMessage: vi.fn().mockResolvedValue(undefined),
+    sendMessage: vi.fn().mockResolvedValue({ key: { id: 'wa-msg-default' } }),
     sendPresenceUpdate: vi.fn().mockResolvedValue(undefined),
     groupFetchAllParticipating: vi.fn().mockResolvedValue({}),
     // end() removes listeners to simulate real socket teardown —
@@ -121,7 +123,13 @@ vi.mock('@whiskeysockets/baileys', () => {
 });
 
 import { WhatsAppChannel, WhatsAppChannelOpts } from './whatsapp.js';
-import { getLastGroupSync, updateChatName, setLastGroupSync } from '../db.js';
+import {
+  getLastGroupSync,
+  reconcileOutboundReceiptByEcho,
+  recordOutboundReceipt,
+  updateChatName,
+  setLastGroupSync,
+} from '../db.js';
 import { transcribeAudioMessage } from '../transcription.js';
 
 // --- Test helpers ---
@@ -843,6 +851,36 @@ describe('WhatsAppChannel', () => {
       expect(message.is_from_me).toBe(true);
     });
 
+    it('reconciles unresolved outbound rows from a bot self-echo when send receipt was missing', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await triggerMessages(
+        [
+          {
+            key: {
+              id: 'msg-self-echo-reconcile',
+              remoteJid: 'registered@g.us',
+              fromMe: true,
+            },
+            message: { conversation: 'Andy: Confirmação enviada sem recibo' },
+            pushName: 'Andy',
+            messageTimestamp: Math.floor(Date.now() / 1000),
+          },
+        ],
+        'append',
+      );
+
+      expect(reconcileOutboundReceiptByEcho).toHaveBeenCalledWith({
+        chatJid: 'registered@g.us',
+        text: 'Andy: Confirmação enviada sem recibo',
+        messageId: 'msg-self-echo-reconcile',
+        timestamp: expect.any(String),
+      });
+    });
+
     it('uses sender JID when pushName is absent', async () => {
       const opts = createTestOpts();
       const channel = new WhatsAppChannel(opts);
@@ -1024,6 +1062,35 @@ describe('WhatsAppChannel', () => {
 
       // Should not throw, message queued for retry
       // The queue should have the message
+    });
+
+    it('backfills the outbound receipt when a disconnected queued send flushes later', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      fakeSocket.sendMessage.mockResolvedValueOnce({
+        key: { id: 'wa-msg-flushed-1' },
+      });
+
+      await channel.sendMessageWithReceipt?.(
+        'test@g.us',
+        'Queued with receipt',
+        undefined,
+        { outboundMessageId: 42 },
+      );
+
+      expect(fakeSocket.sendMessage).not.toHaveBeenCalled();
+
+      await connectChannel(channel);
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(fakeSocket.sendMessage).toHaveBeenCalledWith('test@g.us', {
+        text: 'Andy: Queued with receipt',
+      });
+      expect(recordOutboundReceipt).toHaveBeenCalledWith(42, {
+        messageId: 'wa-msg-flushed-1',
+        timestamp: expect.any(String),
+      });
     });
 
     it('flushes multiple queued messages in order', async () => {

@@ -160,6 +160,10 @@ const handleProvisionRootBoard: IpcHandler = async (
     typeof data.group_context === 'string'
       ? data.group_context.trim()
       : `${subject} task board`;
+  const triggerTurnId =
+    typeof data.turnId === 'string' && data.turnId.trim()
+      ? data.turnId.trim()
+      : null;
 
   // --- 4. Compute folder and board ID ---
   let groupFolder =
@@ -197,6 +201,12 @@ const handleProvisionRootBoard: IpcHandler = async (
     const existingBoard = tfDb
       .prepare('SELECT 1 FROM boards WHERE id = ? OR short_code = ?')
       .get(boardId, shortCode);
+
+    try {
+      tfDb.exec(`ALTER TABLE task_history ADD COLUMN trigger_turn_id TEXT`);
+    } catch {
+      // Existing DBs may already have the column.
+    }
 
     if (existingBoard) {
       logger.warn(
@@ -307,7 +317,7 @@ const handleProvisionRootBoard: IpcHandler = async (
 
       tfDb
         .prepare(
-          'INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES (?, ?, ?, ?, ?, ?)',
+          'INSERT INTO task_history (board_id, task_id, action, by, at, details, trigger_turn_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
         )
         .run(
           boardId,
@@ -316,6 +326,7 @@ const handleProvisionRootBoard: IpcHandler = async (
           personId,
           now,
           JSON.stringify({ board_id: boardId, short_code: shortCode }),
+          triggerTurnId,
         );
     });
 

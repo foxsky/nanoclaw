@@ -75,6 +75,10 @@ const handleProvisionChildBoard: IpcHandler = async (
     typeof data.short_code === 'string'
       ? data.short_code.trim().toUpperCase()
       : null;
+  const triggerTurnId =
+    typeof data.turnId === 'string' && data.turnId.trim()
+      ? data.turnId.trim()
+      : null;
 
   if (!personId || !personName || !personPhone || !personRole) {
     logger.warn(
@@ -97,6 +101,12 @@ const handleProvisionChildBoard: IpcHandler = async (
     const parentBoard = tfDb
       .prepare('SELECT * FROM boards WHERE group_folder = ?')
       .get(sourceGroup) as BoardRow | undefined;
+
+    try {
+      tfDb.exec(`ALTER TABLE task_history ADD COLUMN trigger_turn_id TEXT`);
+    } catch {
+      // Existing DBs may already have the column.
+    }
 
     if (!parentBoard) {
       logger.warn(
@@ -525,7 +535,7 @@ const handleProvisionChildBoard: IpcHandler = async (
 
       tfDb
         .prepare(
-          'INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES (?, ?, ?, ?, ?, ?)',
+          'INSERT INTO task_history (board_id, task_id, action, by, at, details, trigger_turn_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
         )
         .run(
           parentBoard.id,
@@ -538,6 +548,7 @@ const handleProvisionChildBoard: IpcHandler = async (
             person_id: personId,
             auto_provisioned: true,
           }),
+          triggerTurnId,
         );
     });
 

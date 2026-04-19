@@ -73,4 +73,22 @@ describe('agent-runner runtime config', () => {
       NANOCLAW_IS_TASKFLOW_MANAGED: '0',
     });
   });
+
+  it('passes through the host-issued turn ID when present', () => {
+    expect(
+      buildNanoclawMcpEnv({
+        prompt: 'test',
+        groupFolder: 'plain-group',
+        chatJid: '456@g.us',
+        isMain: false,
+        turnContext: { turnId: 'turn-123' },
+      }),
+    ).toEqual({
+      NANOCLAW_CHAT_JID: '456@g.us',
+      NANOCLAW_GROUP_FOLDER: 'plain-group',
+      NANOCLAW_IS_MAIN: '0',
+      NANOCLAW_IS_TASKFLOW_MANAGED: '0',
+      NANOCLAW_TURN_ID: 'turn-123',
+    });
+  });
 });

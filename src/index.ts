@@ -45,6 +45,7 @@ import {
 } from './container-runtime.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import {
+  createAgentTurn,
   countPendingOutbound,
   deleteRegisteredGroup,
   deleteSession,
@@ -79,7 +80,14 @@ import {
 import { getGroupSenderName } from './group-sender.js';
 import { parseImageReferences } from './image.js';
 import { startSchedulerLoop } from './task-scheduler.js';
-import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import {
+  Channel,
+  AgentTurnContext,
+  AgentTurnMessageRef,
+  NewMessage,
+  RegisteredGroup,
+  TriggerMessageContext,
+} from './types.js';
 import { logger } from './logger.js';
 import {
   restoreRemoteControl,
@@ -165,7 +173,11 @@ let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 const pendingExternalDmPrompts = new Map<
   string,
-  Array<{ timestamp: string; prompt: string }>
+  Array<{
+    timestamp: string;
+    prompt: string;
+    triggerMessage: TriggerMessageContext;
+  }>
 >();
 /** Highest DM timestamp that is staged but not yet consumed. */
 let stagedDmMaxTimestamp = '';
@@ -190,8 +202,16 @@ function enqueueAgentOutput(
   text: string,
   senderLabel: string | null,
   source: OutboundSource,
+  triggerTurnId?: string | null,
 ): void {
-  enqueueOutbound({ chatJid, groupFolder, text, senderLabel, source });
+  enqueueOutbound({
+    chatJid,
+    groupFolder,
+    text,
+    senderLabel,
+    source,
+    triggerTurnId: triggerTurnId ?? null,
+  });
   outboundDispatcher.wake();
 }
 
@@ -215,6 +235,20 @@ function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
       );
     },
   );
+}
+
+function toTriggerMessageContext(msg: NewMessage): TriggerMessageContext {
+  return {
+    messageId: msg.id,
+    chatJid: msg.chat_jid,
+    sender: msg.sender,
+    senderName: msg.sender_name,
+    timestamp: msg.timestamp,
+  };
+}
+
+function toAgentTurnMessageRef(msg: NewMessage): AgentTurnMessageRef {
+  return toTriggerMessageContext(msg);
 }
 
 function loadState(): void {
@@ -422,6 +456,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const pendingDms = pendingExternalDmPrompts.get(chatJid);
   if (pendingDms && pendingDms.length > 0) {
     const dmPrompt = pendingDms.map((p) => p.prompt).join('\n\n');
+    const turnContext: AgentTurnContext = {
+      turnId: createAgentTurn({
+        groupFolder: group.folder,
+        chatJid,
+        messages: pendingDms.map((pending) => pending.triggerMessage),
+      }).id,
+    };
     pendingExternalDmPrompts.delete(chatJid);
 
     // NOTE: Do NOT advance lastAgentTimestamp here. That cursor tracks
@@ -458,10 +499,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               text,
               getGroupSenderName(group.trigger),
               'user',
+              turnContext.turnId,
             );
           }
         }
       },
+      turnContext,
     );
 
     if (channel) await channel.setTyping?.(chatJid, false);
@@ -574,6 +617,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Derive group-specific sender name from trigger (e.g. "@Case" → "Case").
   // Falls back to global ASSISTANT_NAME for groups without a custom trigger.
   const groupSender = getGroupSenderName(group.trigger);
+  const turnContext: AgentTurnContext = {
+    turnId: createAgentTurn({
+      groupFolder: group.folder,
+      chatJid,
+      messages: missedMessages.map(toAgentTurnMessageRef),
+    }).id,
+  };
 
   const output = await runAgent(
     group,
@@ -600,6 +650,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               text,
               groupSender,
               'user',
+              turnContext.turnId,
             );
           }
           outputSentToUser = true;
@@ -621,6 +672,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         hadError = true;
       }
     },
+    turnContext,
   );
 
   await channel.setTyping?.(chatJid, false);
@@ -655,6 +707,7 @@ async function runAgent(
   chatJid: string,
   imageAttachments: Array<{ relativePath: string; mediaType: string }>,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  turnContext?: AgentTurnContext,
 ): Promise<'success' | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
   const persistedSessionId = sessions[group.folder];
@@ -720,6 +773,7 @@ async function runAgent(
         taskflowHierarchyLevel: group.taskflowHierarchyLevel,
         taskflowMaxDepth: group.taskflowMaxDepth,
         assistantName: getGroupSenderName(group.trigger),
+        turnContext,
         ...(imageAttachments.length > 0 && { imageAttachments }),
       },
       (proc, containerName) =>
@@ -879,26 +933,11 @@ async function startMessageLoop(): Promise<void> {
           // re-sending already-processed messages and rolling the cursor back.
           if (allPending.length === 0) continue;
 
-          const formatted = formatMessages(allPending, TIMEZONE);
-
-          if (queue.sendMessage(chatJid, formatted)) {
-            logger.debug(
-              { chatJid, count: allPending.length },
-              'Piped messages to active container',
-            );
-            lastAgentTimestamp[chatJid] =
-              allPending[allPending.length - 1].timestamp;
-            saveState();
-            // Show typing indicator while the container processes the piped message
-            channel
-              .setTyping?.(chatJid, true)
-              ?.catch((err) =>
-                logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
-              );
-          } else {
-            // No active container — enqueue for a new one
-            queue.enqueueMessageCheck(chatJid);
-          }
+          logger.debug(
+            { chatJid, count: allPending.length },
+            'Queued follow-up messages for the next exact-correlation turn',
+          );
+          queue.enqueueMessageCheck(chatJid);
         }
       }
 
@@ -956,31 +995,22 @@ async function startMessageLoop(): Promise<void> {
             const formatted = formatMessages([msg], TIMEZONE);
             const externalContext = `[External participant: ${route.displayName} (${route.externalId}), active grants: ${route.grants.map((g) => g.meetingTaskId).join(', ')}]\n${formatted}`;
 
-            // Try piping to active container first.
-            if (queue.sendMessage(groupJid, externalContext)) {
-              if (!hitStagedDm) safeDmCursor = msg.timestamp;
-              logger.info(
-                { dmJid: msg.chat_jid, groupJid },
-                'DM piped to active container',
-              );
-            } else {
-              // No active container — stage prompt and enqueue for trigger-bypassed processing
-              const staged = pendingExternalDmPrompts.get(groupJid) ?? [];
-              staged.push({
-                timestamp: msg.timestamp,
-                prompt: externalContext,
-              });
-              pendingExternalDmPrompts.set(groupJid, staged);
-              hitStagedDm = true;
-              if (msg.timestamp > stagedDmMaxTimestamp) {
-                stagedDmMaxTimestamp = msg.timestamp;
-              }
-              queue.enqueueMessageCheck(groupJid);
-              logger.info(
-                { dmJid: msg.chat_jid, groupJid },
-                'DM staged for trigger-bypassed processing and enqueued',
-              );
+            const staged = pendingExternalDmPrompts.get(groupJid) ?? [];
+            staged.push({
+              timestamp: msg.timestamp,
+              prompt: externalContext,
+              triggerMessage: toTriggerMessageContext(msg),
+            });
+            pendingExternalDmPrompts.set(groupJid, staged);
+            hitStagedDm = true;
+            if (msg.timestamp > stagedDmMaxTimestamp) {
+              stagedDmMaxTimestamp = msg.timestamp;
             }
+            queue.enqueueMessageCheck(groupJid);
+            logger.info(
+              { dmJid: msg.chat_jid, groupJid },
+              'DM staged for trigger-bypassed processing and enqueued',
+            );
             // Track max timestamp of ALL messages after a staged DM,
             // not just staged ones — prevents re-delivery of piped DMs
             if (hitStagedDm && msg.timestamp > stagedDmMaxTimestamp) {

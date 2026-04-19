@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { DATA_DIR } from './config.js';
 import {
   _initTestDatabase,
+  createAgentTurn,
   createTask,
   getAllTasks,
   getRegisteredGroup,
@@ -93,6 +94,19 @@ describe('schedule_task authorization', () => {
   });
 
   it('non-main group can schedule for itself', async () => {
+    const turn = createAgentTurn({
+      groupFolder: 'other-group',
+      chatJid: 'other@g.us',
+      messages: [
+        {
+          messageId: 'msg-101',
+          chatJid: 'other@g.us',
+          sender: '123@s.whatsapp.net',
+          senderName: 'Alice',
+          timestamp: '2026-04-19T10:00:00.000Z',
+        },
+      ],
+    });
     await processTaskIpc(
       {
         type: 'schedule_task',
@@ -100,6 +114,7 @@ describe('schedule_task authorization', () => {
         schedule_type: 'once',
         schedule_value: '2027-06-01T00:00:00',
         targetJid: 'other@g.us',
+        turnId: turn.id,
       },
       'other-group',
       false,
@@ -109,6 +124,9 @@ describe('schedule_task authorization', () => {
     const allTasks = getAllTasks();
     expect(allTasks.length).toBe(1);
     expect(allTasks[0].group_folder).toBe('other-group');
+    expect(allTasks[0].trigger_message_id).toBe('msg-101');
+    expect(allTasks[0].trigger_sender_name).toBe('Alice');
+    expect(allTasks[0].trigger_turn_id).toBe(turn.id);
   });
 
   it('non-main group cannot schedule for another group', async () => {
@@ -127,6 +145,41 @@ describe('schedule_task authorization', () => {
 
     const allTasks = getAllTasks();
     expect(allTasks.length).toBe(0);
+  });
+
+  it('ignores a foreign turn ID when scheduling a task', async () => {
+    const foreignTurn = createAgentTurn({
+      groupFolder: 'third-group',
+      chatJid: 'third@g.us',
+      messages: [
+        {
+          messageId: 'msg-foreign',
+          chatJid: 'third@g.us',
+          sender: '999@s.whatsapp.net',
+          senderName: 'Mallory',
+          timestamp: '2026-04-19T10:01:00.000Z',
+        },
+      ],
+    });
+
+    await processTaskIpc(
+      {
+        type: 'schedule_task',
+        prompt: 'self task',
+        schedule_type: 'once',
+        schedule_value: '2027-06-01T00:00:00',
+        targetJid: 'other@g.us',
+        turnId: foreignTurn.id,
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    const allTasks = getAllTasks();
+    expect(allTasks).toHaveLength(1);
+    expect(allTasks[0].trigger_turn_id).toBeNull();
+    expect(allTasks[0].trigger_message_id).toBeNull();
   });
 
   it('rejects schedule_task for unregistered target JID', async () => {

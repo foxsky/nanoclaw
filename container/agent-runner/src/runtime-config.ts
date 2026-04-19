@@ -1,3 +1,15 @@
+export interface TriggerMessageContext {
+  messageId: string;
+  chatJid: string;
+  sender: string;
+  senderName: string;
+  timestamp: string;
+}
+
+export interface AgentTurnContext {
+  turnId: string;
+}
+
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -15,6 +27,7 @@ export interface ContainerInput {
   queryVector?: string; // base64-encoded Float32Array
   ollamaHost?: string;
   embeddingModel?: string;
+  turnContext?: AgentTurnContext;
 }
 
 /**
@@ -68,6 +81,10 @@ export function buildNanoclawMcpEnv(
     NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
     NANOCLAW_IS_TASKFLOW_MANAGED: containerInput.isTaskflowManaged ? '1' : '0',
   };
+
+  if (containerInput.turnContext?.turnId) {
+    env.NANOCLAW_TURN_ID = containerInput.turnContext.turnId;
+  }
 
   if (containerInput.isTaskflowManaged && containerInput.taskflowBoardId) {
     env.NANOCLAW_TASKFLOW_BOARD_ID = containerInput.taskflowBoardId;

@@ -67,6 +67,35 @@ export interface NewMessage {
   reply_to_sender_name?: string;
 }
 
+export interface TriggerMessageContext {
+  messageId: string;
+  chatJid: string;
+  sender: string;
+  senderName: string;
+  timestamp: string;
+}
+
+export interface AgentTurnContext {
+  turnId: string;
+}
+
+export interface AgentTurnMessageRef {
+  messageId: string;
+  chatJid: string;
+  sender: string;
+  senderName: string;
+  timestamp: string;
+}
+
+export interface SentMessageReceipt {
+  messageId: string;
+  timestamp?: string | null;
+}
+
+export interface SendMessageContext {
+  outboundMessageId?: number;
+}
+
 export interface ScheduledTask {
   id: string;
   group_folder: string;
@@ -81,6 +110,12 @@ export interface ScheduledTask {
   last_result: string | null;
   status: 'active' | 'paused' | 'completed';
   created_at: string;
+  trigger_message_id?: string | null;
+  trigger_chat_jid?: string | null;
+  trigger_sender?: string | null;
+  trigger_sender_name?: string | null;
+  trigger_message_timestamp?: string | null;
+  trigger_turn_id?: string | null;
 }
 
 export interface TaskRunLog {
@@ -98,6 +133,12 @@ export interface Channel {
   name: string;
   connect(): Promise<void>;
   sendMessage(jid: string, text: string, sender?: string): Promise<void>;
+  sendMessageWithReceipt?(
+    jid: string,
+    text: string,
+    sender?: string,
+    context?: SendMessageContext,
+  ): Promise<SentMessageReceipt | void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;

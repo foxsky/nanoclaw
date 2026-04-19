@@ -11,6 +11,8 @@ import {
 } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import {
+  getAgentTurn,
+  getAgentTurnMessages,
   createTask,
   deleteTask,
   getTaskById,
@@ -21,7 +23,11 @@ import { resolveExternalDm, getTaskflowDb } from './dm-routing.js';
 import { getGroupSenderName } from './group-sender.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
-import { RegisteredGroup, SendTargetKind } from './types.js';
+import {
+  AgentTurnMessageRef,
+  RegisteredGroup,
+  SendTargetKind,
+} from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string, sender?: string) => Promise<void>;
@@ -72,6 +78,45 @@ function parseOptionalNonNegativeInteger(value: unknown): number | undefined {
     return undefined;
   }
   return value;
+}
+
+function parseOptionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value
+    : undefined;
+}
+
+function getTurnId(data: Record<string, unknown>): string | undefined {
+  return parseOptionalString(data.turnId);
+}
+
+function getSingleTurnMessage(
+  data: Record<string, unknown>,
+): (AgentTurnMessageRef & { turnId: string }) | undefined {
+  const turnId = getTurnId(data);
+  if (!turnId) return undefined;
+  const turnMessages = getAgentTurnMessages(turnId);
+  if (turnMessages.length !== 1) {
+    return undefined;
+  }
+  const [message] = turnMessages;
+  return {
+    turnId,
+    messageId: message.message_id,
+    chatJid: message.message_chat_jid,
+    sender: message.sender,
+    senderName: message.sender_name,
+    timestamp: message.message_timestamp,
+  };
+}
+
+function hasKnownTurnForGroup(
+  turnId: string | undefined,
+  sourceGroup: string,
+): boolean {
+  if (!turnId) return false;
+  const turn = getAgentTurn(turnId);
+  return turn?.group_folder === sourceGroup;
 }
 
 export function registerIpcHandler(type: string, handler: IpcHandler): void {
@@ -176,6 +221,20 @@ const handleScheduleTask: IpcHandler = async (
       data.context_mode === 'group' || data.context_mode === 'isolated'
         ? data.context_mode
         : 'isolated';
+    const triggerTurnId = getTurnId(data);
+    const hasKnownTurn =
+      triggerTurnId === undefined ||
+      hasKnownTurnForGroup(triggerTurnId, sourceGroup);
+    if (!hasKnownTurn) {
+      logger.warn(
+        { sourceGroup, triggerTurnId },
+        'Ignoring unknown or foreign turn ID on schedule_task IPC',
+      );
+    }
+    const singleTurnMessage =
+      hasKnownTurn && triggerTurnId
+        ? getSingleTurnMessage({ turnId: triggerTurnId })
+        : undefined;
     createTask({
       id: taskId,
       group_folder: targetFolder,
@@ -187,6 +246,12 @@ const handleScheduleTask: IpcHandler = async (
       next_run: nextRun,
       status: 'active',
       created_at: new Date().toISOString(),
+      trigger_message_id: singleTurnMessage?.messageId ?? null,
+      trigger_chat_jid: singleTurnMessage?.chatJid ?? null,
+      trigger_sender: singleTurnMessage?.sender ?? null,
+      trigger_sender_name: singleTurnMessage?.senderName ?? null,
+      trigger_message_timestamp: singleTurnMessage?.timestamp ?? null,
+      trigger_turn_id: hasKnownTurn ? triggerTurnId ?? null : null,
     });
     logger.info(
       { taskId, sourceGroup, targetFolder, contextMode },
@@ -731,7 +796,13 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
   // are sent immediately — no hold.
   interface PendingNotification {
     filePath: string;
-    data: { chatJid: string; text: string; sender?: string; groupFolder?: string; type: string };
+    data: Record<string, unknown> & {
+      chatJid: string;
+      text: string;
+      sender?: string;
+      groupFolder?: string;
+      type: string;
+    };
     sourceGroup: string;
     isMain: boolean;
     isTaskflow: boolean;
@@ -748,8 +819,12 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
     return /^🔔 \*(?:Atualização|Nova tarefa|Tarefa reatribuída|Lembrete)/.test(text);
   }
 
-  function extractNotifGroupKey(sourceGroup: string, chatJid: string): string {
-    return `${sourceGroup}:${chatJid}`;
+  function extractNotifGroupKey(
+    sourceGroup: string,
+    chatJid: string,
+    turnId?: string,
+  ): string {
+    return `${sourceGroup}:${chatJid}:${turnId ?? ''}`;
   }
 
   const processIpcFiles = async () => {
@@ -796,7 +871,11 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                 // next poll (Codex review: held files on disk get re-read every
                 // 1s poll, duplicating the entry in the pending buffer).
                 if (isBufferableNotification(data.text, data.chatJid)) {
-                  const key = extractNotifGroupKey(sourceGroup, data.chatJid);
+                  const key = extractNotifGroupKey(
+                    sourceGroup,
+                    data.chatJid,
+                    getTurnId(data),
+                  );
                   if (!pendingNotifications.has(key)) {
                     pendingNotifications.set(key, []);
                   }
@@ -893,6 +972,20 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                 }
 
                 if (deliveredKind !== null) {
+                  const triggerTurnId = getTurnId(data);
+                  const hasKnownTurn =
+                    triggerTurnId === undefined ||
+                    hasKnownTurnForGroup(triggerTurnId, sourceGroup);
+                  if (!hasKnownTurn) {
+                    logger.warn(
+                      { chatJid: data.chatJid, sourceGroup, triggerTurnId },
+                      'Ignoring unknown or foreign turn ID on send_message IPC',
+                    );
+                  }
+                  const singleTurnMessage =
+                    hasKnownTurn && triggerTurnId
+                      ? getSingleTurnMessage({ turnId: triggerTurnId })
+                      : undefined;
                   try {
                     recordSendMessageLog({
                       sourceGroupFolder: sourceGroup,
@@ -901,6 +994,8 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
                       senderLabel: deliveredSender ?? null,
                       contentPreview: data.text,
                       deliveredAt: new Date().toISOString(),
+                      triggerMessage: singleTurnMessage,
+                      triggerTurnId: hasKnownTurn ? triggerTurnId ?? null : null,
                     });
                   } catch (err) {
                     logger.warn(
@@ -1035,6 +1130,14 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
             .clearTyping?.(first.data.chatJid)
             ?.catch(() => {});
           try {
+            const triggerTurnId = getTurnId(first.data);
+            const hasKnownTurn =
+              triggerTurnId === undefined ||
+              hasKnownTurnForGroup(triggerTurnId, first.sourceGroup);
+            const singleTurnMessage =
+              hasKnownTurn && triggerTurnId
+                ? getSingleTurnMessage({ turnId: triggerTurnId })
+                : undefined;
             recordSendMessageLog({
               sourceGroupFolder: first.sourceGroup,
               targetChatJid: first.data.chatJid,
@@ -1042,6 +1145,8 @@ export async function startIpcWatcher(deps: IpcDeps): Promise<void> {
               senderLabel: sender ?? null,
               contentPreview: mergedText,
               deliveredAt: new Date().toISOString(),
+              triggerMessage: singleTurnMessage,
+              triggerTurnId: hasKnownTurn ? triggerTurnId ?? null : null,
             });
           } catch {}
         } catch (err) {

@@ -78,10 +78,32 @@ describe('outbound_messages durable queue', () => {
       text: 't',
       senderLabel: null,
       source: 'user',
+      triggerTurnId: 'turn-1',
     });
-    db.markOutboundSent(id);
+    db.markOutboundSent(id, {
+      messageId: 'msg-out-1',
+      timestamp: '2026-04-19T12:00:00.000Z',
+    });
     expect(db.countPendingOutbound()).toBe(0);
     expect(db.getPendingOutbound()).toHaveLength(0);
+    const raw = new Database(dbPath, { readonly: true });
+    const row = raw
+      .prepare(
+        `SELECT trigger_turn_id, delivered_message_id, delivered_message_timestamp
+         FROM outbound_messages
+         WHERE id = ?`,
+      )
+      .get(id) as {
+        trigger_turn_id: string | null;
+        delivered_message_id: string | null;
+        delivered_message_timestamp: string | null;
+      };
+    raw.close();
+    expect(row).toEqual({
+      trigger_turn_id: 'turn-1',
+      delivered_message_id: 'msg-out-1',
+      delivered_message_timestamp: '2026-04-19T12:00:00.000Z',
+    });
   });
 
   it('abandons a row after N failed attempts', async () => {
@@ -112,11 +134,20 @@ describe('outbound_messages durable queue', () => {
       text: 'hello',
       senderLabel: 'Case',
       source: 'user',
+      triggerTurnId: 'turn-123',
     });
     const sent: Array<{ jid: string; text: string; sender?: string }> = [];
     const channel = {
-      sendMessage: vi.fn(async (jid: string, text: string, sender?: string) => {
+      sendMessageWithReceipt: vi.fn(async (
+        jid: string,
+        text: string,
+        sender?: string,
+      ) => {
         sent.push({ jid, text, sender });
+        return {
+          messageId: 'wa-msg-123',
+          timestamp: '2026-04-19T12:05:00.000Z',
+        };
       }),
     } as any;
     const { OutboundDispatcher } = await import('./outbound-dispatcher.js');
@@ -125,6 +156,19 @@ describe('outbound_messages durable queue', () => {
     expect(result.drained).toBe(true);
     expect(sent).toEqual([{ jid: 'x@g.us', text: 'hello', sender: 'Case' }]);
     expect(db.countPendingOutbound()).toBe(0);
+    const raw = new Database(dbPath, { readonly: true });
+    const row = raw
+      .prepare(
+        `SELECT trigger_turn_id, delivered_message_id
+         FROM outbound_messages
+         WHERE chat_jid = 'x@g.us'`,
+      )
+      .get() as { trigger_turn_id: string | null; delivered_message_id: string | null };
+    raw.close();
+    expect(row).toEqual({
+      trigger_turn_id: 'turn-123',
+      delivered_message_id: 'wa-msg-123',
+    });
   });
 
   it('dispatcher leaves rows pending when getChannel returns null', async () => {
