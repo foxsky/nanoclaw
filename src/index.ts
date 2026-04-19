@@ -83,7 +83,6 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import {
   Channel,
   AgentTurnContext,
-  AgentTurnMessageRef,
   NewMessage,
   RegisteredGroup,
   TriggerMessageContext,
@@ -245,10 +244,6 @@ function toTriggerMessageContext(msg: NewMessage): TriggerMessageContext {
     senderName: msg.sender_name,
     timestamp: msg.timestamp,
   };
-}
-
-function toAgentTurnMessageRef(msg: NewMessage): AgentTurnMessageRef {
-  return toTriggerMessageContext(msg);
 }
 
 function loadState(): void {
@@ -621,7 +616,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     turnId: createAgentTurn({
       groupFolder: group.folder,
       chatJid,
-      messages: missedMessages.map(toAgentTurnMessageRef),
+      messages: missedMessages.map(toTriggerMessageContext),
     }).id,
   };
 

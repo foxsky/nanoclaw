@@ -98,6 +98,12 @@ function createSchema(database: Database.Database): void {
       ON send_message_log(source_group_folder, delivered_at);
     CREATE INDEX IF NOT EXISTS idx_send_message_log_target_at
       ON send_message_log(target_chat_jid, delivered_at);
+    -- Direct trigger_message_id lookup path used by the auditor DM-send
+    -- attribution cascade (avoid scanning the 10-min window when the
+    -- caller knows the exact triggering message id).
+    CREATE INDEX IF NOT EXISTS idx_send_message_log_trigger_msg
+      ON send_message_log(trigger_message_id)
+      WHERE trigger_message_id IS NOT NULL;
 
     CREATE TABLE IF NOT EXISTS agent_turns (
       id TEXT PRIMARY KEY,
@@ -170,6 +176,12 @@ function createSchema(database: Database.Database): void {
       WHERE sent_at IS NULL AND abandoned_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_outbound_trigger_turn
       ON outbound_messages(trigger_turn_id, enqueued_at);
+    -- Lookup path for reconcileOutboundReceiptByEcho: find unresolved
+    -- outbound rows by (chat_jid, sent_at) when Baileys didn't return a
+    -- provider key at send time.
+    CREATE INDEX IF NOT EXISTS idx_outbound_echo
+      ON outbound_messages(chat_jid, sent_at)
+      WHERE delivered_message_id IS NULL;
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)

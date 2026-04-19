@@ -4,7 +4,7 @@ import path from 'path';
 import { DATA_DIR, PROJECT_ROOT } from '../config.js';
 import { getGroupSenderName } from '../group-sender.js';
 import { isValidGroupFolder } from '../group-folder.js';
-import type { IpcHandler } from '../ipc.js';
+import { getTurnId, type IpcHandler } from '../ipc.js';
 import { logger } from '../logger.js';
 import { normalizePhone } from '../phone.js';
 
@@ -75,10 +75,7 @@ const handleProvisionChildBoard: IpcHandler = async (
     typeof data.short_code === 'string'
       ? data.short_code.trim().toUpperCase()
       : null;
-  const triggerTurnId =
-    typeof data.turnId === 'string' && data.turnId.trim()
-      ? data.turnId.trim()
-      : null;
+  const triggerTurnId = getTurnId(data) ?? null;
 
   if (!personId || !personName || !personPhone || !personRole) {
     logger.warn(
@@ -102,10 +99,15 @@ const handleProvisionChildBoard: IpcHandler = async (
       .prepare('SELECT * FROM boards WHERE group_folder = ?')
       .get(sourceGroup) as BoardRow | undefined;
 
+    // Defensive: this plugin INSERTs task_history rows with trigger_turn_id
+    // below (~L529). On old-schema taskflow.db instances the column is
+    // missing and the INSERT would throw. initTaskflowDb adds it too, but
+    // provisioning paths may run against DBs that weren't opened through
+    // initTaskflowDb — keep the ALTER here.
     try {
       tfDb.exec(`ALTER TABLE task_history ADD COLUMN trigger_turn_id TEXT`);
     } catch {
-      // Existing DBs may already have the column.
+      // column already exists
     }
 
     if (!parentBoard) {

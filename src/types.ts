@@ -75,16 +75,12 @@ export interface TriggerMessageContext {
   timestamp: string;
 }
 
+// A turn can carry multiple inbound messages; each ref has the same shape
+// as TriggerMessageContext (a turn's "trigger" is just one of its messages).
+export type AgentTurnMessageRef = TriggerMessageContext;
+
 export interface AgentTurnContext {
   turnId: string;
-}
-
-export interface AgentTurnMessageRef {
-  messageId: string;
-  chatJid: string;
-  sender: string;
-  senderName: string;
-  timestamp: string;
 }
 
 export interface SentMessageReceipt {

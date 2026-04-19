@@ -86,7 +86,7 @@ function parseOptionalString(value: unknown): string | undefined {
     : undefined;
 }
 
-function getTurnId(data: Record<string, unknown>): string | undefined {
+export function getTurnId(data: Record<string, unknown>): string | undefined {
   return parseOptionalString(data.turnId);
 }
 

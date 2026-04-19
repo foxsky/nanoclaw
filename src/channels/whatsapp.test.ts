@@ -873,6 +873,10 @@ describe('WhatsAppChannel', () => {
         'append',
       );
 
+      // Reconciliation is deferred via setImmediate so a slow DB write can't
+      // block the Baileys socket event loop; flush the microtask queue.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
       expect(reconcileOutboundReceiptByEcho).toHaveBeenCalledWith({
         chatJid: 'registered@g.us',
         text: 'Andy: Confirmação enviada sem recibo',

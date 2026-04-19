@@ -5,7 +5,7 @@ import path from 'path';
 import { DATA_DIR, PROJECT_ROOT } from '../config.js';
 import { getGroupSenderName } from '../group-sender.js';
 import { isValidGroupFolder } from '../group-folder.js';
-import type { IpcHandler } from '../ipc.js';
+import { getTurnId, type IpcHandler } from '../ipc.js';
 import { logger } from '../logger.js';
 import { normalizePhone } from '../phone.js';
 
@@ -160,10 +160,7 @@ const handleProvisionRootBoard: IpcHandler = async (
     typeof data.group_context === 'string'
       ? data.group_context.trim()
       : `${subject} task board`;
-  const triggerTurnId =
-    typeof data.turnId === 'string' && data.turnId.trim()
-      ? data.turnId.trim()
-      : null;
+  const triggerTurnId = getTurnId(data) ?? null;
 
   // --- 4. Compute folder and board ID ---
   let groupFolder =
@@ -202,10 +199,13 @@ const handleProvisionRootBoard: IpcHandler = async (
       .prepare('SELECT 1 FROM boards WHERE id = ? OR short_code = ?')
       .get(boardId, shortCode);
 
+    // Defensive: provisioning may run against old-schema DBs that weren't
+    // opened through initTaskflowDb. This plugin writes task_history rows
+    // with trigger_turn_id later; ensure the column exists.
     try {
       tfDb.exec(`ALTER TABLE task_history ADD COLUMN trigger_turn_id TEXT`);
     } catch {
-      // Existing DBs may already have the column.
+      // column already exists
     }
 
     if (existingBoard) {

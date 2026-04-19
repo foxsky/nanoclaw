@@ -305,11 +305,24 @@ export class WhatsAppChannel implements Channel {
                 );
 
             if (fromMe && isBotMessage && msg.key.id && content) {
-              reconcileOutboundReceiptByEcho({
+              // Reconciliation is advisory — defer it off the Baileys socket
+              // event loop so a slow SQLite write can't back up the inbound
+              // stream. Bind the values now; the update runs on the next tick.
+              const echoParams = {
                 chatJid,
                 text: content,
                 messageId: msg.key.id,
                 timestamp,
+              };
+              setImmediate(() => {
+                try {
+                  reconcileOutboundReceiptByEcho(echoParams);
+                } catch (err) {
+                  logger.warn(
+                    { err, chatJid },
+                    'reconcileOutboundReceiptByEcho failed',
+                  );
+                }
               });
             }
 
