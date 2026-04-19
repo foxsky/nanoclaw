@@ -41,9 +41,18 @@ function getReviewPeriod() {
   const localNow = new Date(now.getTime() + TZ_OFFSET_HOURS * 3600000);
   const dow = localNow.getUTCDay();
 
+  // `NANOCLAW_AUDIT_PERIOD_DAYS_BACK=N` forces a custom N-day backfill
+  // window ending at start-of-today-local. Used for one-off dryrun
+  // backfills; overrides the default 1-day (or 3-day Monday) behavior.
+  const envBackfill = parseInt(process.env.NANOCLAW_AUDIT_PERIOD_DAYS_BACK || "", 10);
+  const isBackfill = Number.isFinite(envBackfill) && envBackfill > 0;
+
   let daysBack = 1;
   let daysSpan = 1;
-  if (dow === 1) { // Monday
+  if (isBackfill) {
+    daysBack = envBackfill;
+    daysSpan = envBackfill;
+  } else if (dow === 1) { // Monday
     daysBack = 3; // back to Friday
     daysSpan = 3; // Fri, Sat, Sun
   }
@@ -61,7 +70,8 @@ function getReviewPeriod() {
   const startUtc = new Date(startLocal.getTime() - TZ_OFFSET_HOURS * 3600000);
   const endUtc = new Date(endLocal.getTime() - TZ_OFFSET_HOURS * 3600000);
 
-  const label = dow === 1
+  const spansMultipleDays = daysSpan > 1;
+  const label = spansMultipleDays
     ? startLocal.toISOString().slice(0, 10) + " a " + new Date(endLocal.getTime() - 86400000).toISOString().slice(0, 10)
     : startLocal.toISOString().slice(0, 10);
 
@@ -69,7 +79,7 @@ function getReviewPeriod() {
     startIso: startUtc.toISOString(),
     endIso: endUtc.toISOString(),
     label,
-    isWeekend: dow === 1,
+    isWeekend: !isBackfill && dow === 1,
   };
 }
 
