@@ -196,10 +196,17 @@ async function runTask(
   let result: string | null = null;
   let error: string | null = null;
 
-  // For group context mode, use the group's current session
+  // For group context mode, use the group's current session.
+  // Exception: script-driven tasks (Kipp audit and similar) must NEVER inherit
+  // the group's conversation history. The script's output is the sole source
+  // of truth; resuming a prior session lets the model re-synthesize narratives
+  // from past audit runs — confirmed leak path behind the 2026-04-18 Kipp
+  // semantic hallucinations (Codex peer review 2026-04-19).
   const sessions = deps.getSessions();
   const sessionId =
-    task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
+    task.context_mode === 'group' && !task.script
+      ? sessions[task.group_folder]
+      : undefined;
 
   // After the task produces a result, close the container promptly.
   // Tasks are single-turn — no need to wait IDLE_TIMEOUT (30 min) for the

@@ -395,7 +395,15 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
+  mandatoryAppendBlocks?: string[],
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
+  // Local copy so we can null it after the first success append — a query
+  // may emit multiple `result` messages (e.g. compact→continuation), and
+  // each should NOT re-append the same semantic candidates.
+  let remainingAppendBlocks: string[] | null =
+    mandatoryAppendBlocks && mandatoryAppendBlocks.length > 0
+      ? [...mandatoryAppendBlocks]
+      : null;
   const stream = new MessageStream();
   stream.push(prompt);
 
@@ -538,9 +546,16 @@ async function runQuery(
           error: `Agent ${message.subtype}: ${errors?.join('; ') ?? 'unknown error'}`,
         });
       } else {
+        let finalResult: string | null = textResult || null;
+        if (remainingAppendBlocks && remainingAppendBlocks.length > 0) {
+          const append = remainingAppendBlocks.join('\n');
+          finalResult = finalResult ? `${finalResult}\n${append}` : append;
+          log(`Appended ${append.length} chars of mandatory post-hoc blocks to agent output`);
+          remainingAppendBlocks = null;
+        }
         writeOutput({
           status: 'success',
-          result: textResult || null,
+          result: finalResult,
           newSessionId,
         });
       }
@@ -556,6 +571,7 @@ async function runQuery(
 interface ScriptResult {
   wakeAgent: boolean;
   data?: unknown;
+  mandatoryAppendBlocks?: string[];
 }
 
 const SCRIPT_TIMEOUT_MS = 3_600_000;
@@ -631,6 +647,7 @@ async function main(): Promise<void> {
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;
+  let pendingAppendBlocks: string[] = [];
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
   // Clean up stale _close sentinel from previous container runs
@@ -745,7 +762,15 @@ async function main(): Promise<void> {
       });
       return;
     } else {
-      // Script says wake agent — enrich prompt with script data
+      // Script says wake agent — enrich prompt with script data.
+      // `mandatoryAppendBlocks` is stripped from the agent-visible payload
+      // and captured here for verbatim post-hoc append after the agent's
+      // first successful result. Kept local to `main` so an error in one
+      // query can't leak them into a later IPC follow-up query.
+      if (scriptResult.mandatoryAppendBlocks && scriptResult.mandatoryAppendBlocks.length > 0) {
+        pendingAppendBlocks = scriptResult.mandatoryAppendBlocks;
+        log(`Captured ${pendingAppendBlocks.length} mandatory append block(s) from script`);
+      }
       log(`Script wakeAgent=true, enriching prompt with data`);
       prompt = `[SCHEDULED TASK]\n\nScript output:\n${JSON.stringify(scriptResult.data, null, 2)}\n\nInstructions:\n${containerInput.prompt}`;
     }
@@ -859,7 +884,12 @@ async function main(): Promise<void> {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      // `pendingAppendBlocks` is passed only on the FIRST iteration. Once
+      // consumed (success) or not (error/early-close), clear it so a
+      // follow-up IPC-driven query can't pick up stale semantic blocks.
+      const blocksForThisQuery = pendingAppendBlocks;
+      pendingAppendBlocks = [];
+      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt, blocksForThisQuery);
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }

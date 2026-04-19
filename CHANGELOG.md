@@ -4,6 +4,22 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-19 — Kipp audit: structural quarantine for semantic candidates
+
+Yesterday's PR-1 (`2026-04-18`) shipped `⚠️ Candidato` labels + `auditor-prompt.txt` Regra 10 asking the agent to emit the pre-rendered block verbatim. Live Kipp run 7 showed the prompt rule DID NOT bind: the delivered 6364-char report had zero `⚠️ Candidato` labels, agent rewrote semantic findings with severity emojis, and the original T40→T41→T42 "titles swapped in ≤2s" hallucination came back. Exactly the failure mode Codex had warned about when I walked away from the timestamp-only trigger-binding heuristic.
+
+**Structural fix — move candidates OUT of the agent's payload:**
+
+- `container/agent-runner/src/auditor-script.sh` — semantic candidates are now collected into top-level `result.mandatoryAppendBlocks` (array of pre-rendered `⚠️ Candidato` markdown blocks, one per board with findings). Board objects no longer carry `semanticDeviations` or `semanticEvidenceMarkdown` — the agent literally cannot see them. `wakeAgent=true` is forced when candidates exist so the audit still runs even on days where heuristic totals are zero.
+
+- `container/agent-runner/src/index.ts` — `ScriptResult` gains `mandatoryAppendBlocks?: string[]`. Blocks are captured into a local `pendingAppendBlocks` in `main` after `runScript` returns, passed as an explicit optional argument to `runQuery` (no module-level state), and appended verbatim to the agent's `textResult` before `writeOutput`. `runQuery` owns a local `remainingAppendBlocks` that's nulled after the first successful `result` message so multi-result runs (compact→continuation) don't duplicate the appendix. Blocks are dropped on error paths and on any subsequent IPC-driven follow-up query, so a half-formed agent result can't be chased by a standalone candidate block.
+
+- `container/agent-runner/src/auditor-prompt.txt` — Regra 10 replaced with a "you cannot see semantic candidates; do not invent, infer, or mention them" directive. References to `semanticEvidenceMarkdown` and the "⚠️ candidatos" counter in the summary line removed — the appendix is the host's responsibility now, with its own counters.
+
+- `src/task-scheduler.ts` — `sessionId` is forced `undefined` for script-driven scheduled tasks regardless of `context_mode`. Codex review flagged this as a HIGH-severity leak path: `context_mode='group'` resumed the group's live Claude session, so prior-session memory (yesterday's hallucinated phrasing, past audit narratives) could bias the model into re-synthesizing semantic claims even on a clean payload. The embedding preamble is task-DB context, not prior conversation — not a leak path.
+
+Codex gpt-5.4 high review on the fix (two rounds): confirmed the session-leak path is closed, `mandatoryAppendBlocks` is properly scoped per-query AND per-result-within-query, and no runtime reader still consumes `semanticDeviations` / `semanticEvidenceMarkdown`. Remaining residual risk: there is still no host-side validator/redactor, so any semantic claim the agent invents from heuristics alone (no `semanticDeviations` payload present) would pass through untouched — deferred.
+
 ## 2026-04-18 — Kipp audit: stop hallucinating specifics + dual-host Ollama with cloud primary
 
 Today's Kipp audit (run on Friday 04-17 data) emitted a 6300-char report with 18 "high-confidence" findings, of which spot-checking showed ~60% were fabricated: `T40-T42 title-swap in ≤2s sequence` (actual gaps were 27-71s, titles correct), `P11.22 due_date ignored` (DB had 2026-04-17 stored + bot reply confirmed it), `p4.3+p5.7 multi-line ignored` (two independent messages 40s apart, both correctly processed). Three stacked defects (confirmed by Codex gpt-5.4 peer review):

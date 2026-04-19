@@ -683,62 +683,31 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
           if (mode === 'dryrun') {
             writeDryRunLog(allDeviations);
           } else if (mode === 'enabled') {
-            // Attach deviations to existing boards AND surface boards that
-            // only have semantic deviations — without this, a board with 0
-            // heuristic issues + N semantic issues gets dropped from the report.
+            // Semantic candidates are kept OUT of the agent's payload and
+            // appended verbatim by the host after the agent produces its
+            // report. The in-prompt "Regra 10 — copy verbatim" approach
+            // failed in Kipp run 7: the agent rewrote findings with
+            // severity emojis and reinstated fabricated specifics. Only
+            // a structural fix — the agent can't see them — prevents that.
             const devsByBoard = new Map();
             for (const d of allDeviations) {
               const arr = devsByBoard.get(d.boardId) || [];
               arr.push(d);
               devsByBoard.set(d.boardId, arr);
             }
-            const boardIdSet = new Set(boards.map(b => b.boardId));
-            for (const board of boards) {
-              board.semanticDeviations = devsByBoard.get(board.boardId) || [];
-              result.data.summary.totalFlagged += board.semanticDeviations.length;
-            }
-            // Synthesize boards for deviations whose boardId isn't in the
-            // heuristic report yet. Look up real group/folder labels so the
-            // report shows "SECI-SECTI" rather than a derived "board-X" → "X".
             const boardMetaStmt = tfDb.prepare('SELECT group_jid, group_folder FROM boards WHERE id = ?');
             const groupMetaStmt = msgDb.prepare('SELECT folder, name FROM registered_groups WHERE jid = ?');
-            for (const [boardId, devs] of devsByBoard) {
-              if (boardIdSet.has(boardId)) continue;
-              let folder = boardId.replace(/^board-/, '');
-              let groupName = folder;
+            const resolveBoardName = (boardId) => {
+              const existing = boards.find(b => b.boardId === boardId);
+              if (existing) return existing.group;
               const boardMeta = boardMetaStmt.get(boardId);
               if (boardMeta && boardMeta.group_jid) {
                 const groupMeta = groupMetaStmt.get(boardMeta.group_jid);
-                if (groupMeta) {
-                  folder = groupMeta.folder;
-                  groupName = groupMeta.name || groupMeta.folder;
-                } else if (boardMeta.group_folder) {
-                  folder = boardMeta.group_folder;
-                  groupName = boardMeta.group_folder;
-                }
+                if (groupMeta) return groupMeta.name || groupMeta.folder;
+                if (boardMeta.group_folder) return boardMeta.group_folder;
               }
-              boards.push({
-                group: groupName,
-                folder,
-                boardId,
-                totalUserMessages: 0,
-                flaggedInteractions: 0,
-                auditTrailDivergence: false,
-                deliveriesToGroup: 0,
-                botRowsInGroup: 0,
-                interactions: [],
-                selfCorrections: [],
-                semanticDeviations: devs,
-              });
-              result.data.summary.totalFlagged += devs.length;
-              if (!result.data.summary.boardsWithIssues.includes(folder)) {
-                result.data.summary.boardsWithIssues.push(folder);
-              }
-            }
-            // Emit each deviation as a candidate for manual review, not a
-            // finding — classifier context may be mis-associated by
-            // upstream heuristics. Pairs with auditor-prompt.txt Regra 10
-            // requiring the agent to copy this block verbatim.
+              return boardId;
+            };
             // Escape WhatsApp markdown meta-characters so user content
             // can't distort rendering when re-emitted.
             const escapeMdQuote = (s, limit) => {
@@ -746,13 +715,13 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
               const capped = flat.length > limit ? flat.slice(0, limit) + '…' : flat;
               return capped.replace(/([*_`~\\])/g, '\\$1');
             };
-            for (const board of boards) {
-              const devs = board.semanticDeviations || [];
+            const appendBlocks = [];
+            for (const [boardId, devs] of devsByBoard) {
               if (devs.length === 0) continue;
+              const boardName = resolveBoardName(boardId);
               const lines = [];
               lines.push(
-                `\n_Possíveis divergências semânticas (${devs.length} candidato${devs.length > 1 ? 's' : ''}` +
-                ` — verificação manual recomendada, heurística de associação em revisão)_\n`,
+                `\n📋 *${boardName}* — _possíveis divergências semânticas (${devs.length} candidato${devs.length > 1 ? 's' : ''}, verificação manual recomendada; heurística de associação em revisão):_\n`,
               );
               for (const d of devs) {
                 lines.push(`⚠️ *Candidato* _(confiança ${d.confidence}, ${d.fieldKind}${d.taskId ? `, task ${d.taskId}` : ''})_`);
@@ -768,7 +737,14 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
                 }
                 lines.push('');
               }
-              board.semanticEvidenceMarkdown = lines.join('\n');
+              appendBlocks.push(lines.join('\n'));
+            }
+            if (appendBlocks.length > 0) {
+              result.mandatoryAppendBlocks = appendBlocks;
+              // Ensure the agent runs even when semantic candidates are the
+              // only findings. `wakeAgent` was computed from heuristic
+              // totals before this phase.
+              result.wakeAgent = true;
             }
           }
         } else {
