@@ -610,41 +610,43 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
     if (mode === 'dryrun' || mode === 'enabled') {
       try {
         const { runSemanticAudit, runResponseAudit, writeDryRunLog } = await import(SEMANTIC_AUDIT_MODULE_PATH);
-        // Audit override takes precedence over the general OLLAMA_HOST so
-        // the cloud-authenticated endpoint isn't forced on embedding/context.
-        const ollamaHost =
-          process.env.NANOCLAW_SEMANTIC_AUDIT_OLLAMA_HOST ||
-          process.env.OLLAMA_HOST ||
-          '';
-        // Fallback host defaults to primary; override when the primary is a
-        // cloud-authed stub that doesn't have the fallback model pulled.
-        const ollamaFallbackHost =
-          process.env.NANOCLAW_SEMANTIC_AUDIT_FALLBACK_OLLAMA_HOST || '';
         const rawCloud = (process.env.NANOCLAW_SEMANTIC_AUDIT_CLOUD || '').trim().toLowerCase();
         const cloudOptIn = rawCloud === '1' || rawCloud === 'true' || rawCloud === 'yes';
-        // Bench data (Apr 2026) on a logged-in Ollama instance, 3-sample
-        // probes with real audit-sized prompts:
-        //   glm-5.1:cloud        p50 ~4s   (100%)  ← fastest, default primary
-        //   minimax-m2.7:cloud   p50 ~22s  (100%)
-        //   qwen3.5:cloud        p50 ~22s  (100%)  — older default
-        //   glm-4.6:cloud        p50 ~23s  (100%)
-        // Lowercase 'm' / exact version tag matter — 'minimax-M2.7:cloud'
-        // and 'minimax-M2:cloud' both 404 on the cloud registry.
+        // Classifier selection. Two backends:
+        //   - Ollama (all `*:cloud` / local model tags): uses OLLAMA_HOST
+        //   - Anthropic (model starts with `claude-` or `anthropic:`): uses
+        //     the container's credential-proxy at ANTHROPIC_BASE_URL, which
+        //     injects auth and forwards to api.anthropic.com.
+        // Bench notes: glm-5.1:cloud was the Ollama winner (6/6 on curated
+        // cases) but produced 4/4 false positives on real production data
+        // on 2026-04-19 — timezone arithmetic, dialogue-state reasoning,
+        // and note-vs-action semantics all failed. Haiku was introduced
+        // to address that class.
         const defaultModel = cloudOptIn
           ? 'minimax-m2.7:cloud'
-          : 'glm-5.1:cloud';
+          : 'claude-haiku-4-5-20251001';
         const ollamaModel =
           process.env.NANOCLAW_SEMANTIC_AUDIT_MODEL || defaultModel;
-        // Auto-wire a local fallback whenever the primary looks cloud-routed.
-        // Cloud calls succeed 100% against a logged-in Ollama but ~20% exceed
-        // a 60s lease — without a fallback those tail-latency calls turn into
-        // ollamaFail. Defaults to qwen3-coder:latest, which should live on
-        // NANOCLAW_SEMANTIC_AUDIT_FALLBACK_OLLAMA_HOST (often a different box
-        // than the cloud-authed primary). Non-cloud primaries skip it.
+        const isAnthropic = ollamaModel.startsWith('claude-') || ollamaModel.startsWith('anthropic:');
+        // The `host` field is backend-specific but the module's arg name is
+        // historical. For Anthropic, feed the credential-proxy base URL.
+        const ollamaHost = isAnthropic
+          ? (process.env.ANTHROPIC_BASE_URL || '')
+          : (process.env.NANOCLAW_SEMANTIC_AUDIT_OLLAMA_HOST ||
+             process.env.OLLAMA_HOST ||
+             '');
+        const ollamaFallbackHost =
+          process.env.NANOCLAW_SEMANTIC_AUDIT_FALLBACK_OLLAMA_HOST || '';
+        // Auto-wire a local fallback whenever the primary can tail-latency.
+        // Anthropic rarely does (<<1%) but ollama cloud stubs ~20%. Users
+        // override with NANOCLAW_SEMANTIC_AUDIT_FALLBACK_MODEL; `none`
+        // disables; empty defaults to qwen3-coder:latest for cloud/anthropic
+        // primaries, nothing for local primaries.
         const envFallback = process.env.NANOCLAW_SEMANTIC_AUDIT_FALLBACK_MODEL;
+        const needsFallback = isAnthropic || ollamaModel.endsWith(':cloud');
         const ollamaFallbackModel = envFallback === 'none'
           ? ''
-          : envFallback || (ollamaModel.endsWith(':cloud') ? 'qwen3-coder:latest' : '');
+          : envFallback || (needsFallback ? 'qwen3-coder:latest' : '');
         if (ollamaHost) {
           // Phase 1: mutation-level audit (scheduled_at, due_date, assignee, title)
           const mutationAudit = await runSemanticAudit({

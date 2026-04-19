@@ -4,6 +4,16 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-19 (later) — Kipp semantic classifier: Haiku 4.5 via credential-proxy
+
+Structural fix from earlier today exposed the classifier itself as the next bottleneck. glm-5.1:cloud scored 6/6 on the curated 2026-04-18 shootout but produced 4/4 false positives on real production data: failed at timezone arithmetic (`23/04 8h30` local → stored `2026-04-23T11:30Z`, flagged as deviation), dialogue-state reasoning (read "Participante externo" menu-selection as a generic bot case), and note-vs-action semantics (classified `nota Beatriz, entrar em contato com o Gabriel` as a bot instruction instead of a note about Beatriz's task).
+
+Added a Claude path to `semantic-audit.ts`. New `callAnthropic(baseUrl, model, prompt, timeoutMs)` hits the container's existing credential-proxy (`ANTHROPIC_BASE_URL=http://host.docker.internal:3001`), which injects OAuth/API-key auth transparently. Dispatch in `callWithFallback` routes to Anthropic when the model string starts with `claude-` or `anthropic:`; Ollama path is unchanged. Fallback auto-wires `qwen3-coder:latest` (on `.13`) for both cloud-Ollama and Anthropic primaries, since both can tail-latency. `auditor-script.sh` default model flips from `glm-5.1:cloud` → `claude-haiku-4-5-20251001`. No code change needed on the host — `ANTHROPIC_BASE_URL` is already passed into every container via `src/container-runner.ts`.
+
+Cost envelope at yesterday's ~228 classifier calls/day: Haiku 4.5 ≈ $0.57/day (1.5k tokens in × $1/MTok + 200 tokens out × $5/MTok per call). Latency ~1-3s/call vs glm-5.1 p50 25s — net audit wall-clock drops substantially even with one fallback retry.
+
+Placeholder `Authorization: Bearer placeholder` header is required on every request — in OAuth mode the credential proxy only rewrites requests that carry an `authorization` header (`src/credential-proxy.ts` L74).
+
 ## 2026-04-19 — Kipp audit: structural quarantine for semantic candidates
 
 Yesterday's PR-1 (`2026-04-18`) shipped `⚠️ Candidato` labels + `auditor-prompt.txt` Regra 10 asking the agent to emit the pre-rendered block verbatim. Live Kipp run 7 showed the prompt rule DID NOT bind: the delivered 6364-char report had zero `⚠️ Candidato` labels, agent rewrote semantic findings with severity emojis, and the original T40→T41→T42 "titles swapped in ≤2s" hallucination came back. Exactly the failure mode Codex had warned about when I walked away from the timestamp-only trigger-binding heuristic.

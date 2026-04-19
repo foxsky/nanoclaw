@@ -194,6 +194,66 @@ export async function callOllama(
   }
 }
 
+// Route classifier calls through the container's credential-proxy
+// (ANTHROPIC_BASE_URL). Used when the model name looks like a Claude model.
+// The proxy injects x-api-key / OAuth on the way to api.anthropic.com, so
+// this code ships no secrets.
+export function isAnthropicModel(model: string): boolean {
+  return model.startsWith('claude-') || model.startsWith('anthropic:');
+}
+
+export async function callAnthropic(
+  baseUrl: string,
+  model: string,
+  prompt: string,
+  timeoutMs = 30_000,
+): Promise<string | null> {
+  if (!baseUrl) return null;
+  const trimmedBase = baseUrl.replace(/\/+$/, '');
+  const resolvedModel = model.startsWith('anthropic:') ? model.slice('anthropic:'.length) : model;
+  try {
+    // `Authorization: Bearer placeholder` is required: in OAuth mode the
+    // credential proxy only rewrites requests that carry an `authorization`
+    // header (see src/credential-proxy.ts). In API-key mode the proxy
+    // injects `x-api-key` on every request regardless. Either way this
+    // placeholder is replaced before the request leaves the host.
+    const resp = await fetch(`${trimmedBase}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        'Authorization': 'Bearer placeholder',
+      },
+      body: JSON.stringify({
+        model: resolvedModel,
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as {
+      content?: Array<{ type: string; text?: string }>;
+    };
+    const textBlock = data.content?.find((b) => b.type === 'text');
+    return textBlock?.text ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function callModel(
+  host: string,
+  model: string,
+  prompt: string,
+  timeoutMs: number,
+): Promise<string | null> {
+  if (isAnthropicModel(model)) {
+    return callAnthropic(host, model, prompt, timeoutMs);
+  }
+  return callOllama(host, model, prompt, timeoutMs);
+}
+
 export interface RunSemanticAuditArgs {
   msgDb: BetterSqliteDB;
   tfDb: BetterSqliteDB;
@@ -232,11 +292,11 @@ function resolveOllamaPolicy(args: RunSemanticAuditArgs): OllamaPolicy {
 }
 
 async function callWithFallback(p: OllamaPolicy, prompt: string): Promise<string | null> {
-  const raw = await callOllama(p.host, p.model, prompt, p.primaryTimeoutMs);
+  const raw = await callModel(p.host, p.model, prompt, p.primaryTimeoutMs);
   if (raw) return raw;
   if (!p.fallbackModel) return null;
   if (p.fallbackModel === p.model && p.fallbackHost === p.host) return null;
-  return callOllama(p.fallbackHost, p.fallbackModel, prompt, p.fallbackTimeoutMs);
+  return callModel(p.fallbackHost, p.fallbackModel, prompt, p.fallbackTimeoutMs);
 }
 
 export interface SemanticAuditCounters {
