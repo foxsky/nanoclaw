@@ -566,6 +566,13 @@ describe('taskflow skill package', () => {
     expect(skillMd).toContain('exit silently, even if there was archive activity this week');
   });
 
+  it('SKILL.md documents runner channel separation', () => {
+    const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
+    expect(skillMd).toContain('Reserve `send_message` for explicit transport work');
+    expect(skillMd).toContain('Channel separation for runners');
+    expect(skillMd).toContain('background jobs with no triggering user message to attach a reply to');
+  });
+
   it('SKILL.md documents automatic group creation via Baileys', () => {
     const skillMd = fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf-8');
     // Documents the Baileys API
@@ -627,6 +634,20 @@ describe('taskflow skill package', () => {
     expect(toolSection).toContain('For normal task and board inspection, use `taskflow_query` first');
     expect(toolSection).not.toContain('Use `mcp__sqlite__read_query` for READ queries by default');
     expect(toolSection).not.toContain('TASKS.json');
+  });
+
+  it('CLAUDE.md.template separates current-group replies from explicit transport', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    const toolSection = content.split('## Tool vs. Direct SQL')[1]?.split('## Command')[0] ?? '';
+
+    expect(toolSection).toContain('Channel separation (MANDATORY)');
+    expect(toolSection).toContain('Current-group replies are plain assistant output');
+    expect(toolSection).toContain('do NOT call `send_message` just to echo something back into the same group');
+    expect(toolSection).toContain('scheduled runner output (`[TF-*]` tags)');
+    expect(toolSection).toContain('Engine notifications are delivery instructions');
   });
 
   it('SKILL.md documents per-group AI model configuration via settings.json', () => {
@@ -804,6 +825,8 @@ describe('taskflow skill package', () => {
     expect(digestSection).toContain('taskflow_report');
     expect(digestSection).toContain('Skip if empty');
     expect(digestSection).toContain('formatted_report');
+    expect(digestSection).toContain('Interactive user requests reply with it normally');
+    expect(digestSection).toContain('Scheduled `[TF-DIGEST]` runs send it via `send_message`');
     expect(digestSection).not.toContain('TASKS.json');
   });
 
@@ -820,6 +843,8 @@ describe('taskflow skill package', () => {
     expect(reviewSection).toContain('Skip if empty');
     expect(reviewSection).toContain('formatted_report');
     expect(reviewSection).toContain('per-person');
+    expect(reviewSection).toContain('Interactive user requests reply with it normally');
+    expect(reviewSection).toContain('Scheduled `[TF-REVIEW]` runs send it via `send_message`');
     expect(reviewSection).not.toContain('TASKS.json');
   });
 
@@ -836,6 +861,8 @@ describe('taskflow skill package', () => {
     expect(renderedSection).toContain('board queries and standup reports');
     expect(renderedSection).toContain('formatted_report');
     expect(renderedSection).toContain('digest and weekly reports');
+    expect(renderedSection).toContain('Interactive current-group turns use the normal assistant reply path');
+    expect(renderedSection).toContain('scheduled `[TF-DIGEST]` / `[TF-REVIEW]` runs send the same body via `send_message`');
   });
 
   it('TaskFlow scheduler docs do not hardcode UTC and match runtime timezone behavior', () => {
@@ -2115,7 +2142,21 @@ describe('taskflow skill package', () => {
     // v2: notifications dispatched via tool response notifications array
     expect(content).toContain('notification_group_jid');
     expect(content).toContain('notifications');
-    expect(content).toContain('do NOT call `send_message`');
+    expect(content).toContain('never create a same-group duplicate');
+  });
+
+  it('CLAUDE.md.template notification relay is cross-chat only', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    const notificationSection =
+      content.split('## Notification Dispatch')[1]?.split('## Schema Reference')[0] ?? '';
+
+    expect(notificationSection).toContain('Relay only cross-chat deliveries');
+    expect(notificationSection).toContain('If `notification_group_jid` is null, missing, or the current group');
+    expect(notificationSection).toContain('If present and `parent_notification.parent_group_jid` differs from the current group');
+    expect(notificationSection).toContain('Do NOT modify the notification text');
   });
 
   it('CLAUDE.md.template done shortcut allows Assignee via tool authorization', () => {
@@ -4109,8 +4150,9 @@ describe('meeting notes', () => {
 
   describe('query meetings', () => {
     let meetingId: string;
-    // Use dynamic future date (7 days ahead) so tests don't become flaky
-    const nextWeek = new Date(Date.now() + 7 * 86400000);
+    // Use a future business date so the engine's non-business-day guard
+    // cannot reject the shared meeting fixture on weekends.
+    const nextWeek = futureBusinessDate(7);
     const nextWeekISO = nextWeek.toISOString().slice(0, 19) + 'Z';
     const nextWeekDate = nextWeek.toISOString().slice(0, 10);
 
@@ -4863,7 +4905,7 @@ describe('meeting notes', () => {
         board_id: BOARD_ID,
         type: 'meeting',
         title: 'Team sync',
-        scheduled_at: new Date(Date.now() + 3600000).toISOString(),
+        scheduled_at: futureBusinessDate().toISOString(),
         sender_name: 'Alexandre',
       });
       expect(meeting.success).toBe(true);
@@ -4920,7 +4962,7 @@ describe('meeting notes', () => {
     });
 
     it('meeting starting notifications are keyed to scheduled_at', () => {
-      const startTime = new Date(Date.now() + 2 * 60_000).toISOString();
+      const startTime = futureBusinessDate().toISOString();
       const createResult = engine.create({
         board_id: BOARD_ID,
         type: 'meeting',
@@ -4945,7 +4987,7 @@ describe('meeting notes', () => {
     it('no duplicate notifications when participants list has duplicate person_ids', () => {
       // Manually insert a meeting with duplicate person_ids in participants
       const now = new Date().toISOString();
-      const meetingTime = new Date(Date.now() + 2 * 60_000);
+      const meetingTime = futureBusinessDate();
       const scheduledAt = meetingTime.toISOString();
       db.prepare(
         `INSERT INTO tasks (id, board_id, type, title, assignee, column, participants, scheduled_at, created_at, updated_at)
@@ -5039,7 +5081,7 @@ describe('meeting notes', () => {
 
     it('getMeetingStartingNotifications includes accepted external participants as DM targets', () => {
       // Create a meeting starting soon
-      const startTime = new Date(Date.now() + 2 * 60_000).toISOString();
+      const startTime = futureBusinessDate().toISOString();
       const createResult = engine.create({
         board_id: BOARD_ID,
         type: 'meeting',
@@ -5091,7 +5133,7 @@ describe('meeting notes', () => {
     });
 
     it('getMeetingStartingNotifications does NOT include external participants with pending invite_status', () => {
-      const startTime = new Date(Date.now() + 2 * 60_000).toISOString();
+      const startTime = futureBusinessDate().toISOString();
       const createResult = engine.create({
         board_id: BOARD_ID,
         type: 'meeting',

@@ -73,7 +73,7 @@ This brings in the TaskFlow engine, board provisioning, container runtime wiring
 
 ### 1. Pre-flight Checks
 
-TaskFlow boards default to `ASSISTANT_NAME` = **"Case"**. Ask the user if they want to keep "Case" or use a different name. This will be used as the trigger prefix (e.g., `@Case`). The host derives the outbound message sender name from the group's `trigger_pattern` (stripping the `@` prefix), so the agent's streaming output is automatically prefixed with the correct name (e.g., "Case: ...") — no need for the agent to call `send_message` for regular responses.
+TaskFlow boards default to `ASSISTANT_NAME` = **"Case"**. Ask the user if they want to keep "Case" or use a different name. This will be used as the trigger prefix (e.g., `@Case`). The host derives the outbound message sender name from the group's `trigger_pattern` (stripping the `@` prefix), so the agent's streaming output is automatically prefixed with the correct name (e.g., "Case: ...") — no need for the agent to call `send_message` for regular responses in the current group. Reserve `send_message` for explicit transport work such as cross-group delivery, DMs, scheduled runners, or long-running progress updates.
 
 Check whether media-support skill/tooling is available for attachment ingestion:
 - If available: set `ATTACHMENT_IMPORT_ENABLED=true` and `ATTACHMENT_IMPORT_REASON=` (empty raw value, no quotes)
@@ -703,6 +703,8 @@ node -e "
 ### Runner Prompts
 
 All topologies use SQLite runner prompts. The 3 runner prompts (referenced in the INSERT statements below):
+
+**Channel separation for runners:** interactive TaskFlow replies ride the normal assistant-output path in the current group. Runner prompts are different: they are background jobs with no triggering user message to attach a reply to, so they must use explicit `send_message` delivery.
 
 **STANDUP_PROMPT:** `[TF-STANDUP] You are running the morning standup for this group. Query the board from /workspace/taskflow/taskflow.db using the SQLite MCP tools — SELECT from tasks, board_people, board_config for your board_id. If no tasks exist, do NOT send any message — just perform housekeeping (archival) silently and exit. Otherwise: 1) Send the Kanban board to this group via send_message (grouped by column, show overdue with 🔴). 2) Include per-person sections in the group message with their personal board, WIP status (X/Y), and prompt for updates. 3) Check for tasks with column = 'done' and updated_at older than 30 days — INSERT them into archive and DELETE from tasks. 4) List any inbox items that need processing. Note: send_message sends to this group only — individual DMs are not supported.`
 

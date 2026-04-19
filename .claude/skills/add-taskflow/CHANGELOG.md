@@ -1,5 +1,16 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-04-19 — Channel separation guidance for TaskFlow prompts
+
+Template and setup docs now draw a hard boundary between the **current-group reply path** and the **explicit transport path**. Interactive user turns in the current group should use normal assistant output; they should not call `send_message` just to echo a board, digest, or confirmation back into the same chat. `send_message` is now documented as the transport tool for cross-group delivery, DMs, scheduled runner output, and long-running progress updates.
+
+The main prompt contradiction was in report/notification handling. Earlier text mixed three different models: some sections said cross-group notifications were auto-dispatched, others told the agent to loop over `notifications` and call `send_message`, and digest/weekly guidance always used `send_message` even for direct user requests. The template now distinguishes:
+- interactive `formatted_board` / `formatted_report` replies: normal assistant output
+- scheduled `[TF-STANDUP]` / `[TF-DIGEST]` / `[TF-REVIEW]` flows: explicit `send_message`
+- engine-generated `notifications` / `parent_notification`: relay only when they target a different chat; never create same-group duplicates
+
+This keeps the skill aligned with the host-side correlation work from 2026-04-19: the current-group reply remains structurally tied to the triggering chat/message, while explicit cross-chat sends stay visible as transport actions with their own target JIDs.
+
 ## 2026-04-17 — `is_owner` on find_person + owner_person_id backfill
 
 Follow-up to the 2026-04-16 org-wide lookup ship. The engine now joins `boards.owner_person_id` and returns `is_owner: boolean` per row so agents can pick the person's HOME board (where `name` is WhatsApp-canonical) over parent-board mirror rows (where `name` is whatever a manager typed).

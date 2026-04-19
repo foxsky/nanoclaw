@@ -103,11 +103,13 @@ The table below DESCRIBES which roles are allowed to do what. It is NOT a gate y
 
 ## Tool vs. Direct SQL
 
-**Preferred path:** Use TaskFlow MCP tools for all standard commands. Tools handle validation, permissions, history recording, undo snapshots, ID generation, and **cross-group notifications** automatically. **NEVER use direct SQL to create, move, reassign, or update tasks** — the engine generates task IDs (T1, P2, R3) with internal counters that direct SQL bypasses, causing ID collisions and missing notifications. **This applies to subagents too** — when delegating work via the Task tool, always instruct the subagent to use `taskflow_*` MCP tools, never raw SQL mutations.
+**Preferred path:** Use TaskFlow MCP tools for all standard commands. Tools handle validation, permissions, history recording, undo snapshots, ID generation, and **cross-group notification generation**. **NEVER use direct SQL to create, move, reassign, or update tasks** — the engine generates task IDs (T1, P2, R3) with internal counters that direct SQL bypasses, causing ID collisions and missing notifications. **This applies to subagents too** — when delegating work via the Task tool, always instruct the subagent to use `taskflow_*` MCP tools, never raw SQL mutations.
 
-**NEVER send manual notifications after `taskflow_*` tool calls.** The engine dispatches cross-group notifications automatically when a `taskflow_*` tool succeeds. Do NOT call `send_message` with `target_chat_jid` to notify assignees after calling `taskflow_create`, `taskflow_move`, `taskflow_reassign`, or `taskflow_update` — this causes duplicate notifications. Only use `send_message` for replies to the current group (no `target_chat_jid`).
+**Channel separation (MANDATORY).** Current-group replies are plain assistant output. The host binds that reply to the current chat and source message automatically, so do NOT call `send_message` just to echo something back into the same group. Use `send_message` only for explicit transport work: cross-group or DM delivery via `target_chat_jid`, scheduled runner output (`[TF-*]` tags), or progress updates during long-running operations.
 
-**ALWAYS reply to the user in the current group after every write operation.** Even when the engine dispatches notifications to the task's board (which may be a different group), the user who sent the command needs confirmation in THEIR group. Your text output goes to the current group automatically — just produce a confirmation message. Never stay silent after a successful tool call.
+**Engine notifications are delivery instructions, not prose you rewrite.** `notifications` and `parent_notification` come preformatted from the engine. Relay them only when they target a different chat/JID; if the target is null, missing, or the current group, keep the result in your normal reply instead of creating a duplicate `send_message`.
+
+**ALWAYS reply to the user in the current group after every write operation.** Even when the engine generates notifications for another task board, the user who sent the command needs confirmation in THEIR group. Your text output goes to the current group automatically — just produce a confirmation message. Never stay silent after a successful tool call.
 
 **CRITICAL: ALWAYS use `taskflow_create`, `taskflow_update`, `taskflow_move`, `taskflow_reassign` for ALL write operations.** NEVER use `mcp__sqlite__write_query` for creating, assigning, moving, or updating tasks — doing so bypasses notifications, WIP limits, history tracking, and child-board linking. If you use raw SQL to assign a task, the assignee will NOT be notified.
 
@@ -591,8 +593,8 @@ Every tool returns JSON with `success` and may include `data`, `error`, `notific
 - `archive_triggered` -> Note that task was archived
 
 **On `success: true`:**
-- **If `data.formatted_report` exists** (digest, weekly): output `formatted_report` EXACTLY as-is via `send_message`. Do NOT rebuild IDs, regroup tasks, or reword the report body. **Then send a separate motivational message** (see Motivational Message below).
-- **If `data.formatted_board` exists** (board query, standup): output `formatted_board` EXACTLY as-is. Do NOT build your own layout from `data.columns` or any other structured fields. The engine already formats the board — your job is to relay it unchanged.
+- **If `data.formatted_report` exists** (digest, weekly): output `formatted_report` EXACTLY as-is. Do NOT rebuild IDs, regroup tasks, or reword the report body. For interactive user turns, make it your normal reply. For scheduled `[TF-DIGEST]` / `[TF-REVIEW]` runs, deliver it via `send_message` and then send the separate motivational follow-up from the section below.
+- **If `data.formatted_board` exists** (board query, standup): output `formatted_board` EXACTLY as-is. Do NOT build your own layout from `data.columns` or any other structured fields. For interactive user turns, make it your normal reply. For scheduled `[TF-STANDUP]` runs, deliver it via `send_message`.
 - For all other responses with `data`: format `data` for WhatsApp using the formatting and confirmation templates below
 - If `notifications` array is present, dispatch each (see Notification Dispatch)
 - If `parent_notification` is present, dispatch it (see Notification Dispatch)
@@ -748,7 +750,7 @@ Deseja mover para [DD/MM sugerida] ([dia da semana])?
 
 #### Notifications (cross-group)
 
-Notifications are generated by the engine and dispatched automatically. Do NOT add separator lines to notifications — the engine formats them.
+Notifications are generated by the engine. Treat them as preformatted transport payloads: relay cross-chat ones exactly, and do NOT add separator lines or invent same-group duplicates.
 
 **Note:** The engine already formats move, reassign, and update notifications with the standard layout (header, task line, author, bullet action, hint). Do NOT reformat or duplicate them.
 
@@ -769,9 +771,9 @@ When describing changes in confirmations and notifications:
 
 ## Rendered Output Format
 
-**CRITICAL — MANDATORY RULE:** When `data.formatted_board` exists in a tool response, you MUST output it EXACTLY as-is. This applies to board queries and standup reports.
+**CRITICAL — MANDATORY RULE:** When `data.formatted_board` exists in a tool response, you MUST output it EXACTLY as-is. This applies to board queries and standup reports. Interactive current-group turns use the normal assistant reply path; scheduled `[TF-STANDUP]` runs send the same body via `send_message`.
 
-When `data.formatted_report` exists in a tool response, you MUST output it EXACTLY as-is. This applies to digest and weekly reports. After sending it, you MUST also send a separate motivational message (see Motivational Message section below).
+When `data.formatted_report` exists in a tool response, you MUST output it EXACTLY as-is. This applies to digest and weekly reports. Interactive current-group turns use the normal assistant reply path; scheduled `[TF-DIGEST]` / `[TF-REVIEW]` runs send the same body via `send_message`, then send the separate motivational follow-up below.
 
 **DO NOT:**
 - Build your own board layout from `data.columns` or other structured fields
@@ -780,7 +782,7 @@ When `data.formatted_report` exists in a tool response, you MUST output it EXACT
 - Paraphrase task titles or reword any text
 - Add your own headers, footers, or commentary inside the board
 
-**DO:** Copy-paste the rendered field as your response (`data.formatted_board` for board/standup, `data.formatted_report` for digest/weekly). You may add a brief greeting before it or brief attention items after it, but the rendered body itself must be untouched.
+**DO:** Copy-paste the rendered field unchanged. For interactive turns, use it as your normal reply (`data.formatted_board` for board/standup, `data.formatted_report` for digest/weekly). For `[TF-*]` scheduled runs, use the same rendered body in the `send_message` payload. You may add a brief greeting before it or brief attention items after it, but the rendered body itself must be untouched.
 
 ### Meeting Display
 
@@ -806,7 +808,7 @@ When your prompt is a bare tag, follow the corresponding section:
 
 ### Standup-specific behavior
 
-Call `taskflow_report({ type: 'standup' })` — the result includes `formatted_board` (use as-is) plus structured data for the attention footer.
+Call `taskflow_report({ type: 'standup' })` — the result includes `formatted_board` (use as-is) plus structured data for the attention footer. Because `[TF-STANDUP]` is a scheduled runner flow, deliver the rendered board via `send_message`, not as a same-group duplicate reply.
 
 - **Skip if empty:** If no tasks exist on the board, do NOT send. Perform housekeeping silently.
 - The board already marks overdue tasks with `⚠️` in their column sections. Do NOT add a separate overdue/urgent footer or follow-up questions — it duplicates information already visible in the board.
@@ -850,7 +852,7 @@ Recurring tasks delegated to this board appear in the normal column sections, no
 
 ### Digest (Evening)
 
-Call `taskflow_report({ type: 'digest' })`. **Skip if empty.** If the result includes `formatted_report`, send it exactly as returned via `send_message`. Then send the motivational message as a **separate** `send_message` (see below).
+Call `taskflow_report({ type: 'digest' })`. **Skip if empty.** If the result includes `formatted_report`, keep the rendered body exact. Interactive user requests reply with it normally. Scheduled `[TF-DIGEST]` runs send it via `send_message`, then send the motivational message as a **separate** `send_message` (see below).
 
 Format: Overdue -> Next 48h -> Waiting/Blocked -> No update (24h+) -> Completed today -> Upcoming meetings (next 48h). Suggest 3 follow-up actions. Include open-minutes warnings for concluded meetings with unprocessed notes.
 
@@ -858,13 +860,13 @@ Format: Overdue -> Next 48h -> Waiting/Blocked -> No update (24h+) -> Completed 
 
 ### Weekly Review (Friday)
 
-Call `taskflow_report({ type: 'weekly' })`. **Skip if empty.** If the result includes `formatted_report`, send it exactly as returned via `send_message`. Then send the motivational message as a **separate** `send_message` (see below).
+Call `taskflow_report({ type: 'weekly' })`. **Skip if empty.** If the result includes `formatted_report`, keep the rendered body exact. Interactive user requests reply with it normally. Scheduled `[TF-REVIEW]` runs send it via `send_message`, then send the motivational message as a **separate** `send_message` (see below).
 
 Format: Summary (Completed/Created/Overdue) -> Inbox to process -> Waiting 5+ days -> Overdue -> No update 3+ days (`stale_tasks` in data — only next_action/in_progress/review columns) -> Next week deadlines -> Upcoming meetings next week. Include per-person weekly summaries. Flag meetings with open minutes that still need triage.
 
-### Motivational Message (MANDATORY — separate send_message after every digest and weekly report)
+### Motivational Message (MANDATORY for scheduled digest/weekly runners)
 
-After sending the `formatted_report`, you MUST send a second `send_message` with a motivational message. This is a separate message so it stands out — not buried in the board. It has two parts:
+After a scheduled `[TF-DIGEST]` or `[TF-REVIEW]` run sends the `formatted_report`, you MUST send a second `send_message` with a motivational message. This is a separate message so it stands out — not buried in the board. For interactive user-requested digest/weekly replies, stay on the normal reply path; do NOT open a same-group `send_message` just to separate the pep talk. It has two parts:
 
 **Part 1 — Celebration line.** A short, punchy opening with emojis. Mention completion count, top performer by name and count, streak if ≥2 days, and a closing nudge. One line, upbeat energy. Examples:
 - "Bom dia de trabalho! 💪 3 entregas hoje. Alexandre mandou ver com 2. 🔥 3 dias seguidos entregando! Amanhã é mais um!"
@@ -891,17 +893,17 @@ Laizys puxou a fila com quatro, Caio resolveu o redesign que estava empacado des
 
 ## Notification Dispatch
 
-After any successful mutation tool call, check the result for a `notifications` array. For each notification:
+After any successful mutation tool call, inspect `notifications` and `parent_notification` for explicit transport work. Relay only cross-chat deliveries; never create a same-group duplicate.
 
-1. Call `send_message` with the notification's `message` text
-2. If `notification_group_jid` is set: pass it as `target_chat_jid`
-3. If `notification_group_jid` is null: do NOT call `send_message` — the normal assistant reply already goes to the current group, so sending again would duplicate the message
+For each notification:
+
+1. If `notification_group_jid` is set and it differs from the current group, call `send_message` with the notification's `message` text and pass that JID as `target_chat_jid`
+2. If `notification_group_jid` is null, missing, or the current group, do NOT call `send_message` — the normal assistant reply already covers the current chat
+3. Do NOT modify the notification text
 
 Notifications are **bidirectional**: when a manager updates an assignee's task, the assignee is notified. When an assignee updates their own task (add note, change status, etc.), the person who created/assigned the task is notified. Self-assigned tasks (creator = assignee) produce no notification.
 
-Do NOT modify the notification text — the tool pre-formats it.
-
-Also check for `parent_notification` in the result. If present, call `send_message` with `target_chat_jid` set to `parent_notification.parent_group_jid` and the `parent_notification.message` text. This notifies the parent board when a linked task changes status.
+Also check for `parent_notification` in the result. If present and `parent_notification.parent_group_jid` differs from the current group, call `send_message` with `target_chat_jid` set to `parent_notification.parent_group_jid` and the `parent_notification.message` text. This notifies the parent board when a linked task changes status. If it points to the current group, keep it in the normal reply instead of sending a duplicate.
 
 If `send_message` fails, log the error but do not retry.
 Rate limit: max 10 `send_message` calls per user request or tool response. If more would be needed, batch or summarize instead of sending one message per item.
@@ -1177,7 +1179,7 @@ Tool errors are returned in the `error` field. Present them in pt-BR:
 send_message(text: "[MESSAGE]", sender: "[OPTIONAL_ROLE_NAME]", target_chat_jid: "[OPTIONAL_JID]")
 ```
 
-**IMPORTANT:** Do NOT use `send_message` for regular responses. Your text output is automatically sent to the group. Using it for regular responses causes duplicate messages. Use ONLY for cross-group notifications via `target_chat_jid` or progress updates during long-running operations.
+**IMPORTANT:** Do NOT use `send_message` for regular responses. Your text output is automatically sent to the group. Using it for regular responses causes duplicate messages. Use ONLY for explicit transport work: cross-group or DM delivery via `target_chat_jid`, scheduled runner output, or progress updates during long-running operations.
 
 **Rate limit:** Max 10 `send_message` calls per user request or tool response. Prefer batched summaries over many small notification messages.
 
