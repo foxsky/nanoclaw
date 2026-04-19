@@ -585,6 +585,13 @@ export async function runSemanticAudit(
       continue;
     }
 
+    // Only emit when the classifier says the mutation does NOT match intent.
+    // The response-audit loop had this gate; the mutation loop silently
+    // emitted every classifier call as a deviation, which made the no-op
+    // `intentMatches=true` Sonnet returns for timezone-annotated correct
+    // mutations leak into the report as unlabeled candidates.
+    if (parsed.intentMatches) continue;
+
     deviations.push({
       taskId: row.taskId,
       boardId: row.boardId,

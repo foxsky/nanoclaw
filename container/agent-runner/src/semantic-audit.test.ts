@@ -435,7 +435,7 @@ describe('runSemanticAudit', () => {
     `);
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ response: '{"intent_matches":true,"deviation":null,"confidence":"high"}' }),
+      json: async () => ({ response: '{"intent_matches":false,"deviation":"mock","confidence":"high"}' }),
     });
     const result = await runSemanticAudit({
       msgDb: msg,
@@ -475,7 +475,7 @@ describe('runSemanticAudit', () => {
     `);
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ response: '{"intent_matches":true,"deviation":null,"confidence":"high"}' }),
+      json: async () => ({ response: '{"intent_matches":false,"deviation":"mock","confidence":"high"}' }),
     });
     const result = await runSemanticAudit({
       msgDb: msg,
@@ -496,7 +496,7 @@ describe('runSemanticAudit', () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
       json: async () => ({
-        response: '{"intent_matches":true,"deviation":null,"confidence":"high"}',
+        response: '{"intent_matches":false,"deviation":"mock","confidence":"high"}',
       }),
     });
 
@@ -537,7 +537,7 @@ describe('runSemanticAudit', () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
       json: async () => ({
-        response: '{"intent_matches":true,"deviation":null,"confidence":"high"}',
+        response: '{"intent_matches":false,"deviation":"mock","confidence":"high"}',
       }),
     });
 
@@ -578,7 +578,7 @@ describe('runSemanticAudit', () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
       json: async () => ({
-        response: '{"intent_matches":true,"deviation":null,"confidence":"high"}',
+        response: '{"intent_matches":false,"deviation":"mock","confidence":"high"}',
       }),
     });
 
@@ -979,7 +979,7 @@ describe('runResponseAudit', () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
       json: async () => ({
-        response: '{"intent_matches":true,"deviation":null,"confidence":"high"}',
+        response: '{"intent_matches":false,"deviation":"mock","confidence":"high"}',
       }),
     });
 
