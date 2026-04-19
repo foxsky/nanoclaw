@@ -348,7 +348,10 @@ describe('runSemanticAudit', () => {
     expect(result.deviations[0].intentMatches).toBe(false);
     expect(result.deviations[0].confidence).toBe('high');
     expect(result.deviations[0].userMessage).toContain('quinta-feira');
-    expect(result.deviations[0].storedValue).toBe('2026-04-17T11:00');
+    // storedValue now carries the tz annotation — `annotateUtcTimestamps`
+    // labels Z-less ISO as "already local TZ" so classifiers don't guess.
+    expect(result.deviations[0].storedValue).toContain('2026-04-17T11:00');
+    expect(result.deviations[0].storedValue).toContain('already local');
     expect(result.counters).toMatchObject({ examined: 1, noTrigger: 0, boardMapFail: 0, ollamaFail: 0, parseFail: 0, skippedCasual: 0, skippedNoResponse: 0 });
 
     tf.close();
@@ -447,7 +450,10 @@ describe('runSemanticAudit', () => {
     expect(result.counters.examined).toBe(1);
     expect(result.counters.noTrigger).toBe(1);
     expect(result.counters.boardMapFail).toBe(0);
-    expect(result.deviations[0]?.userMessage).toBeNull();
+    // Mutation audit now SKIPS the classifier when userMessage is null —
+    // no user message means no evidence, so emitting a deviation was an
+    // FP source (dryrun 2026-04-19: 14 of 33 FPs were these leaks).
+    expect(result.deviations).toEqual([]);
     tf.close();
     msg.close();
   });
@@ -487,7 +493,9 @@ describe('runSemanticAudit', () => {
     expect(result.counters.examined).toBe(1);
     expect(result.counters.boardMapFail).toBe(1);
     expect(result.counters.noTrigger).toBe(0);
-    expect(result.deviations[0]?.userMessage).toBeNull();
+    // boardMapFail prevents userMessage resolution → classifier skipped,
+    // no deviation emitted (same rationale as the noTrigger test above).
+    expect(result.deviations).toEqual([]);
     tf.close();
     msg.close();
   });
@@ -612,6 +620,120 @@ describe('runSemanticAudit', () => {
     expect(result.deviations).toHaveLength(1);
     expect(result.deviations[0].fieldKind).toBe('scheduled_at');
     expect(result.deviations[0].storedValue).toContain('scheduled_at');
+    tf.close(); msg.close();
+  });
+
+  it('resolves mutation triggers via secondary board_groups chat jid', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        response: '{"intent_matches":false,"deviation":"mock","confidence":"high"}',
+      }),
+    });
+
+    const tf = new Database(':memory:');
+    tf.exec(`
+      CREATE TABLE boards (
+        id TEXT PRIMARY KEY,
+        group_jid TEXT,
+        group_folder TEXT,
+        parent_board_id TEXT
+      );
+      CREATE TABLE board_groups (
+        board_id TEXT,
+        group_jid TEXT,
+        group_folder TEXT,
+        PRIMARY KEY (board_id, group_jid)
+      );
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+      CREATE TABLE board_people (board_id TEXT, person_id TEXT, name TEXT, PRIMARY KEY (board_id, person_id));
+      CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT, task_id TEXT, action TEXT, by TEXT, at TEXT, details TEXT);
+      INSERT INTO boards VALUES ('board-multi-chat', 'PRIMARY@g.us', 'primary-folder', NULL);
+      INSERT INTO board_groups VALUES ('board-multi-chat', '120363499@g.us', 'secondary-folder');
+      INSERT INTO board_runtime_config VALUES ('board-multi-chat', 'America/Fortaleza');
+      INSERT INTO board_people VALUES ('board-multi-chat', 'alice', 'Alice Example');
+      INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES
+        ('board-multi-chat', 'M1', 'updated', 'alice',
+         '2026-04-15T11:04:11.450Z',
+         '{"changes":["Reunião reagendada para 17/04/2026 às 11:00"]}');
+    `);
+
+    const msg = new Database(':memory:');
+    msg.exec(`
+      CREATE TABLE messages (id TEXT, chat_jid TEXT, sender TEXT, sender_name TEXT, content TEXT, timestamp TEXT, is_from_me INTEGER, is_bot_message INTEGER DEFAULT 0, PRIMARY KEY (id, chat_jid));
+      CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
+      INSERT INTO registered_groups VALUES ('120363499@g.us', 'secondary-folder', 'Secondary', 1);
+      INSERT INTO messages VALUES (
+        'm1', '120363499@g.us', '558@s.whatsapp.net', 'Alice Example',
+        'mudar a reunião para quinta às 11h', '2026-04-15T11:03:30.000Z', 0, 0
+      );
+    `);
+
+    const result = await runSemanticAudit({
+      msgDb: msg,
+      tfDb: tf,
+      period: { startIso: '2026-04-15T00:00:00.000Z', endIso: '2026-04-16T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434',
+      ollamaModel: 'test-model:fake',
+    });
+
+    expect(result.counters.boardMapFail).toBe(0);
+    expect(result.counters.noTrigger).toBe(0);
+    expect(result.deviations).toHaveLength(1);
+    expect(result.deviations[0].userMessage).toContain('quinta às 11h');
+    tf.close(); msg.close();
+  });
+
+  it('classifies title changes as title, not due_date', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        response: '{"intent_matches":false,"deviation":"mock","confidence":"high"}',
+      }),
+    });
+
+    const tf = new Database(':memory:');
+    tf.exec(`
+      CREATE TABLE boards (
+        id TEXT PRIMARY KEY,
+        group_jid TEXT,
+        group_folder TEXT,
+        parent_board_id TEXT
+      );
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+      CREATE TABLE board_people (board_id TEXT, person_id TEXT, name TEXT, PRIMARY KEY (board_id, person_id));
+      CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT, task_id TEXT, action TEXT, by TEXT, at TEXT, details TEXT);
+      INSERT INTO boards VALUES ('board-title', '120363500@g.us', 'title-group', NULL);
+      INSERT INTO board_runtime_config VALUES ('board-title', 'America/Fortaleza');
+      INSERT INTO board_people VALUES ('board-title', 'alice', 'Alice Example');
+      INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES
+        ('board-title', 'T5', 'updated', 'alice',
+         '2026-04-15T11:04:11.450Z',
+         '{"changes":["Título alterado para \\"Novo título\\""]}');
+    `);
+
+    const msg = new Database(':memory:');
+    msg.exec(`
+      CREATE TABLE messages (id TEXT, chat_jid TEXT, sender TEXT, sender_name TEXT, content TEXT, timestamp TEXT, is_from_me INTEGER, is_bot_message INTEGER DEFAULT 0, PRIMARY KEY (id, chat_jid));
+      CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
+      INSERT INTO registered_groups VALUES ('120363500@g.us', 'title-group', 'Title', 1);
+      INSERT INTO messages VALUES (
+        'm1', '120363500@g.us', '558@s.whatsapp.net', 'Alice Example',
+        'renomear a tarefa para Novo título', '2026-04-15T11:03:30.000Z', 0, 0
+      );
+    `);
+
+    const result = await runSemanticAudit({
+      msgDb: msg,
+      tfDb: tf,
+      period: { startIso: '2026-04-15T00:00:00.000Z', endIso: '2026-04-16T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434',
+      ollamaModel: 'test-model:fake',
+    });
+
+    expect(result.deviations).toHaveLength(1);
+    expect(result.deviations[0].fieldKind).toBe('title');
+    expect(result.deviations[0].storedValue).toContain('Título alterado');
     tf.close(); msg.close();
   });
 
@@ -1012,6 +1134,51 @@ describe('runResponseAudit', () => {
     expect(result.counters.examined).toBe(1);
     expect(result.counters.boardMapFail).toBe(0);
     tf.close(); msg.close();
+  });
+
+  it('does not attribute Alice\'s reply to Bob when another user speaks first', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        response: '{"intent_matches":false,"deviation":"Bob only","confidence":"high"}',
+      }),
+    });
+
+    const tf = new Database(':memory:');
+    tf.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT, group_folder TEXT, parent_board_id TEXT);
+      CREATE TABLE board_groups (board_id TEXT, group_jid TEXT, group_folder TEXT, PRIMARY KEY (board_id, group_folder));
+      CREATE TABLE board_runtime_config (board_id TEXT PRIMARY KEY, timezone TEXT);
+      INSERT INTO boards VALUES ('board-interleaved', '120363416@g.us', 'interleaved-group', NULL);
+      INSERT INTO board_runtime_config VALUES ('board-interleaved', 'America/Fortaleza');
+    `);
+    const msg = new Database(':memory:');
+    msg.exec(`
+      CREATE TABLE messages (id TEXT, chat_jid TEXT, sender TEXT, sender_name TEXT, content TEXT, timestamp TEXT, is_from_me INTEGER, is_bot_message INTEGER DEFAULT 0, PRIMARY KEY (id, chat_jid));
+      CREATE TABLE registered_groups (jid TEXT PRIMARY KEY, folder TEXT, name TEXT, taskflow_managed INTEGER);
+      INSERT INTO registered_groups VALUES ('120363416@g.us', 'interleaved-group', 'Interleaved', 1);
+      INSERT INTO messages VALUES ('u1', '120363416@g.us', 'alice@s.whatsapp.net', 'Alice', 'pedido da Alice', '2026-04-15T10:00:00.000Z', 0, 0);
+      INSERT INTO messages VALUES ('u2', '120363416@g.us', 'bob@s.whatsapp.net', 'Bob', 'pedido do Bob', '2026-04-15T10:00:20.000Z', 0, 0);
+      INSERT INTO messages VALUES ('b1', '120363416@g.us', 'bot', 'Case', 'resposta para o Bob', '2026-04-15T10:00:40.000Z', 1, 1);
+    `);
+
+    const result = await runResponseAudit({
+      msgDb: msg,
+      tfDb: tf,
+      period: { startIso: '2026-04-15T00:00:00.000Z', endIso: '2026-04-16T00:00:00.000Z' },
+      ollamaHost: 'http://ollama:11434',
+      ollamaModel: 'test-model:fake',
+    });
+
+    expect(result.counters.skippedNoResponse).toBe(1);
+    expect(result.counters.examined).toBe(1);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(result.deviations).toHaveLength(1);
+    expect(result.deviations[0].userMessage).toBe('pedido do Bob');
+    const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
+    expect(body.prompt).toContain('pedido do Bob');
+    expect(body.prompt).not.toContain('pedido da Alice');
+    msg.close(); tf.close();
   });
 });
 

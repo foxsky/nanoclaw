@@ -6,12 +6,12 @@ import { resolveTimezoneOrUtc } from './tz-util.js';
 export const CONFIDENCE_VALUES = ['high', 'med', 'low'] as const;
 export type Confidence = (typeof CONFIDENCE_VALUES)[number];
 
-export type SemanticField = 'scheduled_at' | 'due_date' | 'assignee' | 'response';
+export type SemanticField = 'scheduled_at' | 'due_date' | 'assignee' | 'title' | 'response';
 
 export interface QualifyingMutation {
   taskId: string;
   boardId: string;
-  action: 'updated';
+  action: 'updated' | 'reassigned' | 'created';
   by: string | null;
   at: string;
   details: string;
@@ -76,10 +76,18 @@ const REAGENDADA_PATTERN =
 
 // Capable LLMs reading a raw UTC ISO like `2026-04-23T11:30:00.000Z` will
 // compare `11:30` against a user-provided local time (`8h30`) literally and
-// flag a deviation that isn't one. This helper replaces every UTC ISO
-// timestamp in a stored-value string with a labeled pair:
-//   `2026-04-23T11:30:00.000Z (local 2026-04-23 08:30 America/Fortaleza)`
-// so the classifier sees the converted value right next to the raw one.
+// flag a deviation that isn't one. This helper labels every ISO-shaped
+// timestamp in a stored-value string so the classifier doesn't have to
+// guess which zone it's in:
+//   `2026-04-23T11:30:00.000Z` → append `(local 2026-04-23 08:30 TZ)` — UTC → local
+//   `2026-04-23T11:00`         → append `(already local TZ)`          — already local
+//
+// The Z-less form matters because `extractScheduledAtValue` emits local
+// time without Z (extracted from the bot's own human-readable "Reunião
+// reagendada para DD/MM/YYYY às HH:MM" phrase, which is always in local).
+// Without an explicit label Haiku read those as UTC and "converted"
+// backward (11:00 → 08:00 local) producing confident FPs (#17, #24, #26
+// in the 2026-04-19 dryrun).
 export function annotateUtcTimestamps(stored: string, boardTimezone: string): string {
   if (!stored) return stored;
   const tz = resolveTimezoneOrUtc(boardTimezone);
@@ -92,7 +100,8 @@ export function annotateUtcTimestamps(stored: string, boardTimezone: string): st
     minute: '2-digit',
     hour12: false,
   });
-  return stored.replace(
+  // Pass 1: UTC Z-terminated → append local conversion.
+  const withUtc = stored.replace(
     /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)/g,
     (iso) => {
       const at = new Date(iso);
@@ -103,6 +112,16 @@ export function annotateUtcTimestamps(stored: string, boardTimezone: string): st
       const local = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
       return `${iso} (local ${local} ${tz})`;
     },
+  );
+  // Pass 2: Z-less / offset-less ISO → label as already-local. Must run
+  // AFTER pass 1 so Z-terminated values (which passed through pass 1 into
+  // a longer "ISO (local ... TZ)" form) don't get double-annotated.
+  // Negative lookahead prevents matching a date that's already followed
+  // by `Z`, `+HH:MM`, `-HH:MM`, or the `(local ...)` annotation we just
+  // added.
+  return withUtc.replace(
+    /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)(?![Z+\-\d]|\s*\(local)/g,
+    (iso) => `${iso} (already local ${tz})`,
   );
 }
 
@@ -162,9 +181,12 @@ export function buildPrompt(
     '',
     'Importante:',
     '- Se o usuário forneceu uma faixa de horário (ex: "9h às 9h30") e o bot armazenou apenas o início, isso é POR DESIGN do TaskFlow (não rastreia horário de fim) — não conta como divergência.',
-    '- Se o usuário pediu também algo que vira uma linha SEPARADA no histórico (ex: "me avise um dia antes" → reminder_added), a ausência dessa ação NESTA mutação não é divergência — ela vive em outra linha.',
+    '- Se o usuário pediu também algo que vira uma linha SEPARADA no histórico (ex: "me avise um dia antes" → reminder_added, "coloque o X como participante" → "Participante adicionado", "com uma nota referenciando Y" → "Nota adicionada"), a ausência dessa ação NESTA mutação NÃO é divergência — ela vive em outra linha.',
+    '- **Você está auditando APENAS a mutação específica mostrada em "Valor armazenado".** Não é divergência que a mutação não inclua participantes, notas, lembretes, ou outras ações complementares. Essas são registradas em linhas separadas do `task_history`.',
     '- Se o usuário usou um nome ambíguo mas o bot resolveu corretamente para a única pessoa do quadro com aquele nome, isso é correto.',
     '- Se o campo = `assignee` e o assignee armazenado bate literalmente com o nome que o usuário pediu (mesmo em minúscula ou com acento removido), é correspondência — não divergência.',
+    '- **Em português, `com [Nome]` NÃO indica atribuição** — indica que o usuário mencionou essa pessoa como colega/contexto. Ex: "criar tarefa X com o Mario" significa "criar tarefa X (que envolve Mario)", NÃO "atribuir a Mario". A atribuição implícita é ao próprio usuário. Só considere divergência de assignee quando o usuário usou "atribuir para", "para", "assignee", ou similar direcionador explícito.',
+    '- Se a mensagem do usuário é uma confirmação curta ("sim", "ok", "pode", "confirmar", "aprovar"), a mutação foi provavelmente resultado de contexto acumulado anterior (bot perguntou, usuário confirmou). Sem acesso a esse contexto, ASSUMA que é correspondência — marque `intent_matches=true`.',
     '',
     'Depois do raciocínio, produza JSON em bloco fenced:',
     '',
@@ -399,6 +421,35 @@ export interface SemanticAuditResult {
   counters: SemanticAuditCounters;
 }
 
+function hasTable(db: BetterSqliteDB, tableName: string): boolean {
+  const row = db
+    .prepare(
+      `SELECT 1 AS exists_flag
+       FROM sqlite_master
+       WHERE type = 'table' AND name = ?
+       LIMIT 1`,
+    )
+    .get(tableName) as { exists_flag: number } | undefined;
+  return !!row;
+}
+
+function getTableColumns(db: BetterSqliteDB, tableName: string): Set<string> {
+  if (!hasTable(db, tableName)) return new Set();
+  const rows = db
+    .prepare(`PRAGMA table_info(${tableName})`)
+    .all() as Array<{ name: string }>;
+  return new Set(rows.map((r) => r.name));
+}
+
+function interactionSenderKey(msg: {
+  sender?: string | null;
+  sender_name?: string | null;
+}): string {
+  const sender = (msg.sender ?? '').trim();
+  if (sender) return `sender:${sender}`;
+  return `name:${(msg.sender_name ?? '').trim()}`;
+}
+
 export async function runSemanticAudit(
   args: RunSemanticAuditArgs,
 ): Promise<SemanticAuditResult> {
@@ -454,18 +505,41 @@ export async function runSemanticAudit(
 
   if (mutationRows.length === 0) return { deviations: [], counters };
 
-  // Board → group jid resolution is two-step: `boards` lives in tfDb and
-  // `registered_groups` lives in msgDb. SQLite prepared statements cannot
-  // span two database connections, so we derive the folder from tfDb first,
-  // then look up the jid in msgDb. Do NOT collapse these into a single JOIN.
+  // Board → group-jid resolution for mutation-trigger lookup. Production
+  // schema can resolve a board via its primary `boards.group_jid`, any
+  // secondary `board_groups.group_jid`, or legacy `group_folder` wiring.
+  // Older unit-test fixtures may only have `boards.id`, so keep a final
+  // id-derived folder fallback for compatibility.
   const tzStmt = tfDb.prepare(
     `SELECT timezone FROM board_runtime_config WHERE board_id = ?`,
   );
-  const folderStmt = tfDb.prepare(
+  const boardsColumns = getTableColumns(tfDb, 'boards');
+  const hasBoardGroups = hasTable(tfDb, 'board_groups');
+  const boardMetaStmt =
+    boardsColumns.has('group_jid') || boardsColumns.has('group_folder')
+      ? tfDb.prepare(
+          `SELECT ${
+            boardsColumns.has('group_jid') ? 'group_jid' : 'NULL AS group_jid'
+          }, ${
+            boardsColumns.has('group_folder') ? 'group_folder' : 'NULL AS group_folder'
+          }
+           FROM boards
+           WHERE id = ?`,
+        )
+      : null;
+  const boardGroupsStmt = hasBoardGroups
+    ? tfDb.prepare(
+        `SELECT group_jid
+         FROM board_groups
+         WHERE board_id = ?
+         ORDER BY group_jid`,
+      )
+    : null;
+  const legacyFolderStmt = tfDb.prepare(
     `SELECT LOWER(REPLACE(id, 'board-', '')) AS folder FROM boards WHERE id = ?`,
   );
-  const groupStmt = msgDb.prepare(
-    `SELECT jid FROM registered_groups WHERE folder = ?`,
+  const groupsByFolderStmt = msgDb.prepare(
+    `SELECT jid FROM registered_groups WHERE folder = ? ORDER BY jid`,
   );
   const personStmt = tfDb.prepare(
     `SELECT name FROM board_people WHERE board_id = ? AND person_id = ? LIMIT 1`,
@@ -499,13 +573,17 @@ export async function runSemanticAudit(
     } else if (row.action === 'reassigned') {
       fieldKind = 'assignee';
       storedValue = row.details;
+    } else if (row.details.includes('"Título alterado')) {
+      fieldKind = 'title';
+      storedValue = row.details;
     } else if (row.action === 'created') {
       // Created rows: classify by what's interesting (scheduled_at > assignee)
       fieldKind = row.details.includes('scheduled_at') ? 'scheduled_at' : 'assignee';
       storedValue = row.details;
     } else {
-      // Title changes and other update types
-      fieldKind = 'due_date'; // generic "field update" bucket
+      // Unknown update types are still interesting enough to inspect,
+      // but keep them out of the date-specific bucket.
+      fieldKind = 'title';
       storedValue = row.details;
     }
 
@@ -524,13 +602,33 @@ export async function runSemanticAudit(
     const personRow = personStmt.get(row.boardId, row.by) as { name: string } | undefined;
     const userDisplayName = personRow?.name ?? null;
 
-    const folderRow = folderStmt.get(row.boardId) as { folder: string } | undefined;
-    const groupRow = folderRow
-      ? (groupStmt.get(folderRow.folder) as { jid: string } | undefined)
-      : undefined;
+    const candidateJids: string[] = [];
+    const metaRow = boardMetaStmt?.get(row.boardId) as
+      | { group_jid: string | null; group_folder: string | null }
+      | undefined;
+    if (metaRow?.group_jid) {
+      candidateJids.push(metaRow.group_jid);
+    }
+    if (boardGroupsStmt) {
+      const groupRows = boardGroupsStmt.all(row.boardId) as Array<{ group_jid: string }>;
+      for (const group of groupRows) {
+        if (group.group_jid) candidateJids.push(group.group_jid);
+      }
+    }
+    const candidateFolders = [
+      metaRow?.group_folder ?? null,
+      (legacyFolderStmt.get(row.boardId) as { folder: string } | undefined)?.folder ?? null,
+    ].filter((folder): folder is string => !!folder);
+    for (const folder of candidateFolders) {
+      const groupRows = groupsByFolderStmt.all(folder) as Array<{ jid: string }>;
+      for (const group of groupRows) {
+        if (group.jid) candidateJids.push(group.jid);
+      }
+    }
+    const resolvedGroupJids = [...new Set(candidateJids)];
     let userMessage: string | null = null;
     let messageTimestamp: string | null = null;
-    if (!groupRow) {
+    if (resolvedGroupJids.length === 0) {
       counters.boardMapFail++;
     } else if (userDisplayName) {
       const windowStart = new Date(new Date(row.at).getTime() - 600_000).toISOString();
@@ -538,12 +636,18 @@ export async function runSemanticAudit(
       // the self-correction detector in auditor-script.sh (~L420, L552).
       const escaped = userDisplayName.replace(/[\\%_]/g, (c) => '\\' + c);
       const likeName = `%${escaped}%`;
-      const tr = triggerStmt.get(groupRow.jid, row.at, windowStart, likeName) as
-        | { content: string; timestamp: string; sender_name: string }
-        | undefined;
-      if (tr) {
-        userMessage = tr.content;
-        messageTimestamp = tr.timestamp;
+      let trigger: { content: string; timestamp: string; sender_name: string } | undefined;
+      for (const groupJid of resolvedGroupJids) {
+        const tr = triggerStmt.get(groupJid, row.at, windowStart, likeName) as
+          | { content: string; timestamp: string; sender_name: string }
+          | undefined;
+        if (tr && (!trigger || tr.timestamp > trigger.timestamp)) {
+          trigger = tr;
+        }
+      }
+      if (trigger) {
+        userMessage = trigger.content;
+        messageTimestamp = trigger.timestamp;
       } else {
         counters.noTrigger++;
       }
@@ -556,7 +660,7 @@ export async function runSemanticAudit(
     const mutation: QualifyingMutation = {
       taskId: row.taskId,
       boardId: row.boardId,
-      action: row.action as 'updated',
+      action: row.action as 'updated' | 'reassigned' | 'created',
       by: row.by,
       at: row.at,
       details: row.details,
@@ -572,6 +676,13 @@ export async function runSemanticAudit(
       headerToday: header.today,
       headerWeekday: header.weekday,
     };
+
+    // Skip the classifier when no triggering user message was found.
+    // Without a user message the classifier can only honestly say "can't
+    // verify" — and capable models still return `intent_matches=false` with
+    // low confidence, which used to surface as FPs. The noTrigger counter
+    // was already incremented above when the lookup failed.
+    if (!userMessage) continue;
 
     const prompt = buildPrompt(mutation, context);
     const raw = await callWithFallback(ollama, prompt);
@@ -798,23 +909,31 @@ export async function runResponseAudit(
       const head = userMessages[i];
       if (isWebOrigin(head)) continue;
 
+      const headKey = interactionSenderKey(head);
       const tenMinLater = new Date(new Date(head.timestamp).getTime() + 600_000).toISOString();
       const botResp = botRespStmt.get(group.jid, head.timestamp, tenMinLater) as
         | { content: string; timestamp: string }
         | undefined;
-      if (!botResp) {
-        counters.skippedNoResponse++;
-        continue;
-      }
-
       const burst = [head];
+      const burstCutoff = botResp?.timestamp ?? tenMinLater;
+      let interleavedUserBeforeReply = false;
       let j = i + 1;
       for (; j < userMessages.length; j++) {
         const next = userMessages[j];
-        if (next.timestamp >= botResp.timestamp) break;
-        if (!isWebOrigin(next)) burst.push(next);
+        if (next.timestamp >= burstCutoff) break;
+        if (isWebOrigin(next)) continue;
+        if (interactionSenderKey(next) !== headKey) {
+          interleavedUserBeforeReply = true;
+          break;
+        }
+        burst.push(next);
       }
       i = j - 1;
+
+      if (!botResp || interleavedUserBeforeReply) {
+        counters.skippedNoResponse++;
+        continue;
+      }
 
       const burstContent = burst.map((m) => m.content).join('\n');
       if (CASUAL_PATTERN.test(burstContent.trim())) {
