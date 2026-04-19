@@ -4,6 +4,14 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-19 (later) — Auditor dryrun cleanup scope fix
+
+The exact-correlation canary surfaced a real dryrun-only regression in `container/agent-runner/src/auditor-script.sh`: `mode` was declared inside the main `try` block but referenced again in `finally` when deciding whether to write the structured audit dryrun artifact. In dryrun mode that threw `ReferenceError: mode is not defined` after the audit body completed, which meant the report path only looked healthy if you patched the generated script copy by hand during debugging.
+
+The fix is intentionally narrow: hoist `const mode = process.env.NANOCLAW_SEMANTIC_AUDIT_MODE` outside the `try` so both the semantic-audit branch and the cleanup/dryrun logging branch read the same value. No enabled-mode behavior changes; this just restores the intended dryrun execution path.
+
+Re-verified with the exact-correlation canary fixture after the source fix. The clean rerun produced the expected structural refs in the final auditor report, preserved `trigger_turn_id` / message-ID links in the DB artifacts, and wrote the unified `semantic-dryrun-2026-04-19.ndjson` with the exact response-correlation row (`sourceTurnId=71d720f9-3437-4fd1-ae3d-cc348f32208d`, `sourceMessageIds=["u-response-1"]`, `responseMessageId="bot-related-1"`).
+
 ## 2026-04-19 (later) — Exact message correlation across the audit pipeline
 
 This lands the end-to-end correlation work that had been deferred behind the original Kipp structural quarantine. Before this change, the system had three different "close enough" paths still in play: `send_message_log` could only attribute some DM sends by time window, `task_history` self-correction context still fell back to sender-name + 10-minute scans when no turn data was present, and `runResponseAudit()` paired user bursts to "first bot row in the next 10 minutes" unless a response happened to be obvious. That was good enough to reduce false positives, but not good enough for the stated goal: exact message-ID correlation wherever the transport actually knows the IDs.

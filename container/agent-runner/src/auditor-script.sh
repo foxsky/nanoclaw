@@ -961,8 +961,8 @@ if (refsAppendBlock) {
 const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
 
 (async () => {
+  const mode = process.env.NANOCLAW_SEMANTIC_AUDIT_MODE;
   try {
-    const mode = process.env.NANOCLAW_SEMANTIC_AUDIT_MODE;
     if (mode === 'dryrun' || mode === 'enabled') {
       try {
         const { runSemanticAudit, runResponseAudit, writeDryRunLog } = await import(SEMANTIC_AUDIT_MODULE_PATH);
