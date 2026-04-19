@@ -624,7 +624,7 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
         // to address that class.
         const defaultModel = cloudOptIn
           ? 'minimax-m2.7:cloud'
-          : 'claude-haiku-4-5-20251001';
+          : 'claude-sonnet-4-6';
         const ollamaModel =
           process.env.NANOCLAW_SEMANTIC_AUDIT_MODEL || defaultModel;
         const isAnthropic = ollamaModel.startsWith('claude-') || ollamaModel.startsWith('anthropic:');

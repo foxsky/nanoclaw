@@ -135,37 +135,83 @@ export function buildPrompt(
   ].join('\n');
 }
 
+// Strict schema check for the classifier's answer shape.
+function coerceClassifierJson(parsed: unknown): {
+  intentMatches: boolean;
+  deviation: string | null;
+  confidence: Confidence;
+} | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const p = parsed as Record<string, unknown>;
+  if (typeof p.intent_matches !== 'boolean') return null;
+  if (!CONFIDENCE_VALUES.includes(p.confidence as Confidence)) return null;
+  const deviation = typeof p.deviation === 'string' ? p.deviation : null;
+  return {
+    intentMatches: p.intent_matches,
+    deviation,
+    confidence: p.confidence as Confidence,
+  };
+}
+
 export function parseOllamaResponse(raw: string): {
   intentMatches: boolean;
   deviation: string | null;
   confidence: Confidence;
 } | null {
   if (!raw) return null;
+  const text = raw.trim();
 
-  let text = raw.trim();
-  text = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '');
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start === -1 || end === -1 || end <= start) return null;
-  const candidate = text.slice(start, end + 1);
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(candidate);
-  } catch {
-    return null;
+  // Preferred path: pick the LAST ```json``` (or bare ```) fenced block. Claude
+  // models asked to "think step by step" often include example-shaped JSON in
+  // the reasoning prose; taking the last fenced block grabs the final answer
+  // and avoids those. Ollama models that wrap the whole response in a single
+  // fence also land on this path.
+  const fencedMatches = [...text.matchAll(/```(?:json)?\s*\n?([\s\S]*?)```/gi)];
+  for (let i = fencedMatches.length - 1; i >= 0; i--) {
+    const body = fencedMatches[i][1].trim();
+    const open = body.indexOf('{');
+    const close = body.lastIndexOf('}');
+    if (open === -1 || close === -1 || close <= open) continue;
+    try {
+      const parsed = JSON.parse(body.slice(open, close + 1));
+      const result = coerceClassifierJson(parsed);
+      if (result) return result;
+    } catch {
+      // try the next fenced block
+    }
   }
-  if (!parsed || typeof parsed !== 'object') return null;
-  const p = parsed as Record<string, unknown>;
-  if (typeof p.intent_matches !== 'boolean') return null;
-  if (!CONFIDENCE_VALUES.includes(p.confidence as Confidence)) return null;
-  const deviation = typeof p.deviation === 'string' ? p.deviation : null;
 
-  return {
-    intentMatches: p.intent_matches,
-    deviation,
-    confidence: p.confidence as Confidence,
-  };
+  // Fallback: last balanced {...} in the text. Scans right-to-left so a
+  // classifier that emits `{ ... }` at the end of the message wins over any
+  // `{"scheduled_at":"..."}` echoed from the stored-value quote earlier.
+  const ends: number[] = [];
+  for (let i = 0; i < text.length; i++) if (text[i] === '}') ends.push(i);
+  for (let ei = ends.length - 1; ei >= 0; ei--) {
+    const close = ends[ei];
+    // Find the matching `{` by scanning left and tracking depth.
+    let depth = 0;
+    let open = -1;
+    for (let i = close; i >= 0; i--) {
+      if (text[i] === '}') depth++;
+      else if (text[i] === '{') {
+        depth--;
+        if (depth === 0) {
+          open = i;
+          break;
+        }
+      }
+    }
+    if (open === -1) continue;
+    try {
+      const parsed = JSON.parse(text.slice(open, close + 1));
+      const result = coerceClassifierJson(parsed);
+      if (result) return result;
+    } catch {
+      // keep scanning
+    }
+  }
+
+  return null;
 }
 
 export async function callOllama(
