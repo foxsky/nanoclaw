@@ -9,6 +9,36 @@ console.info = (...args) => process.stderr.write(args.join(' ') + '\n')
 console.warn = (...args) => process.stderr.write(args.join(' ') + '\n')
 console.error = (...args) => process.stderr.write(args.join(' ') + '\n')
 
+function safeParseJsonArray(val: unknown): unknown[] {
+  if (!val || typeof val !== 'string') return []
+  try { return JSON.parse(val) as unknown[] } catch { return [] }
+}
+
+function serializeTask(row: Record<string, unknown>) {
+  return {
+    id: row['id'],
+    board_id: row['board_id'],
+    board_code: row['board_code'] ?? null,
+    title: row['title'],
+    assignee: row['assignee'] ?? null,
+    column: (row['column'] as string) || 'inbox',
+    priority: row['priority'] ?? null,
+    due_date: row['due_date'] ?? null,
+    type: (row['type'] as string) || 'simple',
+    labels: safeParseJsonArray(row['labels']),
+    description: row['description'] ?? null,
+    notes: null,
+    parent_task_id: row['parent_task_id'] ?? null,
+    parent_task_title: row['parent_task_title'] ?? null,
+    scheduled_at: row['scheduled_at'] ?? null,
+    created_at: row['created_at'],
+    updated_at: row['updated_at'],
+    child_exec_board_id: row['child_exec_board_id'] ?? null,
+    child_exec_person_id: row['child_exec_person_id'] ?? null,
+    child_exec_rollup_status: row['child_exec_rollup_status'] ?? null,
+  }
+}
+
 function parseArgs(): { db: string } {
   const idx = process.argv.indexOf('--db')
   if (idx === -1 || !process.argv[idx + 1]) {
