@@ -44,4 +44,55 @@ describe('taskflow-mcp-server', () => {
     })
     expect(sentinel).toContain('MCP server ready')
   })
+
+  it('responds to initialize with protocol version', async () => {
+    proc = spawn('node', [SERVER_BIN, '--db', TEST_DB], { stdio: ['pipe', 'pipe', 'pipe'] })
+
+    // Wait for ready sentinel
+    await new Promise<void>((resolve, reject) => {
+      const rl = createInterface({ input: proc!.stderr! })
+      let settled = false
+      const t = setTimeout(() => {
+        if (!settled) { settled = true; rl.close(); reject(new Error('timeout waiting for sentinel')) }
+      }, 5000)
+      rl.on('line', (l) => {
+        if (l.includes('MCP server ready') && !settled) {
+          settled = true; clearTimeout(t); rl.close(); resolve()
+        }
+      })
+      proc!.on('exit', (code) => {
+        if (!settled) { settled = true; clearTimeout(t); reject(new Error(`exited with code ${code}`)) }
+      })
+    })
+
+    // Send initialize request
+    const req = JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'initialize',
+      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0.0.1' } }
+    })
+    proc!.stdin!.write(req + '\n')
+
+    // Read response from stdout
+    const response = await new Promise<any>((resolve, reject) => {
+      const rl = createInterface({ input: proc!.stdout! })
+      let settled = false
+      const t = setTimeout(() => {
+        if (!settled) { settled = true; rl.close(); reject(new Error('timeout waiting for initialize response')) }
+      }, 5000)
+      rl.on('line', (line) => {
+        if (settled) return
+        try {
+          const msg = JSON.parse(line)
+          settled = true; clearTimeout(t); rl.close(); resolve(msg)
+        } catch {}
+      })
+      proc!.on('exit', (code) => {
+        if (!settled) { settled = true; clearTimeout(t); rl.close(); reject(new Error(`process exited with code ${code}`)) }
+      })
+    })
+
+    expect(response.id).toBe(1)
+    expect(response.result.protocolVersion).toBe('2024-11-05')
+    expect(response.result.serverInfo.name).toBe('taskflow-mcp-server')
+  })
 })

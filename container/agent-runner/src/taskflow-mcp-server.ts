@@ -1,3 +1,5 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import Database from 'better-sqlite3'
 
 // Redirect all console output to stderr — stdout is the exclusive JSON-RPC channel
@@ -27,18 +29,22 @@ async function main() {
   db.pragma('journal_mode = WAL')
   db.pragma('busy_timeout = 5000')
 
-  // TODO(Task 2): move sentinel to AFTER McpServer.connect(transport) — emitting here
-  // is correct for the skeleton but Task 2 must gate it behind the transport being live.
+  const server = new McpServer({
+    name: 'taskflow-mcp-server',
+    version: '0.1.0',
+  })
+
+  const transport = new StdioServerTransport()
+  await server.connect(transport)
+
+  // Emit ready sentinel AFTER transport is connected and listening
   process.stderr.write('MCP server ready\n')
 
-  // Keep process alive
-  process.stdin.resume()
   process.on('SIGTERM', () => shutdown(db))
   process.on('SIGINT', () => shutdown(db))
 }
 
 main().catch((err) => {
-  process.stderr.write(`Fatal: ${err}
-`)
+  process.stderr.write(`Fatal: ${err}\n`)
   process.exit(1)
 })
