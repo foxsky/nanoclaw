@@ -100,9 +100,72 @@ function registerTools(server: McpServer, db: Database.Database): void {
     {
       board_id: z.string(),
       filter: z.string(),
+      label: z.string().optional(),
     },
-    async (_args) => {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: 'not_implemented' }) }] }
+    async (args) => {
+      const filterType = args.filter.trim().toLowerCase()
+      const validFilters = ['overdue', 'due_today', 'due_this_week', 'urgent', 'high_priority', 'by_label']
+      if (!validFilters.includes(filterType)) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: 'Invalid filter type' }) }] }
+      }
+      if (filterType === 'by_label' && (!args.label || args.label.trim() === '')) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: 'label is required for by_label filter' }) }] }
+      }
+
+      const rows = db.prepare(`
+        SELECT t.id, t.board_id, b.short_code AS board_code,
+               t.title, t.assignee, t."column", t.priority, t.due_date,
+               t.type, t.labels, t.description, t.parent_task_id,
+               t.scheduled_at, t.created_at, t.updated_at,
+               t.child_exec_board_id, t.child_exec_person_id, t.child_exec_rollup_status
+        FROM tasks t
+        JOIN boards b ON b.id = t.board_id
+        WHERE t.board_id = ?
+      `).all(args.board_id) as Record<string, unknown>[]
+
+      const serialized = rows.map(serializeTask)
+
+      const todayStr = new Date().toISOString().slice(0, 10)
+      const weekEnd = new Date()
+      weekEnd.setDate(weekEnd.getDate() + 6)
+      const weekEndStr = weekEnd.toISOString().slice(0, 10)
+
+      let filtered: ReturnType<typeof serializeTask>[]
+      if (filterType === 'overdue') {
+        filtered = serialized.filter(t =>
+          t.due_date != null && t.column !== 'done' && (t.due_date as string) < todayStr
+        )
+      } else if (filterType === 'due_today') {
+        filtered = serialized.filter(t => t.due_date === todayStr)
+      } else if (filterType === 'due_this_week') {
+        filtered = serialized.filter(t =>
+          t.due_date != null &&
+          (t.due_date as string) >= todayStr &&
+          (t.due_date as string) <= weekEndStr
+        )
+      } else if (filterType === 'urgent') {
+        filtered = serialized.filter(t => t.priority === 'urgente')
+      } else if (filterType === 'high_priority') {
+        filtered = serialized.filter(t => t.priority === 'alta')
+      } else {
+        // by_label
+        const labelQuery = args.label!.trim().toLowerCase()
+        filtered = serialized.filter(t =>
+          Array.isArray(t.labels) &&
+          (t.labels as string[]).some(l => l.toLowerCase() === labelQuery)
+        )
+      }
+
+      filtered.sort((a, b) => {
+        const aN = a.due_date == null
+        const bN = b.due_date == null
+        if (aN && bN) return 0
+        if (aN) return 1
+        if (bN) return -1
+        return (a.due_date as string) < (b.due_date as string) ? -1 : 1
+      })
+
+      return { content: [{ type: 'text', text: JSON.stringify({ rows: filtered }) }] }
     }
   )
 

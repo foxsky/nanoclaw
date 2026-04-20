@@ -273,6 +273,45 @@ describe('taskflow-mcp-server', () => {
     expect(row).toHaveProperty('details')
   })
 
+  it('api_filter_board_tasks returns urgent tasks', async () => {
+    const dbPath = createTestDb2()
+    tempDir = dbPath
+    proc = spawn('node', [SERVER_BIN, '--db', dbPath], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const lines: any[] = []
+    createInterface({ input: proc.stdout! }).on('line', l => { try { lines.push(JSON.parse(l)) } catch {} })
+
+    await new Promise<void>((resolve, reject) => {
+      const rl = createInterface({ input: proc!.stderr! })
+      let settled = false
+      const t = setTimeout(() => { if (!settled) { settled = true; rl.close(); reject(new Error('timeout')) } }, 5000)
+      rl.on('line', l => { if (l.includes('MCP server ready') && !settled) { settled = true; clearTimeout(t); rl.close(); resolve() } })
+    })
+
+    const send = (msg: object) => proc!.stdin!.write(JSON.stringify(msg) + '\n')
+    const waitFor = (id: number) => new Promise<any>((resolve, reject) => {
+      const deadline = setTimeout(() => reject(new Error(`timeout id=${id}`)), 5000)
+      const iv = setInterval(() => {
+        const m = lines.find(x => x.id === id)
+        if (m) { clearInterval(iv); clearTimeout(deadline); resolve(m) }
+      }, 50)
+    })
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0.0.1' } } })
+    await waitFor(1)
+    send({ jsonrpc: '2.0', method: 'notifications/initialized' })
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'api_filter_board_tasks', arguments: { board_id: 'b1', filter: 'urgent' } } })
+    const resp = await waitFor(2)
+
+    const text = resp.result.content[0].text
+    const data = JSON.parse(text)
+    expect(Array.isArray(data.rows)).toBe(true)
+    expect(data.rows.length).toBe(1)
+    expect(data.rows[0].id).toBe('t1')
+    expect(data.rows[0].priority).toBe('urgente')
+    expect(data.rows[0].board_code).toBe('TF')
+    expect(Array.isArray(data.rows[0].labels)).toBe(true)
+  })
+
 })
 
 // ── test DB factory ──────────────────────────────────────────────────────────
