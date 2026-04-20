@@ -163,8 +163,9 @@ describe('taskflow-mcp-server', () => {
   })
 
   it('returns the placeholder payload from tools/call', async () => {
-    const dbPath = createTestDb2()
-    proc = spawn('node', [SERVER_BIN, '--db', dbPath], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const testDb = createTestDb2()
+    tempDir = testDb
+    proc = spawn('node', [SERVER_BIN, '--db', testDb], { stdio: ['pipe', 'pipe', 'pipe'] })
     const lines: any[] = []
     const stdoutRl = createInterface({ input: proc!.stdout! })
     stdoutRl.on('line', (line) => {
@@ -217,8 +218,6 @@ describe('taskflow-mcp-server', () => {
     const text = resp.result.content[0].text
     const data = JSON.parse(text)
     expect(Array.isArray(data.rows)).toBe(true)
-
-    await removeTestDb(dbPath)
   })
 
   it('exits non-zero when --db is missing', async () => {
@@ -233,6 +232,7 @@ describe('taskflow-mcp-server', () => {
 
   it('api_board_activity returns history rows for changes_today', async () => {
     const dbPath = createTestDb2()
+    tempDir = dbPath
     proc = spawn('node', [SERVER_BIN, '--db', dbPath], { stdio: ['pipe', 'pipe', 'pipe'] })
     const lines: any[] = []
     createInterface({ input: proc.stdout! }).on('line', l => { try { lines.push(JSON.parse(l)) } catch {} })
@@ -271,8 +271,6 @@ describe('taskflow-mcp-server', () => {
     expect(row).toHaveProperty('by')
     expect(row).toHaveProperty('at')
     expect(row).toHaveProperty('details')
-
-    await removeTestDb(dbPath)
   })
 
 })
