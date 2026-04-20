@@ -17,7 +17,14 @@ function parseArgs(): { db: string } {
   return { db: process.argv[idx + 1] }
 }
 
-function shutdown(db: Database.Database) {
+function registerTools(server: McpServer, db: Database.Database): void {
+  // Tool implementations will be added in Phase 3
+  void db // suppress unused-variable warning until Phase 3
+  void server
+}
+
+async function shutdown(server: McpServer, db: Database.Database): Promise<void> {
+  try { await server.close() } catch {}
   db.close()
   process.exit(0)
 }
@@ -34,14 +41,16 @@ async function main() {
     version: '0.1.0',
   })
 
+  registerTools(server, db)
+
   const transport = new StdioServerTransport()
   await server.connect(transport)
 
   // Emit ready sentinel AFTER transport is connected and listening
   process.stderr.write('MCP server ready\n')
 
-  process.on('SIGTERM', () => shutdown(db))
-  process.on('SIGINT', () => shutdown(db))
+  process.on('SIGTERM', () => { shutdown(server, db) })
+  process.on('SIGINT',  () => { shutdown(server, db) })
 }
 
 main().catch((err) => {

@@ -83,7 +83,7 @@ describe('taskflow-mcp-server', () => {
         if (settled) return
         try {
           const msg = JSON.parse(line)
-          settled = true; clearTimeout(t); rl.close(); resolve(msg)
+          if (msg.id === 1) { settled = true; clearTimeout(t); rl.close(); resolve(msg) }
         } catch {}
       })
       proc!.on('exit', (code) => {
@@ -94,5 +94,6 @@ describe('taskflow-mcp-server', () => {
     expect(response.id).toBe(1)
     expect(response.result.protocolVersion).toBe('2024-11-05')
     expect(response.result.serverInfo.name).toBe('taskflow-mcp-server')
+    expect(response.result.capabilities).toBeDefined()
   })
 })
