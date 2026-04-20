@@ -175,8 +175,20 @@ function registerTools(server: McpServer, db: Database.Database): void {
     {
       board_id: z.string(),
     },
-    async (_args) => {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: 'not_implemented' }) }] }
+    async (args) => {
+      const rows = db.prepare(`
+        SELECT t.id, t.board_id, b.short_code AS board_code,
+               t.title, t.assignee, t."column", t.priority, t.due_date,
+               t.type, t.labels, t.description, t.parent_task_id,
+               (SELECT pt.title FROM tasks pt WHERE pt.id = t.parent_task_id LIMIT 1) AS parent_task_title,
+               t.scheduled_at, t.created_at, t.updated_at,
+               t.child_exec_board_id, t.child_exec_person_id, t.child_exec_rollup_status
+        FROM tasks t
+        JOIN boards b ON b.id = t.board_id
+        WHERE t.board_id = ? AND t.child_exec_board_id IS NOT NULL
+        ORDER BY COALESCE(t.updated_at, t.created_at) DESC, t.id ASC
+      `).all(args.board_id) as Record<string, unknown>[]
+      return { content: [{ type: 'text', text: JSON.stringify({ rows: rows.map(r => serializeTask(r)) }) }] }
     }
   )
 }
