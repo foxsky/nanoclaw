@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import Database from 'better-sqlite3'
@@ -18,9 +19,43 @@ function parseArgs(): { db: string } {
 }
 
 function registerTools(server: McpServer, db: Database.Database): void {
-  // Tool implementations will be added in Phase 3
-  void db // suppress unused-variable warning until Phase 3
-  void server
+  void db // suppress unused-variable warning until tools query the DB in a later phase
+
+  server.tool(
+    'api_board_activity',
+    'Board activity log',
+    {
+      board_id: z.string(),
+      mode: z.enum(['changes_today', 'changes_since']).optional(),
+      since: z.string().optional(),
+    },
+    async (_args) => {
+      return { content: [{ type: 'text', text: JSON.stringify({ error: 'not_implemented' }) }] }
+    }
+  )
+
+  server.tool(
+    'api_filter_board_tasks',
+    'Board task filter',
+    {
+      board_id: z.string(),
+      filter: z.string(),
+    },
+    async (_args) => {
+      return { content: [{ type: 'text', text: JSON.stringify({ error: 'not_implemented' }) }] }
+    }
+  )
+
+  server.tool(
+    'api_linked_tasks',
+    'Board linked tasks',
+    {
+      board_id: z.string(),
+    },
+    async (_args) => {
+      return { content: [{ type: 'text', text: JSON.stringify({ error: 'not_implemented' }) }] }
+    }
+  )
 }
 
 async function shutdown(server: McpServer, db: Database.Database): Promise<void> {
