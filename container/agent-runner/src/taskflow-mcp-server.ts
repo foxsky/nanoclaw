@@ -15,6 +15,11 @@ function parseArgs(): { db: string } {
   return { db: process.argv[idx + 1] }
 }
 
+function shutdown(db: Database.Database) {
+  db.close()
+  process.exit(0)
+}
+
 async function main() {
   const { db: dbPath } = parseArgs()
 
@@ -22,18 +27,18 @@ async function main() {
   db.pragma('journal_mode = WAL')
   db.pragma('busy_timeout = 5000')
 
-  // Emit ready sentinel to stderr — Python client waits for this line
+  // TODO(Task 2): move sentinel to AFTER McpServer.connect(transport) — emitting here
+  // is correct for the skeleton but Task 2 must gate it behind the transport being live.
   process.stderr.write('MCP server ready\n')
 
   // Keep process alive
   process.stdin.resume()
-  process.on('SIGTERM', () => {
-    db.close()
-    process.exit(0)
-  })
+  process.on('SIGTERM', () => shutdown(db))
+  process.on('SIGINT', () => shutdown(db))
 }
 
 main().catch((err) => {
-  process.stderr.write(`Fatal: ${err}\n`)
+  process.stderr.write(`Fatal: ${err}
+`)
   process.exit(1)
 })

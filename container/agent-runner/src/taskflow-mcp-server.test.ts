@@ -9,23 +9,38 @@ const TEST_DB = process.env.TASKFLOW_DB_PATH || '/home/nanoclaw/nanoclaw/data/ta
 describe('taskflow-mcp-server', () => {
   let proc: ReturnType<typeof spawn> | null = null
 
-  afterEach(() => {
-    proc?.kill()
-    proc = null
+  afterEach(async () => {
+    if (proc) {
+      await new Promise<void>((res) => { proc!.on('exit', () => res()); proc!.kill() })
+      proc = null
+    }
   })
 
   it('emits ready sentinel on stderr after startup', async () => {
     proc = spawn('node', [SERVER_BIN, '--db', TEST_DB])
     const sentinel = await new Promise<string>((resolve, reject) => {
       const rl = createInterface({ input: proc!.stderr! })
-      const timeout = setTimeout(() => reject(new Error('timeout waiting for sentinel')), 5000)
+      const timeout = setTimeout(() => {
+        rl.close()
+        reject(new Error('timeout waiting for sentinel'))
+      }, 5000)
+      let settled = false
       rl.on('line', (line) => {
-        if (line.includes('MCP server ready')) {
+        if (line.includes('MCP server ready') && !settled) {
+          settled = true
           clearTimeout(timeout)
+          rl.close()
           resolve(line)
         }
       })
-      proc!.on('exit', (code) => reject(new Error(`exited with code ${code}`)))
+      proc!.on('exit', (code) => {
+        if (!settled) {
+          settled = true
+          clearTimeout(timeout)
+          rl.close()
+          reject(new Error(`exited with code ${code}`))
+        }
+      })
     })
     expect(sentinel).toContain('MCP server ready')
   })
