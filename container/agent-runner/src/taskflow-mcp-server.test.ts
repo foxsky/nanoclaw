@@ -163,8 +163,8 @@ describe('taskflow-mcp-server', () => {
   })
 
   it('returns the placeholder payload from tools/call', async () => {
-    const testDb = createTestDb2()
-    tempDir = testDb
+    tempDir = mkdtempSync(path.join(tmpdir(), 'taskflow-mcp-server-test-'))
+    const testDb = createTestDbSeeded(tempDir)
     proc = spawn('node', [SERVER_BIN, '--db', testDb], { stdio: ['pipe', 'pipe', 'pipe'] })
     const lines: any[] = []
     const stdoutRl = createInterface({ input: proc!.stdout! })
@@ -231,8 +231,8 @@ describe('taskflow-mcp-server', () => {
   })
 
   it('api_board_activity returns history rows for changes_today', async () => {
-    const dbPath = createTestDb2()
-    tempDir = dbPath
+    tempDir = mkdtempSync(path.join(tmpdir(), 'taskflow-mcp-server-test-'))
+    const dbPath = createTestDbSeeded(tempDir)
     proc = spawn('node', [SERVER_BIN, '--db', dbPath], { stdio: ['pipe', 'pipe', 'pipe'] })
     const lines: any[] = []
     createInterface({ input: proc.stdout! }).on('line', l => { try { lines.push(JSON.parse(l)) } catch {} })
@@ -274,8 +274,8 @@ describe('taskflow-mcp-server', () => {
   })
 
   it('api_filter_board_tasks returns urgent tasks', async () => {
-    const dbPath = createTestDb2()
-    tempDir = dbPath
+    tempDir = mkdtempSync(path.join(tmpdir(), 'taskflow-mcp-server-test-'))
+    const dbPath = createTestDbSeeded(tempDir)
     proc = spawn('node', [SERVER_BIN, '--db', dbPath], { stdio: ['pipe', 'pipe', 'pipe'] })
     const lines: any[] = []
     createInterface({ input: proc.stdout! }).on('line', l => { try { lines.push(JSON.parse(l)) } catch {} })
@@ -356,7 +356,45 @@ export function createTestDb(): string {
   return path
 }
 
-// Alias used inside the taskflow-mcp-server describe block for tests that need a seeded DB
+// Helper used inside the taskflow-mcp-server describe block: creates a seeded DB inside an
+// existing temp directory so `tempDir` always points to a directory for afterEach cleanup.
+function createTestDbSeeded(dir: string): string {
+  const dbPath = path.join(dir, 'taskflow-test.db')
+  const db = new Database(dbPath)
+  db.exec(`
+    CREATE TABLE boards (
+      id TEXT PRIMARY KEY, short_code TEXT, name TEXT, created_at TEXT NOT NULL
+    );
+    CREATE TABLE tasks (
+      id TEXT PRIMARY KEY, board_id TEXT NOT NULL,
+      title TEXT NOT NULL, "column" TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'simple',
+      assignee TEXT, priority TEXT, due_date TEXT, labels TEXT,
+      description TEXT, parent_task_id TEXT, scheduled_at TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      child_exec_board_id TEXT, child_exec_person_id TEXT,
+      child_exec_rollup_status TEXT
+    );
+    CREATE TABLE task_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      board_id TEXT NOT NULL, task_id TEXT NOT NULL,
+      action TEXT NOT NULL, "by" TEXT,
+      "at" TEXT NOT NULL, details TEXT
+    );
+    INSERT INTO boards VALUES ('b1', 'TF', 'Test Board', '2024-01-01T00:00:00Z');
+    INSERT INTO tasks VALUES
+      ('t1','b1','Urgent Task','todo','simple','alice','urgente','2099-01-01','["bug"]',NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t2','b1','Overdue Task','todo','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t3','b1','Linked Task','todo','simple',NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z','child-board-1',NULL,NULL),
+      ('t4','b1','Done Task','done','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL);
+    INSERT INTO task_history (board_id, task_id, action, "by", "at", details)
+      VALUES ('b1','t1','create','alice', datetime('now','localtime'), NULL);
+  `)
+  db.close()
+  return dbPath
+}
+
+// Alias kept for the standalone 'test DB factory' describe block at the bottom of this file
 const createTestDb2 = createTestDb
 
 export async function removeTestDb(path: string) {

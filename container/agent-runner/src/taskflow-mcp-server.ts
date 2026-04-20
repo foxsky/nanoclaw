@@ -20,10 +20,10 @@ function serializeTask(row: Record<string, unknown>) {
     board_id: row['board_id'],
     board_code: row['board_code'] ?? null,
     title: row['title'],
-    assignee: row['assignee'] ?? null,
+    assignee: (row['assignee'] as string | null) ?? null,
     column: (row['column'] as string) || 'inbox',
-    priority: row['priority'] ?? null,
-    due_date: row['due_date'] ?? null,
+    priority: (row['priority'] as string | null) ?? null,
+    due_date: (row['due_date'] as string | null) ?? null,
     type: (row['type'] as string) || 'simple',
     labels: safeParseJsonArray(row['labels']),
     description: row['description'] ?? null,
@@ -133,15 +133,15 @@ function registerTools(server: McpServer, db: Database.Database): void {
       let filtered: ReturnType<typeof serializeTask>[]
       if (filterType === 'overdue') {
         filtered = serialized.filter(t =>
-          t.due_date != null && t.column !== 'done' && (t.due_date as string) < todayStr
+          t.due_date != null && t.column !== 'done' && t.due_date < todayStr
         )
       } else if (filterType === 'due_today') {
         filtered = serialized.filter(t => t.due_date === todayStr)
       } else if (filterType === 'due_this_week') {
         filtered = serialized.filter(t =>
           t.due_date != null &&
-          (t.due_date as string) >= todayStr &&
-          (t.due_date as string) <= weekEndStr
+          t.due_date >= todayStr &&
+          t.due_date <= weekEndStr
         )
       } else if (filterType === 'urgent') {
         filtered = serialized.filter(t => t.priority === 'urgente')
@@ -162,7 +162,7 @@ function registerTools(server: McpServer, db: Database.Database): void {
         if (aN && bN) return 0
         if (aN) return 1
         if (bN) return -1
-        return (a.due_date as string) < (b.due_date as string) ? -1 : 1
+        return a.due_date! < b.due_date! ? -1 : 1
       })
 
       return { content: [{ type: 'text', text: JSON.stringify({ rows: filtered }) }] }
