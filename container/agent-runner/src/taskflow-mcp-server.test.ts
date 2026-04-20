@@ -163,8 +163,8 @@ describe('taskflow-mcp-server', () => {
   })
 
   it('returns the placeholder payload from tools/call', async () => {
-    const testDb = createTestDb()
-    proc = spawn('node', [SERVER_BIN, '--db', testDb], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const dbPath = createTestDb2()
+    proc = spawn('node', [SERVER_BIN, '--db', dbPath], { stdio: ['pipe', 'pipe', 'pipe'] })
     const lines: any[] = []
     const stdoutRl = createInterface({ input: proc!.stdout! })
     stdoutRl.on('line', (line) => {
@@ -214,7 +214,11 @@ describe('taskflow-mcp-server', () => {
     send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'api_board_activity', arguments: { board_id: 'board-001', mode: 'changes_today' } } })
     const resp = await waitForId(2)
 
-    expect(resp.result.content).toEqual([{ type: 'text', text: JSON.stringify({ error: 'not_implemented' }) }])
+    const text = resp.result.content[0].text
+    const data = JSON.parse(text)
+    expect(Array.isArray(data.rows)).toBe(true)
+
+    await removeTestDb(dbPath)
   })
 
   it('exits non-zero when --db is missing', async () => {
@@ -225,6 +229,50 @@ describe('taskflow-mcp-server', () => {
     })
 
     expect(exitCode).not.toBe(0)
+  })
+
+  it('api_board_activity returns history rows for changes_today', async () => {
+    const dbPath = createTestDb2()
+    proc = spawn('node', [SERVER_BIN, '--db', dbPath], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const lines: any[] = []
+    createInterface({ input: proc.stdout! }).on('line', l => { try { lines.push(JSON.parse(l)) } catch {} })
+
+    await new Promise<void>((resolve, reject) => {
+      const rl = createInterface({ input: proc!.stderr! })
+      let settled = false
+      const t = setTimeout(() => { if (!settled) { settled = true; rl.close(); reject(new Error('timeout')) } }, 5000)
+      rl.on('line', l => { if (l.includes('MCP server ready') && !settled) { settled = true; clearTimeout(t); rl.close(); resolve() } })
+    })
+
+    const send = (msg: object) => proc!.stdin!.write(JSON.stringify(msg) + '\n')
+    const waitFor = (id: number) => new Promise<any>((resolve, reject) => {
+      const deadline = setTimeout(() => reject(new Error(`timeout id=${id}`)), 5000)
+      const iv = setInterval(() => {
+        const m = lines.find(x => x.id === id)
+        if (m) { clearInterval(iv); clearTimeout(deadline); resolve(m) }
+      }, 50)
+    })
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0.0.1' } } })
+    await waitFor(1)
+    send({ jsonrpc: '2.0', method: 'notifications/initialized' })
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'api_board_activity', arguments: { board_id: 'b1', mode: 'changes_today' } } })
+    const resp = await waitFor(2)
+
+    const text = resp.result.content[0].text
+    const data = JSON.parse(text)
+    expect(Array.isArray(data.rows)).toBe(true)
+    expect(data.rows.length).toBeGreaterThanOrEqual(1)
+    const row = data.rows[0]
+    expect(row).toHaveProperty('id')
+    expect(row).toHaveProperty('board_id', 'b1')
+    expect(row).toHaveProperty('task_id')
+    expect(row).toHaveProperty('action')
+    expect(row).toHaveProperty('by')
+    expect(row).toHaveProperty('at')
+    expect(row).toHaveProperty('details')
+
+    await removeTestDb(dbPath)
   })
 
 })
@@ -270,6 +318,9 @@ export function createTestDb(): string {
   db.close()
   return path
 }
+
+// Alias used inside the taskflow-mcp-server describe block for tests that need a seeded DB
+const createTestDb2 = createTestDb
 
 export async function removeTestDb(path: string) {
   await rm(path, { force: true })

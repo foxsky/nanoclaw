@@ -39,6 +39,23 @@ function serializeTask(row: Record<string, unknown>) {
   }
 }
 
+function serializeActivityRow(row: Record<string, unknown>) {
+  const rawDetails = row['details']
+  let details: unknown = null
+  if (rawDetails !== null && rawDetails !== undefined) {
+    try { details = JSON.parse(rawDetails as string) } catch { details = rawDetails }
+  }
+  return {
+    id: row['id'],
+    board_id: row['board_id'],
+    task_id: row['task_id'],
+    action: row['action'],
+    by: row['by'],
+    at: row['at'],
+    details,
+  }
+}
+
 function parseArgs(): { db: string } {
   const idx = process.argv.indexOf('--db')
   if (idx === -1 || !process.argv[idx + 1]) {
@@ -49,8 +66,6 @@ function parseArgs(): { db: string } {
 }
 
 function registerTools(server: McpServer, db: Database.Database): void {
-  void db // suppress unused-variable warning until tools query the DB in a later phase
-
   server.tool(
     'api_board_activity',
     'Board activity log',
@@ -59,8 +74,23 @@ function registerTools(server: McpServer, db: Database.Database): void {
       mode: z.enum(['changes_today', 'changes_since']).optional(),
       since: z.string().optional(),
     },
-    async (_args) => {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: 'not_implemented' }) }] }
+    async (args) => {
+      const mode = args.mode ?? 'changes_today'
+      if (mode === 'changes_since' && !args.since) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: 'since is required for changes_since' }) }] }
+      }
+      let rows: Record<string, unknown>[]
+      if (mode === 'changes_since') {
+        rows = db.prepare(
+          `SELECT id, board_id, task_id, action, "by", "at", details FROM task_history WHERE board_id = ? AND "at" >= ? ORDER BY id DESC`
+        ).all(args.board_id, args.since!) as Record<string, unknown>[]
+      } else {
+        rows = db.prepare(
+          `SELECT id, board_id, task_id, action, "by", "at", details FROM task_history WHERE board_id = ? AND date("at") = date('now', 'localtime') ORDER BY id DESC`
+        ).all(args.board_id) as Record<string, unknown>[]
+      }
+      const serialized = rows.map(serializeActivityRow)
+      return { content: [{ type: 'text', text: JSON.stringify({ rows: serialized }) }] }
     }
   )
 
