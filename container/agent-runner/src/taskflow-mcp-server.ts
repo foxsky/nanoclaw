@@ -84,8 +84,8 @@ async function main() {
   // Emit ready sentinel AFTER transport is connected and listening
   process.stderr.write('MCP server ready\n')
 
-  process.on('SIGTERM', () => { shutdown(server, db) })
-  process.on('SIGINT',  () => { shutdown(server, db) })
+  process.on('SIGTERM', () => void shutdown(server, db))
+  process.on('SIGINT',  () => void shutdown(server, db))
 }
 
 main().catch((err) => {
