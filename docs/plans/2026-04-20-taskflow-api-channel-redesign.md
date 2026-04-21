@@ -14,23 +14,21 @@ As of the latest implementation pass:
 - Phase 1 is NOT done: the reusable Node service module that consolidates
   `ipc-mcp-stdio.ts` wrapper behavior (duplicate detection, embedding injection,
   notification shaping, child-board provisioning) has not been extracted
-- Phase 5 low-risk reads are implemented for:
-  - board activity
-  - board filter queries
-  - linked tasks
-
-Important correction:
-
-- those three read tools must be considered complete only in their engine-backed form
-- the current server implementation has been corrected so
-  `taskflow-mcp-server.ts` delegates those reads to `TaskflowEngine` adapter
-  methods instead of duplicating route-specific SQL in the transport layer
-- that corrects the Node-side read path, but it does not change the fact that
-  Phase 1 and Phase 3 are still outstanding
+- Phase 3 is complete: explicit actor resolution is implemented end-to-end
+  - TypeScript actor contract types and exported `parseActorArg` validator
+    in `taskflow-mcp-server.ts`
+  - Python actor dataclasses, `resolve_board_actor()`, and
+    `board_actor_resolution` route with `ensure_board_access_prechecked` guard
+    and structured `ActorResolutionError` codes in `main.py`
+  - Full test suite in `tests/test_actor_resolution.py` including a cross-repo
+    compatibility roundtrip against the compiled Node validator
+- Phase 5 is complete: low-risk reads are engine-backed
+  - board activity (`engine.apiBoardActivity()`)
+  - board filter queries (`engine.apiFilterBoardTasks()`)
+  - linked tasks (`engine.apiLinkedTasks()`)
 
 What is still not done:
 
-- Phase 3 explicit actor resolution
 - Phase 4 notification and event-invalidation unification
 - Phase 6 mutation migration
 
@@ -304,8 +302,7 @@ If a route needs API-level authority rather than TaskFlow human authority,
 model that explicitly as a separate actor type instead of faking a
 `sender_name`.
 
-This is the next implementation phase after the low-risk read slice.
-It is not optional groundwork for mutations; it is a hard prerequisite.
+This phase is now complete.
 
 ### Phase 4 — Unify notifications and event invalidation
 
@@ -402,20 +399,18 @@ Do not:
 
 ## Immediate Next Step
 
-The compatibility matrix now exists, the MCP transport infrastructure exists,
-and the first low-risk reads are now implemented in corrected engine-backed
-form on the Node side as well as wired through Python delegation.
+Phases 0, 3, and 5 are complete. Phase 1 (wrapper extraction) remains outstanding
+but does not block Phase 4.
 
-The next concrete artifact should be a Phase 3 actor-resolution plan such as
-[2026-04-20-taskflow-api-phase3-actor-resolution.md](/root/nanoclaw/docs/plans/2026-04-20-taskflow-api-phase3-actor-resolution.md)
-that defines:
+The next concrete artifact is the Phase 4 notification and event-invalidation
+unification plan. It must define shared primitives for:
 
-1. JWT/session -> user resolution inputs
-2. user -> board-scoped TaskFlow actor or API-only actor resolution rules
-3. explicit failure outcomes for:
-   - no match
-   - ambiguous match
-   - resolution unavailable
-4. the structured actor contract passed across the adapter boundary
+1. direct DM notifications
+2. deferred notifications
+3. parent-board notifications
+4. comment-created invalidation
+5. board-chat invalidation
+6. board detail / stats cache-busting
 
-Only after that should mutation-migration planning resume.
+Only after Phase 4 primitives are defined and implemented should
+mutation-migration planning (Phase 6) resume.
