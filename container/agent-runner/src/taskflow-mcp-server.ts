@@ -48,7 +48,7 @@ export function parseActorArg(raw: unknown): ResolvedActor {
     if (obj.source_auth !== 'api_token') throw new Error('actor.source_auth: expected "api_token" for api_service')
     return obj as ApiServiceActor
   }
-  throw new Error(`actor.actor_type: unknown value "${String(obj.actor_type)}"`) 
+  throw new Error(`actor.actor_type: unknown value "${String(obj.actor_type)}"`)
 }
 
 function contentFromResult(result: { success: boolean; data?: unknown; error?: string }) {

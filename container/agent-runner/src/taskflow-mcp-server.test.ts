@@ -12,10 +12,9 @@ describe('taskflow-mcp-server', () => {
   let proc: ReturnType<typeof spawn> | null = null
   let tempDir: string | null = null
 
-  const createTestDb = () => {
+  const createEmptyTestDb = () => {
     tempDir = mkdtempSync(path.join(tmpdir(), 'taskflow-mcp-server-test-'))
     const dbPath = path.join(tempDir, 'taskflow-test.db')
-    // The Phase 1 server only needs a writable SQLite file. Placeholder tools do not query schema yet.
     writeFileSync(dbPath, '')
     return dbPath
   }
@@ -36,8 +35,38 @@ describe('taskflow-mcp-server', () => {
     }
   })
 
+  async function startTestServer(): Promise<{ send: (msg: object) => void; waitFor: (id: number) => Promise<any> }> {
+    tempDir = mkdtempSync(path.join(tmpdir(), 'taskflow-mcp-server-test-'))
+    const dbPath = createTestDbSeeded(tempDir)
+    proc = spawn('node', [SERVER_BIN, '--db', dbPath], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const lines: any[] = []
+    createInterface({ input: proc.stdout! }).on('line', l => { try { lines.push(JSON.parse(l)) } catch {} })
+
+    await new Promise<void>((resolve, reject) => {
+      const rl = createInterface({ input: proc!.stderr! })
+      let settled = false
+      const t = setTimeout(() => { if (!settled) { settled = true; rl.close(); reject(new Error('timeout')) } }, 5000)
+      rl.on('line', l => { if (l.includes('MCP server ready') && !settled) { settled = true; clearTimeout(t); rl.close(); resolve() } })
+    })
+
+    const send = (msg: object) => proc!.stdin!.write(JSON.stringify(msg) + '\n')
+    const waitFor = (id: number) => new Promise<any>((resolve, reject) => {
+      const deadline = setTimeout(() => reject(new Error(`timeout id=${id}`)), 5000)
+      const iv = setInterval(() => {
+        const m = lines.find(x => x.id === id)
+        if (m) { clearInterval(iv); clearTimeout(deadline); resolve(m) }
+      }, 50)
+    })
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0.0.1' } } })
+    await waitFor(1)
+    send({ jsonrpc: '2.0', method: 'notifications/initialized' })
+
+    return { send, waitFor }
+  }
+
   it('emits ready sentinel on stderr after startup', async () => {
-    const testDb = createTestDb()
+    const testDb = createEmptyTestDb()
     proc = spawn('node', [SERVER_BIN, '--db', testDb])
     const sentinel = await new Promise<string>((resolve, reject) => {
       const rl = createInterface({ input: proc!.stderr! })
@@ -67,10 +96,9 @@ describe('taskflow-mcp-server', () => {
   })
 
   it('responds to initialize with protocol version', async () => {
-    const testDb = createTestDb()
+    const testDb = createEmptyTestDb()
     proc = spawn('node', [SERVER_BIN, '--db', testDb], { stdio: ['pipe', 'pipe', 'pipe'] })
 
-    // Wait for ready sentinel
     await new Promise<void>((resolve, reject) => {
       const rl = createInterface({ input: proc!.stderr! })
       let settled = false
@@ -87,14 +115,12 @@ describe('taskflow-mcp-server', () => {
       })
     })
 
-    // Send initialize request
     const req = JSON.stringify({
       jsonrpc: '2.0', id: 1, method: 'initialize',
       params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0.0.1' } }
     })
     proc!.stdin!.write(req + '\n')
 
-    // Read response from stdout
     const response = await new Promise<any>((resolve, reject) => {
       const rl = createInterface({ input: proc!.stdout! })
       let settled = false
@@ -120,43 +146,9 @@ describe('taskflow-mcp-server', () => {
   })
 
   it('returns adapter tools in tools/list after handshake', async () => {
-    const testDb = createTestDb()
-    proc = spawn('node', [SERVER_BIN, '--db', testDb], { stdio: ['pipe', 'pipe', 'pipe'] })
-    const lines: any[] = []
-    const stdout_rl = createInterface({ input: proc!.stdout! })
-    stdout_rl.on('line', (l) => { try { lines.push(JSON.parse(l)) } catch {} })
-
-    await new Promise<void>((resolve, reject) => {
-      const rl = createInterface({ input: proc!.stderr! })
-      let settled = false
-      const t = setTimeout(() => {
-        if (!settled) { settled = true; rl.close(); reject(new Error('timeout waiting for sentinel')) }
-      }, 5000)
-      rl.on('line', (l) => {
-        if (l.includes('MCP server ready') && !settled) {
-          settled = true; clearTimeout(t); rl.close(); resolve()
-        }
-      })
-      proc!.on('exit', (code) => {
-        if (!settled) { settled = true; clearTimeout(t); rl.close(); reject(new Error(`exited ${code}`)) }
-      })
-    })
-
-    const send = (msg: object) => proc!.stdin!.write(JSON.stringify(msg) + '\n')
-    const waitForId = (id: number, timeoutMs = 5000) => new Promise<any>((resolve, reject) => {
-      const deadline = setTimeout(() => reject(new Error(`timeout waiting for id=${id}`)), timeoutMs)
-      const check = setInterval(() => {
-        const msg = lines.find(m => m.id === id)
-        if (msg) { clearInterval(check); clearTimeout(deadline); resolve(msg) }
-      }, 50)
-    })
-
-    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0.0.1' } } })
-    await waitForId(1)
-    send({ jsonrpc: '2.0', method: 'notifications/initialized' })
+    const { send, waitFor } = await startTestServer()
     send({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
-    const resp = await waitForId(2)
-
+    const resp = await waitFor(2)
     const toolNames = resp.result.tools.map((t: any) => t.name)
     expect(toolNames).toContain('api_board_activity')
     expect(toolNames).toContain('api_filter_board_tasks')
@@ -164,104 +156,26 @@ describe('taskflow-mcp-server', () => {
   })
 
   it('returns JSON content from tools/call', async () => {
-    tempDir = mkdtempSync(path.join(tmpdir(), 'taskflow-mcp-server-test-'))
-    const testDb = createTestDbSeeded(tempDir)
-    proc = spawn('node', [SERVER_BIN, '--db', testDb], { stdio: ['pipe', 'pipe', 'pipe'] })
-    const lines: any[] = []
-    const stdoutRl = createInterface({ input: proc!.stdout! })
-    stdoutRl.on('line', (line) => {
-      try { lines.push(JSON.parse(line)) } catch {}
-    })
-
-    await new Promise<void>((resolve, reject) => {
-      const rl = createInterface({ input: proc!.stderr! })
-      let settled = false
-      const timeout = setTimeout(() => {
-        if (!settled) { settled = true; rl.close(); reject(new Error('timeout waiting for sentinel')) }
-      }, 5000)
-      rl.on('line', (line) => {
-        if (line.includes('MCP server ready') && !settled) {
-          settled = true
-          clearTimeout(timeout)
-          rl.close()
-          resolve()
-        }
-      })
-      proc!.on('exit', (code) => {
-        if (!settled) {
-          settled = true
-          clearTimeout(timeout)
-          rl.close()
-          reject(new Error(`process exited with code ${code}`))
-        }
-      })
-    })
-
-    const send = (msg: object) => proc!.stdin!.write(JSON.stringify(msg) + '\n')
-    const waitForId = (id: number, timeoutMs = 5000) => new Promise<any>((resolve, reject) => {
-      const deadline = setTimeout(() => reject(new Error(`timeout waiting for id=${id}`)), timeoutMs)
-      const check = setInterval(() => {
-        const msg = lines.find((candidate) => candidate.id === id)
-        if (msg) {
-          clearInterval(check)
-          clearTimeout(deadline)
-          resolve(msg)
-        }
-      }, 50)
-    })
-
-    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0.0.1' } } })
-    await waitForId(1)
-    send({ jsonrpc: '2.0', method: 'notifications/initialized' })
+    const { send, waitFor } = await startTestServer()
     send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'api_board_activity', arguments: { board_id: 'board-001', mode: 'changes_today' } } })
-    const resp = await waitForId(2)
-
-    const text = resp.result.content[0].text
-    const data = JSON.parse(text)
+    const resp = await waitFor(2)
+    const data = JSON.parse(resp.result.content[0].text)
     expect(Array.isArray(data.rows)).toBe(true)
   })
 
   it('exits non-zero when --db is missing', async () => {
     proc = spawn('node', [SERVER_BIN], { stdio: ['ignore', 'pipe', 'pipe'] })
-
     const exitCode = await new Promise<number | null>((resolve) => {
       proc!.on('exit', (code) => resolve(code))
     })
-
     expect(exitCode).not.toBe(0)
   })
 
   it('api_board_activity returns history rows for changes_today', async () => {
-    tempDir = mkdtempSync(path.join(tmpdir(), 'taskflow-mcp-server-test-'))
-    const dbPath = createTestDbSeeded(tempDir)
-    proc = spawn('node', [SERVER_BIN, '--db', dbPath], { stdio: ['pipe', 'pipe', 'pipe'] })
-    const lines: any[] = []
-    createInterface({ input: proc.stdout! }).on('line', l => { try { lines.push(JSON.parse(l)) } catch {} })
-
-    await new Promise<void>((resolve, reject) => {
-      const rl = createInterface({ input: proc!.stderr! })
-      let settled = false
-      const t = setTimeout(() => { if (!settled) { settled = true; rl.close(); reject(new Error('timeout')) } }, 5000)
-      rl.on('line', l => { if (l.includes('MCP server ready') && !settled) { settled = true; clearTimeout(t); rl.close(); resolve() } })
-    })
-
-    const send = (msg: object) => proc!.stdin!.write(JSON.stringify(msg) + '\n')
-    const waitFor = (id: number) => new Promise<any>((resolve, reject) => {
-      const deadline = setTimeout(() => reject(new Error(`timeout id=${id}`)), 5000)
-      const iv = setInterval(() => {
-        const m = lines.find(x => x.id === id)
-        if (m) { clearInterval(iv); clearTimeout(deadline); resolve(m) }
-      }, 50)
-    })
-
-    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0.0.1' } } })
-    await waitFor(1)
-    send({ jsonrpc: '2.0', method: 'notifications/initialized' })
+    const { send, waitFor } = await startTestServer()
     send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'api_board_activity', arguments: { board_id: 'b1', mode: 'changes_today' } } })
     const resp = await waitFor(2)
-
-    const text = resp.result.content[0].text
-    const data = JSON.parse(text)
+    const data = JSON.parse(resp.result.content[0].text)
     expect(Array.isArray(data.rows)).toBe(true)
     expect(data.rows.length).toBeGreaterThanOrEqual(1)
     const row = data.rows[0]
@@ -275,36 +189,10 @@ describe('taskflow-mcp-server', () => {
   })
 
   it('api_board_activity returns history rows for changes_since', async () => {
-    tempDir = mkdtempSync(path.join(tmpdir(), 'taskflow-mcp-server-test-'))
-    const dbPath = createTestDbSeeded(tempDir)
-    proc = spawn('node', [SERVER_BIN, '--db', dbPath], { stdio: ['pipe', 'pipe', 'pipe'] })
-    const lines: any[] = []
-    createInterface({ input: proc.stdout! }).on('line', l => { try { lines.push(JSON.parse(l)) } catch {} })
-
-    await new Promise<void>((resolve, reject) => {
-      const rl = createInterface({ input: proc!.stderr! })
-      let settled = false
-      const t = setTimeout(() => { if (!settled) { settled = true; rl.close(); reject(new Error('timeout')) } }, 5000)
-      rl.on('line', l => { if (l.includes('MCP server ready') && !settled) { settled = true; clearTimeout(t); rl.close(); resolve() } })
-    })
-
-    const send = (msg: object) => proc!.stdin!.write(JSON.stringify(msg) + '\n')
-    const waitFor = (id: number) => new Promise<any>((resolve, reject) => {
-      const deadline = setTimeout(() => reject(new Error(`timeout id=${id}`)), 5000)
-      const iv = setInterval(() => {
-        const m = lines.find(x => x.id === id)
-        if (m) { clearInterval(iv); clearTimeout(deadline); resolve(m) }
-      }, 50)
-    })
-
-    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0.0.1' } } })
-    await waitFor(1)
-    send({ jsonrpc: '2.0', method: 'notifications/initialized' })
+    const { send, waitFor } = await startTestServer()
     send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'api_board_activity', arguments: { board_id: 'b1', mode: 'changes_since', since: '2021-01-01T00:00:00Z' } } })
     const resp = await waitFor(2)
-
-    const text = resp.result.content[0].text
-    const data = JSON.parse(text)
+    const data = JSON.parse(resp.result.content[0].text)
     expect(Array.isArray(data.rows)).toBe(true)
     expect(data.rows).toHaveLength(1)
     expect(data.rows[0].action).toBe('create')
@@ -312,36 +200,10 @@ describe('taskflow-mcp-server', () => {
   })
 
   it('api_filter_board_tasks returns urgent tasks', async () => {
-    tempDir = mkdtempSync(path.join(tmpdir(), 'taskflow-mcp-server-test-'))
-    const dbPath = createTestDbSeeded(tempDir)
-    proc = spawn('node', [SERVER_BIN, '--db', dbPath], { stdio: ['pipe', 'pipe', 'pipe'] })
-    const lines: any[] = []
-    createInterface({ input: proc.stdout! }).on('line', l => { try { lines.push(JSON.parse(l)) } catch {} })
-
-    await new Promise<void>((resolve, reject) => {
-      const rl = createInterface({ input: proc!.stderr! })
-      let settled = false
-      const t = setTimeout(() => { if (!settled) { settled = true; rl.close(); reject(new Error('timeout')) } }, 5000)
-      rl.on('line', l => { if (l.includes('MCP server ready') && !settled) { settled = true; clearTimeout(t); rl.close(); resolve() } })
-    })
-
-    const send = (msg: object) => proc!.stdin!.write(JSON.stringify(msg) + '\n')
-    const waitFor = (id: number) => new Promise<any>((resolve, reject) => {
-      const deadline = setTimeout(() => reject(new Error(`timeout id=${id}`)), 5000)
-      const iv = setInterval(() => {
-        const m = lines.find(x => x.id === id)
-        if (m) { clearInterval(iv); clearTimeout(deadline); resolve(m) }
-      }, 50)
-    })
-
-    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0.0.1' } } })
-    await waitFor(1)
-    send({ jsonrpc: '2.0', method: 'notifications/initialized' })
+    const { send, waitFor } = await startTestServer()
     send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'api_filter_board_tasks', arguments: { board_id: 'b1', filter: 'urgent' } } })
     const resp = await waitFor(2)
-
-    const text = resp.result.content[0].text
-    const data = JSON.parse(text)
+    const data = JSON.parse(resp.result.content[0].text)
     expect(Array.isArray(data.rows)).toBe(true)
     expect(data.rows.length).toBe(1)
     expect(data.rows[0].id).toBe('t1')
@@ -353,36 +215,12 @@ describe('taskflow-mcp-server', () => {
   })
 
   it('api_filter_board_tasks supports due, label, and high-priority filters', async () => {
-    tempDir = mkdtempSync(path.join(tmpdir(), 'taskflow-mcp-server-test-'))
-    const dbPath = createTestDbSeeded(tempDir)
-    proc = spawn('node', [SERVER_BIN, '--db', dbPath], { stdio: ['pipe', 'pipe', 'pipe'] })
-    const lines: any[] = []
-    createInterface({ input: proc.stdout! }).on('line', l => { try { lines.push(JSON.parse(l)) } catch {} })
-
-    await new Promise<void>((resolve, reject) => {
-      const rl = createInterface({ input: proc!.stderr! })
-      let settled = false
-      const t = setTimeout(() => { if (!settled) { settled = true; rl.close(); reject(new Error('timeout')) } }, 5000)
-      rl.on('line', l => { if (l.includes('MCP server ready') && !settled) { settled = true; clearTimeout(t); rl.close(); resolve() } })
-    })
-
-    const send = (msg: object) => proc!.stdin!.write(JSON.stringify(msg) + '\n')
-    const waitFor = (id: number) => new Promise<any>((resolve, reject) => {
-      const deadline = setTimeout(() => reject(new Error(`timeout id=${id}`)), 5000)
-      const iv = setInterval(() => {
-        const m = lines.find(x => x.id === id)
-        if (m) { clearInterval(iv); clearTimeout(deadline); resolve(m) }
-      }, 50)
-    })
+    const { send, waitFor } = await startTestServer()
     const callTool = async (id: number, filter: string, extraArgs: Record<string, unknown> = {}) => {
       send({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'api_filter_board_tasks', arguments: { board_id: 'b1', filter, ...extraArgs } } })
       const resp = await waitFor(id)
       return JSON.parse(resp.result.content[0].text)
     }
-
-    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0.0.1' } } })
-    await waitFor(1)
-    send({ jsonrpc: '2.0', method: 'notifications/initialized' })
 
     const overdue = await callTool(2, 'overdue')
     expect(overdue.rows.map((row: any) => row.id)).toEqual(['t2'])
@@ -400,38 +238,11 @@ describe('taskflow-mcp-server', () => {
     expect(byLabel.rows.map((row: any) => row.id)).toEqual(['t6'])
   })
 
-
   it('api_linked_tasks returns only tasks with child_exec_board_id', async () => {
-    tempDir = mkdtempSync(path.join(tmpdir(), 'taskflow-mcp-server-test-'))
-    const dbPath = createTestDbSeeded(tempDir)
-    proc = spawn('node', [SERVER_BIN, '--db', dbPath], { stdio: ['pipe', 'pipe', 'pipe'] })
-    const lines: any[] = []
-    createInterface({ input: proc.stdout! }).on('line', l => { try { lines.push(JSON.parse(l)) } catch {} })
-
-    await new Promise<void>((resolve, reject) => {
-      const rl = createInterface({ input: proc!.stderr! })
-      let settled = false
-      const t = setTimeout(() => { if (!settled) { settled = true; rl.close(); reject(new Error('timeout')) } }, 5000)
-      rl.on('line', l => { if (l.includes('MCP server ready') && !settled) { settled = true; clearTimeout(t); rl.close(); resolve() } })
-    })
-
-    const send = (msg: object) => proc!.stdin!.write(JSON.stringify(msg) + '\n')
-    const waitFor = (id: number) => new Promise<any>((resolve, reject) => {
-      const deadline = setTimeout(() => reject(new Error(`timeout id=${id}`)), 5000)
-      const iv = setInterval(() => {
-        const m = lines.find(x => x.id === id)
-        if (m) { clearInterval(iv); clearTimeout(deadline); resolve(m) }
-      }, 50)
-    })
-
-    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0.0.1' } } })
-    await waitFor(1)
-    send({ jsonrpc: '2.0', method: 'notifications/initialized' })
+    const { send, waitFor } = await startTestServer()
     send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'api_linked_tasks', arguments: { board_id: 'b1' } } })
     const resp = await waitFor(2)
-
-    const text = resp.result.content[0].text
-    const data = JSON.parse(text)
+    const data = JSON.parse(resp.result.content[0].text)
     expect(Array.isArray(data.rows)).toBe(true)
     expect(data.rows.length).toBe(1)
     expect(data.rows[0].id).toBe('t3')
@@ -447,9 +258,7 @@ import Database from 'better-sqlite3'
 import { rm } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 
-export function createTestDb(): string {
-  const path = `${tmpdir()}/taskflow-test-${randomBytes(4).toString('hex')}.db`
-  const db = new Database(path)
+function _seedDb(db: Database.Database): void {
   db.exec(`
     CREATE TABLE boards (
       id TEXT PRIMARY KEY, short_code TEXT, name TEXT, created_at TEXT NOT NULL
@@ -488,62 +297,26 @@ export function createTestDb(): string {
         ('b1','t2','update','alice', '2020-01-01T00:00:00Z', '{"source":"old"}'),
         ('b1','t1','create','alice', datetime('now','localtime'), '{"source":"seed"}');
   `)
-  db.close()
-  return path
 }
 
-// Helper used inside the taskflow-mcp-server describe block: creates a seeded DB inside an
-// existing temp directory so `tempDir` always points to a directory for afterEach cleanup.
+export function createTestDb(): string {
+  const filePath = `${tmpdir()}/taskflow-test-${randomBytes(4).toString('hex')}.db`
+  const db = new Database(filePath)
+  _seedDb(db)
+  db.close()
+  return filePath
+}
+
 function createTestDbSeeded(dir: string): string {
   const dbPath = path.join(dir, 'taskflow-test.db')
   const db = new Database(dbPath)
-  db.exec(`
-    CREATE TABLE boards (
-      id TEXT PRIMARY KEY, short_code TEXT, name TEXT, created_at TEXT NOT NULL
-    );
-    CREATE TABLE tasks (
-      id TEXT PRIMARY KEY, board_id TEXT NOT NULL,
-      title TEXT NOT NULL, "column" TEXT NOT NULL,
-      type TEXT NOT NULL DEFAULT 'simple',
-      assignee TEXT, priority TEXT, due_date TEXT, labels TEXT,
-      description TEXT, notes TEXT, parent_task_id TEXT, scheduled_at TEXT,
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-      child_exec_board_id TEXT, child_exec_person_id TEXT,
-      child_exec_rollup_status TEXT
-    );
-    CREATE TABLE task_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      board_id TEXT NOT NULL, task_id TEXT NOT NULL,
-      action TEXT NOT NULL, "by" TEXT,
-      "at" TEXT NOT NULL, details TEXT
-    );
-    INSERT INTO boards VALUES ('b1', 'TF', 'Test Board', '2024-01-01T00:00:00Z');
-    INSERT INTO tasks (
-      id, board_id, title, "column", type, assignee, priority, due_date, labels,
-      description, notes, parent_task_id, scheduled_at, created_at, updated_at,
-      child_exec_board_id, child_exec_person_id, child_exec_rollup_status
-    ) VALUES
-      ('t1','b1','Urgent Task','todo','simple','alice','urgente','2099-01-01','["bug"]',NULL,'[{"id":"n1","author":"alice","content":"seed note","created_at":"2024-01-01T00:00:00Z"}]',NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
-      ('t2','b1','Overdue Task','todo','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
-      ('t3','b1','Linked Task','todo','simple',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z','child-board-1',NULL,NULL),
-      ('t4','b1','Done Task','done','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
-      ('t5','b1','Due Today Task','todo','simple',NULL,NULL,date('now','localtime'),'[]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
-      ('t6','b1','Due This Week Task','todo','simple',NULL,NULL,date('now','localtime','+3 days'),'["backend"]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
-      ('t7','b1','High Priority Task','todo','simple',NULL,'alta','2099-02-01','[]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL);
-    INSERT INTO task_history (board_id, task_id, action, "by", "at", details)
-      VALUES
-        ('b1','t2','update','alice', '2020-01-01T00:00:00Z', '{"source":"old"}'),
-        ('b1','t1','create','alice', datetime('now','localtime'), '{"source":"seed"}');
-  `)
+  _seedDb(db)
   db.close()
   return dbPath
 }
 
-// Alias kept for the standalone 'test DB factory' describe block at the bottom of this file
-const createTestDb2 = createTestDb
-
-export async function removeTestDb(path: string) {
-  await rm(path, { force: true })
+export async function removeTestDb(filePath: string) {
+  await rm(filePath, { force: true })
 }
 
 describe('test DB factory', () => {
@@ -602,14 +375,13 @@ describe('parseActorArg', () => {
       user_id: 'u1',
       board_id: 'b1',
       display_name: 'Alice',
-      // person_id missing
     })).toThrow('actor.person_id: required string')
   })
 
   it('rejects api_service with wrong source_auth', () => {
     expect(() => parseActorArg({
       actor_type: 'api_service',
-      source_auth: 'jwt',  // wrong
+      source_auth: 'jwt',
       board_id: 'b1',
       service_name: 'taskflow-api',
     })).toThrow('actor.source_auth: expected "api_token"')
