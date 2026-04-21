@@ -51,6 +51,70 @@ export function parseActorArg(raw: unknown): ResolvedActor {
   throw new Error(`actor.actor_type: unknown value "${String(obj.actor_type)}"`)
 }
 
+type DeferredNotificationEvent = {
+  kind: 'deferred_notification'
+  board_id: string
+  target_person_id: string
+  message: string
+}
+
+type DirectMessageEvent = {
+  kind: 'direct_message'
+  target_chat_jid: string
+  message: string
+}
+
+type ParentNotificationEvent = {
+  kind: 'parent_notification'
+  parent_group_jid: string
+  message: string
+}
+
+export type NotificationEvent =
+  | DeferredNotificationEvent
+  | DirectMessageEvent
+  | ParentNotificationEvent
+
+export function parseNotificationEvents(raw: unknown): NotificationEvent[] {
+  if (!Array.isArray(raw)) return []
+  const out: NotificationEvent[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const obj = item as Record<string, unknown>
+    if (obj.kind === 'deferred_notification') {
+      if (typeof obj.board_id === 'string' && obj.board_id &&
+          typeof obj.target_person_id === 'string' && obj.target_person_id &&
+          typeof obj.message === 'string' && obj.message) {
+        out.push({
+          kind: 'deferred_notification',
+          board_id: obj.board_id as string,
+          target_person_id: obj.target_person_id as string,
+          message: obj.message as string,
+        })
+      }
+    } else if (obj.kind === 'direct_message') {
+      if (typeof obj.target_chat_jid === 'string' && obj.target_chat_jid &&
+          typeof obj.message === 'string' && obj.message) {
+        out.push({
+          kind: 'direct_message',
+          target_chat_jid: obj.target_chat_jid as string,
+          message: obj.message as string,
+        })
+      }
+    } else if (obj.kind === 'parent_notification') {
+      if (typeof obj.parent_group_jid === 'string' && obj.parent_group_jid &&
+          typeof obj.message === 'string' && obj.message) {
+        out.push({
+          kind: 'parent_notification',
+          parent_group_jid: obj.parent_group_jid as string,
+          message: obj.message as string,
+        })
+      }
+    }
+  }
+  return out
+}
+
 function contentFromResult(result: { success: boolean; data?: unknown; error?: string }) {
   if (!result.success) {
     return { content: [{ type: 'text' as const, text: JSON.stringify({ error: result.error ?? 'unknown_error' }) }] }

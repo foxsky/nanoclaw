@@ -387,3 +387,82 @@ describe('parseActorArg', () => {
     })).toThrow('actor.source_auth: expected "api_token"')
   })
 })
+
+import { parseNotificationEvents } from './taskflow-mcp-server.js'
+
+describe('parseNotificationEvents', () => {
+  it('accepts a valid deferred_notification', () => {
+    const result = parseNotificationEvents([
+      { kind: 'deferred_notification', board_id: 'b1', target_person_id: 'alice', message: 'Hello' },
+    ])
+    expect(result).toHaveLength(1)
+    expect(result[0].kind).toBe('deferred_notification')
+    if (result[0].kind === 'deferred_notification') {
+      expect(result[0].board_id).toBe('b1')
+      expect(result[0].target_person_id).toBe('alice')
+      expect(result[0].message).toBe('Hello')
+    }
+  })
+
+  it('accepts a valid direct_message', () => {
+    const result = parseNotificationEvents([
+      { kind: 'direct_message', target_chat_jid: 'jid@s.whatsapp.net', message: 'Hi there' },
+    ])
+    expect(result).toHaveLength(1)
+    expect(result[0].kind).toBe('direct_message')
+    if (result[0].kind === 'direct_message') {
+      expect(result[0].target_chat_jid).toBe('jid@s.whatsapp.net')
+      expect(result[0].message).toBe('Hi there')
+    }
+  })
+
+  it('accepts a valid parent_notification', () => {
+    const result = parseNotificationEvents([
+      { kind: 'parent_notification', parent_group_jid: 'group@g.us', message: 'Update' },
+    ])
+    expect(result).toHaveLength(1)
+    expect(result[0].kind).toBe('parent_notification')
+    if (result[0].kind === 'parent_notification') {
+      expect(result[0].parent_group_jid).toBe('group@g.us')
+      expect(result[0].message).toBe('Update')
+    }
+  })
+
+  it('skips items with unknown kind', () => {
+    const result = parseNotificationEvents([
+      { kind: 'unknown_kind', board_id: 'b1', message: 'Should be skipped' },
+    ])
+    expect(result).toHaveLength(0)
+  })
+
+  it('returns empty array for non-array input (null, undefined, string)', () => {
+    expect(parseNotificationEvents(null)).toEqual([])
+    expect(parseNotificationEvents(undefined)).toEqual([])
+    expect(parseNotificationEvents('a string')).toEqual([])
+    expect(parseNotificationEvents(42)).toEqual([])
+  })
+
+  it('rejects empty message string', () => {
+    const deferred = parseNotificationEvents([
+      { kind: 'deferred_notification', board_id: 'b1', target_person_id: 'alice', message: '' },
+    ])
+    expect(deferred).toHaveLength(0)
+
+    const direct = parseNotificationEvents([
+      { kind: 'direct_message', target_chat_jid: 'jid@s.whatsapp.net', message: '' },
+    ])
+    expect(direct).toHaveLength(0)
+
+    const parent = parseNotificationEvents([
+      { kind: 'parent_notification', parent_group_jid: 'group@g.us', message: '' },
+    ])
+    expect(parent).toHaveLength(0)
+  })
+
+  it('skips deferred_notification missing required field target_person_id', () => {
+    const result = parseNotificationEvents([
+      { kind: 'deferred_notification', board_id: 'b1', message: 'No person' },
+    ])
+    expect(result).toHaveLength(0)
+  })
+})
