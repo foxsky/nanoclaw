@@ -324,6 +324,42 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+function localDateString(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function safeParseJsonArray(value: unknown): unknown[] {
+  if (!value || typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function safeParseJsonNotes(value: unknown): Record<string, unknown>[] {
+  if (!value || typeof value !== 'string') return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter((entry): entry is Record<string, unknown> => {
+    if (entry == null || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const noteId = String(entry['id'] ?? '').trim();
+    const author = String(entry['author'] ?? entry['by'] ?? '').trim();
+    const content = String(entry['content'] ?? entry['text'] ?? '').trim();
+    const createdAt = String(entry['created_at'] ?? entry['at'] ?? '').trim();
+    return noteId !== '' && author !== '' && content !== '' && createdAt !== '';
+  });
+}
+
 function tomorrow(): string {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() + 1);
@@ -1571,6 +1607,198 @@ export class TaskflowEngine {
          ORDER BY t.id`,
       )
       .all(this.boardId);
+  }
+
+  private apiPriority(priority: string | null | undefined): string | null {
+    switch ((priority ?? '').trim().toLowerCase()) {
+      case 'urgent':
+      case 'urgente':
+        return 'urgente';
+      case 'high':
+      case 'alta':
+        return 'alta';
+      case 'low':
+      case 'baixa':
+        return 'baixa';
+      case 'normal':
+        return 'normal';
+      default:
+        return priority ?? null;
+    }
+  }
+
+  private apiAssignee(boardId: string, assignee: unknown): string | null {
+    if (assignee == null) return null;
+    const raw = String(assignee).trim();
+    if (!raw) return null;
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT name
+           FROM board_people
+           WHERE board_id = ? AND person_id = ?
+           LIMIT 1`,
+        )
+        .get(boardId, raw) as { name: string } | undefined;
+      return row?.name ?? raw;
+    } catch {
+      return raw;
+    }
+  }
+
+  private serializeApiTask(row: Record<string, unknown>): Record<string, unknown> {
+    const boardId = String(row['board_id'] ?? this.boardId);
+    return {
+      id: row['id'],
+      board_id: boardId,
+      board_code: row['board_code'] ?? null,
+      title: row['title'],
+      assignee: this.apiAssignee(boardId, row['assignee']),
+      column: (row['column'] as string) || 'inbox',
+      priority: this.apiPriority((row['priority'] as string | null | undefined) ?? null),
+      due_date: (row['due_date'] as string | null | undefined) ?? null,
+      type: (row['type'] as string) || 'simple',
+      labels: safeParseJsonArray(row['labels']),
+      description: row['description'] ?? null,
+      notes: safeParseJsonNotes(row['notes']),
+      parent_task_id: row['parent_task_id'] ?? null,
+      parent_task_title: row['parent_task_title'] ?? row['parent_title'] ?? null,
+      scheduled_at: row['scheduled_at'] ?? null,
+      created_at: row['created_at'],
+      updated_at: row['updated_at'],
+      child_exec_board_id: row['child_exec_board_id'] ?? null,
+      child_exec_person_id: row['child_exec_person_id'] ?? null,
+      child_exec_rollup_status: row['child_exec_rollup_status'] ?? null,
+    };
+  }
+
+  private serializeApiHistoryRow(row: Record<string, unknown>): Record<string, unknown> {
+    const rawDetails = row['details'];
+    let details: unknown = null;
+    if (rawDetails !== null && rawDetails !== undefined) {
+      try {
+        details = JSON.parse(String(rawDetails));
+      } catch {
+        details = rawDetails;
+      }
+    }
+    return {
+      id: row['id'],
+      board_id: row['board_id'],
+      task_id: row['task_id'],
+      action: row['action'],
+      by: row['by'],
+      at: row['at'],
+      details,
+    };
+  }
+
+  private apiBoardLocalTasks(includeParentTitle: boolean): Record<string, unknown>[] {
+    const parentTitleSelect = includeParentTitle
+      ? `, pt.title AS parent_task_title`
+      : '';
+    const parentJoin = includeParentTitle
+      ? `LEFT JOIN tasks pt ON pt.board_id = t.board_id AND pt.id = t.parent_task_id`
+      : '';
+    return this.db
+      .prepare(
+        `SELECT t.*, b.short_code AS board_code${parentTitleSelect}
+         FROM tasks t
+         JOIN boards b ON b.id = t.board_id
+         ${parentJoin}
+         WHERE t.board_id = ?`,
+      )
+      .all(this.boardId) as Record<string, unknown>[];
+  }
+
+  apiBoardActivity(params: { mode?: 'changes_today' | 'changes_since'; since?: string }): TaskflowResult {
+    const mode = params.mode ?? 'changes_today';
+    if (mode === 'changes_since' && !params.since) {
+      return { success: false, error: 'since is required for changes_since' };
+    }
+    const rows = mode === 'changes_since'
+      ? this.db.prepare(
+        `SELECT id, board_id, task_id, action, "by", "at", details
+         FROM task_history
+         WHERE board_id = ? AND "at" >= ?
+         ORDER BY id DESC`,
+      ).all(this.boardId, params.since!) as Record<string, unknown>[]
+      : this.db.prepare(
+        `SELECT id, board_id, task_id, action, "by", "at", details
+         FROM task_history
+         WHERE board_id = ? AND date("at", 'localtime') = date('now', 'localtime')
+         ORDER BY id DESC`,
+      ).all(this.boardId) as Record<string, unknown>[];
+    return { success: true, data: rows.map((row) => this.serializeApiHistoryRow(row)) };
+  }
+
+  apiFilterBoardTasks(params: { filter: string; label?: string }): TaskflowResult {
+    const filterType = params.filter.trim().toLowerCase();
+    const validFilters = new Set(['overdue', 'due_today', 'due_this_week', 'urgent', 'high_priority', 'by_label']);
+    if (!validFilters.has(filterType)) {
+      return { success: false, error: 'Invalid filter type' };
+    }
+    if (filterType === 'by_label' && (!params.label || params.label.trim() === '')) {
+      return { success: false, error: 'label is required for by_label filter' };
+    }
+
+    const tasks = this.apiBoardLocalTasks(false).map((row) => this.serializeApiTask(row));
+    const todayStr = localDateString(new Date());
+    const weekEnd = new Date();
+    weekEnd.setDate(weekEnd.getDate() + 6);
+    const weekEndStr = localDateString(weekEnd);
+    const labelQuery = (params.label ?? '').trim().toLowerCase();
+
+    let filtered: Record<string, unknown>[];
+    if (filterType === 'overdue') {
+      filtered = tasks.filter((task) =>
+        task['due_date'] != null &&
+        task['column'] !== 'done' &&
+        String(task['due_date']) < todayStr,
+      );
+    } else if (filterType === 'due_today') {
+      filtered = tasks.filter((task) => task['due_date'] === todayStr);
+    } else if (filterType === 'due_this_week') {
+      filtered = tasks.filter((task) =>
+        task['due_date'] != null &&
+        String(task['due_date']) >= todayStr &&
+        String(task['due_date']) <= weekEndStr,
+      );
+    } else if (filterType === 'urgent') {
+      filtered = tasks.filter((task) => task['priority'] === 'urgente');
+    } else if (filterType === 'high_priority') {
+      filtered = tasks.filter((task) => task['priority'] === 'alta');
+    } else {
+      filtered = tasks.filter((task) =>
+        Array.isArray(task['labels']) &&
+        (task['labels'] as string[]).some((label) => label.toLowerCase() === labelQuery),
+      );
+    }
+
+    filtered.sort((left, right) => {
+      const leftDue = left['due_date'] == null ? null : String(left['due_date']);
+      const rightDue = right['due_date'] == null ? null : String(right['due_date']);
+      if (leftDue == null && rightDue == null) return 0;
+      if (leftDue == null) return 1;
+      if (rightDue == null) return -1;
+      return leftDue.localeCompare(rightDue);
+    });
+
+    return { success: true, data: filtered };
+  }
+
+  apiLinkedTasks(): TaskflowResult {
+    const rows = this.db
+      .prepare(
+        `SELECT t.*, b.short_code AS board_code, pt.title AS parent_task_title
+         FROM tasks t
+         JOIN boards b ON b.id = t.board_id
+         LEFT JOIN tasks pt ON pt.board_id = t.board_id AND pt.id = t.parent_task_id
+         WHERE t.board_id = ? AND t.child_exec_board_id IS NOT NULL
+         ORDER BY COALESCE(t.updated_at, t.created_at) DESC, t.id ASC`,
+      )
+      .all(this.boardId) as Record<string, unknown>[];
+    return { success: true, data: rows.map((row) => this.serializeApiTask(row)) };
   }
 
   private getHistory(taskId: string, limit?: number, boardId = this.boardId): any[] {

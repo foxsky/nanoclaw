@@ -2,11 +2,17 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Implement the three Phase-5 read adapter tools (`api_board_activity`, `api_filter_board_tasks`, `api_linked_tasks`) in the Node MCP server and delegate the corresponding FastAPI routes to call them, with a transparent Python SQL fallback.
+**Status note:** this filename is historical. Per [2026-04-20-taskflow-api-channel-design.md](/root/nanoclaw/docs/plans/2026-04-20-taskflow-api-channel-design.md), the routes in this document belong to the low-risk board-local read slice that follows the infrastructure/bootstrap prerequisites. This plan does not waive that ordering.
 
-**Architecture:** Each Node tool runs a direct SQLite query against the shared database and returns a fully serialized JSON response. Each Python route handler checks whether an alive MCP client is available; if so it awaits the tool call and returns the result directly; otherwise it falls through to the existing Python SQL path. No actor resolution is required because all three routes are read-only.
+**Current status:** the intended Phase 5 read slice is implemented in corrected engine-backed form. This document should not be used to justify any mutation migration. The next architecture phase is explicit actor resolution per [2026-04-20-taskflow-api-phase3-actor-resolution.md](/root/nanoclaw/docs/plans/2026-04-20-taskflow-api-phase3-actor-resolution.md), not `create`/`update`/`delete` adapter work.
 
-**Tech Stack:** TypeScript + better-sqlite3 (Node tools), Python + asyncio (route delegation), pytest + FakeMCPClient (unit tests), vitest + temp SQLite (Node integration tests)
+**Goal:** Implement the three low-risk read adapter tools (`api_board_activity`, `api_filter_board_tasks`, `api_linked_tasks`) as engine-backed adapter methods exposed through the Node MCP server, and delegate the corresponding FastAPI routes to call them without reviving a duplicate Python SQL implementation.
+
+**Architecture:** The MCP server is a transport shim. API-specific read semantics live in `TaskflowEngine` adapter methods that own serialization, priority/assignee translation, local-date filtering, and linked-task shaping. The migrated FastAPI routes are MCP-required: they validate auth/board access locally, call MCP, and return `503` when the subprocess path is unavailable or invalid. No actor resolution is required because all three routes are read-only.
+
+**Tech Stack:** TypeScript + `TaskflowEngine` + better-sqlite3 (Node adapter methods), Python + asyncio (route delegation), pytest + FakeMCPClient (unit tests), vitest + temp SQLite (engine + MCP integration tests)
+
+**Rewrite note:** some detailed code snippets later in this historical plan still show the earlier direct-SQL draft. Those snippets are superseded. The authoritative implementation rule is: do not add route-specific SQL to `taskflow-mcp-server.ts`; put the behavior in engine-owned adapter methods and keep MCP transport-thin.
 
 ---
 
@@ -22,8 +28,16 @@
 
 ### Current Python behavior (must be preserved exactly)
 
+The MCP path is a transport optimization only. It must not weaken any Python route guarantees. In particular:
+
+- FastAPI still authenticates the caller before any MCP call
+- FastAPI still preserves `check_board_org_access()` behavior, including `404 Board not found` and JWT org scoping, before delegating to MCP
+- if MCP is unavailable, raises, or returns an unexpected payload, the migrated route fails closed with `503` rather than reviving Python SQL
+
+The Node MCP layer must not become a second SQL-heavy behavior surface. If API semantics are not expressible through the existing engine query contract, add explicit adapter methods in `TaskflowEngine` (or the dedicated Node adapter layer) and keep the MCP server thin.
+
 **`board_activity`** (`GET /boards/{board_id}/activity`):
-- Modes: `changes_today` (SQL: `date("at") = date('now', 'localtime')`) or `changes_since` (SQL: `at >= ?`)
+- Modes: `changes_today` (SQL: `date("at", 'localtime') = date('now', 'localtime')`) or `changes_since` (SQL: `at >= ?`)
 - Returns list of `{id, board_id, task_id, action, by, at, details}` where `details` is JSON-decoded (or raw string on parse failure)
 - Ordered by `id DESC`
 
@@ -53,7 +67,7 @@
   type: string,                    // default 'simple'
   labels: unknown[],               // parsed from JSON string, default []
   description: string | null,
-  notes: null,                     // not in schema, always null
+  notes: Record<string, unknown>[], // parsed from JSON string, default []
   parent_task_id: string | null,
   parent_task_title: string | null, // from subquery (linked_tasks only)
   scheduled_at: string | null,
@@ -64,6 +78,15 @@
   child_exec_rollup_status: string | null,
 }
 ```
+
+### Date/filter parity requirements
+
+- `due_today` and `due_this_week` must use local-date semantics equivalent to Python `date.today()`, not UTC `toISOString().slice(0, 10)`
+- `changes_today` must compare activity timestamps in local time, not raw UTC date fragments
+- `urgent` maps to `priority == 'urgente'`
+- `high_priority` maps to `priority == 'alta'`
+- `by_label` remains case-insensitive
+- sorting remains `due_date` nulls last, then ascending
 
 ---
 
@@ -172,7 +195,7 @@ function serializeTask(row: Record<string, unknown>) {
     type: (row['type'] as string) || 'simple',
     labels: safeParseJsonArray(row['labels']),
     description: row['description'] ?? null,
-    notes: null,
+    notes: safeParseJsonNotes(row['notes']),
     parent_task_id: row['parent_task_id'] ?? null,
     parent_task_title: row['parent_task_title'] ?? null,
     scheduled_at: row['scheduled_at'] ?? null,
@@ -201,7 +224,7 @@ cd /root/nanoclaw && git add container/agent-runner/src/taskflow-mcp-server.ts c
 
 ---
 
-## Task 2: `api_board_activity` — real SQL implementation
+## Task 2: `api_board_activity` — engine-backed adapter implementation
 
 **Files:**
 - Modify: `container/agent-runner/src/taskflow-mcp-server.ts` (inside `registerTools`)
@@ -266,9 +289,9 @@ cd /root/nanoclaw/container/agent-runner && npm run build && npx vitest run --re
 
 Expected: FAIL — tool returns `{error: 'not_implemented'}`.
 
-### Step 3: Implement `api_board_activity` in `registerTools()`
+### Step 3: Implement `api_board_activity` via `TaskflowEngine`
 
-Replace the placeholder for `api_board_activity` in the `registerTools` function:
+Add a canonical adapter method to `TaskflowEngine` for the API contract, then have the MCP tool call that method from a readonly engine instance:
 
 ```typescript
 server.tool(
@@ -286,7 +309,7 @@ server.tool(
       rows = db.prepare(`
         SELECT id, board_id, task_id, action, "by", "at", details
         FROM task_history
-        WHERE board_id = ? AND date("at") = date('now', 'localtime')
+        WHERE board_id = ? AND date("at", 'localtime') = date('now', 'localtime')
         ORDER BY id DESC
       `).all(args.board_id)
     } else {
@@ -331,7 +354,7 @@ cd /root/nanoclaw && git add container/agent-runner/src/taskflow-mcp-server.ts c
 
 ---
 
-## Task 3: `api_filter_board_tasks` — real SQL + filter logic
+## Task 3: `api_filter_board_tasks` — engine-backed adapter implementation
 
 **Files:**
 - Modify: `container/agent-runner/src/taskflow-mcp-server.ts`
@@ -391,9 +414,9 @@ cd /root/nanoclaw/container/agent-runner && npm run build && npx vitest run --re
 
 Expected: FAIL — returns `{error: 'not_implemented'}`.
 
-### Step 3: Implement `api_filter_board_tasks` in `registerTools()`
+### Step 3: Implement `api_filter_board_tasks` via `TaskflowEngine`
 
-Replace the placeholder:
+Add a canonical adapter method to `TaskflowEngine` that owns the API serializer, priority translation, and local-date filter semantics. The MCP tool should only validate input shape and return the engine result.
 
 ```typescript
 server.tool(
@@ -417,7 +440,7 @@ server.tool(
     const rawRows = db.prepare(`
       SELECT t.id, t.board_id, b.short_code AS board_code,
              t.title, t.assignee, t."column", t.priority, t.due_date,
-             t.type, t.labels, t.description, t.parent_task_id,
+             t.type, t.labels, t.description, t.notes, t.parent_task_id,
              t.scheduled_at, t.created_at, t.updated_at,
              t.child_exec_board_id, t.child_exec_person_id, t.child_exec_rollup_status
       FROM tasks t
@@ -427,10 +450,11 @@ server.tool(
 
     const tasks = rawRows.map(r => serializeTask(r))
 
-    const todayStr = new Date().toISOString().slice(0, 10)
-    const weekEnd = new Date()
+    const today = new Date()
+    const todayStr = localDateString(today)
+    const weekEnd = new Date(today.getFullYear(), today.getMonth(), today.getDate())
     weekEnd.setDate(weekEnd.getDate() + 6)
-    const weekEndStr = weekEnd.toISOString().slice(0, 10)
+    const weekEndStr = localDateString(weekEnd)
     const targetLabel = (args.label ?? '').trim().toLowerCase()
 
     let filtered: ReturnType<typeof serializeTask>[]
@@ -486,7 +510,7 @@ cd /root/nanoclaw && git add container/agent-runner/src/taskflow-mcp-server.ts c
 
 ---
 
-## Task 4: `api_linked_tasks` — real SQL implementation
+## Task 4: `api_linked_tasks` — engine-backed adapter implementation
 
 **Files:**
 - Modify: `container/agent-runner/src/taskflow-mcp-server.ts`
@@ -546,7 +570,7 @@ cd /root/nanoclaw/container/agent-runner && npm run build && npx vitest run --re
 
 Expected: FAIL — returns `{error: 'not_implemented'}`.
 
-### Step 3: Implement `api_linked_tasks` in `registerTools()`
+### Step 3: Implement `api_linked_tasks` via `TaskflowEngine`
 
 Replace the placeholder:
 
@@ -712,9 +736,10 @@ async def board_activity(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="since must be ISO8601 timestamp") from exc
 
-    # MCP delegation — fall through to Python SQL if unavailable
+    # MCP delegation — preserve board existence / org scoping before calling Node
     mcp_client = getattr(request.app.state, 'mcp_client', None)
     if mcp_client and mcp_client.is_alive():
+        ensure_board_access_prechecked(board_id, access)
         try:
             result = await mcp_client.call('api_board_activity', {
                 'board_id': board_id, 'mode': normalized_mode, 'since': since
@@ -726,7 +751,7 @@ async def board_activity(
 
     # Python SQL fallback (existing implementation)
     if normalized_mode == "changes_today":
-        predicate = 'date("at") = date(\'now\', \'localtime\')'
+        predicate = 'date("at", \'localtime\') = date(\'now\', \'localtime\')'
         args: tuple = (board_id,)
     else:
         predicate = '"at" >= ?'
@@ -756,7 +781,7 @@ async def board_activity(
         raise HTTPException(status_code=503, detail="Database error") from exc
 ```
 
-**Note:** The `check_board_org_access` call is kept in the fallback path. For the MCP path, access was already validated by `BoardAccessClaims`. The Node server does NOT do auth — it trusts that FastAPI has already authorized the request.
+**Required invariant:** `require_board_access()` alone is not sufficient for these routes because board existence and JWT org checks live in `check_board_org_access()`. The MCP fast path must preserve those semantics before calling Node. The Node server does not perform authorization.
 
 ### Step 4: Write the full test with correct auth
 
@@ -944,16 +969,22 @@ Expected: All pass. Verify count is at least 122.
 
 ---
 
-## Phase 2 Acceptance Criteria
+## Acceptance Criteria
 
-Before declaring Phase 2 complete, verify all of the following:
+Before declaring this low-risk read slice complete, verify all of the following:
 
+- [ ] The design-doc prerequisites for low-risk board-local reads are already complete; this plan does not waive them
+- [ ] `taskflow-mcp-server.ts` is a thin transport layer; API read behavior is not re-implemented there with direct SQL
 - [ ] `npm run build` in `container/agent-runner` compiles without errors
-- [ ] `npm test` in `container/agent-runner` passes all server tests (3 new tool tests + 3 prior handshake tests + DB smoke test)
-- [ ] `api_board_activity` returns `{rows: [...]}` with correct shape for `changes_today` and `changes_since` modes
+- [ ] `npm test -- taskflow-mcp-server` in `container/agent-runner` passes the handshake tests, tool tests, and DB smoke test
+- [ ] Engine-level tests cover the canonical adapter methods directly, not only through MCP
+- [ ] `api_board_activity` returns `{rows: [...]}` with correct shape for both `changes_today` and `changes_since`
 - [ ] `api_filter_board_tasks` returns correctly filtered rows for all 6 filter types
+- [ ] `api_filter_board_tasks` uses local-date semantics for `due_today` and `due_this_week`
 - [ ] `api_linked_tasks` returns only tasks with `child_exec_board_id IS NOT NULL`
-- [ ] Python tests pass with `TASKFLOW_DISABLE_MCP_SUBPROCESS=1` (all 122+ tests)
+- [ ] Task DTO parity is preserved for `labels` and `notes` parsing (`[]` default, not `null`)
+- [ ] MCP-enabled route tests prove `404 Board not found` still occurs before delegation for all three routes
 - [ ] `FakeMCPClient` injection causes `board_activity`, `filter_board_tasks`, and `linked_tasks` routes to return MCP-provided rows
-- [ ] Setting `mcp_client = None` causes all three routes to fall back to Python SQL (existing behavior preserved)
-- [ ] No existing route behavior has changed — all existing API tests pass with MCP disabled
+- [ ] Setting `mcp_client = None`, disabling lifespan startup, or returning a non-`rows` payload causes migrated routes to fail closed with `503`
+- [ ] Python targeted tests cover the real subprocess client and the MCP route shims without relying on module-scope imports that bypass fixture DB setup
+- [ ] The duplicated Python SQL read path for these migrated routes is removed

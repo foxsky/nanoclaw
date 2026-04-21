@@ -14,7 +14,7 @@ As of the latest implementation pass:
 - Phase 1 is NOT done: the reusable Node service module that consolidates
   `ipc-mcp-stdio.ts` wrapper behavior (duplicate detection, embedding injection,
   notification shaping, child-board provisioning) has not been extracted
-- Phase 5 low-risk reads are partially implemented for:
+- Phase 5 low-risk reads are implemented for:
   - board activity
   - board filter queries
   - linked tasks
@@ -22,10 +22,11 @@ As of the latest implementation pass:
 Important correction:
 
 - those three read tools must be considered complete only in their engine-backed form
-- the current server implementation uses direct SQL in `taskflow-mcp-server.ts`
-  instead of calling `engine.apiBoardActivity()`, `engine.apiFilterBoardTasks()`,
-  and `engine.apiLinkedTasks()` — which exist and are the correct call sites
-- correcting this is the first task of the next implementation phase
+- the current server implementation has been corrected so
+  `taskflow-mcp-server.ts` delegates those reads to `TaskflowEngine` adapter
+  methods instead of duplicating route-specific SQL in the transport layer
+- that corrects the Node-side read path, but it does not change the fact that
+  Phase 1 and Phase 3 are still outstanding
 
 What is still not done:
 
@@ -402,8 +403,8 @@ Do not:
 ## Immediate Next Step
 
 The compatibility matrix now exists, the MCP transport infrastructure exists,
-and the first low-risk reads have been wired through Python delegation — but
-the Node tools still use direct SQL instead of engine adapter methods.
+and the first low-risk reads are now implemented in corrected engine-backed
+form on the Node side as well as wired through Python delegation.
 
 The next concrete artifact should be a Phase 3 actor-resolution plan such as
 [2026-04-20-taskflow-api-phase3-actor-resolution.md](/root/nanoclaw/docs/plans/2026-04-20-taskflow-api-phase3-actor-resolution.md)

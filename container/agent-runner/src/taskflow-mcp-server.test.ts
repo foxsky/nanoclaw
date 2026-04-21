@@ -162,7 +162,7 @@ describe('taskflow-mcp-server', () => {
     expect(toolNames).toContain('api_linked_tasks')
   })
 
-  it('returns the placeholder payload from tools/call', async () => {
+  it('returns JSON content from tools/call', async () => {
     tempDir = mkdtempSync(path.join(tmpdir(), 'taskflow-mcp-server-test-'))
     const testDb = createTestDbSeeded(tempDir)
     proc = spawn('node', [SERVER_BIN, '--db', testDb], { stdio: ['pipe', 'pipe', 'pipe'] })
@@ -273,6 +273,43 @@ describe('taskflow-mcp-server', () => {
     expect(row).toHaveProperty('details')
   })
 
+  it('api_board_activity returns history rows for changes_since', async () => {
+    tempDir = mkdtempSync(path.join(tmpdir(), 'taskflow-mcp-server-test-'))
+    const dbPath = createTestDbSeeded(tempDir)
+    proc = spawn('node', [SERVER_BIN, '--db', dbPath], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const lines: any[] = []
+    createInterface({ input: proc.stdout! }).on('line', l => { try { lines.push(JSON.parse(l)) } catch {} })
+
+    await new Promise<void>((resolve, reject) => {
+      const rl = createInterface({ input: proc!.stderr! })
+      let settled = false
+      const t = setTimeout(() => { if (!settled) { settled = true; rl.close(); reject(new Error('timeout')) } }, 5000)
+      rl.on('line', l => { if (l.includes('MCP server ready') && !settled) { settled = true; clearTimeout(t); rl.close(); resolve() } })
+    })
+
+    const send = (msg: object) => proc!.stdin!.write(JSON.stringify(msg) + '\n')
+    const waitFor = (id: number) => new Promise<any>((resolve, reject) => {
+      const deadline = setTimeout(() => reject(new Error(`timeout id=${id}`)), 5000)
+      const iv = setInterval(() => {
+        const m = lines.find(x => x.id === id)
+        if (m) { clearInterval(iv); clearTimeout(deadline); resolve(m) }
+      }, 50)
+    })
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0.0.1' } } })
+    await waitFor(1)
+    send({ jsonrpc: '2.0', method: 'notifications/initialized' })
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'api_board_activity', arguments: { board_id: 'b1', mode: 'changes_since', since: '2021-01-01T00:00:00Z' } } })
+    const resp = await waitFor(2)
+
+    const text = resp.result.content[0].text
+    const data = JSON.parse(text)
+    expect(Array.isArray(data.rows)).toBe(true)
+    expect(data.rows).toHaveLength(1)
+    expect(data.rows[0].action).toBe('create')
+    expect(data.rows[0].details).toEqual({ source: 'seed' })
+  })
+
   it('api_filter_board_tasks returns urgent tasks', async () => {
     tempDir = mkdtempSync(path.join(tmpdir(), 'taskflow-mcp-server-test-'))
     const dbPath = createTestDbSeeded(tempDir)
@@ -310,6 +347,56 @@ describe('taskflow-mcp-server', () => {
     expect(data.rows[0].priority).toBe('urgente')
     expect(data.rows[0].board_code).toBe('TF')
     expect(Array.isArray(data.rows[0].labels)).toBe(true)
+    expect(Array.isArray(data.rows[0].notes)).toBe(true)
+    expect(data.rows[0].notes).toHaveLength(1)
+  })
+
+  it('api_filter_board_tasks supports due, label, and high-priority filters', async () => {
+    tempDir = mkdtempSync(path.join(tmpdir(), 'taskflow-mcp-server-test-'))
+    const dbPath = createTestDbSeeded(tempDir)
+    proc = spawn('node', [SERVER_BIN, '--db', dbPath], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const lines: any[] = []
+    createInterface({ input: proc.stdout! }).on('line', l => { try { lines.push(JSON.parse(l)) } catch {} })
+
+    await new Promise<void>((resolve, reject) => {
+      const rl = createInterface({ input: proc!.stderr! })
+      let settled = false
+      const t = setTimeout(() => { if (!settled) { settled = true; rl.close(); reject(new Error('timeout')) } }, 5000)
+      rl.on('line', l => { if (l.includes('MCP server ready') && !settled) { settled = true; clearTimeout(t); rl.close(); resolve() } })
+    })
+
+    const send = (msg: object) => proc!.stdin!.write(JSON.stringify(msg) + '\n')
+    const waitFor = (id: number) => new Promise<any>((resolve, reject) => {
+      const deadline = setTimeout(() => reject(new Error(`timeout id=${id}`)), 5000)
+      const iv = setInterval(() => {
+        const m = lines.find(x => x.id === id)
+        if (m) { clearInterval(iv); clearTimeout(deadline); resolve(m) }
+      }, 50)
+    })
+    const callTool = async (id: number, filter: string, extraArgs: Record<string, unknown> = {}) => {
+      send({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'api_filter_board_tasks', arguments: { board_id: 'b1', filter, ...extraArgs } } })
+      const resp = await waitFor(id)
+      return JSON.parse(resp.result.content[0].text)
+    }
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0.0.1' } } })
+    await waitFor(1)
+    send({ jsonrpc: '2.0', method: 'notifications/initialized' })
+
+    const overdue = await callTool(2, 'overdue')
+    expect(overdue.rows.map((row: any) => row.id)).toEqual(['t2'])
+
+    const dueToday = await callTool(3, 'due_today')
+    expect(dueToday.rows.map((row: any) => row.id)).toEqual(['t5'])
+
+    const dueThisWeek = await callTool(4, 'due_this_week')
+    expect(dueThisWeek.rows.map((row: any) => row.id)).toEqual(['t5', 't6'])
+
+    const highPriority = await callTool(5, 'high_priority')
+    expect(highPriority.rows.map((row: any) => row.id)).toEqual(['t7'])
+
+    const byLabel = await callTool(6, 'by_label', { label: 'backend' })
+    expect(byLabel.rows.map((row: any) => row.id)).toEqual(['t6'])
   })
 
 
@@ -371,7 +458,7 @@ export function createTestDb(): string {
       title TEXT NOT NULL, "column" TEXT NOT NULL,
       type TEXT NOT NULL DEFAULT 'simple',
       assignee TEXT, priority TEXT, due_date TEXT, labels TEXT,
-      description TEXT, parent_task_id TEXT, scheduled_at TEXT,
+      description TEXT, notes TEXT, parent_task_id TEXT, scheduled_at TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
       child_exec_board_id TEXT, child_exec_person_id TEXT,
       child_exec_rollup_status TEXT
@@ -383,13 +470,22 @@ export function createTestDb(): string {
       "at" TEXT NOT NULL, details TEXT
     );
     INSERT INTO boards VALUES ('b1', 'TF', 'Test Board', '2024-01-01T00:00:00Z');
-    INSERT INTO tasks VALUES
-      ('t1','b1','Urgent Task','todo','simple','alice','urgente','2099-01-01','["bug"]',NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
-      ('t2','b1','Overdue Task','todo','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
-      ('t3','b1','Linked Task','todo','simple',NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z','child-board-1',NULL,NULL),
-      ('t4','b1','Done Task','done','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL);
+    INSERT INTO tasks (
+      id, board_id, title, "column", type, assignee, priority, due_date, labels,
+      description, notes, parent_task_id, scheduled_at, created_at, updated_at,
+      child_exec_board_id, child_exec_person_id, child_exec_rollup_status
+    ) VALUES
+      ('t1','b1','Urgent Task','todo','simple','alice','urgente','2099-01-01','["bug"]',NULL,'[{"id":"n1","author":"alice","content":"seed note","created_at":"2024-01-01T00:00:00Z"}]',NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t2','b1','Overdue Task','todo','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t3','b1','Linked Task','todo','simple',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z','child-board-1',NULL,NULL),
+      ('t4','b1','Done Task','done','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t5','b1','Due Today Task','todo','simple',NULL,NULL,date('now','localtime'),'[]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t6','b1','Due This Week Task','todo','simple',NULL,NULL,date('now','localtime','+3 days'),'["backend"]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t7','b1','High Priority Task','todo','simple',NULL,'alta','2099-02-01','[]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL);
     INSERT INTO task_history (board_id, task_id, action, "by", "at", details)
-      VALUES ('b1','t1','create','alice', datetime('now','localtime'), NULL);
+      VALUES
+        ('b1','t2','update','alice', '2020-01-01T00:00:00Z', '{"source":"old"}'),
+        ('b1','t1','create','alice', datetime('now','localtime'), '{"source":"seed"}');
   `)
   db.close()
   return path
@@ -409,7 +505,7 @@ function createTestDbSeeded(dir: string): string {
       title TEXT NOT NULL, "column" TEXT NOT NULL,
       type TEXT NOT NULL DEFAULT 'simple',
       assignee TEXT, priority TEXT, due_date TEXT, labels TEXT,
-      description TEXT, parent_task_id TEXT, scheduled_at TEXT,
+      description TEXT, notes TEXT, parent_task_id TEXT, scheduled_at TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
       child_exec_board_id TEXT, child_exec_person_id TEXT,
       child_exec_rollup_status TEXT
@@ -421,13 +517,22 @@ function createTestDbSeeded(dir: string): string {
       "at" TEXT NOT NULL, details TEXT
     );
     INSERT INTO boards VALUES ('b1', 'TF', 'Test Board', '2024-01-01T00:00:00Z');
-    INSERT INTO tasks VALUES
-      ('t1','b1','Urgent Task','todo','simple','alice','urgente','2099-01-01','["bug"]',NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
-      ('t2','b1','Overdue Task','todo','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
-      ('t3','b1','Linked Task','todo','simple',NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z','child-board-1',NULL,NULL),
-      ('t4','b1','Done Task','done','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL);
+    INSERT INTO tasks (
+      id, board_id, title, "column", type, assignee, priority, due_date, labels,
+      description, notes, parent_task_id, scheduled_at, created_at, updated_at,
+      child_exec_board_id, child_exec_person_id, child_exec_rollup_status
+    ) VALUES
+      ('t1','b1','Urgent Task','todo','simple','alice','urgente','2099-01-01','["bug"]',NULL,'[{"id":"n1","author":"alice","content":"seed note","created_at":"2024-01-01T00:00:00Z"}]',NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t2','b1','Overdue Task','todo','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t3','b1','Linked Task','todo','simple',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z','child-board-1',NULL,NULL),
+      ('t4','b1','Done Task','done','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t5','b1','Due Today Task','todo','simple',NULL,NULL,date('now','localtime'),'[]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t6','b1','Due This Week Task','todo','simple',NULL,NULL,date('now','localtime','+3 days'),'["backend"]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t7','b1','High Priority Task','todo','simple',NULL,'alta','2099-02-01','[]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL);
     INSERT INTO task_history (board_id, task_id, action, "by", "at", details)
-      VALUES ('b1','t1','create','alice', datetime('now','localtime'), NULL);
+      VALUES
+        ('b1','t2','update','alice', '2020-01-01T00:00:00Z', '{"source":"old"}'),
+        ('b1','t1','create','alice', datetime('now','localtime'), '{"source":"seed"}');
   `)
   db.close()
   return dbPath
@@ -447,6 +552,6 @@ describe('test DB factory', () => {
     const rows = db.prepare('SELECT id FROM tasks WHERE board_id = ?').all('b1')
     db.close()
     await removeTestDb(dbPath)
-    expect(rows).toHaveLength(4)
+    expect(rows).toHaveLength(7)
   })
 })

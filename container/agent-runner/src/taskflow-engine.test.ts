@@ -1058,6 +1058,88 @@ describe('TaskflowEngine', () => {
   });
 
   /* ---------------------------------------------------------------- */
+  /*  API adapter reads                                                */
+  /* ---------------------------------------------------------------- */
+
+  describe('API adapter reads', () => {
+    it('apiBoardActivity returns parsed rows for local-today changes', () => {
+      const now = new Date().toISOString();
+      db.exec(`UPDATE boards SET short_code = 'DEV' WHERE id = '${BOARD_ID}'`);
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+         VALUES ('${BOARD_ID}', 'T-001', 'create', 'person-1', '${now}', '{"source":"seed"}')`,
+      );
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+         VALUES ('${BOARD_ID}', 'T-001', 'update', 'person-1', '2020-01-01T00:00:00Z', '{"source":"old"}')`,
+      );
+
+      const result = engine.apiBoardActivity({ mode: 'changes_today' });
+
+      expect(result.success).toBe(true);
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0]).toMatchObject({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        action: 'create',
+        by: 'person-1',
+        details: { source: 'seed' },
+      });
+    });
+
+    it('apiFilterBoardTasks translates assignee and priority for API consumers', () => {
+      db.exec(`UPDATE boards SET short_code = 'DEV' WHERE id = '${BOARD_ID}'`);
+      db.exec(
+        `UPDATE tasks
+         SET priority = 'urgent', labels = '["backend"]', notes = '[{"id":"n1","author":"Alexandre","content":"Context","created_at":"2026-03-01T10:00:00Z"}]'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
+      );
+
+      const result = engine.apiFilterBoardTasks({ filter: 'urgent' });
+
+      expect(result.success).toBe(true);
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0]).toMatchObject({
+        id: 'T-001',
+        board_id: BOARD_ID,
+        board_code: 'DEV',
+        assignee: 'Alexandre',
+        priority: 'urgente',
+      });
+      expect(result.data[0].labels).toEqual(['backend']);
+      expect(result.data[0].notes).toHaveLength(1);
+    });
+
+    it('apiLinkedTasks returns board-local linked tasks with parent titles', () => {
+      const now = new Date().toISOString();
+      db.exec(`UPDATE boards SET short_code = 'DEV' WHERE id = '${BOARD_ID}'`);
+      db.exec(
+        `INSERT INTO tasks (
+          id, board_id, type, title, assignee, column, requires_close_approval,
+          child_exec_board_id, parent_task_id, created_at, updated_at
+        )
+        VALUES (
+          'T-099', '${BOARD_ID}', 'simple', 'Linked child board task', 'person-2', 'next_action', 0,
+          'board-child-1', 'T-001', '${now}', '${now}'
+        )`,
+      );
+
+      const result = engine.apiLinkedTasks();
+
+      expect(result.success).toBe(true);
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0]).toMatchObject({
+        id: 'T-099',
+        board_id: BOARD_ID,
+        board_code: 'DEV',
+        assignee: 'Giovanni',
+        parent_task_title: 'Fix login bug',
+        child_exec_board_id: 'board-child-1',
+      });
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
   /*  query: person_waiting / person_review / person_completed         */
   /* ---------------------------------------------------------------- */
 
