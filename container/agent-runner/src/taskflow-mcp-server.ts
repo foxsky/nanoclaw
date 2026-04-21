@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import Database from 'better-sqlite3'
+import { fileURLToPath } from 'url'
 import { TaskflowEngine } from './taskflow-engine.js'
 
 // Redirect all console output to stderr — stdout is the exclusive JSON-RPC channel
@@ -138,7 +139,9 @@ async function main() {
   process.on('SIGINT',  () => void shutdown(server, db))
 }
 
-main().catch((err) => {
-  process.stderr.write(`Fatal: ${err}\n`)
-  process.exit(1)
-})
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    process.stderr.write(`Fatal: ${err}\n`)
+    process.exit(1)
+  })
+}
