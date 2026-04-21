@@ -388,17 +388,16 @@ describe('parseActorArg', () => {
   })
 })
 
-import { parseNotificationEvents } from './taskflow-mcp-server.js'
+import { normalizeEngineNotificationEvents, parseNotificationEvents } from './taskflow-mcp-server.js'
 
 describe('parseNotificationEvents', () => {
   it('accepts a valid deferred_notification', () => {
     const result = parseNotificationEvents([
-      { kind: 'deferred_notification', board_id: 'b1', target_person_id: 'alice', message: 'Hello' },
+      { kind: 'deferred_notification', target_person_id: 'alice', message: 'Hello' },
     ])
     expect(result).toHaveLength(1)
     expect(result[0].kind).toBe('deferred_notification')
     if (result[0].kind === 'deferred_notification') {
-      expect(result[0].board_id).toBe('b1')
       expect(result[0].target_person_id).toBe('alice')
       expect(result[0].message).toBe('Hello')
     }
@@ -428,41 +427,71 @@ describe('parseNotificationEvents', () => {
     }
   })
 
-  it('skips items with unknown kind', () => {
-    const result = parseNotificationEvents([
-      { kind: 'unknown_kind', board_id: 'b1', message: 'Should be skipped' },
-    ])
-    expect(result).toHaveLength(0)
+  it('rejects items with unknown kind', () => {
+    expect(() => parseNotificationEvents([
+      { kind: 'unknown_kind', message: 'Should fail' },
+    ])).toThrow(/unknown value/)
   })
 
-  it('returns empty array for non-array input (null, undefined, string)', () => {
+  it('returns empty array for nullish input and rejects malformed non-array input', () => {
     expect(parseNotificationEvents(null)).toEqual([])
     expect(parseNotificationEvents(undefined)).toEqual([])
-    expect(parseNotificationEvents('a string')).toEqual([])
-    expect(parseNotificationEvents(42)).toEqual([])
+    expect(() => parseNotificationEvents('a string')).toThrow(/expected array/)
+    expect(() => parseNotificationEvents(42)).toThrow(/expected array/)
   })
 
   it('rejects empty message string', () => {
-    const deferred = parseNotificationEvents([
-      { kind: 'deferred_notification', board_id: 'b1', target_person_id: 'alice', message: '' },
-    ])
-    expect(deferred).toHaveLength(0)
-
-    const direct = parseNotificationEvents([
+    expect(() => parseNotificationEvents([
+      { kind: 'deferred_notification', target_person_id: 'alice', message: '' },
+    ])).toThrow(/message/)
+    expect(() => parseNotificationEvents([
       { kind: 'direct_message', target_chat_jid: 'jid@s.whatsapp.net', message: '' },
-    ])
-    expect(direct).toHaveLength(0)
-
-    const parent = parseNotificationEvents([
+    ])).toThrow(/message/)
+    expect(() => parseNotificationEvents([
       { kind: 'parent_notification', parent_group_jid: 'group@g.us', message: '' },
-    ])
-    expect(parent).toHaveLength(0)
+    ])).toThrow(/message/)
   })
 
-  it('skips deferred_notification missing required field target_person_id', () => {
-    const result = parseNotificationEvents([
-      { kind: 'deferred_notification', board_id: 'b1', message: 'No person' },
+  it('rejects deferred_notification missing required field target_person_id', () => {
+    expect(() => parseNotificationEvents([
+      { kind: 'deferred_notification', message: 'No person' },
+    ])).toThrow(/target_person_id/)
+  })
+})
+
+describe('normalizeEngineNotificationEvents', () => {
+  it('normalizes group-routed, deferred, and parent notifications', () => {
+    const result = normalizeEngineNotificationEvents({
+      notifications: [
+        { notification_group_jid: 'group-1@g.us', target_person_id: 'alice', message: 'group update' },
+        { target_person_id: 'bob', message: 'deferred update' },
+      ],
+      parent_notification: { parent_group_jid: 'parent@g.us', message: 'parent update' },
+    })
+
+    expect(result).toEqual([
+      { kind: 'direct_message', target_chat_jid: 'group-1@g.us', message: 'group update' },
+      { kind: 'deferred_notification', target_person_id: 'bob', message: 'deferred update' },
+      { kind: 'parent_notification', parent_group_jid: 'parent@g.us', message: 'parent update' },
     ])
-    expect(result).toHaveLength(0)
+  })
+
+  it('preserves same-call parent dedup behavior', () => {
+    const result = normalizeEngineNotificationEvents({
+      notifications: [
+        { notification_group_jid: 'parent@g.us', target_person_id: 'alice', message: 'already delivered' },
+      ],
+      parent_notification: { parent_group_jid: 'parent@g.us', message: 'duplicate parent update' },
+    })
+
+    expect(result).toEqual([
+      { kind: 'direct_message', target_chat_jid: 'parent@g.us', message: 'already delivered' },
+    ])
+  })
+
+  it('rejects malformed engine notification entries', () => {
+    expect(() => normalizeEngineNotificationEvents({
+      notifications: [{ message: 'missing route' }],
+    })).toThrow(/missing routing target/)
   })
 })

@@ -53,7 +53,6 @@ export function parseActorArg(raw: unknown): ResolvedActor {
 
 type DeferredNotificationEvent = {
   kind: 'deferred_notification'
-  board_id: string
   target_person_id: string
   message: string
 }
@@ -75,44 +74,149 @@ export type NotificationEvent =
   | DirectMessageEvent
   | ParentNotificationEvent
 
-export function parseNotificationEvents(raw: unknown): NotificationEvent[] {
-  if (!Array.isArray(raw)) return []
-  const out: NotificationEvent[] = []
-  for (const item of raw) {
-    if (!item || typeof item !== 'object') continue
-    const obj = item as Record<string, unknown>
-    if (obj.kind === 'deferred_notification') {
-      if (typeof obj.board_id === 'string' && obj.board_id &&
-          typeof obj.target_person_id === 'string' && obj.target_person_id &&
-          typeof obj.message === 'string' && obj.message) {
-        out.push({
-          kind: 'deferred_notification',
-          board_id: obj.board_id as string,
-          target_person_id: obj.target_person_id as string,
-          message: obj.message as string,
-        })
-      }
-    } else if (obj.kind === 'direct_message') {
-      if (typeof obj.target_chat_jid === 'string' && obj.target_chat_jid &&
-          typeof obj.message === 'string' && obj.message) {
-        out.push({
-          kind: 'direct_message',
-          target_chat_jid: obj.target_chat_jid as string,
-          message: obj.message as string,
-        })
-      }
-    } else if (obj.kind === 'parent_notification') {
-      if (typeof obj.parent_group_jid === 'string' && obj.parent_group_jid &&
-          typeof obj.message === 'string' && obj.message) {
-        out.push({
-          kind: 'parent_notification',
-          parent_group_jid: obj.parent_group_jid as string,
-          message: obj.message as string,
-        })
-      }
+type RawEngineNotification = {
+  target_kind?: 'group' | 'dm'
+  target_person_id?: string
+  notification_group_jid?: string | null
+  target_chat_jid?: string | null
+  message?: string
+}
+
+type RawParentNotification = {
+  parent_group_jid?: string
+  message?: string
+}
+
+export type ApiMutationResult<T = unknown> = {
+  success: true
+  data: T
+  notification_events: NotificationEvent[]
+} | {
+  success: false
+  error_code: string
+  error: string
+}
+
+function requireNonEmptyString(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !value) {
+    throw new Error(`${label}: required non-empty string`)
+  }
+  return value
+}
+
+function parseNotificationEvent(raw: unknown, label: string): NotificationEvent {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error(`${label}: expected object`)
+  }
+  const obj = raw as Record<string, unknown>
+  if (obj.kind === 'deferred_notification') {
+    return {
+      kind: 'deferred_notification',
+      target_person_id: requireNonEmptyString(obj.target_person_id, `${label}.target_person_id`),
+      message: requireNonEmptyString(obj.message, `${label}.message`),
     }
   }
-  return out
+  if (obj.kind === 'direct_message') {
+    return {
+      kind: 'direct_message',
+      target_chat_jid: requireNonEmptyString(obj.target_chat_jid, `${label}.target_chat_jid`),
+      message: requireNonEmptyString(obj.message, `${label}.message`),
+    }
+  }
+  if (obj.kind === 'parent_notification') {
+    return {
+      kind: 'parent_notification',
+      parent_group_jid: requireNonEmptyString(obj.parent_group_jid, `${label}.parent_group_jid`),
+      message: requireNonEmptyString(obj.message, `${label}.message`),
+    }
+  }
+  throw new Error(`${label}.kind: unknown value "${String(obj.kind)}"`)
+}
+
+export function parseNotificationEvents(raw: unknown): NotificationEvent[] {
+  if (raw == null) return []
+  if (!Array.isArray(raw)) {
+    throw new Error('notification_events: expected array')
+  }
+  return raw.map((item, index) => parseNotificationEvent(item, `notification_events[${index}]`))
+}
+
+export function normalizeEngineNotificationEvents(raw: unknown): NotificationEvent[] {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('mutation_result: expected object')
+  }
+  const result = raw as Record<string, unknown>
+  const normalized: NotificationEvent[] = []
+  const notifiedJids = new Set<string>()
+
+  const notifications = result.notifications
+  if (notifications != null) {
+    if (!Array.isArray(notifications)) {
+      throw new Error('mutation_result.notifications: expected array')
+    }
+    for (let index = 0; index < notifications.length; index++) {
+      const item = notifications[index]
+      if (!item || typeof item !== 'object') {
+        throw new Error(`mutation_result.notifications[${index}]: expected object`)
+      }
+      const notification = item as RawEngineNotification
+      const message = requireNonEmptyString(notification.message, `mutation_result.notifications[${index}].message`)
+      if (notification.target_kind === 'dm') {
+        const targetChatJid = requireNonEmptyString(
+          notification.target_chat_jid,
+          `mutation_result.notifications[${index}].target_chat_jid`,
+        )
+        normalized.push({ kind: 'direct_message', target_chat_jid: targetChatJid, message })
+        notifiedJids.add(targetChatJid)
+        continue
+      }
+      if (typeof notification.notification_group_jid === 'string' && notification.notification_group_jid) {
+        normalized.push({
+          kind: 'direct_message',
+          target_chat_jid: notification.notification_group_jid,
+          message,
+        })
+        notifiedJids.add(notification.notification_group_jid)
+        continue
+      }
+      if (typeof notification.target_person_id === 'string' && notification.target_person_id) {
+        normalized.push({
+          kind: 'deferred_notification',
+          target_person_id: notification.target_person_id,
+          message,
+        })
+        continue
+      }
+      throw new Error(
+        `mutation_result.notifications[${index}]: missing routing target`,
+      )
+    }
+  }
+
+  const parentNotification = result.parent_notification
+  if (parentNotification != null) {
+    if (!parentNotification || typeof parentNotification !== 'object') {
+      throw new Error('mutation_result.parent_notification: expected object')
+    }
+    const parent = parentNotification as RawParentNotification
+    const parentGroupJid = requireNonEmptyString(
+      parent.parent_group_jid,
+      'mutation_result.parent_notification.parent_group_jid',
+    )
+    const message = requireNonEmptyString(
+      parent.message,
+      'mutation_result.parent_notification.message',
+    )
+    if (!notifiedJids.has(parentGroupJid)) {
+      normalized.push({
+        kind: 'parent_notification',
+        parent_group_jid: parentGroupJid,
+        message,
+      })
+    }
+  }
+
+  return normalized
 }
 
 function contentFromResult(result: { success: boolean; data?: unknown; error?: string }) {

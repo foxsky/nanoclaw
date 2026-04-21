@@ -4,6 +4,14 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-21 — Phase 4 notification contract hardening
+
+Phase 4 of the TaskFlow API / MCP notification unification landed as a contract hardening pass across both sides of the boundary. On the Node side, `container/agent-runner/src/taskflow-mcp-server.ts` no longer accepts the stale `deferred_notification.board_id` shape, parses notification arrays fail-closed instead of silently skipping malformed items, and adds explicit normalization for engine-style `notifications` plus `parent_notification` payloads. That closes the mismatch where the engine emitted routing fields like `notification_group_jid` and `target_kind` while the REST/API layer was inventing a parallel event contract.
+
+On the Python REST side, `taskflow-api/app/main.py` now parses MCP mutation responses into typed success/error variants before dispatch, maps structured engine `error_code` values to real HTTP semantics (`not_found` -> 404, validation conflicts -> 4xx, malformed/unknown responses -> 503), and only dispatches notification kinds the REST channel actually supports. Unsupported kinds now log and fail closed instead of disappearing silently. The old best-effort `dispatch_mcp_notification_events()` shim was removed in favor of strict validation plus explicit `dispatch_supported_notification_events()`.
+
+Regression coverage was expanded on both sides. Node tests now cover normalization of engine notification output, deduped parent notifications, and rejection of malformed items. The TaskFlow API tests now cover strict mutation-result parsing, transport failure behavior, access-check invocation, unsupported notification kinds, and a board invalidation regression proving that posting a task comment changes the SSE change hash used by board detail/stats refresh paths.
+
 ## 2026-04-19 (later) — Auditor dryrun cleanup scope fix
 
 The exact-correlation canary surfaced a real dryrun-only regression in `container/agent-runner/src/auditor-script.sh`: `mode` was declared inside the main `try` block but referenced again in `finally` when deciding whether to write the structured audit dryrun artifact. In dryrun mode that threw `ReferenceError: mode is not defined` after the audit body completed, which meant the report path only looked healthy if you patched the generated script copy by hand during debugging.
