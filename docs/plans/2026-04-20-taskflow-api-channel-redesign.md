@@ -27,9 +27,19 @@ As of the latest implementation pass:
   - board filter queries (`engine.apiFilterBoardTasks()`)
   - linked tasks (`engine.apiLinkedTasks()`)
 
+- Phase 4 is complete: notification and event-invalidation primitives are unified
+  - `board_chat` COUNT+MAX included in SSE change hash (invalidation covers board chat)
+  - `dispatch_mcp_notification_events(conn, events)` dispatches `deferred_notification`
+    events via `write_notification_ipc`; logs warnings for `direct_message` and
+    `parent_notification` (not yet wired to IPC senders)
+  - `call_mcp_mutation(request, board_id, claims, tool_name, args)` helper handles
+    MCP delegation, maps `error_kind` to 422/503, and dispatches notification events
+  - `NotificationEvent` TypeScript discriminated union exported from
+    `taskflow-mcp-server.ts`; `parseNotificationEvents` validates and constructs events
+  - Indexes added on `tasks.updated_at` and `board_chat.created_at` for SSE hash queries
+
 What is still not done:
 
-- Phase 4 notification and event-invalidation unification
 - Phase 6 mutation migration
 
 Therefore:
@@ -399,18 +409,18 @@ Do not:
 
 ## Immediate Next Step
 
-Phases 0, 3, and 5 are complete. Phase 1 (wrapper extraction) remains outstanding
-but does not block Phase 4.
+Phases 0, 3, 4, and 5 are complete. Phase 1 (wrapper extraction) remains outstanding
+but does not block Phase 6.
 
-The next concrete artifact is the Phase 4 notification and event-invalidation
-unification plan. It must define shared primitives for:
+Phase 6 (mutation migration) prerequisites:
 
-1. direct DM notifications
-2. deferred notifications
-3. parent-board notifications
-4. comment-created invalidation
-5. board-chat invalidation
-6. board detail / stats cache-busting
+- [x] Actor resolution is deterministic (`resolve_board_actor`, `ensure_board_access_prechecked`)
+- [x] Error codes are structured and stable (`error_kind: engine | system` → 422/503)
+- [x] Notification routing is unified (`dispatch_mcp_notification_events`, `write_notification_ipc`)
+- [x] Event invalidation is explicit (SSE hash covers tasks, board config, board chat)
+- [x] `call_mcp_mutation` helper handles the full MCP delegation + error + dispatch pipeline
+- [ ] API compatibility tests green against the adapter path (required before first mutation tool)
 
-Only after Phase 4 primitives are defined and implemented should
-mutation-migration planning (Phase 6) resume.
+The next concrete artifact is a Phase 6 plan that introduces the first mutation tool
+(`api_create_simple_task` or `api_update_simple_task`) against the adapter path,
+backed by `call_mcp_mutation`.
