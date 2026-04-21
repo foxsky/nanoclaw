@@ -3,6 +3,41 @@
 **Date:** 2026-04-20
 **Status:** Proposed replacement for `2026-04-20-taskflow-api-channel-design.md`
 
+## Current State
+
+As of the latest implementation pass:
+
+- Phase 0 is complete: the compatibility matrix artifact exists
+- MCP transport infrastructure exists: stdio subprocess server, Python async client,
+  FakeMCPClient, lifespan wiring, and health endpoint are all implemented
+  — this is plumbing that enables the remaining phases, not the redesign's Phase 1
+- Phase 1 is NOT done: the reusable Node service module that consolidates
+  `ipc-mcp-stdio.ts` wrapper behavior (duplicate detection, embedding injection,
+  notification shaping, child-board provisioning) has not been extracted
+- Phase 5 low-risk reads are partially implemented for:
+  - board activity
+  - board filter queries
+  - linked tasks
+
+Important correction:
+
+- those three read tools must be considered complete only in their engine-backed form
+- the current server implementation uses direct SQL in `taskflow-mcp-server.ts`
+  instead of calling `engine.apiBoardActivity()`, `engine.apiFilterBoardTasks()`,
+  and `engine.apiLinkedTasks()` — which exist and are the correct call sites
+- correcting this is the first task of the next implementation phase
+
+What is still not done:
+
+- Phase 3 explicit actor resolution
+- Phase 4 notification and event-invalidation unification
+- Phase 6 mutation migration
+
+Therefore:
+
+- no mutation routes should move next
+- no plan that introduces `api_create_*`, `api_update_*`, or `api_delete_*` before actor resolution and notification/invalidation work is aligned with this redesign
+
 ## Verdict
 
 The original "FastAPI as a thin HTTP channel over `TaskflowEngine`" plan is not
@@ -268,6 +303,9 @@ If a route needs API-level authority rather than TaskFlow human authority,
 model that explicitly as a separate actor type instead of faking a
 `sender_name`.
 
+This is the next implementation phase after the low-risk read slice.
+It is not optional groundwork for mutations; it is a hard prerequisite.
+
 ### Phase 4 — Unify notifications and event invalidation
 
 Before migrating task mutations, define shared primitives for:
@@ -302,6 +340,16 @@ Guardrails for this phase:
 - do not migrate any read that depends on board-scoped delegation visibility
   until the reconciliation refresh contract is explicit
 
+Implementation status:
+
+- Python delegation wired for `board_activity`, `filter_board_tasks`, and `linked_tasks`
+- Node tools currently use direct SQL — not yet delegating to engine adapter methods
+- correcting the Node tools to call `engine.apiBoardActivity()`,
+  `engine.apiFilterBoardTasks()`, and `engine.apiLinkedTasks()` is the
+  first task of the next implementation phase
+- Python-side duplicate SQL for these migrated reads should not be treated as
+  an acceptable long-term fallback
+
 ### Phase 6 — Migrate mutations only after contract translation exists
 
 Only move task mutations after all of these are true:
@@ -311,6 +359,12 @@ Only move task mutations after all of these are true:
 - notification routing is unified
 - event invalidation is explicit
 - API compatibility tests are green against the adapter path
+
+This phase is still blocked. In particular, it must not begin while:
+
+- actor resolution is still implicit, heuristic, or optional
+- mutation attribution still falls back to generic values such as `web-api`
+- notification/event invalidation behavior is not unified across Python and Node
 
 ### Phase 7 — Decide comments and chat separately
 
@@ -347,12 +401,20 @@ Do not:
 
 ## Immediate Next Step
 
-Do not begin route migration yet.
+The compatibility matrix now exists, the MCP transport infrastructure exists,
+and the first low-risk reads have been wired through Python delegation — but
+the Node tools still use direct SQL instead of engine adapter methods.
 
-The next concrete artifact should be a compatibility matrix with three columns:
+The next concrete artifact should be a Phase 3 actor-resolution plan such as
+[2026-04-20-taskflow-api-phase3-actor-resolution.md](/root/nanoclaw/docs/plans/2026-04-20-taskflow-api-phase3-actor-resolution.md)
+that defines:
 
-1. current FastAPI contract
-2. current engine/tool contract
-3. required adapter behavior
+1. JWT/session -> user resolution inputs
+2. user -> board-scoped TaskFlow actor or API-only actor resolution rules
+3. explicit failure outcomes for:
+   - no match
+   - ambiguous match
+   - resolution unavailable
+4. the structured actor contract passed across the adapter boundary
 
-Only after that should implementation planning resume.
+Only after that should mutation-migration planning resume.
