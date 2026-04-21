@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { createInterface } from 'node:readline'
 import { describe, it, expect, afterEach } from 'vitest'
 import path from 'node:path'
+import { parseActorArg } from './taskflow-mcp-server.js'
 
 const SERVER_BIN = path.resolve(__dirname, '../dist/taskflow-mcp-server.js')
 
@@ -553,5 +554,64 @@ describe('test DB factory', () => {
     db.close()
     await removeTestDb(dbPath)
     expect(rows).toHaveLength(7)
+  })
+})
+
+describe('parseActorArg', () => {
+  it('accepts a valid taskflow_person actor', () => {
+    const actor = parseActorArg({
+      actor_type: 'taskflow_person',
+      source_auth: 'jwt',
+      user_id: 'u1',
+      board_id: 'b1',
+      person_id: 'alice',
+      display_name: 'Alice',
+    })
+    expect(actor.actor_type).toBe('taskflow_person')
+    if (actor.actor_type === 'taskflow_person') {
+      expect(actor.person_id).toBe('alice')
+      expect(actor.display_name).toBe('Alice')
+    }
+  })
+
+  it('accepts a valid api_service actor', () => {
+    const actor = parseActorArg({
+      actor_type: 'api_service',
+      source_auth: 'api_token',
+      board_id: 'b1',
+      service_name: 'taskflow-api',
+    })
+    expect(actor.actor_type).toBe('api_service')
+    if (actor.actor_type === 'api_service') {
+      expect(actor.service_name).toBe('taskflow-api')
+    }
+  })
+
+  it('rejects null', () => {
+    expect(() => parseActorArg(null)).toThrow('actor: expected object')
+  })
+
+  it('rejects unknown actor_type', () => {
+    expect(() => parseActorArg({ actor_type: 'unknown' })).toThrow('actor.actor_type: unknown value')
+  })
+
+  it('rejects taskflow_person with missing person_id', () => {
+    expect(() => parseActorArg({
+      actor_type: 'taskflow_person',
+      source_auth: 'jwt',
+      user_id: 'u1',
+      board_id: 'b1',
+      display_name: 'Alice',
+      // person_id missing
+    })).toThrow('actor.person_id: required string')
+  })
+
+  it('rejects api_service with wrong source_auth', () => {
+    expect(() => parseActorArg({
+      actor_type: 'api_service',
+      source_auth: 'jwt',  // wrong
+      board_id: 'b1',
+      service_name: 'taskflow-api',
+    })).toThrow('actor.source_auth: expected "api_token"')
   })
 })

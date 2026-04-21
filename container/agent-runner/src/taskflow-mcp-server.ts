@@ -10,6 +10,46 @@ console.info = (...args) => process.stderr.write(args.join(' ') + '\n')
 console.warn = (...args) => process.stderr.write(args.join(' ') + '\n')
 console.error = (...args) => process.stderr.write(args.join(' ') + '\n')
 
+type TaskflowPersonActor = {
+  actor_type: 'taskflow_person'
+  source_auth: 'jwt'
+  user_id: string
+  board_id: string
+  person_id: string
+  display_name: string
+}
+
+type ApiServiceActor = {
+  actor_type: 'api_service'
+  source_auth: 'api_token'
+  board_id: string
+  service_name: string
+}
+
+type ResolvedActor = TaskflowPersonActor | ApiServiceActor
+
+export function parseActorArg(raw: unknown): ResolvedActor {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('actor: expected object')
+  }
+  const obj = raw as Record<string, unknown>
+  if (obj.actor_type === 'taskflow_person') {
+    if (typeof obj.user_id !== 'string' || !obj.user_id) throw new Error('actor.user_id: required string')
+    if (typeof obj.board_id !== 'string' || !obj.board_id) throw new Error('actor.board_id: required string')
+    if (typeof obj.person_id !== 'string' || !obj.person_id) throw new Error('actor.person_id: required string')
+    if (typeof obj.display_name !== 'string' || !obj.display_name) throw new Error('actor.display_name: required string')
+    if (obj.source_auth !== 'jwt') throw new Error('actor.source_auth: expected "jwt" for taskflow_person')
+    return obj as TaskflowPersonActor
+  }
+  if (obj.actor_type === 'api_service') {
+    if (typeof obj.board_id !== 'string' || !obj.board_id) throw new Error('actor.board_id: required string')
+    if (typeof obj.service_name !== 'string' || !obj.service_name) throw new Error('actor.service_name: required string')
+    if (obj.source_auth !== 'api_token') throw new Error('actor.source_auth: expected "api_token" for api_service')
+    return obj as ApiServiceActor
+  }
+  throw new Error(`actor.actor_type: unknown value "${String(obj.actor_type)}"`) 
+}
+
 function contentFromResult(result: { success: boolean; data?: unknown; error?: string }) {
   if (!result.success) {
     return { content: [{ type: 'text' as const, text: JSON.stringify({ error: result.error ?? 'unknown_error' }) }] }
