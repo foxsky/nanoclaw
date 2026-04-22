@@ -573,6 +573,7 @@ function createEngineDb(boardId: string): Database.Database {
     INSERT INTO board_people (board_id, person_id, name, role) VALUES ('${boardId}', 'alice', 'alice', 'manager');
     INSERT INTO board_id_counters (board_id, prefix, next_number) VALUES ('${boardId}', 'T', 1);
     CREATE TABLE IF NOT EXISTS child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
+    CREATE TABLE IF NOT EXISTS archive (board_id TEXT NOT NULL, task_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, assignee TEXT, archive_reason TEXT NOT NULL, linked_parent_board_id TEXT, linked_parent_task_id TEXT, archived_at TEXT NOT NULL, task_snapshot TEXT NOT NULL, history TEXT, PRIMARY KEY (board_id, task_id));
   `.replace(/\${boardId}/g, boardId))
   new TaskflowEngine(db, boardId) // run schema migrations
   return db
@@ -817,5 +818,76 @@ describe('api_update_simple_task', () => {
     })
     const result = JSON.parse(resp.content[0].text)
     expect(result.data.assignee).toBeNull()
+  })
+})
+
+
+describe('api_delete_simple_task', () => {
+  let db: Database.Database
+  let toolHandlers: Map<string, (params: any) => Promise<any>>
+  let taskId: string
+
+  beforeEach(async () => {
+    const boardId = 'b1'
+    db = createEngineDb(boardId)
+    toolHandlers = new Map()
+    const mockServer = {
+      tool: (name: string, _desc: string, _schema: unknown, handler: (params: any) => Promise<any>) => {
+        toolHandlers.set(name, handler)
+      },
+    } as unknown as McpServer
+    registerTools(mockServer, db)
+
+    const resp = await toolHandlers.get('api_create_simple_task')!({
+      board_id: boardId, title: 'Delete candidate', sender_name: 'alice',
+    })
+    const created = JSON.parse(resp.content[0].text)
+    taskId = created.data.id
+  })
+
+  afterEach(() => { db.close() })
+
+  it('api_delete_simple_task is registered', () => {
+    expect(toolHandlers.has('api_delete_simple_task')).toBe(true)
+  })
+
+  it('creator can delete and returns success with deleted:true', async () => {
+    const resp = await toolHandlers.get('api_delete_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'alice',
+    })
+    const result = JSON.parse(resp.content[0].text)
+    expect(result.success).toBe(true)
+    expect(result.data.deleted).toBe(true)
+    expect(db.prepare('SELECT id FROM tasks WHERE id = ?').get(taskId)).toBeUndefined()
+  })
+
+  it('returns not_found for missing task', async () => {
+    const resp = await toolHandlers.get('api_delete_simple_task')!({
+      board_id: 'b1', task_id: 'T-missing', sender_name: 'alice',
+    })
+    const result = JSON.parse(resp.content[0].text)
+    expect(result.success).toBe(false)
+    expect(result.error_code).toBe('not_found')
+  })
+
+  it('returns actor_type_not_allowed for assignee-only', async () => {
+    db.prepare("INSERT OR IGNORE INTO board_people (board_id, person_id, name, role) VALUES ('b1', 'charlie', 'charlie', 'Tecnico')").run()
+    await toolHandlers.get('api_update_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'alice', assignee: 'charlie',
+    })
+    const resp = await toolHandlers.get('api_delete_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'charlie',
+    })
+    const result = JSON.parse(resp.content[0].text)
+    expect(result.success).toBe(false)
+    expect(result.error_code).toBe('actor_type_not_allowed')
+  })
+
+  it('service actor bypasses auth and deletes', async () => {
+    const resp = await toolHandlers.get('api_delete_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'taskflow-api', sender_is_service: true,
+    })
+    const result = JSON.parse(resp.content[0].text)
+    expect(result.success).toBe(true)
   })
 })

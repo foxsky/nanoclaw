@@ -440,6 +440,22 @@ export function registerTools(server: McpServer, db: Database.Database): void {
       }
     }
   )
+
+  server.tool(
+    'api_delete_simple_task',
+    'Delete a simple task via the REST API, enforcing creator/Gestor/service ownership',
+    {
+      board_id: z.string(),
+      task_id: z.string(),
+      sender_name: z.string(),
+      sender_is_service: z.boolean().optional(),
+    },
+    (params) => {
+      const engine = new TaskflowEngine(db, params.board_id)
+      const result = engine.apiDeleteSimpleTask(params)
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] }
+    }
+  )
 }
 
 async function shutdown(server: McpServer, db: Database.Database): Promise<void> {
