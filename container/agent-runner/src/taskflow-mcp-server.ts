@@ -341,16 +341,19 @@ export function registerTools(server: McpServer, db: Database.Database): void {
         const engine = new TaskflowEngine(db, params.board_id)
 
         const existing = db.prepare(
-          'SELECT * FROM tasks WHERE id = ? AND board_id = ?'
+          'SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ? AND t.board_id = ?'
         ).get(params.task_id, params.board_id) as Record<string, unknown> | undefined
         if (!existing) {
           return { content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error_code: 'not_found', error: `Task not found: ${params.task_id}` }) }] }
         }
 
+        const senderPerson = params.sender_is_service
+          ? undefined
+          : db.prepare(
+              'SELECT person_id, role FROM board_people WHERE board_id = ? AND name = ?'
+            ).get(params.board_id, params.sender_name) as { person_id: string; role: string } | undefined
+
         if (!params.sender_is_service) {
-          const senderPerson = db.prepare(
-            'SELECT person_id, role FROM board_people WHERE board_id = ? AND name = ?'
-          ).get(params.board_id, params.sender_name) as { person_id: string; role: string } | undefined
           const isGestor = senderPerson?.role === 'Gestor'
           if (!isGestor) {
             const createdBy = existing['created_by'] as string | null
@@ -392,13 +395,15 @@ export function registerTools(server: McpServer, db: Database.Database): void {
         if ('title' in params) { setClauses.push('title = ?'); setValues.push(params.title) }
         if ('description' in params) { setClauses.push('description = ?'); setValues.push(params.description) }
         if ('assignee' in params) { setClauses.push('assignee = ?'); setValues.push(resolvedAssignee) }
+        let resolvedPriority: string | undefined = undefined
         if ('priority' in params) {
           const priorityMap: Record<string, string> = {
             urgent: 'urgente', high: 'alta', normal: 'normal', low: 'baixa',
             urgente: 'urgente', alta: 'alta', baixa: 'baixa',
           }
+          resolvedPriority = priorityMap[params.priority!] ?? params.priority
           setClauses.push('priority = ?')
-          setValues.push(priorityMap[params.priority!] ?? params.priority)
+          setValues.push(resolvedPriority)
         }
         if ('due_date' in params) { setClauses.push('due_date = ?'); setValues.push(params.due_date) }
 
@@ -407,17 +412,18 @@ export function registerTools(server: McpServer, db: Database.Database): void {
 
         engine.recordHistory(params.task_id, 'updated', params.sender_name)
 
-        const row = db.prepare(
-          `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ?`
-        ).get(params.task_id) as Record<string, unknown>
+        const row: Record<string, unknown> = { ...existing, updated_at: now }
+        if ('column' in params) row['column'] = params.column
+        if ('title' in params) row['title'] = params.title
+        if ('description' in params) row['description'] = params.description
+        if ('assignee' in params) row['assignee'] = resolvedAssignee
+        if ('priority' in params) row['priority'] = resolvedPriority
+        if ('due_date' in params) row['due_date'] = params.due_date
         const data = engine.serializeApiTask(row)
 
         const notification_events: Array<{ kind: string; board_id: string; target_person_id: string; message: string }> = []
         if (newAssigneePersonId) {
-          const senderRow = db.prepare(
-            'SELECT person_id FROM board_people WHERE board_id = ? AND name = ?'
-          ).get(params.board_id, params.sender_name) as { person_id: string } | undefined
-          if (!senderRow || senderRow.person_id !== newAssigneePersonId) {
+          if (!senderPerson || senderPerson.person_id !== newAssigneePersonId) {
             notification_events.push({
               kind: 'deferred_notification',
               board_id: params.board_id,
