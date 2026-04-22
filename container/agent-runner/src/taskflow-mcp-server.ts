@@ -285,25 +285,32 @@ export function registerTools(server: McpServer, db: Database.Database): void {
       assignee: z.string().optional(),
       priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
       due_date: z.string().nullable().optional(),
-      column: z.string().optional(),
       description: z.string().nullable().optional(),
     },
-    async (params) => {
+    (params) => {
       try {
         const engine = new TaskflowEngine(db, params.board_id)
-        const result = await engine.apiCreateSimpleTask({
+        const result = engine.create({
+          board_id: params.board_id,
+          type: 'inbox',
           title: params.title,
           sender_name: params.sender_name,
           assignee: params.assignee,
-          priority: params.priority,
-          due_date: params.due_date,
-          column: params.column,
-          description: params.description,
+          priority: params.priority as 'low' | 'normal' | 'high' | 'urgent' | undefined,
+          due_date: params.due_date ?? undefined,
         })
         if (!result.success) {
           return { content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: result.error }) }] }
         }
-        return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] }
+        const taskId = result.task_id!
+        const row = db.prepare(
+          `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ?`
+        ).get(taskId) as Record<string, unknown>
+        const data = engine.serializeApiTask(row)
+        const notification_events = (result.notifications ?? [])
+          .filter(n => n.target_person_id)
+          .map(n => ({ kind: 'deferred_notification', board_id: params.board_id, target_person_id: n.target_person_id!, message: n.message }))
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ success: true, data, notification_events }) }] }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
         return { content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: msg }) }] }

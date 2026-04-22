@@ -523,16 +523,45 @@ function createEngineDb(boardId: string): Database.Database {
       PRIMARY KEY (board_id, prefix)
     );
     CREATE TABLE tasks (
-      id TEXT PRIMARY KEY, board_id TEXT NOT NULL,
-      title TEXT NOT NULL, "column" TEXT NOT NULL DEFAULT 'inbox',
+      id TEXT NOT NULL,
+      board_id TEXT NOT NULL,
       type TEXT NOT NULL DEFAULT 'simple',
-      assignee TEXT, priority TEXT, due_date TEXT, labels TEXT,
-      description TEXT, notes TEXT, parent_task_id TEXT, scheduled_at TEXT,
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      title TEXT NOT NULL,
+      assignee TEXT,
+      next_action TEXT,
+      waiting_for TEXT,
+      column TEXT DEFAULT 'inbox',
+      priority TEXT,
+      due_date TEXT,
+      description TEXT,
+      labels TEXT DEFAULT '[]',
+      blocked_by TEXT DEFAULT '[]',
+      reminders TEXT DEFAULT '[]',
+      next_note_id INTEGER DEFAULT 1,
+      notes TEXT DEFAULT '[]',
+      _last_mutation TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      child_exec_enabled INTEGER DEFAULT 0,
+      child_exec_board_id TEXT,
+      child_exec_person_id TEXT,
+      child_exec_rollup_status TEXT,
+      child_exec_last_rollup_at TEXT,
+      child_exec_last_rollup_summary TEXT,
+      linked_parent_board_id TEXT,
+      linked_parent_task_id TEXT,
+      subtasks TEXT,
+      recurrence TEXT,
+      current_cycle TEXT,
+      parent_task_id TEXT,
+      max_cycles INTEGER,
+      recurrence_end_date TEXT,
+      recurrence_anchor TEXT,
+      participants TEXT,
+      scheduled_at TEXT,
+      requires_close_approval INTEGER NOT NULL DEFAULT 1,
       created_by TEXT,
-      requires_close_approval INTEGER NOT NULL DEFAULT 0,
-      child_exec_board_id TEXT, child_exec_person_id TEXT,
-      child_exec_rollup_status TEXT
+      PRIMARY KEY (board_id, id)
     );
     CREATE TABLE task_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -543,6 +572,7 @@ function createEngineDb(boardId: string): Database.Database {
     INSERT INTO boards (id, short_code, name) VALUES ('${boardId}', 'TF', 'Test Board');
     INSERT INTO board_people (board_id, person_id, name, role) VALUES ('${boardId}', 'alice', 'alice', 'manager');
     INSERT INTO board_id_counters (board_id, prefix, next_number) VALUES ('${boardId}', 'T', 1);
+    CREATE TABLE IF NOT EXISTS child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
   `.replace(/\${boardId}/g, boardId))
   new TaskflowEngine(db, boardId) // run schema migrations
   return db
