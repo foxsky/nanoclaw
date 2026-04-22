@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { createInterface } from 'node:readline'
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import path from 'node:path'
 import { parseActorArg } from './taskflow-mcp-server.js'
 
@@ -655,5 +655,167 @@ describe('api_create_simple_task', () => {
     expect(typeof result).toBe('object')
     expect(result.success).toBe(false)
     expect(typeof result.error).toBe('string')
+  })
+})
+describe('api_update_simple_task', () => {
+  let db: Database.Database
+  let taskId: string
+  let toolHandlers: Map<string, (params: any) => Promise<any>>
+
+  beforeEach(async () => {
+    db = createEngineDb('b1')
+    db.prepare("INSERT OR IGNORE INTO board_people (board_id, person_id, name, role) VALUES ('b1', 'charlie', 'charlie', 'Tecnico')").run()
+
+    toolHandlers = new Map()
+    const mockServer = {
+      tool: (name: string, _desc: string, _schema: unknown, handler: (p: any) => Promise<any>) => {
+        toolHandlers.set(name, handler)
+      },
+    } as unknown as McpServer
+    registerTools(mockServer, db)
+
+    const createResp = await toolHandlers.get('api_create_simple_task')!({
+      board_id: 'b1', title: 'Original', sender_name: 'alice',
+    })
+    taskId = JSON.parse(createResp.content[0].text).data.id
+  })
+
+  afterEach(() => { db.close() })
+
+  it('registerTools registers api_update_simple_task', () => {
+    expect(toolHandlers.has('api_update_simple_task')).toBe(true)
+  })
+
+  it('updates present fields', async () => {
+    const resp = await toolHandlers.get('api_update_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'alice', title: 'Updated',
+    })
+    const result = JSON.parse(resp.content[0].text)
+    expect(result.success).toBe(true)
+    expect(result.data.title).toBe('Updated')
+  })
+
+  it('does not alter absent fields', async () => {
+    db.prepare("UPDATE tasks SET priority = 'urgente' WHERE id = ?").run(taskId)
+    await toolHandlers.get('api_update_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'alice', title: 'New',
+    })
+    const row = db.prepare('SELECT priority FROM tasks WHERE id = ?').get(taskId) as any
+    expect(row.priority).toBe('urgente')
+  })
+
+  it('records an updated history entry', async () => {
+    await toolHandlers.get('api_update_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'alice', title: 'Changed',
+    })
+    const hist = db.prepare(
+      "SELECT * FROM task_history WHERE task_id = ? AND action = 'updated'"
+    ).get(taskId)
+    expect(hist).toBeTruthy()
+  })
+
+  it('returns not_found for unknown task_id', async () => {
+    const resp = await toolHandlers.get('api_update_simple_task')!({
+      board_id: 'b1', task_id: 'T999', sender_name: 'alice',
+    })
+    const result = JSON.parse(resp.content[0].text)
+    expect(result.success).toBe(false)
+    expect(result.error_code).toBe('not_found')
+  })
+
+  it('returns conflict when moving to done with close_approval required', async () => {
+    db.prepare('UPDATE tasks SET requires_close_approval = 1 WHERE id = ?').run(taskId)
+    const resp = await toolHandlers.get('api_update_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'alice', column: 'done',
+    })
+    const result = JSON.parse(resp.content[0].text)
+    expect(result.success).toBe(false)
+    expect(result.error_code).toBe('conflict')
+  })
+
+  it('allows move to done without close_approval', async () => {
+    db.prepare('UPDATE tasks SET requires_close_approval = 0 WHERE id = ?').run(taskId)
+    const resp = await toolHandlers.get('api_update_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'alice', column: 'done',
+    })
+    const result = JSON.parse(resp.content[0].text)
+    expect(result.success).toBe(true)
+    expect(result.data.column).toBe('done')
+  })
+
+  it('returns actor_type_not_allowed for unrelated board member', async () => {
+    const resp = await toolHandlers.get('api_update_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'charlie', title: 'Hijack',
+    })
+    const result = JSON.parse(resp.content[0].text)
+    expect(result.success).toBe(false)
+    expect(result.error_code).toBe('actor_type_not_allowed')
+  })
+
+  it('Gestor can modify any task', async () => {
+    db.prepare("INSERT OR IGNORE INTO board_people (board_id, person_id, name, role) VALUES ('b1', 'dave', 'dave', 'Gestor')").run()
+    const resp = await toolHandlers.get('api_update_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'dave', title: 'Admin edit',
+    })
+    const result = JSON.parse(resp.content[0].text)
+    expect(result.success).toBe(true)
+  })
+
+  it('service account bypasses auth check', async () => {
+    const resp = await toolHandlers.get('api_update_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'taskflow-api',
+      sender_is_service: true, title: 'Service edit',
+    })
+    const result = JSON.parse(resp.content[0].text)
+    expect(result.success).toBe(true)
+  })
+
+  it('task with null created_by is open to any board member', async () => {
+    db.prepare('UPDATE tasks SET created_by = NULL WHERE id = ?').run(taskId)
+    const resp = await toolHandlers.get('api_update_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'charlie', title: 'Open task',
+    })
+    const result = JSON.parse(resp.content[0].text)
+    expect(result.success).toBe(true)
+  })
+
+  it('assignee can modify task', async () => {
+    await toolHandlers.get('api_update_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'alice', assignee: 'charlie',
+    })
+    const resp = await toolHandlers.get('api_update_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'charlie', title: 'By assignee',
+    })
+    const result = JSON.parse(resp.content[0].text)
+    expect(result.success).toBe(true)
+  })
+
+  it('emits deferred notification when assignee changes', async () => {
+    const resp = await toolHandlers.get('api_update_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'alice', assignee: 'charlie',
+    })
+    const result = JSON.parse(resp.content[0].text)
+    expect(result.notification_events).toHaveLength(1)
+    expect(result.notification_events[0].target_person_id).toBe('charlie')
+  })
+
+  it('returns validation_error for unknown assignee', async () => {
+    const resp = await toolHandlers.get('api_update_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'alice', assignee: 'nobody',
+    })
+    const result = JSON.parse(resp.content[0].text)
+    expect(result.success).toBe(false)
+    expect(result.error_code).toBe('validation_error')
+  })
+
+  it('clears assignee when null is passed', async () => {
+    await toolHandlers.get('api_update_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'alice', assignee: 'charlie',
+    })
+    const resp = await toolHandlers.get('api_update_simple_task')!({
+      board_id: 'b1', task_id: taskId, sender_name: 'alice', assignee: null,
+    })
+    const result = JSON.parse(resp.content[0].text)
+    expect(result.data.assignee).toBeNull()
   })
 })

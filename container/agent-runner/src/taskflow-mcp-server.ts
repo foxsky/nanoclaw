@@ -302,7 +302,10 @@ export function registerTools(server: McpServer, db: Database.Database): void {
         if (!result.success) {
           return { content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: result.error }) }] }
         }
-        const taskId = result.task_id!
+        if (!result.task_id) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: 'engine returned success without task_id' }) }] }
+        }
+        const taskId = result.task_id
         const row = db.prepare(
           `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ?`
         ).get(taskId) as Record<string, unknown>
@@ -314,6 +317,120 @@ export function registerTools(server: McpServer, db: Database.Database): void {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
         return { content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: msg }) }] }
+      }
+    }
+  )
+
+  server.tool(
+    'api_update_simple_task',
+    'Update a simple task via the REST API (field updates, column move, reassign)',
+    {
+      board_id: z.string(),
+      task_id: z.string(),
+      sender_name: z.string(),
+      sender_is_service: z.boolean().optional(),
+      column: z.string().optional(),
+      title: z.string().optional(),
+      description: z.string().nullable().optional(),
+      assignee: z.string().nullable().optional(),
+      priority: z.string().optional(),
+      due_date: z.string().nullable().optional(),
+    },
+    (params) => {
+      try {
+        const engine = new TaskflowEngine(db, params.board_id)
+
+        const existing = db.prepare(
+          'SELECT * FROM tasks WHERE id = ? AND board_id = ?'
+        ).get(params.task_id, params.board_id) as Record<string, unknown> | undefined
+        if (!existing) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error_code: 'not_found', error: `Task not found: ${params.task_id}` }) }] }
+        }
+
+        if (!params.sender_is_service) {
+          const senderPerson = db.prepare(
+            'SELECT person_id, role FROM board_people WHERE board_id = ? AND name = ?'
+          ).get(params.board_id, params.sender_name) as { person_id: string; role: string } | undefined
+          const isGestor = senderPerson?.role === 'Gestor'
+          if (!isGestor) {
+            const createdBy = existing['created_by'] as string | null
+            const assignee = existing['assignee'] as string | null
+            const isCreatorOrUnowned = createdBy === null || createdBy === params.sender_name
+            const isAssignee = assignee !== null && assignee === params.sender_name
+            if (!isCreatorOrUnowned && !isAssignee) {
+              return { content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error_code: 'actor_type_not_allowed', error: 'Not authorized to modify this task' }) }] }
+            }
+          }
+        }
+
+        if ('column' in params && params.column === 'done' && existing['requires_close_approval']) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error_code: 'conflict', error: 'Task requires close approval before moving to done' }) }] }
+        }
+
+        let resolvedAssignee: string | null | undefined = undefined
+        let newAssigneePersonId: string | null = null
+        if ('assignee' in params) {
+          if (params.assignee === null) {
+            resolvedAssignee = null
+          } else {
+            const person = db.prepare(
+              'SELECT person_id, name FROM board_people WHERE board_id = ? AND (name = ? OR person_id = ?)'
+            ).get(params.board_id, params.assignee, params.assignee) as { person_id: string; name: string } | undefined
+            if (!person) {
+              return { content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error_code: 'validation_error', error: `Assignee not found: ${params.assignee}` }) }] }
+            }
+            resolvedAssignee = person.name
+            newAssigneePersonId = person.person_id
+          }
+        }
+
+        const now = new Date().toISOString()
+        const setClauses: string[] = ['updated_at = ?']
+        const setValues: unknown[] = [now]
+
+        if ('column' in params) { setClauses.push('"column" = ?'); setValues.push(params.column) }
+        if ('title' in params) { setClauses.push('title = ?'); setValues.push(params.title) }
+        if ('description' in params) { setClauses.push('description = ?'); setValues.push(params.description) }
+        if ('assignee' in params) { setClauses.push('assignee = ?'); setValues.push(resolvedAssignee) }
+        if ('priority' in params) {
+          const priorityMap: Record<string, string> = {
+            urgent: 'urgente', high: 'alta', normal: 'normal', low: 'baixa',
+            urgente: 'urgente', alta: 'alta', baixa: 'baixa',
+          }
+          setClauses.push('priority = ?')
+          setValues.push(priorityMap[params.priority!] ?? params.priority)
+        }
+        if ('due_date' in params) { setClauses.push('due_date = ?'); setValues.push(params.due_date) }
+
+        db.prepare(`UPDATE tasks SET ${setClauses.join(', ')} WHERE id = ? AND board_id = ?`)
+          .run(...setValues, params.task_id, params.board_id)
+
+        engine.recordHistory(params.task_id, 'updated', params.sender_name)
+
+        const row = db.prepare(
+          `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ?`
+        ).get(params.task_id) as Record<string, unknown>
+        const data = engine.serializeApiTask(row)
+
+        const notification_events: Array<{ kind: string; board_id: string; target_person_id: string; message: string }> = []
+        if (newAssigneePersonId) {
+          const senderRow = db.prepare(
+            'SELECT person_id FROM board_people WHERE board_id = ? AND name = ?'
+          ).get(params.board_id, params.sender_name) as { person_id: string } | undefined
+          if (!senderRow || senderRow.person_id !== newAssigneePersonId) {
+            notification_events.push({
+              kind: 'deferred_notification',
+              board_id: params.board_id,
+              target_person_id: newAssigneePersonId,
+              message: `${params.sender_name} assigned you: ${(row['title'] as string) ?? params.task_id}`,
+            })
+          }
+        }
+
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ success: true, data, notification_events }) }] }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error_code: 'internal_error', error: msg }) }] }
       }
     }
   )
