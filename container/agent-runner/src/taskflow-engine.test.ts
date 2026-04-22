@@ -6380,6 +6380,104 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
   });
 });
 
+
+describe('apiDeleteSimpleTask', () => {
+  const BOARD = 'board-001'
+  let db: Database.Database
+  let taskId: string
+
+  function createDeleteTestDb(): Database.Database {
+    const d = new Database(':memory:')
+    d.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY, short_code TEXT, name TEXT NOT NULL DEFAULT '', board_role TEXT NOT NULL DEFAULT 'hierarchy', group_folder TEXT NOT NULL DEFAULT '', group_jid TEXT NOT NULL DEFAULT '');
+      CREATE TABLE board_people (board_id TEXT NOT NULL, person_id TEXT NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', status TEXT NOT NULL DEFAULT 'active', PRIMARY KEY (board_id, person_id));
+      CREATE TABLE board_id_counters (board_id TEXT NOT NULL, prefix TEXT NOT NULL, next_number INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (board_id, prefix));
+      CREATE TABLE tasks (id TEXT NOT NULL, board_id TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'simple', title TEXT NOT NULL, assignee TEXT, column TEXT DEFAULT 'inbox', priority TEXT, requires_close_approval INTEGER NOT NULL DEFAULT 1, due_date TEXT, description TEXT, labels TEXT DEFAULT '[]', blocked_by TEXT DEFAULT '[]', reminders TEXT DEFAULT '[]', next_note_id INTEGER DEFAULT 1, notes TEXT DEFAULT '[]', _last_mutation TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, child_exec_enabled INTEGER DEFAULT 0, child_exec_board_id TEXT, child_exec_person_id TEXT, child_exec_rollup_status TEXT, child_exec_last_rollup_at TEXT, child_exec_last_rollup_summary TEXT, linked_parent_board_id TEXT, linked_parent_task_id TEXT, subtasks TEXT, recurrence TEXT, current_cycle TEXT, parent_task_id TEXT, max_cycles INTEGER, recurrence_end_date TEXT, recurrence_anchor TEXT, participants TEXT, scheduled_at TEXT, created_by TEXT, PRIMARY KEY (board_id, id));
+      CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, task_id TEXT NOT NULL, action TEXT NOT NULL, "by" TEXT, "at" TEXT NOT NULL, details TEXT, trigger_turn_id TEXT);
+      CREATE TABLE archive (board_id TEXT NOT NULL, task_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, assignee TEXT, archive_reason TEXT NOT NULL, linked_parent_board_id TEXT, linked_parent_task_id TEXT, archived_at TEXT NOT NULL, task_snapshot TEXT NOT NULL, history TEXT, PRIMARY KEY (board_id, task_id));
+      CREATE TABLE IF NOT EXISTS child_board_registrations (parent_board_id TEXT, person_id TEXT NOT NULL, child_board_id TEXT, PRIMARY KEY (parent_board_id, person_id));
+      INSERT INTO boards (id, short_code, name) VALUES ('board-001', 'TF', 'Delete Test Board');
+      INSERT INTO board_people (board_id, person_id, name, role) VALUES ('board-001', 'person-1', 'Alice', 'Gestor');
+      INSERT INTO board_people (board_id, person_id, name, role) VALUES ('board-001', 'person-2', 'Bob', 'Tecnico');
+      INSERT INTO board_id_counters (board_id, prefix, next_number) VALUES ('board-001', 'T', 1);
+    `)
+    new TaskflowEngine(d, 'board-001')
+    return d
+  }
+
+  function insertTask(d: Database.Database, id: string, createdBy: string | null = 'Alice'): void {
+    const now = new Date().toISOString()
+    d.prepare(
+      "INSERT INTO tasks (id, board_id, type, title, column, created_at, updated_at, created_by) VALUES (?, ?, 'simple', ?, 'inbox', ?, ?, ?)"
+    ).run(id, BOARD, `Task ${id}`, now, now, createdBy)
+  }
+
+  beforeEach(() => {
+    db = createDeleteTestDb()
+    taskId = 'T-del-1'
+    insertTask(db, taskId)
+  })
+
+  afterEach(() => { db.close() })
+
+  it('allows creator to delete and archives the task', () => {
+    const engine = new TaskflowEngine(db, BOARD)
+    const result = engine.apiDeleteSimpleTask({ board_id: BOARD, task_id: taskId, sender_name: 'Alice' })
+    expect(result.success).toBe(true)
+    expect(db.prepare('SELECT id FROM tasks WHERE id = ?').get(taskId)).toBeUndefined()
+    expect(db.prepare('SELECT task_id FROM archive WHERE task_id = ?').get(taskId)).toBeTruthy()
+    const history = db.prepare(
+      'SELECT action, "by" FROM task_history WHERE board_id = ? AND task_id = ? ORDER BY id DESC LIMIT 1'
+    ).get(BOARD, taskId) as any
+    expect(history.action).toBe('delete')
+    expect(history.by).toBe('Alice')
+  })
+
+  it('blocks assignee-only delete', () => {
+    db.prepare('UPDATE tasks SET assignee = ? WHERE id = ? AND board_id = ?').run('Bob', taskId, BOARD)
+    const engine = new TaskflowEngine(db, BOARD)
+    const result = engine.apiDeleteSimpleTask({ board_id: BOARD, task_id: taskId, sender_name: 'Bob' }) as any
+    expect(result.success).toBe(false)
+    expect(result.error_code).toBe('actor_type_not_allowed')
+    expect(db.prepare('SELECT id FROM tasks WHERE id = ?').get(taskId)).toBeTruthy()
+  })
+
+  it('allows Gestor to delete any task', () => {
+    const engine = new TaskflowEngine(db, BOARD)
+    const result = engine.apiDeleteSimpleTask({ board_id: BOARD, task_id: taskId, sender_name: 'Alice' })
+    expect(result.success).toBe(true)
+  })
+
+  it('legacy row with null created_by is Gestor-only for delete', () => {
+    insertTask(db, 'T-legacy', null)
+    const engine = new TaskflowEngine(db, BOARD)
+    const result = engine.apiDeleteSimpleTask({ board_id: BOARD, task_id: 'T-legacy', sender_name: 'Bob' }) as any
+    expect(result.success).toBe(false)
+    expect(result.error_code).toBe('actor_type_not_allowed')
+  })
+
+  it('returns conflict for delegated tasks', () => {
+    db.prepare("UPDATE tasks SET child_exec_board_id = 'board-child' WHERE id = ? AND board_id = ?").run(taskId, BOARD)
+    const engine = new TaskflowEngine(db, BOARD)
+    const result = engine.apiDeleteSimpleTask({ board_id: BOARD, task_id: taskId, sender_name: 'Alice' }) as any
+    expect(result.success).toBe(false)
+    expect(result.error_code).toBe('conflict')
+  })
+
+  it('returns not_found for missing task', () => {
+    const engine = new TaskflowEngine(db, BOARD)
+    const result = engine.apiDeleteSimpleTask({ board_id: BOARD, task_id: 'T-missing', sender_name: 'Alice' }) as any
+    expect(result.success).toBe(false)
+    expect(result.error_code).toBe('not_found')
+  })
+
+  it('service actor bypasses authorization and deletes', () => {
+    const engine = new TaskflowEngine(db, BOARD)
+    const result = engine.apiDeleteSimpleTask({ board_id: BOARD, task_id: taskId, sender_name: 'taskflow-api', sender_is_service: true })
+    expect(result.success).toBe(true)
+  })
+})
+
 // Parity guard: this fixture table MUST match src/phone.test.ts exactly.
 // If either the engine or the host normalizePhone is changed, both copies
 // and both fixture tables must be updated together — otherwise the host

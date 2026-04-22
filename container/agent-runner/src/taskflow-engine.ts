@@ -1079,7 +1079,7 @@ export class TaskflowEngine {
     }
   }
 
-  private migrateLegacyProjectSubtasks(): void { try { this._migrateLegacyProjectSubtasksImpl(); } catch {} }
+  private migrateLegacyProjectSubtasks(): void { try { this._migrateLegacyProjectSubtasksImpl(); } catch (e) { console.error('migrateLegacyProjectSubtasks failed:', e) } }
   private _migrateLegacyProjectSubtasksImpl(): void {
     const projectRows = this.db
       .prepare(
@@ -1237,7 +1237,7 @@ export class TaskflowEngine {
     }
   }
 
-  private reconcileDelegationLinks(): void { try { this._reconcileDelegationLinksImpl(); } catch {} }
+  private reconcileDelegationLinks(): void { try { this._reconcileDelegationLinksImpl(); } catch (e) { console.error('reconcileDelegationLinks failed:', e) } }
   private _reconcileDelegationLinksImpl(): void {
     /* Reconcile ALL tasks on this board with an assignee — not just subtasks/recurring.
        Top-level tasks also get child_exec_enabled via auto-link on create/assign,
@@ -1803,6 +1803,67 @@ export class TaskflowEngine {
       )
       .all(this.boardId) as Record<string, unknown>[];
     return { success: true, data: rows.map((row) => this.serializeApiTask(row)) };
+  }
+
+  apiDeleteSimpleTask(params: {
+    board_id: string;
+    task_id: string;
+    sender_name: string;
+    sender_is_service?: boolean;
+  }): TaskflowResult {
+    const task = this.db
+      .prepare('SELECT * FROM tasks WHERE id = ? AND board_id = ?')
+      .get(params.task_id, params.board_id) as Record<string, unknown> | undefined;
+    if (!task) {
+      return { success: false, error_code: 'not_found', error: `Task not found: ${params.task_id}` } as any;
+    }
+
+    if (task['child_exec_board_id'] != null) {
+      return { success: false, error_code: 'conflict', error: 'Delegated tasks cannot be deleted' } as any;
+    }
+
+    if (!params.sender_is_service) {
+      const senderPerson = this.db
+        .prepare('SELECT person_id, role FROM board_people WHERE board_id = ? AND name = ?')
+        .get(params.board_id, params.sender_name) as { person_id: string; role: string } | undefined;
+      const isGestor = senderPerson?.role === 'Gestor';
+      if (!isGestor) {
+        const createdBy = task['created_by'] as string | null;
+        if (createdBy === null) {
+          return { success: false, error_code: 'actor_type_not_allowed', error: 'Only a Gestor may delete unowned tasks' } as any;
+        }
+        if (createdBy !== params.sender_name) {
+          return { success: false, error_code: 'actor_type_not_allowed', error: 'Not authorized to delete this task' } as any;
+        }
+      }
+    }
+
+    const now = new Date().toISOString();
+    const history = this.getHistory(params.task_id, undefined, params.board_id);
+    this.db
+      .prepare(
+        `INSERT INTO archive (board_id, task_id, type, title, assignee, archive_reason,
+         linked_parent_board_id, linked_parent_task_id, archived_at, task_snapshot, history)
+         VALUES (?, ?, ?, ?, ?, 'deleted_via_web', ?, ?, ?, ?, ?)
+         ON CONFLICT(board_id, task_id) DO UPDATE SET
+           type = excluded.type, title = excluded.title, assignee = excluded.assignee,
+           archive_reason = excluded.archive_reason, archived_at = excluded.archived_at,
+           task_snapshot = excluded.task_snapshot, history = excluded.history`,
+      )
+      .run(
+        params.board_id, params.task_id, task['type'] as string, task['title'] as string,
+        task['assignee'] ?? null,
+        task['linked_parent_board_id'] ?? null, task['linked_parent_task_id'] ?? null,
+        now, JSON.stringify(task), JSON.stringify(history),
+      );
+    this.db
+      .prepare(`INSERT INTO task_history (board_id, task_id, action, "by", "at", details) VALUES (?, ?, 'delete', ?, ?, NULL)`)
+      .run(params.board_id, params.task_id, params.sender_name, now);
+    this.db
+      .prepare('DELETE FROM tasks WHERE board_id = ? AND id = ?')
+      .run(params.board_id, params.task_id);
+
+    return { success: true, data: { id: params.task_id, deleted: true } } as any;
   }
 
   private getHistory(taskId: string, limit?: number, boardId = this.boardId): any[] {
