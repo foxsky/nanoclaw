@@ -495,3 +495,135 @@ describe('normalizeEngineNotificationEvents', () => {
     })).toThrow(/missing routing target/)
   })
 })
+
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { registerTools } from './taskflow-mcp-server.js'
+import { TaskflowEngine } from './taskflow-engine.js'
+
+// Helper: create a fully-initialized in-memory DB via the engine
+function createEngineDb(boardId: string): Database.Database {
+  const db = new Database(':memory:')
+  db.pragma('journal_mode = WAL')
+  db.exec(`
+    CREATE TABLE boards (
+      id TEXT PRIMARY KEY, short_code TEXT, name TEXT NOT NULL DEFAULT '',
+      board_role TEXT NOT NULL DEFAULT 'hierarchy',
+      group_folder TEXT NOT NULL DEFAULT '',
+      group_jid TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE board_people (
+      board_id TEXT NOT NULL, person_id TEXT NOT NULL, name TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member',
+      status TEXT NOT NULL DEFAULT 'active',
+      PRIMARY KEY (board_id, person_id)
+    );
+    CREATE TABLE board_id_counters (
+      board_id TEXT NOT NULL, prefix TEXT NOT NULL,
+      next_number INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (board_id, prefix)
+    );
+    CREATE TABLE tasks (
+      id TEXT PRIMARY KEY, board_id TEXT NOT NULL,
+      title TEXT NOT NULL, "column" TEXT NOT NULL DEFAULT 'inbox',
+      type TEXT NOT NULL DEFAULT 'simple',
+      assignee TEXT, priority TEXT, due_date TEXT, labels TEXT,
+      description TEXT, notes TEXT, parent_task_id TEXT, scheduled_at TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      created_by TEXT,
+      requires_close_approval INTEGER NOT NULL DEFAULT 0,
+      child_exec_board_id TEXT, child_exec_person_id TEXT,
+      child_exec_rollup_status TEXT
+    );
+    CREATE TABLE task_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      board_id TEXT NOT NULL, task_id TEXT NOT NULL,
+      action TEXT NOT NULL, "by" TEXT,
+      "at" TEXT NOT NULL, details TEXT, trigger_turn_id TEXT
+    );
+    INSERT INTO boards (id, short_code, name) VALUES ('${boardId}', 'TF', 'Test Board');
+    INSERT INTO board_people (board_id, person_id, name, role) VALUES ('${boardId}', 'alice', 'alice', 'manager');
+    INSERT INTO board_id_counters (board_id, prefix, next_number) VALUES ('${boardId}', 'T', 1);
+  `.replace(/\${boardId}/g, boardId))
+  new TaskflowEngine(db, boardId) // run schema migrations
+  return db
+}
+
+describe('api_create_simple_task', () => {
+  it('registerTools registers api_create_simple_task', () => {
+    const db = new Database(':memory:')
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS boards (id TEXT PRIMARY KEY, short_code TEXT, name TEXT NOT NULL DEFAULT '', board_role TEXT NOT NULL DEFAULT 'hierarchy', group_folder TEXT NOT NULL DEFAULT '', group_jid TEXT NOT NULL DEFAULT '');
+      CREATE TABLE IF NOT EXISTS board_people (board_id TEXT NOT NULL, person_id TEXT NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', status TEXT NOT NULL DEFAULT 'active', PRIMARY KEY (board_id, person_id));
+    `)
+    const toolNames: string[] = []
+    const mockServer = {
+      tool: (name: string, ...rest: unknown[]) => { toolNames.push(name) },
+    } as unknown as McpServer
+    registerTools(mockServer, db)
+    expect(toolNames).toContain('api_create_simple_task')
+  })
+
+  it('api_create_simple_task returns success with full task data including created_by', async () => {
+    const boardId = 'b1'
+    const db = createEngineDb(boardId)
+    const toolHandlers = new Map<string, (params: any) => Promise<any>>()
+    const mockServer = {
+      tool: (name: string, _desc: string, _schema: unknown, handler: (params: any) => Promise<any>) => {
+        toolHandlers.set(name, handler)
+      },
+    } as unknown as McpServer
+    registerTools(mockServer, db)
+
+    const handler = toolHandlers.get('api_create_simple_task')!
+    expect(handler).toBeDefined()
+
+    const response = await handler({
+      board_id: boardId,
+      title: 'Test Task from MCP',
+      sender_name: 'alice',
+      priority: 'normal',
+    })
+
+    const result = JSON.parse(response.content[0].text)
+    expect(result.success).toBe(true)
+    expect(result.data).toBeDefined()
+    expect(result.data.title).toBe('Test Task from MCP')
+    expect(result.data.board_id).toBe(boardId)
+    expect(result.data.board_code).toBe('TF')
+    expect(result.data.created_by).toBe('alice')
+    expect(result.data.column).toBe('inbox')
+    expect(typeof result.data.id).toBe('string')
+    expect(Array.isArray(result.notification_events)).toBe(true)
+  })
+
+  it('api_create_simple_task propagates engine error as JSON (not thrown)', async () => {
+    const db = new Database(':memory:')
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS boards (id TEXT PRIMARY KEY, short_code TEXT, name TEXT NOT NULL DEFAULT '', board_role TEXT NOT NULL DEFAULT 'hierarchy', group_folder TEXT NOT NULL DEFAULT '', group_jid TEXT NOT NULL DEFAULT '');
+      CREATE TABLE IF NOT EXISTS board_people (board_id TEXT NOT NULL, person_id TEXT NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', status TEXT NOT NULL DEFAULT 'active', PRIMARY KEY (board_id, person_id));
+      INSERT INTO boards (id, short_code, name) VALUES ('b-err', 'XX', 'Error Board');
+    `)
+    const toolHandlers = new Map<string, (params: any) => Promise<any>>()
+    const mockServer = {
+      tool: (name: string, _desc: string, _schema: unknown, handler: (params: any) => Promise<any>) => {
+        toolHandlers.set(name, handler)
+      },
+    } as unknown as McpServer
+    registerTools(mockServer, db)
+
+    const handler = toolHandlers.get('api_create_simple_task')!
+
+    const response = await handler({
+      board_id: 'b-err',
+      title: 'Should fail',
+      sender_name: 'unknownperson',
+      assignee: 'nonexistent-assignee',
+    })
+
+    const result = JSON.parse(response.content[0].text)
+    expect(response.content[0].type).toBe('text')
+    expect(typeof result).toBe('object')
+    expect(result.success).toBe(false)
+    expect(typeof result.error).toBe('string')
+  })
+})

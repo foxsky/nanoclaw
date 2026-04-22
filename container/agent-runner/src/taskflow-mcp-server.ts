@@ -235,7 +235,7 @@ function parseArgs(): { db: string } {
   return { db: process.argv[idx + 1] }
 }
 
-function registerTools(server: McpServer, db: Database.Database): void {
+export function registerTools(server: McpServer, db: Database.Database): void {
   server.tool(
     'api_board_activity',
     'Board activity log',
@@ -273,6 +273,41 @@ function registerTools(server: McpServer, db: Database.Database): void {
     async (args) => {
       const engine = new TaskflowEngine(db, args.board_id, { readonly: true })
       return contentFromResult(engine.apiLinkedTasks())
+    }
+  )
+  server.tool(
+    'api_create_simple_task',
+    'Create a simple task via the REST API',
+    {
+      board_id: z.string(),
+      title: z.string(),
+      sender_name: z.string(),
+      assignee: z.string().optional(),
+      priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
+      due_date: z.string().nullable().optional(),
+      column: z.string().optional(),
+      description: z.string().nullable().optional(),
+    },
+    async (params) => {
+      try {
+        const engine = new TaskflowEngine(db, params.board_id)
+        const result = await engine.apiCreateSimpleTask({
+          title: params.title,
+          sender_name: params.sender_name,
+          assignee: params.assignee,
+          priority: params.priority,
+          due_date: params.due_date,
+          column: params.column,
+          description: params.description,
+        })
+        if (!result.success) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: result.error }) }] }
+        }
+        return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: msg }) }] }
+      }
     }
   )
 }

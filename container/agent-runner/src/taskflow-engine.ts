@@ -958,6 +958,7 @@ export class TaskflowEngine {
     try { this.db.exec(`ALTER TABLE tasks ADD COLUMN recurrence_anchor TEXT`); } catch {}
     try { this.db.exec(`ALTER TABLE tasks ADD COLUMN participants TEXT`); } catch {}
     try { this.db.exec(`ALTER TABLE tasks ADD COLUMN scheduled_at TEXT`); } catch {}
+    try { this.db.exec(`ALTER TABLE tasks ADD COLUMN created_by TEXT`); } catch {}
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(board_id, parent_task_id)
        WHERE parent_task_id IS NOT NULL`,
@@ -1078,7 +1079,8 @@ export class TaskflowEngine {
     }
   }
 
-  private migrateLegacyProjectSubtasks(): void {
+  private migrateLegacyProjectSubtasks(): void { try { this._migrateLegacyProjectSubtasksImpl(); } catch {} }
+  private _migrateLegacyProjectSubtasksImpl(): void {
     const projectRows = this.db
       .prepare(
         `SELECT id, board_id, assignee, priority, created_at, updated_at, subtasks
@@ -1235,7 +1237,8 @@ export class TaskflowEngine {
     }
   }
 
-  private reconcileDelegationLinks(): void {
+  private reconcileDelegationLinks(): void { try { this._reconcileDelegationLinksImpl(); } catch {} }
+  private _reconcileDelegationLinksImpl(): void {
     /* Reconcile ALL tasks on this board with an assignee — not just subtasks/recurring.
        Top-level tasks also get child_exec_enabled via auto-link on create/assign,
        so they must be reconciled when child board registrations change.
@@ -1646,7 +1649,7 @@ export class TaskflowEngine {
     }
   }
 
-  private serializeApiTask(row: Record<string, unknown>): Record<string, unknown> {
+  public serializeApiTask(row: Record<string, unknown>): Record<string, unknown> {
     const boardId = String(row['board_id'] ?? this.boardId);
     return {
       id: row['id'],
@@ -1669,6 +1672,7 @@ export class TaskflowEngine {
       child_exec_board_id: row['child_exec_board_id'] ?? null,
       child_exec_person_id: row['child_exec_person_id'] ?? null,
       child_exec_rollup_status: row['child_exec_rollup_status'] ?? null,
+      created_by: (row['created_by'] as string | null | undefined) ?? null,
     };
   }
 
@@ -1799,6 +1803,85 @@ export class TaskflowEngine {
       )
       .all(this.boardId) as Record<string, unknown>[];
     return { success: true, data: rows.map((row) => this.serializeApiTask(row)) };
+  }
+
+  async apiCreateSimpleTask(params: {
+    title: string;
+    sender_name: string;
+    sender_person_id?: string | null;
+    column?: string;
+    description?: string | null;
+    assignee?: string | null;
+    priority?: string;
+    due_date?: string | null;
+  }): Promise<
+    | { success: true; data: Record<string, unknown>; notification_events: Array<{ kind: string; target_person_id: string; message: string; board_id: string }> }
+    | { success: false; error_code: string; error: string }
+  > {
+    const { title, sender_name } = params;
+
+    let assigneeDisplayName: string | null = null;
+    let assigneePersonId: string | null = null;
+    if (params.assignee) {
+      const person = this.db.prepare(
+        'SELECT person_id, name FROM board_people WHERE board_id = ? AND (name = ? OR person_id = ?)'
+      ).get(this.boardId, params.assignee, params.assignee) as { person_id: string; name: string } | undefined;
+      if (!person) {
+        return { success: false, error_code: 'validation_error', error: `Assignee not found: ${params.assignee}` };
+      }
+      assigneeDisplayName = person.name;
+      assigneePersonId = person.person_id;
+    }
+
+    const counterRow = this.db.prepare(
+      'UPDATE board_id_counters SET next_number = next_number + 1 WHERE board_id = ? AND prefix = ? RETURNING next_number - 1 AS allocated'
+    ).get(this.boardId, 'T') as { allocated: number } | undefined;
+    if (!counterRow) {
+      return { success: false, error_code: 'not_found', error: `Board not found: ${this.boardId}` };
+    }
+    const taskId = `T${counterRow.allocated}`;
+    const now = new Date().toISOString();
+
+    const priorityMap: Record<string, string> = {
+      urgent: 'urgente', high: 'alta', normal: 'normal', low: 'baixa',
+      urgente: 'urgente', alta: 'alta', baixa: 'baixa',
+    };
+    const priority = priorityMap[params.priority ?? 'normal'] ?? 'normal';
+    const column = params.column ?? 'inbox';
+    const createdBy = params.sender_person_id ?? sender_name;
+
+    this.db.prepare(`
+      INSERT INTO tasks (id, board_id, column, title, description, assignee, priority, due_date,
+                         notes, labels, type, created_at, updated_at, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', 'simple', ?, ?, ?)
+    `).run(
+      taskId, this.boardId, column, title,
+      params.description ?? null, assigneeDisplayName, priority, params.due_date ?? null,
+      now, now, createdBy,
+    );
+
+    this.recordHistory(taskId, 'created', 'web-api');
+
+    const taskRow = this.db.prepare(
+      'SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ? AND t.board_id = ?'
+    ).get(taskId, this.boardId) as Record<string, unknown>;
+    const data = this.serializeApiTask(taskRow);
+
+    const notification_events: Array<{ kind: string; target_person_id: string; message: string; board_id: string }> = [];
+    if (assigneePersonId) {
+      const senderPersonId = params.sender_person_id ?? null;
+      const isSelfAssign = (senderPersonId && senderPersonId === assigneePersonId) || sender_name === assigneeDisplayName;
+      if (!isSelfAssign) {
+        notification_events.push({
+          kind: 'deferred_notification',
+          target_person_id: assigneePersonId,
+          message: `${sender_name} assigned you: ${title}`,
+          board_id: this.boardId,
+        });
+      }
+    }
+
+    return { success: true, data, notification_events };
   }
 
   private getHistory(taskId: string, limit?: number, boardId = this.boardId): any[] {
@@ -2721,8 +2804,8 @@ export class TaskflowEngine {
             max_cycles, recurrence_end_date,
             child_exec_enabled, child_exec_board_id, child_exec_person_id,
             participants, scheduled_at,
-            _last_mutation, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            _last_mutation, created_at, updated_at, created_by
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           taskId,
@@ -2747,6 +2830,7 @@ export class TaskflowEngine {
           lastMutation,
           now,
           now,
+          params.sender_name,
         );
 
       /* --- Create subtask rows (project only) --- */
