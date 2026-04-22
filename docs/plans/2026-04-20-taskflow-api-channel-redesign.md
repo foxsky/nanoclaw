@@ -27,6 +27,18 @@ As of the latest implementation pass:
   - board filter queries (`engine.apiFilterBoardTasks()`)
   - linked tasks (`engine.apiLinkedTasks()`)
 
+- Phase 6 is complete: task mutations are engine-backed
+  - `apiCreateSimpleTask` sets and returns stable `created_by`;
+    `apiUpdateSimpleTask` enforces the action matrix for edit/reassign/done/cancel;
+    `apiDeleteSimpleTask` enforces delete ownership (creator or Gestor; assignee-only blocked)
+  - `api_create_simple_task`, `api_update_simple_task`, `api_delete_simple_task` MCP tools registered
+  - `POST /boards/{board_id}/tasks`, `PATCH /boards/{board_id}/tasks/{task_id}`,
+    and `DELETE /boards/{board_id}/tasks/{task_id}` delegate to MCP; direct Python SQL removed
+  - Comment `author_id`/`author_name` derived from resolved JWT actor, not client-supplied field
+  - Frontend action buttons use per-capability flags (`canEditTask`, `canDeleteTask`,
+    `canMarkDone`, `canReassignTask`) derived from the resolved current board person
+  - `tasks.created_by` migration added; `serialize_task` returns it; `Task` interface updated
+
 - Phase 4 is complete: notification and event-invalidation primitives are unified
   - `board_chat` COUNT+MAX included in SSE change hash (invalidation covers board chat)
   - `dispatch_mcp_notification_events(conn, events)` dispatches `deferred_notification`
@@ -40,7 +52,7 @@ As of the latest implementation pass:
 
 What is still not done:
 
-- Phase 6 mutation migration
+- Phase 7: decide comments and board chat (see Phase 7 section below)
 
 Therefore:
 
@@ -409,18 +421,12 @@ Do not:
 
 ## Immediate Next Step
 
-Phases 0, 3, 4, and 5 are complete. Phase 1 (wrapper extraction) remains outstanding
-but does not block Phase 6.
+Phases 0, 3, 4, 5, and 6 are complete. Phase 1 (wrapper extraction) remains outstanding
+but does not block Phase 7.
 
-Phase 6 (mutation migration) prerequisites:
+Phase 7 decision: comments and board chat remain **API-owned**. They are not task mutations
+and have no equivalent in `TaskflowEngine`. The Phase 7 plan fixes the POST /chat security
+hole (client-controlled `sender_name`) and removes the client-side `senderName` prop from
+the frontend `BoardChat` component. No MCP tools are added for comments or chat.
 
-- [x] Actor resolution is deterministic (`resolve_board_actor`, `ensure_board_access_prechecked`)
-- [x] Error codes are structured and stable (`error_kind: engine | system` → 422/503)
-- [x] Notification routing is unified (`dispatch_mcp_notification_events`, `write_notification_ipc`)
-- [x] Event invalidation is explicit (SSE hash covers tasks, board config, board chat)
-- [x] `call_mcp_mutation` helper handles the full MCP delegation + error + dispatch pipeline
-- [ ] API compatibility tests green against the adapter path (required before first mutation tool)
-
-The next concrete artifact is a Phase 6 plan that introduces the first mutation tool
-(`api_create_simple_task` or `api_update_simple_task`) against the adapter path,
-backed by `call_mcp_mutation`.
+Phase 7 implementation plan: `docs/plans/2026-04-22-taskflow-phase7-chat-sender.md`
