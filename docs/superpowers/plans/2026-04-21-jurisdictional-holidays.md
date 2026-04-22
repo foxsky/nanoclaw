@@ -144,23 +144,43 @@ try {
 
 Place it near the other ALTER statements for `boards`.
 
-- [ ] **Step 3: Mirror in every inline schema fragment across test files**
+- [ ] **Step 3: Mirror in every schema fragment across test files (realistic inventory)**
 
-Three distinct locations need the new column — the plan treats each as a concrete edit, not "if present":
-
-1. `container/agent-runner/src/taskflow-engine.test.ts` — top-level `SCHEMA` constant around line 8 (covers the main describe block). Add `work_start_hour_local INTEGER,` before `PRIMARY KEY` on the board_holidays table.
-
-2. `container/agent-runner/src/taskflow-engine.test.ts:3600` — an inline `CREATE TABLE IF NOT EXISTS board_holidays (board_id TEXT, holiday_date TEXT, label TEXT, PRIMARY KEY (board_id, holiday_date))` lives inside one test body. Replace with: `CREATE TABLE IF NOT EXISTS board_holidays (board_id TEXT, holiday_date TEXT, label TEXT, work_start_hour_local INTEGER, PRIMARY KEY (board_id, holiday_date))`.
-
-3. `container/agent-runner/src/taskflow-embedding-integration.test.ts` — this file inlines its own `CREATE TABLE board_runtime_config` (around line 59) and `CREATE TABLE board_holidays` (around line 72). Both need updates: board_holidays gets `work_start_hour_local INTEGER,`, and since Phase 2's engine code will SELECT from `jurisdictional_holidays`, the test also needs that table added — copy the same CREATE TABLE statement from Task 1.1 Step 2.
-
-Verify coverage:
+As of the current codebase state, four test files reference either `board_holidays` or `board_runtime_config`:
 
 ```bash
 cd /root/nanoclaw && grep -rln "CREATE TABLE.*board_holidays\|CREATE TABLE.*board_runtime_config" --include="*.test.ts" src/ container/agent-runner/src/ | sort -u
 ```
 
-Each path in the output must have been updated above. If grep finds more, update them before committing.
+Expected hits: `semantic-audit.test.ts`, `taskflow-embedding-integration.test.ts`, `provision-child-board.test.ts`, `taskflow-db.test.ts`, and `container/agent-runner/src/taskflow-engine.test.ts` (top-level `SCHEMA` constant at ~line 8 PLUS an inline `board_holidays` CREATE at ~line 3600).
+
+The engine test file has a **specific nuance**: the top-level `SCHEMA` constant does NOT currently include `board_holidays` at all — it's inlined at line 3600 inside one test body. Phase 2's `isNonBusinessDay` tests (Task 2.3) will need `board_holidays` AND `jurisdictional_holidays` available, so the top-level SCHEMA is the right place to add them.
+
+Concrete edits per file:
+
+1. **`container/agent-runner/src/taskflow-engine.test.ts`** top-level `SCHEMA` constant at line 8 — append (at the end of the template literal, before the closing backtick):
+
+   ```sql
+   CREATE TABLE IF NOT EXISTS board_holidays (board_id TEXT, holiday_date TEXT, label TEXT, work_start_hour_local INTEGER, PRIMARY KEY (board_id, holiday_date));
+   CREATE TABLE IF NOT EXISTS jurisdictional_holidays (country TEXT NOT NULL, state TEXT, city TEXT, date TEXT NOT NULL, label TEXT NOT NULL, work_start_hour_local INTEGER, source TEXT DEFAULT 'manual', PRIMARY KEY (country, state, city, date));
+   ```
+
+   (`board_runtime_config` already present in the top-level SCHEMA — no change there.)
+
+2. **`container/agent-runner/src/taskflow-engine.test.ts:3600`** — inline `CREATE TABLE IF NOT EXISTS board_holidays` in one test body. Replace with the `work_start_hour_local`-including variant above. Note: since the top-level SCHEMA now creates the same table with `IF NOT EXISTS`, this inline CREATE becomes a no-op for new test runs but keeps the file working against any environment where the top-level SCHEMA hasn't loaded yet. Update for consistency rather than correctness.
+
+3. **`container/agent-runner/src/taskflow-embedding-integration.test.ts`** — inlines `board_runtime_config` and `board_holidays`. Update both:
+   - `board_runtime_config` already has `country`/`state`/`city` — verify first; add if missing.
+   - `board_holidays` — add `work_start_hour_local INTEGER,` before `PRIMARY KEY`.
+   - Add `jurisdictional_holidays` CREATE from Task 1.1 Step 2.
+
+4. **`container/agent-runner/src/semantic-audit.test.ts`** — audit this file for `board_holidays` / `board_runtime_config` use. Add the new columns / table if referenced by any test path that also calls the engine's new `isNonBusinessDay`.
+
+5. **`src/ipc-plugins/provision-child-board.test.ts`** — no change expected (doesn't exercise engine holiday reads), but the grep result demands we check. If the file inlines `board_holidays` at all, add `work_start_hour_local`.
+
+6. **`src/taskflow-db.test.ts`** — created in Task 1.4. Uses the real `initTaskflowDb()` which runs `TASKFLOW_SCHEMA` from Task 1.1's update, so automatically picks up the new tables/columns. No additional edit needed.
+
+Final verification: re-run the grep after edits. Any `board_holidays` CREATE that lacks `work_start_hour_local`, or any file that runs Phase 2 engine code without a `jurisdictional_holidays` table, is still broken.
 
 - [ ] **Step 4: Run all container tests**
 
@@ -376,7 +396,20 @@ function seedBRJurisdictionalHolidays(db: Database.Database): void {
      (country, state, city, date, label, work_start_hour_local, source)
      VALUES ('BR', NULL, NULL, ?, ?, NULL, 'fixed')`,
   );
-  const currentYear = new Date().getUTCFullYear();
+  // Use LOCAL year in the BR default timezone, not UTC year. At ~21:00
+  // on Dec 31 local (UTC-3), `new Date().getUTCFullYear()` is already
+  // next year — a UTC-based seed would skip the tail of the LOCAL
+  // current year (Natal Dec 25 would already be seeded via the prior
+  // boot, but a late-Dec-31 first-ever init would miss it). Pulling the
+  // year from an `Intl.DateTimeFormat` in America/Fortaleza closes the
+  // gap.
+  const currentYear = Number.parseInt(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Fortaleza',
+      year: 'numeric',
+    }).format(new Date()),
+    10,
+  );
   for (let offset = 0; offset < 3; offset++) {
     const year = currentYear + offset;
     for (const h of BR_FIXED_HOLIDAYS) {
@@ -386,12 +419,28 @@ function seedBRJurisdictionalHolidays(db: Database.Database): void {
 }
 ```
 
-- [ ] **Step 4: Call the seed from `initTaskflowDb`**
+- [ ] **Step 4: Call the seed from `initTaskflowDb` and invalidate the scheduler's cached handle**
 
 Find `export function initTaskflowDb(` and locate the end of the migration block (after the `ALTER TABLE board_runtime_config ADD COLUMN city TEXT` try/catch, around line 594). Before the function returns, add:
 
 ```typescript
 seedBRJurisdictionalHolidays(db);
+
+// Defense-in-depth: the scheduler's cached readonly handle (see
+// task-scheduler.ts) would retain this DB's pre-migration schema if
+// init re-ran in-process. In normal boot the handle isn't opened yet
+// so this is a no-op; during a hot-reload or test-harness path it's
+// load-bearing.
+try {
+  // Lazy require to avoid a static circular dependency (task-scheduler
+  // imports from taskflow-db indirectly through the provision-shared
+  // TASKFLOW_DB_PATH export).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { closeCachedTaskflowDb } = require('./task-scheduler.js') as typeof import('./task-scheduler.js');
+  closeCachedTaskflowDb();
+} catch {
+  // scheduler not loaded (e.g. setup CLI invocation) — nothing to close.
+}
 ```
 
 - [ ] **Step 5: Run tests — verify they pass**
@@ -874,11 +923,12 @@ describe('engine holiday resolution', () => {
     seedOrgWithBR();
     // Read once — cache populated.
     expect(engine.isNonBusinessDay('2026-04-22')).toBeNull();
-    // Add an override via admin.
+    // Add an override via admin. Parameter name is `holiday_operation`,
+    // not `holiday_op` — see AdminParams type at taskflow-engine.ts:218.
     const adminResult = engine.admin({
       action: 'manage_holidays',
       sender_name: 'Alexandre',
-      holiday_op: 'add',
+      holiday_operation: 'add',
       holidays: [{ date: '2026-04-22', label: 'Retiro' }],
     });
     expect(adminResult.success).toBe(true);
@@ -978,8 +1028,13 @@ private getEffectiveHolidays(year: number): Map<string, HolidayInfo> {
   }
 
   // 3. Per-board overrides (always win identity; full-day semantics from
-  //    prior layers are preserved — a half-day override does NOT soften a
-  //    full-day jurisdictional/moveable-feast on the same date).
+  //    prior layers are preserved in ONE direction only — a half-day
+  //    override does NOT soften a full-day prior. A full-day override
+  //    DOES replace a half-day prior (the manager is overriding, after
+  //    all). An override's label always wins regardless of strictness
+  //    direction. This is directional by design: enforces "full-day
+  //    wins over half-day on conflict" while still letting managers
+  //    escalate a half-day public holiday to a full-day board closure.
   const overrides = this.db
     .prepare(
       `SELECT holiday_date, label, work_start_hour_local FROM board_holidays WHERE board_id = ? AND holiday_date >= ? AND holiday_date <= ?`,
@@ -1624,19 +1679,58 @@ engine-side."
 - Modify: `src/task-scheduler.ts`
 - Modify: `src/task-scheduler.test.ts`
 
-- [ ] **Step 1: Write failing tests — six cases covering all preflight branches**
+- [ ] **Step 1: Prep — export `runTask` and add `now` parameter**
 
-In `src/task-scheduler.test.ts`, add at the end of the existing describe block. Each test shares the same board/tz setup; factor into a helper:
+`runTask` is currently module-private in `src/task-scheduler.ts:88`. The existing scheduler tests don't call it directly — they drive `startSchedulerLoop` with `vi.useFakeTimers()` and assert via DB state. For the holiday-preflight tests we need direct `runTask` invocation with a mocked "now" to exercise the timezone-date math without waiting for the cron clock.
+
+Two source changes in `src/task-scheduler.ts`:
+
+1. Add `export` to the function declaration: `export async function runTask(`
+2. Add the `now?: Date` optional argument: `export async function runTask(task: ScheduledTask, deps: SchedulerDependencies, now?: Date): Promise<void>`. Replace every `new Date()` inside the function that represents "current wall-clock time for scheduling decisions" with `now ?? new Date()`. The cron `computeNextRun(task)` still uses wall-clock by default — don't override that one, the spec's skip-path is intentionally tied to the preflight moment, not the cron slot.
+
+- [ ] **Step 2: Add a test-only `_runTaskForTests` re-export OR directly import `runTask`**
+
+The existing convention is `_resetSchedulerLoopForTests`, `_initTestDatabase` — underscore-prefixed test surface. If the test-affordance pattern must be preserved, add `export { runTask as _runTaskForTests }` alongside the already-exported `_resetSchedulerLoopForTests`. Otherwise just `import { runTask } from './task-scheduler.js'` in the test.
+
+- [ ] **Step 3: Mock `runContainerAgent` via `vi.mock`**
+
+`runContainerAgent` is imported directly in `task-scheduler.ts` (not injected via `deps`). Tests mock it by mocking the module:
 
 ```typescript
+import { vi } from 'vitest';
+vi.mock('./container-runner.js', () => ({
+  runContainerAgent: vi.fn(async () => ({
+    status: 'success',
+    result: 'ok',
+  })),
+  writeGroupsSnapshot: vi.fn(),
+  writeTasksSnapshot: vi.fn(),
+}));
+```
+
+After `vi.mock`, import the mock'd `runContainerAgent` and use `mockClear()` / `expect(runContainerAgent).toHaveBeenCalled()`.
+
+- [ ] **Step 4: Write the six failing preflight tests**
+
+In `src/task-scheduler.test.ts`, after the existing `describe('task scheduler', ...)` block, add:
+
+```typescript
+import Database from 'better-sqlite3';
+import { TASKFLOW_DB_PATH } from './ipc-plugins/provision-shared.js';
+import { runTask } from './task-scheduler.js';
+import { runContainerAgent } from './container-runner.js';
+import type { ScheduledTask } from './types.js';
+import type { SchedulerDependencies } from './task-scheduler.js';
+
 function seedHolidayTestBoard(): void {
   const tfDb = new Database(TASKFLOW_DB_PATH);
   try {
     tfDb.exec(`
-      INSERT INTO boards VALUES ('board-hol-test', 'hol@g.us', 'hol-taskflow', 'standard', 0, 1, NULL, NULL, NULL);
-      INSERT INTO board_runtime_config (board_id, country, timezone)
+      INSERT OR REPLACE INTO boards (id, group_jid, group_folder, hierarchy_level, max_depth, short_code, owner_person_id)
+        VALUES ('board-hol-test', 'hol@g.us', 'hol-taskflow', 0, 1, NULL, NULL);
+      INSERT OR REPLACE INTO board_runtime_config (board_id, country, timezone)
         VALUES ('board-hol-test', 'BR', 'America/Fortaleza');
-      INSERT INTO jurisdictional_holidays (country, state, city, date, label, work_start_hour_local, source)
+      INSERT OR IGNORE INTO jurisdictional_holidays (country, state, city, date, label, work_start_hour_local, source)
         VALUES ('BR', NULL, NULL, '2026-04-21', 'Tiradentes', NULL, 'fixed');
     `);
   } finally {
@@ -1659,116 +1753,133 @@ function makeTestTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     skip_on_holiday: true,
     last_run: null,
     last_result: null,
-    ...overrides,
-  };
+  } as ScheduledTask satisfies ScheduledTask;
 }
 
-it('preflight A: full-day holiday (Tiradentes 08:00 local) → skip', async () => {
-  seedHolidayTestBoard();
-  const task = makeTestTask();
-  createTask(task);
-  const deps = makeSchedulerDeps();
-  await runTask(task, deps, new Date('2026-04-21T11:00:01.000Z'));
-  const row = getTaskById(task.id);
-  expect(row?.last_result).toMatch(/skipped_holiday.*Tiradentes/);
-  expect(deps.runContainerAgent).not.toHaveBeenCalled();
-});
+function makeDeps(): SchedulerDependencies {
+  return {
+    registeredGroups: () => ({
+      'hol@g.us': {
+        name: 'Holiday Test',
+        folder: 'hol-taskflow',
+        trigger: '@Case',
+        added_at: '2026-01-01T00:00:00.000Z',
+        taskflowManaged: true,
+        isMain: false,
+      },
+      'nc@g.us': {
+        name: 'No Country',
+        folder: 'nc-taskflow',
+        trigger: '@Case',
+        added_at: '2026-01-01T00:00:00.000Z',
+        taskflowManaged: true,
+        isMain: false,
+      },
+    }),
+    // Pad out with whatever other SchedulerDependencies fields are required
+    // — copy from an existing test in this file if the shape has grown.
+  } as SchedulerDependencies;
+}
 
-it('preflight B: half-day morning (Ash Wed 08:00 local) → skip', async () => {
-  // Ash Wednesday 2026 = Feb 18. 08:00 Fortaleza = 11:00 UTC.
-  seedHolidayTestBoard();
-  const task = makeTestTask({
-    id: 'task-halfday-morning',
-    next_run: '2026-02-18T11:00:00.000Z',
+describe('runTask holiday preflight', () => {
+  beforeEach(() => {
+    _initTestDatabase();
+    vi.mocked(runContainerAgent).mockClear();
+    vi.mocked(runContainerAgent).mockResolvedValue({ status: 'success', result: 'ok' } as any);
   });
-  createTask(task);
-  const deps = makeSchedulerDeps();
-  await runTask(task, deps, new Date('2026-02-18T11:00:01.000Z'));
-  expect(getTaskById(task.id)?.last_result).toMatch(/skipped_holiday.*Cinzas/);
-  expect(deps.runContainerAgent).not.toHaveBeenCalled();
-});
 
-it('preflight C: half-day afternoon (Ash Wed 18:00 local) → fire', async () => {
-  // 18:00 Fortaleza = 21:00 UTC. workStartHourLocal=12, so 18 >= 12 → fire.
-  seedHolidayTestBoard();
-  const task = makeTestTask({
-    id: 'task-halfday-afternoon',
-    schedule_value: '0 18 * * 1-5',
-    next_run: '2026-02-18T21:00:00.000Z',
+  it('A: full-day holiday (Tiradentes 08:00 local) → skip', async () => {
+    seedHolidayTestBoard();
+    const task = makeTestTask({ ...overrideDefaults, id: 'task-fullday' });
+    createTask(task);
+    await runTask({ ...task, ...overrideDefaults }, makeDeps(), new Date('2026-04-21T11:00:01.000Z'));
+    expect(getTaskById(task.id)?.last_result).toMatch(/skipped_holiday.*Tiradentes/);
+    expect(runContainerAgent).not.toHaveBeenCalled();
   });
-  createTask(task);
-  const deps = makeSchedulerDeps();
-  await runTask(task, deps, new Date('2026-02-18T21:00:01.000Z'));
-  expect(deps.runContainerAgent).toHaveBeenCalled();
-});
 
-it('preflight D: skip_on_holiday=false on a holiday → fire', async () => {
-  seedHolidayTestBoard();
-  const task = makeTestTask({
-    id: 'task-optout',
-    skip_on_holiday: false,
+  it('B: half-day morning (Ash Wed 08:00 local) → skip', async () => {
+    // Ash Wednesday 2026 = Feb 18. 08:00 Fortaleza = 11:00 UTC.
+    seedHolidayTestBoard();
+    const task = makeTestTask({ id: 'task-halfday-morning', next_run: '2026-02-18T11:00:00.000Z' });
+    createTask(task);
+    await runTask(task, makeDeps(), new Date('2026-02-18T11:00:01.000Z'));
+    expect(getTaskById(task.id)?.last_result).toMatch(/skipped_holiday.*Cinzas/);
+    expect(runContainerAgent).not.toHaveBeenCalled();
   });
-  createTask(task);
-  const deps = makeSchedulerDeps();
-  await runTask(task, deps, new Date('2026-04-21T11:00:01.000Z'));
-  expect(deps.runContainerAgent).toHaveBeenCalled();
-});
 
-it('preflight E: NANOCLAW_HOLIDAY_SKIP=0 env → fire', async () => {
-  seedHolidayTestBoard();
-  const task = makeTestTask({ id: 'task-env-kill' });
-  createTask(task);
-  const prior = process.env.NANOCLAW_HOLIDAY_SKIP;
-  process.env.NANOCLAW_HOLIDAY_SKIP = '0';
-  try {
-    const deps = makeSchedulerDeps();
-    await runTask(task, deps, new Date('2026-04-21T11:00:01.000Z'));
-    expect(deps.runContainerAgent).toHaveBeenCalled();
-  } finally {
-    if (prior === undefined) delete process.env.NANOCLAW_HOLIDAY_SKIP;
-    else process.env.NANOCLAW_HOLIDAY_SKIP = prior;
-  }
-});
-
-it('preflight F: board with country=NULL → fire (no jurisdictional match)', async () => {
-  const tfDb = new Database(TASKFLOW_DB_PATH);
-  tfDb.exec(`
-    INSERT INTO boards VALUES ('board-nocountry', 'nc@g.us', 'nc-taskflow', 'standard', 0, 1, NULL, NULL, NULL);
-    INSERT INTO board_runtime_config (board_id, country, timezone)
-      VALUES ('board-nocountry', NULL, 'America/Fortaleza');
-    INSERT INTO jurisdictional_holidays (country, state, city, date, label, work_start_hour_local, source)
-      VALUES ('BR', NULL, NULL, '2026-04-21', 'Tiradentes', NULL, 'fixed');
-  `);
-  tfDb.close();
-  const task = makeTestTask({
-    id: 'task-nocountry',
-    group_folder: 'nc-taskflow',
-    chat_jid: 'nc@g.us',
+  it('C: half-day afternoon (Ash Wed 18:00 local) → fire', async () => {
+    seedHolidayTestBoard();
+    const task = makeTestTask({
+      id: 'task-halfday-afternoon',
+      schedule_value: '0 18 * * 1-5',
+      next_run: '2026-02-18T21:00:00.000Z',
+    });
+    createTask(task);
+    await runTask(task, makeDeps(), new Date('2026-02-18T21:00:01.000Z'));
+    expect(runContainerAgent).toHaveBeenCalled();
   });
-  createTask(task);
-  const deps = makeSchedulerDeps();
-  await runTask(task, deps, new Date('2026-04-21T11:00:01.000Z'));
-  expect(deps.runContainerAgent).toHaveBeenCalled();
-});
 
-it('preflight G (tz-boundary): next_run UTC just past midnight resolves to prior local day', async () => {
-  // Tiradentes 2026-04-21 in Fortaleza (UTC-3). UTC 2026-04-22T02:00:00 is
-  // 2026-04-21T23:00 local — still Tiradentes. A task with next_run at that
-  // UTC time must skip.
-  seedHolidayTestBoard();
-  const task = makeTestTask({
-    id: 'task-tzboundary',
-    next_run: '2026-04-22T02:00:00.000Z',
+  it('D: skip_on_holiday=false on a holiday → fire', async () => {
+    seedHolidayTestBoard();
+    const task = makeTestTask({ id: 'task-optout', skip_on_holiday: false });
+    createTask(task);
+    await runTask(task, makeDeps(), new Date('2026-04-21T11:00:01.000Z'));
+    expect(runContainerAgent).toHaveBeenCalled();
   });
-  createTask(task);
-  const deps = makeSchedulerDeps();
-  await runTask(task, deps, new Date('2026-04-22T02:00:01.000Z'));
-  expect(getTaskById(task.id)?.last_result).toMatch(/skipped_holiday.*Tiradentes/);
-  expect(deps.runContainerAgent).not.toHaveBeenCalled();
+
+  it('E: NANOCLAW_HOLIDAY_SKIP=0 env → fire', async () => {
+    seedHolidayTestBoard();
+    const task = makeTestTask({ id: 'task-env-kill' });
+    createTask(task);
+    const prior = process.env.NANOCLAW_HOLIDAY_SKIP;
+    process.env.NANOCLAW_HOLIDAY_SKIP = '0';
+    try {
+      await runTask(task, makeDeps(), new Date('2026-04-21T11:00:01.000Z'));
+      expect(runContainerAgent).toHaveBeenCalled();
+    } finally {
+      if (prior === undefined) delete process.env.NANOCLAW_HOLIDAY_SKIP;
+      else process.env.NANOCLAW_HOLIDAY_SKIP = prior;
+    }
+  });
+
+  it('F: board with country=NULL → fire (no jurisdictional match)', async () => {
+    const tfDb = new Database(TASKFLOW_DB_PATH);
+    try {
+      tfDb.exec(`
+        INSERT OR REPLACE INTO boards (id, group_jid, group_folder, hierarchy_level, max_depth, short_code, owner_person_id)
+          VALUES ('board-nocountry', 'nc@g.us', 'nc-taskflow', 0, 1, NULL, NULL);
+        INSERT OR REPLACE INTO board_runtime_config (board_id, country, timezone)
+          VALUES ('board-nocountry', NULL, 'America/Fortaleza');
+        INSERT OR IGNORE INTO jurisdictional_holidays (country, state, city, date, label, work_start_hour_local, source)
+          VALUES ('BR', NULL, NULL, '2026-04-21', 'Tiradentes', NULL, 'fixed');
+      `);
+    } finally {
+      tfDb.close();
+    }
+    const task = makeTestTask({
+      id: 'task-nocountry',
+      group_folder: 'nc-taskflow',
+      chat_jid: 'nc@g.us',
+    });
+    createTask(task);
+    await runTask(task, makeDeps(), new Date('2026-04-21T11:00:01.000Z'));
+    expect(runContainerAgent).toHaveBeenCalled();
+  });
+
+  it('G tz-boundary: next_run UTC just past midnight resolves to prior local day', async () => {
+    // Tiradentes 2026-04-21 in Fortaleza (UTC-3). UTC 2026-04-22T02:00:00 is
+    // 2026-04-21T23:00 local — still Tiradentes.
+    seedHolidayTestBoard();
+    const task = makeTestTask({ id: 'task-tzboundary', next_run: '2026-04-22T02:00:00.000Z' });
+    createTask(task);
+    await runTask(task, makeDeps(), new Date('2026-04-22T02:00:01.000Z'));
+    expect(getTaskById(task.id)?.last_result).toMatch(/skipped_holiday.*Tiradentes/);
+    expect(runContainerAgent).not.toHaveBeenCalled();
+  });
 });
 ```
 
-NOTE: `runTask`'s existing signature takes `(task, deps)`. Adding a third arg `now?: Date` is a TEST affordance — the production call passes no third argument and falls through to `new Date()`.
+NOTE: `_initTestDatabase()` from the existing test file creates the host `messages.db`; for `taskflow.db` the test writes directly via `Database(TASKFLOW_DB_PATH)`. If `TASKFLOW_DB_PATH` in test contexts points at an unexpected location, override it the same way the existing test suite does in `src/ipc-plugins/provision-child-board.test.ts` (via a `vi.mock` on `./provision-shared.js` that replaces `TASKFLOW_DB_PATH` with a temp path).
 
 - [ ] **Step 2: Run test — verify it fails**
 
@@ -1890,11 +2001,26 @@ At the top of `src/task-scheduler.ts` (module scope), add the cached read-only h
 // reports the DB as closed (e.g., after an in-process rewrite). Avoids
 // 27× open/close bursts when the 08:00 poll picks up every board's
 // standup at once.
+//
+// Safety: `initTaskflowDb()` runs on host startup BEFORE the scheduler
+// ticks for the first time, so the cached handle won't be opened against
+// a pre-migration schema on the normal boot path. The `closeCachedTaskflowDb`
+// helper is called from `initTaskflowDb` as defense-in-depth for any
+// future in-process re-init (hot-reload, test harness) — dropping the
+// cache forces the next `openTaskflowDbReadonly` call to reopen against
+// whatever schema the latest init produced.
 let _taskflowDbReadonly: Database.Database | null = null;
 function openTaskflowDbReadonly(): Database.Database {
   if (_taskflowDbReadonly) return _taskflowDbReadonly;
   _taskflowDbReadonly = new Database(TASKFLOW_DB_PATH, { readonly: true });
   return _taskflowDbReadonly;
+}
+
+export function closeCachedTaskflowDb(): void {
+  if (_taskflowDbReadonly) {
+    try { _taskflowDbReadonly.close(); } catch {}
+    _taskflowDbReadonly = null;
+  }
 }
 
 // Dedupe invalid-TZ warnings: log once per (boardId, tz) pair. Bad
@@ -2190,6 +2316,12 @@ The three phases deploy additively but **rollback must run in reverse dependency
 - `computeEaster(year): string` return type identical on host and container sides, verified by the parity test. ✓
 - `MoveableFeast` interface identical on both sides (date/label/workStartHourLocal). ✓
 - `updateTaskAfterRun(id, nextRun, lastResult)` — verified to exist at `src/db.ts:874` (real helper), exported and used by Task 3.3's preflight. ✓
+- `logTaskRun({...})` — verified to exist at `src/db.ts:889` with the shape Task 3.3 uses. ✓
+- `holiday_operation` (NOT `holiday_op`) — verified against `AdminParams` type at `container/agent-runner/src/taskflow-engine.ts:218` and the handler at line 7145. Used correctly in Task 2.3's cache-invalidation test. ✓
+- `runTask` now explicitly exported from `task-scheduler.ts` with an optional `now?: Date` test-affordance (Task 3.3 Step 1). Real production callers pass no third argument. ✓
+- `runContainerAgent` mocked via `vi.mock('./container-runner.js')` in Task 3.3 Step 3 — mirrors the pattern used elsewhere for module-level imports. ✓
+- `closeCachedTaskflowDb` exported from `task-scheduler.ts` and called from `initTaskflowDb` (Task 1.4 Step 4) so hot-reload paths can't retain a pre-migration readonly handle. ✓
+- Seed uses LOCAL year (America/Fortaleza) not UTC year (Task 1.4 Step 3) to avoid a late-Dec-31 edge case. ✓
 
 ---
 
