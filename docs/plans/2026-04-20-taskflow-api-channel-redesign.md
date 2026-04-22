@@ -28,9 +28,11 @@ As of the latest implementation pass:
   - linked tasks (`engine.apiLinkedTasks()`)
 
 - Phase 6 is complete: task mutations are engine-backed
-  - `apiCreateSimpleTask` sets and returns stable `created_by`;
-    `apiUpdateSimpleTask` enforces the action matrix for edit/reassign/done/cancel;
-    `apiDeleteSimpleTask` enforces delete ownership (creator or Gestor; assignee-only blocked)
+  - `api_create_simple_task` sets and returns stable `created_by` on new tasks;
+    `api_update_simple_task` enforces ownership authorization (creator, assignee, or Gestor)
+    and gates move-to-done when `requires_close_approval` is set;
+    `api_delete_simple_task` (via `engine.apiDeleteSimpleTask`) enforces delete ownership
+    (creator or Gestor; assignee-only blocked)
   - `api_create_simple_task`, `api_update_simple_task`, `api_delete_simple_task` MCP tools registered
   - `POST /boards/{board_id}/tasks`, `PATCH /boards/{board_id}/tasks/{task_id}`,
     and `DELETE /boards/{board_id}/tasks/{task_id}` delegate to MCP; direct Python SQL removed
