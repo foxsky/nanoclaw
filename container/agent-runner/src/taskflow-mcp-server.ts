@@ -421,6 +421,10 @@ export function registerTools(server: McpServer, db: Database.Database): void {
         if ('due_date' in params) row['due_date'] = params.due_date
         const data = engine.serializeApiTask(row)
 
+        const COLUMN_LABELS: Record<string, string> = {
+          inbox: 'Inbox', next_action: 'Próxima Ação', in_progress: 'Em Andamento',
+          waiting: 'Aguardando', review: 'Revisão', done: 'Concluída', cancelled: 'Cancelada',
+        }
         const notification_events: Array<{ kind: string; board_id: string; target_person_id: string; message: string }> = []
         if (newAssigneePersonId) {
           if (!senderPerson || senderPerson.person_id !== newAssigneePersonId) {
@@ -430,6 +434,24 @@ export function registerTools(server: McpServer, db: Database.Database): void {
               target_person_id: newAssigneePersonId,
               message: `${params.sender_name} assigned you: ${(row['title'] as string) ?? params.task_id}`,
             })
+          }
+        }
+        if ('column' in params && params.column !== (existing['column'] as string)) {
+          const existingAssigneeName = existing['assignee'] as string | null
+          if (existingAssigneeName) {
+            const assigneePerson = db.prepare(
+              'SELECT person_id FROM board_people WHERE board_id = ? AND name = ?'
+            ).get(params.board_id, existingAssigneeName) as { person_id: string } | undefined
+            if (assigneePerson && assigneePerson.person_id !== newAssigneePersonId && (!senderPerson || senderPerson.person_id !== assigneePerson.person_id)) {
+              const oldLabel = COLUMN_LABELS[existing['column'] as string] ?? (existing['column'] as string)
+              const newLabel = COLUMN_LABELS[params.column!] ?? params.column!
+              notification_events.push({
+                kind: 'deferred_notification',
+                board_id: params.board_id,
+                target_person_id: assigneePerson.person_id,
+                message: `\u{1F514} *Tarefa movida*\n\n*${params.task_id}* — ${(row['title'] as string) ?? params.task_id}\n*${oldLabel}* \u2192 *${newLabel}*\n\nDigite \`${params.task_id}\` para ver detalhes.`,
+              })
+            }
           }
         }
 
