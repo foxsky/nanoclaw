@@ -663,47 +663,51 @@ const personNameByIdStmt = tfDb.prepare(
   `SELECT name FROM board_people WHERE board_id = ? AND person_id = ? LIMIT 1`
 );
 
-// Symmetric with taskflow-engine.ts:resolvePerson but uses NFD (not LOWER())
-// so diacritics resolve correctly. Loads per-board people once, matches in JS.
-const _boardPeopleStmt = tfDb.prepare(
+// Symmetric with taskflow-engine.ts:resolvePerson but uses NFD (not SQLite
+// LOWER(), which is ASCII-only and drops diacritics). Loads per-board people
+// once, matches in JS against pre-normalized fields.
+const boardPeopleStmt = tfDb.prepare(
   `SELECT person_id, name FROM board_people WHERE board_id = ?`
 );
-const _boardPeopleCache = new Map();
-let _firstNameHeuristicHits = 0;
-let _firstNameAmbiguityMisses = 0;
-function _nfd(s) {
-  return String(s || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim();
+const boardPeopleCache = new Map();
+let firstNameHeuristicHits = 0;
+let firstNameAmbiguityMisses = 0;
+function getBoardPeopleNormalized(boardId) {
+  let people = boardPeopleCache.get(boardId);
+  if (!people) {
+    people = boardPeopleStmt.all(boardId).map((p) => {
+      const nfdName = normalizeForCompare(p.name);
+      return {
+        person_id: p.person_id,
+        nfdName,
+        nfdId: normalizeForCompare(p.person_id),
+        nfdFirst: nfdName.split(/\s+/)[0],
+      };
+    });
+    boardPeopleCache.set(boardId, people);
+  }
+  return people;
 }
-function resolveActorToPersonId(rawName, boardIds) {
+// searchBoardsInOrder: caller controls precedence (mutation.board_id first
+// on the mutation side, sender's scope on the sender side).
+function resolveActorToPersonId(rawName, searchBoardsInOrder) {
   if (!rawName) return null;
-  const key = _nfd(rawName);
+  const key = normalizeForCompare(rawName);
   if (!key) return null;
-  for (const boardId of boardIds) {
+  const firstKey = key.split(/\s+/)[0];
+  for (const boardId of searchBoardsInOrder) {
     if (!boardId) continue;
-    let people = _boardPeopleCache.get(boardId);
-    if (!people) {
-      people = _boardPeopleStmt.all(boardId);
-      _boardPeopleCache.set(boardId, people);
-    }
-    const exact = people.find(
-      (p) => _nfd(p.name) === key || _nfd(p.person_id) === key,
-    );
+    const people = getBoardPeopleNormalized(boardId);
+    const exact = people.find((p) => p.nfdName === key || p.nfdId === key);
     if (exact) return exact.person_id;
-    const first = key.split(/\s+/)[0];
-    if (first) {
-      const firstMatches = people.filter(
-        (p) => _nfd(p.name).split(/\s+/)[0] === first,
-      );
+    if (firstKey) {
+      const firstMatches = people.filter((p) => p.nfdFirst === firstKey);
       if (firstMatches.length === 1) {
-        _firstNameHeuristicHits += 1;
+        firstNameHeuristicHits += 1;
         return firstMatches[0].person_id;
       }
       if (firstMatches.length > 1) {
-        _firstNameAmbiguityMisses += 1;
+        firstNameAmbiguityMisses += 1;
       }
     }
   }
@@ -1187,8 +1191,8 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
       // refs; this also preserves the semantic candidate quarantine path.
       result.wakeAgent = true;
     }
-    result.data.actor_first_name_heuristic_hits = _firstNameHeuristicHits;
-    result.data.actor_first_name_ambiguity_misses = _firstNameAmbiguityMisses;
+    result.data.actor_first_name_heuristic_hits = firstNameHeuristicHits;
+    result.data.actor_first_name_ambiguity_misses = firstNameAmbiguityMisses;
     console.log(JSON.stringify(result));
   }
 })();
