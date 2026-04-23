@@ -663,6 +663,53 @@ const personNameByIdStmt = tfDb.prepare(
   `SELECT name FROM board_people WHERE board_id = ? AND person_id = ? LIMIT 1`
 );
 
+// Symmetric with taskflow-engine.ts:resolvePerson but uses NFD (not LOWER())
+// so diacritics resolve correctly. Loads per-board people once, matches in JS.
+const _boardPeopleStmt = tfDb.prepare(
+  `SELECT person_id, name FROM board_people WHERE board_id = ?`
+);
+const _boardPeopleCache = new Map();
+let _firstNameHeuristicHits = 0;
+let _firstNameAmbiguityMisses = 0;
+function _nfd(s) {
+  return String(s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+function resolveActorToPersonId(rawName, boardIds) {
+  if (!rawName) return null;
+  const key = _nfd(rawName);
+  if (!key) return null;
+  for (const boardId of boardIds) {
+    if (!boardId) continue;
+    let people = _boardPeopleCache.get(boardId);
+    if (!people) {
+      people = _boardPeopleStmt.all(boardId);
+      _boardPeopleCache.set(boardId, people);
+    }
+    const exact = people.find(
+      (p) => _nfd(p.name) === key || _nfd(p.person_id) === key,
+    );
+    if (exact) return exact.person_id;
+    const first = key.split(/\s+/)[0];
+    if (first) {
+      const firstMatches = people.filter(
+        (p) => _nfd(p.name).split(/\s+/)[0] === first,
+      );
+      if (firstMatches.length === 1) {
+        _firstNameHeuristicHits += 1;
+        return firstMatches[0].person_id;
+      }
+      if (firstMatches.length > 1) {
+        _firstNameAmbiguityMisses += 1;
+      }
+    }
+  }
+  return null;
+}
+
 const triggerMessageStmt = msgDb.prepare(
   `SELECT id, content, timestamp, sender_name FROM messages
    WHERE chat_jid = ? AND timestamp <= ? AND timestamp >= ?
@@ -787,11 +834,28 @@ for (const group of groups) {
     // pro X sobre o prazo") also accept a send-log row as evidence.
     if (isWrite) {
       const mutations = taskHistoryStmt.all(...boardIds, msg.timestamp, tenMinLater);
-      const actorKey = normalizeForCompare(msg.sender_name || msg.sender || '');
+      const rawSender = msg.sender_name || msg.sender || '';
+      const senderPersonId = resolveActorToPersonId(rawSender, boardIds);
+      // Resolver hit → canonical person_id; miss (phone-number sender,
+      // external contact, unregistered) → fall back to NFD-normalized string.
+      // Not a strict superset of pre-fix logic: cross-board precedence could
+      // theoretically cause matchNew < matchOld. Verified empirically clean
+      // on prod snapshot (2026-04-23, 0 regression boards across 28 groups).
+      const senderKey = senderPersonId ?? normalizeForCompare(rawSender);
       const matchingMutations = mutations.filter((mutation) => {
-        const sameActor = !actorKey || !mutation.by
-          ? true
-          : normalizeForCompare(mutation.by) === actorKey;
+        let sameActor;
+        if (!senderKey || !mutation.by) {
+          // Preserve original semantics: when one side is unknown, don't
+          // gate on actor; fall through to the task-ref filter below.
+          sameActor = true;
+        } else {
+          const mutPersonId = resolveActorToPersonId(
+            mutation.by,
+            [mutation.board_id, ...boardIds],
+          );
+          const mutationKey = mutPersonId ?? normalizeForCompare(mutation.by);
+          sameActor = mutationKey === senderKey;
+        }
         if (!sameActor) return false;
         if (messageTaskRefs.size === 0) return true;
         return buildTaskIdAliases(
@@ -1123,6 +1187,8 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
       // refs; this also preserves the semantic candidate quarantine path.
       result.wakeAgent = true;
     }
+    result.data.actor_first_name_heuristic_hits = _firstNameHeuristicHits;
+    result.data.actor_first_name_ambiguity_misses = _firstNameAmbiguityMisses;
     console.log(JSON.stringify(result));
   }
 })();
