@@ -110,6 +110,11 @@ export interface MoveParams {
   sender_name: string;
   reason?: string;
   subtask_id?: string;
+  /**
+   * Pass when retrying after an `ambiguous_task_context` error. Must equal
+   * `task_id`. Acknowledges the user has confirmed this task explicitly.
+   */
+  confirmed_task_id?: string;
 }
 
 export interface MoveResult extends TaskflowResult {
@@ -153,6 +158,11 @@ export interface UpdateParams {
   task_id: string;
   sender_name: string;
   sender_external_id?: string;
+  /**
+   * Pass when retrying after an `ambiguous_task_context` error. Must equal
+   * `task_id`. Acknowledges the user has confirmed this task explicitly.
+   */
+  confirmed_task_id?: string;
   updates: {
     title?: string;
     priority?: 'low' | 'normal' | 'high' | 'urgent';
@@ -830,6 +840,100 @@ export class TaskflowEngine {
       this.migrateLegacyProjectSubtasks();
       this.reconcileDelegationLinks();
     }
+  }
+
+  /**
+   * Detect task-id magnetism: the agent called a mutation with a task_id
+   * that the user's current turn message did not reference, while the bot's
+   * immediately prior message was a confirmation-question about a DIFFERENT
+   * single task. See docs/superpowers/plans/2026-04-24-t12-magnetism.md.
+   *
+   * Public for direct unit testing. Fails open (returns `{ shape: 'clear' }`)
+   * whenever any required input is missing — never blocks a legitimate
+   * mutation due to incomplete turn metadata.
+   */
+  checkTaskIdMagnetism(
+    params: { task_id: string; confirmed_task_id?: string },
+  ): { shape: 'firing'; expected: string } | { shape: 'clear' } {
+    if (params.confirmed_task_id) return { shape: 'clear' };
+    if (this.guardMode === 'off') return { shape: 'clear' };
+    if (!this.messagesDb || !this.chatJid || !this.triggerTurnId) {
+      return { shape: 'clear' };
+    }
+
+    // Current-turn user messages. Composite-key join (Codex #1): messages PK
+    // is (id, chat_jid), not id alone.
+    let turnMessages: Array<{ content: string | null; timestamp: string }>;
+    try {
+      turnMessages = this.messagesDb
+        .prepare(
+          `SELECT m.content, m.timestamp FROM agent_turn_messages atm
+           JOIN messages m
+             ON m.id = atm.message_id
+            AND m.chat_jid = atm.message_chat_jid
+           WHERE atm.turn_id = ?
+           ORDER BY atm.ordinal ASC`,
+        )
+        .all(this.triggerTurnId) as Array<{
+        content: string | null;
+        timestamp: string;
+      }>;
+    } catch {
+      return { shape: 'clear' };
+    }
+    if (turnMessages.length === 0) return { shape: 'clear' };
+
+    const userText = turnMessages.map((r) => r.content ?? '').join(' ');
+    if (TaskflowEngine.extractTaskRefs(userText).length > 0) {
+      return { shape: 'clear' };
+    }
+
+    const firstTurnTs = turnMessages[0].timestamp;
+    if (!firstTurnTs) return { shape: 'clear' };
+
+    const BOT_CONCAT_WINDOW_MS = 30_000;
+    const botFloor = new Date(
+      new Date(firstTurnTs).getTime() - BOT_CONCAT_WINDOW_MS,
+    ).toISOString();
+    let priorBots: Array<{ content: string | null }>;
+    try {
+      priorBots = this.messagesDb
+        .prepare(
+          `SELECT content FROM messages
+           WHERE chat_jid = ? AND (is_from_me = 1 OR is_bot_message = 1)
+             AND timestamp < ? AND timestamp >= ?
+           ORDER BY timestamp DESC LIMIT 3`,
+        )
+        .all(this.chatJid, firstTurnTs, botFloor) as Array<{
+        content: string | null;
+      }>;
+    } catch {
+      return { shape: 'clear' };
+    }
+    if (priorBots.length === 0) return { shape: 'clear' };
+
+    const botText = priorBots
+      .map((r) => r.content ?? '')
+      .reverse()
+      .join('\n');
+    const botRefs = TaskflowEngine.extractTaskRefs(botText);
+    if (botRefs.length !== 1) return { shape: 'clear' };
+    if (!MAGNETISM_CONFIRM_VERBS.test(botText) && !botText.includes('?')) {
+      return { shape: 'clear' };
+    }
+    if (botRefs[0].toUpperCase() === params.task_id.toUpperCase()) {
+      return { shape: 'clear' };
+    }
+
+    return { shape: 'firing', expected: botRefs[0] };
+  }
+
+  static extractTaskRefs(text: string | null | undefined): string[] {
+    if (!text) return [];
+    const matches = String(text).match(TASK_REF_RE_GLOBAL);
+    return matches
+      ? Array.from(new Set(matches.map((m) => m.toUpperCase())))
+      : [];
   }
 
   private visibleTaskScope(alias = ''): string {
@@ -3489,6 +3593,37 @@ export class TaskflowEngine {
       const task = this.requireTask(params.task_id);
       const taskBoardId = this.taskBoardId(task);
 
+      /* --- Task-id magnetism guard --- */
+      const magCheck = this.checkTaskIdMagnetism(params);
+      if (magCheck.shape === 'firing') {
+        if (this.guardMode === 'enforce') {
+          return {
+            success: false,
+            error: `O último prompt do bot era sobre ${magCheck.expected}, mas o task_id recebido é ${params.task_id}. Confirme com o usuário qual tarefa antes de retry com confirmed_task_id.`,
+            error_code: 'ambiguous_task_context',
+            expected_task_id: magCheck.expected,
+            actual_task_id: params.task_id,
+          } as MoveResult;
+        }
+        // shadow: log but proceed
+        this.recordHistory(
+          params.task_id,
+          'magnetism_shadow_flag',
+          params.sender_name,
+          JSON.stringify({ expected: magCheck.expected, mode: this.guardMode, path: 'move' }),
+          taskBoardId,
+        );
+      }
+      if (params.confirmed_task_id) {
+        this.recordHistory(
+          params.task_id,
+          'magnetism_override',
+          params.sender_name,
+          JSON.stringify({ confirmed: params.confirmed_task_id, path: 'move' }),
+          taskBoardId,
+        );
+      }
+
       const fromColumn: string = task.column;
 
       /* --- Define valid transitions --- */
@@ -4414,6 +4549,36 @@ export class TaskflowEngine {
       const task = this.requireTask(params.task_id);
       const taskBoardId = this.taskBoardId(task);
       const tz = getBoardTimezone(this.db, taskBoardId);
+
+      /* --- Task-id magnetism guard --- */
+      const magCheck = this.checkTaskIdMagnetism(params);
+      if (magCheck.shape === 'firing') {
+        if (this.guardMode === 'enforce') {
+          return {
+            success: false,
+            error: `O último prompt do bot era sobre ${magCheck.expected}, mas o task_id recebido é ${params.task_id}. Confirme com o usuário qual tarefa antes de retry com confirmed_task_id.`,
+            error_code: 'ambiguous_task_context',
+            expected_task_id: magCheck.expected,
+            actual_task_id: params.task_id,
+          } as UpdateResult;
+        }
+        this.recordHistory(
+          params.task_id,
+          'magnetism_shadow_flag',
+          params.sender_name,
+          JSON.stringify({ expected: magCheck.expected, mode: this.guardMode, path: 'update' }),
+          taskBoardId,
+        );
+      }
+      if (params.confirmed_task_id) {
+        this.recordHistory(
+          params.task_id,
+          'magnetism_override',
+          params.sender_name,
+          JSON.stringify({ confirmed: params.confirmed_task_id, path: 'update' }),
+          taskBoardId,
+        );
+      }
 
       /* --- Weekday guard: reject if user-intended weekday disagrees with resolved date --- */
       if (updates.intended_weekday && (updates.scheduled_at !== undefined || updates.due_date)) {

@@ -6554,6 +6554,379 @@ describe('apiDeleteSimpleTask', () => {
 // Parity guard: this fixture table MUST match src/phone.test.ts exactly.
 // If either the engine or the host normalizePhone is changed, both copies
 // and both fixture tables must be updated together — otherwise the host
+// ----- T12 magnetism guard -----
+
+function seedMagnetismMsgDb(): Database.Database {
+  const msgDb = new Database(':memory:');
+  msgDb.exec(`
+    CREATE TABLE messages (
+      id TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      sender TEXT,
+      sender_name TEXT,
+      content TEXT,
+      timestamp TEXT NOT NULL,
+      is_from_me INTEGER DEFAULT 0,
+      is_bot_message INTEGER DEFAULT 0,
+      PRIMARY KEY (id, chat_jid)
+    );
+    CREATE TABLE agent_turn_messages (
+      turn_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      message_chat_jid TEXT NOT NULL,
+      ordinal INTEGER NOT NULL,
+      sender_name TEXT,
+      message_timestamp TEXT NOT NULL,
+      PRIMARY KEY (turn_id, message_id, message_chat_jid)
+    );
+  `);
+  return msgDb;
+}
+
+function insertMsg(
+  msgDb: Database.Database,
+  row: {
+    id: string;
+    chat_jid: string;
+    content: string;
+    timestamp: string;
+    is_from_me?: 0 | 1;
+    is_bot_message?: 0 | 1;
+  },
+) {
+  msgDb
+    .prepare(
+      `INSERT INTO messages (id, chat_jid, content, timestamp, is_from_me, is_bot_message)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      row.id,
+      row.chat_jid,
+      row.content,
+      row.timestamp,
+      row.is_from_me ?? 0,
+      row.is_bot_message ?? 0,
+    );
+}
+
+function linkTurn(
+  msgDb: Database.Database,
+  turnId: string,
+  messageId: string,
+  chatJid: string,
+  ordinal: number,
+  timestamp: string,
+) {
+  msgDb
+    .prepare(
+      `INSERT INTO agent_turn_messages
+         (turn_id, message_id, message_chat_jid, ordinal, message_timestamp)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run(turnId, messageId, chatJid, ordinal, timestamp);
+}
+
+describe('T12 magnetism guard — checkTaskIdMagnetism', () => {
+  let db: Database.Database;
+  let msgDb: Database.Database;
+  const CHAT = 'chat-1@g.us';
+  const TURN = 'turn-magnetism-1';
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    seedTestDb(db, BOARD_ID);
+    msgDb = seedMagnetismMsgDb();
+  });
+
+  afterEach(() => {
+    db.close();
+    msgDb.close();
+  });
+
+  function mkEngine(mode: 'off' | 'shadow' | 'enforce' = 'shadow'): TaskflowEngine {
+    return new TaskflowEngine(db, BOARD_ID, {
+      triggerTurnId: TURN,
+      chatJid: CHAT,
+      messagesDb: msgDb,
+      guardMode: mode,
+    });
+  }
+
+  it('FIRES: user has no refs, prior bot asked about T13 with "?", agent picks T12', () => {
+    insertMsg(msgDb, {
+      id: 'bot-1',
+      chat_jid: CHAT,
+      content: 'Case: Cancelar T13? Confirme com sim.',
+      timestamp: '2026-04-23T15:08:30.000Z',
+      is_from_me: 1,
+    });
+    insertMsg(msgDb, {
+      id: 'user-1',
+      chat_jid: CHAT,
+      content: 'só retire o prazo',
+      timestamp: '2026-04-23T15:08:37.000Z',
+    });
+    linkTurn(msgDb, TURN, 'user-1', CHAT, 0, '2026-04-23T15:08:37.000Z');
+
+    const engine = mkEngine();
+    const r = engine.checkTaskIdMagnetism({ task_id: 'T12' });
+    expect(r).toEqual({ shape: 'firing', expected: 'T13' });
+  });
+
+  it('CLEAR: user message contains an explicit task ref', () => {
+    insertMsg(msgDb, {
+      id: 'bot-1',
+      chat_jid: CHAT,
+      content: 'Cancelar T13?',
+      timestamp: '2026-04-23T15:08:30.000Z',
+      is_from_me: 1,
+    });
+    insertMsg(msgDb, {
+      id: 'user-1',
+      chat_jid: CHAT,
+      content: 'fechar T12 agora',
+      timestamp: '2026-04-23T15:08:37.000Z',
+    });
+    linkTurn(msgDb, TURN, 'user-1', CHAT, 0, '2026-04-23T15:08:37.000Z');
+
+    const engine = mkEngine();
+    expect(engine.checkTaskIdMagnetism({ task_id: 'T12' })).toEqual({
+      shape: 'clear',
+    });
+  });
+
+  it('CLEAR: bot msg has 3+ refs (digest/board shape)', () => {
+    insertMsg(msgDb, {
+      id: 'bot-1',
+      chat_jid: CHAT,
+      content: 'Digest: T1, T2, T3, T4 pendentes.',
+      timestamp: '2026-04-23T15:08:30.000Z',
+      is_from_me: 1,
+    });
+    insertMsg(msgDb, {
+      id: 'user-1',
+      chat_jid: CHAT,
+      content: 'só retire o prazo',
+      timestamp: '2026-04-23T15:08:37.000Z',
+    });
+    linkTurn(msgDb, TURN, 'user-1', CHAT, 0, '2026-04-23T15:08:37.000Z');
+
+    const engine = mkEngine();
+    expect(engine.checkTaskIdMagnetism({ task_id: 'T1' })).toEqual({
+      shape: 'clear',
+    });
+  });
+
+  it('CLEAR: bot msg is not a confirmation (no ? or verb)', () => {
+    insertMsg(msgDb, {
+      id: 'bot-1',
+      chat_jid: CHAT,
+      content: 'Entendi que você quer T13.',
+      timestamp: '2026-04-23T15:08:30.000Z',
+      is_from_me: 1,
+    });
+    insertMsg(msgDb, {
+      id: 'user-1',
+      chat_jid: CHAT,
+      content: 'ok',
+      timestamp: '2026-04-23T15:08:37.000Z',
+    });
+    linkTurn(msgDb, TURN, 'user-1', CHAT, 0, '2026-04-23T15:08:37.000Z');
+
+    const engine = mkEngine();
+    expect(engine.checkTaskIdMagnetism({ task_id: 'T12' })).toEqual({
+      shape: 'clear',
+    });
+  });
+
+  it('CLEAR: confirmed_task_id override bypasses the guard', () => {
+    insertMsg(msgDb, {
+      id: 'bot-1',
+      chat_jid: CHAT,
+      content: 'Cancelar T13?',
+      timestamp: '2026-04-23T15:08:30.000Z',
+      is_from_me: 1,
+    });
+    insertMsg(msgDb, {
+      id: 'user-1',
+      chat_jid: CHAT,
+      content: 'só retire o prazo',
+      timestamp: '2026-04-23T15:08:37.000Z',
+    });
+    linkTurn(msgDb, TURN, 'user-1', CHAT, 0, '2026-04-23T15:08:37.000Z');
+
+    const engine = mkEngine();
+    expect(
+      engine.checkTaskIdMagnetism({ task_id: 'T12', confirmed_task_id: 'T12' }),
+    ).toEqual({ shape: 'clear' });
+  });
+
+  it('CLEAR: guard off mode returns clear regardless of shape', () => {
+    insertMsg(msgDb, {
+      id: 'bot-1',
+      chat_jid: CHAT,
+      content: 'Cancelar T13?',
+      timestamp: '2026-04-23T15:08:30.000Z',
+      is_from_me: 1,
+    });
+    insertMsg(msgDb, {
+      id: 'user-1',
+      chat_jid: CHAT,
+      content: 'só retire o prazo',
+      timestamp: '2026-04-23T15:08:37.000Z',
+    });
+    linkTurn(msgDb, TURN, 'user-1', CHAT, 0, '2026-04-23T15:08:37.000Z');
+
+    const engine = mkEngine('off');
+    expect(engine.checkTaskIdMagnetism({ task_id: 'T12' })).toEqual({
+      shape: 'clear',
+    });
+  });
+
+  it('CLEAR: fails open when messagesDb missing', () => {
+    const engine = new TaskflowEngine(db, BOARD_ID, {
+      triggerTurnId: TURN,
+      chatJid: CHAT,
+      messagesDb: null,
+      guardMode: 'enforce',
+    });
+    expect(engine.checkTaskIdMagnetism({ task_id: 'T12' })).toEqual({
+      shape: 'clear',
+    });
+  });
+
+  it('FIRES: concatenates consecutive bot messages within 30s ("Cancelar T13?" + "Confirme com sim.")', () => {
+    insertMsg(msgDb, {
+      id: 'bot-a',
+      chat_jid: CHAT,
+      content: 'Cancelar T13?',
+      timestamp: '2026-04-23T15:08:25.000Z',
+      is_from_me: 1,
+    });
+    insertMsg(msgDb, {
+      id: 'bot-b',
+      chat_jid: CHAT,
+      content: 'Confirme com sim.',
+      timestamp: '2026-04-23T15:08:30.000Z',
+      is_from_me: 1,
+    });
+    insertMsg(msgDb, {
+      id: 'user-1',
+      chat_jid: CHAT,
+      content: 'só retire o prazo',
+      timestamp: '2026-04-23T15:08:37.000Z',
+    });
+    linkTurn(msgDb, TURN, 'user-1', CHAT, 0, '2026-04-23T15:08:37.000Z');
+
+    const engine = mkEngine();
+    const r = engine.checkTaskIdMagnetism({ task_id: 'T12' });
+    expect(r).toEqual({ shape: 'firing', expected: 'T13' });
+  });
+
+  it('enforce mode: engine.move() returns ambiguous_task_context error', () => {
+    insertMsg(msgDb, {
+      id: 'bot-1',
+      chat_jid: CHAT,
+      content: 'Cancelar T13?',
+      timestamp: '2026-04-23T15:08:30.000Z',
+      is_from_me: 1,
+    });
+    insertMsg(msgDb, {
+      id: 'user-1',
+      chat_jid: CHAT,
+      content: 'só retire o prazo',
+      timestamp: '2026-04-23T15:08:37.000Z',
+    });
+    linkTurn(msgDb, TURN, 'user-1', CHAT, 0, '2026-04-23T15:08:37.000Z');
+
+    const engine = mkEngine('enforce');
+    const r = engine.move({
+      board_id: BOARD_ID,
+      task_id: 'T-002',
+      action: 'start',
+      sender_name: 'Alexandre',
+    });
+    // T-002 maps to 'T-002' which isn't 'T13' — firing shape.
+    // But extractTaskRefs on 'T-002' won't match since our regex needs T\d+ (no dash).
+    // Rebuild: T-002 doesn't match the bot's T13 literally either.
+    // This test validates the error shape when magnetism fires.
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('ambiguous_task_context');
+    expect(r.expected_task_id).toBe('T13');
+    expect(r.actual_task_id).toBe('T-002');
+  });
+
+  it('shadow mode: engine.move() succeeds but writes magnetism_shadow_flag to task_history', () => {
+    insertMsg(msgDb, {
+      id: 'bot-1',
+      chat_jid: CHAT,
+      content: 'Cancelar T13?',
+      timestamp: '2026-04-23T15:08:30.000Z',
+      is_from_me: 1,
+    });
+    insertMsg(msgDb, {
+      id: 'user-1',
+      chat_jid: CHAT,
+      content: 'só retire o prazo',
+      timestamp: '2026-04-23T15:08:37.000Z',
+    });
+    linkTurn(msgDb, TURN, 'user-1', CHAT, 0, '2026-04-23T15:08:37.000Z');
+
+    const engine = mkEngine('shadow');
+    const r = engine.move({
+      board_id: BOARD_ID,
+      task_id: 'T-002',
+      action: 'start',
+      sender_name: 'Alexandre',
+    });
+    expect(r.success).toBe(true);
+    const flags = db
+      .prepare(
+        `SELECT action, details FROM task_history WHERE task_id = 'T-002' AND action = 'magnetism_shadow_flag'`,
+      )
+      .all() as Array<{ action: string; details: string }>;
+    expect(flags).toHaveLength(1);
+    expect(JSON.parse(flags[0].details)).toMatchObject({
+      expected: 'T13',
+      mode: 'shadow',
+      path: 'move',
+    });
+  });
+
+  it('records magnetism_override in task_history when confirmed_task_id is passed', () => {
+    insertMsg(msgDb, {
+      id: 'bot-1',
+      chat_jid: CHAT,
+      content: 'Cancelar T13?',
+      timestamp: '2026-04-23T15:08:30.000Z',
+      is_from_me: 1,
+    });
+    insertMsg(msgDb, {
+      id: 'user-1',
+      chat_jid: CHAT,
+      content: 'só retire o prazo',
+      timestamp: '2026-04-23T15:08:37.000Z',
+    });
+    linkTurn(msgDb, TURN, 'user-1', CHAT, 0, '2026-04-23T15:08:37.000Z');
+
+    const engine = mkEngine('enforce');
+    const r = engine.move({
+      board_id: BOARD_ID,
+      task_id: 'T-002',
+      action: 'start',
+      sender_name: 'Alexandre',
+      confirmed_task_id: 'T-002',
+    });
+    expect(r.success).toBe(true);
+    const overrides = db
+      .prepare(
+        `SELECT details FROM task_history WHERE task_id = 'T-002' AND action = 'magnetism_override'`,
+      )
+      .all() as Array<{ details: string }>;
+    expect(overrides).toHaveLength(1);
+  });
+});
+
 describe('completion notification (three-variant policy)', () => {
   describe('completionVariant', () => {
     it('returns quiet for recurring tasks regardless of age', () => {
