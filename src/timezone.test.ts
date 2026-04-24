@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 
 import {
   formatLocalTime,
+  formatPtBrShort,
   isValidTimezone,
   resolveTimezone,
 } from './timezone.js';
@@ -69,5 +70,27 @@ describe('resolveTimezone', () => {
   it('falls back to UTC for invalid timezone', () => {
     expect(resolveTimezone('IST-2')).toBe('UTC');
     expect(resolveTimezone('')).toBe('UTC');
+  });
+});
+
+describe('formatPtBrShort', () => {
+  it('renders DD/MM, HH:MM in the given timezone', () => {
+    // 2026-04-22T08:00:00Z in America/Fortaleza (UTC-3) = 22/04, 05:00
+    const result = formatPtBrShort(
+      '2026-04-22T08:00:00.000Z',
+      'America/Fortaleza',
+    );
+    expect(result).toMatch(/^22\/04.*05:00$/);
+  });
+
+  it('returns empty string for unparseable input', () => {
+    expect(formatPtBrShort('not-a-date', 'America/Fortaleza')).toBe('');
+    expect(formatPtBrShort('', 'America/Fortaleza')).toBe('');
+  });
+
+  it('falls back to UTC on invalid timezone', () => {
+    // 12:00 UTC should render as 12:00 when tz is garbage
+    const result = formatPtBrShort('2026-06-15T12:00:00.000Z', 'IST-2');
+    expect(result).toContain('12:00');
   });
 });

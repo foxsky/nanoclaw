@@ -37,7 +37,7 @@ export function formatLocalTime(utcIso: string, timezone: string): string {
 }
 
 /**
- * Short pt-BR "DD/MM às HH:MM" form for conversational acks.
+ * Short pt-BR "DD/MM, HH:MM" form for conversational acks.
  * Returns empty string if the ISO is unparseable so callers can fall back.
  */
 export function formatPtBrShort(utcIso: string, timezone: string): string {

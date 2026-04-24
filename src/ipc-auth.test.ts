@@ -713,6 +713,13 @@ describe('schedule_task auto-ack', () => {
     });
   }
 
+  // Two microtask ticks: one for the IIFE to start, one for its `await` to
+  // settle. Reliable because our mocks resolve synchronously (same tick).
+  async function flushAck(): Promise<void> {
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
   beforeEach(() => {
     ackSpy = [];
     deps.sendMessage = async (jid, text) => {
@@ -735,6 +742,7 @@ describe('schedule_task auto-ack', () => {
       false,
       deps,
     );
+    await flushAck();
 
     expect(getAllTasks()).toHaveLength(1);
     expect(ackSpy).toHaveLength(1);
@@ -755,6 +763,7 @@ describe('schedule_task auto-ack', () => {
       true,
       deps,
     );
+    await flushAck();
 
     expect(getAllTasks()).toHaveLength(1);
     expect(ackSpy).toHaveLength(0);
@@ -775,6 +784,7 @@ describe('schedule_task auto-ack', () => {
       false,
       deps,
     );
+    await flushAck();
 
     expect(ackSpy).toHaveLength(1);
     expect(ackSpy[0].text).toContain('recorrente');
@@ -800,14 +810,15 @@ describe('schedule_task auto-ack', () => {
       false,
       deps,
     );
+    await flushAck();
 
     expect(getAllTasks()).toHaveLength(1);
   });
 
   it('swallows SYNCHRONOUS sendMessage throws without losing the task', async () => {
     // Regression guard: prod deps.sendMessage at src/index.ts:1337 throws
-    // synchronously if no channel matches the JID. A bare .catch() does NOT
-    // catch sync throws — only a try/await does.
+    // synchronously if no channel matches the JID. The IIFE's await
+    // converts the sync throw into a rejected promise caught by try/catch.
     deps.sendMessage = () => {
       throw new Error(`No channel for JID: other@g.us`);
     };
@@ -826,8 +837,44 @@ describe('schedule_task auto-ack', () => {
       false,
       deps,
     );
+    await flushAck();
 
     expect(getAllTasks()).toHaveLength(1);
+  });
+
+  it('handler does NOT block on slow sendMessage (fire-and-forget)', async () => {
+    // Non-blocking is load-bearing for the IPC watcher serial loop —
+    // a hung WA send must not delay subsequent task files.
+    let sendResolved = false;
+    deps.sendMessage = () =>
+      new Promise<void>((resolve) => {
+        setTimeout(() => {
+          sendResolved = true;
+          resolve();
+        }, 500);
+      });
+
+    const turn = seedTurn('msg-ack-slow');
+    const handlerStart = Date.now();
+    await processTaskIpc(
+      {
+        type: 'schedule_task',
+        prompt: 'slow send',
+        schedule_type: 'once',
+        schedule_value: '2027-06-01T12:00:00',
+        targetJid: 'other@g.us',
+        turnId: turn.id,
+      },
+      'other-group',
+      false,
+      deps,
+    );
+    const handlerMs = Date.now() - handlerStart;
+
+    expect(getAllTasks()).toHaveLength(1);
+    // Handler must return well before the 500ms sendMessage settles.
+    expect(handlerMs).toBeLessThan(100);
+    expect(sendResolved).toBe(false);
   });
 });
 

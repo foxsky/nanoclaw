@@ -11,7 +11,7 @@ import {
 } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { formatPtBrShort } from './timezone.js';
-import type { ScheduleType } from './types.js';
+import { SCHEDULE_TYPES, type ScheduleType } from './types.js';
 import {
   getAgentTurn,
   getAgentTurnMessages,
@@ -164,16 +164,15 @@ const handleScheduleTask: IpcHandler = async (
       return;
     }
 
-    const VALID_SCHEDULE_TYPES = new Set(['cron', 'interval', 'once']);
     const rawScheduleType = data.schedule_type as string;
-    if (!VALID_SCHEDULE_TYPES.has(rawScheduleType)) {
+    if (!(SCHEDULE_TYPES as readonly string[]).includes(rawScheduleType)) {
       logger.warn(
         { scheduleType: rawScheduleType },
         'Invalid schedule_type in schedule_task',
       );
       return;
     }
-    const scheduleType = rawScheduleType as 'cron' | 'interval' | 'once';
+    const scheduleType = rawScheduleType as ScheduleType;
 
     let nextRun: string | null = null;
     if (scheduleType === 'cron') {
@@ -264,19 +263,24 @@ const handleScheduleTask: IpcHandler = async (
     // schedule_task has no tool-return notification contract; when the turn
     // is user-initiated, the host is the only guaranteed ack path (agents
     // sometimes skip replying, e.g. when the same message says "fale menos").
+    // Fire-and-forget via async IIFE: catches both sync throws from
+    // sendMessage (src/index.ts:1339 throws synchronously if no channel)
+    // AND async rejections, without blocking the IPC watcher loop.
     const ackChatJid = singleTurnMessage?.chatJid;
     if (hasKnownTurn && ackChatJid) {
-      try {
-        await deps.sendMessage(
-          ackChatJid,
-          formatScheduleAck(scheduleType, data.schedule_value as string, nextRun),
-        );
-      } catch (err) {
-        logger.warn(
-          { err: String(err), ackChatJid, taskId },
-          'Auto-ack emission failed (task still created)',
-        );
-      }
+      void (async () => {
+        try {
+          await deps.sendMessage(
+            ackChatJid,
+            formatScheduleAck(scheduleType, data.schedule_value as string, nextRun),
+          );
+        } catch (err) {
+          logger.warn(
+            { err: String(err), ackChatJid, taskId },
+            'Auto-ack emission failed (task still created)',
+          );
+        }
+      })();
     }
   }
 };
