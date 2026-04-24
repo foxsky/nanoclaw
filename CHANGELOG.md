@@ -27,9 +27,17 @@ Shape of the change:
 
 Ancillary: split the old `columnLabels` map into `columnEntries` `{emoji,label}` pairs so `columnLabel` (emoji-prefixed) and the new `columnLabelPlain` (text-only) both derive from one source, removing a regex and a duplicate label map in `taskflow-mcp-server.ts`. `TaskflowEngine.SEP` is now public so non-engine callers can compose consistent `━━━` headers.
 
-## 2026-04-24 — TaskFlow: notes + labels on api_update_simple_task
+## 2026-04-24 (later) — TaskFlow: API note delta endpoints share engine logic
 
-Extended the REST API's `api_update_simple_task` zod schema to accept optional `notes` (array of objects with id, author, text, created_at, and optional updated_at) and `labels` (array of non-empty strings). The notes transform tolerates `author|by` and `text|content` alias pairs, normalizes timestamps, and rejects items missing any of id/author/text/created_at. Both columns serialize to JSON on the `tasks` row (`'[]'` for explicit null). No change to the engine mutation path or notification contract.
+Notes on the REST API path are now CRUD'd through the engine instead of via whole-array PATCH on `api_update_simple_task`. The earlier zod-schema-on-update approach overwrote engine-maintained note metadata on every dashboard save: `next_note_id` got stale, `author_actor_*` identity tracking was wiped, meeting `phase`/`status` and `parent_note_id` threading were silently lost. The Phase 6 service-token bypass complicated direct delegation — `engine.update()`'s manager-or-assignee gate at `taskflow-engine.ts:4110` rejects service callers, so the API needed its own auth path without duplicating note logic.
+
+Resolution: extract `addNoteCore` / `editNoteCore` / `removeNoteCore` / `setNoteStatusCore` private helpers from `engine.update()` (behavior preserved — same vitest baseline). Add public `apiAddNote` / `apiEditNote` / `apiRemoveNote` wrappers that share those helpers, accept `sender_is_service` for service-token bypass, and run inside `db.transaction` for atomicity. Three new MCP tools — `api_task_add_note`, `api_task_edit_note`, `api_task_remove_note` — delegate to the wrappers. The Python API exposes them as `POST /tasks/{id}/notes`, `PATCH /tasks/{id}/notes/{note_id}`, `DELETE /tasks/{id}/notes/{note_id}`, with task-id resolution via `fetch_task_row` so T-codes still work. Six pytest cases cover happy paths, validation, and not-found.
+
+Dashboard `TaskDetailPanel` rewires from `persistNotes(fullArray) → updateMutation` to three dedicated mutations against the new endpoints. Client-side ID generation (`buildNextNoteId`, `UNKNOWN_NOTE_AUTHOR`) is deleted — the engine owns the counter. The previously-added `notes` field on `api_update_simple_task` is removed; only `labels` remains there.
+
+## 2026-04-24 — TaskFlow: labels on api_update_simple_task
+
+Added `labels: z.array(z.string().trim().min(1)).nullable().optional()` to the REST API's `api_update_simple_task` zod schema and SET clause. Dashboard label add/remove from `TaskDetailPanel` now persists — previously the dashboard sent `labels: string[]` in the PATCH body, but the MCP tool stripped unknown keys and `UpdateTaskPayload` had no `labels` field on the Python side either, so optimistic UI updates were silently dropped on read. Notes were originally bundled with this work but moved to dedicated delta endpoints (above) — the engine's note operations carry too much side-state to be expressed as a whole-array replace.
 
 ## 2026-04-24 — TaskFlow: proactive approval routing
 
