@@ -2185,6 +2185,79 @@ describe('TaskflowEngine', () => {
   });
 
   /* ---------------------------------------------------------------- */
+  /*  move → completion notification integration                        */
+  /* ---------------------------------------------------------------- */
+
+  describe('move → buildCompletionNotification integration', () => {
+    beforeEach(() => {
+      db.prepare(
+        `UPDATE board_people SET notification_group_jid = ? WHERE board_id = ? AND person_id = ?`,
+      ).run('notif@g.us', BOARD_ID, 'person-2');
+    });
+
+    it('cheerful variant: fresh one-shot task emits cheerful message on conclude', () => {
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        action: 'conclude',
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(true);
+      expect(r.to_column).toBe('done');
+      expect(r.notifications).toBeDefined();
+      expect(r.notifications!.length).toBeGreaterThan(0);
+      const msg = r.notifications![0].message;
+      expect(msg).toContain('🎉 *Tarefa concluída!*');
+      expect(msg).toContain('*T-002* — Update docs');
+      expect(msg).toContain('👤 *Entregue por:* Giovanni');
+      expect(msg).toContain('🎯 *Próximas Ações → Concluída*');
+      expect(msg.match(/━━━━━━━━━━━━━━/g)?.length).toBe(1);
+    });
+
+    it('loud variant: old task includes duration + reconstructed flow', () => {
+      const oldDate = new Date(Date.now() - 10 * 86400 * 1000).toISOString();
+      db.prepare(`UPDATE tasks SET created_at = ? WHERE board_id = ? AND id = ?`)
+        .run(oldDate, BOARD_ID, 'T-002');
+      db.prepare(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(BOARD_ID, 'T-002', 'moved', 'Alexandre', '2026-04-18T10:00:00Z', JSON.stringify({ from: 'inbox', to: 'next_action' }));
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        action: 'conclude',
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(true);
+      const msg = r.notifications![0].message;
+      expect(msg.match(/━━━━━━━━━━━━━━/g)?.length).toBe(2);
+      expect(msg).toContain('🎉 *Tarefa concluída!*');
+      expect(msg).toMatch(/Giovanni entregou em \d+ dias 👏/);
+      expect(msg).toContain('_Fluxo: ');
+      expect(msg).toContain('Concluída');
+    });
+
+    it('requires_close_approval=1 forces loud even on fresh tasks', () => {
+      db.prepare(`UPDATE tasks SET requires_close_approval = 1 WHERE board_id = ? AND id = ?`)
+        .run(BOARD_ID, 'T-002');
+
+      const r = engine.move({
+        board_id: BOARD_ID,
+        task_id: 'T-002',
+        action: 'conclude',
+        sender_name: 'Alexandre',
+      });
+
+      expect(r.success).toBe(true);
+      const msg = r.notifications![0].message;
+      expect(msg.match(/━━━━━━━━━━━━━━/g)?.length).toBe(2);
+      expect(msg).toContain('🎉 *Tarefa concluída!*');
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
   /*  reassign                                                         */
   /* ---------------------------------------------------------------- */
 
@@ -6521,6 +6594,26 @@ describe('completion notification (three-variant policy)', () => {
           recurrence: null,
           requires_close_approval: 0,
           created_at: created,
+        }),
+      ).toBe('cheerful');
+    });
+
+    it('7-day boundary: exactly 7d old is loud (inclusive)', () => {
+      const exactly7 = new Date(Date.now() - 7 * 86400 * 1000).toISOString();
+      expect(
+        TaskflowEngine.completionVariant({
+          recurrence: null,
+          requires_close_approval: 0,
+          created_at: exactly7,
+        }),
+      ).toBe('loud');
+
+      const justUnder7 = new Date(Date.now() - 7 * 86400 * 1000 + 1000).toISOString();
+      expect(
+        TaskflowEngine.completionVariant({
+          recurrence: null,
+          requires_close_approval: 0,
+          created_at: justUnder7,
         }),
       ).toBe('cheerful');
     });

@@ -2309,11 +2309,13 @@ export class TaskflowEngine {
     boardId: string,
     taskId: string,
   ): string {
+    // 'updated' is included so MCP-driven column changes (which write
+    // action='updated' with {from,to} details) appear in the flow.
     const rows = db
       .prepare(
         `SELECT details FROM task_history
          WHERE board_id = ? AND task_id = ?
-           AND action IN ('moved','start','force_start','resume','approve','conclude','review','return','reject','reopen')
+           AND action IN ('moved','start','force_start','resume','approve','conclude','review','return','reject','reopen','updated')
          ORDER BY at ASC`,
       )
       .all(boardId, taskId) as Array<{ details: string | null }>;

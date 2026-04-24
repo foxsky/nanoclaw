@@ -410,7 +410,16 @@ export function registerTools(server: McpServer, db: Database.Database): void {
         db.prepare(`UPDATE tasks SET ${setClauses.join(', ')} WHERE id = ? AND board_id = ?`)
           .run(...setValues, params.task_id, params.board_id)
 
-        engine.recordHistory(params.task_id, 'updated', params.sender_name)
+        // When column changed, persist {from,to} so computeTaskFlow (loud
+        // completion) can reconstruct the flow from MCP-driven moves too.
+        const priorColumn = existing['column'] as string
+        const columnChanged = 'column' in params && params.column !== priorColumn
+        engine.recordHistory(
+          params.task_id,
+          'updated',
+          params.sender_name,
+          columnChanged ? JSON.stringify({ from: priorColumn, to: params.column }) : undefined,
+        )
 
         const row: Record<string, unknown> = { ...existing, updated_at: now }
         if ('column' in params) row['column'] = params.column
