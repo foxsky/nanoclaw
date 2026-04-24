@@ -4,6 +4,33 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-24 (later) — TaskFlow: silent-lembrete auto-ack + IPC non-blocking guarantee
+
+Kipp audit 2026-04-24 flagged João Henrique's "meu fi, me lembre tudo isso amanhã" (2026-04-21) as "pedido ignorado — sem resposta alguma." Trace showed the agent scheduled the task correctly (`scheduled_tasks` row created, executed next morning as requested) but emitted no immediate acknowledgment. Root cause: `schedule_task` has no tool-return notification contract, so interactive ack depends entirely on the agent's turn-end reply — which the agent skipped, plausibly because the same message said "fale menos tbm, você é muito prolixo."
+
+Fix lives in `src/ipc.ts handleScheduleTask`: when the IPC payload carries a known trigger turn, emit a terse ack to the originating chat after `createTask()` succeeds (`⏰ Lembrete agendado para DD/MM, HH:MM.` for `once`, recurrente form for `cron`, periódica for `interval`). System/admin cron schedules without turn context stay silent.
+
+Initial implementation had a subtle regression caught via `/simplify` + Codex: `deps.sendMessage` (wired at `src/index.ts:1337`) throws synchronously when no channel matches the JID, escaping a plain `.catch()`. A `try/await` fix caught the throw but blocked the IPC watcher's serial loop on slow sends. Final shape is an async IIFE — `void (async () => { try { await deps.sendMessage(...) } catch {} })()` — which captures both sync and async throws without blocking. Regression test asserts handler returns in &lt;100ms when sendMessage takes 500ms.
+
+Ancillary cleanups: extracted `ScheduleType` + `SCHEDULE_TYPES` const-tuple to `src/types.ts` (was inline union in three places), factored a pt-BR `formatPtBrShort(iso, tz)` helper into `src/timezone.ts` with `resolveTimezone` fallback.
+
+## 2026-04-24 — TaskFlow: three-variant task-completion notification
+
+Column-move to `done` now emits one of three message layouts instead of the previous generic `🔔 Tarefa movida` text. The policy picks a variant from task state: recurring tasks (e.g. weekly reports, standups) get a terse `✅ Tarefa concluída` card with single separator; default one-shots under 7 days get `🎉 Tarefa concluída!` with the column transition line; long-running tasks (`requires_close_approval=1` OR age ≥7 days) get the "loud" layout — bookending `━━━` separators, inline duration prose ("Lucas entregou em 3 dias 👏"), and an italicized reconstructed `_Fluxo: Fazer → Revisão → Concluída_` read off `task_history`. All three credit the **assignee** by name (not the actor), honoring the prior memory rule from `feedback_digest_compliments.md`.
+
+Shape of the change:
+- `buildCompletionNotification` instance method on `TaskflowEngine` resolves the notification target and delegates render.
+- Three static helpers — `completionVariant(task)`, `renderCompletionMessage(params)`, `computeTaskFlow(db, boardId, taskId)` — are pure and reusable; both the engine-native `move()` path AND the REST API path (`taskflow-mcp-server.ts api_update_simple_task`) use them, so API-driven completions get the same layout as agent-driven ones.
+- `renderCompletionMessage` uses a discriminated union over `variant`, forcing each caller to supply exactly the fields the variant renders (a `loud` call without `createdAt`/`flow` is now a type error, not a silent fallback).
+- `computeTaskFlow` walks `task_history` for the task, parsing `{from,to}` from `details` JSON, collapsing consecutive duplicates, mapping columns to plain labels (emoji stripped for the inline prose).
+- MCP path patched to persist `{from,to}` in `details` when `action='updated'` changes column — previously wrote empty details, so MCP-driven moves were invisible to `computeTaskFlow`.
+
+Ancillary: split the old `columnLabels` map into `columnEntries` `{emoji,label}` pairs so `columnLabel` (emoji-prefixed) and the new `columnLabelPlain` (text-only) both derive from one source, removing a regex and a duplicate label map in `taskflow-mcp-server.ts`. `TaskflowEngine.SEP` is now public so non-engine callers can compose consistent `━━━` headers.
+
+## 2026-04-24 — TaskFlow: notes + labels on api_update_simple_task
+
+Extended the REST API's `api_update_simple_task` zod schema to accept optional `notes` (array of objects with id, author, text, created_at, and optional updated_at) and `labels` (array of non-empty strings). The notes transform tolerates `author|by` and `text|content` alias pairs, normalizes timestamps, and rejects items missing any of id/author/text/created_at. Both columns serialize to JSON on the `tasks` row (`'[]'` for explicit null). No change to the engine mutation path or notification contract.
+
 ## 2026-04-24 — TaskFlow: proactive approval routing
 
 Template-only fix surfaced by Kipp audit 2026-04-21..23. When an assignee sends `"TXXX concluída"` and the engine moves the task to `review` (close-approval required), the agent previously sometimes offered *"você ou um delegado pode aprovar"* — but the engine blocks assignee self-approval. New rule instructs the agent to pre-check `tasks.assignee == SENDER` before proposing approval and, when matched, directly name the actual approver (board manager, or parent-board manager for delegated tasks). Rendered `groups/*/CLAUDE.md` copies regenerated from the template; no engine or skill-structure changes.

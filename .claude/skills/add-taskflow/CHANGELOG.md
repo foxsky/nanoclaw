@@ -1,5 +1,15 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-04-24 (later) — Three-variant completion notification
+
+Column-move to `done` now renders a distinct, policy-picked layout instead of the generic `🔔 Tarefa movida` text. The variants:
+
+- **Quiet** (recurring tasks): `✅ *Tarefa concluída*` with a single `━━━` separator and `👤 *Entregue por:* {name}`. Intended for weekly reports / standups — keeps the channel calm when this fires 52x/year.
+- **Cheerful** (default one-shots under 7 days): `🎉 *Tarefa concluída!*` with the `🎯 *{from} → Concluída*` transition line.
+- **Loud** (`requires_close_approval=1` OR age ≥7 days): bookending `━━━` separators, inline prose `"{name} entregou em N dias 👏"`, and italicized `_Fluxo: ..._` reconstructed from `task_history`.
+
+All three credit the **assignee** (not the modifier) — honoring `feedback_digest_compliments.md` — and reuse the create-card header/SEP grammar so the notification style is cohesive across create/move/complete events. Render lives in `TaskflowEngine.renderCompletionMessage` (pure static, typed discriminated union over variant). Both the engine-native `move()` path and the REST API path (`api_update_simple_task`) dispatch into the same renderer, so API-driven completions match agent-driven ones.
+
 ## 2026-04-24 — Proactive approval routing (T61 self-approval paper cut)
 
 Kipp audit 2026-04-21 to 2026-04-23 flagged Alexandre's "T61 concluído" as a template gap: the first bot reply suggested *"você ou um delegado pode aprovar"* even though Alexandre is the task's assignee and the engine blocks assignee self-approval. After Alexandre replied "Sim", the engine correctly rejected the action — but the round-trip was avoidable.
