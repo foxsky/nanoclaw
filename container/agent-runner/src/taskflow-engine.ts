@@ -46,6 +46,16 @@ export type NotificationEntry = {
 
 export type ParentNotification = { parent_group_jid: string; message: string };
 
+type CompletionRenderCommon = {
+  taskId: string;
+  title: string;
+  assigneeName: string;
+};
+export type CompletionRenderParams =
+  | ({ variant: 'quiet' } & CompletionRenderCommon)
+  | ({ variant: 'cheerful'; fromColumn: string } & CompletionRenderCommon)
+  | ({ variant: 'loud'; createdAt: string | null; flow: string } & CompletionRenderCommon);
+
 export interface CreateParams {
   board_id: string;
   type: 'simple' | 'project' | 'recurring' | 'inbox' | 'meeting';
@@ -1365,7 +1375,9 @@ export class TaskflowEngine {
   private static readonly TASK_BY_BOARD_SQL =
     `SELECT tasks.*, tasks.board_id AS owning_board_id FROM tasks WHERE board_id = ? AND id = ?`;
 
-  private static readonly SEP = '━━━━━━━━━━━━━━';
+  static readonly SEP = '━━━━━━━━━━━━━━';
+  private static readonly DAY_MS = 86_400_000;
+  private static readonly LOUD_AGE_MS = 7 * TaskflowEngine.DAY_MS;
 
   /**
    * Strict task lookup. Returns the task only when it belongs to this board
@@ -2004,7 +2016,7 @@ export class TaskflowEngine {
     return assigneePersonId === senderPersonId ? 0 : 1;
   }
 
-  private taskRequiresCloseApproval(task: { requires_close_approval?: unknown }): boolean {
+  private static taskRequiresCloseApproval(task: { requires_close_approval?: unknown }): boolean {
     return task.requires_close_approval === 1 || task.requires_close_approval === '1' || task.requires_close_approval === true;
   }
 
@@ -2176,18 +2188,23 @@ export class TaskflowEngine {
     }
   }
 
-  private static readonly columnLabels: Record<string, string> = {
-    inbox: '📥 Inbox',
-    next_action: '⏭️ Próximas Ações',
-    in_progress: '🔄 Em Andamento',
-    waiting: '⏳ Aguardando',
-    review: '🔍 Revisão',
-    done: '✅ Concluída',
+  private static readonly columnEntries: Record<string, { emoji: string; label: string }> = {
+    inbox: { emoji: '📥', label: 'Inbox' },
+    next_action: { emoji: '⏭️', label: 'Próximas Ações' },
+    in_progress: { emoji: '🔄', label: 'Em Andamento' },
+    waiting: { emoji: '⏳', label: 'Aguardando' },
+    review: { emoji: '🔍', label: 'Revisão' },
+    done: { emoji: '✅', label: 'Concluída' },
+    cancelled: { emoji: '🚫', label: 'Cancelada' },
   };
 
-  /** Column name in pt-BR. */
   private static columnLabel(col: string): string {
-    return TaskflowEngine.columnLabels[col] ?? col;
+    const e = TaskflowEngine.columnEntries[col];
+    return e ? `${e.emoji} ${e.label}` : col;
+  }
+
+  static columnLabelPlain(col: string): string {
+    return TaskflowEngine.columnEntries[col]?.label ?? col;
   }
 
   /** Build a notification for new task assignment. */
@@ -2244,7 +2261,7 @@ export class TaskflowEngine {
       board_id?: string;
       column?: string;
       recurrence?: string | null;
-      requires_close_approval?: number | string | boolean | null;
+      requires_close_approval?: unknown;
       created_at?: string | null;
     },
     modifierPersonId: string,
@@ -2257,42 +2274,36 @@ export class TaskflowEngine {
     const assigneeName = task.assignee
       ? this.personDisplayName(task.assignee, taskBoardId)
       : this.personDisplayName(modifierPersonId, taskBoardId);
-    const fromColumn = task.column ?? 'inbox';
     const variant = TaskflowEngine.completionVariant(task);
-    const flow =
-      variant === 'loud'
-        ? TaskflowEngine.computeTaskFlow(this.db, taskBoardId, task.id)
-        : undefined;
-    const message = TaskflowEngine.renderCompletionMessage({
-      taskId: did,
-      title: task.title,
-      assigneeName,
-      fromColumn,
-      variant,
-      createdAt: task.created_at ?? null,
-      flow,
-    });
-    return { ...target, message };
+    const base = { taskId: did, title: task.title, assigneeName };
+    const renderParams: CompletionRenderParams =
+      variant === 'quiet'
+        ? { variant, ...base }
+        : variant === 'loud'
+          ? {
+              variant,
+              ...base,
+              createdAt: task.created_at ?? null,
+              flow: TaskflowEngine.computeTaskFlow(this.db, taskBoardId, task.id),
+            }
+          : { variant, ...base, fromColumn: task.column ?? 'inbox' };
+    return { ...target, message: TaskflowEngine.renderCompletionMessage(renderParams) };
   }
 
-  /** Select the completion-notification variant from a task row. */
   static completionVariant(task: {
     recurrence?: string | null;
-    requires_close_approval?: number | string | boolean | null;
+    requires_close_approval?: unknown;
     created_at?: string | null;
   }): 'quiet' | 'cheerful' | 'loud' {
     if (task.recurrence) return 'quiet';
-    const rca = task.requires_close_approval;
-    const requiresApproval = rca === 1 || rca === '1' || rca === true;
-    if (requiresApproval) return 'loud';
+    if (TaskflowEngine.taskRequiresCloseApproval(task)) return 'loud';
     if (task.created_at) {
       const ageMs = Date.now() - new Date(task.created_at).getTime();
-      if (Number.isFinite(ageMs) && ageMs >= 7 * 86400 * 1000) return 'loud';
+      if (Number.isFinite(ageMs) && ageMs >= TaskflowEngine.LOUD_AGE_MS) return 'loud';
     }
     return 'cheerful';
   }
 
-  /** Walk task_history for a task and produce a "Col1 → Col2 → Col3" flow string. */
   static computeTaskFlow(
     db: Database.Database,
     boardId: string,
@@ -2321,32 +2332,18 @@ export class TaskflowEngine {
     for (const c of cols) {
       if (deduped[deduped.length - 1] !== c) deduped.push(c);
     }
-    const labels = deduped.map((c) => TaskflowEngine.columnLabelPlain(c));
-    if (labels.length === 0) return TaskflowEngine.columnLabelPlain('done');
-    return labels.join(' → ');
-  }
-
-  /** Column label without the leading emoji (for inline prose like the fluxo line). */
-  static columnLabelPlain(col: string): string {
-    const full = TaskflowEngine.columnLabel(col);
-    // Strip a leading non-space token (emoji) + separating space, if present.
-    const m = full.match(/^\S+\s+(.+)$/u);
-    return m ? m[1] : full;
+    const doneLabel = TaskflowEngine.columnLabelPlain('done');
+    if (deduped.length === 0) return doneLabel;
+    return deduped.map((c) => TaskflowEngine.columnLabelPlain(c)).join(' → ');
   }
 
   /**
    * Render the completion-notification message body. Pure string function — no DB access.
    * Callable from taskflow-mcp-server.ts and any other notification producer.
+   * The discriminated union forces each variant to supply exactly the fields it renders,
+   * so a 'loud' call without createdAt/flow becomes a type error rather than a silent fallback.
    */
-  static renderCompletionMessage(params: {
-    taskId: string;
-    title: string;
-    assigneeName: string;
-    fromColumn: string;
-    variant: 'quiet' | 'cheerful' | 'loud';
-    createdAt?: string | null;
-    flow?: string;
-  }): string {
+  static renderCompletionMessage(params: CompletionRenderParams): string {
     const SEP = TaskflowEngine.SEP;
     const head = `*${params.taskId}* — ${params.title}`;
 
@@ -2359,33 +2356,28 @@ export class TaskflowEngine {
     }
 
     if (params.variant === 'loud') {
-      const durationText = TaskflowEngine.formatDuration(params.createdAt);
-      const flow = params.flow ?? TaskflowEngine.columnLabelPlain('done');
       return (
         `${SEP}\n🎉 *Tarefa concluída!*\n${SEP}\n\n` +
         `${head}\n` +
-        `${params.assigneeName} entregou ${durationText} 👏\n\n` +
-        `_Fluxo: ${flow}_`
+        `${params.assigneeName} entregou ${TaskflowEngine.formatDuration(params.createdAt)} 👏\n\n` +
+        `_Fluxo: ${params.flow}_`
       );
     }
 
-    // cheerful
-    const fromLabel = TaskflowEngine.columnLabelPlain(params.fromColumn);
-    const toLabel = TaskflowEngine.columnLabelPlain('done');
+    const doneLabel = TaskflowEngine.columnLabelPlain('done');
     return (
       `🎉 *Tarefa concluída!*\n${SEP}\n\n` +
       `${head}\n` +
       `👤 *Entregue por:* ${params.assigneeName}\n` +
-      `🎯 *${fromLabel} → ${toLabel}*`
+      `🎯 *${TaskflowEngine.columnLabelPlain(params.fromColumn)} → ${doneLabel}*`
     );
   }
 
-  /** Format a created_at ISO timestamp into a human duration for the loud variant. */
   static formatDuration(createdAt?: string | null): string {
     if (!createdAt) return 'agora';
     const ms = Date.now() - new Date(createdAt).getTime();
     if (!Number.isFinite(ms) || ms < 0) return 'agora';
-    const days = Math.round(ms / 86400000);
+    const days = Math.floor(ms / TaskflowEngine.DAY_MS);
     if (days < 1) return 'hoje';
     if (days === 1) return 'em 1 dia';
     return `em ${days} dias`;
@@ -3342,7 +3334,7 @@ export class TaskflowEngine {
       const assigneeNeedsCloseApproval =
         params.action === 'conclude' &&
         isAssignee &&
-        this.taskRequiresCloseApproval(task);
+        TaskflowEngine.taskRequiresCloseApproval(task);
 
       // Allow any board member to start an unassigned inbox task (auto-assign)
       const canClaimUnassigned = params.action === 'start' && fromColumn === 'inbox' && !task.assignee && senderPersonId;

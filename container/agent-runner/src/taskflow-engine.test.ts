@@ -6544,18 +6544,10 @@ describe('completion notification (three-variant policy)', () => {
   });
 
   describe('renderCompletionMessage', () => {
-    const common = {
-      taskId: 'T71',
-      title: 'eMails FMC',
-      assigneeName: 'Lucas',
-      fromColumn: 'review',
-    };
+    const base = { taskId: 'T71', title: 'eMails FMC', assigneeName: 'Lucas' };
 
     it('quiet: create-card skeleton with single SEP, no celebration emoji', () => {
-      const msg = TaskflowEngine.renderCompletionMessage({
-        ...common,
-        variant: 'quiet',
-      });
+      const msg = TaskflowEngine.renderCompletionMessage({ variant: 'quiet', ...base });
       expect(msg).toContain('✅ *Tarefa concluída*');
       expect(msg).toContain('━━━━━━━━━━━━━━');
       expect(msg).toContain('*T71* — eMails FMC');
@@ -6565,8 +6557,9 @@ describe('completion notification (three-variant policy)', () => {
 
     it('cheerful: celebration header with single SEP and column transition line', () => {
       const msg = TaskflowEngine.renderCompletionMessage({
-        ...common,
         variant: 'cheerful',
+        ...base,
+        fromColumn: 'review',
       });
       expect(msg).toContain('🎉 *Tarefa concluída!*');
       expect(msg).toContain('━━━━━━━━━━━━━━');
@@ -6577,12 +6570,11 @@ describe('completion notification (three-variant policy)', () => {
     it('loud: bookending SEPs, inline prose, italicized fluxo', () => {
       const created = new Date(Date.now() - 3 * 86400 * 1000).toISOString();
       const msg = TaskflowEngine.renderCompletionMessage({
-        ...common,
         variant: 'loud',
+        ...base,
         createdAt: created,
         flow: 'Em Andamento → Revisão → Concluída',
       });
-      // Two separators framing the header
       expect(msg.match(/━━━━━━━━━━━━━━/g)?.length).toBe(2);
       expect(msg).toContain('🎉 *Tarefa concluída!*');
       expect(msg).toContain('Lucas entregou em 3 dias 👏');
@@ -6591,8 +6583,8 @@ describe('completion notification (three-variant policy)', () => {
 
     it('loud: handles created today ("hoje") and single-day ("em 1 dia")', () => {
       const todayMsg = TaskflowEngine.renderCompletionMessage({
-        ...common,
         variant: 'loud',
+        ...base,
         createdAt: new Date().toISOString(),
         flow: 'Inbox → Concluída',
       });
@@ -6600,12 +6592,20 @@ describe('completion notification (three-variant policy)', () => {
 
       const oneDay = new Date(Date.now() - 1 * 86400 * 1000).toISOString();
       const oneDayMsg = TaskflowEngine.renderCompletionMessage({
-        ...common,
         variant: 'loud',
+        ...base,
         createdAt: oneDay,
         flow: 'Inbox → Concluída',
       });
       expect(oneDayMsg).toContain('Lucas entregou em 1 dia 👏');
+    });
+
+    it('formatDuration: same-day completion (12h elapsed) says "hoje", not "em 1 dia"', () => {
+      // Regression guard for the Math.round → Math.floor fix.
+      const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+      expect(TaskflowEngine.formatDuration(twelveHoursAgo)).toBe('hoje');
+      const twentyThreeHoursAgo = new Date(Date.now() - 23 * 60 * 60 * 1000).toISOString();
+      expect(TaskflowEngine.formatDuration(twentyThreeHoursAgo)).toBe('hoje');
     });
   });
 

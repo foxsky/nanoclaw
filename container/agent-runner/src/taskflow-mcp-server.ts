@@ -421,10 +421,6 @@ export function registerTools(server: McpServer, db: Database.Database): void {
         if ('due_date' in params) row['due_date'] = params.due_date
         const data = engine.serializeApiTask(row)
 
-        const COLUMN_LABELS: Record<string, string> = {
-          inbox: 'Inbox', next_action: 'Próxima Ação', in_progress: 'Em Andamento',
-          waiting: 'Aguardando', review: 'Revisão', done: 'Concluída', cancelled: 'Cancelada',
-        }
         const notification_events: Array<{ kind: string; board_id: string; target_person_id: string; message: string }> = []
         if (newAssigneePersonId) {
           if (!senderPerson || senderPerson.person_id !== newAssigneePersonId) {
@@ -445,30 +441,32 @@ export function registerTools(server: McpServer, db: Database.Database): void {
             if (assigneePerson && assigneePerson.person_id !== newAssigneePersonId && (!senderPerson || senderPerson.person_id !== assigneePerson.person_id)) {
               const fromColumn = existing['column'] as string
               const toColumn = params.column!
+              const title = (row['title'] as string) ?? params.task_id
+              const base = { taskId: params.task_id, title, assigneeName: existingAssigneeName }
               let message: string
               if (toColumn === 'done') {
                 const taskRow = {
                   recurrence: (existing['recurrence'] as string | null) ?? null,
-                  requires_close_approval: existing['requires_close_approval'] as number | null,
+                  requires_close_approval: existing['requires_close_approval'],
                   created_at: (existing['created_at'] as string | null) ?? null,
                 }
                 const variant = TaskflowEngine.completionVariant(taskRow)
-                const flow = variant === 'loud'
-                  ? TaskflowEngine.computeTaskFlow(db, params.board_id, params.task_id)
-                  : undefined
-                message = TaskflowEngine.renderCompletionMessage({
-                  taskId: params.task_id,
-                  title: (row['title'] as string) ?? params.task_id,
-                  assigneeName: existingAssigneeName,
-                  fromColumn,
-                  variant,
-                  createdAt: taskRow.created_at,
-                  flow,
-                })
+                const renderParams =
+                  variant === 'quiet'
+                    ? { variant, ...base }
+                    : variant === 'loud'
+                      ? {
+                          variant,
+                          ...base,
+                          createdAt: taskRow.created_at,
+                          flow: TaskflowEngine.computeTaskFlow(db, params.board_id, params.task_id),
+                        }
+                      : { variant, ...base, fromColumn }
+                message = TaskflowEngine.renderCompletionMessage(renderParams)
               } else {
-                const oldLabel = COLUMN_LABELS[fromColumn] ?? fromColumn
-                const newLabel = COLUMN_LABELS[toColumn] ?? toColumn
-                message = `\u{1F514} *Tarefa movida*\n\n*${params.task_id}* — ${(row['title'] as string) ?? params.task_id}\n*${oldLabel}* \u2192 *${newLabel}*\n\nDigite \`${params.task_id}\` para ver detalhes.`
+                const oldLabel = TaskflowEngine.columnLabelPlain(fromColumn)
+                const newLabel = TaskflowEngine.columnLabelPlain(toColumn)
+                message = `\u{1F514} *Tarefa movida*\n\n*${params.task_id}* — ${title}\n*${oldLabel}* \u2192 *${newLabel}*\n\nDigite \`${params.task_id}\` para ver detalhes.`
               }
               notification_events.push({
                 kind: 'deferred_notification',
