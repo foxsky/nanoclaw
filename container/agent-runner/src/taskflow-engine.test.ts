@@ -6481,6 +6481,206 @@ describe('apiDeleteSimpleTask', () => {
 // Parity guard: this fixture table MUST match src/phone.test.ts exactly.
 // If either the engine or the host normalizePhone is changed, both copies
 // and both fixture tables must be updated together — otherwise the host
+describe('completion notification (three-variant policy)', () => {
+  describe('completionVariant', () => {
+    it('returns quiet for recurring tasks regardless of age', () => {
+      expect(
+        TaskflowEngine.completionVariant({
+          recurrence: 'weekly',
+          requires_close_approval: 1,
+          created_at: '2024-01-01T00:00:00Z',
+        }),
+      ).toBe('quiet');
+    });
+
+    it('returns loud when requires_close_approval is truthy', () => {
+      expect(
+        TaskflowEngine.completionVariant({
+          recurrence: null,
+          requires_close_approval: 1,
+          created_at: new Date().toISOString(),
+        }),
+      ).toBe('loud');
+    });
+
+    it('returns loud when task is older than 7 days', () => {
+      const created = new Date(Date.now() - 8 * 86400 * 1000).toISOString();
+      expect(
+        TaskflowEngine.completionVariant({
+          recurrence: null,
+          requires_close_approval: 0,
+          created_at: created,
+        }),
+      ).toBe('loud');
+    });
+
+    it('returns cheerful for default one-shot tasks under 7 days', () => {
+      const created = new Date(Date.now() - 3 * 86400 * 1000).toISOString();
+      expect(
+        TaskflowEngine.completionVariant({
+          recurrence: null,
+          requires_close_approval: 0,
+          created_at: created,
+        }),
+      ).toBe('cheerful');
+    });
+
+    it('handles string/boolean truthy encodings of requires_close_approval', () => {
+      expect(
+        TaskflowEngine.completionVariant({
+          recurrence: null,
+          requires_close_approval: '1',
+          created_at: new Date().toISOString(),
+        }),
+      ).toBe('loud');
+      expect(
+        TaskflowEngine.completionVariant({
+          recurrence: null,
+          requires_close_approval: true,
+          created_at: new Date().toISOString(),
+        }),
+      ).toBe('loud');
+    });
+  });
+
+  describe('renderCompletionMessage', () => {
+    const common = {
+      taskId: 'T71',
+      title: 'eMails FMC',
+      assigneeName: 'Lucas',
+      fromColumn: 'review',
+    };
+
+    it('quiet: create-card skeleton with single SEP, no celebration emoji', () => {
+      const msg = TaskflowEngine.renderCompletionMessage({
+        ...common,
+        variant: 'quiet',
+      });
+      expect(msg).toContain('✅ *Tarefa concluída*');
+      expect(msg).toContain('━━━━━━━━━━━━━━');
+      expect(msg).toContain('*T71* — eMails FMC');
+      expect(msg).toContain('👤 *Entregue por:* Lucas');
+      expect(msg).not.toContain('🎉');
+    });
+
+    it('cheerful: celebration header with single SEP and column transition line', () => {
+      const msg = TaskflowEngine.renderCompletionMessage({
+        ...common,
+        variant: 'cheerful',
+      });
+      expect(msg).toContain('🎉 *Tarefa concluída!*');
+      expect(msg).toContain('━━━━━━━━━━━━━━');
+      expect(msg).toContain('👤 *Entregue por:* Lucas');
+      expect(msg).toContain('🎯 *Revisão → Concluída*');
+    });
+
+    it('loud: bookending SEPs, inline prose, italicized fluxo', () => {
+      const created = new Date(Date.now() - 3 * 86400 * 1000).toISOString();
+      const msg = TaskflowEngine.renderCompletionMessage({
+        ...common,
+        variant: 'loud',
+        createdAt: created,
+        flow: 'Em Andamento → Revisão → Concluída',
+      });
+      // Two separators framing the header
+      expect(msg.match(/━━━━━━━━━━━━━━/g)?.length).toBe(2);
+      expect(msg).toContain('🎉 *Tarefa concluída!*');
+      expect(msg).toContain('Lucas entregou em 3 dias 👏');
+      expect(msg).toContain('_Fluxo: Em Andamento → Revisão → Concluída_');
+    });
+
+    it('loud: handles created today ("hoje") and single-day ("em 1 dia")', () => {
+      const todayMsg = TaskflowEngine.renderCompletionMessage({
+        ...common,
+        variant: 'loud',
+        createdAt: new Date().toISOString(),
+        flow: 'Inbox → Concluída',
+      });
+      expect(todayMsg).toContain('Lucas entregou hoje 👏');
+
+      const oneDay = new Date(Date.now() - 1 * 86400 * 1000).toISOString();
+      const oneDayMsg = TaskflowEngine.renderCompletionMessage({
+        ...common,
+        variant: 'loud',
+        createdAt: oneDay,
+        flow: 'Inbox → Concluída',
+      });
+      expect(oneDayMsg).toContain('Lucas entregou em 1 dia 👏');
+    });
+  });
+
+  describe('computeTaskFlow', () => {
+    let db: Database.Database;
+    beforeEach(() => {
+      db = new Database(':memory:');
+      db.exec(`
+        CREATE TABLE task_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          board_id TEXT NOT NULL,
+          task_id TEXT NOT NULL,
+          action TEXT NOT NULL,
+          by TEXT,
+          at TEXT NOT NULL,
+          details TEXT
+        );
+      `);
+    });
+    afterEach(() => db.close());
+
+    it('produces ordered unique flow from moved/start/conclude rows', () => {
+      const insert = db.prepare(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES (?, ?, ?, ?, ?, ?)`,
+      );
+      insert.run('b1', 'T1', 'start', 'x', '2026-04-20T10:00:00Z', JSON.stringify({ from: 'inbox', to: 'in_progress' }));
+      insert.run('b1', 'T1', 'moved', 'x', '2026-04-21T10:00:00Z', JSON.stringify({ from: 'in_progress', to: 'review' }));
+      insert.run('b1', 'T1', 'conclude', 'x', '2026-04-22T10:00:00Z', JSON.stringify({ from: 'review', to: 'done' }));
+
+      expect(TaskflowEngine.computeTaskFlow(db, 'b1', 'T1')).toBe(
+        'Inbox → Em Andamento → Revisão → Concluída',
+      );
+    });
+
+    it('collapses consecutive duplicate columns', () => {
+      const insert = db.prepare(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES (?, ?, ?, ?, ?, ?)`,
+      );
+      insert.run('b1', 'T1', 'moved', 'x', '2026-04-20T10:00:00Z', JSON.stringify({ from: 'inbox', to: 'next_action' }));
+      insert.run('b1', 'T1', 'moved', 'x', '2026-04-21T10:00:00Z', JSON.stringify({ from: 'next_action', to: 'next_action' }));
+      insert.run('b1', 'T1', 'conclude', 'x', '2026-04-22T10:00:00Z', JSON.stringify({ from: 'next_action', to: 'done' }));
+
+      expect(TaskflowEngine.computeTaskFlow(db, 'b1', 'T1')).toBe(
+        'Inbox → Próximas Ações → Concluída',
+      );
+    });
+
+    it('falls back to "Concluída" when no history rows exist', () => {
+      expect(TaskflowEngine.computeTaskFlow(db, 'b1', 'T-missing')).toBe('Concluída');
+    });
+
+    it('skips malformed JSON details without throwing', () => {
+      db.prepare(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run('b1', 'T1', 'moved', 'x', '2026-04-20T10:00:00Z', '{this is not valid json');
+      db.prepare(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run('b1', 'T1', 'conclude', 'x', '2026-04-21T10:00:00Z', JSON.stringify({ from: 'review', to: 'done' }));
+      expect(TaskflowEngine.computeTaskFlow(db, 'b1', 'T1')).toBe('Revisão → Concluída');
+    });
+  });
+
+  describe('columnLabelPlain', () => {
+    it('strips leading emoji+space', () => {
+      expect(TaskflowEngine.columnLabelPlain('done')).toBe('Concluída');
+      expect(TaskflowEngine.columnLabelPlain('review')).toBe('Revisão');
+      expect(TaskflowEngine.columnLabelPlain('in_progress')).toBe('Em Andamento');
+    });
+
+    it('returns the raw label unchanged when no leading emoji is present', () => {
+      expect(TaskflowEngine.columnLabelPlain('unknown_col')).toBe('unknown_col');
+    });
+  });
+});
+
 // will write rows the engine can't look up (or vice versa).
 describe('normalizePhone parity with host src/phone.ts', () => {
   const fixtures: Array<[string, string]> = [

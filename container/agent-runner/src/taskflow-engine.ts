@@ -2231,6 +2231,166 @@ export class TaskflowEngine {
     };
   }
 
+  /**
+   * Build the group-broadcast notification for task completion (column → 'done').
+   * Policy: recurring → quiet, long-running (≥7d OR requires_close_approval=1) → loud, else cheerful.
+   * Credits the assignee (not the actor), per feedback_digest_compliments.md.
+   */
+  private buildCompletionNotification(
+    task: {
+      id: string;
+      title: string;
+      assignee: string | null;
+      board_id?: string;
+      column?: string;
+      recurrence?: string | null;
+      requires_close_approval?: number | string | boolean | null;
+      created_at?: string | null;
+    },
+    modifierPersonId: string,
+    taskBoardId = this.boardId,
+  ): { target_person_id: string; notification_group_jid: string | null; message: string } | null {
+    const target = this.resolveNotifTarget(task.assignee, modifierPersonId, task.id, taskBoardId);
+    if (!target) return null;
+    const viewerBoard = this.resolveViewerBoard(target.target_person_id, task.board_id ?? taskBoardId);
+    const did = this.displayId(task, viewerBoard);
+    const assigneeName = task.assignee
+      ? this.personDisplayName(task.assignee, taskBoardId)
+      : this.personDisplayName(modifierPersonId, taskBoardId);
+    const fromColumn = task.column ?? 'inbox';
+    const variant = TaskflowEngine.completionVariant(task);
+    const flow =
+      variant === 'loud'
+        ? TaskflowEngine.computeTaskFlow(this.db, taskBoardId, task.id)
+        : undefined;
+    const message = TaskflowEngine.renderCompletionMessage({
+      taskId: did,
+      title: task.title,
+      assigneeName,
+      fromColumn,
+      variant,
+      createdAt: task.created_at ?? null,
+      flow,
+    });
+    return { ...target, message };
+  }
+
+  /** Select the completion-notification variant from a task row. */
+  static completionVariant(task: {
+    recurrence?: string | null;
+    requires_close_approval?: number | string | boolean | null;
+    created_at?: string | null;
+  }): 'quiet' | 'cheerful' | 'loud' {
+    if (task.recurrence) return 'quiet';
+    const rca = task.requires_close_approval;
+    const requiresApproval = rca === 1 || rca === '1' || rca === true;
+    if (requiresApproval) return 'loud';
+    if (task.created_at) {
+      const ageMs = Date.now() - new Date(task.created_at).getTime();
+      if (Number.isFinite(ageMs) && ageMs >= 7 * 86400 * 1000) return 'loud';
+    }
+    return 'cheerful';
+  }
+
+  /** Walk task_history for a task and produce a "Col1 → Col2 → Col3" flow string. */
+  static computeTaskFlow(
+    db: Database.Database,
+    boardId: string,
+    taskId: string,
+  ): string {
+    const rows = db
+      .prepare(
+        `SELECT details FROM task_history
+         WHERE board_id = ? AND task_id = ?
+           AND action IN ('moved','start','force_start','resume','approve','conclude','review','return','reject','reopen')
+         ORDER BY at ASC`,
+      )
+      .all(boardId, taskId) as Array<{ details: string | null }>;
+    const cols: string[] = [];
+    for (const row of rows) {
+      if (!row.details) continue;
+      try {
+        const obj = JSON.parse(row.details);
+        if (typeof obj.from === 'string' && cols.length === 0) cols.push(obj.from);
+        if (typeof obj.to === 'string') cols.push(obj.to);
+      } catch {
+        // Skip malformed history rows.
+      }
+    }
+    const deduped: string[] = [];
+    for (const c of cols) {
+      if (deduped[deduped.length - 1] !== c) deduped.push(c);
+    }
+    const labels = deduped.map((c) => TaskflowEngine.columnLabelPlain(c));
+    if (labels.length === 0) return TaskflowEngine.columnLabelPlain('done');
+    return labels.join(' → ');
+  }
+
+  /** Column label without the leading emoji (for inline prose like the fluxo line). */
+  static columnLabelPlain(col: string): string {
+    const full = TaskflowEngine.columnLabel(col);
+    // Strip a leading non-space token (emoji) + separating space, if present.
+    const m = full.match(/^\S+\s+(.+)$/u);
+    return m ? m[1] : full;
+  }
+
+  /**
+   * Render the completion-notification message body. Pure string function — no DB access.
+   * Callable from taskflow-mcp-server.ts and any other notification producer.
+   */
+  static renderCompletionMessage(params: {
+    taskId: string;
+    title: string;
+    assigneeName: string;
+    fromColumn: string;
+    variant: 'quiet' | 'cheerful' | 'loud';
+    createdAt?: string | null;
+    flow?: string;
+  }): string {
+    const SEP = TaskflowEngine.SEP;
+    const head = `*${params.taskId}* — ${params.title}`;
+
+    if (params.variant === 'quiet') {
+      return (
+        `✅ *Tarefa concluída*\n${SEP}\n\n` +
+        `${head}\n` +
+        `👤 *Entregue por:* ${params.assigneeName}`
+      );
+    }
+
+    if (params.variant === 'loud') {
+      const durationText = TaskflowEngine.formatDuration(params.createdAt);
+      const flow = params.flow ?? TaskflowEngine.columnLabelPlain('done');
+      return (
+        `${SEP}\n🎉 *Tarefa concluída!*\n${SEP}\n\n` +
+        `${head}\n` +
+        `${params.assigneeName} entregou ${durationText} 👏\n\n` +
+        `_Fluxo: ${flow}_`
+      );
+    }
+
+    // cheerful
+    const fromLabel = TaskflowEngine.columnLabelPlain(params.fromColumn);
+    const toLabel = TaskflowEngine.columnLabelPlain('done');
+    return (
+      `🎉 *Tarefa concluída!*\n${SEP}\n\n` +
+      `${head}\n` +
+      `👤 *Entregue por:* ${params.assigneeName}\n` +
+      `🎯 *${fromLabel} → ${toLabel}*`
+    );
+  }
+
+  /** Format a created_at ISO timestamp into a human duration for the loud variant. */
+  static formatDuration(createdAt?: string | null): string {
+    if (!createdAt) return 'agora';
+    const ms = Date.now() - new Date(createdAt).getTime();
+    if (!Number.isFinite(ms) || ms < 0) return 'agora';
+    const days = Math.round(ms / 86400000);
+    if (days < 1) return 'hoje';
+    if (days === 1) return 'em 1 dia';
+    return `em ${days} dias`;
+  }
+
   /** Build a notification for task reassignment. */
   private buildReassignNotification(
     task: { id: string; title: string; board_id?: string },
@@ -3471,12 +3631,10 @@ export class TaskflowEngine {
       const skipGenericMoveNotif =
         effectiveAction === 'reject' && task.child_exec_enabled === 1 && !!task.child_exec_person_id;
       if (senderPersonId && !skipGenericMoveNotif) {
-        const notif = this.buildMoveNotification(
-          task,
-          effectiveAction,
-          senderPersonId,
-          taskBoardId,
-        );
+        const notif =
+          toColumn === 'done'
+            ? this.buildCompletionNotification(task, senderPersonId, taskBoardId)
+            : this.buildMoveNotification(task, effectiveAction, senderPersonId, taskBoardId);
         if (notif) notifications.push(notif);
       }
 

@@ -443,13 +443,38 @@ export function registerTools(server: McpServer, db: Database.Database): void {
               'SELECT person_id FROM board_people WHERE board_id = ? AND name = ?'
             ).get(params.board_id, existingAssigneeName) as { person_id: string } | undefined
             if (assigneePerson && assigneePerson.person_id !== newAssigneePersonId && (!senderPerson || senderPerson.person_id !== assigneePerson.person_id)) {
-              const oldLabel = COLUMN_LABELS[existing['column'] as string] ?? (existing['column'] as string)
-              const newLabel = COLUMN_LABELS[params.column!] ?? params.column!
+              const fromColumn = existing['column'] as string
+              const toColumn = params.column!
+              let message: string
+              if (toColumn === 'done') {
+                const taskRow = {
+                  recurrence: (existing['recurrence'] as string | null) ?? null,
+                  requires_close_approval: existing['requires_close_approval'] as number | null,
+                  created_at: (existing['created_at'] as string | null) ?? null,
+                }
+                const variant = TaskflowEngine.completionVariant(taskRow)
+                const flow = variant === 'loud'
+                  ? TaskflowEngine.computeTaskFlow(db, params.board_id, params.task_id)
+                  : undefined
+                message = TaskflowEngine.renderCompletionMessage({
+                  taskId: params.task_id,
+                  title: (row['title'] as string) ?? params.task_id,
+                  assigneeName: existingAssigneeName,
+                  fromColumn,
+                  variant,
+                  createdAt: taskRow.created_at,
+                  flow,
+                })
+              } else {
+                const oldLabel = COLUMN_LABELS[fromColumn] ?? fromColumn
+                const newLabel = COLUMN_LABELS[toColumn] ?? toColumn
+                message = `\u{1F514} *Tarefa movida*\n\n*${params.task_id}* — ${(row['title'] as string) ?? params.task_id}\n*${oldLabel}* \u2192 *${newLabel}*\n\nDigite \`${params.task_id}\` para ver detalhes.`
+              }
               notification_events.push({
                 kind: 'deferred_notification',
                 board_id: params.board_id,
                 target_person_id: assigneePerson.person_id,
-                message: `\u{1F514} *Tarefa movida*\n\n*${params.task_id}* — ${(row['title'] as string) ?? params.task_id}\n*${oldLabel}* \u2192 *${newLabel}*\n\nDigite \`${params.task_id}\` para ver detalhes.`,
+                message,
               })
             }
           }
