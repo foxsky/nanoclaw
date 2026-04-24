@@ -1878,6 +1878,155 @@ export class TaskflowEngine {
     return { success: true, data: { id: params.task_id, deleted: true } } as any;
   }
 
+  /* ---------------------------------------------------------------- */
+  /*  API note wrappers — service-aware, delegate to note helpers     */
+  /* ---------------------------------------------------------------- */
+
+  apiAddNote(params: {
+    board_id: string;
+    task_id: string;
+    sender_name: string;
+    sender_is_service?: boolean;
+    text: string;
+    parent_note_id?: number;
+  }): TaskflowResult & { data?: Record<string, unknown> } {
+    try {
+      return this.db.transaction(() => {
+        const task = this.db
+          .prepare('SELECT * FROM tasks WHERE id = ? AND board_id = ?')
+          .get(params.task_id, params.board_id) as Record<string, any> | undefined;
+        if (!task) {
+          return { success: false, error_code: 'not_found', error: `Task not found: ${params.task_id}` } as any;
+        }
+        const taskBoardId = this.taskBoardId(task);
+        const sender = this.resolvePerson(params.sender_name);
+        const senderPersonId = sender?.person_id ?? null;
+        const isAssignee = senderPersonId != null && task.assignee === senderPersonId;
+        const isMgr = this.isManager(params.sender_name) || !!params.sender_is_service;
+        const now = new Date().toISOString();
+
+        if (!params.sender_is_service && task.type !== 'meeting' && !isMgr && !isAssignee) {
+          return { success: false, error_code: 'actor_type_not_allowed', error: `Not authorized to add notes to this task` } as any;
+        }
+
+        const out = this.addNoteCore(
+          { task, taskBoardId, senderPersonId, sender, isMgr, isAssignee, isExternalSender: false, hasExternalGrant: false, senderName: params.sender_name, senderExternalId: undefined, now },
+          params.text,
+          params.parent_note_id,
+        );
+        if (!out.success) {
+          return { success: false, error_code: 'validation_error', error: out.error } as any;
+        }
+
+        this.db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ? AND board_id = ?').run(now, params.task_id, params.board_id);
+        this.recordHistory(params.task_id, 'updated', params.sender_name, JSON.stringify({ note_added: true }));
+
+        const row = this.db.prepare(
+          `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ?`
+        ).get(params.task_id) as Record<string, unknown>;
+        return { success: true, data: this.serializeApiTask(row), changes: [out.change] } as any;
+      })();
+    } catch (err: any) {
+      return { success: false, error: err.message ?? String(err) };
+    }
+  }
+
+  apiEditNote(params: {
+    board_id: string;
+    task_id: string;
+    sender_name: string;
+    sender_is_service?: boolean;
+    note_id: number;
+    text: string;
+  }): TaskflowResult & { data?: Record<string, unknown> } {
+    try {
+      return this.db.transaction(() => {
+        const task = this.db
+          .prepare('SELECT * FROM tasks WHERE id = ? AND board_id = ?')
+          .get(params.task_id, params.board_id) as Record<string, any> | undefined;
+        if (!task) {
+          return { success: false, error_code: 'not_found', error: `Task not found: ${params.task_id}` } as any;
+        }
+        const taskBoardId = this.taskBoardId(task);
+        const sender = this.resolvePerson(params.sender_name);
+        const senderPersonId = sender?.person_id ?? null;
+        const isAssignee = senderPersonId != null && task.assignee === senderPersonId;
+        const isMgr = this.isManager(params.sender_name) || !!params.sender_is_service;
+        const now = new Date().toISOString();
+
+        if (!params.sender_is_service && task.type !== 'meeting' && !isMgr && !isAssignee) {
+          return { success: false, error_code: 'actor_type_not_allowed', error: `Not authorized to edit notes on this task` } as any;
+        }
+
+        const out = this.editNoteCore(
+          { task, taskBoardId, senderPersonId, isMgr, isAssignee, isExternalSender: false, hasExternalGrant: false, senderName: params.sender_name, senderExternalId: undefined },
+          params.note_id,
+          params.text,
+        );
+        if (!out.success) {
+          return { success: false, error_code: 'validation_error', error: out.error } as any;
+        }
+
+        this.db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ? AND board_id = ?').run(now, params.task_id, params.board_id);
+        this.recordHistory(params.task_id, 'updated', params.sender_name, JSON.stringify({ note_edited: params.note_id }));
+
+        const row = this.db.prepare(
+          `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ?`
+        ).get(params.task_id) as Record<string, unknown>;
+        return { success: true, data: this.serializeApiTask(row), changes: [out.change] } as any;
+      })();
+    } catch (err: any) {
+      return { success: false, error: err.message ?? String(err) };
+    }
+  }
+
+  apiRemoveNote(params: {
+    board_id: string;
+    task_id: string;
+    sender_name: string;
+    sender_is_service?: boolean;
+    note_id: number;
+  }): TaskflowResult & { data?: Record<string, unknown> } {
+    try {
+      return this.db.transaction(() => {
+        const task = this.db
+          .prepare('SELECT * FROM tasks WHERE id = ? AND board_id = ?')
+          .get(params.task_id, params.board_id) as Record<string, any> | undefined;
+        if (!task) {
+          return { success: false, error_code: 'not_found', error: `Task not found: ${params.task_id}` } as any;
+        }
+        const taskBoardId = this.taskBoardId(task);
+        const sender = this.resolvePerson(params.sender_name);
+        const senderPersonId = sender?.person_id ?? null;
+        const isAssignee = senderPersonId != null && task.assignee === senderPersonId;
+        const isMgr = this.isManager(params.sender_name) || !!params.sender_is_service;
+        const now = new Date().toISOString();
+
+        if (!params.sender_is_service && task.type !== 'meeting' && !isMgr && !isAssignee) {
+          return { success: false, error_code: 'actor_type_not_allowed', error: `Not authorized to remove notes from this task` } as any;
+        }
+
+        const out = this.removeNoteCore(
+          { task, taskBoardId, senderPersonId, isMgr, isAssignee, isExternalSender: false, hasExternalGrant: false, senderName: params.sender_name, senderExternalId: undefined },
+          params.note_id,
+        );
+        if (!out.success) {
+          return { success: false, error_code: 'validation_error', error: out.error } as any;
+        }
+
+        this.db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ? AND board_id = ?').run(now, params.task_id, params.board_id);
+        this.recordHistory(params.task_id, 'updated', params.sender_name, JSON.stringify({ note_removed: params.note_id }));
+
+        const row = this.db.prepare(
+          `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ?`
+        ).get(params.task_id) as Record<string, unknown>;
+        return { success: true, data: this.serializeApiTask(row), changes: [out.change] } as any;
+      })();
+    } catch (err: any) {
+      return { success: false, error: err.message ?? String(err) };
+    }
+  }
+
   private getHistory(taskId: string, limit?: number, boardId = this.boardId): any[] {
     const sql = limit
       ? `SELECT * FROM task_history WHERE board_id = ? AND task_id = ? ORDER BY id DESC LIMIT ?`
@@ -3983,6 +4132,240 @@ export class TaskflowEngine {
   }
 
   /* ---------------------------------------------------------------- */
+  /* ---------------------------------------------------------------- */
+  /*  Note operation helpers (shared by engine.update and API wrappers) */
+  /* ---------------------------------------------------------------- */
+
+  /** Context captured once per request, passed to each note helper. */
+
+  private addNoteCore(
+    ctx: {
+      task: any;
+      taskBoardId: string;
+      senderPersonId: string | null;
+      sender: { name: string; person_id: string; role?: string } | null;
+      isMgr: boolean;
+      isAssignee: boolean;
+      isExternalSender: boolean;
+      hasExternalGrant: boolean;
+      senderName: string;
+      senderExternalId: string | undefined;
+      now: string;
+    },
+    text: string,
+    parentNoteId?: number,
+  ): { success: false; error: string } | { success: true; change: string } {
+    const { task, taskBoardId, senderPersonId, sender, isMgr, isAssignee, isExternalSender, hasExternalGrant, senderName, senderExternalId, now } = ctx;
+
+    // Meeting note authorization: participants can add notes
+    if (task.type === 'meeting' && !isMgr && !isAssignee) {
+      const participants: string[] = JSON.parse(task.participants ?? '[]');
+      if (!participants.includes(senderPersonId ?? '') && !hasExternalGrant) {
+        return { success: false, error: `Permission denied: "${senderName}" is not a participant of this meeting.` };
+      }
+    }
+
+    const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+    const noteId = task.next_note_id ?? 1;
+    const noteEntry: any = { id: noteId, text, at: now, by: senderName };
+
+    // Stable author identity for permission checks
+    if (senderPersonId) {
+      noteEntry.author_actor_type = 'board_person';
+      noteEntry.author_actor_id = senderPersonId;
+      noteEntry.author_display_name = sender?.name ?? senderName;
+    }
+    if (isExternalSender && senderExternalId) {
+      noteEntry.author_actor_type = 'external_contact';
+      noteEntry.author_actor_id = senderExternalId;
+      const ext = this.db.prepare(`SELECT display_name FROM external_contacts WHERE external_id = ?`).get(senderExternalId) as any;
+      noteEntry.author_display_name = ext?.display_name ?? senderName;
+    }
+
+    // Meeting-only metadata
+    const phase = this.getMeetingNotePhase(task);
+    if (phase) {
+      noteEntry.phase = phase;
+      noteEntry.status = 'open';
+    }
+    if (parentNoteId !== undefined) {
+      const parentExists = notes.some((n: any) => n.id === parentNoteId);
+      if (!parentExists) {
+        return { success: false, error: `Parent note #${parentNoteId} not found.` };
+      }
+      noteEntry.parent_note_id = parentNoteId;
+    }
+
+    notes.push(noteEntry);
+    this.db
+      .prepare(`UPDATE tasks SET notes = ?, next_note_id = ? WHERE board_id = ? AND id = ?`)
+      .run(JSON.stringify(notes), noteId + 1, taskBoardId, task.id);
+    return { success: true, change: `Nota: ${text}` };
+  }
+
+  private editNoteCore(
+    ctx: {
+      task: any;
+      taskBoardId: string;
+      senderPersonId: string | null;
+      isMgr: boolean;
+      isAssignee: boolean;
+      isExternalSender: boolean;
+      hasExternalGrant: boolean;
+      senderName: string;
+      senderExternalId: string | undefined;
+    },
+    noteId: number,
+    text: string,
+  ): { success: false; error: string } | { success: true; change: string } {
+    const { task, taskBoardId, senderPersonId, isMgr, isAssignee, isExternalSender, hasExternalGrant, senderName, senderExternalId } = ctx;
+    // Re-read notes from DB to pick up any preceding add_note in the same update call
+    const freshEditRow = this.db
+      .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+      .get(taskBoardId, task.id) as { notes: string } | undefined;
+    const notes: Array<any> = JSON.parse(freshEditRow?.notes ?? task.notes ?? '[]');
+    const note = notes.find((n: any) => n.id === noteId);
+    if (!note) {
+      return { success: false, error: `Note #${noteId} not found.` };
+    }
+    // Meeting note authorization: only author/organizer/manager can edit
+    if (task.type === 'meeting' && !isMgr && !isAssignee) {
+      if (isExternalSender && !hasExternalGrant) {
+        return { success: false, error: `Permission denied: "${senderName}" does not have active access to this meeting.` };
+      }
+      const isNoteAuthor = note.author_actor_id
+        ? (
+            (note.author_actor_type === 'board_person' && note.author_actor_id === senderPersonId && !isExternalSender) ||
+            (note.author_actor_type === 'external_contact' && note.author_actor_id === senderExternalId)
+          )
+        : false;
+      if (!isNoteAuthor) {
+        return { success: false, error: `Permission denied: only the note author, organizer, or manager can edit note #${noteId}.` };
+      }
+    }
+    note.text = text;
+    this.db
+      .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
+      .run(JSON.stringify(notes), taskBoardId, task.id);
+    return { success: true, change: `Nota #${noteId} editada: ${text}` };
+  }
+
+  private removeNoteCore(
+    ctx: {
+      task: any;
+      taskBoardId: string;
+      senderPersonId: string | null;
+      isMgr: boolean;
+      isAssignee: boolean;
+      isExternalSender: boolean;
+      hasExternalGrant: boolean;
+      senderName: string;
+      senderExternalId: string | undefined;
+    },
+    noteId: number,
+  ): { success: false; error: string } | { success: true; change: string } {
+    const { task, taskBoardId, senderPersonId, isMgr, isAssignee, isExternalSender, hasExternalGrant, senderName, senderExternalId } = ctx;
+    // Re-read notes from DB to pick up any preceding add_note/edit_note in the same update call
+    const freshRemoveRow = this.db
+      .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+      .get(taskBoardId, task.id) as { notes: string } | undefined;
+    const notes: Array<{ id: number; text: string; at: string; by: string }> = JSON.parse(freshRemoveRow?.notes ?? task.notes ?? '[]');
+    const idx = notes.findIndex((n) => n.id === noteId);
+    if (idx < 0) {
+      return { success: false, error: `Note #${noteId} not found.` };
+    }
+    // Meeting note authorization: only author/organizer/manager can remove
+    if (task.type === 'meeting' && !isMgr && !isAssignee) {
+      if (isExternalSender && !hasExternalGrant) {
+        return { success: false, error: `Permission denied: "${senderName}" does not have active access to this meeting.` };
+      }
+      const noteAny = notes[idx] as any;
+      const isNoteAuthor = noteAny.author_actor_id
+        ? (
+            (noteAny.author_actor_type === 'board_person' && noteAny.author_actor_id === senderPersonId && !isExternalSender) ||
+            (noteAny.author_actor_type === 'external_contact' && noteAny.author_actor_id === senderExternalId)
+          )
+        : false;
+      if (!isNoteAuthor) {
+        return { success: false, error: `Permission denied: only the note author, organizer, or manager can remove note #${noteId}.` };
+      }
+    }
+    const removedId = notes[idx].id;
+    notes.splice(idx, 1);
+    // Promote orphaned children to top-level so they remain visible
+    for (const n of notes) {
+      if ((n as any).parent_note_id === removedId) {
+        delete (n as any).parent_note_id;
+      }
+    }
+    this.db
+      .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
+      .run(JSON.stringify(notes), taskBoardId, task.id);
+    return { success: true, change: `Nota #${noteId} removida` };
+  }
+
+  private setNoteStatusCore(
+    ctx: {
+      task: any;
+      taskBoardId: string;
+      senderPersonId: string | null;
+      isMgr: boolean;
+      isAssignee: boolean;
+      isExternalSender: boolean;
+      hasExternalGrant: boolean;
+      senderName: string;
+      senderExternalId: string | undefined;
+      now: string;
+    },
+    noteId: number,
+    status: 'open' | 'checked' | 'task_created' | 'inbox_created' | 'dismissed',
+  ): { success: false; error: string } | { success: true; change: string } {
+    const { task, taskBoardId, senderPersonId, isMgr, isAssignee, isExternalSender, hasExternalGrant, senderName, senderExternalId, now } = ctx;
+    if (task.type !== 'meeting') {
+      return { success: false, error: 'Note status can only be set on meeting tasks.' };
+    }
+    // Meeting note authorization: only participants, organizer, or manager can set status
+    if (!isMgr && !isAssignee) {
+      const participants: string[] = JSON.parse(task.participants ?? '[]');
+      if (!participants.includes(senderPersonId ?? '') && !hasExternalGrant) {
+        return { success: false, error: `Permission denied: "${senderName}" is not a participant of this meeting.` };
+      }
+    }
+    // Re-read notes from DB to pick up any preceding add_note/edit_note/remove_note in the same update call
+    const freshNotesRow = this.db
+      .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
+      .get(taskBoardId, task.id) as { notes: string } | undefined;
+    const notes: Array<any> = JSON.parse(freshNotesRow?.notes ?? task.notes ?? '[]');
+    const note = notes.find((n: any) => n.id === noteId);
+    if (!note) {
+      return { success: false, error: `Note #${noteId} not found.` };
+    }
+    // External participants can only change status of their own notes
+    if (isExternalSender && !isMgr && !isAssignee) {
+      const isNoteAuthor = note.author_actor_id
+        ? (
+            (note.author_actor_type === 'board_person' && note.author_actor_id === senderPersonId && !isExternalSender) ||
+            (note.author_actor_type === 'external_contact' && note.author_actor_id === senderExternalId)
+          )
+        : false;
+      if (!isNoteAuthor) {
+        return { success: false, error: `Permission denied: only the note author, organizer, or manager can change status of note #${noteId}.` };
+      }
+    }
+    note.status = status;
+    if (status === 'open') {
+      delete note.processed_at;
+      delete note.processed_by;
+    } else {
+      note.processed_at = now;
+      note.processed_by = senderName;
+    }
+    this.db
+      .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
+      .run(JSON.stringify(notes), taskBoardId, task.id);
+    return { success: true, change: `Nota #${noteId} status: ${status}` };
+  }
+
   /*  update — taskflow_update                                         */
   /* ---------------------------------------------------------------- */
 
@@ -4287,171 +4670,45 @@ export class TaskflowEngine {
 
       /* Add note */
       if (updates.add_note !== undefined) {
-        // Meeting note authorization: participants can add notes
-        if (task.type === 'meeting' && !isMgr && !isAssignee) {
-          const participants: string[] = JSON.parse(task.participants ?? '[]');
-          if (!participants.includes(senderPersonId ?? '') && !hasExternalGrant) {
-            return { success: false, error: `Permission denied: "${params.sender_name}" is not a participant of this meeting.` };
-          }
-        }
-
-        const notes: Array<any> = JSON.parse(task.notes ?? '[]');
-        const noteId = task.next_note_id ?? 1;
-        const noteEntry: any = { id: noteId, text: updates.add_note, at: now, by: params.sender_name };
-
-        // Stable author identity for permission checks
-        if (senderPersonId) {
-          noteEntry.author_actor_type = 'board_person';
-          noteEntry.author_actor_id = senderPersonId;
-          noteEntry.author_display_name = sender?.name ?? params.sender_name;
-        }
-        if (isExternalSender && params.sender_external_id) {
-          noteEntry.author_actor_type = 'external_contact';
-          noteEntry.author_actor_id = params.sender_external_id;
-          const ext = this.db.prepare(`SELECT display_name FROM external_contacts WHERE external_id = ?`).get(params.sender_external_id) as any;
-          noteEntry.author_display_name = ext?.display_name ?? params.sender_name;
-        }
-
-        // Meeting-only metadata
-        const phase = this.getMeetingNotePhase(task);
-        if (phase) {
-          noteEntry.phase = phase;
-          noteEntry.status = 'open';
-        }
-        if (updates.parent_note_id !== undefined) {
-          const parentExists = notes.some((n: any) => n.id === updates.parent_note_id);
-          if (!parentExists) {
-            return { success: false, error: `Parent note #${updates.parent_note_id} not found.` };
-          }
-          noteEntry.parent_note_id = updates.parent_note_id;
-        }
-
-        notes.push(noteEntry);
-        this.db
-          .prepare(`UPDATE tasks SET notes = ?, next_note_id = ? WHERE board_id = ? AND id = ?`)
-          .run(JSON.stringify(notes), noteId + 1, taskBoardId, task.id);
-        changes.push(`Nota: ${updates.add_note}`);
+        const out = this.addNoteCore(
+          { task, taskBoardId, senderPersonId, sender, isMgr, isAssignee, isExternalSender, hasExternalGrant, senderName: params.sender_name, senderExternalId: params.sender_external_id, now },
+          updates.add_note,
+          updates.parent_note_id,
+        );
+        if (!out.success) return { success: false, error: out.error };
+        changes.push(out.change);
       }
 
       /* Edit note */
       if (updates.edit_note !== undefined) {
-        // Re-read notes from DB to pick up any preceding add_note in the same update call
-        const freshEditRow = this.db
-          .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
-          .get(taskBoardId, task.id) as { notes: string } | undefined;
-        const notes: Array<any> = JSON.parse(freshEditRow?.notes ?? task.notes ?? '[]');
-        const note = notes.find((n: any) => n.id === updates.edit_note!.id);
-        if (!note) {
-          return { success: false, error: `Note #${updates.edit_note.id} not found.` };
-        }
-        // Meeting note authorization: only author/organizer/manager can edit
-        if (task.type === 'meeting' && !isMgr && !isAssignee) {
-          if (isExternalSender && !hasExternalGrant) {
-            return { success: false, error: `Permission denied: "${params.sender_name}" does not have active access to this meeting.` };
-          }
-          const isNoteAuthor = note.author_actor_id
-            ? (
-                (note.author_actor_type === 'board_person' && note.author_actor_id === senderPersonId && !isExternalSender) ||
-                (note.author_actor_type === 'external_contact' && note.author_actor_id === params.sender_external_id)
-              )
-            : false;
-          if (!isNoteAuthor) {
-            return { success: false, error: `Permission denied: only the note author, organizer, or manager can edit note #${updates.edit_note.id}.` };
-          }
-        }
-        note.text = updates.edit_note.text;
-        this.db
-          .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
-          .run(JSON.stringify(notes), taskBoardId, task.id);
-        changes.push(`Nota #${updates.edit_note.id} editada: ${updates.edit_note.text}`);
+        const out = this.editNoteCore(
+          { task, taskBoardId, senderPersonId, isMgr, isAssignee, isExternalSender, hasExternalGrant, senderName: params.sender_name, senderExternalId: params.sender_external_id },
+          updates.edit_note.id,
+          updates.edit_note.text,
+        );
+        if (!out.success) return { success: false, error: out.error };
+        changes.push(out.change);
       }
 
       /* Remove note */
       if (updates.remove_note !== undefined) {
-        // Re-read notes from DB to pick up any preceding add_note/edit_note in the same update call
-        const freshRemoveRow = this.db
-          .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
-          .get(taskBoardId, task.id) as { notes: string } | undefined;
-        const notes: Array<{ id: number; text: string; at: string; by: string }> = JSON.parse(freshRemoveRow?.notes ?? task.notes ?? '[]');
-        const idx = notes.findIndex((n) => n.id === updates.remove_note);
-        if (idx < 0) {
-          return { success: false, error: `Note #${updates.remove_note} not found.` };
-        }
-        // Meeting note authorization: only author/organizer/manager can remove
-        if (task.type === 'meeting' && !isMgr && !isAssignee) {
-          if (isExternalSender && !hasExternalGrant) {
-            return { success: false, error: `Permission denied: "${params.sender_name}" does not have active access to this meeting.` };
-          }
-          const noteAny = notes[idx] as any;
-          const isNoteAuthor = noteAny.author_actor_id
-            ? (
-                (noteAny.author_actor_type === 'board_person' && noteAny.author_actor_id === senderPersonId && !isExternalSender) ||
-                (noteAny.author_actor_type === 'external_contact' && noteAny.author_actor_id === params.sender_external_id)
-              )
-            : false;
-          if (!isNoteAuthor) {
-            return { success: false, error: `Permission denied: only the note author, organizer, or manager can remove note #${updates.remove_note}.` };
-          }
-        }
-        const removedId = notes[idx].id;
-        notes.splice(idx, 1);
-        // Promote orphaned children to top-level so they remain visible
-        for (const n of notes) {
-          if ((n as any).parent_note_id === removedId) {
-            delete (n as any).parent_note_id;
-          }
-        }
-        this.db
-          .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
-          .run(JSON.stringify(notes), taskBoardId, task.id);
-        changes.push(`Nota #${updates.remove_note} removida`);
+        const out = this.removeNoteCore(
+          { task, taskBoardId, senderPersonId, isMgr, isAssignee, isExternalSender, hasExternalGrant, senderName: params.sender_name, senderExternalId: params.sender_external_id },
+          updates.remove_note,
+        );
+        if (!out.success) return { success: false, error: out.error };
+        changes.push(out.change);
       }
 
       /* Set note status (meeting only) */
       if (updates.set_note_status !== undefined) {
-        if (task.type !== 'meeting') {
-          return { success: false, error: 'Note status can only be set on meeting tasks.' };
-        }
-        // Meeting note authorization: only participants, organizer, or manager can set status
-        if (!isMgr && !isAssignee) {
-          const participants: string[] = JSON.parse(task.participants ?? '[]');
-          if (!participants.includes(senderPersonId ?? '') && !hasExternalGrant) {
-            return { success: false, error: `Permission denied: "${params.sender_name}" is not a participant of this meeting.` };
-          }
-        }
-        // Re-read notes from DB to pick up any preceding add_note/edit_note/remove_note in the same update call
-        const freshNotesRow = this.db
-          .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
-          .get(taskBoardId, task.id) as { notes: string } | undefined;
-        const notes: Array<any> = JSON.parse(freshNotesRow?.notes ?? task.notes ?? '[]');
-        const note = notes.find((n: any) => n.id === updates.set_note_status!.id);
-        if (!note) {
-          return { success: false, error: `Note #${updates.set_note_status.id} not found.` };
-        }
-        // External participants can only change status of their own notes
-        if (isExternalSender && !isMgr && !isAssignee) {
-          const isNoteAuthor = note.author_actor_id
-            ? (
-                (note.author_actor_type === 'board_person' && note.author_actor_id === senderPersonId && !isExternalSender) ||
-                (note.author_actor_type === 'external_contact' && note.author_actor_id === params.sender_external_id)
-              )
-            : false;
-          if (!isNoteAuthor) {
-            return { success: false, error: `Permission denied: only the note author, organizer, or manager can change status of note #${updates.set_note_status.id}.` };
-          }
-        }
-        note.status = updates.set_note_status.status;
-        if (updates.set_note_status.status === 'open') {
-          delete note.processed_at;
-          delete note.processed_by;
-        } else {
-          note.processed_at = now;
-          note.processed_by = params.sender_name;
-        }
-        this.db
-          .prepare(`UPDATE tasks SET notes = ? WHERE board_id = ? AND id = ?`)
-          .run(JSON.stringify(notes), taskBoardId, task.id);
-        changes.push(`Nota #${updates.set_note_status.id} status: ${updates.set_note_status.status}`);
+        const out = this.setNoteStatusCore(
+          { task, taskBoardId, senderPersonId, isMgr, isAssignee, isExternalSender, hasExternalGrant, senderName: params.sender_name, senderExternalId: params.sender_external_id, now },
+          updates.set_note_status.id,
+          updates.set_note_status.status,
+        );
+        if (!out.success) return { success: false, error: out.error };
+        changes.push(out.change);
       }
 
       /* Add participant (meeting only) */

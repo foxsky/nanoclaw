@@ -335,29 +335,6 @@ export function registerTools(server: McpServer, db: Database.Database): void {
       assignee: z.string().nullable().optional(),
       priority: z.string().optional(),
       due_date: z.string().nullable().optional(),
-      notes: z.array(
-        z.object({
-          id: z.union([z.string(), z.number()]),
-          author: z.string().optional(),
-          by: z.string().optional(),
-          text: z.string().optional(),
-          content: z.string().optional(),
-          created_at: z.string().optional(),
-          at: z.string().optional(),
-          updated_at: z.string().nullable().optional(),
-        })
-          .transform((n) => {
-            const author = (n.author ?? n.by ?? '').trim()
-            const text = (n.text ?? n.content ?? '').trim()
-            const created_at = (n.created_at ?? n.at ?? '').trim()
-            const id = String(n.id).trim()
-            const updated_at = n.updated_at == null ? undefined : String(n.updated_at).trim() || undefined
-            return { id, author, text, created_at, updated_at }
-          })
-          .refine((n) => n.id !== '' && n.author !== '' && n.text !== '' && n.created_at !== '', {
-            message: 'note requires id + author|by + text|content + created_at|at',
-          })
-      ).nullable().optional(),
       labels: z.array(z.string().trim().min(1)).nullable().optional(),
     },
     (params) => {
@@ -430,12 +407,6 @@ export function registerTools(server: McpServer, db: Database.Database): void {
           setValues.push(resolvedPriority)
         }
         if ('due_date' in params) { setClauses.push('due_date = ?'); setValues.push(params.due_date) }
-        let notesJson: string | undefined = undefined
-        if ('notes' in params) {
-          notesJson = params.notes == null ? '[]' : JSON.stringify(params.notes)
-          setClauses.push('notes = ?')
-          setValues.push(notesJson)
-        }
         let labelsJson: string | undefined = undefined
         if ('labels' in params) {
           labelsJson = params.labels == null ? '[]' : JSON.stringify(params.labels)
@@ -464,7 +435,6 @@ export function registerTools(server: McpServer, db: Database.Database): void {
         if ('assignee' in params) row['assignee'] = resolvedAssignee
         if ('priority' in params) row['priority'] = resolvedPriority
         if ('due_date' in params) row['due_date'] = params.due_date
-        if ('notes' in params) row['notes'] = notesJson
         if ('labels' in params) row['labels'] = labelsJson
         const data = engine.serializeApiTask(row)
 
@@ -545,6 +515,59 @@ export function registerTools(server: McpServer, db: Database.Database): void {
     (params) => {
       const engine = new TaskflowEngine(db, params.board_id)
       const result = engine.apiDeleteSimpleTask(params)
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] }
+    }
+  )
+
+  server.tool(
+    'api_task_add_note',
+    'Add a note to a task; delegates to engine.apiAddNote (shares engine.update logic)',
+    {
+      board_id: z.string(),
+      task_id: z.string(),
+      sender_name: z.string(),
+      sender_is_service: z.boolean().optional(),
+      text: z.string().min(1),
+      parent_note_id: z.number().int().optional(),
+    },
+    (params) => {
+      const engine = new TaskflowEngine(db, params.board_id)
+      const result = engine.apiAddNote(params)
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] }
+    }
+  )
+
+  server.tool(
+    'api_task_edit_note',
+    'Edit a note on a task; delegates to engine.apiEditNote',
+    {
+      board_id: z.string(),
+      task_id: z.string(),
+      sender_name: z.string(),
+      sender_is_service: z.boolean().optional(),
+      note_id: z.number().int(),
+      text: z.string().min(1),
+    },
+    (params) => {
+      const engine = new TaskflowEngine(db, params.board_id)
+      const result = engine.apiEditNote(params)
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] }
+    }
+  )
+
+  server.tool(
+    'api_task_remove_note',
+    'Remove a note from a task; delegates to engine.apiRemoveNote',
+    {
+      board_id: z.string(),
+      task_id: z.string(),
+      sender_name: z.string(),
+      sender_is_service: z.boolean().optional(),
+      note_id: z.number().int(),
+    },
+    (params) => {
+      const engine = new TaskflowEngine(db, params.board_id)
+      const result = engine.apiRemoveNote(params)
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] }
     }
   )
