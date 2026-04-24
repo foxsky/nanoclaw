@@ -64,7 +64,7 @@ const MAGNETISM_CONFIRM_VERBS =
 
 const MAGNETISM_SHADOW_FLAG = 'magnetism_shadow_flag';
 const MAGNETISM_OVERRIDE = 'magnetism_override';
-const AMBIGUOUS_TASK_CONTEXT = 'ambiguous_task_context';
+export const AMBIGUOUS_TASK_CONTEXT = 'ambiguous_task_context';
 
 type CompletionRenderCommon = {
   taskId: string;

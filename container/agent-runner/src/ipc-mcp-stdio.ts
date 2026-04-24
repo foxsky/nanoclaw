@@ -16,10 +16,16 @@ import {
   normalizeCreateGroupRequest,
 } from './ipc-tooling.js';
 import {
+  AMBIGUOUS_TASK_CONTEXT,
   ParentNotification,
   TaskflowEngine,
   parseMagnetismGuardMode,
 } from './taskflow-engine.js';
+
+const CONFIRMED_TASK_ID_DESCRIBE =
+  `Pass ONLY when retrying after error_code=${AMBIGUOUS_TASK_CONTEXT}. ` +
+  'Must equal task_id. Set only after the user has explicitly confirmed which task — ' +
+  'do NOT retry silently. Triggers a magnetism_override audit row.';
 
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
@@ -848,7 +854,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         sender_name: z.string().describe('Name of the person performing the action'),
         reason: z.string().optional().describe('Reason for the action (e.g., wait/reject reason)'),
         subtask_id: z.string().optional().describe('Subtask ID to complete within a project (e.g. P16.2). When provided, task_id must be the parent project ID (e.g. P16)'),
-        confirmed_task_id: z.string().optional().describe('Pass ONLY when retrying after error_code=ambiguous_task_context. Must equal task_id. Set only after the user has explicitly confirmed which task — do NOT retry silently. Triggers a magnetism_override audit row.'),
+        confirmed_task_id: z.string().optional().describe(CONFIRMED_TASK_ID_DESCRIBE),
       },
       async (args: any) => {
         const result = engine.move({ ...args, board_id: boardId });
@@ -889,7 +895,7 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
         task_id: z.string().describe('Task ID to update'),
         sender_name: z.string().describe('Name of the person making the update'),
         sender_external_id: z.string().optional().describe('External contact ID when the caller is an external participant'),
-        confirmed_task_id: z.string().optional().describe('Pass ONLY when retrying after error_code=ambiguous_task_context. Must equal task_id. Set only after the user has explicitly confirmed which task — do NOT retry silently. Triggers a magnetism_override audit row.'),
+        confirmed_task_id: z.string().optional().describe(CONFIRMED_TASK_ID_DESCRIBE),
         updates: z.object({
           title: z.string().optional().describe('New title'),
           priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('New priority'),
