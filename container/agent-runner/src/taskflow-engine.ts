@@ -46,6 +46,22 @@ export type NotificationEntry = {
 
 export type ParentNotification = { parent_group_jid: string; message: string };
 
+export const MAGNETISM_GUARD_MODES = ['off', 'shadow', 'enforce'] as const;
+export type MagnetismGuardMode = (typeof MAGNETISM_GUARD_MODES)[number];
+
+export function parseMagnetismGuardMode(
+  raw: string | undefined,
+): MagnetismGuardMode {
+  return (MAGNETISM_GUARD_MODES as readonly string[]).includes(raw ?? '')
+    ? (raw as MagnetismGuardMode)
+    : 'shadow';
+}
+
+const TASK_REF_RE_GLOBAL =
+  /\b(?:[A-Z]{2,}-)?(?:T|P|M|R)\d+(?:\.\d+)*\b|\bSEC-[A-Z0-9]+(?:[.-][A-Z0-9]+)*\b/gi;
+const MAGNETISM_CONFIRM_VERBS =
+  /\b(Cancelar|Mover|Atualizar|Reagendar|Concluir|Aprovar|Rejeitar|Remover|Arquivar|Fechar|Finalizar|Iniciar|Reabrir|Atribuir|Reatribuir)\b/i;
+
 type CompletionRenderCommon = {
   taskId: string;
   title: string;
@@ -789,12 +805,25 @@ export class TaskflowEngine {
     force_start: 'Forçada para 🔄 Em Andamento',
   };
 
+  private chatJid: string | null;
+  private messagesDb: Database.Database | null;
+  private guardMode: MagnetismGuardMode;
+
   constructor(
     private db: Database.Database,
     private boardId: string,
-    options?: { readonly?: boolean; triggerTurnId?: string | null },
+    options?: {
+      readonly?: boolean;
+      triggerTurnId?: string | null;
+      chatJid?: string | null;
+      messagesDb?: Database.Database | null;
+      guardMode?: MagnetismGuardMode;
+    },
   ) {
     this.triggerTurnId = options?.triggerTurnId ?? null;
+    this.chatJid = options?.chatJid ?? null;
+    this.messagesDb = options?.messagesDb ?? null;
+    this.guardMode = options?.guardMode ?? 'shadow';
     this.db.pragma('busy_timeout = 5000');
     if (!options?.readonly) {
       this.ensureTaskSchema();

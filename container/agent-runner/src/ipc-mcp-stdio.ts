@@ -15,7 +15,11 @@ import {
   canUseCreateGroup,
   normalizeCreateGroupRequest,
 } from './ipc-tooling.js';
-import { ParentNotification, TaskflowEngine } from './taskflow-engine.js';
+import {
+  ParentNotification,
+  TaskflowEngine,
+  parseMagnetismGuardMode,
+} from './taskflow-engine.js';
 
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
@@ -606,8 +610,31 @@ if (process.env.NANOCLAW_IS_TASKFLOW_MANAGED === '1') {
   if (boardId) {
     const tfDb = new Database(dbPath);
     process.on('exit', () => tfDb.close());
+    // Open messages.db read-only for the magnetism guard (engine-side turn
+    // introspection). The store volume is mounted RO at src/container-runner.ts.
+    let magnetismMsgDb: Database.Database | null = null;
+    try {
+      magnetismMsgDb = new Database('/workspace/store/messages.db', {
+        readonly: true,
+      });
+      process.on('exit', () => {
+        try {
+          magnetismMsgDb?.close();
+        } catch {
+          /* best-effort */
+        }
+      });
+    } catch {
+      // If messages.db isn't mounted or is unreadable, guard fails open.
+      magnetismMsgDb = null;
+    }
     const engine = new TaskflowEngine(tfDb, boardId, {
       triggerTurnId: turnId ?? null,
+      chatJid: chatJid ?? null,
+      messagesDb: magnetismMsgDb,
+      guardMode: parseMagnetismGuardMode(
+        process.env.NANOCLAW_MAGNETISM_GUARD,
+      ),
     });
 
     /** Write IPC message files for any notifications returned by the engine. */
