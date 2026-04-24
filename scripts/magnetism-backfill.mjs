@@ -21,6 +21,9 @@ const DAYS = Number(process.env.DAYS || 30);
 const WINDOW_MS = 10 * 60 * 1000;
 const BOT_CONCAT_WINDOW_MS = 30_000;
 
+// MIRRORS container/agent-runner/src/taskflow-engine.ts:TASK_REF_RE_GLOBAL +
+// MAGNETISM_CONFIRM_VERBS. Keep in sync: if the engine heuristic changes, the
+// backfill's projected FP rate will drift from what prod actually flags.
 const TASK_REF_RE =
   /\b(?:[A-Z]{2,}-)?(?:T|P|M|R)\d+(?:\.\d+)*\b|\bSEC-[A-Z0-9]+(?:[.-][A-Z0-9]+)*\b/gi;
 const CONFIRM_VERBS =

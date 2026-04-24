@@ -6846,10 +6846,6 @@ describe('T12 magnetism guard — checkTaskIdMagnetism', () => {
       action: 'start',
       sender_name: 'Alexandre',
     });
-    // T-002 maps to 'T-002' which isn't 'T13' — firing shape.
-    // But extractTaskRefs on 'T-002' won't match since our regex needs T\d+ (no dash).
-    // Rebuild: T-002 doesn't match the bot's T13 literally either.
-    // This test validates the error shape when magnetism fires.
     expect(r.success).toBe(false);
     expect(r.error_code).toBe('ambiguous_task_context');
     expect(r.expected_task_id).toBe('T13');

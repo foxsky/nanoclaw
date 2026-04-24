@@ -62,6 +62,10 @@ const TASK_REF_RE_GLOBAL =
 const MAGNETISM_CONFIRM_VERBS =
   /\b(Cancelar|Mover|Atualizar|Reagendar|Concluir|Aprovar|Rejeitar|Remover|Arquivar|Fechar|Finalizar|Iniciar|Reabrir|Atribuir|Reatribuir)\b/i;
 
+const MAGNETISM_SHADOW_FLAG = 'magnetism_shadow_flag';
+const MAGNETISM_OVERRIDE = 'magnetism_override';
+const AMBIGUOUS_TASK_CONTEXT = 'ambiguous_task_context';
+
 type CompletionRenderCommon = {
   taskId: string;
   title: string;
@@ -847,10 +851,8 @@ export class TaskflowEngine {
    * that the user's current turn message did not reference, while the bot's
    * immediately prior message was a confirmation-question about a DIFFERENT
    * single task. See docs/superpowers/plans/2026-04-24-t12-magnetism.md.
-   *
-   * Public for direct unit testing. Fails open (returns `{ shape: 'clear' }`)
-   * whenever any required input is missing — never blocks a legitimate
-   * mutation due to incomplete turn metadata.
+   * Fails open (returns `{ shape: 'clear' }`) whenever any required input is
+   * missing — never blocks a legitimate mutation due to incomplete metadata.
    */
   checkTaskIdMagnetism(
     params: { task_id: string; confirmed_task_id?: string },
@@ -926,6 +928,50 @@ export class TaskflowEngine {
     }
 
     return { shape: 'firing', expected: botRefs[0] };
+  }
+
+  /**
+   * Apply the magnetism guard for a mutation call. Returns `{ stop: true, error }`
+   * when the guard is in enforce mode and fires; otherwise `{ stop: false }`.
+   * Records shadow flags + overrides to task_history as a side effect.
+   */
+  private runMagnetismGuard(
+    params: { task_id: string; confirmed_task_id?: string; sender_name: string },
+    taskBoardId: string,
+    path: 'move' | 'update',
+  ): { stop: true; error: TaskflowResult } | { stop: false } {
+    const magCheck = this.checkTaskIdMagnetism(params);
+    if (magCheck.shape === 'firing') {
+      if (this.guardMode === 'enforce') {
+        return {
+          stop: true,
+          error: {
+            success: false,
+            error: `O último prompt do bot era sobre ${magCheck.expected}, mas o task_id recebido é ${params.task_id}. Confirme com o usuário qual tarefa antes de retry com confirmed_task_id.`,
+            error_code: AMBIGUOUS_TASK_CONTEXT,
+            expected_task_id: magCheck.expected,
+            actual_task_id: params.task_id,
+          },
+        };
+      }
+      this.recordHistory(
+        params.task_id,
+        MAGNETISM_SHADOW_FLAG,
+        params.sender_name,
+        JSON.stringify({ expected: magCheck.expected, mode: this.guardMode, path }),
+        taskBoardId,
+      );
+    }
+    if (params.confirmed_task_id) {
+      this.recordHistory(
+        params.task_id,
+        MAGNETISM_OVERRIDE,
+        params.sender_name,
+        JSON.stringify({ confirmed: params.confirmed_task_id, path }),
+        taskBoardId,
+      );
+    }
+    return { stop: false };
   }
 
   static extractTaskRefs(text: string | null | undefined): string[] {
@@ -3594,35 +3640,8 @@ export class TaskflowEngine {
       const taskBoardId = this.taskBoardId(task);
 
       /* --- Task-id magnetism guard --- */
-      const magCheck = this.checkTaskIdMagnetism(params);
-      if (magCheck.shape === 'firing') {
-        if (this.guardMode === 'enforce') {
-          return {
-            success: false,
-            error: `O último prompt do bot era sobre ${magCheck.expected}, mas o task_id recebido é ${params.task_id}. Confirme com o usuário qual tarefa antes de retry com confirmed_task_id.`,
-            error_code: 'ambiguous_task_context',
-            expected_task_id: magCheck.expected,
-            actual_task_id: params.task_id,
-          } as MoveResult;
-        }
-        // shadow: log but proceed
-        this.recordHistory(
-          params.task_id,
-          'magnetism_shadow_flag',
-          params.sender_name,
-          JSON.stringify({ expected: magCheck.expected, mode: this.guardMode, path: 'move' }),
-          taskBoardId,
-        );
-      }
-      if (params.confirmed_task_id) {
-        this.recordHistory(
-          params.task_id,
-          'magnetism_override',
-          params.sender_name,
-          JSON.stringify({ confirmed: params.confirmed_task_id, path: 'move' }),
-          taskBoardId,
-        );
-      }
+      const magGuard = this.runMagnetismGuard(params, taskBoardId, 'move');
+      if (magGuard.stop) return magGuard.error as MoveResult;
 
       const fromColumn: string = task.column;
 
@@ -4551,34 +4570,8 @@ export class TaskflowEngine {
       const tz = getBoardTimezone(this.db, taskBoardId);
 
       /* --- Task-id magnetism guard --- */
-      const magCheck = this.checkTaskIdMagnetism(params);
-      if (magCheck.shape === 'firing') {
-        if (this.guardMode === 'enforce') {
-          return {
-            success: false,
-            error: `O último prompt do bot era sobre ${magCheck.expected}, mas o task_id recebido é ${params.task_id}. Confirme com o usuário qual tarefa antes de retry com confirmed_task_id.`,
-            error_code: 'ambiguous_task_context',
-            expected_task_id: magCheck.expected,
-            actual_task_id: params.task_id,
-          } as UpdateResult;
-        }
-        this.recordHistory(
-          params.task_id,
-          'magnetism_shadow_flag',
-          params.sender_name,
-          JSON.stringify({ expected: magCheck.expected, mode: this.guardMode, path: 'update' }),
-          taskBoardId,
-        );
-      }
-      if (params.confirmed_task_id) {
-        this.recordHistory(
-          params.task_id,
-          'magnetism_override',
-          params.sender_name,
-          JSON.stringify({ confirmed: params.confirmed_task_id, path: 'update' }),
-          taskBoardId,
-        );
-      }
+      const magGuard = this.runMagnetismGuard(params, taskBoardId, 'update');
+      if (magGuard.stop) return magGuard.error as UpdateResult;
 
       /* --- Weekday guard: reject if user-intended weekday disagrees with resolved date --- */
       if (updates.intended_weekday && (updates.scheduled_at !== undefined || updates.due_date)) {
