@@ -692,6 +692,156 @@ describe('schedule_task context_mode', () => {
   });
 });
 
+// --- schedule_task auto-ack (silent-lembrete fix) ---
+
+describe('schedule_task auto-ack', () => {
+  it('emits a terse ack to the trigger chat when scheduled with turn context', async () => {
+    const ackSpy: Array<{ jid: string; text: string }> = [];
+    deps.sendMessage = async (jid, text) => {
+      ackSpy.push({ jid, text });
+    };
+
+    const turn = createAgentTurn({
+      groupFolder: 'other-group',
+      chatJid: 'other@g.us',
+      messages: [
+        {
+          messageId: 'msg-ack-1',
+          chatJid: 'other@g.us',
+          sender: '123@s.whatsapp.net',
+          senderName: 'Joao',
+          timestamp: '2026-04-21T15:08:46.000Z',
+        },
+      ],
+    });
+
+    await processTaskIpc(
+      {
+        type: 'schedule_task',
+        prompt: 'Envie um resumo amanhã',
+        schedule_type: 'once',
+        schedule_value: '2027-06-01T12:00:00',
+        targetJid: 'other@g.us',
+        turnId: turn.id,
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    expect(getAllTasks()).toHaveLength(1);
+    // Allow the .catch()-attached promise to settle
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(ackSpy).toHaveLength(1);
+    expect(ackSpy[0].jid).toBe('other@g.us');
+    expect(ackSpy[0].text).toMatch(/^⏰ Lembrete agendado para /);
+  });
+
+  it('does NOT ack when task is scheduled without turn context (system/cron)', async () => {
+    const ackSpy: Array<{ jid: string; text: string }> = [];
+    deps.sendMessage = async (jid, text) => {
+      ackSpy.push({ jid, text });
+    };
+
+    await processTaskIpc(
+      {
+        type: 'schedule_task',
+        prompt: 'system task',
+        schedule_type: 'cron',
+        schedule_value: '0 9 * * *',
+        targetJid: 'other@g.us',
+        // no turnId — simulates admin/system scheduling
+      },
+      'whatsapp_main',
+      true,
+      deps,
+    );
+
+    expect(getAllTasks()).toHaveLength(1);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(ackSpy).toHaveLength(0);
+  });
+
+  it('cron ack wording when scheduled with turn context', async () => {
+    const ackSpy: Array<{ jid: string; text: string }> = [];
+    deps.sendMessage = async (jid, text) => {
+      ackSpy.push({ jid, text });
+    };
+
+    const turn = createAgentTurn({
+      groupFolder: 'other-group',
+      chatJid: 'other@g.us',
+      messages: [
+        {
+          messageId: 'msg-ack-cron',
+          chatJid: 'other@g.us',
+          sender: '123@s.whatsapp.net',
+          senderName: 'Joao',
+          timestamp: '2026-04-21T15:08:46.000Z',
+        },
+      ],
+    });
+
+    await processTaskIpc(
+      {
+        type: 'schedule_task',
+        prompt: 'standup diario',
+        schedule_type: 'cron',
+        schedule_value: '0 9 * * *',
+        targetJid: 'other@g.us',
+        turnId: turn.id,
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(ackSpy).toHaveLength(1);
+    expect(ackSpy[0].text).toContain('recorrente');
+    expect(ackSpy[0].text).toContain('0 9 * * *');
+  });
+
+  it('swallows sendMessage failures without losing the task', async () => {
+    deps.sendMessage = async () => {
+      throw new Error('simulated WA outage');
+    };
+
+    const turn = createAgentTurn({
+      groupFolder: 'other-group',
+      chatJid: 'other@g.us',
+      messages: [
+        {
+          messageId: 'msg-ack-err',
+          chatJid: 'other@g.us',
+          sender: '123@s.whatsapp.net',
+          senderName: 'Joao',
+          timestamp: '2026-04-21T15:08:46.000Z',
+        },
+      ],
+    });
+
+    await processTaskIpc(
+      {
+        type: 'schedule_task',
+        prompt: 'still schedules',
+        schedule_type: 'once',
+        schedule_value: '2027-06-01T12:00:00',
+        targetJid: 'other@g.us',
+        turnId: turn.id,
+      },
+      'other-group',
+      false,
+      deps,
+    );
+
+    // Task still lands in the DB even if ack throws
+    expect(getAllTasks()).toHaveLength(1);
+    // Let the promise chain settle
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+});
+
 // --- register_group success path ---
 
 describe('register_group success', () => {

@@ -258,8 +258,54 @@ const handleScheduleTask: IpcHandler = async (
       'Task created via IPC',
     );
     deps.onTasksChanged();
+
+    // Auto-ack: when the schedule was user-initiated (has trigger turn context),
+    // emit a terse confirmation to the originating chat. Agents sometimes skip
+    // the ack — e.g., when the user says "fale menos" in the same message —
+    // and schedule_task has no tool-return notification contract, so this is
+    // the only guaranteed acknowledgment path for interactive lembretes.
+    const ackChatJid = singleTurnMessage?.chatJid;
+    if (hasKnownTurn && ackChatJid) {
+      deps
+        .sendMessage(
+          ackChatJid,
+          formatScheduleAck(scheduleType, data.schedule_value as string, nextRun),
+        )
+        .catch((err) => {
+          logger.warn(
+            { err: String(err), ackChatJid, taskId },
+            'Auto-ack emission failed (task still created)',
+          );
+        });
+    }
   }
 };
+
+function formatScheduleAck(
+  scheduleType: 'once' | 'cron' | 'interval',
+  scheduleValue: string,
+  nextRun: string | null,
+): string {
+  if (scheduleType === 'once') {
+    const iso = nextRun ?? scheduleValue;
+    const d = new Date(iso);
+    if (!isNaN(d.getTime())) {
+      const when = d.toLocaleString('pt-BR', {
+        timeZone: TIMEZONE,
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      return `⏰ Lembrete agendado para ${when}.`;
+    }
+    return `⏰ Lembrete agendado.`;
+  }
+  if (scheduleType === 'cron') {
+    return `⏰ Tarefa recorrente agendada (${scheduleValue}).`;
+  }
+  return `⏰ Tarefa periódica agendada.`;
+}
 
 const handlePauseTask: IpcHandler = async (data, sourceGroup, isMain, deps) => {
   if (data.taskId) {
