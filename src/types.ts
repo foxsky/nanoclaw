@@ -92,13 +92,16 @@ export interface SendMessageContext {
   outboundMessageId?: number;
 }
 
+export const SCHEDULE_TYPES = ['cron', 'interval', 'once'] as const;
+export type ScheduleType = (typeof SCHEDULE_TYPES)[number];
+
 export interface ScheduledTask {
   id: string;
   group_folder: string;
   chat_jid: string;
   prompt: string;
   script?: string | null;
-  schedule_type: 'cron' | 'interval' | 'once';
+  schedule_type: ScheduleType;
   schedule_value: string;
   context_mode: 'group' | 'isolated';
   next_run: string | null;

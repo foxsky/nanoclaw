@@ -35,3 +35,19 @@ export function formatLocalTime(utcIso: string, timezone: string): string {
     hour12: true,
   });
 }
+
+/**
+ * Short pt-BR "DD/MM às HH:MM" form for conversational acks.
+ * Returns empty string if the ISO is unparseable so callers can fall back.
+ */
+export function formatPtBrShort(utcIso: string, timezone: string): string {
+  const date = new Date(utcIso);
+  if (isNaN(date.getTime())) return '';
+  return date.toLocaleString('pt-BR', {
+    timeZone: resolveTimezone(timezone),
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}

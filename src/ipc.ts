@@ -10,6 +10,8 @@ import {
   TIMEZONE,
 } from './config.js';
 import { AvailableGroup } from './container-runner.js';
+import { formatPtBrShort } from './timezone.js';
+import type { ScheduleType } from './types.js';
 import {
   getAgentTurn,
   getAgentTurnMessages,
@@ -259,47 +261,33 @@ const handleScheduleTask: IpcHandler = async (
     );
     deps.onTasksChanged();
 
-    // Auto-ack: when the schedule was user-initiated (has trigger turn context),
-    // emit a terse confirmation to the originating chat. Agents sometimes skip
-    // the ack — e.g., when the user says "fale menos" in the same message —
-    // and schedule_task has no tool-return notification contract, so this is
-    // the only guaranteed acknowledgment path for interactive lembretes.
+    // schedule_task has no tool-return notification contract; when the turn
+    // is user-initiated, the host is the only guaranteed ack path (agents
+    // sometimes skip replying, e.g. when the same message says "fale menos").
     const ackChatJid = singleTurnMessage?.chatJid;
     if (hasKnownTurn && ackChatJid) {
-      deps
-        .sendMessage(
+      try {
+        await deps.sendMessage(
           ackChatJid,
           formatScheduleAck(scheduleType, data.schedule_value as string, nextRun),
-        )
-        .catch((err) => {
-          logger.warn(
-            { err: String(err), ackChatJid, taskId },
-            'Auto-ack emission failed (task still created)',
-          );
-        });
+        );
+      } catch (err) {
+        logger.warn(
+          { err: String(err), ackChatJid, taskId },
+          'Auto-ack emission failed (task still created)',
+        );
+      }
     }
   }
 };
 
 function formatScheduleAck(
-  scheduleType: 'once' | 'cron' | 'interval',
+  scheduleType: ScheduleType,
   scheduleValue: string,
   nextRun: string | null,
 ): string {
-  if (scheduleType === 'once') {
-    const iso = nextRun ?? scheduleValue;
-    const d = new Date(iso);
-    if (!isNaN(d.getTime())) {
-      const when = d.toLocaleString('pt-BR', {
-        timeZone: TIMEZONE,
-        day: '2-digit',
-        month: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-      return `⏰ Lembrete agendado para ${when}.`;
-    }
-    return `⏰ Lembrete agendado.`;
+  if (scheduleType === 'once' && nextRun) {
+    return `⏰ Lembrete agendado para ${formatPtBrShort(nextRun, TIMEZONE)}.`;
   }
   if (scheduleType === 'cron') {
     return `⏰ Tarefa recorrente agendada (${scheduleValue}).`;
