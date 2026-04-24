@@ -4,6 +4,20 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-25 — TaskFlow: task-id magnetism guard (engine + MCP + template, shadow mode)
+
+Addresses the "T12 magnetism" class of bug — agent calls `taskflow_update` / `taskflow_move` with the wrong `task_id` because it picked from magnetic context instead of what the user actually addressed. Concrete case Kipp flagged 2026-04-23 SEAF-GEFIN: bot asked *"Cancelar T13? Confirme com sim."*, user replied *"só retire o prazo"*, agent operated on T12 instead.
+
+Fix shape:
+- **Engine guard** (`taskflow-engine.ts` `checkTaskIdMagnetism` + `runMagnetismGuard`): reads the current turn's user messages via the existing `/workspace/store/messages.db` read-only mount (joined through `agent_turn_messages` with composite key `(message_id, message_chat_jid)`), finds the bot's immediately prior messages in the same `chat_jid` (concatenated across a 30-second window to handle split prompts like *"Cancelar T13?"* + *"Confirme com sim."*), and fires only when: user message has zero task refs, bot concatenation has exactly one task ref in a confirmation-question shape (`?` OR one of `{Cancelar, Mover, Atualizar, Reagendar, Concluir, Aprovar, Rejeitar, Remover, Arquivar, Fechar, Finalizar, Iniciar, Reabrir, Atribuir, Reatribuir}`), and agent's `task_id` differs from the bot's single ref. Fails open on any missing metadata — never blocks a legitimate mutation due to incomplete data.
+- **Three modes** via `NANOCLAW_MAGNETISM_GUARD` env var: `off` (disabled), `shadow` (default — logs `magnetism_shadow_flag` to `task_history` and proceeds), `enforce` (returns `{success: false, error_code: 'ambiguous_task_context', expected_task_id, actual_task_id}`).
+- **MCP schema** (`ipc-mcp-stdio.ts`): new optional `confirmed_task_id` on `taskflow_update` and `taskflow_move`. Agent passes it on retry after the user confirms which task. Writes a `magnetism_override` row to `task_history`.
+- **Template rule** (CLAUDE.md.template): when the engine returns `ambiguous_task_context`, the agent must present both candidates to the user and ask — no silent retry.
+
+Phase 0 backfill (`scripts/magnetism-backfill.mjs`, 30 days of prod data): 1 candidate in 671 mutations, `max_per_board_weekly = 0.5` (threshold ≤1.0, gate PASSED). Known gap: the canonical 2026-04-23 T12/T13 case itself wasn't caught by the backfill because the original bug manifested as no-op confabulation (no `task_history` row), a different bug class. The guard would fire correctly if the same shape produced a real mutation.
+
+Shadow mode ships first. After ≥14 days of live data, a follow-up will decide whether to promote to `enforce` and render `magnetism_candidates` in the Kipp audit report.
+
 ## 2026-04-24 (later) — TaskFlow: silent-lembrete auto-ack + IPC non-blocking guarantee
 
 Kipp audit 2026-04-24 flagged João Henrique's "meu fi, me lembre tudo isso amanhã" (2026-04-21) as "pedido ignorado — sem resposta alguma." Trace showed the agent scheduled the task correctly (`scheduled_tasks` row created, executed next morning as requested) but emitted no immediate acknowledgment. Root cause: `schedule_task` has no tool-return notification contract, so interactive ack depends entirely on the agent's turn-end reply — which the agent skipped, plausibly because the same message said "fale menos tbm, você é muito prolixo."

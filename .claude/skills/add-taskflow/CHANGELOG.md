@@ -1,5 +1,20 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-04-25 — Task-id magnetism guard (engine + template, shadow mode)
+
+Engine-side soft guard for the "T12 magnetism" bug class: agent picks the wrong `task_id` because it inferred from magnetic context (e.g., the task it just operated on) instead of the task the user actually addressed. Shape that fires: user message has no `T#`/`P#`/`SEC-` ref AND the bot's immediately prior message (within 30s, concatenated across consecutive bot messages) contains exactly one task ref in a confirmation-question shape AND the agent's intended `task_id` mismatches.
+
+Three modes via `NANOCLAW_MAGNETISM_GUARD` env var:
+- `off` — guard disabled (kill switch)
+- `shadow` (default) — logs `magnetism_shadow_flag` to `task_history`, proceeds with the mutation
+- `enforce` — returns `error_code: 'ambiguous_task_context'` so the agent can ask the user
+
+New MCP field `confirmed_task_id` on `taskflow_update` and `taskflow_move`: pass on retry after the user confirms which task. Writes `magnetism_override` to `task_history` for audit visibility.
+
+Template rule: when the engine returns `ambiguous_task_context`, the agent presents both candidates (`expected_task_id` from the bot's prior question, `actual_task_id` from the failed call) and asks the user — never silent retry.
+
+Phase 0 backfill across 30 days of prod data: 1 magnetism candidate in 671 mutations, `max_per_board_weekly = 0.5` (gate threshold ≤1.0). Heuristic precise enough to ship in shadow.
+
 ## 2026-04-24 (later) — Three-variant completion notification
 
 Column-move to `done` now renders a distinct, policy-picked layout instead of the generic `🔔 Tarefa movida` text. The variants:
