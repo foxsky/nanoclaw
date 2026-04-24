@@ -27,6 +27,17 @@ Shape of the change:
 
 Ancillary: split the old `columnLabels` map into `columnEntries` `{emoji,label}` pairs so `columnLabel` (emoji-prefixed) and the new `columnLabelPlain` (text-only) both derive from one source, removing a regex and a duplicate label map in `taskflow-mcp-server.ts`. `TaskflowEngine.SEP` is now public so non-engine callers can compose consistent `━━━` headers.
 
+## 2026-04-24 (later still) — TaskFlow: simplify pass on note delta endpoints
+
+Followup to the engine-extraction note delta work. Three reviewers (reuse, quality, efficiency) flagged 23 issues; five were in-scope and fixed:
+
+- `TaskDetailPanel.invalidateOnNoteChange` was using `["task", boardId, task?.id]` and `["boardTasks"]` — keys no consumer registers. The kanban relies on `["taskflow", "board", boardId, "tasks"]` (per `BoardDetail.tsx`) and `["taskflow", "board", boardId]` (per `AddNoteDialog.tsx`). Notes would not have refreshed on the board without `onTaskUpdated?.()` covering for it. Aligned to the canonical namespace.
+- `notesDraft` React state was a stale mirror of `task.notes` after the move to delta endpoints — `persistNotes` no longer writes to it. Replaced the state + sync `useEffect` with a `useMemo` over `task?.notes`.
+- `parent_note_id` JSON validation in `add_task_note` accepted booleans because Python `isinstance(True, int)` is `True`. Added an explicit `bool` rejection.
+- The closing `SELECT t.*, b.short_code … JOIN boards` and `serializeApiTask` calls in `apiAddNote/apiEditNote/apiRemoveNote` were inside `db.transaction`, holding the write lock across a non-transactional read. Moved them out — the transaction now returns a `change` marker and the response row is built afterward.
+
+Out of scope (flagged for follow-up): extracting an `apiNoteOp<T>` skeleton across the three engine wrappers (~100 lines duplication), extracting a `route_to_mcp_mutation` helper across Python routes (also affects pre-existing `update_task` / `delete_task`), widening `TaskflowResult` to include `error_code` (drops twelve `as any` casts), and the per-call `new TaskflowEngine(...)` constructor cost that affects all `api_*` MCP tools.
+
 ## 2026-04-24 (later) — TaskFlow: API note delta endpoints share engine logic
 
 Notes on the REST API path are now CRUD'd through the engine instead of via whole-array PATCH on `api_update_simple_task`. The earlier zod-schema-on-update approach overwrote engine-maintained note metadata on every dashboard save: `next_note_id` got stale, `author_actor_*` identity tracking was wiped, meeting `phase`/`status` and `parent_note_id` threading were silently lost. The Phase 6 service-token bypass complicated direct delegation — `engine.update()`'s manager-or-assignee gate at `taskflow-engine.ts:4110` rejects service callers, so the API needed its own auth path without duplicating note logic.
