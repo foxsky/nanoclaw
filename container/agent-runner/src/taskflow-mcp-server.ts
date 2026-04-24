@@ -335,6 +335,30 @@ export function registerTools(server: McpServer, db: Database.Database): void {
       assignee: z.string().nullable().optional(),
       priority: z.string().optional(),
       due_date: z.string().nullable().optional(),
+      notes: z.array(
+        z.object({
+          id: z.union([z.string(), z.number()]),
+          author: z.string().optional(),
+          by: z.string().optional(),
+          text: z.string().optional(),
+          content: z.string().optional(),
+          created_at: z.string().optional(),
+          at: z.string().optional(),
+          updated_at: z.string().nullable().optional(),
+        })
+          .transform((n) => {
+            const author = (n.author ?? n.by ?? '').trim()
+            const text = (n.text ?? n.content ?? '').trim()
+            const created_at = (n.created_at ?? n.at ?? '').trim()
+            const id = String(n.id).trim()
+            const updated_at = n.updated_at == null ? undefined : String(n.updated_at).trim() || undefined
+            return { id, author, text, created_at, updated_at }
+          })
+          .refine((n) => n.id !== '' && n.author !== '' && n.text !== '' && n.created_at !== '', {
+            message: 'note requires id + author|by + text|content + created_at|at',
+          })
+      ).nullable().optional(),
+      labels: z.array(z.string().trim().min(1)).nullable().optional(),
     },
     (params) => {
       try {
@@ -406,6 +430,18 @@ export function registerTools(server: McpServer, db: Database.Database): void {
           setValues.push(resolvedPriority)
         }
         if ('due_date' in params) { setClauses.push('due_date = ?'); setValues.push(params.due_date) }
+        let notesJson: string | undefined = undefined
+        if ('notes' in params) {
+          notesJson = params.notes == null ? '[]' : JSON.stringify(params.notes)
+          setClauses.push('notes = ?')
+          setValues.push(notesJson)
+        }
+        let labelsJson: string | undefined = undefined
+        if ('labels' in params) {
+          labelsJson = params.labels == null ? '[]' : JSON.stringify(params.labels)
+          setClauses.push('labels = ?')
+          setValues.push(labelsJson)
+        }
 
         db.prepare(`UPDATE tasks SET ${setClauses.join(', ')} WHERE id = ? AND board_id = ?`)
           .run(...setValues, params.task_id, params.board_id)
@@ -428,6 +464,8 @@ export function registerTools(server: McpServer, db: Database.Database): void {
         if ('assignee' in params) row['assignee'] = resolvedAssignee
         if ('priority' in params) row['priority'] = resolvedPriority
         if ('due_date' in params) row['due_date'] = params.due_date
+        if ('notes' in params) row['notes'] = notesJson
+        if ('labels' in params) row['labels'] = labelsJson
         const data = engine.serializeApiTask(row)
 
         const notification_events: Array<{ kind: string; board_id: string; target_person_id: string; message: string }> = []
