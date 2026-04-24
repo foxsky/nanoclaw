@@ -1891,7 +1891,7 @@ export class TaskflowEngine {
     parent_note_id?: number;
   }): TaskflowResult & { data?: Record<string, unknown> } {
     try {
-      return this.db.transaction(() => {
+      const txResult = this.db.transaction(() => {
         const task = this.db
           .prepare('SELECT * FROM tasks WHERE id = ? AND board_id = ?')
           .get(params.task_id, params.board_id) as Record<string, any> | undefined;
@@ -1920,12 +1920,13 @@ export class TaskflowEngine {
 
         this.db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ? AND board_id = ?').run(now, params.task_id, params.board_id);
         this.recordHistory(params.task_id, 'updated', params.sender_name, JSON.stringify({ note_added: true }));
-
-        const row = this.db.prepare(
-          `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ?`
-        ).get(params.task_id) as Record<string, unknown>;
-        return { success: true, data: this.serializeApiTask(row), changes: [out.change] } as any;
+        return { success: true, change: out.change } as any;
       })();
+      if (!txResult.success) return txResult;
+      const row = this.db.prepare(
+        `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ?`
+      ).get(params.task_id) as Record<string, unknown>;
+      return { success: true, data: this.serializeApiTask(row), changes: [txResult.change] } as any;
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }
@@ -1940,7 +1941,7 @@ export class TaskflowEngine {
     text: string;
   }): TaskflowResult & { data?: Record<string, unknown> } {
     try {
-      return this.db.transaction(() => {
+      const txResult = this.db.transaction(() => {
         const task = this.db
           .prepare('SELECT * FROM tasks WHERE id = ? AND board_id = ?')
           .get(params.task_id, params.board_id) as Record<string, any> | undefined;
@@ -1969,12 +1970,13 @@ export class TaskflowEngine {
 
         this.db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ? AND board_id = ?').run(now, params.task_id, params.board_id);
         this.recordHistory(params.task_id, 'updated', params.sender_name, JSON.stringify({ note_edited: params.note_id }));
-
-        const row = this.db.prepare(
-          `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ?`
-        ).get(params.task_id) as Record<string, unknown>;
-        return { success: true, data: this.serializeApiTask(row), changes: [out.change] } as any;
+        return { success: true, change: out.change } as any;
       })();
+      if (!txResult.success) return txResult;
+      const row = this.db.prepare(
+        `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ?`
+      ).get(params.task_id) as Record<string, unknown>;
+      return { success: true, data: this.serializeApiTask(row), changes: [txResult.change] } as any;
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }
@@ -1988,7 +1990,7 @@ export class TaskflowEngine {
     note_id: number;
   }): TaskflowResult & { data?: Record<string, unknown> } {
     try {
-      return this.db.transaction(() => {
+      const txResult = this.db.transaction(() => {
         const task = this.db
           .prepare('SELECT * FROM tasks WHERE id = ? AND board_id = ?')
           .get(params.task_id, params.board_id) as Record<string, any> | undefined;
@@ -2016,12 +2018,13 @@ export class TaskflowEngine {
 
         this.db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ? AND board_id = ?').run(now, params.task_id, params.board_id);
         this.recordHistory(params.task_id, 'updated', params.sender_name, JSON.stringify({ note_removed: params.note_id }));
-
-        const row = this.db.prepare(
-          `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ?`
-        ).get(params.task_id) as Record<string, unknown>;
-        return { success: true, data: this.serializeApiTask(row), changes: [out.change] } as any;
+        return { success: true, change: out.change } as any;
       })();
+      if (!txResult.success) return txResult;
+      const row = this.db.prepare(
+        `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ?`
+      ).get(params.task_id) as Record<string, unknown>;
+      return { success: true, data: this.serializeApiTask(row), changes: [txResult.change] } as any;
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }
@@ -4137,7 +4140,6 @@ export class TaskflowEngine {
   /* ---------------------------------------------------------------- */
 
   /** Context captured once per request, passed to each note helper. */
-
   private addNoteCore(
     ctx: {
       task: any;
