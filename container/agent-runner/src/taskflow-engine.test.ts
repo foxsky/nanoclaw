@@ -6739,6 +6739,59 @@ describe('T12 magnetism guard — checkTaskIdMagnetism', () => {
     });
   });
 
+  it('INVALID_OVERRIDE: confirmed_task_id != task_id is refused even in shadow mode', () => {
+    insertMsg(msgDb, {
+      id: 'bot-1',
+      chat_jid: CHAT,
+      content: 'Cancelar T13?',
+      timestamp: '2026-04-23T15:08:30.000Z',
+      is_from_me: 1,
+    });
+    insertMsg(msgDb, {
+      id: 'user-1',
+      chat_jid: CHAT,
+      content: 'só retire o prazo',
+      timestamp: '2026-04-23T15:08:37.000Z',
+    });
+    linkTurn(msgDb, TURN, 'user-1', CHAT, 0, '2026-04-23T15:08:37.000Z');
+
+    const engine = mkEngine();
+    expect(
+      engine.checkTaskIdMagnetism({ task_id: 'T12', confirmed_task_id: 'T15' }),
+    ).toEqual({ shape: 'invalid_override' });
+  });
+
+  it('move() refuses invalid override even in shadow mode', () => {
+    insertMsg(msgDb, {
+      id: 'bot-1',
+      chat_jid: CHAT,
+      content: 'Cancelar T13?',
+      timestamp: '2026-04-23T15:08:30.000Z',
+      is_from_me: 1,
+    });
+    insertMsg(msgDb, {
+      id: 'user-1',
+      chat_jid: CHAT,
+      content: 'só retire o prazo',
+      timestamp: '2026-04-23T15:08:37.000Z',
+    });
+    linkTurn(msgDb, TURN, 'user-1', CHAT, 0, '2026-04-23T15:08:37.000Z');
+
+    const engine = mkEngine('shadow');
+    const r = engine.move({
+      board_id: BOARD_ID,
+      task_id: 'T-002',
+      action: 'start',
+      sender_name: 'Alexandre',
+      confirmed_task_id: 'T-999',
+    });
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('invalid_confirmed_task_id');
+    // No mutation should have happened — task still in next_action.
+    const task = engine.getTask('T-002');
+    expect(task.column).toBe('next_action');
+  });
+
   it('CLEAR: confirmed_task_id override bypasses the guard', () => {
     insertMsg(msgDb, {
       id: 'bot-1',

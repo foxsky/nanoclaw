@@ -856,8 +856,18 @@ export class TaskflowEngine {
    */
   checkTaskIdMagnetism(
     params: { task_id: string; confirmed_task_id?: string },
-  ): { shape: 'firing'; expected: string } | { shape: 'clear' } {
-    if (params.confirmed_task_id) return { shape: 'clear' };
+  ):
+    | { shape: 'firing'; expected: string }
+    | { shape: 'clear' }
+    | { shape: 'invalid_override' } {
+    // confirmed_task_id MUST equal task_id (the agent's documented contract).
+    // Anything else is either a bug in the agent or a bypass attempt — refuse.
+    if (params.confirmed_task_id !== undefined) {
+      if (params.confirmed_task_id === params.task_id) {
+        return { shape: 'clear' };
+      }
+      return { shape: 'invalid_override' };
+    }
     if (this.guardMode === 'off') return { shape: 'clear' };
     if (!this.messagesDb || !this.chatJid || !this.triggerTurnId) {
       return { shape: 'clear' };
@@ -941,6 +951,20 @@ export class TaskflowEngine {
     path: 'move' | 'update',
   ): { stop: true; error: TaskflowResult } | { stop: false } {
     const magCheck = this.checkTaskIdMagnetism(params);
+    if (magCheck.shape === 'invalid_override') {
+      // Always reject — even in shadow mode — because this is the agent
+      // breaking the documented `confirmed_task_id === task_id` contract,
+      // not a magnetism finding.
+      return {
+        stop: true,
+        error: {
+          success: false,
+          error: `confirmed_task_id (${params.confirmed_task_id}) must equal task_id (${params.task_id}). Reread the tool description.`,
+          error_code: 'invalid_confirmed_task_id',
+          actual_task_id: params.task_id,
+        },
+      };
+    }
     if (magCheck.shape === 'firing') {
       if (this.guardMode === 'enforce') {
         return {
@@ -962,7 +986,9 @@ export class TaskflowEngine {
         taskBoardId,
       );
     }
-    if (params.confirmed_task_id) {
+    // Only audit-log a successful override (confirmed_task_id matched task_id);
+    // invalid overrides already returned above.
+    if (params.confirmed_task_id === params.task_id) {
       this.recordHistory(
         params.task_id,
         MAGNETISM_OVERRIDE,
