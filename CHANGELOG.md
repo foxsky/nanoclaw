@@ -4,6 +4,10 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-24 — TaskFlow: proactive approval routing
+
+Template-only fix surfaced by Kipp audit 2026-04-21..23. When an assignee sends `"TXXX concluída"` and the engine moves the task to `review` (close-approval required), the agent previously sometimes offered *"você ou um delegado pode aprovar"* — but the engine blocks assignee self-approval. New rule instructs the agent to pre-check `tasks.assignee == SENDER` before proposing approval and, when matched, directly name the actual approver (board manager, or parent-board manager for delegated tasks). Rendered `groups/*/CLAUDE.md` copies regenerated from the template; no engine or skill-structure changes.
+
 ## 2026-04-21 — Phase 4 notification contract hardening
 
 Phase 4 of the TaskFlow API / MCP notification unification landed as a contract hardening pass across both sides of the boundary. On the Node side, `container/agent-runner/src/taskflow-mcp-server.ts` no longer accepts the stale `deferred_notification.board_id` shape, parses notification arrays fail-closed instead of silently skipping malformed items, and adds explicit normalization for engine-style `notifications` plus `parent_notification` payloads. That closes the mismatch where the engine emitted routing fields like `notification_group_jid` and `target_kind` while the REST/API layer was inventing a parallel event contract.

@@ -1,5 +1,11 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-04-24 — Proactive approval routing (T61 self-approval paper cut)
+
+Kipp audit 2026-04-21 to 2026-04-23 flagged Alexandre's "T61 concluído" as a template gap: the first bot reply suggested *"você ou um delegado pode aprovar"* even though Alexandre is the task's assignee and the engine blocks assignee self-approval. After Alexandre replied "Sim", the engine correctly rejected the action — but the round-trip was avoidable.
+
+The template already had a **reactive** self-approval rule (tell the user who can approve once the engine has refused). Added a sibling **proactive** rule next to it: before offering approval routing on an `action='conclude'` request that lands in `review` because `requires_close_approval=1`, the agent is instructed to compare `tasks.assignee` against SENDER and — when they match — skip "você ou um delegado" entirely and name the actual approver on the first reply. For delegated tasks (linked to a parent board), the approver is the parent board's manager. No engine change; rendered group copies regenerated from the template.
+
 ## 2026-04-19 — Channel separation guidance for TaskFlow prompts
 
 Template and setup docs now draw a hard boundary between the **current-group reply path** and the **explicit transport path**. Interactive user turns in the current group should use normal assistant output; they should not call `send_message` just to echo a board, digest, or confirmation back into the same chat. `send_message` is now documented as the transport tool for cross-group delivery, DMs, scheduled runner output, and long-running progress updates.

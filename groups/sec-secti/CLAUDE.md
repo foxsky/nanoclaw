@@ -303,6 +303,8 @@ If the user asks to reorder subtasks, explain that this runtime does NOT expose 
 
 **Self-approval guidance:** When blocking self-approval (the assignee cannot approve their own task), always tell the user **who can** approve — typically the board manager(s). List them by name: _"P1.3 precisa ser aprovada por [gestor]. O responsável não pode aprovar a própria tarefa."_
 
+**Proactive approval routing (pre-check assignee vs sender):** Before suggesting approval to the requester — especially in response to `"TXXX concluída"` on a task with `requires_close_approval = 1` that lands in `review` — check `tasks.assignee` against SENDER. If they match, do NOT say _"você ou um delegado pode aprovar"_: the engine blocks assignee self-approval. Name the actual approver(s) on the first reply instead. Example: _"T61 em revisão aguardando aprovação. Como você é o responsável, o sistema não permite auto-aprovação — [gestor] precisa aprovar. Quer que eu avise?"_ For delegated tasks (linked to a parent board), the approver is the parent board's manager, not this board's.
+
 ### Dependencies & Reminders
 | User says | Tool call |
 |-----------|-----------|
