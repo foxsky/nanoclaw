@@ -842,12 +842,11 @@ Expected: FAIL — functions undefined.
 
 - [ ] **Step 3: Implement in `src/memory-service.ts`**
 
-Append to `src/memory-service.ts`:
+Append to `src/memory-service.ts` (note: do NOT re-import `collectionName` — it's already defined in this file):
 
 ```typescript
 import type { Database as Db } from 'better-sqlite3';
 import { logger } from './logger.js';
-import { collectionName } from './memory-service.js';
 import type { EmbeddingService } from './embedding-service.js';
 import { isMemoryCategory, isMemoryScope } from './memory-types.js';
 
@@ -866,14 +865,19 @@ export function resolveSenderForUserScope(
     .get(groupFolder) as { jid: string } | undefined;
   if (!groupRow) return { action: 'no_recent_sender' };
 
+  // Compute ISO cutoff explicitly. messages.timestamp stores ISO strings
+  // like '2026-04-25T15:42:11.000Z'; SQLite's datetime('now', '-10 minutes')
+  // returns space-formatted '2026-04-25 15:32:11' which lexically compares
+  // unreliably against ISO. Use a parameterized ISO cutoff instead.
+  const cutoffIso = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   const recents = messagesDb
     .prepare(`
       SELECT sender, sender_name FROM messages
       WHERE chat_jid = ? AND is_from_me = 0
-        AND timestamp >= datetime('now', '-10 minutes')
+        AND timestamp >= ?
       ORDER BY timestamp DESC LIMIT 5
     `)
-    .all(groupRow.jid) as Array<{ sender: string; sender_name: string }>;
+    .all(groupRow.jid, cutoffIso) as Array<{ sender: string; sender_name: string }>;
 
   if (recents.length === 0) return { action: 'no_recent_sender' };
 
@@ -1205,164 +1209,99 @@ git commit -m "feat(memory): processMemoryForget with prefix resolution + scoped
 
 ## Phase C — Container env + plumbing
 
-### Task 8: Forward `NANOCLAW_MEMORY` + `NANOCLAW_MEMORY_ENABLED` env vars
+### Task 8: Combined env forwarding + ContainerInput type additions + senderJid plumbing
+
+**Why combined**: Task 8 originally was just env var forwarding, Task 9 added the `senderJid`/`memoryEnabled` types. They couldn't compile independently — Task 8's code references `input.memoryEnabled` and `input.senderJid` which only exist after Task 9. Combined, they form one shippable unit. Per Codex round 7 finding, additionally route the new env vars through `buildNanoclawMcpEnv()` (the MCP subprocess builds its env via that function — Docker `-e` flags alone don't reach the MCP server).
 
 **Files:**
-- Modify: `src/container-runner.ts:520-545` (env var splice block)
-- Test: `src/container-runner.test.ts` (verify the spawn args include the new env vars when configured)
+- Modify: `container/agent-runner/src/runtime-config.ts` (interfaces + `buildNanoclawMcpEnv`)
+- Modify: `src/container-runner.ts` (Docker `-e` env splice + populate `input.senderJid`/`input.memoryEnabled`)
+- Modify: `src/index.ts` (caller of `runContainerAgent` reads sender + memory_enabled, passes to input)
+- Modify: `src/db.ts` or wherever `RegisteredGroup`-typed rows are SELECTed (add `memory_enabled` to SELECT)
+- Modify: `src/types.ts` (RegisteredGroup interface)
+- **Modify: the inbound→IPC follow-up enqueue path** — see Step 6 below for the concrete identification/wiring
+- Test: `container/agent-runner/src/runtime-config.test.ts`, `src/container-runner.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test (types only, behavior tests later)**
+
+`container/agent-runner/src/runtime-config.test.ts` (append or create):
 
 ```typescript
-// src/container-runner.test.ts (add to existing)
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
+import type { AgentTurnContext, ContainerInput } from './runtime-config.js';
+import { buildNanoclawMcpEnv } from './runtime-config.js';
 
-describe('runContainerAgent: NANOCLAW_MEMORY env forwarding', () => {
-  it('forwards NANOCLAW_MEMORY env var when set', async () => {
-    process.env.NANOCLAW_MEMORY = 'on';
-    // Mock spawn to capture args
-    const spawnMock = vi.fn().mockReturnValue({ stdin: { write: () => {}, end: () => {} }, stdout: { on: () => {} }, stderr: { on: () => {} }, on: () => {} });
-    vi.doMock('child_process', () => ({ spawn: spawnMock }));
-    // ... call runContainerAgent (the test scaffolding may need adjustment)
-    const args: string[] = spawnMock.mock.calls[0][1];
-    expect(args).toContain('NANOCLAW_MEMORY=on');
+describe('AgentTurnContext.senderJid + ContainerInput additions', () => {
+  it('AgentTurnContext.senderJid is optional', () => {
+    const ctx: AgentTurnContext = { turnId: 't1', senderJid: '5585@s.whatsapp.net' };
+    expect(ctx.senderJid).toBe('5585@s.whatsapp.net');
+    const ctx2: AgentTurnContext = { turnId: 't2' };
+    expect(ctx2.senderJid).toBeUndefined();
   });
 
-  it('forwards NANOCLAW_MEMORY_ENABLED=1 when registered_groups.memory_enabled=1', async () => {
-    // Setup: mock the registered group with memory_enabled=1
-    // ... call runContainerAgent
-    const args: string[] = spawnMock.mock.calls[0][1];
-    expect(args).toContain('NANOCLAW_MEMORY_ENABLED=1');
+  it('ContainerInput.senderJid + memoryEnabled + senderName are optional', () => {
+    const input: ContainerInput = {
+      prompt: 'x', groupFolder: 'g', chatJid: 'c', isMain: false,
+      senderJid: '5585@s.whatsapp.net',
+      senderName: 'Maria',
+      memoryEnabled: true,
+    };
+    expect(input.senderJid).toBe('5585@s.whatsapp.net');
+    expect(input.senderName).toBe('Maria');
+    expect(input.memoryEnabled).toBe(true);
+  });
+});
+
+describe('buildNanoclawMcpEnv: memory env vars', () => {
+  it('forwards NANOCLAW_MEMORY_ENABLED + sender info when memoryEnabled=true', () => {
+    const env = buildNanoclawMcpEnv({
+      prompt: '', groupFolder: 'g', chatJid: 'c', isMain: false,
+      memoryEnabled: true,
+      senderJid: '5585@s.whatsapp.net',
+      senderName: 'Maria',
+    });
+    expect(env.NANOCLAW_MEMORY_ENABLED).toBe('1');
+    expect(env.NANOCLAW_SENDER_JID).toBe('5585@s.whatsapp.net');
+    expect(env.NANOCLAW_SENDER_NAME).toBe('Maria');
   });
 
-  it('forwards NANOCLAW_MEMORY_ENABLED=0 when memory_enabled=0', async () => {
-    // ...
-    expect(args).toContain('NANOCLAW_MEMORY_ENABLED=0');
+  it('NANOCLAW_MEMORY_ENABLED=0 when flag is false', () => {
+    const env = buildNanoclawMcpEnv({
+      prompt: '', groupFolder: 'g', chatJid: 'c', isMain: false,
+      memoryEnabled: false,
+    });
+    expect(env.NANOCLAW_MEMORY_ENABLED).toBe('0');
+  });
+
+  it('passes through process.env.NANOCLAW_MEMORY when set', () => {
+    const prev = process.env.NANOCLAW_MEMORY;
+    process.env.NANOCLAW_MEMORY = 'off';
+    try {
+      const env = buildNanoclawMcpEnv({
+        prompt: '', groupFolder: 'g', chatJid: 'c', isMain: false, memoryEnabled: true,
+      });
+      expect(env.NANOCLAW_MEMORY).toBe('off');
+    } finally {
+      if (prev === undefined) delete process.env.NANOCLAW_MEMORY;
+      else process.env.NANOCLAW_MEMORY = prev;
+    }
   });
 });
 ```
-
-If the existing `container-runner.test.ts` doesn't have a spawn-mocking pattern, this test may need a refactor of the production code first to inject `spawn`. Check for existing patterns; if absent, write a smaller test that just asserts the env-var splice helper produces the expected args.
 
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-npx vitest run src/container-runner.test.ts -t "NANOCLAW_MEMORY env forwarding"
-```
-Expected: FAIL.
-
-- [ ] **Step 3: Implement in `src/container-runner.ts`**
-
-After the existing `OLLAMA_HOST`/`EMBEDDING_MODEL` splice (around line 530-538), add:
-
-```typescript
-// Memory layer kill-switch (system-wide + per-board)
-if (process.env.NANOCLAW_MEMORY) {
-  containerArgs.splice(
-    containerArgs.length - 1, 0,
-    '-e', `NANOCLAW_MEMORY=${process.env.NANOCLAW_MEMORY}`,
-  );
-}
-// Per-board flag from registered_groups.memory_enabled (passed via input.memoryEnabled)
-containerArgs.splice(
-  containerArgs.length - 1, 0,
-  '-e', `NANOCLAW_MEMORY_ENABLED=${input.memoryEnabled ? '1' : '0'}`,
-);
-```
-
-`input.memoryEnabled` requires the type addition in Task 9 — sequence Task 9 before this if the typecheck fails, or do them as a paired commit.
-
-- [ ] **Step 4: Run tests**
-
-```bash
-npx vitest run src/container-runner.test.ts -t "NANOCLAW_MEMORY env forwarding"
-```
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/container-runner.ts src/container-runner.test.ts
-git commit -m "feat(memory): forward NANOCLAW_MEMORY + NANOCLAW_MEMORY_ENABLED env vars
-
-Container needs both for kill-switch:
-- NANOCLAW_MEMORY (system-wide, set in service env, only forwarded if defined)
-- NANOCLAW_MEMORY_ENABLED (per-board, derived from registered_groups.memory_enabled)
-Without these, the container's MCP tools and recall preamble silently default-on
-regardless of host kill-switch state."
-```
-
----
-
-### Task 9: `senderJid` plumbing through `AgentTurnContext` + `ContainerInput`
-
-**Files:**
-- Modify: `container/agent-runner/src/runtime-config.ts` (interfaces)
-- Modify: `src/container-runner.ts` (host populates `input.senderJid` + `input.memoryEnabled`)
-- Modify: `src/index.ts` (caller of `runContainerAgent` passes inbound message's `sender`)
-- Modify: wherever the inbound→IPC follow-up enqueue path lives (per spec §9.3 — implementation prerequisite)
-- Test: `container/agent-runner/src/runtime-config.test.ts`
-
-- [ ] **Step 1: Identify the inbound→IPC follow-up enqueue path (PREREQUISITE)**
-
-Per spec §9.3: `GroupQueue.sendMessage` may have no production callers wiring TaskFlow follow-ups today. Trace:
-
-```bash
-grep -rn "groupQueue\|GroupQueue\.prototype\.sendMessage" /root/nanoclaw/src --include="*.ts" | grep -v "\.test\.ts" | head -20
-grep -rn "writeFileSync.*ipc.*input" /root/nanoclaw/src --include="*.ts" | grep -v "\.test\.ts" | head -20
-```
-
-Document findings. Three possible outcomes:
-- **A**: Found a real call site. Modify it to populate `turnContext.senderJid`.
-- **B**: Found a different mechanism (direct file write somewhere). Use the same approach there.
-- **C**: No active path exists. Add a call site that wires the WhatsApp inbound handler to `groupQueue.sendMessage(chatJid, text, { turnId, senderJid: msg.sender })`.
-
-If outcome C: this becomes a substantive subtask requiring its own design (and probably its own commit). Discuss with the user before proceeding.
-
-- [ ] **Step 2: Write the failing test**
-
-```typescript
-// container/agent-runner/src/runtime-config.test.ts (append or create)
-import { describe, it, expect } from 'vitest';
-import type { AgentTurnContext, ContainerInput } from './runtime-config.js';
-
-describe('AgentTurnContext.senderJid', () => {
-  it('is an optional string', () => {
-    const ctx: AgentTurnContext = { turnId: 't1', senderJid: '5585@s.whatsapp.net' };
-    expect(ctx.senderJid).toBe('5585@s.whatsapp.net');
-    const ctx2: AgentTurnContext = { turnId: 't2' }; // omitting is fine
-    expect(ctx2.senderJid).toBeUndefined();
-  });
-});
-
-describe('ContainerInput.senderJid + memoryEnabled', () => {
-  it('both are optional fields', () => {
-    const input: ContainerInput = {
-      prompt: 'x', groupFolder: 'g', chatJid: 'c', isMain: false,
-      senderJid: '5585@s.whatsapp.net',
-      memoryEnabled: true,
-    };
-    expect(input.senderJid).toBe('5585@s.whatsapp.net');
-    expect(input.memoryEnabled).toBe(true);
-  });
-});
-```
-
-- [ ] **Step 3: Run test to verify it fails**
-
-```bash
 cd container/agent-runner && npx vitest run src/runtime-config.test.ts
 ```
-Expected: FAIL — TypeScript compile error (fields don't exist).
+Expected: FAIL — types + new env vars don't exist.
 
-- [ ] **Step 4: Add to interfaces**
-
-`container/agent-runner/src/runtime-config.ts`:
+- [ ] **Step 3: Add to `container/agent-runner/src/runtime-config.ts`**
 
 ```typescript
 export interface AgentTurnContext {
   turnId: string;
-  senderJid?: string;        // NEW: per-user collection routing on follow-ups
+  senderJid?: string;        // NEW
 }
 
 export interface ContainerInput {
@@ -1383,70 +1322,204 @@ export interface ContainerInput {
   ollamaHost?: string;
   embeddingModel?: string;
   turnContext?: AgentTurnContext;
-  senderJid?: string;        // NEW: initial sender (initial container start)
+  senderJid?: string;        // NEW: initial sender
+  senderName?: string;       // NEW: initial sender name
   memoryEnabled?: boolean;   // NEW: from registered_groups.memory_enabled
 }
 ```
 
-Mirror in `src/container-runner.ts` if there's a host-side `ContainerInput` type definition there (per Codex round 5 finding it has a duplicate definition):
-
-- [ ] **Step 5: Update host `runContainerAgent` to populate `input.senderJid` + `input.memoryEnabled`**
-
-In `src/index.ts` around the call to `runContainerAgent` (search for it; the existing call at ~line 759 takes a structured arg). Add:
+In `buildNanoclawMcpEnv` (around line 75-115), append before the final `return env;`:
 
 ```typescript
-const senderJidForContainer = inboundMessage.sender; // pass the sender's JID
-const memoryEnabledForContainer = group.memoryEnabled === 1; // from the registered_groups row
-const output = await runContainerAgent(
-  group,
-  {
-    // ... existing fields
-    senderJid: senderJidForContainer,
-    memoryEnabled: memoryEnabledForContainer,
-  },
-  // ...
-);
+  // Memory layer kill-switch + sender plumbing for MCP subprocess
+  if (process.env.NANOCLAW_MEMORY) {
+    env.NANOCLAW_MEMORY = process.env.NANOCLAW_MEMORY;
+  }
+  env.NANOCLAW_MEMORY_ENABLED = containerInput.memoryEnabled ? '1' : '0';
+  if (containerInput.senderJid) {
+    env.NANOCLAW_SENDER_JID = containerInput.senderJid;
+  }
+  if (containerInput.senderName) {
+    env.NANOCLAW_SENDER_NAME = containerInput.senderName;
+  }
 ```
 
-The `group.memoryEnabled` field needs to be on the `RegisteredGroup` interface too — add it there:
+Mirror the `ContainerInput` interface additions in `src/container-runner.ts` if it has a duplicate definition (per Codex round 5 finding).
+
+- [ ] **Step 4: Add Docker `-e` env splice in `src/container-runner.ts`**
+
+After the existing `OLLAMA_HOST`/`EMBEDDING_MODEL` splice (around line 530-538), add:
 
 ```typescript
-// wherever RegisteredGroup is defined (likely src/types.ts)
+// Memory layer: kill-switch + per-board flag + sender info to Docker container
+if (process.env.NANOCLAW_MEMORY) {
+  containerArgs.splice(
+    containerArgs.length - 1, 0,
+    '-e', `NANOCLAW_MEMORY=${process.env.NANOCLAW_MEMORY}`,
+  );
+}
+containerArgs.splice(
+  containerArgs.length - 1, 0,
+  '-e', `NANOCLAW_MEMORY_ENABLED=${input.memoryEnabled ? '1' : '0'}`,
+);
+if (input.senderJid) {
+  containerArgs.splice(
+    containerArgs.length - 1, 0,
+    '-e', `NANOCLAW_SENDER_JID=${input.senderJid}`,
+  );
+}
+if (input.senderName) {
+  containerArgs.splice(
+    containerArgs.length - 1, 0,
+    '-e', `NANOCLAW_SENDER_NAME=${input.senderName}`,
+  );
+}
+```
+
+- [ ] **Step 5: Add `memory_enabled` to `RegisteredGroup` + SELECT**
+
+In `src/types.ts`:
+
+```typescript
 export interface RegisteredGroup {
   // ... existing fields
   memoryEnabled?: number;  // 0 or 1, from registered_groups.memory_enabled
 }
 ```
 
-And update the SQL that reads `registered_groups` rows to SELECT `memory_enabled` (likely in `src/db.ts`).
+In `src/db.ts`, find the SELECT that reads `registered_groups` rows (used by the registered-groups loader). Add `memory_enabled` to the column list and to the row mapping:
 
-- [ ] **Step 6: Apply the inbound→IPC enqueue update from Step 1**
+```typescript
+// Find the existing SELECT, add memory_enabled
+db.prepare(`
+  SELECT jid, name, folder, trigger_pattern, added_at, container_config,
+         requires_trigger, taskflow_managed, taskflow_hierarchy_level,
+         taskflow_max_depth, is_main,
+         memory_enabled                          -- NEW
+  FROM registered_groups
+`).all();
 
-Apply the modification you identified in Step 1 to populate `turnContext.senderJid` from the inbound message's sender field.
+// In the row→RegisteredGroup mapping:
+const group: RegisteredGroup = {
+  // ... existing fields
+  memoryEnabled: row.memory_enabled,            // NEW
+};
+```
 
-- [ ] **Step 7: Run tests + typecheck**
+- [ ] **Step 6: Update `runContainerAgent` caller in `src/index.ts` (initial start)**
+
+Find the existing `runContainerAgent(group, { ... }, ...)` call at ~line 759. Add the inbound message's sender info + memoryEnabled flag:
+
+```typescript
+const inbound = /* the inbound WhatsApp message variable in scope at this site */;
+const senderJidForContainer = inbound.sender;
+const senderNameForContainer = inbound.senderName ?? inbound.pushName ?? '';
+const memoryEnabledForContainer = group.memoryEnabled === 1;
+
+const output = await runContainerAgent(
+  group,
+  {
+    prompt,
+    sessionId,
+    groupFolder: group.folder,
+    chatJid,
+    isMain,
+    isTaskflowManaged: group.taskflowManaged === true,
+    taskflowHierarchyLevel: group.taskflowHierarchyLevel,
+    taskflowMaxDepth: group.taskflowMaxDepth,
+    assistantName: getGroupSenderName(group.trigger),
+    turnContext,
+    senderJid: senderJidForContainer,         // NEW
+    senderName: senderNameForContainer,       // NEW
+    memoryEnabled: memoryEnabledForContainer, // NEW
+    ...(imageAttachments.length > 0 && { imageAttachments }),
+  },
+  // ...
+);
+```
+
+(The exact variable names for the inbound message at this call site may differ — search for the existing `runContainerAgent` invocation and inspect surrounding code.)
+
+- [ ] **Step 7: Wire `turnContext.senderJid` in the inbound→IPC follow-up enqueue path**
+
+Per spec §9.3, the v2 plan was unclear about whether `GroupQueue.sendMessage` has any active production callers. **Concrete approach for v2 plan**: regardless of whether a caller exists today, the active inbound→follow-up path goes through `src/group-queue.ts:223-261`'s `sendMessage(groupJid, text, turnContext)`. Modify any caller (or add one if absent) to populate `turnContext.senderJid`:
+
+```bash
+# Step 7a: locate the actual caller(s)
+grep -rn "groupQueue\.sendMessage\|queue\.sendMessage" /root/nanoclaw/src --include="*.ts" | grep -v "\.test\.ts"
+```
+
+Three concrete sub-cases:
+
+- **(a) Found one or more callers**: modify each to pass `turnContext: { turnId, senderJid: inboundMessage.sender }` (where `inboundMessage` is whatever variable holds the WhatsApp message at that site).
+
+- **(b) Found no callers**: this means follow-ups currently don't reach running containers via `GroupQueue`. The inbound dispatcher likely either restarts the container (loses turnId) or uses a different mechanism. Search for `data/ipc/${...}/input` writes:
+
+  ```bash
+  grep -rn "ipc.*input\|inputDir" /root/nanoclaw/src --include="*.ts" | grep -v "\.test\.ts"
+  ```
+
+  Modify the writer to populate `senderJid` in the JSON payload alongside `text` and `turnContext`. The container's `IpcInputMessage` interface (Task 9 from container side) already defines `turnContext?: AgentTurnContext`; ensure the container reads `nextMessage.turnContext?.senderJid` (Task 13 already does this).
+
+- **(c) Neither found**: the inbound→follow-up path needs to be added. Concrete code to add (place in `src/index.ts` message loop where new inbound messages are dispatched):
+
+  ```typescript
+  // In the message loop, when a new inbound message arrives for a group with active container:
+  if (groupQueue.hasActiveContainer(chatJid)) {
+    const wrote = groupQueue.sendMessage(
+      chatJid,
+      inboundMessage.content,
+      {
+        turnId: turnContext?.turnId ?? generateTurnId(),
+        senderJid: inboundMessage.sender,
+      },
+    );
+    if (wrote) {
+      logger.debug({ chatJid, sender: inboundMessage.sender }, 'follow-up enqueued');
+      return; // skip starting a new container
+    }
+  }
+  ```
+
+Pick whichever sub-case matches reality. Document in the commit message which one applied.
+
+- [ ] **Step 8: Run tests + typecheck (host + container)**
 
 ```bash
 npx tsc --noEmit
 cd container/agent-runner && npx tsc --noEmit && cd ../..
 npx vitest run
+cd container/agent-runner && npx vitest run && cd ../..
 ```
-Expected: tsc clean (host + container), all tests still pass.
+Expected: tsc clean both sides, all tests pass.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add container/agent-runner/src/runtime-config.ts container/agent-runner/src/runtime-config.test.ts \
-       src/container-runner.ts src/index.ts src/db.ts src/types.ts
-git commit -m "feat(memory): plumb senderJid + memoryEnabled through container interfaces
+       src/container-runner.ts src/index.ts src/db.ts src/types.ts \
+       src/group-queue.ts /* if modified per Step 7 sub-case */
+git commit -m "feat(memory): combined env forwarding + senderJid plumbing
 
-- AgentTurnContext.senderJid (optional, for per-user recall on follow-ups)
-- ContainerInput.senderJid (initial start) + ContainerInput.memoryEnabled
-- Host populates both when invoking runContainerAgent
-- registered_groups SELECT now includes memory_enabled
-- Inbound→IPC follow-up enqueue path updated to populate turnContext.senderJid
-  (per spec §9.3 implementation prerequisite — see commit message above for
-  the specific call site identified)"
+Combined Tasks 8+9 from the original plan because they couldn't compile
+independently (Task 8 referenced input.memoryEnabled added by Task 9).
+
+Type additions:
+- AgentTurnContext.senderJid (per-user recall on follow-ups)
+- ContainerInput.senderJid/.senderName/.memoryEnabled
+
+Env routing (BOTH paths required — Codex round 7 finding):
+- Docker spawn: container-runner.ts adds -e flags for the Docker container env
+- MCP subprocess: buildNanoclawMcpEnv adds the same vars to the MCP server env
+  (the MCP server inside the container builds its env via this function;
+  Docker -e alone wouldn't reach it)
+
+Schema:
+- registered_groups SELECT now includes memory_enabled column
+- RegisteredGroup interface gains memoryEnabled?: number
+
+Inbound→IPC follow-up enqueue path: identified as sub-case (a/b/c) per
+Step 7 — see code change for the specific path used in this commit."
 ```
 
 ---
@@ -1775,7 +1848,16 @@ export interface BuildPreambleArgs {
   embeddingModel: string;
 }
 
-const ENVELOPE_HEADER_RE = /^\[[^\]]+\]\s*/;
+// NOTE: this helper does NOT strip XML wrappers (<context>, <messages>, <message ...>)
+// because we expect the CALLER to pass the raw user message text, NOT the
+// SDK-formatted prompt. See Tasks 12 + 13: callers pass containerInput.prompt
+// (initial) or nextMessage.text (follow-up) — both raw, pre-XML-wrapping.
+//
+// We still strip two minimal envelope patterns that the host or upstream
+// formatters sometimes prepend:
+//   1. Single-line envelope header `[Channel User Timestamp]` at the start
+//   2. Inline `[message_id: ...]` lines anywhere in the body
+const ENVELOPE_HEADER_RE = /^\[[^\]\n]+\]\s*\n?/;
 const MESSAGE_ID_LINE_RE = /^\[message_id:\s*[^\]]+\]$/;
 
 function stripEnvelopeForSearch(text: string): string {
@@ -1784,7 +1866,7 @@ function stripEnvelopeForSearch(text: string): string {
   let result = filtered.join('\n');
   const m = result.match(ENVELOPE_HEADER_RE);
   if (m) {
-    const inside = m[0].slice(1, -1).trim();
+    const inside = m[0].replace(/[\[\]\n]/g, '').trim();
     if (inside.split(/\s+/).length >= 2) {
       result = result.slice(m[0].length);
     }
@@ -1888,8 +1970,13 @@ After the closing `}` of the existing `if (containerInput.queryVector && contain
   ) {
     try {
       const { buildMemoryPreamble } = await import('./memory-reader.js');
+      // IMPORTANT: pass the ORIGINAL containerInput.prompt (raw user message),
+      // NOT the mutated `prompt` variable. By this point `prompt` already has
+      // task-context preamble prepended; embedding that would skew memory recall
+      // toward task-related noise. Pre-mutation containerInput.prompt is the
+      // pure user message text from WhatsApp.
       const memoryBlock = await buildMemoryPreamble({
-        promptText: prompt,
+        promptText: containerInput.prompt,
         boardId: containerInput.taskflowBoardId,
         senderJid: containerInput.senderJid ?? null,
         ollamaHost: containerInput.ollamaHost ?? '',
@@ -1959,6 +2046,8 @@ After line 958 (`containerInput.turnContext = nextMessage.turnContext;`), add:
       // --- add-memory skill: relevant memories preamble (IPC follow-up) ---
       // Re-run recall on every follow-up. The host pre-embeds only the initial
       // prompt; container does its own ollamaEmbed for follow-ups.
+      // Use nextMessage.text (raw user text from IPC file), NOT the prompt
+      // variable (which is the same value here, but explicit).
       if (
         containerInput.isTaskflowManaged
         && containerInput.taskflowBoardId
@@ -1968,7 +2057,7 @@ After line 958 (`containerInput.turnContext = nextMessage.turnContext;`), add:
         try {
           const { buildMemoryPreamble } = await import('./memory-reader.js');
           const memoryBlock = await buildMemoryPreamble({
-            promptText: prompt,
+            promptText: nextMessage.text,
             boardId: containerInput.taskflowBoardId,
             senderJid: nextMessage.turnContext?.senderJid
               ?? containerInput.senderJid
@@ -2017,6 +2106,24 @@ containerInput.senderJid → null (board-scope only)."
 **Files:**
 - Modify: `container/agent-runner/src/ipc-mcp-stdio.ts` (register tool, add `MEMORY_WRITES_DIR` constant, kill-switch gating)
 
+- [ ] **Step 0: Create container-side `memory-types.ts` (mirror of host)**
+
+Container code can't import from `src/` (host). Create a parallel file:
+
+`container/agent-runner/src/memory-types.ts`:
+
+```typescript
+export const MEMORY_CATEGORIES = [
+  'preference', 'fact', 'decision', 'entity', 'other',
+] as const;
+export type MemoryCategory = (typeof MEMORY_CATEGORIES)[number];
+
+export const MEMORY_SCOPES = ['board', 'user'] as const;
+export type MemoryScope = (typeof MEMORY_SCOPES)[number];
+```
+
+(Container side doesn't need the `isMemory*` type guards — the MCP zod schemas validate.)
+
 - [ ] **Step 1: Add MEMORY_WRITES_DIR constant + kill-switch helpers**
 
 Near the existing `IPC_DIR`, `MESSAGES_DIR`, `TASKS_DIR` constants (~line 30):
@@ -2027,6 +2134,8 @@ const memoryEnabled =
   process.env.NANOCLAW_MEMORY_ENABLED === '1'
   && process.env.NANOCLAW_MEMORY !== 'off';
 ```
+
+(These env vars are forwarded by `buildNanoclawMcpEnv` — Task 8.)
 
 - [ ] **Step 2: Write the failing test (skip — MCP tool tests in this codebase typically integration-test via the registered server, not direct unit calls)**
 
@@ -2110,30 +2219,21 @@ server.tool(
 
 Note: `NANOCLAW_SENDER_JID` and `NANOCLAW_SENDER_NAME` env vars are NEW. Forward them in `src/container-runner.ts` similarly to the memory-enabled forwarding (Task 8 + 9).
 
-- [ ] **Step 4: Add NANOCLAW_SENDER_JID + NANOCLAW_SENDER_NAME forwarding**
+- [ ] **Step 4: NANOCLAW_SENDER_JID/NAME env forwarding (already done in Task 8)**
 
-In `src/container-runner.ts` near the other env splices:
+Both env vars are already forwarded by Task 8 (Docker `-e` AND `buildNanoclawMcpEnv`). Nothing to add here — Task 14's MCP tool just reads them.
 
-```typescript
-if (input.senderJid) {
-  containerArgs.splice(
-    containerArgs.length - 1, 0,
-    '-e', `NANOCLAW_SENDER_JID=${input.senderJid}`,
-  );
-}
-if (input.senderName) {
-  containerArgs.splice(
-    containerArgs.length - 1, 0,
-    '-e', `NANOCLAW_SENDER_NAME=${input.senderName}`,
-  );
-}
-```
+**On follow-up sender attribution (architecture note):**
 
-(`input.senderName` requires adding to `ContainerInput` interface — same pattern as `senderJid` from Task 9. Add it.)
+The container's env vars (`NANOCLAW_SENDER_JID`, `NANOCLAW_SENDER_NAME`) are fixed at container start. On IPC follow-up turns, these still reflect the INITIAL sender. The MCP `memory_store` tool reads them, so a naive implementation would attribute follow-up `memory_store` calls to the wrong sender.
 
-Also: for IPC follow-ups, the container's env is fixed at start. To support recall on follow-ups with the new sender, the recall path uses `nextMessage.turnContext?.senderJid` (Task 13 — already done). The MCP `memory_store` tool currently reads `process.env.NANOCLAW_SENDER_JID` — this is the INITIAL sender. **For multi-sender follow-up scenarios, memory_store as written attributes to the initial sender, not the current follow-up sender.** Document this limitation OR plumb the current sender via a different mechanism (e.g., a writable file `/workspace/ipc/current-sender.txt` updated by the container loop on each `nextMessage`).
+**Why this is fine in practice (self-correcting via host-side validation):**
 
-For MVP, accept the limitation: most TaskFlow boards have stable per-turn senders during a single container session. Document in the spec under §10.3 boundary cases as a known limitation.
+The container writes `metadata.senderJid` from its (potentially stale) env var. The host's `processMemoryStore` (Task 6) validates this against recent inbound senders in `messages.db`. If the container-supplied JID doesn't match the actual most-recent inbound for the group, host falls back to the actual most-recent sender + logs `memory.spoof_attempt`. The fallback is the correct behavior anyway — the inbound that triggered this turn IS the most-recent.
+
+So for follow-up turns: container writes stale init sender → host detects mismatch → host stores under the actual current sender (correct). The "spoof_attempt" warn log will fire on every legitimate multi-sender follow-up; tune the log level or rename to `memory.sender_corrected` if noisy. Document this in Task 14's commit message.
+
+(Alternative: a turn-state file at `/workspace/ipc/current-sender.txt` updated by the container loop on each `nextMessage`, read by the MCP tool. Skip for MVP — the host-side validation already gets this right.)
 
 - [ ] **Step 5: Run tsc**
 
@@ -2702,20 +2802,412 @@ the processIpcOnce refactor from Task 4."
 
 ---
 
+### Task 20: Observability — `memory.recall` log + hourly summary aggregator
+
+**Files:**
+- Modify: `container/agent-runner/src/memory-reader.ts` (emit `memory.recall` log line per call)
+- Create: `src/memory-observability.ts` (in-memory aggregator + hourly flush timer)
+- Modify: `src/index.ts` (start the observability ticker alongside other services)
+- Test: `src/memory-observability.test.ts`
+
+Per spec §11. The `memory.write` log is already emitted in Tasks 6+7. We add the per-recall log line and the hourly summary.
+
+- [ ] **Step 1: Write the failing test for the aggregator**
+
+`src/memory-observability.test.ts`:
+
+```typescript
+import { describe, it, expect, vi } from 'vitest';
+import { MemoryObservability } from './memory-observability.js';
+
+describe('MemoryObservability hourly summary', () => {
+  it('aggregates store/recall/forget counts and recallHitRate', () => {
+    const obs = new MemoryObservability();
+    obs.recordWrite({ source: 'manual_store', action: 'stored' });
+    obs.recordWrite({ source: 'manual_store', action: 'stored' });
+    obs.recordRecall({ groupFolder: 'g1', hits: { board: 0, user: 1 } });
+    obs.recordRecall({ groupFolder: 'g1', hits: { board: 0, user: 0 } });
+    obs.recordRecall({ groupFolder: 'g1', hits: { board: 1, user: 0 } });
+    obs.recordWrite({ source: 'manual_store', action: 'forgotten' });
+
+    const summary = obs.flushHourly();
+    expect(summary.totalStoreCalls).toBe(2);
+    expect(summary.totalForgetCalls).toBe(1);
+    expect(summary.totalRecallCalls).toBe(3);
+    expect(summary.totalRecallHits).toBe(2);
+    expect(summary.recallHitRate).toBeCloseTo(2 / 3, 2);
+  });
+
+  it('flushHourly resets counters', () => {
+    const obs = new MemoryObservability();
+    obs.recordWrite({ source: 'manual_store', action: 'stored' });
+    obs.flushHourly();
+    const second = obs.flushHourly();
+    expect(second.totalStoreCalls).toBe(0);
+  });
+});
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+```bash
+npx vitest run src/memory-observability.test.ts
+```
+Expected: FAIL — module not found.
+
+- [ ] **Step 3: Implement**
+
+`src/memory-observability.ts`:
+
+```typescript
+import { logger } from './logger.js';
+
+export interface RecallEvent {
+  groupFolder: string;
+  hits: { board: number; user: number };
+}
+
+export interface WriteEvent {
+  source: string;            // 'manual_store' | future 'auto_extract'
+  action: string;            // 'stored' | 'noop_already_exists' | 'forgotten'
+}
+
+export interface HourlySummary {
+  windowStart: string;
+  windowEnd: string;
+  totalStoreCalls: number;
+  totalForgetCalls: number;
+  totalRecallCalls: number;
+  totalRecallHits: number;
+  recallHitRate: number;
+  ipcQueueDepthMax: number;
+}
+
+export class MemoryObservability {
+  private windowStart: string;
+  private storeCount = 0;
+  private forgetCount = 0;
+  private recallCount = 0;
+  private recallHitCount = 0;
+  private ipcQueueDepthMax = 0;
+  private timer: ReturnType<typeof setInterval> | null = null;
+
+  constructor() {
+    this.windowStart = new Date().toISOString();
+  }
+
+  recordWrite(event: WriteEvent): void {
+    if (event.action === 'forgotten') this.forgetCount++;
+    else this.storeCount++;
+  }
+
+  recordRecall(event: RecallEvent): void {
+    this.recallCount++;
+    if (event.hits.board + event.hits.user > 0) this.recallHitCount++;
+  }
+
+  recordIpcQueueDepth(depth: number): void {
+    if (depth > this.ipcQueueDepthMax) this.ipcQueueDepthMax = depth;
+  }
+
+  flushHourly(): HourlySummary {
+    const summary: HourlySummary = {
+      windowStart: this.windowStart,
+      windowEnd: new Date().toISOString(),
+      totalStoreCalls: this.storeCount,
+      totalForgetCalls: this.forgetCount,
+      totalRecallCalls: this.recallCount,
+      totalRecallHits: this.recallHitCount,
+      recallHitRate: this.recallCount > 0 ? this.recallHitCount / this.recallCount : 0,
+      ipcQueueDepthMax: this.ipcQueueDepthMax,
+    };
+    logger.info(summary, 'memory.summary.hourly');
+    // Reset counters
+    this.windowStart = summary.windowEnd;
+    this.storeCount = 0;
+    this.forgetCount = 0;
+    this.recallCount = 0;
+    this.recallHitCount = 0;
+    this.ipcQueueDepthMax = 0;
+    return summary;
+  }
+
+  start(): void {
+    if (this.timer) return;
+    this.timer = setInterval(() => this.flushHourly(), 60 * 60 * 1000);
+  }
+
+  stop(): void {
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+  }
+}
+
+export const memoryObservability = new MemoryObservability();
+```
+
+In `src/index.ts`, alongside the EmbeddingService startup, add:
+
+```typescript
+import { memoryObservability } from './memory-observability.js';
+memoryObservability.start();
+```
+
+In `container/agent-runner/src/memory-reader.ts`, after the recall completes in `buildMemoryPreamble`:
+
+```typescript
+// Emit per-recall log (consumed by host-side hourly aggregator via stdout/journalctl tailing)
+const userHits = hits.filter(h => h.scope === 'user').length;
+const boardHits = hits.filter(h => h.scope === 'board').length;
+console.log(JSON.stringify({
+  level: 'info',
+  msg: 'memory.recall',
+  callSite: 'container',
+  hits: { board: boardHits, user: userHits },
+  injectedTokens: Math.ceil((formatRelevantMemoriesBlock(hits, 500)).length / 4),
+}));
+```
+
+(Container-side logging goes to stdout, which the host captures in container logs. The host-side aggregator is fed by `processMemoryStore`/`processMemoryForget` calls in Task 6+7 — add `memoryObservability.recordWrite(...)` calls there.)
+
+Update Task 6 implementation to call `memoryObservability.recordWrite({source, action})` after `embeddingService.index()`. Same for Task 7's forget path.
+
+- [ ] **Step 4: Run tests + commit**
+
+```bash
+npx vitest run src/memory-observability.test.ts
+git add src/memory-observability.ts src/memory-observability.test.ts \
+       src/index.ts src/memory-service.ts container/agent-runner/src/memory-reader.ts
+git commit -m "feat(memory): observability — per-call logs + hourly summary aggregator
+
+Per spec §11:
+- memory.write logs in processMemoryStore/processMemoryForget (existing from
+  Tasks 6+7); now also feed MemoryObservability.recordWrite()
+- memory.recall logs from container-side memory-reader stdout
+- MemoryObservability hourly summary: totalStoreCalls, totalRecallCalls,
+  recallHitRate, ipcQueueDepthMax — flushed every 60min via setInterval
+- memoryObservability singleton started in src/index.ts alongside other services"
+```
+
+---
+
+### Task 21: MCP unit tests + real-Ollama integration tests
+
+**Files:**
+- Create: `container/agent-runner/src/ipc-mcp-stdio-memory.test.ts` (MCP tool unit tests)
+- Create: `container/agent-runner/src/memory-ollama.test.ts` (real-Ollama gated tests)
+
+Per spec §12.1 (~9 MCP tool tests) and §12.3 (~3 real-Ollama tests). These were skipped in the original plan; adding now.
+
+- [ ] **Step 1: MCP tool unit tests**
+
+`container/agent-runner/src/ipc-mcp-stdio-memory.test.ts`:
+
+```typescript
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+// We test the IPC writes the tools produce, not the MCP server wiring.
+// Set env vars + mock writeIpcFile via spying on fs.writeFileSync.
+
+describe('memory_store IPC write shape', () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memwrtest-'));
+    process.env.NANOCLAW_MEMORY = 'on';
+    process.env.NANOCLAW_MEMORY_ENABLED = '1';
+    process.env.NANOCLAW_SENDER_JID = '5585@s.whatsapp.net';
+    process.env.NANOCLAW_SENDER_NAME = 'Maria';
+  });
+
+  it('writes JSON with correct shape (no collection field)', () => {
+    // Re-import module to pick up env state
+    vi.resetModules();
+    const { /* memory_store_internal */ } = require('./ipc-mcp-stdio.js');
+    // ... the actual MCP tool is registered via server.tool — testing it
+    // directly requires either:
+    //  (a) extracting the handler function for direct invocation (refactor first)
+    //  (b) spinning up the MCP server and calling the tool via JSON-RPC
+    // Choose (a): refactor server.tool body into a pure function memoryStoreHandler
+    // that ipc-mcp-stdio.ts wraps. Test the pure function.
+  });
+
+  it('returns error_code memory_disabled when NANOCLAW_MEMORY=off', () => { /* ... */ });
+  it('returns error_code memory_disabled_for_board when NANOCLAW_MEMORY_ENABLED=0', () => { /* ... */ });
+  it('rejects scope=user when no NANOCLAW_SENDER_JID', () => { /* ... */ });
+  it('truncates contentHash to 12 chars in returned memoryId', () => { /* ... */ });
+});
+
+describe('memory_recall IPC behavior', () => {
+  it('embeds query via ollamaEmbed + calls reader', () => { /* ... */ });
+  it('filters by category when given', () => { /* ... */ });
+});
+
+describe('memory_forget IPC behavior', () => {
+  it('writes JSON with op=forget', () => { /* ... */ });
+  it('rejects memoryId<8 chars', () => { /* ... */ });
+});
+```
+
+**Refactor prerequisite**: Tasks 14, 15, 16 register tools inline in `server.tool(...)` calls. To test, extract each tool's body into an exported pure function (e.g., `export async function memoryStoreHandler(args, ctx): Promise<ToolResult>`) and have `server.tool('memory_store', desc, schema, (args) => memoryStoreHandler(args, defaultCtx))`. This is a small refactor — apply as part of Task 21.
+
+- [ ] **Step 2: Real-Ollama gated tests**
+
+`container/agent-runner/src/memory-ollama.test.ts`:
+
+```typescript
+import { describe, it, expect } from 'vitest';
+
+const OLLAMA_HOST = process.env.OLLAMA_HOST;
+const skip = !OLLAMA_HOST;
+
+describe.skipIf(skip)('memory-ollama (gated)', () => {
+  it('bge-m3 produces 1024-dim vector for English fact text', async () => {
+    const resp = await fetch(`${OLLAMA_HOST}/api/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'bge-m3', input: 'Maria prefers concise replies, no emojis.' }),
+    });
+    expect(resp.ok).toBe(true);
+    const data = await resp.json() as { embeddings: number[][] };
+    expect(data.embeddings[0].length).toBe(1024);
+  });
+
+  it('semantically close query returns the stored fact via cosine sim >0.5', async () => {
+    // Embed two texts, compute cosine, assert >0.5 for paraphrase
+    const stored = 'Maria prefers concise replies and dislikes emojis.';
+    const query = 'How does Maria like to be replied to?';
+    const fetch1 = await fetch(`${OLLAMA_HOST}/api/embed`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'bge-m3', input: stored }),
+    });
+    const fetch2 = await fetch(`${OLLAMA_HOST}/api/embed`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'bge-m3', input: query }),
+    });
+    const v1 = (await fetch1.json()).embeddings[0];
+    const v2 = (await fetch2.json()).embeddings[0];
+    const dot = v1.reduce((s: number, x: number, i: number) => s + x * v2[i], 0);
+    const n1 = Math.sqrt(v1.reduce((s: number, x: number) => s + x * x, 0));
+    const n2 = Math.sqrt(v2.reduce((s: number, x: number) => s + x * x, 0));
+    const cos = dot / (n1 * n2);
+    expect(cos).toBeGreaterThan(0.5);
+  });
+
+  it('semantically distant query returns score below threshold', async () => {
+    const stored = 'Team uses M for meetings instead of R.';
+    const query = 'What is the weather forecast?';
+    // ... same pattern, expect cos < 0.5
+  });
+});
+```
+
+- [ ] **Step 3: Run + commit**
+
+```bash
+cd container/agent-runner && npx vitest run src/ipc-mcp-stdio-memory.test.ts && cd ../..
+# Real-Ollama tests skipped unless OLLAMA_HOST is set:
+OLLAMA_HOST=http://192.168.2.13:11434 cd container/agent-runner && npx vitest run src/memory-ollama.test.ts && cd ../..
+
+git add container/agent-runner/src/ipc-mcp-stdio-memory.test.ts \
+       container/agent-runner/src/memory-ollama.test.ts \
+       container/agent-runner/src/ipc-mcp-stdio.ts
+git commit -m "test(memory): MCP unit tests + real-Ollama gated tests
+
+Per spec §12.1 + §12.3. MCP tools refactored to expose pure handler
+functions for direct testing (memoryStoreHandler etc.); server.tool
+registrations now wrap the handlers."
+```
+
+---
+
+### Task 22: Rollback verification test
+
+**Files:**
+- Create: `scripts/memory-rollback-test.sh` (operator-runnable)
+
+Per spec §13.
+
+- [ ] **Step 1: Write the rollback verification script**
+
+```bash
+#!/usr/bin/env bash
+# scripts/memory-rollback-test.sh
+# Verifies the per-board kill-switch + close-sentinel rollback workflow.
+
+set -euo pipefail
+
+GROUP_FOLDER="${1:-setd-secti-taskflow}"
+DB_PATH="store/messages.db"
+
+echo "=== 1. Confirm memory_enabled=1 currently ==="
+sqlite3 "$DB_PATH" "SELECT folder, memory_enabled FROM registered_groups WHERE folder='$GROUP_FOLDER';"
+
+echo "=== 2. Disable per-board ==="
+sqlite3 "$DB_PATH" "UPDATE registered_groups SET memory_enabled=0 WHERE folder='$GROUP_FOLDER';"
+
+echo "=== 3. Evict active container via close sentinel ==="
+INPUT_DIR="data/ipc/$GROUP_FOLDER/input"
+if [[ -d "$INPUT_DIR" ]]; then
+  touch "$INPUT_DIR/_close"
+  echo "Close sentinel written. Container (if running) will exit at next IPC poll."
+else
+  echo "No active input dir — no container running."
+fi
+
+echo "=== 4. Re-enable ==="
+sleep 5  # give container time to exit
+sqlite3 "$DB_PATH" "UPDATE registered_groups SET memory_enabled=1 WHERE folder='$GROUP_FOLDER';"
+
+echo "=== 5. Final state ==="
+sqlite3 "$DB_PATH" "SELECT folder, memory_enabled FROM registered_groups WHERE folder='$GROUP_FOLDER';"
+echo "Rollback verification complete. Next container start will pick up memory_enabled=1."
+```
+
+- [ ] **Step 2: Make executable + commit**
+
+```bash
+chmod +x scripts/memory-rollback-test.sh
+git add scripts/memory-rollback-test.sh
+git commit -m "test(memory): rollback verification script
+
+Per spec §13. Scripted verification of the per-board kill-switch +
+close-sentinel workflow:
+1. Toggle memory_enabled=0
+2. touch _close to evict active container
+3. Toggle back to 1
+4. Confirm next container picks up new flag value"
+```
+
+---
+
 ## Final acceptance checklist
 
-After all 19 tasks complete:
+After all 22 tasks complete:
 
 - [ ] `npx tsc --noEmit` clean (host)
 - [ ] `cd container/agent-runner && npx tsc --noEmit && cd ../..` clean (container)
 - [ ] `npx vitest run` all green
 - [ ] `cd container/agent-runner && npx vitest run` all green
 - [ ] `npm run build` clean
-- [ ] `./container/build.sh` clean
+- [ ] **`./container/build.sh` clean (REQUIRED after any container/agent-runner/* edit — Phase D, E, parts of Task 21)**
 - [ ] Smoke test passes: `./scripts/memory-smoke-test.sh setd-secti-taskflow`
+- [ ] Rollback test passes: `./scripts/memory-rollback-test.sh setd-secti-taskflow`
 - [ ] Verify `memory.write` log entries appear within 30s of smoke test
-- [ ] Verify `memory.recall callSite=initial` and `memory.recall callSite=ipc_followup` appear during normal traffic
+- [ ] Verify `memory.recall` log entries appear during normal traffic (from container stdout)
+- [ ] Verify `memory.summary.hourly` log entry appears within 1h
 - [ ] Codex review of final code (one round, gpt-5.5/high) before deploy
+
+### Container rebuild checkpoints (cross-cutting)
+
+After completing Phase D (Tasks 10-13) AND after Phase E (Tasks 14-16), the agent-runner image MUST be rebuilt for changes to take effect at runtime:
+
+```bash
+./container/build.sh
+```
+
+If you skip this, existing containers will keep running the old image and recall/MCP tools won't be active until they restart with the new image. The smoke test in Task 18 will silently fail.
 
 ## Deferred items (per spec §14)
 
@@ -2724,4 +3216,4 @@ After all 19 tasks complete:
 - Lint pass for contradictions
 - TTL eviction
 - Per-fact confidence scores
-- Multi-sender follow-up attribution (memory_store reads initial sender from env)
+- Multi-sender follow-up exact attribution (the host-side spoof-fallback already self-corrects to the actual current sender — see Task 14 architecture note; only the container-side log line might be misleading)
