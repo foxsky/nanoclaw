@@ -41,6 +41,23 @@ Shape of the change:
 
 Ancillary: split the old `columnLabels` map into `columnEntries` `{emoji,label}` pairs so `columnLabel` (emoji-prefixed) and the new `columnLabelPlain` (text-only) both derive from one source, removing a regex and a duplicate label map in `taskflow-mcp-server.ts`. `TaskflowEngine.SEP` is now public so non-engine callers can compose consistent `━━━` headers.
 
+## 2026-04-24 (deploy) — TaskFlow API: prod cutover to modular MCP-backed app/main.py
+
+The whole-day journey to make the engine-routed API path real for users. Both dev (`192.168.2.160:8100`) and prod (`192.168.2.63:8100`) now run `uvicorn app.main:app` with the TaskFlow MCP TypeScript engine spawned as a stdio subprocess (`TASKFLOW_MCP_SERVER_BIN` env var). Prior shape was a flat single-file `main.py` doing direct SQLite — the modular `app/main.py` had been Phase-6-complete in the redesign doc but never actually deployed.
+
+**Stage shape:**
+
+- **Dev cutover (.160):** symlinked the dev workdir's `app/` into the canonical `tf-mcontrol/taskflow-api/app/`, fixed `TASKFLOW_DB_PATH` (was pointing at an empty stub DB the whole time — flat API was apparently never exercised on dev, only on prod via patch scripts), restarted uvicorn with `app.main:app`, validated `/api/v1/health` reports `subprocess: healthy`, smoke-tested note add/edit/remove through the MCP delta endpoints.
+- **Prod prep (.63):** rsync'd `agent-runner/src/` and `taskflow-api/app/` from dev, ran `npm install && npm run build` (`better-sqlite3` native binding compiled cleanly for prod's Node 22.22.1), ran `ensure_support_tables` against the live prod DB (idempotent, table set unchanged).
+- **Prod cutover:** captured `run.sh.flat-rollback` and a 2.1 MB DB backup at `/tmp/taskflow.prod.cutover-backup.<ts>.db`. Updated `run.sh` to launch `app.main:app`. Killed an orphan uvicorn that was holding port 8100 from the previous nohup-via-shell pattern (systemd had been restart-looping 20764 times because of the bind conflict — silently). Systemd unit now `active`, `/api/v1/health` returns `subprocess: healthy` on prod for the first time.
+
+**Bugs found and fixed mid-cutover:**
+
+- `app/engine/{base,client,fake_client,__init__}.py` were destroyed by a misfired `rm -rf` during the dev cutover (these files were never tracked in git). Reconstructed from local `.cpython-312.pyc` bytecode disassembly + session memory, verified via 190/190 pytest, then committed (`recover: track app/engine sources reconstructed from .pyc bytecode` in `tf-mcontrol@e5af7ec`).
+- Smoke test on prod surfaced an unscoped `SELECT t.* … WHERE t.id = ?` in `apiAddNote/apiEditNote/apiRemoveNote` response row fetch. T-codes are board-scoped, so when `T2` exists on multiple boards (4 boards on prod), the response returned a different task than the one mutated. The write itself was always correct (auth uses both id and board_id). Fixed by adding `AND t.board_id = ?` to all three SELECTs.
+
+**Rollback path:** `cp /home/nanoclaw/taskflow-api/run.sh.flat-rollback /home/nanoclaw/taskflow-api/run.sh && sudo systemctl restart taskflow-api` reverts to the flat single-file API. DB backup at `/tmp/taskflow.prod.cutover-backup.20260424-212004.db` until the soak window confirms no rollback needed.
+
 ## 2026-04-24 (later still) — TaskFlow: simplify pass on note delta endpoints
 
 Followup to the engine-extraction note delta work. Three reviewers (reuse, quality, efficiency) flagged 23 issues; five were in-scope and fixed:
