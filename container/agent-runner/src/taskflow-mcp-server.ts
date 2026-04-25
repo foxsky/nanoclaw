@@ -307,8 +307,8 @@ export function registerTools(server: McpServer, db: Database.Database): void {
         }
         const taskId = result.task_id
         const row = db.prepare(
-          `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ?`
-        ).get(taskId) as Record<string, unknown>
+          `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ? AND t.board_id = ?`
+        ).get(taskId, params.board_id) as Record<string, unknown>
         const data = engine.serializeApiTask(row)
         const notification_events = (result.notifications ?? [])
           .filter(n => n.target_person_id)
