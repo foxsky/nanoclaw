@@ -124,8 +124,8 @@ CONTAINER (container/agent-runner/src/)
 
 | Path | Change |
 |---|---|
-| `src/ipc.ts` | ~30 lines: extend the existing per-group polling loop to also scan `data/ipc/{groupFolder}/memory-writes/`, dispatch by `data.op` field to the memory-service handler. Reuses the existing retry+unlink+`.errors/` pattern. |
-| `container/agent-runner/src/ipc-mcp-stdio.ts` | ~80 lines: register 3 MCP tools (`memory_store`, `memory_recall`, `memory_forget`); each writes to `/workspace/ipc/{groupFolder}/memory-writes/` via the existing IPC write pattern. Tool descriptions are gating UX. |
+| `src/ipc.ts` | ~60 lines (revised up from initial ~30 estimate after Codex review): the existing per-group loop has **hardcoded buckets** (`messages`, `tasks`, `otp` at `ipc.ts:891`) and dispatches by `data.type` — not generic. Two integration choices: (a) add `memory-writes` as a fourth hardcoded bucket with its own `processMemoryIpc(data)` handler that switches on `data.op` (`store`/`forget`); (b) reuse the existing `tasks` bucket by adding `data.type === 'memory_op'` and a new sub-dispatcher. Choice (a) is preferred — keeps memory ops on their own write path with isolated `.errors/` quarantine and avoids polluting the tasks dispatcher. Either way reuses the existing retry/unlink primitive. |
+| `container/agent-runner/src/ipc-mcp-stdio.ts` | ~80 lines: register 3 MCP tools (`memory_store`, `memory_recall`, `memory_forget`); each writes to `/workspace/ipc/memory-writes/` via the existing IPC write pattern. (The container's `/workspace/ipc/` IS the host's `data/ipc/{groupFolder}/` — the per-group scoping is enforced by the mount in `container-runner.ts:267-274`, not by container-supplied paths.) Tool descriptions are gating UX. |
 | `container/agent-runner/src/index.ts` | ~30 lines at two locations: (a) after the existing task-context preamble block (~line 729), call `buildMemoryPreamble(prompt, ...)` and prepend to `prompt`; (b) inside the IPC follow-up loop after `prompt = nextMessage.text` (~line 957), do the same. DRY by importing the helper from `memory-reader.ts`. |
 
 ### 5.3 Files NOT touched
@@ -144,32 +144,38 @@ Agent invokes `memory_store(text, category, scope?, entities?)` MCP tool. Tool b
 1. Validates input (category in enum, text 5-280 chars, scope ∈ {user, board}, entities array)
 2. Computes `contentHash = sha1(category + ':' + normalize(text).toLowerCase())`
 3. Builds collection name: `scope === 'board' ? 'memory:board:'+boardId : 'memory:user:'+boardId+':'+senderJid`
-4. Writes JSON to `/workspace/ipc/{groupFolder}/memory-writes/{ts}-store-{contentHash[0:8]}.json`:
+4. Writes JSON to `/workspace/ipc/memory-writes/{ts}-store-{contentHash[0:8]}.json` (the container's `/workspace/ipc/` is mounted from host `data/ipc/{groupFolder}/`; container cannot see other groups' folders):
    ```json
    {
      "op": "store",
-     "collection": "memory:user:setd-secti-taskflow:5585999@s.whatsapp.net",
+     "scope": "user",
      "contentHash": "a3f1b9c842de...",
      "text": "Prefers concise replies, no emojis",
      "metadata": {
-       "category": "preference", "scope": "user", "entities": [],
+       "category": "preference", "entities": [],
        "senderJid": "5585999@s.whatsapp.net", "senderName": "Maria",
        "capturedAt": "2026-04-25T18:42:11.000Z",
        "source": "manual_store"
      }
    }
    ```
+   **Note**: the JSON does NOT contain a `collection` field. **The host derives the collection name from the IPC pipe's mount path** (which board's directory the file came from) + the `scope` + `senderJid`. The container cannot lie about which board the memory belongs to, because the container-supplied collection field doesn't exist — this closes the cross-board store hole that v2 spec originally had.
 5. Returns `{memoryId: contentHash, action: 'queued'}` to agent
 
-Host-side `src/ipc.ts` polling loop (existing pattern, scans group dirs every `IPC_POLL_INTERVAL`):
+Host-side `src/ipc.ts` polling loop:
 
-1. Picks up the JSON file
-2. Dispatches by `data.op`:
-   - `store` → `EmbeddingService.index(collection, contentHash, text, metadata)` — UPSERT compare-before-write makes identical writes no-ops
-   - `forget` → scoped delete (see §6.3)
-3. On success: `unlink` the file
-4. On parse error: move to `data/ipc/{groupFolder}/memory-writes/.errors/` (existing eviction)
-5. **Memory ops are idempotent at the storage layer** — existing IPC retry-up-to-5 logic is safe (re-running `index()` with same contentHash is a no-op via compare-before-write; re-running scoped `forget` on already-deleted ID is a no-op)
+1. New bucket `memory-writes/` added to the per-group scan at `ipc.ts:891` (the loop currently scans `messages`, `tasks`, `otp` — adds a fourth)
+2. New handler `processMemoryIpc(data, groupFolder)` invoked when `data.op` ∈ `{store, forget}`
+3. **Collection derivation (security boundary)**: handler computes `collection` server-side:
+   - `scope === 'user'` → `memory:user:${groupFolder}:${data.metadata.senderJid}` (groupFolder from path, senderJid from metadata)
+   - `scope === 'board'` → `memory:board:${groupFolder}` (groupFolder from path)
+   - Container's `data` JSON contains `scope` + `senderJid` (in metadata) but NOT `collection`. The host never trusts a container-supplied collection name.
+4. Dispatches by `data.op`:
+   - `store` → `EmbeddingService.index(derivedCollection, contentHash, text, metadata)` — UPSERT compare-before-write makes identical writes no-ops
+   - `forget` → scoped delete (see §6.3) — also derives collection scope from path, so forget can only target this board's collections
+5. On success: `unlink` the file
+6. On parse error: move to `data/ipc/{groupFolder}/memory-writes/.errors/` (per-bucket quarantine; **separate from** the global `data/ipc/errors/` used by the existing watcher)
+7. **Memory ops are idempotent at the storage layer** — existing IPC retry-up-to-5 logic is safe (re-running `index()` with same contentHash is a no-op via compare-before-write; re-running scoped `forget` on already-deleted ID is a no-op)
 
 Latency: write→queryable is bound by `IPC_POLL_INTERVAL` + indexer cycle (~10-15s typically). MCP tool returns `action: 'queued'` immediately and does NOT block.
 
@@ -290,7 +296,13 @@ The `memoryId` may be a full 40-char sha1 contentHash OR a prefix (≥8 chars). 
 4. If 0 matches: idempotent no-op, logs warn
 5. If >1 match: rejects with `error_code='ambiguous_prefix'`, logs warn (defensive — should not occur at 12-char prefix)
 
-**Security boundary**: cross-board IDs are unreachable because the LIKE filter only sees this board's collections. A container for board-A cannot forget memories on board-B even by knowing the contentHash. Additionally, the host watcher derives `groupFolder` from the IPC pipe path itself (`data/ipc/{groupFolder}/memory-writes/...`) — the container cannot lie about which board it's for, because the path it can write to is determined by its mount.
+**Security boundary**: cross-board operations are structurally impossible because:
+1. The container's mount only allows writes to its own `data/ipc/{groupFolder}/memory-writes/` (enforced by docker mount in `container-runner.ts:267-274`)
+2. The host watcher derives `groupFolder` from the IPC file's path, not from container-supplied data
+3. The host derives `collection` from `groupFolder` + `scope` (+ `senderJid` for user scope) — never from container-supplied collection names
+4. The forget LIKE filter only matches `memory:board:${groupFolder}` and `memory:user:${groupFolder}:%`
+
+A container for board-A cannot store to nor forget from board-B's memory namespace, even with a malicious payload.
 
 ## 7. Extractor design (DEFERRED)
 
@@ -400,13 +412,16 @@ Tools always **register** so disabling doesn't crash the MCP server — they sho
 
 ### 8.6 Combined preamble token budget
 
-Existing prepended preambles in `container/agent-runner/src/index.ts` order (after v2):
-1. `add-long-term-context` recap (≤1024 tokens, line 731-778)
-2. `taskflow` task-context preamble (variable, via `engine.buildContextSummary`, line 700-729)
-3. **NEW**: `add-memory` preamble (≤500 tokens)
-4. User prompt
+Each successive `prompt = X + '\n\n' + prompt` mutation prepends to the front. Tracing the actual code execution order in `container/agent-runner/src/index.ts`:
 
-Combined upper bound: ~2500 tokens of preamble for a TaskFlow turn with all three layers active. At 165k auto-compact window (per project memory: `CLAUDE_CODE_AUTO_COMPACT_WINDOW=165000`), this is <2% of budget — acceptable. Prompt cache effects are unaffected because all three preambles are dynamic anyway.
+1. `prompt = containerInput.prompt` (line 688)
+2. Line ~717: `prompt = task_preamble + '\n\n' + prompt` → `task → user`
+3. **NEW** at line ~729 (after task block, before recap block): `prompt = memory + '\n\n' + prompt` → `memory → task → user`
+4. Line ~768: `prompt = recap + '\n\n' + prompt` → `recap → memory → task → user`
+
+**Final order: `recap → memory → task → user`.** Recap (most general background) at the front, memory (slow-moving facts about user/board), task (query-specific task hits), user message at the end (closest to attention).
+
+Combined upper bound: ~2500 tokens of preamble for a TaskFlow turn with all three layers active. At 165k auto-compact window (per project memory: `CLAUDE_CODE_AUTO_COMPACT_WINDOW=165000`), this is <2% of budget — acceptable. Prompt cache (system prompt) is unaffected; preambles are user-prompt content. Per-turn token cost is +500 input tokens when memory has hits, 0 when empty.
 
 If combined preamble proves too noisy in practice: the easiest knob is the memory budget (drop from 500 → 250 tokens, ~5 facts max).
 
@@ -448,12 +463,28 @@ interface ContainerInput {
 
 Plumbing:
 
-- **Initial container start**: host sets `containerInput.senderJid` when invoking `runContainerAgent` (reads from the WhatsApp message's `sender` field).
-- **IPC follow-up messages**: host extends `AgentTurnContext` (already passed through `IpcInputMessage`) to carry `senderJid`. `src/group-queue.ts:223-261` `sendMessage(groupJid, text, turnContext?)` requires no signature change — caller just sets `turnContext.senderJid` from the inbound WhatsApp message.
-- **Burst-merge edge case** (`src/ipc.ts:1156` mergedText path): when multiple inbound messages from different senders are merged into one IPC follow-up, use the last sender's JID for `turnContext.senderJid`. This matches the burst's most-recent intent.
+- **Initial container start**: host sets `containerInput.senderJid` when invoking `runContainerAgent` (reads from the WhatsApp message's `sender` field). Today's call site at `src/index.ts:759-770` does NOT pass `senderJid`; this is a new field to add to the call.
+- **IPC follow-up messages**: host extends `AgentTurnContext` (already passed through `IpcInputMessage`) to carry `senderJid`. `src/group-queue.ts:223-261` `sendMessage(groupJid, text, turnContext?)` requires no signature change — the caller building the `turnContext` just sets `senderJid` from the inbound WhatsApp message.
+- **Inbound→container delivery path**: in the message loop in `src/index.ts`, when a follow-up message is delivered to an active container via `groupQueue.sendMessage(...)`, the caller constructs `AgentTurnContext` and must include `senderJid` from the inbound message's `sender` field. (Note: v1 of this spec misattributed this to `src/ipc.ts:1156` — that line is **outbound** notification consolidation, unrelated.)
 - **Container reader**: `nextMessage.turnContext?.senderJid` (initial: `containerInput.senderJid`). Falls back to `null` → board-scope-only recall.
 
 Host also sets `containerInput.memoryEnabled` from a `registered_groups.memory_enabled` lookup at container-start time.
+
+### 9.4 Container env forwarding (kill-switch)
+
+`src/container-runner.ts` currently forwards only `OLLAMA_HOST` and `EMBEDDING_MODEL` env vars to the spawned docker container (`container-runner.ts:530-538`). The kill-switch env var must be added to that splice block:
+
+```typescript
+// container-runner.ts ~line 530
+if (process.env.NANOCLAW_MEMORY) {
+  containerArgs.splice(
+    containerArgs.length - 1, 0,
+    '-e', `NANOCLAW_MEMORY=${process.env.NANOCLAW_MEMORY}`,
+  );
+}
+```
+
+Without this, the container sees `process.env.NANOCLAW_MEMORY === undefined` and the recall preamble + MCP tool gating both default-on regardless of the host env var. **This is a load-bearing change for the kill-switch to work** — the spec is incomplete without it.
 
 ### 9.4 Runtime artifacts
 
@@ -503,6 +534,17 @@ Host also sets `containerInput.memoryEnabled` from a `registered_groups.memory_e
 | Multi-board container restart with pending IPC writes | All `memory-writes/` files survive restart (no cursor). Host watcher resumes processing on first poll cycle. |
 | Conflicting facts ("Mike" → later "Miguel") | Both stored, recall returns both ranked, agent reasons. Lint deferred. |
 | Deleted upstream `messages` row | Memory persists; we don't follow upstream deletes |
+
+### 10.4 Mid-session kill-switch drift (accepted limitation)
+
+The container reads `containerInput.memoryEnabled` once at start. If the host UPDATEs `registered_groups.memory_enabled=0` mid-session (per-board rollback), **the running container still has the cached value** and continues to run recall + accept memory_store calls until it exits.
+
+**Acceptable because:**
+- Most TaskFlow containers exit shortly after their turn (via `_close` sentinel after the agent finishes)
+- The next container start picks up the new flag value (host re-reads on each `runContainerAgent` call)
+- The fleet-wide kill-switch (`NANOCLAW_MEMORY=off`) requires service restart to take effect anyway, so similar latency
+
+**Operator workflow for immediate per-board disable**: `UPDATE registered_groups SET memory_enabled=0 WHERE folder='X'` AND `groupQueue.closeStdin(groupJid)` to evict any active container. Documented in §13 rollback section.
 
 ## 11. Observability
 
@@ -607,15 +649,17 @@ memory_forget:
   ✓ kill-switch off → returns error_code
 ```
 
-### 12.2 Integration tests (`memory-integration.test.ts`, ~5 tests)
+### 12.2 Integration tests (`memory-integration.test.ts`, ~7 tests)
 
-`:memory:` SQLite + mocked fetch:
+`:memory:` SQLite + mocked fetch + **real `src/ipc.ts` polling loop** (not isolated handler):
 
-- Manual store → IPC pipe → host watcher → embeddings.db row → indexer embeds → recall returns
+- Manual store → IPC pipe → real polling loop picks up → host watcher → embeddings.db row → indexer embeds → recall returns
 - Idempotency: store same fact twice → no duplicate rows (content-hash dedup)
 - Forget: store fact, recall returns it, forget by prefix, recall returns nothing
 - Kill-switch: `NANOCLAW_MEMORY=off` → no writes processed, no preamble
 - Per-board flag: `memory_enabled=0` → tool returns disabled error
+- **Cross-board store attempt**: container A's IPC dir contains a JSON with metadata.senderJid pointing to board B's user — host derives collection from path (board A's dir), NOT metadata; verify the resulting collection is `memory:user:{boardA}:{senderJid}` regardless. **This is the security boundary test.**
+- **Real watcher integration**: spin up `src/ipc.ts` polling loop with a temp `data/ipc/{folder}/memory-writes/` dir, write a fixture JSON, advance fake time past `IPC_POLL_INTERVAL`, assert the file is consumed and the embeddings.db row appears. Tests the new `memory-writes` bucket scan + `processMemoryIpc` dispatch wiring.
 
 ### 12.3 Real-Ollama tests (gated, opt-in)
 
@@ -681,8 +725,8 @@ E2E smoke test via existing `scheduled_tasks` pattern: insert one-shot task that
 
 Two layers:
 
-1. **Per-board:** `UPDATE registered_groups SET memory_enabled=0 WHERE folder='setd-secti-taskflow';` — takes effect within `IPC_POLL_INTERVAL` (next host poll), MCP tools return `error_code='memory_disabled_for_board'` on next agent invocation.
-2. **Fleet-wide:** set `NANOCLAW_MEMORY=off` in service env, `systemctl --user restart nanoclaw`. Same effect, all boards.
+1. **Per-board:** `UPDATE registered_groups SET memory_enabled=0 WHERE folder='setd-secti-taskflow';` — takes effect on next container start. Active containers retain cached value (see §10.4 mid-session drift). For immediate effect on a chatty board, also evict the active container: `groupQueue.closeStdin(groupJid)` (or wait for natural turn-end).
+2. **Fleet-wide:** set `NANOCLAW_MEMORY=off` in service env, `systemctl --user restart nanoclaw`. Effective immediately on restart for all new containers; existing containers exit at restart anyway.
 
 Schema rollback: not needed. `ADD COLUMN` is non-destructive; orphaned memory rows in `embeddings.db` cost a few MB and can stay.
 
