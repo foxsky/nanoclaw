@@ -1,8 +1,8 @@
-# TaskFlow Memory Layer — Design Spec (v2, manual-only MVP)
+# TaskFlow Memory Layer — Design Spec (v2.2, manual-only MVP)
 
 **Date:** 2026-04-25
 **Status:** Draft, pending implementation
-**Revision:** v2 after 3 internal reviewers + Codex (gpt-5.5/high) demolished v1
+**Revision:** v2.2 after 3 internal reviewers + 4 Codex (gpt-5.5/high) skeptical rounds
 **API base:** `redis-developer/openclaw-redis-agent-memory` (design pattern)
 **Storage base:** existing `add-embeddings` skill (BGE-M3 / Ollama / SQLite WAL)
 **Pilot scope:** all TaskFlow-managed boards from day 1, kill-switch via env var
@@ -124,7 +124,7 @@ CONTAINER (container/agent-runner/src/)
 
 | Path | Change |
 |---|---|
-| `src/ipc.ts` | ~75 lines (~60 for memory bucket + ~15 for `processIpcOnce` export refactor for testability): the existing per-group loop has **hardcoded buckets** (`messages`, `tasks`, `otp` at `ipc.ts:891`) and dispatches by `data.type` — not generic. Two integration choices: (a) add `memory-writes` as a fourth hardcoded bucket with its own `processMemoryIpc(data)` handler that switches on `data.op` (`store`/`forget`); (b) reuse the existing `tasks` bucket by adding `data.type === 'memory_op'` and a new sub-dispatcher. Choice (a) is preferred — keeps memory ops on their own write path with isolated `.errors/` quarantine and avoids polluting the tasks dispatcher. Reuses the existing retry/unlink primitive. **Also exposes `processIpcOnce(groupDir)` as an exported helper for deterministic test integration** (today the loop is `setTimeout`-driven with no per-cycle entry point at `ipc.ts:815, 1208-1211`). |
+| `src/ipc.ts` | ~100 lines (~60 for memory bucket + ~40 for `processIpcOnce` export refactor — original ~15 estimate was optimistic per Codex round 5). The existing per-group loop has **hardcoded buckets** (`messages`, `tasks`, `otp` at `ipc.ts:891`) and dispatches by `data.type` — not generic. Two integration choices: (a) add `memory-writes` as a fourth hardcoded bucket with its own `processMemoryIpc(data)` handler that switches on `data.op` (`store`/`forget`); (b) reuse the existing `tasks` bucket by adding `data.type === 'memory_op'` and a new sub-dispatcher. **Choice (a) is preferred** — keeps memory ops on their own write path with isolated `.errors/` quarantine and avoids polluting the tasks dispatcher. Reuses the existing retry/unlink primitive. **Refactor for testability**: `startIpcWatcher` is currently a perpetual `setTimeout` closure (`ipc.ts:815, 1208-1211`) carrying `deps`, `pendingNotifications`, retry/error handling, eviction state, multi-bucket dispatch. The refactor extracts the per-cycle body into `processIpcOnce(groupDir, ctx)` and re-implements `startIpcWatcher` as a wrapper that calls it on a timer; non-trivial because of closure-captured state — must lift state into a `ctx` object. |
 | `container/agent-runner/src/ipc-mcp-stdio.ts` | ~80 lines: register 3 MCP tools (`memory_store`, `memory_recall`, `memory_forget`); each writes to `/workspace/ipc/memory-writes/` via the existing IPC write pattern. (The container's `/workspace/ipc/` IS the host's `data/ipc/{groupFolder}/` — the per-group scoping is enforced by the mount in `container-runner.ts:267-274`, not by container-supplied paths.) Tool descriptions are gating UX. |
 | `container/agent-runner/src/index.ts` | ~30 lines at two locations: (a) after the existing task-context preamble block (~line 729), call `buildMemoryPreamble(prompt, ...)` and prepend to `prompt`; (b) inside the IPC follow-up loop after `prompt = nextMessage.text` (~line 957), do the same. DRY by importing the helper from `memory-reader.ts`. |
 
@@ -283,7 +283,7 @@ export async function buildMemoryPreamble(
 }
 ```
 
-**Sender JID for follow-ups**: `nextMessage.senderJid` is the new addition we'll need to plumb through the IPC message format (currently `IpcMessage` has `text` and `turnContext`; we add `senderJid?: string`). Falls back to `containerInput.senderJid` if missing.
+**Sender JID for follow-ups**: `nextMessage.turnContext?.senderJid` is the new addition we'll need to plumb through the IPC `AgentTurnContext` (the existing `IpcInputMessage` shape is `{text, turnContext}`; we extend `AgentTurnContext` with `senderJid?: string`, see §9.3). Falls back to `containerInput.senderJid` if missing.
 
 `ollamaEmbedLocal` is a small inline helper (or refactored from the existing `ollamaEmbed` in `ipc-mcp-stdio.ts:60-75` into a shared module). Same fetch pattern, 2s timeout, returns `Float32Array | null`.
 
@@ -337,7 +337,9 @@ description:
   'Do NOT use for task state (use taskflow_* tools), one-time events, ' +
   'specific dates, or speculation. ' +
   'Background auto-capture is NOT enabled — if you do not call this tool, ' +
-  'the fact will not be remembered.'
+  'the fact will not be remembered. ' +
+  'IMPORTANT: in script-driven scheduled tasks (no human inbound), you MUST ' +
+  'use scope="board" — scope="user" writes will be rejected.'
 
 inputSchema:
   text:     z.string().min(5).max(280)  // one English sentence
@@ -472,7 +474,8 @@ Plumbing:
 
 - **Initial container start**: host sets `containerInput.senderJid` when invoking `runContainerAgent` (reads from the WhatsApp message's `sender` field). Today's call site at `src/index.ts:759-770` does NOT pass `senderJid`; this is a new field to add to the call.
 - **IPC follow-up messages**: host extends `AgentTurnContext` (already passed through `IpcInputMessage`) to carry `senderJid`. `src/group-queue.ts:223-261` `sendMessage(groupJid, text, turnContext?)` requires no signature change — the caller building the `turnContext` just sets `senderJid` from the inbound WhatsApp message.
-- **Inbound→container delivery path**: when a follow-up WhatsApp message arrives for a group with an active container, the host writes an IPC file (via `GroupQueue.sendMessage` in `src/group-queue.ts:223-261`) into `data/ipc/{groupFolder}/input/`. The caller building the `turnContext` argument must populate `senderJid` from the inbound message's `sender` field. The implementation plan must locate the actual call site by tracing callers of `groupQueue.sendMessage(...)` (or whatever IPC enqueue helper is in use); previous spec drafts misattributed this to `src/ipc.ts:1156` (outbound notification consolidation, unrelated) and `src/index.ts` (which dispatches but does not directly enqueue follow-ups).
+- **Inbound→container delivery path**: when a follow-up WhatsApp message arrives for a group with an active container, an IPC file is written into `data/ipc/{groupFolder}/input/` via `GroupQueue.sendMessage` (`src/group-queue.ts:223-261`). The caller building the `turnContext` argument must populate `senderJid` from the inbound message's `sender` field.
+  - **Important — implementation prerequisite**: at HEAD, `GroupQueue.sendMessage` may have no active production callers wiring TaskFlow follow-ups (the channel-handler → IPC path may use a different enqueue mechanism, or the active-container follow-up path may need to be added). The implementation plan must (a) locate the actual current code path by tracing how WhatsApp inbound messages reach `data/ipc/{groupFolder}/input/`, OR (b) explicitly add a caller to `GroupQueue.sendMessage` from the inbound message handler if no such path exists. **Previous spec drafts misattributed this**: `src/ipc.ts:1156` is outbound notification consolidation (unrelated), and `src/index.ts` dispatches but does not directly enqueue follow-ups. Verify against HEAD before implementing.
 - **Container reader**: `nextMessage.turnContext?.senderJid` (initial: `containerInput.senderJid`). Falls back to `null` → board-scope-only recall.
 
 Host also sets `containerInput.memoryEnabled` from a `registered_groups.memory_enabled` lookup at container-start time.
@@ -493,7 +496,7 @@ if (process.env.NANOCLAW_MEMORY) {
 
 Without this, the container sees `process.env.NANOCLAW_MEMORY === undefined` and the recall preamble + MCP tool gating both default-on regardless of the host env var. **This is a load-bearing change for the kill-switch to work** — the spec is incomplete without it.
 
-### 9.4 Runtime artifacts
+### 9.5 Runtime artifacts
 
 | Path | Format | Lifecycle |
 |---|---|---|
@@ -538,6 +541,7 @@ Without this, the container sees `process.env.NANOCLAW_MEMORY === undefined` and
 | Sender JID changes (phone change) | Memory under old JID orphaned; no auto-merge. Manual `memory_forget` if user requests. |
 | Board folder rename | Old `memory:*:{oldFolder}:*` collections orphaned; ops migration via SQL |
 | `senderJid` missing from IPC follow-up `turnContext` | `buildMemoryPreamble` falls back to `containerInput.senderJid`; if that's also null (rare — script-driven scheduled task), falls back to board-scope only and skips user-scope query. Logs debug. |
+| Script-driven scheduled task calling `memory_store(scope='user')` | Server-side validation rejects with `error_code='no_recent_sender'` because there's no recent human inbound to verify against. Scripts must use `scope='board'` explicitly. The agent's tool description must mention this constraint to gate misuse — added to §8.1 wording. |
 | Multi-board container restart with pending IPC writes | All `memory-writes/` files survive restart (no cursor). Host watcher resumes processing on first poll cycle. |
 | Conflicting facts ("Mike" → later "Miguel") | Both stored, recall returns both ranked, agent reasons. Lint deferred. |
 | Deleted upstream `messages` row | Memory persists; we don't follow upstream deletes |
@@ -668,7 +672,10 @@ memory_forget:
 - Kill-switch: `NANOCLAW_MEMORY=off` → no writes processed, no preamble
 - Per-board flag: `memory_enabled=0` → tool returns disabled error
 - **Cross-board store attempt**: container A's IPC dir contains a JSON with metadata.senderJid pointing to board B's user — host derives collection from path (board A's dir), NOT metadata; verify the resulting collection is `memory:user:{boardA}:{senderJid}` regardless. **This is the security boundary test.**
-- **Real watcher integration**: depends on a small refactor to `src/ipc.ts` that exposes `processIpcOnce(groupDir)` as an exported helper (today `startIpcWatcher` is a perpetual `setTimeout` loop with no per-cycle entry point — see `ipc.ts:815, 1208-1211`). The integration test imports `processIpcOnce`, sets up a temp `data/ipc/{folder}/memory-writes/` dir, writes a fixture JSON, calls `processIpcOnce` once, and asserts the file is consumed and the row appears in embeddings.db. **Note: this refactor is part of the implementation — the spec adds `processIpcOnce` export to the §5.2 modified-files list for `src/ipc.ts`.**
+- **Real watcher integration**: depends on the `processIpcOnce(groupDir, ctx)` refactor in §5.2 (~40 lines). The integration test imports `processIpcOnce`, sets up a temp `data/ipc/{folder}/memory-writes/` dir + a stub `ctx` (deps mocks), writes a fixture JSON, calls `processIpcOnce` once, asserts the file is consumed and the row appears in embeddings.db.
+- **Sender spoof fallback**: container writes a JSON with `metadata.senderJid='OTHER@s.whatsapp.net'` while `messages.db` recent-inbound for this groupFolder shows only `MARIA@s.whatsapp.net`. Run `processMemoryIpc`. Assert: row is stored under `memory:user:{groupFolder}:MARIA@s.whatsapp.net` (the recent inbound, not the spoof), and `logger.warn` was called with `memory.spoof_attempt`.
+- **No-recent-inbound rejection**: container writes a JSON with `op=store, scope=user, metadata.senderJid=...` for a groupFolder that has zero recent inbound messages (e.g., script-driven scheduled task). Assert: file moves to `.errors/`, host emits `error_code='no_recent_sender'`, no row in embeddings.db.
+- **Cross-board store** (existing test, updated to v2.2 semantics): container A writes a JSON with `metadata.senderJid` belonging to board B's user. The host derives `groupFolder` from board A's path. Assert: collection is `memory:user:{boardA}:{spoof_or_fallback_jid}` (NEVER `memory:*:{boardB}:*`); the file cannot escape board A's namespace regardless of metadata content.
 
 ### 12.3 Real-Ollama tests (gated, opt-in)
 
@@ -714,7 +721,7 @@ journalctl --user -u nanoclaw --since "1 day ago" \
 ls /root/nanoclaw/data/ipc/*/memory-writes/ 2>/dev/null | wc -l
 ```
 
-E2E smoke test via existing `scheduled_tasks` pattern: insert one-shot task that calls `memory_store` then `memory_recall` and verifies the fact comes back.
+E2E smoke test via existing `scheduled_tasks` pattern: insert one-shot task that calls `memory_store(text=..., category=..., scope='board')` then `memory_recall(query=..., scope='board')` and verifies the fact comes back. **Must use `scope='board'`** because scheduled tasks are script-driven with no recent human inbound, and `scope='user'` writes are rejected with `error_code='no_recent_sender'` (see §6.1 step 3 server-side validation).
 
 ## 13. Rollout plan
 
