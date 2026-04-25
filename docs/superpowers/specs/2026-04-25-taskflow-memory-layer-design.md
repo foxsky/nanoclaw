@@ -1,8 +1,8 @@
-# TaskFlow Memory Layer — Design Spec (v2.2, manual-only MVP)
+# TaskFlow Memory Layer — Design Spec (v2.4, manual-only MVP)
 
 **Date:** 2026-04-25
 **Status:** Draft, pending implementation
-**Revision:** v2.2 after 3 internal reviewers + 4 Codex (gpt-5.5/high) skeptical rounds
+**Revision:** v2.4 after 3 internal reviewers + 5 Codex (gpt-5.5/high) skeptical rounds
 **API base:** `redis-developer/openclaw-redis-agent-memory` (design pattern)
 **Storage base:** existing `add-embeddings` skill (BGE-M3 / Ollama / SQLite WAL)
 **Pilot scope:** all TaskFlow-managed boards from day 1, kill-switch via env var
@@ -131,9 +131,14 @@ CONTAINER (container/agent-runner/src/)
 ### 5.3 Files NOT touched
 
 - `taskflow-engine.ts` (no engine changes)
-- `container-runner.ts` (mount + env already wired by add-embeddings; host-side `input.prompt` embedding at `:546-563` is fine for the initial start, container handles its own embedding for IPC follow-ups)
 - `embedding-service.ts` (consumed as-is, no method additions)
 - `EmbeddingReader.search` (consumed as-is; we pass `opts.threshold=0.5` explicitly to override its default of 0.3)
+
+### 5.4 Files touched minimally (env-forwarding only)
+
+| Path | Change |
+|---|---|
+| `src/container-runner.ts` | ~5 lines: add `NANOCLAW_MEMORY` env var to the docker spawn splice block at `~line 530` (currently forwards only `OLLAMA_HOST`/`EMBEDDING_MODEL`). See §9.4 for code snippet. Also: ensure `containerInput.senderJid` is populated when invoking `runContainerAgent` (host reads from inbound message's `sender` field; ~3 more lines). Note: §5.3 v2.0-2.2 listed this as "NOT touched" — that was wrong, fixed in v2.4. The mount + bge-m3 embedding wiring at `:267-274` and `:546-563` is unchanged. |
 
 ## 6. Data flow
 
@@ -169,12 +174,12 @@ Host-side `src/ipc.ts` polling loop:
 2. New handler `processMemoryIpc(data, groupFolder)` invoked when `data.op` ∈ `{store, forget}`
 3. **Collection derivation (security boundary)**: handler computes `collection` server-side:
    - `scope === 'board'` → `memory:board:${groupFolder}` (groupFolder from path; immune to spoofing)
-   - `scope === 'user'` → `memory:user:${groupFolder}:${resolvedSenderJid}` where `resolvedSenderJid` is **server-validated**:
-     - Host queries `messages.db`: `SELECT sender FROM messages WHERE chat_jid = ? AND is_from_me = 0 AND timestamp >= datetime('now', '-10 minutes') ORDER BY timestamp DESC LIMIT 5` (where `chat_jid` is the registered group's JID for this `groupFolder`)
-     - If `data.metadata.senderJid` matches one of the recent inbound senders → use it
-     - If no match → fall back to the most-recent inbound sender (`recent[0]`), log warn `memory.spoof_attempt` with the mismatched value
+   - `scope === 'user'` → `memory:user:${groupFolder}:${resolvedSenderJid}` where `resolvedSenderJid` AND `resolvedSenderName` are **server-derived from `messages.db`**:
+     - Host queries: `SELECT sender, sender_name FROM messages WHERE chat_jid = ? AND is_from_me = 0 AND timestamp >= datetime('now', '-10 minutes') ORDER BY timestamp DESC LIMIT 5` (where `chat_jid` is the registered group's JID for this `groupFolder`, looked up via `SELECT jid FROM registered_groups WHERE folder = ?`)
+     - If `data.metadata.senderJid` matches one of the recent inbound `sender` values → use it as `resolvedSenderJid` AND take its `sender_name` from the same row as `resolvedSenderName` (overrides container-supplied `metadata.senderName` — host is authoritative)
+     - If no match → fall back to the most-recent inbound's `(sender, sender_name)`, log warn `memory.spoof_attempt` with the mismatched value
      - If no recent senders at all (rare — bot turn with no recent inbound) → reject with `error_code='no_recent_sender'`, move file to `.errors/`
-   - Container's `data` JSON contains `scope` + `metadata.senderJid` but NOT `collection`. The host never trusts a container-supplied collection name AND validates `senderJid` against recent message history. **This closes both cross-board AND same-board sender-spoofing holes.**
+   - Container's `data` JSON contains `scope` + `metadata.senderJid` + `metadata.senderName` but NOT `collection`. The host never trusts container-supplied collection names AND validates `senderJid` against recent message history AND overrides `senderName` from the matched DB row. **This closes cross-board AND same-board sender-spoofing AND name-impersonation holes.**
 4. Dispatches by `data.op`:
    - `store` → `EmbeddingService.index(derivedCollection, contentHash, text, metadata)` — UPSERT compare-before-write makes identical writes no-ops
    - `forget` → scoped delete (see §6.3) — also derives collection scope from path, so forget can only target this board's collections
@@ -594,7 +599,7 @@ Key metrics for the eval window:
 
 ## 12. Testing strategy
 
-TDD throughout. ~30 tests across unit + integration (down from v1's ~45-55 due to extractor removal).
+TDD throughout. After v2.3 spoof-fallback + no-recent-rejection + real-watcher integration tests added, count is ~46 unit/integration + 3 real-Ollama gated tests. (Earlier draft estimates of "~30" were stale — kept low by collapsing test groups; v2.4 reflects honest count.)
 
 ### 12.1 Unit tests
 
@@ -675,7 +680,7 @@ memory_forget:
 - **Real watcher integration**: depends on the `processIpcOnce(groupDir, ctx)` refactor in §5.2 (~40 lines). The integration test imports `processIpcOnce`, sets up a temp `data/ipc/{folder}/memory-writes/` dir + a stub `ctx` (deps mocks), writes a fixture JSON, calls `processIpcOnce` once, asserts the file is consumed and the row appears in embeddings.db.
 - **Sender spoof fallback**: container writes a JSON with `metadata.senderJid='OTHER@s.whatsapp.net'` while `messages.db` recent-inbound for this groupFolder shows only `MARIA@s.whatsapp.net`. Run `processMemoryIpc`. Assert: row is stored under `memory:user:{groupFolder}:MARIA@s.whatsapp.net` (the recent inbound, not the spoof), and `logger.warn` was called with `memory.spoof_attempt`.
 - **No-recent-inbound rejection**: container writes a JSON with `op=store, scope=user, metadata.senderJid=...` for a groupFolder that has zero recent inbound messages (e.g., script-driven scheduled task). Assert: file moves to `.errors/`, host emits `error_code='no_recent_sender'`, no row in embeddings.db.
-- **Cross-board store** (existing test, updated to v2.2 semantics): container A writes a JSON with `metadata.senderJid` belonging to board B's user. The host derives `groupFolder` from board A's path. Assert: collection is `memory:user:{boardA}:{spoof_or_fallback_jid}` (NEVER `memory:*:{boardB}:*`); the file cannot escape board A's namespace regardless of metadata content.
+- **Cross-board store boundary** (one consolidated test, replacing the v2.2 separate cross-board + spoof bullets which overlapped): container A writes a JSON with `metadata.senderJid` belonging to board B's user. The host derives `groupFolder` from board A's path. Assert: (1) collection is `memory:user:{boardA}:{resolved_jid}` (NEVER `memory:*:{boardB}:*` — the file cannot escape board A's namespace), and (2) since the spoofed JID won't match board A's recent inbound, host falls back to board A's most-recent valid inbound sender + logs `memory.spoof_attempt`.
 
 ### 12.3 Real-Ollama tests (gated, opt-in)
 
@@ -721,7 +726,12 @@ journalctl --user -u nanoclaw --since "1 day ago" \
 ls /root/nanoclaw/data/ipc/*/memory-writes/ 2>/dev/null | wc -l
 ```
 
-E2E smoke test via existing `scheduled_tasks` pattern: insert one-shot task that calls `memory_store(text=..., category=..., scope='board')` then `memory_recall(query=..., scope='board')` and verifies the fact comes back. **Must use `scope='board'`** because scheduled tasks are script-driven with no recent human inbound, and `scope='user'` writes are rejected with `error_code='no_recent_sender'` (see §6.1 step 3 server-side validation).
+E2E smoke test via existing `scheduled_tasks` pattern. Because `memory_store` returns `action='queued'` and the write→recallable latency is ~10-15s (IPC poll + indexer cycle), the smoke test cannot do `store` then immediately `recall` in one turn. Two viable patterns:
+
+- **Two scheduled tasks**: insert task #1 that calls `memory_store(scope='board')` and exits; insert task #2 scheduled 30 seconds later that calls `memory_recall(scope='board')` and verifies the fact appears.
+- **Single task with sleep + retry**: agent calls `memory_store(scope='board')`, then uses `Bash sleep 20`, then calls `memory_recall(scope='board')` with retry-up-to-3-times on empty result (200ms backoff).
+
+The **two-task pattern** is preferred — cleaner, doesn't tie up the container for 20s, and matches how a real user would interact (write, come back later). **Must use `scope='board'`** because scheduled tasks are script-driven with no recent human inbound, and `scope='user'` writes are rejected with `error_code='no_recent_sender'` (see §6.1 step 3 server-side validation).
 
 ## 13. Rollout plan
 
