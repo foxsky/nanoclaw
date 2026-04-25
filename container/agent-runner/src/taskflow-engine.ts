@@ -2129,8 +2129,8 @@ export class TaskflowEngine {
       })();
       if (!txResult.success) return txResult;
       const row = this.db.prepare(
-        `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ?`
-      ).get(params.task_id) as Record<string, unknown>;
+        `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ? AND t.board_id = ?`
+      ).get(params.task_id, params.board_id) as Record<string, unknown>;
       return { success: true, data: this.serializeApiTask(row), changes: [txResult.change] } as any;
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
@@ -2179,8 +2179,8 @@ export class TaskflowEngine {
       })();
       if (!txResult.success) return txResult;
       const row = this.db.prepare(
-        `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ?`
-      ).get(params.task_id) as Record<string, unknown>;
+        `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ? AND t.board_id = ?`
+      ).get(params.task_id, params.board_id) as Record<string, unknown>;
       return { success: true, data: this.serializeApiTask(row), changes: [txResult.change] } as any;
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
@@ -2227,8 +2227,8 @@ export class TaskflowEngine {
       })();
       if (!txResult.success) return txResult;
       const row = this.db.prepare(
-        `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ?`
-      ).get(params.task_id) as Record<string, unknown>;
+        `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ? AND t.board_id = ?`
+      ).get(params.task_id, params.board_id) as Record<string, unknown>;
       return { success: true, data: this.serializeApiTask(row), changes: [txResult.change] } as any;
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
