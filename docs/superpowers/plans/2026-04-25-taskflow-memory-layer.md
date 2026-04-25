@@ -1410,37 +1410,35 @@ const group: RegisteredGroup = {
 };
 ```
 
-- [ ] **Step 6: Update `runContainerAgent` caller in `src/index.ts` (initial start)**
+- [ ] **Step 6: Modify `runAgent` signature + populate raw text/sender at both call sites**
 
-Find the existing `runContainerAgent(group, { ... }, ...)` call at ~line 759. Trace UP from this call site to find:
-1. The inbound message variable (look for `formatMessages(...)` or the raw message content immediately before `prompt` is built — typically in `src/router.ts:formatMessages` or in a dispatcher in `src/index.ts`/`src/whatsapp.ts`)
-2. The `sender` and `senderName` fields on that inbound message
+The existing `runAgent` function in `src/index.ts:699-816` calls `runContainerAgent` at `:759`. At that call site there is no `inboundMessage` variable in scope — `runAgent` only receives `(group, prompt, chatJid, imageAttachments, onOutput?, turnContext?)`. The inbound message data lives in `runAgent`'s **callers** (in scope as `missedMessages` at `src/index.ts:619` and `pendingDms` at `:472-478`).
 
-Concrete steps:
+Approach: extend `runAgent`'s signature to accept the missing fields, update both production call sites to extract them from their respective inbound arrays, and pass through to `runContainerAgent`.
 
-```bash
-grep -n "formatMessages\|runContainerAgent\|prompt = " /root/nanoclaw/src/index.ts | head -20
-```
-
-The inbound message object (from Baileys/WhatsApp) typically has `.key.participant` (group sender JID) or `.key.remoteJid` (DM sender JID), `.pushName` (display name), and `.message.conversation` (raw text). Adjust based on what you find.
-
-Apply this edit:
+**Edit 1 — `runAgent` signature** (`src/index.ts:699-706`):
 
 ```typescript
-// Just before calling runContainerAgent, capture the raw text + sender info
-const rawUserText = inboundMessage.content ?? inboundMessage.message?.conversation ?? '';
-const senderJidForContainer = inboundMessage.key?.participant
-  ?? inboundMessage.key?.remoteJid
-  ?? inboundMessage.sender;
-const senderNameForContainer = inboundMessage.pushName
-  ?? inboundMessage.senderName
-  ?? '';
-const memoryEnabledForContainer = group.memoryEnabled === 1;
+async function runAgent(
+  group: RegisteredGroup,
+  prompt: string,
+  chatJid: string,
+  imageAttachments: Array<{ relativePath: string; mediaType: string }>,
+  onOutput?: (output: ContainerOutput) => Promise<void>,
+  turnContext?: AgentTurnContext,
+  // NEW (memory layer):
+  senderInfo?: { jid: string; name: string; rawText: string },
+): Promise<'success' | 'error'> {
+```
 
+**Edit 2 — `runAgent` body** (in the `runContainerAgent` call at ~line 759):
+
+```typescript
+const memoryEnabledForContainer = group.memoryEnabled === 1;
 const output = await runContainerAgent(
   group,
   {
-    prompt,                                      // existing — already XML via formatMessages
+    prompt,
     sessionId,
     groupFolder: group.folder,
     chatJid,
@@ -1450,21 +1448,60 @@ const output = await runContainerAgent(
     taskflowMaxDepth: group.taskflowMaxDepth,
     assistantName: getGroupSenderName(group.trigger),
     turnContext,
-    senderJid: senderJidForContainer,           // NEW
-    senderName: senderNameForContainer,         // NEW
-    memoryEnabled: memoryEnabledForContainer,   // NEW
-    rawUserText,                                // NEW: needed for memory recall (Task 12)
+    senderJid: senderInfo?.jid,                  // NEW
+    senderName: senderInfo?.name,                // NEW
+    memoryEnabled: memoryEnabledForContainer,    // NEW
+    rawUserText: senderInfo?.rawText,            // NEW: for memory recall (Task 12)
     ...(imageAttachments.length > 0 && { imageAttachments }),
   },
-  // ...
+  // ... existing ...
 );
 ```
 
-If the inbound message variable is named differently in your code (`message`, `msg`, `wa`), adjust accordingly. The principle: capture the original user text BEFORE any wrapping, plus the sender's JID + display name, plus the per-board memory flag.
+**Edit 3 — caller site at `src/index.ts:478` (pendingDms branch)**:
+
+The `pendingDms` array's most recent message holds the inbound. Use:
+
+```typescript
+const lastDm = pendingDms[pendingDms.length - 1];
+const output = await runAgent(
+  group, dmPrompt, chatJid, [], async (result) => { ... }, turnContext,
+  lastDm ? {
+    jid: lastDm.sender,
+    name: lastDm.sender_name ?? '',
+    rawText: lastDm.content ?? '',
+  } : undefined,
+);
+```
+
+(Verify `pendingDms` element shape: it should have `sender`, `sender_name`, `content` — same shape as `missedMessages`. If different, adjust field names.)
+
+**Edit 4 — caller site at `src/index.ts:623` (missedMessages branch)**:
+
+```typescript
+const lastInbound = missedMessages[missedMessages.length - 1];
+const output = await runAgent(
+  group, prompt, chatJid, imageAttachments, async (result) => { ... }, turnContext,
+  lastInbound ? {
+    jid: lastInbound.sender,
+    name: lastInbound.sender_name ?? '',
+    rawText: lastInbound.content ?? '',
+  } : undefined,
+);
+```
+
+**Edit 5 — closure at `src/index.ts:544-545`**: this closure passes `runAgent` as a callback to something else (likely a webhook/scheduled handler). It currently passes only `(prompt, onOutput) => runAgent(group, prompt, chatJid, [], onOutput)`. For scheduled tasks / webhook-driven turns there's no inbound user message; pass `undefined` for senderInfo:
+
+```typescript
+runAgent: (prompt, onOutput) =>
+  runAgent(group, prompt, chatJid, [], onOutput),  // unchanged — senderInfo defaults undefined
+```
+
+(Scheduled tasks must use `scope='board'` for `memory_store`; the per-spec §10.3 boundary case.)
 
 - [ ] **Step 7: Wire `turnContext.senderJid` in the inbound→IPC follow-up enqueue path**
 
-Per spec §9.3, the v2 plan was unclear about whether `GroupQueue.sendMessage` has any active production callers. **Concrete approach for v2 plan**: regardless of whether a caller exists today, the active inbound→follow-up path goes through `src/group-queue.ts:223-261`'s `sendMessage(groupJid, text, turnContext)`. Modify any caller (or add one if absent) to populate `turnContext.senderJid`:
+Per spec §9.3, the inbound→follow-up enqueue path goes through `src/group-queue.ts:223-261`'s `sendMessage(groupJid, text, turnContext)`. **Codex round 3 confirmed: current production code has no `queue.sendMessage` callers** (only test files). The implementation must commit to outcome (c) below — adding a caller from the inbound message handler in `src/index.ts`. The (a)/(b) outcomes are listed only for future-proofing if the codebase changes:
 
 ```bash
 # Step 7a: locate the actual caller(s)
@@ -1505,7 +1542,7 @@ Three concrete sub-cases:
 
   Note: this assumes `groupQueue.hasActiveContainer(chatJid)` exists on the GroupQueue class. If not, add it (1-line: `return this.getGroup(jid).active`).
 
-Pick whichever sub-case matches reality (a, b, or c). Document in the commit message which one applied. The container-side reading of `nextMessage.turnContext?.senderJid` is already done in Task 13.
+**Default to outcome (c)** unless your grep finds an existing caller (a) or alternative path (b). The container-side reading of `nextMessage.turnContext?.senderJid` is already done in Task 13. Document in the commit message which sub-case applied (almost certainly (c) at HEAD per Codex round 3 verification).
 
 - [ ] **Step 8: Run tests + typecheck (host + container)**
 
@@ -1996,19 +2033,25 @@ After the closing `}` of the existing `if (containerInput.queryVector && contain
       const { buildMemoryPreamble } = await import('./memory-reader.js');
       // IMPORTANT: pass containerInput.rawUserText (the raw inbound message content
       // populated by the host before formatMessages() wrapped prompt in XML).
-      // Embedding the XML-wrapped prompt would skew recall toward document/context
-      // noise instead of the user's actual question. Falls back to containerInput.prompt
-      // only as last resort (some legacy paths may not populate rawUserText yet).
-      const memoryBlock = await buildMemoryPreamble({
-        promptText: containerInput.rawUserText ?? containerInput.prompt,
-        boardId: containerInput.taskflowBoardId,
-        senderJid: containerInput.senderJid ?? null,
-        ollamaHost: containerInput.ollamaHost ?? '',
-        embeddingModel: containerInput.embeddingModel ?? 'bge-m3',
-      });
-      if (memoryBlock) {
-        prompt = memoryBlock + prompt;  // newline already in block
-        log(`Memory preamble injected (${memoryBlock.length} chars)`);
+      // Embedding the XML-wrapped containerInput.prompt would skew recall toward
+      // document/context noise instead of the user's actual question.
+      // NO FALLBACK to containerInput.prompt — if rawUserText is missing, recall is
+      // skipped (fail-loud via empty preamble) rather than silently producing
+      // bad-quality recall. The host MUST populate rawUserText (Task 8 Step 6).
+      if (!containerInput.rawUserText) {
+        log('Memory preamble skipped: rawUserText missing (host must populate)');
+      } else {
+        const memoryBlock = await buildMemoryPreamble({
+          promptText: containerInput.rawUserText,
+          boardId: containerInput.taskflowBoardId,
+          senderJid: containerInput.senderJid ?? null,
+          ollamaHost: containerInput.ollamaHost ?? '',
+          embeddingModel: containerInput.embeddingModel ?? 'bge-m3',
+        });
+        if (memoryBlock) {
+          prompt = memoryBlock + prompt;  // newline already in block
+          log(`Memory preamble injected (${memoryBlock.length} chars)`);
+        }
       }
     } catch (err) {
       log(`Memory preamble skipped: ${err}`);
@@ -2125,10 +2168,12 @@ containerInput.senderJid → null (board-scope only)."
 
 ## Phase E — MCP tools
 
-### Task 14: Register `memory_store` MCP tool
+### Task 14: Register `memory_store` MCP tool (with handler extraction)
 
 **Files:**
-- Modify: `container/agent-runner/src/ipc-mcp-stdio.ts` (register tool, add `MEMORY_WRITES_DIR` constant, kill-switch gating)
+- Modify: `container/agent-runner/src/ipc-mcp-stdio.ts` (register tool, add `MEMORY_WRITES_DIR` constant, kill-switch gating, **extract pure `memoryStoreHandler(args, ctx)` for testability — see refactor at end of Task 14**)
+
+**HANDLER EXTRACTION (load-bearing for Task 21 unit tests)**: when implementing the `server.tool('memory_store', ...)` registration below, do NOT inline the body. Extract it into an exported pure function `memoryStoreHandler(args, ctx)` with a `MemoryToolCtx` interface (see Task 21 for the exact interface signature). The `server.tool(...)` registration body becomes `(args) => memoryStoreHandler(args, defaultMemoryCtx())`. This applies to Tasks 14, 15, AND 16 — all three handlers extracted, then Task 21 tests them directly without spinning up the MCP server.
 
 - [ ] **Step 0: Create container-side `memory-types.ts` (mirror of host)**
 
@@ -2294,7 +2339,7 @@ multi-sender follow-up turns attribute memory_store to the initial sender."
 ### Task 15: Register `memory_recall` MCP tool
 
 **Files:**
-- Modify: `container/agent-runner/src/ipc-mcp-stdio.ts`
+- Modify: `container/agent-runner/src/ipc-mcp-stdio.ts` (extract `memoryRecallHandler(args, ctx)` per Task 14 handler-extraction note — Task 21 depends on this)
 
 - [ ] **Step 1: Implement**
 
@@ -2398,7 +2443,7 @@ memory_recall(query, scope?, limit?, category?):
 ### Task 16: Register `memory_forget` MCP tool
 
 **Files:**
-- Modify: `container/agent-runner/src/ipc-mcp-stdio.ts`
+- Modify: `container/agent-runner/src/ipc-mcp-stdio.ts` (extract `memoryForgetHandler(args, ctx)` per Task 14 handler-extraction note — Task 21 depends on this)
 
 - [ ] **Step 1: Implement**
 
@@ -3267,7 +3312,21 @@ describe.skipIf(skip)('memory-ollama (gated)', () => {
   it('semantically distant query returns score below threshold', async () => {
     const stored = 'Team uses M for meetings instead of R.';
     const query = 'What is the weather forecast?';
-    // ... same pattern, expect cos < 0.5
+    const fetch1 = await fetch(`${OLLAMA_HOST}/api/embed`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'bge-m3', input: stored }),
+    });
+    const fetch2 = await fetch(`${OLLAMA_HOST}/api/embed`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'bge-m3', input: query }),
+    });
+    const v1 = (await fetch1.json()).embeddings[0];
+    const v2 = (await fetch2.json()).embeddings[0];
+    const dot = v1.reduce((s: number, x: number, i: number) => s + x * v2[i], 0);
+    const n1 = Math.sqrt(v1.reduce((s: number, x: number) => s + x * x, 0));
+    const n2 = Math.sqrt(v2.reduce((s: number, x: number) => s + x * x, 0));
+    const cos = dot / (n1 * n2);
+    expect(cos).toBeLessThan(0.5);
   });
 });
 ```
@@ -3275,18 +3334,18 @@ describe.skipIf(skip)('memory-ollama (gated)', () => {
 - [ ] **Step 3: Run + commit**
 
 ```bash
-cd container/agent-runner && npx vitest run src/ipc-mcp-stdio-memory.test.ts && cd ../..
-# Real-Ollama tests skipped unless OLLAMA_HOST is set:
-OLLAMA_HOST=http://192.168.2.13:11434 cd container/agent-runner && npx vitest run src/memory-ollama.test.ts && cd ../..
+( cd container/agent-runner && npx vitest run src/ipc-mcp-stdio-memory.test.ts )
+# Real-Ollama tests gated on OLLAMA_HOST — env var must scope to vitest, not cd:
+( cd container/agent-runner && OLLAMA_HOST=http://192.168.2.13:11434 npx vitest run src/memory-ollama.test.ts )
 
 git add container/agent-runner/src/ipc-mcp-stdio-memory.test.ts \
        container/agent-runner/src/memory-ollama.test.ts \
        container/agent-runner/src/ipc-mcp-stdio.ts
-git commit -m "test(memory): MCP unit tests + real-Ollama gated tests
+git commit -m "test(memory): MCP handler unit tests + real-Ollama gated tests
 
-Per spec §12.1 + §12.3. MCP tools refactored to expose pure handler
-functions for direct testing (memoryStoreHandler etc.); server.tool
-registrations now wrap the handlers."
+Per spec §12.1 + §12.3. Handler extraction was done within Tasks 14-16
+(memoryStoreHandler etc.); this task only adds tests against those handlers.
+Real-Ollama tests skipped in CI unless OLLAMA_HOST is set."
 ```
 
 ---
