@@ -1325,6 +1325,10 @@ export interface ContainerInput {
   senderJid?: string;        // NEW: initial sender
   senderName?: string;       // NEW: initial sender name
   memoryEnabled?: boolean;   // NEW: from registered_groups.memory_enabled
+  rawUserText?: string;      // NEW: raw inbound message content (pre-formatMessages),
+                             //      used for memory recall embedding so recall doesn't
+                             //      embed XML wrapper noise. Populated by host before
+                             //      formatMessages() wraps prompt.
 }
 ```
 
@@ -1408,18 +1412,35 @@ const group: RegisteredGroup = {
 
 - [ ] **Step 6: Update `runContainerAgent` caller in `src/index.ts` (initial start)**
 
-Find the existing `runContainerAgent(group, { ... }, ...)` call at ~line 759. Add the inbound message's sender info + memoryEnabled flag:
+Find the existing `runContainerAgent(group, { ... }, ...)` call at ~line 759. Trace UP from this call site to find:
+1. The inbound message variable (look for `formatMessages(...)` or the raw message content immediately before `prompt` is built — typically in `src/router.ts:formatMessages` or in a dispatcher in `src/index.ts`/`src/whatsapp.ts`)
+2. The `sender` and `senderName` fields on that inbound message
+
+Concrete steps:
+
+```bash
+grep -n "formatMessages\|runContainerAgent\|prompt = " /root/nanoclaw/src/index.ts | head -20
+```
+
+The inbound message object (from Baileys/WhatsApp) typically has `.key.participant` (group sender JID) or `.key.remoteJid` (DM sender JID), `.pushName` (display name), and `.message.conversation` (raw text). Adjust based on what you find.
+
+Apply this edit:
 
 ```typescript
-const inbound = /* the inbound WhatsApp message variable in scope at this site */;
-const senderJidForContainer = inbound.sender;
-const senderNameForContainer = inbound.senderName ?? inbound.pushName ?? '';
+// Just before calling runContainerAgent, capture the raw text + sender info
+const rawUserText = inboundMessage.content ?? inboundMessage.message?.conversation ?? '';
+const senderJidForContainer = inboundMessage.key?.participant
+  ?? inboundMessage.key?.remoteJid
+  ?? inboundMessage.sender;
+const senderNameForContainer = inboundMessage.pushName
+  ?? inboundMessage.senderName
+  ?? '';
 const memoryEnabledForContainer = group.memoryEnabled === 1;
 
 const output = await runContainerAgent(
   group,
   {
-    prompt,
+    prompt,                                      // existing — already XML via formatMessages
     sessionId,
     groupFolder: group.folder,
     chatJid,
@@ -1429,16 +1450,17 @@ const output = await runContainerAgent(
     taskflowMaxDepth: group.taskflowMaxDepth,
     assistantName: getGroupSenderName(group.trigger),
     turnContext,
-    senderJid: senderJidForContainer,         // NEW
-    senderName: senderNameForContainer,       // NEW
-    memoryEnabled: memoryEnabledForContainer, // NEW
+    senderJid: senderJidForContainer,           // NEW
+    senderName: senderNameForContainer,         // NEW
+    memoryEnabled: memoryEnabledForContainer,   // NEW
+    rawUserText,                                // NEW: needed for memory recall (Task 12)
     ...(imageAttachments.length > 0 && { imageAttachments }),
   },
   // ...
 );
 ```
 
-(The exact variable names for the inbound message at this call site may differ — search for the existing `runContainerAgent` invocation and inspect surrounding code.)
+If the inbound message variable is named differently in your code (`message`, `msg`, `wa`), adjust accordingly. The principle: capture the original user text BEFORE any wrapping, plus the sender's JID + display name, plus the per-board memory flag.
 
 - [ ] **Step 7: Wire `turnContext.senderJid` in the inbound→IPC follow-up enqueue path**
 
@@ -1461,7 +1483,7 @@ Three concrete sub-cases:
 
   Modify the writer to populate `senderJid` in the JSON payload alongside `text` and `turnContext`. The container's `IpcInputMessage` interface (Task 9 from container side) already defines `turnContext?: AgentTurnContext`; ensure the container reads `nextMessage.turnContext?.senderJid` (Task 13 already does this).
 
-- **(c) Neither found**: the inbound→follow-up path needs to be added. Concrete code to add (place in `src/index.ts` message loop where new inbound messages are dispatched):
+- **(c) Neither found**: the inbound→follow-up path needs to be added. Concrete code to add (place in `src/index.ts` message loop where new inbound messages are dispatched, BEFORE the `runContainerAgent` call):
 
   ```typescript
   // In the message loop, when a new inbound message arrives for a group with active container:
@@ -1481,7 +1503,9 @@ Three concrete sub-cases:
   }
   ```
 
-Pick whichever sub-case matches reality. Document in the commit message which one applied.
+  Note: this assumes `groupQueue.hasActiveContainer(chatJid)` exists on the GroupQueue class. If not, add it (1-line: `return this.getGroup(jid).active`).
+
+Pick whichever sub-case matches reality (a, b, or c). Document in the commit message which one applied. The container-side reading of `nextMessage.turnContext?.senderJid` is already done in Task 13.
 
 - [ ] **Step 8: Run tests + typecheck (host + container)**
 
@@ -1970,13 +1994,13 @@ After the closing `}` of the existing `if (containerInput.queryVector && contain
   ) {
     try {
       const { buildMemoryPreamble } = await import('./memory-reader.js');
-      // IMPORTANT: pass the ORIGINAL containerInput.prompt (raw user message),
-      // NOT the mutated `prompt` variable. By this point `prompt` already has
-      // task-context preamble prepended; embedding that would skew memory recall
-      // toward task-related noise. Pre-mutation containerInput.prompt is the
-      // pure user message text from WhatsApp.
+      // IMPORTANT: pass containerInput.rawUserText (the raw inbound message content
+      // populated by the host before formatMessages() wrapped prompt in XML).
+      // Embedding the XML-wrapped prompt would skew recall toward document/context
+      // noise instead of the user's actual question. Falls back to containerInput.prompt
+      // only as last resort (some legacy paths may not populate rawUserText yet).
       const memoryBlock = await buildMemoryPreamble({
-        promptText: containerInput.prompt,
+        promptText: containerInput.rawUserText ?? containerInput.prompt,
         boardId: containerInput.taskflowBoardId,
         senderJid: containerInput.senderJid ?? null,
         ollamaHost: containerInput.ollamaHost ?? '',
@@ -2952,24 +2976,56 @@ import { memoryObservability } from './memory-observability.js';
 memoryObservability.start();
 ```
 
-In `container/agent-runner/src/memory-reader.ts`, after the recall completes in `buildMemoryPreamble`:
+In `container/agent-runner/src/memory-reader.ts`, after the recall completes in `buildMemoryPreamble`, add a stdout log line that the host tails:
 
 ```typescript
-// Emit per-recall log (consumed by host-side hourly aggregator via stdout/journalctl tailing)
+// Emit per-recall log to stdout. Host parses container stdout (existing pattern
+// for container output → host log aggregation) and forwards to the host-side
+// MemoryObservability aggregator.
 const userHits = hits.filter(h => h.scope === 'user').length;
 const boardHits = hits.filter(h => h.scope === 'board').length;
+const formattedBlock = formatRelevantMemoriesBlock(hits, 500);
 console.log(JSON.stringify({
   level: 'info',
   msg: 'memory.recall',
-  callSite: 'container',
   hits: { board: boardHits, user: userHits },
-  injectedTokens: Math.ceil((formatRelevantMemoriesBlock(hits, 500)).length / 4),
+  injectedTokens: Math.ceil(formattedBlock.length / 4),
 }));
 ```
 
-(Container-side logging goes to stdout, which the host captures in container logs. The host-side aggregator is fed by `processMemoryStore`/`processMemoryForget` calls in Task 6+7 — add `memoryObservability.recordWrite(...)` calls there.)
+**Wire recall counts into the host aggregator.** In `src/container-runner.ts` where container stdout is processed (search for the existing `proc.stdout.on('data', ...)` handler), add:
 
-Update Task 6 implementation to call `memoryObservability.recordWrite({source, action})` after `embeddingService.index()`. Same for Task 7's forget path.
+```typescript
+import { memoryObservability } from './memory-observability.js';
+
+// Inside the existing stdout line-parser:
+if (parsedLine?.msg === 'memory.recall') {
+  memoryObservability.recordRecall({
+    groupFolder: group.folder,
+    hits: parsedLine.hits ?? { board: 0, user: 0 },
+  });
+}
+```
+
+(If the existing stdout handler doesn't JSON-parse lines, add a try/catch JSON.parse around line content. Reuse the pattern from existing log forwarding.)
+
+**Wire write counts.** Update Task 6's `processMemoryStore` and Task 7's `processMemoryForget` to call:
+
+```typescript
+import { memoryObservability } from './memory-observability.js';
+// ... after embeddingService.index() in processMemoryStore:
+memoryObservability.recordWrite({
+  source: finalMetadata.source,                    // 'manual_store'
+  action: 'stored',                                // or 'noop_already_exists' if applicable
+});
+// ... after embeddingService.remove() in processMemoryForget:
+memoryObservability.recordWrite({
+  source: 'manual_forget',
+  action: 'forgotten',
+});
+```
+
+These calls go in the same files Tasks 6 and 7 already modify; this Task 20 step adds the import + the two `memoryObservability.recordWrite()` lines.
 
 - [ ] **Step 4: Run tests + commit**
 
@@ -2998,7 +3054,40 @@ Per spec §11:
 
 Per spec §12.1 (~9 MCP tool tests) and §12.3 (~3 real-Ollama tests). These were skipped in the original plan; adding now.
 
-- [ ] **Step 1: MCP tool unit tests**
+**Refactor prerequisite (apply WITHIN Tasks 14, 15, 16)**: when implementing the `server.tool(...)` registrations in Tasks 14-16, extract each tool's body into an exported pure function `memoryStoreHandler(args, ctx)`, `memoryRecallHandler(args, ctx)`, `memoryForgetHandler(args, ctx)`, then have the inline `server.tool(...)` body call the handler with a `defaultCtx` derived from env vars:
+
+```typescript
+// In ipc-mcp-stdio.ts (Task 14 extends to all three tools)
+export interface MemoryToolCtx {
+  memoryEnabled: boolean;
+  senderJid?: string;
+  senderName?: string;
+  groupFolder: string;
+  ollamaHost: string;
+  embeddingModel: string;
+  writeIpcFile: (dir: string, data: object) => string;
+}
+
+const defaultMemoryCtx = (): MemoryToolCtx => ({
+  memoryEnabled: process.env.NANOCLAW_MEMORY_ENABLED === '1' && process.env.NANOCLAW_MEMORY !== 'off',
+  senderJid: process.env.NANOCLAW_SENDER_JID,
+  senderName: process.env.NANOCLAW_SENDER_NAME,
+  groupFolder: process.env.NANOCLAW_GROUP_FOLDER!,
+  ollamaHost: process.env.NANOCLAW_OLLAMA_HOST ?? '',
+  embeddingModel: process.env.NANOCLAW_EMBEDDING_MODEL || 'bge-m3',
+  writeIpcFile,
+});
+
+export async function memoryStoreHandler(args: { text: string; category: string; scope?: string; entities?: string[] }, ctx: MemoryToolCtx) {
+  // [body extracted from Task 14's server.tool callback — same logic, now pure]
+}
+
+server.tool('memory_store', '...desc...', { /* zod */ }, (args) => memoryStoreHandler(args, defaultMemoryCtx()));
+```
+
+Move this refactor into Task 14 (and analogous for Tasks 15/16). Adjust Task 14's commit message to mention the handler extraction.
+
+- [ ] **Step 1: MCP tool unit tests (executable, not placeholders)**
 
 `container/agent-runner/src/ipc-mcp-stdio-memory.test.ts`:
 
@@ -3007,50 +3096,130 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import {
+  memoryStoreHandler,
+  memoryRecallHandler,
+  memoryForgetHandler,
+  type MemoryToolCtx,
+} from './ipc-mcp-stdio.js';
 
-// We test the IPC writes the tools produce, not the MCP server wiring.
-// Set env vars + mock writeIpcFile via spying on fs.writeFileSync.
+function makeCtx(overrides: Partial<MemoryToolCtx> = {}): MemoryToolCtx {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memmcp-'));
+  return {
+    memoryEnabled: true,
+    senderJid: '5585111@s.whatsapp.net',
+    senderName: 'Maria',
+    groupFolder: 'test-folder',
+    ollamaHost: 'http://localhost:11434',
+    embeddingModel: 'bge-m3',
+    writeIpcFile: vi.fn((dir, data) => {
+      fs.mkdirSync(dir, { recursive: true });
+      const filename = `${Date.now()}-test.json`;
+      fs.writeFileSync(path.join(dir, filename), JSON.stringify(data));
+      return filename;
+    }),
+    ...overrides,
+  };
+}
 
-describe('memory_store IPC write shape', () => {
-  let tmpDir: string;
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memwrtest-'));
-    process.env.NANOCLAW_MEMORY = 'on';
-    process.env.NANOCLAW_MEMORY_ENABLED = '1';
-    process.env.NANOCLAW_SENDER_JID = '5585@s.whatsapp.net';
-    process.env.NANOCLAW_SENDER_NAME = 'Maria';
+describe('memoryStoreHandler', () => {
+  it('writes IPC file with correct shape (no collection field)', async () => {
+    const ctx = makeCtx();
+    const result = await memoryStoreHandler(
+      { text: 'Prefers concise replies', category: 'preference' },
+      ctx,
+    );
+    expect(ctx.writeIpcFile).toHaveBeenCalled();
+    const writeCall = (ctx.writeIpcFile as any).mock.calls[0];
+    const writtenData = writeCall[1];
+    expect(writtenData.op).toBe('store');
+    expect(writtenData.scope).toBe('user');
+    expect(writtenData.collection).toBeUndefined();
+    expect(writtenData.text).toBe('Prefers concise replies');
+    expect(writtenData.metadata.category).toBe('preference');
+    expect(writtenData.metadata.senderJid).toBe('5585111@s.whatsapp.net');
+    expect(result.content[0].text).toMatch(/memoryId=[a-f0-9]{12}/);
   });
 
-  it('writes JSON with correct shape (no collection field)', () => {
-    // Re-import module to pick up env state
-    vi.resetModules();
-    const { /* memory_store_internal */ } = require('./ipc-mcp-stdio.js');
-    // ... the actual MCP tool is registered via server.tool — testing it
-    // directly requires either:
-    //  (a) extracting the handler function for direct invocation (refactor first)
-    //  (b) spinning up the MCP server and calling the tool via JSON-RPC
-    // Choose (a): refactor server.tool body into a pure function memoryStoreHandler
-    // that ipc-mcp-stdio.ts wraps. Test the pure function.
+  it('returns error when memoryEnabled=false', async () => {
+    const ctx = makeCtx({ memoryEnabled: false });
+    const result = await memoryStoreHandler(
+      { text: 'fact', category: 'preference' },
+      ctx,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/memory_disabled/);
   });
 
-  it('returns error_code memory_disabled when NANOCLAW_MEMORY=off', () => { /* ... */ });
-  it('returns error_code memory_disabled_for_board when NANOCLAW_MEMORY_ENABLED=0', () => { /* ... */ });
-  it('rejects scope=user when no NANOCLAW_SENDER_JID', () => { /* ... */ });
-  it('truncates contentHash to 12 chars in returned memoryId', () => { /* ... */ });
+  it('rejects scope=user when no senderJid', async () => {
+    const ctx = makeCtx({ senderJid: undefined });
+    const result = await memoryStoreHandler(
+      { text: 'fact', category: 'preference', scope: 'user' },
+      ctx,
+    );
+    expect(result.isError).toBe(true);
+  });
+
+  it('allows scope=board without senderJid', async () => {
+    const ctx = makeCtx({ senderJid: undefined });
+    const result = await memoryStoreHandler(
+      { text: 'Team fact', category: 'fact', scope: 'board' },
+      ctx,
+    );
+    expect(result.isError).toBeUndefined();
+  });
 });
 
-describe('memory_recall IPC behavior', () => {
-  it('embeds query via ollamaEmbed + calls reader', () => { /* ... */ });
-  it('filters by category when given', () => { /* ... */ });
+describe('memoryForgetHandler', () => {
+  it('writes IPC file with op=forget', async () => {
+    const ctx = makeCtx();
+    await memoryForgetHandler({ memoryId: 'a3f1b9c842de' }, ctx);
+    const writtenData = (ctx.writeIpcFile as any).mock.calls[0][1];
+    expect(writtenData.op).toBe('forget');
+    expect(writtenData.memoryId).toBe('a3f1b9c842de');
+  });
+
+  it('rejects memoryId<8 chars', async () => {
+    const ctx = makeCtx();
+    const result = await memoryForgetHandler({ memoryId: 'short' }, ctx);
+    expect(result.isError).toBe(true);
+  });
 });
 
-describe('memory_forget IPC behavior', () => {
-  it('writes JSON with op=forget', () => { /* ... */ });
-  it('rejects memoryId<8 chars', () => { /* ... */ });
+describe('memoryRecallHandler', () => {
+  it('returns memory_disabled when killswitch off', async () => {
+    const ctx = makeCtx({ memoryEnabled: false });
+    const result = await memoryRecallHandler({ query: 'test' }, ctx);
+    expect(result.isError).toBe(true);
+  });
+
+  // Real recall logic tested in container/agent-runner/src/memory-reader.test.ts
+  // Here we only test the handler-level wiring.
 });
 ```
 
-**Refactor prerequisite**: Tasks 14, 15, 16 register tools inline in `server.tool(...)` calls. To test, extract each tool's body into an exported pure function (e.g., `export async function memoryStoreHandler(args, ctx): Promise<ToolResult>`) and have `server.tool('memory_store', desc, schema, (args) => memoryStoreHandler(args, defaultCtx))`. This is a small refactor — apply as part of Task 21.
+- [ ] **Step 2: Real-Ollama gated tests** (no change from prior version, but fix the bash command):
+
+```bash
+# CORRECT bash: env var must scope to vitest, not to cd
+( cd container/agent-runner && OLLAMA_HOST=http://192.168.2.13:11434 npx vitest run src/memory-ollama.test.ts )
+```
+
+(The body of `memory-ollama.test.ts` is unchanged from the v1 plan — it'\''s already executable.)
+
+- [ ] **Step 3: Run + commit**
+
+```bash
+cd container/agent-runner && npx vitest run src/ipc-mcp-stdio-memory.test.ts && cd ../..
+( cd container/agent-runner && OLLAMA_HOST=http://192.168.2.13:11434 npx vitest run src/memory-ollama.test.ts )
+
+git add container/agent-runner/src/ipc-mcp-stdio-memory.test.ts \
+       container/agent-runner/src/memory-ollama.test.ts
+git commit -m "test(memory): MCP handler unit tests + real-Ollama gated tests
+
+Per spec §12.1 + §12.3. Tests are executable (no placeholders) — depends
+on the handler-extraction refactor done within Tasks 14-16."
+```
 
 - [ ] **Step 2: Real-Ollama gated tests**
 
