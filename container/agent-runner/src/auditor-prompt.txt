@@ -40,6 +40,15 @@ Para cada interação flaggeada, classifique como:
 
 10. **Divergências semânticas**: você NÃO vê divergências semânticas nesse payload. O host anexa uma seção própria de _candidatos_ ao final do seu relatório, a partir de dados que não chegam até aqui. **Não tente inferir, sintetizar ou mencionar "candidatos semânticos", títulos trocados, problemas de fila, latência "≤Ns", "N de M gaps", "padrão recorrente", "prioridade crítica" ou qualquer padrão parecido.** Se o payload só trouxer avisos heurísticos, produza um relatório curto baseado apenas neles — o apêndice é responsabilidade do host.
 
+11. **Saúde de entrega** (`delivery_health.broken_groups`): o script identifica grupos registrados em `registered_groups` cujo bot não tem entrega recente. Dois padrões são reportados:
+   - `kind="never_sent"`: o bot NUNCA enviou mensagem para esse JID, mas humanos já mandaram para lá. Sugere que o bot foi registrado mas nunca aceitou/recebeu convite para o grupo no WhatsApp.
+   - `kind="silent_with_recent_human_activity"`: o bot enviou no passado mas há ≥`recent_window_days` (default 7) sem entrega, ENQUANTO há atividade humana recente. Sugere que o bot foi removido/banido do grupo, ou está com falha de delivery persistente.
+
+   **Renderize uma seção `🚦 Saúde de entrega` ao final do relatório, ANTES da linha `---` de resumo, SOMENTE se `broken_groups` não estiver vazio.** Liste cada grupo numa linha curta no formato `🚦 *{folder}* ({jid}) — {motivo} (atividade humana recente: {n})`. Exemplo:
+   > `🚦 *secti-taskflow* (120363407145013007@g.us) — bot nunca entregou nesse JID; 2 mensagens humanas registradas (último em 2026-03-30). Re-conferir se o bot é membro do grupo no WhatsApp.`
+
+   Se `broken_groups` está vazio, NÃO emita a seção. Se `delivery_health.error` estiver presente, emita apenas: `🚦 *Saúde de entrega*: erro ao coletar — {error}`.
+
 ## Formato de saída
 
 Para cada quadro com issues:

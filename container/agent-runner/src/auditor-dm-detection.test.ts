@@ -1090,6 +1090,36 @@ describe('auditor DM-send detection', () => {
       expect(match![1]).not.toContain('não está cadastrad');
     });
 
+    it('auditor-script.sh emits delivery_health for broken-delivery groups', () => {
+      // Two patterns must be reported:
+      //  - never_sent: bot has never sent to a registered JID but humans have
+      //  - silent_with_recent_human_activity: bot was active long ago, silent recently
+      // Surfaces the secti-taskflow class of bug (registered + invited but bot
+      // never accepted/joined the group on WhatsApp).
+      expect(script).toContain('result.data.delivery_health');
+      expect(script).toContain("'never_sent'");
+      expect(script).toContain("'silent_with_recent_human_activity'");
+      // Query joins registered_groups → messages on chat_jid; the result
+      // ends up under delivery_health.broken_groups in the JSON output.
+      expect(script).toContain('FROM registered_groups');
+      expect(script).toMatch(/result\.data\.delivery_health\s*=\s*\{[\s\S]*?broken_groups/);
+    });
+
+    it('auditor-prompt.txt teaches the agent to render a 🚦 Saúde de entrega section', () => {
+      const fs = require('fs');
+      const path = require('path');
+      const prompt = fs.readFileSync(
+        path.join(__dirname, 'auditor-prompt.txt'),
+        'utf-8',
+      );
+      expect(prompt).toContain('🚦');
+      expect(prompt).toContain('delivery_health.broken_groups');
+      expect(prompt).toContain('never_sent');
+      expect(prompt).toContain('silent_with_recent_human_activity');
+      // Section must be conditional — empty broken_groups should NOT emit.
+      expect(prompt).toMatch(/SOMENTE se[\s\S]+?broken_groups[\s\S]+?não estiver vazio/i);
+    });
+
     it('auditor-script.sh does not include shared vocabulary in TASK_KEYWORDS', () => {
       // Adding "prazo" / "nota" / etc. to TASK_KEYWORDS breaks the
       // DM-send exemption on messages containing them.

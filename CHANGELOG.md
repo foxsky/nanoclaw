@@ -4,6 +4,24 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-26 (audit) — Kipp auditor: 🚦 Saúde de entrega section
+
+Extends Kipp's daily auditor to surface the failure mode that the previous setup couldn't detect: a group is registered in `registered_groups` but the bot was never a stable member on the WhatsApp side, so every send to that JID quietly fails and the queue piles up. Prior to today's WA queue head-of-line fix this was invisible AND blocking; now it's just invisible. Today's auditor extension closes the visibility gap.
+
+The script-side change in `auditor-script.sh` adds a `delivery_health` block to the JSON it emits. Two patterns are flagged: `kind="never_sent"` (registered JID with ≥1 inbound human message but 0 from-bot ever — the secti-taskflow class), and `kind="silent_with_recent_human_activity"` (bot was active historically but no send in `recent_window_days=7` while humans kept posting — the "removed from group" class). Both are computed from `messages.db` only; the WA outbound queue file is not mounted in the auditor container, so queue-depth telemetry stays out of scope for this round.
+
+The prompt-side change in `auditor-prompt.txt` adds rule #11 instructing the agent to render a `🚦 Saúde de entrega` section before the closing summary line, but only when `broken_groups` is non-empty. Each broken group renders as one line: `🚦 *{folder}* ({jid}) — {motivo} (atividade humana recente: {n})`. The section is conditional so green days produce no extra noise.
+
+Two regression tests guard the wiring: `delivery_health` shape on the script side, and the conditional `🚦` rendering instructions on the prompt side. The DB-side `scheduled_tasks.prompt` column for the `auditor-daily` row is the runtime authority and is updated in lockstep with this change (per `reference_auditor_prompt_db_vs_file.md`: editing the file alone changes nothing).
+
+## 2026-04-26 (latest-2) — WhatsApp outbound queue: head-of-line blocking fix
+
+Pre-existing bug discovered during the memory-layer e2e validation. `flushOutgoingQueue()` was using `unshift + break` on send failure, so a single message to a permanently unreachable JID (e.g. bot kicked from group, never accepted invite) blocked every subsequent send. The bot had 25 messages backed up since 2026-03-30 — all pending sends to the secti-taskflow group, which the bot was never actually a member of (0 successful from-bot deliveries to that JID, ever).
+
+Fix: on send failure, mutate `item.retryCount` in place and push to the queue TAIL (not the head). An `attempted` Set tracks items processed in the current flush by reference, so a tail-pushed item that cycles back to the head ends the flush instead of spinning until the connection drops. After `MAX_QUEUE_RETRIES` (10) failed attempts, the message is dropped with a warn log naming the JID — surfacing operator-actionable signal instead of an ever-growing queue.
+
+Two regression tests cover the change: "does NOT head-of-line block" (item A fails, item B still drains) and "drops a queued message after MAX_QUEUE_RETRIES failed attempts". The 25 dead messages were drained operationally; the new code prevents the same accumulation pattern from recurring.
+
 ## 2026-04-26 (latest) — TaskFlow memory: persist audit DB under existing host mount
 
 Phase 1 shipped the `MemoryAudit` SQLite sidecar at `/workspace/memory/memory.db`, but no such host mount exists in `src/container-runner.ts` and the agent-runner container runs with `--rm`. Every turn started with an empty audit DB, silently breaking three of the four guarantees the sidecar was meant to enforce: ownership-based `memory_forget`, the per-turn write quota's cold-path durability, and the `memory_list` admin tool.

@@ -1193,6 +1193,69 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
     }
     result.data.actor_first_name_heuristic_hits = firstNameHeuristicHits;
     result.data.actor_first_name_ambiguity_misses = firstNameAmbiguityMisses;
+
+    // --- Delivery health (registered groups whose bot output is silent) ---
+    // Catches the failure mode where a group is registered but the bot is
+    // not actually a member (kicked, never accepted invite, group deleted),
+    // so every send to that JID fails and Kipp's semantic audit sees no
+    // bot activity to evaluate. Caller-side check on messages.db only —
+    // the WA outbound queue file is not mounted in the auditor container.
+    try {
+      const NEVER_SENT_NEEDS_HUMAN_ACTIVITY = true;
+      const RECENT_DAYS = 7;
+      const cutoff = new Date(
+        Date.now() - RECENT_DAYS * 86400 * 1000,
+      ).toISOString();
+      const flagged = msgDb
+        .prepare(
+          `
+          SELECT g.folder AS folder, g.jid AS jid,
+            (SELECT MAX(timestamp) FROM messages m
+              WHERE m.chat_jid = g.jid AND m.is_from_me = 1) AS last_bot_send,
+            (SELECT COUNT(*) FROM messages m
+              WHERE m.chat_jid = g.jid AND m.is_from_me = 0
+                AND m.is_bot_message = 0
+                AND m.timestamp > ?) AS human_recent_n,
+            (SELECT MAX(timestamp) FROM messages m
+              WHERE m.chat_jid = g.jid AND m.is_from_me = 0) AS last_human
+          FROM registered_groups g
+          `,
+        )
+        .all(cutoff);
+      const broken = [];
+      for (const row of flagged) {
+        if (row.last_bot_send === null && row.last_human !== null) {
+          broken.push({
+            folder: row.folder,
+            jid: row.jid,
+            kind: 'never_sent',
+            last_human: row.last_human,
+            human_recent_n: row.human_recent_n,
+          });
+        } else if (
+          row.last_bot_send !== null &&
+          row.last_bot_send < cutoff &&
+          row.human_recent_n > 0
+        ) {
+          broken.push({
+            folder: row.folder,
+            jid: row.jid,
+            kind: 'silent_with_recent_human_activity',
+            last_bot_send: row.last_bot_send,
+            human_recent_n: row.human_recent_n,
+          });
+        }
+      }
+      result.data.delivery_health = {
+        recent_window_days: RECENT_DAYS,
+        broken_groups: broken,
+      };
+    } catch (err) {
+      result.data.delivery_health = {
+        error: err && err.message ? err.message : String(err),
+      };
+    }
+
     console.log(JSON.stringify(result));
   }
 })();
