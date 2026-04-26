@@ -81,6 +81,8 @@ export type AgentTurnMessageRef = TriggerMessageContext;
 
 export interface AgentTurnContext {
   turnId: string;
+  /** Sender JID of the trigger message, used by the memory layer for attribution. */
+  senderJid?: string;
 }
 
 export interface SentMessageReceipt {

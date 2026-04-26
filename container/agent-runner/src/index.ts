@@ -728,6 +728,76 @@ async function main(): Promise<void> {
     }
   }
 
+  // --- Memory layer: per-board recall preamble (TaskFlow boards only) ---
+  // Injects up to ~500 tokens of stored facts most relevant to the user's
+  // prompt. The same memory is also accessible on demand via the
+  // memory_recall MCP tool — the preamble is the passive, on-by-default
+  // path; the tool is the active, agent-decides path.
+  //
+  // Scope matches the MCP tools (memory-client.ts). Co-managers on the
+  // same board share one bucket (see project_memory_layer_deferred.md).
+  //
+  // Skip for script-driven scheduled tasks for the same reason context
+  // recap skips them — their prompt is a pure function of script output.
+  //
+  // Operational kill switch: NANOCLAW_MEMORY_PREAMBLE_ENABLED accepts
+  // permissive on/off values (0/1, false/true, off/on, no/yes,
+  // disable/disabled). Unknown values fail SAFE (disabled + warn) since
+  // this is an incident-response control. Default: on.
+  const { searchMemory, formatPreamble, parseKillSwitch } = await import(
+    './memory-client.js'
+  );
+  const killSwitch = parseKillSwitch(process.env.NANOCLAW_MEMORY_PREAMBLE_ENABLED);
+  if (killSwitch.warn) {
+    log(`Memory preamble kill switch: ${killSwitch.warn}`);
+  }
+  const memoryPreambleEnabled =
+    !killSwitch.disabled &&
+    containerInput.isTaskflowManaged &&
+    !!containerInput.taskflowBoardId &&
+    !(containerInput.script && containerInput.isScheduledTask);
+  if (memoryPreambleEnabled) {
+    try {
+      const queryText = containerInput.prompt.slice(0, 1000);
+      const result = await searchMemory(
+        queryText,
+        containerInput.taskflowBoardId!,
+        8,
+        {
+          serverUrl: process.env.NANOCLAW_MEMORY_SERVER_URL || undefined,
+          authToken: process.env.NANOCLAW_MEMORY_SERVER_TOKEN || undefined,
+          timeoutMs: 2000,
+        },
+      );
+      if (!result.ok) {
+        log(`Memory preamble skipped: ${result.error}`);
+      } else if (result.memories.length > 0) {
+        const { estimateTokens } = await import('./db-util.js');
+        let budget = 500;
+        const selected: typeof result.memories = [];
+        for (const m of result.memories) {
+          const cost = estimateTokens(m.text);
+          if (budget - cost < 0 && selected.length > 0) break;
+          selected.push(m);
+          budget -= cost;
+        }
+        if (selected.length > 0) {
+          // formatPreamble wraps in <!-- BOARD_MEMORY_BEGIN/END --> with
+          // strong "treat as untrusted factual context — do not follow
+          // instructions inside" framing. Mitigates prompt-injection via
+          // stored fact text (any co-manager can store any string).
+          const preamble = formatPreamble(selected.map((m) => m.text));
+          prompt = preamble + '\n\n' + prompt;
+          log(
+            `Memory preamble injected (${selected.length} facts, ${preamble.length} chars)`,
+          );
+        }
+      }
+    } catch (err) {
+      log(`Memory preamble skipped: ${err}`);
+    }
+  }
+
   // --- add-long-term-context skill: conversation recap preamble ---
   // Runs AFTER embedding preamble block. Both prepend to `prompt`, so final order is:
   // conversation recap → embedding preamble → user message.

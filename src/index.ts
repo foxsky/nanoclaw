@@ -451,12 +451,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const pendingDms = pendingExternalDmPrompts.get(chatJid);
   if (pendingDms && pendingDms.length > 0) {
     const dmPrompt = pendingDms.map((p) => p.prompt).join('\n\n');
+    const dmTriggers = pendingDms.map((pending) => pending.triggerMessage);
     const turnContext: AgentTurnContext = {
       turnId: createAgentTurn({
         groupFolder: group.folder,
         chatJid,
-        messages: pendingDms.map((pending) => pending.triggerMessage),
+        messages: dmTriggers,
       }).id,
+      senderJid: dmTriggers[dmTriggers.length - 1]?.sender,
     };
     pendingExternalDmPrompts.delete(chatJid);
 
@@ -612,12 +614,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Derive group-specific sender name from trigger (e.g. "@Case" → "Case").
   // Falls back to global ASSISTANT_NAME for groups without a custom trigger.
   const groupSender = getGroupSenderName(group.trigger);
+  const turnTriggers = missedMessages.map(toTriggerMessageContext);
   const turnContext: AgentTurnContext = {
     turnId: createAgentTurn({
       groupFolder: group.folder,
       chatJid,
-      messages: missedMessages.map(toTriggerMessageContext),
+      messages: turnTriggers,
     }).id,
+    senderJid: turnTriggers[turnTriggers.length - 1]?.sender,
   };
 
   const output = await runAgent(

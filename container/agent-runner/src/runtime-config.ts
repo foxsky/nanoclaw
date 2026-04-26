@@ -8,6 +8,8 @@ export interface TriggerMessageContext {
 
 export interface AgentTurnContext {
   turnId: string;
+  /** Sender JID of the trigger message, used by the memory layer for attribution. */
+  senderJid?: string;
 }
 
 export interface ContainerInput {
@@ -84,6 +86,10 @@ export function buildNanoclawMcpEnv(
 
   if (containerInput.turnContext?.turnId) {
     env.NANOCLAW_TURN_ID = containerInput.turnContext.turnId;
+  }
+
+  if (containerInput.turnContext?.senderJid) {
+    env.NANOCLAW_TURN_SENDER_JID = containerInput.turnContext.senderJid;
   }
 
   if (containerInput.isTaskflowManaged && containerInput.taskflowBoardId) {

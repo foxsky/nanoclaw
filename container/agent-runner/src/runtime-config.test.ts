@@ -91,4 +91,33 @@ describe('agent-runner runtime config', () => {
       NANOCLAW_TURN_ID: 'turn-123',
     });
   });
+
+  it('emits the sender JID env var when the turn carries one (audit attribution)', () => {
+    const env = buildNanoclawMcpEnv({
+      prompt: 'test',
+      groupFolder: 'taskflow-root',
+      chatJid: '123@g.us',
+      isMain: false,
+      isTaskflowManaged: true,
+      taskflowBoardId: 'board-foo',
+      turnContext: {
+        turnId: 'turn-99',
+        senderJid: '5586999999999@s.whatsapp.net',
+      },
+    });
+    expect(env.NANOCLAW_TURN_SENDER_JID).toBe('5586999999999@s.whatsapp.net');
+  });
+
+  it('omits the sender JID env var when no sender is present (e.g. scheduled tasks)', () => {
+    const env = buildNanoclawMcpEnv({
+      prompt: 'test',
+      groupFolder: 'taskflow-root',
+      chatJid: '123@g.us',
+      isMain: false,
+      isTaskflowManaged: true,
+      taskflowBoardId: 'board-foo',
+      turnContext: { turnId: 'turn-99' },
+    });
+    expect(env).not.toHaveProperty('NANOCLAW_TURN_SENDER_JID');
+  });
 });

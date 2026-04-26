@@ -56,6 +56,48 @@ const ollamaHost = process.env.NANOCLAW_OLLAMA_HOST ?? '';
 const embeddingModel = process.env.NANOCLAW_EMBEDDING_MODEL || 'bge-m3';
 const EMBEDDINGS_DB_PATH = '/workspace/embeddings/embeddings.db';
 
+// Memory layer (agent-memory-server). Phase 1: TaskFlow boards only,
+// per-board shared bucket. Co-managers on the same board (e.g. Giovanni +
+// Mariany on board-seci-taskflow) intentionally share memory — most useful
+// facts are board-domain (workflow patterns, project IDs, disambiguations).
+//
+// All HTTP and scope helpers live in memory-client.ts so they can be unit
+// tested with a mocked fetch. The sidecar audit DB enforces per-board
+// ownership for memory_forget (closes the v0.13.2 unscoped-DELETE TOCTOU)
+// and supplies the per-turn write quota counter and admin listing.
+import {
+  MemoryAudit,
+  buildMemoryNamespace,
+  buildMemoryUserId,
+  deleteMemoryById,
+  generateMemoryId,
+  searchMemory,
+  storeMemory,
+  type MemoryClientOptions,
+} from './memory-client.js';
+
+const taskflowBoardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+const turnSenderJid = process.env.NANOCLAW_TURN_SENDER_JID ?? null;
+const memoryEnabled = isTaskflowManaged && !!taskflowBoardId;
+const memoryClientOptions: MemoryClientOptions = {
+  serverUrl: process.env.NANOCLAW_MEMORY_SERVER_URL || undefined,
+  authToken: process.env.NANOCLAW_MEMORY_SERVER_TOKEN || undefined,
+};
+const MAX_MEMORY_WRITES_PER_TURN = (() => {
+  const raw = process.env.NANOCLAW_MEMORY_MAX_WRITES_PER_TURN;
+  const n = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : 5;
+})();
+
+let memoryAuditInstance: MemoryAudit | null = null;
+function getMemoryAudit(): MemoryAudit {
+  if (!memoryAuditInstance) {
+    memoryAuditInstance =
+      new MemoryAudit('/workspace/memory/memory.db');
+  }
+  return memoryAuditInstance;
+}
+
 /** Call Ollama embed API. Returns Float32Array or null on failure. */
 async function ollamaEmbed(text: string): Promise<Float32Array | null> {
   if (!ollamaHost) return null;
@@ -393,6 +435,214 @@ server.tool(
     writeIpcFile(TASKS_DIR, data);
 
     return { content: [{ type: 'text' as const, text: `Task ${args.task_id} update requested.` }] };
+  },
+);
+
+// --- Long-term memory layer (TaskFlow boards only) ---
+//
+// Backed by redislabs/agent-memory-server at ${memoryServerUrl}.
+// Scope: per-board shared bucket. All senders on a TaskFlow board write
+// to and recall from the same memory bucket — most useful facts are
+// board-domain (workflow patterns, project IDs, disambiguations) and
+// co-managers benefit from sharing them.
+
+server.tool(
+  'memory_store',
+  `Persist one durable, slow-moving meta-fact about this board's team or workflow. Examples: workflow conventions, project ID meanings, name disambiguations, communication preferences. Do NOT use for transient task state, one-time events, or conversational filler. The recall layer is for facts that should still apply weeks from now. Returns the stored memory id. Per-turn write quota: ${MAX_MEMORY_WRITES_PER_TURN}.`,
+  {
+    text: z
+      .string()
+      .min(1)
+      .max(2000)
+      .describe(
+        "One declarative sentence stating the fact. Prefix with the relevant person's name when person-specific (e.g. 'Mariany prefere respostas em primeira pessoa').",
+      ),
+  },
+  async (args) => {
+    if (!memoryEnabled) {
+      return {
+        content: [{ type: 'text' as const, text: 'Error: memory tools are only available on TaskFlow-managed boards.' }],
+        isError: true,
+      };
+    }
+
+    // Per-turn write quota. Counted via the audit sidecar so it's
+    // resilient across MCP-server restarts within a turn.
+    const audit = getMemoryAudit();
+    if (turnId) {
+      const already = audit.countWritesInTurn(turnId);
+      if (already >= MAX_MEMORY_WRITES_PER_TURN) {
+        return {
+          content: [{ type: 'text' as const, text: `Error: memory_store quota exhausted for this turn (${already}/${MAX_MEMORY_WRITES_PER_TURN}). Fact NOT saved.` }],
+          isError: true,
+        };
+      }
+    }
+
+    const id = generateMemoryId();
+    const namespace = buildMemoryNamespace(taskflowBoardId!);
+
+    const result = await storeMemory(args.text, taskflowBoardId!, id, memoryClientOptions);
+
+    if (!result.ok) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: memory server unreachable; fact NOT saved (${result.error}). The agent should not retry this turn — try again later.` }],
+        isError: true,
+      };
+    }
+    if (result.status >= 400) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: memory server returned HTTP ${result.status}; fact NOT saved (${JSON.stringify(result.body)}).` }],
+        isError: true,
+      };
+    }
+
+    // Record ownership ONLY after the server confirms the write.
+    audit.recordStore({
+      memoryId: id,
+      boardId: taskflowBoardId!,
+      turnId: turnId ?? null,
+      senderJid: turnSenderJid,
+      text: args.text,
+    });
+
+    return {
+      content: [{ type: 'text' as const, text: `Stored memory ${id} on ${namespace}.` }],
+    };
+  },
+);
+
+server.tool(
+  'memory_recall',
+  `Search this board's memory for facts relevant to a query. Use BEFORE responding to recall conventions, preferences, or prior decisions that apply to the current request. Returns up to 'limit' results sorted by semantic relevance (smaller dist = closer match).`,
+  {
+    query: z.string().min(1).max(2000).describe('What to search for.'),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(20)
+      .optional()
+      .describe('Max results (default 5).'),
+  },
+  async (args) => {
+    if (!memoryEnabled) {
+      return {
+        content: [{ type: 'text' as const, text: 'Error: memory tools are only available on TaskFlow-managed boards.' }],
+        isError: true,
+      };
+    }
+
+    const namespace = buildMemoryNamespace(taskflowBoardId!);
+    const result = await searchMemory(
+      args.query,
+      taskflowBoardId!,
+      args.limit ?? 5,
+      memoryClientOptions,
+    );
+
+    if (!result.ok) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: memory recall failed; no facts returned (${result.error}). Proceed without memory context.` }],
+        isError: true,
+      };
+    }
+    if (result.memories.length === 0) {
+      return { content: [{ type: 'text' as const, text: `No memories found on ${namespace}.` }] };
+    }
+    const lines = result.memories.map(
+      (m) => `- [${m.id}] ${m.text}${m.dist !== undefined ? ` (dist=${m.dist.toFixed(3)})` : ''}`,
+    );
+    return {
+      content: [{ type: 'text' as const, text: `Memories on ${namespace} (lower dist = closer match):\n${lines.join('\n')}` }],
+    };
+  },
+);
+
+server.tool(
+  'memory_list',
+  `List recent memories owned by THIS board, newest first. Useful for admin review and cleanup. Only returns records this nanoclaw instance wrote (the sidecar audit log is the source of truth — server-side enumeration would mix data from other tenants on the shared backend).`,
+  {
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe('Max rows to return (default 20, max 200).'),
+  },
+  async (args) => {
+    if (!memoryEnabled) {
+      return {
+        content: [{ type: 'text' as const, text: 'Error: memory tools are only available on TaskFlow-managed boards.' }],
+        isError: true,
+      };
+    }
+
+    const audit = getMemoryAudit();
+    const rows = audit.listOwnedForBoard(taskflowBoardId!, args.limit ?? 20);
+    if (rows.length === 0) {
+      return { content: [{ type: 'text' as const, text: `No memories owned by this board yet.` }] };
+    }
+    const lines = rows.map((r) => {
+      const sender = r.sender_jid ? ` from=${r.sender_jid}` : '';
+      const turn = r.turn_id ? ` turn=${r.turn_id}` : '';
+      return `- [${r.memory_id}] ${r.stored_at}${sender}${turn}: ${r.text}`;
+    });
+    return {
+      content: [{ type: 'text' as const, text: `Memories owned by board ${taskflowBoardId} (newest first):\n${lines.join('\n')}` }],
+    };
+  },
+);
+
+server.tool(
+  'memory_forget',
+  `Delete one memory by id. Only memories created by THIS board can be forgotten — ownership is verified against the local sidecar audit log. Use when a stored fact is wrong or no longer applies.`,
+  {
+    memory_id: z
+      .string()
+      .min(1)
+      .describe('The id returned by memory_store, memory_recall, or memory_list.'),
+  },
+  async (args) => {
+    if (!memoryEnabled) {
+      return {
+        content: [{ type: 'text' as const, text: 'Error: memory tools are only available on TaskFlow-managed boards.' }],
+        isError: true,
+      };
+    }
+
+    const namespace = buildMemoryNamespace(taskflowBoardId!);
+    const audit = getMemoryAudit();
+
+    // Local ownership check (no GET race window). The DELETE endpoint
+    // on v0.13.2 has no server-side scope filter, so the only safe gate
+    // is "did we record writing this id under this board?".
+    if (!audit.isOwned(args.memory_id, taskflowBoardId!)) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: memory ${args.memory_id} is not owned by this board (or was already deleted).` }],
+        isError: true,
+      };
+    }
+
+    const result = await deleteMemoryById(args.memory_id, memoryClientOptions);
+    if (!result.ok) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: memory server unreachable; delete NOT issued (${result.error}).` }],
+        isError: true,
+      };
+    }
+    if (result.status >= 400) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: memory server returned HTTP ${result.status} on delete (${JSON.stringify(result.body)}).` }],
+        isError: true,
+      };
+    }
+
+    audit.removeOwned(args.memory_id);
+    return {
+      content: [{ type: 'text' as const, text: `Forgot memory ${args.memory_id} on ${namespace}.` }],
+    };
   },
 );
 

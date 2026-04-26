@@ -140,6 +140,48 @@ describe('ipc-mcp-stdio tool handler shapes', () => {
     ).toBe(true);
   });
 
+  it('memory_store enforces TaskFlow scope, per-turn quota, and audit-log on write', () => {
+    const body = extractToolHandlerBlock('memory_store');
+    expect(body, 'memory_store handler not found').not.toBeNull();
+    expect(body).toContain('memoryEnabled');
+    expect(body).toContain('storeMemory(args.text');
+    expect(body).toContain('audit.countWritesInTurn(turnId)');
+    expect(body).toContain('MAX_MEMORY_WRITES_PER_TURN');
+    expect(body).toContain('audit.recordStore(');
+    // Soft fail must surface as isError so the model knows the fact was NOT saved.
+    expect(body).toContain('isError: true');
+    expect(body).toContain('fact NOT saved');
+  });
+
+  it('memory_recall delegates to memory-client and reports relevance hint', () => {
+    const body = extractToolHandlerBlock('memory_recall');
+    expect(body, 'memory_recall handler not found').not.toBeNull();
+    expect(body).toContain('memoryEnabled');
+    expect(body).toContain('searchMemory(');
+    expect(body).toContain('lower dist = closer match');
+    // Network failure path must be isError so the agent knows recall returned nothing.
+    expect(body).toContain('isError: true');
+  });
+
+  it('memory_list reads from the local audit DB (not the shared server)', () => {
+    const body = extractToolHandlerBlock('memory_list');
+    expect(body, 'memory_list handler not found').not.toBeNull();
+    expect(body).toContain('memoryEnabled');
+    expect(body).toContain('audit.listOwnedForBoard(taskflowBoardId!');
+  });
+
+  it('memory_forget gates the DELETE on local sidecar ownership (no TOCTOU)', () => {
+    const body = extractToolHandlerBlock('memory_forget');
+    expect(body, 'memory_forget handler not found').not.toBeNull();
+    expect(body).toContain('memoryEnabled');
+    expect(body).toContain('audit.isOwned(args.memory_id, taskflowBoardId!)');
+    expect(body).toContain('deleteMemoryById(');
+    expect(body).toContain('audit.removeOwned(args.memory_id)');
+    // No GET-then-DELETE pattern (the source of the prior TOCTOU).
+    expect(body).not.toContain("method: 'GET'");
+    expect(body).toContain('not owned by this board');
+  });
+
   it('every tool handler that returns an error message uses isError: true', () => {
     // Guardrail: any `content: [{ type: 'text' ... Error` style response
     // inside a tool handler should also carry `isError: true`. This catches
