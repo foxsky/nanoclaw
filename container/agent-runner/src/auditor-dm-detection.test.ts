@@ -944,9 +944,13 @@ describe('auditor DM-send detection', () => {
       expect(script).toMatch(
         /const matchingMutations = mutations\.filter/,
       );
-      expect(script).toMatch(
-        /normalizeForCompare\(mutation\.by\)\s*===\s*actorKey/,
-      );
+      // Actor comparison must use the NFD-normalized + person_id resolver
+      // shipped 2026-04-23 (commits 5a94be33 / ed52fa72), not the old
+      // pre-canonicalization `normalizeForCompare(mutation.by) === actorKey`
+      // string-equality. mutation.by is resolved to a canonical person_id
+      // (or falls back to normalizeForCompare on miss) before comparison.
+      expect(script).toMatch(/resolveActorToPersonId\(\s*mutation\.by/);
+      expect(script).toMatch(/mutationKey\s*===\s*senderKey/);
       expect(script).toMatch(
         /buildTaskIdAliases\(/,
       );
