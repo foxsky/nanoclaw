@@ -89,11 +89,16 @@ const MAX_MEMORY_WRITES_PER_TURN = (() => {
   return Number.isFinite(n) && n > 0 ? n : 5;
 })();
 
+// Sidecar lives under /workspace/group — the per-group host-mounted
+// directory that persists across container restarts. The container runs
+// with --rm so any path NOT inside a host mount is wiped every turn;
+// /workspace/memory was such a path, which silently broke ownership
+// tracking on Phase 1 prior to this fix.
+const MEMORY_AUDIT_DB_PATH = '/workspace/group/memory/memory.db';
 let memoryAuditInstance: MemoryAudit | null = null;
 function getMemoryAudit(): MemoryAudit {
   if (!memoryAuditInstance) {
-    memoryAuditInstance =
-      new MemoryAudit('/workspace/memory/memory.db');
+    memoryAuditInstance = new MemoryAudit(MEMORY_AUDIT_DB_PATH);
   }
   return memoryAuditInstance;
 }

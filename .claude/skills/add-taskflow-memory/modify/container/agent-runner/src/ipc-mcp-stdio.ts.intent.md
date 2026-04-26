@@ -3,7 +3,7 @@
 ## What Changed
 1. Import the new `memory-client.ts` module.
 2. Read four memory-related env vars near the top of the file.
-3. Lazy-initialize a singleton `MemoryAudit` SQLite sidecar at `/workspace/memory/memory.db`.
+3. Lazy-initialize a singleton `MemoryAudit` SQLite sidecar at `/workspace/group/memory/memory.db`. The path matters: containers run with `--rm`, so any sidecar path NOT inside an existing host-mounted directory is wiped every turn. `/workspace/group` is the per-group host mount that already persists across restarts, so the audit DB lives in a `memory/` subdirectory under it.
 4. Register four new MCP tools: `memory_store`, `memory_recall`, `memory_list`, `memory_forget`.
 
 ## Key Sections
@@ -36,10 +36,14 @@ const MAX_MEMORY_WRITES_PER_TURN = (() => {
   const n = raw ? Number.parseInt(raw, 10) : NaN;
   return Number.isFinite(n) && n > 0 ? n : 5;
 })();
+// MUST be a path inside an existing host mount. /workspace/group is the
+// per-group writable mount; /workspace/memory is NOT mounted and would
+// be ephemeral under --rm.
+const MEMORY_AUDIT_DB_PATH = '/workspace/group/memory/memory.db';
 let memoryAuditInstance: MemoryAudit | null = null;
 function getMemoryAudit(): MemoryAudit {
   if (!memoryAuditInstance) {
-    memoryAuditInstance = new MemoryAudit('/workspace/memory/memory.db');
+    memoryAuditInstance = new MemoryAudit(MEMORY_AUDIT_DB_PATH);
   }
   return memoryAuditInstance;
 }

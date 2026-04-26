@@ -4,6 +4,16 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-26 (latest) — TaskFlow memory: persist audit DB under existing host mount
+
+Phase 1 shipped the `MemoryAudit` SQLite sidecar at `/workspace/memory/memory.db`, but no such host mount exists in `src/container-runner.ts` and the agent-runner container runs with `--rm`. Every turn started with an empty audit DB, silently breaking three of the four guarantees the sidecar was meant to enforce: ownership-based `memory_forget`, the per-turn write quota's cold-path durability, and the `memory_list` admin tool.
+
+Fix: relocate the sidecar to `/workspace/group/memory/memory.db`. `/workspace/group` is the per-group host mount (from the existing `groupDir` mapping in `container-runner.ts`) that already persists across container restarts. Detected while writing a follow-up evaluation task — the eval would have queried each board's local audit DB and gotten back zero rows everywhere.
+
+The behavior tests in `memory-client.test.ts` were unaffected (they use `os.tmpdir()` already), but `ipc-mcp-stdio.test.ts` now has a guardrail assertion: `expect(source).toContain("'/workspace/group/memory/memory.db'")` and the matching negative for the old path, so this regression can't sneak back in.
+
+Skill `add-taskflow-memory`'s `modify/container/agent-runner/src/ipc-mcp-stdio.ts.intent.md` was updated to call out the mount constraint explicitly so a future re-application picks the right path.
+
 ## 2026-04-26 (later) — TaskFlow memory: package as `/add-taskflow-memory` skill
 
 The runtime code that landed earlier today is now packaged as a discrete, reversible skill at `.claude/skills/add-taskflow-memory/`. Same code, same behavior — what's new is the install/uninstall surface:

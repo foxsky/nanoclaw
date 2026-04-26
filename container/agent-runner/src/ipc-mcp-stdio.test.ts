@@ -140,6 +140,14 @@ describe('ipc-mcp-stdio tool handler shapes', () => {
     ).toBe(true);
   });
 
+  it('memory audit DB lives under the persistent /workspace/group mount, not the ephemeral /workspace/memory path', () => {
+    // Container runs with --rm; only paths under host-mounted dirs survive
+    // across turns. /workspace/group is per-group host mount; /workspace/memory
+    // is NOT mounted and would silently break ownership tracking.
+    expect(source).toContain("'/workspace/group/memory/memory.db'");
+    expect(source).not.toContain("'/workspace/memory/memory.db'");
+  });
+
   it('memory_store enforces TaskFlow scope, per-turn quota, and audit-log on write', () => {
     const body = extractToolHandlerBlock('memory_store');
     expect(body, 'memory_store handler not found').not.toBeNull();
