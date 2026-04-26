@@ -63,7 +63,10 @@ export class WhatsAppChannel implements Channel {
     jid: string;
     text: string;
     outboundMessageId?: number;
+    /** Number of failed delivery attempts. After MAX_QUEUE_RETRIES the item is dropped with a warn log to prevent head-of-line blocking from a permanently unreachable JID (e.g. bot kicked from group). */
+    retryCount?: number;
   }> = [];
+  private static readonly MAX_QUEUE_RETRIES = 10;
   private flushing = false;
   private groupSyncTimerStarted = false;
   private healthCheckTimer?: ReturnType<typeof setInterval>;
@@ -880,8 +883,16 @@ export class WhatsAppChannel implements Channel {
         { count: this.outgoingQueue.length },
         'Flushing outgoing message queue',
       );
+      // Track items processed in THIS flush so that an item moved to the
+      // tail after failure isn't retried again in the same pass (which
+      // would spin until the connection drops). The flush ends when every
+      // remaining queue entry has already been attempted once here.
+      const attempted = new Set<{ jid: string; text: string }>();
       while (this.outgoingQueue.length > 0) {
-        const item = this.outgoingQueue.shift()!;
+        const item = this.outgoingQueue[0];
+        if (attempted.has(item)) break;
+        attempted.add(item);
+        this.outgoingQueue.shift();
         try {
           const result = await this.sock.sendMessage(item.jid, { text: item.text });
           const messageId = result?.key?.id;
@@ -905,13 +916,34 @@ export class WhatsAppChannel implements Channel {
             'Queued message sent',
           );
         } catch (err) {
-          this.outgoingQueue.unshift(item);
+          // Push to the TAIL (not the head) so a permanently unreachable
+          // JID can't block other messages from being delivered. After
+          // MAX_QUEUE_RETRIES the item is dropped with a warn log.
+          item.retryCount = (item.retryCount ?? 0) + 1;
+          if (item.retryCount >= WhatsAppChannel.MAX_QUEUE_RETRIES) {
+            this.saveQueue();
+            logger.warn(
+              {
+                jid: item.jid,
+                err,
+                retryCount: item.retryCount,
+                length: item.text.length,
+                outboundMessageId: item.outboundMessageId,
+              },
+              'Dropping queued message after max retries — JID likely unreachable',
+            );
+            continue;
+          }
+          // Mutate in place + push the SAME reference to the tail. The
+          // `attempted` Set then catches it on the next loop iteration in
+          // this flush, so a single broken JID can't spin the loop until
+          // the connection drops.
+          this.outgoingQueue.push(item);
           this.saveQueue();
           logger.warn(
-            { jid: item.jid, err, queueSize: this.outgoingQueue.length },
-            'Failed to send queued message, will retry on reconnect',
+            { jid: item.jid, err, retryCount: item.retryCount, queueSize: this.outgoingQueue.length },
+            'Failed to send queued message, requeued at tail',
           );
-          break;
         }
       }
     } finally {

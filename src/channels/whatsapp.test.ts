@@ -244,6 +244,57 @@ describe('WhatsAppChannel', () => {
       });
     });
 
+    it('does NOT head-of-line block: when item A fails, item B still drains', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+      await connectChannel(channel);
+
+      // Reject only when the broken JID is the target.
+      fakeSocket.sendMessage.mockImplementation(async (jid: string) => {
+        if (jid === 'broken@g.us') {
+          throw new Error('not-a-member');
+        }
+        return { key: { id: 'msg-id' } };
+      });
+
+      (channel as any).connected = false;
+      await channel.sendMessage('broken@g.us', 'first');
+      await channel.sendMessage('healthy@g.us', 'second');
+
+      (channel as any).connected = true;
+      await (channel as any).flushOutgoingQueue();
+
+      // Both targets must have been attempted — pre-fix, the loop broke
+      // on the first failure and never tried `healthy`.
+      const calledJids = fakeSocket.sendMessage.mock.calls.map((c: unknown[]) => c[0]);
+      expect(calledJids).toContain('broken@g.us');
+      expect(calledJids).toContain('healthy@g.us');
+
+      // The healthy message is gone (sent), the broken one is requeued at tail.
+      const queue: Array<{ jid: string }> = (channel as any).outgoingQueue;
+      expect(queue.map((e) => e.jid)).toEqual(['broken@g.us']);
+    });
+
+    it('drops a queued message after MAX_QUEUE_RETRIES failed attempts', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+      await connectChannel(channel);
+
+      fakeSocket.sendMessage.mockRejectedValue(new Error('not-a-member'));
+
+      (channel as any).connected = false;
+      await channel.sendMessage('broken@g.us', 'doomed');
+
+      // Run flush enough times to exceed MAX_QUEUE_RETRIES (10).
+      (channel as any).connected = true;
+      for (let i = 0; i < 12; i++) {
+        await (channel as any).flushOutgoingQueue();
+      }
+
+      const queue: unknown[] = (channel as any).outgoingQueue;
+      expect(queue).toHaveLength(0);
+    });
+
     it('disconnects cleanly', async () => {
       const opts = createTestOpts();
       const channel = new WhatsAppChannel(opts);
