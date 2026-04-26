@@ -89,16 +89,35 @@ const MAX_MEMORY_WRITES_PER_TURN = (() => {
 
 // Sidecar lives under /workspace/group — the per-group host-mounted
 // directory that persists across container restarts. The container runs
-// with --rm so any path NOT inside a host mount is wiped every turn;
-// /workspace/memory was such a path, which silently broke ownership
-// tracking on Phase 1 prior to this fix.
-const MEMORY_AUDIT_DB_PATH = '/workspace/group/memory/memory.db';
+// with --rm so any path NOT inside a host mount is wiped every turn.
+// Use a hidden `.nanoclaw/` subdirectory to keep our internal state out
+// of the way of agent/user files in /workspace/group.
+const MEMORY_AUDIT_DB_PATH =
+  '/workspace/group/.nanoclaw/memory/memory.db';
 let memoryAuditInstance: MemoryAudit | null = null;
 function getMemoryAudit(): MemoryAudit {
   if (!memoryAuditInstance) {
     memoryAuditInstance = new MemoryAudit(MEMORY_AUDIT_DB_PATH);
   }
   return memoryAuditInstance;
+}
+
+/** Try to obtain the audit sidecar; surface any open failure as a clean
+ *  tool error instead of letting a SQLite/mkdir exception escape. */
+function tryGetMemoryAudit(action: string):
+  | { ok: true; audit: MemoryAudit }
+  | { ok: false; result: ReturnType<typeof memNetworkErrorResult> } {
+  try {
+    return { ok: true, audit: getMemoryAudit() };
+  } catch (err) {
+    return {
+      ok: false,
+      result: memNetworkErrorResult(
+        action,
+        `audit DB unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    };
+  }
 }
 
 /** Common error responses for the four memory tools. */
@@ -501,9 +520,9 @@ server.tool(
     text: z
       .string()
       .min(1)
-      .max(2000)
+      .max(1200)
       .describe(
-        "One declarative sentence stating the fact. Prefix with the relevant person's name when person-specific (e.g. 'Mariany prefere respostas em primeira pessoa').",
+        "One declarative sentence stating the fact, ≤1200 characters (so it fits the auto-recall preamble budget). Prefix with the relevant person's name when person-specific (e.g. 'Mariany prefere respostas em primeira pessoa').",
       ),
   },
   async (args) => {
@@ -511,7 +530,9 @@ server.tool(
 
     // Per-turn write quota, counted via the audit sidecar so it's
     // resilient across MCP-server restarts within a turn.
-    const audit = getMemoryAudit();
+    const auditAttempt = tryGetMemoryAudit('store; fact NOT saved');
+    if (!auditAttempt.ok) return auditAttempt.result;
+    const audit = auditAttempt.audit;
     if (turnId) {
       const already = audit.countWritesInTurn(turnId);
       if (already >= MAX_MEMORY_WRITES_PER_TURN) {
@@ -591,8 +612,9 @@ server.tool(
   async (args) => {
     if (!memoryEnabled) return memDisabledResult();
 
-    const audit = getMemoryAudit();
-    const rows = audit.listOwnedForBoard(taskflowBoardId!, args.limit ?? 20);
+    const auditAttempt = tryGetMemoryAudit('list');
+    if (!auditAttempt.ok) return auditAttempt.result;
+    const rows = auditAttempt.audit.listOwnedForBoard(taskflowBoardId!, args.limit ?? 20);
     if (rows.length === 0) {
       return { content: [{ type: 'text' as const, text: `No memories owned by this board yet.` }] };
     }
@@ -620,7 +642,9 @@ server.tool(
     if (!memoryEnabled) return memDisabledResult();
 
     const namespace = buildMemoryNamespace(taskflowBoardId!);
-    const audit = getMemoryAudit();
+    const auditAttempt = tryGetMemoryAudit('forget');
+    if (!auditAttempt.ok) return auditAttempt.result;
+    const audit = auditAttempt.audit;
 
     // Local ownership check (no GET race window). The DELETE endpoint
     // on v0.13.2 has no server-side scope filter, so the only safe gate

@@ -47,9 +47,15 @@ describe('agent-runner prompt preambles', () => {
   it('memory preamble pre-checks audit DB existence before HTTP (saves RTT on never-stored boards)', () => {
     const start = source.indexOf('Memory layer: per-board recall preamble');
     const block = source.slice(start, start + 5000);
-    expect(block).toContain("'/workspace/group/memory/memory.db'");
+    expect(block).toContain("'/workspace/group/.nanoclaw/memory/memory.db'");
     expect(block).toContain('fs.existsSync(auditDbPath)');
-    expect(block).toContain('no memories ever stored on this board');
+    expect(block).toContain('no local audit sidecar');
+  });
+
+  it('memory preamble uses strict token budget so a single oversized fact cannot dominate', () => {
+    const start = source.indexOf('Memory layer: per-board recall preamble');
+    const block = source.slice(start, start + 5000);
+    expect(block).toContain('strict: true');
   });
 
   it('memory preamble is skipped for script-driven scheduled tasks', () => {

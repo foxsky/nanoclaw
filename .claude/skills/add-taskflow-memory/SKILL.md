@@ -10,7 +10,7 @@ Adds a long-term memory layer for TaskFlow-managed boards backed by [`redislabs/
 **What it adds:**
 - Four MCP tools: `memory_store`, `memory_recall`, `memory_list`, `memory_forget`
 - Auto-recall preamble injected into every TaskFlow turn (~500 token budget, top-8 relevant facts, wrapped in untrusted-context framing)
-- Local sidecar SQLite at `/workspace/memory/memory.db` for per-board ownership tracking + audit attribution
+- Local sidecar SQLite at `/workspace/group/.nanoclaw/memory/memory.db` for per-board ownership tracking + audit attribution. Lives in a hidden `.nanoclaw/` subdirectory so it does not collide with files the user or agent might place in `/workspace/group`.
 
 **Prerequisite:** `add-taskflow` must already be installed (this skill only fires on TaskFlow-managed boards).
 
@@ -146,7 +146,7 @@ The four MCP tools remain available — only the passive preamble injection is g
 ## Known limitations
 
 1. **`.65` is multi-tenant.** The `openclaw` namespace already lives there. Predictable `taskflow:<boardId>` scope strings mean a peer with API access can read or write our records. Today's data is workflow conventions on a friendly LAN. Production deployments should either stand up a dedicated `agent-memory-server` instance OR enable `HTTPBearer` auth on the shared instance and set `NANOCLAW_MEMORY_SERVER_TOKEN` on every agent-runner.
-2. **Sidecar audit DB is per-container.** If `/workspace/memory/memory.db` is wiped (manual cleanup, container rebuild that drops the workspace mount), prior `memory_forget` calls will fail until manual SQL recovery — `memory_recall` and `memory_store` continue to work.
+2. **Sidecar audit DB is per-container.** If `/workspace/group/.nanoclaw/memory/memory.db` is wiped (manual cleanup, container rebuild that drops the workspace mount), prior `memory_forget` calls will fail until manual SQL recovery — `memory_recall` and `memory_store` continue to work.
 3. **Embedding model consistency.** Recall hits depend on the server's configured embedding model staying the same across store + search. Swapping models requires re-indexing all stored facts.
 
 ## Why per-board (not per-(board, sender))

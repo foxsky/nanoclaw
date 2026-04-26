@@ -758,13 +758,14 @@ async function main(): Promise<void> {
     !(containerInput.script && containerInput.isScheduledTask);
   if (memoryPreambleEnabled) {
     try {
-      // Cheap gate: skip the HTTP RTT on boards that have never written
-      // a memory (the dominant case at fleet rollout). The audit DB is
-      // the local source of truth — under per-board scope the server
-      // can only have what we wrote.
-      const auditDbPath = '/workspace/group/memory/memory.db';
+      // Skip passive recall unless this board has a local audit
+      // sidecar. Rationale: only locally-attributed memories are trusted
+      // for passive injection — direct .65 writes by other tenants or
+      // out-of-band tooling exist outside our trust boundary, and the
+      // memory_recall MCP tool is the explicit-opt-in path for those.
+      const auditDbPath = '/workspace/group/.nanoclaw/memory/memory.db';
       if (!fs.existsSync(auditDbPath)) {
-        log('Memory preamble skipped: no memories ever stored on this board');
+        log('Memory preamble skipped: no local audit sidecar (no audited memories yet)');
       } else {
         const { selectWithinTokenBudget } = await import('./db-util.js');
         const result = await memoryClient.searchMemory(
@@ -780,6 +781,7 @@ async function main(): Promise<void> {
             result.memories,
             (m) => m.text,
             500,
+            { strict: true },
           );
           if (selected.length > 0) {
             // formatPreamble wraps in <!-- BOARD_MEMORY_BEGIN/END --> with

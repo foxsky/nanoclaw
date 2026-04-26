@@ -35,7 +35,7 @@ describe('add-taskflow-memory skill package', () => {
       expect(content).toContain('container/agent-runner/src/index-preambles.test.ts');
     });
 
-    it('lists all modify files', () => {
+    it('lists all modify files (including db-util.ts which the new code imports)', () => {
       expect(content).toContain('src/types.ts');
       expect(content).toContain('src/index.ts');
       expect(content).toContain('container/agent-runner/src/runtime-config.ts');
@@ -43,6 +43,11 @@ describe('add-taskflow-memory skill package', () => {
       expect(content).toContain('container/agent-runner/src/ipc-mcp-stdio.ts');
       expect(content).toContain('container/agent-runner/src/ipc-mcp-stdio.test.ts');
       expect(content).toContain('container/agent-runner/src/index.ts');
+      // memory-client.ts imports openWritableDb + selectWithinTokenBudget
+      // from db-util.ts, and the auto-recall preamble imports
+      // selectWithinTokenBudget. Without this entry the skill is broken
+      // on a fresh fork.
+      expect(content).toContain('container/agent-runner/src/db-util.ts');
     });
 
     it('depends on add-taskflow (only fires on TaskFlow boards)', () => {
@@ -119,6 +124,7 @@ describe('add-taskflow-memory skill package', () => {
       'container/agent-runner/src/ipc-mcp-stdio.ts.intent.md',
       'container/agent-runner/src/ipc-mcp-stdio.test.ts.intent.md',
       'container/agent-runner/src/index.ts.intent.md',
+      'container/agent-runner/src/db-util.ts.intent.md',
     ];
 
     for (const rel of expectedIntents) {

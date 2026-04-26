@@ -140,12 +140,14 @@ describe('ipc-mcp-stdio tool handler shapes', () => {
     ).toBe(true);
   });
 
-  it('memory audit DB lives under the persistent /workspace/group mount, not the ephemeral /workspace/memory path', () => {
+  it('memory audit DB lives under /workspace/group/.nanoclaw (persistent + isolated)', () => {
     // Container runs with --rm; only paths under host-mounted dirs survive
-    // across turns. /workspace/group is per-group host mount; /workspace/memory
-    // is NOT mounted and would silently break ownership tracking.
-    expect(source).toContain("'/workspace/group/memory/memory.db'");
+    // across turns. /workspace/group is the per-group host mount.
+    // .nanoclaw/ subdirectory keeps internal state out of the way of
+    // user/agent files in /workspace/group.
+    expect(source).toContain("'/workspace/group/.nanoclaw/memory/memory.db'");
     expect(source).not.toContain("'/workspace/memory/memory.db'");
+    expect(source).not.toContain("'/workspace/group/memory/memory.db'");
   });
 
   it('memory_store enforces TaskFlow scope, per-turn quota, and audit-log on write', () => {

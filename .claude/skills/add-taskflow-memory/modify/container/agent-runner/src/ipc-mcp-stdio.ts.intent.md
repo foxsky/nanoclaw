@@ -3,7 +3,7 @@
 ## What Changed
 1. Import the new `memory-client.ts` module.
 2. Read four memory-related env vars near the top of the file.
-3. Lazy-initialize a singleton `MemoryAudit` SQLite sidecar at `/workspace/group/memory/memory.db`. The path matters: containers run with `--rm`, so any sidecar path NOT inside an existing host-mounted directory is wiped every turn. `/workspace/group` is the per-group host mount that already persists across restarts, so the audit DB lives in a `memory/` subdirectory under it.
+3. Lazy-initialize a singleton `MemoryAudit` SQLite sidecar at `/workspace/group/.nanoclaw/memory/memory.db`. The path matters: containers run with `--rm`, so any sidecar path NOT inside an existing host-mounted directory is wiped every turn. `/workspace/group` is the per-group host mount that already persists across restarts. The hidden `.nanoclaw/` subdirectory keeps our internal state out of the way of agent/user files in `/workspace/group`. Wrap `getMemoryAudit()` in a try/catch (`tryGetMemoryAudit`) so a SQLite/mkdir failure surfaces as a clean `isError: true` tool response rather than an unhandled exception.
 4. Register four new MCP tools: `memory_store`, `memory_recall`, `memory_list`, `memory_forget`.
 
 ## Key Sections
@@ -64,7 +64,7 @@ Insert all four `server.tool('memory_store', ...)`, `'memory_recall'`, `'memory_
 
 #### memory_recall
 - Plain `searchMemory(query, boardId, limit ?? 5, options)`.
-- Format response with "lower dist = closer match" hint.
+- Format response as `Memories on <namespace> (best match first): - [id] text`. Do NOT leak raw cosine distance numbers (e.g. `(dist=0.273)`) — they expose vector-DB internals without giving the agent useful signal beyond the result ordering.
 
 #### memory_list
 - Reads from the local audit DB only — `audit.listOwnedForBoard(taskflowBoardId!, limit ?? 20)`.

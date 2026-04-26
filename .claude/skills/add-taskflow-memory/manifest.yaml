@@ -14,6 +14,7 @@ modifies:
   - container/agent-runner/src/ipc-mcp-stdio.ts
   - container/agent-runner/src/ipc-mcp-stdio.test.ts
   - container/agent-runner/src/index.ts
+  - container/agent-runner/src/db-util.ts
 structured:
   npm_dependencies: {}
   env_additions:

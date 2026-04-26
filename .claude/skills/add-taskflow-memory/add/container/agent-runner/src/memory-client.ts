@@ -347,14 +347,6 @@ export class MemoryAudit {
     return row?.n ?? 0;
   }
 
-  /** Cheap "any rows for this board?" check used by the auto-recall preamble. */
-  hasAnyForBoard(boardId: string): boolean {
-    const row = this.db
-      .prepare(`SELECT 1 FROM owned_memories WHERE board_id = ? LIMIT 1`)
-      .get(boardId);
-    return !!row;
-  }
-
   listOwnedForBoard(boardId: string, limit = 50): OwnedMemoryRow[] {
     return this.db
       .prepare(
