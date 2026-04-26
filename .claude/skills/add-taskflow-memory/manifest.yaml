@@ -1,0 +1,27 @@
+skill: add-taskflow-memory
+version: 1.0.0
+description: "Long-term memory layer for TaskFlow boards (per-board shared bucket via redislabs/agent-memory-server)"
+core_version: 1.2.53
+adds:
+  - container/agent-runner/src/memory-client.ts
+  - container/agent-runner/src/memory-client.test.ts
+  - container/agent-runner/src/index-preambles.test.ts
+modifies:
+  - src/types.ts
+  - src/index.ts
+  - container/agent-runner/src/runtime-config.ts
+  - container/agent-runner/src/runtime-config.test.ts
+  - container/agent-runner/src/ipc-mcp-stdio.ts
+  - container/agent-runner/src/ipc-mcp-stdio.test.ts
+  - container/agent-runner/src/index.ts
+structured:
+  npm_dependencies: {}
+  env_additions:
+    - NANOCLAW_MEMORY_SERVER_URL
+    - NANOCLAW_MEMORY_SERVER_TOKEN
+    - NANOCLAW_MEMORY_PREAMBLE_ENABLED
+    - NANOCLAW_MEMORY_MAX_WRITES_PER_TURN
+conflicts: []
+depends:
+  - add-taskflow
+test: "npx vitest run --config vitest.skills.config.ts .claude/skills/add-taskflow-memory/tests/memory.test.ts"

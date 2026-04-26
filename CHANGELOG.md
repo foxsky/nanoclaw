@@ -4,6 +4,18 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-26 (later) — TaskFlow memory: package as `/add-taskflow-memory` skill
+
+The runtime code that landed earlier today is now packaged as a discrete, reversible skill at `.claude/skills/add-taskflow-memory/`. Same code, same behavior — what's new is the install/uninstall surface:
+
+- `manifest.yaml` declares the dependency on `add-taskflow`, the env-var contract, and the three new + seven modified files.
+- `add/` ships the three net-new files (`memory-client.ts`, `memory-client.test.ts`, `index-preambles.test.ts`).
+- `modify/*.intent.md` (seven files) describes each modification's shape, critical safety properties, and invariants — intent files, not diffs, so the change can be re-applied on a divergent fork.
+- `SKILL.md` walks Pre-flight → Apply → Configure → Verify, including a `.65`-server smoke test and a documented `NANOCLAW_MEMORY_PREAMBLE_ENABLED=0` operational kill switch.
+- `tests/memory.test.ts` (24 source-shape assertions) keeps the package itself well-formed — manifest content, presence of all intent files, key invariants in the bundled `memory-client.ts` (per-board scope, kill-switch fail-safe, prompt-injection mitigation, no GET-then-DELETE pattern in the forget intent).
+
+The skill is **not** a re-install for installations that already have the core commit (`5e8d43e9`) — it's a packaging artifact for forks that want to add memory cleanly, plus a forward-looking surface for the `update-skills` flow.
+
 ## 2026-04-26 — TaskFlow: per-board memory layer (Phase 1, manual-only)
 
 Adds a long-term memory layer for TaskFlow boards backed by [`redislabs/agent-memory-server`](https://github.com/redis/agent-memory-server) v0.13.2 at `http://192.168.2.65:8000`. Co-managers on the same board (e.g. Giovanni + Mariany on board-seci-taskflow) share one memory bucket; cross-board strictly isolated.
