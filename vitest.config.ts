@@ -5,8 +5,11 @@ export default defineConfig({
     include: ['src/**/*.test.ts', 'setup/**/*.test.ts', '.claude/skills/**/*.test.ts'],
     exclude: [
       '**/node_modules/**',
-      '.claude/skills/**/add/src/**/*.test.ts',
-      '.claude/skills/**/modify/src/**/*.test.ts',
+      // Skill add/ and modify/ trees are reference files for re-application
+      // on a fork — not runnable in-place (imports target host-repo paths,
+      // not relative to the skill dir).
+      '.claude/skills/**/add/**/*.test.ts',
+      '.claude/skills/**/modify/**/*.test.ts',
     ],
   },
 });

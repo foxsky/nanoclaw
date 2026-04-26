@@ -71,18 +71,16 @@ import {
   buildMemoryUserId,
   deleteMemoryById,
   generateMemoryId,
+  loadMemoryClientOptionsFromEnv,
   searchMemory,
   storeMemory,
-  type MemoryClientOptions,
+  type MemoryFetchResult,
 } from './memory-client.js';
 
 const taskflowBoardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
 const turnSenderJid = process.env.NANOCLAW_TURN_SENDER_JID ?? null;
 const memoryEnabled = isTaskflowManaged && !!taskflowBoardId;
-const memoryClientOptions: MemoryClientOptions = {
-  serverUrl: process.env.NANOCLAW_MEMORY_SERVER_URL || undefined,
-  authToken: process.env.NANOCLAW_MEMORY_SERVER_TOKEN || undefined,
-};
+const memoryClientOptions = loadMemoryClientOptionsFromEnv();
 const MAX_MEMORY_WRITES_PER_TURN = (() => {
   const raw = process.env.NANOCLAW_MEMORY_MAX_WRITES_PER_TURN;
   const n = raw ? Number.parseInt(raw, 10) : NaN;
@@ -101,6 +99,51 @@ function getMemoryAudit(): MemoryAudit {
     memoryAuditInstance = new MemoryAudit(MEMORY_AUDIT_DB_PATH);
   }
   return memoryAuditInstance;
+}
+
+/** Common error responses for the four memory tools. */
+const memDisabledResult = () => ({
+  content: [
+    {
+      type: 'text' as const,
+      text: 'Error: memory tools are only available on TaskFlow-managed boards.',
+    },
+  ],
+  isError: true,
+});
+
+const memNetworkErrorResult = (action: string, error: string) => ({
+  content: [
+    {
+      type: 'text' as const,
+      text: `Error: memory server unreachable; ${action} (${error}).`,
+    },
+  ],
+  isError: true,
+});
+
+const memHttpErrorResult = (action: string, status: number, body: unknown) => ({
+  content: [
+    {
+      type: 'text' as const,
+      text: `Error: memory server returned HTTP ${status} on ${action} (${JSON.stringify(body)}).`,
+    },
+  ],
+  isError: true,
+});
+
+/**
+ * Convert a memoryHttp/storeMemory/deleteMemoryById result into a tool
+ * error response, or null if it succeeded.
+ */
+function memoryErrorOrNull(
+  result: MemoryFetchResult,
+  actionLabel: string,
+): ReturnType<typeof memHttpErrorResult> | null {
+  if (!result.ok) return memNetworkErrorResult(actionLabel, result.error);
+  if (result.status >= 400)
+    return memHttpErrorResult(actionLabel, result.status, result.body);
+  return null;
 }
 
 /** Call Ollama embed API. Returns Float32Array or null on failure. */
@@ -464,14 +507,9 @@ server.tool(
       ),
   },
   async (args) => {
-    if (!memoryEnabled) {
-      return {
-        content: [{ type: 'text' as const, text: 'Error: memory tools are only available on TaskFlow-managed boards.' }],
-        isError: true,
-      };
-    }
+    if (!memoryEnabled) return memDisabledResult();
 
-    // Per-turn write quota. Counted via the audit sidecar so it's
+    // Per-turn write quota, counted via the audit sidecar so it's
     // resilient across MCP-server restarts within a turn.
     const audit = getMemoryAudit();
     if (turnId) {
@@ -486,23 +524,10 @@ server.tool(
 
     const id = generateMemoryId();
     const namespace = buildMemoryNamespace(taskflowBoardId!);
-
     const result = await storeMemory(args.text, taskflowBoardId!, id, memoryClientOptions);
+    const err = memoryErrorOrNull(result, 'store; fact NOT saved');
+    if (err) return err;
 
-    if (!result.ok) {
-      return {
-        content: [{ type: 'text' as const, text: `Error: memory server unreachable; fact NOT saved (${result.error}). The agent should not retry this turn — try again later.` }],
-        isError: true,
-      };
-    }
-    if (result.status >= 400) {
-      return {
-        content: [{ type: 'text' as const, text: `Error: memory server returned HTTP ${result.status}; fact NOT saved (${JSON.stringify(result.body)}).` }],
-        isError: true,
-      };
-    }
-
-    // Record ownership ONLY after the server confirms the write.
     audit.recordStore({
       memoryId: id,
       boardId: taskflowBoardId!,
@@ -519,7 +544,7 @@ server.tool(
 
 server.tool(
   'memory_recall',
-  `Search this board's memory for facts relevant to a query. Use BEFORE responding to recall conventions, preferences, or prior decisions that apply to the current request. Returns up to 'limit' results sorted by semantic relevance (smaller dist = closer match).`,
+  `Search this board's memory for facts relevant to a query. Use BEFORE responding to recall conventions, preferences, or prior decisions that apply to the current request. Returns up to 'limit' results sorted by semantic relevance (best match first).`,
   {
     query: z.string().min(1).max(2000).describe('What to search for.'),
     limit: z
@@ -531,12 +556,7 @@ server.tool(
       .describe('Max results (default 5).'),
   },
   async (args) => {
-    if (!memoryEnabled) {
-      return {
-        content: [{ type: 'text' as const, text: 'Error: memory tools are only available on TaskFlow-managed boards.' }],
-        isError: true,
-      };
-    }
+    if (!memoryEnabled) return memDisabledResult();
 
     const namespace = buildMemoryNamespace(taskflowBoardId!);
     const result = await searchMemory(
@@ -545,21 +565,13 @@ server.tool(
       args.limit ?? 5,
       memoryClientOptions,
     );
-
-    if (!result.ok) {
-      return {
-        content: [{ type: 'text' as const, text: `Error: memory recall failed; no facts returned (${result.error}). Proceed without memory context.` }],
-        isError: true,
-      };
-    }
+    if (!result.ok) return memNetworkErrorResult('recall failed; no facts returned', result.error);
     if (result.memories.length === 0) {
       return { content: [{ type: 'text' as const, text: `No memories found on ${namespace}.` }] };
     }
-    const lines = result.memories.map(
-      (m) => `- [${m.id}] ${m.text}${m.dist !== undefined ? ` (dist=${m.dist.toFixed(3)})` : ''}`,
-    );
+    const lines = result.memories.map((m) => `- [${m.id}] ${m.text}`);
     return {
-      content: [{ type: 'text' as const, text: `Memories on ${namespace} (lower dist = closer match):\n${lines.join('\n')}` }],
+      content: [{ type: 'text' as const, text: `Memories on ${namespace} (best match first):\n${lines.join('\n')}` }],
     };
   },
 );
@@ -577,12 +589,7 @@ server.tool(
       .describe('Max rows to return (default 20, max 200).'),
   },
   async (args) => {
-    if (!memoryEnabled) {
-      return {
-        content: [{ type: 'text' as const, text: 'Error: memory tools are only available on TaskFlow-managed boards.' }],
-        isError: true,
-      };
-    }
+    if (!memoryEnabled) return memDisabledResult();
 
     const audit = getMemoryAudit();
     const rows = audit.listOwnedForBoard(taskflowBoardId!, args.limit ?? 20);
@@ -610,12 +617,7 @@ server.tool(
       .describe('The id returned by memory_store, memory_recall, or memory_list.'),
   },
   async (args) => {
-    if (!memoryEnabled) {
-      return {
-        content: [{ type: 'text' as const, text: 'Error: memory tools are only available on TaskFlow-managed boards.' }],
-        isError: true,
-      };
-    }
+    if (!memoryEnabled) return memDisabledResult();
 
     const namespace = buildMemoryNamespace(taskflowBoardId!);
     const audit = getMemoryAudit();
@@ -631,18 +633,8 @@ server.tool(
     }
 
     const result = await deleteMemoryById(args.memory_id, memoryClientOptions);
-    if (!result.ok) {
-      return {
-        content: [{ type: 'text' as const, text: `Error: memory server unreachable; delete NOT issued (${result.error}).` }],
-        isError: true,
-      };
-    }
-    if (result.status >= 400) {
-      return {
-        content: [{ type: 'text' as const, text: `Error: memory server returned HTTP ${result.status} on delete (${JSON.stringify(result.body)}).` }],
-        isError: true,
-      };
-    }
+    const err = memoryErrorOrNull(result, 'delete');
+    if (err) return err;
 
     audit.removeOwned(args.memory_id);
     return {

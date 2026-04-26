@@ -24,8 +24,8 @@
  */
 
 import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
+
+import { closeDb, openWritableDb } from './db-util.js';
 
 // ---- Pure helpers --------------------------------------------------------
 
@@ -40,7 +40,7 @@ export function buildMemoryUserId(boardId: string): string {
 export function generateMemoryId(): string {
   // ms timestamp + 8 base36 chars of randomness. ~6e12 ids/ms before a
   // 50% birthday-collision chance — comfortably more than any realistic
-  // store rate. See Codex review (2026-04-26): collision risk is fine.
+  // store rate.
   return `tflow-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
@@ -114,6 +114,19 @@ export interface MemoryClientOptions {
   authToken?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+}
+
+/**
+ * Build options from the standard env vars. Both call sites (the MCP
+ * tools and the auto-recall preamble) need the same `serverUrl` +
+ * `authToken` resolution; reading env in only one place avoids the env
+ * names being typed in two files.
+ */
+export function loadMemoryClientOptionsFromEnv(): MemoryClientOptions {
+  return {
+    serverUrl: process.env.NANOCLAW_MEMORY_SERVER_URL || undefined,
+    authToken: process.env.NANOCLAW_MEMORY_SERVER_TOKEN || undefined,
+  };
 }
 
 export type MemoryFetchResult =
@@ -259,13 +272,10 @@ export interface OwnedMemoryRow {
  */
 export class MemoryAudit {
   private db: Database.Database;
-  private inserted = 0;
-  private inserted_by_turn = new Map<string, number>();
+  private insertedByTurn = new Map<string, number>();
 
   constructor(dbPath: string) {
-    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-    this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
+    this.db = openWritableDb(dbPath);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS owned_memories (
         memory_id  TEXT PRIMARY KEY,
@@ -300,11 +310,10 @@ export class MemoryAudit {
         opts.senderJid ?? null,
         opts.text,
       );
-    this.inserted++;
     if (opts.turnId) {
-      this.inserted_by_turn.set(
+      this.insertedByTurn.set(
         opts.turnId,
-        (this.inserted_by_turn.get(opts.turnId) ?? 0) + 1,
+        (this.insertedByTurn.get(opts.turnId) ?? 0) + 1,
       );
     }
   }
@@ -326,8 +335,8 @@ export class MemoryAudit {
 
   /** Count writes already made in this turn (after MemoryAudit construction). */
   countWritesInTurn(turnId: string): number {
-    if (this.inserted_by_turn.has(turnId)) {
-      return this.inserted_by_turn.get(turnId)!;
+    if (this.insertedByTurn.has(turnId)) {
+      return this.insertedByTurn.get(turnId)!;
     }
     // Cold path: sum from disk in case of process restart mid-turn.
     const row = this.db
@@ -336,6 +345,14 @@ export class MemoryAudit {
       )
       .get(turnId) as { n: number } | undefined;
     return row?.n ?? 0;
+  }
+
+  /** Cheap "any rows for this board?" check used by the auto-recall preamble. */
+  hasAnyForBoard(boardId: string): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 FROM owned_memories WHERE board_id = ? LIMIT 1`)
+      .get(boardId);
+    return !!row;
   }
 
   listOwnedForBoard(boardId: string, limit = 50): OwnedMemoryRow[] {
@@ -351,6 +368,6 @@ export class MemoryAudit {
   }
 
   close(): void {
-    this.db.close();
+    closeDb(this.db);
   }
 }

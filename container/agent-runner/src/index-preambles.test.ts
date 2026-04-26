@@ -33,15 +33,23 @@ describe('agent-runner prompt preambles', () => {
   it('memory preamble caps the token budget so it cannot dominate the prompt', () => {
     const start = source.indexOf('Memory layer: per-board recall preamble');
     const block = source.slice(start, start + 5000);
-    expect(block).toContain('let budget = 500');
-    expect(block).toContain('estimateTokens');
+    expect(block).toContain('selectWithinTokenBudget');
+    expect(block).toContain('500'); // budget literal
   });
 
-  it('memory preamble fails soft (no thrown error escapes; uses 2s timeout)', () => {
+  it('memory preamble fails soft (no thrown error escapes; tight 800ms timeout caps outage cost)', () => {
     const start = source.indexOf('Memory layer: per-board recall preamble');
     const block = source.slice(start, start + 5000);
     expect(block).toMatch(/try\s*\{[\s\S]+?\}\s*catch\s*\(err\)\s*\{[\s\S]+?Memory preamble skipped/);
-    expect(block).toContain('timeoutMs: 2000');
+    expect(block).toContain('timeoutMs: 800');
+  });
+
+  it('memory preamble pre-checks audit DB existence before HTTP (saves RTT on never-stored boards)', () => {
+    const start = source.indexOf('Memory layer: per-board recall preamble');
+    const block = source.slice(start, start + 5000);
+    expect(block).toContain("'/workspace/group/memory/memory.db'");
+    expect(block).toContain('fs.existsSync(auditDbPath)');
+    expect(block).toContain('no memories ever stored on this board');
   });
 
   it('memory preamble is skipped for script-driven scheduled tasks', () => {
@@ -54,7 +62,7 @@ describe('agent-runner prompt preambles', () => {
     const start = source.indexOf('Memory layer: per-board recall preamble');
     const block = source.slice(start, start + 5000);
     expect(block).toContain('NANOCLAW_MEMORY_PREAMBLE_ENABLED');
-    expect(block).toContain('parseKillSwitch(process.env.NANOCLAW_MEMORY_PREAMBLE_ENABLED)');
+    expect(block).toContain('memoryClient.parseKillSwitch');
     // Warn surface for unknown values must be logged.
     expect(block).toContain('killSwitch.warn');
   });

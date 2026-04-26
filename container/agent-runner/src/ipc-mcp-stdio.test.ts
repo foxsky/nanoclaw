@@ -161,14 +161,18 @@ describe('ipc-mcp-stdio tool handler shapes', () => {
     expect(body).toContain('fact NOT saved');
   });
 
-  it('memory_recall delegates to memory-client and reports relevance hint', () => {
+  it('memory_recall delegates to memory-client and orders by relevance', () => {
     const body = extractToolHandlerBlock('memory_recall');
     expect(body, 'memory_recall handler not found').not.toBeNull();
     expect(body).toContain('memoryEnabled');
     expect(body).toContain('searchMemory(');
-    expect(body).toContain('lower dist = closer match');
-    // Network failure path must be isError so the agent knows recall returned nothing.
-    expect(body).toContain('isError: true');
+    expect(body).toContain('best match first');
+    // Network failure path uses the shared memNetworkErrorResult helper
+    // (which always sets isError: true).
+    expect(body).toContain('memNetworkErrorResult');
+    // The raw cosine-distance number must NOT leak to the agent — it
+    // doesn't add useful signal beyond the result ordering.
+    expect(body).not.toMatch(/dist[=:]/);
   });
 
   it('memory_list reads from the local audit DB (not the shared server)', () => {
