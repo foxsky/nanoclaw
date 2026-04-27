@@ -73,6 +73,23 @@ describe('agent-runner prompt preambles', () => {
     expect(block).toContain('killSwitch.warn');
   });
 
+  it('preambles fetch in parallel via Promise.all (memory HTTP + 2 DB reads)', () => {
+    // The three preamble fetches are independent — memory talks to
+    // agent-memory-server over HTTP, summary opens context.db,
+    // verbatim opens messages.db. Running them sequentially adds the
+    // HTTP roundtrip latency to every TaskFlow turn. Promise.all is
+    // the higher-leverage fix from the simplify pass.
+    expect(source).toMatch(/Promise\.all\(\s*\[/);
+    // Each Promise.all entry must be one of the three build helpers,
+    // dispatched in the order they push into preambleBlocks.
+    const promiseAllIdx = source.indexOf('Promise.all([');
+    expect(promiseAllIdx).toBeGreaterThan(0);
+    const block = source.slice(promiseAllIdx, promiseAllIdx + 500);
+    expect(block).toContain('buildMemoryPreamble');
+    expect(block).toContain('buildSummaryRecap');
+    expect(block).toContain('buildVerbatimRecap');
+  });
+
   it('preambles assemble in summary -> memory -> verbatim -> user_msg order', () => {
     // The final prompt the agent sees must be:
     //   summary (oldest context, farthest)

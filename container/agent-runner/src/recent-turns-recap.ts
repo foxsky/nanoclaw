@@ -1,5 +1,4 @@
-import Database from 'better-sqlite3';
-import * as fs from 'node:fs';
+import { openReadonlyDb, closeDb } from './db-util.js';
 
 interface MessageRow {
   timestamp: string;
@@ -40,9 +39,11 @@ export function getRecentVerbatimTurns(
   chatJid: string,
   options: GetRecentVerbatimTurnsOptions = {},
 ): string | null {
+  if (!chatJid) return null;
   const messagesDbPath =
     options.messagesDbPath ?? '/workspace/store/messages.db';
-  if (!chatJid || !fs.existsSync(messagesDbPath)) return null;
+  const db = openReadonlyDb(messagesDbPath);
+  if (!db) return null;
 
   const maxAge = options.maxAgeMinutes ?? 15;
   const maxTurns = options.maxTurns ?? 12;
@@ -54,7 +55,6 @@ export function getRecentVerbatimTurns(
 
   const cutoff = new Date(Date.now() - maxAge * 60_000).toISOString();
 
-  const db = new Database(messagesDbPath, { readonly: true });
   try {
     const rows = db
       .prepare(
@@ -96,6 +96,6 @@ export function getRecentVerbatimTurns(
 
     return `--- Recent turns (last ${maxAge} min) ---\n${lines.join('\n')}\n---`;
   } finally {
-    db.close();
+    closeDb(db);
   }
 }

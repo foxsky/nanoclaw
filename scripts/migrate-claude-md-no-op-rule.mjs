@@ -72,18 +72,29 @@ for (const entry of fs.readdirSync(groupsDir)) {
     skipped += 1;
     continue;
   }
-  if (!content.includes(ANCHOR)) {
+  // Each anchor must appear EXACTLY ONCE. String.replace() with a
+  // string pattern silently replaces only the first occurrence, so a
+  // file with duplicate anchors would land half-migrated.
+  const anchorCount = content.split(ANCHOR).length - 1;
+  if (anchorCount === 0) {
     console.warn(`WARN: anchor not found in ${claudeMd} — skipping`);
+    warned += 1;
+    continue;
+  }
+  if (anchorCount > 1) {
+    console.warn(
+      `WARN: anchor appears ${anchorCount}x in ${claudeMd} — skipping (manual fix required)`,
+    );
     warned += 1;
     continue;
   }
   let next = content.replace(ANCHOR, ANCHOR + RULE_BODY);
   // Best-effort enrichment of the wait/reject rows. Only replaces when
-  // the unenriched original row is present.
-  if (next.includes(WAIT_ANCHOR)) {
+  // exactly one unenriched row is present.
+  if ((next.split(WAIT_ANCHOR).length - 1) === 1) {
     next = next.replace(WAIT_ANCHOR, WAIT_REPLACEMENT);
   }
-  if (next.includes(REJECT_ANCHOR)) {
+  if ((next.split(REJECT_ANCHOR).length - 1) === 1) {
     next = next.replace(REJECT_ANCHOR, REJECT_REPLACEMENT);
   }
   fs.writeFileSync(claudeMd, next, 'utf8');

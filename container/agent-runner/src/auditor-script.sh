@@ -910,9 +910,14 @@ for (const group of groups) {
       };
       const responseEchoesAlreadyDone = botResponse &&
         botEchoesAlreadyDone(botResponse.content || '');
-      const acceptedMutations = forwardMatches.length > 0
-        ? forwardMatches
-        : (responseEchoesAlreadyDone ? backwardMatches : []);
+      let acceptedMutations;
+      if (forwardMatches.length > 0) {
+        acceptedMutations = forwardMatches;
+      } else if (responseEchoesAlreadyDone) {
+        acceptedMutations = backwardMatches;
+      } else {
+        acceptedMutations = [];
+      }
       const scheduledTaskCreated = reminderLikeWrite &&
         scheduledTasksStmt.get(group.folder, msg.timestamp, tenMinLater) !== undefined;
       taskMutationFound = acceptedMutations.length > 0 || scheduledTaskCreated;
