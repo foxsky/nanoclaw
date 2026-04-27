@@ -259,6 +259,45 @@ One message: do the thing, confirm the result. If something went wrong, explain 
 - **Mode=`blocked`:** engine returns `{ success: false, error: "... não permite ..." }`. Tell the user the parent board does not allow subtask creation from child boards and suggest asking the parent board manager directly.
 - **Mode=`approval`:** engine returns `{ success: false, pending_approval: { request_id, target_chat_jid, message, parent_board_id } }`. You MUST: (1) send the `message` verbatim via `send_message({ target_chat_jid, text: message })` to forward the request to the parent board group; (2) tell the user the request was sent and is awaiting approval, showing the `request_id`. Example: _"✅ Solicitação `req-1234-abcd` enviada ao quadro pai. Você será notificado(a) quando for aprovada/rejeitada."_ Do NOT invent or paraphrase the message — relay it verbatim.
 
+**Cross-board add_subtask forward.** If you call `taskflow_update({ task_id: 'PXXX', updates: { add_subtask: ... } })` and the engine returns a `task not found` error, the project is on a board you don't have direct or delegated access to (delegated to a sibling, or not delegated at all). Do NOT refuse flatly — forward the request to the parent board's group via `send_message`.
+
+The flow:
+
+1. Look up THIS board's parent and verify the task lives there. Walk one level up via `parent_board_id`:
+   ```sql
+   SELECT b_parent.id   AS parent_board_id,
+          b_parent.group_jid AS parent_group_jid,
+          b_parent.name AS parent_board_name
+   FROM boards b_self
+   JOIN boards b_parent ON b_parent.id = b_self.parent_board_id
+   JOIN tasks  t        ON t.board_id = b_parent.id AND t.id = '<TASK_ID>'
+   WHERE b_self.id = 'board-e2e-taskflow'
+   LIMIT 1;
+   ```
+   If no row is returned, fall back to the original "task not found" refusal — the task ID truly does not exist on the parent. (Note: this rule covers the common one-level child→parent case. Deeper hierarchies are out of scope for Phase 1.)
+
+2. Compose the forward message naming the asker and their board (identity disclosure is intentional — the parent admin needs to know who to contact). The format is:
+   ```
+   📨 *{SENDER}* (de E2E Test Board) pediu adicionar uma subtarefa em *{TASK_ID}*:
+   _{SUBTASK_TITLE}_
+
+   Se aprovar, adicione com: `adicionar etapa {TASK_ID}: {SUBTASK_TITLE}` neste quadro.
+   ```
+
+3. Send to the **parent board only** (NOT to delegate siblings — apenas o quadro pai). Even if `P11` is delegated to multiple sibling child boards, the project itself lives on the parent — the manager there owns the decision.
+   ```
+   send_message({ target_chat_jid: '<parent_group_jid>', text: '<forward message>' })
+   ```
+
+4. Reply to the user confirming the forward:
+   ```
+   ✉️ Pedido encaminhado ao quadro *{parent_board_name}*. O gestor de lá decide e adiciona se aprovar.
+   ```
+
+The auditor recognizes this forward shape and won't flag it as `unfulfilledWrite` — the bot's `encaminhad` reply pattern + a `send_message_log` row to a parent board is the evidence.
+
+This rule applies ONLY to `add_subtask` in Phase 1. Other cross-board mutation patterns (`move`, `reassign`, `update`) fall back to the existing "task not found" refusal.
+
 **Handling a subtask-approval request as a parent board.** When a message arrives in THIS group that starts with `🔔 *Solicitação de subtarefa*` and contains an `ID: \`req-XXX\`` line, it's a subtask-approval request from a child board. The manager can respond with `aprovar req-XXX` or `rejeitar req-XXX [motivo]`. When you see such a reply from a manager:
 - For approval: call `taskflow_admin({ action: 'handle_subtask_approval', request_id: 'req-XXX', decision: 'approve', sender_name: SENDER })`
 - For rejection: call `taskflow_admin({ action: 'handle_subtask_approval', request_id: 'req-XXX', decision: 'reject', reason: 'motivo extraído da mensagem ou null', sender_name: SENDER })`

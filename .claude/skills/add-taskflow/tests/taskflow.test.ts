@@ -2938,6 +2938,46 @@ describe('taskflow skill package', () => {
     expect(content).toContain('Solicitação de subtarefa');
   });
 
+  it('CLAUDE.md.template documents cross-board add_subtask forward (sibling-delegated case)', () => {
+    // When a child board user tries to add a subtask to a parent-board
+    // project that is NOT delegated to their board (delegated to a
+    // sibling, or not delegated at all), the engine returns
+    // "task not found" because the project isn't reachable. Phase 1a
+    // teaches the agent to forward the request via send_message to
+    // the parent board's group instead of refusing flatly. Real case:
+    // 2026-04-23 Lucas Batista (asse-seci-taskflow) tried 3+ times
+    // to add subtasks to P11, which is delegated to sibling
+    // asse-seci-taskflow-3, not his board.
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    // Header / anchor for the new section
+    expect(content).toContain('Cross-board add_subtask forward');
+    // Trigger condition: agent activates this branch on engine refusal
+    expect(content).toContain('task not found');
+    // Identity disclosure: the forward names the asker AND their board
+    // (uses {{GROUP_NAME}} — the real placeholder; {{BOARD_NAME}} does
+    // not exist in the generator's substitution map).
+    expect(content).toMatch(
+      /\{SENDER\}[^\n]*?\(de \{\{GROUP_NAME\}\}\)/,
+    );
+    // Parent-board lookup uses the boards.parent_board_id chain, NOT
+    // a short_code-based prefix match (task ID prefixes are types
+    // like P/T/M, not board codes).
+    expect(content).toContain('parent_board_id');
+    // Forward target: parent board only.
+    expect(content).toMatch(
+      /send_message\(\{[\s\S]*?target_chat_jid[\s\S]*?text[\s\S]*?\}\)/,
+    );
+    // Reply-to-user template confirms the forward landed.
+    expect(content).toMatch(/encaminhad[ao] ao quadro/i);
+    // Explicit reminder the agent MUST NOT fan out to delegate siblings.
+    expect(content).toMatch(/n[aã]o[^\n]*sibling|apenas o quadro pai|parent only/i);
+    // Scope guard: rule applies ONLY to add_subtask in Phase 1.
+    expect(content).toMatch(/aplica\s+somente|applies only to|ONLY to.*add_subtask/i);
+  });
+
   it('MCP schema includes handle_subtask_approval in taskflow_admin', () => {
     const ipcSrc = fs.readFileSync(
       path.resolve(skillDir, '..', '..', '..', 'container', 'agent-runner', 'src', 'ipc-mcp-stdio.ts'),
