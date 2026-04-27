@@ -837,7 +837,15 @@ for (const group of groups) {
     // prove the task was concluded. Shared-vocab writes ("mande mensagem
     // pro X sobre o prazo") also accept a send-log row as evidence.
     if (isWrite) {
-      const mutations = taskHistoryStmt.all(...boardIds, msg.timestamp, tenMinLater);
+      // Extend the search window 60s backward so a confirming follow-up
+      // ("só retire o prazo" 33s after the bot already removed it) is
+      // not flagged as unfulfilledWrite. Backward matches only count
+      // when the bot's reply to THIS message echoes "already done" —
+      // see acceptedMutations below.
+      const sixtySecBefore = new Date(
+        new Date(msg.timestamp).getTime() - 60000,
+      ).toISOString();
+      const mutations = taskHistoryStmt.all(...boardIds, sixtySecBefore, tenMinLater);
       const rawSender = msg.sender_name || msg.sender || '';
       const senderPersonId = resolveActorToPersonId(rawSender, boardIds);
       // Resolver hit → canonical person_id; miss (phone-number sender,
@@ -868,9 +876,46 @@ for (const group of groups) {
           boardShortCodes,
         ).some((alias) => messageTaskRefs.has(alias));
       });
+      // Backward-window matches are noisy: an unrelated earlier mutation
+      // on a different task (or by a different actor) can leak in,
+      // especially for terse messages ("só retire o prazo") with empty
+      // task_refs where the filter returns every match. Trust forward
+      // matches by default; trust backward matches only when the bot's
+      // reply explicitly acknowledges the work was already done.
+      const msgTimeMs = new Date(msg.timestamp).getTime();
+      const forwardMatches = matchingMutations.filter(
+        (m) => new Date(m.at).getTime() >= msgTimeMs,
+      );
+      const backwardMatches = matchingMutations.filter(
+        (m) => new Date(m.at).getTime() < msgTimeMs,
+      );
+      // The verb pattern: "já" plus a Portuguese acknowledgment verb.
+      // Used by botEchoesAlreadyDone() below — exposed for source-grep
+      // tests in auditor-dm-detection.test.ts.
+      const ALREADY_DONE_RE =
+        /\bj[aá]\s+(foi|fiz|feito|est[aáà]|conclu[íi]d|atualizad|removid|adicionad|criad|registrad|marcad)/i;
+      // Returns true only when the bot's reply contains an "already done"
+      // acknowledgment in an AFFIRMATIVE context. Phrases like "ela já foi
+      // removida anteriormente" inside an error report ("a nota #6 não
+      // existe") would falsely trigger ALREADY_DONE_RE alone, so we also
+      // require that no negation token ("não|nunca|antes|nem") appears
+      // within the 50 chars preceding the match.
+      const NEGATION_NEAR_RE = /\b(n[aã]o|nunca|antes|nem)\b/i;
+      const botEchoesAlreadyDone = (content) => {
+        if (!content) return false;
+        const m = ALREADY_DONE_RE.exec(content);
+        if (!m) return false;
+        const before = content.slice(Math.max(0, m.index - 50), m.index);
+        return !NEGATION_NEAR_RE.test(before);
+      };
+      const responseEchoesAlreadyDone = botResponse &&
+        botEchoesAlreadyDone(botResponse.content || '');
+      const acceptedMutations = forwardMatches.length > 0
+        ? forwardMatches
+        : (responseEchoesAlreadyDone ? backwardMatches : []);
       const scheduledTaskCreated = reminderLikeWrite &&
         scheduledTasksStmt.get(group.folder, msg.timestamp, tenMinLater) !== undefined;
-      taskMutationFound = matchingMutations.length > 0 || scheduledTaskCreated;
+      taskMutationFound = acceptedMutations.length > 0 || scheduledTaskCreated;
     }
     const mutationFound = isTaskWrite
       ? taskMutationFound

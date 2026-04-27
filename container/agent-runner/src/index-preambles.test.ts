@@ -72,4 +72,56 @@ describe('agent-runner prompt preambles', () => {
     // Warn surface for unknown values must be logged.
     expect(block).toContain('killSwitch.warn');
   });
+
+  it('preambles assemble in summary -> memory -> verbatim -> user_msg order', () => {
+    // The final prompt the agent sees must be:
+    //   summary (oldest context, farthest)
+    //   memory (per-board facts, middle)
+    //   verbatim (most recent context, closest to user message)
+    //   user message
+    //
+    // Regression for review #4 finding B2: the original prepend-each-block
+    // order produced verbatim FARTHEST from the user message, opposite to
+    // intent. The fix is to build each block as a string variable and
+    // concatenate once in the desired order.
+    expect(source).toContain('preambleBlocks');
+    // Exactly one final assembly that prepends preamble blocks to prompt.
+    expect(source).toMatch(
+      /preambleBlocks\.join\(['"]\\n\\n['"]\)\s*\+\s*['"]\\n\\n['"]\s*\+\s*prompt/,
+    );
+    // The push order must be summary -> memory -> verbatim. Each push
+    // call uses the variable holding that block's string.
+    const pushSummaryIdx = source.indexOf('preambleBlocks.push(summaryRecapStr');
+    const pushMemoryIdx = source.indexOf('preambleBlocks.push(memoryPreambleStr');
+    const pushVerbatimIdx = source.indexOf('preambleBlocks.push(verbatimRecapStr');
+    expect(pushSummaryIdx).toBeGreaterThan(0);
+    expect(pushMemoryIdx).toBeGreaterThan(0);
+    expect(pushVerbatimIdx).toBeGreaterThan(0);
+    expect(pushSummaryIdx).toBeLessThan(pushMemoryIdx);
+    expect(pushMemoryIdx).toBeLessThan(pushVerbatimIdx);
+  });
+
+  it('verbatim recap passes currentMessageTimestamp as the excludeFrom boundary', () => {
+    // Review #4 finding B1: the wallclock heuristic (now - 5s) does not
+    // match sender-claimed WhatsApp timestamps under delivery latency.
+    // Callers MUST pass containerInput.currentMessageTimestamp.
+    const callIdx = source.indexOf('getRecentVerbatimTurns(');
+    expect(callIdx).toBeGreaterThan(0);
+    const callBlock = source.slice(callIdx, callIdx + 1000);
+    expect(callBlock).toContain('excludeFrom');
+    expect(callBlock).toContain('containerInput.currentMessageTimestamp');
+  });
+
+  it('all three preamble blocks are skipped for script-driven scheduled tasks', () => {
+    // memory + summary + verbatim recaps are agent context. Script-driven
+    // scheduled tasks (the daily auditor) must have a deterministic
+    // prompt — no leaking conversation history.
+    const guardIdx = source.indexOf(
+      'containerInput.script && containerInput.isScheduledTask',
+    );
+    expect(guardIdx).toBeGreaterThan(0);
+    // The script-task guard appears at least once before the assembly.
+    const assemblyIdx = source.indexOf('preambleBlocks.join');
+    expect(assemblyIdx).toBeGreaterThan(guardIdx);
+  });
 });

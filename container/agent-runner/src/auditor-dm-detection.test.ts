@@ -958,7 +958,7 @@ describe('auditor DM-send detection', () => {
         /const scheduledTaskCreated = reminderLikeWrite &&/,
       );
       expect(script).toMatch(
-        /taskMutationFound\s*=\s*matchingMutations\.length\s*>\s*0\s*\|\|\s*scheduledTaskCreated/,
+        /taskMutationFound\s*=\s*acceptedMutations\.length\s*>\s*0\s*\|\|\s*scheduledTaskCreated/,
       );
       expect(script).toMatch(
         /const sendLogs = sendMessageLogStmt\.all/,
@@ -1128,6 +1128,97 @@ describe('auditor DM-send detection', () => {
       expect(prompt).toContain('silent_with_recent_human_activity');
       // Section must be conditional — empty broken_groups should NOT emit.
       expect(prompt).toMatch(/SOMENTE se[\s\S]+?broken_groups[\s\S]+?não estiver vazio/i);
+    });
+
+    it('auditor-script.sh extends the taskHistory window 60s backward', () => {
+      // Regression: confirming follow-ups ("só retire o prazo" 33s after
+      // the bot already removed the prazo) used to be flagged as
+      // unfulfilledWrite because the search window only looked forward
+      // from msg.timestamp. Real case from 2026-04-23 SEAF-GEFIN/T12.
+      expect(script).toContain('sixtySecBefore');
+      expect(script).toMatch(/getTime\(\)\s*-\s*60000/);
+      expect(script).toMatch(
+        /taskHistoryStmt\.all\([^\)]*?sixtySecBefore[^\)]*?tenMinLater\)/,
+      );
+    });
+
+    it('auditor-script.sh only counts backward-window mutations when bot reply echoes already-done', () => {
+      // Backward matches are noisy (terse messages with empty task_refs let
+      // the filter pass any match through). Trust them only when the bot's
+      // reply contains a "já foi / já feito / já está" acknowledgment.
+      expect(script).toContain('ALREADY_DONE_RE');
+      expect(script).toContain('NEGATION_NEAR_RE');
+      expect(script).toContain('botEchoesAlreadyDone');
+      expect(script).toContain('responseEchoesAlreadyDone');
+      expect(script).toContain('forwardMatches');
+      expect(script).toContain('backwardMatches');
+      expect(script).toContain('acceptedMutations');
+
+      // Validate behavior by extracting the helper function (regex +
+      // negation-window guard) and running it against canonical phrases.
+      const reMatch = script.match(/const ALREADY_DONE_RE\s*=\s*([\s\S]*?);/);
+      const negMatch = script.match(/const NEGATION_NEAR_RE\s*=\s*([\s\S]*?);/);
+      expect(reMatch).not.toBeNull();
+      expect(negMatch).not.toBeNull();
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+      const botEchoesAlreadyDone: (s: string) => boolean = new Function(
+        `const ALREADY_DONE_RE = ${reMatch![1].trim()};
+         const NEGATION_NEAR_RE = ${negMatch![1].trim()};
+         return (content) => {
+           if (!content) return false;
+           const m = ALREADY_DONE_RE.exec(content);
+           if (!m) return false;
+           const before = content.slice(Math.max(0, m.index - 50), m.index);
+           return !NEGATION_NEAR_RE.test(before);
+         };`,
+      )();
+
+      // Should match (canonical bot acknowledgments):
+      for (const phrase of [
+        'Já foi feito',
+        'já fiz isso',
+        'Já está em Aguardando',
+        'Prazo já foi removido',
+        'T1 já está concluída',
+        'já atualizado',
+        'Já registrado.',
+        'já foi marcado como concluído',
+        'A tarefa já está em Aguardando',
+      ]) {
+        expect(botEchoesAlreadyDone(phrase), `should match: ${phrase}`).toBe(
+          true,
+        );
+      }
+
+      // Should NOT match — unrelated bot text without "já":
+      for (const phrase of [
+        'Não encontrei essa tarefa',
+        'Pode elaborar um pouco mais?',
+        'Tarefa criada com sucesso',
+        'Qual o prazo?',
+      ]) {
+        expect(
+          botEchoesAlreadyDone(phrase),
+          `should NOT match: ${phrase}`,
+        ).toBe(false);
+      }
+
+      // Should NOT match — bot's "já" is part of a NEGATION/error report,
+      // not an acknowledgment of the user's current request. These are
+      // real patterns from prod messages.db that would falsely trigger a
+      // backward mutation match if we didn't guard against negation
+      // prefixes within 50 chars of "já".
+      for (const phrase of [
+        'A nota #6 não existe — ela já foi removida anteriormente',
+        'Você não pode já ter feito isso',
+        'A tarefa nunca foi atualizada nem já está concluída',
+        'Antes de já ter sido feito, era preciso aprovar',
+      ]) {
+        expect(
+          botEchoesAlreadyDone(phrase),
+          `should NOT match (negation context): ${phrase}`,
+        ).toBe(false);
+      }
     });
 
     it('auditor-script.sh does not include shared vocabulary in TASK_KEYWORDS', () => {

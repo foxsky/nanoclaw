@@ -672,6 +672,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       }
     },
     turnContext,
+    missedMessages[0]?.timestamp,
   );
 
   await channel.setTyping?.(chatJid, false);
@@ -707,6 +708,7 @@ async function runAgent(
   imageAttachments: Array<{ relativePath: string; mediaType: string }>,
   onOutput?: (output: ContainerOutput) => Promise<void>,
   turnContext?: AgentTurnContext,
+  currentMessageTimestamp?: string,
 ): Promise<'success' | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
   const persistedSessionId = sessions[group.folder];
@@ -773,6 +775,7 @@ async function runAgent(
         taskflowMaxDepth: group.taskflowMaxDepth,
         assistantName: getGroupSenderName(group.trigger),
         turnContext,
+        currentMessageTimestamp,
         ...(imageAttachments.length > 0 && { imageAttachments }),
       },
       (proc, containerName) =>

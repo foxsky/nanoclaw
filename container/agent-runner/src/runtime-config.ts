@@ -23,6 +23,14 @@ export interface ContainerInput {
   taskflowHierarchyLevel?: number;
   taskflowMaxDepth?: number;
   isScheduledTask?: boolean;
+  /**
+   * Timestamp (ISO 8601) of the earliest user message in the batch
+   * currently being processed. Used by the recent-turns recap to
+   * exclude the in-flight messages from the verbatim history slice.
+   * Required: the wallclock heuristic alone (now-5s) does not match
+   * sender-claimed WhatsApp timestamps under delivery latency.
+   */
+  currentMessageTimestamp?: string;
   assistantName?: string;
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
   script?: string;

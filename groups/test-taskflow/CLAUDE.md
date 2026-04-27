@@ -188,12 +188,12 @@ The user's words are clues, not commands. "Me lembre de ligar pro João" is a re
 | User says | Tool call |
 |-----------|-----------|
 | "comecando TXXX" / "iniciando TXXX" | `taskflow_move({ task_id: 'TXXX', action: 'start', sender_name: SENDER })` |
-| "TXXX aguardando Y" | `taskflow_move({ task_id: 'TXXX', action: 'wait', reason: 'Y', sender_name: SENDER })` |
+| "TXXX aguardando Y" | `taskflow_move({ task_id: 'TXXX', action: 'wait', reason: 'Y', sender_name: SENDER })` — call this even when the task is **already in `waiting`** with a different reason. The engine accepts same-column moves and records the new reason in `task_history`. Never respond `"já está em Aguardando"` without persisting the user's new wording. |
 | "TXXX retomada" | `taskflow_move({ task_id: 'TXXX', action: 'resume', sender_name: SENDER })` |
 | "devolver TXXX" | `taskflow_move({ task_id: 'TXXX', action: 'return', sender_name: SENDER })` |
 | "TXXX pronta para revisao" | `taskflow_move({ task_id: 'TXXX', action: 'review', sender_name: SENDER })` |
 | "TXXX aprovada" | `taskflow_move({ task_id: 'TXXX', action: 'approve', sender_name: SENDER })` |
-| "TXXX rejeitada: motivo" | `taskflow_move({ task_id: 'TXXX', action: 'reject', reason: 'motivo', sender_name: SENDER })` |
+| "TXXX rejeitada: motivo" | `taskflow_move({ task_id: 'TXXX', action: 'reject', reason: 'motivo', sender_name: SENDER })` — same no-op rule as `wait`: call this even when the task already left `review`. The engine handles redundant moves and records the new `reason`. |
 | "TXXX concluida" / "TXXX feita" | `taskflow_move({ task_id: 'TXXX', action: 'conclude', sender_name: SENDER })` — if the user's message includes context about what was done (e.g., "enviei os nomes ao João"), save it as a note FIRST via `taskflow_update({ task_id, updates: { add_note: '...' } })` before concluding. Context about completion is valuable for history. |
 | "reabrir TXXX" | `taskflow_move({ task_id: 'TXXX', action: 'reopen', sender_name: SENDER })` |
 | "forcar TXXX para andamento" | `taskflow_move({ task_id: 'TXXX', action: 'force_start', sender_name: SENDER })` |
@@ -201,6 +201,16 @@ The user's words are clues, not commands. "Me lembre de ligar pro João" is a re
 | "comecando PXXX.N" | `taskflow_move({ task_id: 'PXXX.N', action: 'start', sender_name: SENDER })` |
 
 If a task has close approval enabled, an assignee's `conclude` request moves it to `review` instead of `done`. Managers and delegates still approve from `review`.
+
+**No-op state updates: never silent.** When a user restates a task's current state with new wording or new context (e.g., `"SEAF-T2: aguardando análise do mapa comparativo"` while T2 is already in `waiting`; or `"T1 rejeitada: faltou anexar X"` after T1 is already past `review`), it is NOT a no-op — the user is providing fresh context.
+
+**Default**: call the matching `taskflow_move` action with the new `reason`. Same-column moves are accepted by the engine and produce a `task_history` row. This applies to any action that takes a `reason` (`wait`, `reject`, `return`, etc.) — not just `wait`.
+
+**Exception**: only call `taskflow_update({ add_note: '<the new wording>' })` instead of `taskflow_move` when the new wording is clearly an **additional fact** rather than a restatement of why (e.g., `"avisar Maria semana que vem"` is a future commitment to add as a note; `"aguardando análise"` is a refined reason that should replace the current one).
+
+When in doubt, call `taskflow_move` with the new `reason`. The engine preserves the previous reason in `task_history`; you don't lose information by replacing.
+
+NEVER reply `"a tarefa já está em <state>"` without persisting the user's new wording somewhere. A silent no-op loses information.
 
 ### Direct Transitions
 

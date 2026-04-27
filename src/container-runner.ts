@@ -64,6 +64,14 @@ export interface ContainerInput {
   taskflowMaxDepth?: number;
   taskflowBoardId?: string;
   isScheduledTask?: boolean;
+  /**
+   * ISO 8601 timestamp of the earliest user message in the batch
+   * being processed. Used by the recent-turns recap inside the
+   * container to exclude in-flight messages from the verbatim slice.
+   * Required: wallclock heuristic (now-5s) does not match
+   * sender-claimed WhatsApp timestamps under delivery latency.
+   */
+  currentMessageTimestamp?: string;
   assistantName?: string;
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
   queryVector?: string; // base64-encoded Float32Array

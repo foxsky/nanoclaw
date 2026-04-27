@@ -260,6 +260,15 @@ describe('taskflow skill package', () => {
 
     // Tool vs. Direct SQL section
     expect(content).toContain('## Tool vs. Direct SQL');
+
+    // No-op state updates rule. Regression for the 2026-04-23 SEAF-T2
+    // case: user sent "SEAF-T2: aguardando análise do mapa comparativo"
+    // while T2 was already in `waiting`; agent replied "já está em
+    // Aguardando" and lost the user's reason update. Rule must be
+    // present so the agent persists the new wording instead.
+    expect(content).toContain('No-op state updates: never silent');
+    expect(content).toContain('NEVER reply');
+    expect(content).toContain('add_note');
   });
 
   it('CLAUDE.md.template uses correct send_message signature', () => {
