@@ -18,6 +18,27 @@
 import fs from 'fs';
 import path from 'path';
 
+/**
+ * Derives template placeholder substitutions for a single CLAUDE.md.
+ * Returns null if the file's title doesn't match the expected
+ * `# <ASSISTANT_NAME> — TaskFlow (<GROUP_NAME>)` pattern — caller
+ * should warn and skip rather than write unresolved {{...}} markers.
+ */
+function deriveSubstitutions(folderName, content) {
+  const titleMatch = content.match(/^#\s+\S+\s+—\s+TaskFlow\s+\(([^)]+)\)/m);
+  if (!titleMatch) return null;
+  return {
+    boardId: `board-${folderName}`,
+    groupName: titleMatch[1].trim(),
+  };
+}
+
+function applySubstitutions(text, subs) {
+  return text
+    .replaceAll('{{BOARD_ID}}', subs.boardId)
+    .replaceAll('{{GROUP_NAME}}', subs.groupName);
+}
+
 const RULE_MARKER = 'Cross-board add_subtask forward';
 // Anchor: closing sentence of the existing Mode=approval paragraph.
 const ANCHOR =
@@ -96,7 +117,16 @@ for (const entry of fs.readdirSync(groupsDir)) {
     warned += 1;
     continue;
   }
-  const next = content.replace(ANCHOR, ANCHOR + RULE_BODY);
+  const subs = deriveSubstitutions(entry, content);
+  if (!subs) {
+    console.warn(
+      `WARN: title pattern not recognized in ${claudeMd} — skipping (cannot derive {{BOARD_ID}}/{{GROUP_NAME}})`,
+    );
+    warned += 1;
+    continue;
+  }
+  const ruleBodyResolved = applySubstitutions(RULE_BODY, subs);
+  const next = content.replace(ANCHOR, ANCHOR + ruleBodyResolved);
   fs.writeFileSync(claudeMd, next, 'utf8');
   console.log(`Updated: ${claudeMd}`);
   touched += 1;
