@@ -922,8 +922,23 @@ for (const group of groups) {
         scheduledTasksStmt.get(group.folder, msg.timestamp, tenMinLater) !== undefined;
       taskMutationFound = acceptedMutations.length > 0 || scheduledTaskCreated;
     }
+    // Cross-board forward evidence: when the agent forwards an
+    // add_subtask request to the parent board, the bot's reply matches
+    // FORWARD_REPLY_RE AND a send_message_log row landed in the
+    // 10-min window. For isTaskWrite=true messages, this counts as
+    // fulfilled action even when no task_history row exists locally
+    // (the parent board owns the actual mutation decision).
+    // The 40-char window between "encaminh*" and "quadro/gestor" lets
+    // both shapes match: "encaminhado ao quadro X" AND
+    // "Encaminhei seu pedido ao quadro pai".
+    const FORWARD_REPLY_RE =
+      /\bencaminh\w+\b[\s\S]{0,40}\b(quadro|gestor)\b/i;
+    const isCrossBoardForward = !!botResponse &&
+      FORWARD_REPLY_RE.test(botResponse.content || '') &&
+      crossGroupSendLogged;
+
     const mutationFound = isTaskWrite
-      ? taskMutationFound
+      ? (taskMutationFound || isCrossBoardForward)
       : (taskMutationFound || crossGroupSendLogged);
 
     if (botResponse) {

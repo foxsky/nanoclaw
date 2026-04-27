@@ -976,7 +976,7 @@ describe('auditor DM-send detection', () => {
         /noResponse\s*=\s*!botResponse\s*&&\s*!\(isDmSend\s*&&\s*crossGroupSendLogged\s*&&\s*!isTaskWrite\)/,
       );
       expect(script).toMatch(
-        /mutationFound\s*=\s*isTaskWrite\s*\?\s*taskMutationFound\s*:\s*\(taskMutationFound\s*\|\|\s*crossGroupSendLogged\)/,
+        /mutationFound\s*=\s*isTaskWrite\s*\?\s*\(\s*taskMutationFound\s*\|\|\s*isCrossBoardForward\s*\)\s*:\s*\(\s*taskMutationFound\s*\|\|\s*crossGroupSendLogged\s*\)/,
       );
     });
 
@@ -1128,6 +1128,82 @@ describe('auditor DM-send detection', () => {
       expect(prompt).toContain('silent_with_recent_human_activity');
       // Section must be conditional — empty broken_groups should NOT emit.
       expect(prompt).toMatch(/SOMENTE se[\s\S]+?broken_groups[\s\S]+?não estiver vazio/i);
+    });
+
+    it('auditor-script.sh defines a FORWARD_REPLY_RE that matches Portuguese forward acknowledgments', () => {
+      // The auditor accepts a cross-board forward as fulfilled action
+      // when the bot's reply matches this pattern. Required because
+      // for isTaskWrite=true messages, the asymmetric rule at
+      // mutationFound demands taskMutationFound — without this evidence
+      // path, every successful forward becomes unfulfilledWrite.
+      expect(script).toContain('FORWARD_REPLY_RE');
+
+      const reMatch = script.match(/const FORWARD_REPLY_RE\s*=\s*([\s\S]*?);/);
+      expect(reMatch).not.toBeNull();
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+      const FORWARD_REPLY_RE: RegExp = new Function(
+        `return ${reMatch![1].trim()};`,
+      )();
+
+      // Should match canonical forward acknowledgments
+      for (const phrase of [
+        'Pedido encaminhado ao quadro SECI',
+        '✉️ Pedido encaminhado ao quadro SEC',
+        'Encaminhei seu pedido ao quadro pai',
+        'Mensagem encaminhada ao gestor do quadro pai',
+      ]) {
+        expect(FORWARD_REPLY_RE.test(phrase), `should match: ${phrase}`).toBe(
+          true,
+        );
+      }
+
+      // Should NOT match unrelated bot text
+      for (const phrase of [
+        'Tarefa criada com sucesso',
+        'Não encontrei essa tarefa',
+        'Já está em Aguardando',
+      ]) {
+        expect(
+          FORWARD_REPLY_RE.test(phrase),
+          `should NOT match: ${phrase}`,
+        ).toBe(false);
+      }
+    });
+
+    it('auditor-script.sh derives isCrossBoardForward from forward reply + send_message_log', () => {
+      // isCrossBoardForward requires BOTH:
+      //   (a) bot reply matches FORWARD_REPLY_RE
+      //   (b) crossGroupSendLogged is true (a send_message_log row
+      //       exists in the 10-min window for this group)
+      // Both gates must be present in the script.
+      expect(script).toContain('isCrossBoardForward');
+      expect(script).toMatch(
+        /isCrossBoardForward\s*=[\s\S]*?FORWARD_REPLY_RE[\s\S]*?crossGroupSendLogged/,
+      );
+    });
+
+    it('auditor-script.sh accepts isCrossBoardForward as evidence even for isTaskWrite=true', () => {
+      // The asymmetric rule must be relaxed for confirmed cross-board
+      // forwards. New shape:
+      //   const mutationFound = isTaskWrite
+      //     ? (taskMutationFound || isCrossBoardForward)
+      //     : (taskMutationFound || crossGroupSendLogged);
+      expect(script).toMatch(
+        /mutationFound\s*=\s*isTaskWrite\s*\?\s*\(\s*taskMutationFound\s*\|\|\s*isCrossBoardForward\s*\)/,
+      );
+    });
+
+    it('auditor-prompt.txt rule #4 mentions cross-board forward as a fulfilled-action signal', () => {
+      // The auditor agent reading the prompt must understand that
+      // isCrossBoardForward=true means the bot did the right thing
+      // (forwarded the cross-board request), not that it failed.
+      const fs = require('fs');
+      const path = require('path');
+      const prompt = fs.readFileSync(
+        path.join(__dirname, 'auditor-prompt.txt'),
+        'utf-8',
+      );
+      expect(prompt).toContain('isCrossBoardForward');
     });
 
     it('auditor-script.sh extends the taskHistory window 60s backward', () => {
