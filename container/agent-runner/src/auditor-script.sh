@@ -1178,30 +1178,14 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
       }
     }
   } finally {
-    try { msgDb.close(); } catch {}
-    try { tfDb.close(); } catch {}
-    if (mode === 'dryrun') {
-      try { writeAuditDryRunLog(result.data); } catch (err) {
-        console.error('Audit dryrun log failed:', err && err.message ? err.message : err);
-      }
-    }
-    if (structuralAppendBlocks.length > 0) {
-      result.mandatoryAppendBlocks = structuralAppendBlocks;
-      // Structural appendices must survive even if the agent omits inline
-      // refs; this also preserves the semantic candidate quarantine path.
-      result.wakeAgent = true;
-    }
-    result.data.actor_first_name_heuristic_hits = firstNameHeuristicHits;
-    result.data.actor_first_name_ambiguity_misses = firstNameAmbiguityMisses;
-
     // --- Delivery health (registered groups whose bot output is silent) ---
     // Catches the failure mode where a group is registered but the bot is
     // not actually a member (kicked, never accepted invite, group deleted),
     // so every send to that JID fails and Kipp's semantic audit sees no
     // bot activity to evaluate. Caller-side check on messages.db only —
     // the WA outbound queue file is not mounted in the auditor container.
+    // MUST run before msgDb.close() below.
     try {
-      const NEVER_SENT_NEEDS_HUMAN_ACTIVITY = true;
       const RECENT_DAYS = 7;
       const cutoff = new Date(
         Date.now() - RECENT_DAYS * 86400 * 1000,
@@ -1219,6 +1203,7 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
             (SELECT MAX(timestamp) FROM messages m
               WHERE m.chat_jid = g.jid AND m.is_from_me = 0) AS last_human
           FROM registered_groups g
+          WHERE g.taskflow_managed = 1
           `,
         )
         .all(cutoff);
@@ -1255,6 +1240,22 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
         error: err && err.message ? err.message : String(err),
       };
     }
+
+    try { msgDb.close(); } catch {}
+    try { tfDb.close(); } catch {}
+    if (mode === 'dryrun') {
+      try { writeAuditDryRunLog(result.data); } catch (err) {
+        console.error('Audit dryrun log failed:', err && err.message ? err.message : err);
+      }
+    }
+    if (structuralAppendBlocks.length > 0) {
+      result.mandatoryAppendBlocks = structuralAppendBlocks;
+      // Structural appendices must survive even if the agent omits inline
+      // refs; this also preserves the semantic candidate quarantine path.
+      result.wakeAgent = true;
+    }
+    result.data.actor_first_name_heuristic_hits = firstNameHeuristicHits;
+    result.data.actor_first_name_ambiguity_misses = firstNameAmbiguityMisses;
 
     console.log(JSON.stringify(result));
   }

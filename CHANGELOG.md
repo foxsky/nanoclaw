@@ -4,6 +4,18 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-27 (audit-fix) — delivery_health: ordering + missing taskflow filter
+
+Two related fixes to yesterday's `🚦 Saúde de entrega` extension, both caught by post-deploy review (auditor-checkin-20260427 + 3-subagent validation pass):
+
+**1. Ordering bug.** The collection block was placed inside the `finally` clause of the auditor IIFE *after* the `try { msgDb.close() }` line. The first 04:00 UTC run on 2026-04-27 emitted `delivery_health.error = "The database connection is not open"` and the rendered section showed the error string instead of the broken-groups list. Fix: move the block above the `msgDb.close()` / `tfDb.close()` calls in `auditor-script.sh`.
+
+**2. Missing taskflow filter.** The `FROM registered_groups g` SELECT was missing `WHERE g.taskflow_managed = 1`, so once the collection block actually ran, the main NanoClaw group (`120363408855255405@g.us`) and `eurotrip` would surface as `never_sent` false positives — neither is a TaskFlow board, so the bot has no `is_from_me=1` activity there by design. Fix: add the filter in lockstep with every other `registered_groups` query in the script.
+
+**Test infrastructure.** Added `auditor-delivery-health.test.ts` — 7 execution tests that extract the SQL string from `auditor-script.sh` via regex and run it against in-memory better-sqlite3 fixtures with the post-processing JS re-applied in test. Validates: never_sent shape, silent_with_recent_human_activity shape, healthy-group exclusion, **non-taskflow group exclusion** (regression test for fix #2), no-human-activity exclusion, and a mixed scenario. The string-match tests in `auditor-dm-detection.test.ts` keep guarding ordering and literal presence; the new file guards SQL semantics.
+
+No DB update needed — `auditor-script.sh` is synced from source on every container start (per the `CORE_AGENT_RUNNER_FILES` list in `src/container-runner.ts`); the script body is not embedded in `scheduled_tasks.prompt`.
+
 ## 2026-04-26 (audit) — Kipp auditor: 🚦 Saúde de entrega section
 
 Extends Kipp's daily auditor to surface the failure mode that the previous setup couldn't detect: a group is registered in `registered_groups` but the bot was never a stable member on the WhatsApp side, so every send to that JID quietly fails and the queue piles up. Prior to today's WA queue head-of-line fix this was invisible AND blocking; now it's just invisible. Today's auditor extension closes the visibility gap.

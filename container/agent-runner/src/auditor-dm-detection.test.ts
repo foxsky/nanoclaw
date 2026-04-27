@@ -1103,6 +1103,16 @@ describe('auditor DM-send detection', () => {
       // ends up under delivery_health.broken_groups in the JSON output.
       expect(script).toContain('FROM registered_groups');
       expect(script).toMatch(/result\.data\.delivery_health\s*=\s*\{[\s\S]*?broken_groups/);
+
+      // REGRESSION: the delivery_health block uses msgDb, so it MUST run
+      // before the finally-block close. The first run on 2026-04-27 emitted
+      // `delivery_health.error = "The database connection is not open"`
+      // because the block was placed after msgDb.close().
+      const deliveryHealthIdx = script.indexOf('result.data.delivery_health');
+      const msgDbCloseIdx = script.indexOf('try { msgDb.close()');
+      expect(deliveryHealthIdx).toBeGreaterThan(0);
+      expect(msgDbCloseIdx).toBeGreaterThan(0);
+      expect(deliveryHealthIdx).toBeLessThan(msgDbCloseIdx);
     });
 
     it('auditor-prompt.txt teaches the agent to render a 🚦 Saúde de entrega section', () => {
