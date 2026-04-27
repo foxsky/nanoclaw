@@ -924,7 +924,14 @@ describe('auditor DM-send detection', () => {
       // scheduled_tasks for reminders, send_message_log for cross-group
       // DM deliveries.
       expect(script).toMatch(
-        /const isDmSend = isDmSendRequest\(msg\.content\)[\s\S]*?if\s*\(\s*isDmSend\s*\)\s*\{[\s\S]*?sendMessageLogStmt\.all[\s\S]*?if\s*\(\s*isWrite\s*\)\s*\{[\s\S]*?taskHistoryStmt\.all[\s\S]*?scheduledTasksStmt\.get/,
+        // Note: the `if (isDmSend) {` gate around sendMessageLogStmt was
+        // removed 2026-04-27 — see the dedicated guard further below
+        // ('computes crossGroupSendLogged for EVERY message'). The
+        // sendMessageLogStmt block now sits inside an unconditional
+        // `{ ... }` scope, but it must still come before the
+        // `if (isWrite) { taskHistoryStmt.all ... scheduledTasksStmt.get }`
+        // block.
+        /const isDmSend = isDmSendRequest\(msg\.content\)[\s\S]*?sendMessageLogStmt\.all[\s\S]*?if\s*\(\s*isWrite\s*\)\s*\{[\s\S]*?taskHistoryStmt\.all[\s\S]*?scheduledTasksStmt\.get/,
       );
       // Both scheduledTasksStmt AND sendMessageLogStmt must be prepared
       // against msgDb (messages.db), not tfDb.
@@ -1309,6 +1316,156 @@ describe('auditor DM-send detection', () => {
           `TASK_KEYWORDS must not contain ${forbidden} — it's shared vocabulary used in DM-send requests`,
         ).toBe(false);
       }
+    });
+
+    it('auditor-script.sh computes crossGroupSendLogged for EVERY message, not just isDmSend', () => {
+      // Source-shape guard for the 2026-04-27 Critical fix. The previous
+      // shape gated the sendMessageLogStmt.all(...) lookup on `isDmSend`,
+      // which made `isCrossBoardForward` dead code for the canonical
+      // case (Lucas's "adicionar tarefa na p11" — pure isTaskWrite=true,
+      // isDmSend=false, but the bot does forward to the parent board
+      // and a send_message_log row lands).
+      //
+      // The fix removes the `if (isDmSend) {` wrapper, leaving the
+      // computation inside an unconditional block scope. Two guards:
+      //   1. The gate must NOT immediately precede the sendLogs lookup.
+      //   2. crossGroupSendLogged must be reachable from a non-DM path.
+      const sendLogsIdx = script.indexOf('const sendLogs = sendMessageLogStmt.all(');
+      expect(sendLogsIdx).toBeGreaterThan(0);
+      const before = script.slice(Math.max(0, sendLogsIdx - 200), sendLogsIdx);
+      // Negative guard: the `if (isDmSend) {` wrapper that gated the
+      // computation is gone (allowing whitespace + brace variants).
+      expect(
+        before,
+        'crossGroupSendLogged must NOT be gated on isDmSend — that makes ' +
+          'isCrossBoardForward dead code for pure isTaskWrite=true forwards. ' +
+          'See commit fixing 4af4d2d0.',
+      ).not.toMatch(/if\s*\(\s*isDmSend\s*\)\s*\{\s*$/);
+    });
+  });
+
+  // -----------------------------------------------------------------
+  // Behavioral test for the asymmetric mutationFound rule. Mirrors the
+  // logic shape inlined in auditor-script.sh ~line 940 and the
+  // FORWARD_REPLY_RE/isCrossBoardForward derivation just above it.
+  // The FORWARD_REPLY_RE regex is extracted from the script source so
+  // any change there breaks this test. The inline logic is not auto-
+  // extracted (the surrounding closure makes that impractical), so it
+  // shadows the source — the four cases below are calibrated against
+  // the script's current shape.
+  // -----------------------------------------------------------------
+  describe('mutationFound decision tree (behavioral)', () => {
+    const scriptPath = path.join(import.meta.dirname, 'auditor-script.sh');
+    const script = fs.readFileSync(scriptPath, 'utf-8');
+
+    // Extract FORWARD_REPLY_RE from the script so the regex is shared
+    // with the test. Any change to the script regex either re-routes
+    // matches or fails to compile — both surface here.
+    const reMatch = script.match(/const FORWARD_REPLY_RE\s*=\s*([\s\S]*?);/);
+    if (!reMatch) {
+      throw new Error('FORWARD_REPLY_RE not found in auditor-script.sh');
+    }
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+    const FORWARD_REPLY_RE: RegExp = new Function(
+      `return ${reMatch[1].trim()};`,
+    )();
+
+    function evaluate(input: {
+      isDmSend: boolean;
+      isTaskWrite: boolean;
+      botResponseContent: string | null;
+      crossGroupSendLogged: boolean;
+      taskMutationFound?: boolean;
+    }): { mutationFound: boolean; isCrossBoardForward: boolean } {
+      const taskMutationFound = input.taskMutationFound ?? false;
+      const isCrossBoardForward =
+        !!input.botResponseContent &&
+        FORWARD_REPLY_RE.test(input.botResponseContent) &&
+        input.crossGroupSendLogged;
+      const mutationFound = input.isTaskWrite
+        ? (taskMutationFound || isCrossBoardForward)
+        : (taskMutationFound || input.crossGroupSendLogged);
+      return { mutationFound, isCrossBoardForward };
+    }
+
+    it('Case A (Lucas): isTaskWrite + forward reply + send-log → mutationFound=true', () => {
+      // The flagship case Task 2 was supposed to fix. Pure task-write
+      // ("adicionar tarefa na p11") — isDmSend=false. Bot forwards to
+      // SECI, sends back acknowledgement, send_message_log records it.
+      // With the Critical fix, crossGroupSendLogged is computed for
+      // every message (not just isDmSend), so isCrossBoardForward
+      // evaluates true, and the asymmetric rule accepts it.
+      const result = evaluate({
+        isDmSend: false,
+        isTaskWrite: true,
+        botResponseContent: '✉️ Pedido encaminhado ao quadro SECI',
+        crossGroupSendLogged: true,
+      });
+      expect(result.isCrossBoardForward).toBe(true);
+      expect(result.mutationFound).toBe(true);
+    });
+
+    it('Case A pre-fix simulation: gating crossGroupSendLogged on isDmSend would set mutationFound=false', () => {
+      // Simulate the buggy shape: when crossGroupSendLogged is
+      // initialized false and only computed inside `if (isDmSend)`,
+      // a pure task-write with isDmSend=false leaves the flag false,
+      // killing isCrossBoardForward. This is exactly what 4af4d2d0
+      // shipped — Lucas's case never reached the relaxed rule.
+      const buggyCrossGroupSendLogged = false; // never computed
+      const result = evaluate({
+        isDmSend: false,
+        isTaskWrite: true,
+        botResponseContent: '✉️ Pedido encaminhado ao quadro SECI',
+        crossGroupSendLogged: buggyCrossGroupSendLogged,
+      });
+      expect(result.isCrossBoardForward).toBe(false);
+      expect(result.mutationFound).toBe(false);
+    });
+
+    it('Case B: isTaskWrite + non-forward reply → mutationFound=false', () => {
+      // Same as Case A but the bot reply does not match
+      // FORWARD_REPLY_RE — e.g. "Tarefa não encontrada". Even with
+      // crossGroupSendLogged=true (some unrelated send happened),
+      // isCrossBoardForward stays false because both gates are
+      // required. The asymmetric rule then demands taskMutationFound,
+      // which is false → mutationFound=false.
+      const result = evaluate({
+        isDmSend: false,
+        isTaskWrite: true,
+        botResponseContent: 'Tarefa não encontrada',
+        crossGroupSendLogged: true,
+      });
+      expect(result.isCrossBoardForward).toBe(false);
+      expect(result.mutationFound).toBe(false);
+    });
+
+    it('Case C: forward reply but no send-log → mutationFound=false', () => {
+      // The bot's reply matches FORWARD_REPLY_RE but no
+      // send_message_log row landed in the 10-min window. The regex
+      // alone is insufficient evidence — the host's authoritative
+      // delivery record must also exist. Both gates required.
+      const result = evaluate({
+        isDmSend: false,
+        isTaskWrite: true,
+        botResponseContent: 'Pedido encaminhado ao quadro pai',
+        crossGroupSendLogged: false,
+      });
+      expect(result.isCrossBoardForward).toBe(false);
+      expect(result.mutationFound).toBe(false);
+    });
+
+    it('Case D (shared-vocab DM-send): isTaskWrite=false + send-log → mutationFound=true', () => {
+      // Existing pre-fix behavior: shared-vocab DM-send messages
+      // ("mande mensagem pro X sobre o prazo") accept
+      // crossGroupSendLogged alone. The non-isTaskWrite branch of the
+      // asymmetric rule is preserved.
+      const result = evaluate({
+        isDmSend: true,
+        isTaskWrite: false,
+        botResponseContent: 'Pronto, enviei a mensagem',
+        crossGroupSendLogged: true,
+      });
+      expect(result.mutationFound).toBe(true);
     });
   });
 });

@@ -807,7 +807,12 @@ for (const group of groups) {
     let crossGroupSendLogged = false;
     let refusalDetected = false;
 
-    if (isDmSend) {
+    // Compute crossGroupSendLogged for EVERY message, not just isDmSend.
+    // The 2026-04-27 isCrossBoardForward evidence path uses this signal
+    // for pure isTaskWrite=true forwards (Lucas's "adicionar tarefa na
+    // p11" case), where isDmSend=false. Gating on isDmSend would make
+    // isCrossBoardForward dead code for the canonical use case.
+    {
       const sendLogs = sendMessageLogStmt.all(
         group.folder,
         msg.timestamp,
