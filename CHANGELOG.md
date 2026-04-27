@@ -4,6 +4,20 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-27 (cross-board-forward) — TaskFlow: cross-board add_subtask forward (Phase 1a)
+
+Closes the recurring "Lucas's P11" refusal pattern surfaced in the 2026-04-22..26 audit window. When a child-board user tries to add a subtask to a parent-board project that isn't delegated to their board (delegated to a sibling, or not delegated at all), the agent now forwards the request to the parent board's group via `send_message` instead of refusing flatly.
+
+**Template change.** Extended `.claude/skills/add-taskflow/templates/CLAUDE.md.template` with a new rule branch directly after the existing `cross_board_subtask_mode` block. Identity is disclosed (the forward names the asker AND their board's `{{GROUP_NAME}}`) so the parent admin knows who to contact. Forward target is the parent board only — sibling delegate boards are NOT pinged. The agent looks up the parent via `boards.parent_board_id` (one-level walk + `tasks` join confirms the project lives there); deeper hierarchies fall back to the original refusal.
+
+**Auditor companion.** The auditor's asymmetric `mutationFound` rule at `auditor-script.sh` required `taskMutationFound=true` for `isTaskWrite=true` messages — a cross-board forward never produces a local `task_history` row, so without this change every forward would be flagged 🔴 by Kipp. New `isCrossBoardForward` evidence path: bot reply matches `FORWARD_REPLY_RE` (`/\bencaminh\w+\b[\s\S]{0,40}\b(quadro|gestor)\b/i`) AND `crossGroupSendLogged=true`. The asymmetric rule now accepts `taskMutationFound || isCrossBoardForward` for task writes. Auditor prompt rule #4 teaches the daily auditor agent the new signal. Critical fix during review: `crossGroupSendLogged` was previously gated on `isDmSend`, making the new evidence path dead code for the flagship Lucas case (`isDmSend=false, isTaskWrite=true`); gate removed so the signal computes for every audited message.
+
+**Migration.** `scripts/migrate-claude-md-cross-board-forward.mjs` handles the ~20 prod-only TaskFlow boards provisioned via `provision-shared.ts` and the local `groups/new-taskflow/CLAUDE.md` orphan. Idempotent, anchor-based, with exact-occurrence-count guards. Substitutes `{{BOARD_ID}}` (from folder name) and `{{GROUP_NAME}}` (from the file's title line `# X — TaskFlow (Y)`) at migration time so prod-only boards land with concrete values matching what the generator produces for managed boards. Behavioral test in `.claude/skills/add-taskflow/tests/migrate-cross-board-forward.test.ts`.
+
+Phase 2 (formal approval workflow with `mutation_requests` table) remains deferred until evidence — audit volume currently shows ~1 distinct board hit "pertence ao" recently. Spec: `docs/superpowers/specs/2026-04-27-cross-board-mutation-forwarding-design.md`.
+
+Rolled out to all 31 prod TaskFlow boards via two paths: 11 generator-managed via `node scripts/generate-claude-md.mjs` regeneration + `deploy.sh` rsync, the remaining 20 provisioned-only boards via `scripts/migrate-claude-md-cross-board-forward.mjs` run on prod after deploy. The prod `auditor-daily` scheduled task's prompt is also UPDATEd in the DB to pick up the new rule #4 (the file change alone does not propagate; `messages.db.scheduled_tasks.prompt` is the runtime authority — see memory `reference_auditor_prompt_db_vs_file.md`).
+
 ## 2026-04-27 (audit-followups) — three engine/auditor fixes from the 2026-04-22..26 audit window
 
 Investigation of the Kipp daily audit reports for 22/04..26/04 (per the user's standing "review interactions by user intent" rule) surfaced four real issues, three of which ship in this commit. The fourth — cross-board mutation forwarding — is now a design spec at `docs/superpowers/specs/2026-04-27-cross-board-mutation-forwarding-design.md` pending user decisions before implementation.
