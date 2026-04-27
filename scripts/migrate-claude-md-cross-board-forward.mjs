@@ -50,7 +50,7 @@ The flow:
    Se aprovar, adicione com: \`adicionar etapa {TASK_ID}: {SUBTASK_TITLE}\` neste quadro.
    \`\`\`
 
-3. Send to the **parent board only** (NOT to delegate siblings). Even if \`P11\` is delegated to multiple sibling child boards, the project itself lives on the parent — the manager there owns the decision.
+3. Send to the **parent board only** (NOT to delegate siblings — apenas o quadro pai). Even if \`P11\` is delegated to multiple sibling child boards, the project itself lives on the parent — the manager there owns the decision.
    \`\`\`
    send_message({ target_chat_jid: '<parent_group_jid>', text: '<forward message>' })
    \`\`\`
