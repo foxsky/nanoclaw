@@ -32,7 +32,7 @@ function runMigration(groupsDir: string): { stdout: string; stderr: string; code
 }
 
 const ANCHOR =
-  'Do NOT invent or paraphrase the message — relay it verbatim.';
+  'A silent no-op loses information.';
 
 const TEMPLATE_PRE_RULE = `# Case — TaskFlow (TEST-FIXTURE - TaskFlow)
 

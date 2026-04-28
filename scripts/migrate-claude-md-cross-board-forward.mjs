@@ -40,9 +40,13 @@ function applySubstitutions(text, subs) {
 }
 
 const RULE_MARKER = 'Cross-board add_subtask forward';
-// Anchor: closing sentence of the existing Mode=approval paragraph.
+// Anchor: closing sentence of the "No-op state updates: never silent"
+// rule, which exists in all current boards (including pre-Mode=approval
+// boards on prod that predate the cross_board_subtask_mode work — their
+// only universal post-rule landmark is the no-op rule shipped earlier
+// today via migrate-claude-md-no-op-rule.mjs).
 const ANCHOR =
-  'Do NOT invent or paraphrase the message — relay it verbatim.';
+  'A silent no-op loses information.';
 
 const RULE_BODY = `
 
