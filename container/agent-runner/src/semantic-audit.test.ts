@@ -279,6 +279,14 @@ describe('callOllama', () => {
     // chain-of-thought reasoning that several models need to compute the
     // weekday from the date. We deliberately omit it.
     expect(body.format).toBeUndefined();
+    // think: false disables the separate <think>...</think> hidden
+    // reasoning block on newer Qwen3/glm/deepseek-v4 cloud models —
+    // visible prose reasoning in the response is preserved (the model
+    // still derives weekdays in the body), but latency drops 4-12×
+    // because the hidden CoT channel is suppressed. Per 2026-04-28
+    // summarization shootout. Honored by Ollama 0.6+; older versions
+    // and non-thinking models silently ignore.
+    expect(body.think).toBe(false);
   });
 });
 

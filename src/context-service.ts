@@ -710,27 +710,38 @@ export class ContextService {
     // models (glm-5.1:cloud, kimi-k2.6:cloud, deepseek-v4-*:cloud)
     // without regressing summarization coverage. Honored by Ollama
     // 0.6+; older versions and non-thinking models silently ignore it.
-    const resp = await fetch(`${host}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        prompt,
-        think: false,
-        stream: false,
-        keep_alive: -1,
-      }),
-      signal: AbortSignal.timeout(60_000),
-    });
-    if (!resp.ok) {
+    // Wrap in try/catch so network/timeout throws return null rather
+    // than escaping to the outer try in callSummarizer — the latter
+    // path skips the fallback chain.
+    try {
+      const resp = await fetch(`${host}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          prompt,
+          think: false,
+          stream: false,
+          keep_alive: -1,
+        }),
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!resp.ok) {
+        logger.warn(
+          { status: resp.status, model },
+          'Ollama summarizer returned non-OK',
+        );
+        return null;
+      }
+      const data = (await resp.json()) as { response?: string };
+      return data.response ?? null;
+    } catch (err) {
       logger.warn(
-        { status: resp.status, model },
-        'Ollama summarizer returned non-OK',
+        { err: err instanceof Error ? err.message : String(err), model, host },
+        'Ollama summarizer fetch threw',
       );
       return null;
     }
-    const data = (await resp.json()) as { response?: string };
-    return data.response ?? null;
   }
 
   private async callVllmCompat(
@@ -738,28 +749,36 @@ export class ContextService {
     model: string,
     prompt: string,
   ): Promise<string | null> {
-    const resp = await fetch(`${host}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: prompt }],
-        chat_template_kwargs: { enable_thinking: false },
-        stream: false,
-      }),
-      signal: AbortSignal.timeout(60_000),
-    });
-    if (!resp.ok) {
+    try {
+      const resp = await fetch(`${host}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          chat_template_kwargs: { enable_thinking: false },
+          stream: false,
+        }),
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!resp.ok) {
+        logger.warn(
+          { status: resp.status, model },
+          'vLLM summarizer returned non-OK',
+        );
+        return null;
+      }
+      const data = (await resp.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      return data.choices?.[0]?.message?.content ?? null;
+    } catch (err) {
       logger.warn(
-        { status: resp.status, model },
-        'vLLM summarizer returned non-OK',
+        { err: err instanceof Error ? err.message : String(err), model, host },
+        'vLLM summarizer fetch threw',
       );
       return null;
     }
-    const data = (await resp.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    return data.choices?.[0]?.message?.content ?? null;
   }
 
   private async callClaude(prompt: string): Promise<string | null> {

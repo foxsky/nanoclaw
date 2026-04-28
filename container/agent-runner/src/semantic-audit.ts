@@ -290,10 +290,19 @@ export async function callOllama(
     // reasoning, which several models (gemma4, qwen3.5) need to correctly
     // derive the stored date's weekday before classifying. The prompt asks
     // for a fenced JSON block; parseOllamaResponse() handles fences.
+    //
+    // `think: false` is orthogonal to `format: 'json'`: it disables the
+    // separate <think>...</think> reasoning block that newer models
+    // (glm-5.1:cloud, kimi-k2.6:cloud, deepseek-v4-*:cloud) emit when
+    // routed via Ollama cloud. Visible prose reasoning in the main
+    // response is preserved — the model still derives weekdays in the
+    // body, it just stops burning latency on a hidden CoT channel.
+    // Honored by Ollama 0.6+; older versions silently ignore. Drops
+    // 4-12× of latency on cloud thinking models per 2026-04-28 shootout.
     const resp = await fetch(`${host}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, prompt, stream: false }),
+      body: JSON.stringify({ model, prompt, think: false, stream: false }),
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!resp.ok) return null;

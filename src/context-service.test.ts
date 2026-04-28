@@ -342,6 +342,60 @@ describe('ContextService — summarizePending', () => {
     svc.close();
   });
 
+  it('falls back to secondary model when primary fetch THROWS (network/timeout)', async () => {
+    // Prior shape: fetch throws → callSummarizer's outer try/catch
+    // returns null directly, never attempting the fallback. The
+    // fetch-throw branch (vLLM unreachable, ECONNREFUSED, AbortSignal
+    // timeout) must reach the fallback the same way HTTP-non-OK does.
+    const svc = new ContextService(TEST_DB, {
+      summarizer: 'ollama',
+      ollamaHost: 'http://192.168.2.13:8000', // vLLM (unreachable in test)
+      summarizerModel: 'mlx-community/Qwen3.6-35B-A3B-4bit',
+      fallbackOllamaHost: 'http://192.168.2.63:11434',
+      fallbackModel: 'glm-5.1:cloud',
+      retainDays: 90,
+    });
+    svc.insertTurn('grp', 'sess', {
+      userMessage: 'a',
+      agentResponse: 'b',
+      toolCalls: [],
+      timestamp: '2026-04-28T12:00:00.000Z',
+    });
+    let callIndex = 0;
+    const fallbackText =
+      'Resumo via fallback glm-5.1:cloud — usuário pediu, bot respondeu.';
+    const mockFetch = vi.fn().mockImplementation(async () => {
+      callIndex++;
+      if (callIndex === 1) {
+        // Primary call — simulate vLLM unreachable
+        throw new Error('ECONNREFUSED 192.168.2.13:8000');
+      }
+      // Fallback Ollama call — succeed
+      return {
+        ok: true,
+        json: async () => ({ response: fallbackText }),
+      };
+    });
+    global.fetch = mockFetch as any;
+
+    const count = await svc.summarizePending(5);
+    expect(count).toBe(1);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    // Second call hit the fallback Ollama host with the fallback model
+    const fallbackCallUrl = mockFetch.mock.calls[1][0];
+    expect(fallbackCallUrl).toBe('http://192.168.2.63:11434/api/generate');
+    const fallbackBody = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(fallbackBody.model).toBe('glm-5.1:cloud');
+    expect(fallbackBody.think).toBe(false);
+
+    const node = svc.db
+      .prepare('SELECT summary FROM context_nodes WHERE level = 0')
+      .get() as any;
+    expect(node.summary).toBe(fallbackText);
+
+    svc.close();
+  });
+
   it('summarizes via Claude when configured', async () => {
     const svc = new ContextService(TEST_DB, {
       summarizer: 'claude',
