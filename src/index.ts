@@ -1162,7 +1162,16 @@ async function main(): Promise<void> {
     );
     setContextService(contextService);
     contextSyncTimer = startContextSync(contextService);
-    logger.info('Long-term context service started');
+    logger.info(
+      {
+        summarizer: skillEnv.CONTEXT_SUMMARIZER || 'ollama',
+        primaryModel: skillEnv.CONTEXT_SUMMARIZER_MODEL,
+        primaryHost: skillEnv.CONTEXT_OLLAMA_HOST || skillEnv.OLLAMA_HOST,
+        fallbackModel: skillEnv.CONTEXT_FALLBACK_MODEL,
+        fallbackHost: skillEnv.CONTEXT_FALLBACK_OLLAMA_HOST,
+      },
+      'Long-term context service started',
+    );
   }
 
   // Start credential proxy

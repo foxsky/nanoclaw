@@ -630,11 +630,17 @@ export class ContextService {
   /* ---------------------------------------------------------------- */
 
   private getModelName(): string {
+    // Returns the model that ACTUALLY produced the most recent summary
+    // (set inside callSummarizer when the primary or fallback succeeds).
+    // Falls back to the configured primary when no call has succeeded
+    // yet — keeps logging context useful during the cold-start window.
+    if (this.lastUsedModel) return this.lastUsedModel;
     return this.config.summarizer === 'claude'
       ? CLAUDE_DISPLAY_NAME
       : (this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL);
   }
 
+  private lastUsedModel: string | null = null;
   private consecutiveFailures = 0;
   private static readonly FAILURE_ALERT_THRESHOLD = 10;
 
@@ -657,23 +663,30 @@ export class ContextService {
       let result: string | null;
       if (this.config.summarizer === 'claude') {
         result = await this.callClaude(prompt);
+        if (result) this.lastUsedModel = CLAUDE_DISPLAY_NAME;
       } else {
+        const primaryModel =
+          this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL;
         result = await this.callOllama(prompt);
-        const hasFallback =
-          this.config.fallbackModel &&
-          (this.config.fallbackOllamaHost ||
-            this.config.fallbackModel !==
-              (this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL));
-        if (!result && hasFallback) {
-          logger.info(
-            { fallback: this.config.fallbackModel },
-            'Primary Ollama model failed, trying fallback',
-          );
-          result = await this.callOllama(
-            prompt,
-            this.config.fallbackModel,
-            this.config.fallbackOllamaHost,
-          );
+        if (result) {
+          this.lastUsedModel = primaryModel;
+        } else {
+          const hasFallback =
+            this.config.fallbackModel &&
+            (this.config.fallbackOllamaHost ||
+              this.config.fallbackModel !== primaryModel);
+          if (hasFallback) {
+            logger.info(
+              { fallback: this.config.fallbackModel },
+              'Primary Ollama model failed, trying fallback',
+            );
+            result = await this.callOllama(
+              prompt,
+              this.config.fallbackModel,
+              this.config.fallbackOllamaHost,
+            );
+            if (result) this.lastUsedModel = this.config.fallbackModel!;
+          }
         }
       }
       if (result) {

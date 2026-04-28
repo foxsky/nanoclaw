@@ -396,6 +396,52 @@ describe('ContextService — summarizePending', () => {
     svc.close();
   });
 
+  it('persists the actual model that produced the summary (fallback path)', async () => {
+    // Pre-fix: getModelName() always returned the primary, so a row
+    // produced by the fallback model would be tagged with the primary's
+    // name. Reviewer's Minor #3 from 2026-04-28: misleading attribution
+    // when the fallback fires.
+    const svc = new ContextService(TEST_DB, {
+      summarizer: 'ollama',
+      ollamaHost: 'http://192.168.2.13:8000',
+      summarizerModel: 'mlx-community/Qwen3.6-35B-A3B-4bit',
+      fallbackOllamaHost: 'http://192.168.2.63:11434',
+      fallbackModel: 'glm-5.1:cloud',
+      retainDays: 90,
+    });
+    svc.insertTurn('grp', 'sess', {
+      userMessage: 'a',
+      agentResponse: 'b',
+      toolCalls: [],
+      timestamp: '2026-04-28T12:00:00.000Z',
+    });
+    let callIndex = 0;
+    const fallbackText =
+      'Resumo via fallback glm-5.1:cloud — usuário pediu, bot respondeu.';
+    const mockFetch = vi.fn().mockImplementation(async () => {
+      callIndex++;
+      if (callIndex === 1) {
+        // Primary returns HTTP-non-OK
+        return { ok: false, status: 503, json: async () => ({}) };
+      }
+      return {
+        ok: true,
+        json: async () => ({ response: fallbackText }),
+      };
+    });
+    global.fetch = mockFetch as any;
+
+    await svc.summarizePending(5);
+
+    const node = svc.db
+      .prepare('SELECT summary, model FROM context_nodes WHERE level = 0')
+      .get() as any;
+    expect(node.summary).toBe(fallbackText);
+    expect(node.model).toBe('glm-5.1:cloud');
+
+    svc.close();
+  });
+
   it('summarizes via Claude when configured', async () => {
     const svc = new ContextService(TEST_DB, {
       summarizer: 'claude',
