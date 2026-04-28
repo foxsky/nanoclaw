@@ -1310,6 +1310,24 @@ describe('auditor DM-send detection', () => {
       }
     });
 
+    it('auditor-script.sh gates each audit pass on its own host (no silent skip when only MUTATION_MODEL is set)', () => {
+      // Codex review of f5dfe9b9 caught: the new per-pass mutationHost
+      // / responseHost are computed but the run gate `if (ollamaHost)`
+      // still uses the OLD shared variable. With MUTATION_MODEL set
+      // and the unified MODEL unset, ollamaHost can be empty while
+      // mutationHost is fine — the whole audit silently skips.
+      // Fix: gate each pass on its own host.
+      expect(script).toMatch(/if\s*\(\s*mutationHost\s*\)\s*\{/);
+      expect(script).toMatch(/if\s*\(\s*responseHost\s*\)\s*\{/);
+      // The old single-gate pattern must NOT remain in the audit run
+      // block. Find every `if (ollamaHost)` and confirm it's not the
+      // run-block gate. This regex looks for the specific shape that
+      // wraps both runSemanticAudit and runResponseAudit.
+      expect(script).not.toMatch(
+        /if\s*\(\s*ollamaHost\s*\)\s*\{[\s\S]*?runSemanticAudit[\s\S]*?runResponseAudit/,
+      );
+    });
+
     it('auditor-script.sh resolves separate models for mutation pass and response pass', () => {
       // The two semantic-audit passes (runSemanticAudit on task_history
       // mutations vs runResponseAudit on user→bot interaction pairs)

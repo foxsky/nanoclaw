@@ -1129,8 +1129,16 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
           : (process.env.NANOCLAW_SEMANTIC_AUDIT_OLLAMA_HOST ||
              process.env.OLLAMA_HOST ||
              '');
+        // Fallback host defaults to the regular Ollama host because the
+        // default fallback model (`qwen3-coder:latest`) is Ollama-served.
+        // Without this default, an Anthropic primary with the implicit
+        // Ollama fallback would silently send Ollama calls to the
+        // Anthropic proxy URL and get back null. (Codex review 2026-04-28.)
         const ollamaFallbackHost =
-          process.env.NANOCLAW_SEMANTIC_AUDIT_FALLBACK_OLLAMA_HOST || '';
+          process.env.NANOCLAW_SEMANTIC_AUDIT_FALLBACK_OLLAMA_HOST ||
+          process.env.NANOCLAW_SEMANTIC_AUDIT_OLLAMA_HOST ||
+          process.env.OLLAMA_HOST ||
+          '';
         // Auto-wire a local fallback whenever the primary can tail-latency.
         // Anthropic rarely does (<<1%) but ollama cloud stubs ~20%. Users
         // override with NANOCLAW_SEMANTIC_AUDIT_FALLBACK_MODEL; `none`
@@ -1163,9 +1171,16 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
         };
         const mutationHost = resolveHost(mutationModel);
         const responseHost = resolveHost(responseModel);
-        if (ollamaHost) {
+        // Each pass is gated on its OWN resolved host — using the
+        // original shared `ollamaHost` here would silently skip the
+        // whole audit when an operator sets MUTATION_MODEL but not
+        // the unified MODEL, even when the per-pass host is fine.
+        // (Codex review 2026-04-28.)
+        let mutationAudit = null;
+        let responseAudit = null;
+        if (mutationHost) {
           // Phase 1: mutation-level audit (scheduled_at, due_date, assignee, title)
-          const mutationAudit = await runSemanticAudit({
+          mutationAudit = await runSemanticAudit({
             msgDb, tfDb, period,
             ollamaHost: mutationHost,
             ollamaModel: mutationModel,
@@ -1180,9 +1195,15 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
             `parseFail=${mutationAudit.counters.parseFail} ` +
             `deviations=${mutationAudit.deviations.length}`,
           );
+        } else {
+          console.error(
+            `Semantic audit — mutations skipped: no host for model ${mutationModel}`,
+          );
+        }
 
+        if (responseHost) {
           // Phase 2: response-level audit (all user→bot interaction pairs)
-          const responseAudit = await runResponseAudit({
+          responseAudit = await runResponseAudit({
             msgDb, tfDb, period,
             ollamaHost: responseHost,
             ollamaModel: responseModel,
@@ -1198,9 +1219,18 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
             `parseFail=${responseAudit.counters.parseFail} ` +
             `deviations=${responseAudit.deviations.length}`,
           );
+        } else {
+          console.error(
+            `Semantic audit — responses skipped: no host for model ${responseModel}`,
+          );
+        }
 
-          // Merge both phases
-          const allDeviations = [...mutationAudit.deviations, ...responseAudit.deviations];
+        if (mutationAudit || responseAudit) {
+          // Merge whichever passes ran
+          const allDeviations = [
+            ...(mutationAudit?.deviations ?? []),
+            ...(responseAudit?.deviations ?? []),
+          ];
 
           if (mode === 'dryrun') {
             writeDryRunLog(allDeviations);
