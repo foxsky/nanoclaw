@@ -1310,6 +1310,33 @@ describe('auditor DM-send detection', () => {
       }
     });
 
+    it('auditor-script.sh resolves separate models for mutation pass and response pass', () => {
+      // The two semantic-audit passes (runSemanticAudit on task_history
+      // mutations vs runResponseAudit on user→bot interaction pairs)
+      // are different workloads — narrow structured fact-check vs prose
+      // judgment. Allow them to run on different models. Both default
+      // to NANOCLAW_SEMANTIC_AUDIT_MODEL when their per-pass var is
+      // unset (backwards-compat; existing single-model deployments
+      // keep working).
+      expect(script).toContain('NANOCLAW_SEMANTIC_AUDIT_MUTATION_MODEL');
+      expect(script).toContain('NANOCLAW_SEMANTIC_AUDIT_RESPONSE_MODEL');
+      // Per-pass resolution must default to the unified MODEL var.
+      expect(script).toMatch(
+        /NANOCLAW_SEMANTIC_AUDIT_MUTATION_MODEL[\s\S]{0,80}\|\|[\s\S]{0,40}ollamaModel/,
+      );
+      expect(script).toMatch(
+        /NANOCLAW_SEMANTIC_AUDIT_RESPONSE_MODEL[\s\S]{0,80}\|\|[\s\S]{0,40}ollamaModel/,
+      );
+      // Each pass receives its own model (not the shared ollamaModel).
+      // runSemanticAudit gets mutationModel; runResponseAudit gets responseModel.
+      expect(script).toMatch(
+        /runSemanticAudit\(\{[\s\S]{0,400}ollamaModel:\s*mutationModel/,
+      );
+      expect(script).toMatch(
+        /runResponseAudit\(\{[\s\S]{0,400}ollamaModel:\s*responseModel/,
+      );
+    });
+
     it('auditor-script.sh does not include shared vocabulary in TASK_KEYWORDS', () => {
       // Adding "prazo" / "nota" / etc. to TASK_KEYWORDS breaks the
       // DM-send exemption on messages containing them.

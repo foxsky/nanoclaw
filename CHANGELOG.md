@@ -4,6 +4,25 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-28 — Model rebalancing: vLLM-MLX context summarizer + glm-5.1 auditor + per-pass split
+
+Six commits across the day rebalanced the LLM workloads behind the auditor and the long-term context summarizer. The headline win is moving two cost-bearing workloads off paid Anthropic models and onto self-hosted / cloud-routed alternatives, without quality regression on the harder pass.
+
+**Long-term context summarization** (`src/context-service.ts`). After an empirical 6-model shootout on 10 real production turns (`/tmp/context-summarization-shootout-2026-04-28.md`), the per-turn rollup workload moved from `qwen3-coder:latest` to `mlx-community/Qwen3.6-35B-A3B-4bit` via vLLM-MLX at `192.168.2.13:8000`. The prior default (qwen3-coder) was code-tuned and emitting English structural headers ("User:", "Summary:", "Key outcome:") on Portuguese input — the new default is 35% leaner output, 100% PT fidelity, ~2s median latency. The fallback flipped from `qwen3-coder:latest` to `glm-5.1:cloud` after `think: false` brought its latency from 24s to 2s. New `callVllmCompat` adapter handles vLLM's OpenAI-compat `/v1/chat/completions` shape; URL port detection (`:8000`) keeps the existing `CONTEXT_OLLAMA_HOST` config knob without adding a new env var.
+
+**Auditor semantic classifier** (`container/agent-runner/src/semantic-audit.ts` + `container/agent-runner/src/auditor-script.sh`). The pre-classifier flipped from `claude-haiku-4-5` (then briefly `claude-sonnet-4-6`) to `glm-5.1:cloud` with `think: false`. The cost-driven case is real (~10x cheaper than Haiku, ~80x cheaper than Sonnet at audit volume) and the workload is on the parallel-evidence-stream side of the auditor pipeline (semantic deviations get appended as a structural appendix, not mixed into the user-facing flag stream that Kipp Sonnet 4.6 still classifies). Reverts cleanly via env flip if quality regresses.
+
+**Per-pass model split for semantic-audit** (`auditor-script.sh`). The two LLM passes — mutation-level fact-check (`buildPrompt`) and response-level prose judgment (`buildResponsePrompt`) — historically shared one model. New env vars `NANOCLAW_SEMANTIC_AUDIT_MUTATION_MODEL` and `NANOCLAW_SEMANTIC_AUDIT_RESPONSE_MODEL` allow each pass to use a different model. Both default to `NANOCLAW_SEMANTIC_AUDIT_MODEL` (existing single-model deployments unaffected). Per-pass URL resolution handles mixed-backend setups (e.g., glm-5.1:cloud for mutations + claude-haiku for responses) — Anthropic models route through the credential proxy, Ollama models go to the Ollama host.
+
+**`think: false` on every Ollama call**. Ollama 0.6+ accepts a `think: false` flag in the request body that suppresses the separate `<think>...</think>` reasoning channel on Qwen3/glm-5.1/kimi/deepseek-v4-class models. Visible prose reasoning in the main response is preserved (the model still derives weekdays in the body for the audit task), but latency drops 4-12× because the hidden CoT channel is suppressed. Confirmed at the wire: glm-5.1:cloud goes from 24s mean (CoT enabled) to 2s mean (`think: false`). minimax-m2.7:cloud silently ignores the flag — recommended fallback is `glm-5.1:cloud` (or `claude-haiku-4-5` if cost is acceptable). Older Ollama versions and non-thinking models silently ignore `think: false`, so the flag is safe to set everywhere.
+
+**Reliability fixes from /simplify review:**
+- `callOllama` and `callVllmCompat` now wrap `fetch` in try/catch returning `null` on throw. Pre-fix, a network error or `AbortSignal` timeout escaped the inner method to `callSummarizer`'s outer catch, which returned null directly without ever attempting the fallback. Fallback chain now fires correctly when the primary host is unreachable.
+- `getModelName()` returns the model that actually produced the most recent summary (tracked via `lastUsedModel` field set inside `callSummarizer`). Previously, rows produced by the fallback model were tagged with the primary model's name in `context_nodes.model` — wrong attribution that obscured failover patterns.
+- Long-term context service startup log now emits structured payload (`primaryModel`, `primaryHost`, `fallbackModel`, `fallbackHost`) instead of an opaque "service started" message. Easier ops verification when env flips.
+
+**Tests:** 1085 host (was 1075 before today's work, +10 across the full day) / 743 container (+1 todo). Multiple commits stacked on `main` from the morning's audit-followups-Phase-1a work through this evening's model rebalancing.
+
 ## 2026-04-27 (cross-board-forward) — TaskFlow: cross-board add_subtask forward (Phase 1a)
 
 Closes the recurring "Lucas's P11" refusal pattern surfaced in the 2026-04-22..26 audit window. When a child-board user tries to add a subtask to a parent-board project that isn't delegated to their board (delegated to a sibling, or not delegated at all), the agent now forwards the request to the parent board's group via `send_message` instead of refusing flatly.

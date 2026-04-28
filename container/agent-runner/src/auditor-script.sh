@@ -1141,14 +1141,38 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
         const ollamaFallbackModel = envFallback === 'none'
           ? ''
           : envFallback || (needsFallback ? 'qwen3-coder:latest' : '');
+        // Per-pass model split. Mutation pass = narrow structured
+        // fact-check (does stored value match user intent?). Response
+        // pass = prose judgment (does bot's reply describe doing what
+        // was asked?). Different difficulty profiles, so allow each
+        // to run on its own model. Both default to ollamaModel above
+        // — existing single-model deployments keep working until the
+        // operator explicitly sets the per-pass overrides.
+        const mutationModel =
+          process.env.NANOCLAW_SEMANTIC_AUDIT_MUTATION_MODEL || ollamaModel;
+        const responseModel =
+          process.env.NANOCLAW_SEMANTIC_AUDIT_RESPONSE_MODEL || ollamaModel;
+        // Per-pass host: an Anthropic-flavored model uses the credential
+        // proxy; Ollama models use OLLAMA_HOST. When the two passes
+        // pick different backends, each lands on the right URL.
+        const resolveHost = (model) => {
+          const anthropic = model.startsWith('claude-') || model.startsWith('anthropic:');
+          if (anthropic) return process.env.ANTHROPIC_BASE_URL || '';
+          return process.env.NANOCLAW_SEMANTIC_AUDIT_OLLAMA_HOST ||
+                 process.env.OLLAMA_HOST || '';
+        };
+        const mutationHost = resolveHost(mutationModel);
+        const responseHost = resolveHost(responseModel);
         if (ollamaHost) {
           // Phase 1: mutation-level audit (scheduled_at, due_date, assignee, title)
           const mutationAudit = await runSemanticAudit({
-            msgDb, tfDb, period, ollamaHost, ollamaModel,
+            msgDb, tfDb, period,
+            ollamaHost: mutationHost,
+            ollamaModel: mutationModel,
             ollamaFallbackHost, ollamaFallbackModel,
           });
           console.error(
-            `Semantic audit — mutations (${mode}, ${ollamaModel}): ` +
+            `Semantic audit — mutations (${mode}, ${mutationModel}): ` +
             `examined=${mutationAudit.counters.examined} ` +
             `noTrigger=${mutationAudit.counters.noTrigger} ` +
             `boardMapFail=${mutationAudit.counters.boardMapFail} ` +
@@ -1159,11 +1183,13 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
 
           // Phase 2: response-level audit (all user→bot interaction pairs)
           const responseAudit = await runResponseAudit({
-            msgDb, tfDb, period, ollamaHost, ollamaModel,
+            msgDb, tfDb, period,
+            ollamaHost: responseHost,
+            ollamaModel: responseModel,
             ollamaFallbackHost, ollamaFallbackModel,
           });
           console.error(
-            `Semantic audit — responses (${mode}, ${ollamaModel}): ` +
+            `Semantic audit — responses (${mode}, ${responseModel}): ` +
             `examined=${responseAudit.counters.examined} ` +
             `skippedCasual=${responseAudit.counters.skippedCasual} ` +
             `skippedNoResponse=${responseAudit.counters.skippedNoResponse} ` +
