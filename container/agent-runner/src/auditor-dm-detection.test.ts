@@ -209,6 +209,17 @@ function buildTaskIdAliases(
   return Array.from(aliases);
 }
 
+function extractRegexLiteral(scriptSource: string, varName: string): RegExp {
+  const m = scriptSource.match(
+    new RegExp(`const\\s+${varName}\\s*=\\s*([\\s\\S]*?);`),
+  );
+  if (!m) {
+    throw new Error(`Variable ${varName} not found in script source`);
+  }
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+  return new Function(`return ${m[1].trim()};`)();
+}
+
 function taskMutationEvidence(
   msg: {
     content: string;
@@ -1145,12 +1156,7 @@ describe('auditor DM-send detection', () => {
       // path, every successful forward becomes unfulfilledWrite.
       expect(script).toContain('FORWARD_REPLY_RE');
 
-      const reMatch = script.match(/const FORWARD_REPLY_RE\s*=\s*([\s\S]*?);/);
-      expect(reMatch).not.toBeNull();
-      // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-      const FORWARD_REPLY_RE: RegExp = new Function(
-        `return ${reMatch![1].trim()};`,
-      )();
+      const FORWARD_REPLY_RE = extractRegexLiteral(script, 'FORWARD_REPLY_RE');
 
       // Should match canonical forward acknowledgments
       for (const phrase of [
@@ -1361,14 +1367,7 @@ describe('auditor DM-send detection', () => {
     // Extract FORWARD_REPLY_RE from the script so the regex is shared
     // with the test. Any change to the script regex either re-routes
     // matches or fails to compile — both surface here.
-    const reMatch = script.match(/const FORWARD_REPLY_RE\s*=\s*([\s\S]*?);/);
-    if (!reMatch) {
-      throw new Error('FORWARD_REPLY_RE not found in auditor-script.sh');
-    }
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-    const FORWARD_REPLY_RE: RegExp = new Function(
-      `return ${reMatch[1].trim()};`,
-    )();
+    const FORWARD_REPLY_RE = extractRegexLiteral(script, 'FORWARD_REPLY_RE');
 
     function evaluate(input: {
       isDmSend: boolean;
