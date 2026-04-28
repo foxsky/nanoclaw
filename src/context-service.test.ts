@@ -259,6 +259,89 @@ describe('ContextService — summarizePending', () => {
     svc.close();
   });
 
+  it('Ollama request includes think:false to disable CoT prefix on cloud-routed thinking models', async () => {
+    // The 2026-04-28 shootout showed glm-5.1:cloud and kimi-k2.6:cloud
+    // burn 12-25s on chain-of-thought when called via /api/generate
+    // without think:false. Disabling thinking drops latency 4-12× and
+    // does not regress coverage for this summarization workload.
+    const svc = new ContextService(TEST_DB, {
+      summarizer: 'ollama',
+      ollamaHost: 'http://localhost:11434',
+      summarizerModel: 'glm-5.1:cloud',
+      retainDays: 90,
+    });
+    svc.insertTurn('grp', 'sess', {
+      userMessage: 'a',
+      agentResponse: 'b',
+      toolCalls: [],
+      timestamp: '2026-04-28T12:00:00.000Z',
+    });
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ response: 'short' }),
+    });
+    global.fetch = mockFetch as any;
+
+    await svc.summarizePending(5);
+
+    const callArgs = mockFetch.mock.calls[0];
+    const body = JSON.parse(callArgs[1].body);
+    expect(body.think).toBe(false);
+    expect(body.model).toBe('glm-5.1:cloud');
+    expect(body.stream).toBe(false);
+
+    svc.close();
+  });
+
+  it('vLLM-MLX (port :8000) uses OpenAI-compat /v1/chat/completions with enable_thinking:false', async () => {
+    // mlx-community/Qwen3.6-35B-A3B-4bit on vLLM at :8000 needs the
+    // OpenAI-compat shape, NOT Ollama /api/generate. enable_thinking
+    // must be in chat_template_kwargs to avoid the 1500-token CoT
+    // prefix (per memory reference_audit_ollama_hosts.md).
+    const svc = new ContextService(TEST_DB, {
+      summarizer: 'ollama',
+      ollamaHost: 'http://192.168.2.13:8000',
+      summarizerModel: 'mlx-community/Qwen3.6-35B-A3B-4bit',
+      retainDays: 90,
+    });
+    svc.insertTurn('grp', 'sess', {
+      userMessage: 'a',
+      agentResponse: 'b',
+      toolCalls: [],
+      timestamp: '2026-04-28T12:00:00.000Z',
+    });
+    const summaryText =
+      'O usuário pediu o status. Tudo em dia, sem novas tarefas pendentes.';
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: summaryText } }],
+      }),
+    });
+    global.fetch = mockFetch as any;
+
+    const count = await svc.summarizePending(5);
+    expect(count).toBe(1);
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      'http://192.168.2.13:8000/v1/chat/completions',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.model).toBe('mlx-community/Qwen3.6-35B-A3B-4bit');
+    expect(body.messages).toEqual([
+      { role: 'user', content: expect.any(String) },
+    ]);
+    expect(body.chat_template_kwargs).toEqual({ enable_thinking: false });
+
+    const node = svc.db
+      .prepare('SELECT summary FROM context_nodes WHERE level = 0')
+      .get() as any;
+    expect(node.summary).toBe(summaryText);
+
+    svc.close();
+  });
+
   it('summarizes via Claude when configured', async () => {
     const svc = new ContextService(TEST_DB, {
       summarizer: 'claude',

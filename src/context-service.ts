@@ -698,12 +698,25 @@ export class ContextService {
     if (!host) return null;
     const model =
       modelOverride ?? this.config.summarizerModel ?? DEFAULT_OLLAMA_MODEL;
+    // vLLM-MLX (the Qwen3.6-35B local server) speaks OpenAI-compat on
+    // port 8000, not Ollama-native /api/generate. Detect by port and
+    // fan out to the OpenAI-compat path. The vLLM server requires
+    // chat_template_kwargs.enable_thinking=false to avoid a 1500-token
+    // CoT prefix on Qwen3-class models.
+    if (/:8000(?:\/|$)/.test(host)) {
+      return this.callVllmCompat(host, model, prompt);
+    }
+    // think:false drops 4-12× of latency on cloud-routed thinking
+    // models (glm-5.1:cloud, kimi-k2.6:cloud, deepseek-v4-*:cloud)
+    // without regressing summarization coverage. Honored by Ollama
+    // 0.6+; older versions and non-thinking models silently ignore it.
     const resp = await fetch(`${host}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model,
         prompt,
+        think: false,
         stream: false,
         keep_alive: -1,
       }),
@@ -718,6 +731,35 @@ export class ContextService {
     }
     const data = (await resp.json()) as { response?: string };
     return data.response ?? null;
+  }
+
+  private async callVllmCompat(
+    host: string,
+    model: string,
+    prompt: string,
+  ): Promise<string | null> {
+    const resp = await fetch(`${host}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        chat_template_kwargs: { enable_thinking: false },
+        stream: false,
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!resp.ok) {
+      logger.warn(
+        { status: resp.status, model },
+        'vLLM summarizer returned non-OK',
+      );
+      return null;
+    }
+    const data = (await resp.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    return data.choices?.[0]?.message?.content ?? null;
   }
 
   private async callClaude(prompt: string): Promise<string | null> {
