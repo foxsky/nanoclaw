@@ -1476,6 +1476,77 @@ describe('dedupeDeviations', () => {
     expect(out).toHaveLength(2);
   });
 
+  it('uses sourceMutationId as the mutation dedup anchor when present', () => {
+    // task_history.id is the canonical row anchor — two genuinely
+    // distinct task_history rows with the same `at` (millisecond
+    // collision under concurrent writes) would collapse on the
+    // at-based key but stay separate on the id-based key.
+    const out = dedupeDeviations([
+      baseDev({
+        fieldKind: 'assignee',
+        taskId: 'P11.25',
+        responseMessageId: null,
+        sourceMutationId: 1001,
+        deviation: 'first row',
+      }),
+      baseDev({
+        fieldKind: 'assignee',
+        taskId: 'P11.25',
+        responseMessageId: null,
+        sourceMutationId: 1002,
+        // Same `at` as above (default from baseDev) — would collide
+        // on the at-based key. The id discriminates.
+        deviation: 'second row, same millisecond',
+      }),
+    ]);
+    expect(out).toHaveLength(2);
+  });
+
+  it('collapses LLM-framing duplicates on the same sourceMutationId', () => {
+    const out = dedupeDeviations([
+      baseDev({
+        fieldKind: 'assignee',
+        taskId: 'P11.25',
+        responseMessageId: null,
+        sourceMutationId: 1001,
+        deviation: 'framing 1',
+      }),
+      baseDev({
+        fieldKind: 'assignee',
+        taskId: 'P11.25',
+        responseMessageId: null,
+        sourceMutationId: 1001,
+        deviation: 'framing 2',
+      }),
+    ]);
+    expect(out).toHaveLength(1);
+  });
+
+  it('falls back to (taskId, fieldKind, at) when sourceMutationId is missing', () => {
+    // Backwards-compat path: older NDJSON records may not carry
+    // sourceMutationId. Dedup should still collapse same-row
+    // duplicates and split same-task different-day mutations.
+    const out = dedupeDeviations([
+      baseDev({
+        fieldKind: 'assignee',
+        taskId: 'P11.25',
+        responseMessageId: null,
+        sourceMutationId: null,
+        at: '2026-04-29T09:00:00.000Z',
+        deviation: 'morning',
+      }),
+      baseDev({
+        fieldKind: 'assignee',
+        taskId: 'P11.25',
+        responseMessageId: null,
+        sourceMutationId: null,
+        at: '2026-04-29T15:00:00.000Z',
+        deviation: 'afternoon',
+      }),
+    ]);
+    expect(out).toHaveLength(2);
+  });
+
   it('keeps mutation deviations on different at timestamps for the same (task, field)', () => {
     // Two genuinely different same-day mutations on the same field
     // (e.g., user reassigns P11.25 morning, then again afternoon —

@@ -37,6 +37,14 @@ export interface SemanticDeviation {
   userMessage: string | null;
   sourceTurnId?: string | null;
   sourceMessageIds?: string[] | null;
+  /**
+   * task_history row PK that produced this deviation. Used as the
+   * canonical dedup anchor for the mutation pass — two genuinely
+   * distinct same-millisecond writes have different ids and stay
+   * separate. Null/undefined for response-pass deviations and for
+   * older NDJSON records that predate this field.
+   */
+  sourceMutationId?: number | null;
   responseMessageId?: string | null;
   storedValue: string | null;
   responsePreview: string | null;
@@ -659,7 +667,7 @@ export async function runSemanticAudit(
   //   - 'created' with scheduled_at or assignee (initial task creation)
   const mutationRows = tfDb
     .prepare(
-      `SELECT board_id AS boardId, task_id AS taskId, action, by, at, details${
+      `SELECT id AS sourceMutationId, board_id AS boardId, task_id AS taskId, action, by, at, details${
         hasTaskHistoryTriggerTurnId
           ? ', trigger_turn_id AS triggerTurnId'
           : ', NULL AS triggerTurnId'
@@ -681,6 +689,7 @@ export async function runSemanticAudit(
          )`,
     )
     .all(period.startIso, period.endIso) as Array<{
+      sourceMutationId: number;
       boardId: string;
       taskId: string;
       action: string;
@@ -947,6 +956,7 @@ export async function runSemanticAudit(
       userMessage,
       sourceTurnId,
       sourceMessageIds,
+      sourceMutationId: row.sourceMutationId,
       responseMessageId: null,
       storedValue,
       responsePreview: null,
@@ -1262,10 +1272,12 @@ export async function runResponseAudit(
  * Collapse same-failure duplicates produced by repeated LLM judgments on the
  * same underlying record. Response-pass dedup key is the bot reply
  * (boardId + responseMessageId): the same reply judged twice is one failure.
- * Mutation-pass dedup key is (boardId + taskId + fieldKind + at): two
- * genuinely different same-day mutations on the same field have distinct
- * `at` timestamps and are kept separate; only LLM-framing duplicates of the
- * same underlying task_history row collapse.
+ * Mutation-pass dedup key prefers the source `task_history.id`
+ * (boardId + sourceMutationId): two genuinely distinct same-millisecond
+ * writes have different ids and stay separate. Falls back to
+ * (boardId + taskId + fieldKind + at) for older NDJSON records that
+ * don't carry sourceMutationId — lossier on the millisecond-collision
+ * edge case but back-compatible.
  *
  * Records without a usable anchor are kept verbatim — losing those would
  * silently drop genuinely orphan deviations.
@@ -1301,6 +1313,8 @@ export function dedupeDeviations(
       key = d.responseMessageId
         ? `r|${d.boardId}|${d.responseMessageId}`
         : null;
+    } else if (d.sourceMutationId != null) {
+      key = `m|${d.boardId}|id:${d.sourceMutationId}`;
     } else {
       key = d.taskId
         ? `m|${d.boardId}|${d.taskId}|${d.fieldKind}|${d.at}`
