@@ -271,6 +271,38 @@ describe('taskflow skill package', () => {
     expect(content).toContain('add_note');
   });
 
+  it('CLAUDE.md.template enforces multi-action-turn execution', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+
+    // Regression for the 2026-04-29 multi-action-ignored pattern
+    // (docs/incidents/2026-04-29-multi-action-ignored.md). Without an
+    // explicit "execute every action instance" rule, Claude treats the
+    // first successful tool call as fulfillment and emits a final
+    // reply, dropping later action instances in the same user turn.
+    // Rule must be present so the agent loops through every action
+    // instance before responding.
+    expect(content).toContain('## Multi-Action Turns');
+    // Must explicitly forbid stopping after the first tool call.
+    expect(content).toMatch(/do NOT stop|do not stop/i);
+    // Must reference a separate-tool-call-per-action pattern, since
+    // taskflow_update's `updates` payload only fits one add_note,
+    // one due_date, etc. — multiple actions require multiple calls.
+    expect(content).toMatch(/sequence|sequencial|each\s+\w+\s+via/i);
+    // Repeated-same-verb clarifier (e.g. two `adicionar nota` requests
+    // = two actions) — without this the rule is too weak for T14/T17.
+    expect(content).toMatch(/repeated\s+uses|two\s+`?adicionar\s+nota`?\s+requests?\s+are\s+TWO/i);
+    // Anti-pattern example anchors the rule in a concrete failure
+    // shape so the agent can pattern-match.
+    expect(content).toMatch(/anti-pattern|anti.padr/i);
+    // Examples must use the canonical taskflow_update tool shape, not
+    // the engine's internal UpdateParams interface name.
+    expect(content).toMatch(/taskflow_update\(\{[^}]*task_id/);
+    expect(content).not.toMatch(/`update_task\(\{/);
+  });
+
   it('CLAUDE.md.template uses correct send_message signature', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
