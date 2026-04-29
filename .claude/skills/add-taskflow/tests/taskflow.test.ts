@@ -271,6 +271,24 @@ describe('taskflow skill package', () => {
     expect(content).toContain('add_note');
   });
 
+  it('CLAUDE.md.template enforces weekday/date contradiction handling', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+
+    // Regression for the 2026-04-29 M22 case: Thiago wrote "quinta, dia
+    // 30/05" — 30/05/2026 is a Saturday, not Thursday. Bot silently
+    // picked "quinta = 30/04" and scheduled a wrong-month meeting.
+    // Rule must tell the agent to ASK, not silently pick.
+    expect(content).toMatch(/Contradictory weekday \+ date|Contradi[çc][aã]o/i);
+    expect(content).toMatch(/ASK, don't pick|ask.*before.*pick|ask.*before.*calling/i);
+
+    // intended_weekday rule must apply to both create AND update —
+    // the M22 case was a taskflow_create call.
+    expect(content).toMatch(/taskflow_update.*OR.*taskflow_create|taskflow_create.*OR.*taskflow_update|both.*taskflow_create.*taskflow_update/i);
+  });
+
   it('CLAUDE.md.template enforces multi-action-turn execution', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),

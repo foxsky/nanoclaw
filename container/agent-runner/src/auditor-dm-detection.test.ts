@@ -921,7 +921,38 @@ describe('auditor DM-send detection', () => {
       // Guard against accidentally re-introducing the !isDmSend gate
       // in writeNeedsMutation. The log-based check supersedes it.
       expect(script).not.toMatch(/writeNeedsMutation[^;]*!isDmSend/);
-      expect(script).toMatch(/unfulfilledWrite\s*=\s*writeNeedsMutation\s*&&\s*!mutationFound\s*&&\s*!refusalDetected/);
+      expect(script).toMatch(/unfulfilledWrite\s*=\s*writeNeedsMutation\s*&&\s*!mutationFound\s*&&\s*!refusalDetected\s*&&\s*!isNoopAck/);
+    });
+
+    it('auditor-script.sh suppresses unfulfilledWrite when bot acknowledges no-op state', () => {
+      // Regression for the 2026-04-29 SEAF-T9 case: Flávia restated
+      // T9's current state ("DFD aguardando análise de Laizys") with
+      // identical wording. Bot correctly acknowledged without writing
+      // a duplicate task_history row. Heuristic flagged unfulfilledWrite
+      // because no mutation appeared. Add a noop-ack pattern check that
+      // recognizes "já está em [state]" replies and suppresses the flag
+      // — bot did the right thing, not a real miss.
+      expect(script).toContain('NOOP_ACK_PATTERNS');
+      expect(script).toMatch(/isNoopAck\s*=/);
+      // Must include the canonical "já está em" pattern as a regex
+      // literal in the script source (escaped backslashes are how the
+      // .sh heredoc carries `\s` into the JS regex).
+      expect(script).toContain('j[áa]\\s+est[áa]\\s+em');
+    });
+
+    it('auditor-script.sh gates noop-ack suppression on state evidence', () => {
+      // Codex BLOCKER 2026-04-29: prose alone is not enough. A bot
+      // hallucinating "já está em Aguardando" for a task that's
+      // actually in next_action would silently suppress a real failure.
+      // Suppression must be gated on the actual current column matching
+      // the bot's claimed column.
+      expect(script).toContain('COLUMN_CLAIM_PATTERNS');
+      expect(script).toContain('claimedColumns');
+      // Must look up the task's current column via tasksColumnStmt
+      // before deciding to suppress.
+      expect(script).toContain('tasksColumnStmt');
+      // Suppression must AND the prose pattern AND the column match.
+      expect(script).toMatch(/claimedColumns\.has\(row\.column\)/);
     });
 
     it('auditor-script.sh queries task_history, scheduled_tasks, AND send_message_log when isWrite', () => {

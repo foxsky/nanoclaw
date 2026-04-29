@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   buildPrompt,
+  buildResponsePrompt,
   callOllama,
   CASUAL_PATTERN,
   dedupeDeviations,
@@ -1387,6 +1388,45 @@ describe('runResponseAudit', () => {
     expect(body.prompt).toContain('pedido do Bob');
     expect(body.prompt).not.toContain('pedido da Alice');
     msg.close(); tf.close();
+  });
+});
+
+describe('buildResponsePrompt — approval-gate fulfillment rule', () => {
+  // Regression for the 2026-04-29 P20.5 case: Lucas asked to add a note
+  // AND finalize. Bot did BOTH — note added, then attempted finalize
+  // which the engine routed to `review` because the task has
+  // requires_close_approval=true. Successful execution. Audit's
+  // response classifier didn't recognize the approval-gate path and
+  // flagged it as unfulfilled. The prompt must teach the classifier
+  // that "moved to review awaiting approval" counts as fulfilled when
+  // user asked to conclude/finalize.
+  const interaction = {
+    userTimestamp: '2026-04-27T11:34:56.000Z',
+    userSender: 'lucas',
+    userContent: 'P20.5 nota: X. finalizar P20.5',
+    botTimestamp: '2026-04-27T11:35:30.000Z',
+    botContent: '✅ P20.5 movida para Revisão (aguardando aprovação do gestor)',
+    chatJid: '120363408810515104@g.us',
+  };
+  const ctx = {
+    boardTimezone: 'America/Fortaleza',
+    headerToday: '2026-04-27',
+    headerWeekday: 'segunda-feira',
+  };
+
+  it('mentions the requires_close_approval / Revisão fulfillment path', () => {
+    const prompt = buildResponsePrompt(interaction, ctx);
+    expect(prompt).toMatch(/requires_close_approval|aprovaç[ãa]o.*finaliz|Revis[ãa]o.*aprovaç/i);
+    expect(prompt).toMatch(/finaliz|conclu/i);
+  });
+
+  it('places the approval-gate clarification in the NÃO-é-divergência section', () => {
+    const prompt = buildResponsePrompt(interaction, ctx);
+    // The "não é divergência" cases are numbered "3." in the rule list.
+    // The new rule must live there (not in section 4 or 5).
+    const section3Match = prompt.match(/3\. \*\*Casos que NÃO são divergência[\s\S]*?(?=\n\n4\. )/);
+    expect(section3Match).not.toBeNull();
+    expect(section3Match![0]).toMatch(/Revis[ãa]o|requires_close_approval/);
   });
 });
 

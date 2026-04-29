@@ -1029,6 +1029,7 @@ export function buildResponsePrompt(
     '   - Bot detectou conflito legítimo (feriado, dia não útil, conflito de horário) e pediu confirmação antes de agir.',
     '   - Bot pediu desambiguação de nome/data ambíguos.',
     '   - Bot recusou por limitação técnica declarada ("não consigo X por Y").',
+    '   - Usuário pediu finalizar/concluir uma tarefa e o bot moveu para `Revisão` (em vez de `Concluída`). A tarefa requer aprovação (`requires_close_approval=true`) e a transição para `Revisão` é a etapa CORRETA — a finalização foi executada com sucesso, está aguardando aprovação do gestor. Padrão da resposta: "✅ TXX movida para Revisão" / "aguardando aprovação". Não é divergência.',
     '   - O usuário pediu uma NOTA (ex: "nota: X fazer Y"). A nota é sobre a ação de X, não sobre o bot agir. Bot adicionar a nota = correto.',
     '   - Usuário disse uma hora LOCAL e o bot confirmou com a MESMA hora local (ex: usuário "8h30", bot "08:30"). **Não é divergência de data mesmo que um timestamp ISO UTC apareça em outro lugar.**',
     '   - Mensagem casual ("ok", "beleza", "obrigado") — `intent_matches=true` automaticamente.',

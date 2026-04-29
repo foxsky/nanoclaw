@@ -596,6 +596,15 @@ const taskHistoryStmts = {
   ),
 };
 
+// Look up a task's current column. Used by the no-op-ack guard to
+// verify the bot's "já está em X" claim against the actual task
+// state — without this, a hallucinated no-op claim would silently
+// suppress a real unfulfilledWrite flag (Codex BLOCKER 2026-04-29).
+const tasksColumnStmts = {
+  1: tfDb.prepare(`SELECT id, "column" FROM tasks WHERE board_id IN (?) AND id = ?`),
+  2: tfDb.prepare(`SELECT id, "column" FROM tasks WHERE board_id IN (?, ?) AND id = ?`),
+};
+
 // Self-correction detector: find pairs of same-user same-task date-field
 // mutations within 60 min. The canonical signal is a user having to fix
 // what the bot just did — e.g. Giovanni 2026-04-14 rescheduled M1 twice
@@ -950,6 +959,55 @@ for (const group of groups) {
       refusalDetected = hasRefusal(botResponse.content);
     }
 
+    // Bot acknowledges the task is already in the requested state
+    // ("já está em Aguardando", etc.) — intentional no-op, not a
+    // dropped action. Suppresses unfulfilledWrite so the SEAF-T9-class
+    // FP doesn't flag a correct acknowledgment as a missed write.
+    //
+    // CODEX BLOCKER 2026-04-29: prose alone is not enough — bot could
+    // hallucinate "já está em Aguardando" for a task that's actually
+    // in next_action. Gate the suppression on STATE EVIDENCE: extract
+    // the claimed column from the bot reply, look up the task's
+    // actual current column, suppress only on match.
+    const NOOP_ACK_PATTERNS = [
+      /\bj[áa]\s+est[áa]\s+em\b/i,
+      /\bj[áa]\s+em\s+\*?(?:Aguardando|Inbox|Pr[óo]ximas|Em andamento|Revis[ãa]o|Conclu[íi]da)\*?/i,
+    ];
+    // Bot reply phrasing → engine column name. Patterns are anchored
+    // on the localized labels the bot uses in confirmations.
+    const COLUMN_CLAIM_PATTERNS = [
+      { col: 'waiting',     re: /\baguardando\b/i },
+      { col: 'review',      re: /\brevis[ãa]o\b/i },
+      { col: 'done',        re: /\bconclu[íi]d/i },
+      { col: 'in_progress', re: /\bem\s+andamento\b/i },
+      { col: 'next_action', re: /\bpr[óo]ximas?\s+a[çc][õo]es?\b/i },
+      { col: 'inbox',       re: /\binbox\b/i },
+    ];
+    let isNoopAck = false;
+    if (
+      botResponse &&
+      NOOP_ACK_PATTERNS.some((re) => re.test(botResponse.content || '')) &&
+      messageTaskRefs.size > 0
+    ) {
+      const claimedColumns = new Set(
+        COLUMN_CLAIM_PATTERNS
+          .filter(({ re }) => re.test(botResponse.content || ''))
+          .map(({ col }) => col)
+      );
+      if (claimedColumns.size > 0) {
+        const tasksColumnStmt = tasksColumnStmts[boardIds.length];
+        if (tasksColumnStmt) {
+          for (const ref of messageTaskRefs) {
+            const row = tasksColumnStmt.get(...boardIds, String(ref).toUpperCase());
+            if (row && claimedColumns.has(row.column)) {
+              isNoopAck = true;
+              break;
+            }
+          }
+        }
+      }
+    }
+
     const noResponse = !botResponse &&
       !(isDmSend && crossGroupSendLogged && !isTaskWrite);
     const responseTimeMs = botResponse
@@ -960,7 +1018,7 @@ for (const group of groups) {
     // `send_message_log`, checked via `mutationFound` above. `isDmSend`
     // survives only as an informational bit in the interaction record.
     const writeNeedsMutation = !isRead && !isIntent && isWrite;
-    const unfulfilledWrite = writeNeedsMutation && !mutationFound && !refusalDetected;
+    const unfulfilledWrite = writeNeedsMutation && !mutationFound && !refusalDetected && !isNoopAck;
 
     if (noResponse || delayedResponse || unfulfilledWrite || refusalDetected) {
       interactions.push({

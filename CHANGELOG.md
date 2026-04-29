@@ -4,6 +4,20 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-29 (eve) — Audit-finding preventions: weekday/date contradictions, no-op-ack heuristic, approval-gate prompt
+
+Three preventions derived from today's NDJSON findings, addressing the M22, SEAF-T9, and P20.5 cases respectively.
+
+**M22 — weekday/date contradiction template rule** (`.claude/skills/add-taskflow/templates/CLAUDE.md.template`). Strengthens existing `intended_weekday` rule to apply to BOTH `taskflow_create` AND `taskflow_update` (was only `update`). Adds a new rule "Contradictory weekday + date in user input — ASK, don't pick" with the M22 case ("quinta, dia 30/05" — Saturday in 2026) as worked example. The engine already validates `intended_weekday` against the resolved date, but it can't catch user-side contradiction; the template rule covers that gap by telling the agent to ask for clarification rather than silently pick one interpretation.
+
+**SEAF-T9 — heuristic no-op-ack suppression with state evidence** (`container/agent-runner/src/auditor-script.sh`). Adds `NOOP_ACK_PATTERNS` (column-anchored ack patterns like "já está em Aguardando") AND `COLUMN_CLAIM_PATTERNS` (bot-reply-phrase → engine-column mapping). New `tasksColumnStmts` SQL (1- and 2-board arity) looks up the task's actual current column. Suppression of `unfulfilledWrite` requires BOTH a noop-ack prose match AND the task's actual column matching the bot's claimed column — Codex caught this gating: prose alone could hide a bot hallucinating "já está em Aguardando" on a task in `next_action`. Closes the SEAF-T9 false-positive class without opening a hallucination back door.
+
+**P20.5 — approval-gate fulfillment in response prompt** (`container/agent-runner/src/semantic-audit.ts`). Adds a bullet to section 3 of `buildResponsePrompt` documenting that tasks with `requires_close_approval=true` move to `Revisão` instead of `Concluída` when the user asks finalize/conclude — that's successful execution awaiting manager approval, NOT a dropped action. Closes the P20.5 false-positive class.
+
+Tests: 5 new tests across `taskflow.test.ts`, `auditor-dm-detection.test.ts`, `semantic-audit.test.ts`. All 1088 host + 764 container green.
+
+Pre-merge fixes Codex flagged: (1) initial heuristic suppression had no state evidence — could hide hallucinated no-ops; added column lookup. (2) initial template rule missed `taskflow_create` — only mentioned `taskflow_update`; expanded.
+
 ## 2026-04-29 — Per-pass disable switch for semantic audit
 
 Added `NANOCLAW_SEMANTIC_AUDIT_DISABLE_MUTATION` and `NANOCLAW_SEMANTIC_AUDIT_DISABLE_RESPONSE` env vars to skip a single audit pass without losing the other. Setting `MUTATION_MODEL=''` falls back to the unified MODEL via `||`, so it cannot mute a pass — these are the explicit off-switches. Operator motivation: today's NDJSON had a 4/4 false-positive rate on the mutation pass (Sonnet flagging engine-policy defaults like "subtask.assignee inherits from parent" as bugs). Setting `DISABLE_MUTATION=1` lets us mute the noisy pass while the response pass keeps surfacing real multi-action-ignored failures. Accepts the same truthy vocabulary as `CLOUD` (`1/true/yes/on`, case- and whitespace-insensitive). Both keys added to the container env-forwarding allowlist (`SEMANTIC_AUDIT_ENV_KEYS`) so they actually reach the audit container — Codex caught this allowlist gap pre-merge.
