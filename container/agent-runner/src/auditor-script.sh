@@ -222,6 +222,23 @@ const RESPONSE_THRESHOLD_MS = 300000; // 5 minutes
 const TASK_REF_PATTERN = /\b(?:[A-Z]{2,}-)?(?:T|P|M|R)\d+(?:\.\d+)*\b|\bSEC-[A-Z0-9]+(?:[.-][A-Z0-9]+)*\b/gi;
 const REMINDER_LIKE_PATTERN = /\b(?:lembr(?:ar|e|ete|etes)|me\s+avise|me\s+lembre|avise-me|avisa\s+me|avisar|lembret[ea]|agendar|agenda(?:r)?)\b/i;
 
+// No-op acknowledgment guard: bot saying "já está em <column>" is
+// fulfillment, not a missed write — but only when the task is actually
+// in the claimed column (Codex BLOCKER 2026-04-29: prose alone could
+// hide a hallucinated no-op).
+const NOOP_ACK_PATTERNS = [
+  /\bj[áa]\s+est[áa]\s+em\b/i,
+  /\bj[áa]\s+em\s+\*?(?:Aguardando|Inbox|Pr[óo]ximas|Em andamento|Revis[ãa]o|Conclu[íi]da)\*?/i,
+];
+const COLUMN_CLAIM_PATTERNS = [
+  { col: 'waiting',     re: /\baguardando\b/i },
+  { col: 'review',      re: /\brevis[ãa]o\b/i },
+  { col: 'done',        re: /\bconclu[íi]d/i },
+  { col: 'in_progress', re: /\bem\s+andamento\b/i },
+  { col: 'next_action', re: /\bpr[óo]ximas?\s+a[çc][õo]es?\b/i },
+  { col: 'inbox',       re: /\binbox\b/i },
+];
+
 function normalizeForCompare(text) {
   return String(text || '')
     .normalize('NFD')
@@ -237,6 +254,23 @@ function extractTaskRefs(text) {
 
 function isReminderLikeWrite(text) {
   return REMINDER_LIKE_PATTERN.test(text || '');
+}
+
+function detectNoopAck(botResponse, messageTaskRefs, boardIds) {
+  if (!botResponse || messageTaskRefs.size === 0) return false;
+  const content = botResponse.content || '';
+  if (!NOOP_ACK_PATTERNS.some((re) => re.test(content))) return false;
+  const claimedColumns = new Set(
+    COLUMN_CLAIM_PATTERNS.filter(({ re }) => re.test(content)).map(({ col }) => col),
+  );
+  if (claimedColumns.size === 0) return false;
+  const stmt = tasksColumnStmts[boardIds.length];
+  if (!stmt) return false;
+  for (const ref of messageTaskRefs) {
+    const row = stmt.get(...boardIds, String(ref).toUpperCase());
+    if (row && claimedColumns.has(row.column)) return true;
+  }
+  return false;
 }
 
 function buildTaskIdAliases(taskId, boardId, boardShortCodes) {
@@ -596,10 +630,9 @@ const taskHistoryStmts = {
   ),
 };
 
-// Look up a task's current column. Used by the no-op-ack guard to
-// verify the bot's "já está em X" claim against the actual task
-// state — without this, a hallucinated no-op claim would silently
-// suppress a real unfulfilledWrite flag (Codex BLOCKER 2026-04-29).
+// Used by detectNoopAck to verify the bot's "já está em X" claim
+// against the task's actual column (Codex BLOCKER 2026-04-29: prose
+// alone could hide a hallucinated no-op).
 const tasksColumnStmts = {
   1: tfDb.prepare(`SELECT id, "column" FROM tasks WHERE board_id IN (?) AND id = ?`),
   2: tfDb.prepare(`SELECT id, "column" FROM tasks WHERE board_id IN (?, ?) AND id = ?`),
@@ -959,54 +992,7 @@ for (const group of groups) {
       refusalDetected = hasRefusal(botResponse.content);
     }
 
-    // Bot acknowledges the task is already in the requested state
-    // ("já está em Aguardando", etc.) — intentional no-op, not a
-    // dropped action. Suppresses unfulfilledWrite so the SEAF-T9-class
-    // FP doesn't flag a correct acknowledgment as a missed write.
-    //
-    // CODEX BLOCKER 2026-04-29: prose alone is not enough — bot could
-    // hallucinate "já está em Aguardando" for a task that's actually
-    // in next_action. Gate the suppression on STATE EVIDENCE: extract
-    // the claimed column from the bot reply, look up the task's
-    // actual current column, suppress only on match.
-    const NOOP_ACK_PATTERNS = [
-      /\bj[áa]\s+est[áa]\s+em\b/i,
-      /\bj[áa]\s+em\s+\*?(?:Aguardando|Inbox|Pr[óo]ximas|Em andamento|Revis[ãa]o|Conclu[íi]da)\*?/i,
-    ];
-    // Bot reply phrasing → engine column name. Patterns are anchored
-    // on the localized labels the bot uses in confirmations.
-    const COLUMN_CLAIM_PATTERNS = [
-      { col: 'waiting',     re: /\baguardando\b/i },
-      { col: 'review',      re: /\brevis[ãa]o\b/i },
-      { col: 'done',        re: /\bconclu[íi]d/i },
-      { col: 'in_progress', re: /\bem\s+andamento\b/i },
-      { col: 'next_action', re: /\bpr[óo]ximas?\s+a[çc][õo]es?\b/i },
-      { col: 'inbox',       re: /\binbox\b/i },
-    ];
-    let isNoopAck = false;
-    if (
-      botResponse &&
-      NOOP_ACK_PATTERNS.some((re) => re.test(botResponse.content || '')) &&
-      messageTaskRefs.size > 0
-    ) {
-      const claimedColumns = new Set(
-        COLUMN_CLAIM_PATTERNS
-          .filter(({ re }) => re.test(botResponse.content || ''))
-          .map(({ col }) => col)
-      );
-      if (claimedColumns.size > 0) {
-        const tasksColumnStmt = tasksColumnStmts[boardIds.length];
-        if (tasksColumnStmt) {
-          for (const ref of messageTaskRefs) {
-            const row = tasksColumnStmt.get(...boardIds, String(ref).toUpperCase());
-            if (row && claimedColumns.has(row.column)) {
-              isNoopAck = true;
-              break;
-            }
-          }
-        }
-      }
-    }
+    const isNoopAck = detectNoopAck(botResponse, messageTaskRefs, boardIds);
 
     const noResponse = !botResponse &&
       !(isDmSend && crossGroupSendLogged && !isTaskWrite);

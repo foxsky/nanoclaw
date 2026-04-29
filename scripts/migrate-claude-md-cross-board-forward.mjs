@@ -5,47 +5,9 @@
  * generator (provisioned via src/ipc-plugins/provision-shared.ts and
  * have drifted from the template since).
  *
- * Idempotent: skips files that already contain the rule.
- * Safe: only inserts after a unique anchor; warns and skips files
- * where the anchor appears 0 or >1 times.
- *
- * Usage:
- *   node scripts/migrate-claude-md-cross-board-forward.mjs <groups-dir>
- *
- * Locally (smoke test): node scripts/migrate-claude-md-cross-board-forward.mjs groups
- * On prod:               ssh nanoclaw@host 'cd /home/nanoclaw/nanoclaw && node scripts/migrate-claude-md-cross-board-forward.mjs groups'
+ * On prod: ssh nanoclaw@host 'cd /home/nanoclaw/nanoclaw && node scripts/migrate-claude-md-cross-board-forward.mjs groups'
  */
-import fs from 'fs';
-import path from 'path';
-
-/**
- * Derives template placeholder substitutions for a single CLAUDE.md.
- * Returns null if the file's title doesn't match the expected
- * `# <ASSISTANT_NAME> — TaskFlow (<GROUP_NAME>)` pattern — caller
- * should warn and skip rather than write unresolved {{...}} markers.
- */
-function deriveSubstitutions(folderName, content) {
-  const titleMatch = content.match(/^#\s+\S+\s+—\s+TaskFlow\s+\(([^)]+)\)/m);
-  if (!titleMatch) return null;
-  return {
-    boardId: `board-${folderName}`,
-    groupName: titleMatch[1].trim(),
-  };
-}
-
-function applySubstitutions(text, subs) {
-  return text
-    .replaceAll('{{BOARD_ID}}', subs.boardId)
-    .replaceAll('{{GROUP_NAME}}', subs.groupName);
-}
-
-const RULE_MARKER = 'Cross-board add_subtask forward';
-// Anchor: closing sentence of the "No-op state updates: never silent"
-// rule. Older provisioned boards predate the cross_board_subtask_mode
-// block, so we anchor on the no-op rule instead — present in every
-// board after migrate-claude-md-no-op-rule.mjs has run.
-const ANCHOR =
-  'A silent no-op loses information.';
+import { migrateClaudeMd } from './lib/migrate-claude-md.mjs';
 
 const RULE_BODY = `
 
@@ -88,53 +50,21 @@ The auditor recognizes this forward shape and won't flag it as \`unfulfilledWrit
 
 This rule applies ONLY to \`add_subtask\` in Phase 1. Other cross-board mutation patterns (\`move\`, \`reassign\`, \`update\`) fall back to the existing "task not found" refusal.`;
 
-const groupsDir = process.argv[2] || 'groups';
-if (!fs.existsSync(groupsDir)) {
-  console.error(`Groups dir not found: ${groupsDir}`);
-  process.exit(1);
-}
-
-let touched = 0;
-let skipped = 0;
-let warned = 0;
-
-for (const entry of fs.readdirSync(groupsDir)) {
-  const claudeMd = path.join(groupsDir, entry, 'CLAUDE.md');
-  if (!fs.existsSync(claudeMd)) continue;
-  const content = fs.readFileSync(claudeMd, 'utf8');
-  if (!content.includes('taskflow_update')) continue;
-  if (content.includes(RULE_MARKER)) {
-    skipped += 1;
-    continue;
-  }
-  const anchorCount = content.split(ANCHOR).length - 1;
-  if (anchorCount === 0) {
-    console.warn(`WARN: anchor not found in ${claudeMd} — skipping`);
-    warned += 1;
-    continue;
-  }
-  if (anchorCount > 1) {
-    console.warn(
-      `WARN: anchor appears ${anchorCount}x in ${claudeMd} — skipping (manual fix required)`,
-    );
-    warned += 1;
-    continue;
-  }
-  const subs = deriveSubstitutions(entry, content);
-  if (!subs) {
-    console.warn(
-      `WARN: title pattern not recognized in ${claudeMd} — skipping (cannot derive {{BOARD_ID}}/{{GROUP_NAME}})`,
-    );
-    warned += 1;
-    continue;
-  }
-  const ruleBodyResolved = applySubstitutions(RULE_BODY, subs);
-  const next = content.replace(ANCHOR, ANCHOR + ruleBodyResolved);
-  fs.writeFileSync(claudeMd, next, 'utf8');
-  console.log(`Updated: ${claudeMd}`);
-  touched += 1;
-}
-
-console.log(
-  `\nDone. Updated ${touched} files. Skipped ${skipped} already-current files. Warned ${warned} customized files.`,
-);
+migrateClaudeMd({
+  groupsDir: process.argv[2] || 'groups',
+  ruleMarker: 'Cross-board add_subtask forward',
+  // Anchor: closing sentence of the "No-op state updates: never silent"
+  // rule. Older provisioned boards predate the cross_board_subtask_mode
+  // block, so we anchor on the no-op rule instead — present in every
+  // board after migrate-claude-md-no-op-rule.mjs has run.
+  anchor: 'A silent no-op loses information.',
+  ruleBody: RULE_BODY,
+  deriveSubstitutions: (folderName, content) => {
+    const titleMatch = content.match(/^#\s+\S+\s+—\s+TaskFlow\s+\(([^)]+)\)/m);
+    if (!titleMatch) return null;
+    return {
+      BOARD_ID: `board-${folderName}`,
+      GROUP_NAME: titleMatch[1].trim(),
+    };
+  },
+});
