@@ -1103,7 +1103,7 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
   try {
     if (mode === 'dryrun' || mode === 'enabled') {
       try {
-        const { runSemanticAudit, runResponseAudit, writeDryRunLog } = await import(SEMANTIC_AUDIT_MODULE_PATH);
+        const { runSemanticAudit, runResponseAudit, writeDryRunLog, dedupeDeviations } = await import(SEMANTIC_AUDIT_MODULE_PATH);
         const rawCloud = (process.env.NANOCLAW_SEMANTIC_AUDIT_CLOUD || '').trim().toLowerCase();
         const cloudOptIn = rawCloud === '1' || rawCloud === 'true' || rawCloud === 'yes';
         // Classifier selection. Two backends:
@@ -1245,11 +1245,16 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
         }
 
         if (mutationAudit || responseAudit) {
-          // Merge whichever passes ran
-          const allDeviations = [
+          // Merge whichever passes ran, then collapse same-failure
+          // duplicates produced by repeated LLM judgments on the same
+          // record (e.g., deepseek-v4-pro on the response pass emitting
+          // 1.86× records per unique bot reply, observed 2026-04-29).
+          // Dedup before BOTH the dryrun-NDJSON write and the enabled
+          // per-board renderer so neither path spams duplicates.
+          const allDeviations = dedupeDeviations([
             ...(mutationAudit?.deviations ?? []),
             ...(responseAudit?.deviations ?? []),
-          ];
+          ]);
 
           if (mode === 'dryrun') {
             writeDryRunLog(allDeviations);

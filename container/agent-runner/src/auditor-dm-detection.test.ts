@@ -1356,6 +1356,25 @@ describe('auditor DM-send detection', () => {
       );
     });
 
+    it('auditor-script.sh dedupes merged deviations before write/render', () => {
+      // deepseek-v4-pro on the response pass and Sonnet on the mutation
+      // pass both emit duplicate records per unique failure (1.86× and
+      // 1.33× respectively, observed 2026-04-29). Dedup must happen
+      // BEFORE the mode branches so both dryrun NDJSON and enabled
+      // per-board render consume the deduped set.
+      expect(script).toContain('dedupeDeviations');
+      // Imported alongside the other semantic-audit exports via the
+      // standard destructuring shape used in this script.
+      expect(script).toMatch(
+        /\{[^}]*\bdedupeDeviations\b[^}]*\}\s*=\s*await\s+import\(SEMANTIC_AUDIT_MODULE_PATH\)/,
+      );
+      // Called wrapping the merged array so both downstream branches
+      // (dryrun write, enabled render) see the deduped set.
+      expect(script).toMatch(
+        /allDeviations\s*=\s*dedupeDeviations\(\[/,
+      );
+    });
+
     it('auditor-script.sh supports per-pass disable via NANOCLAW_SEMANTIC_AUDIT_DISABLE_MUTATION/RESPONSE', () => {
       // When a pass is producing high false-positive output (e.g., the
       // mutation pass on Sonnet flagging engine-policy defaults as bugs),

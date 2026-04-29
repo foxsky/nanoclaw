@@ -1258,6 +1258,69 @@ export async function runResponseAudit(
   return { deviations, counters };
 }
 
+/**
+ * Collapse same-failure duplicates produced by repeated LLM judgments on the
+ * same underlying record. Response-pass dedup key is the bot reply
+ * (boardId + responseMessageId): the same reply judged twice is one failure.
+ * Mutation-pass dedup key is (boardId + taskId + fieldKind + at): two
+ * genuinely different same-day mutations on the same field have distinct
+ * `at` timestamps and are kept separate; only LLM-framing duplicates of the
+ * same underlying task_history row collapse.
+ *
+ * Records without a usable anchor are kept verbatim — losing those would
+ * silently drop genuinely orphan deviations.
+ *
+ * On collision, the "better" record wins: higher confidence beats lower,
+ * then longer deviation prose, then first-emitted (stable). This avoids
+ * silently downgrading a high-confidence judgment to a low one when the
+ * loop happens to encounter the low one first.
+ */
+const CONFIDENCE_RANK: Record<Confidence, number> = { high: 3, med: 2, low: 1 };
+
+function pickBetterDeviation(
+  a: SemanticDeviation,
+  b: SemanticDeviation,
+): SemanticDeviation {
+  const ra = CONFIDENCE_RANK[a.confidence as Confidence] ?? 0;
+  const rb = CONFIDENCE_RANK[b.confidence as Confidence] ?? 0;
+  if (ra !== rb) return ra > rb ? a : b;
+  const la = a.deviation?.length ?? 0;
+  const lb = b.deviation?.length ?? 0;
+  if (la !== lb) return la > lb ? a : b;
+  return a;
+}
+
+export function dedupeDeviations(
+  deviations: SemanticDeviation[],
+): SemanticDeviation[] {
+  const indexByKey = new Map<string, number>();
+  const out: SemanticDeviation[] = [];
+  for (const d of deviations) {
+    let key: string | null;
+    if (d.fieldKind === 'response') {
+      key = d.responseMessageId
+        ? `r|${d.boardId}|${d.responseMessageId}`
+        : null;
+    } else {
+      key = d.taskId
+        ? `m|${d.boardId}|${d.taskId}|${d.fieldKind}|${d.at}`
+        : null;
+    }
+    if (key === null) {
+      out.push(d);
+      continue;
+    }
+    const existingIdx = indexByKey.get(key);
+    if (existingIdx === undefined) {
+      indexByKey.set(key, out.length);
+      out.push(d);
+    } else {
+      out[existingIdx] = pickBetterDeviation(out[existingIdx], d);
+    }
+  }
+  return out;
+}
+
 export function writeDryRunLog(
   deviations: SemanticDeviation[],
   rootDir = '/workspace/audit',

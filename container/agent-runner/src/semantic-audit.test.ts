@@ -7,6 +7,7 @@ import {
   buildPrompt,
   callOllama,
   CASUAL_PATTERN,
+  dedupeDeviations,
   deriveContextHeader,
   extractScheduledAtValue,
   parseOllamaResponse,
@@ -1386,6 +1387,178 @@ describe('runResponseAudit', () => {
     expect(body.prompt).toContain('pedido do Bob');
     expect(body.prompt).not.toContain('pedido da Alice');
     msg.close(); tf.close();
+  });
+});
+
+describe('dedupeDeviations', () => {
+  // Real-world signal: deepseek-v4-pro on the response pass produced 26
+  // records for 14 unique bot replies on 2026-04-29 (1.86×). The mutation
+  // pass on Sonnet produced 4 records for 3 distinct (task, field) pairs
+  // (P11.25 assignee × 2). Same underlying failure restated from
+  // different angles. Dedup at consumption keeps NDJSON forensics intact
+  // while preventing the report from spamming duplicate items.
+  const baseDev = (overrides: Partial<SemanticDeviation>): SemanticDeviation => ({
+    taskId: null,
+    boardId: 'b1',
+    fieldKind: 'response',
+    at: '2026-04-29T10:00:00.000Z',
+    by: 'lucas',
+    userMessage: 'adicionar nota X e alterar prazo',
+    sourceTurnId: null,
+    sourceMessageIds: ['m1'],
+    responseMessageId: 'r1',
+    storedValue: null,
+    responsePreview: '✅ atualizada',
+    intentMatches: false,
+    deviation: 'first framing',
+    confidence: 'high',
+    rawResponse: '{}',
+    ...overrides,
+  });
+
+  it('collapses response deviations on the same (boardId, responseMessageId)', () => {
+    const out = dedupeDeviations([
+      baseDev({ deviation: 'first framing' }),
+      baseDev({ deviation: 'second framing' }),
+      baseDev({ deviation: 'third framing' }),
+    ]);
+    expect(out).toHaveLength(1);
+  });
+
+  it('keeps response deviations on different responseMessageIds', () => {
+    const out = dedupeDeviations([
+      baseDev({ responseMessageId: 'r1' }),
+      baseDev({ responseMessageId: 'r2' }),
+    ]);
+    expect(out).toHaveLength(2);
+  });
+
+  it('collapses mutation deviations on the same (boardId, taskId, fieldKind, at)', () => {
+    const out = dedupeDeviations([
+      baseDev({
+        fieldKind: 'assignee',
+        taskId: 'P11.25',
+        responseMessageId: null,
+        deviation: 'first take',
+      }),
+      baseDev({
+        fieldKind: 'assignee',
+        taskId: 'P11.25',
+        responseMessageId: null,
+        deviation: 'second take',
+      }),
+    ]);
+    expect(out).toHaveLength(1);
+  });
+
+  it('keeps mutation deviations on different fieldKinds for the same task', () => {
+    const out = dedupeDeviations([
+      baseDev({
+        fieldKind: 'assignee',
+        taskId: 'M22',
+        responseMessageId: null,
+      }),
+      baseDev({
+        fieldKind: 'scheduled_at',
+        taskId: 'M22',
+        responseMessageId: null,
+      }),
+    ]);
+    expect(out).toHaveLength(2);
+  });
+
+  it('keeps records that have no anchor (taskId AND responseMessageId both null)', () => {
+    const out = dedupeDeviations([
+      baseDev({ taskId: null, responseMessageId: null, deviation: 'orphan 1' }),
+      baseDev({ taskId: null, responseMessageId: null, deviation: 'orphan 2' }),
+    ]);
+    // No reliable dedup key — keep both rather than risk losing real signal.
+    expect(out).toHaveLength(2);
+  });
+
+  it('keeps mutation deviations on different at timestamps for the same (task, field)', () => {
+    // Two genuinely different same-day mutations on the same field
+    // (e.g., user reassigns P11.25 morning, then again afternoon —
+    // bot did the wrong thing both times) are NOT duplicates and
+    // must both surface. LLM-framing duplicates share the same `at`
+    // (the source mutation timestamp), real reruns differ.
+    const out = dedupeDeviations([
+      baseDev({
+        fieldKind: 'assignee',
+        taskId: 'P11.25',
+        responseMessageId: null,
+        at: '2026-04-29T09:00:00.000Z',
+        storedValue: 'rodrigo-lima',
+      }),
+      baseDev({
+        fieldKind: 'assignee',
+        taskId: 'P11.25',
+        responseMessageId: null,
+        at: '2026-04-29T15:00:00.000Z',
+        storedValue: 'edilson',
+      }),
+    ]);
+    expect(out).toHaveLength(2);
+  });
+
+  it('prefers higher-confidence record when duplicates collide', () => {
+    // First-wins would silently downgrade a high-confidence judgment
+    // to a low one when the loop happens to see the low one first.
+    // Confidence vocabulary is 'high' | 'med' | 'low' (CONFIDENCE_VALUES).
+    const out = dedupeDeviations([
+      baseDev({ confidence: 'low', deviation: 'low-conf framing' }),
+      baseDev({ confidence: 'high', deviation: 'high-conf framing' }),
+      baseDev({ confidence: 'med', deviation: 'med-conf framing' }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].confidence).toBe('high');
+    expect(out[0].deviation).toBe('high-conf framing');
+  });
+
+  it("'med' beats 'low' on dedup collision (rank table contract)", () => {
+    // Regression guard: an earlier draft used 'medium' in the rank
+    // table while the prompt contract emits 'med', so real 'med'
+    // deviations got rank 0 and lost to 'low'.
+    const out = dedupeDeviations([
+      baseDev({ confidence: 'low', deviation: 'low first' }),
+      baseDev({ confidence: 'med', deviation: 'med second' }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].confidence).toBe('med');
+  });
+
+  it('prefers longer deviation prose when confidence ties on duplicates', () => {
+    const out = dedupeDeviations([
+      baseDev({ confidence: 'high', deviation: 'short' }),
+      baseDev({ confidence: 'high', deviation: 'a substantially longer framing of the same failure' }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].deviation).toBe('a substantially longer framing of the same failure');
+  });
+
+  it('falls back to first-emitted on a full tie', () => {
+    const out = dedupeDeviations([
+      baseDev({ confidence: 'high', deviation: 'first', sourceMessageIds: ['m1'] }),
+      baseDev({ confidence: 'high', deviation: 'first', sourceMessageIds: ['m2'] }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].sourceMessageIds).toEqual(['m1']);
+  });
+
+  it('does not collide a mutation with a response that share boardId only', () => {
+    const out = dedupeDeviations([
+      baseDev({
+        fieldKind: 'assignee',
+        taskId: 'P11.25',
+        responseMessageId: null,
+      }),
+      baseDev({
+        fieldKind: 'response',
+        taskId: null,
+        responseMessageId: 'r1',
+      }),
+    ]);
+    expect(out).toHaveLength(2);
   });
 });
 
