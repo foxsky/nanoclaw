@@ -1316,9 +1316,10 @@ describe('auditor DM-send detection', () => {
       // still uses the OLD shared variable. With MUTATION_MODEL set
       // and the unified MODEL unset, ollamaHost can be empty while
       // mutationHost is fine — the whole audit silently skips.
-      // Fix: gate each pass on its own host.
-      expect(script).toMatch(/if\s*\(\s*mutationHost\s*\)\s*\{/);
-      expect(script).toMatch(/if\s*\(\s*responseHost\s*\)\s*\{/);
+      // Fix: gate each pass on its own host. The gate may also AND with
+      // an optional disable flag (see DISABLE_MUTATION/RESPONSE test).
+      expect(script).toMatch(/if\s*\(\s*mutationHost\b[^)]*\)\s*\{/);
+      expect(script).toMatch(/if\s*\(\s*responseHost\b[^)]*\)\s*\{/);
       // The old single-gate pattern must NOT remain in the audit run
       // block. Find every `if (ollamaHost)` and confirm it's not the
       // run-block gate. This regex looks for the specific shape that
@@ -1353,6 +1354,27 @@ describe('auditor DM-send detection', () => {
       expect(script).toMatch(
         /runResponseAudit\(\{[\s\S]{0,400}ollamaModel:\s*responseModel/,
       );
+    });
+
+    it('auditor-script.sh supports per-pass disable via NANOCLAW_SEMANTIC_AUDIT_DISABLE_MUTATION/RESPONSE', () => {
+      // When a pass is producing high false-positive output (e.g., the
+      // mutation pass on Sonnet flagging engine-policy defaults as bugs),
+      // the operator needs to mute it without losing the other pass.
+      // Setting the per-pass MODEL var to empty does NOT disable — it
+      // falls back to the unified MODEL. The disable env is the explicit
+      // off-switch.
+      expect(script).toContain('NANOCLAW_SEMANTIC_AUDIT_DISABLE_MUTATION');
+      expect(script).toContain('NANOCLAW_SEMANTIC_AUDIT_DISABLE_RESPONSE');
+      // The gates must AND with the existing host check so a pass runs
+      // only if its host is set AND the disable flag is not truthy.
+      expect(script).toMatch(/if\s*\(\s*mutationHost\s*&&\s*!disableMutation\s*\)/);
+      expect(script).toMatch(/if\s*\(\s*responseHost\s*&&\s*!disableResponse\s*\)/);
+      // Disable parsing accepts the same truthy vocabulary as CLOUD
+      // (1/true/yes/on, case-insensitive). Don't ship a stricter
+      // === '1' check that silently ignores the other variants.
+      expect(script).toMatch(/===\s*'true'/);
+      expect(script).toMatch(/===\s*'yes'/);
+      expect(script).toMatch(/===\s*'on'/);
     });
 
     it('auditor-script.sh does not include shared vocabulary in TASK_KEYWORDS', () => {

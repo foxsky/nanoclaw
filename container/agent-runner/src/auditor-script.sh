@@ -1171,6 +1171,21 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
         };
         const mutationHost = resolveHost(mutationModel);
         const responseHost = resolveHost(responseModel);
+        // Per-pass off-switch. Setting MUTATION_MODEL='' falls back to
+        // the unified MODEL (see ||-default above), so it cannot mute a
+        // pass. The disable env is the explicit way to skip a single
+        // pass when its FP rate is too high to surface, while keeping
+        // the other pass producing signal. Accepts 1/true/yes/on
+        // (case- and whitespace-insensitive) — same parsing style as
+        // CLOUD above, plus 'on'.
+        const isTruthyEnv = (v) => {
+          const s = (v || '').trim().toLowerCase();
+          return s === '1' || s === 'true' || s === 'yes' || s === 'on';
+        };
+        const disableMutation =
+          isTruthyEnv(process.env.NANOCLAW_SEMANTIC_AUDIT_DISABLE_MUTATION);
+        const disableResponse =
+          isTruthyEnv(process.env.NANOCLAW_SEMANTIC_AUDIT_DISABLE_RESPONSE);
         // Each pass is gated on its OWN resolved host — using the
         // original shared `ollamaHost` here would silently skip the
         // whole audit when an operator sets MUTATION_MODEL but not
@@ -1178,7 +1193,7 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
         // (Codex review 2026-04-28.)
         let mutationAudit = null;
         let responseAudit = null;
-        if (mutationHost) {
+        if (mutationHost && !disableMutation) {
           // Phase 1: mutation-level audit (scheduled_at, due_date, assignee, title)
           mutationAudit = await runSemanticAudit({
             msgDb, tfDb, period,
@@ -1197,11 +1212,13 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
           );
         } else {
           console.error(
-            `Semantic audit — mutations skipped: no host for model ${mutationModel}`,
+            disableMutation
+              ? `Semantic audit — mutations disabled via NANOCLAW_SEMANTIC_AUDIT_DISABLE_MUTATION`
+              : `Semantic audit — mutations skipped: no host for model ${mutationModel}`,
           );
         }
 
-        if (responseHost) {
+        if (responseHost && !disableResponse) {
           // Phase 2: response-level audit (all user→bot interaction pairs)
           responseAudit = await runResponseAudit({
             msgDb, tfDb, period,
@@ -1221,7 +1238,9 @@ const SEMANTIC_AUDIT_MODULE_PATH = '/app/dist/semantic-audit.js';
           );
         } else {
           console.error(
-            `Semantic audit — responses skipped: no host for model ${responseModel}`,
+            disableResponse
+              ? `Semantic audit — responses disabled via NANOCLAW_SEMANTIC_AUDIT_DISABLE_RESPONSE`
+              : `Semantic audit — responses skipped: no host for model ${responseModel}`,
           );
         }
 

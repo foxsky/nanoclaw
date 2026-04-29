@@ -4,6 +4,12 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## 2026-04-29 — Per-pass disable switch for semantic audit
+
+Added `NANOCLAW_SEMANTIC_AUDIT_DISABLE_MUTATION` and `NANOCLAW_SEMANTIC_AUDIT_DISABLE_RESPONSE` env vars to skip a single audit pass without losing the other. Setting `MUTATION_MODEL=''` falls back to the unified MODEL via `||`, so it cannot mute a pass — these are the explicit off-switches. Operator motivation: today's NDJSON had a 4/4 false-positive rate on the mutation pass (Sonnet flagging engine-policy defaults like "subtask.assignee inherits from parent" as bugs). Setting `DISABLE_MUTATION=1` lets us mute the noisy pass while the response pass keeps surfacing real multi-action-ignored failures. Accepts the same truthy vocabulary as `CLOUD` (`1/true/yes/on`, case- and whitespace-insensitive). Both keys added to the container env-forwarding allowlist (`SEMANTIC_AUDIT_ENV_KEYS`) so they actually reach the audit container — Codex caught this allowlist gap pre-merge.
+
+Followup investigation written up at `docs/incidents/2026-04-29-multi-action-ignored.md`: every multi-verb user turn currently loses actions after the first because the TaskFlow `CLAUDE.md` template lacks an explicit "execute every verb" rule, and `update_task` doesn't accept multi-action payloads. Template fix to follow.
+
 ## 2026-04-28 — Model rebalancing: vLLM-MLX context summarizer + glm-5.1 auditor + per-pass split
 
 Six commits across the day rebalanced the LLM workloads behind the auditor and the long-term context summarizer. The headline win is moving two cost-bearing workloads off paid Anthropic models and onto self-hosted / cloud-routed alternatives, without quality regression on the harder pass.

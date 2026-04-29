@@ -106,6 +106,7 @@ import {
   runContainerAgent,
   ContainerOutput,
   resolveProjectRoot,
+  SEMANTIC_AUDIT_ENV_KEYS,
 } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 
@@ -237,6 +238,21 @@ describe('container-runner path resolution', () => {
     expect(
       resolveProjectRoot('file:///tmp/example/src/container-runner.ts'),
     ).toBe('/tmp/example');
+  });
+});
+
+describe('container-runner semantic-audit env forwarding', () => {
+  it('SEMANTIC_AUDIT_ENV_KEYS allowlists the per-pass disable vars', () => {
+    // Vars added to auditor-script.sh must be added here too — otherwise
+    // they're set in the host .env but never reach the container, and
+    // setting them on prod silently does nothing. Codex review caught
+    // this exact deploy-time gap when DISABLE_MUTATION/RESPONSE landed.
+    expect(SEMANTIC_AUDIT_ENV_KEYS).toContain(
+      'NANOCLAW_SEMANTIC_AUDIT_DISABLE_MUTATION',
+    );
+    expect(SEMANTIC_AUDIT_ENV_KEYS).toContain(
+      'NANOCLAW_SEMANTIC_AUDIT_DISABLE_RESPONSE',
+    );
   });
 });
 
