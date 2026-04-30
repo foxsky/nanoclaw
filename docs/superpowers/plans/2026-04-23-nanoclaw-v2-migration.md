@@ -1,4 +1,4 @@
-# NanoClaw v2 Migration Plan (v2.2 — Codex feature-evaluation update)
+# NanoClaw v2 Migration Plan (v2.3 — OneCLI direction + scope-deferral)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. At every phase gate, pause for user sign-off before proceeding.
 
@@ -7,6 +7,7 @@
 - v2 (2026-04-23 rewrite) — corrects file counts, command syntax, adds Phase -1 infra prep, rewrites Phase 5 cutover model (Baileys auth prohibits per-group shadow), extends timeline to 12-16 weeks, adds strategic decision section.
 - v2.1 (2026-04-30 delta re-review) — folds in `v2.0.10 → v2.0.21` upstream changes. Adds Phase -1.5 security back-port, expands Phase 0 (circuit breaker + native-proxy re-merge), Phase 2 (channel-approval surface), Phase 3 (schedule_task content JSON routing, `namespacedPlatformId()` rule, register field-name regression). Codex-corrected delta numbers (183 commits, 76 files, +4632/-576 LOC).
 - v2.2 (2026-04-30 features evaluation) — Codex gpt-5.5/high independent evaluation of v2 features for our skills surfaced **9 missed feature areas** (sender-approval, channel-approval, ask_user_question/pending_questions, scheduling improvements, unregistered_senders audit, named destinations as outbound ACL, self-mod, mount allowlist, new upstream skills). Adds **Phase 2.5: TaskFlow Permissions Adoption** (Weeks 5-6, between WhatsApp re-port and isMain rewrite) — re-prioritized as Codex's #1 recommendation. Downscopes cross-board a2a to "visible-text MVP" reusing existing `subtask_requests` + `handle_subtask_approval`. Net timeline: 14-18 weeks full-time.
+- v2.3 (2026-04-30 OneCLI direction + scope deferral) — locks in **self-hosted OneCLI (A2a)** as the v2 credential layer after Phase 0 Task 0.3 confirmed `use-native-credential-proxy` skill conflicts in 5 files vs v2.0.22. Reverses `project_onecli_decision.md` for v2 only (1.x stays on native proxy through cutover). Multi-tenant + multi-instance fleet expansion (1000+ boards across K NanoClaw instances with K WhatsApp accounts) explicitly **scope-deferred to post-migration**. Each future instance gets its own self-hosted OneCLI. Migration plan stays single-instance, single-tenant — fleet work happens after cutover.
 
 ---
 
@@ -426,28 +427,83 @@ Record: how many of our 28 TaskFlow-managed groups ended up in `messaging_groups
 
 - [ ] **Step 7: Gate decision.** Document in Phase-0-gate-report.md.
 
-### Task 0.3: Verify native-credential-proxy skill (UPDATED, delta #1)
+### Task 0.3: Install self-hosted OneCLI (UPDATED v2.3, was native-proxy verification)
 
-**Note:** v2.0.21's `src/container-runner.ts:459` is now a hard throw on missing OneCLI gateway (`'OneCLI gateway not applied — refusing to spawn container without credentials'`). The native-credential-proxy escape still works — the skill swaps OneCLI imports out entirely — but the merge surface against current upstream `main` is bigger than v2.0.10. Verify clean merge before relying on the escape.
+**Decision recorded 2026-04-30:** `use-native-credential-proxy` skill conflicts in 5 files vs v2.0.22 (`config.ts`, `container-runner.ts`, `container-runner.test.ts`, `index.ts`, `setup/verify.ts`) — confirmed via `git merge-tree`. Codex prediction held. Path A2a (self-hosted OneCLI) selected because:
+- Free at our scale ($0/month per instance, open-source via `ghcr.io/onecli/onecli`)
+- Aligns with v2.0.22's hard-throw at `container-runner.ts:459`
+- Future Calendar/Gmail/Google integration (Codex Tier 2 item E) becomes free
+- Multi-tenant expansion path: each NanoClaw instance gets its own self-hosted OneCLI gateway
 
-- [ ] **Step 1: Merge the skill onto the worktree's upstream/main**
+**Pre-existing 1.x decision unchanged:** the native credential proxy at port 3001 stays in the 1.2.53 install through cutover. Installing OneCLI on the same dev server is safe — different port (10254/10255), separate Docker container.
+
+- [ ] **Step 1: Pin a specific OneCLI release tag** (avoid `:latest`)
+
+```bash
+# Find the latest stable OneCLI release tag — review on GHCR or GitHub before pinning:
+docker pull ghcr.io/onecli/onecli  # Just for tag inspection, not the actual run
+```
+
+Document the chosen tag in the Phase 0 gate report. Update `Step 2` install command to use `ghcr.io/onecli/onecli:<tag>` not `:latest`.
+
+- [ ] **Step 2: Run OneCLI gateway as a Docker container**
+
+```bash
+docker run -d \
+  --name onecli-gateway \
+  --restart unless-stopped \
+  -p 10254:10254 \
+  -p 10255:10255 \
+  -v onecli-data:/app/data \
+  ghcr.io/onecli/onecli:<pinned-tag>
+```
+
+Health check:
+
+```bash
+sleep 3
+curl -sf http://localhost:10254/health
+# Expected: 200 OK with health JSON
+```
+
+- [ ] **Step 3: Configure the OneCLI CLI**
+
+```bash
+curl -fsSL onecli.sh/cli/install | sh
+export PATH="$HOME/.local/bin:$PATH"
+onecli version
+onecli config set api-host http://localhost:10254
+```
+
+- [ ] **Step 4: Register Anthropic credential**
+
+For our 1.x dev install: read the Anthropic key from `/root/nanoclaw/.env`, register as a OneCLI secret (so v2 can use it without us re-entering):
+
+```bash
+ANTHROPIC_KEY=$(grep '^ANTHROPIC_API_KEY=' /root/nanoclaw/.env | cut -d= -f2- | tr -d '"')
+onecli secrets create \
+  --name Anthropic \
+  --type anthropic \
+  --value "$ANTHROPIC_KEY" \
+  --host-pattern api.anthropic.com
+```
+
+Verify: `onecli secrets list` shows the Anthropic entry.
+
+- [ ] **Step 5: Boot a v2 test container against the gateway**
 
 ```bash
 cd /root/nanoclaw-v2
-git checkout upstream/main -- .
-git fetch upstream skill/native-credential-proxy
-git merge upstream/skill/native-credential-proxy
-# If conflicts beyond package-lock.json, STOP — record exact files, escalate to user.
+echo "ONECLI_URL=http://localhost:10254" >> .env
+# pnpm run build path may not exist on v2 (Bun direct-TS) — verify by:
+ls dist/ 2>/dev/null || echo "no dist (Bun direct-TS, expected)"
+# Try a minimal container spawn via setup or test harness:
+pnpm exec tsx scripts/dev-container.ts 2>&1 | tee /tmp/v2-onecli-boot.log || true
+grep -i 'onecli\|gateway' /tmp/v2-onecli-boot.log
+# Expected: "OneCLI gateway applied" log line, no hard-throw.
 ```
 
-- [ ] **Step 2: Confirm the hard-throw at L459 is removed by the merge**
-
-```bash
-grep -n 'OneCLI gateway not applied' src/container-runner.ts
-# Expected: no match (the skill replaces this code path).
-```
-
-If the throw still exists, the skill needs an update for v2.0.21 — STOP and report.
+If hard-throw persists despite gateway healthy, escalate — the skill setup-config logic may not detect our local gateway URL.
 
 - [ ] **Step 3: Boot a test container**
 
