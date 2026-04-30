@@ -1,6 +1,6 @@
 # Cross-board Agent-to-Agent Routing — Design Spec (Stub)
 
-> **Status:** Stub. Open for brainstorming. Lands at v2 migration Phase 6 (cleanup) or post-cutover follow-up — see `docs/superpowers/plans/2026-04-23-nanoclaw-v2-migration.md`.
+> **Status:** Stub. Open for brainstorming. Lands at v2 migration Phase 6 (Weeks 16-18) per plan v2.2. **Codex downscoped MVP:** visible-text a2a transport reusing existing `subtask_requests` table + `taskflow_admin({ action: 'handle_subtask_approval' })` — NOT full structured payload with `taskflow_get_forward` MCP read tool. Skip the read tool unless proven needed. See `docs/superpowers/plans/2026-04-23-nanoclaw-v2-migration.md` Phase 6.
 >
 > **Predecessors:**
 > - `docs/superpowers/specs/2026-04-09-cross-board-subtask-approval-design.md` (cross-board subtask Phase 1+2 — `cross_board_subtask_mode` engine flag)
@@ -152,11 +152,19 @@ Child board (Caio sees):
 8. **Rollback path.** If parent approves but later wants to revoke, does `cross_board_forward_reply` support an `unapprove` action? Or just a new forward in reverse (`taskflow_forward_to_child` to remove the subtask)?
 9. **Auditor heuristic deprecation.** Keep both detection paths (text-pattern `encaminhad` + a2a route) during transition, or hard-cut to a2a once all 31 boards support it?
 
-## Phase fit
+## Phase fit (revised v2.2)
 
-- **Pre-v2 (now):** Phase 1 send_message forward is shipped (2026-04-30). It works as a baseline; no immediate replacement needed.
-- **v2 migration Phase 6 cleanup, OR post-cutover follow-up:** This spec lands. Both source and target boards must be on v2 to use a2a; until full fleet is on v2, fall back to send_message.
-- **Phase 2 of THIS spec:** Generalize to `move`, `reassign`, `update` cross-board mutations. Same pattern, different intents.
+- **Pre-v2 (now):** Phase 1 send_message forward is shipped (2026-04-30). Baseline; no immediate replacement.
+- **v2 migration Phase 2.5 (Weeks 5-6):** `agent_destinations` rows seeded for cross-board flow as part of TaskFlow Permissions Adoption (delta #14 — Codex finding that destinations are the outbound ACL for ALL sends, not a2a-specific). This task is in the migration plan, not deferred.
+- **v2 migration Phase 6 cleanup (Weeks 16-18):** **MVP** lands per Codex downscoping. Minimum viable scope:
+  1. Source agent calls `taskflow_forward_to_parent_agent` MCP tool (in our taskflow-mcp-server.ts)
+  2. Tool routes a2a message via existing `routeAgentMessage()` in `src/modules/agent-to-agent/agent-route.ts`
+  3. Payload encoded **into `content.text` only** (`[TF-FORWARD request_id=<ulid>] Caio (UX) → P11: revisar mockup`)
+  4. Parent agent recognizes the `[TF-FORWARD ...]` text pattern via CLAUDE.md fragment, reads request from existing `subtask_requests` table by `request_id`
+  5. Approval/decline handled by **existing** `taskflow_admin({ action: 'handle_subtask_approval' })` (Phase 2 already shipped this)
+  6. Reply via a2a back to child, again with text payload only
+  - **Skipped initially:** the `taskflow_get_forward` read MCP tool, structured `x_taskflow_*` auxiliary fields, formatter changes
+- **Post-Phase-6 (deferred):** Generalize to `move`, `reassign`, `update` cross-board mutations. Same pattern, different intents. Add `taskflow_get_forward` read tool only if visible-text MVP turns out insufficient.
 
 ## Risks
 

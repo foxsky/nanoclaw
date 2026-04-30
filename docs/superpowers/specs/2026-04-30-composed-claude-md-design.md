@@ -112,11 +112,12 @@ Run **before** v2 migration begins so the flat-output renderer is the single sou
 5. **Compose at deploy vs. at container wake.** v2 supports per-wake composition (changes propagate without redeploy). Worth it for TaskFlow, or unnecessary complexity?
 6. **Auditor regression.** The auditor today greps the deployed CLAUDE.md for rule presence. After composition, what does it grep against — the deployed file (still a flat copy) or the manifest?
 
-## Phase fit (revised after Codex review)
+## Phase fit (revised v2.2)
 
 - **v1 stepping stone (already scheduled):** 2026-05-07 PR `ruleBodyFromTemplate` helper (one source of truth across the 4 migration scripts; doesn't yet decompose the template itself).
-- **v1 main implementation (recommended landing point):** Full decomposition of `add-taskflow` template into `base.md + fragments/ + manifest.json`. Renderer produces flat output, identical in shape to today's `groups/<board>/CLAUDE.md`. **Eliminates the 4 migration scripts.** Lands BEFORE v2 migration begins so v1→v2 doesn't have to chase rule drift on top of everything else.
-- **v2 cutover (Phase 6):** Decide between flat output (simpler, no behavior change) and emitted `@./.claude-fragments/...` imports (smaller files, leans on v2's primitive). **Not** a "compose at session wake" change — v2 composes at container spawn, not session wake. Codex flagged this misconception.
+- **v1 main implementation (recommended landing point — Codex's #2 priority):** Full decomposition of `add-taskflow` template into `base.md + fragments/ + manifest.json`. Renderer produces flat output, identical in shape to today's `groups/<board>/CLAUDE.md`. **Eliminates the 4 migration scripts.** Lands BEFORE v2 migration begins so v1→v2 doesn't have to chase rule drift on top of everything else. Per Codex: "the leverage is your fork-private TaskFlow decomposition, not upstream composition."
+- **v2 migration Phase 6 (Weeks 16-18) — fallback if not done pre-v2:** Same decomposition work, just later. Then optionally adopt `@./.claude-fragments/...` import syntax to lean on v2's regenerate-on-spawn compositor. Decision deferred until v2 cutover.
+  - **Not** a "compose at session wake" change — v2 composes at container spawn, not session wake. Codex flagged this misconception.
 
 ## Risks
 
