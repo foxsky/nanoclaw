@@ -11,22 +11,34 @@ import { migrateClaudeMd } from './lib/migrate-claude-md.mjs';
 
 const RULE_BODY = `
 
-**Cross-board add_subtask forward.** If you call \`taskflow_update({ task_id: 'PXXX', updates: { add_subtask: ... } })\` and the engine returns a \`task not found\` error, the project is on a board you don't have direct or delegated access to (delegated to a sibling, or not delegated at all). Do NOT refuse flatly — forward the request to the parent board's group via \`send_message\`.
+**Cross-board add_subtask forward.** Always try the tool first — \`taskflow_update({ task_id: 'PXXX', updates: { add_subtask: ... } })\` — even when you recognize the project lives on a parent board (e.g., from a \`[seci] P11\` prefix in your task views). The engine is the source of truth for what is writable from your board: it handles delegated tasks via \`cross_board_subtask_mode\` (\`open\` / \`blocked\` / \`approval\`) and returns a structured \`task not found\` only when the project is genuinely not reachable from here. **Never** refuse preemptively just because you can name the parent.
+
+**Engine-error fallback (this rule).** If the tool call returns \`task not found\`, the project is delegated to a sibling or not delegated at all. Do NOT refuse flatly — forward the request to the parent board's group via \`send_message\`.
+
+**Forbidden refusal patterns** (these are the bug, not the fix). After a \`task not found\` engine error, never reply with variants of these fragments:
+
+- ❌ \`pertence ao quadro\` / \`pertence ao quadro pai\`
+- ❌ \`precisará fazer pelo quadro\` / \`você terá que fazer pelo quadro\`
+- ❌ \`faça por lá\` / \`adicione lá no quadro pai\`
+
+These are the literal fragments observed in the 2026-04-27 P11 incident. The bot correctly identified the cross-board context but refused instead of forwarding, leaving the user to do the work manually. Forward via the flow below.
 
 The flow:
 
-1. Look up THIS board's parent and verify the task lives there. Walk one level up via \`parent_board_id\`:
+1. Look up THIS board's parent and verify the project lives there. Walk one level up via \`parent_board_id\`. Note: \`boards\` has no \`name\` column — use \`group_folder\` (or \`short_code\`) for the human-readable display name.
    \`\`\`sql
-   SELECT b_parent.id   AS parent_board_id,
-          b_parent.group_jid AS parent_group_jid,
-          b_parent.name AS parent_board_name
+   SELECT b_parent.id          AS parent_board_id,
+          b_parent.group_jid   AS parent_group_jid,
+          COALESCE(NULLIF(b_parent.short_code, ''), b_parent.group_folder, b_parent.id) AS parent_board_name
    FROM boards b_self
    JOIN boards b_parent ON b_parent.id = b_self.parent_board_id
-   JOIN tasks  t        ON t.board_id = b_parent.id AND t.id = '<TASK_ID>'
+   JOIN tasks  t        ON t.board_id = b_parent.id
+                       AND t.id = '<TASK_ID>'
+                       AND t.type = 'project'
    WHERE b_self.id = '{{BOARD_ID}}'
    LIMIT 1;
    \`\`\`
-   If no row is returned, fall back to the original "task not found" refusal — the task ID truly does not exist on the parent. (Note: this rule covers the common one-level child→parent case. Deeper hierarchies are out of scope for Phase 1.)
+   If no row is returned, fall back to the normal task-not-found handling — the project ID truly does not exist on the parent. (Note: this rule covers the common one-level child→parent case. Deeper hierarchies are out of scope for Phase 1.)
 
 2. Compose the forward message naming the asker and their board (identity disclosure is intentional — the parent admin needs to know who to contact). The format is:
    \`\`\`
