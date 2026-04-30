@@ -6,7 +6,7 @@
 > - `docs/superpowers/specs/2026-04-09-cross-board-subtask-approval-design.md` (cross-board subtask Phase 1+2 — `cross_board_subtask_mode` engine flag)
 > - `docs/superpowers/specs/2026-04-27-cross-board-mutation-forwarding-design.md` (Phase 1 send_message-based forward, deployed 2026-04-30)
 >
-> **Author:** Claude (initial draft, 2026-04-30). To be refined with user via brainstorming skill before plan-write.
+> **Author:** Claude (initial draft, 2026-04-30; Codex-corrected, same day). To be refined with user via brainstorming skill before plan-write.
 
 ---
 
@@ -28,9 +28,11 @@ Pain points:
 - **No structured payload.** The subtask intent (parent task ID, subtask title, asker identity) is reconstructed from PT-BR prose on the parent side. Multi-action requests (add subtask + set due date) lose structure.
 - **No reply path.** Parent admin's decision (added / declined / clarified) doesn't flow back to the child agent automatically.
 
-V2 ships **agent-to-agent routing** (`upstream/main:src/modules/agent-to-agent/agent-route.ts`) — outbound messages with `channel_type='agent'` deliver structured payloads + attachments directly into another agent group's `inbound.db`. Permission via `agent_destinations` table. Self-messages allowed (for follow-up prompt injection).
+V2 ships **agent-to-agent routing** (`upstream/main:src/modules/agent-to-agent/agent-route.ts`) — outbound messages with `channel_type='agent'` deliver `content` + attachments into another agent group's `inbound.db`. Permission via `agent_destinations` table. Wired by default in v2.0.21 (verified by Codex: `src/modules/index.ts:19-23`, `src/db/migrations/index.ts:22-27`, `src/delivery.ts:259-269`). Self-messages bypass the destinations ACL (`agent-route.ts:111-118`).
 
-This is the right primitive to replace the text-based forward.
+**Important constraint (Codex correction):** the transport preserves arbitrary fields on `content`, but the receiving agent's formatter only renders `content.text` + `attachments` for `kind='chat'` (`container/agent-runner/src/formatter.ts:158-179, 223-235`). **Arbitrary structured fields like `intent`, `task_id`, `requested_actions` are stored in the inbound row but invisible in the parent agent's prompt** unless we either (a) encode them into `content.text`, (b) add a typed formatter path, or (c) expose them via a dedicated MCP read tool on the parent side. This shapes the design below.
+
+This is still the right primitive to replace the text-based forward, but "structured payload" is more aspirational than literal — the parent agent will see whatever we encode into `text`, plus auxiliary fields it can pull on demand.
 
 ## Goal
 
@@ -53,17 +55,27 @@ Replace the current cross-board send_message forward with structured agent-to-ag
 
 ### Components
 
-1. **`agent_destinations` rows** declared at provision time. Each child board declares its parent agent group as a destination with type `agent`. Optionally: each child declares siblings if delegation visibility is desired.
+1. **`agent_destinations` rows** declared at provision time. Each child board declares its parent agent group as a destination with type `agent`. Optionally: each child declares siblings if delegation visibility is desired. Schema lives in the module migration (`src/db/migrations/module-agent-to-agent-destinations.ts:21-35`), not the static `SCHEMA` string. A per-session projected `destinations` table in `inbound.db` (`src/modules/agent-to-agent/write-destinations.ts:19-58`) is refreshed by `writeDestinations()` on each container wake — Phase 1 must call it after seeding central `agent_destinations` rows so running sessions pick up the wiring without a restart.
 2. **MCP tool `taskflow_forward_to_parent_agent`** in `taskflow-mcp-server.ts`:
    - Args: `{ task_id, subtask_title, asker_user_id, asker_display_name, requested_actions: [...] }`
    - Looks up parent agent group from board hierarchy
    - Validates `agent_destinations` row exists
-   - Writes structured payload to parent's `inbound.db` via the a2a route helper
-3. **Parent-side intent handler** — new MCP tool or system rule on parent agents that recognizes a `cross_board_forward` intent in incoming a2a messages and:
-   - Surfaces the request to the parent group's chat (`Caio do quadro X pediu...`) with approval/decline buttons (or text triggers `/aprovar P11-S1`, `/recusar P11-S1`)
-   - On approval: executes the mutation (`taskflow_update({ ... add_subtask })`)
-   - On approval or decline: routes a `cross_board_forward_reply` a2a message back to the child agent with the outcome
-4. **Child-side reply handler** — receives `cross_board_forward_reply`, replies in the child group's chat to the original asker (`✅ Aprovado e adicionado.` or `❌ Recusado: <reason>`).
+   - Writes a `cross_board_forwards` row (status=pending) for audit
+   - Routes an a2a message to parent's `inbound.db` with `content` shaped as:
+     ```json
+     {
+       "kind": "chat",
+       "text": "[FORWARD] Caio (UX-SETD-SECTI) → P11: revisar mockup\nForward ID: <ulid>",
+       "x_taskflow_intent": "cross_board_forward",
+       "x_taskflow_forward_id": "<ulid>",
+       "x_taskflow_payload": {...}
+     }
+     ```
+     The `text` field is human-readable and carries the forward ID inline so the parent agent can recover it from the prompt. The `x_taskflow_*` fields are auxiliary (visible to the parent agent ONLY if it pulls them via a dedicated MCP read tool — see component 5).
+3. **Parent-side rule** in the parent agent's CLAUDE.md (composed per Spec A — composed CLAUDE.md): "When you see `[FORWARD] <asker> (<group>) → <task_id>: <intent>` in chat, treat it as a structured forward request. Read the full payload via `taskflow_get_forward(<forward_id>)`. Surface to the manager with approval prompt."
+4. **MCP tool `taskflow_get_forward`** on parent agents — reads the full payload from the auxiliary `x_taskflow_*` fields (or from our `cross_board_forwards` table by `forward_id`) and returns it in a structured shape the parent agent can act on. **This is the bridge that makes "structured payload" actually visible to the parent agent.**
+5. **Approval UI** — parent agent surfaces to the parent group's chat (`📨 Caio (UX-SETD-SECTI) pediu adicionar em P11: 'revisar mockup'. Responda /aprovar abc123 ou /recusar abc123`). Manager replies; parent agent executes and routes a reply a2a back.
+6. **Child-side reply handler** — receives `cross_board_forward_reply` (also encoded into `content.text` for visibility), replies in the child group's chat to the original asker.
 
 ### Schema additions
 
@@ -128,11 +140,13 @@ Child board (Caio sees):
 
 ## Open questions (for brainstorming)
 
-1. **Approval UX.** Reply commands (`/aprovar abc123` / `/recusar abc123`) require parent admin to type IDs. Alternatives: enumerate pending requests numerically (`1`, `2`, ...), or use WhatsApp button-style affordances if Baileys exposes them. Tradeoff: typing ID-strings is unambiguous but tedious.
+0. **(NEW, Codex flag) Reuse v2's `pending_questions` / `pending_approvals` instead of building our own approval UI?** Codex confirmed v2 has `pending_questions`, `pending_approvals`, and `messages_out.in_reply_to`, but no generic A2A request/reply correlation primitive. The `create_agent` tool even accepts a `requestId` parameter that's explicitly unused. Could we layer the cross-board approval on top of `ask_user_question` (parent agent asks the manager via the existing question primitive) and skip the `/aprovar abc123` text protocol entirely? Tradeoff: gains v2-native UI; loses control over the prompt and forward-ID coupling.
+
+1. **Approval UX.** Reply commands (`/aprovar abc123` / `/recusar abc123`) require parent admin to type IDs. Alternatives: enumerate pending requests numerically (`1`, `2`, ...), use `ask_user_question` (per Q0 above), or use WhatsApp button-style affordances if Baileys exposes them. Tradeoff: typing ID-strings is unambiguous but tedious.
 2. **Async vs synchronous from child user's POV.** Caio asks; how long until he sees an answer? If parent admin is offline for hours, do we send a "request pending approval" interim reply? Today (send_message flow) Caio gets nothing — silent.
 3. **Auto-approval threshold.** For trusted child boards (e.g. parent's own delegate), should the parent agent auto-approve without human in loop? Governed by `cross_board_subtask_mode='open'` already, but a2a opens new auto-approval paths.
 4. **Multi-hop.** If grandchild → child → parent, does the child agent forward up the chain? Phase 1 spec is one-level only. v2 a2a primitive supports arbitrary depth; we just don't.
-5. **Identity disclosure.** Today's send_message flow names the asker by display name. a2a payload could carry user_id (more precise, less human-readable). Likely keep both: asker_user_id + asker_display_name in payload.
+5. **Identity disclosure.** Today's send_message flow names the asker by display name. a2a payload could carry user_id (more precise, less human-readable). Likely keep both: asker_user_id + asker_display_name in payload (encoded into `text` for visibility plus auxiliary fields per Codex constraint).
 6. **Reply attribution.** When child agent confirms back to Caio, does it credit the parent admin who approved? Today the child agent has no way to know — a2a reply can include `approved_by_user_id` if we want this.
 7. **Failure modes.** What if parent agent group is down / hasn't woken in N hours / declines without reply? Need timeout + fallback (e.g. fall back to send_message forward after 1h).
 8. **Rollback path.** If parent approves but later wants to revoke, does `cross_board_forward_reply` support an `unapprove` action? Or just a new forward in reverse (`taskflow_forward_to_child` to remove the subtask)?
@@ -146,6 +160,7 @@ Child board (Caio sees):
 
 ## Risks
 
+- **Formatter visibility.** (Codex finding.) Parent agent will only see what we encode into `content.text`. Auxiliary `x_taskflow_*` fields require a fork-private MCP read tool (`taskflow_get_forward`) to be visible. If we forget the read tool, the parent agent flies blind on subtask details. Test path: write an a2a message with auxiliary fields, run a parent-side prompt, assert it can recover the payload.
 - **Two-flow coexistence.** During v2 migration cutover window, some boards on v1 (send_message), some on v2 (a2a). Need a feature flag at the source agent that picks the right path based on target board's runtime version.
 - **Inbound flood.** A parent board for many children could see a queue of pending forwards. Need rate limiting + dedup (don't accept duplicate pending forwards for the same `task_id` + `subtask_title`).
 - **Permission leak.** `agent_destinations` declared too broadly (e.g. every board sees every other board) leaks information. Provision strictly: child sees only its parent.

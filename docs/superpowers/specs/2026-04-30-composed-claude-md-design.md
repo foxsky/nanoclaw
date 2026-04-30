@@ -1,10 +1,10 @@
 # Composed CLAUDE.md for `add-taskflow` — Design Spec (Stub)
 
-> **Status:** Stub. Open for brainstorming. Lands at v2 migration Phase 6 (cleanup) — see `docs/superpowers/plans/2026-04-23-nanoclaw-v2-migration.md`.
+> **Status:** Stub. Open for brainstorming. Phase fit revised after Codex review (see "Phase fit" below): TaskFlow-side decomposition can land **before v2 migration** as a v1 deploy-time renderer; v2's runtime composition is a different (narrower) primitive that we layer on top later.
 >
 > **Predecessor:** v1 stepping stone is the 2026-05-07 PR routine `trig_012bnQzpo2QpgMr7v5kSSDi1` (`ruleBodyFromTemplate({ marker, anchor })` helper consolidating the 4 sister `migrate-claude-md-*.mjs` scripts).
 >
-> **Author:** Claude (initial draft, 2026-04-30). To be refined with user via brainstorming skill before plan-write.
+> **Author:** Claude (initial draft, 2026-04-30; Codex-corrected, same day). To be refined with user via brainstorming skill before plan-write.
 
 ---
 
@@ -22,7 +22,13 @@ Each migration script duplicates a `RULE_BODY` string that **also** lives in the
 - Every new TaskFlow rule = template edit + new migration script + risk of drift between them (caught the v1→v2 cross-board-forward upgrade on 2026-04-30 — the standard migration's idempotency check blocked re-running for prod-only boards, requiring a one-shot `upgrade-cross-board-forward-v1-to-v2.mjs`)
 - 31 board CLAUDE.md files diverge silently as scripts run partial sweeps
 
-V2 ships a "**composed CLAUDE.md**" model (CHANGELOG 2.0.0, "Per-group customization flows through composed CLAUDE.md (shared base + per-group fragments)") that's exactly the right primitive: shared base content lives once, per-group fragments compose at session start. No runtime mutation of generated files.
+V2 ships a **composed CLAUDE.md** model, but the actual primitive is narrower than the CHANGELOG suggests — Codex review confirmed:
+
+- **Composition site:** v2 regenerates `groups/<folder>/CLAUDE.md` on every **container spawn** via `src/claude-md-compose.ts:37-124` called from `src/container-runner.ts:259-261`. NOT every session wake; NOT a runtime template engine in the agent's prompt path.
+- **Composition mechanism:** the output is an **import file** using `@./.claude-shared.md` and `@./.claude-fragments/...` directives, not literal concatenation. Claude Code's loader resolves the imports at session start.
+- **Fragment sources:** (a) `container/skills/*/instructions.md`, (b) built-in MCP `*.instructions.md`, (c) inline `container.json` MCP instructions. **No** manifest, **no** role-based fragment selection logic, **no** variable substitution engine.
+
+**Implication:** TaskFlow's manifest-driven, role-keyed, variable-templated composition is **fork-private tooling layered on top of v2's import compositor**, not a use of v2's native primitive. We benefit from v2's regenerate-on-spawn + import resolution; everything else is ours to build.
 
 ## Goal
 
@@ -63,15 +69,26 @@ Refactor `add-taskflow` so:
   manifest.yaml                      # Add claude_md_composition field
 ```
 
-### Composition rule
+### Composition rule (v1 phase, pre-v2)
 
 ```
 groups/<board>/CLAUDE.md =
-  per-board.md.template (with variables substituted)
+  per-board.md.template (with variables substituted by our renderer)
 + base.md
 + each fragments/<name>.md WHERE fragment-manifest.json["<board-role>"].includes("<name>")
 + optional groups/<board>/CLAUDE.md.local-overrides (operator escape hatch)
 ```
+
+The renderer is `scripts/compose-claude-md.mjs` (fork-private). Output is a flat file that drops in alongside today's `groups/<board>/CLAUDE.md`. No runtime change in v1.
+
+### Composition rule (v2 phase, post-cutover)
+
+After v2 cutover, two options for layering on top of v2's import compositor:
+
+1. **Stay flat (simplest).** Our renderer keeps producing flat output; v2's `claude-md-compose.ts` writes the file at spawn but our content has already been resolved. We pay no cost from v2's import resolution (idempotent on a flat file). Benefit: no behavior change.
+2. **Adopt imports.** Our renderer emits `@./.claude-fragments/<name>.md` lines instead of inlining. v2's loader resolves at session start. Benefit: bytewise smaller `groups/<board>/CLAUDE.md`; debuggable per-fragment via filesystem. Cost: per-fragment file proliferation; harder to inspect by `cat`.
+
+Decision deferred until v2 cutover. Either way, our manifest + variable substitution + role selection logic stays fork-private; v2 doesn't natively support them.
 
 `fragment-manifest.json` keys fragments by board role (`leaf`, `intermediate`, `root`, `manager`, `cross-board-shared`). New rules land as new fragment files and a manifest entry. No script per rule.
 
@@ -84,12 +101,7 @@ One-shot `scripts/decompose-existing-claude-md.mjs`:
 - Discard the rest (it's all reproducible from template + fragments)
 - Re-run `compose-claude-md.mjs` — output should match input modulo formatting
 
-This becomes the "v2 cutover" CLAUDE.md regeneration step.
-
-### Backward compatibility
-
-- During v1 → v2 transition: dual-mode. `compose-claude-md.mjs` can run on v1 too — it just regenerates the same flat file. Cuts the 4 migration scripts immediately, before v2 ships.
-- After v2 cutover: optional adoption of v2's per-wake composition (compose at container wake instead of at deploy).
+Run **before** v2 migration begins so the flat-output renderer is the single source of truth across the v1→v2 cutover. The "v2 cutover" CLAUDE.md regeneration step then becomes a no-op for content (only filesystem layout changes).
 
 ## Open questions (for brainstorming)
 
@@ -100,11 +112,11 @@ This becomes the "v2 cutover" CLAUDE.md regeneration step.
 5. **Compose at deploy vs. at container wake.** v2 supports per-wake composition (changes propagate without redeploy). Worth it for TaskFlow, or unnecessary complexity?
 6. **Auditor regression.** The auditor today greps the deployed CLAUDE.md for rule presence. After composition, what does it grep against — the deployed file (still a flat copy) or the manifest?
 
-## Phase fit
+## Phase fit (revised after Codex review)
 
-- **v1 stepping stone (already scheduled):** 2026-05-07 PR `ruleBodyFromTemplate` helper (one source of truth across the 4 migration scripts; doesn't yet decompose the template itself)
-- **v1 next step (optional):** Full decomposition of `add-taskflow` template into base + fragments. Rendering still produces today's flat output. Eliminates the 4 migration scripts.
-- **v2 cutover (Phase 6):** Adopt v2's per-wake composition primitive. Migrate from "compose at deploy" to "compose at session wake."
+- **v1 stepping stone (already scheduled):** 2026-05-07 PR `ruleBodyFromTemplate` helper (one source of truth across the 4 migration scripts; doesn't yet decompose the template itself).
+- **v1 main implementation (recommended landing point):** Full decomposition of `add-taskflow` template into `base.md + fragments/ + manifest.json`. Renderer produces flat output, identical in shape to today's `groups/<board>/CLAUDE.md`. **Eliminates the 4 migration scripts.** Lands BEFORE v2 migration begins so v1→v2 doesn't have to chase rule drift on top of everything else.
+- **v2 cutover (Phase 6):** Decide between flat output (simpler, no behavior change) and emitted `@./.claude-fragments/...` imports (smaller files, leans on v2's primitive). **Not** a "compose at session wake" change — v2 composes at container spawn, not session wake. Codex flagged this misconception.
 
 ## Risks
 

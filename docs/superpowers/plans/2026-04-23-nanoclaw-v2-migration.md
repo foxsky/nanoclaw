@@ -37,22 +37,25 @@
 
 ---
 
-## v2.0.21 delta re-review (2026-04-30)
+## v2.0.21 delta re-review (2026-04-30, Codex-corrected)
 
-Fold-in of upstream changes since `v2.0.10` baseline (576 commits, 72 files changed, ~3939 insertions / ~580 deletions). **No new `[BREAKING]` items in CHANGELOG since 2.0.0** — architecture is stable, deltas are patches + features.
+Fold-in of upstream changes since `v2.0.10` baseline (`git diff --shortstat 78b0ad68..upstream/main` = **183 commits, 76 files changed, ~4632 insertions / ~576 deletions**). **No new `[BREAKING]` items in CHANGELOG since 2.0.0** — architecture is stable, deltas are patches + features.
+
+> Counts revised after Codex gpt-5.5/high read-only validation flagged the original v2.1 numbers as wrong. Initial v2.1 cited 576/72/3939/580; the actual `git diff --shortstat` against `v2.0.10` is the row above. Lesson: anchor stats to a real `git rev-list`/`shortstat`, never to commit-list scrolling.
 
 | # | Delta | Affects | Phase |
 |---|-------|---------|-------|
-| 1 | OneCLI mandate tightened: `src/container-runner.ts:459` now `throw new Error('OneCLI gateway not applied — refusing to spawn container without credentials')`. Was caught at L437-451 with "spawn continues with no credentials." | Native-credential-proxy escape skill must be re-merged against v2.0.21 head; merge surface bigger but escape still works. | Phase 0 Task 0.3 |
+| 1 | OneCLI mandate tightened: `src/container-runner.ts:449-459` now `throw new Error('OneCLI gateway not applied — refusing to spawn container without credentials')`. Was caught at L437-451 with "spawn continues with no credentials." | **Native-credential-proxy branch is bit-rotted against v2.0.21.** `git merge-tree` reports conflicts in `src/container-runner.ts`, `src/config.ts`, `src/container-runner.test.ts`, `setup/verify.ts`. The branch's `container-runner.ts` is structurally older and imports `credential-proxy.js`, not the v2 OneCLI path. The escape **concept** likely still works, but the branch needs repair before relying on it. Phase 0 Task 0.3 must repair + boot-test, not just re-merge. | Phase 0 Task 0.3 |
 | 2 | `schedule_task` MCP tool now writes routing into **content JSON** (`platformId`, `channelType`, `threadId`) — not just row columns. Without it, host-sweep falls through to the "Routing recovery" retry prompt. (Commit `8dd004ca`, 2026-04-30.) | Our Kipp/digest/standup `scheduled_tasks` custom seeder must populate these three fields in content JSON. | Phase 3 Task 3.5 |
-| 3 | New `src/platform-id.ts` exports `namespacedPlatformId(channel, raw)`: skips `channel:` prefix when raw contains `@` (WhatsApp/iMessage), starts with `+` (Signal DM), or starts with `group:` (Signal group). Chat-SDK adapters (Telegram/Discord/Slack/Teams) get prefix. | Our 31 boards are WhatsApp `@g.us` JIDs → skip prefix. The TaskFlow-groups seeder must route every JID through this rule. | Phase 3 Task 3.4 |
+| 3 | New `src/platform-id.ts` exports `namespacedPlatformId(channel, raw)`: returns raw unchanged when (a) `raw` is **already prefixed** with `${channel}:` (idempotent fast-path), (b) raw contains `@` (WhatsApp/iMessage), (c) starts with `+` (Signal DM), or (d) starts with `group:` (Signal group). Chat-SDK adapters (Telegram/Discord/Slack/Teams) get prefix. | Our 31 boards are WhatsApp `@g.us` JIDs → skip prefix. The TaskFlow-groups seeder must route every JID through this rule and is idempotent because of (a). | Phase 3 Task 3.4 |
 | 4 | `setup/register.ts` regression fix (`fc375ca7`): upstream itself just fixed `createMessagingGroupAgent` being called with **legacy field names**. | Our seeder copy-pasted from earlier upstream samples may inherit the broken fields. Diff against current upstream before running. | Phase 3 Task 3.4 |
-| 5 | Channel-approval flow expanded ~600 lines (`modules/permissions/channel-approval.ts` +217, `permissions/index.ts` +300) — agent selection + free-text naming. | WhatsApp re-port wire-up surface bigger than v2 plan estimated. Bump Phase 2 estimate from 1-2 weeks to 2-3 weeks. | Phase 2 Task 2.2 |
+| 5 | Channel-approval flow expanded — `git diff --numstat 78b0ad68..upstream/main -- src/modules/permissions/` shows **+439 / -98 net (+341)** across the module. Per-file: `channel-approval.ts` +163/-54 (net +109), `index.ts` +262/-38 (net +224). Earlier "+217" / "+300" were diffstat churn widths, not insertions. Feature: agent selection + free-text naming. | WhatsApp re-port wire-up surface bigger than v2 plan estimated, but smaller than the original "+600" estimate suggested. Phase 2 estimate bumped from 1-2 weeks to 2-3 weeks remains directionally correct. | Phase 2 Task 2.2 |
 | 6 | Startup circuit breaker shipped (`2bf296b0` + `336e01d2` hardening). On by default. | Could block boots if any of our 31 boards trip init-time errors. Smoke-test on a single board before fleet cutover. | Phase -1 Task -1.6 (NEW) |
 | 7 | `fix(claude-provider): respect operator-set CLAUDE_CODE_AUTO_COMPACT_WINDOW` (`98898489`). | Our `=165000` setting is honored without patches. Strike the env-semantics worry from the SDK 0.2.111 audit. | Phase 3 Task 3.1 |
-| 8 | **Security:** path traversal fixes in attachment handling — `7e37b13a` (channel-inbound), `6e5e568d` + `2a3be9ec` (agent-sent file names). New `src/attachment-safety.ts` module. | Same bug class may exist in v1.2.53. Back-port the sanitizer to our v1 fork **now**, independent of v2 migration. | Phase -1.5 (NEW) |
-| 9 | `add-signal-v2` skill folded back into `add-signal` (`b6be3b9b`). | Pattern signal: channel ports likely won't need separate v2-suffix branches. Lowers Phase 2 complexity slightly. | Phase 2 |
-| 10 | New `nc` CLI scaffold (`3a3d2ee6`) with `list-groups` command. | Operational only; no migration impact. Optional adoption post-cutover. | Out-of-scope |
+| 8 | **Security:** path traversal fixes in attachment handling — `7e37b13a` (channel-inbound), `6e5e568d` + `2a3be9ec` (agent-sent file names). New `src/attachment-safety.ts` module. **Primitive is `isSafeAttachmentName()`** (`src/attachment-safety.ts:18-22`): rejects names with path separators, `..` segments, NUL bytes, or empty basenames. **NOT an extension allowlist** — MIME/type mapping in `session-manager.ts:263-277, 375-383` only derives a fallback name when no explicit name exists. | Same bug class may exist in v1.2.53. Back-port the basename guard + MIME-derived fallback to our v1 fork **now**, independent of v2 migration. Don't describe it as an extension allowlist. | Phase -1.5 (NEW) |
+| 9 | `add-signal-v2` skill folded back into `add-signal` (`b6be3b9b`). | Pattern signal: channel ports likely won't need separate v2-suffix branches. Lowers Phase 2 complexity slightly. **Caveat:** don't infer all channel ports will be this easy — Signal happened to have a clean fold-back, WhatsApp's customizations are deeper. | Phase 2 |
+| 10 | **(REMOVED — Codex correction.)** Earlier draft cited `nc` CLI scaffold (`3a3d2ee6`) as part of v2.0.21. **Not on `upstream/main`**: `git merge-base --is-ancestor 3a3d2ee6 upstream/main` returns false; the commit lives on `upstream/nc-cli` only. No `bin/nc` or `src/cli/*` exists on main. | Out-of-scope until `nc-cli` branch is merged upstream. | n/a |
+| 11 | **(NEW — Codex addition.)** Provider-selection precedence fix (`5845a5a9`): provider precedence is now `sessions.agent_provider → agent_groups.agent_provider → container.json → claude` (`src/container-runner.ts:184-204`). Per-provider continuation keying (`81ef193e`). | Material **only if our fork uses non-Claude providers** (Codex/OpenCode/Ollama at the agent level) or sets per-session/per-group provider overrides. Today our fork is Anthropic-SDK-only with Ollama used outside the agent (Kipp / semantic audit / extractor stack), so impact is low. Verify in Phase 0 that none of our `agent_groups` or `sessions` rows set `agent_provider`. | Phase 0 Task 0.6 (env+provider audit) |
 
 **Drift trajectory:** ~25 upstream commits/day at this rate. By Phase 0 entry (~3-4 weeks out), upstream will be ~700 commits further along. **Recommendation:** pin the migration baseline to a specific upstream commit hash at Phase -1 entry; only re-merge upstream `main` between phases, with a delta re-review at each merge. Document the pinned hash in the Phase -1 sign-off.
 
@@ -284,9 +287,12 @@ Upstream `2.0.21` ships a startup circuit breaker (`src/circuit-breaker.ts`, har
 
 **Goal:** Port the upstream attachment path-traversal fix (`7e37b13a` + `6e5e568d` + `2a3be9ec`) to our v1.2.53 fork. Do this independently of v2 migration — it's a security fix, not a migration step.
 
+**The actual primitive (Codex-corrected):** v2's `src/attachment-safety.ts:18-22` exposes `isSafeAttachmentName(name)` which **rejects** names containing path separators (`/`, `\`), `..` segments, NUL bytes, or empty basenames. MIME-type-derived extension is used **only as a fallback** when no explicit filename was provided (`session-manager.ts:263-277, 375-383`). The fix is NOT a safe-extension allowlist.
+
 **Success criteria:**
-- Our v1 attachment-handling code path matches v2's mimeType-derived extension + safe-extension allowlist behavior.
-- A failing test exists for the path-traversal vector (e.g., `..` in suggested filename).
+- Our v1 attachment-handling code path validates inbound + agent-sent filenames via a basename guard equivalent to `isSafeAttachmentName()`.
+- A MIME-derived fallback name is used when filename is absent.
+- A failing test exists for each of the rejection vectors (`..`, `/`, `\`, NUL, empty).
 - The fix lands on `main`, ships through `deploy.sh` to prod, soaks for 48h before Phase 0 begins.
 
 ### Task -1.5.1: Identify our v1 attachment code path
@@ -301,9 +307,9 @@ Upstream `2.0.21` ships a startup circuit breaker (`src/circuit-breaker.ts`, har
 
 ### Task -1.5.3: Port the sanitizer
 
-- [ ] **Step 1:** Adapt `attachment-safety.ts` to our codebase (no Bun deps; works under Node). Keep the same mimeType-derived extension + extension allowlist.
+- [ ] **Step 1:** Adapt `attachment-safety.ts` to our codebase (no Bun deps; works under Node). Keep the same `isSafeAttachmentName()` primitive (basename guard rejecting separators, `..`, NUL, empty) plus the MIME-type-derived **fallback** name path for nameless attachments.
 - [ ] **Step 2:** Wire it into the call-sites identified in Task -1.5.1.
-- [ ] **Step 3:** Run the test from Task -1.5.2; verify PASS.
+- [ ] **Step 3:** Run the tests from Task -1.5.2 (one per rejection vector); verify all PASS.
 - [ ] **Step 4:** Codex review (read-only) before commit, per `feedback_review_before_deploy.md`.
 - [ ] **Step 5:** Commit, deploy via `./scripts/deploy.sh`, soak 48h with prod attachment traffic.
 
