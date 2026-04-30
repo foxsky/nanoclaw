@@ -21,7 +21,7 @@ const RULE_BODY = `
 - ❌ \`precisará fazer pelo quadro\` / \`você terá que fazer pelo quadro\`
 - ❌ \`faça por lá\` / \`adicione lá no quadro pai\`
 
-These are the literal fragments observed in the 2026-04-27 P11 incident. The bot correctly identified the cross-board context but refused instead of forwarding, leaving the user to do the work manually. Forward via the flow below.
+Forward via the flow below instead.
 
 The flow:
 
@@ -29,7 +29,7 @@ The flow:
    \`\`\`sql
    SELECT b_parent.id          AS parent_board_id,
           b_parent.group_jid   AS parent_group_jid,
-          COALESCE(NULLIF(b_parent.short_code, ''), b_parent.group_folder, b_parent.id) AS parent_board_name
+          COALESCE(b_parent.short_code, b_parent.group_folder, b_parent.id) AS parent_board_name
    FROM boards b_self
    JOIN boards b_parent ON b_parent.id = b_self.parent_board_id
    JOIN tasks  t        ON t.board_id = b_parent.id

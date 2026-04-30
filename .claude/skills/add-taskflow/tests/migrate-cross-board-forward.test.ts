@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -102,74 +102,58 @@ describe('migrate-claude-md-cross-board-forward', () => {
     expect(after).not.toContain('Cross-board add_subtask forward');
   });
 
-  it('rule addresses preemptive cross-board recognition without bypassing the engine', () => {
-    // Bug 2026-04-27: bot recognized P11 belonged to parent (SECI) board
-    // upfront from the [seci] prefix in its task list and refused with
-    // "pertence ao quadro X, faça por lá" instead of forwarding. The rule
-    // must acknowledge that recognition path explicitly — and tell the
-    // agent to STILL call the tool first, never refuse preemptively.
-    writeBoard(env.dir, 'fixture-board', TEMPLATE_PRE_RULE);
-    runMigration(env.dir);
-    const after = fs.readFileSync(
-      path.join(env.dir, 'fixture-board', 'CLAUDE.md'),
-      'utf8',
-    );
-    // The rule must reference the recognition path AND ban preemptive refusal.
-    expect(after).toMatch(/recogni[sz]e|reconhece/i);
-    expect(after).toContain('[seci]');
-    // The `**Never**` markdown emphasis can sit between the words, so allow
-    // any non-greedy run of chars between "never" and "preemptively".
-    expect(after).toMatch(/never\b[^\n]{0,40}refuse[^\n]{0,40}preemptively/i);
-  });
+  // Rule-body content assertions: all share the same fixture and migrated
+  // output. Run the migration once via beforeAll to avoid 4× spawnSync.
+  describe('rule body content (shared fixture)', () => {
+    let after: string;
+    let plain: string;
 
-  it('rule forbids the refusal phrases observed in the 2026-04-27 bug', () => {
-    writeBoard(env.dir, 'fixture-board', TEMPLATE_PRE_RULE);
-    runMigration(env.dir);
-    const after = fs.readFileSync(
-      path.join(env.dir, 'fixture-board', 'CLAUDE.md'),
-      'utf8',
-    );
-    // The rule must explicitly forbid the bot's actual refusal phrasing so
-    // a future agent can recognize the anti-pattern. These three Portuguese
-    // fragments are the literal wording from msg 3EB04ABD3417EAA72CA13F.
-    expect(after).toContain('pertence ao quadro');
-    expect(after).toContain('faça por lá');
-    expect(after).toContain('precisará fazer pelo quadro');
-  });
+    beforeAll(() => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'migrate-cb-shared-'));
+      writeBoard(dir, 'fixture-board', TEMPLATE_PRE_RULE);
+      runMigration(dir);
+      after = fs.readFileSync(
+        path.join(dir, 'fixture-board', 'CLAUDE.md'),
+        'utf8',
+      );
+      // Markdown emphasis (`**Never**`) makes phrase regex brittle; assert
+      // against an emphasis-stripped copy so prose tweaks don't cascade.
+      plain = after.replace(/\*\*/g, '');
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
 
-  it('rule preserves engine-first ordering (does not short-circuit cross_board_subtask_mode)', () => {
-    // Codex flagged this risk: a "preemptive forward" trigger that bypasses
-    // the engine call would skip the engine's blocked/approval branches for
-    // delegated tasks (cross_board_subtask_mode). The rule must instead say
-    // "always try the tool first, even when you recognize cross-board context."
-    writeBoard(env.dir, 'fixture-board', TEMPLATE_PRE_RULE);
-    runMigration(env.dir);
-    const after = fs.readFileSync(
-      path.join(env.dir, 'fixture-board', 'CLAUDE.md'),
-      'utf8',
-    );
-    // Must instruct "try the tool first" / "always try" before any forward.
-    expect(after).toMatch(/try the tool first|always try/i);
-    // Must reference taskflow_update as the tool to call first, not
-    // recommend a manual forward upfront.
-    expect(after).toContain('taskflow_update');
-  });
+    // Bug 2026-04-27 (msg 3EB04ABD3417EAA72CA13F): bot recognized P11
+    // belonged to parent SECI from a `[seci]` prefix in its views and
+    // refused without forwarding. The rule must acknowledge the
+    // recognition path AND ban preemptive refusal.
+    it('addresses preemptive cross-board recognition without bypassing the engine', () => {
+      expect(after).toMatch(/recogni[sz]e|reconhece/i);
+      expect(after).toContain('[seci]');
+      expect(plain).toMatch(/never\s+refuse\s+preemptively/i);
+    });
 
-  it('rule SQL uses real boards columns (no b_parent.name)', () => {
-    // Codex caught this pre-existing bug: boards has no `name` column —
-    // schema is (id, group_jid, group_folder, board_role, hierarchy_level,
-    // max_depth, parent_board_id, short_code, owner_person_id). The
-    // verification SQL must use group_folder/short_code, not name.
-    writeBoard(env.dir, 'fixture-board', TEMPLATE_PRE_RULE);
-    runMigration(env.dir);
-    const after = fs.readFileSync(
-      path.join(env.dir, 'fixture-board', 'CLAUDE.md'),
-      'utf8',
-    );
-    expect(after).not.toMatch(/b_parent\.name/);
-    // Real human-readable column substitutes:
-    expect(after).toMatch(/group_folder|short_code/);
-    // Filter to project type to avoid colliding with regular tasks.
-    expect(after).toContain("t.type = 'project'");
+    // Three Portuguese fragments are the literal wording from the bug.
+    it('forbids the refusal phrases observed in the 2026-04-27 bug', () => {
+      expect(after).toContain('pertence ao quadro');
+      expect(after).toContain('faça por lá');
+      expect(after).toContain('precisará fazer pelo quadro');
+    });
+
+    // Codex pre-merge guard: a "preemptive forward" trigger would skip
+    // the engine's blocked/approval branches for delegated tasks. The
+    // rule must mandate the tool call first.
+    it('preserves engine-first ordering (does not short-circuit cross_board_subtask_mode)', () => {
+      expect(after).toMatch(/try the tool first|always try/i);
+      expect(after).toContain('taskflow_update');
+    });
+
+    // Codex pre-merge guard: `boards` has no `name` column. Schema is
+    // (id, group_jid, group_folder, board_role, hierarchy_level,
+    // max_depth, parent_board_id, short_code, owner_person_id).
+    it('SQL uses real boards columns (no b_parent.name)', () => {
+      expect(after).not.toMatch(/b_parent\.name/);
+      expect(after).toMatch(/group_folder|short_code/);
+      expect(after).toContain("t.type = 'project'");
+    });
   });
 });
