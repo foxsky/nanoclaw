@@ -304,9 +304,15 @@ Upstream `2.0.21` ships a startup circuit breaker (`src/circuit-breaker.ts`, har
 
 ## Phase -1.5: Security back-port to v1 (NEW, delta #8)
 
-**Goal:** Port the upstream attachment path-traversal fix (`7e37b13a` + `6e5e568d` + `2a3be9ec`) to our v1.2.53 fork. Do this independently of v2 migration — it's a security fix, not a migration step.
+**Goal:** Port the upstream attachment path-traversal fix to our v1.2.53 fork. Do this independently of v2 migration — it's a security fix, not a migration step.
 
-**The actual primitive (Codex-corrected):** v2's `src/attachment-safety.ts:18-22` exposes `isSafeAttachmentName(name)` which **rejects** names containing path separators (`/`, `\`), `..` segments, NUL bytes, or empty basenames. MIME-type-derived extension is used **only as a fallback** when no explicit filename was provided (`session-manager.ts:263-277, 375-383`). The fix is NOT a safe-extension allowlist.
+**Commit set (v2.0.10 → v2.0.22):**
+- `7e37b13a` — channel-inbound path-traversal fix (basename guard)
+- `6e5e568d` + `2a3be9ec` — agent-sent file name safety
+- `fc3c11b6` (v2.0.22) — `session-manager`: outbox path-confinement applied to inbound attachments
+- `852009dc` (v2.0.22) — container: confine outbound attachment paths
+
+**The actual primitive (Codex-corrected):** v2's `src/attachment-safety.ts:18-22` exposes `isSafeAttachmentName(name)` which **rejects** names containing path separators (`/`, `\`), `..` segments, NUL bytes, or empty basenames. MIME-type-derived extension is used **only as a fallback** when no explicit filename was provided (`session-manager.ts:263-277, 375-383`). The fix is NOT a safe-extension allowlist. The 2.0.22 follow-ups extend the same primitive into outbox/inbox path-confinement on both ends.
 
 **Success criteria:**
 - Our v1 attachment-handling code path validates inbound + agent-sent filenames via a basename guard equivalent to `isSafeAttachmentName()`.
@@ -478,21 +484,23 @@ cp /tmp/prod-snapshot-<DATE>/data/taskflow/taskflow.db .
 
 - [ ] **Step 3: Send + receive "ping".**
 
-### Task 0.6: Env allowlist audit (NEW)
+### Task 0.6: Env allowlist audit (UPDATED 2026-04-30 with worktree finding)
 
-- [ ] **Step 1: Grep v2 allowlist**
+**Confirmed finding (2026-04-30, /root/nanoclaw-v2 at `7ac8dd0f`):** v2 has **no allowlist** in the v1 sense. `src/container-runner.ts:438-446` passes ONLY `TZ` + provider-contributed env (from `registerProviderContainerConfig()`) + OneCLI proxy injection. Comment is explicit: *"Environment — only vars read by code we don't own. Everything NanoClaw-specific is in container.json (read by runner at startup)."* `src/env.ts` is now `readEnvFile(keys)` — caller-driven, no global allowlist file to patch.
 
-```bash
-cd /root/nanoclaw-v2
-git grep -n 'OLLAMA_HOST\|EMBEDDING_MODEL\|NANOCLAW_SEMANTIC_AUDIT' -- src/
-# Expected: missing entries in v2's safe-env set.
-```
+**Implication:** our `OLLAMA_HOST`, `EMBEDDING_MODEL`, all 6 `NANOCLAW_SEMANTIC_AUDIT_*` envs are dropped on container spawn unless we either (a) extend container-runner's env-passing block or (b) move semantic-audit / embedding configs into per-board `container.json` (read by agent-runner at startup). Option (b) is more v2-native; option (a) is a smaller fork-private patch.
 
-- [ ] **Step 2: Identify the allowlist file**
-
-Likely `src/container-runner.ts` or `src/env.ts` or similar. Record the exact location where the envs would need to be added.
-
-- [ ] **Step 3: Write a minimal patch that adds our 6 semantic-audit keys + Ollama + Embedding.** Stage for Phase 3 application.
+- [x] **Step 1: Confirm no global allowlist exists in v2** — done. `git grep` returns no `OLLAMA_HOST` / `EMBEDDING_MODEL` / `NANOCLAW_SEMANTIC_AUDIT_*` matches in v2 src. Confirmed.
+- [x] **Step 2: Identify the env-injection site** — done. `src/container-runner.ts:438-446` is the only place container env vars are added beyond OneCLI/TZ.
+- [ ] **Step 3: Decide between fork-private patch vs. container.json migration**
+  - Option (a): patch `container-runner.ts` to push `OLLAMA_HOST`, `EMBEDDING_MODEL`, `NANOCLAW_SEMANTIC_AUDIT_*` from `process.env` into `args.push('-e', ...)`. Smallest change. Drift-prone (re-applies each upstream merge).
+  - Option (b): extend `container-config.ts` to read a `taskflow.semanticAudit` block from `container.json` per-board; agent-runner reads at startup. More v2-native. Requires touching all 31 boards' `container.json` during Phase 2.5.
+- [ ] **Step 4: Verify no `agent_provider` overrides in our DB** (delta #11). Phase 0 prereq for the provider precedence fix being a no-op for us:
+  ```sql
+  SELECT COUNT(*) FROM sessions WHERE agent_provider IS NOT NULL;
+  SELECT COUNT(*) FROM agent_groups WHERE agent_provider IS NOT NULL;
+  ```
+  Expected: 0 / 0. If non-zero, audit which sessions/groups override and decide intent.
 
 ### Task 0.7: `.env` safety audit (NEW)
 
