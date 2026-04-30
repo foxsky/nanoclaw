@@ -1,11 +1,12 @@
-# NanoClaw v2 Migration Plan (v2 — post-review rewrite)
+# NanoClaw v2 Migration Plan (v2.2 — Codex feature-evaluation update)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. At every phase gate, pause for user sign-off before proceeding.
 
 **Revision history:**
 - v1 (2026-04-23 first draft) — superseded. Three-agent review + Codex gpt-5.5/xhigh validation found ~30 concrete bugs and multiple strategy errors. See git history for v1.
 - v2 (2026-04-23 rewrite) — corrects file counts, command syntax, adds Phase -1 infra prep, rewrites Phase 5 cutover model (Baileys auth prohibits per-group shadow), extends timeline to 12-16 weeks, adds strategic decision section.
-- v2.1 (2026-04-30 delta re-review) — folds in `v2.0.10 → v2.0.21` upstream changes (576 commits, 72 files, no new BREAKING). Adds Phase -1.5 security back-port, expands Phase 0 (circuit breaker + native-proxy re-merge), Phase 2 (channel-approval surface grew ~600 lines), Phase 3 (schedule_task content JSON routing, `namespacedPlatformId()` rule, register field-name regression). See "v2.0.21 delta" section below.
+- v2.1 (2026-04-30 delta re-review) — folds in `v2.0.10 → v2.0.21` upstream changes. Adds Phase -1.5 security back-port, expands Phase 0 (circuit breaker + native-proxy re-merge), Phase 2 (channel-approval surface), Phase 3 (schedule_task content JSON routing, `namespacedPlatformId()` rule, register field-name regression). Codex-corrected delta numbers (183 commits, 76 files, +4632/-576 LOC).
+- v2.2 (2026-04-30 features evaluation) — Codex gpt-5.5/high independent evaluation of v2 features for our skills surfaced **9 missed feature areas** (sender-approval, channel-approval, ask_user_question/pending_questions, scheduling improvements, unregistered_senders audit, named destinations as outbound ACL, self-mod, mount allowlist, new upstream skills). Adds **Phase 2.5: TaskFlow Permissions Adoption** (Weeks 5-6, between WhatsApp re-port and isMain rewrite) — re-prioritized as Codex's #1 recommendation. Downscopes cross-board a2a to "visible-text MVP" reusing existing `subtask_requests` + `handle_subtask_approval`. Net timeline: 14-18 weeks full-time.
 
 ---
 
@@ -56,6 +57,24 @@ Fold-in of upstream changes since `v2.0.10` baseline (`git diff --shortstat 78b0
 | 9 | `add-signal-v2` skill folded back into `add-signal` (`b6be3b9b`). | Pattern signal: channel ports likely won't need separate v2-suffix branches. Lowers Phase 2 complexity slightly. **Caveat:** don't infer all channel ports will be this easy — Signal happened to have a clean fold-back, WhatsApp's customizations are deeper. | Phase 2 |
 | 10 | **(REMOVED — Codex correction.)** Earlier draft cited `nc` CLI scaffold (`3a3d2ee6`) as part of v2.0.21. **Not on `upstream/main`**: `git merge-base --is-ancestor 3a3d2ee6 upstream/main` returns false; the commit lives on `upstream/nc-cli` only. No `bin/nc` or `src/cli/*` exists on main. | Out-of-scope until `nc-cli` branch is merged upstream. | n/a |
 | 11 | **(NEW — Codex addition.)** Provider-selection precedence fix (`5845a5a9`): provider precedence is now `sessions.agent_provider → agent_groups.agent_provider → container.json → claude` (`src/container-runner.ts:184-204`). Per-provider continuation keying (`81ef193e`). | Material **only if our fork uses non-Claude providers** (Codex/OpenCode/Ollama at the agent level) or sets per-session/per-group provider overrides. Today our fork is Anthropic-SDK-only with Ollama used outside the agent (Kipp / semantic audit / extractor stack), so impact is low. Verify in Phase 0 that none of our `agent_groups` or `sessions` rows set `agent_provider`. | Phase 0 Task 0.6 (env+provider audit) |
+
+### v2.2 additions — Codex feature evaluation (2026-04-30)
+
+Items 12-20 surfaced by Codex gpt-5.5/high independent evaluation. These are **feature opportunities**, not migration risks — the migration plan still works without them, but adopting them during the migration is the highest-leverage path.
+
+| # | Feature | Affects our skills | Phase |
+|---|---------|--------------------|-------|
+| 12 | **Unknown-sender approval** (`src/modules/permissions/sender-approval.ts`, migration 011, commit `622a3708`). Drops + logs messages from non-members; admin can approve and replay (or block permanently). | HIGH fit for 31 government boards. Replaces our current trigger-pattern-based gating. Admins get a structured approval flow for new members. | Phase 2.5 (NEW) |
+| 13 | **Unknown-channel registration** (`src/modules/permissions/channel-approval.ts`, migration 012, commits `719f97e4` + `db198377`). Owner/admin approves a new DM/group → wires it to existing or new agent. | HIGH fit for controlled government onboarding. Today board provisioning is operator-driven; v2 lets admins request new channels via approval UI. | Phase 2.5 (NEW) |
+| 14 | **`agent_destinations` is the outbound ACL for ALL sends** (channels and agents), not just a2a (`src/modules/agent-to-agent/db/agent-destinations.ts`, commit `e83ffbc1`). | HIGH fit. We treated this as a2a-specific. Actually controls every outbound `send_message` target — a unified permission map for board → board, board → admin DM, etc. | Phase 2.5 + Phase 6 (a2a-lite) |
+| 15 | **`ask_user_question` + `pending_questions`** (`container/agent-runner/src/mcp-tools/interactive.ts`, `src/modules/interactive/index.ts`, commit `c31bb02c`). v2-native card-style approval primitive. | HIGH/MED fit. Replaces hypothetical `/aprovar abc123` text protocol in cross-board forwarding. Use for parent-admin approval prompts in Phase 6 a2a-lite. | Phase 6 (a2a-lite) |
+| 16 | **Scheduling improvements**: `update_task` MCP tool, deduped `list_tasks`, timezone parsing, pre-agent `script` support (`container/agent-runner/src/mcp-tools/scheduling.ts`, `src/modules/scheduling/*`, commits `cdf18e60`, `dcfa12ea`, `8dd004ca`). | HIGH fit. Simplifies our Kipp/digest/standup runners. Today our `task-scheduler.ts` re-implements this; v2 has it natively. | Phase 3 Task 3.5 (incorporate before re-implementing fork-private) |
+| 17 | **`unregistered_senders` audit table** (migration 008, commit `39d2af99`). Operations visibility into blocked/dropped people and channels. | HIGH fit for ops monitoring. Pairs with Item 12 — we get an audit trail of who tried to message which board and was rejected. | Phase 2.5 |
+| 18 | **Self-mod container config** (`src/modules/self-mod/*`, `container/agent-runner/src/mcp-tools/self-mod.ts`, commits `75c2fde2`, `3b8240a9`). Agents can request `install_packages` / `add_mcp_server`; admin approval applies to `groups/<folder>/container.json`. | MED fit; **probably disable** for prod TaskFlow boards (low trust ceiling). May enable for a sandboxed dev board. | Out-of-scope for fleet; opt-in per-board |
+| 19 | **Mount allowlist** at `~/.config/nanoclaw/mount-allowlist.json` + `additionalMounts` in container.json (`src/modules/mount-security/index.ts`, `src/container-config.ts`). | MED fit. Relevant when wiring `add-gmail-tool` / `add-gcal-tool` (need mount for OneCLI stub credentials at `~/.gmail-mcp/`, `~/.calendar-mcp/`). | Tier 2 follow-up (Phase 6 cleanup) |
+| 20 | **New upstream skills** since 1.2.53: `add-gmail-tool`, `add-dashboard`, `add-atomic-chat-tool`, `manage-mounts`; container-side `frontend-engineer`, `self-customize`, `welcome`. Plus `init-first-agent` host skill. | MED fit. `add-gmail-tool` + `add-dashboard` worth piloting on one board post-cutover. Others board-local utilities. | Phase 6 cleanup or post-cutover |
+
+**Codex priority headline** (executive summary verbatim): *"Your Tier 1 has the right themes but the wrong order for migration risk. I would put v2 permissions/approval/destination seeding first, TaskFlow prompt composition second, and a2a-lite third."*
 
 **Drift trajectory:** ~25 upstream commits/day at this rate. By Phase 0 entry (~3-4 weeks out), upstream will be ~700 commits further along. **Recommendation:** pin the migration baseline to a specific upstream commit hash at Phase -1 entry; only re-merge upstream `main` between phases, with a delta re-review at each merge. Document the pinned hash in the Phase -1 sign-off.
 
@@ -660,9 +679,117 @@ Test separate from prod pairing.
 
 ---
 
-## Phase 3: isMain Rewrite + Schema Migration + Env Patch (Weeks 6-9)
+## Phase 2.5: TaskFlow Permissions Adoption (NEW v2.2, Weeks 5-6)
+
+**Goal:** Adopt v2's permissions/approval/destinations stack for TaskFlow boards. Codex's #1 recommendation from the 2026-04-30 feature evaluation. Surfaces the highest-leverage v2 features (deltas #12, #13, #14, #17) that the prior plan version omitted.
+
+**Why now (between Phase 2 and Phase 3):** Phase 2 lands v2-native WhatsApp adapter; Phase 3 rewrites 103 `isMain` sites. Permissions adoption needs (a) v2 WhatsApp wired (Phase 2 done) and (b) the new `users` / `agent_group_members` / `user_roles` tables to be the privilege source (Phase 3 prerequisite). Phase 2.5 is where we seed those tables for TaskFlow's 31 boards before the isMain rewrite uses them.
+
+**Success criteria:**
+- For each of the 31 boards: `users`, `user_roles`, `agent_group_members`, `user_dms` populated from current TaskFlow `board_people` / `board_admins`.
+- `agent_destinations` seeded as the outbound ACL per board (board → its parent agent group; board → admin DM where applicable).
+- `messaging_groups.unknown_sender_policy='request_approval'` enabled on all 31 boards. New non-member message → admin approval card via `ask_user_question`.
+- `unregistered_senders` audit table populates correctly when a non-member messages a board.
+- Migration script `scripts/migrate-taskflow-users.ts` is idempotent and re-runnable.
+
+### Task 2.5.1: Inventory current TaskFlow privilege state
+
+- [ ] **Step 1:** Enumerate the source-of-truth tables for board membership today.
+
+```bash
+sqlite3 store/messages.db "SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE 'board_%' OR name LIKE '%admin%' OR name LIKE '%people%' OR name LIKE '%role%')"
+sqlite3 data/taskflow/taskflow.db ".schema board_people"
+sqlite3 data/taskflow/taskflow.db ".schema board_admins"
+```
+
+Record: rows per board, fields per row. This becomes the input to the migration script.
+
+- [ ] **Step 2:** Per board (sample 3 boards), reconstruct: who is admin, who is a member, what is their phone JID, what is the `board_id → messaging_group_id` mapping. Document in Phase 2.5 prep notes.
+
+### Task 2.5.2: Seed v2 permission tables from TaskFlow source-of-truth
+
+Write `scripts/migrate-taskflow-users.ts` (~250 LOC) that:
+
+- [ ] **Step 1:** For each row in `board_people` / `board_admins`:
+  - Insert into `users` (id derived from phone JID), upsert by JID
+  - Insert into `agent_group_members` (`agent_group_id`, `user_id`, `joined_at`)
+  - Insert into `user_roles` (`user_id`, `role IN ('owner','admin','member')`, `agent_group_id` scope) — `admin` for board admins, `member` for board people, `owner` for the platform owner (currently `is_main` boards)
+  - Insert into `user_dms` if the user has had a 1:1 conversation with the bot
+
+- [ ] **Step 2:** Idempotency: every `INSERT` is `INSERT OR IGNORE` keyed on (user_id, agent_group_id, role). Re-running the script after partial failure must not duplicate rows.
+
+- [ ] **Step 3:** Diff report: emit a CSV showing per-board users + roles before/after. Spot-check 3 boards manually before bulk run.
+
+- [ ] **Step 4:** Run on the dryrun migrated DB from Phase 0 Task 0.2. Verify counts match expectations.
+
+### Task 2.5.3: Seed `agent_destinations` as outbound ACL
+
+Per Codex finding (delta #14): `agent_destinations` is not a2a-only. It's the outbound permission map. This task seeds it for the cross-board flow we already need.
+
+- [ ] **Step 1:** For each child board, insert one row:
+  - `agent_group_id = <child board agent_group>`
+  - `local_name = 'parent'`
+  - `target_type = 'agent'`
+  - `target_agent_group_id = <parent board agent_group>`
+
+- [ ] **Step 2:** For each parent board, insert siblings of one child each (named `child-<short_code>`).
+
+- [ ] **Step 3:** For boards with admin DMs, insert one row per admin:
+  - `local_name = 'admin-<short_name>'`
+  - `target_type = 'channel'`
+  - `target_platform_id = <admin JID>`
+
+- [ ] **Step 4:** Refresh per-session `destinations` projection via `writeDestinations()` for any running session. Sleep one container wake cycle and verify projection rows match.
+
+### Task 2.5.4: Enable unknown-sender approval policy
+
+- [ ] **Step 1:** For each `messaging_groups` row:
+  ```sql
+  UPDATE messaging_groups
+  SET unknown_sender_policy = 'request_approval'
+  WHERE id IN (<31 TaskFlow board IDs>);
+  ```
+
+- [ ] **Step 2:** Verify `messaging_group_agents` rows have `sender_scope='known'` and `ignored_message_policy='accumulate'` (so dropped messages are logged, not silently discarded).
+
+- [ ] **Step 3:** End-to-end test on test-taskflow board:
+  - Send a message from a phone number NOT in `agent_group_members`
+  - Verify: message lands in `unregistered_senders` table, NOT in the agent's session
+  - Verify: an `ask_user_question` card appears in the parent group asking the admin to approve
+  - Admin approves → message is replayed; admin rejects → message stays in `unregistered_senders`
+
+### Task 2.5.5: PT-BR copy for approval cards
+
+- [ ] **Step 1:** Translate the v2 default approval-card copy to PT-BR. Default is English; we need:
+  - "User <name> not recognized. Approve?" → "Usuário <nome> não reconhecido. Aprovar?"
+  - "Approve" / "Reject" → "Aprovar" / "Rejeitar"
+- [ ] **Step 2:** Wire the PT-BR copy via `groups/<board>/CLAUDE.md` fragment OR (better) via a fork-private patch to `src/modules/permissions/sender-approval.ts` strings. Decide based on what v2 exposes.
+- [ ] **Step 3:** Test approval-card rendering on test-taskflow.
+
+### Task 2.5.6: Adopt v2 scheduling natives where possible (delta #16)
+
+Codex finding: v2 has `update_task`, deduped `list_tasks`, timezone parsing, pre-agent `script` support. Today `task-scheduler.ts` re-implements much of this fork-privately.
+
+- [ ] **Step 1:** Map our Kipp/digest/standup recurring tasks to v2's scheduling primitives. Sample one (e.g. Kipp 04:00 cron) and rewrite it via v2's `update_task` MCP tool from a one-shot init script.
+- [ ] **Step 2:** Verify v2's recurrence + timezone handling matches our expectations (especially the holiday/weekday-contradiction handling we shipped 2026-04-29).
+- [ ] **Step 3:** If v2's primitives suffice, plan to retire fork-private `task-scheduler.ts` in Phase 6. If they don't, document the gap and keep our scheduler.
+
+### Task 2.5.7: Phase 2.5 gate
+
+- [ ] All 31 boards have populated v2 permission tables (counts match source-of-truth ±0 rows).
+- [ ] `agent_destinations` seeded; per-session projection refreshed.
+- [ ] Unknown-sender approval verified on test-taskflow with both approve and reject paths.
+- [ ] PT-BR copy applied.
+- [ ] Scheduling-primitive feasibility documented (Item 16 outcome).
+- [ ] Present to user. Wait for explicit approval before Phase 3.
+
+---
+
+## Phase 3: isMain Rewrite + Schema Migration + Env Patch (Weeks 7-10, was 6-9)
 
 **Goal:** Rewrite ~103 isMain sites across 18 files. Create TaskFlow sidecar tables. Port scheduled_tasks. Patch v2 env allowlist.
+
+**Phase 2.5 dependency:** This phase replaces `isMain` checks with `hasAdminRole(senderUserId, agentGroupId)` queries against `user_roles`. Phase 2.5 must have populated `user_roles` for all 31 boards before this phase begins, otherwise the rewritten check returns `false` for every legitimate admin.
 
 ### Task 3.1: SDK 0.2.111/0.2.113 behavioral audit
 
@@ -768,7 +895,7 @@ If v2 has no direct cron equivalent, keep `scheduled_tasks` as a fork-private ta
 
 ---
 
-## Phase 4: Shadow Run on Test Groups (Weeks 10-11)
+## Phase 4: Shadow Run on Test Groups (Weeks 11-12, was 10-11)
 
 **Goal:** Run v2 against `test-taskflow` + `e2e-taskflow` with separate Baileys auth (dedicated test phone number). 5-day shadow. This is the ONLY pre-cutover shadow validation.
 
@@ -822,7 +949,7 @@ For each scenario in `docs/runbooks/v2-on-call.md`:
 
 ---
 
-## Phase 5: Fleet Cutover (Weeks 12-14)
+## Phase 5: Fleet Cutover (Weeks 13-15, was 12-14)
 
 **Goal:** Migrate all 28 prod groups to v2 in a single scheduled window with tested 15-minute rollback.
 
@@ -871,7 +998,14 @@ For each scenario in `docs/runbooks/v2-on-call.md`:
 
 ---
 
-## Phase 6: Cleanup (Weeks 15-16)
+## Phase 6: Cleanup (Weeks 16-18, was 15-16)
+
+**Phase 6 includes deferred Tier 2 / Tier 3 features from v2.2 evaluation:**
+- Composed CLAUDE.md decomposition for `add-taskflow` (or land pre-v2 if completed earlier)
+- Cross-board a2a-lite (visible-text MVP per Codex; reuses existing `subtask_requests` + `taskflow_admin({ action: 'handle_subtask_approval' })`)
+- Optional: pilot `add-gmail-tool` / `add-dashboard` upstream skills on one board (delta #20)
+- Mount allowlist work if Gmail/Calendar adopted (delta #19)
+- Retire fork-private `task-scheduler.ts` if Phase 2.5 Task 2.5.6 confirmed v2 primitives suffice
 
 **Goal:** Remove v1 remnants, tag release, update docs.
 
@@ -919,15 +1053,17 @@ For each scenario in `docs/runbooks/v2-on-call.md`:
 
 ---
 
-## Self-review (v2.1)
+## Self-review (v2.2)
 
-- **Spec coverage:** Every finding from the 3-agent review + Codex gpt-5.5/xhigh validation is addressed. v2.1 folds in the v2.0.10→v2.0.21 delta (10 items) without restructuring phases. Corrections reflected in file counts (17 container, 16 src, 103 isMain sites, 579 SQL sites), command syntax, strategic model, env allowlist, scheduled_tasks (now with content-JSON routing per delta #2), `namespacedPlatformId()` rule (delta #3), register field-name regression (delta #4), permissions surface growth (delta #5), startup circuit breaker (delta #6), security back-port to v1 (delta #8).
-- **Placeholder scan:** None new. Phase -1.5 (security back-port) and Task -1.6 (circuit breaker smoke) have concrete steps; Task 0.3 has a concrete grep gate; Task 3.4 imports `namespacedPlatformId` from a real upstream module; Task 3.5 has a verifiable SQL gate.
-- **Timeline realism:** Phase 2 widens by ~1 week (channel-approval surface). Phase -1.5 adds ~3 days for the security back-port + 48h soak. Net: 13-17 weeks full-time. Part-time still ~6+ months.
+- **Spec coverage:** Every finding from prior reviews is addressed. v2.2 folds in 9 missed feature areas surfaced by Codex gpt-5.5/high feature evaluation (deltas #12-20) and adds Phase 2.5 (TaskFlow Permissions Adoption) as Codex's #1 recommendation. Three deferred items now live explicitly in Phase 6 (composed CLAUDE.md, a2a-lite, optional new upstream skills).
+- **Placeholder scan:** None new. Phase 2.5 has 7 concrete tasks with verifiable gates. PT-BR copy task (2.5.5) flags an open question (fork-private patch vs. CLAUDE.md fragment) — should be resolved at Phase 2.5 entry, not pre-emptively.
+- **Timeline realism:** Phase 2.5 adds ~1-2 weeks (Weeks 5-6, partially overlapping Phase 2's tail). Net total: 14-18 weeks full-time. Part-time stretches to 7+ months.
 - **Risk ledger:**
-  - Highest residual risk: `use-native-credential-proxy` skill v2.0.21-compat UNVERIFIED until Phase 0 Task 0.3. If the skill needs an update for the new hard-throw at L459, migration timeline blows out 1-2 weeks (OneCLI adoption or skill patch).
+  - Highest residual risk: `use-native-credential-proxy` skill v2.0.21-compat UNVERIFIED until Phase 0 Task 0.3. If the skill needs repair (Codex flagged merge-tree conflicts), 1-2 week timeline impact.
   - Second: fleet cutover has a ~2h service window. Cannot be zero. User must accept.
-  - Third: scheduled_tasks porting may discover v2 has no cron equivalent for our Kipp cron. If so, add another fork-private table + keep our scheduler. Either way, the post-`8dd004ca` content-JSON routing contract must be honored.
-  - Fourth (new): drift continues at ~25 commits/day. If migration baseline isn't pinned at Phase -1 entry, every phase chases a moving target.
-- **Gate discipline:** Phase -1 (infra), -1.5 (security back-port), 0 (recon), 4 (shadow), 5 (cutover) each have explicit go/no-go. Phases 1-3 are internal engineering with no prod impact. Phase 6 is reversible only via the 30-day rollback tag retention.
+  - Third: scheduled_tasks porting (Phase 3) may discover v2's primitives don't fully cover holiday/weekday-contradiction handling. If Task 2.5.6 spike confirms gap, fork-private `task-scheduler.ts` stays.
+  - Fourth: Phase 2.5 user/role seeding depends on TaskFlow's source-of-truth tables having clean data. If `board_people` / `board_admins` have stale rows or duplicate JIDs, the seeder needs a deduplication pass — could add 2-3 days.
+  - Fifth: drift continues at ~25 commits/day. Pin baseline at Phase -1 entry.
+- **Gate discipline:** Phase -1 (infra), -1.5 (security back-port), 0 (recon), 2.5 (permissions adoption), 4 (shadow), 5 (cutover) each have explicit go/no-go. Phases 1-3 are internal engineering with no prod impact. Phase 6 is reversible only via the 30-day rollback tag retention.
+- **Codex priority alignment:** Phase 2.5 lands the #1 recommendation; composed CLAUDE.md is positioned as Phase 6 OR pre-migration v1 stepping stone (separate decision); a2a-lite is Phase 6 with explicit MVP scope (visible-text + existing `handle_subtask_approval`, NOT full structured payload).
 - **Out-of-scope discipline:** Deferred items are listed with explicit rationale. No scope-creep during execution.
