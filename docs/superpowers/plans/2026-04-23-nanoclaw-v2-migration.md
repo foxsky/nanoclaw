@@ -356,6 +356,19 @@ Upstream `2.0.21` ships a startup circuit breaker (`src/circuit-breaker.ts`, har
 
 ## Phase 0: Reconnaissance & Gate (Week 1)
 
+**Progress (2026-05-01 execution):**
+- ✅ Task 0.1: Worktree at `/root/nanoclaw-v2` baseline `7ac8dd0f` (v2.0.22). Migrate-branch worktree at `/root/nanoclaw-migrate-v2` baseline `5afe51b8`. pnpm@10.33.0 + typecheck clean.
+- ✅ Task 0.2: **migrate-v2.sh dry-run PASSED** on `/root/prod-snapshot-20260430/`. 29/29 boards migrated (28 TaskFlow + 1 unmanaged), 0 skipped, 0 unknown JIDs. All 29 messaging_groups are channel_type=whatsapp. 10 schema migrations applied to `/root/nanoclaw-migrate-v2/data/v2.db`. **Source DBs unchanged** (md5 -c OK).
+  - Pre-flight finding: migrator's seed step requires the WhatsApp channel adapter installed in the v2 worktree first (it errors with `Channel adapters not installed: whatsapp`). Resolved by `git show upstream/channels:src/channels/whatsapp.ts`, appending `import './whatsapp.js'` to channels/index.ts, and pinned-dep install (baileys 6.17.16 + qrcode 1.5.4 + pino 9.6.0).
+  - Migrator interactive prompts: must run with `NANOCLAW_MIGRATE_SKIP="guide,safety,copy,rebuild,verify"` and pipe `y\n` for the owner-confirmation prompt.
+  - **Phase 2.5 sanity confirmed:** TaskFlow has 59 `board_people` + 30 `board_admins` (89 human entities). Migrator seeded only the operator (1 user, 1 role, 29 memberships of operator-as-admin). Phase 2.5's TaskFlow Permissions Adoption must seed the remaining ~88 from the TaskFlow source-of-truth tables — this empirically validates Codex's #1 recommendation.
+- ✅ Task 0.3: Self-hosted OneCLI installed and SDK-smoke-tested. See "v2.3 OneCLI direction" in revision history.
+- ⏸️ Task 0.4: Bun smoke (needs `bun` install — small).
+- ⏸️ Task 0.5: WhatsApp v2 pairing (needs test phone number).
+- ✅ Task 0.6: Env audit done (steps 1-2). Step 4 (provider override audit) deferred — checked v2.db post-seed: 0 sessions/agent_groups have `agent_provider` set, so delta #11 is a no-op for us.
+- ✅ Task 0.7 Step 1: migrator does NOT modify source `.env` (verified via dryrun pre/post check).
+- ⏸️ Task 0.8: Phase 0 gate — pending 0.4 + 0.5.
+
 **Goal:** Prove the highest-risk assumptions before any commit to our repo. If any gate fails, STOP.
 
 **Success criteria:**
