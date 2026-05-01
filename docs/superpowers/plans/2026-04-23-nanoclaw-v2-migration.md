@@ -1,4 +1,4 @@
-# NanoClaw v2 Migration Plan (v2.4 — post-execution Codex review)
+# NanoClaw v2 Migration Plan (v2.5 — Phase 1 closed, Phase 2 dissolved)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. At every phase gate, pause for user sign-off before proceeding.
 
@@ -9,6 +9,7 @@
 - v2.2 (2026-04-30 features evaluation) — Codex gpt-5.5/high independent evaluation of v2 features for our skills surfaced **9 missed feature areas** (sender-approval, channel-approval, ask_user_question/pending_questions, scheduling improvements, unregistered_senders audit, named destinations as outbound ACL, self-mod, mount allowlist, new upstream skills). Adds **Phase 2.5: TaskFlow Permissions Adoption** (Weeks 5-6, between WhatsApp re-port and isMain rewrite) — re-prioritized as Codex's #1 recommendation. Downscopes cross-board a2a to "visible-text MVP" reusing existing `subtask_requests` + `handle_subtask_approval`. Net timeline: 14-18 weeks full-time.
 - v2.3 (2026-04-30 OneCLI direction + scope deferral) — locks in **self-hosted OneCLI (A2a)** as the v2 credential layer after Phase 0 Task 0.3 confirmed `use-native-credential-proxy` skill conflicts in 5 files vs v2.0.22. Reverses `project_onecli_decision.md` for v2 only (1.x stays on native proxy through cutover). Multi-tenant + multi-instance fleet expansion (1000+ boards across K NanoClaw instances with K WhatsApp accounts) explicitly **scope-deferred to post-migration**. Each future instance gets its own self-hosted OneCLI. Migration plan stays single-instance, single-tenant — fleet work happens after cutover.
 - v2.4 (2026-05-01 post-execution Codex review) — Codex gpt-5.5/high skeptical review of Phase -1 + Phase 0 work surfaced **3 BLOCKERS + 8 IMPORTANTS + 1 confirmed-correct + 1 false-positive (sandboxed network)**. Critical fixes applied: (a) F1 `requires_trigger=0` → `engage_pattern='.'` mapping required in seeder before Phase 5 cutover (fold into Phase 2.5 Task 2.5.2); (b) F7 `db.pragma()` → `db.exec('PRAGMA …')` swap added to Phase 1 Task 1.4 mechanical edit list; (c) F15 plan internal contradictions resolved (architecture, strategic decision, success criteria, risk ledger no longer claim "OneCLI NOT adopted"); (d) rollback script gains snapshot-freshness gate (default 30min) and post-restart functional probes (WhatsApp connection-open log scan, no-v2-schema-bleed check). Phase 0 Task 0.2 result downgraded from "PASSED" to "STRUCTURALLY PASSED — behavioral migration pending Phase 2.5/3 fixes."
+- v2.5 (2026-05-01 Phase 1 closure + Phase 2 dissolution) — Phase 1 Bun runtime port FULLY closed (typecheck ✅, 719/765 bun test ✅, container build ✅, auditor heredoc smoke vs prod snapshot ✅). Phase 2 (WhatsApp re-port, was 2-3 weeks) **dissolved via empirical finding**: v1 whatsapp.ts vs v2-channels whatsapp.ts is a **21-line whitespace-only diff** — no functional port required. The original Phase 2 scope conflated WhatsApp-adapter port with `registered_groups` schema port; the latter has always belonged to Phase 2.5 + Phase 3. Phase 2 tasks 2.2-2.4 superseded; Task 2.1 retained as DONE. **Net timeline: 11-15 weeks full-time** (was 14-18; saved 2-3 weeks of phantom work). Plan +1 simplify pass on Phase 1 (Dockerfile `exec`, db-util reuse, comment cleanup).
 
 ---
 
@@ -747,9 +748,52 @@ docker run --rm -it nanoclaw-agent:latest id
 
 ---
 
-## Phase 2: WhatsApp Re-port (Weeks 4-6, was 4-5; delta #5)
+## Phase 2: WhatsApp Re-port (RESOLVED via Phase 0 finding 2026-05-01 — essentially no-op)
 
-**Goal:** Port TaskFlow's WhatsApp hooks against v2-native adapter. The hooks don't all live in `whatsapp.ts` — they span `db.ts`, `router.ts`, `group-sender.ts`, `ipc.ts`, `container-runner.ts`, `mount-security.ts`. **Estimate bumped from 2 weeks to 2-3 weeks** because upstream's channel-approval flow grew ~600 lines (`modules/permissions/channel-approval.ts` +217, `modules/permissions/index.ts` +300) between v2.0.10 and v2.0.21 — agent selection + free-text naming. The wire-up surface that previously took 1-2 weeks now takes 2-3.
+**Status: CLOSED.** Phase 0 Task 2.1 inventory + diff (2026-05-01) showed that the v2-native WhatsApp adapter on `upstream/channels:src/channels/whatsapp.ts` (964 lines) is **functionally identical** to our v1 fork's adapter (973 lines) — the diff is **21 lines of pure whitespace formatting** (multi-line argument formatting collapsed/expanded). Zero functional or behavioral changes. v1 imports identical to v2 imports.
+
+**Why the original plan estimate was wrong:** Phase 2 as originally specced conflated two different ports:
+1. WhatsApp adapter port (whatsapp.ts customizations) — turns out **near-no-op** (whitespace only)
+2. `registered_groups` schema port (column reads/writes → `messaging_groups` + `messaging_group_agents` triple) — owned by **Phase 2.5 (Permissions Adoption) + Phase 3 (isMain rewrite)**
+
+The 269 TaskFlow-related hits across `src/*.ts` distribute as:
+- `db.ts` (53), `index.ts` (32), `ipc.ts` (28), `container-runner.ts` (17) — **Phase 3 territory** (isMain → user_roles, registered_groups → messaging_groups)
+- Tests (~100) — auto-update with Phase 3 source changes
+- The remaining ~40 are scattered helper queries that go with Phase 2.5
+
+**What's still owed in Phase 2:** the channel-approval flow growth (delta #5, ~600 LOC across `modules/permissions/`) — but that's a Phase 2.5 wire-up task, not a v1→v2 port. Phase 2.5 already has tasks for this.
+
+**Net plan-timeline impact:** Phase 2 was budgeted 2-3 weeks. Saved entirely. **New total: 11-15 weeks full-time** (was 14-18).
+
+### Task 2.1: Hook inventory (DONE 2026-05-01) — original plan retained for history
+
+- [x] **Step 1: Grep TaskFlow hooks across ALL WhatsApp-adjacent files**
+
+```bash
+cd /root/nanoclaw
+grep -rn 'taskflow\|TaskFlow\|@Case\|@Tars\|@Kipp\|trigger_pattern\|isMainGroup\|taskflow_managed\|requiresTrigger\|requires_trigger' src/*.ts | tee /tmp/tf-hooks-full-inventory.txt
+wc -l /tmp/tf-hooks-full-inventory.txt   # 269 hits across 24 files
+```
+
+- [x] **Step 2: Compare v1 whatsapp.ts vs v2-channels whatsapp.ts**
+
+```bash
+diff -u /root/nanoclaw/src/channels/whatsapp.ts /root/nanoclaw-feat-v2/src/channels/whatsapp.ts | wc -l   # 21 lines (whitespace only)
+```
+
+Result: no functional delta in whatsapp.ts. The 269 TaskFlow hits across our `src/*.ts` are not WhatsApp-specific — they're general fork customizations that get rewritten in Phase 2.5 + Phase 3.
+
+### Task 2.2-2.4: SUPERSEDED
+
+All scheduled work re-attributed:
+- Hook porting against `messaging_group_agents` → Phase 2.5 Task 2.5.3 (already in plan).
+- isMain rewrite → Phase 3 Task 3.3 (already in plan).
+- E2E on test phone number → Phase 0 Task 0.5 (still operator-blocked) + Phase 4 shadow run (5-day test).
+- Phase 2 gate → folded into Phase 2.5 gate.
+
+### Original plan content (historical, retained for reference)
+
+**Original goal:** Port TaskFlow's WhatsApp hooks against v2-native adapter. Original-estimate-was-wrong reasoning: Phase 2 spec conflated WhatsApp-adapter port with schema-port. Estimate retained as a salutary reminder that "X weeks for WhatsApp port" was wildly overscoped — the real Phase 2 work was always Phase 3.
 
 ### Task 2.1: Hook inventory (CORRECTED scope)
 
