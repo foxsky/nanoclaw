@@ -50,18 +50,29 @@ function pickApprover(v2Db: Database, agentGroupId: string | null): string[] {
     }
   };
 
+  // ORDER BY granted_at — matches v2's helper queries
+  // (upstream/main:src/modules/permissions/db/user-roles.ts). Without the
+  // ordering, multi-admin boards could return a different first approver
+  // than the real v2 implementation, breaking pickApprovalDelivery's
+  // tie-breaker logic. Caught by Codex review #3 (F3).
   if (agentGroupId) {
     const scopedAdmins = v2Db
-      .prepare("SELECT user_id FROM user_roles WHERE role='admin' AND agent_group_id = ?")
+      .prepare(
+        "SELECT user_id FROM user_roles WHERE role='admin' AND agent_group_id = ? ORDER BY granted_at",
+      )
       .all(agentGroupId) as Array<{ user_id: string }>;
     for (const r of scopedAdmins) add(r.user_id);
   }
   const globalAdmins = v2Db
-    .prepare("SELECT user_id FROM user_roles WHERE role='admin' AND agent_group_id IS NULL")
+    .prepare(
+      "SELECT user_id FROM user_roles WHERE role='admin' AND agent_group_id IS NULL ORDER BY granted_at",
+    )
     .all() as Array<{ user_id: string }>;
   for (const r of globalAdmins) add(r.user_id);
   const globalOwners = v2Db
-    .prepare("SELECT user_id FROM user_roles WHERE role='owner' AND agent_group_id IS NULL")
+    .prepare(
+      "SELECT user_id FROM user_roles WHERE role='owner' AND agent_group_id IS NULL ORDER BY granted_at",
+    )
     .all() as Array<{ user_id: string }>;
   for (const r of globalOwners) add(r.user_id);
 

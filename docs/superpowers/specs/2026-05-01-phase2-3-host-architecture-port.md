@@ -94,20 +94,44 @@ Per memory `feedback_tdd_test_first.md`: writing tests forces you to confront th
 
 ## Next session: starting Strategy A Week 1
 
-Concrete first commit on feat/v2-migration:
+### Updated Week 1 dependency order (Codex review #3 caught 3 missing deps)
+
+The naive "types + db/ first" plan misses transitive imports that block the typecheck gate:
+
+- `upstream/main:src/types.ts:158` imports `./channels/ask-question.js` — must port that file too
+- `upstream/main:src/db/messaging-groups.ts:11-16` imports `../modules/agent-to-agent/db/agent-destinations.js` — module-level import, not optional
+- `upstream/main:src/db/connection.ts:5` imports `../log.js` — but our fork has `logger.ts`, not `log.ts`. Either rename + adapt, or stub `log.ts` as a re-export.
+
+`db/sessions.ts` does NOT import session-manager.ts (good). And v2's `db/*` does NOT import `delivery.ts` or `response-registry.ts` (good — those still come in Week 3).
+
+### Concrete first commits on feat/v2-migration
 
 ```bash
 cd /root/nanoclaw-feat-v2
 git fetch upstream main
-# Cherry-pick v2's types + DB layer:
-git checkout upstream/main -- src/types.ts src/db/
-# This will fail in a thousand places because our v1 src/* still imports old types.
-# That's fine — Week 1 ends when typecheck passes against the new types.
+
+# Step 1: rename our logger.ts so v2's log.ts import resolves.
+git mv src/logger.ts src/log.ts
+# (Update every importer of logger.ts → log.ts, ~10-15 sites.)
+
+# Step 2: pull in v2's types + supporting one-liners.
+git checkout upstream/main -- src/types.ts src/channels/ask-question.ts
+
+# Step 3: pull in v2's db layer + the agent-destinations module it imports.
+git checkout upstream/main -- src/db/ src/modules/agent-to-agent/db/agent-destinations.ts
+
+# Step 4: typecheck. Expect ~200-250 errors initially (was 150-200 before
+# Codex's revision; the additional modules surface more import sites).
+cd container/agent-runner && bunx tsc --noEmit
 ```
 
-The work for Strategy A Week 1:
-1. Replace `src/types.ts` with v2's (preserves what we need; drops what's gone in v2).
-2. Add v2's `src/db/connection.ts`, `src/db/schema.ts`, `src/db/agent-groups.ts`, `src/db/messaging-groups.ts`, `src/db/sessions.ts`, `src/db/migrations/`.
-3. Migrate our `db.ts` callers one-by-one to the new shape. Expect ~150-200 type errors initially; each is a small fix.
-4. Remove our `registered_groups` reads — they're satisfied by v2's `messaging_groups` joins.
-5. End-of-week gate: `bunx tsc --noEmit` passes on host.
+### Work breakdown
+
+1. Rename `logger.ts` → `log.ts` + update importers (~half day).
+2. Pull v2's `types.ts`, `channels/ask-question.ts` (~1 hour).
+3. Pull v2's `db/` directory + `modules/agent-to-agent/db/agent-destinations.ts` (~1 hour).
+4. Migrate our existing `db.ts` callers one-by-one to the new shape (rest of Week 1).
+5. Remove our `registered_groups` reads (satisfied by v2's `messaging_groups` joins now).
+6. End-of-week gate: `bunx tsc --noEmit` passes on host.
+
+Watch out for: any v2 db file that itself depends on something Week 2-3 ports (delivery, session-manager). If found, need to stub or reorder.
