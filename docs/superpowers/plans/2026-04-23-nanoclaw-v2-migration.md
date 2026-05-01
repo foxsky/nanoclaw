@@ -988,7 +988,14 @@ Codex finding: v2 has `update_task`, deduped `list_tasks`, timezone parsing, pre
 
 ## Phase 3: isMain Rewrite + Schema Migration + Env Patch (Weeks 7-10, was 6-9)
 
-**Goal:** Rewrite ~103 isMain sites across 18 files. Create TaskFlow sidecar tables. Port scheduled_tasks. Patch v2 env allowlist.
+**Goal:** Rewrite isMain sites across the fork. Create TaskFlow sidecar tables. Port scheduled_tasks. Patch v2 env allowlist.
+
+**Inventory refresh (2026-05-01 EOD, Codex F13):** the original "103 sites across 18 files" estimate was narrow. Real grep across `src/` + `container/` for `\bisMain\b|is_main|MAIN_GROUP_FOLDER`:
+- **167 total hits** (136 production, 31 tests)
+- **20+ files** affected (was 18)
+- Includes the local variable `isMain: boolean` parameter in many functions (`container-runner.ts`, `index.ts`, `ipc.ts`, `mount-security.ts`, `task-scheduler.ts`, plus all IPC plugins). Each needs to flip from `isMain: boolean` parameter to `userId: string` + `await hasAdminRole(userId, agentGroupId)` lookup.
+
+This is meaningfully larger than the original 103-site estimate. Phase 3 budget retained at 4 weeks; Task 3.3 timeline tightened.
 
 **Phase 2.5 dependency:** This phase replaces `isMain` checks with `hasAdminRole(senderUserId, agentGroupId)` queries against `user_roles`. Phase 2.5 must have populated `user_roles` for all 31 boards before this phase begins, otherwise the rewritten check returns `false` for every legitimate admin.
 
@@ -1018,7 +1025,7 @@ CREATE INDEX IF NOT EXISTS idx_tfg_managed ON taskflow_groups(taskflow_managed);
 
 **Note** (Codex correction): use explicit `nowIso()` at INSERT time, not `DEFAULT (datetime('now'))` — upstream convention.
 
-### Task 3.3: Rewrite 103 isMain sites across 18 files
+### Task 3.3: Rewrite ~167 isMain sites across 20+ files
 
 This is the largest task in the plan — 4 weeks realistic for full coverage + tests.
 
