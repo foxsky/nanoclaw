@@ -1,0 +1,32 @@
+diff --git a/setup/migrate/seed-v2.ts b/setup/migrate/seed-v2.ts
+index ad8f1dce..247e34da 100644
+--- a/setup/migrate/seed-v2.ts
++++ b/setup/migrate/seed-v2.ts
+@@ -372,14 +372,21 @@ function buildWiring(
+   const pattern =
+     typeof g.trigger_pattern === 'string' && g.trigger_pattern.length > 0 ? g.trigger_pattern : null;
+ 
+-  if (pattern) {
+-    engage_mode = 'pattern';
+-    engage_pattern = pattern;
+-  } else if (g.requires_trigger === 0) {
+-    // v1 rows with requires_trigger=0 responded to every message. v2's
+-    // "always" sentinel is engage_pattern='.'.
++  // FORK-PRIVATE FIX (Phase 0 spike, 2026-05-01) — upstream priority order
++  // assumes pattern wins over requires_trigger=0. For our fleet that's wrong:
++  // v1 src/index.ts:575 BYPASSES the trigger gate when requiresTrigger===false,
++  // and db.ts:999 maps DB integer 0 → boolean false. So every TaskFlow row
++  // (28/28 with requires_trigger=0 + trigger_pattern='@Case') ran in "respond
++  // to every message" mode in production — empirically ZERO messages across
++  // 1836+624+306+... user messages contain '@Case'. Mapping to engage_pattern
++  // ='@Case' would silently drop 100% of user messages on cutover.
++  // Correct mapping: requires_trigger=0 ALWAYS wins over trigger_pattern.
++  if (g.requires_trigger === 0) {
+     engage_mode = 'pattern';
+     engage_pattern = '.';
++  } else if (pattern) {
++    engage_mode = 'pattern';
++    engage_pattern = pattern;
+   } else {
+     // No explicit pattern, trigger required → v2 mention mode with the
+     // default trigger derived from ASSISTANT_NAME.
