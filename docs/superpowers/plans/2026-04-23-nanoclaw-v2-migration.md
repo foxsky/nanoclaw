@@ -609,13 +609,24 @@ Expected: identical. If migrator touches `.env`, document exactly what it does.
 
 ## Phase 1: Bun Runtime Port (Weeks 2-3)
 
+**Progress (2026-05-01 execution, branch `feat/v2-migration` at `/root/nanoclaw-feat-v2`):**
+- ✅ Task 1.1: branch via worktree off main.
+- ✅ Task 1.2: `container/agent-runner/package.json` updated — removed `better-sqlite3` + `@types/better-sqlite3`, added `@types/bun`, bumped SDK to `^0.2.116` (resolved to 0.2.126 via `bun install`), removed `build` script (Bun runs TS direct), kept vitest in devDeps to avoid 13 test-import rewrites. Version 1.0.0 → 2.0.0.
+- ✅ Task 1.3: `container/agent-runner/tsconfig.json` → `noEmit: true`, `types: ["bun"]`, removed outDir/declaration.
+- ✅ Task 1.4: mechanical port across 17 files via 3 sed passes + 4 manual fixes (semicolon-less imports, dynamic imports, type-only alias) + 4 type-tightening fixes for bun:sqlite stricter SQLQueryBindings. **`bunx tsc --noEmit` clean.**
+- ✅ Task 1.5: heredoc rewrites in `auditor-script.sh` (line 14, line 1461) and `digest-skip-script.sh` (line 32, line 60) — `require("better-sqlite3")` → `require("bun:sqlite")` destructured + `node /tmp/X.js` → `bun /tmp/X.js`.
+- ✅ Task 1.6: `container/Dockerfile` rewritten — Bun 1.3.12 install via curl, `bun install --frozen-lockfile` instead of npm, removed make/g++ apt deps (no native compile needed), removed runtime `npx tsc` from entrypoint. Net entrypoint shrinkage 6 commands → 2.
+- ⚠️ Task 1.7: **partial gate.** `bunx tsc --noEmit` ✅. `bun test` → 719 pass / 45 fail / 6 errors / 1 todo across 13 files. **All 46 non-pass results are vitest-specific mocking API gaps** (`vi.stubGlobal`, `vi.unstubAllGlobals`, etc.) — NOT bun:sqlite port issues. Real bun:sqlite-vs-better-sqlite3 delta: `.get()` returns `null` (not `undefined`) on empty match — fixed in 5 test sites. Production code is unaffected (uses truthy guards, not `=== undefined`).
+- ⏸️ Task 1.7 remaining: container build smoke (`./container/build.sh`) + auditor heredoc runs against prod snapshot (output match within ±5%).
+- 📌 Test framework migration (`vi.*` → bun mocks OR vitest-via-shim) **scoped OUT of Phase 1** — separate work item for Phase 6 cleanup or post-cutover.
+
 **Goal:** Port `container/agent-runner/src/*` (17 files) to Bun + `bun:sqlite`. Rewrite Dockerfile's two TS-compile sites. Rewrite `auditor-script.sh` heredoc for `bun:sqlite`.
 
 **Success criteria:**
-- `bun x tsc --noEmit` passes on all 17 container files.
-- `bun test` passes (all existing vitest tests compile under bun:test).
-- Local container rebuilds with Bun entrypoint (no `npx tsc` at runtime OR buildtime).
-- Extracted auditor heredoc runs under `bun` against prod snapshot; output matches 1.x within ±5%.
+- `bunx tsc --noEmit` passes on all 17 container files. ✅
+- `bun test` passes (all existing vitest tests compile under bun:test). ⚠️ 94% pass; 46 vi.* mock-API gaps deferred.
+- Local container rebuilds with Bun entrypoint (no `npx tsc` at runtime OR buildtime). ⏸️
+- Extracted auditor heredoc runs under `bun` against prod snapshot; output matches 1.x within ±5%. ⏸️
 
 ### Task 1.1: Create migration branch
 
