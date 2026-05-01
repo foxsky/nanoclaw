@@ -95,11 +95,30 @@ For Phase 2 MVP, Path A wins. Path B can happen as a Phase 6 cleanup if/when we 
 ## Phase 2 timeline
 
 - Task 2.2 (this doc): DONE.
-- Task 2.3 (adapter port): 1-2 days dev + 1 day testing = **~3 days realistic** (not Codex's worst-case 1-2 weeks).
+- Task 2.3 (adapter port): see scope-realization below — channel-side is **only one third** of Task 2.3.
 - Task 2.4 (E2E test): blocked on Phase 0.5 operator phone.
 - Task 2.5 (gate): structural diff resolved + approval card runtime-verified locally.
 
-Net Phase 2 budget: 3-5 days, not 1-2 weeks. Plan timeline can stay at ~10-13 weeks.
+### Scope realization (2026-05-01 EOD, before implementation)
+
+The "~100 LOC channel-side ask_question rendering" estimate is correct in isolation but produces **dead code** without three other ports landing in the same phase:
+
+1. **Channel-side adapter port (~100 LOC):** the ask_question outbound rendering + pendingQuestions map + inbound option-match → onAction callback. ESTIMATE: 1 day.
+2. **`ChannelOpts` interface extension:** add `onAction?: (questionId, optionValue, senderUserId) => void` to `src/channels/registry.ts:ChannelOpts`. Touches every channel registration site (whatsapp.ts:955, telegram.ts, etc.). ESTIMATE: half a day.
+3. **Host-side permissions module port:** `requestSenderApproval()` from `upstream/main:src/modules/permissions/sender-approval.ts` plus the supporting `pickApprover` + `pickApprovalDelivery` + `pending_sender_approvals` schema migration + `getApprovalStrategy` router hook. This is what GENERATES the `ask_question` outbound; without it, nothing on the host side fires. ESTIMATE: 2-3 days.
+4. **Wire host-side approval handler to channel `onAction`:** when admin replies "Permitir", the channel calls `onAction` → router.ts looks up the pending row → calls `addAgentGroupMember` + replays the original message via `routeInbound`. ESTIMATE: half a day.
+
+**Real Task 2.3 budget: 4-5 days, not 1 day.** The channel-side alone is well-bounded but isolated; the full vertical slice that delivers a working approval card requires all four pieces.
+
+**Why the original estimate was wrong:** I scoped only the diff against `upstream/channels`'s WhatsApp adapter, ignoring that v2's permissions module is **also** missing from feat/v2-migration. Phase 1 only ported `container/agent-runner/` to Bun; the host-side `src/modules/` directory wasn't touched. Phase 2 must include the host-side permissions port, OR the channel-side work is dead until Phase 3 / 2.5 ports it later.
+
+### Recommendation: bundle host-side into Task 2.3
+
+Don't ship channel-side in isolation. The vertical slice (4 components above, ~5 days) is the smallest unit that delivers a working approval-card flow. Phase 2 was already restored in plan v2.6; the budget should reflect this scope, not the under-scoped 1-day estimate.
+
+Plan: Phase 2 budget moves from "3-5 days" → "**1 week**" full-time, or 2 weeks if interleaved with Phase 3 isMain prep work.
+
+Net plan timeline: stays at ~10-13 weeks (Phase 2 longer; Phase 3 partial overlap).
 
 ## Open questions
 
