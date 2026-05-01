@@ -363,8 +363,8 @@ Upstream `2.0.21` ships a startup circuit breaker (`src/circuit-breaker.ts`, har
   - Migrator interactive prompts: must run with `NANOCLAW_MIGRATE_SKIP="guide,safety,copy,rebuild,verify"` and pipe `y\n` for the owner-confirmation prompt.
   - **Phase 2.5 sanity confirmed:** TaskFlow has 59 `board_people` + 30 `board_admins` (89 human entities). Migrator seeded only the operator (1 user, 1 role, 29 memberships of operator-as-admin). Phase 2.5's TaskFlow Permissions Adoption must seed the remaining ~88 from the TaskFlow source-of-truth tables — this empirically validates Codex's #1 recommendation.
 - ✅ Task 0.3: Self-hosted OneCLI installed and SDK-smoke-tested. See "v2.3 OneCLI direction" in revision history.
-- ⏸️ Task 0.4: Bun smoke (needs `bun` install — small).
-- ⏸️ Task 0.5: WhatsApp v2 pairing (needs test phone number).
+- ✅ Task 0.4: **Bun smoke PASSED.** Bun 1.3.12 installed at `/root/.bun/bin/bun` (matches v2 container Dockerfile pin). Mechanical port (2 sed edits) on `taskflow-engine.ts` (9598 lines): `import Database from 'better-sqlite3'` → `import { Database } from 'bun:sqlite'` + `Database.Database` → `Database` (5 occurrences). Smoke at `/tmp/bun-smoke/` exercises seven API surfaces (`.prepare()`, `.get()`, `.all()`, `.run()` with `{changes, lastInsertRowid}`, transaction wrapper, `.iterate()`, pragma) against the prod taskflow.db snapshot — all green. Updated SQL site counts (more accurate than Codex earlier): 284 prepare / 113 run / 134 get / 72 all / 25 exec / 12 transactions / **0 named-parameter (`$name`) usage** — confirms mechanical port is safe.
+- ⏸️ Task 0.5: WhatsApp v2 pairing — needs operator-provided test phone number. Defer to ops-availability.
 - ✅ Task 0.6: Env audit done (steps 1-2). Step 4 (provider override audit) deferred — checked v2.db post-seed: 0 sessions/agent_groups have `agent_provider` set, so delta #11 is a no-op for us.
 - ✅ Task 0.7 Step 1: migrator does NOT modify source `.env` (verified via dryrun pre/post check).
 - ⏸️ Task 0.8: Phase 0 gate — pending 0.4 + 0.5.
