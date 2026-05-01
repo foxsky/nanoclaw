@@ -1,0 +1,29 @@
+diff --git a/src/modules/permissions/sender-approval.ts b/src/modules/permissions/sender-approval.ts
+--- a/src/modules/permissions/sender-approval.ts
++++ b/src/modules/permissions/sender-approval.ts
+@@ -35,8 +35,8 @@
+ import { createPendingSenderApproval, hasInFlightSenderApproval } from './db/pending-sender-approvals.js';
+
+ const APPROVAL_OPTIONS: RawOption[] = [
+-  { label: 'Allow', selectedLabel: '✅ Allowed', value: 'approve' },
+-  { label: 'Deny', selectedLabel: '❌ Denied', value: 'reject' },
++  { label: 'Permitir', selectedLabel: '✅ Permitido', value: 'approve' },
++  { label: 'Negar', selectedLabel: '❌ Negado', value: 'reject' },
+ ];
+
+ function generateId(): string {
+@@ -90,10 +90,10 @@
+
+   const approvalId = generateId();
+   const senderDisplay = senderName && senderName.length > 0 ? senderName : senderIdentity;
+-  const originName = originMg?.name ?? originMg?.platform_id ?? 'an unfamiliar chat';
+-
+-  const title = '👤 New sender';
+-  const question = `${senderDisplay} wants to talk to your agent in ${originName}. Allow?`;
++  const originName = originMg?.name ?? originMg?.platform_id ?? 'um quadro desconhecido';
++
++  const title = '👤 Novo remetente';
++  const question = `${senderDisplay} quer falar com seu agente em ${originName}. Permitir?`;
+
+   createPendingSenderApproval({
+     id: approvalId,
