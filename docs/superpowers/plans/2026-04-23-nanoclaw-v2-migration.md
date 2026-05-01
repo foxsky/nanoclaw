@@ -172,6 +172,15 @@ Phase 3 adds a TaskFlow env allowlist extension.
 
 **Goal:** Create the preconditions for Phase 0. No code changes to app; all changes are infra + operational tooling.
 
+**Progress (2026-04-30 execution):**
+- ✅ Task -1.1: disk reclaimed (operator resized VM 42G → 61G; 30G free)
+- ✅ Task -1.2: prod image pinned. `nanoclaw-agent:v1-rollback` tagged on prod (id `7c2ec789eef7`) and saved to `/home/nanoclaw/backup/v1-image.tar` (1.6GB, md5 `92395ff333e20fad96f5e532ce452600`); `docker load` round-trip verified.
+- ✅ Task -1.3: snapshot at `/root/prod-snapshot-20260430/` (chmod 444 + md5 baseline; chattr +i blocked by VM kernel capability restriction — md5+chmod is the integrity guarantee). md5: messages.db `404ff56443d44f4f623db8f862d70b3a`, taskflow.db `58cab45e360120be9e8e09ae1b0d2015`. Both produced via `sqlite3 .backup` for WAL-consistent atomicity.
+- ✅ Task -1.4 Step 1+3: `scripts/rollback-to-v1.sh` written and dry-run smoke-tested.
+- ⏸️ Task -1.4 Step 2: live sandbox rehearsal — needs disposable test VM, not currently available. Defer to first available test environment, ideally before Phase 5 cutover.
+- ⏸️ Task -1.5: PT-BR user-comms templates — not started.
+- ⏸️ Task -1.6: circuit breaker boot smoke — needs Phase 0 Task 0.4 Bun image first.
+
 **Success criteria:**
 - Local + prod disk ≥30GB free.
 - Immutable prod DB snapshot pinned with `chattr +i` or equivalent.
