@@ -69,13 +69,31 @@ scp_run() {
 
 START_TIME=$(date +%s)
 
-echo "==> Step 1/7: Verify snapshot integrity"
+echo "==> Step 1/7: Verify snapshot integrity + freshness"
 test -d "$SNAPSHOT_DIR" || { echo "ERROR: $SNAPSHOT_DIR not found" >&2; exit 1; }
 test -f "$SNAPSHOT_DIR/store/messages.db" || { echo "ERROR: messages.db missing" >&2; exit 1; }
 test -f "$SNAPSHOT_DIR/data/taskflow/taskflow.db" || { echo "ERROR: taskflow.db missing" >&2; exit 1; }
 test -f "$SNAPSHOT_DIR/md5.txt" || { echo "ERROR: md5.txt baseline missing" >&2; exit 1; }
 ( cd "$SNAPSHOT_DIR" && md5sum -c md5.txt ) || { echo "ERROR: snapshot integrity check FAILED" >&2; exit 1; }
 echo "    snapshot integrity ok"
+# F13 (Codex 2026-05-01): rollback restores snapshot data — any v1 messages/
+# tasks created AFTER snapshot are lost. Refuse stale snapshots unless the
+# operator opts in. Default: snapshot must be <30 minutes old to proceed.
+SNAP_AGE_MIN=$(( ($(date +%s) - $(stat -c %Y "$SNAPSHOT_DIR/store/messages.db")) / 60 ))
+SNAP_MAX_AGE_MIN="${SNAP_MAX_AGE_MIN:-30}"
+if [ "$SNAP_AGE_MIN" -gt "$SNAP_MAX_AGE_MIN" ]; then
+  echo "WARNING: snapshot is ${SNAP_AGE_MIN}min old (max ${SNAP_MAX_AGE_MIN}min)" >&2
+  echo "         Data created since the snapshot will be LOST on rollback." >&2
+  echo "         For a planned cutover, take a fresh snapshot via Phase -1.3 first." >&2
+  echo "         To proceed anyway: SNAP_MAX_AGE_MIN=99999 $0 $SNAPSHOT_DIR" >&2
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "         (DRY-RUN mode — continuing despite stale snapshot for testing)"
+  else
+    exit 1
+  fi
+else
+  echo "    snapshot age: ${SNAP_AGE_MIN}min (within ${SNAP_MAX_AGE_MIN}min limit)"
+fi
 
 echo ""
 echo "==> Step 2/7: Stop v2 service on prod"
@@ -105,11 +123,23 @@ echo "==> Step 6/7: Restart service"
 ssh_run "systemctl --user start nanoclaw"
 
 echo ""
-echo "==> Step 7/7: Verify active (10s settle window)"
-if [ "$DRY_RUN" != "1" ]; then sleep 10; fi
+echo "==> Step 7/7: Verify active + functional (30s settle window)"
+# F14 (Codex 2026-05-01): is-active is necessary but NOT sufficient. Add probes
+# that actually exercise WhatsApp connectivity and DB read/write.
+if [ "$DRY_RUN" != "1" ]; then sleep 30; fi
+echo "    7a. systemctl is-active"
 ssh_run "systemctl --user is-active nanoclaw"
+echo "    7b. log scan for WhatsApp 'connection open'"
+ssh_run "tail -200 /home/nanoclaw/nanoclaw/logs/nanoclaw.log 2>/dev/null | grep -i 'connection open\\|whatsapp.*ready\\|connected' | tail -3 || echo '(no whatsapp-ready signal yet)'"
+echo "    7c. messages.db schema reachable (no v2 schema bleed)"
+ssh_run "sqlite3 /home/nanoclaw/nanoclaw/store/messages.db 'SELECT COUNT(*) FROM registered_groups' 2>&1 | head -3"
+echo "    7d. NO v2 tables present in restored DB"
+ssh_run "sqlite3 /home/nanoclaw/nanoclaw/store/messages.db \"SELECT name FROM sqlite_master WHERE type='table' AND name IN ('messaging_groups','agent_groups','user_dms')\" | head -3 || echo '(clean — no v2 tables)'"
 
 ELAPSED=$(( $(date +%s) - START_TIME ))
 echo ""
-echo "✓ Rollback complete in ${ELAPSED}s. Service is active on $PROD_HOST."
-echo "  Verify externally: send a WhatsApp message to a TaskFlow group and confirm response."
+echo "✓ Rollback ran in ${ELAPSED}s. systemctl says active and DB queries work."
+echo "  REQUIRED MANUAL VERIFICATION before declaring rollback successful:"
+echo "    1. Send a WhatsApp message to a TaskFlow group → confirm bot responds with @Case prefix"
+echo "    2. Check Kipp's next 04:00 audit cron fires (Phase -1.3 baseline)"
+echo "    3. Compare prod messages.db row count to snapshot baseline + expected drift"

@@ -1,4 +1,4 @@
-# NanoClaw v2 Migration Plan (v2.3 — OneCLI direction + scope-deferral)
+# NanoClaw v2 Migration Plan (v2.4 — post-execution Codex review)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. At every phase gate, pause for user sign-off before proceeding.
 
@@ -8,12 +8,13 @@
 - v2.1 (2026-04-30 delta re-review) — folds in `v2.0.10 → v2.0.21` upstream changes. Adds Phase -1.5 security back-port, expands Phase 0 (circuit breaker + native-proxy re-merge), Phase 2 (channel-approval surface), Phase 3 (schedule_task content JSON routing, `namespacedPlatformId()` rule, register field-name regression). Codex-corrected delta numbers (183 commits, 76 files, +4632/-576 LOC).
 - v2.2 (2026-04-30 features evaluation) — Codex gpt-5.5/high independent evaluation of v2 features for our skills surfaced **9 missed feature areas** (sender-approval, channel-approval, ask_user_question/pending_questions, scheduling improvements, unregistered_senders audit, named destinations as outbound ACL, self-mod, mount allowlist, new upstream skills). Adds **Phase 2.5: TaskFlow Permissions Adoption** (Weeks 5-6, between WhatsApp re-port and isMain rewrite) — re-prioritized as Codex's #1 recommendation. Downscopes cross-board a2a to "visible-text MVP" reusing existing `subtask_requests` + `handle_subtask_approval`. Net timeline: 14-18 weeks full-time.
 - v2.3 (2026-04-30 OneCLI direction + scope deferral) — locks in **self-hosted OneCLI (A2a)** as the v2 credential layer after Phase 0 Task 0.3 confirmed `use-native-credential-proxy` skill conflicts in 5 files vs v2.0.22. Reverses `project_onecli_decision.md` for v2 only (1.x stays on native proxy through cutover). Multi-tenant + multi-instance fleet expansion (1000+ boards across K NanoClaw instances with K WhatsApp accounts) explicitly **scope-deferred to post-migration**. Each future instance gets its own self-hosted OneCLI. Migration plan stays single-instance, single-tenant — fleet work happens after cutover.
+- v2.4 (2026-05-01 post-execution Codex review) — Codex gpt-5.5/high skeptical review of Phase -1 + Phase 0 work surfaced **3 BLOCKERS + 8 IMPORTANTS + 1 confirmed-correct + 1 false-positive (sandboxed network)**. Critical fixes applied: (a) F1 `requires_trigger=0` → `engage_pattern='.'` mapping required in seeder before Phase 5 cutover (fold into Phase 2.5 Task 2.5.2); (b) F7 `db.pragma()` → `db.exec('PRAGMA …')` swap added to Phase 1 Task 1.4 mechanical edit list; (c) F15 plan internal contradictions resolved (architecture, strategic decision, success criteria, risk ledger no longer claim "OneCLI NOT adopted"); (d) rollback script gains snapshot-freshness gate (default 30min) and post-restart functional probes (WhatsApp connection-open log scan, no-v2-schema-bleed check). Phase 0 Task 0.2 result downgraded from "PASSED" to "STRUCTURALLY PASSED — behavioral migration pending Phase 2.5/3 fixes."
 
 ---
 
 **Goal:** Migrate our fork from `nanoclaw@1.2.53` to upstream `v2.x` (currently `2.0.21`; 577 commits behind / 886 ahead at last fetch 2026-04-30) with **zero TaskFlow data loss**, a tested rollback recipe validated before production cutover, and minimal service disruption to 31 live government IT TaskFlow groups.
 
-**Architecture:** Parallel-worktree development, fleet-level cutover. Reuse upstream's `migrate/v1-to-v2` driver for platform-schema migration; preserve `data/taskflow/taskflow.db` verbatim; mechanically port `container/agent-runner/` from Node+better-sqlite3 to Bun+bun:sqlite; re-port TaskFlow WhatsApp hooks against the v2-native adapter; install `use-native-credential-proxy` skill to avoid OneCLI adoption; add a TaskFlow sidecar table for custom columns that have no v2 equivalent. **Per-group 24h shadow is NOT used** — Baileys auth is shared state, so two processes cannot hold the same WhatsApp identity. Cutover is fleet-level with a tested 15-minute rollback SLA.
+**Architecture:** Parallel-worktree development, fleet-level cutover. Reuse upstream's `migrate/v1-to-v2` driver for platform-schema migration; preserve `data/taskflow/taskflow.db` verbatim; mechanically port `container/agent-runner/` from Node+better-sqlite3 to Bun+bun:sqlite (with `db.pragma()` → `db.exec('PRAGMA …')` fixup, see Phase 1 Task 1.4); re-port TaskFlow WhatsApp hooks against the v2-native adapter; **adopt self-hosted OneCLI (path A2a, decision recorded in v2.3)** as the credential layer; add a TaskFlow sidecar table for custom columns that have no v2 equivalent. **Per-group 24h shadow is NOT used** — Baileys auth is shared state, so two processes cannot hold the same WhatsApp identity. Cutover is fleet-level with a tested 15-minute rollback SLA.
 
 **Tech Stack:** Bun 1.3.x (container), Node + pnpm@10.33.0 (host), SQLite (`bun:sqlite` container / `better-sqlite3` host), Anthropic Agent SDK 0.2.116, bash heredocs for audit scripts, Docker + Proxmox VM orchestration.
 
@@ -27,7 +28,7 @@
 
 2. **IPC stays file-based.** Codex verified v2 still supports `.heartbeat` + `outbox/` file channels (`src/session-manager.ts:59-62`; `host-sweep.ts:5-8`). Our 9 `src/ipc-plugins/*.ts` stay as-is. Rewriting them as `messages_out` system-action MCP tools is deferred to a post-cutover project.
 
-3. **OneCLI NOT adopted.** `use-native-credential-proxy` skill handles the escape (`upstream/skill/native-credential-proxy`). Our `project_onecli_decision.md` survives v2 with minor work.
+3. **Self-hosted OneCLI ADOPTED for v2 (decision recorded 2026-04-30, v2.3).** `use-native-credential-proxy` skill conflicts in 5 files vs v2.0.22 (Phase 0 Task 0.3 confirmed via `git merge-tree`). Self-hosted OneCLI is free at any scale (`ghcr.io/onecli/onecli:1.18.6` on the same host), aligned with v2's hard-throw at `container-runner.ts:459`, and unblocks future Calendar/Gmail integration. **1.x install retains the native credential proxy through cutover** — only v2 adopts OneCLI. See `project_onecli_decision.md` (memory) for the full v1.x-deferred / v2-adopted split.
 
 4. **TaskFlow DB preserved.** `data/taskflow/taskflow.db` is fully orthogonal to v2 platform schema. Migrator leaves `data/` untouched. Our 4 TaskFlow-custom columns on `registered_groups` (`taskflow_managed`, `taskflow_hierarchy_level`, `taskflow_max_depth`, `is_main`) move to a new `taskflow_groups` sidecar table keyed on `messaging_groups.id`.
 
@@ -358,12 +359,20 @@ Upstream `2.0.21` ships a startup circuit breaker (`src/circuit-breaker.ts`, har
 
 **Progress (2026-05-01 execution):**
 - ✅ Task 0.1: Worktree at `/root/nanoclaw-v2` baseline `7ac8dd0f` (v2.0.22). Migrate-branch worktree at `/root/nanoclaw-migrate-v2` baseline `5afe51b8`. pnpm@10.33.0 + typecheck clean.
-- ✅ Task 0.2: **migrate-v2.sh dry-run PASSED** on `/root/prod-snapshot-20260430/`. 29/29 boards migrated (28 TaskFlow + 1 unmanaged), 0 skipped, 0 unknown JIDs. All 29 messaging_groups are channel_type=whatsapp. 10 schema migrations applied to `/root/nanoclaw-migrate-v2/data/v2.db`. **Source DBs unchanged** (md5 -c OK).
-  - Pre-flight finding: migrator's seed step requires the WhatsApp channel adapter installed in the v2 worktree first (it errors with `Channel adapters not installed: whatsapp`). Resolved by `git show upstream/channels:src/channels/whatsapp.ts`, appending `import './whatsapp.js'` to channels/index.ts, and pinned-dep install (baileys 6.17.16 + qrcode 1.5.4 + pino 9.6.0).
+- ✅ Task 0.2: **migrate-v2.sh dry-run STRUCTURALLY PASSED** on `/root/prod-snapshot-20260430/` (10860 messages). 29/29 boards migrated (28 TaskFlow + 1 unmanaged), 0 skipped, 0 unknown JIDs. All 29 messaging_groups are channel_type=whatsapp. 10 schema migrations applied to `/root/nanoclaw-migrate-v2/data/v2.db`. **Source DBs unchanged** (md5 -c OK).
+  - **Behavioral gaps surfaced by Codex review (must be fixed before Phase 5 cutover):**
+    1. **F1 BLOCKER:** All 29 v1 rows have `requires_trigger=0` (bypass trigger gating per `src/index.ts:575`). Migrator seeds `engage_pattern='@Case'` (only respond when prefix matches) — silent behavioral regression. Fix in `seed-v2.ts:366` to map `requires_trigger=0` → `engage_pattern='.'` (match-all), and store the display trigger elsewhere if TaskFlow still needs `@Case` for sender naming. **Phase 2.5 must include this fixup.**
+    2. **F2:** Migrator silently drops our 4 TaskFlow custom columns (`taskflow_managed`, `taskflow_hierarchy_level`, `taskflow_max_depth`, `is_main`). Plan promises sidecar in Phase 3 Task 3.2 — known work, but Phase 0.2 cannot be called "TaskFlow-passed" until that lands.
+    3. **F4:** Active `scheduled_tasks` (90 rows) extracted to `.nanoclaw-migrations/v1-data/scheduled-tasks.json` but NOT seeded into v2.db. Phase 3 Task 3.5 (`scheduled_tasks` re-creation) is required, not optional.
+    4. **F6:** Migrator opens v1's SQLite directly without `.backup` snapshot. Dry-run on a static snapshot doesn't prove safety against live writes — Phase 5 cutover MUST stop v1 service or take fresh `sqlite3 .backup` first.
+  - Pre-flight finding: migrator's seed step requires the WhatsApp channel adapter installed in the v2 worktree first (errors with `Channel adapters not installed: whatsapp`). Resolved by `git show upstream/channels:src/channels/whatsapp.ts`, appending `import './whatsapp.js'` to channels/index.ts, and pinned-dep install (baileys 6.17.16 + qrcode 1.5.4 + pino 9.6.0).
   - Migrator interactive prompts: must run with `NANOCLAW_MIGRATE_SKIP="guide,safety,copy,rebuild,verify"` and pipe `y\n` for the owner-confirmation prompt.
   - **Phase 2.5 sanity confirmed:** TaskFlow has 59 `board_people` + 30 `board_admins` (89 human entities). Migrator seeded only the operator (1 user, 1 role, 29 memberships of operator-as-admin). Phase 2.5's TaskFlow Permissions Adoption must seed the remaining ~88 from the TaskFlow source-of-truth tables — this empirically validates Codex's #1 recommendation.
 - ✅ Task 0.3: Self-hosted OneCLI installed and SDK-smoke-tested. See "v2.3 OneCLI direction" in revision history.
-- ✅ Task 0.4: **Bun smoke PASSED.** Bun 1.3.12 installed at `/root/.bun/bin/bun` (matches v2 container Dockerfile pin). Mechanical port (2 sed edits) on `taskflow-engine.ts` (9598 lines): `import Database from 'better-sqlite3'` → `import { Database } from 'bun:sqlite'` + `Database.Database` → `Database` (5 occurrences). Smoke at `/tmp/bun-smoke/` exercises seven API surfaces (`.prepare()`, `.get()`, `.all()`, `.run()` with `{changes, lastInsertRowid}`, transaction wrapper, `.iterate()`, pragma) against the prod taskflow.db snapshot — all green. Updated SQL site counts (more accurate than Codex earlier): 284 prepare / 113 run / 134 get / 72 all / 25 exec / 12 transactions / **0 named-parameter (`$name`) usage** — confirms mechanical port is safe.
+- ✅ Task 0.4: **Bun smoke PASSED — with one mechanical-port addition.** Bun 1.3.12 installed at `/root/.bun/bin/bun` (matches v2 container Dockerfile pin). Mechanical port (2 sed edits) on `taskflow-engine.ts` (9598 lines): `import Database from 'better-sqlite3'` → `import { Database } from 'bun:sqlite'` + `Database.Database` → `Database` (5 occurrences). Smoke at `/tmp/bun-smoke/` exercises seven API surfaces (`.prepare()`, `.get()`, `.all()`, `.run()` with `{changes, lastInsertRowid}`, transaction wrapper, `.iterate()`, read-pragma via `.query('PRAGMA …').get()`) against the prod taskflow.db snapshot — all green.
+  - **F7 BLOCKER (Codex review 2026-05-01):** `bun:sqlite` does NOT have `.pragma()`. Verified: `typeof db.pragma === 'undefined'`. taskflow-engine.ts:841 uses `this.db.pragma('busy_timeout = 5000')` — **mechanical sed-only port is NOT safe**, requires one additional swap. Phase 1 Task 1.4 must include `.pragma(X)` → `.exec('PRAGMA X')` (write-pragma) and `.pragma('X')` → `.query('PRAGMA X').get()` (read-pragma) replacements. Grep confirms 1 site in taskflow-engine.ts; sweep all 17 container files in Task 1.4.
+  - Updated SQL site counts (more accurate than Codex earlier): 284 prepare / 113 run / 134 get / 72 all / 25 exec / 12 transactions / **0 named-parameter (`$name`) usage** — confirms the rest of the port surface is safe.
+  - **F8 CONFIRMED (Codex):** `taskflow-engine.ts` has zero matches for `.pluck(`, `.raw(`, `.columns(`, `.expand(`, `.function(`, `.aggregate(`, `.collation(`, `ATTACH`, `DETACH`, `wal_checkpoint`, `loadExtension`. No exotic better-sqlite3 helpers; the `db.pragma()` swap is the only non-sed fixup needed.
 - ⏸️ Task 0.5: WhatsApp v2 pairing — needs operator-provided test phone number. Defer to ops-availability.
 - ✅ Task 0.6: Env audit done (steps 1-2). Step 4 (provider override audit) deferred — checked v2.db post-seed: 0 sessions/agent_groups have `agent_provider` set, so delta #11 is a no-op for us.
 - ✅ Task 0.7 Step 1: migrator does NOT modify source `.env` (verified via dryrun pre/post check).
@@ -373,7 +382,7 @@ Upstream `2.0.21` ships a startup circuit breaker (`src/circuit-breaker.ts`, har
 
 **Success criteria:**
 - `migrate-v2.sh` + `setup/migrate.ts` successfully transform `/tmp/prod-snapshot-*/store/messages.db` into v2's triplet without data loss, writing to `<v2Root>/data/v2.db` (NOT `/tmp/migration-dryrun/data/v2.db` — verified path at execution time).
-- `use-native-credential-proxy` skill boots a v2 container without OneCLI.
+- Self-hosted OneCLI gateway boots and accepts SDK calls (`ensureAgent`, `applyContainerConfig`) — see Phase 0 Task 0.3 below.
 - Bun + `bun:sqlite` runtime-smoke-test on `taskflow-engine.ts` returns real data from our `taskflow.db`.
 - V2-native WhatsApp adapter on `upstream/channels` pairs + receives + stores a test message (test number, NOT prod).
 - Env allowlist audit: `OLLAMA_HOST`, `EMBEDDING_MODEL`, `NANOCLAW_SEMANTIC_AUDIT_*` propagation verified or patched.
@@ -661,6 +670,13 @@ Per file:
 ```bash
 sed -i "s|^import Database from 'better-sqlite3';|import { Database } from 'bun:sqlite';|" <file>
 sed -i 's|Database\.Database|Database|g' <file>  # only 2 occurrences in taskflow-engine.ts
+# F7 fixup (Codex 2026-05-01) — bun:sqlite has no .pragma() method.
+# Write-pragmas:
+sed -i "s|\.pragma('\\([^']*\\) = \\([^']*\\)')|\.exec('PRAGMA \\1 = \\2')|g" <file>
+# Read-pragmas (e.g. db.pragma('journal_mode')) need manual review since the
+# return shape changes — do these by hand. Grep first:
+#   grep -n "\.pragma('[a-z_]*')" <file>
+# Then convert each to: db.query('PRAGMA <name>').get()
 ```
 
 - [ ] **Step 4: Fix MCP loader at `src/index.ts:678`** — path-based `.js` import must become `.ts` (Bun runs TS directly).
@@ -1145,7 +1161,7 @@ For each scenario in `docs/runbooks/v2-on-call.md`:
 - **Placeholder scan:** None new. Phase 2.5 has 7 concrete tasks with verifiable gates. PT-BR copy task (2.5.5) flags an open question (fork-private patch vs. CLAUDE.md fragment) — should be resolved at Phase 2.5 entry, not pre-emptively.
 - **Timeline realism:** Phase 2.5 adds ~1-2 weeks (Weeks 5-6, partially overlapping Phase 2's tail). Net total: 14-18 weeks full-time. Part-time stretches to 7+ months.
 - **Risk ledger:**
-  - Highest residual risk: `use-native-credential-proxy` skill v2.0.21-compat UNVERIFIED until Phase 0 Task 0.3. If the skill needs repair (Codex flagged merge-tree conflicts), 1-2 week timeline impact.
+  - Highest residual risk RESOLVED 2026-04-30: native-credential-proxy skill confirmed bit-rotted (5-file conflict vs v2.0.22). Path A2a (self-hosted OneCLI) selected. New residual risk: OneCLI postgres credential hygiene (currently `postgres:postgres` defaults on `.66`) and orphan secret cleanup when agents are deleted — must be addressed before Phase 5 cutover.
   - Second: fleet cutover has a ~2h service window. Cannot be zero. User must accept.
   - Third: scheduled_tasks porting (Phase 3) may discover v2's primitives don't fully cover holiday/weekday-contradiction handling. If Task 2.5.6 spike confirms gap, fork-private `task-scheduler.ts` stays.
   - Fourth: Phase 2.5 user/role seeding depends on TaskFlow's source-of-truth tables having clean data. If `board_people` / `board_admins` have stale rows or duplicate JIDs, the seeder needs a deduplication pass — could add 2-3 days.
