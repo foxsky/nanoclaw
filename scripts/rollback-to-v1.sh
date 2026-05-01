@@ -43,14 +43,6 @@ if [ -z "$V1_SHA" ]; then
   exit 2
 fi
 
-run() {
-  if [ "$DRY_RUN" = "1" ]; then
-    echo "[DRY-RUN] $*"
-  else
-    eval "$*"
-  fi
-}
-
 ssh_run() {
   if [ "$DRY_RUN" = "1" ]; then
     echo "[DRY-RUN] ssh $PROD_HOST \"$*\""
