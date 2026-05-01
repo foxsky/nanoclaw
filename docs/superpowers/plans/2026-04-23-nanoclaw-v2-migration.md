@@ -313,43 +313,33 @@ Upstream `2.0.21` ships a startup circuit breaker (`src/circuit-breaker.ts`, har
 
 ---
 
-## Phase -1.5: Security back-port to v1 (NEW, delta #8)
+## Phase -1.5: Security back-port to v1 (RESOLVED 2026-05-01 — NO-OP for v1)
 
-**Goal:** Port the upstream attachment path-traversal fix to our v1.2.53 fork. Do this independently of v2 migration — it's a security fix, not a migration step.
+**Status: CLOSED via audit.** Full audit at `docs/security/phase-1.5-attachment-traversal-audit-2026-05-01.md`. The v2 vulnerability class (user-supplied attachment names flowing unvalidated into `path.join` sinks) **does not exist in v1.2.53**.
 
-**Commit set (v2.0.10 → v2.0.22):**
+**Why audit-only, not back-port:**
+1. Every `fs.writeFile*` sink in `src/` and `container/agent-runner/src/` was traced. All filenames are either (a) internally synthesized (`img-${Date.now()}-${Math.random()...}.jpg`, etc.), (b) strict-whitelist sanitized via `sanitizeFilename()` for archive paths, or (c) validated via `isValidGroupFolder()` for operator-provided board names.
+2. v1's `src/group-folder.ts:isValidGroupFolder()` is **stricter** than v2's `isSafeAttachmentName()`: whitelist `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`, explicit `..` and separator rejection, plus `ensureWithinBase()` canonical-path containment check.
+3. v1 has no `session-manager.ts`, no agent-to-agent attachment forwarding, no `send_file` MCP tool — i.e., none of the entry points where v2's bug lived.
+4. After Phase 5 cutover, v2's `attachment-safety.ts` ships in our worktree automatically — no fork-private maintenance burden.
+
+**Original commit set (v2.0.10 → v2.0.22) referenced for the audit:**
 - `7e37b13a` — channel-inbound path-traversal fix (basename guard)
 - `6e5e568d` + `2a3be9ec` — agent-sent file name safety
 - `fc3c11b6` (v2.0.22) — `session-manager`: outbox path-confinement applied to inbound attachments
 - `852009dc` (v2.0.22) — container: confine outbound attachment paths
 
-**The actual primitive (Codex-corrected):** v2's `src/attachment-safety.ts:18-22` exposes `isSafeAttachmentName(name)` which **rejects** names containing path separators (`/`, `\`), `..` segments, NUL bytes, or empty basenames. MIME-type-derived extension is used **only as a fallback** when no explicit filename was provided (`session-manager.ts:263-277, 375-383`). The fix is NOT a safe-extension allowlist. The 2.0.22 follow-ups extend the same primitive into outbox/inbox path-confinement on both ends.
+The v2 primitive (`src/attachment-safety.ts:18-22`) rejects names containing path separators (`/`, `\`), `..` segments, NUL bytes, or empty basenames. **Future-proofing:** if we ever add a `send_file` MCP tool or other user-controlled-filename code path on v1.x, port `isSafeAttachmentName()` then. See audit doc's "Future-proofing" section.
 
-**Success criteria:**
-- Our v1 attachment-handling code path validates inbound + agent-sent filenames via a basename guard equivalent to `isSafeAttachmentName()`.
-- A MIME-derived fallback name is used when filename is absent.
-- A failing test exists for each of the rejection vectors (`..`, `/`, `\`, NUL, empty).
-- The fix lands on `main`, ships through `deploy.sh` to prod, soaks for 48h before Phase 0 begins.
+**Audit results (2026-05-01):**
+- ✅ Task -1.5.1: filename derivation traced across `src/` + `container/agent-runner/src/`. All sinks are synthesized, sanitized, or `isValidGroupFolder()`-validated.
+- ✅ Task -1.5.2: failing test SKIPPED — no vulnerable sink to write a test for. Audit doc records the rationale (Task -1.5.2 step 2 explicitly allows skipping when test would pass on v1).
+- ✅ Task -1.5.3 SKIPPED: nothing to port; v1's existing `isValidGroupFolder()` is stricter than v2's `isSafeAttachmentName()`.
+- ✅ Task -1.5.4: closed via audit doc.
 
-### Task -1.5.1: Identify our v1 attachment code path
+### (historical) Tasks -1.5.1 → -1.5.4
 
-- [ ] **Step 1:** Grep our `src/` and `container/agent-runner/src/` for filename derivation in inbound + agent-sent attachment handlers.
-- [ ] **Step 2:** Compare against `upstream/main:src/attachment-safety.ts` and the patched call-sites in `upstream/main:src/session-manager.ts`. Identify the equivalent locations in our code.
-
-### Task -1.5.2: Write failing test
-
-- [ ] **Step 1:** Reproduce the path traversal: an inbound attachment with filename `../../etc/passwd` or similar, asserting that the handler must reject or sanitize.
-- [ ] **Step 2:** Run; expect FAIL on v1.2.53 if the bug is present. If the test PASSES on v1, document why (e.g., we sanitize elsewhere) and skip Task -1.5.3.
-
-### Task -1.5.3: Port the sanitizer
-
-- [ ] **Step 1:** Adapt `attachment-safety.ts` to our codebase (no Bun deps; works under Node). Keep the same `isSafeAttachmentName()` primitive (basename guard rejecting separators, `..`, NUL, empty) plus the MIME-type-derived **fallback** name path for nameless attachments.
-- [ ] **Step 2:** Wire it into the call-sites identified in Task -1.5.1.
-- [ ] **Step 3:** Run the tests from Task -1.5.2 (one per rejection vector); verify all PASS.
-- [ ] **Step 4:** Codex review (read-only) before commit, per `feedback_review_before_deploy.md`.
-- [ ] **Step 5:** Commit, deploy via `./scripts/deploy.sh`, soak 48h with prod attachment traffic.
-
-### Task -1.5.4: Phase -1.5 sign-off
+Original task list at v2.1 anticipated a real port. Audit-only path replaces them. Full step-by-step trace and conclusion at `docs/security/phase-1.5-attachment-traversal-audit-2026-05-01.md`.
 
 - [ ] 48h clean prod soak. No regressions in attachment delivery. Then proceed to Phase 0.
 
