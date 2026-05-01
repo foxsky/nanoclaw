@@ -10,9 +10,15 @@
  * Mapping rules:
  *   - users.id     = whatsapp:<phone>@s.whatsapp.net (matches the migrator's owner format)
  *   - users.kind   = 'whatsapp' (channel type — convention from migrator's owner row)
- *   - role         = 'owner' if board_admins.is_primary_manager=1, else 'admin'
+ *   - role         = always 'admin' (scoped to agent_group_id). v2's user_roles
+ *                    invariant (Codex B3, src/modules/permissions/db/user-roles.ts:9):
+ *                    `owner` role MUST be global (agent_group_id IS NULL); any
+ *                    INSERT with role='owner' AND agent_group_id != NULL is
+ *                    silently ignored by isOwner()/pickApprover(). Board-scoped
+ *                    privilege is 'admin' regardless of board_admins.is_primary_manager.
  *   - agent_group  = looked up via boards.group_folder ↔ agent_groups.folder
- *   - granted_by/added_by = the operator user (already seeded by migrate-v2.sh)
+ *   - granted_by/added_by = the operator user (already seeded by migrate-v2.sh,
+ *                    holds the global 'owner' role)
  *
  * Idempotent: every INSERT is OR IGNORE, keyed on the natural primary key.
  *
@@ -80,8 +86,13 @@ function userIdFromPhone(phone: string): string | null {
   return `whatsapp:${trimmed}@s.whatsapp.net`;
 }
 
-function adminRoleFor(row: AdminRow): 'owner' | 'admin' {
-  return row.is_primary_manager === 1 ? 'owner' : 'admin';
+function adminRoleFor(_row: AdminRow): 'admin' {
+  // v2 reserves 'owner' role for global admins (agent_group_id IS NULL).
+  // Board-scoped admins map to 'admin' regardless of is_primary_manager.
+  // The is_primary_manager bit can be preserved separately in a sidecar
+  // table later if we need to distinguish; for the permission gate, scoped
+  // 'admin' is the only valid v2 value here.
+  return 'admin';
 }
 
 interface SeedStats {

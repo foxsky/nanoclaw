@@ -1,4 +1,4 @@
-# NanoClaw v2 Migration Plan (v2.5 — Phase 1 closed, Phase 2 dissolved)
+# NanoClaw v2 Migration Plan (v2.6 — Phase 2 RESTORED, role mapping fixed)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. At every phase gate, pause for user sign-off before proceeding.
 
@@ -10,6 +10,17 @@
 - v2.3 (2026-04-30 OneCLI direction + scope deferral) — locks in **self-hosted OneCLI (A2a)** as the v2 credential layer after Phase 0 Task 0.3 confirmed `use-native-credential-proxy` skill conflicts in 5 files vs v2.0.22. Reverses `project_onecli_decision.md` for v2 only (1.x stays on native proxy through cutover). Multi-tenant + multi-instance fleet expansion (1000+ boards across K NanoClaw instances with K WhatsApp accounts) explicitly **scope-deferred to post-migration**. Each future instance gets its own self-hosted OneCLI. Migration plan stays single-instance, single-tenant — fleet work happens after cutover.
 - v2.4 (2026-05-01 post-execution Codex review) — Codex gpt-5.5/high skeptical review of Phase -1 + Phase 0 work surfaced **3 BLOCKERS + 8 IMPORTANTS + 1 confirmed-correct + 1 false-positive (sandboxed network)**. Critical fixes applied: (a) F1 `requires_trigger=0` → `engage_pattern='.'` mapping required in seeder before Phase 5 cutover (fold into Phase 2.5 Task 2.5.2); (b) F7 `db.pragma()` → `db.exec('PRAGMA …')` swap added to Phase 1 Task 1.4 mechanical edit list; (c) F15 plan internal contradictions resolved (architecture, strategic decision, success criteria, risk ledger no longer claim "OneCLI NOT adopted"); (d) rollback script gains snapshot-freshness gate (default 30min) and post-restart functional probes (WhatsApp connection-open log scan, no-v2-schema-bleed check). Phase 0 Task 0.2 result downgraded from "PASSED" to "STRUCTURALLY PASSED — behavioral migration pending Phase 2.5/3 fixes."
 - v2.5 (2026-05-01 Phase 1 closure + Phase 2 dissolution) — Phase 1 Bun runtime port FULLY closed (typecheck ✅, 719/765 bun test ✅, container build ✅, auditor heredoc smoke vs prod snapshot ✅). Phase 2 (WhatsApp re-port, was 2-3 weeks) **dissolved via empirical finding**: v1 whatsapp.ts vs v2-channels whatsapp.ts is a **21-line whitespace-only diff** — no functional port required. The original Phase 2 scope conflated WhatsApp-adapter port with `registered_groups` schema port; the latter has always belonged to Phase 2.5 + Phase 3. Phase 2 tasks 2.2-2.4 superseded; Task 2.1 retained as DONE. **Net timeline: 11-15 weeks full-time** (was 14-18; saved 2-3 weeks of phantom work). Plan +1 simplify pass on Phase 1 (Dockerfile `exec`, db-util reuse, comment cleanup).
+- v2.6 (2026-05-01 EOD post-execution Codex review #2) — second Codex gpt-5.5/high skeptical pass found **3 BLOCKERS + 7 IMPORTANTS** in v2.5 claims. Critical fixes applied:
+  - **B1 — Phase 2 dissolution was wrong.** The 21-line whitespace diff was between TWO copies of OUR FORK (v1.2.53 main vs feat/v2-migration branch — both ours, both fork-private). The real diff against `upstream/channels:src/channels/whatsapp.ts` is **+871/-633 lines (1504-line change)**: v2's whatsapp.ts is 735 lines, structurally different — exposes `ask_question` / action replies / reactions / file outbound / syncConversations / getMessage fallback. **Phase 2 is REOPENED.** Approval-card delivery (`type: 'ask_question'`) won't work on our fork's adapter as-is; sender-approval will silently fail to render the card. Phase 2 work reinstated: 1-2 weeks to port the adapter surface gap or repoint to upstream/channels' adapter.
+  - **B3 — Role mapping was incompatible with v2.** Seeder mapped `is_primary_manager=1` → `'owner'` with `agent_group_id` set. But v2's `grantRole()` invariant (`src/modules/permissions/db/user-roles.ts:9`) FORBIDS `role='owner' && agent_group_id !== NULL`; `isOwner()` (line 36) ignores any such row. So 28 board "owners" were dead rows. Fixed: map `is_primary_manager=1` → `'admin'` (scoped). Re-ran on the worktree v2.db: 28 admin rows (0 invariant violations), 1 global owner (operator). `pickApprover('secti-taskflow')` now correctly returns Carlos Giovanni (the actual manager).
+  - **B2 — Approval-card delivery requires v2 ChannelAdapter primitives** (`ask_question`, etc.) that our fork's whatsapp.ts doesn't have. Sender-approval will silently fail-soft (`pickApprovalDelivery()` returns null → "no DM channel for any approver" warning) until adapter port lands.
+  - F5 destination round-trip — parent-only edges seeded; reverse edges deferred. For a2a-lite MVP per Spec B, parent → child reply can use group-JID via `send_message` (host-routed) instead of agent_destinations, so reverse not strictly required. Document.
+  - F7 main group — operator works, no other senders seeded for `whatsapp_main`. Acceptable since main is operator-only by design.
+  - F8/F9 — auditor smoke and bun test 46-failures need paired-output v1↔v2 comparison + `vi.*` shim before Phase 1 can claim "behavior-closed" (currently "build-closed" only).
+  - F12 — Phase 2.5 should add unit/integration gates (pickApprover, replay, round-trip) before Phase 4 shadow.
+  - F13 — Phase 3 isMain count refreshed: now 169 hits (was 103 from earlier baseline), more hits in test files.
+  - **Phase 2.5 status downgraded:** "STRUCTURALLY closed" → "data-layer closed; runtime gates 2.5.5/2.5.6/2.5.7 still owe pickApprover/replay/round-trip integration tests." Approval-card delivery itself blocked on Phase 2 adapter port (B2).
+  - **Phase 2 status RESTORED:** ~1-2 weeks budget reinstated for adapter port. Net timeline back to **10-15 weeks full-time** (saved less than v2.5 claimed).
 
 ---
 
@@ -748,9 +759,25 @@ docker run --rm -it nanoclaw-agent:latest id
 
 ---
 
-## Phase 2: WhatsApp Re-port (RESOLVED via Phase 0 finding 2026-05-01 — essentially no-op)
+## Phase 2: WhatsApp Re-port (RESTORED 2026-05-01 EOD via Codex review B1+B2)
 
-**Status: CLOSED.** Phase 0 Task 2.1 inventory + diff (2026-05-01) showed that the v2-native WhatsApp adapter on `upstream/channels:src/channels/whatsapp.ts` (964 lines) is **functionally identical** to our v1 fork's adapter (973 lines) — the diff is **21 lines of pure whitespace formatting** (multi-line argument formatting collapsed/expanded). Zero functional or behavioral changes. v1 imports identical to v2 imports.
+**Status: RESTORED.** v2.5 claimed Phase 2 was dissolved via "21-line whitespace diff." That diff was wrong — it compared two copies of our fork (v1.2.53 main vs feat/v2-migration), both fork-private. **The real diff against `upstream/channels:src/channels/whatsapp.ts` is +871/-633 lines** (1504-line change). v2's adapter is 735 lines, structurally different.
+
+**What our fork is missing (Codex B2):** v2's `ChannelAdapter` interface includes `ask_question` / action replies / reactions / file outbound / `syncConversations` / `getMessage` fallback. v2's `requestSenderApproval` delivers `type: 'ask_question'` to the channel adapter. Our fork's whatsapp.ts only has `sendMessageWithReceipt` — **the approval-card flow will fail silently** (delivery handler returns null → `pickApprovalDelivery()` returns null → "no DM channel for any approver" warning).
+
+**Phase 2 work reinstated:** 1-2 weeks. Either (a) port the missing surface from `upstream/channels:src/channels/whatsapp.ts` into our adapter, or (b) repoint feat/v2-migration to use upstream/channels' adapter wholesale and re-port our fork-private logger/timezone/group-folder hooks against it. Decision deferred until Phase 2 entry.
+
+### Phase 2 Tasks (RESTORED)
+
+- [ ] **Task 2.1 (DONE 2026-05-01):** Hook inventory — 269 TaskFlow hits across `src/*.ts`, distributed mostly to Phase 2.5 + Phase 3 (registered_groups schema work, isMain).
+- [ ] **Task 2.2: Adapter surface delta inventory.** Diff our `src/channels/whatsapp.ts` against `upstream/channels:src/channels/whatsapp.ts`. List every public method or behavior in v2 that we don't have. Decide: port-into-ours vs. repoint-to-upstream.
+- [ ] **Task 2.3: Approval-card delivery wire-up.** Whichever path 2.2 chose, ensure `requestSenderApproval`'s `type: 'ask_question'` delivery actually reaches a WhatsApp DM. Test: simulate non-member → admin gets card → reply Permitir → sender added.
+- [ ] **Task 2.4: E2E on test phone (still operator-blocked on Phase 0.5).**
+- [ ] **Task 2.5 gate:** structural diff resolved (zero missing v2 adapter primitives) + approval card runtime-verified.
+
+### Historical (v2.5 dissolution claim — WRONG, kept for record)
+
+Original v2.5 tasks 2.2-2.4 SUPERSEDED claim was wrong. Phase 2 has real work.
 
 **Why the original plan estimate was wrong:** Phase 2 as originally specced conflated two different ports:
 1. WhatsApp adapter port (whatsapp.ts customizations) — turns out **near-no-op** (whitespace only)
@@ -844,9 +871,16 @@ Test separate from prod pairing.
   - v2's host-side `src/modules/scheduling/recurrence.ts` uses `CronExpressionParser.parse(msg.recurrence, { tz: TIMEZONE })` — identical timezone-aware cron evaluation to v1.
   - Architectural shift: v2 stores recurring tasks IN `messages_in` (with `recurrence` field), sweep hook re-inserts on completion. v1's separate `scheduled_tasks` table goes away in Phase 3 schema migration.
   - Holiday-skip + weekday-contradiction handling: NOT in v1's `task-scheduler.ts` either. Lives in `taskflow-engine.ts:isNonBusinessDay/checkNonBusinessDay` (engine-level, due_date warnings), already ported in Phase 1 mechanical sweep. Holiday-skip for scheduled tasks themselves is operator-driven SQL (e.g. today's manual May 1 skip via `UPDATE scheduled_tasks SET next_run = ...`); no code change required for v2.
-- ✅ Task 2.5.7: **Phase 2.5 STRUCTURAL GATE PASSED.** Permission tables populated (28 users / 29 owner-roles / 86 memberships, 0 boards unmapped); destinations seeded (27 child→parent edges); policies enabled (29/29 boards on `request_approval` + `sender_scope=known` + `ignored_message_policy=accumulate`); PT-BR copy patched; scheduling primitive verdict recorded. **Runtime verification of approval-card flow deferred to Phase 4 shadow run** (blocked on Phase 0.5 operator test phone) — the structural gate is what Phase 2.5 owns; behavioral validation is Phase 4's job.
+- ⚠️ Task 2.5.7: **Phase 2.5 DATA-LAYER closed; runtime gate REOPENED.** v2.5 declared "structural close"; Codex EOD review #2 (B3 + F12) caught two issues:
+  - **B3 fixed (2026-05-01 EOD):** v2.5 seeded `is_primary_manager=1` → `'owner'` with `agent_group_id` set. v2 forbids that combination (`grantRole()` invariant; `isOwner()` ignores). 28 board "owners" were dead rows. **Fixed:** seeder now maps to `'admin'` (scoped). Re-ran on worktree v2.db: 28 admin rows, 1 global owner (operator), 0 invariant violations. `pickApprover('secti-taskflow')` correctly returns Carlos Giovanni.
+  - **F12 still owed:** Phase 2.5 should add unit/integration gates BEFORE Phase 4 shadow:
+    - `pickApprover(agentGroupId)` returns the right admin for each board.
+    - Unknown-sender replay path runs end-to-end against seeded DB fixtures (no phone needed).
+    - Cross-board destination round-trip (parent → child reply path) is testable via fixtures.
+    These are doable without the operator test phone — defer to Phase 4 only the actual WhatsApp pairing test.
+  - **B2 blocking:** Approval-card delivery itself depends on Phase 2's adapter port (`type: 'ask_question'` rendering on WhatsApp). Phase 2.5 runtime can't fully close until Phase 2 adapter port lands.
 
-**Phase 2.5 CLOSED structurally — 7/7 tasks done. Runtime verification of approval-card flow lives in Phase 4 shadow.**
+**Phase 2.5 status: data layer closed; runtime gate REOPENED pending Phase 2 adapter port + integration tests.**
 
 **Goal:** Adopt v2's permissions/approval/destinations stack for TaskFlow boards. Codex's #1 recommendation from the 2026-04-30 feature evaluation. Surfaces the highest-leverage v2 features (deltas #12, #13, #14, #17) that the prior plan version omitted.
 
