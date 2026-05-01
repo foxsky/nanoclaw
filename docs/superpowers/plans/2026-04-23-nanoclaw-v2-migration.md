@@ -833,6 +833,15 @@ Test separate from prod pairing.
 
 ## Phase 2.5: TaskFlow Permissions Adoption (NEW v2.2, Weeks 5-6)
 
+**Progress (2026-05-01 execution):**
+- ✅ Task 2.5.1: Inventory complete. TaskFlow source: 59 board_people + 30 board_admins + 37 boards (29 with v2 agent_group mapping via `boards.group_folder ↔ agent_groups.folder`; 27 child boards have `parent_board_id`; 10 root boards). Empirical: ALL board_admins have `is_primary_manager=1` → 'owner' role. 2 admin rows + 1 person row have empty phone (mariany on board-seci-taskflow — known data quality issue).
+- ✅ Task 2.5.2: **Seeder shipped at `scripts/migrate-taskflow-users.ts`.** Validated against the Phase 0.2-seeded v2.db: 27 humans + 29 owner-roles + 86 agent_group_members inserted (with operator already there → 28 users / 29 roles / 86 members total). Idempotent (re-run = 0 inserts). Bug caught + fixed: empty-phone rows would have created `whatsapp:@s.whatsapp.net` phantom user; `userIdFromPhone()` now returns `null` for empty/blank, callers skip-and-count.
+- ✅ Task 2.5.3: **Destinations seeder shipped at `scripts/migrate-taskflow-destinations.ts`.** 27 child→parent destinations seeded (`local_name='parent'`, `target_type='agent'`). Schema confirmed simpler than plan stub: single `target_id` polymorphic by `target_type`, not separate columns. 0 children unmapped, 0 parents unmapped, 10 roots correctly skipped. Idempotent.
+- ✅ Task 2.5.4: **Policy SQL shipped at `scripts/migrate-taskflow-policies.sql`.** All 29 messaging_groups now `unknown_sender_policy='request_approval'`; all 29 messaging_group_agents now `sender_scope='known'` + `ignored_message_policy='accumulate'`. Combined with F1 patch (`engage_pattern='.'`), gives: members → bot responds to everything; non-members → admin approval card; dropped messages → audit trail in `unregistered_senders`.
+- ⏸️ Task 2.5.5: PT-BR approval-card copy (translation + decision: fork-private patch vs. CLAUDE.md fragment).
+- ⏸️ Task 2.5.6: Scheduling primitive feasibility spike (read upstream `scheduling.ts` + decide whether v2 covers our holiday/weekday handling).
+- ⏸️ Task 2.5.7: Phase 2.5 gate.
+
 **Goal:** Adopt v2's permissions/approval/destinations stack for TaskFlow boards. Codex's #1 recommendation from the 2026-04-30 feature evaluation. Surfaces the highest-leverage v2 features (deltas #12, #13, #14, #17) that the prior plan version omitted.
 
 **Why now (between Phase 2 and Phase 3):** Phase 2 lands v2-native WhatsApp adapter; Phase 3 rewrites 103 `isMain` sites. Permissions adoption needs (a) v2 WhatsApp wired (Phase 2 done) and (b) the new `users` / `agent_group_members` / `user_roles` tables to be the privilege source (Phase 3 prerequisite). Phase 2.5 is where we seed those tables for TaskFlow's 31 boards before the isMain rewrite uses them.
