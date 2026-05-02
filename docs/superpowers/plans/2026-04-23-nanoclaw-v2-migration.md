@@ -170,7 +170,7 @@ To be inventoried in Phase A.1. Likely candidates:
 ✅ Task 0.1: throwaway v2 worktree at `/root/nanoclaw-feat-v2/` (now reverted to pre-session state).
 ✅ Task 0.2: upstream migrator dry-run.
 ✅ Task 0.3: self-hosted OneCLI installed + verified.
-✅ Task 0.4: Bun + bun:sqlite smoke (replay against new skills in Phase A.4).
+✅ Task 0.4: Bun + bun:sqlite smoke (replay against new skills in Phase A.5).
 ⏸️ Task 0.5: WhatsApp v2-native adapter pairing — operator-blocked (test phone).
 ✅ Task 0.6: env allowlist audit.
 ✅ Task 0.7: `.env` safety audit.
@@ -196,9 +196,47 @@ To be inventoried in Phase A.1. Likely candidates:
 - Total extraction effort estimated.
 - Pinned upstream commit hash recorded.
 
-### Phase A.2: TaskFlow extraction — biggest debt (Weeks 2-4)
+### Phase A.2: `whatsapp-fixes` skill — foundational, extends v2 ChannelAdapter (Week 2)
+
+**Goal:** make `whatsapp-fixes` self-contained AND author the WhatsApp capability extensions that `add-taskflow` later consumes.
+
+**Why this is Phase A.2 (not A.3):** `add-taskflow` board provisioning needs `Channel.createGroup()`, `Channel.lookupPhoneJid()`, `Channel.resolvePhoneJid()` — none of which exist in v2's deliberately-minimal `ChannelAdapter`. `add-taskflow` extraction is blocked on these extensions. Therefore `whatsapp-fixes` must land first.
+
+**Files to author** (per "WhatsApp surface" in audit summary):
+- `whatsapp-fixes/manifest.yaml` declaring `modifies: [src/channels/whatsapp.ts]`.
+- `whatsapp-fixes/modify/src/channels/whatsapp.ts` — extends upstream's 735-LOC adapter with:
+  - `createGroup(subject, participants)` — wraps Baileys `sock.groupCreate`
+  - `lookupPhoneJid(phone)` — wraps `sock.onWhatsApp`
+  - `resolvePhoneJid(phone)` — phone-to-JID resolution
+  - `setTyping(jid, isTyping)` — typing indicator
+  - `syncGroups(force)` — force-API for periodic refresh
+  - Multi-trigger detection — checks per-group `engage_pattern`, not just `ASSISTANT_NAME`
+- `whatsapp-fixes/modify/src/channels/whatsapp.ts.intent.md` — semantic contract
+- Extends `OutboundMessage.content.type` with `'create_group' | 'lookup_phone' | 'resolve_phone' | 'sync_groups'` variants (added to `src/channels/adapter.ts` via another modify/ patch).
+- `whatsapp-fixes/tests/whatsapp-extensions.test.ts` — verifies each extension method.
+
+Net: ~300-400 LOC of fork additions + manifest + tests. Substantial but bounded.
+
+- [ ] Step 1: author `manifest.yaml` declaring modifies + tests target.
+- [ ] Step 2: author `modify/src/channels/whatsapp.ts` (start from `upstream/channels:src/channels/whatsapp.ts` + apply 5 method additions + multi-trigger fix).
+- [ ] Step 3: author `.intent.md` files describing each addition (WHY it exists, what API it wraps).
+- [ ] Step 4: author `modify/src/channels/adapter.ts` extending OutboundMessage content types.
+- [ ] Step 5: author tests.
+- [ ] Step 6: skill-replay test on clean `upstream/main` + apply `add-whatsapp` (upstream) + apply `whatsapp-fixes` → verify all 5 methods callable + multi-trigger fix works.
+- [ ] Step 7: gate sign-off.
+
+**Success criteria:**
+- `whatsapp-fixes` skill applies cleanly to a fresh upstream worktree (after `add-whatsapp` upstream skill is applied) and produces an extended adapter with all 5 missing methods.
+- Tests verify each extension.
+- Multi-trigger detection passes against a test board with per-group `engage_pattern` distinct from global `ASSISTANT_NAME`.
+
+**Post-cutover follow-up** (out of Phase A.2 scope): submit upstream PR proposing `createGroup`/`lookupPhoneJid`/etc. as ChannelAdapter additions (or sibling `ChannelAdapterExtras` interface). When merged, `whatsapp-fixes` shrinks to just the multi-trigger fix.
+
+### Phase A.3: TaskFlow extraction — biggest debt (Weeks 3-5)
 
 **Goal:** make `add-taskflow` self-contained. Currently the skill's `SKILL.md` references runtime files in `container/agent-runner/src/` that aren't owned by the skill.
+
+**Depends on:** Phase A.2 (`whatsapp-fixes`) complete — `add-taskflow` board provisioning consumes the extended `Channel.createGroup` / `lookupPhoneJid` / `resolvePhoneJid` methods.
 
 **Files to extract** (initial list, refined by A.1 audit):
 - `container/agent-runner/src/taskflow-engine.ts` (1409 lines, 53 exports, ~579 SQL sites)
@@ -207,30 +245,35 @@ To be inventoried in Phase A.1. Likely candidates:
 - `src/taskflow-db.ts`
 - `src/taskflow-db.test.ts`
 - `src/taskflow-embedding-sync.ts`
-- `src/dm-routing.ts` + `src/dm-routing.test.ts`
-- `groups/<board>/CLAUDE.md` (deferred to runtime — covered by templates/CLAUDE.md.template already)
+- `src/dm-routing.ts` + `src/dm-routing.test.ts` (relocated from `whatsapp-fixes` per WhatsApp audit — TaskFlow-specific)
+- IPC plugin replacements (per Decision 1):
+  - 5 MCP tools in `add-taskflow/add/container/agent-runner/src/mcp-tools/{create-group,send-otp,provision-root-board,provision-child-board,provision-shared}.ts`
+  - 5 delivery-action handlers in `add-taskflow/add/src/delivery-actions/<same>.ts` — these consume `whatsapp-fixes`'s extended `Channel.createGroup` etc.
+- `groups/<board>/CLAUDE.md` (deferred to runtime — covered by `templates/CLAUDE.md.template` already)
 
 **Extraction approach (per file):**
 1. Copy the file verbatim into `add-taskflow/add/<original-path>` (since these files don't exist in upstream `src/`, they're additions, not modifications).
 2. If the file is modified (vs upstream having a different version), use `modify/<path>` with `.intent.md` instead.
 3. Author `add-taskflow/add/<path>.intent.md` (or `modify/<path>.intent.md`) describing: WHAT the file does, WHY it diverges from upstream (or WHY it's net-new), what UPSTREAM API it consumes.
-4. Update `add-taskflow/manifest.yaml`: add `adds:` entry per file.
+4. Update `add-taskflow/manifest.yaml`: add `adds:` entry per file. Add `depends: [whatsapp-fixes]` to declare ordering.
 5. Update `add-taskflow/SKILL.md` orchestration to ensure files copy at install time.
-6. Run skill-replay test: apply `add-taskflow` to a clean upstream worktree → verify all 53 exports of `taskflow-engine.ts` resolve, all tests pass.
+6. Run skill-replay test: apply `add-taskflow` to a clean upstream worktree (with `add-whatsapp` + `whatsapp-fixes` already applied) → verify all 53 exports of `taskflow-engine.ts` resolve, all tests pass.
 
 - [ ] Step 1: extract `taskflow-engine.ts` (largest, do first).
 - [ ] Step 2: extract `taskflow-mcp-server.ts` + tests.
 - [ ] Step 3: extract `taskflow-db.ts`, `taskflow-embedding-sync.ts`, `dm-routing.ts` + tests.
-- [ ] Step 4: schema additions (`taskflow_groups` sidecar, custom indices) authored as `add-taskflow/add/migrations/<NNN>-taskflow-sidecar.sql` + an init script.
-- [ ] Step 5: skill-replay test on a clean upstream worktree. Verify TaskFlow MCP tools register, schema migrates, prod-snapshot test data loads cleanly.
-- [ ] Step 6: gate sign-off.
+- [ ] Step 4: author 5 IPC-replacement MCP tools + delivery-action handlers (per Decision 1).
+- [ ] Step 5: schema additions (`taskflow_groups` sidecar, custom indices) authored as `add-taskflow/add/migrations/<NNN>-taskflow-sidecar.sql` + an init script.
+- [ ] Step 6: skill-replay test on a clean upstream worktree. Verify TaskFlow MCP tools register, schema migrates, prod-snapshot test data loads cleanly, board provisioning end-to-end works.
+- [ ] Step 7: gate sign-off.
 
 **Success criteria:**
-- `add-taskflow` skill applies cleanly to a fresh `upstream/main` clone and produces a working TaskFlow runtime.
+- `add-taskflow` skill applies cleanly to a fresh `upstream/main` clone (with `add-whatsapp` + `whatsapp-fixes` already applied) and produces a working TaskFlow runtime.
 - Test count parity: every `taskflow-engine.test.ts` test passes after replay.
+- Board provisioning test: provision a new test board → WhatsApp group created via `createGroup` extension → `agent_groups` + `messaging_groups` rows seeded → bot replies in the new group.
 - `add-taskflow/manifest.yaml` core_version matches the pinned upstream commit's NanoClaw version.
 
-### Phase A.3: Per-skill audits + extractions (Weeks 4-6, parallelizable)
+### Phase A.4: Per-skill audits + extractions (Weeks 5-7, parallelizable)
 
 For each non-empty diff cluster from Phase A.1, repeat the Phase A.2 pattern.
 
@@ -252,7 +295,7 @@ Likely targets (refined by A.1):
 5. Skill-replay test on clean upstream.
 6. Gate sign-off per skill.
 
-### Phase A.4: Bun container runtime — author as a skill (Week 6)
+### Phase A.5: Bun container runtime — author as a skill (Week 6)
 
 **Goal:** the Bun port (formerly Phase 1) becomes the `bun-container-runtime` skill. Net-new in `add/`, no `src/` edits.
 
@@ -264,7 +307,7 @@ Likely targets (refined by A.1):
 - [ ] `modify/container/agent-runner/src/auditor-script.sh` swaps heredoc imports. Plus `.intent.md`.
 - [ ] Tests in `tests/` validate the skill applied to `upstream/main` produces a passing `bun test` and `bun run` boot.
 
-### Phase A.5: Track A gate (Week 7)
+### Phase A.6: Track A gate (Week 7)
 
 **Validation:**
 - [ ] On a clean upstream-cloned worktree, run `apply-all-skills.sh` (NEW utility — owned by `migrate-nanoclaw-v2` skill).
@@ -294,7 +337,7 @@ Test infrastructure: `test-taskflow` + `e2e-taskflow` boards on a SEPARATE Whats
 
 **Pre-cutover (T-72h):**
 - [ ] Send PT-BR user-comms (template from Phase -1 Task -1.5): "TaskFlow scheduled maintenance Sunday 03:00-05:00 BR. Boards may be slow during the window."
-- [ ] Re-pin upstream commit hash; re-run Phase A.5 gate against the freshly-pinned hash. If skills drift caused regressions, fix in skills before proceeding.
+- [ ] Re-pin upstream commit hash; re-run Phase A.6 gate against the freshly-pinned hash. If skills drift caused regressions, fix in skills before proceeding.
 - [ ] Fresh prod snapshot + md5 baseline.
 - [ ] OneCLI v2 vault populated with all 28 boards' credentials.
 
@@ -325,7 +368,7 @@ Test infrastructure: `test-taskflow` + `e2e-taskflow` boards on a SEPARATE Whats
 
 ## Track A success metric: "skill-replay equivalence"
 
-After Phase A.5, a clean clone of `upstream/main` + `apply-all-skills.sh` must produce a tree functionally equivalent to current production NanoClaw 1.x. Validation:
+After Phase A.6, a clean clone of `upstream/main` + `apply-all-skills.sh` must produce a tree functionally equivalent to current production NanoClaw 1.x. Validation:
 
 ```bash
 # In a scratch dir:
@@ -397,7 +440,7 @@ Cutover is irreversible by design (data has flowed through v2 schema). If a regr
 | Phase -1 (infra prep) | Phase -1 | Unchanged. Mostly DONE. |
 | Phase -1.5 (security) | Phase -1.5 | Unchanged. DONE — no-op. |
 | Phase 0 (recon + gate) | Phase 0 | Unchanged. DONE except 0.5 (operator-blocked). |
-| Phase 1 (Bun container port via direct edits) | Phase A.4 (Bun runtime as a skill) | Reframed: net-new skill instead of direct file rename. |
+| Phase 1 (Bun container port via direct edits) | Phase A.5 (Bun runtime as a skill) | Reframed: net-new skill instead of direct file rename. |
 | Phase 2 (WhatsApp re-port) | Track A: extract divergence in `add-whatsapp` | Phase 2 surgical additions removed. v2 upstream provides primitives natively post-cutover. |
 | Phase 2.5 (TaskFlow permissions) | Track A: extract into `add-taskflow` | Permission seeders go in `add-taskflow/add/scripts/`. |
 | Phase 3 (isMain rewrite) | Eliminated | v2 upstream already migrated isMain → hasAdminRole. Post-cutover, no isMain hits in core. Skill-private isMain checks (if any) live in skill modify/. |

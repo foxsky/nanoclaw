@@ -24,7 +24,7 @@
 | `add-embeddings` | 14 | 7,902 | ✅ confirmed; absorbs auditor heredoc + semantic-audit + Kipp + digest-skip + audit-actor (semantic-audit uses embeddings) |
 | `add-long-term-context` | 6 | 6,184 | ✅ confirmed; per-board context DB, DAG/rollup, qwen3-coder summarization, MCP tools |
 | `add-taskflow-memory` | 5 | 1,271 | ✅ confirmed; Redis-backed memory layer, agent-memory-server v0.13.2 |
-| `whatsapp-fixes` | 9 | 3,264 | ✅ confirmed; LID verification, reconnection, multi-trigger, phone util, group-folder validation |
+| `whatsapp-fixes` | 9 | 3,264 | ✅ confirmed. **Scope revised** (see "WhatsApp surface" section below): v2's `ChannelAdapter` is intentionally minimal — `createGroup`/`lookupPhoneJid`/`resolvePhoneJid`/`setTyping`/`syncGroups` are NOT in v2; this skill carries them as fork extensions on top of upstream's adapter. ~300-400 LOC modify/ patch (not the "100 LOC" earlier estimate). |
 | `add-travel-assistant` | 0 | 0 | ✅ confirmed; entirely skill-internal — no codebase divergence beyond what's already in skill |
 
 **Total: 54 files / 38,561 LOC under skill ownership.**
@@ -137,6 +137,116 @@ modifies:
 Each `modify/<path>` is the file's content AS IT SHOULD BE after this skill applies. Skill replay merges them via the migrate-nanoclaw skill's process (re-apply each skill in order on a fresh upstream worktree).
 
 **Phase A.2 starts with `add-taskflow`** — the largest skill (29 files / 23K LOC) AND it touches the most multi-skill files. Once `add-taskflow` is well-formed, the pattern is established for the other 5 skills.
+
+---
+
+## WhatsApp surface (cross-skill investigation)
+
+WhatsApp is more deeply integrated than just `whatsapp-fixes`. Several of our 6 skills consume WhatsApp methods that v2's deliberately-minimal adapter doesn't ship.
+
+### v2 architecture: how WhatsApp lives
+
+```
+upstream/main           ← stable trunk; NO src/channels/whatsapp.ts
+upstream/channels       ← feature branch; HAS src/channels/whatsapp.ts (735 LOC)
+upstream/main:.claude/skills/add-whatsapp/SKILL.md
+                        ← official mechanism: at install time, copies whatsapp.ts
+                          FROM channels branch INTO local src/. No Chat SDK bridge.
+```
+
+At cutover the chain is: `git reset --hard upstream/main` → apply `add-whatsapp` (upstream's; pulls whatsapp.ts from channels branch) → apply our `whatsapp-fixes` ON TOP (modify/ patches + extensions).
+
+### v2 `ChannelAdapter` interface (minimal by design)
+
+```ts
+interface ChannelAdapter {
+  setup(config: ChannelSetup): Promise<void>;
+  teardown(): Promise<void>;
+  isConnected(): boolean;
+  // Inbound callbacks (channel calls these on host)
+  onInbound(platformId, threadId, message: InboundMessage): void | Promise<void>;
+  onInboundEvent(event: InboundEvent): void | Promise<void>;
+  onMetadata(platformId, name?, isGroup?): void;
+  onAction(questionId, selectedOption, userId): void;
+  // SINGLE outbound entry — content.type discriminates
+  deliver(platformId, threadId, message: OutboundMessage): Promise<string | undefined>;
+}
+```
+
+`OutboundMessage.content.type` discriminates between `'send_message'`, `'send_file'`, `'ask_question'`, `'reaction'`, `'edit_message'`. NO `'create_group'`, NO `'lookup_phone'`, NO `'resolve_phone'`.
+
+### What v2 already ships (verified in `upstream/channels:src/channels/whatsapp.ts`)
+
+✅ LID mapping (full `lidToPhoneMap`, `setLidPhoneMapping`, `getPNForLID` + LID→assistant-name normalization)
+✅ Reconnection with backoff
+✅ Outgoing queue
+✅ Group metadata cache
+✅ getMessage fallback
+✅ Pairing code auth (`setup/whatsapp-auth.ts:--method pairing-code --phone <X>`)
+✅ ask_question outbound rendering (`pendingQuestions` map + `optionToCommand`)
+✅ Reactions outbound (`content.operation === 'reaction'`)
+✅ File outbound
+
+### What v2 is MISSING (verified by grep — zero matches)
+
+❌ `createGroup` / `groupCreate` — no agent-driven WhatsApp group creation
+❌ `lookupPhoneJid` / `onWhatsApp` — no phone-number-to-JID validation
+❌ `resolvePhoneJid` — no phone-to-JID resolution for outbound routing
+❌ `setTyping` — no typing indicator API (presence updates exist internally but not exposed)
+❌ `syncGroups(force)` — internal sync runs, but no force-API
+❌ Per-group trigger pattern check (`isBotMessage` only checks global `ASSISTANT_NAME`, not per-group `engage_pattern`)
+
+### Consumers across our skills
+
+| v1 method | Files calling | Skill that needs it |
+|---|---|---|
+| `createGroup` | 4 files | `add-taskflow` (board provisioning auto-creates WhatsApp group) |
+| `lookupPhoneJid` | 3 files | `add-taskflow` (validates participant phones before adding) |
+| `resolvePhoneJid` | 3 files | `add-taskflow` + IPC routing |
+| `setTyping` | 2 files | core (not skill-specific; UX) |
+| `syncGroups` | 1 file | core (periodic refresh) |
+| Multi-trigger detection | inline in whatsapp.ts | `whatsapp-fixes` (per-group `@Case` triggers — TaskFlow boards) |
+
+### Resolved disposition
+
+`whatsapp-fixes` skill **does NOT shrink to ~100 LOC** as I estimated earlier. It carries the FORK CAPABILITY LAYER on top of upstream's minimal adapter:
+
+```
+.claude/skills/whatsapp-fixes/
+├── manifest.yaml
+│   modifies:
+│     - src/channels/whatsapp.ts   # extend with createGroup, lookupPhoneJid,
+│                                   # resolvePhoneJid, setTyping, syncGroups, multi-trigger
+├── modify/src/channels/whatsapp.ts          (~300-400 LOC of fork additions)
+├── modify/src/channels/whatsapp.ts.intent.md (semantic contract for replay)
+└── tests/whatsapp-extensions.test.ts
+```
+
+Plus extends `OutboundMessage.content.type` with new variants (`'create_group'`, `'lookup_phone'`, `'resolve_phone'`, `'sync_groups'`). The matching delivery-action handlers live in `add-taskflow/add/src/delivery-actions/` (since `add-taskflow` is the consumer).
+
+### DM routing relocation
+
+`src/dm-routing.ts` + tests (currently in `whatsapp-fixes`) move to `add-taskflow`. Reason: it reads `taskflow.db` for meeting participant lookup — purely TaskFlow-specific, not WhatsApp-generic.
+
+### Path forward (architectural recommendation)
+
+The 5 missing methods (`createGroup`, `lookupPhoneJid`, `resolvePhoneJid`, `setTyping`, `syncGroups`) are **generic capabilities, not fork-private**. Upstream may have intentionally kept them out of `ChannelAdapter` to allow heterogeneous channels (Slack/Discord don't have WhatsApp's group-creation semantics), but agent-driven group creation is a feature any multi-channel deployment would want.
+
+**Recommendation: hybrid approach**
+- **Now (Track A):** carry these as fork-private extensions in `whatsapp-fixes`. Ship cutover.
+- **Post-cutover:** submit upstream PR proposing these as ChannelAdapter additions (or a sibling `ChannelAdapterExtras` interface that channels opt into). When upstream merges, our `whatsapp-fixes` skill shrinks accordingly.
+
+This eliminates fork divergence over time without blocking the migration.
+
+### Implications for Phase A.2
+
+`add-taskflow` extraction (Phase A.2 start) consumes `whatsapp-fixes`'s extended adapter. Order:
+
+1. `whatsapp-fixes` skill authored FIRST (extends `Channel` + delivery types)
+2. `add-taskflow` extraction depends on the extended interface
+3. Sequencing: Phase A.2 = whatsapp-fixes (~1 week — substantial modify/ + tests). Phase A.3 = add-taskflow (~3 weeks; consumes whatsapp-fixes outputs).
+
+Original v3.0 plan said "Phase A.2 = add-taskflow first." Re-prioritizing: **Phase A.2 = whatsapp-fixes** (small, foundational, unblocks add-taskflow). Phase A.3 = add-taskflow.
 
 ---
 
