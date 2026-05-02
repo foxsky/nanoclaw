@@ -76,36 +76,85 @@ Files that don't cleanly fit our 6 skills. Each row needs a disposition decision
 
 **Net win:** v2's "no IPC" design makes this cleaner than v1, not harder.
 
-### Decision 2: outbound-resilience (SIGKILL-recovery)
+### Decision 2: outbound-resilience (SIGKILL-recovery) — RESOLVED 2026-05-01
 
-2 files (507 LOC). The durable outbound queue prevents message loss on SIGKILL. Generic improvement; not TaskFlow-specific.
+2 files (507 LOC). v1's `src/outbound-dispatcher.ts` (1255 LOC including the `outbound_messages` schema additions) was the 2026-04-14 fix to prevent message loss on SIGKILL.
 
-Options:
-- (a) Absorb into `add-taskflow` (TaskFlow is the primary consumer).
-- (b) Drop — accept that SIGKILL during message send may lose messages until upstream adopts a similar feature.
-- (c) Submit as upstream PR; preserve in skill until upstream merges.
+**v2 architectural finding:** v2 has SIGKILL-recovery NATIVELY:
+- **Durable** `outbound.db` — persists across host crashes (the v1 problem was an in-memory queue).
+- **Retry logic** in `src/delivery.ts` (`MAX_DELIVERY_ATTEMPTS`, "will retry" path).
+- **Auto-reset** of stuck `processing` rows by `host-sweep.ts` when container restarts.
 
-### Decision 3: session-cleanup + session-commands
+What v1's dispatcher provides that v2 doesn't: an explicit `drain()` window with `DRAIN_QUIET_MS` + per-row `SEND_TIMEOUT_MS` for graceful shutdown. v2 doesn't have this graceful-drain primitive, but v2's retry-on-restart absorbs the failure mode (in-flight messages just retry on next boot).
 
-3 files (435 LOC). `/undo`, `/forward`, session inactivity cleanup.
+**Resolved disposition: DROP.** v2's native durability makes our v1 fix unnecessary. 2 files (507 LOC) deleted at cutover, no skill carries them.
 
-Options:
-- (a) Absorb into `add-taskflow` (TaskFlow uses both).
-- (b) Drop — `/undo` becomes manual via DB; cleanup runs via upstream defaults.
+### Decision 3: session-cleanup + session-commands — RESOLVED 2026-05-01
 
-### Decision 4: remote-control
+3 files (435 LOC):
+- `src/session-cleanup.ts` (24-line wrapper that runs `scripts/cleanup-sessions.sh` every 24h)
+- `src/session-commands.ts` + `src/session-commands.test.ts` (handles `/compact` slash command)
 
-2 files (621 LOC). What does this do? **I need to inspect before recommending.**
+**Findings:**
+- `session-cleanup.ts` is a generic disk-cleanup cron. v2's `session-manager.ts:clearOutbox` cleans outboxes per-message automatically. Periodic deletion of OLD session directories is a separate concern that v2 may not handle natively, but it's a low-risk gap (a few MB/year of stale session dirs).
+- `session-commands.ts` is owned by the **`add-compact` skill** (which came from upstream PR #817 per git history) — it's an upstream-derived feature, NOT one of our 6 ours-skills. The runtime is in our codebase but the skill itself is upstream.
 
-### Decision 5: agent-swarm
+**Resolved disposition:**
+- `session-cleanup.ts` → DROP at cutover. Acceptable disk-management gap; revisit if it becomes a problem.
+- `session-commands.ts` → owned by upstream's `add-compact` skill. v2 cutover replays `add-compact` from upstream; no fork-private work needed. **CAVEAT:** verify `add-compact` skill's `manifest.yaml` declares `session-commands.ts` ownership at Phase A.5 gate. Currently `add-compact` only has `SKILL.md` — no manifest yet. If the skill doesn't declare it, file an upstream PR or carry it as fork-private documentation in a `tracking/` doc.
 
-Confirmed as not-ours; dies at cutover. **Sanity check:** is `SWARM_SSH_TARGET` set in production `.env`? If yes, the swarm is in use; we should warn before letting it die.
+### Decision 4: remote-control — RESOLVED 2026-05-01
 
-### Decision 6: the multi-skill files
+2 files (621 LOC). `src/remote-control.ts` implements `/remote-control` slash command: from a WhatsApp message in the main group, the operator can spawn a Claude Code instance on the host's working directory and get back a `https://claude.ai/code/...` URL to access it remotely. State persists in `data/remote-control.json`; stdout/stderr captured to log files.
 
-29 files across `multi-skill core / setup / container / router / overlap`. These need **redistribution** — each existing skill that adds something to those files captures its piece in `modify/<path>` + `.intent.md`. That's labor-intensive (essentially auditing every skill's footprint on shared files), but it's the only path that preserves the skills-only rule.
+**Use case:** operator can debug/fix the running NanoClaw from anywhere via a chat message instead of SSH-ing to the host.
 
-Phase A.2 (TaskFlow extraction) is the biggest single piece. Phase A.3 redistributes per-skill.
+**Disposition options:**
+- (a) Absorb into one of our 6 skills — but it doesn't fit any of them (not TaskFlow-specific, not channel-specific, not memory/context/embeddings).
+- (b) Create a 7th ours-skill `add-remote-control` — violates the 4-6 cap.
+- (c) DROP — operator loses the convenience but can still SSH manually.
+
+**Resolved disposition: DROP.** Operator convenience feature; SSH replaces it. 2 files (621 LOC) deleted at cutover. No skill needed.
+
+### Decision 5: agent-swarm — RESOLVED 2026-05-01
+
+Confirmed not-ours; **skill REMOVED** (commit `324445ed`, 26 files deleted). Runtime files (`src/agent-swarm.ts`, `src/agent-swarm-monitor.ts`, `src/group-queue.ts`) remain in codebase as orphaned debt — die at cutover when `src/` is reset to upstream. `SWARM_SSH_TARGET` not in `.env` → no production impact.
+
+### Decision 6: the multi-skill files — RESOLVED (methodology)
+
+29 files across `multi-skill core / setup / container / router / overlap`. These have additions from MANY skills.
+
+**Resolved methodology:** during Phase A.2/A.3, for each shared file (e.g., `src/types.ts`), every skill that adds something captures ITS piece in `modify/<path>` + `.intent.md`. The file in `src/` becomes a downstream artifact; each skill's `modify/<path>` records the skill-specific deltas. When the skill replays at cutover, all skills' modifications layer onto the upstream-shape file in dependency order.
+
+**Practical pattern (per `add-image-vision/manifest.yaml`):**
+```yaml
+modifies:
+  - src/types.ts                # add-image-vision adds ImageContentBlock type
+  - src/index.ts                # add-image-vision wires processImage hook
+  - container/agent-runner/src/index.ts  # add-image-vision adds image MCP tool
+```
+
+Each `modify/<path>` is the file's content AS IT SHOULD BE after this skill applies. Skill replay merges them via the migrate-nanoclaw skill's process (re-apply each skill in order on a fresh upstream worktree).
+
+**Phase A.2 starts with `add-taskflow`** — the largest skill (29 files / 23K LOC) AND it touches the most multi-skill files. Once `add-taskflow` is well-formed, the pattern is established for the other 5 skills.
+
+---
+
+## Decisions summary table
+
+| # | Disposition | Files | LOC | Net |
+|---|---|---|---|---|
+| 1 | Absorb into `add-taskflow` (as v2 MCP tools + delivery actions) | 8 → ~12 | 3756 → ~1700 | -2K LOC, cleaner architecture |
+| 2 | DROP (v2 has native durable outbound + retry) | 2 | 507 | -507 LOC |
+| 3a | DROP `session-cleanup.ts` (acceptable gap) | 1 | 24 | -24 LOC |
+| 3b | `session-commands.ts` owned by upstream `add-compact` (verify at A.5) | 2 | 411 | 0 (carries through upstream) |
+| 4 | DROP `remote-control` (operator uses SSH) | 2 | 621 | -621 LOC |
+| 5 | `add-agent-swarm` REMOVED (skill deleted; runtime dies at cutover) | 2 | 1242 | -1242 LOC |
+| 6 | Methodology: each skill captures its piece in `modify/<path>` + `.intent.md` | 29 | varies | distributed across skills |
+
+**Net debt reduction:** ~5K LOC of fork code drops cleanly at cutover (decisions 2, 3a, 4, 5). Decision 1 absorbs 3.8K LOC into `add-taskflow` (with ~2K savings via v2 helpers). Decision 6 distributes 29 multi-skill files across our 6 skills' `modify/` trees. Decision 3b is upstream-tracked.
+
+**Final ours-skill scope after all decisions resolved:** still 6 skills (no new ones added). `add-taskflow` grows from 29 files to ~41 files (29 + ~12 absorbed IPC). The other 5 skills stay roughly the same size.
 
 ## Coverage gaps in our 6 skills
 
