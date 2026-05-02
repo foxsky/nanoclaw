@@ -1,6 +1,8 @@
 # Phase 2 + 3 Host-Architecture Port — Strategic Design
 
-> **Status:** strategic. Replaces the implicit "Phase 2 = WhatsApp adapter, Phase 3 = isMain rewrite" framing with the empirical reality: porting v2's host-side modules cascades through the entire architecture. **The honest budget is 5-7 weeks of focused work** for both phases combined.
+> **STATUS: OBSOLETE (2026-05-01).** This entire spec is premised on editing `src/` directly to align toward upstream (Strategy A bottom-up port). The skills-only rule (`feedback_no_nanoclaw_codebase_changes.md`) forbids that approach. The Phase 2 + 3 work has been reframed under v3.0 of the migration plan: Track A skill extraction (`add-whatsapp` + `add-taskflow` absorb fork-private behavior into `modify/` trees) followed by Track B cutover (codebase tree replaced with upstream + skill replay). See `docs/superpowers/plans/2026-04-23-nanoclaw-v2-migration.md` v3.0 for the current authoritative framing. The content below is preserved for historical context only — do NOT execute against it.
+
+> **Original status:** strategic. Replaces the implicit "Phase 2 = WhatsApp adapter, Phase 3 = isMain rewrite" framing with the empirical reality: porting v2's host-side modules cascades through the entire architecture. **The honest budget is 5-7 weeks of focused work** for both phases combined.
 
 ## The realization
 

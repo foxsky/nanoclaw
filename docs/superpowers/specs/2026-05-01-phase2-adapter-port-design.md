@@ -1,6 +1,8 @@
 # Phase 2 WhatsApp Adapter Port — Design (Task 2.2 Deliverable)
 
-> **Status:** scoped. Restored from v2.5's "dissolved" claim after Codex EOD review #2 (B1 + B2). Estimated work: **~100 LOC + integration tests, 1-2 days** (not Codex's worst-case 1-2 weeks).
+> **STATUS: OBSOLETE (2026-05-01).** This spec recommends "Path A surgical addition" of `ask_question`/`onAction` primitives to our v1 `src/channels/whatsapp.ts`. Under the skills-only rule (`feedback_no_nanoclaw_codebase_changes.md`), no surgical additions to `src/` are allowed. v2 upstream provides these primitives natively post-cutover; the `add-whatsapp` skill consumes them from upstream rather than re-implementing them in fork. See `docs/superpowers/plans/2026-04-23-nanoclaw-v2-migration.md` v3.0 for the current authoritative migration shape. The content below is preserved for historical context only — do NOT execute against it.
+
+> **Original status:** scoped. Restored from v2.5's "dissolved" claim after Codex EOD review #2 (B1 + B2). Estimated work: **~100 LOC + integration tests, 1-2 days** (not Codex's worst-case 1-2 weeks).
 
 ## What v1 fork has
 
