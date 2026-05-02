@@ -1,6 +1,6 @@
 # v2 Feature Evaluation — TaskFlow + Memory Skills
 
-> **Date:** 2026-05-02. **Source:** `upstream/main @ 1b08b58f` (pinned baseline) + `upstream/channels` for adapter-side. **Status:** evaluation; awaiting prioritization sign-off.
+> **Date:** 2026-05-02. **Source:** `upstream/main @ 1b08b58f` (pinned baseline) + `upstream/channels` for adapter-side. **Status:** **REVISED post-Codex review #5** — see "Corrections (Codex review #5)" section below. Original claims preserved with strikethroughs; corrected dispositions follow.
 
 ## Scope
 
@@ -13,14 +13,119 @@ For each v2 capability not already in v1.2.53, classify by impact on our `add-ta
 
 ## Headline takeaways
 
-1. **5 fork-private TaskFlow primitives are fully replaced by v2 natives** — net deletion at cutover.
-2. **3 v2 features substantially enhance TaskFlow** — adopt during Phase A.3 extraction.
-3. **2 v2 features are post-cutover follow-ups for memory skills** — defer.
-4. **Major architectural unlock**: `ask_user_question` (blocking MCP tool) + `pending_questions` table — replaces our text-protocol `/aprovar abc123` cross-board approval flow with a structured card primitive that survives restarts.
+(Original — partially wrong; see Corrections section.)
+
+1. ~~**5 fork-private TaskFlow primitives are fully replaced by v2 natives**~~
+2. ~~**3 v2 features substantially enhance TaskFlow**~~
+3. ~~**2 v2 features are post-cutover follow-ups**~~
+4. ~~**Major architectural unlock**: `ask_user_question` replaces cross-board approval~~
+
+**Corrected (post-Codex):** **2 fully REPLACE** (R1, the migrate-v2-driven user_roles seed for board admins is also new work), **5 PARTIALLY REPLACE** (need fork-private supplements), **3 ENHANCE** (E2, E4, E6 confirmed clean). **3 ENHANCE were over-claimed** (E3 fails on WhatsApp adapter, E5 needs operator setup, E7 has real adoption cost). **R2 cross-board approval is NOT durable in v2 — fork-private retention required for multi-day workflows.**
 
 ---
 
-## REPLACE: v2 ships these natively
+## Corrections (Codex review #5, gpt-5.5/high, 2026-05-02)
+
+Codex skeptical review of original claims found **3 BLOCKERS + 3 IMPORTANTs + 3 missed v2 features**. The original "5 REPLACE" claim was over-confident; the truthful breakdown is below.
+
+### Blockers (would derail Phase A.3 if shipped as-written)
+
+**B1. R2 is FALSE — `ask_user_question` cannot replace multi-day cross-board approval.**
+
+Evidence (`container/agent-runner/src/mcp-tools/interactive.ts:74-128`): `ask_user_question` has a 300s default timeout; on timeout it returns an error to the agent. Late admin responses arrive as `kind='system'` messages (`src/modules/interactive/index.ts:33-48`) which the container's poll loop **filters out** (`container/agent-runner/src/poll-loop.ts:66-67`). So even if the admin replies a day later, the agent that asked is gone and the answer is dropped on arrival.
+
+Our cross-board approval today uses `subtask_requests` table that survives indefinitely until approved/cancelled — a child board sends a request to its parent and waits for any admin to reply, possibly across days. v2's `ask_user_question` does not support this workflow.
+
+**Disposition (revised):** R2 → **PARTIAL**, not REPLACE. `ask_user_question` is great for *short-lived in-session prompts* (within 300s — e.g., "Confirm deletion?" while the user is actively in the chat). Cross-board multi-day approval requires keeping `subtask_requests` (or equivalent) as a fork-private TaskFlow table. Could augment with a recurring `schedule_task` that re-asks every N hours until a row is marked answered. Net: TaskFlow approval logic STAYS in `add-taskflow`, with `ask_user_question` adopted only for ≤300s prompts.
+
+**B2. R4 is PARTIALLY-WRONG — `destinations` doesn't replace external-participant DM routing.**
+
+Evidence: I conflated two distinct tables. The session-DB-side `destinations` table has a global `name PRIMARY KEY` (`src/db/schema.ts:191-198`); the central `agent_destinations` table is per-agent `(agent_group_id, local_name)` (`src/db/migrations/module-agent-to-agent-destinations.ts:26-34`). ACL is enforced at delivery (`src/delivery.ts:288-309`) and routing (`src/modules/agent-to-agent/agent-route.ts:106-118`), but there's **no denied-channel safety check on outbound delivery** (`src/modules/agent-to-agent/write-destinations.ts:26-37` projects denied groups if a row exists).
+
+More importantly: TaskFlow's external-meeting-participant DM routing (where an external person we don't have a wired channel for needs to receive a DM about a meeting) is **not addressed by `destinations`**. That feature requires our `dm-routing.ts` logic which reads `taskflow.db` for participant lookup.
+
+**Disposition (revised):** R4 → **PARTIAL**. `destinations` replaces *some* cross-board work (named in-fleet routing). External DM routing stays in `add-taskflow` (via `dm-routing.ts` extraction).
+
+**B3. R5's "NO Phase A work" is WRONG.**
+
+Evidence: core `isMain` count is effectively 0 in upstream/main (only stale example in `container/build.sh:45`); v2's privilege model is real (`src/db/schema.ts:61-91`, `src/modules/permissions/db/user-roles.ts:36-60`). BUT — the migrate-v2 driver only seeds the global owner + members for v1's allowlist (`/root/nanoclaw-migrate-v2/setup/migrate/seed-v2.ts:262-347`). It does NOT seed TaskFlow's `board_admins` table → scoped `user_roles` rows. We have to do this seeding ourselves in `add-taskflow`'s extraction.
+
+**Disposition (revised):** R5 → **REPLACE for core isMain hits** (v2 main has migrated those) + **NEW WORK in `add-taskflow`** (Phase A.3 must include a board-admin → user_roles seeder, mapping `board_admins.is_primary_manager=1` to scoped `'admin'` role per memory `project_v2_user_roles_invariant.md`).
+
+### Importants (fix before Phase A.2/A.3 starts)
+
+**I1. R3 seeding is dangerous.** Original disposition said "TaskFlow board provisioning seeds `engage_pattern='@<board-trigger>'`" (e.g. `@Case`). Per `migrate-v2:seed-v2.ts:375-386`, the correct seeding for production traffic is `engage_pattern='.'` ("always engage", regardless of trigger string). Setting `@Case` would DROP messages that don't include the literal `@Case` mention — production regression on day one.
+
+**Disposition (revised):** TaskFlow boards seed `engage_mode='pattern'` + `engage_pattern='.'` (not `@<trigger>`). Per-board agent prefix (`Case:` etc.) is an **agent-side convention** in CLAUDE.md prompts, NOT v2-router-driven dispatch.
+
+**I2. E3 (`edit_message`) is FALSE for WhatsApp.** Native WhatsApp adapter (`upstream/channels:src/channels/whatsapp.ts:650-695`) only handles `reaction` + normal sends — no `operation === 'edit'` handler. Chat SDK bridge supports edit (`upstream/channels:src/channels/chat-sdk-bridge.ts:357-361`), but we don't use Chat SDK.
+
+**Disposition (revised):** E3 → **REMOVED** from the recommendations. Either drop the placeholder→edit pattern, OR contribute an edit handler to upstream/channels' WhatsApp adapter (post-cutover).
+
+**I3. E7 (mount-security) has real adoption cost.** v2's mount-security is **DEFAULT** (not opt-in) at `src/container-runner.ts:323-327`. Without `~/.config/nanoclaw/mount-allowlist.json`, additional mounts are silently blocked (`src/modules/mount-security/index.ts:74-83, 230-239`). TaskFlow uses additional mounts for board folders + future Gmail/Calendar.
+
+**Disposition (revised):** E7 → adoption cost is **non-zero**. `add-taskflow` install must populate the allowlist file with TaskFlow's required mounts. If we miss this, board provisioning silently fails. Belongs in Phase A.3 (TaskFlow extraction).
+
+### Other corrections
+
+- **R1** (`schedule_task`) → **PARTIALLY-WRONG**. Recurrence uses `cron-parser.next()` from "now" not from prior scheduled time (`src/modules/scheduling/recurrence.ts:21-37`); missed windows during downtime are SKIPPED. Our v1's task-scheduler does catch-up runs. If TaskFlow's daily Kipp cron is missed (host down at 04:00), v2 won't replay. Need to verify: is missed-run catch-up a TaskFlow requirement? If yes, fork-private logic stays.
+- **E5** (`add-dashboard`) → **PARTIALLY-WRONG**. Skill exists but doesn't auto-install at runtime — operator copies `resources/dashboard-pusher.ts` to `src/dashboard-pusher.ts` (`upstream/main:.claude/skills/add-dashboard/SKILL.md:31-79`). Treat as post-cutover OPTIONAL.
+- **P3** (`messages_in.kind`) → **PARTIALLY-WRONG**. `'webhook'` value has no real producer (`container/agent-runner/src/formatter.ts:124`, `poll-loop.test.ts:55` only). 4 of 5 kinds are real ('chat', 'chat-sdk', 'task', 'system').
+- **R2 alternate**: late `system`-kind responses are filtered. If we want durable cross-board approval via v2, need a different pattern than `ask_user_question`.
+
+### v2 features I MISSED (Codex)
+
+**M1. `ignored_message_policy='accumulate'`** (`src/router.ts:310-319`). Materially changes how non-trigger context is preserved. When a message doesn't engage but `accumulate` is set, it's stored for the agent's next turn. Useful for TaskFlow boards where context matters across triggered messages. **Adopt:** TaskFlow board provisioning sets `ignored_message_policy='accumulate'` on `messaging_group_agents` (verify per-board if accumulate or drop is desired).
+
+**M2. `sender_scope='known'`** (`src/modules/permissions/index.ts:193-208`). Per-wiring sender restriction separate from `unknown_sender_policy`. Could let TaskFlow boards have stricter membership than the messaging group's policy. **Adopt:** consider for boards that should only respond to known board members (vs anyone in the chat).
+
+**M3. `pending_channel_approvals`** (`src/db/migrations/012-channel-registration.ts:34-46`). Distinct from sender approval — covers the case where an entirely new DM/group messages NanoClaw and an admin must approve registering it. Affects onboarding when new govt departments adopt TaskFlow. **Adopt:** could simplify our operator-driven board-onboarding flow further.
+
+### LOC estimate — OVER-OPTIMISTIC
+
+Original claim: `add-taskflow` shrinks from 23K LOC → 12-14K LOC.
+
+Codex sample: `taskflow-engine.ts` (9,598 LOC) + `taskflow-mcp-server.ts` (611 LOC) + `taskflow-db.ts` (783 LOC) = 10,992 LOC of the largest 3 files. Most of this is **TaskFlow domain logic** — Kanban schema/lifecycle, meetings, recurrence engine, WIP enforcement, hierarchy, holidays, external-participant flows. The R1+R2+R4 replacements only touch scheduling glue, approval protocol, and routing wrappers (a small fraction of the engine).
+
+**Revised LOC estimate:** `add-taskflow` shrinks from 23K → **18-20K LOC** (not 12-14K). Roughly 3-5K LOC deletion from R1 (scheduling glue), R2 partial (subtask_requests STAYS but approval-card render uses `ask_user_question` for short prompts), R4 partial (named in-fleet destinations replace some JID lookups), R5 (isMain hits gone — but this is mostly host-side, not in taskflow-engine). The bulk of taskflow-engine.ts is domain code that doesn't disappear.
+
+### Updated summary table (vs original)
+
+| ID | Original | Codex-corrected |
+|---|---|---|
+| R1 schedule_task | REPLACE (clean) | PARTIAL — verify catch-up requirement |
+| R2 ask_user_question | REPLACE (clean) | **PARTIAL — fork keeps subtask_requests for multi-day workflows; v2 tool used for ≤300s prompts only** |
+| R3 engage_pattern | REPLACE | **PARTIAL — seed `'.'` not `@<trigger>`; agent prefix is CLAUDE.md convention** |
+| R4 destinations | REPLACE (clean) | **PARTIAL — external-DM routing stays in add-taskflow** |
+| R5 user_roles | REPLACE (no Phase A) | **REPLACE for core + NEW WORK to seed board_admins → user_roles in Phase A.3** |
+| E1 unregistered_senders | ENHANCE | CONFIRMED |
+| E2 typing module | ENHANCE (zero cost) | CONFIRMED |
+| E3 edit_message | ENHANCE | **REMOVED — WhatsApp adapter doesn't handle edit** |
+| E4 add_reaction | ENHANCE | CONFIRMED |
+| E5 add-dashboard | ENHANCE post-cutover | CONFIRMED with caveat (operator must copy pusher to src/) |
+| E6 init-first-agent | ENHANCE | CONFIRMED |
+| E7 mount-security | ENHANCE (zero cost today) | **PARTIAL — DEFAULT module; allowlist setup REQUIRED in Phase A.3** |
+| E8 sender-approval | ENHANCE post-cutover | CONFIRMED with caveat (must set `unknown_sender_policy='request_approval'`) |
+| P1 create_agent partial | CONFIRMED | CONFIRMED |
+| P2 sender approval new | CONFIRMED | CONFIRMED |
+| P3 messages_in.kind | PARTIAL | CONFIRMED ('webhook' aspirational; 4 of 5 kinds real) |
+| **NEW M1** | n/a | `ignored_message_policy='accumulate'` — adopt for TaskFlow boards |
+| **NEW M2** | n/a | `sender_scope='known'` — per-wiring restriction |
+| **NEW M3** | n/a | `pending_channel_approvals` — onboarding flow |
+
+### Implications for Phase A.3 (TaskFlow extraction)
+
+- **Keep `subtask_requests` table** as a fork-private add-taskflow concept; integrate `ask_user_question` only for short prompts.
+- **Add board_admins → user_roles seeder** as Phase A.3 task.
+- **Set `engage_pattern='.'` not `@<trigger>`** in board provisioning seeds.
+- **Drop `edit_message` recommendation** until WhatsApp adapter supports it.
+- **Add mount-allowlist setup** to TaskFlow install steps.
+- **Consider M1, M2, M3** during board provisioning script rewrite.
+- **Revise LOC delete budget to ~3-5K** (not 9-11K).
+
+---
+
+## REPLACE: v2 ships these natively (ORIGINAL — see Corrections above)
 
 ### R1. Scheduled tasks (`schedule_task` MCP tool + `messages_in` recurrence)
 
