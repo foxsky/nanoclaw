@@ -58,14 +58,23 @@ Files that don't cleanly fit our 6 skills. Each row needs a disposition decision
 
 ## Decisions needed before Phase A.2
 
-### Decision 1: How to absorb the IPC plugins
+### Decision 1: How to absorb the IPC plugins — RESOLVED 2026-05-01
 
-8 files (3,756 LOC) — `src/ipc.ts` + `src/ipc-plugins/{create-group,send-otp,provision-shared,provision-child-board,provision-root-board}.ts` and tests. These are TaskFlow-supporting infrastructure but not strictly TaskFlow-only.
+8 files (3,756 LOC) — `src/ipc.ts` + `src/ipc-plugins/{create-group,send-otp,provision-shared,provision-child-board,provision-root-board}.ts` and tests.
 
-Options:
-- (a) **Absorb into `add-taskflow`** as TaskFlow's needed infrastructure. `add-taskflow/modify/src/ipc.ts` + `add-taskflow/add/src/ipc-plugins/*`.
-- (b) Drop at cutover — TaskFlow features that depend on these stop working until re-implemented through upstream's primitives.
-- (c) Create a new 7th skill (`add-ipc-plugins` or similar) — violates your 4-5 cap.
+**v2 architectural finding (per `https://github.com/qwibitai/nanoclaw` README):** v2 has **NO IPC** as a concept — eliminated by design. The README explicitly states "no cross-mount contention, no IPC, no stdin piping." The two-DB session model (`inbound.db` host-write / `outbound.db` container-write) replaces IPC entirely. Container writes structured action payloads to `outbound.db`; host's delivery sweep picks up and routes to handlers registered via `registerDeliveryAction(action, handler)` in `src/delivery.ts`.
+
+**v2 architectural translation of our 5 plugins:**
+
+| v1 plugin | v2 shape |
+|---|---|
+| `create-group.ts` (155 LOC) | New MCP tool `create_group` in `add-taskflow/add/container/agent-runner/src/mcp-tools/create-group.ts` + delivery action handler in `add-taskflow/add/src/delivery-actions/create-group.ts` (calls `WhatsAppChannel.createGroup()`). |
+| `send-otp.ts` (54 LOC) | MCP tool `send_otp` + delivery action handler — same pattern. |
+| `provision-root-board.ts` + `provision-child-board.ts` + `provision-shared.ts` (1668 LOC) | 2 MCP tools (`provision_root_board`, `provision_child_board`) + 2 delivery action handlers. The handlers internally call v2's `src/db/agent-groups.ts` + `src/db/messaging-groups.ts` helpers (which already exist in upstream). The bulky logic stays roughly the same; what disappears is the v1 IPC dispatcher boilerplate. |
+
+**Resolved disposition:** absorb into `add-taskflow/modify/` and `add-taskflow/add/`. Result will be ~10-12 small skill files (5 MCP tool definitions + 5 delivery action handlers + 2 register-patch `modify/<index>.ts` files), totaling ~1.5-2K LOC (down from 3.8K LOC) since v2's helpers do the heavy lifting and the IPC dispatcher boilerplate disappears.
+
+**Net win:** v2's "no IPC" design makes this cleaner than v1, not harder.
 
 ### Decision 2: outbound-resilience (SIGKILL-recovery)
 
