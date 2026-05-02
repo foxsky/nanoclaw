@@ -210,7 +210,7 @@ To be inventoried in Phase A.1. Likely candidates:
   - `resolvePhoneJid(phone)` — phone-to-JID resolution
   - `setTyping(jid, isTyping)` — typing indicator
   - `syncGroups(force)` — force-API for periodic refresh
-  - Multi-trigger detection — checks per-group `engage_pattern`, not just `ASSISTANT_NAME`
+  - (NOTE: per-org `engage_pattern` (`@Case`, etc.) is NOT a `whatsapp-fixes` concern. It's a TaskFlow configuration — `add-taskflow` writes `messaging_group_agents.engage_pattern` per board; v2's router consults it natively. The channel adapter doesn't see triggers.)
 - `whatsapp-fixes/modify/src/channels/whatsapp.ts.intent.md` — semantic contract
 - Extends `OutboundMessage.content.type` with `'create_group' | 'lookup_phone' | 'resolve_phone' | 'sync_groups'` variants (added to `src/channels/adapter.ts` via another modify/ patch).
 - `whatsapp-fixes/tests/whatsapp-extensions.test.ts` — verifies each extension method.
@@ -218,19 +218,19 @@ To be inventoried in Phase A.1. Likely candidates:
 Net: ~300-400 LOC of fork additions + manifest + tests. Substantial but bounded.
 
 - [ ] Step 1: author `manifest.yaml` declaring modifies + tests target.
-- [ ] Step 2: author `modify/src/channels/whatsapp.ts` (start from `upstream/channels:src/channels/whatsapp.ts` + apply 5 method additions + multi-trigger fix).
+- [ ] Step 2: author `modify/src/channels/whatsapp.ts` (start from `upstream/channels:src/channels/whatsapp.ts` + apply 5 method additions).
 - [ ] Step 3: author `.intent.md` files describing each addition (WHY it exists, what API it wraps).
 - [ ] Step 4: author `modify/src/channels/adapter.ts` extending OutboundMessage content types.
 - [ ] Step 5: author tests.
-- [ ] Step 6: skill-replay test on clean `upstream/main` + apply `add-whatsapp` (upstream) + apply `whatsapp-fixes` → verify all 5 methods callable + multi-trigger fix works.
+- [ ] Step 6: skill-replay test on clean `upstream/main` + apply `add-whatsapp` (upstream) + apply `whatsapp-fixes` → verify all 5 methods callable.
 - [ ] Step 7: gate sign-off.
 
 **Success criteria:**
 - `whatsapp-fixes` skill applies cleanly to a fresh upstream worktree (after `add-whatsapp` upstream skill is applied) and produces an extended adapter with all 5 missing methods.
 - Tests verify each extension.
-- Multi-trigger detection passes against a test board with per-group `engage_pattern` distinct from global `ASSISTANT_NAME`.
+- Per-org `engage_pattern` test belongs to Phase A.3 (TaskFlow). Phase A.2's success is just the 5 missing channel methods.
 
-**Post-cutover follow-up** (out of Phase A.2 scope): submit upstream PR proposing `createGroup`/`lookupPhoneJid`/etc. as ChannelAdapter additions (or sibling `ChannelAdapterExtras` interface). When merged, `whatsapp-fixes` shrinks to just the multi-trigger fix.
+**Post-cutover follow-up** (out of Phase A.2 scope): submit upstream PR proposing `createGroup`/`lookupPhoneJid`/etc. as ChannelAdapter additions (or sibling `ChannelAdapterExtras` interface). When merged, `whatsapp-fixes` shrinks toward zero (skill could be retired entirely).
 
 ### Phase A.3: TaskFlow extraction — biggest debt (Weeks 3-5)
 
@@ -263,6 +263,7 @@ Net: ~300-400 LOC of fork additions + manifest + tests. Substantial but bounded.
 - [ ] Step 2: extract `taskflow-mcp-server.ts` + tests.
 - [ ] Step 3: extract `taskflow-db.ts`, `taskflow-embedding-sync.ts`, `dm-routing.ts` + tests.
 - [ ] Step 4: author 5 IPC-replacement MCP tools + delivery-action handlers (per Decision 1).
+- [ ] Step 4b: author per-org `engage_pattern` configuration in board provisioning seed scripts. Each TaskFlow board gets a custom trigger (e.g. `@Case`, `@Audit`) written to `messaging_group_agents.engage_pattern` at provisioning time. v2's router consults this natively for inbound dispatch — no channel-side changes required. Default behavior: `engage_mode='pattern'`, `engage_pattern='@<board-trigger>'`.
 - [ ] Step 5: schema additions (`taskflow_groups` sidecar, custom indices) authored as `add-taskflow/add/migrations/<NNN>-taskflow-sidecar.sql` + an init script.
 - [ ] Step 6: skill-replay test on a clean upstream worktree. Verify TaskFlow MCP tools register, schema migrates, prod-snapshot test data loads cleanly, board provisioning end-to-end works.
 - [ ] Step 7: gate sign-off.

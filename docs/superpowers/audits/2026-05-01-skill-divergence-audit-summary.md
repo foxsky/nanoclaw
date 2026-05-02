@@ -205,7 +205,7 @@ interface ChannelAdapter {
 | `resolvePhoneJid` | 3 files | `add-taskflow` + IPC routing |
 | `setTyping` | 2 files | core (not skill-specific; UX) |
 | `syncGroups` | 1 file | core (periodic refresh) |
-| Multi-trigger detection | inline in whatsapp.ts | `whatsapp-fixes` (per-group `@Case` triggers — TaskFlow boards) |
+| Per-org `engage_pattern` (`@Case` etc.) | board seed scripts (data, not code) | `add-taskflow` — writes `messaging_group_agents.engage_pattern` per board. v2's router consults this natively. NOT a `whatsapp-fixes` concern. |
 
 ### Resolved disposition
 
@@ -216,7 +216,7 @@ interface ChannelAdapter {
 ├── manifest.yaml
 │   modifies:
 │     - src/channels/whatsapp.ts   # extend with createGroup, lookupPhoneJid,
-│                                   # resolvePhoneJid, setTyping, syncGroups, multi-trigger
+│                                   # resolvePhoneJid, setTyping, syncGroups
 ├── modify/src/channels/whatsapp.ts          (~300-400 LOC of fork additions)
 ├── modify/src/channels/whatsapp.ts.intent.md (semantic contract for replay)
 └── tests/whatsapp-extensions.test.ts
