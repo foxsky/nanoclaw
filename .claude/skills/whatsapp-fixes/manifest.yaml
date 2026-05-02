@@ -1,0 +1,15 @@
+skill: whatsapp-fixes
+version: 0.1.0
+description: "WhatsApp channel adapter extensions for our 28-board fork: createGroup / lookupPhoneJid / resolvePhoneJid (3 methods missing from v2's intentionally-minimal ChannelAdapter). Layers on top of upstream's add-whatsapp."
+core_version: "1b08b58f"   # upstream/main pinned hash; whatsapp.ts comes from upstream/channels
+adds: []
+modifies:
+  - src/channels/adapter.ts        # extend ChannelAdapter with 3 optional methods
+  - src/channels/whatsapp.ts       # add the 3 method implementations on WhatsAppAdapter class
+structured:
+  npm_dependencies: {}
+  env_additions: []
+conflicts: []
+depends:
+  - add-whatsapp                   # upstream skill — installs the base whatsapp.ts from upstream/channels
+test: "npx vitest run --config .claude/skills/vitest.config.ts .claude/skills/whatsapp-fixes/tests/"
