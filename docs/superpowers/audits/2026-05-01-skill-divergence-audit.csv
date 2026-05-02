@@ -1,0 +1,144 @@
+path,status,loc,owner-skill,coverage,effort
+container/Dockerfile,M,150,DEBT (multi-skill container),COVERED:add-pdf-reader,0.5d
+container/agent-runner/src/auditor-delivery-health.test.ts,A,235,add-embeddings,UNCOVERED,1d
+container/agent-runner/src/auditor-dm-detection.test.ts,A,1587,add-embeddings,UNCOVERED,3d
+container/agent-runner/src/auditor-prompt.txt,A,74,add-embeddings,UNCOVERED,0.5d
+container/agent-runner/src/auditor-script.sh,A,1459,add-embeddings,UNCOVERED,3d
+container/agent-runner/src/context-reader.test.ts,A,1083,add-long-term-context,UNCOVERED,3d
+container/agent-runner/src/context-reader.ts,A,577,add-long-term-context,UNCOVERED,2d
+container/agent-runner/src/db-util.ts,A,110,DEBT (multi-skill container),COVERED:add-taskflow-memory,0.5d
+container/agent-runner/src/digest-skip-script.sh,A,59,add-embeddings,UNCOVERED,0.5d
+container/agent-runner/src/embedding-reader.test.ts,A,120,add-embeddings,UNCOVERED,0.5d
+container/agent-runner/src/embedding-reader.ts,A,92,add-embeddings,UNCOVERED,0.5d
+container/agent-runner/src/index-preambles.test.ts,A,144,add-taskflow-memory,COVERED:add-taskflow-memory,0.5d
+container/agent-runner/src/index.ts,M,1129,DEBT (multi-skill container),COVERED:add-image-vision;add-taskflow-memory,3d
+container/agent-runner/src/ipc-mcp-stdio.test.ts,A,213,DEBT (multi-skill container),COVERED:add-taskflow-memory,1d
+container/agent-runner/src/ipc-mcp-stdio.ts,A,1549,DEBT (multi-skill container),COVERED:add-agent-swarm;add-taskflow-memory,3d
+container/agent-runner/src/ipc-tooling.ts,A,62,DEBT (multi-skill container),UNCOVERED,0.5d
+container/agent-runner/src/mcp-plugins/create-group.ts,A,96,add-taskflow,UNCOVERED,0.5d
+container/agent-runner/src/memory-client.test.ts,A,315,add-taskflow-memory,COVERED:add-taskflow-memory,1d
+container/agent-runner/src/memory-client.ts,A,365,add-taskflow-memory,COVERED:add-taskflow-memory,1d
+container/agent-runner/src/recent-turns-recap.test.ts,A,346,add-taskflow-memory,UNCOVERED,1d
+container/agent-runner/src/recent-turns-recap.ts,A,101,add-taskflow-memory,UNCOVERED,0.5d
+container/agent-runner/src/runtime-config.test.ts,A,123,DEBT (multi-skill container),COVERED:add-taskflow-memory,0.5d
+container/agent-runner/src/runtime-config.ts,A,129,DEBT (multi-skill container),COVERED:add-taskflow-memory,0.5d
+container/agent-runner/src/semantic-audit.test.ts,A,1734,add-embeddings,UNCOVERED,3d
+container/agent-runner/src/semantic-audit.ts,A,1350,add-embeddings,UNCOVERED,3d
+container/agent-runner/src/taskflow-embedding-integration.test.ts,A,333,add-embeddings,UNCOVERED,1d
+container/agent-runner/src/taskflow-engine.test.ts,A,7218,add-taskflow,UNCOVERED,8d+
+container/agent-runner/src/taskflow-engine.ts,A,9598,add-taskflow,UNCOVERED,8d+
+container/agent-runner/src/taskflow-mcp-server.test.ts,A,893,add-taskflow,UNCOVERED,2d
+container/agent-runner/src/taskflow-mcp-server.ts,A,611,add-taskflow,UNCOVERED,2d
+container/agent-runner/src/tz-util.ts,A,8,add-taskflow,UNCOVERED,0.1d
+package.json,M,14,DEBT (multi-skill deps),UNCOVERED,0.1d
+scripts/audit-actor-match-diagnostic.mjs,A,211,add-embeddings,UNCOVERED,1d
+scripts/cleanup-sessions.sh,M,30,DEBT (ops-tooling, not skill),UNCOVERED,0.1d
+scripts/create-group.mjs,A,82,add-taskflow,UNCOVERED,0.5d
+scripts/deploy.sh,A,94,DEBT (ops-tooling, not skill),UNCOVERED,0.5d
+scripts/e2e-live-tests.md,A,217,DEBT (docs / not skill),UNCOVERED,1d
+scripts/find-dropped-messages.sql,A,36,DEBT (multi-skill or ops),UNCOVERED,0.1d
+scripts/generate-claude-md.mjs,A,218,add-taskflow,UNCOVERED,1d
+scripts/lib/migrate-claude-md.mjs,A,89,add-taskflow,UNCOVERED,0.5d
+scripts/magnetism-backfill.mjs,A,155,add-taskflow,UNCOVERED,0.5d
+scripts/migrate-claude-md-cross-board-forward.mjs,A,82,add-taskflow,UNCOVERED,0.5d
+scripts/migrate-claude-md-multi-action.mjs,A,34,add-taskflow,UNCOVERED,0.1d
+scripts/migrate-claude-md-no-op-rule.mjs,A,49,add-taskflow,UNCOVERED,0.1d
+scripts/migrate-claude-md-weekday-contradiction.mjs,A,25,add-taskflow,UNCOVERED,0.1d
+scripts/migrate-taskflow-destinations.ts,A,141,add-taskflow,UNCOVERED,0.5d
+scripts/migrate-taskflow-policies.sql,A,45,add-taskflow,UNCOVERED,0.1d
+scripts/migrate-taskflow-users.ts,A,265,add-taskflow,UNCOVERED,1d
+scripts/migrate-v2-patches/01-engage-pattern-priority-fix.patch,A,32,DEBT (migration-time, post-cutover obsolete),UNCOVERED,0.1d
+scripts/migrate-v2-patches/02-pt-br-sender-approval.patch,A,29,DEBT (migration-time, post-cutover obsolete),UNCOVERED,0.1d
+scripts/migrate-v2-patches/README.md,A,64,DEBT (docs / not skill),UNCOVERED,0.5d
+scripts/rollback-to-v1.sh,A,137,DEBT (ops-tooling, not skill),UNCOVERED,0.5d
+scripts/update-group-subject.mjs,A,64,DEBT (UNCLASSIFIED),UNCOVERED,0.5d
+scripts/upgrade-cross-board-forward-v1-to-v2.mjs,A,139,add-taskflow,UNCOVERED,0.5d
+scripts/verify-taskflow-permissions.ts,A,170,add-taskflow,UNCOVERED,0.5d
+setup/container.ts,M,206,DEBT (multi-skill setup),UNCOVERED,1d
+setup/environment.test.ts,M,97,DEBT (multi-skill setup),UNCOVERED,0.5d
+setup/environment.ts,M,114,DEBT (multi-skill setup),UNCOVERED,0.5d
+setup/groups.ts,A,229,DEBT (multi-skill setup),UNCOVERED,1d
+setup/index.ts,M,17,DEBT (multi-skill setup),UNCOVERED,0.1d
+setup/mounts.ts,M,20,DEBT (multi-skill setup),UNCOVERED,0.1d
+setup/register.test.ts,A,464,DEBT (multi-skill setup),UNCOVERED,1d
+setup/register.ts,M,226,DEBT (multi-skill setup),UNCOVERED,1d
+setup/service.test.ts,M,17,DEBT (multi-skill setup),UNCOVERED,0.1d
+setup/service.ts,M,135,DEBT (multi-skill setup),UNCOVERED,0.5d
+setup/timezone.ts,M,4,DEBT (multi-skill setup),UNCOVERED,0.1d
+setup/verify.ts,M,191,DEBT (multi-skill setup),UNCOVERED,0.5d
+setup/whatsapp-auth.ts,M,521,whatsapp-fixes,UNCOVERED,2d
+src/agent-runner-ipc-tooling.test.ts,A,65,DEBT (multi-skill container),UNCOVERED,0.5d
+src/channels/index.ts,M,22,DEBT (multi-skill or upstream-overlap),UNCOVERED,0.1d
+src/channels/registry.test.ts,A,42,DEBT (multi-skill or upstream-overlap),UNCOVERED,0.1d
+src/channels/registry.ts,A,28,DEBT (multi-skill or upstream-overlap),UNCOVERED,0.1d
+src/channels/telegram.test.ts,A,180,DEBT (UNCLASSIFIED),UNCOVERED,0.5d
+src/channels/telegram.ts,A,317,DEBT (UNCLASSIFIED),UNCOVERED,1d
+src/channels/whatsapp.test.ts,A,1356,whatsapp-fixes,COVERED:add-image-vision;add-pdf-reader,3d
+src/channels/whatsapp.ts,A,964,whatsapp-fixes,COVERED:add-image-vision;add-pdf-reader,2d
+src/config.ts,M,93,DEBT (multi-skill core),COVERED:add-agent-swarm,0.5d
+src/container-runner.test.ts,M,472,DEBT (UNCLASSIFIED),UNCOVERED,1d
+src/container-runner.ts,M,1387,DEBT (multi-skill core),COVERED:add-image-vision,3d
+src/container-runtime.test.ts,M,104,DEBT (multi-skill or upstream-overlap),UNCOVERED,0.5d
+src/container-runtime.ts,M,98,DEBT (multi-skill or upstream-overlap),UNCOVERED,0.5d
+src/context-service.test.ts,A,1840,add-long-term-context,UNCOVERED,3d
+src/context-service.ts,A,840,add-long-term-context,UNCOVERED,2d
+src/context-sync.test.ts,A,1196,add-long-term-context,UNCOVERED,3d
+src/context-sync.ts,A,648,add-long-term-context,UNCOVERED,2d
+src/credential-proxy.test.ts,A,192,DEBT (upstream: native-credential-proxy),UNCOVERED,0.5d
+src/credential-proxy.ts,A,132,DEBT (upstream: native-credential-proxy),UNCOVERED,0.5d
+src/db-migration.test.ts,A,67,DEBT (multi-skill core),UNCOVERED,0.5d
+src/db.test.ts,A,888,DEBT (multi-skill core),UNCOVERED,2d
+src/db.ts,A,1405,DEBT (multi-skill core),UNCOVERED,3d
+src/dm-routing.test.ts,A,151,add-taskflow,UNCOVERED,0.5d
+src/dm-routing.ts,A,153,add-taskflow,UNCOVERED,0.5d
+src/embedding-service.test.ts,A,276,add-embeddings,UNCOVERED,1d
+src/embedding-service.ts,A,293,add-embeddings,UNCOVERED,1d
+src/env.ts,M,7,DEBT (multi-skill core),UNCOVERED,0.1d
+src/formatting.test.ts,A,680,DEBT (UNCLASSIFIED),UNCOVERED,2d
+src/group-folder.test.ts,M,14,whatsapp-fixes,UNCOVERED,0.1d
+src/group-folder.ts,M,2,whatsapp-fixes,UNCOVERED,0.1d
+src/group-queue.test.ts,A,764,DEBT (excluded: add-agent-swarm uncertain),UNCOVERED,2d
+src/group-queue.ts,A,478,DEBT (excluded: add-agent-swarm uncertain),UNCOVERED,1d
+src/group-sender.ts,A,13,DEBT (multi-skill or upstream-overlap),UNCOVERED,0.1d
+src/image.test.ts,A,86,DEBT (UNCLASSIFIED),COVERED:add-image-vision,0.5d
+src/image.ts,A,66,DEBT (UNCLASSIFIED),COVERED:add-image-vision,0.5d
+src/index.ts,M,1559,DEBT (multi-skill core),COVERED:add-image-vision;add-taskflow-memory,3d
+src/ipc-auth.test.ts,A,988,DEBT (multi-skill or ops),UNCOVERED,2d
+src/ipc-dm-auth.test.ts,A,93,DEBT (multi-skill or ops),UNCOVERED,0.5d
+src/ipc-plugins/create-group.test.ts,A,282,add-taskflow,UNCOVERED,1d
+src/ipc-plugins/create-group.ts,A,155,add-taskflow,UNCOVERED,0.5d
+src/ipc-plugins/provision-child-board.test.ts,A,620,DEBT (no-skill: ipc-plugins),UNCOVERED,2d
+src/ipc-plugins/provision-child-board.ts,A,741,DEBT (no-skill: ipc-plugins),UNCOVERED,2d
+src/ipc-plugins/provision-root-board.test.ts,A,83,DEBT (no-skill: ipc-plugins),UNCOVERED,0.5d
+src/ipc-plugins/provision-root-board.ts,A,534,DEBT (no-skill: ipc-plugins),UNCOVERED,2d
+src/ipc-plugins/provision-shared.ts,A,384,DEBT (no-skill: ipc-plugins),UNCOVERED,1d
+src/ipc-plugins/send-otp.test.ts,A,112,DEBT (no-skill: ipc-plugins),UNCOVERED,0.5d
+src/ipc-plugins/send-otp.ts,A,54,DEBT (no-skill: ipc-plugins),UNCOVERED,0.5d
+src/ipc.ts,A,1228,DEBT (no-skill: ipc-plugins),COVERED:add-agent-swarm,3d
+src/logger.test.ts,A,55,DEBT (UNCLASSIFIED),UNCOVERED,0.5d
+src/logger.ts,A,120,DEBT (multi-skill core),UNCOVERED,0.5d
+src/outbound-dispatcher.test.ts,A,279,DEBT (no-skill: outbound-resilience),UNCOVERED,1d
+src/outbound-dispatcher.ts,A,228,DEBT (no-skill: outbound-resilience),UNCOVERED,1d
+src/phone.test.ts,A,116,whatsapp-fixes,UNCOVERED,0.5d
+src/phone.ts,A,41,whatsapp-fixes,UNCOVERED,0.1d
+src/remote-control.test.ts,A,397,DEBT (no-skill: remote-control),UNCOVERED,1d
+src/remote-control.ts,A,224,DEBT (no-skill: remote-control),UNCOVERED,1d
+src/router.ts,M,571,DEBT (multi-skill router),UNCOVERED,2d
+src/routing.test.ts,A,170,DEBT (multi-skill router),UNCOVERED,0.5d
+src/sender-allowlist.test.ts,A,216,add-taskflow,UNCOVERED,1d
+src/sender-allowlist.ts,A,155,add-taskflow,UNCOVERED,0.5d
+src/session-cleanup.ts,A,25,DEBT (no-skill: session-management),UNCOVERED,0.1d
+src/session-commands.test.ts,A,247,DEBT (no-skill: session-management),UNCOVERED,1d
+src/session-commands.ts,A,163,DEBT (no-skill: session-management),UNCOVERED,0.5d
+src/task-scheduler.test.ts,A,182,add-taskflow,UNCOVERED,0.5d
+src/task-scheduler.ts,A,428,add-taskflow,UNCOVERED,1d
+src/taskflow-db.test.ts,A,800,add-taskflow,UNCOVERED,2d
+src/taskflow-db.ts,A,764,add-taskflow,UNCOVERED,2d
+src/taskflow-embedding-sync.ts,A,79,add-embeddings,UNCOVERED,0.5d
+src/text-styles.ts,A,337,DEBT (upstream: channel-formatting),UNCOVERED,1d
+src/timezone.test.ts,M,38,DEBT (multi-skill or upstream-overlap),UNCOVERED,0.1d
+src/timezone.ts,M,16,DEBT (multi-skill or upstream-overlap),UNCOVERED,0.1d
+src/transcription.ts,A,101,DEBT (multi-skill or upstream-overlap),UNCOVERED,0.5d
+src/types.ts,M,305,DEBT (multi-skill core),COVERED:add-taskflow-memory,1d
+src/whatsapp-auth.test.ts,A,43,whatsapp-fixes,UNCOVERED,0.1d
+src/whatsapp-auth.ts,A,207,whatsapp-fixes,UNCOVERED,1d
