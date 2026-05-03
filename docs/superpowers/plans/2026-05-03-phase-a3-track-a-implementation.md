@@ -2,7 +2,11 @@
 
 > **Goal:** migrate 5 fork-private skills (TaskFlow + 4 supporting) to NanoClaw v2 via **Path A** (git-branch model). Production v1.2.53 stays running until Track B cutover.
 >
-> **Estimated total:** 7-8 weeks. America/Fortaleza no DST since 2019; bi-weekly merge cadence; no upstream PR dependency.
+> **Estimated total:** 8-10 weeks (refined post Codex GAP validation; was 7-8). +2 weeks for 25 RUNTIME-BLOCKERs (5 new sub-tasks 2.3.o-s) + ~3-4 days for 101 PLAN-BLOCKER batch (2.3.5). Engineering scope was originally over-estimated by synthesis (claimed 9-10 weeks); reframe collapses most "BLOCKERs" to PLAN-BLOCKERs.
+>
+> **GAP validation source:** `docs/superpowers/audits/2026-05-03-feature-coverage/21-codex-validation.md` (178 GAPs validated: 25 RUNTIME / 101 PLAN / 15 HIGH / 9 MED / 14 LOW / 5 OVERCLAIM / 8 DEPRECATED-CORRECTLY).
+>
+> America/Fortaleza no DST since 2019; bi-weekly merge cadence; no upstream PR dependency.
 >
 > **Status (2026-05-03):** Phase A.3.0 done; A.3.0.5 paused mid-execution; v2 discovery (20 docs + synthesis) regenerated after data loss; ready for A.3.0.5 resumption.
 
@@ -143,6 +147,31 @@ Adapt all test imports for v2 paths (`log.ts` not `logger.ts`; v2 module structu
 | 2.3.l Reconciliation sweep seeding | scripts/ | Seed recurring scheduled task to update `taskflow_send_message_log.status` from `inbound.db.delivered` joins. Per-session via v2's schedule_task. |
 | **NEW 2.3.m** Drop `send_message_log` + auditor rewrite (Discovery 03, 04, 19) | container/agent-runner/src/auditor-script.sh + auditor-prompt.txt | **Per re-discovery:** drop `send_message_log` table entirely. Rewrite Kipp auditor to query v2 session DBs directly (`outbound.db.messages_out` ⨝ `inbound.db.delivered` ⨝ `inbound.db.messages_in`) for cross-board send detection. ~200 LOC auditor change. **User review needed before commit.** |
 | **NEW 2.3.n** task_history action-name canonicalization (Discovery 19) | engine | 8 unfixed doublets identified (`create`/`created`, `update`/`updated`/`update_field`, `concluded`/`conclude`, etc.). Pick canonical names + UPDATE migration on cutover. |
+| **NEW 2.3.o** Runtime permission gate (8 RUNTIME-BLOCKERs from Codex GAP validation) | `src/modules/taskflow/permissions.ts` (new module) | Per Codex 11.1, 11.3, 10.2, 10.3, P.7, P.8, 11.8: implement (a) **3-tier role-label runtime gate** reading `taskflow_board_admin_meta.role_label` ('manager'/'delegate'/'observer') beyond v2's binary `user_roles`; (b) **`sender_name → user_id` bridge** for caller identity in MCP wrappers; (c) **delegate carve-out** for `process_inbox`, `approve`, `reject` (manager-or-delegate); (d) **dual-write atomicity** between v2 `user_roles` INSERT and `taskflow_board_admin_meta` INSERT in same transaction; (e) **`auto_provision_request` wiring** as a v2 system-action that fires on `register_person` for unprovisioned hierarchy boards. Tests cover all 6 production permission denials + the 1 delegate (sanunciel). |
+| **NEW 2.3.p** Auditor architecture rewrite (5 RUNTIME-BLOCKERs: R12, R15, AH.8, AH.11, AH.13, Y.8) | `container/agent-runner/src/auditor-script.sh` + `auditor-prompt.txt` (heredoc + DB row) | Replaces and absorbs 2.3.m. (a) **`auditTrailDivergence` detector**: drop OR redefine — bug class disappears under v2's single-store; explicit decision required. (b) **Kipp isolated session**: define v2 provisioning shape — currently `context_mode='isolated'` not in v2; must use dedicated agent_group + `schedule_task` with `pre_agent_script`. (c) **8 interaction-record signals** rebuilt: `crossGroupSendLogged` per-session DB walk; `isCrossBoardForward` from new `send_message_log` projection; `taskMutationFound` unchanged; `isDmSend` heuristic re-grounded; `auditTrailDivergence` decision baked in; `selfCorrections`/`noResponse`/`isIntent`/`isRead` ported. (d) **Coupling with 2.3.c + 2.3.r**: hook placement decision (pre-queue wrapper vs registerDeliveryAction) drives audit truth; lock together. ~250-350 LOC + 28 prompt UPDATEs (per audit 13). |
+| **NEW 2.3.q** Cross-board send pipeline (3 RUNTIME-BLOCKERs: K.4, K.5, W.5) | `mcp-tools/taskflow.ts` send wrapper + `src/modules/taskflow/cross-board.ts` (new) | (a) **`trigger_message_id` propagation**: TaskFlow wrapper accepts `trigger_inbound_seq` param; resolves via `SELECT id FROM messages_in WHERE seq=?`; embeds in audit row. (b) **5-second notification consolidation**: in-process buffer per (source_board, target_chat_jid) within a single agent turn; flush at turn end via host-side coalesce. Critical for 28% cross-board outbound volume (~422 sends/60d) — without it, 2× notification spam day-1. (c) **Send audit hook placement decision (W.5)**: lock pre-queue insert pattern (Discovery 09) NOT post-delivery hook (Codex#10 B5: container can't write central; via host-side `kind='system'` action handler). |
+| **NEW 2.3.r** Cross-DB write/identity boundary (4 RUNTIME-BLOCKERs: S5, S15, S20, V.13) | Multiple — `init-db.ts`, `cross-board.ts`, host migration scripts | (a) **`board_people` two-table write**: live `register_person` writes to fork-private `data/taskflow/taskflow.db.board_people` AND v2 central `data/v2.db.users` + `agent_group_members` atomically. Reconciliation script for backfill. (b) **`send_message_log` storage decision (lock with 2.3.p)**: drop v1 table OR new central audit table; affects auditor data path. (c) **Web-UI table collision (S20)**: prod `data/taskflow/taskflow.db` has `users` + `sessions` tables (web-UI `tf-mcontrol`) — naming collision with v2 central `users` + `sessions`. Decision: rename web tables (`taskflow_web_users`, `taskflow_web_sessions`) OR isolate behind FK. (d) **`find_person_in_organization` (V.13)**: cross-board org walk needs central DB read access; pattern: TaskFlow MCP queries via mounted central DB (read-only). |
+| **NEW 2.3.s** IPC-replacement runtime patterns (4 RUNTIME-BLOCKERs: W.1, W.7, W.9, W.10) | Multiple | (a) **Raw sqlite MCP access (W.1)**: keep/drop/read-only decision for `mcp-server-sqlite-npx` (28 boards ship it as second MCP server with raw SQL write access). Recommend mount read-only. (b) **Auto-fire child provisioning (W.7)**: v2 replacement for `register_person` → `provision_child_board` IPC chain — emit system action from MCP result. (c) **`register_group` hierarchy metadata (W.9)**: v2's `create_agent` lacks `hierarchy_level`/`max_depth` fields — write to fork-private `taskflow_group_settings` sidecar in same transaction. (d) **`send_otp` IPC path (W.10)**: web-admin OTP path — design v2 input/delivery (engage_pattern doesn't apply; bot-initiated outbound only). |
+
+### Step 2.3.5 — Spec/Plan enumeration batch (101 PLAN-BLOCKERs)
+
+**Goal:** absorb 101 PLAN-BLOCKER GAPs from Codex validation in a single batch update — they're all "engine port-forward already covers behavior; just need spec/plan/test enumeration." NOT new code.
+
+**Source:** `docs/superpowers/audits/2026-05-03-feature-coverage/21-codex-validation.md` per-audit GAP tables.
+
+**Approach:** single doc-PR sweep across spec + plan + tests covering:
+- 8+ MCP tools missing from spec inventory (`process_inbox`, `register_person`, `restore_task`, `manage_holidays` 4 ops, `reparent_task`, `detach_task`, `merge_project`, `reinvite_meeting_participant_external`)
+- Missing acceptance tests for engine behaviors (J.* rollup, K.x meeting, weekday/DST, default-assignee, dotted subtask IDs, etc.)
+- Spec/plan internal contradictions resolved (B9: `/aprovar`; B6: `register_person`)
+- Template port (1316 LOC, 11 v2-breaking sites — per 2.3.i, expanded with Codex G-15.1 through G-15.9)
+- Test count corrections (audit 18: 234+/901+/126 actual = 330/374/134)
+- Phone canonicalization parity tests
+- 5 OVERCLAIMs explicitly dropped (K.17.phone-mask, S13, X.10, Y.6, Z.2)
+- 8 DEPRECATED-CORRECTLY confirmations (attachment intake, etc.)
+
+Estimated: ~3-4 days of doc + test author work; NO engine changes.
+
+**Acceptance:** every PLAN-BLOCKER from Codex validation has a corresponding spec entry + acceptance test stub.
 
 ### Step 2.4 — Engine-canonical regression suite (Discovery 06)
 
