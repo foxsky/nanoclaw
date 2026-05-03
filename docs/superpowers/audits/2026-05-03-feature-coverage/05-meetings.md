@@ -1,211 +1,266 @@
-# Feature Coverage Audit — K. Meetings Domain
+# Coverage Matrix — Section K: Meetings Domain
 
-**Date:** 2026-05-03
-**Scope:** TaskFlow meetings (K.1–K.17 from inventory section K)
-**Engine source of truth (read):** `/root/nanoclaw/data/sessions/secti-taskflow/agent-runner-src/taskflow-engine.ts` (7745 lines)
-**dm-routing source of truth (read):** prod `/home/nanoclaw/nanoclaw/src/dm-routing.ts`
-**Production DB:** `nanoclaw@192.168.2.63:/home/nanoclaw/nanoclaw/data/taskflow/taskflow.db`
+> **Date:** 2026-05-03
+> **Scope:** validate v2 plan covers all 17 meeting features (K.1–K.17) including the 8 meeting query views, external participant flow, dm-routing, scheduled_at weekday validation, and triage state machine.
+> **Inputs:**
+> - Plan: `docs/superpowers/plans/2026-05-03-phase-a3-track-a-implementation.md` §A.3.2 step 2.3.g + §A.3.7 step 7.1 "Meetings (5 tools)"
+> - Spec: `docs/superpowers/specs/2026-05-02-add-taskflow-v2-native-redesign.md` §"External meeting participant onboarding" + §"Meeting tools"
+> - Discovery 12 (sender approval): `docs/superpowers/research/2026-05-03-v2-discovery/12-sender-approval.md` §7 §8
+> - Discovery 19 (production usage): `docs/superpowers/research/2026-05-03-v2-discovery/19-production-usage.md` §5 §6
+> - dm-routing prod bug: `~/.claude/projects/-root-nanoclaw/memory/project_dm_routing_silent_bug.md`
+> - Engine: `/root/nanoclaw/container/agent-runner/src/taskflow-engine.ts` (8500 lines)
+> - dm-routing source: `/root/nanoclaw/src/dm-routing.ts` (lines 43-55 contain the table-existence guard)
+> - Production DB: `nanoclaw@192.168.2.63:/home/nanoclaw/nanoclaw/data/taskflow/taskflow.db`
+
+---
+
+## Production validation (refreshed 2026-05-03)
+
+| Metric | Value | Source |
+|---|---:|---|
+| `tasks WHERE type='meeting'` (live) | **20** | confirms inventory + Discovery 19 §5 |
+| `external_contacts` rows | **3** | Edmilson, Katia, Ismael |
+| `meeting_external_participants` rows | **3** | one per external |
+| MEP `invite_status='invited'` | 2 | Katia + Ismael (M5 sec, both stale 2026-04-02 expiry) |
+| MEP `invite_status='revoked'` | 1 | Edmilson (M7 thiago, exp 2026-03-24) |
+| MEP `invite_status='accepted'` | 0 | feature has never seen a confirmed acceptance |
+| Meetings on `board-thiago-taskflow` (≤60d) | 7 | dominant calendar (M22 future, rest past) |
+| Meetings on `board-seci-taskflow` (≤60d) | 4 | secondary |
+| Meetings on `board-sec-taskflow` (≤60d) | 1 | tertiary; M5 holds external grants |
+| 25 other boards: meetings | 0 | meetings concentrated on 3 boards |
+| `resolveExternalDm` errors in `nanoclaw.log` | **10,863** | confirmed today: `sudo grep -c resolveExternalDm /home/nanoclaw/nanoclaw/logs/nanoclaw.log` |
+
+**Recent meetings (top 10 by `scheduled_at` DESC, ≤60d):**
+
+```
+M22  2026-05-05 12:00  thiago   Reunião SDU Sul — Integração/QGIS/STM   (FUTURE)
+M23  2026-04-30 11:30  thiago   Apresentação Avisa BR — Mensageria
+M21  2026-04-27 11:00  thiago   Reunião Prestação de Contas — SECTI
+M3   2026-04-24 12:00  seci     Reunião com Cleonildo da FMS
+M1   2026-04-23 14:00  seci     Reunião alinhamento ATI-Timon × SECTI
+M20  2026-04-23 14:00  thiago   Apresentação final estágio probatório
+M6   2026-04-23 11:30  seci     Gabriel Freitas sobre Projetos
+M14  2026-04-15 17:00  thiago   Bases Suas no Sebrae
+M2   2026-04-15 11:00  seci     Pesquisa TIC Governo 2025
+M19  2026-04-14 14:00  thiago   Levantamento Critérios — Portal Transparência
+```
+
+> Discovery 19 §5 verdict: meetings are **real but small** — 16 meetings in last 30d, 3 boards account for all 20 live; the other 25 boards have zero. Discovery 19 §6 verdict: external-guest is **dormant** — 3 contacts, 3 grants, 0 acceptances, 6-week-old data. The feature has been used three times in the entire history of the system.
+
+---
+
+## dm-routing prod incident validation
+
+**Confirmed live today:** `sudo grep -c resolveExternalDm /home/nanoclaw/nanoclaw/logs/nanoclaw.log` returns **10,863**.
+
+The prior version of this audit speculated that prod `dist/dm-routing.js` predated the table-existence guard added at `src/dm-routing.ts:47-53`:
+
+```ts
+const tableCheck = db
+  .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='external_contacts'`)
+  .get();
+if (!tableCheck) return null;
+```
+
+That guard exists in current src; the per-handle prepared-statement schema cache in better-sqlite3 (combined with a possibly-stale `_taskflowDb` cache) is the more likely root cause. **Either way, the v2 plan's regression coverage is the right shape.**
+
+**Plan §A.3.2 step 2.3.g** explicitly addresses this:
+
+> Test: missing `external_contacts` table returns null without throwing (regression for prod dist drift bug per memory `project_dm_routing_silent_bug.md`).
+
+**Validation of the plan's regression coverage:**
+
+| Risk vector | Plan addresses? | Notes |
+|---|---|---|
+| `external_contacts` table missing → throw | **YES** (§2.3.g explicit regression test) | matches the symptom |
+| Stale dist/src divergence | **PARTIAL** (Risk table line "dm-routing.ts prod dist drift reproduces on v2 build" → "step 2.3.g adds explicit table-existence regression test") | Test catches the throw but not the underlying build-pipeline drift |
+| `_taskflowDb` cache opened pre-migration | **MISSING** | No spec/plan language requires `db.pragma('user_version')` recheck on cache; no language requires invalidation on schema bump |
+| Multiple `taskflow.db` candidates on disk (prod has 4 — three are zero-byte) | **MISSING** | No spec/plan language requires single-source-of-truth path resolution or fail-fast on multiple candidates |
+| Prepared-statement schema cache mismatch when external_contacts is created out-of-band | **PARTIAL** | The §2.3.g test would not reproduce this scenario unless explicitly written to create-then-prepare-then-create-again |
+
+**Verdict on the special call-out:** the plan's regression test (§2.3.g) **addresses the surface symptom** (table-existence guard) cleanly. It does **not** address the four anti-drift hardening recommendations from the memory file (single DB path, user_version recheck, cache invalidation on migration, dist/src fingerprint check). Those remain as **GAP-K.6.bug** to be added to the spec or plan.
+
+---
+
+## Coverage matrix
+
+### K.1 — Create meeting task (`type='meeting'`)
+
+| | |
+|---|---|
+| v1 source | engine:3150 (type discriminator), :3184 (participants on create), :3202 (scheduled_at on create), :3221–:3231 (recurrence + due_date invariants) |
+| v1 behavior | `create_task` accepts `type='meeting'`. Invariants: meetings cannot have `due_date` (line 3231); recurring meetings require `scheduled_at` for first occurrence (3221); `recurrence_anchor` defaults to `scheduled_at` (3226). |
+| v2 plan/spec | Spec §"Meeting tools" lists 5 MCP tools but does NOT enumerate `create_task(type='meeting')` — meetings are created via the unified `add_task` (Kanban tools row in spec) or implicitly. No invariants restated. |
+| **Status** | **PARTIAL** |
+| **GAP-K.1** | Spec must explicitly state: (a) meetings created via `add_task(type='meeting')` or a dedicated `create_meeting`; (b) the 4 invariants (no due_date, recurrence requires scheduled_at, recurrence_anchor default, type-locked-on-create) survive into v2. Plan §A.3.7 step 7.1 "Meetings (5 tools)" must include create-meeting in its happy-path + error-path tests. |
+
+### K.2 — Internal participant management (add/remove)
+
+| | |
+|---|---|
+| v1 source | engine:4930–:4990 (add/remove via update_task), :184 (`add_participant` / `remove_participant` update fields) |
+| v1 behavior | Only meeting tasks. Resolves person via `resolvePerson` → `buildOfferRegisterError` if unknown. Mutates `tasks.participants` JSON-array. Notifies the added/removed person. |
+| v2 plan/spec | Spec §"Meeting tools" lists `add_meeting_participant` (internal) + `remove_meeting_participant`. Plan §7.1 budgets 5 meeting tools with happy + error paths. |
+| **Status** | **COVERED** (named) |
+| **GAP-K.2** | Spec must restate: (a) meeting-only gate; (b) `tasks.participants` JSON column is the storage shape; (c) `resolvePerson` `offer_register` error path; (d) notification recipient = the added/removed person. Plan §7.1 error-path test should include "person not on board → offer_register". |
+
+### K.3 — External participant invite (`add_external_participant`)
+
+| | |
+|---|---|
+| v1 source | engine:4992–:5106 (115 lines: gate, normalize, upsert external_contacts, insert/update MEP, set 7d window, send DM, history) |
+| v1 behavior | Manager/organizer-only. Phone normalized. `external_contacts(phone UNIQUE)` upserted. `meeting_external_participants(board_id, meeting_task_id, occurrence_scheduled_at, external_id)` 4-tuple PK. `invite_status='invited'`, `access_expires_at = scheduled_at + 7d`. Sends DM if `direct_chat_jid` known; otherwise relies on first-DM phone-fallback (see K.6). `task_history` action `add_external_participant`. |
+| v2 plan/spec | Spec §"External meeting participant onboarding" rewrites the flow: bot DMs the participant → if unknown, `unknown_sender_policy='request_approval'` triggers admin card → on approve, INSERT users + user_dms + agent_group_members + replay_inbound. Spec proposes a smaller `meeting_externals` table (meeting↔user_id pairings only). Spec §"Meeting tools" names `add_meeting_participant_external`. |
+| **Status** | **PARTIAL — design drift** |
+| **GAP-K.3.design** | The spec's redesigned flow is **invitation-pull** (admin card on first DM), not the v1 **invitation-push** (organizer issues invite by name+phone, bot sends outbound DM). Discovery 12 §7 option (c) is the recommended bridge: TaskFlow's invitation-send flow calls `addMember()` to seed `agent_group_members` so v2's first-contact gate doesn't fire — but spec doesn't lock this in. Decision needed: (a) keep v1's push (TaskFlow MCP tool calls `addMember()` + sends DM directly), or (b) adopt v2's pull (admin card on first DM). Plan §7.1 cannot test this until decided. **3 prod contacts will need migration handling per Discovery 12 §8** — recommended Strategy 1 (do nothing; all 3 are expired). |
+| **GAP-K.3.window** | The 7-day `access_expires_at` constant (engine line ~5050) is not restated in spec. v2 design must preserve or replace. |
+
+### K.4 — Remove external participant (`remove_external_participant`)
+
+| | |
+|---|---|
+| v1 source | engine:5108–:5170 (62 lines) |
+| v1 behavior | Manager/organizer-only. 3-way fallback resolution: external_id → phone → name. UPDATE `meeting_external_participants.invite_status='revoked'`, `revoked_at`. Notifies via DM if `direct_chat_jid` known. `task_history` action `remove_external_participant`. |
+| v2 plan/spec | Spec §"Meeting tools" implicit in `remove_meeting_participant` (single tool covers internal + external? — unclear). Plan §7.1 budgets 5 meeting tools. |
+| **Status** | **PARTIAL** |
+| **GAP-K.4** | Spec must clarify: is `remove_meeting_participant` polymorphic (internal vs external) or are there two tools? v1 has separate update fields (`remove_participant` vs `remove_external_participant`). Spec must also preserve the 3-way fallback resolver (external_id / phone / name). |
+
+### K.5 — Reinvite external participant (`reinvite_external_participant`)
+
+| | |
+|---|---|
+| v1 source | engine:5173–:5220 (47 lines) |
+| v1 behavior | Resurrect a `revoked` or `expired` grant on the **current occurrence** only. UPDATE → `invite_status='invited'`, reset `access_expires_at = scheduled_at + 7d`, `invited_at = now`. Re-sends DM. |
+| v2 plan/spec | Not enumerated as a distinct MCP tool. Spec §"Meeting tools" has no reinvite primitive. |
+| **Status** | **MISSING** |
+| **GAP-K.5** | Spec must add `reinvite_meeting_participant_external` OR document that reinvite is reachable via remove-then-add. v1's "current occurrence only" semantics matters for recurring meetings (don't resurrect grants on past occurrences). |
+
+### K.6 — DM-based external participant correlation (dm-routing)
+
+| | |
+|---|---|
+| v1 source | `/root/nanoclaw/src/dm-routing.ts` (145 lines, `resolveExternalDm`); host `dist/ipc.js:370,628,658` invokes |
+| v1 behavior | Resolve inbound DM JID → (board, meeting_task_id, grants). Phone-fallback: extract phone from JID, match `external_contacts.phone`, backfill `direct_chat_jid` on hit. Lazy-expire grants where `access_expires_at < now`. Disambiguate when active grants span multiple boards. Inject `[External participant: <name> (<id>), grants: M1,M3]` context tag into the host board's session. |
+| v2 plan/spec | Spec §"External meeting participant onboarding" — proposes deletion of `dm-routing.ts` (~250 LOC) absorbed by v2 sender-approval. Discovery 12 §7 option (c) recommends keeping `resolveExternalDm` as a context-tag layer (no longer drops messages, since v2's request_approval gate handles unknown senders). Plan §A.3.2 step 2.3.g: ports `dm-routing.ts` to skill branch + adds table-existence regression test. |
+| **Status** | **PARTIAL — port-forward decision unclear** |
+| **GAP-K.6.scope** | Spec says "delete dm-routing.ts"; plan §2.3.g says "port + regression test". Internally inconsistent. Decision: Discovery 12 option (c) is correct — context-tag layer survives, message-drop semantics move to v2 sender-approval. Spec must be amended to say "trim, don't delete." |
+| **GAP-K.6.bug** | The plan's table-existence regression test (§2.3.g) is **necessary but not sufficient** to prevent the prod incident (10,863 errors). The four anti-drift requirements from `project_dm_routing_silent_bug.md` are unaddressed: (1) single source of truth for `taskflow.db` path with multi-candidate fail-fast; (2) `db.pragma('user_version')` recheck on cache reuse; (3) `_taskflowDb` cache invalidation on schema bump (or remove caching); (4) deploy-pipeline fingerprint check covering `src/` delta, not only container build inputs. **Recommendation:** add these as A.3.2 §2.3.g acceptance subitems. Production incident is dormant (no active grants) so out-of-scope for v1 hotfix per memory note, but in-scope for v2 to not reproduce. |
+
+### K.7 — Triage meeting notes (`process_minutes` + `process_minutes_decision`)
+
+| | |
+|---|---|
+| v1 source | engine:7932–:8050 (`process_minutes`, `process_minutes_decision`); :189 (set_note_status update field); :4919–:4925 (set_note_status mutator); note phase computed at :2965 (`getMeetingNotePhase`); phase filter at :4397, :5795–5798 (pre / meeting / post / other). |
+| v1 behavior | `process_minutes` returns notes grouped by parent_note_id where `status='open'` for triage. `process_minutes_decision({decision: 'create_task'\|'create_inbox', create: <payload>})` creates the new task via `createTaskInternal`, updates `note.status='task_created'\|'inbox_created'`, stores `note.created_task_id` for traceability. `set_note_status` flips between {open, checked, task_created, inbox_created, dismissed}. Note `phase` is derived from current task `column` (pre = before scheduled_at; meeting = day-of; post = after). |
+| v2 plan/spec | Spec §"Meeting tools" lists `set_meeting_note_status` ("Pre/meeting/post note triage") + `transition_meeting` (state machine planned→confirmed→in_progress→done). No `process_minutes` orchestrator. |
+| **Status** | **PARTIAL** |
+| **GAP-K.7.tools** | Spec collapses v1's two-step triage (`process_minutes` listing + `process_minutes_decision` action) into `set_meeting_note_status`. The "decision creates a task" branch (the most useful path — turn an open item into a `next_action` task with linkage) is not enumerated in spec. Either add a `triage_meeting_note` MCP tool or document that `add_task(parent_note_id=...)` + `set_meeting_note_status` is the v2 idiom. |
+| **GAP-K.7.statemachine** | Spec's `transition_meeting` invents a planned/confirmed/in_progress/done state machine that v1 does NOT have. v1 derives `phase` from `column` automatically. Decision needed: keep v1's column-derived phase (simpler, port-forward), or adopt the explicit transition_meeting state machine (re-design). |
+
+### K.8–K.15 — 8 meeting query views
+
+Per the inventory's "8 meeting query views (upcoming, today, overdue, by_status, external, internal, participants, open_items)", v1 actually exposes a slightly different set (10 cases in the engine query dispatcher). The mapping:
+
+| Inventory view | v1 case (engine:6818–:7125) | v1 lines |
+|---|---|---|
+| K.8 `agenda` (today) | `case 'agenda'` (overdue + due_today + in_progress) | 6818–:6831 |
+| K.9 `agenda_week` | `case 'agenda_week'` | 6832–:6841 |
+| K.10 `meetings` (open / by_status) | `case 'meetings'` (`type='meeting' AND column != 'done'`) | 7020–:7026 |
+| K.11 `meeting_agenda` (per-meeting pre-notes) | `case 'meeting_agenda'` (filters notes phase='pre') | 7027–:7046 |
+| K.12 `meeting_minutes` (formatted ata) | `case 'meeting_minutes'` (calls `formatMeetingMinutes` at :5768) | 7047–:7055 |
+| K.13 `upcoming_meetings` (next N) | `case 'upcoming_meetings'` (scheduled_at >= now, sorted asc) | 7056–:7062 |
+| K.14 `meeting_participants` | `case 'meeting_participants'` (organizer + internal + external) | 7063–:7087 |
+| K.15 `meeting_open_items` | `case 'meeting_open_items'` (`notes.status='open'`) | 7088–:7096 |
+
+| | |
+|---|---|
+| v2 plan/spec | Spec §"Query tools" line 283: `list_meetings (8 view-shaped variants)` — names exist but variants not enumerated. Plan §A.3.7 step 7.1 "Query (3+ tools)" budgets generic query tool tests. |
+| **Status** | **COVERED** (by name, single line) |
+| **GAP-K.8-15.enumerate** | Spec must enumerate the 8 variants by name + filter shape + return shape so the engine port-forward has a coverage checklist. v1 has 10 distinct query cases for meetings (counting `agenda`/`agenda_week` as part of the meetings UX); spec's "8" matches the inventory but the mapping is non-obvious. Plan §7.1 must include 1 happy-path test per variant (8 tests minimum). |
+| **GAP-K.12.formatter** | `formatMeetingMinutes` (engine:5768–:5827) emits Portuguese-language section headers ("Pré-reunião", "Pós-reunião"). v2 spec must keep the formatter port-forward; production corpus shows 1233 "ata" hits vs 2 "minutes" — pt-BR is canonical. |
+
+### K.16 — Cross-board meeting visibility
+
+| | |
+|---|---|
+| v1 source | engine:1011 (`visibleTaskScope`), :1720 (`isBoardMeetingParticipant`), :1648/:1658 (visibility resolution) |
+| v1 behavior | Meetings are visible from any board where someone on the meeting's `participants` list is registered (`board_people`). Implemented as an OR clause in every read query: `WHERE board_id = this.boardId OR (type='meeting' AND visibleAsParticipant)`. Used by 13 query views and ~30 read paths. |
+| v2 plan/spec | Not enumerated. Spec §"External meeting participant onboarding" rewrites the external participant flow but does not restate the cross-board visibility primitive for **internal** participants. |
+| **Status** | **MISSING** |
+| **GAP-K.16** | Spec must restate the cross-board visibility rule. Without it, `agent_group`-scoped queries on v2 will hide a meeting from a participant whose home board ≠ the meeting's host board. Discovery 19 §11 reassign analysis showed `was_linked` reassigns rely on the same cross-board surface. Plan §A.3.7 must include a test: "user U on board A is on participant list of meeting on board B → query from board A's session sees the meeting". |
+
+### K.17 — Non-business-day weekday validation on `scheduled_at` + phone display
+
+| | |
+|---|---|
+| v1 source weekday | engine:1084 (`isNonBusinessDay`), :1099 (`getNextBusinessDay`), :1107 (`shiftToBusinessDay`), :1119 (`checkNonBusinessDay`); applied at :3202 (create) + :4613 (update); recurring auto-shift at :4674 |
+| v1 behavior weekday | Detects weekend OR jurisdictional holiday (per `board_holidays` table). On meeting create/update with weekend `scheduled_at`, returns warning. `allow_non_business_day` override flag bypasses. Recurring meetings auto-shift to next business day. |
+| v1 source phone | engine:5004 (`normalizePhone`); display in `meeting_participants` query at :7063–:7087 (returns plain phone, NO masking); external invite history at :5101 (raw phone); contact lookup at :5150. |
+| v1 behavior phone | Phones are stored canonical (`normalizePhone`) and displayed **plain** — no masking anywhere in engine source. |
+| v2 plan/spec | Spec §"Kanban tools" mentions `set_due_date` "(skip-non-business-days option)" — but `scheduled_at` (meetings) is separate from `due_date` (tasks). Plan §A.3.6 verifies `board_holidays` row count matches v1 post-migration. No spec language on phone-mask. |
+| **Status** | **PARTIAL — weekday COVERED, phone-mask MISSING but inventory-wrong** |
+| **GAP-K.17.weekday** | Spec must mention that `scheduled_at` mutations (meetings) use the same `isNonBusinessDay` gate as `due_date` mutations. The recurring auto-shift (engine:4674) is a corner case the plan's port-forward must preserve. |
+| **GAP-K.17.phone-mask** | Inventory item K.17 calls for "phone-mask display + match" but **engine source has no masking** — phones are shown plain in `meeting_participants` query and history rows. Either (a) the inventory is aspirational ("we want this in v2"), or (b) masking lives outside the engine (not in source I read). Flag for inventory author: clarify whether phone-mask is real-v1 or v2-want. **If v2-want:** add to spec §"Meeting tools" with explicit "display: last-4-digits-only, match: full canonical normalize". |
+
+---
+
+## Cross-cutting concerns the v2 spec must address (preserved from prior audit)
+
+1. **Reschedule cascade** (engine:5260–:5275): editing `scheduled_at` cascades to all active `meeting_external_participants` rows — updates `occurrence_scheduled_at` AND `access_expires_at = new_scheduled_at + 7d` in one statement. Spec must preserve.
+2. **WIP-limit exemption for meetings** (engine:2880, 2938, and elsewhere): meetings explicitly excluded from per-person WIP semantics. Plan §A.3.7 step 7.1 Kanban error-path "WIP exceeded" must NOT fire on meetings.
+3. **Reminder semantics**: meetings key reminders off `scheduled_at`, NOT `due_date`. Two reminder kinds (scheduled days-before + exact-time meeting-start). Discovery 19 §8 confirmed Thiago board uses both.
+4. **Notification recipient set** (engine:4392, 5101, 5163): includes assignee + participants + accepted/invited external contacts (excluding past-expiry). Used by reschedule, reminder, and start notifications.
+5. **Note authorization layers** (engine:4372, 4443, 4489): meeting note operations bypass the assignee/manager gate but only for non-privileged updates. Multi-layered (participant membership AND/OR active external grant). Must port forward.
+
+---
 
 ## Status counts
 
 | Status | Count | IDs |
-|--------|------:|-----|
-| COVERED-by-v2 | 0 | — |
-| COVERED-by-skill | 0 | — |
-| GAP | 17 | K.1–K.17 |
-| NOT-NEEDED | 0 | — |
+|---|---:|---|
+| COVERED | 2 | K.2 (named), K.8-15 (named single-line) |
+| PARTIAL | 7 | K.1, K.3 (design drift), K.4, K.6 (scope+bug), K.7, K.16, K.17 (weekday side) |
+| MISSING | 1 | K.5 (reinvite tool) |
+| GAP totals | **10 distinct GAPs** | K.1, K.3.design, K.3.window, K.4, K.5, K.6.scope, K.6.bug, K.7.tools, K.7.statemachine, K.16, K.17.weekday, K.17.phone-mask, K.8-15.enumerate, K.12.formatter |
 
-> **All 17 features default to GAP** because the v2 plan documents referenced as inputs (`2026-05-03-add-taskflow-feature-inventory.md`, `2026-05-03-add-taskflow-v1v2-mapping.md`, `2026-05-03-phase-a3-track-a-implementation.md`, `2026-05-02-add-taskflow-v2-native-redesign.md`, discovery 12 + 19) **do not exist on disk** — neither at `/root/nanoclaw/docs/superpowers/{audits,plans,specs,research}/...` nor on prod (`/home/nanoclaw/nanoclaw/.claude/skills/add-taskflow/`). Without a v2 spec to evaluate against, the only honest mapping is "not yet covered." Each feature below documents what v1 provides so the v2 spec, when it lands, has a coverage checklist to validate.
-
-## Production validation (run 2026-05-03)
-
-```text
-$ sqlite3 .../taskflow.db
-SELECT COUNT(*) FROM tasks WHERE type='meeting';                  -> 20
-SELECT COUNT(*) FROM external_contacts;                           -> 3
-SELECT COUNT(*) FROM meeting_external_participants;               -> 3
-SELECT invite_status, COUNT(*) FROM meeting_external_participants
-  GROUP BY 1;                                                      -> invited: 2, revoked: 1
-SELECT id, title, scheduled_at, board_id FROM tasks
-  WHERE type='meeting' AND scheduled_at > datetime('now','-60 days')
-  ORDER BY scheduled_at DESC LIMIT 10;                             -> 10 rows (M22, M23, M21, M3, M1, M20, M6, M14, M2, M19; M22 future, rest past)
-```
-
-Production message-corpus (last ~all time, `store/messages.db`):
-
-```text
-agenda    -> 884 hits
-ata       -> 1233 hits
-minutes   -> 2 hits   (Portuguese-language deployment, English term unused)
-reunião   -> 962 hits
-total OR  -> 1827 distinct messages mention any of {agenda, ata, minutes}
-```
-
-Reading: meetings are a **real but small** workload in production. The active external-participant flow has 3 contacts and 3 grants total (from M5/M7, both past); 2 invited grants are stale (never accepted/revoked) and 1 was revoked. No orphaned meeting tasks; recent activity confined to the SECI and Thiago boards.
+(K.6.bug and K.3.design are the highest-impact: dm-routing prod incident risk + the push-vs-pull invitation flow ambiguity respectively.)
 
 ---
 
-## dm-routing prod incident (10,863 errors)
+## Recommended plan/spec amendments
 
-**Confirmed today via `sudo grep -c resolveExternalDm /home/nanoclaw/nanoclaw/logs/nanoclaw.log` -> 10863.**
-
-The memory note `project_dm_routing_silent_bug.md` hypothesised a stale `dist/dm-routing.js` (compiled before the table-existence guard was added). I checked: **prod `dist/dm-routing.js:25-30` already contains the guard** (matches `src/dm-routing.ts:43-55`). Yet `SqliteError: no such table: external_contacts` still throws from `dist/dm-routing.js:25:10` continuously.
-
-Updated hypothesis (root cause): the `_taskflowDb` cache in `getTaskflowDb()` was populated **before** the `external_contacts` migration ran (or the migration was applied to a different db file than the one cached in `_taskflowDb`). prod has FOUR `taskflow.db` files:
-
-```
-/home/nanoclaw/nanoclaw/data/taskflow/taskflow.db          2.2 MB, has external_contacts ✓
-/home/nanoclaw/nanoclaw/data/taskflow/data/taskflow.db     0 B, no tables ✗
-/home/nanoclaw/nanoclaw/data/taskflow.db                   0 B, no tables ✗
-/home/nanoclaw/nanoclaw/data/sessions/sec-secti/taskflow.db 0 B, no tables ✗
-```
-
-The dist `getTaskflowDb` constructs `path.join(DATA_DIR, 'taskflow', 'taskflow.db')` — this points at the populated file. But `fileMustExist: true` and the cached `_taskflowDb` mean a process that opened a stale handle (e.g., before a backup-and-restore cycle) keeps it. The host process has been up since the last `systemctl restart nanoclaw`. **The guard executes against the live cached handle but the live handle's snapshot doesn't see `external_contacts` because the in-memory schema cache is stale** — better-sqlite3 caches schema on prepare; if the table was created out-of-band by the agent-runner (engine writes to its own taskflow.db via WAL), the host process's pragma-version may be behind.
-
-Either way, the bug is **production-side** and **out of scope for the v2 plan** per scope note (a). For (b) — does the v2 plan introduce code that could reproduce this — the answer is **GAP-Q.bug**: without a v2 spec to read, we can't confirm the v2 build pipeline avoids the same drift class. The risk vectors to require in the spec:
-
-1. Single source of truth for the `taskflow.db` path; reject startup if multiple candidates exist.
-2. `getTaskflowDb` MUST `db.pragma('user_version')` after open and refuse to cache if migrations haven't been applied.
-3. Either remove `_taskflowDb` caching entirely, or invalidate on each migration bump.
-4. Build pipeline must fail-fast if `dist/` and `src/` diverge (deploy script's fingerprint check needs to also cover `src/` delta, not only container build inputs).
-
-These are recorded as `GAP-Q.bug` against the v2 plan and called out separately in the meeting feature rows below where dm-routing is on the critical path (K.6).
+1. **Spec §"Meeting tools" expansion** (≈1 page): enumerate the 5 (or 6) MCP tools — `add_meeting_participant`, `add_meeting_participant_external`, `remove_meeting_participant`, `reinvite_meeting_participant_external`, `transition_meeting` (or `set_meeting_phase`), `triage_meeting_note` — with input/output schemas, gate (manager-only), notification policy, and error cases. **Resolves K.1, K.2, K.3, K.4, K.5, K.7.**
+2. **Spec §"External meeting participant onboarding" reconciliation** (≈4 paragraphs): commit to Discovery 12 §7 option (c) — "TaskFlow's invitation-send flow calls `addMember()` to seed `agent_group_members` so v2's first-contact gate doesn't fire for invited externals; `dm-routing.ts` survives as a context-tag layer." Re-word the spec away from "delete dm-routing.ts" to "trim and reposition." **Resolves K.3.design, K.6.scope.**
+3. **Plan §A.3.2 step 2.3.g acceptance expansion** (≈4 sub-bullets): add (a) single-source-of-truth path resolution with multi-candidate fail-fast; (b) `db.pragma('user_version')` recheck on cached handle reuse; (c) `_taskflowDb` cache invalidation on schema bump; (d) deploy-pipeline fingerprint check covering `src/` delta. Without these, v2 build silently inherits the same drift class. **Resolves K.6.bug.**
+4. **Spec §"Query tools" `list_meetings` enumeration** (≈1 table, 8 rows): name + filter + return shape per variant. **Resolves K.8-15.enumerate.**
+5. **Spec §"Cross-cutting" addendum on cross-board meeting visibility** (≈1 paragraph): restate `visibleTaskScope` rule for meetings — meeting visible from any board where a participant is registered. Plan §A.3.7 must add a test. **Resolves K.16.**
+6. **Inventory clarification on K.17 phone-mask**: spec author or inventory author resolves whether masking is a real-v1 feature or a v2 want. If v2-want, add to spec §"Meeting tools" output schemas. **Resolves K.17.phone-mask.**
+7. **Plan §A.3.7 step 7.1 "Meetings (5 tools)" expansion**: bump from 5 to 6 tool tests, plus 8 query-view tests, plus 1 cross-board-visibility test, plus 1 weekday-validation test, plus 1 reschedule-cascade test, plus 1 phase-derivation test, plus 1 reinvite test. Total ≈18 meeting-domain tests for production parity.
 
 ---
 
-## Feature coverage matrix
+## Production source code references
 
-Format per row: `K.N — Feature` | source-of-truth lines | v1 behavior | v2 status | gap detail.
+- **Engine entry points (5 mutators + 8 query views):** `/root/nanoclaw/container/agent-runner/src/taskflow-engine.ts:4930-5220` (mutators) and `:6818-:7125` (query dispatcher)
+- **`isBoardMeetingParticipant`:** `/root/nanoclaw/container/agent-runner/src/taskflow-engine.ts:1720`
+- **`visibleTaskScope`:** `/root/nanoclaw/container/agent-runner/src/taskflow-engine.ts:1011`
+- **`formatMeetingMinutes`:** `/root/nanoclaw/container/agent-runner/src/taskflow-engine.ts:5768-5827`
+- **`isNonBusinessDay` family:** `/root/nanoclaw/container/agent-runner/src/taskflow-engine.ts:1084-1130`
+- **`getMeetingNotePhase`:** `/root/nanoclaw/container/agent-runner/src/taskflow-engine.ts:2965`
+- **`process_minutes` / `process_minutes_decision`:** `/root/nanoclaw/container/agent-runner/src/taskflow-engine.ts:7932-8050`
+- **`external_contacts` + `meeting_external_participants` schema:** `/root/nanoclaw/container/agent-runner/src/taskflow-engine.ts:1213-1240`
+- **dm-routing source:** `/root/nanoclaw/src/dm-routing.ts:43-145` (guard at 47-53)
+- **Production DB:** `nanoclaw@192.168.2.63:/home/nanoclaw/nanoclaw/data/taskflow/taskflow.db`
+- **Production log (10,863 errors):** `nanoclaw@192.168.2.63:/home/nanoclaw/nanoclaw/logs/nanoclaw.log`
 
-### K.1 — Create meeting task (`type='meeting'`)
+## Anchor references
 
-- **v1 source:** engine.ts:1912 (type union), :1944–:1960 (participant resolution), :1961–:1987 (recurring meeting validation), :2040–:2070 (INSERT)
-- **v1 behavior:** `create_task` accepts `type='meeting'`, requires nothing on day-1 but enforces: meetings can't have `due_date` (line 1972); recurring meetings require `scheduled_at` for first occurrence (line 1962); `recurrence_anchor` defaults to `scheduled_at` (line 1967).
-- **v2 status:** **GAP-K.1** — no v2 spec to evaluate.
-- **What v2 spec must cover:** the four invariants above. Phase A3 plan must call out that `tasks.type='meeting'` is a v1-shape table inherited as-is, OR specify a v2-native equivalent.
-
-### K.2 — Internal participant management (add/remove)
-
-- **v1 source:** engine.ts:3522–3582 (`add_participant` / `remove_participant`)
-- **v1 behavior:** Only meeting tasks. Resolves person via `resolvePerson` (offer-register if unknown). DB column `tasks.participants` is JSON-array of person IDs. Notifies the added/removed person.
-- **v2 status:** **GAP-K.2.**
-- **Spec must cover:** the `tasks.participants` JSON column shape, person-resolution semantics, notification recipients.
-
-### K.3 — External participant invite (`add_external_participant`)
-
-- **v1 source:** engine.ts:3584–3697 (220 lines of logic)
-- **v1 behavior:** Manager/organizer-only gate (line 3589). Requires `scheduled_at`. Normalizes phone, upserts `external_contacts` (display_name, phone UNIQUE). Inserts/updates `meeting_external_participants` (board_id, meeting_task_id, occurrence_scheduled_at, external_id) PK. Sets `invite_status='invited'`, `access_expires_at = scheduled_at + 7 days` (line 516 constant). Sends DM invite if `direct_chat_jid` known. Logs `task_history` action `add_external_participant`.
-- **v2 status:** **GAP-K.3.**
-- **Spec must cover:** the `external_contacts` global (cross-board) table, the per-occurrence `meeting_external_participants` 4-tuple PK, the 7-day access window constant, the WhatsApp DM invite path (which depends on dm-routing.ts being healthy, see K.6).
-- **Prod state:** 3 contacts, 3 grants (2 invited + 1 revoked); flow has been tested. Last activity March 2026 — flow is dormant, data is real.
-
-### K.4 — Remove external participant (`remove_external_participant`)
-
-- **v1 source:** engine.ts:3699–3760
-- **v1 behavior:** Manager/organizer-only. Resolves contact by `external_id` OR phone OR name (3-way fallback). UPDATEs `meeting_external_participants.invite_status='revoked'`, `revoked_at`. Notifies via DM if direct_chat_jid known. `task_history` action `remove_external_participant`.
-- **v2 status:** **GAP-K.4.**
-
-### K.5 — Reinvite external participant (`reinvite_external_participant`)
-
-- **v1 source:** engine.ts:3762–3820
-- **v1 behavior:** Resurrect a `revoked` or `expired` grant on the **current occurrence**. Re-sends DM invite. Resets `access_expires_at = scheduled_at + 7d`. Restores `invite_status='invited'`.
-- **v2 status:** **GAP-K.5.**
-
-### K.6 — DM-based external participant correlation (dm-routing)
-
-- **v1 source:** prod `src/dm-routing.ts` (whole file, 145 lines), invoked by host `dist/ipc.js:370,628,658`.
-- **v1 behavior:** Resolves an inbound DM JID to (board, meeting, grants), then routes the message into that group's IPC inbox so the agent sees it as if posted by the external contact in the meeting's note thread. Lazy-expires past-window grants. Disambiguates when grants span multiple groups (orchestrator-side prompt; engine returns `needsDisambiguation: true`). Backfills `direct_chat_jid` after first phone-fallback match.
-- **v2 status:** **GAP-K.6** + **GAP-Q.bug** (see prod incident above).
-- **Spec must cover:** the same routing semantics + the four anti-drift requirements listed in the prod incident section. Without these, v2 build will silently reproduce the dist/src drift bug.
-- **Production:** broken silently for an unknown duration; 10,863 errors in `nanoclaw.log`. Feature dormant (no active grants, last activity March), so no user-visible impact.
-
-### K.7 — Triage notes (`process_minutes` + `process_minutes_decision`)
-
-- **v1 source:** engine.ts:6382–6463
-- **v1 behavior:** `process_minutes` returns open notes grouped by `parent_note_id` for triage UI. `process_minutes_decision` accepts `decision: 'create_task' | 'create_inbox'` + a `create` payload, creates the new task (via `createTaskInternal`), updates note status to `task_created`/`inbox_created`, stores `created_task_id` for traceability.
-- **v2 status:** **GAP-K.7.**
-- **Spec must cover:** the note-status state machine (`open` → `checked` | `task_created` | `inbox_created` | `dismissed`), and the cross-task linkage `note.created_task_id`.
-
-### K.8 — `agenda` query view
-
-- **v1 source:** engine.ts:5376–5401
-- **v1 behavior:** Three buckets: overdue (`due_date < today AND column != 'done'`), due_today, in_progress. **Not meeting-specific** despite the name — it's the global day view, but listed in section K because meetings show on it via `meeting_dueSfx`.
-- **v2 status:** **GAP-K.8.**
-
-### K.9 — `agenda_week` query view
-
-- **v1 source:** engine.ts:5403–5412
-- **v1 behavior:** Tasks with `due_date BETWEEN weekStart() AND weekEnd()`. Same caveat as K.8 (general view, meetings included via type marker).
-- **v2 status:** **GAP-K.9.**
-
-### K.10 — `meetings` query view (open)
-
-- **v1 source:** engine.ts:5595–5604
-- **v1 behavior:** All meeting tasks where `column != 'done'`, sorted by scheduled_at.
-- **v2 status:** **GAP-K.10.**
-
-### K.11 — `meeting_agenda` query view (per-meeting pre-notes)
-
-- **v1 source:** engine.ts:5606–5624
-- **v1 behavior:** Returns `notes` filtered to `phase='pre'`, structured as top-level items + `replies` array (parent_note_id grouping). Used to render the pre-meeting briefing.
-- **v2 status:** **GAP-K.11.**
-
-### K.12 — `meeting_minutes` query view (formatted ata)
-
-- **v1 source:** engine.ts:5626–5633, formatter at :4275–:4350 (`formatMeetingMinutes`)
-- **v1 behavior:** Returns raw `{task, notes}` plus a Portuguese-formatted minutes string with sections: pre-meeting agenda, meeting notes, post-meeting decisions, open items. Used by digest and chat replies.
-- **v2 status:** **GAP-K.12.**
-- **Spec must cover:** the Portuguese-language section headers (the prod corpus shows 1233 "ata" mentions, 2 "minutes" — Portuguese is canonical).
-
-### K.13 — `upcoming_meetings` query view (next 7 days)
-
-- **v1 source:** engine.ts:5635–5646; daily-digest aggregator at :7026–:7053
-- **v1 behavior:** Future `scheduled_at >= now`, sorted ascending. Daily digest formats with `participant_count = participants.length + organizer (1)` (line :7050). Visible across boards via `visibleTaskScope` (cross-board meeting visibility, line :1095).
-- **v2 status:** **GAP-K.13.**
-
-### K.14 — `meeting_participants` query view
-
-- **v1 source:** engine.ts:5648–5671
-- **v1 behavior:** Returns `{organizer, participants[], external_participants[]}`. Internal: from `tasks.participants` JSON joined with `board_people`. External: `getActiveExternalParticipants` at :1124 (joins MEP + external_contacts, filters revoked/past-expiry).
-- **v2 status:** **GAP-K.14.**
-
-### K.15 — `meeting_open_items` query view
-
-- **v1 source:** engine.ts:5673–5680
-- **v1 behavior:** Filters `notes` where `status='open'`. Used as input to triage (K.7) and to set the `meetings_with_open_minutes` daily-digest section (line :7066).
-- **v2 status:** **GAP-K.15.**
-
-### K.16 — `meeting_history` + `meeting_minutes_at` (occurrence archive lookups)
-
-- **v1 source:** engine.ts:5682–5713; archival at :2311–:2336 (`meeting_occurrence_archived` action stores selective fields).
-- **v1 behavior:** `meeting_history` returns full `task_history` for the meeting task. `meeting_minutes_at` looks up the archived occurrence by `at` (YYYY-MM-DD), reconstructs minutes from the snapshot, falls back to current task if `scheduled_at` matches. Critical for recurring meetings — each occurrence's notes are preserved when the task cycles to its next occurrence.
-- **v2 status:** **GAP-K.16.**
-- **Spec must cover:** the `task_history.action='meeting_occurrence_archived'` snapshot shape and the lookup-by-date fallback semantics.
-
-### K.17 — Weekday/non-business-day validation + phone display
-
-- **v1 source weekday:** engine.ts:646–693 (`isNonBusinessDay`, `getNextBusinessDay`, `shiftToBusinessDay`, `checkNonBusinessDay`); applied at :1990 (create) and :3282 (update). Recurring meetings auto-shift off weekends/holidays at :2286.
-- **v1 source phone:** engine.ts:3596 (`normalizePhone`), display in `external_participants` query is **plain phone** (line :1632 — no masking). External-participant invite messages include the raw phone (`${displayName} (${phone}) invited` at :3693).
-- **v1 behavior:** Weekend/holiday warnings on due dates; meetings are exempt from "auto-shift" because meetings use `scheduled_at` (not `due_date`); manual `allow_non_business_day` override flag (line :65).
-- **Phone-mask gap:** **inventory item K.17 calls for "phone-mask display" but engine source has no masking.** Phones shown plain in `meeting_participants` and history rows. Either the inventory is aspirational, or masking lives outside the engine (formatter/agent prompt) — neither is the case in the engine source I read. Flag for inventory correction.
-- **v2 status:** **GAP-K.17** with sub-flag: spec must clarify whether phone-mask is a real v1 feature or planned v2-only addition.
-
----
-
-## Cross-cutting concerns the v2 spec must address
-
-1. **Cross-board meeting visibility** (engine.ts:1094, 1111): meetings are visible from any board where someone on the participant list is registered. This is a v1-shape mechanism (`isBoardMeetingParticipant`). The v2 native redesign needs an equivalent — either keep `tasks.participants` JSON, or design a v2-native participant table.
-2. **Meeting note authorization layers** (engine.ts:3140, 3355, 3413, 3446, 3480): note operations bypass the assignee/manager gate but only for non-privileged updates (no add/remove/scheduled_at). Multi-layered authorization that depends on `participant` membership AND/OR active external grants.
-3. **Reschedule cascade** (engine.ts:3850–3870): editing `scheduled_at` cascades to all active `meeting_external_participants` rows — updates `occurrence_scheduled_at` and `access_expires_at` in one statement to keep the access-window invariant.
-4. **WIP-limit exemption for meetings** (engine.ts:2168, 2532, 2919, 6935): meetings explicitly excluded from per-person WIP semantics. Must be preserved or v2 must restate the policy.
-5. **Reminder semantics** (engine.ts:1652–1746, 3266): meetings key reminders off `scheduled_at`, NOT `due_date`. Two reminder kinds: scheduled (`days` before) and exact-time meeting-start. v2 spec must enumerate both.
-6. **Notification recipient set** (engine.ts:1601–1650): includes assignee + participants + accepted/invited external contacts (excluding past-expiry). Used by reschedule, reminder, and start notifications.
-
----
-
-## What the parent agent needs back
-
-- **17 GAPs**, all due to missing v2 spec/plan inputs (the 5 referenced documents do not exist on disk).
-- **Production-confirmed feature surface:** 20 meeting tasks, 3 external contacts, 3 MEP rows (2 invited / 1 revoked). Real but small.
-- **dm-routing prod incident corroborated** at 10,863 errors. Memory note's "stale dist/" hypothesis is **wrong** — dist matches src. Updated root cause: stale `_taskflowDb` cache or schema-cache mismatch in better-sqlite3. Out of scope for v2 plan, but v2 spec MUST add anti-drift requirements (single-source DB path, migration version check on cache, fail-fast on dist/src divergence) — recorded as **GAP-Q.bug**.
-- **K.17 inventory mismatch:** "phone-mask display" appears in the inventory header, but engine source has no masking. Either inventory is aspirational or feature lives outside engine. Flag for inventory author.
+- Plan §A.3.2 step 2.3.g (dm-routing port + regression test): `/root/nanoclaw/docs/superpowers/plans/2026-05-03-phase-a3-track-a-implementation.md:138`
+- Plan §A.3.7 "Meetings (5 tools)": `/root/nanoclaw/docs/superpowers/plans/2026-05-03-phase-a3-track-a-implementation.md:244`
+- Plan risk row "dm-routing.ts prod dist drift": `/root/nanoclaw/docs/superpowers/plans/2026-05-03-phase-a3-track-a-implementation.md:298`
+- Spec §"External meeting participant onboarding": `/root/nanoclaw/docs/superpowers/specs/2026-05-02-add-taskflow-v2-native-redesign.md:158-180`
+- Spec §"Meeting tools": `/root/nanoclaw/docs/superpowers/specs/2026-05-02-add-taskflow-v2-native-redesign.md:268-276`
+- Spec §"Query tools `list_meetings`": `/root/nanoclaw/docs/superpowers/specs/2026-05-02-add-taskflow-v2-native-redesign.md:283`
+- Discovery 12 §7 (TaskFlow dm-routing layering options) and §8 (3-contact migration strategy): `/root/nanoclaw/docs/superpowers/research/2026-05-03-v2-discovery/12-sender-approval.md:172-288`
+- Discovery 19 §5 (meeting frequency) and §6 (external participants flow): `/root/nanoclaw/docs/superpowers/research/2026-05-03-v2-discovery/19-production-usage.md:118-145`
+- dm-routing prod bug memory: `~/.claude/projects/-root-nanoclaw/memory/project_dm_routing_silent_bug.md`

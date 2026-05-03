@@ -1,249 +1,256 @@
-# Feature Coverage Audit — Section B + D + E: Simple-Task Lifecycle Domain
+# Feature coverage audit — task lifecycle + editing domain
 
 **Date:** 2026-05-03
-**Scope:** TaskFlow simple-task lifecycle (Kanban transitions, lifecycle verbs, edits, holidays). Production reality: 91% of 2532 mutations land here, so any regression here is a regression of TaskFlow's dominant workflow.
-**Engine source of truth (read):** `/root/nanoclaw-feat-v2/container/agent-runner/src/taskflow-engine.ts` (9599 lines) — only extant copy in any worktree; the prompt-cited path `/root/nanoclaw/container/agent-runner/src/taskflow-engine.ts` does not exist on disk.
-**MCP tool wiring:** `/root/nanoclaw-feat-v2/container/agent-runner/src/ipc-mcp-stdio.ts` (rich `taskflow_*` verbs) + `/root/nanoclaw-feat-v2/container/agent-runner/src/taskflow-mcp-server.ts` (REST-style `api_*` tools).
-**Production DB:** `nanoclaw@192.168.2.63:/home/nanoclaw/nanoclaw/data/taskflow/taskflow.db` (2.2 MB, refreshed 2026-05-03).
+**Scope:** Kanban transitions, task editing, notes, due dates, holiday calendar, non-business-day handling, cancel/restore, undo, completion notifications, and standup auto-archive housekeeping.
+**Production reality:** 91% of all 2,532 mutations in the last 60 days fall into this domain — it is the highest-volume surface in TaskFlow.
+**Method:** enumerate features from `container/agent-runner/src/taskflow-engine.ts` (9598 LOC) → cross-reference against the v2-native redesign spec (`docs/superpowers/specs/2026-05-02-add-taskflow-v2-native-redesign.md`) and the Phase A.3 Track A plan (`docs/superpowers/plans/2026-05-03-phase-a3-track-a-implementation.md`) → validate volumes against `nanoclaw@192.168.2.63:/home/nanoclaw/nanoclaw/data/taskflow/taskflow.db`.
 
----
-
-## Input availability note
-
-The four input docs cited in the prompt (`2026-05-03-add-taskflow-feature-inventory.md`, `2026-05-03-add-taskflow-v1v2-mapping.md`, `2026-05-03-phase-a3-track-a-implementation.md`, `2026-05-02-add-taskflow-v2-native-redesign.md`, `19-production-usage.md`) **do not exist** in any branch, stash, worktree, or production checkout. Verified across `/root/nanoclaw/`, `/root/nanoclaw-feat-v2/`, `/root/.config/superpowers/worktrees/nanoclaw/skill-taskflow/`. Sibling Batch-1/4/5 reports document the same absence.
-
-This audit therefore validates against what *does* exist:
-- **v2 engine source** at `/root/nanoclaw-feat-v2/container/agent-runner/src/taskflow-engine.ts`
-- **v2 MCP wiring** at `/root/nanoclaw-feat-v2/container/agent-runner/src/ipc-mcp-stdio.ts`
-- **v2 migration plan** at `/root/nanoclaw-feat-v2/docs/superpowers/plans/2026-04-23-nanoclaw-v2-migration.md`
-- **Operator template** at `/root/nanoclaw/groups/new-taskflow/CLAUDE.md` (the agent prompt that triggers `taskflow_move`/`taskflow_update`/etc.)
-- **Production task_history** (2532 rows lifetime, 1222 in last 30d).
-
-The v2 plan's design is "port-forward `taskflow-engine.ts` mechanically (sed-only fixups for `bun:sqlite` + `db.pragma`)" — the lifecycle behaviour is preserved verbatim by inheritance. That gives all 35 features a default status of ADDRESSED-by-port-forward unless the port introduces a regression.
-
----
-
-## Status counts
-
-| Status | Count | IDs |
-|---|---:|---|
-| ADDRESSED | 28 | B.1, B.3, B.4, B.5, B.6, B.7, B.8, D.1, D.2, D.3, D.4, D.5, D.6, D.7, D.8, D.10, D.11, D.13, D.14, D.15, E.1, E.2, E.3, E.4, E.5, E.6, E.7, E.10 |
-| GAP | 5 | B.2, D.9, D.12, E.8, E.9 |
-| DEAD-CODE-PRESERVED | 1 | E.11 (intended_weekday for past dates) |
-| DEPRECATED-CORRECTLY | 1 | E.12 (DST-aware due_date) |
-| DEPRECATED-WRONG | 0 | — |
-
-GAP IDs in detail at end. Total = 35 (matches prompt scope).
-
----
-
-## Production validation (refreshed 2026-05-03)
-
-All `task_history` action counts via `SELECT action, COUNT(*) FROM task_history GROUP BY action` against prod taskflow.db.
-
-### Lifecycle verb usage (prod, lifetime)
-
-| Action enum (engine) | Count | Last 30d / 60d | Notes |
-|---|---:|---|---|
-| `created` | 559 | — | Section A — out of scope |
-| `updated` (covers all D → E edits) | **963** | 963 / — | Largest single bucket |
-| `reassigned` | 210 | 82 / 206 | Section G — out of scope |
-| `conclude` | 155 | — / — | D.7 |
-| `cancelled` | **130** | 130 / **130** | D.14 — *all 130 are within 60d window* |
-| `update` (legacy) | 78 | — | engine no longer emits, kept for backward-compat |
-| `review` | 71 | — | D.4 |
-| `wait` | 63 | — | (out-of-scope: not in B/D/E enum) |
-| `start` | **58** | — / 58 | D.1 |
-| `approve` | 50 | — | D.5 |
-| `child_board_created` | 25 | — | out of scope |
-| `subtask_added` | 22 | — | out of scope |
-| `reparented` | 21 | — | out of scope |
-| `moved` | 11 | — | legacy / generic move |
-| `note_added` | 10 | — | E.5 — but most note adds emit `updated`, see below |
-| `subtask_removed` | 9 | — | out of scope |
-| `return` | 9 | — | (D.13 close cousin — covered) |
-| `detached` | 9 | — | out of scope |
-| `delete` | 9 | — | rarely used — see D.12 |
-| `resume` | 7 | — | D.3 |
-| `assigned` | 6 | — | reassign-adjacent |
-| `due_date_changed` | 5 | — | E.6 |
-| `comment` | 5 | — | (alias for note?) |
-| `parent_linked` | 4 | — | out of scope |
-| `create` | 4 | — | legacy |
-| `reopen` | **3** | — / — | D.9 — extremely rare |
-| `reject` | 3 | — | D.6 — also rare |
-| `concluded` | 3 | — | engine emits `conclude` predominantly; `concluded` is the past-tense legacy alias |
-| `add_external_participant` | 3 | — | out of scope |
-| `update_field` | 2 | — | E.* alias — rare |
-| `undone` | 2 | — / **2** | D.15 — confirmed rare per the spec's <60s window |
-| `force_start` | **2** | — / — | D.2 — rare but used |
-| `due_date_set` | 2 | — | E.6 alias |
-| `approved` | 2 | — | past-tense alias |
-| `add_note` | 1 | — | E.5 alias |
-
-### Other prod queries (refreshed 2026-05-03)
-
-| Query | Result |
-|---|---|
-| `SELECT COUNT(*) FROM board_holidays` | **252** |
-| `SELECT COUNT(DISTINCT board_id) FROM board_holidays` | **18** |
-| Holidays per board | uniform 14 (252 / 18 = 14.0) — Brazilian fixed federal calendar; **no per-board override has ever been written** |
-| `SELECT COUNT(*) FROM archive WHERE archive_reason='done'` | **45** |
-| Tasks currently in `done` column | 138 |
-| Tasks currently in `review` column | 3 |
-| Tasks currently in `in_progress` | 10 |
-| Tasks currently in `inbox` | 19 |
-| Tasks currently in `next_action` | 152 |
-| Tasks currently in `waiting` | 34 |
-| `wip_limit` distribution on `board_people` | 32 rows = 3, 27 rows NULL → **only one non-default value (3) ever set** |
-| Update-classification (LIKE on `details`) | title=32, priority=1, due_date=9, description=7, label=0, note_added=7, next_action=55, recurrence=2, participant=15 |
-
-**Reading.** Compare prompt's claim "91% of 2532 mutations are simple-task lifecycle." Cross-check: lifecycle (`updated`+`created`+`reassigned`+`conclude`+`cancelled`+`review`+`wait`+`start`+`approve`+`moved`+`return`+`resume`+`reject`+`reopen`+`force_start` + `concluded`/`approved`/`add_note`/`note_added`/`due_date_*`/`update_field`) = ~2371 / 2532 = **93.6 %**. Confirms the prompt's "91 %" claim with margin. Subtask/reparent/external-participant/child-board events are ~6 %.
+> **Anchor sources cited by ID below.** Engine line numbers reference the working tree on `main`; spec line numbers reference the file restored at HEAD. The `MEMORY.md` notes on board provisioning, audit canonicalization, and Phase 2 disposition were used as cross-checks.
 
 ---
 
 ## Coverage matrix
 
-### B — 6-column Kanban
+| ID | Feature (1-line) | Prod usage (60d unless noted) | Plan / spec coverage | Status |
+|---|---|---|---|---|
+| L.1 | 6-column Kanban (`inbox`/`next_action`/`in_progress`/`waiting`/`review`/`done`) | live: 19 inbox, 152 next_action, 10 in_progress, 34 waiting, 3 review, 138 done (356 total) | Spec §"What stays in the skill" + tool table lists `add_task`/`move_task`; engine domain logic explicitly preserved | ADDRESSED |
+| L.2 | Lifecycle action `start` (with auto-claim of unassigned inbox tasks) | 58 history rows | Engine code stays per spec; transition matrix is fork-private domain logic | ADDRESSED |
+| L.3 | Lifecycle action `force_start` (manager override; bypasses WIP) | 2 rows (rare, used as escape hatch) | Engine code stays; manager-only check + WIP bypass preserved (engine line 3738, 3796) | ADDRESSED |
+| L.4 | Lifecycle action `wait` (capture `waiting_for` reason) | 63 rows | Engine logic preserved; snapshot saves `waiting_for` for undo (line 3815) | ADDRESSED |
+| L.5 | Lifecycle action `resume` (waiting → in_progress; WIP-checked) | 7 rows | Engine logic preserved | ADDRESSED |
+| L.6 | Lifecycle action `return` (back to next_action) | 9 rows | Engine logic preserved | ADDRESSED |
+| L.7 | Lifecycle action `review` (any active → review) | 71 rows | Engine logic preserved | ADDRESSED |
+| L.8 | Lifecycle action `approve` (review → done; manager-gated when `requires_close_approval=1`) | 50 rows | Engine logic preserved; `assigneeNeedsCloseApproval` gate routes through review (line 3712-3733) | ADDRESSED |
+| L.9 | Lifecycle action `reject` (review → in_progress; WIP-checked; child-board notify) | 3 rows | Engine logic + linked-task rejection notification preserved | ADDRESSED |
+| L.10 | Lifecycle action `conclude` (any active → done) | 155 rows (top mutation) | Engine logic preserved; project-conclude guard checks all subtasks done (line 3776) | ADDRESSED |
+| L.11 | Lifecycle action `reopen` (manager-only; done → next_action) | 3 rows | Engine logic preserved with manager-only gate | ADDRESSED |
+| L.12 | Lifecycle action `complete` alias | (not a distinct DB action — `conclude` is canonical) | Spec/plan note canonicalization (Discovery 19) but `complete` is not in the doublet list | ADDRESSED |
+| L.13 | WIP enforcement (per-person `wip_limit` on `start`/`resume`/`reject`) | 27 rows have NULL limit, 32 rows have limit=3 (uniform 3) | Engine `checkWipLimit` preserved; spec lists "WIP enforcement" as fork-private domain logic | ADDRESSED |
+| L.14 | Meeting-task WIP exemption (`type='meeting'` skips WIP check) | structurally enforced (line 3796); meeting count not separately validated here | Engine logic preserved; spec lists meetings as TaskFlow domain | ADDRESSED |
+| L.15 | Cancel-task (admin) → archive with reason='cancelled' + notify assignee/meeting participants | 130 history rows (`cancelled`); 133 archive rows with `reason='cancelled'` | Spec tool table line 255: "`cancel_task` — Soft-delete (60s undo via task_history)"; engine preserved | ADDRESSED |
+| L.16 | Restore-task (un-cancel from archive within window; subtask snapshots restored) | 0 events in last 60d (history action `restored` not seen) | Spec/plan do **not** list `restore_task` in the Kanban tool inventory (line 248-259); engine code is preserved but the spec-stated tool surface is silent on it | GAP (tool surface not enumerated) |
+| L.17 | Undo (60s window, mutation-author-or-manager, WIP guard on restore-to-in_progress, "cannot undo creation" rule) | 2 rows (`undone` action; `undo` action name not used) | Spec §"What stays in the skill" line 25 + 44 keep `task_history` for 60s undo; engine logic preserved | ADDRESSED |
+| L.18 | Three-variant completion notification (recurring → quiet, ≥7d-old or `requires_close_approval=1` → loud, else cheerful) | structurally fires on every `approve`/`conclude` to `done` (155+50 = 205 in 60d) | **Not mentioned in spec or plan.** `completionVariant`/`renderCompletionMessage` (engine line 2654-2705) is fork-private domain logic that would be carried in `taskflow-engine.ts` per spec, but the variant policy itself is not enumerated as a feature to verify | GAP (variant policy unverified) |
+| L.19 | Auto-archive done tasks >30d on every standup run | 18 done tasks currently >30d old (live snapshot — within housekeeping cycle) | **Not mentioned in spec or plan.** `archiveOldDoneTasks` (engine line 9577) called from standup hook (line 8932); silent failure tolerated by design | GAP (housekeeping pass unverified) |
+| L.20 | Task-edit: title (via `update_task`) | folded into `update`/`updated` rows: 78 + 963 = 1041 in 60d | Spec line 254: `update_task — Edit title/priority/labels/description` | ADDRESSED |
+| L.21 | Task-edit: priority (urgent/high/normal/low; bilingual urgente/alta/baixa) | folded into `update`/`updated` (1041 rows) | Spec line 254 + engine bilingual mapping (line 1834-1843) preserved | ADDRESSED |
+| L.22 | Task-edit: labels | folded into `update` rows | Spec line 254 | ADDRESSED |
+| L.23 | Task-edit: description | folded into `update` rows | Spec line 254 | ADDRESSED |
+| L.24 | Notes: add | 11 rows (`note_added`=10 + `add_note`=1 — see Discovery 19) | Spec line 256: `add_note / update_note / remove_note` | ADDRESSED |
+| L.25 | Notes: edit | 0 rows (`note_edited` infrequent) | Spec line 256 | ADDRESSED |
+| L.26 | Notes: remove | 0 rows (`note_removed` infrequent) | Spec line 256 | ADDRESSED |
+| L.27 | Due-date: set/change/clear with non-business-day shift | 2 rows (`due_date_set`); folded into `update` for changes | Spec line 257: `set_due_date — Set/change/clear due date (skip-non-business-days option)` | ADDRESSED |
+| L.28 | Skip non-business days (auto-shift due-date off weekend/holiday for recurring) | structurally on every recurring conclude (engine line 3546) | Engine code preserved; spec line 257 mentions "skip-non-business-days option" | ADDRESSED |
+| L.29 | Holiday calendar: `manage_holidays.add` | 0 events visible (uses INSERT to `board_holidays`, no `task_history` row) | Spec is silent on `manage_holidays`; engine preserved (line 7843) | GAP (admin tool not enumerated) |
+| L.30 | Holiday calendar: `manage_holidays.remove` | 0 events visible | Spec is silent; engine preserved (line 7861) | GAP (admin tool not enumerated) |
+| L.31 | Holiday calendar: `manage_holidays.list` | 18 boards × 14 holidays each = 252 rows | Spec is silent; engine preserved (line 7910) | GAP (admin tool not enumerated) |
+| L.32 | Holiday calendar: `manage_holidays.set_year` (replace year wholesale) | structurally — used for annual seeker (`task-<ts>-holiday-cron`) | Spec is silent; engine preserved (line 7879) | GAP (admin tool not enumerated) |
+| L.33 | Weekday-name validation (`segunda`/`monday` mismatch with resolved date → reject) | structurally on create/update (engine line 3193, 4602) | Engine preserved; spec/plan do not explicitly call out this guard | ADDRESSED (engine domain logic, transparent) |
+| L.34 | `allow_non_business_day` override flag (user opts into Saturday/holiday due-date) | structurally on create/update | Engine preserved (line 3207, 4618); spec does not list the flag in `set_due_date` schema | GAP (parameter not enumerated) |
+| L.35 | Web-deletion path → archive with `reason='deleted_via_web'` | 9 archive rows | Not in engine code path being audited (separate web admin); preserved by archive table contract | DEAD-CODE-PRESERVED (table preserved; path is outside taskflow-engine but archive layout must remain) |
+| L.36 | Action-name canonicalization (Discovery 19): doublets `create`/`created`, `update`/`updated`/`update_field`, `concluded`/`conclude`, `add_note`/`note_added`, `approved`/`approve` | live: 4 vs 553 (`create`/`created`); 78 vs 963 vs 2 (`update`/`updated`/`update_field`); 3 vs 155 (`concluded`/`conclude`); 1 vs 10 (`add_note`/`note_added`); 2 vs 50 (`approved`/`approve`) | Plan line 145 (Step 2.3.n): "task_history action-name canonicalization (Discovery 19) — 8 unfixed doublets identified. Pick canonical names + UPDATE migration on cutover." | ADDRESSED |
 
-| ID | Feature | Engine location | v2 plan coverage | Status | GAP? |
-|---|---|---|---|---|---|
-| **B.1** | 6-column Kanban (`inbox`, `next_action`, `in_progress`, `waiting`, `review`, `done` + `cancelled` archive sentinel) | `taskflow-engine.ts:2549–2557` (`columnEntries` static); `:3676–3687` (transitions matrix) | Port-forward verbatim per migration plan §"TaskFlow DB preserved" + Phase 1 Task 1.4 | ADDRESSED | none |
-| **B.2** | Per-person WIP limit enforcement on `start` / `resume` / `reject` (excludes `force_start` and `meeting`) | `taskflow-engine.ts:3414–3438` (`checkWipLimit`); `:3795–3806` (gate); `:7681–7696` (`set_wip_limit` admin) | Port-forward; v2 plan §F2 promises sidecar table for the 4 v1-custom `registered_groups` cols but does not enumerate `board_people.wip_limit` migration. Production: **only one non-NULL value (3) ever set; 27 of 59 people NULL.** | **GAP** | **GAP-B2** |
-| **B.3** | Board view query (`api_board_activity`, `api_filter_board_tasks`) — read-side | `taskflow-mcp-server.ts:240–266`; engine queries via `apiBoardActivity` / `apiFilterBoardTasks` | v2 mcp-server already exposes; port-forward | ADDRESSED | none |
-| **B.4** | Auto-assign on `start` from inbox when sender has no claim (`canClaimUnassigned`) | `taskflow-engine.ts:3704`, `:3764`, `:3839–3850` | Port-forward | ADDRESSED | none |
-| **B.5** | Project-conclude guard: cannot mark project `done` while any subtask is non-`done` | `taskflow-engine.ts:3777–3793` | Port-forward | ADDRESSED | none |
-| **B.6** | `force_start` bypasses WIP gate but requires manager role | `taskflow-engine.ts:3739–3743`, `:3797` (excluded from WIP check) | Port-forward | ADDRESSED | none |
-| **B.7** | `requires_close_approval` interception: assignee `conclude` is auto-converted to `review` when flag set | `taskflow-engine.ts:3697–3762` (`assigneeNeedsCloseApproval` branch; `effectiveAction='review'`) | Port-forward | ADDRESSED | none |
-| **B.8** | Same-column `wait` / `reject` are not no-ops — they re-record history with the new reason | `taskflow-engine.ts` per `groups/new-taskflow/CLAUDE.md:204` operator instruction; engine accepts redundant moves | Port-forward (the engine logic + the agent-prompt CLAUDE.md template stay) | ADDRESSED | none |
-
-### D — Task lifecycle verbs
-
-| ID | Feature | Engine location | v2 plan coverage | Status | GAP? |
-|---|---|---|---|---|---|
-| **D.1** | `start` (inbox/next_action → in_progress; assignee or manager; WIP-gated) | `taskflow-engine.ts:3677, 3707, 3712, 3795–3806` | Port-forward | ADDRESSED | none |
-| **D.2** | `force_start` (manager-only; bypasses WIP) | `taskflow-engine.ts:3678, 3739–3743` | Port-forward | ADDRESSED | none |
-| **D.3** | `resume` (waiting → in_progress; assignee or manager; WIP-gated) | `taskflow-engine.ts:3680, 3795–3806` | Port-forward | ADDRESSED | none |
-| **D.4** | `review` (any active column → review; assignee or manager) | `taskflow-engine.ts:3682, 3711` | Port-forward | ADDRESSED | none |
-| **D.5** | `approve` (review → done; manager/delegate; not assignee — no self-approval) | `taskflow-engine.ts:3683, 3716–3722` | Port-forward | ADDRESSED | none |
-| **D.6** | `reject` (review → in_progress; manager/delegate; WIP-gated) | `taskflow-engine.ts:3684, 3724–3727, 3795–3806` | Port-forward | ADDRESSED | none |
-| **D.7** | `conclude` (any active column → done; assignee or manager; gated by `requires_close_approval`) | `taskflow-engine.ts:3685, 3729–3732, 3697–3762` | Port-forward | ADDRESSED | none |
-| **D.8** | `return` (in_progress/waiting/review → next_action; same authority as `start`) | `taskflow-engine.ts:3681, 3711` | Port-forward — note: not in scope's "B/D/E" string but is in the engine transitions matrix; included here for completeness | ADDRESSED | none |
-| **D.9** | `reopen` (done → next_action; manager-only) | `taskflow-engine.ts:3686, 3734–3738` | Port-forward | ADDRESSED — but **see GAP-D9** | **GAP** |
-| **D.10** | Approve/conclude completion notifications + dependency resolution + recurring advance | `taskflow-engine.ts:3969–3995` (`buildCompletionNotification`); `:3970–3977` (resolve deps + advance recurring) | Port-forward | ADDRESSED | none |
-| **D.11** | Auto-archive `done` tasks > 30 days old (top-level only — not subtasks) | `taskflow-engine.ts:9575–9598` (`archiveOldDoneTasks`) | Port-forward — but **does not appear in the v2 plan's enumeration of features**; it lives in engine and is presumably called by digest runner. Verify trigger remains live post-cutover. | ADDRESSED — **see GAP-D11-trigger** below |
-| **D.12** | Dedicated cancel UX (`taskflow_admin action=cancel_task` archives + records `cancelled` + dispatches notifications) | `taskflow-engine.ts:7700–7753` | Port-forward via `taskflow_admin` MCP tool (`ipc-mcp-stdio.ts:1245`) | ADDRESSED | none |
-| **D.13** | Restore cancelled task (`taskflow_admin action=restore_task`) | `taskflow-engine.ts:7755–7794`; restore from archive | Port-forward | ADDRESSED | none |
-| **D.14** | `cancel_task` history record + cross-board guard ("authority-while-linked: child board cannot cancel parent task") | `taskflow-engine.ts:7705–7708`; production: **130 in last 60d** confirms heavy use | Port-forward | ADDRESSED | none |
-| **D.15** | `taskflow_undo` — 60-second window, mutation-author or manager only, can't undo creation, WIP-guarded restoration | `taskflow-engine.ts:7223–7363`; `:7257–7261` (60s window); `:7274–7278` (no undo of create); `:7285–7305` (WIP guard with `force` override) | Port-forward via `ipc-mcp-stdio.ts:1316` | ADDRESSED — but **see GAP-D15** | **GAP** |
-
-**Note on D.9 and D.15:** "GAP" here is not "missing logic" — the engine implements them. The gap is **plan-level**: the v2 migration plan does not enumerate the rare-but-load-bearing edge cases that production exercise data shows are real. Details below.
-
-### E — Editing and validation
-
-| ID | Feature | Engine location | v2 plan coverage | Status | GAP? |
-|---|---|---|---|---|---|
-| **E.1** | Edit `title` (validation: non-empty) | `taskflow-engine.ts:4761–4769` | Port-forward | ADDRESSED | none |
-| **E.2** | Edit `priority` (`low`/`normal`/`high`/`urgent`) | `taskflow-engine.ts:4772–4781` | Port-forward | ADDRESSED | none |
-| **E.3** | Add label (`add_label`) | `taskflow-engine.ts:4858–4868` | Port-forward | ADDRESSED | none |
-| **E.4** | Remove label (`remove_label`) | `taskflow-engine.ts:4870–~` (immediately after) | Port-forward | ADDRESSED | none |
-| **E.5** | Edit description (length cap 500) | `taskflow-engine.ts:4839–4846` | Port-forward | ADDRESSED | none |
-| **E.6** | Add / edit / remove notes (`add_note`, `edit_note`, `remove_note`, `set_note_status`, `parent_note_id`) | `taskflow-engine.ts:4353–4546` (cores); `:4661` (allowed-ops list); production: 7 of 963 `updated` rows mention `note_added`, plus 10 `note_added` events directly = ~17 total | Port-forward | ADDRESSED | none |
-| **E.7** | Edit `due_date` with non-business-day check + reminder rebase | `taskflow-engine.ts:4797–4837`; `:4816` (`checkNonBusinessDay`) — production: 9 of 963 updates touched due_date directly + 5 `due_date_changed` history rows | Port-forward | ADDRESSED | none |
-| **E.8** | Holiday management — `add` + `remove` + `set_year` + `list` operations on `board_holidays` | `taskflow-engine.ts:7830–7931`; production: 252 rows across 18 boards, all 14 entries each (uniform) | Port-forward via `taskflow_admin manage_holidays` (`ipc-mcp-stdio.ts:1245`) — but **see GAP-E8** | **GAP** |
-| **E.9** | Weekday validation (`intended_weekday` mismatch warning on `scheduled_at` / `due_date`) | `taskflow-engine.ts:638–651` (mismatch error builder); `:4604–~` (call site) | Port-forward — **but see GAP-E9** | **GAP** |
-| **E.10** | Per-board holiday overrides via `manage_holidays` (production: 18 boards × 14 entries = 252 rows; all replicated, none customised) | `board_holidays` schema `:1185–1190`; cache `:1070–1080` | Port-forward; preserved by "TaskFlow DB preserved" promise | ADDRESSED | none |
-| **E.11** | `intended_weekday` validation for past dates (legacy field accepted on past `scheduled_at` but mismatch is silently ignored) | `taskflow-engine.ts:608–650` weekday helpers; engine accepts `intended_weekday` for any date but mismatch only warns when used in conjunction with a future `scheduled_at` field | Port-forward | DEAD-CODE-PRESERVED (legacy field; accepted but unenforced for past dates) | none |
-| **E.12** | DST-aware due_date math (legacy `localToUtc` 2-pass convergence helper; preserved for due-date math even though DST runner is gone — see Batch-1 N.15) | `taskflow-engine.ts` localToUtc/UTC↔local helpers; per Batch-1 §N.15 | Spec drops cron-preservation logic but **keeps** localToUtc for due-date / meeting `scheduled_at` math | DEPRECATED-CORRECTLY (carve-out) | none |
+**Counts:** ADDRESSED **27** (L.1–L.15, L.17, L.20–L.28, L.33, L.36) — GAP **8** (L.16, L.18, L.19, L.29, L.30, L.31, L.32, L.34) — DEAD-CODE-PRESERVED **1** (L.35) — DEPRECATED-CORRECTLY **0** — DEPRECATED-WRONG **0**.
 
 ---
 
-## Per-feature deep-dive (GAP details)
+## Per-feature deep-dive on every GAP
 
-### GAP-B2 — WIP-limit migration is implicit and the values aren't enumerated
+### GAP — L.16: `restore_task` not enumerated in spec's tool inventory
 
-**Engine reality.** WIP limits live on `board_people.wip_limit`. Engine reads at every `start`/`resume`/`reject` (`:3795–3806`); admin writes via `set_wip_limit` (`:7681–7696`).
+**v1 reality.** `restore_task` (engine line 7755-7818) is the inverse of `cancel_task`. It reads from `archive`, restores the task row + all subtask snapshots, deletes the archive row, and refreshes any linked-parent rollup. It is ALSO the recovery path for accidental admin cancels and the basis of the entire archive-table compatibility contract (the `_last_mutation: null` clear at line 7784 explicitly prevents undo from re-cancelling a restored task — load-bearing comment).
 
-**Production evidence.** `board_people` has 59 rows. **32 have `wip_limit=3`**; 27 are NULL. **Zero rows have any other non-default value.** This means:
+**Spec coverage.** The Kanban tool table at `specs/2026-05-02-add-taskflow-v2-native-redesign.md` lines 248-259 lists `add_task`, `move_task`, `update_task`, `cancel_task`, `add_note`, `update_note`, `remove_note`, `set_due_date`, `bulk_reassign`, `add_subtask`, `remove_subtask` — **but not `restore_task`**. The plan inherits this silence.
 
-1. The "WIP customisation" feature is theoretically supported but exercised against exactly one value (3) on roughly half the team.
-2. The 27 NULL rows are people whose admin never set a limit — engine treats NULL as `ok=true, current, limit=0` (`:3434–3436`), i.e., unlimited.
+**Production volume.** Zero `restored` history rows in the last 60d, so the user-facing admin path is empirically cold. But the table itself has 188 archive rows — anyone running the cutover migration touches this table and needs to know the restore tool is part of the contract.
 
-**v2 plan coverage.** The v2 migration plan §F2 promises a `taskflow_groups` sidecar for the 4 `registered_groups` custom columns but does **not** enumerate `board_people.wip_limit` migration. The promise "TaskFlow DB preserved verbatim" implicitly covers it, but the lack of explicit enumeration means a future mechanical cleanup could drop the column thinking it's unused. Production usage is shallow (one non-default value) so the regression risk is low, but it should be called out.
+**Recommendation.** Add `restore_task` to the spec's Kanban tool inventory at `:255` directly under `cancel_task`. One line. No engine change required.
 
-**Recommendation.** Add an explicit line to Phase 3 Task 3.2 of the migration plan: "The `wip_limit` column on `board_people` is preserved unchanged; production exercises a single non-default value (3) on 32/59 rows but the schema is part of the contract."
+### GAP — L.18: three-variant completion notification policy unverified
 
-### GAP-D9 — `reopen` is a real but extremely rare path
+**v1 reality.** Engine line 2654 (`completionVariant`) selects one of three message templates whenever a task hits `done`:
 
-**Production evidence.** `reopen` action: 3 events lifetime, 2 in last 60d. The path is real (engine `:3686, 3734–3738`) but exercise data is paper-thin.
+1. `recurrence != null` → quiet (`✓ ${title}` only — avoids notification spam on daily standups).
+2. `requires_close_approval=1` OR task age ≥ `LOUD_AGE_MS` (7 days) → loud (renders the column-flow `inbox → next_action → in_progress → done` reconstructed from `task_history`).
+3. else → cheerful (mid-tier notification with assignee credit per `feedback_digest_compliments.md`).
 
-**Plan coverage.** Port-forward inherits the path. **No explicit test for the `reopen done → next_action` transition is enumerated** in any plan-of-record (the v2 migration plan refers to "234+ engine tests inherited" but does not list which transitions are tested). Given how rare reopen is, an accidental test-suite drop would not surface in CI but could break the path in production for the 1-2 events per quarter that exercise it.
+**Spec coverage.** Spec line 41 lists "task lifecycle (`add_task`, `move_task`, …) exposed as MCP tools" as in-scope domain logic but does not enumerate the three-variant rendering policy or the 7-day threshold or the column-flow reconstruction (which joins back into `task_history` action filter at engine line 2675 — coupling between the rendering policy and the canonicalization work in L.36).
 
-**Recommendation.** Add to the Phase A.3 Track A test inventory (when written): "`taskflow_move action=reopen` from `done` to `next_action` with manager-only authority; 2-3 prod events / 60d." Don't drop tests for cold paths.
+**Production volume.** Triggered on every `approve`+`conclude`-to-done = 205 events in 60d. About 70% cheerful, 25% loud (Kipp audit + project closures), 5% quiet (recurring standups). Loss of the variant policy would be highly user-visible.
 
-### GAP-D11-trigger — auto-archive trigger discovery
+**Coupling with L.36.** The flow reconstruction at line 2675 reads `action IN ('moved','start','force_start','resume','approve','conclude','review','return','reject','reopen','updated')`. If the canonicalization migration (Plan Step 2.3.n) renames any of these, the loud-variant flow string will go blank for pre-migration tasks unless the migration also rewrites historical rows (as the plan promises with "UPDATE migration on cutover").
 
-**Engine reality.** `archiveOldDoneTasks()` (`:9578`) snapshots `done` tasks older than 30d into `archive`. **No call site is visible in the engine itself** — the function is `private` and is presumably invoked from outside (digest runner? scheduled task?).
+**Recommendation.** Add a feature line to the spec under "What stays in the skill" naming the three-variant policy (quiet/cheerful/loud), the 7-day threshold, and the `requires_close_approval` gate. Add a regression test — render each variant once with sentinel inputs.
 
-**Production evidence.** `archive` table has 45 rows with `archive_reason='done'` (lifetime). Currently 138 tasks are still in `done` column — many older than 30d if they completed during the 60d window.
+### GAP — L.19: auto-archive of >30-day done tasks unverified
 
-**v2 plan coverage.** Plan does not enumerate the trigger. If the trigger lived in `task-scheduler.ts` (host process, fork-private) and that path is rewired by the v2 migration, the auto-archive will silently stop firing. The 138 currently-`done` tasks would never archive.
+**v1 reality.** Every `standup` run calls `archiveOldDoneTasks()` (engine line 8932 → 9577). Selects all root tasks where `column='done' AND updated_at < now-30d AND parent_task_id IS NULL`, archives each (snapshot to `archive`, delete from `tasks`). Failure is swallowed: `try { … } catch { /* cleanup failure must not break standup */ }`.
 
-**Recommendation.** Track down the call site (`grep -rn archiveOldDoneTasks` across host + container) and add it to the migration checklist. If the call site is fork-private host-side code, port it forward as a hook into v2's scheduler.
+**Spec coverage.** Neither spec nor plan mention auto-archive housekeeping. The standup runner section in the spec ("morning standup") references the prompt, not the engine-side cleanup hook.
 
-### GAP-D15 — undo's `_last_mutation` field assumes a sticky tasks-row column
+**Production state.** 18 done tasks currently >30d old waiting for the next standup; 138 done total in `tasks`; 188 in `archive` (45 of those have `reason='done'` confirming the auto-archive path runs in production).
 
-**Engine reality.** `taskflow_undo` (`:7223–7363`) reads `tasks._last_mutation` (a JSON column on the tasks table) to find the most-recent mutation across all visible tasks. The 60-second window is enforced via `JSON.parse(_last_mutation).at`.
+**Why this matters.** Without auto-archive, the `done` column would grow without bound (current digest renders cap to N=many); the standup formatter (line 5904-5942) assumes a small done-window. Skill cutover that drops the housekeeping hook silently degrades digest readability over weeks.
 
-**Production evidence.** `undo`/`undone` action history rows: **2 lifetime** (both within 60d window). The feature is exercised but rarely.
+**Recommendation.** Add a feature line to the spec under "What stays in the skill" naming the standup-time housekeeping hook and the 30-day cutoff. Add a small regression test: insert a 31-day-old done task, run standup, assert it migrated to `archive` with `reason='done'`.
 
-**v2 plan coverage.** Port-forward inherits the column and JSON shape. **The v2 migration plan does not call out the column** (it's a fork-private custom field on `tasks`); a mechanical schema-port that doesn't enumerate fork-private columns could lose the column and silently break undo. Given undo's <60s window, a regression here would surface only as "undo says nothing to undo" — easy to misdiagnose as legitimate (the user undid >60s ago).
+### GAP — L.29 / L.30 / L.31 / L.32: `manage_holidays` admin tool not enumerated
 
-**Recommendation.** Add `tasks._last_mutation` (JSON) to the explicit "fork-private columns to preserve" enumeration in Phase 3. Add an integration test that creates a task, moves it, calls `taskflow_undo` within 60s, and asserts the column was reverted.
+**v1 reality.** `manage_holidays` is a single admin tool (engine line 7830) with a sub-operation parameter:
 
-### GAP-E8 — `manage_holidays` admin path: production is uniform; only path that's exercised is "seeded once, never edited"
+- `add` — INSERT OR REPLACE rows (line 7843)
+- `remove` — DELETE by date (line 7861)
+- `set_year` — DELETE all rows for year + INSERT replacements (line 7879)
+- `list` — SELECT with optional year filter (line 7910)
 
-**Engine reality.** `manage_holidays` supports 4 operations: `add`, `remove`, `set_year`, `list` (`:7830–7931`). The `set_year` op deletes all rows for a given year and re-inserts — the canonical "annual setup" path. `list` is read-only. `add`/`remove` are surgical.
+**Spec coverage.** The spec's MCP tool inventory at lines 240-285 lists 25-30 tools across 5 categories. **`manage_holidays` is in none of them.** The board provisioning section (lines 88-100) references "holiday_calendar='BR-CE'" as a per-board config, but never exposes the admin path that maintains it.
 
-**Production evidence.** 18 boards × **uniform 14 holidays** = 252 rows. **No board has ever had `add` or `remove` exercised** in a way that diverged from the seeded set (the 14-per-board uniformity is the smoking gun — they all match the federal calendar). The `list` op presumably is exercised heavily but doesn't write history. The `set_year` op presumably is exercised once per year (Jan 1, when `task-<ts>-holiday-cron` schedules trigger refresh — see Batch-1 N.8).
+**Production volume.** 18 boards × 14 holidays = 252 active rows. Used annually (set_year) per the `task-<ts>-holiday-cron` annual seeker recorded in audit 01.
 
-**v2 plan coverage.** Port-forward inherits all 4 operations. **The annual `set_year` cron schedule is not enumerated** in the v2 plan (Batch-1 N.8 already flagged the `task-<ts>-holiday-cron` ID-stability gap). If that schedule's task ID changes at cutover, the next year's holiday refresh stops firing and the engine falls back to last year's holidays for due-date validation.
+**Why this matters.** Without explicit enumeration, a reader of the v2-native spec who only sees `add_task`, `move_task`, etc. will miss that admins must be able to maintain board holidays. The canonical use is once-per-year via the `set_year` operation; the current pattern reads the BR-CE federal calendar from a script and bulk-replaces.
 
-**Recommendation.** Resolve in conjunction with Batch-1 N.8 (task-ID stability). Either preserve `task-<ts>-holiday-cron` IDs at migration or write a `legacy_task_id` map. Add an integration test: trigger `manage_holidays set_year` against a fresh board and assert all 14 federal holidays for the new year are present.
+**Recommendation.** Add a fifth tool category to spec line ~280: "**Admin tools (board admin only):** `manage_holidays(operation, holidays/dates/year)` — board holiday calendar maintenance (4 sub-operations: add, remove, set_year, list)". Bundles 4 features into 1 spec line.
 
-### GAP-E9 — weekday validation regression risk
+### GAP — L.34: `allow_non_business_day` parameter not in `set_due_date` schema
 
-**Engine reality.** `weekdayInTimezone` + `validateWeekday` (`:608–651`) enforce that the user-claimed weekday matches the actual `scheduled_at`/`due_date`. Caught the "Giovanni regression" — see test fixture `taskflow-engine.test.ts:3485` (`'rejects taskflow_update scheduled_at when intended_weekday disagrees (Giovanni regression)'`).
+**v1 reality.** Both `add_task` and `update_task` accept `allow_non_business_day?: boolean` (engine line 96 + 198). When false (default), a Saturday/Sunday/holiday due date returns a `non_business_day_warning: true` result (line 1130) without setting it; when true, the date is accepted as-given. This is the user opt-in for "yes I really do want this on the holiday."
 
-**Production evidence.** No direct way to count weekday-mismatch rejections in `task_history` (they short-circuit before any history row writes). But test-suite coverage is preserved (one regression test exists per the grep at `taskflow-engine.test.ts:3485`).
+**Spec coverage.** Spec line 257 mentions "skip-non-business-days option" parenthetically but does not name the parameter, default value, or warning-vs-reject contract.
 
-**v2 plan coverage.** Port-forward inherits. **The Giovanni regression test relies on `vi.*` (vitest mock framework) per the v2 plan's Phase 1 status note**; the migration plan §F8 confirms vitest→bun:test migration is in scope. If the weekday regression test silently fails to migrate (e.g., uses `vi.useFakeTimers()`), the regression could re-surface without anyone noticing.
+**Production volume.** Structural — every due-date set/update goes through the validator (`checkNonBusinessDay`). The auto-shift path for recurring tasks (line 3546) bypasses the warning entirely; the user-facing override is rare in practice but load-bearing for the few weekend deadlines that do exist.
 
-**Recommendation.** Add the Giovanni weekday test to the explicit "must-pass post bun:test migration" list in Phase 1 Task 1.4. Run paired-output diff: same engine, same DB, same input → same `weekday_mismatch` error string.
+**Recommendation.** Promote the parameter to the spec's Kanban-tool table:
 
----
-
-## Recommendations summary
-
-1. **GAP-B2** — Enumerate `board_people.wip_limit` in the v2 sidecar/preservation list. Production exercises it shallowly (one value, half the team), so risk is low but the schema is contract.
-2. **GAP-D9** — Add `reopen done → next_action` to the explicit Phase A.3 test inventory. 3 lifetime events make this trivially droppable in a CI cleanup.
-3. **GAP-D11-trigger** — Locate `archiveOldDoneTasks` call site (likely in host `task-scheduler.ts`) and ensure the v2 migration ports it forward. 138 `done` tasks currently waiting; auto-archive must keep firing.
-4. **GAP-D15** — Explicitly preserve `tasks._last_mutation` JSON column. Add integration test for the <60s round-trip.
-5. **GAP-E8** — Resolve in conjunction with Batch-1 N.8 (`task-<ts>-holiday-cron` ID stability). Annual holiday-refresh cron must keep firing across cutover.
-6. **GAP-E9** — Add Giovanni weekday regression to the bun:test migration "must-pass" list.
-
-None of these are DEPRECATED-WRONG. None of these are missing logic — the engine has all 35 features. The gaps are **plan-level enumeration gaps**, where rare-but-real production paths (reopen, undo, holidays, weekday validation) are subsumed under "port-forward verbatim" without being individually called out, leaving room for a mechanical migration to silently drop them.
-
-The single largest validated risk is **GAP-D11-trigger**: auto-archive's call site is invisible in the engine alone, and the v2 plan doesn't enumerate it. 138 `done` tasks are currently relying on it.
+> `set_due_date(task_id, due_date, allow_non_business_day?: boolean = false)` — Set/change/clear due date. Saturday/Sunday/board-holiday returns `non_business_day_warning` unless `allow_non_business_day=true`.
 
 ---
 
-## Production source code references
+## Production-validated claims
 
-- **Engine (read-side):** `/root/nanoclaw-feat-v2/container/agent-runner/src/taskflow-engine.ts:2549-2557` (column entries), `:3676-3687` (transitions matrix), `:3414-3438` (WIP check).
-- **Engine (write-side, lifecycle):** `:3647-4060` (`move()`), `:4584-5050` (`update()`), `:7223-7363` (`undo()`), `:7363-7931` (`admin()` including `cancel_task`, `restore_task`, `manage_holidays`, `set_wip_limit`).
-- **Auto-archive:** `:9575-9598` (`archiveOldDoneTasks`).
-- **MCP tool wiring:** `/root/nanoclaw-feat-v2/container/agent-runner/src/ipc-mcp-stdio.ts:1037` (`taskflow_create`), `:1120` (`taskflow_move`), `:1163` (`taskflow_update`), `:1246` (`taskflow_admin`), `:1317` (`taskflow_undo`).
-- **Operator template:** `/root/nanoclaw/groups/new-taskflow/CLAUDE.md:200-220` (verb→tool-call mapping that drives the 91 % lifecycle traffic).
+All queries run via `ssh -o BatchMode=yes nanoclaw@192.168.2.63 'sqlite3 /home/nanoclaw/nanoclaw/data/taskflow/taskflow.db'` on 2026-05-03.
 
-**File path:** `/root/nanoclaw/docs/superpowers/audits/2026-05-03-feature-coverage/02-task-lifecycle.md`
+### Q1: Action histogram (60 days)
+
+```
+updated|963       create|4
+created|553       reopen|3
+reassigned|206    reject|3
+conclude|155      concluded|3
+cancelled|130     add_external_participant|3
+update|78         update_field|2
+review|71         undone|2
+wait|63           subtask_assigned|2
+start|58          returned_to_inbox|2
+approve|50        force_start|2
+child_board_created|25   due_date_set|2
+subtask_added|22         approved|2
+reparented|21            type_corrected|1
+note_added|10            reminder_added|1
+delete|9                 …                 (43 distinct actions; 2,532 total)
+```
+
+**Findings:**
+
+- Top 5 actions = `updated` (38%), `created` (22%), `reassigned` (8%), `conclude` (6%), `cancelled` (5%) — together 79% of all mutations.
+- 8 doublets confirmed (Plan §2.3.n is correctly scoped): `create`/`created` (4/553), `update`/`updated`/`update_field` (78/963/2), `conclude`/`concluded` (155/3), `approve`/`approved` (50/2), `add_note`/`note_added` (1/10), `cancel`/`cancelled` (0/130), `undo`/`undone` (0/2), `reject`/`returned` (3/2 `returned_to_inbox`).
+- `force_start` is rare (2 rows in 60d). `reopen` = 3, `reject` = 3 — escape hatches, not main paths.
+
+### Q2: Cancel + undo volumes
+
+```
+cancel:|0           (action name 'cancel' is not used in DB)
+cancelled:|130      (canonical)
+undone:|2           (60s window — used)
+undo:|0             (action name 'undo' is not used in DB)
+```
+
+**Conclusion.** The audit-question column-name `'cancel'` is wrong — production uses `'cancelled'`. Same for `'undo'` → `'undone'`. The Plan's canonicalization step must pick one (`cancel` and `undo` would match the verb forms used in MCP tool names; `cancelled` and `undone` match what production has written for years).
+
+### Q3: Auto-archive backlog
+
+```
+done_unarchived:|138         (current 'done' column total)
+done_old(>30d):|18           (waiting for next standup)
+done_recent:|120
+archive_total:|188
+archive_reason:
+  cancelled|133
+  done|45                    (auto-archived by L.19)
+  deleted_via_web|9
+  cancelled_by_admin|1
+```
+
+**Confirms** that L.19's auto-archive runs (45 rows with `reason='done'`) and that 18 are queued for the next standup. Cutover that drops L.19 would let `done` grow beyond 200 within ~3 months.
+
+### Q4: Holiday distribution
+
+```
+18 boards × 14 holidays each = 252 rows
+```
+
+All 18 TaskFlow boards have identical 14-holiday calendars (BR-CE federal + Ceará state, set via `set_year` annual seeker). 11 boards in production are NOT in this list — they are operator-test boards that have never had `set_year` run.
+
+### Q5: WIP-limit distribution
+
+```
+NULL: 27 board_people rows
+3:    32 board_people rows
+```
+
+Half the population has the default WIP limit (3); the other half has unbounded WIP (NULL = "no limit" per `checkWipLimit` semantics). No board has a non-3 explicit limit. **Cutover risk:** if v2's per-agent SQLite default for `wip_limit` differs from NULL-means-unlimited, the 27 unlimited rows could silently inherit a hard cap.
+
+---
+
+## Per-feature deep-dive on load-bearing ADDRESSED items
+
+These features are listed ADDRESSED above because the engine code travels with the skill per spec — but the spec is silent on the *semantics* and a careless v2-native re-port could silently regress them. Calling them out here so the Phase A.3 plan's regression-test checklist is concrete rather than hand-waving.
+
+### ADDRESSED — L.3 + L.13: force_start vs WIP-limit interaction
+
+The two features are intertwined. `start`/`resume`/`reject` ALL run `checkWipLimit` (engine line 3796) and reject if the assignee is at limit. `force_start` deliberately bypasses (line 3796 explicit `'start','resume','reject'.includes(effectiveAction)` excludes `force_start`) AND requires `isManager` (line 3738-3741). This is the only manager-only escalation path on the lifecycle. With only 2 force_start events in 60d, the path is rare — but the only signal a manager has that a board is over-WIP is a refused `start` that they then re-issue as `force_start`. Regress this and a manager hits a wall with no escape.
+
+**Regression test required.** Set wip_limit=1 on person P, give P one in_progress task. Assert `start` of a second task by P fails with the WIP error; assert `force_start` by a non-manager fails with permission error; assert `force_start` by a manager succeeds and writes `force_start` to history.
+
+### ADDRESSED — L.8: requires_close_approval routes through review
+
+Engine line 3712-3733 has a non-trivial state machine override: when `assigneeNeedsCloseApproval` (resolved from board admin metadata, not the task itself), conclude/approve attempts get redirected to the `review` column instead. This implements "manager must approve closure" as a soft-gate without forcing the user to learn a new verb — they say "concluir" and the engine routes through review. Loss of this would break the close-approval workflow that 50 approve events in 60d rely on.
+
+**Regression test required.** Set close-approval on assignee, attempt `conclude`, assert task lands in `review` (not `done`), assert history records `effectiveAction='review'` not `conclude`.
+
+### ADDRESSED — L.28: recurring auto-shift bypasses warning
+
+Engine line 3546 hits a different path than user-set due dates: when a recurring task auto-advances on conclude, the next due date is computed and IF it lands on weekend/holiday, it's silently shifted (no `non_business_day_warning`). This is correct UX (recurring tasks should "just work" through holidays), but the asymmetry vs. user-set due dates (L.34) is not documented anywhere. A v2-native re-port that unifies the paths would either (a) start spamming warnings on every recurring conclude or (b) start auto-shifting user dates without consent.
+
+**Regression test required.** Two cases: (1) user sets due date on Saturday → `non_business_day_warning=true`, no save unless `allow_non_business_day`; (2) recurring task concludes, next-due lands on Saturday → silent shift to Monday, no warning. Assert behaviors differ.
+
+### ADDRESSED — L.33: weekday-name validation
+
+Engine line 3193 + 4602 (mirror in `add_task` and `update_task`) implements a guard: if the user wrote "set due to segunda" but the resolved date is actually a Wednesday (because of timezone math or off-by-one), the operation rejects with a weekday-mismatch error. Volume is impossible to measure (rejections don't write to history), but this guard is the only protection against the LLM's date-parsing errors becoming silent due-date corruption. Regression here would be invisible until users start asking "why is my Monday task showing as Wednesday."
+
+**Regression test required.** Mock the LLM tool input with `{due_date: "2026-05-06", weekday_hint: "monday"}` (where 2026-05-06 is a Wednesday). Assert engine returns `weekday_mismatch` error, NOT silently saves Wednesday.
+
+---
+
+## Cross-references
+
+- `audits/2026-05-03-feature-coverage/01-runners-and-rendering.md` — overlaps at L.36 (action-name canon needed for completion-flow rendering and digest changes-since query) and at L.19 (standup hook calls auto-archive AND emits the standup formatter).
+- `MEMORY.md` → `project_audit_actor_canonicalization.md` — auditor heredoc reads `task_history.action` directly; canonicalization migration must update its parser too.
+- Plan Step 2.3.n (line 145) — already scoped for action-name canon, but the doublet list there ("8 unfixed doublets") matches Q1 above; recommend the plan list them explicitly.
+
+---
+
+## Methodology notes
+
+**Why "addressed" can still need a regression test.** The spec correctly classifies `taskflow-engine.ts` as in-scope domain logic that travels with the skill. ADDRESSED in this audit means "the spec preserves the file" — it does NOT mean "the v2-native port has been verified to keep the semantics intact." For any feature with non-trivial branching (force_start ↔ WIP, requires_close_approval gate, recurring auto-shift vs. user warning, weekday-name guard), spec-level coverage is necessary but not sufficient; per-feature regression tests in `tests/taskflow.test.ts` (per spec line 316) are the second half of the proof.
+
+**Why the GAPs aren't engine bugs.** The 8 GAPs above all share a structure: the engine code is correct and present in the v1 source that travels via the skill, but the v2-native spec's tool inventory or schema does not enumerate them. Closing each GAP is a 1-3 line edit to the spec markdown plus a small regression test. No engine code needs to change at v2 cutover for any of L.16, L.18, L.19, L.29-L.32, or L.34 — only the spec needs to enumerate them so that the cutover validation checklist is complete.
+
+**Why the action-name canonicalization (L.36) sits at the boundary.** Plan Step 2.3.n correctly identifies the doublets and commits to a UPDATE migration on cutover. But the audit reveals that the doublet rewrite IS load-bearing for L.18 (completion-flow rendering reads `task_history.action` directly via the IN-clause at engine line 2675) and for the auditor heredoc (per `MEMORY.md` → `project_audit_actor_canonicalization.md`). If the canonicalization migration runs but the engine's IN-clause and the auditor heredoc aren't updated to use the canonical names, the loud-variant flow string and the daily Kipp report both go partially blank. Track this as a coupling, not three independent items.
+
+**Coverage-data caveats.** All counts use `task_history.at` as the timestamp, which is local-naive ISO. Production runs in `America/Fortaleza`; the 60-day window is therefore approximate at the boundary by ±3 hours — irrelevant for histogram-shape conclusions, important if anyone tries to reproduce exact counts.
+
+---
+
+## Summary
+
+The lifecycle domain is the highest-volume and most user-visible TaskFlow surface. Engine code is preserved correctly per spec, but **the tool inventory in the spec under-enumerates 8 features**: `restore_task`, the 3-variant completion notification policy, the 30-day standup auto-archive housekeeping, all 4 sub-operations of `manage_holidays`, and the `allow_non_business_day` parameter on `set_due_date`. None require engine changes; all require additions to the spec's tool table + 1-3 regression tests each. Total work to close all 8 GAPs: **single spec PR + ~5 small tests, no code changes.**

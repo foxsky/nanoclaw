@@ -1,227 +1,259 @@
-# Feature coverage audit — scheduled-runners domain (sections N + L.5/.7/.13/.14)
+# 01 — Runners + Rendering: Feature-Coverage Audit
 
 **Date:** 2026-05-03
-**Scope:** TaskFlow runners (standup, digest, weekly review, Kipp daily audit) + the read-side query support those runners depend on.
-**Method:** cross-reference v1 source (`audit/taskflow-2026-04-11` branch) + v2-native redesign spec (`docs/superpowers/specs/2026-05-02-add-taskflow-v2-native-redesign.md`, restored from `stash@{0}` since the working tree's `base/v2-fork-anchor` has no `docs/superpowers/specs/`) + v2-features evaluation (`docs/superpowers/audits/2026-05-02-v2-features-for-our-skills.md` from commit `97553379`) + production memory (`memory/project_v2_migration_production_validation.md`) + live SQL on prod (`nanoclaw@192.168.2.63:/home/nanoclaw/nanoclaw/`).
-
-> **Input availability note.** The task instructions cite `docs/superpowers/audits/2026-05-03-add-taskflow-feature-inventory.md`, `…-v1v2-mapping.md`, `docs/superpowers/plans/2026-05-03-phase-a3-track-a-implementation.md`, and `docs/superpowers/research/2026-05-03-v2-discovery/{16,19}.md` as inputs. **None of those files exist in any branch, stash, or worktree** (`git log --all --diff-filter=A` returns 0 hits). The closest extant artefacts are the v2-native-redesign spec, the v2-features evaluation, and the production-validation memory file — used in their place. Where this report cites a feature ID like `N.1`, the ID is reconstructed from the spec's runner enumeration + the v2-features eval's R1 disposition; the inventory document that originally defined the IDs is missing.
+**Scope:** TaskFlow's *scheduled runners domain* — morning standup, evening digest, weekly review, Kipp daily auditor — plus the supporting `board_runtime_config` machinery (per-board cron, DST guard, runner_task_id columns, silent-exit policy).
+**Anchor plan:** `/root/nanoclaw/docs/superpowers/plans/2026-05-03-phase-a3-track-a-implementation.md`
+**Anchor spec:** `/root/nanoclaw/docs/superpowers/specs/2026-05-02-add-taskflow-v2-native-redesign.md`
+**Engine source:** `/root/nanoclaw/container/agent-runner/src/taskflow-engine.ts` (lines 8456-9100 cover `report()` runner backend; lines 5901+ cover digest/weekly rendering)
+**Auditor source:** `/root/nanoclaw/container/agent-runner/src/auditor-script.sh` (1459 LOC heredoc) + `auditor-prompt.txt` (74 LOC)
+**Skill source:** `/root/nanoclaw/.claude/skills/add-taskflow/SKILL.md` (lines 469-1150 — runner registration, DST_GUARD prompt, schema)
 
 ---
 
-## Coverage matrix
+## 0. Production validation (queries run 2026-05-03)
 
-| ID | Feature (1-line) | Prod usage | Plan coverage | Status |
+### Cron distribution (`store/messages.db`, `status='active'`)
+
+| schedule_value | rows | label |
+|---|--:|---|
+| `0 14 * * 5` | 28 | weekly review (Friday 14:00) |
+| `0 8 * * 1-5` | 16 | morning standup (08:00) |
+| `0 18 * * 1-5` | 14 | evening digest (18:00) |
+| `3 8 * * 1-5` | 6 | **DST anti-loop standup clone** |
+| `6 8 * * 1-5` | 6 | **DST anti-loop standup clone** |
+| `3 18 * * 1-5` | 6 | **DST anti-loop digest clone** |
+| `6 18 * * 1-5` | 6 | **DST anti-loop digest clone** |
+| `0 4 * * *` | 1 | Kipp daily auditor |
+| `0 17 * * 1-5` | 1 | one-off weekday |
+| `0 12 * * 1-5` | 1 | one-off lunchtime digest variant |
+| `0 8 * * 1` | 1 | one-off Monday |
+| `0 9 15 12 *` | 1 | one-off annual |
+| **Total active cron** | **87** | |
+
+### Tagged-runner counts (prefix match on `prompt`)
+
+| Tag | active rows |
+|---|--:|
+| `[TF-STANDUP]` | 27 |
+| `[TF-DIGEST]` | 27 |
+| `[TF-REVIEW]` | 28 |
+| `[TF-DST-GUARD]` | **0** |
+| Kipp prompt | 1 (`auditor-daily`) |
+
+### `board_runtime_config` runner-id population (28 boards)
+
+| Column | populated | notes |
+|---|--:|---|
+| `runner_standup_task_id` | 28/28 | 100% |
+| `runner_digest_task_id` | 28/28 | 100% |
+| `runner_review_task_id` | 28/28 | 100% |
+| `runner_dst_guard_task_id` | **0/28** | dead column |
+| `runner_standup_secondary_task_id` | **0/28** | dead column |
+| `runner_digest_secondary_task_id` | **0/28** | dead column |
+| `runner_review_secondary_task_id` | **0/28** | dead column |
+| `dst_sync_enabled = 1` | **0/28** | dead flag |
+| `*_cron_local <> *_cron_utc` divergence | 28/28 | dual-cron design used: local `0 8 * * 1-5`, utc `0 11 * * 1-5` |
+
+### Cron customization actually exercised
+
+- `standup_cron_local`: 1 distinct value (`0 8 * * 1-5`, all 28 boards)
+- `digest_cron_local`: 2 distinct values (`0 18 * * 1-5` × 27, `0 12 * * 1-5` × 1)
+- `review_cron_local`: 1 distinct value (`0 11 * * 5`, all 28)
+
+→ **Per-board customization is wired but exercised once.** 1/84 cron-column values is non-default.
+
+### Kipp auditor health (`task_run_logs` last 30d)
+
+| status | count |
+|---|--:|
+| success | 35 |
+| error | 1 (2026-05-03 OAuth/credential-proxy fault — known incident) |
+
+`scheduled_tasks` row `auditor-daily`: `status=active`, `next_run=2026-05-04T07:00:00Z`, `script` column populated (len=106 — invokes `./auditor-script.sh`), `context_mode='isolated'`. Last delivery into `whatsapp_main` containing "uditor": **2026-04-28** (4 deliveries that day: full audit + 3 check-ins). Subsequent days: NDJSON output only — no WhatsApp delivery (matches operator's expected mode flip on 2026-04-30 per `project_kipp_report_hallucination`).
+
+### Context mode usage
+
+| context_mode | active rows |
+|---|--:|
+| `group` | 85 |
+| `isolated` | 4 (incl. `auditor-daily`) |
+
+→ **`context_mode='isolated'` is load-bearing for Kipp.** Discovery 16 §1 flagged this as having no v2 equivalent — open question.
+
+---
+
+## 1. Coverage matrix
+
+| ID | Feature | Prod usage | Plan coverage | Status |
 |---|---|---|---|---|
-| N.1 | Morning standup runner 08:00 wkday | 27 active rows across 27 distinct boards; cron `0 8 * * 1-5` (15) + staggered `3 8` (6) + `6 8` (6); 468 runs in last 30d | Spec §"Scheduling migration" maps each v1 `scheduled_tasks` row to a v2 `schedule_task(recurrence=cron)` call; migrate-scheduled-tasks.ts converts 1:1 | ADDRESSED |
-| N.2 | Evening digest runner 18:00 wkday | 28 active rows across 28 distinct boards; cron `0 18` (14) + staggered `3 18` (6) + `6 18` (6) + outliers `0 12`, `0 17`; 468 runs in last 30d; **18 of 28 attach `digest-skip-script.sh` as the `script` column** | Spec maps the prompt via `schedule_task(prompt, recurrence)`; the spec mentions v2's `script?` parameter in the v2-features eval (R1) but the redesign spec does **not** explicitly migrate the digest-skip script. See per-feature deep-dive. | GAP (script migration not in plan) |
-| N.3 | Weekly review runner Friday 14:00 | 29 active rows; **28 use `0 14 * * 5`** + 1 outlier `0 8 * * 1`; 181 runs in last 60d | Spec includes `schedule_task(prompt='Weekly review ...', recurrence='0 16 * * 5')` (note: spec example uses `16`, prod uses `14` — cosmetic) | ADDRESSED |
-| N.4 | Kipp daily audit runner 04:00 every day | 1 active row (`auditor-daily`, group `whatsapp_main`, `0 4 * * *`); 36 runs in last 30d; **uses `script` field with 483-line `auditor-script.sh` heredoc** | Spec §"Scheduling migration" handles the cron; the eval mentions `script` is a v2-supported pre-agent hook. **Auditor-script.sh content is NOT in the migration plan** — same gap as N.2. | GAP (Kipp audit script body migration not in plan) |
-| N.5 | Per-board cron staggering (`0 8`, `3 8`, `6 8` — rate-limit avoidance) | 12/27 standup rows + 12/28 digest rows use staggered minute offsets | Spec migrates `task.cron` verbatim; staggered minutes are preserved as-is | ADDRESSED |
-| N.6 | Customizable per-board (28 distinct group_folders, 14 distinct cron patterns active) | 29 distinct group_folders active; 14 distinct cron patterns | Spec's per-board provisioning generates `schedule_task` calls per board; preserves customization | ADDRESSED |
-| N.7 | Per-board digest-skip-on-Friday (silent-exit pattern via `script` returning `wakeAgent:false`) | 18/28 digest rows have script attached; 109 of 728 digest runs in 60d emitted a "skip" marker (~15%, all Fridays) | v2's `schedule_task` accepts a `script` arg whose JSON output controls `wakeAgent`. Spec/eval reference the parameter but do **not enumerate which scripts migrate** or test the equivalent v2 behavior. See deep-dive. | GAP (silent-exit semantics not validated against v2's pre-agent script contract) |
-| N.8 | Runner task IDs deterministic (`task-<ts>-*`, `auditor-daily`, `task-<ts>-holiday-cron`) | Stable IDs across all 89 active rows; FK from `task_run_logs.task_id`; `auditor-daily` is the only stable string ID | v2's `schedule_task` mints opaque IDs. Spec's `migrate-scheduled-tasks.ts` re-creates schedules but **the ID-stability question is not addressed**. Audit-history join on `task_run_logs.task_id` will break unless explicit. | GAP (task-ID stability across migration not specified) |
-| N.9 | Trigger context capture on scheduled task firing (`trigger_message_id`, `trigger_chat_jid`, `trigger_sender`, `trigger_turn_id`) | Schema present; **0/89 active rows populate any trigger field** (memory says v1 captures trigger on user-created scheduled tasks, but our 89 production rows are all infrastructure-seeded, so all NULL) | Spec **Q6** explicitly raises: "v2's `schedule_task` doesn't have those fields. Do we lose attribution at cutover?" — flagged as open question, no resolution | GAP (Q6 unresolved; production data shows the column is empty in practice, so the gap is academic — but the spec doesn't say so) |
-| N.10 | Runner failure surfacing (`⚠️ TaskFlow runner error: …` to group chat on agent error) | Hardcoded in `task-scheduler.ts:241` for `taskflowManaged===true`; 0 errors logged in last 60d (1878/1878 success per `task_run_logs`) | Not mentioned in spec — error-surface UX is fork-private behavior in `task-scheduler.ts` | GAP (runner-error visibility behavior is silently dropped) |
-| N.11 | Pre-execution `next_run` advancement to prevent double-pickup on slow runs | `task-scheduler.ts:144-152` advances `next_run` BEFORE running | v2's `schedule_task` is post-recurrence-from-now, no double-pickup possible | ADDRESSED (architecturally subsumed) |
-| N.12 | Cron-slot idempotency guard (skip if `last_run` already in current cron slot) | `task-scheduler.ts:67-86` `cronSlotAlreadyRan()` | v2 cron `next()` from "now" → naturally idempotent; missed slots SKIPPED instead of replayed | ADDRESSED (architecturally subsumed) |
-| N.13 | Catch-up of missed schedules during host downtime | v1 `task-scheduler.ts` polls every interval and picks up any past-due rows | Spec §"Caveat (Codex #5 R1 finding)" + Q1: explicit open question. Spec offers a ~50-LOC fork-private wrapper if catch-up is required. | GAP (Q1 unresolved — decision deferred to plan that doesn't exist) |
-| N.14 | DST automatic resync runner | 0 active rows in production (verified: no `prompt LIKE '%DST%'` or `'%resync%'` rows ever existed) | Spec §"DST handling (Q-N.1 RESOLVED 2026-05-03)" drops it explicitly; production confirms 100% round-hour cron | DEPRECATED-CORRECTLY |
-| N.15 | Local+UTC cron preservation logic for DST boundary safety | Embedded in v1 `localToUtc` 2-pass convergence helper | Spec drops the cron-preservation logic; keeps `localToUtc` for due-date math + meeting `scheduled_at` | DEPRECATED-CORRECTLY (with carve-out for due-date math) |
-| N.16 | DST anti-loop counter in scheduled-task wrapper | Not visible in v1 `task-scheduler.ts` shipped code (described in memory + spec as defensive insurance) | Spec keeps it: "cheap defensive insurance against any pathological cascade in TaskFlow's reminder pipeline" | ADDRESSED |
-| L.5 | Due-soon / overdue task queries (runner read-side) | 135 tasks with due_date; 2 due in next 3 days; 45 overdue (live snapshot) | Domain logic stays in `taskflow-engine.ts` per spec ("Kanban state machine, WIP limits, task lifecycle … exposed as MCP tools") | ADDRESSED |
-| L.7 | Idle-task detection (no `updated_at` change for N days) | 201/218 active tasks idle > 3 days (live snapshot) | Domain logic in engine; runners issue MCP query | ADDRESSED |
-| L.13 | Stale-collapse rendering (collapse N idle tasks into one digest line) | Not directly verifiable in DB (rendering-side); referenced by digest prompt | Domain logic in engine + CLAUDE.md template | ADDRESSED |
-| L.14 | Changes-since query (history-window for digest "what changed today/this week") | 1222 history rows in last 30d; 2532 total — `task_history.at` is the timestamp source | `task_history` STAYS fork-private per spec ("60s undo via task_history" — the same table backs the changes-since query) | ADDRESSED |
+| R1 | Morning standup runner (`[TF-STANDUP]`) — Kanban view + per-person sections + housekeeping | 27 active cron rows; `report({type:'standup'})` engine.ts:8460+ | Plan 2.3.i (CLAUDE.md.template ports) + 2.3.f (migrate-scheduled-tasks) | **ADDRESSED** |
+| R2 | Evening digest runner (`[TF-DIGEST]`) — exec summary; `formatDigestOrWeeklyReport` engine.ts:6260+ | 27 active cron rows; cross-board send observed (digest is the load-bearing cross-board sender — Discovery 19 §7) | Plan 2.3.i + 2.3.f | **ADDRESSED** |
+| R3 | Weekly review runner (`[TF-REVIEW]`) — Friday 14:00 wrap | 28 active cron rows | Plan 2.3.i + 2.3.f | **ADDRESSED** |
+| R4 | Kipp daily auditor — pre-agent script + LLM prompt + cross-board detection | `auditor-daily` row, `0 4 * * *`, 35/36 success last 30d | Plan 2.3.m (auditor rewrite, ~200 LOC; drop `send_message_log`; query v2 session DBs) — **explicitly flagged NEW** | **ADDRESSED** with caveat: rewrite is a major scope item (open question #2) |
+| R5 | `board_runtime_config.runner_*_task_id` persistence (28 × 3 = 84 IDs cross-referenced from `scheduled_tasks`) | 84/84 populated | Plan does NOT mention these columns; spec §211-225 implicitly drops them by switching to v2's per-session `messages_in` storage. No bridge layer. | **GAP** |
+| R6 | Per-board cron customization (`*_cron_local` columns) | 1/84 non-default (`0 12 * * 1-5` digest on 1 board) | Spec §211-225 silently drops `*_cron_local`. No assertion the 1 outlier survives. | **GAP** (small but real) |
+| R7 | DST guard runner (`runner_dst_guard_task_id` + `dst_sync_enabled` + `[TF-DST-GUARD]` prompt) | 0/28 boards have DST guard runner; 0/28 enabled; 0 `[TF-DST-GUARD]` rows in `scheduled_tasks`. **However:** 24 zombie DST anti-loop crons (`3 …`, `6 …`) ARE active. | Plan does not mention DST. Memory `feedback_use_v2_natives_dont_duplicate.md` + Discovery 16 §4 say "drop both layers" | **DEPRECATED-CORRECTLY** but **not yet executed** (24 zombie rows + 6 cols still need decommission) |
+| R8 | Local+UTC cron preservation (dual-column `*_cron_local` + `*_cron_utc`) | 28/28 boards have divergent local/utc values | Spec + Discovery 16 say drop `*_cron_utc` (cron-parser handles tz natively in v2). Plan does not call this out. | **DEPRECATED-CORRECTLY** by Discovery, **GAP in plan** (no explicit drop) |
+| R9 | Silent-exit when no tasks ("If no tasks exist, do NOT send any message — exit silently") | Behavior baked into `STANDUP_PROMPT`/`DIGEST_PROMPT`/`REVIEW_PROMPT` (SKILL.md:709-713). No engine code enforces this — prompt-only. | Plan 2.3.i (CLAUDE.md.template ports) carries the prompts forward | **ADDRESSED** (implicit in template port) |
+| R10 | Catch-up on missed runs (multi-day downtime fires once when host returns) | v1 has explicit catch-up (`task-scheduler.ts:152-170`); v2 does not (Discovery 16 §5) | **Open question Q1 in plan + spec §347.** Plan does not commit to fork-private catch-up wrapper. | **GAP** (decision deferred to user, not in scope of A.3.2) |
+| R11 | Kipp pre-agent script (`scheduled_tasks.script`) | `auditor-daily.script` is 106 chars (invokes `auditor-script.sh`) | Discovery 16 §8: v2 supports pre-agent script via `messages_in.content.script` (functionally equivalent). Migration in 2.3.f puts script in content JSON. Plan 2.3.m rewrites the heredoc itself. | **ADDRESSED** |
+| R12 | Auditor `auditTrailDivergence` + `delivery_health.broken_groups` reports | Both render in Kipp output (auditor-script.sh:1043-1102; auditor-prompt.txt:32, 44-49) | Plan 2.3.m says "rewrite to query v2 session DBs directly" but does NOT enumerate that these two heuristics survive | **GAP** — rewrite scope risk |
+| R13 | Auditor 8-bit signal classification (`isWrite`, `isTaskWrite`, `isDmSend`, `isRead`, `isIntent`, `taskMutationFound`, `crossGroupSendLogged`, `isCrossBoardForward`) | auditor-script.sh:843-998. Reads `send_message_log` (which 2.3.m drops) | Plan 2.3.m says "query outbound.db ⨝ inbound.db.delivered" — equivalent join. Plan does not enumerate every signal preserved. | **ADDRESSED** with regression risk |
+| R14 | Auditor `selfCorrections` (60min reagendar/prazo doublet detection) | auditor-prompt.txt:34-40; auditor-script.sh data path | Plan 2.3.m does not enumerate. Same risk as R12. | **GAP** — preservation not enumerated |
+| R15 | Kipp `context_mode='isolated'` — runs the audit in a *task-only session* not contaminated by group conversation | 4 active tasks use this; auditor-daily is one (CLAUDE.md `project_audit_actor_canonicalization`) | Discovery 16 §9 + open question: "no v2 equivalent. v2 always runs the task in the group's session." Plan does not address. | **GAP** — material behavioral regression risk |
+| R16 | Runner task-id discovery via `[TF-STANDUP]` markers | SKILL.md:777 + provision-shared.ts:249-251 use prompt-marker discovery because `INSERT INTO scheduled_tasks` doesn't return id directly | Plan 2.3.b (`provision_taskflow_board` MCP) reuses prompt-marker mechanism implicitly. v2's `schedule_task` returns `taskId` directly so the marker discovery is unnecessary. | **DEPRECATED-CORRECTLY** (v2 returns task id) but plan does not call out this simplification |
+| R17 | Per-runner `_secondary_task_id` columns (manager-vs-team dual delivery) | 0/28 populated (dead) | Plan does not mention; spec drops via column omission | **DEPRECATED-CORRECTLY** (column drop implicit in spec rewrite) |
+| R18 | Auto-archive old done tasks (>30d) — engine.ts:8930-8933 (only on `type='standup'`) | Runs every weekday morning across 27 standup runners | Plan 2.3.a (engine port) carries this | **ADDRESSED** (engine code travels with skill) |
+| R19 | `formatBoardView('standup')` Kanban rendering — engine.ts:5942+ | Embedded in standup runner output | Plan 2.3.a | **ADDRESSED** |
+| R20 | `formatDigestOrWeeklyReport` rendering — engine.ts:6260+ | Embedded in digest/weekly output | Plan 2.3.a | **ADDRESSED** |
+| R21 | Cross-board digest delivery (digest from child board → parent board's WhatsApp group) | 422 cross-board sends in 60d (28% of outbound; Discovery 19 §7) | Plan 2.3.j (ACL refresh, ~784 `agent_destinations` rows seeded) + A.3.7 cross-cutting test | **ADDRESSED** (load-bearing) |
 
-**Counts:**
+### Status counts
 
-- ADDRESSED: **13** (N.1, N.3, N.5, N.6, N.11, N.12, N.16, L.5, L.7, L.13, L.14, plus N.15-with-carve-out is correctly dropped, plus N.14 below)
-- GAP: **6** (N.2, N.4, N.7, N.8, N.9, N.10, N.13)
-- DEPRECATED-CORRECTLY: **2** (N.14, N.15)
-- DEAD-CODE-PRESERVED: **0**
-- DEPRECATED-WRONG: **0**
-
-(Note: N.15 is counted under DEPRECATED-CORRECTLY because the spec explicitly preserves the helper for due-date math; only the cron-preservation _wrapper_ is dropped.)
-
----
-
-## Per-feature deep-dive
-
-### GAP — N.2 + N.4 + N.7: pre-agent `script` field migration is unspecified
-
-**v1 reality.** The `scheduled_tasks.script` column carries an inline bash heredoc that runs *before* the agent fires. Production usage:
-
-- **18 of 28 digest rows** attach `bash /app/src/digest-skip-script.sh` (59-line script, see `container/agent-runner/src/digest-skip-script.sh` on `audit/taskflow-2026-04-11`). On Fridays it queries `messages.db` for user activity in the last 4h; if zero, prints `{wakeAgent:false}` and the orchestrator skips the agent invocation entirely.
-- **1 row** (`auditor-daily`) attaches a 483-line auditor heredoc (`auditor-script.sh`) that opens BOTH `messages.db` and `taskflow.db` read-only, builds a per-board interaction audit JSON, and emits it as the LAST line of stdout. The agent prompt then consumes that JSON to draft the daily Kipp report.
-
-**v2 spec coverage.** The v2-features eval (`97553379`) cites `schedule_task(prompt, processAfter, recurrence?, script?)` and confirms `script` is "an optional pre-agent script." The redesign spec mentions it once (`script: task.script ?? null`) in the migration loop. **What is missing:**
-
-1. No explicit test that v2's `script` semantics match v1's: does v2 honor the `wakeAgent:false` JSON contract that v1's container-runner reads? (`container/agent-runner/src/index.ts` parses the script's last stdout line.)
-2. No mapping for the heredoc-to-file question — does the migration script copy the inlined heredoc bodies into v2's `script` column verbatim, or extract them to bundled files in `container/agent-runner/src/`?
-3. No regression test for the digest-skip-on-Friday silent-exit path; this is the highest-volume runner-side optimisation in production (15% of digest invocations skipped).
-4. The Kipp auditor heredoc reads `taskflow.db` — under v2, does the script have read access to the per-agent SQLite + the central `data/v2.db`? Mount-security (E7 in eval) defaults to deny.
-
-**Recommendation.** Add an explicit task to the (yet-unwritten) Phase A.3 plan: "Validate that v2's `schedule_task.script` parameter (a) accepts heredoc bodies, (b) parses `{wakeAgent:false}` from last stdout line, (c) has read access to taskflow + messages DBs under default mount-security." Until validated, treat the silent-exit path as a regression risk.
-
-### GAP — N.8: task-ID stability across cutover
-
-**v1 reality.** All 89 active rows have stable, deterministic IDs:
-- `auditor-daily` (single string ID — only one global Kipp)
-- `task-<ms-timestamp>-<6-char-suffix>` (timestamp-based, persistent)
-- `task-<ms-timestamp>-holiday-cron` (sec-secti's annual holiday seeker)
-
-`task_run_logs.task_id` FK joins back to `scheduled_tasks.id`. The 1878 historical run-log rows reference these stable IDs.
-
-**v2 spec coverage.** Spec's `migrate-scheduled-tasks.ts` calls `await scheduleTaskMcpTool({...})` per row. v2 mints its own internal IDs. The plan does NOT address:
-
-1. Whether v2's `schedule_task` accepts a caller-supplied ID (so `auditor-daily` can keep its name).
-2. Whether `task_run_logs` (currently stored under `messages.db` in v1) survives migration — it's not mentioned in the migration steps. If it doesn't, 60 days of run history becomes orphan rows.
-3. The Kipp self-correction detector (per memory `project_audit_actor_canonicalization.md`) joins `auditor-daily` runs across days to compute drift. Breaking the ID breaks the audit-of-the-audit.
-
-**Recommendation.** Add a migration step: copy `task_run_logs` (or transform to v2's equivalent if one exists) and either preserve `auditor-daily` as a caller-supplied ID, or write a `legacy_task_id` column on the new schedules.
-
-### GAP — N.9: trigger-context attribution at cutover (Q6)
-
-The spec explicitly raises this as open question Q6 and never answers it. Production data softens the urgency: **0 of 89 active rows have `trigger_*` fields populated** — the columns are infrastructure-seeded scheduled tasks (standup/digest/review/audit), not user-created reminders. So at cutover, no attribution data is at risk. **But the spec does not state this** — Q6 is left as a real open question. A reader of the plan would think trigger-context is load-bearing for the migration.
-
-**Recommendation.** Resolve Q6 explicitly: "Production audit shows 0/89 active rows populate trigger_*; we lose nothing at cutover. Future user-created reminders post-cutover would need fork-private metadata if attribution becomes a TaskFlow product feature, but it is not one today."
-
-### GAP — N.10: runner failure surfacing UX dropped silently
-
-`task-scheduler.ts:241-243` posts `⚠️ TaskFlow runner error: <msg>` to the group chat when a TaskFlow-managed scheduled task errors. v1 has had **zero errors in 60 days** (1878/1878 success), so the path is empirically rare — but it's the operator's only signal that a board's morning standup or weekly review died. The spec does not mention error-surfacing for v2 schedules; v2's `schedule_task` MCP tool does not document an equivalent behavior.
-
-**Recommendation.** Either (a) verify v2's `schedule_task` has equivalent error-surfacing, or (b) add a fork-private wrapper that posts the message on error. Don't drop silently.
-
-### GAP — N.13: catch-up of missed schedules (Q1)
-
-Spec's Q1: "Is missed-run catch-up required for Kipp/digest/standup?" — left open.
-
-Production evidence: the 2026-04-14 silent-boards post-mortem (memory `project_20260414_audit_silent_boards.md`) showed Kipp audit silence on multiple boards because of 3 SIGKILL service restarts during host downtime. Writes survived via MCP→DB, but responses died. **If v2 silently skips missed schedules, similar restarts post-cutover will silently drop standup and digest runs**, not just response delivery.
-
-**Recommendation.** Resolve Q1 with explicit policy: build the ~50-LOC catch-up wrapper for Kipp + standup/digest. Cost is small; the alternative is lost runs that operators won't notice until end-of-day.
+- **ADDRESSED:** 12 (R1, R2, R3, R4, R9, R11, R13, R18, R19, R20, R21, partial R16)
+- **GAP:** 6 (R5, R6, R10, R12, R14, R15)
+- **DEPRECATED-CORRECTLY:** 4 (R7, R8, R16, R17) — but R7 + R8 need explicit cleanup steps the plan currently lacks
+- **DEPRECATED-WRONG:** 0
+- **DEAD-CODE-PRESERVED:** 0
 
 ---
 
-## Production-validated claims
+## 2. Per-GAP deep dives
 
-All queries run via `ssh -o BatchMode=yes nanoclaw@192.168.2.63 'sqlite3 ...'` against `/home/nanoclaw/nanoclaw/store/messages.db` and `/home/nanoclaw/nanoclaw/data/taskflow/taskflow.db` on 2026-05-03.
+### R5 — runner_*_task_id column persistence
 
-### Q1: Active scheduled tasks by kind + cron pattern
+**What:** v1 stores 3-4 task IDs per board in `data/taskflow/taskflow.db.board_runtime_config`. Used by:
+- `provision-shared.ts:249-251` to UPDATE the row after creating runners
+- DST guard prompt (SKILL.md:777) for cancel-and-recreate (R7 deprecates this)
+- Operator queries when something looks wrong with a board
 
-```sql
-SELECT schedule_value AS cron, <kind classifier>, COUNT(*), COUNT(DISTINCT group_folder)
-FROM scheduled_tasks WHERE status='active' GROUP BY 1, 2;
-```
+**v2 reality (Discovery 16):** scheduled tasks live in per-session `data/v2-sessions/{ag}/{sid}/inbound.db` keyed by their auto-generated id. There's no central registry.
 
-Result (selected rows):
+**Impact:** if v2 keeps the columns, they need to be populated during `provision_taskflow_board` after `schedule_task` returns the new id. If v2 drops them, operator queries that scan `board_runtime_config` for "is this board's standup runner alive?" stop working.
 
-| cron | kind | n | distinct_groups |
-|---|---|---|---|
-| `0 8 * * 1-5` | standup | 15 | 15 |
-| `3 8 * * 1-5` | standup | 6 | 6 |
-| `6 8 * * 1-5` | standup | 6 | 6 |
-| `0 18 * * 1-5` | digest | 14 | 14 |
-| `3 18 * * 1-5` | digest | 6 | 6 |
-| `6 18 * * 1-5` | digest | 6 | 6 |
-| `0 14 * * 5` | weekly_review | 28 | 28 |
-| `0 4 * * *` | other (Kipp) | 1 | 1 |
-| `0 9 15 12 *` | other (annual holiday seeker) | 1 | 1 |
+**Recommended A.3.2 sub-task:** **2.3.o (NEW)** — decide retention:
+1. *Drop* the 7 runner-id columns when porting `taskflow-engine.ts` schema. Update Discovery 04's "3 dropped tables" list. Or
+2. *Keep* `runner_standup_task_id`, `runner_digest_task_id`, `runner_review_task_id` and have `provision_taskflow_board` populate from `schedule_task` return value. Drop the 4 unused (`runner_dst_guard_task_id` + 3 `_secondary_task_id`).
 
-Total 89 active rows. 100% cron + round-hour (the staggered-minute boards are still hour-aligned). Confirms memory claim. Backs N.1, N.3, N.4, N.5, N.6.
+**Default:** option 2 (keep 3, drop 4) — preserves operator query patterns; aligns with prod usage (28/28 populated).
 
-### Q2: Runner activity in `task_run_logs`
+### R6 — per-board cron customization
 
-```sql
-SELECT 'kipp_runs_30d', COUNT(*) FROM task_run_logs WHERE task_id='auditor-daily' AND run_at >= datetime('now','-30 days')
-UNION ALL SELECT 'standup_runs_30d', ... UNION ALL ...
-```
+**What:** SKILL.md inserts runners with hardcoded crons at provisioning, but `*_cron_local` columns let admins change them later.
 
-Result: kipp_runs(30d)=36, standup_runs(30d)=468, digest_runs(30d)=468, weekly_runs(60d)=181, all_runs(60d)=1878, all_runs(7d)=248. Backs N.1, N.2, N.3, N.4 prod-usage claims.
+**Prod usage:** 1 of 28 boards has a non-default `digest_cron_local` (`0 12 * * 1-5` — laizys SEAF lunchtime digest). The other 83 cron columns match defaults exactly.
 
-### Q3: Trigger context capture in 89 active rows
+**Impact if dropped:** that 1 board reverts to 18:00 default after migration unless preserved.
 
-```sql
-SELECT SUM(CASE WHEN trigger_message_id IS NOT NULL THEN 1 ELSE 0 END), ... FROM scheduled_tasks WHERE status='active';
-```
+**Recommended A.3.2 sub-task:** **2.3.f addendum** — `migrate-scheduled-tasks.ts` already migrates the cron value from `scheduled_tasks.schedule_value` (where the live `0 12 * * 1-5` lives) to `messages_in.recurrence`, so it travels for free. **GAP self-resolves** but should be explicitly asserted in A.3.6 step 6.4: `SELECT COUNT(DISTINCT recurrence) FROM messages_in WHERE kind='task'` ≥ 4 (3 default crons + 1 lunchtime override).
 
-Result: with_trigger_msg=0, with_trigger_jid=0, with_trigger_sender=0, with_trigger_turn=0, **with_script=19**, context_mode=group=85, context_mode=isolated=4. **All trigger fields are NULL** in production despite the schema supporting them. Backs N.9 finding (Q6 risk is academic — production already lost no information at cutover).
+### R10 — catch-up on missed runs
 
-### Q4: Digest silent-exit pattern via `script` column
+**What:** v1's `task-scheduler.ts:152-170` finds rows where `next_run <= now` AND last_run was N days ago, fires once. v2 fires once at first wake then advances from "now" (Discovery 16 §5). Practical behavior is identical when the host is down >1 day.
 
-```sql
-SELECT COUNT(*) AS digest_runs_60d, SUM(CASE WHEN result LIKE '%skip%' THEN 1 ELSE 0 END) AS skip_marker, ...
-FROM task_run_logs WHERE run_at >= datetime('now','-60 days') AND task_id IN (digest tasks);
-```
+**Open question Q1 in plan/spec:** is missed-run catch-up required for Kipp/digest/standup? Currently deferred without commitment.
 
-Result: digest_runs_60d=728, skip_marker=109 (~15%, all Friday firings), null_result=79, success=711, error=0. Confirms the `digest-skip-script.sh` silent-exit path is exercised in production. Backs N.7 GAP claim.
+**Production evidence:** the 2026-04-13 silent-board incident (CLAUDE.md `project_20260414_audit_silent_boards`) was caused by 3 host SIGKILLs interleaved with the standup window; recovery was manual via `_close` writes, not catch-up. Kipp ran 35/36 last 30d — 1 failure was OAuth, not downtime. **Empirically, catch-up has been irrelevant for the last 30 days.**
 
-### Q5: Hour-of-day distribution of `send_message_log` (last 30d)
+**Recommendation:** close Q1 explicitly: **decide "no catch-up wrapper"** in A.3.2. Document operationally: if a board misses a window, manager does the standup manually or next day's run picks up the slack. Saves ~50 LOC of fork-private code Discovery 18 warned about (auto-merge bot was deleted because of fragile fork bridges).
 
-| hour_utc | n |
-|---|---|
-| 11 (=08:00 local) | 475 |
-| 12 | 84 |
-| 14 | 68 |
-| 15 | 83 |
-| 17 | 81 |
-| 21 (=18:00 local) | 436 |
+### R12 — auditor `auditTrailDivergence` + `delivery_health.broken_groups`
 
-Two strong peaks at standup-fire and digest-fire local hours. Confirms runners are the dominant outbound senders. Backs N.1 + N.2 prod-usage.
+**What:** Two compound heuristics rendered as warning sections in Kipp's output:
+1. `auditTrailDivergence`: `deliveriesToGroup ≥ 5 AND botRowsInGroup < deliveries × 0.5` — the 2026-04-13 silent-board pattern. Currently joins `send_message_log` × `messages.db`.
+2. `delivery_health.broken_groups`: classify groups as `never_sent` (registered but bot never delivered) or `silent_with_recent_human_activity` (bot kicked out).
 
-### Q6: TaskFlow read-side query support (taskflow.db)
+**Impact of plan 2.3.m rewrite:** new auditor queries `outbound.db.messages_out` ⨝ `inbound.db.delivered`, but the plan does not enumerate that these two sections must survive the rewrite. Risk: rewriter ports cross-group send detection, forgets the warning sections, and the operator loses the early-warning signal that caught the 2026-04-13 incident.
 
-| metric | n |
-|---|---|
-| tasks_total | 356 |
-| tasks_active (column NOT IN done/cancelled/archive) | 218 |
-| tasks_with_due | 135 |
-| tasks_due_in_3d | 2 |
-| tasks_overdue | 45 |
-| tasks_idle_3d (active + updated_at < now-3d) | 201 |
-| task_history (30d) | 1222 |
-| task_history (total) | 2532 |
+**Recommended A.3.2 sub-task:** **2.3.m addendum** — add as acceptance criteria for the auditor rewrite:
+- preserve `auditTrailDivergence` board-level warning (recompute as `deliveriesFromMessagesOut ≥ 5 AND deliveredCount/queuedCount < 0.5`)
+- preserve `delivery_health.broken_groups` (`never_sent` and `silent_with_recent_human_activity`)
+- preserve `selfCorrections` (R14)
+- preserve all 8 signal bits (R13)
 
-Confirms L.5 (due-soon/overdue), L.7 (idle), L.14 (changes-since via `task_history.at`) all have real production volume. The runners do exercise these queries (digest reads idle/overdue, standup reads due-soon, Kipp reads history-30d).
+### R14 — `selfCorrections` 60-minute doublet detection
 
-### Q7: DST runner non-existence
+**What:** Detects user re-editing a `due_date`/`scheduled_at` within 60 min after the bot resolved the first instance. Classified as 🔴 (bot error) or ⚪ (legit iteration) per auditor-prompt.txt:34-40.
 
-```sql
-SELECT * FROM scheduled_tasks WHERE prompt LIKE '%DST%' OR prompt LIKE '%resync%' OR id LIKE '%dst%' OR id LIKE '%resync%';
-```
+**Impact:** same as R12 — easily lost in rewrite.
 
-Zero rows. Confirms N.14 deprecation is correct (Fortaleza dropped DST in 2019; no resync runners ever existed in this DB).
+**Recommended sub-task:** part of **2.3.m addendum** above.
 
-### Q8: Scripts-by-runner-kind
+### R15 — `context_mode='isolated'` for Kipp
 
-```sql
-SELECT <kind>, COUNT(*), SUM(CASE WHEN script IS NOT NULL THEN 1 ELSE 0 END) FROM scheduled_tasks WHERE status='active' GROUP BY kind;
-```
+**What:** v1's `scheduled_tasks.context_mode` lets a task run in an *isolated* session, not the group's main conversation. Kipp uses this so its prompt + script output don't pollute the operator's WhatsApp group context.
 
-| kind | n | with_script |
+**v2 reality (Discovery 16 §1, §9):** v2 always runs `task` messages in the group's session. **There is no "task-only session" flag.**
+
+**Production usage:** 4 active tasks use `isolated` (auditor-daily + 3 others). Kipp's audit relies on this for actor canonicalization (CLAUDE.md `project_audit_actor_canonicalization`).
+
+**Impact:** Kipp's audit context will mix with the `whatsapp_main` group's chat history. Could degrade audit quality (Kipp may "remember" yesterday's user messages and skew classification).
+
+**Mitigation options:**
+1. **Dedicated per-board "audit" session.** Provision a second `(agent_group_id, session_id)` pair specifically for Kipp; route auditor-daily there. ~30 LOC fork-private routing.
+2. **Accept regression.** Most audits are stateless heredoc → JSON → LLM render; the LLM doesn't read prior context aggressively. Empirical risk: medium.
+3. **Upstream proposal.** Add `task_session_isolation` flag to v2's `schedule_task`. Out of scope for A.3.
+
+**Recommended A.3.2 sub-task:** **2.3.p (NEW)** — provision a dedicated `whatsapp_main_audit` session for Kipp; route `auditor-daily` to it via `migrate-scheduled-tasks.ts`. Acceptance: `SELECT session_id FROM messages_in WHERE id LIKE 'migrated-auditor-daily%'` differs from any user-conversation session on `whatsapp_main`.
+
+---
+
+## 3. DEPRECATED-CORRECTLY items needing explicit cleanup
+
+### R7 — DST guard runner
+
+Discovery 16 §4 + memory `feedback_use_v2_natives_dont_duplicate.md` say drop. Production confirms 0/28 enabled. But:
+
+- `[TF-DST-GUARD]` prompt still in SKILL.md:777 (~1500 chars)
+- 6 DST columns still in `board_runtime_config` (`runner_dst_guard_task_id`, `dst_sync_enabled`, `dst_last_offset_minutes`, `dst_last_synced_at`, `dst_resync_count_24h`, `dst_resync_window_started_at`)
+- **24 zombie rows in `scheduled_tasks`** (`3 8 * * 1-5`, `6 8 * * 1-5`, `3 18 * * 1-5`, `6 18 * * 1-5`, 6 each — DST anti-loop clones)
+
+**Recommended A.3.2 sub-task:** **2.3.q (NEW)** — DST decommission:
+- Drop the 6 DST columns from `board_runtime_config` schema in skill init
+- Skip the 24 zombie clone crons in `migrate-scheduled-tasks.ts` (filter `schedule_value LIKE '3 % * * 1-5' OR LIKE '6 % * * 1-5'`)
+- Remove `[TF-DST-GUARD]` prompt from SKILL.md
+- Remove DST text in CLAUDE.md.template
+
+### R8 — local+UTC dual cron columns
+
+`*_cron_utc` exists from early v1 era when host cron-parser was passed `tz: undefined`. v2 always passes `{ tz: TIMEZONE }` per Discovery 16 §3. Drop `*_cron_utc`; keep `*_cron_local` if R5 keeps the runner_id columns.
+
+**Recommended A.3.2 sub-task:** rolled into **2.3.o** (R5 decision).
+
+### R16 — runner discovery via prompt markers
+
+v1 needed it because `INSERT INTO scheduled_tasks` doesn't return id directly via the SKILL.md flow. v2's `schedule_task` MCP returns `taskId` in the result. Provisioning code can write the id directly.
+
+**Recommended:** add to plan 2.3.b acceptance criteria. ~20 LOC saved.
+
+### R17 — `_secondary_task_id` columns
+
+0/28 populated. Manager-vs-team dual-delivery never shipped. Drop with R5 cleanup.
+
+---
+
+## 4. Recommended plan revisions (sub-tasks to add to A.3.2)
+
+| New sub-task | Action | Risk if skipped |
 |---|---|---|
-| digest | 28 | **18** |
-| weekly_review | 29 | 0 |
-| standup | 27 | 0 |
-| other (incl. Kipp) | 5 | 1 |
-
-The 18-of-28 digest scripts all run `bash /app/src/digest-skip-script.sh`. The 1 "other" script is `auditor-daily` running the 483-line auditor heredoc. Backs N.2 + N.4 + N.7 GAP claims about script-migration scope.
-
----
-
-## Recommendations
-
-1. **Resolve Q1 (catch-up) as YES.** Production has already had a silent-boards post-mortem caused by missed runs during host downtime. v2's "skip missed windows" default is an operational regression for Kipp/standup/digest. Build the ~50-LOC fork-private catch-up wrapper. Cost is trivial; cost of NOT doing it is silent failure that operators don't notice until end-of-day.
-
-2. **Add a Phase A.3 plan task: "validate `schedule_task.script` semantics against v1's heredoc/wakeAgent contract."** This covers N.2/N.4/N.7 (the digest-skip + Kipp auditor scripts). Until validated, ~15% of digest invocations and 100% of Kipp data-gathering are at risk.
-
-3. **Specify task-ID preservation policy at migration.** Either preserve `auditor-daily` and `task-<ts>-*` IDs, or migrate `task_run_logs` to a new `legacy_task_id` mapping. Without this, the Kipp self-correction detector and 60d of run history break at cutover.
-
-4. **Add error-surfacing to v2 runners (N.10).** Either verify v2's `schedule_task` has equivalent `⚠️ TaskFlow runner error` UX, or wrap with a fork-private error handler. Don't drop silently — this is the operator's only signal that a runner died.
-
-5. **Resolve Q6 (trigger-context attribution) explicitly with the production-data finding.** 0/89 rows populate trigger_*; the migration loses nothing today. Document that future reminder-style scheduled tasks (if added as a TaskFlow product feature) would need fork-private metadata.
-
-6. **N.14 / N.15 deprecation is correct as-specified.** No DST runners exist in 60 days of history; Fortaleza dropped DST in 2019. Drop confidently.
+| **2.3.o** | Decide retention policy for `runner_*_task_id` and `*_cron_*` columns. Recommended: keep 3 runner ids + 3 `*_cron_local`; drop 4 unused runner ids + 6 DST columns + 3 `*_cron_utc`. Document in `init-db.ts`. | Operator queries break; ambiguous source of truth between v2 inbound.db and legacy columns |
+| **2.3.p** | Provision dedicated `whatsapp_main_audit` session for Kipp; route `auditor-daily` via migrate script. | Kipp context contamination — degrades audit quality silently with no production observability |
+| **2.3.q** | DST decommission: drop 6 columns; filter 24 zombie cron clones in migrate script; remove `[TF-DST-GUARD]` prompt + template references. | Migration creates 24 zombie tasks in v2; future operator confusion |
+| **2.3.m addendum** | Enumerate auditor-rewrite preservation: `auditTrailDivergence`, `delivery_health.broken_groups`, `selfCorrections`, all 8 classification signal bits. Acceptance: paired-output diff of v1 NDJSON vs v2 NDJSON on a 7-day prod fixture. | Silent regression of Kipp's most-valuable warning sections; the 2026-04-13 silent-board pattern goes undetected next time |
+| **2.3.r (NEW)** | Close open question Q1 (catch-up): explicitly decide *no catch-up wrapper*. Document in spec §229 + §347. | Indefinite open question becomes implementation drift |
 
 ---
 
-**File path:** `/root/nanoclaw/docs/superpowers/audits/2026-05-03-feature-coverage/01-runners-and-rendering.md`
+## 5. Open question for plan author
+
+The audit found the runner-state inventory (`board_runtime_config` runner_id + cron columns) is **not** explicitly named anywhere in plan A.3.2. Spec §211-225 implies it via "drop fork-private scheduler," but that's only true for the central `scheduled_tasks` table — `board_runtime_config` is a *separate* fork-private table that survives the migration. Recommend adding to A.3.6 step 6.4 invariants:
+
+```
+- SELECT COUNT(*) FROM board_runtime_config WHERE runner_standup_task_id IS NOT NULL = 28 (post-migration; bridge populated by provision/migrate script)
+- SELECT COUNT(*) FROM board_runtime_config WHERE runner_dst_guard_task_id IS NOT NULL = 0 (decommissioned)
+- SELECT COUNT(*) FROM messages_in WHERE kind='task' AND recurrence LIKE '3 %% * * 1-5' = 0 (zombie DST clones filtered)
+```
+
+---
+
+**Document generated:** 2026-05-03 (against 87-cron / 28-board production state at `nanoclaw@192.168.2.63`)
