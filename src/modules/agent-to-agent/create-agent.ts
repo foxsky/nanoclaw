@@ -80,7 +80,6 @@ export async function handleCreateAgent(content: Record<string, unknown>, sessio
     folder,
     agent_provider: null,
     created_at: now,
-    is_main_control: 0,
   };
   createAgentGroup(newGroup);
   initGroupFilesystem(newGroup, { instructions: instructions ?? undefined });

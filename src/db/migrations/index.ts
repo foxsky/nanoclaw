@@ -11,7 +11,6 @@ import { migration011 } from './011-pending-sender-approvals.js';
 import { migration012 } from './012-channel-registration.js';
 import { moduleApprovalsPendingApprovals } from './module-approvals-pending-approvals.js';
 import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js';
-import { moduleTaskflowIsMainControl } from './module-taskflow-is-main-control.js';
 
 export interface Migration {
   version: number;
@@ -30,7 +29,6 @@ const migrations: Migration[] = [
   migration010,
   migration011,
   migration012,
-  moduleTaskflowIsMainControl,
 ];
 
 export function runMigrations(db: Database.Database): void {
