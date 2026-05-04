@@ -6,6 +6,17 @@ export interface AgentGroup {
   folder: string;
   agent_provider: string | null;
   created_at: string;
+  /**
+   * 1 = this agent group is the operator's main control (privileged
+   * actions like send_otp gate on this). At most one row may have value
+   * 1 (enforced by partial unique index — see
+   * src/db/migrations/module-taskflow-is-main-control.ts). 0 = not main.
+   *
+   * Reintroduces v1's `registered_groups.isMain` semantics on the v2
+   * schema; ported as part of skill/taskflow-v2 Phase A.3.2 sub-task
+   * 2.3.a.1 (send_otp).
+   */
+  is_main_control: number;
 }
 
 export type UnknownSenderPolicy = 'strict' | 'request_approval' | 'public';
