@@ -2,6 +2,10 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 
 export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
+  // Embeddings DBs can hold vectors from a previous model alongside current
+  // ones. Without this guard, longer-stored vectors silently truncate to the
+  // query length (false high scores) and shorter-stored vectors yield NaN.
+  if (a.length !== b.length) return 0;
   let dot = 0,
     normA = 0,
     normB = 0;
