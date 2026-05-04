@@ -2,7 +2,7 @@
 
 > **Goal:** migrate 5 fork-private skills (TaskFlow + 4 supporting) to NanoClaw v2 via **Path A** (git-branch model). Production v1.2.53 stays running until Track B cutover.
 >
-> **Estimated total:** 8-10 weeks (refined post Codex GAP validation; was 7-8). +2 weeks for 25 RUNTIME-BLOCKERs (5 new sub-tasks 2.3.o-s) + ~3-4 days for 101 PLAN-BLOCKER batch (2.3.5). Engineering scope was originally over-estimated by synthesis (claimed 9-10 weeks); reframe collapses most "BLOCKERs" to PLAN-BLOCKERs.
+> **Estimated total:** 9-11 weeks (rebaselined post Codex#11; was 8-10). +1 week absorbed by A.3.5 auditor stack relocation (~250-350 LOC + 28 prompt UPDATEs); +2 weeks across 4 remaining new sub-tasks (2.3.o, 2.3.q, 2.3.r, 2.3.s) for 20 remaining RUNTIME-BLOCKERs; ~3-4 days for 101 PLAN-BLOCKER batch (2.3.5). 5 OVERCLAIMs and 8 DEPRECATED-CORRECTLY items absorbed by 2.3.t + apply-deprecations script.
 >
 > **GAP validation source:** `docs/superpowers/audits/2026-05-03-feature-coverage/21-codex-validation.md` (178 GAPs validated: 25 RUNTIME / 101 PLAN / 15 HIGH / 9 MED / 14 LOW / 5 OVERCLAIM / 8 DEPRECATED-CORRECTLY).
 >
@@ -100,6 +100,8 @@ git push origin release/taskflow-bundle-v2
 
 ## Phase A.3.2 — `skill/taskflow-v2` (master skill)
 
+**Branches off:** `release/taskflow-bundle-v2` (which has `skill/whatsapp-fixes-v2` already merged from A.3.1). This resolves the Codex#11 BLOCKER B2: branching off `base/v2-fork-anchor` directly would fail the file-based prereq probe (whatsapp-fixes' `createGroup` method on `adapter.ts` not yet present). Branching off the release branch ensures whatsapp-fixes is in tree.
+
 **Branches off:** `skill/whatsapp-fixes-v2`.
 
 ### Step 2.0 — MOVE TaskFlow source from trunk to skill branch (Discovery 20 finding)
@@ -120,10 +122,12 @@ git push origin release/taskflow-bundle-v2
 
 ### Step 2.1 — Create branch + scaffold (Pattern A, file-based prereq probes)
 
-**Pattern DECIDED empirically:** v2 has 4 channel skills using Pattern B (`setup/add-X.sh`: whatsapp/discord/telegram/teams) and ~10 generic skills using Pattern A (true branch merge). TaskFlow is a feature skill, not a channel — Pattern A applies. Per audit 17: **branch from `base/v2-fork-anchor`, NOT from `skill/whatsapp-fixes-v2`**, and assert prereqs by file-based probes (not merge-base ancestry).
+**Pattern DECIDED empirically:** v2 has 4 channel skills using Pattern B (`setup/add-X.sh`: whatsapp/discord/telegram/teams) and ~10 generic skills using Pattern A (true branch merge). TaskFlow is a feature skill, not a channel — Pattern A applies.
+
+**Branch source (Codex#11 B2 corrected):** branch from `release/taskflow-bundle-v2` AFTER A.3.1 merges `skill/whatsapp-fixes-v2` into it. This ensures `createGroup` is present in `src/channels/adapter.ts` so the file-based prereq probe passes.
 
 ```bash
-git checkout base/v2-fork-anchor
+git checkout release/taskflow-bundle-v2
 git checkout -b skill/taskflow-v2
 ```
 
@@ -152,13 +156,11 @@ Adapt all test imports for v2 paths (`log.ts` not `logger.ts`; v2 module structu
 | 2.3.g `dm-routing.ts` port + regression test | container/agent-runner/src/dm-routing.ts | Test: missing `external_contacts` table returns null without throwing (regression for prod dist drift bug per memory `project_dm_routing_silent_bug.md`). Per Discovery 12: TaskFlow's invitation-send flow calls `addMember()` to seed `agent_group_members` (so v2 first-contact gate doesn't fire for invited externals); `resolveExternalDm` survives as a context-tag layer. |
 | 2.3.h Cross-board approval port-forward (dead code preserved) | engine | Test: `aprovar <id>` text protocol fires `handle_subtask_approval`; NO `ask_user_question` involvement. Per Discovery 10: `subtask_requests` + `/aprovar` text protocol kept (3 reasons reject `pending_approvals` refactor). |
 | 2.3.i CLAUDE.md.template ports | templates/ | Manual review: per-board prompt renders correctly. Keep `/aprovar` `/rejeitar` text protocols. |
-| 2.3.j Post-provisioning send + ACL refresh (Discovery 14) | engine integration | Per Discovery 14: skill calls `writeDestinations(parent_id, sess_id)` directly for affected agent_groups. `wakeContainer` on running container is no-op. **Sparse seed DECIDED empirically: 68 `agent_destinations` rows** (production has 68 distinct cross-board source→target pairs all-time per `send_message_log`; dense 756 would add 688 unused). Future pairs created via `add_destination` MCP if needed. Test: provision new board, immediately send from existing parent → assert delivered. |
+| 2.3.j Post-provisioning send + ACL refresh (Discovery 14) | engine integration + new TaskFlow MCP tool `taskflow_admin_destination` | Per Discovery 14: skill calls `writeDestinations(parent_id, sess_id)` directly for affected agent_groups. `wakeContainer` on running container is no-op. **Sparse seed DECIDED empirically: 68 `agent_destinations` rows** (production has 68 distinct cross-board source→target pairs all-time per `send_message_log`; dense 756 would add 688 unused). **Future pairs (Codex#11 B4 corrected):** v2 has NO public `add_destination` MCP — `createDestination()` is internal host DB function (`upstream/v2:src/modules/agent-to-agent/db/agent-destinations.ts:44-50`). Build TaskFlow-owned admin MCP `taskflow_admin_destination` (action='add'/'remove'/'list') that emits a `kind='system'` action; host-side handler invokes `createDestination()` + `writeDestinations()` for affected sessions. Test: provision new board, immediately send from existing parent → assert delivered. |
 | 2.3.k Engage config override (Discovery 11) | apply-engage-config.sql (target `data/v2.db`) | **Override** migrate-v2 driver default: set all 28 `messaging_group_agents` to `engage_mode='pattern' + engage_pattern='@Case\|^/' + sender_scope='known' + ignored_message_policy='accumulate' + unknown_sender_policy='request_approval'`. **Engage pattern DECIDED empirically:** all 28 prod boards already use `trigger_pattern='@Case'` per `registered_groups`; matching that preserves v1 behavior + adds slash-command capture. NOT `'.'` (which would silently change to always-engage). |
 | 2.3.l Reconciliation sweep seeding | scripts/ | Seed recurring scheduled task to update `taskflow_send_message_log.status` from `inbound.db.delivered` joins. Per-session via v2's schedule_task. |
-| **NEW 2.3.m** Drop `send_message_log` + auditor rewrite (Discovery 03, 04, 19) | container/agent-runner/src/auditor-script.sh + auditor-prompt.txt | **Per re-discovery:** drop `send_message_log` table entirely. Rewrite Kipp auditor to query v2 session DBs directly (`outbound.db.messages_out` ⨝ `inbound.db.delivered` ⨝ `inbound.db.messages_in`) for cross-board send detection. ~200 LOC auditor change. **User review needed before commit.** |
 | **NEW 2.3.n** task_history action-name canonicalization (Discovery 19) | engine | 8 unfixed doublets identified (`create`/`created`, `update`/`updated`/`update_field`, `concluded`/`conclude`, etc.). Pick canonical names + UPDATE migration on cutover. |
-| **NEW 2.3.o** Runtime permission gate (8 RUNTIME-BLOCKERs from Codex GAP validation) | `src/modules/taskflow/permissions.ts` (new module) | Per Codex 11.1, 11.3, 10.2, 10.3, P.7, P.8, 11.8: implement (a) **3-tier role-label runtime gate** reading `taskflow_board_admin_meta.role_label` ('manager'/'delegate'/'observer') beyond v2's binary `user_roles`; (b) **`sender_name → user_id` bridge** for caller identity in MCP wrappers; (c) **delegate carve-out** for `process_inbox`, `approve`, `reject` (manager-or-delegate); (d) **dual-write atomicity** between v2 `user_roles` INSERT and `taskflow_board_admin_meta` INSERT in same transaction; (e) **`auto_provision_request` wiring** as a v2 system-action that fires on `register_person` for unprovisioned hierarchy boards. Tests cover all 6 production permission denials + the 1 delegate (sanunciel). |
-| **NEW 2.3.p** Auditor architecture rewrite (5 RUNTIME-BLOCKERs: R12, R15, AH.8, AH.11, AH.13, Y.8) | `container/agent-runner/src/auditor-script.sh` + `auditor-prompt.txt` (heredoc + DB row). **Owner: `skill/embeddings-v2`** — auditor uses semantic search for cross-message correlation; entire auditor stack (auditor-script.sh, semantic-audit\*.ts, auditor-{dm-detection,delivery-health}.test.ts, taskflow-embedding-sync.ts, digest-skip-script.sh) lives there per Discovery 20. **Step relocates from A.3.2 to A.3.5 (skill/embeddings-v2 phase).** | Replaces and absorbs 2.3.m. (a) **`auditTrailDivergence` detector**: drop OR redefine — bug class disappears under v2's single-store; explicit decision required. (b) **Kipp isolated session**: define v2 provisioning shape — currently `context_mode='isolated'` not in v2; must use dedicated agent_group + `schedule_task` with `pre_agent_script`. (c) **8 interaction-record signals** rebuilt: `crossGroupSendLogged` per-session DB walk; `isCrossBoardForward` from new `send_message_log` projection; `taskMutationFound` unchanged; `isDmSend` heuristic re-grounded; `auditTrailDivergence` decision baked in; `selfCorrections`/`noResponse`/`isIntent`/`isRead` ported. (d) **Coupling with 2.3.c + 2.3.r**: hook placement decision (pre-queue wrapper vs registerDeliveryAction) drives audit truth; lock together. ~250-350 LOC + 28 prompt UPDATEs (per audit 13). |
+| **NEW 2.3.o** Runtime permission gate (8 RUNTIME-BLOCKERs from Codex GAP validation) | `src/modules/taskflow/permissions.ts` (new module) | Per Codex 11.1, 11.3, 10.2, 10.3, P.7, P.8, 11.8: implement (a) **3-tier role-label runtime gate** reading `taskflow_board_admin_meta.role_label` ('manager'/'delegate'/'observer') beyond v2's binary `user_roles`; (b) **`sender_name → user_id` bridge** for caller identity in MCP wrappers; (c) **delegate carve-out** for `process_inbox`, `approve`, `reject` (manager-or-delegate); (d) **Dual-write SAGA + reconciliation** (Codex#11 IMPORTANT-4): v2 `user_roles` INSERT + fork-private `taskflow_board_admin_meta` INSERT can't be ACID-atomic across separate SQLite files; use saga pattern (`user_roles` first, then meta; reconciliation sweep catches orphans every 5 min); (e) **`auto_provision_request` wiring** as a v2 system-action that fires on `register_person` for unprovisioned hierarchy boards. Tests cover all 6 production permission denials + the 1 delegate (sanunciel). | (a) **`auditTrailDivergence` detector**: drop OR redefine — bug class disappears under v2's single-store; explicit decision required. (b) **Kipp isolated session**: define v2 provisioning shape — currently `context_mode='isolated'` not in v2; must use dedicated agent_group + `schedule_task` with `pre_agent_script`. (c) **8 interaction-record signals** rebuilt: `crossGroupSendLogged` per-session DB walk; `isCrossBoardForward` from new `send_message_log` projection; `taskMutationFound` unchanged; `isDmSend` heuristic re-grounded; `auditTrailDivergence` decision baked in; `selfCorrections`/`noResponse`/`isIntent`/`isRead` ported. (d) **Coupling with 2.3.c + 2.3.r**: hook placement decision (pre-queue wrapper vs registerDeliveryAction) drives audit truth; lock together. ~250-350 LOC + 28 prompt UPDATEs (per audit 13). |
 | **NEW 2.3.q** Cross-board send pipeline (3 RUNTIME-BLOCKERs: K.4, K.5, W.5) | `mcp-tools/taskflow.ts` send wrapper + `src/modules/taskflow/cross-board.ts` (new) | (a) **`trigger_message_id` propagation**: TaskFlow wrapper accepts `trigger_inbound_seq` param; resolves via `SELECT id FROM messages_in WHERE seq=?`; embeds in audit row. (b) **5-second notification consolidation**: in-process buffer per (source_board, target_chat_jid) within a single agent turn; flush at turn end via host-side coalesce. Critical for 28% cross-board outbound volume (~422 sends/60d) — without it, 2× notification spam day-1. (c) **Send audit hook placement decision (W.5)**: lock pre-queue insert pattern (Discovery 09) NOT post-delivery hook (Codex#10 B5: container can't write central; via host-side `kind='system'` action handler). |
 | **NEW 2.3.r** Cross-DB write/identity boundary (4 RUNTIME-BLOCKERs: S5, S15, S20, V.13) | Multiple — `init-db.ts`, `cross-board.ts`, host migration scripts | (a) **`board_people` two-table write**: live `register_person` writes to fork-private `data/taskflow/taskflow.db.board_people` AND v2 central `data/v2.db.users` + `agent_group_members` atomically. Reconciliation script for backfill. (b) **`send_message_log` storage decision (lock with 2.3.p)**: drop v1 table OR new central audit table; affects auditor data path. (c) **Web-UI table collision (S20)**: prod `data/taskflow/taskflow.db` has `users` + `sessions` tables (web-UI `tf-mcontrol`) — naming collision with v2 central `users` + `sessions`. Decision: rename web tables (`taskflow_web_users`, `taskflow_web_sessions`) OR isolate behind FK. (d) **`find_person_in_organization` (V.13)**: cross-board org walk needs central DB read access; pattern: TaskFlow MCP queries via mounted central DB (read-only). |
 | **NEW 2.3.s** IPC-replacement runtime patterns (4 RUNTIME-BLOCKERs: W.1, W.7, W.9, W.10) | Multiple | (a) **Raw sqlite MCP access (W.1)**: keep/drop/read-only decision for `mcp-server-sqlite-npx` (28 boards ship it as second MCP server with raw SQL write access). Recommend mount read-only. (b) **Auto-fire child provisioning (W.7)**: v2 replacement for `register_person` → `provision_child_board` IPC chain — emit system action from MCP result. (c) **`register_group` hierarchy metadata (W.9)**: v2's `create_agent` lacks `hierarchy_level`/`max_depth` fields — write to fork-private `taskflow_group_settings` sidecar in same transaction. (d) **`send_otp` IPC path (W.10)**: web-admin OTP path — design v2 input/delivery (engage_pattern doesn't apply; bot-initiated outbound only). |
@@ -235,11 +237,38 @@ Already uses git-branch model in v1 fork. Verify it merges cleanly with v2 basel
 
 ---
 
-## Phase A.3.5 — `skill/embeddings-v2` (revalidation)
+## Phase A.3.5 — `skill/embeddings-v2` (revalidation + auditor stack ownership)
 
-Same shape as A.3.4. Q-CAP confirmed v2 has no vector primitive — fork-keep all features.
+Q-CAP confirmed v2 has no vector primitive — fork-keep all features. **Plus auditor stack** relocated here from A.3.2 (Codex#11 B1) per Discovery 20: auditor uses semantic search → owned by add-embeddings.
 
-`queryVector` hook on host stays as fork-private patch (Discovery: no v2 equivalent).
+### Step 5.1 — Branch + revalidate base feature set
+- `git checkout -b skill/embeddings-v2 release/taskflow-bundle-v2` (after A.3.4 merged)
+- Cherry-pick or merge v1's `skill/embeddings` content; resolve conflicts on `src/index.ts`, `container/agent-runner/src/embedding-reader.ts`
+- `queryVector` hook on host stays as fork-private patch (Discovery: no v2 equivalent)
+- Tests: `src/embedding-service.test.ts`, `container/agent-runner/src/embedding-reader.test.ts`
+
+### Step 5.2 — Auditor architecture rewrite (5 RUNTIME-BLOCKERs: R12, R15, AH.8, AH.11, AH.13, Y.8)
+
+Owns the entire auditor stack per Discovery 20 (~10k LOC):
+- `container/agent-runner/src/auditor-script.sh` (heredoc)
+- `container/agent-runner/src/auditor-prompt.txt` (and the corresponding row in `scheduled_tasks.prompt`)
+- `container/agent-runner/src/semantic-audit.ts` + tests
+- `container/agent-runner/src/auditor-{dm-detection,delivery-health}.test.ts`
+- `container/agent-runner/src/taskflow-embedding-sync.ts`
+- `container/agent-runner/src/digest-skip-script.sh`
+
+Sub-tasks:
+- **5.2.a `auditTrailDivergence` detector**: drop OR redefine — bug class disappears under v2's single-store. Explicit decision required (recommend DROP since it's a false-positive class introduced by v1's split-store).
+- **5.2.b Kipp isolated session**: define v2 provisioning shape — currently `context_mode='isolated'` not in v2; must use dedicated agent_group + `schedule_task` with `pre_agent_script`.
+- **5.2.c 8 interaction-record signals rebuilt**: `crossGroupSendLogged` per-session DB walk; `isCrossBoardForward` from new `send_message_log` projection (or v2 session DB JOIN); `taskMutationFound` unchanged; `isDmSend` heuristic re-grounded; `selfCorrections`/`noResponse`/`isIntent`/`isRead` ported.
+- **5.2.d send_message_log drop OR keep-as-projection decision**: lock now. Recommend KEEP as TaskFlow-side projection in `data/taskflow/taskflow.db` (consistent with sparse-seed reality + minimizes auditor rewrite scope).
+- **5.2.e Coupling**: hook placement decision (pre-queue wrapper, NOT registerDeliveryAction) per Discovery 09.
+
+Estimated: ~250-350 LOC + 28 prompt UPDATEs (per audit 13). **Sub-phase effort: ~1 week.**
+
+### Step 5.3 — Codex review + merge into `release/taskflow-bundle-v2`
+
+**A.3.5 acceptance:** embedding-service tests pass + auditor unit tests pass + auditor smoke test on a v1-snapshot v2 worktree (verify Kipp daily output reasonable on 5 active prod boards).
 
 ---
 
@@ -255,14 +284,15 @@ Same shape as A.3.4. Q-CAP confirmed v2 has no vector primitive — fork-keep al
   pnpm tsx scripts/seed-board-admins.ts
   pnpm tsx scripts/migrate-scheduled-tasks.ts        # per-session iteration
   sqlite3 data/v2.db < scripts/apply-engage-config.sql   # central, NOT store/messages.db
-  pnpm tsx scripts/seed-agent-destinations.ts            # ~784 ACL rows
+  pnpm tsx scripts/seed-agent-destinations.ts            # 68 sparse rows (audit-driven from prod 60d)
+  pnpm tsx scripts/apply-deprecations.ts                 # drop board_groups/agent_heartbeats/people; rename or drop board_chat (per 2.3.t)
   ```
 - 6.4 Verify post-migration invariants (source-driven counts):
   - `SELECT COUNT(*) FROM user_roles WHERE role='owner' AND agent_group_id IS NOT NULL` = **0** (memory invariant)
   - `SELECT COUNT(*) FROM user_roles WHERE role='admin' AND agent_group_id IS NOT NULL` = `(SELECT COUNT(*) FROM v1_snapshot.board_admins)`
   - `SELECT role, is_primary_manager, is_delegate, COUNT(*) FROM user_roles ur JOIN taskflow_board_admin_meta m ON (ur.user_id, ur.agent_group_id) = (m.user_id, m.agent_group_id) GROUP BY 1,2,3` matches v1 distribution
   - `SELECT COUNT(*) FROM messaging_group_agents WHERE engage_pattern=<chosen pattern> AND sender_scope='known' AND ignored_message_policy='accumulate'` matches taskflow-managed count
-  - `SELECT COUNT(*) FROM agent_destinations` = 784 (28 × 27)
+  - `SELECT COUNT(*) FROM agent_destinations` = **68** (sparse seed; matches production all-time distinct cross-board pairs from `send_message_log`)
   - **Per-session schedule verification:** for each agent_group's session, `SELECT COUNT(*) FROM messages_in WHERE kind='task'` matches v1 cron row count for that board
   - `SELECT COUNT(*) FROM board_holidays` (in `data/taskflow/taskflow.db`) matches v1
   - `SELECT COUNT(*) FROM external_contacts` = 3 (matches prod validation)
@@ -319,13 +349,15 @@ Track B (cutover) is a separate plan.
 
 ---
 
-## Open questions (need user call before A.3.2 step 2.3.k commits)
+## Resolved decisions (all empirically grounded)
 
-1. **engage_pattern**: `'.'` (~10k wakes/day; prior session said fine) vs `'(@Case|@Tars|^/[a-z])'` (~2-3k wakes/day; re-discovery recommends).
-2. **`send_message_log` drop** (Discovery 03/04/19 recommend): auditor rewrite (~200 LOC) — confirm acceptable.
-3. **`agent_destinations` seed strategy**: dense ~784 rows (recommended for safety) vs sparse audit-driven (~30 rows from actual cross-board pairs in last 60d).
-4. **`board_id_counters` table** (newly surfaced in Discovery 04): place in fork-private taskflow.db.
-5. **Pattern A vs B for `skill/taskflow-v2`**: branch from skill/whatsapp-fixes-v2 with file-based prereq probes (Discovery 17 recommendation; Pattern B-style probe rather than merge-base).
+| # | Decision | Empirical source |
+|---|---|---|
+| 1 | **engage_pattern = `'@Case|^/'`** with `engage_mode='pattern'` | All 28 prod boards have `trigger_pattern='@Case'` in `registered_groups` |
+| 2 | **`send_message_log` drop + auditor rewrite owned by `skill/embeddings-v2`** | Discovery 20 attributed auditor stack (~10k LOC) to add-embeddings (semantic search) |
+| 3 | **agent_destinations sparse seed = 68 rows** (audit-driven from prod 60d) | `SELECT COUNT(DISTINCT source_group_folder, target_chat_jid) FROM send_message_log` = 68 |
+| 4 | **`board_id_counters` → fork-private `data/taskflow/taskflow.db`** | Engine line 1203; per-board operational state per Discovery 04. Total 15 tables. |
+| 5 | **`skill/taskflow-v2` Pattern A from `release/taskflow-bundle-v2`** | TaskFlow is feature skill (not channel); 4 channel skills use Pattern B. Branch from release branch (post A.3.1 merge) so file-based prereq probes pass. |
 
 ---
 
