@@ -728,8 +728,98 @@ registerChannelAdapter('whatsapp', {
           return [];
         }
       },
+
+      // ──────────────────────────────────────────────────────────────────
+      // Group helpers (skill/whatsapp-fixes-v2 — upstream PR planned)
+      // ──────────────────────────────────────────────────────────────────
+
+      async createGroup(subject: string, participants: string[]) {
+        // WhatsApp platform cap: 1024 members per group.
+        if (participants.length >= 1024) {
+          throw new Error(`WhatsApp groups support a maximum of 1024 participants; got ${participants.length}`);
+        }
+
+        // Bot must be a participant; ensure self is in the list.
+        const selfJid = sock.user?.id?.split(':')[0] + '@s.whatsapp.net';
+        const allParticipants = participants.includes(selfJid) ? participants : [selfJid, ...participants];
+
+        const created = await sock.groupCreate(subject, allParticipants);
+        const jid = created.id;
+        const actualSubject = created.subject ?? subject;
+
+        // LID-aware verification: refetch metadata; cross-check actual
+        // participants against requested list. WhatsApp may silently
+        // drop unreachable contacts (blocked, deleted, non-WA).
+        let droppedParticipants: string[] | undefined;
+        let inviteLink: string | undefined;
+        try {
+          const meta = await sock.groupMetadata(jid);
+          const actualSet = new Set((meta.participants ?? []).map((p) => p.id));
+          const requested = participants.filter((p) => p !== selfJid);
+          const dropped = requested.filter((p) => !actualSet.has(p));
+          if (dropped.length > 0) {
+            droppedParticipants = dropped;
+            // Surface an invite link the operator can share manually
+            // with the dropped contacts.
+            try {
+              const code = await sock.groupInviteCode(jid);
+              inviteLink = `https://chat.whatsapp.com/${code}`;
+            } catch (err) {
+              log.warn('Failed to fetch group invite link', { jid, err });
+            }
+          }
+        } catch (err) {
+          log.warn('Failed to verify group membership post-create', { jid, err });
+        }
+
+        return {
+          jid,
+          subject: actualSubject,
+          ...(droppedParticipants ? { droppedParticipants } : {}),
+          ...(inviteLink ? { inviteLink } : {}),
+        };
+      },
+
+      async lookupPhoneJid(phone: string) {
+        const digits = phoneDigitsBR(phone);
+        if (!digits) return null;
+        try {
+          const result = await sock.onWhatsApp(digits + '@s.whatsapp.net');
+          if (Array.isArray(result) && result[0]?.exists) {
+            return result[0].jid ?? `${digits}@s.whatsapp.net`;
+          }
+          return null;
+        } catch (err) {
+          log.warn('lookupPhoneJid: sock.onWhatsApp failed', { phone, err });
+          return null;
+        }
+      },
+
+      async resolvePhoneJid(phone: string) {
+        const digits = phoneDigitsBR(phone);
+        if (!digits) {
+          throw new Error(`resolvePhoneJid: phone "${phone}" normalized to empty`);
+        }
+        return `${digits}@s.whatsapp.net`;
+      },
     };
 
     return adapter;
   },
 });
+
+/**
+ * Normalize a phone string to Brazilian-aware digits-only.
+ * Strips non-digits; if 10 or 11 digits (DDD + local), prepends '55' (BR).
+ * Returns empty string when nothing usable remains.
+ *
+ * Inlined here because v2 has no shared phone util; small enough not to
+ * warrant a separate file. If v2 later adds a phone module, swap to it.
+ */
+function phoneDigitsBR(phone: string): string {
+  const digits = phone.replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.length >= 10 && digits.length <= 11) return '55' + digits;
+  if (digits.length >= 12 && digits.length <= 13) return digits;
+  return '';
+}
