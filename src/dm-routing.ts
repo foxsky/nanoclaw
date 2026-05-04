@@ -40,16 +40,9 @@ export interface DmRouteResult {
  * Returns null if the sender has no active external-contact grants.
  * Performs lazy expiry: if access_expires_at is past, updates status to 'expired'.
  */
-export function resolveExternalDm(
-  db: Database.Database,
-  dmJid: string,
-): DmRouteResult | null {
+export function resolveExternalDm(db: Database.Database, dmJid: string): DmRouteResult | null {
   // Guard: if external_contacts table doesn't exist yet, return null gracefully
-  const tableCheck = db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name='external_contacts'`,
-    )
-    .get();
+  const tableCheck = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='external_contacts'`).get();
   if (!tableCheck) return null;
 
   // 1. Resolve external contact by direct_chat_jid
@@ -58,9 +51,7 @@ export function resolveExternalDm(
       `SELECT external_id, display_name, phone FROM external_contacts
        WHERE direct_chat_jid = ? AND status = 'active'`,
     )
-    .get(dmJid) as
-    | { external_id: string; display_name: string; phone: string }
-    | undefined;
+    .get(dmJid) as { external_id: string; display_name: string; phone: string } | undefined;
 
   // 2. Fallback: extract phone from JID and match
   if (!contact) {
@@ -70,9 +61,7 @@ export function resolveExternalDm(
         `SELECT external_id, display_name, phone FROM external_contacts
          WHERE phone = ? AND status = 'active'`,
       )
-      .get(phone) as
-      | { external_id: string; display_name: string; phone: string }
-      | undefined;
+      .get(phone) as { external_id: string; display_name: string; phone: string } | undefined;
 
     // Backfill direct_chat_jid for future fast lookups
     if (contact) {
@@ -115,13 +104,7 @@ export function resolveExternalDm(
         `UPDATE meeting_external_participants
          SET invite_status = 'expired', updated_at = ?
          WHERE board_id = ? AND meeting_task_id = ? AND occurrence_scheduled_at = ? AND external_id = ?`,
-      ).run(
-        now,
-        g.board_id,
-        g.meeting_task_id,
-        g.occurrence_scheduled_at,
-        contact.external_id,
-      );
+      ).run(now, g.board_id, g.meeting_task_id, g.occurrence_scheduled_at, contact.external_id);
     } else {
       active.push(g);
     }

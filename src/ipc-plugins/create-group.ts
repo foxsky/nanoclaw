@@ -1,9 +1,6 @@
 import type { IpcHandler } from '../ipc.js';
-import { logger } from '../logger.js';
-import {
-  PARTICIPANT_JID_PATTERN,
-  TASKFLOW_SUFFIX,
-} from './provision-shared.js';
+import { logger } from '../log.js';
+import { PARTICIPANT_JID_PATTERN, TASKFLOW_SUFFIX } from './provision-shared.js';
 
 const MAX_GROUP_SUBJECT_LENGTH = 100;
 const MAX_GROUP_PARTICIPANTS = 256;
@@ -17,10 +14,7 @@ function normalizeSubject(subject: unknown): string | null {
 
 function normalizeParticipants(participants: unknown): string[] | null {
   if (!Array.isArray(participants)) return null;
-  if (
-    participants.length === 0 ||
-    participants.length > MAX_GROUP_PARTICIPANTS
-  ) {
+  if (participants.length === 0 || participants.length > MAX_GROUP_PARTICIPANTS) {
     return null;
   }
 
@@ -40,42 +34,26 @@ function normalizeParticipants(participants: unknown): string[] | null {
   return normalized;
 }
 
-function canCreateGroupFromSource(
-  sourceGroup: string,
-  isMain: boolean,
-  deps: Parameters<IpcHandler>[3],
-): boolean {
+function canCreateGroupFromSource(sourceGroup: string, isMain: boolean, deps: Parameters<IpcHandler>[3]): boolean {
   if (isMain) return true;
 
-  const sourceEntry = Object.values(deps.registeredGroups()).find(
-    (group) => group.folder === sourceGroup,
-  );
+  const sourceEntry = Object.values(deps.registeredGroups()).find((group) => group.folder === sourceGroup);
 
   if (!sourceEntry || sourceEntry.taskflowManaged !== true) {
     return false;
   }
 
-  if (
-    sourceEntry.taskflowHierarchyLevel !== undefined &&
-    sourceEntry.taskflowMaxDepth !== undefined
-  ) {
+  if (sourceEntry.taskflowHierarchyLevel !== undefined && sourceEntry.taskflowMaxDepth !== undefined) {
     // Runtime levels are 0-based while maxDepth is the board depth ceiling.
     // A group may create one more level only if the next runtime level still
     // fits under the configured maximum depth.
-    return (
-      sourceEntry.taskflowHierarchyLevel + 1 <= sourceEntry.taskflowMaxDepth
-    );
+    return sourceEntry.taskflowHierarchyLevel + 1 <= sourceEntry.taskflowMaxDepth;
   }
 
   return false;
 }
 
-const handleCreateGroup: IpcHandler = async (
-  data,
-  sourceGroup,
-  isMain,
-  deps,
-) => {
+const handleCreateGroup: IpcHandler = async (data, sourceGroup, isMain, deps) => {
   if (!canCreateGroupFromSource(sourceGroup, isMain, deps)) {
     logger.warn({ sourceGroup }, 'Unauthorized create_group attempt blocked');
     return;
@@ -94,9 +72,7 @@ const handleCreateGroup: IpcHandler = async (
       {
         sourceGroup,
         subjectValid: !!subject,
-        participantCount: Array.isArray(data.participants)
-          ? data.participants.length
-          : undefined,
+        participantCount: Array.isArray(data.participants) ? data.participants.length : undefined,
       },
       'Invalid create_group request',
     );
@@ -132,10 +108,7 @@ const handleCreateGroup: IpcHandler = async (
     }
 
     const result = await deps.createGroup(subject, resolvedParticipants);
-    logger.info(
-      { jid: result.jid, participantCount: participants.length },
-      'Group created via IPC',
-    );
+    logger.info({ jid: result.jid, participantCount: participants.length }, 'Group created via IPC');
   } catch (err) {
     logger.error(
       {
@@ -148,8 +121,6 @@ const handleCreateGroup: IpcHandler = async (
   }
 };
 
-export function register(
-  reg: (type: string, handler: IpcHandler) => void,
-): void {
+export function register(reg: (type: string, handler: IpcHandler) => void): void {
   reg('create_group', handleCreateGroup);
 }

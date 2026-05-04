@@ -262,10 +262,7 @@ function linkedChildBoardFor(
   };
 }
 
-function legacySubtaskColumn(subtask: {
-  status?: string;
-  column?: string;
-}): string {
+function legacySubtaskColumn(subtask: { status?: string; column?: string }): string {
   if (typeof subtask.column === 'string' && subtask.column.trim() !== '') {
     return subtask.column;
   }
@@ -309,9 +306,7 @@ function migrateLegacyProjectSubtasks(db: Database.Database): void {
             child_exec_enabled = ?, child_exec_board_id = ?, child_exec_person_id = ?
       WHERE board_id = ? AND id = ?`,
   );
-  const clearLegacySubtasks = db.prepare(
-    `UPDATE tasks SET subtasks = NULL WHERE board_id = ? AND id = ?`,
-  );
+  const clearLegacySubtasks = db.prepare(`UPDATE tasks SET subtasks = NULL WHERE board_id = ? AND id = ?`);
 
   for (const row of rows) {
     let subtasks: any[];
@@ -325,18 +320,11 @@ function migrateLegacyProjectSubtasks(db: Database.Database): void {
     let allMigrated = true;
     for (let i = 0; i < subtasks.length; i++) {
       const subtask = subtasks[i] ?? {};
-      const subtaskId =
-        typeof subtask.id === 'string' && subtask.id.trim() !== ''
-          ? subtask.id
-          : `${row.id}.${i + 1}`;
+      const subtaskId = typeof subtask.id === 'string' && subtask.id.trim() !== '' ? subtask.id : `${row.id}.${i + 1}`;
       const title =
-        typeof subtask.title === 'string' && subtask.title.trim() !== ''
-          ? subtask.title
-          : `Subtask ${i + 1}`;
+        typeof subtask.title === 'string' && subtask.title.trim() !== '' ? subtask.title : `Subtask ${i + 1}`;
       const assignee =
-        typeof subtask.assignee === 'string' && subtask.assignee.trim() !== ''
-          ? subtask.assignee
-          : row.assignee;
+        typeof subtask.assignee === 'string' && subtask.assignee.trim() !== '' ? subtask.assignee : row.assignee;
       const column = legacySubtaskColumn(subtask);
       const priority =
         typeof subtask.priority === 'string' && subtask.priority.trim() !== ''
@@ -391,20 +379,11 @@ function migrateLegacyProjectSubtasks(db: Database.Database): void {
 
     for (let i = 0; i < subtasks.length; i++) {
       const subtask = subtasks[i] ?? {};
-      const subtaskId =
-        typeof subtask.id === 'string' && subtask.id.trim() !== ''
-          ? subtask.id
-          : `${row.id}.${i + 1}`;
+      const subtaskId = typeof subtask.id === 'string' && subtask.id.trim() !== '' ? subtask.id : `${row.id}.${i + 1}`;
       const assignee =
-        typeof subtask.assignee === 'string' && subtask.assignee.trim() !== ''
-          ? subtask.assignee
-          : row.assignee;
+        typeof subtask.assignee === 'string' && subtask.assignee.trim() !== '' ? subtask.assignee : row.assignee;
       const expectedColumn = legacySubtaskColumn(subtask);
-      const expectedChildLink = linkedChildBoardFor(
-        db,
-        row.board_id,
-        assignee ?? null,
-      );
+      const expectedChildLink = linkedChildBoardFor(db, row.board_id, assignee ?? null);
       const existing = subtaskRow.get(row.board_id, subtaskId) as
         | {
             title: string;
@@ -423,10 +402,8 @@ function migrateLegacyProjectSubtasks(db: Database.Database): void {
         existing.assignee !== (assignee ?? null) ||
         existing.column !== expectedColumn ||
         existing.child_exec_enabled !== expectedChildLink.child_exec_enabled ||
-        (existing.child_exec_board_id ?? null) !==
-          expectedChildLink.child_exec_board_id ||
-        (existing.child_exec_person_id ?? null) !==
-          expectedChildLink.child_exec_person_id
+        (existing.child_exec_board_id ?? null) !== expectedChildLink.child_exec_board_id ||
+        (existing.child_exec_person_id ?? null) !== expectedChildLink.child_exec_person_id
       ) {
         allMigrated = false;
         break;
@@ -466,11 +443,7 @@ function reconcileDelegationLinks(db: Database.Database): void {
   );
 
   for (const row of rows) {
-    const expected = linkedChildBoardFor(
-      db,
-      row.board_id,
-      row.assignee ?? null,
-    );
+    const expected = linkedChildBoardFor(db, row.board_id, row.assignee ?? null);
     if (
       row.child_exec_enabled !== expected.child_exec_enabled ||
       (row.child_exec_board_id ?? null) !== expected.child_exec_board_id ||
@@ -503,9 +476,7 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   const taskColumns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{
     name: string;
   }>;
-  const hasRequiresCloseApproval = taskColumns.some(
-    (column) => column.name === 'requires_close_approval',
-  );
+  const hasRequiresCloseApproval = taskColumns.some((column) => column.name === 'requires_close_approval');
   try {
     db.exec(`ALTER TABLE board_people ADD COLUMN notification_group_jid TEXT`);
   } catch {
@@ -513,9 +484,7 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   }
   if (!hasRequiresCloseApproval) {
     try {
-      db.exec(
-        'ALTER TABLE tasks ADD COLUMN requires_close_approval INTEGER NOT NULL DEFAULT 1',
-      );
+      db.exec('ALTER TABLE tasks ADD COLUMN requires_close_approval INTEGER NOT NULL DEFAULT 1');
     } catch {}
     db.exec(`
       UPDATE tasks
@@ -559,26 +528,16 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   // TaskflowEngine.getVisibleTask() — WHERE id = ? AND type = 'meeting'
   // AND board_id IN (...). Partial index keyed on (type, id) limits the
   // index size to meeting rows only.
-  db.exec(
-    `CREATE INDEX IF NOT EXISTS idx_tasks_meeting_id ON tasks(id) WHERE type = 'meeting'`,
-  );
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_meeting_id ON tasks(id) WHERE type = 'meeting'`);
 
   /* --- Performance indexes for task_history and archive queries --- */
-  db.exec(
-    `CREATE INDEX IF NOT EXISTS idx_task_history_board_task ON task_history(board_id, task_id)`,
-  );
-  db.exec(
-    `CREATE INDEX IF NOT EXISTS idx_task_history_board_at ON task_history(board_id, at)`,
-  );
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_task_history_board_task ON task_history(board_id, task_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_task_history_board_at ON task_history(board_id, at)`);
   try {
     db.exec(`ALTER TABLE task_history ADD COLUMN trigger_turn_id TEXT`);
   } catch {}
-  db.exec(
-    `CREATE INDEX IF NOT EXISTS idx_archive_board_assignee ON archive(board_id, assignee)`,
-  );
-  db.exec(
-    `CREATE INDEX IF NOT EXISTS idx_archive_board_archived_at ON archive(board_id, archived_at)`,
-  );
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_archive_board_assignee ON archive(board_id, assignee)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_archive_board_archived_at ON archive(board_id, archived_at)`);
 
   /* --- board_holidays table (migration for existing DBs) --- */
   db.exec(`CREATE TABLE IF NOT EXISTS board_holidays (
@@ -603,14 +562,10 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
 
   /* --- Per-prefix counters (P, T, R) --- */
   try {
-    db.exec(
-      'ALTER TABLE board_config ADD COLUMN next_project_number INTEGER DEFAULT 1',
-    );
+    db.exec('ALTER TABLE board_config ADD COLUMN next_project_number INTEGER DEFAULT 1');
   } catch {}
   try {
-    db.exec(
-      'ALTER TABLE board_config ADD COLUMN next_recurring_number INTEGER DEFAULT 1',
-    );
+    db.exec('ALTER TABLE board_config ADD COLUMN next_recurring_number INTEGER DEFAULT 1');
   } catch {}
   // Seed new counters from existing task IDs (one-time migration).
   // Split into two independent statements so one counter's default doesn't
@@ -666,25 +621,21 @@ function canonicalizePhoneColumns(db: Database.Database): void {
   ];
 
   const existingTables = new Set(
-    (db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all() as Array<{
-      name: string;
-    }>).map((r) => r.name),
+    (
+      db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all() as Array<{
+        name: string;
+      }>
+    ).map((r) => r.name),
   );
 
   for (const { table, pk, phoneIsUnique } of targets) {
     if (!existingTables.has(table)) continue;
-    const cols = (
-      db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
-    ).map((c) => c.name);
+    const cols = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
     if (!cols.includes('phone') || !pk.every((c) => cols.includes(c))) continue;
     const rows = db
-      .prepare(
-        `SELECT ${pk.join(', ')}, phone FROM ${table} WHERE phone IS NOT NULL AND phone != ''`,
-      )
+      .prepare(`SELECT ${pk.join(', ')}, phone FROM ${table} WHERE phone IS NOT NULL AND phone != ''`)
       .all() as Array<Record<string, string>>;
-    const update = db.prepare(
-      `UPDATE ${table} SET phone = ? WHERE ${pk.map((c) => `${c} = ?`).join(' AND ')}`,
-    );
+    const update = db.prepare(`UPDATE ${table} SET phone = ? WHERE ${pk.map((c) => `${c} = ?`).join(' AND ')}`);
     const collisionCheck = phoneIsUnique
       ? db.prepare(
           `SELECT 1 FROM ${table} WHERE phone = ? AND NOT (${pk.map((c) => `${c} = ?`).join(' AND ')}) LIMIT 1`,
@@ -714,12 +665,10 @@ const isMain = process.argv[1]?.endsWith('taskflow-db.js');
 if (isMain) {
   const dbPath = process.argv[2];
   const db = initTaskflowDb(dbPath);
-  const tables = db
-    .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-    .all() as Array<{ name: string }>;
-  console.log(
-    `TaskFlow DB initialized at ${dbPath ?? path.join(DATA_DIR, 'taskflow', 'taskflow.db')}`,
-  );
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as Array<{
+    name: string;
+  }>;
+  console.log(`TaskFlow DB initialized at ${dbPath ?? path.join(DATA_DIR, 'taskflow', 'taskflow.db')}`);
   console.log(`Tables: ${tables.map((t) => t.name).join(', ')}`);
   db.close();
 }
@@ -743,18 +692,16 @@ export function resolveTaskflowBoardId(
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
     db.pragma('busy_timeout = 5000');
 
-    const direct = db
-      .prepare(`SELECT id FROM boards WHERE group_folder = ? LIMIT 1`)
-      .get(groupFolder) as { id: string } | undefined;
+    const direct = db.prepare(`SELECT id FROM boards WHERE group_folder = ? LIMIT 1`).get(groupFolder) as
+      | { id: string }
+      | undefined;
     if (direct?.id) {
       return direct.id;
     }
 
-    const mapped = db
-      .prepare(
-        `SELECT board_id FROM board_groups WHERE group_folder = ? LIMIT 1`,
-      )
-      .get(groupFolder) as { board_id: string } | undefined;
+    const mapped = db.prepare(`SELECT board_id FROM board_groups WHERE group_folder = ? LIMIT 1`).get(groupFolder) as
+      | { board_id: string }
+      | undefined;
     return mapped?.board_id;
   } catch {
     return undefined;

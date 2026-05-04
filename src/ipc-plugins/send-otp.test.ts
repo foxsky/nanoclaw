@@ -55,10 +55,7 @@ describe('send_otp IPC plugin', () => {
     expect(lookupPhoneJid).toHaveBeenCalledOnce();
     expect(lookupPhoneJid).toHaveBeenCalledWith('+55 85 99999-1234');
     expect(sendMessage).toHaveBeenCalledOnce();
-    expect(sendMessage).toHaveBeenCalledWith(
-      '5585999991234@s.whatsapp.net',
-      'Seu codigo: 123456',
-    );
+    expect(sendMessage).toHaveBeenCalledWith('5585999991234@s.whatsapp.net', 'Seu codigo: 123456');
   });
 
   it('rejects requests from non-main groups', async () => {

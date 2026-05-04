@@ -5,7 +5,7 @@ import { DATA_DIR, PROJECT_ROOT } from '../config.js';
 import { getGroupSenderName } from '../group-sender.js';
 import { isValidGroupFolder } from '../group-folder.js';
 import { getTurnId, type IpcHandler } from '../ipc.js';
-import { logger } from '../logger.js';
+import { logger } from '../log.js';
 import { normalizePhone } from '../phone.js';
 
 import {
@@ -22,17 +22,13 @@ import {
   uniqueFolder,
 } from './provision-shared.js';
 
-const handleProvisionChildBoard: IpcHandler = async (
-  data,
-  sourceGroup,
-  isMain,
-  deps,
-) => {
+const handleProvisionChildBoard: IpcHandler = async (data, sourceGroup, isMain, deps) => {
   // --- 1. Validate source authorization ---
   const registeredGroups = deps.registeredGroups();
-  const [sourceGroupJid, sourceEntry] = Object.entries(registeredGroups).find(
-    ([, g]) => g.folder === sourceGroup,
-  ) ?? [undefined, undefined];
+  const [sourceGroupJid, sourceEntry] = Object.entries(registeredGroups).find(([, g]) => g.folder === sourceGroup) ?? [
+    undefined,
+    undefined,
+  ];
 
   if (!sourceEntry || !sourceEntry.taskflowManaged) {
     logger.warn({ sourceGroup }, 'provision_child_board: not a TaskFlow group');
@@ -63,18 +59,11 @@ const handleProvisionChildBoard: IpcHandler = async (
   const assistantName = getGroupSenderName(sourceEntry.trigger);
 
   // --- 2. Validate input ---
-  const personId =
-    typeof data.person_id === 'string' ? data.person_id.trim() : '';
-  const personName =
-    typeof data.person_name === 'string' ? data.person_name.trim() : '';
-  const personPhone =
-    typeof data.person_phone === 'string' ? data.person_phone.trim() : '';
-  const personRole =
-    typeof data.person_role === 'string' ? data.person_role.trim() : '';
-  const shortCode =
-    typeof data.short_code === 'string'
-      ? data.short_code.trim().toUpperCase()
-      : null;
+  const personId = typeof data.person_id === 'string' ? data.person_id.trim() : '';
+  const personName = typeof data.person_name === 'string' ? data.person_name.trim() : '';
+  const personPhone = typeof data.person_phone === 'string' ? data.person_phone.trim() : '';
+  const personRole = typeof data.person_role === 'string' ? data.person_role.trim() : '';
+  const shortCode = typeof data.short_code === 'string' ? data.short_code.trim().toUpperCase() : null;
   const triggerTurnId = getTurnId(data) ?? null;
 
   if (!personId || !personName || !personPhone || !personRole) {
@@ -95,9 +84,9 @@ const handleProvisionChildBoard: IpcHandler = async (
   }
 
   try {
-    const parentBoard = tfDb
-      .prepare('SELECT * FROM boards WHERE group_folder = ?')
-      .get(sourceGroup) as BoardRow | undefined;
+    const parentBoard = tfDb.prepare('SELECT * FROM boards WHERE group_folder = ?').get(sourceGroup) as
+      | BoardRow
+      | undefined;
 
     // Defensive: this plugin INSERTs task_history rows with trigger_turn_id
     // below (~L529). On old-schema taskflow.db instances the column is
@@ -111,34 +100,26 @@ const handleProvisionChildBoard: IpcHandler = async (
     }
 
     if (!parentBoard) {
-      logger.warn(
-        { sourceGroup },
-        'provision_child_board: parent board not found',
-      );
+      logger.warn({ sourceGroup }, 'provision_child_board: parent board not found');
       return;
     }
 
-    const parentConfig = tfDb
-      .prepare('SELECT * FROM board_config WHERE board_id = ?')
-      .get(parentBoard.id) as BoardConfigRow | undefined;
+    const parentConfig = tfDb.prepare('SELECT * FROM board_config WHERE board_id = ?').get(parentBoard.id) as
+      | BoardConfigRow
+      | undefined;
 
-    const parentRuntime = tfDb
-      .prepare('SELECT * FROM board_runtime_config WHERE board_id = ?')
-      .get(parentBoard.id) as BoardRuntimeConfigRow | undefined;
+    const parentRuntime = tfDb.prepare('SELECT * FROM board_runtime_config WHERE board_id = ?').get(parentBoard.id) as
+      | BoardRuntimeConfigRow
+      | undefined;
 
     if (!parentConfig || !parentRuntime) {
-      logger.warn(
-        { boardId: parentBoard.id },
-        'provision_child_board: parent config/runtime not found',
-      );
+      logger.warn({ boardId: parentBoard.id }, 'provision_child_board: parent config/runtime not found');
       return;
     }
 
     // --- 4. Check person not already registered ---
     const existing = tfDb
-      .prepare(
-        'SELECT 1 FROM child_board_registrations WHERE parent_board_id = ? AND person_id = ?',
-      )
+      .prepare('SELECT 1 FROM child_board_registrations WHERE parent_board_id = ? AND person_id = ?')
       .get(parentBoard.id, personId);
 
     if (existing) {
@@ -183,9 +164,7 @@ const handleProvisionChildBoard: IpcHandler = async (
              AND bp.phone IS NOT NULL`,
         )
         .all(personId, parentBoard.id) as Array<ExistingBoardMatch & { phone: string }>;
-      existingElsewhere = candidates.find(
-        (c) => normalizePhone(c.phone) === canonicalPhone,
-      );
+      existingElsewhere = candidates.find((c) => normalizePhone(c.phone) === canonicalPhone);
     }
 
     // Fallback: match by phone number alone (different person_id string,
@@ -201,9 +180,7 @@ const handleProvisionChildBoard: IpcHandler = async (
                AND cbr.parent_board_id != ?`,
         )
         .all(parentBoard.id) as Array<ExistingBoardMatch & { phone: string }>;
-      existingElsewhere = candidates.find(
-        (c) => normalizePhone(c.phone) === canonicalPhone,
-      );
+      existingElsewhere = candidates.find((c) => normalizePhone(c.phone) === canonicalPhone);
       if (existingElsewhere) {
         logger.info(
           {
@@ -239,47 +216,29 @@ const handleProvisionChildBoard: IpcHandler = async (
           );
           // Check for PK collision before updating
           const alreadyExists = tfDb
-            .prepare(
-              `SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?`,
-            )
+            .prepare(`SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?`)
             .get(parentBoard.id, existingPersonId);
           if (alreadyExists) {
             // Person already exists with the target ID — delete the duplicate
-            tfDb
-              .prepare(
-                `DELETE FROM board_people WHERE board_id = ? AND person_id = ?`,
-              )
-              .run(parentBoard.id, personId);
+            tfDb.prepare(`DELETE FROM board_people WHERE board_id = ? AND person_id = ?`).run(parentBoard.id, personId);
           } else {
             tfDb
-              .prepare(
-                `UPDATE board_people SET person_id = ? WHERE board_id = ? AND person_id = ?`,
-              )
+              .prepare(`UPDATE board_people SET person_id = ? WHERE board_id = ? AND person_id = ?`)
               .run(existingPersonId, parentBoard.id, personId);
           }
           // Update tasks (all columns, including done)
           tfDb
-            .prepare(
-              `UPDATE tasks SET assignee = ? WHERE board_id = ? AND assignee = ?`,
-            )
+            .prepare(`UPDATE tasks SET assignee = ? WHERE board_id = ? AND assignee = ?`)
             .run(existingPersonId, parentBoard.id, personId);
           // Update board_admins — delete old row if target already exists to avoid PK collision
           const existingAdmin = tfDb
-            .prepare(
-              `SELECT 1 FROM board_admins WHERE board_id = ? AND person_id = ?`,
-            )
+            .prepare(`SELECT 1 FROM board_admins WHERE board_id = ? AND person_id = ?`)
             .get(parentBoard.id, existingPersonId);
           if (existingAdmin) {
-            tfDb
-              .prepare(
-                `DELETE FROM board_admins WHERE board_id = ? AND person_id = ?`,
-              )
-              .run(parentBoard.id, personId);
+            tfDb.prepare(`DELETE FROM board_admins WHERE board_id = ? AND person_id = ?`).run(parentBoard.id, personId);
           } else {
             tfDb
-              .prepare(
-                `UPDATE board_admins SET person_id = ? WHERE board_id = ? AND person_id = ?`,
-              )
+              .prepare(`UPDATE board_admins SET person_id = ? WHERE board_id = ? AND person_id = ?`)
               .run(existingPersonId, parentBoard.id, personId);
           }
         }
@@ -302,9 +261,7 @@ const handleProvisionChildBoard: IpcHandler = async (
         const targetGroupJid = existingElsewhere!.group_jid;
         if (targetGroupJid && targetGroupJid !== parentBoard.group_jid) {
           tfDb
-            .prepare(
-              `UPDATE board_people SET notification_group_jid = ? WHERE board_id = ? AND person_id = ?`,
-            )
+            .prepare(`UPDATE board_people SET notification_group_jid = ? WHERE board_id = ? AND person_id = ?`)
             .run(targetGroupJid, parentBoard.id, unifiedId);
         }
 
@@ -314,12 +271,7 @@ const handleProvisionChildBoard: IpcHandler = async (
             `UPDATE tasks SET child_exec_board_id = ?, child_exec_enabled = 1, child_exec_person_id = ?
              WHERE board_id = ? AND assignee = ? AND child_exec_board_id IS NULL`,
           )
-          .run(
-            existingElsewhere!.child_board_id,
-            unifiedId,
-            parentBoard.id,
-            unifiedId,
-          );
+          .run(existingElsewhere!.child_board_id, unifiedId, parentBoard.id, unifiedId);
       });
 
       try {
@@ -355,16 +307,11 @@ const handleProvisionChildBoard: IpcHandler = async (
     }
 
     // Ensure folder uniqueness
-    const existingFolders = new Set(
-      Object.values(registeredGroups).map((g) => g.folder),
-    );
+    const existingFolders = new Set(Object.values(registeredGroups).map((g) => g.folder));
     childGroupFolder = uniqueFolder(childGroupFolder, existingFolders);
 
     if (!isValidGroupFolder(childGroupFolder)) {
-      logger.warn(
-        { childGroupFolder },
-        'provision_child_board: invalid group folder name',
-      );
+      logger.warn({ childGroupFolder }, 'provision_child_board: invalid group folder name');
       return;
     }
 
@@ -374,19 +321,11 @@ const handleProvisionChildBoard: IpcHandler = async (
         : personName + ' - TaskFlow';
 
     // Ensure child group name doesn't duplicate any existing group
-    const existingNames = new Set(
-      Object.values(registeredGroups).map((g) => g.name),
-    );
+    const existingNames = new Set(Object.values(registeredGroups).map((g) => g.name));
     if (existingNames.has(childGroupName)) {
-      const deduplicated = childGroupName.replace(
-        / - TaskFlow$/,
-        ` (${personName}) - TaskFlow`,
-      );
+      const deduplicated = childGroupName.replace(/ - TaskFlow$/, ` (${personName}) - TaskFlow`);
       // If regex didn't match (name doesn't end with " - TaskFlow"), append directly
-      childGroupName =
-        deduplicated !== childGroupName
-          ? deduplicated
-          : `${childGroupName} (${personName})`;
+      childGroupName = deduplicated !== childGroupName ? deduplicated : `${childGroupName} (${personName})`;
     }
 
     const childBoardId = 'board-' + childGroupFolder;
@@ -420,10 +359,7 @@ const handleProvisionChildBoard: IpcHandler = async (
         } catch {}
       }
     } catch (err) {
-      logger.error(
-        { err, childGroupName },
-        'provision_child_board: failed to create WhatsApp group',
-      );
+      logger.error({ err, childGroupName }, 'provision_child_board: failed to create WhatsApp group');
       return;
     }
 
@@ -449,9 +385,7 @@ const handleProvisionChildBoard: IpcHandler = async (
         );
 
       tfDb
-        .prepare(
-          'INSERT INTO child_board_registrations (parent_board_id, person_id, child_board_id) VALUES (?, ?, ?)',
-        )
+        .prepare('INSERT INTO child_board_registrations (parent_board_id, person_id, child_board_id) VALUES (?, ?, ?)')
         .run(parentBoard.id, personId, childBoardId);
 
       tfDb
@@ -505,9 +439,7 @@ const handleProvisionChildBoard: IpcHandler = async (
 
       // Update parent board_people with notification_group_jid
       tfDb
-        .prepare(
-          'UPDATE board_people SET notification_group_jid = ? WHERE board_id = ? AND person_id = ?',
-        )
+        .prepare('UPDATE board_people SET notification_group_jid = ? WHERE board_id = ? AND person_id = ?')
         .run(childGroupJid, parentBoard.id, personId);
 
       // Retroactively link existing tasks assigned to this person
@@ -556,15 +488,9 @@ const handleProvisionChildBoard: IpcHandler = async (
 
     try {
       seedTransaction();
-      logger.info(
-        { childBoardId, parentBoardId: parentBoard.id },
-        'provision_child_board: taskflow DB seeded',
-      );
+      logger.info({ childBoardId, parentBoardId: parentBoard.id }, 'provision_child_board: taskflow DB seeded');
     } catch (err) {
-      logger.error(
-        { err, childBoardId },
-        'provision_child_board: failed to seed taskflow DB',
-      );
+      logger.error({ err, childBoardId }, 'provision_child_board: failed to seed taskflow DB');
       return;
     }
 
@@ -580,15 +506,9 @@ const handleProvisionChildBoard: IpcHandler = async (
         taskflowHierarchyLevel: childLevel,
         taskflowMaxDepth: sourceEntry.taskflowMaxDepth,
       });
-      logger.info(
-        { jid: childGroupJid, folder: childGroupFolder },
-        'provision_child_board: group registered',
-      );
+      logger.info({ jid: childGroupJid, folder: childGroupFolder }, 'provision_child_board: group registered');
     } catch (err) {
-      logger.error(
-        { err, childGroupJid },
-        'provision_child_board: failed to register group',
-      );
+      logger.error({ err, childGroupJid }, 'provision_child_board: failed to register group');
       return;
     }
 
@@ -622,10 +542,7 @@ const handleProvisionChildBoard: IpcHandler = async (
         dstGuardEnabled: !!parentRuntime.dst_sync_enabled,
       });
     } catch (err) {
-      logger.error(
-        { err, childGroupFolder },
-        'provision_child_board: failed to create filesystem',
-      );
+      logger.error({ err, childGroupFolder }, 'provision_child_board: failed to create filesystem');
       // Continue — group and DB are already provisioned
     }
 
@@ -633,10 +550,7 @@ const handleProvisionChildBoard: IpcHandler = async (
     try {
       seedAvailableGroupsJson(childGroupFolder);
     } catch (err) {
-      logger.warn(
-        { err, childGroupFolder },
-        'provision_child_board: failed to seed available_groups.json',
-      );
+      logger.warn({ err, childGroupFolder }, 'provision_child_board: failed to seed available_groups.json');
     }
 
     // --- 10. Schedule runners ---
@@ -653,18 +567,12 @@ const handleProvisionChildBoard: IpcHandler = async (
       });
       logger.info({ childBoardId }, 'provision_child_board: runners scheduled');
     } catch (err) {
-      logger.error(
-        { err },
-        'provision_child_board: failed to schedule runners',
-      );
+      logger.error({ err }, 'provision_child_board: failed to schedule runners');
       // Continue — board is functional without runners
     }
 
     // --- 11. Fix ownership ---
-    fixOwnership(
-      path.join(PROJECT_ROOT, 'groups', childGroupFolder),
-      path.join(DATA_DIR, 'ipc', childGroupFolder),
-    );
+    fixOwnership(path.join(PROJECT_ROOT, 'groups', childGroupFolder), path.join(DATA_DIR, 'ipc', childGroupFolder));
 
     // --- 12. Send confirmation ---
     if (sourceGroupJid) {
@@ -675,10 +583,7 @@ const handleProvisionChildBoard: IpcHandler = async (
           assistantName,
         );
       } catch (err) {
-        logger.error(
-          { err },
-          'provision_child_board: failed to send confirmation',
-        );
+        logger.error({ err }, 'provision_child_board: failed to send confirmation');
       }
     }
 
@@ -689,20 +594,10 @@ const handleProvisionChildBoard: IpcHandler = async (
         `👋 *Bem-vindo ao ${childGroupName}!*\n\nEste é o seu quadro de tarefas pessoal. Aqui você receberá suas tarefas, atualizações e automações (standup, resumo, revisão semanal).\n\nDigite \`ajuda\` para ver os comandos disponíveis.`,
         assistantName,
       );
-      tfDb
-        .prepare(
-          'UPDATE board_runtime_config SET welcome_sent = 1 WHERE board_id = ?',
-        )
-        .run(childBoardId);
-      logger.info(
-        { childGroupJid },
-        'provision_child_board: welcome message sent',
-      );
+      tfDb.prepare('UPDATE board_runtime_config SET welcome_sent = 1 WHERE board_id = ?').run(childBoardId);
+      logger.info({ childGroupJid }, 'provision_child_board: welcome message sent');
     } catch (err) {
-      logger.error(
-        { err },
-        'provision_child_board: failed to send welcome message',
-      );
+      logger.error({ err }, 'provision_child_board: failed to send welcome message');
     }
 
     // --- 14. Schedule onboarding message (30 min after welcome) ---
@@ -713,10 +608,7 @@ const handleProvisionChildBoard: IpcHandler = async (
         timezone: parentRuntime.timezone,
       });
     } catch (err) {
-      logger.error(
-        { err },
-        'provision_child_board: failed to schedule onboarding',
-      );
+      logger.error({ err }, 'provision_child_board: failed to schedule onboarding');
     }
 
     logger.info(
@@ -734,8 +626,6 @@ const handleProvisionChildBoard: IpcHandler = async (
   }
 };
 
-export function register(
-  reg: (type: string, handler: IpcHandler) => void,
-): void {
+export function register(reg: (type: string, handler: IpcHandler) => void): void {
   reg('provision_child_board', handleProvisionChildBoard);
 }

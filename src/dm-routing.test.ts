@@ -75,17 +75,13 @@ describe('resolveExternalDm', () => {
   });
 
   it('returns null for expired grants', () => {
-    db.exec(
-      `UPDATE meeting_external_participants SET invite_status = 'expired'`,
-    );
+    db.exec(`UPDATE meeting_external_participants SET invite_status = 'expired'`);
     const result = resolveExternalDm(db, '5585999991234@s.whatsapp.net');
     expect(result).toBeNull();
   });
 
   it('returns null for revoked grants', () => {
-    db.exec(
-      `UPDATE meeting_external_participants SET invite_status = 'revoked'`,
-    );
+    db.exec(`UPDATE meeting_external_participants SET invite_status = 'revoked'`);
     const result = resolveExternalDm(db, '5585999991234@s.whatsapp.net');
     expect(result).toBeNull();
   });
@@ -106,16 +102,12 @@ describe('resolveExternalDm', () => {
     const result = resolveExternalDm(db, '5585999991234@s.whatsapp.net');
     expect(result).toBeNull();
     // Verify status was updated to expired
-    const row = db
-      .prepare(`SELECT invite_status FROM meeting_external_participants`)
-      .get() as any;
+    const row = db.prepare(`SELECT invite_status FROM meeting_external_participants`).get() as any;
     expect(row.invite_status).toBe('expired');
   });
 
   it('flags needsDisambiguation when active grants span different groups', () => {
-    db.exec(
-      `INSERT INTO boards VALUES ('board-2', '999999999@g.us', 'team-beta', 'standard', NULL, NULL, NULL, NULL)`,
-    );
+    db.exec(`INSERT INTO boards VALUES ('board-2', '999999999@g.us', 'team-beta', 'standard', NULL, NULL, NULL, NULL)`);
     db.exec(
       `INSERT INTO meeting_external_participants VALUES ('board-2', 'M5', '2026-03-20T10:00:00Z', 'ext-1', 'accepted', '2026-03-10', '2026-03-10', NULL, '2026-04-30T10:00:00Z', 'person-2', '2026-03-10', '2026-03-10')`,
     );
@@ -141,11 +133,7 @@ describe('resolveExternalDm', () => {
     expect(result).not.toBeNull();
     expect(result!.externalId).toBe('ext-1');
     // Verify direct_chat_jid was backfilled
-    const row = db
-      .prepare(
-        `SELECT direct_chat_jid FROM external_contacts WHERE external_id = 'ext-1'`,
-      )
-      .get() as any;
+    const row = db.prepare(`SELECT direct_chat_jid FROM external_contacts WHERE external_id = 'ext-1'`).get() as any;
     expect(row.direct_chat_jid).toBe('5585999991234@s.whatsapp.net');
   });
 });

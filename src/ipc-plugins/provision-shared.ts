@@ -7,7 +7,7 @@ import path from 'path';
 import { DATA_DIR, PROJECT_ROOT } from '../config.js';
 import { createTask } from '../db.js';
 import { resolveGroupIpcPath } from '../group-folder.js';
-import { logger } from '../logger.js';
+import { logger } from '../log.js';
 
 export const TASKFLOW_DB_PATH = path.join(DATA_DIR, 'taskflow', 'taskflow.db');
 export const TEMPLATE_PATH = path.join(
@@ -81,9 +81,7 @@ export interface BoardRuntimeConfigRow {
 
 export function nextCronRun(cronExpr: string): string | null {
   try {
-    return CronExpressionParser.parse(cronExpr, { tz: 'UTC' })
-      .next()
-      .toISOString();
+    return CronExpressionParser.parse(cronExpr, { tz: 'UTC' }).next().toISOString();
   } catch {
     return null;
   }
@@ -99,10 +97,7 @@ export function sanitizeFolder(input: string): string {
     .replace(/^-|-$/g, '');
 }
 
-export function uniqueFolder(
-  base: string,
-  existingFolders: Set<string>,
-): string {
+export function uniqueFolder(base: string, existingFolders: Set<string>): string {
   if (!existingFolders.has(base)) return base;
   let suffix = 2;
   while (existingFolders.has(`${base}-${suffix}`)) {
@@ -111,10 +106,7 @@ export function uniqueFolder(
   return `${base}-${suffix}`;
 }
 
-export function generateClaudeMd(
-  templateContent: string,
-  replacements: Record<string, string>,
-): string {
+export function generateClaudeMd(templateContent: string, replacements: Record<string, string>): string {
   let content = templateContent;
   for (const [key, value] of Object.entries(replacements)) {
     content = content.split(key).join(value);
@@ -134,11 +126,7 @@ function onboardingPrompt(filename: string): string {
   return `[TF-ONBOARDING] Read the file /workspace/group/${filename} and send its EXACT contents verbatim to this group via send_message. Do NOT modify, summarize, or add any text — send the file contents as-is. If the file does not exist, do nothing.`;
 }
 
-export function scheduleOnboarding(params: {
-  groupFolder: string;
-  groupJid: string;
-  timezone?: string;
-}): void {
+export function scheduleOnboarding(params: { groupFolder: string; groupJid: string; timezone?: string }): void {
   const now = Date.now();
   const tz = params.timezone || 'America/Fortaleza';
   const day1RunAt = new Date(now + 30 * 60 * 1000);
@@ -189,10 +177,7 @@ export function scheduleOnboarding(params: {
       status: 'active',
       created_at: new Date().toISOString(),
     });
-    logger.info(
-      { taskId: id, file, groupFolder: params.groupFolder, runAt: runAtIso },
-      'Onboarding task scheduled',
-    );
+    logger.info({ taskId: id, file, groupFolder: params.groupFolder, runAt: runAtIso }, 'Onboarding task scheduled');
   }
 }
 
@@ -208,16 +193,7 @@ export interface ScheduleRunnersParams {
 }
 
 export function scheduleRunners(params: ScheduleRunnersParams): void {
-  const {
-    tfDb,
-    boardId,
-    groupFolder,
-    groupJid,
-    standupCronUtc,
-    digestCronUtc,
-    reviewCronUtc,
-    now,
-  } = params;
+  const { tfDb, boardId, groupFolder, groupJid, standupCronUtc, digestCronUtc, reviewCronUtc, now } = params;
   const runners = [
     { prompt: STANDUP_PROMPT, cron: standupCronUtc },
     { prompt: DIGEST_PROMPT, cron: digestCronUtc },
@@ -253,10 +229,7 @@ export function scheduleRunners(params: ScheduleRunnersParams): void {
     )
     .run(standupId, digestId, reviewId, boardId);
 
-  logger.info(
-    { standupId, digestId, reviewId, boardId },
-    'Board runners scheduled',
-  );
+  logger.info({ standupId, digestId, reviewId, boardId }, 'Board runners scheduled');
 }
 
 export interface CreateBoardFilesystemParams {
@@ -288,9 +261,7 @@ export interface CreateBoardFilesystemParams {
   dstGuardEnabled?: boolean;
 }
 
-export function createBoardFilesystem(
-  params: CreateBoardFilesystemParams,
-): void {
+export function createBoardFilesystem(params: CreateBoardFilesystemParams): void {
   const groupDir = path.join(PROJECT_ROOT, 'groups', params.groupFolder);
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
@@ -337,25 +308,16 @@ export function createBoardFilesystem(
       '{{STANDUP_CRON_LOCAL}}': params.standupCronLocal,
       '{{DIGEST_CRON_LOCAL}}': params.digestCronLocal,
       '{{REVIEW_CRON_LOCAL}}': params.reviewCronLocal,
-      '{{ATTACHMENT_IMPORT_ENABLED}}': params.attachmentEnabled
-        ? 'true'
-        : 'false',
+      '{{ATTACHMENT_IMPORT_ENABLED}}': params.attachmentEnabled ? 'true' : 'false',
       '{{ATTACHMENT_IMPORT_REASON}}': params.attachmentReason || '',
-      '{{DST_GUARD_ENABLED}}':
-        params.dstGuardEnabled !== false ? 'true' : 'false',
+      '{{DST_GUARD_ENABLED}}': params.dstGuardEnabled !== false ? 'true' : 'false',
     };
     const claudeMd = generateClaudeMd(template, replacements);
     fs.writeFileSync(path.join(groupDir, 'CLAUDE.md'), claudeMd);
-    logger.info(
-      { path: path.join(groupDir, 'CLAUDE.md') },
-      'CLAUDE.md generated',
-    );
+    logger.info({ path: path.join(groupDir, 'CLAUDE.md') }, 'CLAUDE.md generated');
   } catch (templateErr: any) {
     if (templateErr?.code === 'ENOENT') {
-      logger.warn(
-        { templatePath: TEMPLATE_PATH },
-        'Template not found, skipping CLAUDE.md generation',
-      );
+      logger.warn({ templatePath: TEMPLATE_PATH }, 'Template not found, skipping CLAUDE.md generation');
     } else {
       throw templateErr;
     }
@@ -374,10 +336,7 @@ export function seedAvailableGroupsJson(groupFolder: string): void {
 
 export function fixOwnership(...paths: string[]): void {
   try {
-    execSync(
-      `chown -R nanoclaw:nanoclaw ${paths.map((p) => JSON.stringify(p)).join(' ')}`,
-      { timeout: 5000 },
-    );
+    execSync(`chown -R nanoclaw:nanoclaw ${paths.map((p) => JSON.stringify(p)).join(' ')}`, { timeout: 5000 });
   } catch {
     // Best-effort; may fail if not running as root
   }

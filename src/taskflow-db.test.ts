@@ -18,13 +18,9 @@ describe('initTaskflowDb', () => {
 
   it('creates board_people with notification_group_jid', () => {
     const db = initTaskflowDb(':memory:');
-    const columns = db
-      .prepare(`PRAGMA table_info(board_people)`)
-      .all() as Array<{ name: string }>;
+    const columns = db.prepare(`PRAGMA table_info(board_people)`).all() as Array<{ name: string }>;
 
-    expect(columns.map((column) => column.name)).toContain(
-      'notification_group_jid',
-    );
+    expect(columns.map((column) => column.name)).toContain('notification_group_jid');
 
     db.close();
   });
@@ -35,9 +31,7 @@ describe('initTaskflowDb', () => {
       name: string;
     }>;
 
-    expect(columns.map((column) => column.name)).toContain(
-      'requires_close_approval',
-    );
+    expect(columns.map((column) => column.name)).toContain('requires_close_approval');
 
     db.close();
   });
@@ -68,9 +62,7 @@ describe('initTaskflowDb', () => {
     legacyDb.close();
 
     const db = initTaskflowDb(dbPath);
-    const columns = db
-      .prepare(`PRAGMA table_info(board_people)`)
-      .all() as Array<{ name: string }>;
+    const columns = db.prepare(`PRAGMA table_info(board_people)`).all() as Array<{ name: string }>;
     const person = db
       .prepare(
         `SELECT person_id, name, notification_group_jid
@@ -83,9 +75,7 @@ describe('initTaskflowDb', () => {
       notification_group_jid: string | null;
     };
 
-    expect(columns.map((column) => column.name)).toContain(
-      'notification_group_jid',
-    );
+    expect(columns.map((column) => column.name)).toContain('notification_group_jid');
     expect(person).toEqual({
       person_id: 'p1',
       name: 'Pat',
@@ -171,9 +161,7 @@ describe('initTaskflowDb', () => {
 
     const db = initTaskflowDb(dbPath);
     const rows = db
-      .prepare(
-        `SELECT id, requires_close_approval FROM tasks WHERE board_id = ? ORDER BY id`,
-      )
+      .prepare(`SELECT id, requires_close_approval FROM tasks WHERE board_id = ? ORDER BY id`)
       .all('board-1') as Array<{ id: string; requires_close_approval: number }>;
 
     expect(rows).toEqual([
@@ -271,9 +259,9 @@ describe('initTaskflowDb', () => {
       child_exec_enabled: number;
       child_exec_board_id: string | null;
     };
-    const parent = db
-      .prepare(`SELECT subtasks FROM tasks WHERE board_id = ? AND id = ?`)
-      .get('board-1', 'P16') as { subtasks: string | null };
+    const parent = db.prepare(`SELECT subtasks FROM tasks WHERE board_id = ? AND id = ?`).get('board-1', 'P16') as {
+      subtasks: string | null;
+    };
 
     expect(columns.map((column) => column.name)).toContain('parent_task_id');
     expect(subtask).toEqual({
@@ -374,9 +362,9 @@ describe('initTaskflowDb', () => {
       child_exec_board_id: string | null;
       column: string;
     };
-    const parent = db
-      .prepare(`SELECT subtasks FROM tasks WHERE board_id = ? AND id = ?`)
-      .get('board-1', 'P16') as { subtasks: string | null };
+    const parent = db.prepare(`SELECT subtasks FROM tasks WHERE board_id = ? AND id = ?`).get('board-1', 'P16') as {
+      subtasks: string | null;
+    };
 
     expect(subtask).toEqual({
       title: 'Call Jimmy',
@@ -561,9 +549,7 @@ describe('initTaskflowDb', () => {
 
     const db = initTaskflowDb(dbPath);
     const subtask = db
-      .prepare(
-        `SELECT id, priority FROM tasks WHERE board_id = ? AND id = ?`,
-      )
+      .prepare(`SELECT id, priority FROM tasks WHERE board_id = ? AND id = ?`)
       .get('board-1', 'P20.1') as { id: string; priority: string | null };
 
     expect(subtask).toEqual({ id: 'P20.1', priority: 'high' });
@@ -642,9 +628,7 @@ describe('initTaskflowDb', () => {
 
     // Verify existing data is intact and new columns are NULL
     const task = db
-      .prepare(
-        `SELECT title, recurrence_anchor, participants, scheduled_at FROM tasks WHERE board_id = ? AND id = ?`,
-      )
+      .prepare(`SELECT title, recurrence_anchor, participants, scheduled_at FROM tasks WHERE board_id = ? AND id = ?`)
       .get('board-1', 'T1') as {
       title: string;
       recurrence_anchor: string | null;
@@ -693,30 +677,24 @@ describe('initTaskflowDb', () => {
 
     const db = initTaskflowDb(dbPath);
 
-    const person = db
-      .prepare('SELECT phone FROM board_people WHERE person_id = ?')
-      .get('reg') as { phone: string };
-    const admin = db
-      .prepare('SELECT phone FROM board_admins WHERE person_id = ?')
-      .get('reg') as { phone: string };
-    const maria = db
-      .prepare('SELECT phone FROM external_contacts WHERE external_id = ?')
-      .get('ext-1') as { phone: string };
-    const joao = db
-      .prepare('SELECT phone FROM external_contacts WHERE external_id = ?')
-      .get('ext-2') as { phone: string };
+    const person = db.prepare('SELECT phone FROM board_people WHERE person_id = ?').get('reg') as { phone: string };
+    const admin = db.prepare('SELECT phone FROM board_admins WHERE person_id = ?').get('reg') as { phone: string };
+    const maria = db.prepare('SELECT phone FROM external_contacts WHERE external_id = ?').get('ext-1') as {
+      phone: string;
+    };
+    const joao = db.prepare('SELECT phone FROM external_contacts WHERE external_id = ?').get('ext-2') as {
+      phone: string;
+    };
 
-    expect(person.phone).toBe('5586999986334');  // already canonical, untouched
-    expect(admin.phone).toBe('5586999986334');   // 11d → prepended 55
-    expect(maria.phone).toBe('5585999991234');   // stripped formatting
-    expect(joao.phone).toBe('5586999032890');    // 11d → prepended 55
+    expect(person.phone).toBe('5586999986334'); // already canonical, untouched
+    expect(admin.phone).toBe('5586999986334'); // 11d → prepended 55
+    expect(maria.phone).toBe('5585999991234'); // stripped formatting
+    expect(joao.phone).toBe('5586999032890'); // 11d → prepended 55
 
     // Second run is a fixed-point (idempotent migration).
     db.close();
     const db2 = initTaskflowDb(dbPath);
-    const person2 = db2
-      .prepare('SELECT phone FROM board_people WHERE person_id = ?')
-      .get('reg') as { phone: string };
+    const person2 = db2.prepare('SELECT phone FROM board_people WHERE person_id = ?').get('reg') as { phone: string };
     expect(person2.phone).toBe('5586999986334');
     db2.close();
   });
@@ -756,7 +734,7 @@ describe('initTaskflowDb', () => {
     expect(phones).toEqual([
       { board_id: 'b-1', phone: '5586999986334' },
       { board_id: 'b-2', phone: '5586999986334' },
-      { board_id: 'b-3', phone: '5586999986334' },  // now canonicalized
+      { board_id: 'b-3', phone: '5586999986334' }, // now canonicalized
     ]);
     db.close();
   });
@@ -786,15 +764,15 @@ describe('initTaskflowDb', () => {
     // Must not throw.
     const db = initTaskflowDb(dbPath);
 
-    const alice = db
-      .prepare('SELECT phone FROM external_contacts WHERE external_id = ?')
-      .get('ext-alice') as { phone: string };
-    const bob = db
-      .prepare('SELECT phone FROM external_contacts WHERE external_id = ?')
-      .get('ext-bob') as { phone: string };
+    const alice = db.prepare('SELECT phone FROM external_contacts WHERE external_id = ?').get('ext-alice') as {
+      phone: string;
+    };
+    const bob = db.prepare('SELECT phone FROM external_contacts WHERE external_id = ?').get('ext-bob') as {
+      phone: string;
+    };
 
-    expect(alice.phone).toBe('5585999991234');  // canonical — untouched
-    expect(bob.phone).toBe('85999991234');      // SKIPPED — would have collided
+    expect(alice.phone).toBe('5585999991234'); // canonical — untouched
+    expect(bob.phone).toBe('85999991234'); // SKIPPED — would have collided
     db.close();
   });
 });

@@ -66,8 +66,7 @@ describe('create_group IPC plugin', () => {
       getAvailableGroups: () => [],
       writeGroupsSnapshot: () => {},
       onTasksChanged: () => {},
-      createGroup: async (subject, participants) =>
-        createGroup(subject, participants),
+      createGroup: async (subject, participants) => createGroup(subject, participants),
     };
   });
 
@@ -75,10 +74,7 @@ describe('create_group IPC plugin', () => {
     await handler(
       {
         subject: '  Ops War Room  ',
-        participants: [
-          '5585999998888@s.whatsapp.net',
-          '5585999997777@s.whatsapp.net',
-        ],
+        participants: ['5585999998888@s.whatsapp.net', '5585999997777@s.whatsapp.net'],
       },
       'main',
       true,
@@ -104,9 +100,7 @@ describe('create_group IPC plugin', () => {
     );
 
     expect(createGroup).toHaveBeenCalledOnce();
-    expect(createGroup).toHaveBeenCalledWith('Ops - TaskFlow', [
-      '5585999998888@s.whatsapp.net',
-    ]);
+    expect(createGroup).toHaveBeenCalledWith('Ops - TaskFlow', ['5585999998888@s.whatsapp.net']);
   });
 
   it('does not double-append TaskFlow suffix', async () => {
@@ -121,9 +115,7 @@ describe('create_group IPC plugin', () => {
     );
 
     expect(createGroup).toHaveBeenCalledOnce();
-    expect(createGroup).toHaveBeenCalledWith('Ops - TaskFlow', [
-      '5585999998888@s.whatsapp.net',
-    ]);
+    expect(createGroup).toHaveBeenCalledWith('Ops - TaskFlow', ['5585999998888@s.whatsapp.net']);
   });
 
   it('blocks TaskFlow groups at their max hierarchy depth', async () => {
@@ -162,9 +154,7 @@ describe('create_group IPC plugin', () => {
     );
 
     expect(createGroup).toHaveBeenCalledOnce();
-    expect(createGroup).toHaveBeenCalledWith('Ops - TaskFlow', [
-      '5585999998888@s.whatsapp.net',
-    ]);
+    expect(createGroup).toHaveBeenCalledWith('Ops - TaskFlow', ['5585999998888@s.whatsapp.net']);
   });
 
   it('does not add TaskFlow suffix for main group', async () => {
@@ -179,9 +169,7 @@ describe('create_group IPC plugin', () => {
     );
 
     expect(createGroup).toHaveBeenCalledOnce();
-    expect(createGroup).toHaveBeenCalledWith('Ops', [
-      '5585999998888@s.whatsapp.net',
-    ]);
+    expect(createGroup).toHaveBeenCalledWith('Ops', ['5585999998888@s.whatsapp.net']);
   });
 
   it('blocks non-main groups without the TaskFlow marker', async () => {
@@ -230,10 +218,7 @@ describe('create_group IPC plugin', () => {
     await handler(
       {
         subject: 'Ops',
-        participants: [
-          '5585999998888@s.whatsapp.net',
-          '5585999998888@s.whatsapp.net',
-        ],
+        participants: ['5585999998888@s.whatsapp.net', '5585999998888@s.whatsapp.net'],
       },
       'main',
       true,
@@ -251,10 +236,7 @@ describe('create_group IPC plugin', () => {
     await handler(
       {
         subject: 'Ops',
-        participants: [
-          '5585111111111@s.whatsapp.net',
-          '5585222222222@s.whatsapp.net',
-        ],
+        participants: ['5585111111111@s.whatsapp.net', '5585222222222@s.whatsapp.net'],
       },
       'main',
       true,

@@ -19,11 +19,7 @@ import {
  * Anchored to a fixed date (far from DST boundaries) so the result
  * doesn't drift with the test's clock.
  */
-function nextWallClock(
-  cron: string,
-  cronTz: string,
-  viewerTz: string,
-): string {
+function nextWallClock(cron: string, cronTz: string, viewerTz: string): string {
   const anchor = new Date('2026-06-15T00:00:00.000Z');
   const it = CronExpressionParser.parse(cron, {
     tz: cronTz,
@@ -70,14 +66,8 @@ describe('provision_root_board default cron schedules', () => {
   });
 
   it('UTC defaults match their LOCAL counterparts wall-clock (Fortaleza)', () => {
-    expect(nextWallClock(DEFAULT_STANDUP_UTC, 'UTC', TZ)).toBe(
-      nextWallClock(DEFAULT_STANDUP_LOCAL, TZ, TZ),
-    );
-    expect(nextWallClock(DEFAULT_DIGEST_UTC, 'UTC', TZ)).toBe(
-      nextWallClock(DEFAULT_DIGEST_LOCAL, TZ, TZ),
-    );
-    expect(nextWallClock(DEFAULT_REVIEW_UTC, 'UTC', TZ)).toBe(
-      nextWallClock(DEFAULT_REVIEW_LOCAL, TZ, TZ),
-    );
+    expect(nextWallClock(DEFAULT_STANDUP_UTC, 'UTC', TZ)).toBe(nextWallClock(DEFAULT_STANDUP_LOCAL, TZ, TZ));
+    expect(nextWallClock(DEFAULT_DIGEST_UTC, 'UTC', TZ)).toBe(nextWallClock(DEFAULT_DIGEST_LOCAL, TZ, TZ));
+    expect(nextWallClock(DEFAULT_REVIEW_UTC, 'UTC', TZ)).toBe(nextWallClock(DEFAULT_REVIEW_LOCAL, TZ, TZ));
   });
 });

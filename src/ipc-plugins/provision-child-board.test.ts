@@ -19,17 +19,12 @@ const { TEST_DB_DIR, TEST_DB_PATH } = vi.hoisted(() => {
   const pathMod = require('path') as typeof import('path');
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const osMod = require('os') as typeof import('os');
-  const dir = fsMod.mkdtempSync(
-    pathMod.join(osMod.tmpdir(), 'provision-child-board-test-'),
-  );
+  const dir = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'provision-child-board-test-'));
   return { TEST_DB_DIR: dir, TEST_DB_PATH: pathMod.join(dir, 'taskflow.db') };
 });
 
 vi.mock('./provision-shared.js', async () => {
-  const actual =
-    await vi.importActual<typeof import('./provision-shared.js')>(
-      './provision-shared.js',
-    );
+  const actual = await vi.importActual<typeof import('./provision-shared.js')>('./provision-shared.js');
   return {
     ...actual,
     TASKFLOW_DB_PATH: TEST_DB_PATH,
@@ -68,8 +63,7 @@ describe('provision_child_board IPC plugin', () => {
     register((type, candidate) => {
       if (type === 'provision_child_board') registered = candidate;
     });
-    if (!registered)
-      throw new Error('provision_child_board handler not registered');
+    if (!registered) throw new Error('provision_child_board handler not registered');
     handler = registered;
 
     createGroup = vi.fn(async (subject: string, participants: string[]) => ({
@@ -169,52 +163,27 @@ describe('provision_child_board IPC plugin', () => {
   });
 
   it('rejects missing person_id', async () => {
-    await handler(
-      { ...validData, person_id: '' },
-      'parent-taskflow',
-      false,
-      deps,
-    );
+    await handler({ ...validData, person_id: '' }, 'parent-taskflow', false, deps);
     expect(createGroup).not.toHaveBeenCalled();
   });
 
   it('rejects missing person_name', async () => {
-    await handler(
-      { ...validData, person_name: '' },
-      'parent-taskflow',
-      false,
-      deps,
-    );
+    await handler({ ...validData, person_name: '' }, 'parent-taskflow', false, deps);
     expect(createGroup).not.toHaveBeenCalled();
   });
 
   it('rejects missing person_phone', async () => {
-    await handler(
-      { ...validData, person_phone: '' },
-      'parent-taskflow',
-      false,
-      deps,
-    );
+    await handler({ ...validData, person_phone: '' }, 'parent-taskflow', false, deps);
     expect(createGroup).not.toHaveBeenCalled();
   });
 
   it('rejects missing person_role', async () => {
-    await handler(
-      { ...validData, person_role: '' },
-      'parent-taskflow',
-      false,
-      deps,
-    );
+    await handler({ ...validData, person_role: '' }, 'parent-taskflow', false, deps);
     expect(createGroup).not.toHaveBeenCalled();
   });
 
   it('rejects non-string fields', async () => {
-    await handler(
-      { ...validData, person_id: 123 },
-      'parent-taskflow',
-      false,
-      deps,
-    );
+    await handler({ ...validData, person_id: 123 }, 'parent-taskflow', false, deps);
     expect(createGroup).not.toHaveBeenCalled();
   });
 });
@@ -311,20 +280,10 @@ describe('provision_child_board cross-board person matching', () => {
     db.prepare(
       'INSERT INTO boards (id, group_jid, group_folder, hierarchy_level, max_depth) VALUES (?, ?, ?, ?, ?)',
     ).run('board-parent-a', 'parent-a@g.us', 'parent-a-taskflow', 1, 3);
-    db.prepare(
-      'INSERT INTO board_config (board_id, wip_limit) VALUES (?, ?)',
-    ).run('board-parent-a', 5);
+    db.prepare('INSERT INTO board_config (board_id, wip_limit) VALUES (?, ?)').run('board-parent-a', 5);
     db.prepare(
       `INSERT INTO board_runtime_config (board_id, standup_cron_local, digest_cron_local, review_cron_local, standup_cron_utc, digest_cron_utc, review_cron_utc) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      'board-parent-a',
-      '0 9 * * 1-5',
-      '0 18 * * 1-5',
-      '0 9 * * 1',
-      '0 12 * * 1-5',
-      '0 21 * * 1-5',
-      '0 12 * * 1',
-    );
+    ).run('board-parent-a', '0 9 * * 1-5', '0 18 * * 1-5', '0 9 * * 1', '0 12 * * 1-5', '0 21 * * 1-5', '0 12 * * 1');
 
     // Parent B — unrelated parent board that already owns a child for a
     // different person who happens to share the person_id "joao".
@@ -335,20 +294,11 @@ describe('provision_child_board cross-board person matching', () => {
     // Parent B's child: person_id "joao" = Joana Santos, phone 5522222222222.
     db.prepare(
       'INSERT INTO boards (id, group_jid, group_folder, hierarchy_level, max_depth, parent_board_id) VALUES (?, ?, ?, ?, ?, ?)',
-    ).run(
-      'board-parent-b-joao',
-      'parent-b-joao@g.us',
-      'parent-b-joao-taskflow',
-      2,
-      3,
-      'board-parent-b',
-    );
+    ).run('board-parent-b-joao', 'parent-b-joao@g.us', 'parent-b-joao-taskflow', 2, 3, 'board-parent-b');
     db.prepare(
       'INSERT INTO child_board_registrations (parent_board_id, person_id, child_board_id) VALUES (?, ?, ?)',
     ).run('board-parent-b', 'joao', 'board-parent-b-joao');
-    db.prepare(
-      'INSERT INTO board_people (board_id, person_id, name, phone, role) VALUES (?, ?, ?, ?, ?)',
-    ).run(
+    db.prepare('INSERT INTO board_people (board_id, person_id, name, phone, role) VALUES (?, ?, ?, ?, ?)').run(
       'board-parent-b-joao',
       'joao',
       'Joana Santos',
@@ -498,9 +448,9 @@ describe('provision_child_board cross-board person matching', () => {
 
     return handler(
       {
-        person_id: 'joao_silva',            // renamed from 'joao'
+        person_id: 'joao_silva', // renamed from 'joao'
         person_name: 'João Silva',
-        person_phone: '5522222222222',      // same phone as Parent B's joao
+        person_phone: '5522222222222', // same phone as Parent B's joao
         person_role: 'desenvolvedor',
       },
       'parent-a-taskflow',
@@ -541,9 +491,9 @@ describe('provision_child_board cross-board person matching', () => {
 
     await handler(
       {
-        person_id: 'joao_silva',           // different from Parent B's 'joao'
-        person_name: 'João Silva',          // Parent B has 'Joana Santos'
-        person_phone: '5511111111111',      // Parent B has 5522222222222
+        person_id: 'joao_silva', // different from Parent B's 'joao'
+        person_name: 'João Silva', // Parent B has 'Joana Santos'
+        person_phone: '5511111111111', // Parent B has 5522222222222
         person_role: 'desenvolvedor',
       },
       'parent-a-taskflow',

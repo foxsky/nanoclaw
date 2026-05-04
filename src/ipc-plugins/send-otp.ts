@@ -1,5 +1,5 @@
 import type { IpcHandler } from '../ipc.js';
-import { logger } from '../logger.js';
+import { logger } from '../log.js';
 
 function normalizePhone(phone: unknown): string | null {
   if (typeof phone !== 'string') return null;
@@ -15,10 +15,7 @@ function normalizeMessage(message: unknown): string | null {
 
 const handleSendOtp: IpcHandler = async (data, sourceGroup, isMain, deps) => {
   if (!isMain) {
-    logger.warn(
-      { sourceGroup },
-      'send_otp: only main group may send OTP messages',
-    );
+    logger.warn({ sourceGroup }, 'send_otp: only main group may send OTP messages');
     return;
   }
 
@@ -30,10 +27,7 @@ const handleSendOtp: IpcHandler = async (data, sourceGroup, isMain, deps) => {
   const phone = normalizePhone(data.phone);
   const message = normalizeMessage(data.message);
   if (!phone || !message) {
-    logger.warn(
-      { sourceGroup, hasPhone: !!phone, hasMessage: !!message },
-      'send_otp: invalid payload',
-    );
+    logger.warn({ sourceGroup, hasPhone: !!phone, hasMessage: !!message }, 'send_otp: invalid payload');
     return;
   }
 
@@ -47,8 +41,6 @@ const handleSendOtp: IpcHandler = async (data, sourceGroup, isMain, deps) => {
   logger.info({ jid, sourceGroup }, 'OTP delivered via IPC');
 };
 
-export function register(
-  reg: (type: string, handler: IpcHandler) => void,
-): void {
+export function register(reg: (type: string, handler: IpcHandler) => void): void {
   reg('send_otp', handleSendOtp);
 }
