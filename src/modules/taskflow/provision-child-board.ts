@@ -8,10 +8,10 @@ import { getAgentGroup, getAllAgentGroups } from '../../db/agent-groups.js';
 import { getAllMessagingGroups, getMessagingGroup } from '../../db/messaging-groups.js';
 import { initGroupFilesystem } from '../../group-init.js';
 import { log } from '../../log.js';
-import { normalizePhone, phoneToWhatsAppJid } from '../../phone.js';
+import { normalizePhone } from '../../phone.js';
 import type { Session } from '../../types.js';
 import {
-  buildWelcomeMessage,
+  buildChildWelcomeMessage,
   createBoardFilesystem,
   deliverPlainText,
   fixOwnership,
@@ -430,9 +430,11 @@ export async function handleProvisionChildBoard(
 
     let createResult: Awaited<ReturnType<NonNullable<typeof adapter.createGroup>>>;
     try {
+      // v1 child fallback used the raw personPhone when canonicalize-empty
+      // (e.g. non-digit input); preserve that semantic so behavior matches v1.
       const participantJid = adapter.resolvePhoneJid
         ? await adapter.resolvePhoneJid(parsed.personPhone)
-        : phoneToWhatsAppJid(parsed.personPhone);
+        : `${parsed.canonicalPhone || parsed.personPhone}@s.whatsapp.net`;
       createResult = await adapter.createGroup(childGroupName, [participantJid]);
       log.info('provision_child_board: WhatsApp group created', {
         jid: createResult.jid,
@@ -566,7 +568,7 @@ export async function handleProvisionChildBoard(
     }
 
     try {
-      await deliverPlainText(adapter, childGroupJid, buildWelcomeMessage(childGroupName));
+      await deliverPlainText(adapter, childGroupJid, buildChildWelcomeMessage(childGroupName));
       markWelcomeSent(tfDb, childBoardId);
     } catch (err) {
       log.error('provision_child_board: failed to send welcome (non-fatal)', { err });

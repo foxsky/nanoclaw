@@ -370,8 +370,12 @@ export function markWelcomeSent(tfDb: Database.Database, boardId: string): void 
   tfDb.prepare('UPDATE board_runtime_config SET welcome_sent = 1 WHERE board_id = ?').run(boardId);
 }
 
-export function buildWelcomeMessage(groupName: string, lead = 'Bem-vindo ao'): string {
-  return `👋 *${lead} ${groupName}!*\n\nEste é o seu quadro de tarefas. Aqui você receberá tarefas, atualizações e automações (standup, resumo, revisão semanal).\n\nDigite \`ajuda\` para ver os comandos disponíveis.`;
+export function buildRootWelcomeMessage(groupName: string): string {
+  return `👋 *Bem-vindo ao ${groupName}!*\n\nEste é o seu quadro de tarefas. Aqui você receberá tarefas, atualizações e automações (standup, resumo, revisão semanal).\n\nDigite \`ajuda\` para ver os comandos disponíveis.`;
+}
+
+export function buildChildWelcomeMessage(groupName: string): string {
+  return `👋 *Bem-vindo ao ${groupName}!*\n\nEste é o seu quadro de tarefas pessoal. Aqui você receberá suas tarefas, atualizações e automações (standup, resumo, revisão semanal).\n\nDigite \`ajuda\` para ver os comandos disponíveis.`;
 }
 
 export interface WireV2Params {

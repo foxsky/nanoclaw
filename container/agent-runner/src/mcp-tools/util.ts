@@ -1,7 +1,3 @@
-/**
- * Shared helpers for MCP tool implementations. Each tool file used to
- * inline these — pull-up keeps tool surface focused on the tool itself.
- */
 export function log(msg: string): void {
   console.error(`[mcp-tools] ${msg}`);
 }

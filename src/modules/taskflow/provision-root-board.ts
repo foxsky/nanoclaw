@@ -13,7 +13,7 @@ import { normalizePhone, phoneToWhatsAppJid } from '../../phone.js';
 import type { Session } from '../../types.js';
 import { checkMainControlSession } from './permission.js';
 import {
-  buildWelcomeMessage,
+  buildRootWelcomeMessage,
   createBoardFilesystem,
   deliverPlainText,
   fixOwnership,
@@ -353,7 +353,7 @@ export async function handleProvisionRootBoard(
 
     // Welcome to the new board's chat + flip welcome_sent.
     try {
-      await deliverPlainText(adapter, groupJid, buildWelcomeMessage(parsed.subject));
+      await deliverPlainText(adapter, groupJid, buildRootWelcomeMessage(parsed.subject));
       markWelcomeSent(tfDb, boardId);
     } catch (err) {
       log.error('provision_root_board: failed to send welcome (non-fatal)', { err });
