@@ -27,6 +27,18 @@ export interface MessagingGroup {
    * the column itself defaults to NULL in SQLite.
    */
   denied_at?: string | null;
+  /**
+   * 1 = this chat is the operator's main control chat. Privileged actions
+   * (currently send_otp; 4 more in flight via skill/taskflow-v2) require
+   * the calling session's `messaging_group_id` to point at the row with
+   * value 1. At most one row may have value 1 (enforced by partial unique
+   * index — see src/db/migrations/module-taskflow-main-control.ts).
+   *
+   * Reintroduces v1 `registered_groups.isMain` semantics. Optional on the
+   * TS type so pre-migration callers that build MessagingGroup literals
+   * (tests, fixtures) don't need to update; the column defaults to 0.
+   */
+  is_main_control?: number;
   created_at: string;
 }
 

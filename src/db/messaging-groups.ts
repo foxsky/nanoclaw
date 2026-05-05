@@ -18,7 +18,16 @@ import { getDb, hasTable } from './connection.js';
 
 // ── Messaging Groups ──
 
-export function createMessagingGroup(group: MessagingGroup): void {
+/**
+ * `is_main_control` is omitted from the create-time input because it has a
+ * column DEFAULT (0) and is set later via `setMainControlMessagingGroup`
+ * once an admin (or skill bootstrap step) designates the operator's main
+ * chat. Keeping it out of the insert path means callers don't accidentally
+ * promote a non-main row by passing `is_main_control: 1` in the input
+ * literal — the only legitimate path is the dedicated setter, which
+ * enforces atomicity via the partial unique index.
+ */
+export function createMessagingGroup(group: Omit<MessagingGroup, 'is_main_control'>): void {
   getDb()
     .prepare(
       `INSERT INTO messaging_groups (id, channel_type, platform_id, name, is_group, unknown_sender_policy, created_at)
@@ -35,6 +44,42 @@ export function getMessagingGroupByPlatform(channelType: string, platformId: str
   return getDb()
     .prepare('SELECT * FROM messaging_groups WHERE channel_type = ? AND platform_id = ?')
     .get(channelType, platformId) as MessagingGroup | undefined;
+}
+
+/**
+ * Designate `id` as THE main control messaging group (v1 isMain parity).
+ * Atomically clears any existing main and sets the new one in a single
+ * transaction so the partial unique index never sees a transient two-main
+ * state.
+ *
+ * Throws if the target id doesn't exist (fail-closed against typos).
+ *
+ * Designed to be called by:
+ *   - Skill bootstrap step (one-time during install).
+ *   - Admin command path (operator can re-designate later).
+ */
+export function setMainControlMessagingGroup(id: string): void {
+  const db = getDb();
+  db.transaction(() => {
+    const exists = db.prepare('SELECT 1 FROM messaging_groups WHERE id = ?').get(id);
+    if (!exists) {
+      throw new Error(`setMainControlMessagingGroup: messaging group "${id}" does not exist`);
+    }
+    db.prepare('UPDATE messaging_groups SET is_main_control = 0 WHERE is_main_control = 1').run();
+    db.prepare('UPDATE messaging_groups SET is_main_control = 1 WHERE id = ?').run(id);
+  })();
+}
+
+/**
+ * Returns the current main control messaging group, or undefined if none
+ * has been designated yet (fresh install before bootstrap, or operator
+ * cleared it). Privileged-action handlers MUST treat undefined as a
+ * fail-closed signal — drop the action with a warn log.
+ */
+export function getMainControlMessagingGroup(): MessagingGroup | undefined {
+  return getDb().prepare('SELECT * FROM messaging_groups WHERE is_main_control = 1').get() as
+    | MessagingGroup
+    | undefined;
 }
 
 /**
