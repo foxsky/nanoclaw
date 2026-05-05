@@ -5,26 +5,29 @@ import type DatabaseType from 'better-sqlite3';
 
 import { DATA_DIR, GROUPS_DIR } from '../../config.js';
 import { getChannelAdapter } from '../../channels/channel-registry.js';
-import { createAgentGroup, getAllAgentGroups } from '../../db/agent-groups.js';
-import { createMessagingGroup, createMessagingGroupAgent, getMessagingGroup } from '../../db/messaging-groups.js';
-import { isValidGroupFolder } from '../../group-folder.js';
+import { getAllAgentGroups } from '../../db/agent-groups.js';
+import { getMessagingGroup } from '../../db/messaging-groups.js';
 import { initGroupFilesystem } from '../../group-init.js';
 import { log } from '../../log.js';
-import { normalizePhone } from '../../phone.js';
+import { normalizePhone, phoneToWhatsAppJid } from '../../phone.js';
 import type { Session } from '../../types.js';
 import { checkMainControlSession } from './permission.js';
 import {
+  buildWelcomeMessage,
   createBoardFilesystem,
+  deliverPlainText,
   fixOwnership,
+  markWelcomeSent,
   PARTICIPANT_JID_PATTERN,
+  pickUniqueAgentFolder,
   sanitizeFolder,
   scheduleOnboarding,
   scheduleRunners,
   TASKFLOW_DB_PATH,
   TASKFLOW_SUFFIX,
-  uniqueFolder,
+  wireV2,
 } from './provision-shared.js';
-import { newTaskId, nonEmptyString } from './util.js';
+import { newTaskId, nonEmptyString, requireFields } from './util.js';
 
 const DEFAULT_STANDUP_LOCAL = '0 8 * * 1-5';
 const DEFAULT_DIGEST_LOCAL = '0 18 * * 1-5';
@@ -63,9 +66,7 @@ interface ParsedInput {
 }
 
 function parseInput(content: Record<string, unknown>): ParsedInput | null {
-  for (const field of REQUIRED) {
-    if (!nonEmptyString(content[field])) return null;
-  }
+  if (!requireFields(content, REQUIRED)) return null;
   let subject = nonEmptyString(content.subject)!;
   if (!subject.endsWith(TASKFLOW_SUFFIX)) {
     const suffixed = subject + TASKFLOW_SUFFIX;
@@ -106,32 +107,11 @@ function parseInput(content: Record<string, unknown>): ParsedInput | null {
 
 function computeFolder(parsed: ParsedInput): string | null {
   const base = parsed.groupFolderOverride || sanitizeFolder(parsed.shortCode) + '-taskflow';
-  // agent_groups.folder is the on-disk identity for groups/<folder>/ — the v2
-  // source of truth for folder collision. messaging_groups don't carry a
-  // folder column; using their name would miss collisions for already-created
-  // agent groups.
-  const existing = new Set(getAllAgentGroups().map((ag) => ag.folder));
-  const folder = uniqueFolder(base, existing);
-  return isValidGroupFolder(folder) ? folder : null;
-}
-
-function buildWelcomeMessage(subject: string): string {
-  return `👋 *Bem-vindo ao ${subject}!*\n\nEste é o seu quadro de tarefas. Aqui você receberá tarefas, atualizações e automações (standup, resumo, revisão semanal).\n\nDigite \`ajuda\` para ver os comandos disponíveis.`;
+  return pickUniqueAgentFolder(base, new Set(getAllAgentGroups().map((ag) => ag.folder)));
 }
 
 function buildConfirmationMessage(parsed: ParsedInput, boardId: string, folder: string): string {
   return `✅ Quadro raiz *${parsed.shortCode}* provisionado.\n\nGrupo: ${parsed.subject}\nQuadro: ${boardId}\nPasta: ${folder}\nGerente: ${parsed.personName}\n\nO quadro estará disponível na próxima interação.`;
-}
-
-async function deliverPlainText(
-  adapter: NonNullable<ReturnType<typeof getChannelAdapter>>,
-  platformId: string,
-  text: string,
-): Promise<void> {
-  await adapter.deliver(platformId, null, {
-    kind: 'chat',
-    content: { type: 'text', text },
-  });
 }
 
 function seedTaskflow(
@@ -144,14 +124,6 @@ function seedTaskflow(
 ): void {
   const canonicalPhone = normalizePhone(parsed.personPhone) || parsed.personPhone;
   const ts = new Date().toISOString();
-
-  // Defensive: provisioning may run against old-schema DBs without
-  // task_history.trigger_turn_id. ALTER is no-op if column exists.
-  try {
-    tfDb.exec(`ALTER TABLE task_history ADD COLUMN trigger_turn_id TEXT`);
-  } catch {
-    // already present
-  }
 
   tfDb.transaction(() => {
     tfDb
@@ -215,44 +187,8 @@ function seedTaskflow(
   })();
 }
 
-function wireV2(parsed: ParsedInput, agentGroupId: string, folder: string, groupJid: string): void {
-  const ts = new Date().toISOString();
-  createAgentGroup({
-    id: agentGroupId,
-    name: parsed.trigger.startsWith('@') ? parsed.trigger.slice(1) : parsed.trigger,
-    folder,
-    agent_provider: 'claude',
-    created_at: ts,
-  });
-
-  const messagingGroupId = newTaskId('mg');
-  createMessagingGroup({
-    id: messagingGroupId,
-    channel_type: 'whatsapp',
-    platform_id: groupJid,
-    name: parsed.subject,
-    is_group: 1,
-    unknown_sender_policy: 'strict',
-    created_at: ts,
-  });
-
-  // engage_mode='pattern' with engage_pattern='.' = "respond to all messages",
-  // mirroring v1 TaskFlow's requiresTrigger=false default. When the operator
-  // explicitly opts into trigger-only routing, switch to mention mode.
-  const engageMode = parsed.requiresTrigger ? 'mention' : 'pattern';
-  const engagePattern = parsed.requiresTrigger ? null : '.';
-  createMessagingGroupAgent({
-    id: newTaskId('mga'),
-    messaging_group_id: messagingGroupId,
-    agent_group_id: agentGroupId,
-    engage_mode: engageMode,
-    engage_pattern: engagePattern,
-    sender_scope: 'all',
-    ignored_message_policy: 'drop',
-    session_mode: 'shared',
-    priority: 0,
-    created_at: ts,
-  });
+function callerAgentName(parsed: ParsedInput): string {
+  return parsed.trigger.startsWith('@') ? parsed.trigger.slice(1) : parsed.trigger;
 }
 
 function writeAgentSettingsJson(agentGroupId: string, model: string): void {
@@ -304,10 +240,7 @@ export async function handleProvisionRootBoard(
       return;
     }
 
-    // Resolve participant JIDs (manager + extras), deduplicated.
-    const managerDigits = normalizePhone(parsed.personPhone) || parsed.personPhone.replace(/\D/g, '');
-    const managerJid = `${managerDigits}@s.whatsapp.net`;
-    const allParticipants = new Set<string>([managerJid, ...parsed.participants]);
+    const allParticipants = new Set<string>([phoneToWhatsAppJid(parsed.personPhone), ...parsed.participants]);
 
     let groupJid: string;
     try {
@@ -329,7 +262,15 @@ export async function handleProvisionRootBoard(
 
     const agentGroupId = newTaskId('ag');
     try {
-      wireV2(parsed, agentGroupId, folder, groupJid);
+      wireV2({
+        agentGroupId,
+        agentName: callerAgentName(parsed),
+        folder,
+        groupJid,
+        groupName: parsed.subject,
+        engageMode: parsed.requiresTrigger ? 'mention' : 'pattern',
+        engagePattern: parsed.requiresTrigger ? null : '.',
+      });
       log.info('provision_root_board: v2 wiring complete', { agentGroupId, folder, groupJid });
     } catch (err) {
       log.error('provision_root_board: failed to wire v2', { err, agentGroupId });
@@ -337,16 +278,17 @@ export async function handleProvisionRootBoard(
     }
 
     try {
+      const assistantName = callerAgentName(parsed);
       initGroupFilesystem({
         id: agentGroupId,
-        name: parsed.trigger.startsWith('@') ? parsed.trigger.slice(1) : parsed.trigger,
+        name: assistantName,
         folder,
         agent_provider: 'claude',
         created_at: new Date().toISOString(),
       });
       createBoardFilesystem({
         groupFolder: folder,
-        assistantName: parsed.trigger.startsWith('@') ? parsed.trigger.slice(1) : parsed.trigger,
+        assistantName,
         personName: parsed.personName,
         personPhone: parsed.personPhone,
         personId: parsed.personId,
@@ -412,7 +354,7 @@ export async function handleProvisionRootBoard(
     // Welcome to the new board's chat + flip welcome_sent.
     try {
       await deliverPlainText(adapter, groupJid, buildWelcomeMessage(parsed.subject));
-      tfDb.prepare('UPDATE board_runtime_config SET welcome_sent = 1 WHERE board_id = ?').run(boardId);
+      markWelcomeSent(tfDb, boardId);
     } catch (err) {
       log.error('provision_root_board: failed to send welcome (non-fatal)', { err });
     }

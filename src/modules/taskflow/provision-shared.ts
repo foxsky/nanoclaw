@@ -4,7 +4,12 @@ import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 import path from 'path';
 
+import type { ChannelAdapter } from '../../channels/adapter.js';
 import { DATA_DIR, GROUPS_DIR, PROJECT_ROOT } from '../../config.js';
+import { getDb } from '../../db/connection.js';
+import { createAgentGroup } from '../../db/agent-groups.js';
+import { createMessagingGroup, createMessagingGroupAgent } from '../../db/messaging-groups.js';
+import { isValidGroupFolder } from '../../group-folder.js';
 import { createTask } from '../../taskflow-db.js';
 import { log } from '../../log.js';
 import { newTaskId } from './util.js';
@@ -347,4 +352,85 @@ export function fixOwnership(...paths: string[]): void {
   } catch {
     // Best-effort
   }
+}
+
+/**
+ * Sends a plain-text chat message via the channel adapter. Object content
+ * is required — adapters cast `message.content` to Record<string,unknown>
+ * with no JSON.parse, so a stringified payload silently no-ops.
+ */
+export async function deliverPlainText(adapter: ChannelAdapter, platformId: string, text: string): Promise<void> {
+  await adapter.deliver(platformId, null, {
+    kind: 'chat',
+    content: { type: 'text', text },
+  });
+}
+
+export function markWelcomeSent(tfDb: Database.Database, boardId: string): void {
+  tfDb.prepare('UPDATE board_runtime_config SET welcome_sent = 1 WHERE board_id = ?').run(boardId);
+}
+
+export function buildWelcomeMessage(groupName: string, lead = 'Bem-vindo ao'): string {
+  return `👋 *${lead} ${groupName}!*\n\nEste é o seu quadro de tarefas. Aqui você receberá tarefas, atualizações e automações (standup, resumo, revisão semanal).\n\nDigite \`ajuda\` para ver os comandos disponíveis.`;
+}
+
+export interface WireV2Params {
+  agentGroupId: string;
+  agentName: string;
+  folder: string;
+  groupJid: string;
+  groupName: string;
+  engageMode: 'pattern' | 'mention';
+  engagePattern: string | null;
+}
+
+/**
+ * Atomic 3-row insert (agent_group + messaging_group + wiring). All must
+ * land together — partial state would leave taskflow.db pointing at a
+ * folder that has no live agent, and a retry would see a folder collision.
+ */
+export function wireV2(params: WireV2Params): void {
+  const ts = new Date().toISOString();
+  getDb().transaction(() => {
+    createAgentGroup({
+      id: params.agentGroupId,
+      name: params.agentName,
+      folder: params.folder,
+      agent_provider: 'claude',
+      created_at: ts,
+    });
+
+    const messagingGroupId = newTaskId('mg');
+    createMessagingGroup({
+      id: messagingGroupId,
+      channel_type: 'whatsapp',
+      platform_id: params.groupJid,
+      name: params.groupName,
+      is_group: 1,
+      unknown_sender_policy: 'strict',
+      created_at: ts,
+    });
+
+    createMessagingGroupAgent({
+      id: newTaskId('mga'),
+      messaging_group_id: messagingGroupId,
+      agent_group_id: params.agentGroupId,
+      engage_mode: params.engageMode,
+      engage_pattern: params.engagePattern,
+      sender_scope: 'all',
+      ignored_message_policy: 'drop',
+      session_mode: 'shared',
+      priority: 0,
+      created_at: ts,
+    });
+  })();
+}
+
+/**
+ * Pick a folder name unique against existing agent_groups.folder values.
+ * Returns null if the result fails the on-disk-folder safety check.
+ */
+export function pickUniqueAgentFolder(base: string, existingFolders: Set<string>): string | null {
+  const folder = uniqueFolder(base, existingFolders);
+  return isValidGroupFolder(folder) ? folder : null;
 }

@@ -1,28 +1,9 @@
 import { writeMessageOut } from '../db/messages-out.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
+import { err, generateId, log, nonEmptyString, ok } from './util.js';
 
-function log(msg: string): void {
-  console.error(`[mcp-tools] ${msg}`);
-}
 
-function generateId(): string {
-  return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function ok(text: string) {
-  return { content: [{ type: 'text' as const, text }] };
-}
-
-function err(text: string) {
-  return { content: [{ type: 'text' as const, text: `Error: ${text}` }], isError: true };
-}
-
-function nonEmptyString(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed === '' ? null : trimmed;
-}
 
 const REQUIRED_FIELDS = ['person_id', 'person_name', 'person_phone', 'person_role'] as const;
 

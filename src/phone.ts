@@ -39,3 +39,13 @@ export function normalizePhone(phone: string): string {
   // International, trunk-prefixed, too short, or too long — leave alone.
   return digits;
 }
+
+/**
+ * Compose the canonical `<digits>@s.whatsapp.net` JID without round-tripping
+ * to the platform. For verified-on-WhatsApp lookups, use the channel
+ * adapter's `lookupPhoneJid` (network call).
+ */
+export function phoneToWhatsAppJid(phone: string): string {
+  const digits = normalizePhone(phone) || phone.replace(/\D/g, '');
+  return `${digits}@s.whatsapp.net`;
+}

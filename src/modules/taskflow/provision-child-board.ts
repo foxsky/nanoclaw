@@ -4,32 +4,29 @@ import type DatabaseType from 'better-sqlite3';
 
 import { DATA_DIR, GROUPS_DIR } from '../../config.js';
 import { getChannelAdapter } from '../../channels/channel-registry.js';
-import { createAgentGroup, getAgentGroup, getAllAgentGroups } from '../../db/agent-groups.js';
-import { getDb } from '../../db/connection.js';
-import {
-  createMessagingGroup,
-  createMessagingGroupAgent,
-  getAllMessagingGroups,
-  getMessagingGroup,
-} from '../../db/messaging-groups.js';
-import { isValidGroupFolder } from '../../group-folder.js';
+import { getAgentGroup, getAllAgentGroups } from '../../db/agent-groups.js';
+import { getAllMessagingGroups, getMessagingGroup } from '../../db/messaging-groups.js';
 import { initGroupFilesystem } from '../../group-init.js';
 import { log } from '../../log.js';
-import { normalizePhone } from '../../phone.js';
+import { normalizePhone, phoneToWhatsAppJid } from '../../phone.js';
 import type { Session } from '../../types.js';
 import {
+  buildWelcomeMessage,
   createBoardFilesystem,
+  deliverPlainText,
   fixOwnership,
+  markWelcomeSent,
+  pickUniqueAgentFolder,
   sanitizeFolder,
   scheduleOnboarding,
   scheduleRunners,
   TASKFLOW_DB_PATH,
-  uniqueFolder,
+  wireV2,
   type BoardConfigRow,
   type BoardRow,
   type BoardRuntimeConfigRow,
 } from './provision-shared.js';
-import { newTaskId, nonEmptyString } from './util.js';
+import { newTaskId, nonEmptyString, requireFields } from './util.js';
 
 const REQUIRED = ['person_id', 'person_name', 'person_phone', 'person_role'] as const;
 
@@ -37,6 +34,8 @@ interface ParsedInput {
   personId: string;
   personName: string;
   personPhone: string;
+  /** Canonicalized once at parse time so all downstream callers see the same form. */
+  canonicalPhone: string;
   personRole: string;
   shortCode: string | null;
   groupFolderOverride: string | null;
@@ -45,13 +44,13 @@ interface ParsedInput {
 }
 
 function parseInput(content: Record<string, unknown>): ParsedInput | null {
-  for (const field of REQUIRED) {
-    if (!nonEmptyString(content[field])) return null;
-  }
+  if (!requireFields(content, REQUIRED)) return null;
+  const personPhone = nonEmptyString(content.person_phone)!;
   return {
     personId: nonEmptyString(content.person_id)!,
     personName: nonEmptyString(content.person_name)!,
-    personPhone: nonEmptyString(content.person_phone)!,
+    personPhone,
+    canonicalPhone: normalizePhone(personPhone),
     personRole: nonEmptyString(content.person_role)!,
     shortCode: nonEmptyString(content.short_code)?.toUpperCase() ?? null,
     groupFolderOverride: nonEmptyString(content.group_folder),
@@ -120,6 +119,22 @@ interface ExistingBoardMatch {
   phone: string;
 }
 
+const CROSS_PARENT_LOOKUP_SQL = `
+  SELECT cbr.child_board_id, cbr.person_id, b.group_jid, b.group_folder, bp.phone,
+         CASE WHEN cbr.person_id = ? THEN 0 ELSE 1 END AS prio
+    FROM child_board_registrations cbr
+    JOIN boards b ON b.id = cbr.child_board_id
+    JOIN board_people bp ON bp.board_id = cbr.child_board_id AND bp.person_id = cbr.person_id
+   WHERE bp.phone IS NOT NULL
+     AND cbr.parent_board_id != ?
+   ORDER BY prio ASC`;
+
+/**
+ * Find the same person's board on a DIFFERENT parent. id+phone match wins
+ * over phone-only match (handled by ORDER BY prio in the SQL); JS-side
+ * filter compares `normalizePhone(stored)` so values get canonicalized
+ * regardless of which form was stored historically.
+ */
 function findExistingBoardElsewhere(
   tfDb: DatabaseType.Database,
   parentBoardId: string,
@@ -127,32 +142,29 @@ function findExistingBoardElsewhere(
   canonicalPhone: string,
 ): ExistingBoardMatch | null {
   if (canonicalPhone.length < 10) return null;
+  const rows = tfDb.prepare(CROSS_PARENT_LOOKUP_SQL).all(personId, parentBoardId) as ExistingBoardMatch[];
+  return rows.find((c) => normalizePhone(c.phone) === canonicalPhone) ?? null;
+}
 
-  const idMatchRows = tfDb
-    .prepare(
-      `SELECT cbr.child_board_id, cbr.person_id, b.group_jid, b.group_folder, bp.phone
-         FROM child_board_registrations cbr
-         JOIN boards b ON b.id = cbr.child_board_id
-         JOIN board_people bp ON bp.board_id = cbr.child_board_id AND bp.person_id = cbr.person_id
-        WHERE cbr.person_id = ?
-          AND cbr.parent_board_id != ?
-          AND bp.phone IS NOT NULL`,
-    )
-    .all(personId, parentBoardId) as ExistingBoardMatch[];
-  const idMatch = idMatchRows.find((c) => normalizePhone(c.phone) === canonicalPhone);
-  if (idMatch) return idMatch;
-
-  const phoneMatchRows = tfDb
-    .prepare(
-      `SELECT cbr.child_board_id, cbr.person_id, b.group_jid, b.group_folder, bp.phone
-         FROM child_board_registrations cbr
-         JOIN boards b ON b.id = cbr.child_board_id
-         JOIN board_people bp ON bp.board_id = cbr.child_board_id AND bp.person_id = cbr.person_id
-        WHERE bp.phone IS NOT NULL
-          AND cbr.parent_board_id != ?`,
-    )
-    .all(parentBoardId) as ExistingBoardMatch[];
-  return phoneMatchRows.find((c) => normalizePhone(c.phone) === canonicalPhone) ?? null;
+/**
+ * UPDATE the row's PK column from→to, OR DELETE the from-row when the
+ * to-row already exists (would PK-collide on UPDATE). Used for unifying
+ * person_id across board_people / board_admins when linking to an existing
+ * board on a different parent.
+ */
+function rekeyOrDrop(
+  tfDb: DatabaseType.Database,
+  table: 'board_people' | 'board_admins',
+  boardId: string,
+  fromId: string,
+  toId: string,
+): void {
+  const collision = tfDb.prepare(`SELECT 1 FROM ${table} WHERE board_id = ? AND person_id = ?`).get(boardId, toId);
+  if (collision) {
+    tfDb.prepare(`DELETE FROM ${table} WHERE board_id = ? AND person_id = ?`).run(boardId, fromId);
+  } else {
+    tfDb.prepare(`UPDATE ${table} SET person_id = ? WHERE board_id = ? AND person_id = ?`).run(toId, boardId, fromId);
+  }
 }
 
 function linkExistingBoardToParent(
@@ -161,58 +173,32 @@ function linkExistingBoardToParent(
   parsed: ParsedInput,
   existing: ExistingBoardMatch,
 ): void {
-  const existingPersonId = existing.person_id;
-
   tfDb.transaction(() => {
-    if (existingPersonId !== parsed.personId) {
+    if (existing.person_id !== parsed.personId) {
       log.info('provision_child_board: unifying person_id to match existing board', {
         from: parsed.personId,
-        to: existingPersonId,
+        to: existing.person_id,
       });
-      const dupBp = tfDb
-        .prepare('SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?')
-        .get(parentBoard.id, existingPersonId);
-      if (dupBp) {
-        tfDb
-          .prepare('DELETE FROM board_people WHERE board_id = ? AND person_id = ?')
-          .run(parentBoard.id, parsed.personId);
-      } else {
-        tfDb
-          .prepare('UPDATE board_people SET person_id = ? WHERE board_id = ? AND person_id = ?')
-          .run(existingPersonId, parentBoard.id, parsed.personId);
-      }
+      rekeyOrDrop(tfDb, 'board_people', parentBoard.id, parsed.personId, existing.person_id);
       tfDb
         .prepare('UPDATE tasks SET assignee = ? WHERE board_id = ? AND assignee = ?')
-        .run(existingPersonId, parentBoard.id, parsed.personId);
-      const dupAdmin = tfDb
-        .prepare('SELECT 1 FROM board_admins WHERE board_id = ? AND person_id = ?')
-        .get(parentBoard.id, existingPersonId);
-      if (dupAdmin) {
-        tfDb
-          .prepare('DELETE FROM board_admins WHERE board_id = ? AND person_id = ?')
-          .run(parentBoard.id, parsed.personId);
-      } else {
-        tfDb
-          .prepare('UPDATE board_admins SET person_id = ? WHERE board_id = ? AND person_id = ?')
-          .run(existingPersonId, parentBoard.id, parsed.personId);
-      }
+        .run(existing.person_id, parentBoard.id, parsed.personId);
+      rekeyOrDrop(tfDb, 'board_admins', parentBoard.id, parsed.personId, existing.person_id);
     }
-
-    const unifiedId = existingPersonId;
 
     tfDb
       .prepare(
         `INSERT OR IGNORE INTO child_board_registrations (parent_board_id, person_id, child_board_id)
            VALUES (?, ?, ?)`,
       )
-      .run(parentBoard.id, unifiedId, existing.child_board_id);
+      .run(parentBoard.id, existing.person_id, existing.child_board_id);
 
-    // notification_group_jid only updates when target differs from parent group
-    // (avoids double-delivery when parent and child share a group).
+    // Skip when target equals parent group; otherwise the parent + child
+    // would double-deliver to the same chat.
     if (existing.group_jid && existing.group_jid !== parentBoard.group_jid) {
       tfDb
         .prepare('UPDATE board_people SET notification_group_jid = ? WHERE board_id = ? AND person_id = ?')
-        .run(existing.group_jid, parentBoard.id, unifiedId);
+        .run(existing.group_jid, parentBoard.id, existing.person_id);
     }
 
     tfDb
@@ -220,7 +206,7 @@ function linkExistingBoardToParent(
         `UPDATE tasks SET child_exec_board_id = ?, child_exec_enabled = 1, child_exec_person_id = ?
            WHERE board_id = ? AND assignee = ? AND child_exec_board_id IS NULL`,
       )
-      .run(existing.child_board_id, unifiedId, parentBoard.id, unifiedId);
+      .run(existing.child_board_id, existing.person_id, parentBoard.id, existing.person_id);
   })();
 
   log.info('provision_child_board: existing board linked', {
@@ -237,17 +223,15 @@ function computeChildFolderAndName(parsed: ParsedInput): { folder: string; name:
       fallbackFolder: baseFolder,
     });
   }
-  const existingFolders = new Set(getAllAgentGroups().map((ag) => ag.folder));
-  const folder = uniqueFolder(baseFolder, existingFolders);
-  if (!isValidGroupFolder(folder)) {
-    log.warn('provision_child_board: invalid group folder name', { folder });
+  const folder = pickUniqueAgentFolder(baseFolder, new Set(getAllAgentGroups().map((ag) => ag.folder)));
+  if (!folder) {
+    log.warn('provision_child_board: invalid group folder name', { baseFolder });
     return null;
   }
 
   let name = parsed.groupNameOverride || `${parsed.personName} - TaskFlow`;
-  // messaging_groups.name IS the chat's display title (the WhatsApp group
-  // subject). Two children can't share a subject — append (personName) to
-  // disambiguate, matching v1.
+  // messaging_groups.name carries the chat's display title; two children
+  // sharing one would collide on WhatsApp's group subject.
   const existingNames = new Set(
     getAllMessagingGroups()
       .map((mg) => mg.name)
@@ -257,19 +241,7 @@ function computeChildFolderAndName(parsed: ParsedInput): { folder: string; name:
     const withSuffix = name.replace(/ - TaskFlow$/, ` (${parsed.personName}) - TaskFlow`);
     name = withSuffix !== name ? withSuffix : `${name} (${parsed.personName})`;
   }
-
   return { folder, name };
-}
-
-async function deliverPlainText(
-  adapter: NonNullable<ReturnType<typeof getChannelAdapter>>,
-  platformId: string,
-  text: string,
-): Promise<void> {
-  await adapter.deliver(platformId, null, {
-    kind: 'chat',
-    content: { type: 'text', text },
-  });
 }
 
 function seedChildTaskflow(
@@ -281,16 +253,8 @@ function seedChildTaskflow(
   childGroupJid: string,
   ts: string,
 ): { linkedTasks: number } {
-  const canonicalPhone = normalizePhone(parsed.personPhone) || parsed.personPhone;
+  const phone = parsed.canonicalPhone || parsed.personPhone;
   const { parentBoard, parentConfig, parentRuntime } = parent;
-
-  // Defensive: provisioning may run against an old-schema taskflow.db
-  // without task_history.trigger_turn_id; ALTER is no-op if column exists.
-  try {
-    tfDb.exec(`ALTER TABLE task_history ADD COLUMN trigger_turn_id TEXT`);
-  } catch {
-    // already present
-  }
 
   let linkedTasks = 0;
 
@@ -348,21 +312,13 @@ function seedChildTaskflow(
       .prepare(
         'INSERT INTO board_admins (board_id, person_id, phone, admin_role, is_primary_manager) VALUES (?, ?, ?, ?, ?)',
       )
-      .run(childBoardId, parsed.personId, canonicalPhone, 'manager', 1);
+      .run(childBoardId, parsed.personId, phone, 'manager', 1);
 
     tfDb
       .prepare(
         'INSERT INTO board_people (board_id, person_id, name, phone, role, wip_limit, notification_group_jid) VALUES (?, ?, ?, ?, ?, ?, ?)',
       )
-      .run(
-        childBoardId,
-        parsed.personId,
-        parsed.personName,
-        canonicalPhone,
-        parsed.personRole,
-        parentConfig.wip_limit,
-        null,
-      );
+      .run(childBoardId, parsed.personId, parsed.personName, phone, parsed.personRole, parentConfig.wip_limit, null);
 
     tfDb
       .prepare('UPDATE board_people SET notification_group_jid = ? WHERE board_id = ? AND person_id = ?')
@@ -397,56 +353,6 @@ function seedChildTaskflow(
   })();
 
   return { linkedTasks };
-}
-
-function wireChildV2(
-  parent: ParentLookup,
-  childAgentGroupId: string,
-  folder: string,
-  childGroupJid: string,
-  childGroupName: string,
-): void {
-  const ts = new Date().toISOString();
-  // Atomic: the 3 inserts (agent_group + messaging_group + wiring) MUST land
-  // together — a partial state would leave taskflow.db pointing at a folder
-  // that has no live agent, and a retry would see a folder collision.
-  getDb().transaction(() => {
-    createAgentGroup({
-      id: childAgentGroupId,
-      name: parent.callerName,
-      folder,
-      agent_provider: 'claude',
-      created_at: ts,
-    });
-
-    const messagingGroupId = newTaskId('mg');
-    createMessagingGroup({
-      id: messagingGroupId,
-      channel_type: 'whatsapp',
-      platform_id: childGroupJid,
-      name: childGroupName,
-      is_group: 1,
-      unknown_sender_policy: 'strict',
-      created_at: ts,
-    });
-
-    createMessagingGroupAgent({
-      id: newTaskId('mga'),
-      messaging_group_id: messagingGroupId,
-      agent_group_id: childAgentGroupId,
-      engage_mode: 'pattern',
-      engage_pattern: '.',
-      sender_scope: 'all',
-      ignored_message_policy: 'drop',
-      session_mode: 'shared',
-      priority: 0,
-      created_at: ts,
-    });
-  })();
-}
-
-function buildWelcomeMessage(childGroupName: string): string {
-  return `👋 *Bem-vindo ao ${childGroupName}!*\n\nEste é o seu quadro de tarefas pessoal. Aqui você receberá suas tarefas, atualizações e automações (standup, resumo, revisão semanal).\n\nDigite \`ajuda\` para ver os comandos disponíveis.`;
 }
 
 function buildConfirmationMessage(parsed: ParsedInput, childGroupName: string, childBoardId: string): string {
@@ -498,8 +404,12 @@ export async function handleProvisionChildBoard(
       return;
     }
 
-    const canonicalPhone = normalizePhone(parsed.personPhone);
-    const existingElsewhere = findExistingBoardElsewhere(tfDb, parent.parentBoard.id, parsed.personId, canonicalPhone);
+    const existingElsewhere = findExistingBoardElsewhere(
+      tfDb,
+      parent.parentBoard.id,
+      parsed.personId,
+      parsed.canonicalPhone,
+    );
     if (existingElsewhere) {
       try {
         linkExistingBoardToParent(tfDb, parent.parentBoard, parsed, existingElsewhere);
@@ -522,7 +432,7 @@ export async function handleProvisionChildBoard(
     try {
       const participantJid = adapter.resolvePhoneJid
         ? await adapter.resolvePhoneJid(parsed.personPhone)
-        : `${canonicalPhone || parsed.personPhone}@s.whatsapp.net`;
+        : phoneToWhatsAppJid(parsed.personPhone);
       createResult = await adapter.createGroup(childGroupName, [participantJid]);
       log.info('provision_child_board: WhatsApp group created', {
         jid: createResult.jid,
@@ -568,7 +478,15 @@ export async function handleProvisionChildBoard(
 
     const childAgentGroupId = newTaskId('ag');
     try {
-      wireChildV2(parent, childAgentGroupId, folder, childGroupJid, childGroupName);
+      wireV2({
+        agentGroupId: childAgentGroupId,
+        agentName: parent.callerName,
+        folder,
+        groupJid: childGroupJid,
+        groupName: childGroupName,
+        engageMode: 'pattern',
+        engagePattern: '.',
+      });
       log.info('provision_child_board: v2 wiring complete', { childAgentGroupId, folder, childGroupJid });
     } catch (err) {
       log.error('provision_child_board: failed to wire v2', { err, childAgentGroupId });
@@ -649,7 +567,7 @@ export async function handleProvisionChildBoard(
 
     try {
       await deliverPlainText(adapter, childGroupJid, buildWelcomeMessage(childGroupName));
-      tfDb.prepare('UPDATE board_runtime_config SET welcome_sent = 1 WHERE board_id = ?').run(childBoardId);
+      markWelcomeSent(tfDb, childBoardId);
     } catch (err) {
       log.error('provision_child_board: failed to send welcome (non-fatal)', { err });
     }
