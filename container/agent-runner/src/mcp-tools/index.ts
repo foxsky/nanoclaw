@@ -11,6 +11,7 @@ import './interactive.js';
 import './agents.js';
 import './self-mod.js';
 import './send-otp.js';
+import './provision-root-board.js';
 import { startMcpServer } from './server.js';
 
 function log(msg: string): void {
