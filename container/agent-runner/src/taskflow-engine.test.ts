@@ -1,5 +1,5 @@
-import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { Database } from 'bun:sqlite';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 import { TaskflowEngine, maskPhoneForDisplay, normalizePhone } from './taskflow-engine.js';
 
@@ -20,7 +20,7 @@ CREATE TABLE attachment_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, board_i
 CREATE TABLE board_config (board_id TEXT PRIMARY KEY, columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]', wip_limit INTEGER DEFAULT 5, next_task_number INTEGER DEFAULT 1, next_project_number INTEGER DEFAULT 1, next_recurring_number INTEGER DEFAULT 1, next_note_id INTEGER DEFAULT 1);
 `;
 
-function seedTestDb(db: Database.Database, boardId: string) {
+function seedTestDb(db: Database, boardId: string) {
   db.exec(SCHEMA);
 
   db.exec(
@@ -56,7 +56,7 @@ function seedTestDb(db: Database.Database, boardId: string) {
 }
 
 function seedChildBoard(
-  db: Database.Database,
+  db: Database,
   opts: {
     parentBoardId: string;
     childBoardId: string;
@@ -80,7 +80,7 @@ function seedChildBoard(
 }
 
 function seedLinkedTask(
-  db: Database.Database,
+  db: Database,
   visibleBoardId: string,
   overrides?: Partial<{
     ownerBoardId: string;
@@ -109,7 +109,7 @@ function seedLinkedTask(
 }
 
 describe('TaskflowEngine', () => {
-  let db: Database.Database;
+  let db: Database;
   let engine: TaskflowEngine;
 
   beforeEach(() => {
@@ -680,7 +680,7 @@ describe('TaskflowEngine', () => {
   /* ---------------------------------------------------------------- */
 
   describe('query: find_person_in_organization', () => {
-    function seedOrgTree(db: Database.Database) {
+    function seedOrgTree(db: Database) {
       // Org tree:
       //   root (seci-secti) ─┬─ child (BOARD_ID = seci-taskflow)
       //                      ├─ sibling (thiago-taskflow)
@@ -5946,7 +5946,7 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
 
   describe('merge_project', () => {
     const MERGE_BOARD = 'board-merge';
-    let db: Database.Database;
+    let db: Database;
     let engine: TaskflowEngine;
 
     beforeEach(() => {
@@ -6019,8 +6019,8 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
       expect(notes.some((n: any) => n.text.includes('Migrada de P2.2'))).toBe(true);
 
       // Old IDs no longer exist
-      expect(db.prepare(`SELECT 1 FROM tasks WHERE id = 'P2.1'`).get()).toBeUndefined();
-      expect(db.prepare(`SELECT 1 FROM tasks WHERE id = 'P2.2'`).get()).toBeUndefined();
+      expect(db.prepare(`SELECT 1 FROM tasks WHERE id = 'P2.1'`).get()).toBeNull();
+      expect(db.prepare(`SELECT 1 FROM tasks WHERE id = 'P2.2'`).get()).toBeNull();
 
       // History rekeyed
       const hist = db.prepare(`SELECT * FROM task_history WHERE task_id = 'P1.2'`).all();
@@ -6137,7 +6137,7 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
   describe('cross-board subtask mode', () => {
     const PARENT_BOARD = 'board-parent-xbs';
     const CHILD_BOARD = 'board-child-xbs';
-    let db: Database.Database;
+    let db: Database;
     let childEngine: TaskflowEngine;
 
     beforeEach(() => {
@@ -6203,7 +6203,7 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
       expect(r.success).toBe(false);
       expect(r.error).toContain('não permite');
       const subtask = db.prepare(`SELECT * FROM tasks WHERE id = 'P1.2'`).get();
-      expect(subtask).toBeUndefined();
+      expect(subtask).toBeNull();
     });
 
     it('mode=approval: creates pending request with parent board target_chat_jid', () => {
@@ -6227,7 +6227,7 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
 
       // No subtask created yet
       const subtask = db.prepare(`SELECT * FROM tasks WHERE id = 'P1.2'`).get();
-      expect(subtask).toBeUndefined();
+      expect(subtask).toBeNull();
 
       // Request persisted
       const req = db.prepare(`SELECT * FROM subtask_requests WHERE request_id = ?`).get((r as any).pending_approval.request_id) as any;
@@ -6305,7 +6305,7 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
       expect((r as any).notifications[0].message).toContain('fora de escopo');
 
       // No subtask
-      expect(db.prepare(`SELECT * FROM tasks WHERE id = 'P1.2'`).get()).toBeUndefined();
+      expect(db.prepare(`SELECT * FROM tasks WHERE id = 'P1.2'`).get()).toBeNull();
 
       const req = db.prepare(`SELECT * FROM subtask_requests WHERE request_id = ?`).get(requestId) as any;
       expect(req.status).toBe('rejected');
@@ -6456,10 +6456,10 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
 
 describe('apiDeleteSimpleTask', () => {
   const BOARD = 'board-001'
-  let db: Database.Database
+  let db: Database
   let taskId: string
 
-  function createDeleteTestDb(): Database.Database {
+  function createDeleteTestDb(): Database {
     const d = new Database(':memory:')
     d.exec(`
       CREATE TABLE boards (id TEXT PRIMARY KEY, short_code TEXT, name TEXT NOT NULL DEFAULT '', board_role TEXT NOT NULL DEFAULT 'hierarchy', group_folder TEXT NOT NULL DEFAULT '', group_jid TEXT NOT NULL DEFAULT '');
@@ -6478,7 +6478,7 @@ describe('apiDeleteSimpleTask', () => {
     return d
   }
 
-  function insertTask(d: Database.Database, id: string, createdBy: string | null = 'Alice'): void {
+  function insertTask(d: Database, id: string, createdBy: string | null = 'Alice'): void {
     const now = new Date().toISOString()
     d.prepare(
       "INSERT INTO tasks (id, board_id, type, title, column, created_at, updated_at, created_by) VALUES (?, ?, 'simple', ?, 'inbox', ?, ?, ?)"
@@ -6497,7 +6497,7 @@ describe('apiDeleteSimpleTask', () => {
     const engine = new TaskflowEngine(db, BOARD)
     const result = engine.apiDeleteSimpleTask({ board_id: BOARD, task_id: taskId, sender_name: 'Alice' })
     expect(result.success).toBe(true)
-    expect(db.prepare('SELECT id FROM tasks WHERE id = ?').get(taskId)).toBeUndefined()
+    expect(db.prepare('SELECT id FROM tasks WHERE id = ?').get(taskId)).toBeNull()
     expect(db.prepare('SELECT task_id FROM archive WHERE task_id = ?').get(taskId)).toBeTruthy()
     const history = db.prepare(
       'SELECT action, "by" FROM task_history WHERE board_id = ? AND task_id = ? ORDER BY id DESC LIMIT 1'
@@ -6556,7 +6556,7 @@ describe('apiDeleteSimpleTask', () => {
 // and both fixture tables must be updated together — otherwise the host
 // ----- T12 magnetism guard -----
 
-function seedMagnetismMsgDb(): Database.Database {
+function seedMagnetismMsgDb(): Database {
   const msgDb = new Database(':memory:');
   msgDb.exec(`
     CREATE TABLE messages (
@@ -6584,7 +6584,7 @@ function seedMagnetismMsgDb(): Database.Database {
 }
 
 function insertMsg(
-  msgDb: Database.Database,
+  msgDb: Database,
   row: {
     id: string;
     chat_jid: string;
@@ -6610,7 +6610,7 @@ function insertMsg(
 }
 
 function linkTurn(
-  msgDb: Database.Database,
+  msgDb: Database,
   turnId: string,
   messageId: string,
   chatJid: string,
@@ -6627,8 +6627,8 @@ function linkTurn(
 }
 
 describe('T12 magnetism guard — checkTaskIdMagnetism', () => {
-  let db: Database.Database;
-  let msgDb: Database.Database;
+  let db: Database;
+  let msgDb: Database;
   const CHAT = 'chat-1@g.us';
   const TURN = 'turn-magnetism-1';
 
@@ -7125,7 +7125,7 @@ describe('completion notification (three-variant policy)', () => {
   });
 
   describe('computeTaskFlow', () => {
-    let db: Database.Database;
+    let db: Database;
     beforeEach(() => {
       db = new Database(':memory:');
       db.exec(`

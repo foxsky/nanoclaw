@@ -6,7 +6,7 @@
  * statistics, person queries, and change history, plus mutation methods
  * for creating, updating, and managing tasks.
  */
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import { resolveTimezoneOrUtc } from './tz-util.js';
 
 /* ------------------------------------------------------------------ */
@@ -678,7 +678,7 @@ function utcToLocal(utcIso: string, tz: string): string {
 }
 
 /** Read the board timezone from board_runtime_config. Queried per-call (no stale cache). */
-function getBoardTimezone(db: Database.Database, boardId: string): string {
+function getBoardTimezone(db: Database, boardId: string): string {
   const row = db.prepare(
     `SELECT timezone FROM board_runtime_config WHERE board_id = ?`,
   ).get(boardId) as { timezone: string } | undefined;
@@ -820,17 +820,17 @@ export class TaskflowEngine {
   };
 
   private chatJid: string | null;
-  private messagesDb: Database.Database | null;
+  private messagesDb: Database | null;
   private guardMode: MagnetismGuardMode;
 
   constructor(
-    private db: Database.Database,
+    private db: Database,
     private boardId: string,
     options?: {
       readonly?: boolean;
       triggerTurnId?: string | null;
       chatJid?: string | null;
-      messagesDb?: Database.Database | null;
+      messagesDb?: Database | null;
       guardMode?: MagnetismGuardMode;
     },
   ) {
@@ -838,7 +838,7 @@ export class TaskflowEngine {
     this.chatJid = options?.chatJid ?? null;
     this.messagesDb = options?.messagesDb ?? null;
     this.guardMode = options?.guardMode ?? 'shadow';
-    this.db.pragma('busy_timeout = 5000');
+    this.db.exec('PRAGMA busy_timeout = 5000');
     if (!options?.readonly) {
       this.ensureTaskSchema();
       this.migrateLegacyProjectSubtasks();
@@ -2068,10 +2068,16 @@ export class TaskflowEngine {
            task_snapshot = excluded.task_snapshot, history = excluded.history`,
       )
       .run(
-        params.board_id, params.task_id, task['type'] as string, task['title'] as string,
-        task['assignee'] ?? null,
-        task['linked_parent_board_id'] ?? null, task['linked_parent_task_id'] ?? null,
-        now, JSON.stringify(task), JSON.stringify(history),
+        params.board_id,
+        params.task_id,
+        task['type'] as string,
+        task['title'] as string,
+        (task['assignee'] as string | null) ?? null,
+        (task['linked_parent_board_id'] as string | null) ?? null,
+        (task['linked_parent_task_id'] as string | null) ?? null,
+        now,
+        JSON.stringify(task),
+        JSON.stringify(history),
       );
     this.db
       .prepare(`INSERT INTO task_history (board_id, task_id, action, "by", "at", details) VALUES (?, ?, 'delete', ?, ?, NULL)`)
@@ -2662,7 +2668,7 @@ export class TaskflowEngine {
   }
 
   static computeTaskFlow(
-    db: Database.Database,
+    db: Database,
     boardId: string,
     taskId: string,
   ): string {
