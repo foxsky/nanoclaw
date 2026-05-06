@@ -13,6 +13,7 @@ import './self-mod.js';
 import './send-otp.js';
 import './provision-root-board.js';
 import './provision-child-board.js';
+import './create-group.js';
 import { startMcpServer } from './server.js';
 
 function log(msg: string): void {
