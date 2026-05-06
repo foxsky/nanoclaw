@@ -144,20 +144,11 @@ export function clearStaleProcessingAcks(): void {
   getOutboundDb().prepare("DELETE FROM processing_ack WHERE status = 'processing'").run();
 }
 
-/**
- * TaskFlow DB — owned by the host (writer at host-side scheduling cron, etc.)
- * but the container needs full read/write access for the engine's mutations
- * (boards, tasks, task_history, …). Same connection serves all 9 taskflow_*
- * MCP tools. The file is mounted into the container at /workspace/taskflow.db
- * by container-runner.ts.
- */
+/** TaskFlow DB at /workspace/taskflow.db. Mounted by the host; both the
+ *  host-side scheduling cron and the in-container engine read+write to it. */
 export function getTaskflowDb(): Database {
   if (!_taskflow) {
     _taskflow = new Database(DEFAULT_TASKFLOW_PATH);
-    // WAL matches v1 (`openWritableDb` → `db.pragma('journal_mode = WAL')`).
-    // Cross-mount safety (host cron + container engine writers) is decided
-    // in sub-task 2.3.e alongside the host-side container-runner mount
-    // wiring; until then, parity wins.
     _taskflow.exec('PRAGMA journal_mode = WAL');
     _taskflow.exec('PRAGMA busy_timeout = 5000');
     _taskflow.exec('PRAGMA foreign_keys = ON');
@@ -165,10 +156,8 @@ export function getTaskflowDb(): Database {
   return _taskflow;
 }
 
-/** For tests — creates an empty in-memory TaskFlow DB. The engine's
- * `ensureTaskSchema()` will create its own tables on first non-readonly
- * instantiation; tests that exercise read-only tools must seed schema +
- * fixtures explicitly. */
+/** For tests — :memory: TaskFlow DB. Schema is the caller's responsibility
+ *  (the engine's `ensureTaskSchema()` only fires for non-readonly use). */
 export function initTestTaskflowDb(): Database {
   _taskflow = new Database(':memory:');
   _taskflow.exec('PRAGMA foreign_keys = ON');

@@ -1,17 +1,6 @@
 /**
- * Read-side TaskFlow MCP tools — TDD-RED→GREEN spec
- * (skill/taskflow-v2 sub-task 2.3.c).
- *
- * Three v1 tools ported to the v2 registry pattern:
- *   - api_board_activity      (engine.apiBoardActivity)
- *   - api_filter_board_tasks  (engine.apiFilterBoardTasks)
- *   - api_linked_tasks        (engine.apiLinkedTasks)
- *
- * Tests invoke handlers directly — no subprocess, no JSON-RPC framing.
- * Each call instantiates a fresh `TaskflowEngine(getTaskflowDb(), board_id,
- * { readonly: true })`. Test seed mirrors v1's `_seedDb` so behavior parity
- * is byte-identical against v1's tests at lines 174-251 of
- * `container/agent-runner/src/taskflow-mcp-server.test.ts`.
+ * Read-side TaskFlow MCP tools: handler-direct tests against an in-memory
+ * TaskFlow DB seeded with a small board fixture (b1 + tasks t1..t7).
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
@@ -256,13 +245,8 @@ describe('v1-parity validation surface (zod equivalent)', () => {
   });
 });
 
-describe('taskflow-api-read registry registration', () => {
-  it('imports without throwing — registers all 3 read tools', async () => {
-    await import('./taskflow-api-read.ts');
-    // Side-effect import succeeds; specific names asserted in tool tests above.
-  });
-
-  it('exposes v1-byte-identical tool descriptions in tool metadata', async () => {
+describe('tool metadata', () => {
+  it('exposes the v1 tool descriptions verbatim', async () => {
     const { apiBoardActivityTool, apiFilterBoardTasksTool, apiLinkedTasksTool } =
       await import('./taskflow-api-read.ts');
     expect(apiBoardActivityTool.tool.description).toBe('Board activity log');
