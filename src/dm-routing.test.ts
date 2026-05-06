@@ -2,6 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { resolveExternalDm, type DmRouteResult } from './dm-routing.js';
 
+// Always 30 days ahead of "now" so lazy-expiry never fires on fresh
+// fixtures regardless of when the test runs.
+function futureExpiresAt(): string {
+  return new Date(Date.now() + 30 * 86400 * 1000).toISOString();
+}
+
 function seedDb(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS external_contacts (
@@ -43,8 +49,10 @@ function seedDb(db: Database.Database): void {
   db.exec(`
     INSERT INTO external_contacts VALUES ('ext-1', 'Maria', '5585999991234', '5585999991234@s.whatsapp.net', 'active', '2026-01-01', '2026-01-01', NULL);
     INSERT INTO boards VALUES ('board-1', '120363408855255405@g.us', 'team-alpha', 'standard', NULL, NULL, NULL, NULL);
-    INSERT INTO meeting_external_participants VALUES ('board-1', 'M1', '2026-03-12T14:00:00Z', 'ext-1', 'accepted', '2026-03-10', '2026-03-10', NULL, '2026-04-30T14:00:00Z', 'person-1', '2026-03-10', '2026-03-10');
   `);
+  db.prepare(
+    `INSERT INTO meeting_external_participants VALUES ('board-1', 'M1', '2026-03-12T14:00:00Z', 'ext-1', 'accepted', '2026-03-10', '2026-03-10', NULL, ?, 'person-1', '2026-03-10', '2026-03-10')`,
+  ).run(futureExpiresAt());
 }
 
 describe('resolveExternalDm', () => {
@@ -87,9 +95,9 @@ describe('resolveExternalDm', () => {
   });
 
   it('returns multiple grants when contact is in multiple meetings', () => {
-    db.exec(
-      `INSERT INTO meeting_external_participants VALUES ('board-1', 'M2', '2026-03-15T10:00:00Z', 'ext-1', 'accepted', '2026-03-10', '2026-03-10', NULL, '2026-04-30T10:00:00Z', 'person-1', '2026-03-10', '2026-03-10')`,
-    );
+    db.prepare(
+      `INSERT INTO meeting_external_participants VALUES ('board-1', 'M2', '2026-03-15T10:00:00Z', 'ext-1', 'accepted', '2026-03-10', '2026-03-10', NULL, ?, 'person-1', '2026-03-10', '2026-03-10')`,
+    ).run(futureExpiresAt());
     const result = resolveExternalDm(db, '5585999991234@s.whatsapp.net');
     expect(result).not.toBeNull();
     expect(result!.grants).toHaveLength(2);
@@ -108,18 +116,18 @@ describe('resolveExternalDm', () => {
 
   it('flags needsDisambiguation when active grants span different groups', () => {
     db.exec(`INSERT INTO boards VALUES ('board-2', '999999999@g.us', 'team-beta', 'standard', NULL, NULL, NULL, NULL)`);
-    db.exec(
-      `INSERT INTO meeting_external_participants VALUES ('board-2', 'M5', '2026-03-20T10:00:00Z', 'ext-1', 'accepted', '2026-03-10', '2026-03-10', NULL, '2026-04-30T10:00:00Z', 'person-2', '2026-03-10', '2026-03-10')`,
-    );
+    db.prepare(
+      `INSERT INTO meeting_external_participants VALUES ('board-2', 'M5', '2026-03-20T10:00:00Z', 'ext-1', 'accepted', '2026-03-10', '2026-03-10', NULL, ?, 'person-2', '2026-03-10', '2026-03-10')`,
+    ).run(futureExpiresAt());
     const result = resolveExternalDm(db, '5585999991234@s.whatsapp.net');
     expect(result).not.toBeNull();
     expect(result!.needsDisambiguation).toBe(true);
   });
 
   it('does NOT flag needsDisambiguation for multiple meetings on the same board', () => {
-    db.exec(
-      `INSERT INTO meeting_external_participants VALUES ('board-1', 'M2', '2026-03-15T10:00:00Z', 'ext-1', 'accepted', '2026-03-10', '2026-03-10', NULL, '2026-04-30T10:00:00Z', 'person-1', '2026-03-10', '2026-03-10')`,
-    );
+    db.prepare(
+      `INSERT INTO meeting_external_participants VALUES ('board-1', 'M2', '2026-03-15T10:00:00Z', 'ext-1', 'accepted', '2026-03-10', '2026-03-10', NULL, ?, 'person-1', '2026-03-10', '2026-03-10')`,
+    ).run(futureExpiresAt());
     const result = resolveExternalDm(db, '5585999991234@s.whatsapp.net');
     expect(result).not.toBeNull();
     expect(result!.needsDisambiguation).toBe(false);
