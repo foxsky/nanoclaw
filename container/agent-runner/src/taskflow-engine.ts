@@ -681,7 +681,7 @@ function utcToLocal(utcIso: string, tz: string): string {
 function getBoardTimezone(db: Database, boardId: string): string {
   const row = db.prepare(
     `SELECT timezone FROM board_runtime_config WHERE board_id = ?`,
-  ).get(boardId) as { timezone: string } | undefined;
+  ).get(boardId) as { timezone: string } | null;
   return row?.timezone ?? 'America/Fortaleza';
 }
 
@@ -1036,7 +1036,7 @@ export class TaskflowEngine {
   private getBoardShortCode(boardId: string): string | null {
     const row = this.db
       .prepare(`SELECT short_code FROM boards WHERE id = ?`)
-      .get(boardId) as { short_code: string | null } | undefined;
+      .get(boardId) as { short_code: string | null } | null;
     return row?.short_code ?? null;
   }
 
@@ -1063,7 +1063,7 @@ export class TaskflowEngine {
     const [, shortCode, rawId] = match;
     const row = this.db
       .prepare(`SELECT id FROM boards WHERE short_code = ?`)
-      .get(shortCode) as { id: string } | undefined;
+      .get(shortCode) as { id: string } | null;
     return { boardId: row?.id ?? null, rawId };
   }
 
@@ -1598,7 +1598,7 @@ export class TaskflowEngine {
   getTask(taskId: string): any {
     const { boardId: targetBoardId, rawId } = this.resolveInputTaskId(taskId);
     if (targetBoardId) {
-      const task = this.db.prepare(TaskflowEngine.TASK_BY_BOARD_SQL).get(targetBoardId, rawId) as any | undefined;
+      const task = this.db.prepare(TaskflowEngine.TASK_BY_BOARD_SQL).get(targetBoardId, rawId) as any | null;
       if (!task) return null;
       if (task.board_id === this.boardId) return task;
       if (task.child_exec_board_id === this.boardId && task.child_exec_enabled === 1) return task;
@@ -1643,7 +1643,7 @@ export class TaskflowEngine {
           `SELECT tasks.*, tasks.board_id AS owning_board_id FROM tasks
            WHERE board_id = ? AND id = ? AND type = 'meeting'`,
         )
-        .get(targetBoardId, rawId) as any | undefined;
+        .get(targetBoardId, rawId) as any | null;
       if (!candidate) return null;
       return this.isBoardMeetingParticipant(candidate) ? candidate : null;
     }
@@ -1667,7 +1667,7 @@ export class TaskflowEngine {
     for (let i = 0; i < 10 && current; i++) {
       const row = this.db
         .prepare(`SELECT parent_board_id FROM boards WHERE id = ?`)
-        .get(current) as { parent_board_id: string | null } | undefined;
+        .get(current) as { parent_board_id: string | null } | null;
       const parent = row?.parent_board_id ?? null;
       if (!parent || chain.includes(parent)) break;
       chain.push(parent);
@@ -1859,7 +1859,7 @@ export class TaskflowEngine {
            WHERE board_id = ? AND person_id = ?
            LIMIT 1`,
         )
-        .get(boardId, raw) as { name: string } | undefined;
+        .get(boardId, raw) as { name: string } | null;
       return row?.name ?? raw;
     } catch {
       return raw;
@@ -2030,7 +2030,7 @@ export class TaskflowEngine {
   }): TaskflowResult {
     const task = this.db
       .prepare('SELECT * FROM tasks WHERE id = ? AND board_id = ?')
-      .get(params.task_id, params.board_id) as Record<string, unknown> | undefined;
+      .get(params.task_id, params.board_id) as Record<string, unknown> | null;
     if (!task) {
       return { success: false, error_code: 'not_found', error: `Task not found: ${params.task_id}` } as any;
     }
@@ -2105,7 +2105,7 @@ export class TaskflowEngine {
       const txResult = this.db.transaction(() => {
         const task = this.db
           .prepare('SELECT * FROM tasks WHERE id = ? AND board_id = ?')
-          .get(params.task_id, params.board_id) as Record<string, any> | undefined;
+          .get(params.task_id, params.board_id) as Record<string, any> | null;
         if (!task) {
           return { success: false, error_code: 'not_found', error: `Task not found: ${params.task_id}` } as any;
         }
@@ -2155,7 +2155,7 @@ export class TaskflowEngine {
       const txResult = this.db.transaction(() => {
         const task = this.db
           .prepare('SELECT * FROM tasks WHERE id = ? AND board_id = ?')
-          .get(params.task_id, params.board_id) as Record<string, any> | undefined;
+          .get(params.task_id, params.board_id) as Record<string, any> | null;
         if (!task) {
           return { success: false, error_code: 'not_found', error: `Task not found: ${params.task_id}` } as any;
         }
@@ -2204,7 +2204,7 @@ export class TaskflowEngine {
       const txResult = this.db.transaction(() => {
         const task = this.db
           .prepare('SELECT * FROM tasks WHERE id = ? AND board_id = ?')
-          .get(params.task_id, params.board_id) as Record<string, any> | undefined;
+          .get(params.task_id, params.board_id) as Record<string, any> | null;
         if (!task) {
           return { success: false, error_code: 'not_found', error: `Task not found: ${params.task_id}` } as any;
         }
@@ -2398,7 +2398,7 @@ export class TaskflowEngine {
   private getNextNumberForPrefix(prefix: string): number {
     const row = this.db
       .prepare(`SELECT next_number FROM board_id_counters WHERE board_id = ? AND prefix = ?`)
-      .get(this.boardId, prefix) as { next_number: number } | undefined;
+      .get(this.boardId, prefix) as { next_number: number } | null;
     if (row) {
       this.db
         .prepare(`UPDATE board_id_counters SET next_number = ? WHERE board_id = ? AND prefix = ?`)
@@ -2441,7 +2441,7 @@ export class TaskflowEngine {
       const taskId = `${prefix}${num}`;
       const exists = this.db
         .prepare(`SELECT 1 FROM tasks WHERE board_id = ? AND id = ?`)
-        .get(this.boardId, taskId) as { 1: number } | undefined;
+        .get(this.boardId, taskId) as { 1: number } | null;
       if (!exists) return taskId;
       this.syncCounterPastExistingIds(prefix, num + 1);
     }
@@ -2505,7 +2505,7 @@ export class TaskflowEngine {
            WHERE board_id = ? AND task_id = ? AND action = 'created'
            ORDER BY at ASC LIMIT 1`,
         )
-        .get(boardId, taskId) as { by: string } | undefined;
+        .get(boardId, taskId) as { by: string } | null;
       if (!creator) return null;
       const creatorPerson = this.resolvePerson(creator.by, boardId);
       if (!creatorPerson || creatorPerson.person_id === modifierPersonId) return null;
@@ -2530,7 +2530,7 @@ export class TaskflowEngine {
   private personDisplayName(personId: string, boardId = this.boardId): string {
     const row = this.db
       .prepare(`SELECT name FROM board_people WHERE board_id = ? AND person_id = ?`)
-      .get(boardId, personId) as { name: string } | undefined;
+      .get(boardId, personId) as { name: string } | null;
     return row?.name ?? personId;
   }
 
@@ -2790,7 +2790,7 @@ export class TaskflowEngine {
   private getBoardGroupJid(boardId: string): string | null {
     const row = this.db
       .prepare(`SELECT group_jid FROM boards WHERE id = ?`)
-      .get(boardId) as { group_jid: string } | undefined;
+      .get(boardId) as { group_jid: string } | null;
     return row?.group_jid ?? null;
   }
 
@@ -3084,7 +3084,7 @@ export class TaskflowEngine {
         `SELECT child_board_id FROM child_board_registrations
          WHERE parent_board_id = ? AND person_id = ?`,
       )
-      .get(boardId, personId) as { child_board_id: string } | undefined;
+      .get(boardId, personId) as { child_board_id: string } | null;
     return row ?? null;
   }
 
@@ -3118,7 +3118,7 @@ export class TaskflowEngine {
     if (result.success && result.task_id) {
       const verify = this.db
         .prepare('SELECT id FROM tasks WHERE id = ? AND board_id = ?')
-        .get(result.task_id, this.boardId) as { id: string } | undefined;
+        .get(result.task_id, this.boardId) as { id: string } | null;
       if (!verify) {
         return { success: false, error: `Task ${result.task_id} was not persisted after commit.` };
       }
@@ -4439,7 +4439,7 @@ export class TaskflowEngine {
     // Re-read notes from DB to pick up any preceding add_note in the same update call
     const freshEditRow = this.db
       .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
-      .get(taskBoardId, task.id) as { notes: string } | undefined;
+      .get(taskBoardId, task.id) as { notes: string } | null;
     const notes: Array<any> = JSON.parse(freshEditRow?.notes ?? task.notes ?? '[]');
     const note = notes.find((n: any) => n.id === noteId);
     if (!note) {
@@ -4485,7 +4485,7 @@ export class TaskflowEngine {
     // Re-read notes from DB to pick up any preceding add_note/edit_note in the same update call
     const freshRemoveRow = this.db
       .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
-      .get(taskBoardId, task.id) as { notes: string } | undefined;
+      .get(taskBoardId, task.id) as { notes: string } | null;
     const notes: Array<{ id: number; text: string; at: string; by: string }> = JSON.parse(freshRemoveRow?.notes ?? task.notes ?? '[]');
     const idx = notes.findIndex((n) => n.id === noteId);
     if (idx < 0) {
@@ -4551,7 +4551,7 @@ export class TaskflowEngine {
     // Re-read notes from DB to pick up any preceding add_note/edit_note/remove_note in the same update call
     const freshNotesRow = this.db
       .prepare(`SELECT notes FROM tasks WHERE board_id = ? AND id = ?`)
-      .get(taskBoardId, task.id) as { notes: string } | undefined;
+      .get(taskBoardId, task.id) as { notes: string } | null;
     const notes: Array<any> = JSON.parse(freshNotesRow?.notes ?? task.notes ?? '[]');
     const note = notes.find((n: any) => n.id === noteId);
     if (!note) {
@@ -4877,7 +4877,7 @@ export class TaskflowEngine {
         // Re-read labels from DB to pick up any preceding add_label in the same update call
         const freshLabelRow = this.db
           .prepare(`SELECT labels FROM tasks WHERE board_id = ? AND id = ?`)
-          .get(taskBoardId, task.id) as { labels: string } | undefined;
+          .get(taskBoardId, task.id) as { labels: string } | null;
         const labels: string[] = JSON.parse(freshLabelRow?.labels ?? task.labels ?? '[]');
         const idx = labels.indexOf(updates.remove_label);
         if (idx >= 0) {
@@ -5122,7 +5122,7 @@ export class TaskflowEngine {
         const { external_id, phone, name } = updates.remove_external_participant;
         let externalId = external_id;
         if (!externalId && phone) {
-          const row = this.db.prepare(`SELECT external_id FROM external_contacts WHERE phone = ?`).get(normalizePhone(phone)) as { external_id: string } | undefined;
+          const row = this.db.prepare(`SELECT external_id FROM external_contacts WHERE phone = ?`).get(normalizePhone(phone)) as { external_id: string } | null;
           externalId = row?.external_id;
         }
         if (!externalId && name) {
@@ -5133,7 +5133,7 @@ export class TaskflowEngine {
                AND mep.board_id = ? AND mep.meeting_task_id = ?
                AND mep.invite_status IN ('pending', 'invited', 'accepted')
              LIMIT 1`
-          ).get(name, this.boardId, task.id) as { external_id: string } | undefined;
+          ).get(name, this.boardId, task.id) as { external_id: string } | null;
           externalId = row?.external_id;
         }
         if (!externalId) {
@@ -5190,7 +5190,7 @@ export class TaskflowEngine {
         const { external_id, phone } = updates.reinvite_external_participant;
         let externalId = external_id;
         if (!externalId && phone) {
-          const row = this.db.prepare(`SELECT external_id FROM external_contacts WHERE phone = ?`).get(normalizePhone(phone)) as { external_id: string } | undefined;
+          const row = this.db.prepare(`SELECT external_id FROM external_contacts WHERE phone = ?`).get(normalizePhone(phone)) as { external_id: string } | null;
           externalId = row?.external_id;
         }
         if (!externalId) {
@@ -5295,7 +5295,7 @@ export class TaskflowEngine {
           const owningBoardId = this.taskBoardId(task);
           const modeRow = this.db.prepare(
             `SELECT cross_board_subtask_mode FROM board_runtime_config WHERE board_id = ?`,
-          ).get(owningBoardId) as { cross_board_subtask_mode: string } | undefined;
+          ).get(owningBoardId) as { cross_board_subtask_mode: string } | null;
           const mode = modeRow?.cross_board_subtask_mode ?? 'open';
 
           if (mode === 'blocked') {
@@ -5964,7 +5964,7 @@ export class TaskflowEngine {
       if (cached !== undefined) return cached;
       const row = this.db
         .prepare(`SELECT name FROM board_people WHERE person_id = ? LIMIT 1`)
-        .get(personId) as { name: string } | undefined;
+        .get(personId) as { name: string } | null;
       const name = row?.name ?? personId;
       extNameCache.set(personId, name);
       return name;
@@ -6122,7 +6122,7 @@ export class TaskflowEngine {
     /* Board manager (owner) — listed first in each column */
     const managerRow = this.db
       .prepare(`SELECT person_id FROM board_admins WHERE board_id = ? AND admin_role = 'manager' LIMIT 1`)
-      .get(this.boardId) as { person_id: string } | undefined;
+      .get(this.boardId) as { person_id: string } | null;
     const managerId = managerRow?.person_id ?? null;
 
     /** Threshold: 3+ tasks → summary line; < 3 → show individual tasks */
@@ -6325,7 +6325,7 @@ export class TaskflowEngine {
              ON bp.board_id = ba.board_id AND bp.person_id = ba.person_id
              WHERE ba.board_id = ? AND ba.admin_role = 'manager' LIMIT 1`,
           )
-          .get(this.boardId) as { name: string } | undefined;
+          .get(this.boardId) as { name: string } | null;
         const ownerName = ownerRow?.name ?? 'Gestor';
 
         lines.push('', SEP, `🎉 *${completedCount} tarefa(s) concluída(s) hoje!*`, SEP);
@@ -6727,11 +6727,11 @@ export class TaskflowEngine {
                 try {
                   const d = JSON.parse(h.details);
                   if (d.from_assignee && chain.length === 0) {
-                    const n = this.db.prepare(`SELECT name FROM board_people WHERE person_id = ? LIMIT 1`).get(d.from_assignee) as { name: string } | undefined;
+                    const n = this.db.prepare(`SELECT name FROM board_people WHERE person_id = ? LIMIT 1`).get(d.from_assignee) as { name: string } | null;
                     chain.push({ person_id: d.from_assignee, name: n?.name ?? d.from_assignee });
                   }
                   if (d.to_assignee) {
-                    const n = this.db.prepare(`SELECT name FROM board_people WHERE person_id = ? LIMIT 1`).get(d.to_assignee) as { name: string } | undefined;
+                    const n = this.db.prepare(`SELECT name FROM board_people WHERE person_id = ? LIMIT 1`).get(d.to_assignee) as { name: string } | null;
                     chain.push({ person_id: d.to_assignee, name: n?.name ?? d.to_assignee });
                   }
                 } catch {}
@@ -7578,7 +7578,7 @@ export class TaskflowEngine {
             .prepare(
               `SELECT phone FROM board_people WHERE board_id = ? AND person_id = ?`,
             )
-            .get(this.boardId, person.person_id) as { phone: string | null } | undefined;
+            .get(this.boardId, person.person_id) as { phone: string | null } | null;
 
           const managerPhoneRaw = personRow?.phone ?? params.phone ?? '';
           const managerPhone = managerPhoneRaw
@@ -7618,7 +7618,7 @@ export class TaskflowEngine {
             .prepare(
               `SELECT phone FROM board_people WHERE board_id = ? AND person_id = ?`,
             )
-            .get(this.boardId, person.person_id) as { phone: string | null } | undefined;
+            .get(this.boardId, person.person_id) as { phone: string | null } | null;
 
           const delegatePhoneRaw = personRow?.phone ?? params.phone ?? '';
           const delegatePhone = delegatePhoneRaw
@@ -8358,7 +8358,7 @@ export class TaskflowEngine {
           // Look up the source board's group_jid for the notification-back
           const sourceBoardRow = this.db
             .prepare(`SELECT group_jid FROM boards WHERE id = ?`)
-            .get(req.source_board_id) as { group_jid: string } | undefined;
+            .get(req.source_board_id) as { group_jid: string } | null;
 
           if (params.decision === 'reject') {
             // Compare-and-swap on status='pending' to survive a cross-process
@@ -9253,7 +9253,7 @@ export class TaskflowEngine {
           }
           const boardInfo = this.db
             .prepare(`SELECT parent_board_id FROM boards WHERE id = ?`)
-            .get(this.boardId) as { parent_board_id: string | null } | undefined;
+            .get(this.boardId) as { parent_board_id: string | null } | null;
           if (!boardInfo?.parent_board_id) {
             return {
               success: false,
@@ -9549,7 +9549,7 @@ export class TaskflowEngine {
     if (!parentBoardId && task.parent_task_id) {
       const parentProject = this.db
         .prepare(`SELECT linked_parent_board_id, linked_parent_task_id FROM tasks WHERE board_id = ? AND id = ?`)
-        .get(taskBoardId, task.parent_task_id) as any | undefined;
+        .get(taskBoardId, task.parent_task_id) as any | null;
       if (parentProject) {
         parentBoardId = parentProject.linked_parent_board_id ?? null;
         parentTaskId = parentProject.linked_parent_task_id ?? null;
@@ -9561,7 +9561,7 @@ export class TaskflowEngine {
     /* 2. Load the parent task via direct SQL (do NOT use requireTask — it enforces board visibility) */
     const parentTask = this.db
       .prepare('SELECT * FROM tasks WHERE board_id = ? AND id = ?')
-      .get(parentBoardId, parentTaskId) as any | undefined;
+      .get(parentBoardId, parentTaskId) as any | null;
     if (!parentTask) return;
 
     /* 3. Verify parent is linked to a child board */
