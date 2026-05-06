@@ -15,6 +15,7 @@ import './provision-root-board.js';
 import './provision-child-board.js';
 import './create-group.js';
 import './add-destination.js';
+import './taskflow-api-read.js';
 import { startMcpServer } from './server.js';
 
 function log(msg: string): void {

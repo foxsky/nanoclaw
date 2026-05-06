@@ -23,9 +23,11 @@ import fs from 'fs';
 const DEFAULT_INBOUND_PATH = '/workspace/inbound.db';
 const DEFAULT_OUTBOUND_PATH = '/workspace/outbound.db';
 const DEFAULT_HEARTBEAT_PATH = '/workspace/.heartbeat';
+const DEFAULT_TASKFLOW_PATH = '/workspace/taskflow.db';
 
 let _inbound: Database | null = null;
 let _outbound: Database | null = null;
+let _taskflow: Database | null = null;
 let _heartbeatPath: string = DEFAULT_HEARTBEAT_PATH;
 
 /** Inbound DB — container opens read-only (host is the sole writer). */
@@ -140,6 +142,42 @@ export function touchHeartbeat(): void {
  */
 export function clearStaleProcessingAcks(): void {
   getOutboundDb().prepare("DELETE FROM processing_ack WHERE status = 'processing'").run();
+}
+
+/**
+ * TaskFlow DB — owned by the host (writer at host-side scheduling cron, etc.)
+ * but the container needs full read/write access for the engine's mutations
+ * (boards, tasks, task_history, …). Same connection serves all 9 taskflow_*
+ * MCP tools. The file is mounted into the container at /workspace/taskflow.db
+ * by container-runner.ts.
+ */
+export function getTaskflowDb(): Database {
+  if (!_taskflow) {
+    _taskflow = new Database(DEFAULT_TASKFLOW_PATH);
+    // WAL matches v1 (`openWritableDb` → `db.pragma('journal_mode = WAL')`).
+    // Cross-mount safety (host cron + container engine writers) is decided
+    // in sub-task 2.3.e alongside the host-side container-runner mount
+    // wiring; until then, parity wins.
+    _taskflow.exec('PRAGMA journal_mode = WAL');
+    _taskflow.exec('PRAGMA busy_timeout = 5000');
+    _taskflow.exec('PRAGMA foreign_keys = ON');
+  }
+  return _taskflow;
+}
+
+/** For tests — creates an empty in-memory TaskFlow DB. The engine's
+ * `ensureTaskSchema()` will create its own tables on first non-readonly
+ * instantiation; tests that exercise read-only tools must seed schema +
+ * fixtures explicitly. */
+export function initTestTaskflowDb(): Database {
+  _taskflow = new Database(':memory:');
+  _taskflow.exec('PRAGMA foreign_keys = ON');
+  return _taskflow;
+}
+
+export function closeTaskflowDb(): void {
+  _taskflow?.close();
+  _taskflow = null;
 }
 
 /** For tests — creates in-memory DBs with the session schemas. */
