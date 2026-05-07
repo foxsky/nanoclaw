@@ -18,6 +18,7 @@ import './add-destination.js';
 import './taskflow-api-read.js';
 import './taskflow-api-mutate.js';
 import './taskflow-api-update.js';
+import './taskflow-api-notes.js';
 import { startMcpServer } from './server.js';
 
 function log(msg: string): void {
