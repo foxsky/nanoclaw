@@ -12,6 +12,13 @@ import {
 let db: Database;
 
 function seedReadFixtures(d: Database): void {
+  // Compute "today" / "+3 days" in JS so the entire test run sees one
+  // consistent value — SQLite's `date('now','localtime')` can change between
+  // INSERT and the engine's filter query if a test bridges midnight.
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const inThreeDays = new Date(today.getTime() + 3 * 86400 * 1000);
+  const threeDaysStr = `${inThreeDays.getFullYear()}-${String(inThreeDays.getMonth() + 1).padStart(2, '0')}-${String(inThreeDays.getDate()).padStart(2, '0')}`;
   d.exec(`
     CREATE TABLE boards (
       id TEXT PRIMARY KEY, short_code TEXT, name TEXT, created_at TEXT NOT NULL
@@ -42,13 +49,13 @@ function seedReadFixtures(d: Database): void {
       ('t2','b1','Overdue Task','todo','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
       ('t3','b1','Linked Task','todo','simple',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z','child-board-1',NULL,NULL),
       ('t4','b1','Done Task','done','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
-      ('t5','b1','Due Today Task','todo','simple',NULL,NULL,date('now','localtime'),'[]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
-      ('t6','b1','Due This Week Task','todo','simple',NULL,NULL,date('now','localtime','+3 days'),'["backend"]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t5','b1','Due Today Task','todo','simple',NULL,NULL,'${todayStr}','[]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t6','b1','Due This Week Task','todo','simple',NULL,NULL,'${threeDaysStr}','["backend"]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
       ('t7','b1','High Priority Task','todo','simple',NULL,'alta','2099-02-01','[]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL);
     INSERT INTO task_history (board_id, task_id, action, "by", "at", details)
       VALUES
         ('b1','t2','update','alice', '2020-01-01T00:00:00Z', '{"source":"old"}'),
-        ('b1','t1','create','alice', datetime('now','localtime'), '{"source":"seed"}');
+        ('b1','t1','create','alice', '${todayStr}T12:00:00', '{"source":"seed"}');
   `);
 }
 
