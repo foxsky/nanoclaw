@@ -10,11 +10,7 @@ import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
-import { err, requireString } from './util.js';
-
-function jsonResponse(payload: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
-}
+import { err, jsonResponse, parseTaskActorArgs, requireString } from './util.js';
 
 export const apiCreateSimpleTaskTool: McpToolDefinition = {
   tool: {
@@ -132,26 +128,15 @@ export const apiDeleteSimpleTaskTool: McpToolDefinition = {
     },
   },
   async handler(args) {
-    const boardId = requireString(args, 'board_id');
-    if (boardId === null) return err('board_id: required string');
-    const taskId = requireString(args, 'task_id');
-    if (taskId === null) return err('task_id: required string');
-    const senderName = requireString(args, 'sender_name');
-    if (senderName === null) return err('sender_name: required string');
-    let senderIsService: boolean | undefined;
-    if (args.sender_is_service !== undefined) {
-      if (typeof args.sender_is_service !== 'boolean') {
-        return err('sender_is_service: expected boolean');
-      }
-      senderIsService = args.sender_is_service;
-    }
+    const parsed = parseTaskActorArgs(args);
+    if (!parsed.ok) return parsed.error;
 
-    const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+    const engine = new TaskflowEngine(getTaskflowDb(), parsed.boardId);
     const result = engine.apiDeleteSimpleTask({
-      board_id: boardId,
-      task_id: taskId,
-      sender_name: senderName,
-      sender_is_service: senderIsService,
+      board_id: parsed.boardId,
+      task_id: parsed.taskId,
+      sender_name: parsed.senderName,
+      sender_is_service: parsed.senderIsService,
     });
     return jsonResponse(result);
   },

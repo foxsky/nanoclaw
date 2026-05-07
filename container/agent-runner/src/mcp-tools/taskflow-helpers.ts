@@ -1,8 +1,6 @@
-/**
- * Pure-function helpers shared across TaskFlow MCP tools and the cross-repo
- * Python REST consumer (actor resolution + notification routing roundtrip
- * against `tests/test_actor_resolution.py`). No DB access; no I/O.
- */
+/** Pure-function helpers for TaskFlow actor + notification-event parsing.
+ *  Exported for cross-repo consumers (Python REST roundtrip validators).
+ *  No DB access; no I/O. */
 
 export type TaskflowPersonActor = {
   actor_type: 'taskflow_person';

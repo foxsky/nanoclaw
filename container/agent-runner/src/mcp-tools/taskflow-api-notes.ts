@@ -1,43 +1,9 @@
-/**
- * Three note-mutation MCP tools — trivial delegates to engine methods.
- * V1 lines 532-583 of taskflow-mcp-server.ts at sha ec84a745.
- */
+/** Three note-mutation MCP tools — trivial delegates to engine methods. */
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
-import { err, requireString } from './util.js';
-
-function jsonResponse(payload: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
-}
-
-type CommonNoteArgs = {
-  ok: true;
-  boardId: string;
-  taskId: string;
-  senderName: string;
-  senderIsService: boolean | undefined;
-};
-type CommonNoteParseResult = CommonNoteArgs | { ok: false; error: ReturnType<typeof err> };
-
-/** Validates required board_id, task_id, sender_name, optional sender_is_service. */
-function parseCommonNoteArgs(args: Record<string, unknown>): CommonNoteParseResult {
-  const boardId = requireString(args, 'board_id');
-  if (boardId === null) return { ok: false, error: err('board_id: required string') };
-  const taskId = requireString(args, 'task_id');
-  if (taskId === null) return { ok: false, error: err('task_id: required string') };
-  const senderName = requireString(args, 'sender_name');
-  if (senderName === null) return { ok: false, error: err('sender_name: required string') };
-  let senderIsService: boolean | undefined;
-  if (args.sender_is_service !== undefined) {
-    if (typeof args.sender_is_service !== 'boolean') {
-      return { ok: false, error: err('sender_is_service: expected boolean') };
-    }
-    senderIsService = args.sender_is_service;
-  }
-  return { ok: true, boardId, taskId, senderName, senderIsService };
-}
+import { err, jsonResponse, parseTaskActorArgs } from './util.js';
 
 export const apiTaskAddNoteTool: McpToolDefinition = {
   tool: {
@@ -57,7 +23,7 @@ export const apiTaskAddNoteTool: McpToolDefinition = {
     },
   },
   async handler(args) {
-    const parsed = parseCommonNoteArgs(args);
+    const parsed = parseTaskActorArgs(args);
     if (!parsed.ok) return parsed.error;
     if (typeof args.text !== 'string' || args.text.length === 0) {
       return err('text: required non-empty string');
@@ -100,7 +66,7 @@ export const apiTaskEditNoteTool: McpToolDefinition = {
     },
   },
   async handler(args) {
-    const parsed = parseCommonNoteArgs(args);
+    const parsed = parseTaskActorArgs(args);
     if (!parsed.ok) return parsed.error;
     if (typeof args.note_id !== 'number' || !Number.isInteger(args.note_id)) {
       return err('note_id: expected integer');
@@ -138,7 +104,7 @@ export const apiTaskRemoveNoteTool: McpToolDefinition = {
     },
   },
   async handler(args) {
-    const parsed = parseCommonNoteArgs(args);
+    const parsed = parseTaskActorArgs(args);
     if (!parsed.ok) return parsed.error;
     if (typeof args.note_id !== 'number' || !Number.isInteger(args.note_id)) {
       return err('note_id: expected integer');

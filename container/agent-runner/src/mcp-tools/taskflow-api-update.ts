@@ -1,18 +1,12 @@
 /**
- * api_update_simple_task — the single largest mutate tool. v1 implements
- * the entire field/column/assignee/role-gate flow inline (no engine method
- * for "update"); the port is a verbatim translation against bun:sqlite +
- * the v2 registry pattern.
+ * api_update_simple_task. The entire field/column/assignee/role-gate flow
+ * lives in this handler — there is no engine method for "update".
  */
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
-import { err, requireString } from './util.js';
-
-function jsonResponse(payload: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
-}
+import { err, jsonResponse, parseTaskActorArgs } from './util.js';
 
 export const apiUpdateSimpleTaskTool: McpToolDefinition = {
   tool: {
@@ -37,19 +31,9 @@ export const apiUpdateSimpleTaskTool: McpToolDefinition = {
     },
   },
   async handler(args) {
-    const boardId = requireString(args, 'board_id');
-    if (boardId === null) return err('board_id: required string');
-    const taskId = requireString(args, 'task_id');
-    if (taskId === null) return err('task_id: required string');
-    const senderName = requireString(args, 'sender_name');
-    if (senderName === null) return err('sender_name: required string');
-    let senderIsService: boolean | undefined;
-    if (args.sender_is_service !== undefined) {
-      if (typeof args.sender_is_service !== 'boolean') {
-        return err('sender_is_service: expected boolean');
-      }
-      senderIsService = args.sender_is_service;
-    }
+    const parsed = parseTaskActorArgs(args);
+    if (!parsed.ok) return parsed.error;
+    const { boardId, taskId, senderName, senderIsService } = parsed;
 
     // Optional field shapes (zod parity):
     //   z.string().optional()                → string | undefined
