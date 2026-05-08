@@ -216,11 +216,13 @@ function buildMounts(
   // Session folder at /workspace (contains inbound.db, outbound.db, outbox/, .claude/)
   mounts.push({ hostPath: sessDir, containerPath: '/workspace', readonly: false });
 
-  // Single host-owned TaskFlow DB shared by every container. We mount the
-  // DIRECTORY (not just the file) so SQLite's `-journal` sidecar can live
+  // Single host-owned TaskFlow DB shared by every container. The DIRECTORY
+  // (not just the file) is mounted so SQLite's `-journal` sidecar can live
   // beside the main DB on either side of the mount — file-only mounts
   // would put the container's journal inside the session dir, breaking
-  // crash recovery. Schema bootstrap runs on the host before mount.
+  // crash recovery. Heavy schema migration runs once at host startup
+  // (bootstrapTaskflowDb in src/index.ts); this guard only confirms the
+  // file exists (and falls back to bootstrap if a test/CLI bypassed init).
   ensureTaskflowDb(DATA_DIR);
   mounts.push({ hostPath: taskflowDir(DATA_DIR), containerPath: '/workspace/taskflow', readonly: false });
 

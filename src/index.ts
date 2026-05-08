@@ -10,6 +10,7 @@ import { DATA_DIR } from './config.js';
 import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
 import { initDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/index.js';
+import { bootstrapTaskflowDb } from './taskflow-mount.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
@@ -63,6 +64,12 @@ async function main(): Promise<void> {
   const db = initDb(dbPath);
   runMigrations(db);
   log.info('Central DB ready', { path: dbPath });
+
+  // 1a. Bootstrap TaskFlow DB once at startup (heavy schema + ALTER TABLE
+  // migrations). Container spawns later only re-check existence; the
+  // long-lived host handles open lazily against this fully-migrated file.
+  bootstrapTaskflowDb(DATA_DIR);
+  log.info('TaskFlow DB ready');
 
   // 1b. One-time filesystem cutover — idempotent, no-op after first run.
   migrateGroupsToClaudeLocal();
