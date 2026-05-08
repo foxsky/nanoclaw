@@ -542,15 +542,33 @@ function reconcileDelegationLinks(db: Database.Database): void {
 
 /**
  * Initialize the TaskFlow database at the given path (or default location).
- * Creates the directory, database file, enables WAL mode, and creates all tables.
- * Idempotent — safe to call multiple times.
+ * Creates the directory, database file, sets DELETE journal mode, and
+ * creates all tables. Idempotent — safe to call multiple times.
  */
 export function initTaskflowDb(dbPath?: string): Database.Database {
   const resolvedPath = dbPath ?? path.join(DATA_DIR, 'taskflow', 'taskflow.db');
   fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
 
   const db = new Database(resolvedPath);
-  db.pragma('journal_mode = WAL');
+  // busy_timeout BEFORE journal_mode so the pragma can wait if a stale
+  // writer is briefly holding the lock during WAL→DELETE migration.
+  db.pragma('busy_timeout = 5000');
+  // DELETE (not WAL) — taskflow.db is mounted into agent containers, and
+  // WAL's `-shm` mmap is not coherent across the host/container VirtioFS
+  // boundary. With both host (scheduling cron) and container (engine)
+  // writing, we need filesystem-lock serialization. Assert the mode took
+  // effect — if a stale WAL writer is open, SQLite returns 'wal' instead.
+  const journalMode = db.pragma('journal_mode = DELETE', { simple: true });
+  // In-memory DBs return 'memory' regardless of the requested mode — that's
+  // expected and harmless. For file-backed DBs, getting back anything other
+  // than 'delete' means a stale WAL writer is still open and the journal
+  // mode change was rejected.
+  if (journalMode !== 'delete' && journalMode !== 'memory') {
+    db.close();
+    throw new Error(
+      `taskflow.db: failed to set journal_mode=DELETE (got ${journalMode}). A stale WAL writer may still be open.`,
+    );
+  }
   db.pragma('foreign_keys = ON');
   db.exec(TASKFLOW_SCHEMA);
   const taskColumns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{

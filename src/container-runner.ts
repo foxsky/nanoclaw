@@ -19,6 +19,7 @@ import { initGroupFilesystem } from './group-init.js';
 import { stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
 import { validateAdditionalMounts } from './modules/mount-security/index.js';
+import { ensureTaskflowDb, taskflowDir } from './taskflow-mount.js';
 // Provider host-side config barrel — each provider that needs host-side
 // container setup self-registers on import.
 import './providers/index.js';
@@ -214,6 +215,14 @@ function buildMounts(
 
   // Session folder at /workspace (contains inbound.db, outbound.db, outbox/, .claude/)
   mounts.push({ hostPath: sessDir, containerPath: '/workspace', readonly: false });
+
+  // Single host-owned TaskFlow DB shared by every container. We mount the
+  // DIRECTORY (not just the file) so SQLite's `-journal` sidecar can live
+  // beside the main DB on either side of the mount — file-only mounts
+  // would put the container's journal inside the session dir, breaking
+  // crash recovery. Schema bootstrap runs on the host before mount.
+  ensureTaskflowDb(DATA_DIR);
+  mounts.push({ hostPath: taskflowDir(DATA_DIR), containerPath: '/workspace/taskflow', readonly: false });
 
   // Agent group folder at /workspace/agent (RW for working files + CLAUDE.local.md)
   mounts.push({ hostPath: groupDir, containerPath: '/workspace/agent', readonly: false });

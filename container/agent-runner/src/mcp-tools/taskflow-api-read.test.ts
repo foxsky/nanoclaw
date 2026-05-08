@@ -12,13 +12,11 @@ import {
 let db: Database;
 
 function seedReadFixtures(d: Database): void {
-  // Compute "today" / "+3 days" in JS so the entire test run sees one
-  // consistent value — SQLite's `date('now','localtime')` can change between
-  // INSERT and the engine's filter query if a test bridges midnight.
-  const today = new Date();
-  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-  const inThreeDays = new Date(today.getTime() + 3 * 86400 * 1000);
-  const threeDaysStr = `${inThreeDays.getFullYear()}-${String(inThreeDays.getMonth() + 1).padStart(2, '0')}-${String(inThreeDays.getDate()).padStart(2, '0')}`;
+  // Compute "today" / "+3 days" in JS UTC to match the engine's `today()`
+  // helper (`new Date().toISOString().slice(0, 10)`). Local-time would
+  // drift across the UTC-vs-local-timezone boundary near midnight.
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const threeDaysStr = new Date(Date.now() + 3 * 86400 * 1000).toISOString().slice(0, 10);
   d.exec(`
     CREATE TABLE boards (
       id TEXT PRIMARY KEY, short_code TEXT, name TEXT, created_at TEXT NOT NULL

@@ -23,7 +23,7 @@ import fs from 'fs';
 const DEFAULT_INBOUND_PATH = '/workspace/inbound.db';
 const DEFAULT_OUTBOUND_PATH = '/workspace/outbound.db';
 const DEFAULT_HEARTBEAT_PATH = '/workspace/.heartbeat';
-const DEFAULT_TASKFLOW_PATH = '/workspace/taskflow.db';
+const DEFAULT_TASKFLOW_PATH = '/workspace/taskflow/taskflow.db';
 
 let _inbound: Database | null = null;
 let _outbound: Database | null = null;
@@ -144,12 +144,17 @@ export function clearStaleProcessingAcks(): void {
   getOutboundDb().prepare("DELETE FROM processing_ack WHERE status = 'processing'").run();
 }
 
-/** TaskFlow DB at /workspace/taskflow.db. Mounted by the host; both the
- *  host-side scheduling cron and the in-container engine read+write to it. */
+/** TaskFlow DB at /workspace/taskflow/taskflow.db. The DIRECTORY is mounted
+ *  by the host so SQLite's `-journal` sidecar lives next to the DB and is
+ *  visible from both sides. Both the host-side scheduling cron and the
+ *  in-container engine read+write to this file.
+ *  journal_mode=DELETE matches the v2 session-DB invariant: WAL's `-shm`
+ *  mmap is not coherent across the host/container VirtioFS boundary, so
+ *  a cross-mount writer can silently miss updates from the other side. */
 export function getTaskflowDb(): Database {
   if (!_taskflow) {
     _taskflow = new Database(DEFAULT_TASKFLOW_PATH);
-    _taskflow.exec('PRAGMA journal_mode = WAL');
+    _taskflow.exec('PRAGMA journal_mode = DELETE');
     _taskflow.exec('PRAGMA busy_timeout = 5000');
     _taskflow.exec('PRAGMA foreign_keys = ON');
   }

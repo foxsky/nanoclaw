@@ -389,6 +389,7 @@ export async function handleProvisionChildBoard(
   }
 
   const tfDb = new Database(TASKFLOW_DB_PATH);
+  tfDb.pragma('busy_timeout = 5000');
   try {
     const parent = loadParent(tfDb, session);
     if (!parent) return;

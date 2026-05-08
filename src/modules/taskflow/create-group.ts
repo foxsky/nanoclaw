@@ -64,6 +64,7 @@ export async function handleCreateGroup(
   _inDb: DatabaseType.Database,
 ): Promise<void> {
   const tfDb = new Database(TASKFLOW_DB_PATH);
+  tfDb.pragma('busy_timeout = 5000');
   try {
     const auth = checkAuth(tfDb, session);
     if (!auth.ok) {

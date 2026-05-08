@@ -9,7 +9,8 @@ export function getTaskflowDb(dataDir: string): Database.Database | null {
   const dbPath = path.join(dataDir, 'taskflow', 'taskflow.db');
   try {
     _taskflowDb = new Database(dbPath, { fileMustExist: true });
-    _taskflowDb.pragma('journal_mode = WAL');
+    // DELETE (not WAL) — see src/taskflow-db.ts for the cross-mount rationale.
+    _taskflowDb.pragma('journal_mode = DELETE');
     _taskflowDb.pragma('busy_timeout = 5000');
     return _taskflowDb;
   } catch {

@@ -233,6 +233,7 @@ export async function handleProvisionRootBoard(
 
   fs.mkdirSync(path.dirname(TASKFLOW_DB_PATH), { recursive: true });
   const tfDb = new Database(TASKFLOW_DB_PATH);
+  tfDb.pragma('busy_timeout = 5000');
   try {
     const existing = tfDb.prepare('SELECT 1 FROM boards WHERE id = ? OR short_code = ?').get(boardId, parsed.shortCode);
     if (existing) {
