@@ -85,6 +85,13 @@ export interface BoardRuntimeConfigRow {
   dst_sync_enabled: number;
 }
 
+/** v2 task envelope shape expected by the agent runner: it does
+ *  `JSON.parse(content)` and reads `.prompt` and `.script`. Raw strings
+ *  silently corrupt — use this helper at every insertTask call site. */
+export function taskEnvelope(prompt: string, script: string | null = null): string {
+  return JSON.stringify({ prompt, script });
+}
+
 export function nextCronRun(cronExpr: string, tz: string = 'UTC'): string | null {
   try {
     return CronExpressionParser.parse(cronExpr, { tz }).next().toISOString();
@@ -137,10 +144,7 @@ function onboardingPrompt(filename: string): string {
  * on the next 4 distinct weekdays. Wrapped in a single transaction so a
  * crash mid-loop never leaves a partial onboarding series.
  */
-export function scheduleOnboarding(params: {
-  inboundDb: Database.Database;
-  timezone?: string;
-}): void {
+export function scheduleOnboarding(params: { inboundDb: Database.Database; timezone?: string }): void {
   const tz = params.timezone || 'America/Fortaleza';
   const day1RunAt = new Date(Date.now() + 30 * 60 * 1000);
 
@@ -177,7 +181,7 @@ export function scheduleOnboarding(params: {
         platformId: null,
         channelType: null,
         threadId: null,
-        content: JSON.stringify({ prompt: onboardingPrompt(file), script: null }),
+        content: taskEnvelope(onboardingPrompt(file)),
       });
       log.info('Onboarding task scheduled', { taskId: id, file, runAt: runAtIso });
     }
@@ -227,7 +231,7 @@ export function scheduleRunners(params: ScheduleRunnersParams): void {
       id: newTaskId(),
       processAfter,
       recurrence: cron,
-      content: JSON.stringify({ prompt, script: null }),
+      content: taskEnvelope(prompt),
     };
   });
 
@@ -405,10 +409,7 @@ export interface WireV2Params {
  *  inbound.db handle, so the provision flow can write recurring/onboarding
  *  task messages directly into v2's scheduler queue. The caller must
  *  close the handle. */
-export function ensureSessionInbound(
-  agentGroupId: string,
-  messagingGroupId: string,
-): Database.Database {
+export function ensureSessionInbound(agentGroupId: string, messagingGroupId: string): Database.Database {
   const { session } = resolveSession(agentGroupId, messagingGroupId, null, 'shared');
   return openInboundDb(agentGroupId, session.id);
 }

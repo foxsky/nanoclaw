@@ -238,9 +238,7 @@ describe('scheduleOnboarding (integration via in-memory taskflow.db)', () => {
       timezone: 'America/Fortaleza',
     });
     const prompts = (
-      inboundDb
-        .prepare('SELECT content FROM messages_in ORDER BY process_after')
-        .all() as Array<{ content: string }>
+      inboundDb.prepare('SELECT content FROM messages_in ORDER BY process_after').all() as Array<{ content: string }>
     ).map((r) => r.content);
     for (let i = 0; i < ONBOARDING_FILES.length; i++) {
       expect(prompts[i]).toContain(ONBOARDING_FILES[i]!);

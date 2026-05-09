@@ -10,7 +10,12 @@ import { DATA_DIR } from './config.js';
 import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
 import { initDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/index.js';
-import { bootstrapTaskflowDb } from './taskflow-mount.js';
+import {
+  defaultInboundResolver,
+  migrateScheduledTasks,
+} from './modules/taskflow/migrate-scheduled-tasks.js';
+import { initTaskflowDb } from './taskflow-db.js';
+import { bootstrapTaskflowDb, taskflowDbPath } from './taskflow-mount.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
@@ -70,6 +75,22 @@ async function main(): Promise<void> {
   // long-lived host handles open lazily against this fully-migrated file.
   bootstrapTaskflowDb(DATA_DIR);
   log.info('TaskFlow DB ready');
+
+  // 1a.1 Migrate any legacy `scheduled_tasks` rows (status active/paused)
+  // into v2 native messages_in. Idempotent — re-running skips already-
+  // migrated rows. Existing TaskFlow boards' standup/digest/review tasks
+  // begin firing through the new path on first host startup after deploy.
+  {
+    const tfDb = initTaskflowDb(taskflowDbPath(DATA_DIR));
+    const { resolve, closeAll } = defaultInboundResolver();
+    try {
+      const result = migrateScheduledTasks(tfDb, resolve);
+      log.info('TaskFlow scheduled_tasks migration complete', { ...result });
+    } finally {
+      closeAll();
+      tfDb.close();
+    }
+  }
 
   // 1b. One-time filesystem cutover — idempotent, no-op after first run.
   migrateGroupsToClaudeLocal();
