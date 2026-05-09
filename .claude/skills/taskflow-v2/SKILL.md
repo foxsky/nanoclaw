@@ -194,6 +194,40 @@ Three topologies (see `docs/isolation-model.md`):
 - **shared**: one agent group, multiple messaging groups all bound to it.
 - **separate agents**: multiple agent groups, each with its own messaging group.
 
+### Per-board model + reasoning_effort (optional cost/quality tuning)
+
+Available since upstream v2.0.52: `container_configs` carries per-agent-group `model` and `reasoning_effort` columns. Different boards can run on different Claude models with different reasoning depth without affecting the trunk default.
+
+Recommended split for TaskFlow boards:
+
+| Workload | Model | Reasoning effort | Why |
+|---|---|---|---|
+| Daily standup runner | `claude-sonnet-4-6` | `medium` | Routine roll-call, short prompts, fast. Cheaper per turn. |
+| Evening digest runner | `claude-sonnet-4-6` | `medium` | Summary-shaped output, well within Sonnet's strength. |
+| Weekly review runner | `claude-opus-4-7` | `high` | Cross-task analysis, anomaly detection, recommendation generation — Opus's depth pays off. |
+| Cross-board subtask flows | `claude-opus-4-7` | `high` | Multi-board reconciliation; mistakes propagate. |
+| Audit (Kipp-style) board | `claude-opus-4-7` | `high` | Adversarial review of a day's mutations needs the strongest model. |
+
+Apply via `ncl groups config update`:
+
+```bash
+# Daily-cycle board (cheaper)
+ncl groups config update --id <board-agent-group> --model claude-sonnet-4-6 --reasoning-effort medium
+
+# Audit / weekly-review board (deeper)
+ncl groups config update --id <audit-agent-group> --model claude-opus-4-7 --reasoning-effort high
+```
+
+Verify:
+
+```bash
+ncl groups config get --id <agent-group>
+```
+
+The setting takes effect on the next container restart for that agent group (`ncl groups restart --id <agent-group>` to apply immediately, or wait for the next user message to trigger a fresh spawn). The trunk default still applies if `model` and `reasoning_effort` are unset on a given group.
+
+Note: the assistant model selection here is independent of the routing/permission model. The agent's *behavior* (TaskFlow CLAUDE.md, MCP tools, gates) is the same; only the LLM backing each turn differs.
+
 ### Verify after provisioning
 
 ```bash
