@@ -92,13 +92,13 @@ git fetch origin skill/taskflow-v2
 
 ### Verify branch tip
 
-The remote tip must include the latest fixes — at minimum the container build fixes (vercel pin + pnpm 11 PATH). Check:
+The remote tip should include a recent merge-forward against `upstream/main` (currently v2.0.54). Check:
 
 ```bash
 git log --oneline origin/skill/taskflow-v2 | head -3
 ```
 
-If the latest commit isn't `skill/taskflow-v2: container build — pin vercel + fix pnpm 11 PATH` (or newer), the remote is stale — push from a host that has the local branch tip first, or merge from the local branch instead of `origin/`. Otherwise the container won't build.
+If the latest commit is `Merge upstream/main (...) into skill/taskflow-v2` (or newer), the branch is current. If it's an older skill-branch commit with no upstream merge, the remote is stale — merge-forward at the maintainer host before installing here. Otherwise the install merge below will hit infra conflicts.
 
 ### Merge the skill branch
 
@@ -107,11 +107,38 @@ git checkout main
 git merge --no-ff --no-edit origin/skill/taskflow-v2
 ```
 
-**Expect conflicts in 5 infra files even on a clean upstream/main install:** `container/Dockerfile`, `package.json`, `pnpm-lock.yaml`, `setup.sh`, `src/db/migrations/index.ts`. These come from `skill/taskflow-v2` lagging upstream's main (the branch was built from an older v2 baseline; upstream main has moved forward, the skill branch hasn't been merge-forwarded yet). They're resolvable line-by-line — generally take the skill-branch side for `Dockerfile` (the vercel pin + pnpm/bin PATH fix is required for the container build) and the upstream side for `pnpm-lock.yaml` (regenerate with `pnpm install --frozen-lockfile` after the merge anyway). For `src/db/migrations/index.ts`, both sides add migrations — keep both.
+When `origin/skill/taskflow-v2` is current with upstream (the maintenance recipe below keeps it that way), this merge has near-empty conflict surface against a clean `upstream/main`. If conflicts appear in TaskFlow-owned files (`src/modules/taskflow/`, `src/taskflow-mount.ts`, `src/taskflow-db.ts`, container/agent-runner taskflow files), the host's `main` has fork-private edits that overlap with the skill — typically prefer the skill branch version for TaskFlow-owned paths.
 
-If there are conflicts in **other** files (TaskFlow-owned: `src/modules/taskflow/`, `src/taskflow-mount.ts`, `src/taskflow-db.ts`, container/agent-runner taskflow files), the host's `main` has fork-private edits that overlap with the skill. Resolve them — typically prefer the skill branch version for any file the skill owns.
+**Maintenance recipe for skill maintainers:** the upstream branch-skill model (per `docs/skills-as-branches.md`) calls for CI to merge-forward `main` into `skill/*` branches automatically. This fork's `skill/taskflow-v2` does it manually:
 
-**Maintenance note for skill maintainers:** the upstream branch-skill model (per `docs/skills-as-branches.md`) calls for CI to merge-forward `main` into `skill/*` branches automatically, keeping them current with upstream. This fork's `skill/taskflow-v2` does not yet have such CI; periodically merge `upstream/main` into `skill/taskflow-v2` and push to keep the conflict surface minimal for future installs.
+```bash
+git checkout skill/taskflow-v2
+git fetch upstream main
+git tag pre-merge-forward-$(date +%Y%m%d-%H%M%S) HEAD
+git merge --no-edit upstream/main
+# Resolve conflicts (typically migrations/index.ts and src/index.ts when
+# upstream adds new migration entries or new startup-bootstrap steps —
+# keep both sides). Then validate:
+pnpm install
+pnpm exec tsc --noEmit
+pnpm exec tsc -p container/agent-runner/tsconfig.json --noEmit
+pnpm test
+cd container/agent-runner && bun install --frozen-lockfile && bun test && cd -
+./container/build.sh
+git push origin skill/taskflow-v2
+```
+
+Run this whenever upstream tags a new release (or every ~25 commits, whichever comes first). Two such merges have already landed on this branch (v2.0.0→v2.0.47 in `7ba6e94f`, v2.0.48→v2.0.54 in `75c9d25d`).
+
+### Recommended companion skills
+
+These optional skills layer on top of TaskFlow. Install before or after, in any order:
+
+- **`/add-compact`** — Adds the `/compact` slash command for manual context compaction. TaskFlow boards run 8+ hours/day; context accumulates across standup → digest → review cycles. Install before the first standup if you expect long sessions.
+- **`/channel-formatting`** — Markdown → channel-syntax conversion at delivery (WhatsApp, Telegram, Slack). Required only if you wire a TaskFlow board to a non-WhatsApp channel; harmless on WhatsApp-only installs.
+- **`/add-reactions`** — WhatsApp emoji reaction support (receive, send, store, search). Useful for lightweight task acks: 👍 = done, 🚀 = in progress, ✋ = blocked, 👀 = reviewing — maps cleanly to Kanban column transitions.
+- **`/add-image-vision`**, **`/add-voice-transcription`**, **`/add-pdf-reader`** — Richer ingestion bandwidth. Members can send a photo of a whiteboard, a voice note, or a PDF attachment and the agent parses it into tasks/notes.
+- **`/add-taskflow-memory`** — Per-board long-term memory via redislabs/agent-memory-server. Already a fork-private skill.
 
 ### Install dependencies + rebuild
 
