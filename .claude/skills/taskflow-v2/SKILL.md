@@ -35,7 +35,12 @@ grep -q "createGroup\|lookupPhoneJid\|resolvePhoneJid" src/channels/whatsapp.ts 
   || echo "whatsapp adapter or extensions missing"
 ```
 
-If v2 baseline is missing, the host is on a pre-v2 NanoClaw version. Run `/update-nanoclaw` first.
+If v2 baseline is missing, the host is on a pre-v2 NanoClaw version. Two cases:
+
+- **Legacy v1 install** (host was on v1.x.x): `/update-nanoclaw` won't work — v1→v2 is an architecture rewrite, not a merge. Run `bash migrate-v2.sh` first (upstream's platform migrator), then `/migrate-from-v1` for cleanup, then re-run this skill's Phase 1.
+- **Up-to-date v2 with stale main**: `/update-nanoclaw` is the right tool — bring main current with `upstream/main`, then re-run Phase 1.
+
+If unsure: `git log --oneline | grep -E "v1\.|v2 phase"` — v1.x version commits indicate case 1, v2 phase commits indicate case 2.
 
 If WhatsApp is missing or the extensions aren't there, install `/add-whatsapp` (upstream's adapter) and `/whatsapp-fixes` (fork-only extensions: `createGroup`, `lookupPhoneJid`, `resolvePhoneJid`).
 
