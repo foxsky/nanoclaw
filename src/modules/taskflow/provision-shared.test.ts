@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { INBOUND_SCHEMA } from '../../db/schema.js';
 import { initTaskflowDb } from '../../taskflow-db.js';
 import {
   createBoardFilesystem,
@@ -88,15 +89,15 @@ describe('nextCronRun', () => {
   });
 });
 
-describe('scheduleRunners (integration via in-memory taskflow.db)', () => {
+describe('scheduleRunners (writes to session messages_in)', () => {
   let dbFile: string;
   let db: Database.Database;
+  let inboundDb: Database.Database;
 
   beforeEach(() => {
     fs.mkdirSync(TMPROOT, { recursive: true });
     dbFile = path.join(TMPROOT, `runners-${Date.now()}.db`);
     db = initTaskflowDb(dbFile);
-    // Seed a board (FK target for board_runtime_config) and the config row.
     db.prepare(
       `INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code)
          VALUES ('board-test-1', '120363999@g.us', 'test-folder', 'hierarchy', 0, 3, NULL, 'TEST')`,
@@ -104,43 +105,56 @@ describe('scheduleRunners (integration via in-memory taskflow.db)', () => {
     db.prepare(
       `INSERT INTO board_runtime_config (board_id, language, timezone) VALUES ('board-test-1', 'pt-BR', 'America/Fortaleza')`,
     ).run();
+    inboundDb = new Database(':memory:');
+    inboundDb.exec(INBOUND_SCHEMA);
   });
 
   afterEach(() => {
     try {
       db.close();
     } catch {}
+    try {
+      inboundDb.close();
+    } catch {}
     fs.rmSync(dbFile, { force: true });
   });
 
-  it('writes 3 cron rows + UPDATEs runner ids on board_runtime_config', () => {
+  it('writes 3 kind=task rows to messages_in (NOT scheduled_tasks) and UPDATEs runner ids', () => {
     scheduleRunners({
       tfDb: db,
+      inboundDb,
       boardId: 'board-test-1',
-      groupFolder: 'test-folder',
-      groupJid: '120363999@g.us',
-      standupCronUtc: '0 11 * * 1-5',
-      digestCronUtc: '0 21 * * 1-5',
-      reviewCronUtc: '0 14 * * 5',
-      now: '2026-05-05T00:00:00Z',
+      standupCronLocal: '0 8 * * 1-5',
+      digestCronLocal: '0 18 * * 1-5',
+      reviewCronLocal: '0 11 * * 5',
     });
 
-    const tasks = db
-      .prepare('SELECT id, schedule_type, schedule_value, prompt FROM scheduled_tasks ORDER BY rowid')
+    // scheduled_tasks must remain empty — runners now live in messages_in.
+    const legacy = db.prepare('SELECT COUNT(*) AS c FROM scheduled_tasks').get() as { c: number };
+    expect(legacy.c).toBe(0);
+
+    // Three task messages with cron recurrence + JSON content shape.
+    const tasks = inboundDb
+      .prepare(`SELECT id, kind, recurrence, content, process_after FROM messages_in ORDER BY seq`)
       .all() as Array<{
       id: string;
-      schedule_type: string;
-      schedule_value: string;
-      prompt: string;
+      kind: string;
+      recurrence: string | null;
+      content: string;
+      process_after: string | null;
     }>;
     expect(tasks).toHaveLength(3);
-    expect(tasks.every((t) => t.schedule_type === 'cron')).toBe(true);
-    expect(tasks[0]!.schedule_value).toBe('0 11 * * 1-5');
-    expect(tasks[1]!.schedule_value).toBe('0 21 * * 1-5');
-    expect(tasks[2]!.schedule_value).toBe('0 14 * * 5');
-    expect(tasks[0]!.prompt).toMatch(/STANDUP/);
-    expect(tasks[1]!.prompt).toMatch(/DIGEST/);
-    expect(tasks[2]!.prompt).toMatch(/REVIEW/);
+    expect(tasks.every((t) => t.kind === 'task')).toBe(true);
+    expect(tasks[0]!.recurrence).toBe('0 8 * * 1-5');
+    expect(tasks[1]!.recurrence).toBe('0 18 * * 1-5');
+    expect(tasks[2]!.recurrence).toBe('0 11 * * 5');
+    // Content is the v2 task envelope: { prompt, script } JSON string.
+    const parsed = tasks.map((t) => JSON.parse(t.content) as { prompt: string; script: null });
+    expect(parsed[0]!.prompt).toMatch(/STANDUP/);
+    expect(parsed[1]!.prompt).toMatch(/DIGEST/);
+    expect(parsed[2]!.prompt).toMatch(/REVIEW/);
+    expect(parsed.every((p) => p.script === null)).toBe(true);
+    expect(tasks.every((t) => t.process_after !== null)).toBe(true);
 
     const cfg = db
       .prepare(
@@ -160,53 +174,74 @@ describe('scheduleRunners (integration via in-memory taskflow.db)', () => {
 describe('scheduleOnboarding (integration via in-memory taskflow.db)', () => {
   let dbFile: string;
   let db: Database.Database;
+  let inboundDb: Database.Database;
 
   beforeEach(() => {
     fs.mkdirSync(TMPROOT, { recursive: true });
     dbFile = path.join(TMPROOT, `onboarding-${Date.now()}.db`);
     db = initTaskflowDb(dbFile);
+    inboundDb = new Database(':memory:');
+    inboundDb.exec(INBOUND_SCHEMA);
   });
 
   afterEach(() => {
     try {
       db.close();
     } catch {}
+    try {
+      inboundDb.close();
+    } catch {}
     fs.rmSync(dbFile, { force: true });
   });
 
-  it('writes 5 once-rows for the GTD onboarding series, day 1 ~30min from now', () => {
+  it('writes onboarding rows to messages_in (kind=task, recurrence=null) — day 1 ~30min from now', () => {
     const before = Date.now();
-    scheduleOnboarding(db, {
-      groupFolder: 'test-folder',
-      groupJid: '120363999@g.us',
+    scheduleOnboarding({
+      inboundDb,
       timezone: 'America/Fortaleza',
     });
 
-    const tasks = db
-      .prepare('SELECT id, schedule_type, prompt, next_run FROM scheduled_tasks ORDER BY next_run')
-      .all() as Array<{ id: string; schedule_type: string; prompt: string; next_run: string }>;
+    // scheduled_tasks must remain empty — runners now live in messages_in.
+    const legacy = db.prepare('SELECT COUNT(*) AS c FROM scheduled_tasks').get() as { c: number };
+    expect(legacy.c).toBe(0);
+
+    const tasks = inboundDb
+      .prepare(`SELECT id, kind, recurrence, content, process_after FROM messages_in ORDER BY process_after`)
+      .all() as Array<{
+      id: string;
+      kind: string;
+      recurrence: string | null;
+      content: string;
+      process_after: string;
+    }>;
     expect(tasks).toHaveLength(ONBOARDING_FILES.length);
-    expect(tasks.every((t) => t.schedule_type === 'once')).toBe(true);
-    expect(tasks.every((t) => /\[TF-ONBOARDING\]/.test(t.prompt))).toBe(true);
+    expect(tasks.every((t) => t.kind === 'task')).toBe(true);
+    // Onboarding is one-shot — no recurrence.
+    expect(tasks.every((t) => t.recurrence === null)).toBe(true);
+    const parsed = tasks.map((t) => JSON.parse(t.content) as { prompt: string; script: null });
+    expect(parsed.every((p) => /\[TF-ONBOARDING\]/.test(p.prompt))).toBe(true);
+    expect(parsed.every((p) => p.script === null)).toBe(true);
     // Day 1 is 30 minutes from "now"; allow ±90s drift for slow test machines.
-    const day1Ms = new Date(tasks[0]!.next_run).getTime();
+    const day1Ms = new Date(tasks[0]!.process_after).getTime();
     expect(day1Ms - before).toBeGreaterThanOrEqual(30 * 60 * 1000 - 90_000);
     expect(day1Ms - before).toBeLessThanOrEqual(30 * 60 * 1000 + 90_000);
-    // Day 2 onwards strictly later than day 1.
     for (let i = 1; i < tasks.length; i++) {
-      expect(new Date(tasks[i]!.next_run).getTime()).toBeGreaterThan(new Date(tasks[i - 1]!.next_run).getTime());
+      expect(new Date(tasks[i]!.process_after).getTime()).toBeGreaterThan(
+        new Date(tasks[i - 1]!.process_after).getTime(),
+      );
     }
   });
 
   it('each onboarding prompt references its specific file', () => {
-    scheduleOnboarding(db, {
-      groupFolder: 'test-folder',
-      groupJid: '120363999@g.us',
+    scheduleOnboarding({
+      inboundDb,
       timezone: 'America/Fortaleza',
     });
     const prompts = (
-      db.prepare('SELECT prompt FROM scheduled_tasks ORDER BY next_run').all() as Array<{ prompt: string }>
-    ).map((r) => r.prompt);
+      inboundDb
+        .prepare('SELECT content FROM messages_in ORDER BY process_after')
+        .all() as Array<{ content: string }>
+    ).map((r) => r.content);
     for (let i = 0; i < ONBOARDING_FILES.length; i++) {
       expect(prompts[i]).toContain(ONBOARDING_FILES[i]!);
     }

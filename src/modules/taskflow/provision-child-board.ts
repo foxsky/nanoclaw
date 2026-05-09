@@ -18,6 +18,7 @@ import {
   markWelcomeSent,
   pickUniqueAgentFolder,
   sanitizeFolder,
+  ensureSessionInbound,
   scheduleOnboarding,
   scheduleRunners,
   TASKFLOW_DB_PATH,
@@ -390,6 +391,7 @@ export async function handleProvisionChildBoard(
 
   const tfDb = new Database(TASKFLOW_DB_PATH);
   tfDb.pragma('busy_timeout = 5000');
+  let childInboundDb: DatabaseType.Database | null = null;
   try {
     const parent = loadParent(tfDb, session);
     if (!parent) return;
@@ -480,8 +482,9 @@ export async function handleProvisionChildBoard(
     }
 
     const childAgentGroupId = newTaskId('ag');
+    let childMessagingGroupId: string | null = null;
     try {
-      wireV2({
+      const wired = wireV2({
         agentGroupId: childAgentGroupId,
         agentName: parent.callerName,
         folder,
@@ -490,6 +493,7 @@ export async function handleProvisionChildBoard(
         engageMode: 'pattern',
         engagePattern: '.',
       });
+      childMessagingGroupId = wired.messagingGroupId;
       log.info('provision_child_board: v2 wiring complete', { childAgentGroupId, folder, childGroupJid });
     } catch (err) {
       log.error('provision_child_board: failed to wire v2', { err, childAgentGroupId });
@@ -535,19 +539,27 @@ export async function handleProvisionChildBoard(
       log.error('provision_child_board: filesystem step failed (non-fatal)', { err, folder });
     }
 
-    try {
-      scheduleRunners({
-        tfDb,
-        boardId: childBoardId,
-        groupFolder: folder,
-        groupJid: childGroupJid,
-        standupCronUtc: parent.parentRuntime.standup_cron_utc,
-        digestCronUtc: parent.parentRuntime.digest_cron_utc,
-        reviewCronUtc: parent.parentRuntime.review_cron_utc,
-        now: ts,
-      });
-    } catch (err) {
-      log.error('provision_child_board: failed to schedule runners (non-fatal)', { err });
+    if (childMessagingGroupId) {
+      try {
+        childInboundDb = ensureSessionInbound(childAgentGroupId, childMessagingGroupId);
+      } catch (err) {
+        log.error('provision_child_board: failed to open session inbound.db (non-fatal)', { err });
+      }
+    }
+
+    if (childInboundDb) {
+      try {
+        scheduleRunners({
+          tfDb,
+          inboundDb: childInboundDb,
+          boardId: childBoardId,
+          standupCronLocal: parent.parentRuntime.standup_cron_local,
+          digestCronLocal: parent.parentRuntime.digest_cron_local,
+          reviewCronLocal: parent.parentRuntime.review_cron_local,
+        });
+      } catch (err) {
+        log.error('provision_child_board: failed to schedule runners (non-fatal)', { err });
+      }
     }
 
     fixOwnership(
@@ -575,14 +587,15 @@ export async function handleProvisionChildBoard(
       log.error('provision_child_board: failed to send welcome (non-fatal)', { err });
     }
 
-    try {
-      scheduleOnboarding(tfDb, {
-        groupFolder: folder,
-        groupJid: childGroupJid,
-        timezone: parent.parentRuntime.timezone,
-      });
-    } catch (err) {
-      log.error('provision_child_board: failed to schedule onboarding (non-fatal)', { err });
+    if (childInboundDb) {
+      try {
+        scheduleOnboarding({
+          inboundDb: childInboundDb,
+          timezone: parent.parentRuntime.timezone,
+        });
+      } catch (err) {
+        log.error('provision_child_board: failed to schedule onboarding (non-fatal)', { err });
+      }
     }
 
     log.info('provision_child_board: complete', {
@@ -593,6 +606,11 @@ export async function handleProvisionChildBoard(
       personId: parsed.personId,
     });
   } finally {
+    if (childInboundDb) {
+      try {
+        childInboundDb.close();
+      } catch {}
+    }
     tfDb.close();
   }
 }

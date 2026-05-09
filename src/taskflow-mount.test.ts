@@ -79,7 +79,9 @@ describe('ensureTaskflowDb', () => {
     const before = fs.statSync(dbPath).mtimeMs;
     // Pause minimally — fs mtime resolution can be 1ms.
     const start = Date.now();
-    while (Date.now() === start) { /* spin briefly */ }
+    while (Date.now() === start) {
+      /* spin briefly */
+    }
     ensureTaskflowDb(dataDir);
     const after = fs.statSync(dbPath).mtimeMs;
     expect(after).toBe(before);

@@ -5,13 +5,14 @@ import fs from 'fs';
 import path from 'path';
 
 import type { ChannelAdapter } from '../../channels/adapter.js';
-import { DATA_DIR, GROUPS_DIR, PROJECT_ROOT } from '../../config.js';
+import { DATA_DIR, GROUPS_DIR, PROJECT_ROOT, TIMEZONE } from '../../config.js';
 import { getDb } from '../../db/connection.js';
 import { createAgentGroup } from '../../db/agent-groups.js';
 import { createMessagingGroup, createMessagingGroupAgent } from '../../db/messaging-groups.js';
 import { isValidGroupFolder } from '../../group-folder.js';
-import { createTask } from '../../taskflow-db.js';
+import { insertTask } from '../scheduling/db.js';
 import { log } from '../../log.js';
+import { openInboundDb, resolveSession } from '../../session-manager.js';
 import { newTaskId } from './util.js';
 
 export const TASKFLOW_DB_PATH = path.join(DATA_DIR, 'taskflow', 'taskflow.db');
@@ -84,9 +85,9 @@ export interface BoardRuntimeConfigRow {
   dst_sync_enabled: number;
 }
 
-export function nextCronRun(cronExpr: string): string | null {
+export function nextCronRun(cronExpr: string, tz: string = 'UTC'): string | null {
   try {
-    return CronExpressionParser.parse(cronExpr, { tz: 'UTC' }).next().toISOString();
+    return CronExpressionParser.parse(cronExpr, { tz }).next().toISOString();
   } catch {
     return null;
   }
@@ -136,10 +137,10 @@ function onboardingPrompt(filename: string): string {
  * on the next 4 distinct weekdays. Wrapped in a single transaction so a
  * crash mid-loop never leaves a partial onboarding series.
  */
-export function scheduleOnboarding(
-  tfDb: Database.Database,
-  params: { groupFolder: string; groupJid: string; timezone?: string },
-): void {
+export function scheduleOnboarding(params: {
+  inboundDb: Database.Database;
+  timezone?: string;
+}): void {
   const tz = params.timezone || 'America/Fortaleza';
   const day1RunAt = new Date(Date.now() + 30 * 60 * 1000);
 
@@ -152,7 +153,7 @@ export function scheduleOnboarding(
   });
   const day1LocalDate = localDate.format(day1RunAt);
 
-  tfDb.transaction(() => {
+  params.inboundDb.transaction(() => {
     for (let i = 0; i < ONBOARDING_FILES.length; i++) {
       const file = ONBOARDING_FILES[i]!;
       let runAt: Date;
@@ -169,78 +170,90 @@ export function scheduleOnboarding(
       }
       const id = newTaskId('task-onboard');
       const runAtIso = runAt.toISOString();
-      createTask(tfDb, {
+      insertTask(params.inboundDb, {
         id,
-        group_folder: params.groupFolder,
-        chat_jid: params.groupJid,
-        prompt: onboardingPrompt(file),
-        schedule_type: 'once',
-        schedule_value: runAtIso,
-        context_mode: 'isolated',
-        next_run: runAtIso,
-        status: 'active',
-        created_at: new Date().toISOString(),
+        processAfter: runAtIso,
+        recurrence: null,
+        platformId: null,
+        channelType: null,
+        threadId: null,
+        content: JSON.stringify({ prompt: onboardingPrompt(file), script: null }),
       });
-      log.info('Onboarding task scheduled', { taskId: id, file, groupFolder: params.groupFolder, runAt: runAtIso });
+      log.info('Onboarding task scheduled', { taskId: id, file, runAt: runAtIso });
     }
   })();
 }
 
 export interface ScheduleRunnersParams {
+  /** Taskflow DB — only used for the board_runtime_config UPDATE that
+   *  records which task IDs are this board's runners (lifecycle ops). */
   tfDb: Database.Database;
+  /** Session inbound.db — where the host poll loop reads tasks. */
+  inboundDb: Database.Database;
   boardId: string;
-  groupFolder: string;
-  groupJid: string;
-  standupCronUtc: string;
-  digestCronUtc: string;
-  reviewCronUtc: string;
-  now: string;
+  /** Cron expressions interpreted in the host TIMEZONE. v2's recurrence
+   *  handler uses tz=TIMEZONE for the next-occurrence computation, so the
+   *  first run and every subsequent run must share the same TZ. The
+   *  board_runtime_config column to use is `*_cron_local`, NOT `*_cron_utc`. */
+  standupCronLocal: string;
+  digestCronLocal: string;
+  reviewCronLocal: string;
 }
 
 /**
- * The 3 inserts + 1 UPDATE run in a single transaction so a crash never
- * leaves board_runtime_config pointing at an orphaned task id.
+ * Cross-DB write order: tfDb UPDATE FIRST (with pre-generated task IDs),
+ * inboundDb INSERT SECOND. Failure mode if host crashes between them is
+ * `board_runtime_config` pointing at task IDs that don't exist in
+ * messages_in — re-provision overwrites these stale IDs cleanly.
+ *
+ * If we did INSERT first then UPDATE, a crash in between would leave 3
+ * recurring messages_in rows firing forever with no `board_runtime_config`
+ * handle to find them by — operator could not cancel without manual SQL.
  */
 export function scheduleRunners(params: ScheduleRunnersParams): void {
-  const { tfDb, boardId, groupFolder, groupJid, standupCronUtc, digestCronUtc, reviewCronUtc, now } = params;
+  const { tfDb, inboundDb, boardId, standupCronLocal, digestCronLocal, reviewCronLocal } = params;
   const runners = [
-    { prompt: STANDUP_PROMPT, cron: standupCronUtc },
-    { prompt: DIGEST_PROMPT, cron: digestCronUtc },
-    { prompt: REVIEW_PROMPT, cron: reviewCronUtc },
+    { prompt: STANDUP_PROMPT, cron: standupCronLocal },
+    { prompt: DIGEST_PROMPT, cron: digestCronLocal },
+    { prompt: REVIEW_PROMPT, cron: reviewCronLocal },
   ] as const;
 
-  let standupId = '';
-  let digestId = '';
-  let reviewId = '';
+  const planned = runners.map(({ prompt, cron }) => {
+    const processAfter = nextCronRun(cron, TIMEZONE);
+    if (processAfter === null) {
+      throw new Error(`scheduleRunners: nextCronRun returned null for cron='${cron}'`);
+    }
+    return {
+      id: newTaskId(),
+      processAfter,
+      recurrence: cron,
+      content: JSON.stringify({ prompt, script: null }),
+    };
+  });
 
-  tfDb.transaction(() => {
-    const ids = runners.map(({ prompt, cron }) => {
-      const id = newTaskId();
-      createTask(tfDb, {
-        id,
-        group_folder: groupFolder,
-        chat_jid: groupJid,
-        prompt,
-        schedule_type: 'cron',
-        schedule_value: cron,
-        context_mode: 'group',
-        next_run: nextCronRun(cron),
-        status: 'active',
-        created_at: now,
+  const [standupId, digestId, reviewId] = [planned[0]!.id, planned[1]!.id, planned[2]!.id];
+  tfDb
+    .prepare(
+      `UPDATE board_runtime_config SET
+        runner_standup_task_id = ?,
+        runner_digest_task_id = ?,
+        runner_review_task_id = ?
+      WHERE board_id = ?`,
+    )
+    .run(standupId, digestId, reviewId, boardId);
+
+  inboundDb.transaction(() => {
+    for (const p of planned) {
+      insertTask(inboundDb, {
+        id: p.id,
+        processAfter: p.processAfter,
+        recurrence: p.recurrence,
+        platformId: null,
+        channelType: null,
+        threadId: null,
+        content: p.content,
       });
-      return id;
-    });
-    [standupId, digestId, reviewId] = ids;
-
-    tfDb
-      .prepare(
-        `UPDATE board_runtime_config SET
-          runner_standup_task_id = ?,
-          runner_digest_task_id = ?,
-          runner_review_task_id = ?
-        WHERE board_id = ?`,
-      )
-      .run(standupId, digestId, reviewId, boardId);
+    }
   })();
 
   log.info('Board runners scheduled', { standupId, digestId, reviewId, boardId });
@@ -388,13 +401,26 @@ export interface WireV2Params {
   engagePattern: string | null;
 }
 
+/** Eagerly create the session for a freshly-wired board and return its
+ *  inbound.db handle, so the provision flow can write recurring/onboarding
+ *  task messages directly into v2's scheduler queue. The caller must
+ *  close the handle. */
+export function ensureSessionInbound(
+  agentGroupId: string,
+  messagingGroupId: string,
+): Database.Database {
+  const { session } = resolveSession(agentGroupId, messagingGroupId, null, 'shared');
+  return openInboundDb(agentGroupId, session.id);
+}
+
 /**
  * Atomic 3-row insert (agent_group + messaging_group + wiring). All must
  * land together — partial state would leave taskflow.db pointing at a
  * folder that has no live agent, and a retry would see a folder collision.
  */
-export function wireV2(params: WireV2Params): void {
+export function wireV2(params: WireV2Params): { messagingGroupId: string } {
   const ts = new Date().toISOString();
+  const messagingGroupId = newTaskId('mg');
   getDb().transaction(() => {
     createAgentGroup({
       id: params.agentGroupId,
@@ -404,7 +430,6 @@ export function wireV2(params: WireV2Params): void {
       created_at: ts,
     });
 
-    const messagingGroupId = newTaskId('mg');
     createMessagingGroup({
       id: messagingGroupId,
       channel_type: 'whatsapp',
@@ -428,6 +453,7 @@ export function wireV2(params: WireV2Params): void {
       created_at: ts,
     });
   })();
+  return { messagingGroupId };
 }
 
 /**

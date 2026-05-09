@@ -25,6 +25,7 @@ import {
   scheduleRunners,
   TASKFLOW_DB_PATH,
   TASKFLOW_SUFFIX,
+  ensureSessionInbound,
   wireV2,
 } from './provision-shared.js';
 import { newTaskId, nonEmptyString, requireFields } from './util.js';
@@ -234,6 +235,7 @@ export async function handleProvisionRootBoard(
   fs.mkdirSync(path.dirname(TASKFLOW_DB_PATH), { recursive: true });
   const tfDb = new Database(TASKFLOW_DB_PATH);
   tfDb.pragma('busy_timeout = 5000');
+  let inboundDb: DatabaseType.Database | null = null;
   try {
     const existing = tfDb.prepare('SELECT 1 FROM boards WHERE id = ? OR short_code = ?').get(boardId, parsed.shortCode);
     if (existing) {
@@ -262,8 +264,9 @@ export async function handleProvisionRootBoard(
     }
 
     const agentGroupId = newTaskId('ag');
+    let messagingGroupId: string | null = null;
     try {
-      wireV2({
+      const wired = wireV2({
         agentGroupId,
         agentName: callerAgentName(parsed),
         folder,
@@ -272,6 +275,7 @@ export async function handleProvisionRootBoard(
         engageMode: parsed.requiresTrigger ? 'mention' : 'pattern',
         engagePattern: parsed.requiresTrigger ? null : '.',
       });
+      messagingGroupId = wired.messagingGroupId;
       log.info('provision_root_board: v2 wiring complete', { agentGroupId, folder, groupJid });
     } catch (err) {
       log.error('provision_root_board: failed to wire v2', { err, agentGroupId });
@@ -321,19 +325,27 @@ export async function handleProvisionRootBoard(
       log.error('provision_root_board: failed to write settings.json (non-fatal)', { err });
     }
 
-    try {
-      scheduleRunners({
-        tfDb,
-        boardId,
-        groupFolder: folder,
-        groupJid,
-        standupCronUtc: parsed.cron.standupUtc,
-        digestCronUtc: parsed.cron.digestUtc,
-        reviewCronUtc: parsed.cron.reviewUtc,
-        now: new Date().toISOString(),
-      });
-    } catch (err) {
-      log.error('provision_root_board: failed to schedule runners (non-fatal)', { err });
+    if (messagingGroupId) {
+      try {
+        inboundDb = ensureSessionInbound(agentGroupId, messagingGroupId);
+      } catch (err) {
+        log.error('provision_root_board: failed to open session inbound.db (non-fatal)', { err });
+      }
+    }
+
+    if (inboundDb) {
+      try {
+        scheduleRunners({
+          tfDb,
+          inboundDb,
+          boardId,
+          standupCronLocal: parsed.cron.standupLocal,
+          digestCronLocal: parsed.cron.digestLocal,
+          reviewCronLocal: parsed.cron.reviewLocal,
+        });
+      } catch (err) {
+        log.error('provision_root_board: failed to schedule runners (non-fatal)', { err });
+      }
     }
 
     fixOwnership(
@@ -360,14 +372,21 @@ export async function handleProvisionRootBoard(
       log.error('provision_root_board: failed to send welcome (non-fatal)', { err });
     }
 
-    try {
-      scheduleOnboarding(tfDb, { groupFolder: folder, groupJid, timezone: parsed.timezone });
-    } catch (err) {
-      log.error('provision_root_board: failed to schedule onboarding (non-fatal)', { err });
+    if (inboundDb) {
+      try {
+        scheduleOnboarding({ inboundDb, timezone: parsed.timezone });
+      } catch (err) {
+        log.error('provision_root_board: failed to schedule onboarding (non-fatal)', { err });
+      }
     }
 
     log.info('provision_root_board: complete', { boardId, groupJid, folder, shortCode: parsed.shortCode });
   } finally {
+    if (inboundDb) {
+      try {
+        inboundDb.close();
+      } catch {}
+    }
     tfDb.close();
   }
 }
