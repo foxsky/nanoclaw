@@ -253,59 +253,6 @@ CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_status ON scheduled_tasks(status)
 CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_group_folder ON scheduled_tasks(group_folder);
 `;
 
-export type ScheduleType = 'once' | 'cron';
-
-export interface ScheduledTask {
-  id: string;
-  group_folder: string;
-  chat_jid: string;
-  prompt: string;
-  script?: string | null;
-  schedule_type: ScheduleType;
-  schedule_value: string;
-  context_mode: 'group' | 'isolated';
-  next_run: string | null;
-  last_run: string | null;
-  last_result: string | null;
-  status: 'active' | 'paused' | 'completed';
-  created_at: string;
-  trigger_message_id?: string | null;
-  trigger_chat_jid?: string | null;
-  trigger_sender?: string | null;
-  trigger_sender_name?: string | null;
-  trigger_message_timestamp?: string | null;
-  trigger_turn_id?: string | null;
-}
-
-export function createTask(db: Database.Database, task: Omit<ScheduledTask, 'last_run' | 'last_result'>): void {
-  db.prepare(
-    `INSERT INTO scheduled_tasks (
-         id, group_folder, chat_jid, prompt, script, schedule_type, schedule_value,
-         context_mode, next_run, status, created_at,
-         trigger_message_id, trigger_chat_jid, trigger_sender,
-         trigger_sender_name, trigger_message_timestamp, trigger_turn_id
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    task.id,
-    task.group_folder,
-    task.chat_jid,
-    task.prompt,
-    task.script || null,
-    task.schedule_type,
-    task.schedule_value,
-    task.context_mode || 'isolated',
-    task.next_run,
-    task.status,
-    task.created_at,
-    task.trigger_message_id ?? null,
-    task.trigger_chat_jid ?? null,
-    task.trigger_sender ?? null,
-    task.trigger_sender_name ?? null,
-    task.trigger_message_timestamp ?? null,
-    task.trigger_turn_id ?? null,
-  );
-}
-
 function linkedChildBoardFor(
   db: Database.Database,
   boardId: string,

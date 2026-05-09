@@ -47,10 +47,7 @@ interface ScheduledTaskRow {
   status: string;
 }
 
-export function migrateScheduledTasks(
-  tfDb: Database.Database,
-  resolveInbound: InboundResolver,
-): MigrateResult {
+export function migrateScheduledTasks(tfDb: Database.Database, resolveInbound: InboundResolver): MigrateResult {
   const result: MigrateResult = { migrated: 0, skipped: 0, failed: 0 };
   // Pull only active/paused rows; migrated/completed/cancelled are skip-counted
   // in a separate query so the post-drain steady state has zero work to do.
@@ -62,9 +59,9 @@ export function migrateScheduledTasks(
     )
     .all() as ScheduledTaskRow[];
   const skippedCount = (
-    tfDb
-      .prepare(`SELECT COUNT(*) AS c FROM scheduled_tasks WHERE status NOT IN ('active', 'paused')`)
-      .get() as { c: number }
+    tfDb.prepare(`SELECT COUNT(*) AS c FROM scheduled_tasks WHERE status NOT IN ('active', 'paused')`).get() as {
+      c: number;
+    }
   ).c;
   result.skipped = skippedCount;
 
@@ -109,9 +106,9 @@ export function migrateScheduledTasks(
       // we detect prior partial-success instead. If messages_in already
       // has this id, the insertTask already ran on a previous attempt;
       // skip re-inserting (would PK-collide) and just retry the mark.
-      const exists = inboundDb
-        .prepare(`SELECT 1 FROM messages_in WHERE id = ?`)
-        .get(row.id) as { 1: number } | undefined;
+      const exists = inboundDb.prepare(`SELECT 1 FROM messages_in WHERE id = ?`).get(row.id) as
+        | { 1: number }
+        | undefined;
       if (!exists) {
         insertTask(inboundDb, {
           id: row.id,

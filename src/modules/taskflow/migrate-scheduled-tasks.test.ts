@@ -125,9 +125,9 @@ describe('migrateScheduledTasks', () => {
 
     migrateScheduledTasks(tfDb, () => inboundDb);
 
-    const row = inboundDb
-      .prepare(`SELECT recurrence FROM messages_in WHERE id = ?`)
-      .get('task-once-1') as { recurrence: string | null } | undefined;
+    const row = inboundDb.prepare(`SELECT recurrence FROM messages_in WHERE id = ?`).get('task-once-1') as
+      | { recurrence: string | null }
+      | undefined;
     expect(row?.recurrence).toBeNull();
   });
 
@@ -171,9 +171,9 @@ describe('migrateScheduledTasks', () => {
       | { status: string }
       | undefined;
     expect(okRow?.status).toBe('migrated');
-    const orphanRow = tfDb
-      .prepare(`SELECT status FROM scheduled_tasks WHERE id = ?`)
-      .get('task-no-session') as { status: string } | undefined;
+    const orphanRow = tfDb.prepare(`SELECT status FROM scheduled_tasks WHERE id = ?`).get('task-no-session') as
+      | { status: string }
+      | undefined;
     // Orphan stays 'active' so a future run can retry once the session exists.
     expect(orphanRow?.status).toBe('active');
   });
@@ -188,9 +188,9 @@ describe('migrateScheduledTasks', () => {
 
     migrateScheduledTasks(tfDb, () => inboundDb);
 
-    const row = inboundDb
-      .prepare(`SELECT process_after FROM messages_in WHERE id = ?`)
-      .get('task-cron-null-next') as { process_after: string } | undefined;
+    const row = inboundDb.prepare(`SELECT process_after FROM messages_in WHERE id = ?`).get('task-cron-null-next') as
+      | { process_after: string }
+      | undefined;
     expect(row).toBeTruthy();
     // process_after must be a valid ISO timestamp (parseable), not a cron string.
     expect(row!.process_after).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
@@ -240,13 +240,13 @@ describe('migrateScheduledTasks', () => {
     const r1 = migrateScheduledTasks(tfDb, () => inboundDb);
     expect(r1.failed).toBe(1);
     // After partial-success: messages_in has the row, source row still 'active'.
-    const src1 = tfDb
-      .prepare(`SELECT status FROM scheduled_tasks WHERE id = ?`)
-      .get('task-retry') as { status: string };
+    const src1 = tfDb.prepare(`SELECT status FROM scheduled_tasks WHERE id = ?`).get('task-retry') as {
+      status: string;
+    };
     expect(src1.status).toBe('active');
-    const inserted1 = inboundDb
-      .prepare(`SELECT COUNT(*) AS c FROM messages_in WHERE id = ?`)
-      .get('task-retry') as { c: number };
+    const inserted1 = inboundDb.prepare(`SELECT COUNT(*) AS c FROM messages_in WHERE id = ?`).get('task-retry') as {
+      c: number;
+    };
     expect(inserted1.c).toBe(1);
 
     // Restore prepare and retry — should detect existing messages_in row
@@ -254,14 +254,14 @@ describe('migrateScheduledTasks', () => {
     tfDb.prepare = realPrepare;
     const r2 = migrateScheduledTasks(tfDb, () => inboundDb);
     expect(r2.migrated).toBe(1);
-    const inserted2 = inboundDb
-      .prepare(`SELECT COUNT(*) AS c FROM messages_in WHERE id = ?`)
-      .get('task-retry') as { c: number };
+    const inserted2 = inboundDb.prepare(`SELECT COUNT(*) AS c FROM messages_in WHERE id = ?`).get('task-retry') as {
+      c: number;
+    };
     // Still exactly 1 row — no double-insert.
     expect(inserted2.c).toBe(1);
-    const src2 = tfDb
-      .prepare(`SELECT status FROM scheduled_tasks WHERE id = ?`)
-      .get('task-retry') as { status: string };
+    const src2 = tfDb.prepare(`SELECT status FROM scheduled_tasks WHERE id = ?`).get('task-retry') as {
+      status: string;
+    };
     expect(src2.status).toBe('migrated');
   });
 

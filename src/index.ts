@@ -10,10 +10,7 @@ import { DATA_DIR } from './config.js';
 import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
 import { initDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/index.js';
-import {
-  defaultInboundResolver,
-  migrateScheduledTasks,
-} from './modules/taskflow/migrate-scheduled-tasks.js';
+import { defaultInboundResolver, migrateScheduledTasks } from './modules/taskflow/migrate-scheduled-tasks.js';
 import { initTaskflowDb } from './taskflow-db.js';
 import { bootstrapTaskflowDb, taskflowDbPath } from './taskflow-mount.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
