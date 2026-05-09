@@ -194,28 +194,28 @@ Three topologies (see `docs/isolation-model.md`):
 - **shared**: one agent group, multiple messaging groups all bound to it.
 - **separate agents**: multiple agent groups, each with its own messaging group.
 
-### Per-board model + reasoning_effort (optional cost/quality tuning)
+### Per-board model + effort (optional cost/quality tuning)
 
-Available since upstream v2.0.52: `container_configs` carries per-agent-group `model` and `reasoning_effort` columns. Different boards can run on different Claude models with different reasoning depth without affecting the trunk default.
+Available since upstream v2.0.52: `container_configs` carries per-agent-group `model` and `effort` columns (column is `effort TEXT`, see migration 014). `effort` accepts `low | medium | high | xhigh | max`. `model` accepts a Claude alias (`sonnet`, `opus`, `haiku`) or a full model ID — aliases are more durable, full IDs let you pin a specific version.
 
 Recommended split for TaskFlow boards:
 
-| Workload | Model | Reasoning effort | Why |
+| Workload | Model | Effort | Why |
 |---|---|---|---|
-| Daily standup runner | `claude-sonnet-4-6` | `medium` | Routine roll-call, short prompts, fast. Cheaper per turn. |
-| Evening digest runner | `claude-sonnet-4-6` | `medium` | Summary-shaped output, well within Sonnet's strength. |
-| Weekly review runner | `claude-opus-4-7` | `high` | Cross-task analysis, anomaly detection, recommendation generation — Opus's depth pays off. |
-| Cross-board subtask flows | `claude-opus-4-7` | `high` | Multi-board reconciliation; mistakes propagate. |
-| Audit (Kipp-style) board | `claude-opus-4-7` | `high` | Adversarial review of a day's mutations needs the strongest model. |
+| Daily standup runner | `sonnet` | `medium` | Routine roll-call, short prompts. Cheaper per turn. |
+| Evening digest runner | `sonnet` | `medium` | Summary-shaped output, well within Sonnet's strength. |
+| Weekly review runner | `opus` | `high` | Cross-task analysis, anomaly detection, recommendations — Opus's depth pays off. |
+| Cross-board subtask flows | `opus` | `high` | Multi-board reconciliation; mistakes propagate up the hierarchy. |
+| Audit reporter board (chat-side) | `opus` | `high` | The board where audit findings are *delivered* and reasoned-about; Opus's depth helps the human-facing reporter. (NOTE: the underlying semantic auditor extraction step is a separate path — it uses `NANOCLAW_SEMANTIC_AUDIT_*` env vars to pick a non-Claude model like `glm-5.1:cloud`. The `effort`/`model` config here only tunes the chat-side board agent, not the extraction classifier.) |
 
 Apply via `ncl groups config update`:
 
 ```bash
 # Daily-cycle board (cheaper)
-ncl groups config update --id <board-agent-group> --model claude-sonnet-4-6 --reasoning-effort medium
+ncl groups config update --id <board-agent-group> --model sonnet --effort medium
 
-# Audit / weekly-review board (deeper)
-ncl groups config update --id <audit-agent-group> --model claude-opus-4-7 --reasoning-effort high
+# Audit reporter / weekly-review board (deeper)
+ncl groups config update --id <audit-agent-group> --model opus --effort high
 ```
 
 Verify:
@@ -224,9 +224,11 @@ Verify:
 ncl groups config get --id <agent-group>
 ```
 
-The setting takes effect on the next container restart for that agent group (`ncl groups restart --id <agent-group>` to apply immediately, or wait for the next user message to trigger a fresh spawn). The trunk default still applies if `model` and `reasoning_effort` are unset on a given group.
+**Apply the change:** `ncl groups config update` only writes to the DB. A container that's already running keeps its current model/effort (the runtime reads its config at spawn time, not per-turn). Run `ncl groups restart --id <agent-group>` to apply the new setting immediately, or wait for the container to time out and respawn. No image rebuild is required.
 
-Note: the assistant model selection here is independent of the routing/permission model. The agent's *behavior* (TaskFlow CLAUDE.md, MCP tools, gates) is the same; only the LLM backing each turn differs.
+The trunk default still applies if `model` and `effort` are unset on a given group.
+
+Note: the model/effort selection is independent of the routing/permission model. CLAUDE.md, MCP tools, and gates are unchanged. What does change: per-turn cost, latency, context-handling behavior, rate-limit profile, and tool-call reliability — pick the split based on the actual workload, not just speed/quality.
 
 ### Verify after provisioning
 
