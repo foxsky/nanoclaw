@@ -107,7 +107,11 @@ git checkout main
 git merge --no-ff --no-edit origin/skill/taskflow-v2
 ```
 
-If there are conflicts, the host's `main` has fork-private edits that conflict with the skill's source files. Resolve them — typically prefer the skill branch version for any file the skill owns (`src/modules/taskflow/`, `src/taskflow-mount.ts`, `src/taskflow-db.ts`, container/agent-runner taskflow files).
+**Expect conflicts in 5 infra files even on a clean upstream/main install:** `container/Dockerfile`, `package.json`, `pnpm-lock.yaml`, `setup.sh`, `src/db/migrations/index.ts`. These come from `skill/taskflow-v2` lagging upstream's main (the branch was built from an older v2 baseline; upstream main has moved forward, the skill branch hasn't been merge-forwarded yet). They're resolvable line-by-line — generally take the skill-branch side for `Dockerfile` (the vercel pin + pnpm/bin PATH fix is required for the container build) and the upstream side for `pnpm-lock.yaml` (regenerate with `pnpm install --frozen-lockfile` after the merge anyway). For `src/db/migrations/index.ts`, both sides add migrations — keep both.
+
+If there are conflicts in **other** files (TaskFlow-owned: `src/modules/taskflow/`, `src/taskflow-mount.ts`, `src/taskflow-db.ts`, container/agent-runner taskflow files), the host's `main` has fork-private edits that overlap with the skill. Resolve them — typically prefer the skill branch version for any file the skill owns.
+
+**Maintenance note for skill maintainers:** the upstream branch-skill model (per `docs/skills-as-branches.md`) calls for CI to merge-forward `main` into `skill/*` branches automatically, keeping them current with upstream. This fork's `skill/taskflow-v2` does not yet have such CI; periodically merge `upstream/main` into `skill/taskflow-v2` and push to keep the conflict surface minimal for future installs.
 
 ### Install dependencies + rebuild
 
