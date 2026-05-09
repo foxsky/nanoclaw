@@ -49,6 +49,9 @@ interface ScheduledTaskRow {
 
 export function migrateScheduledTasks(tfDb: Database.Database, resolveInbound: InboundResolver): MigrateResult {
   const result: MigrateResult = { migrated: 0, skipped: 0, failed: 0 };
+  // Graceful no-op if the table has already been dropped (post-2.3.g.4 hosts).
+  if (!scheduledTasksTableExists(tfDb)) return result;
+
   // Pull only active/paused rows; migrated/completed/cancelled are skip-counted
   // in a separate query so the post-drain steady state has zero work to do.
   const migratable = tfDb
@@ -166,4 +169,33 @@ export function defaultInboundResolver(): { resolve: InboundResolver; closeAll: 
     opened.clear();
   };
   return { resolve, closeAll };
+}
+
+function scheduledTasksTableExists(tfDb: Database.Database): boolean {
+  const row = tfDb
+    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'`)
+    .get();
+  return !!row;
+}
+
+/** Drops the legacy `scheduled_tasks` table once the migrator has drained
+ *  every active/paused row. Called from host startup right after
+ *  `migrateScheduledTasks` so the table's lifetime ends as soon as the
+ *  last source row has been moved over. Safety: if any row still has
+ *  status `active` or `paused`, leaves the table alone so the operator
+ *  can retry on the next startup. Idempotent on already-dropped DBs. */
+export function dropScheduledTasksIfDrained(tfDb: Database.Database): boolean {
+  if (!scheduledTasksTableExists(tfDb)) return false;
+  const undrained = (
+    tfDb
+      .prepare(`SELECT COUNT(*) AS c FROM scheduled_tasks WHERE status IN ('active', 'paused')`)
+      .get() as { c: number }
+  ).c;
+  if (undrained > 0) {
+    log.warn('dropScheduledTasksIfDrained: undrained rows remain, skipping drop', { undrained });
+    return false;
+  }
+  tfDb.exec(`DROP TABLE scheduled_tasks`);
+  log.info('dropScheduledTasksIfDrained: legacy table removed');
+  return true;
 }

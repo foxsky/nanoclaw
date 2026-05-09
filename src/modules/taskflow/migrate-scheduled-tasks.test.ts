@@ -5,9 +5,42 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { INBOUND_SCHEMA } from '../../db/schema.js';
 import { initTaskflowDb } from '../../taskflow-db.js';
-import { migrateScheduledTasks } from './migrate-scheduled-tasks.js';
+import {
+  dropScheduledTasksIfDrained,
+  migrateScheduledTasks,
+} from './migrate-scheduled-tasks.js';
 
 const TMPROOT = path.join(os.tmpdir(), `nanoclaw-migrate-scheduled-test-${process.pid}`);
+
+/** Seed the legacy `scheduled_tasks` table on a freshly-initialized
+ *  taskflow.db. v1 schema (no longer in TASKFLOW_SCHEMA after 2.3.g.4)
+ *  reproduced verbatim so the migrator + drop function can be tested
+ *  against representative data shapes. */
+function seedLegacyScheduledTasksTable(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scheduled_tasks (
+      id TEXT PRIMARY KEY,
+      group_folder TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      script TEXT,
+      schedule_type TEXT NOT NULL,
+      schedule_value TEXT NOT NULL,
+      context_mode TEXT DEFAULT 'isolated',
+      next_run TEXT,
+      last_run TEXT,
+      last_result TEXT,
+      status TEXT DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      trigger_message_id TEXT,
+      trigger_chat_jid TEXT,
+      trigger_sender TEXT,
+      trigger_sender_name TEXT,
+      trigger_message_timestamp TEXT,
+      trigger_turn_id TEXT
+    );
+  `);
+}
 
 describe('migrateScheduledTasks', () => {
   let dbFile: string;
@@ -18,6 +51,7 @@ describe('migrateScheduledTasks', () => {
     fs.mkdirSync(TMPROOT, { recursive: true });
     dbFile = path.join(TMPROOT, `migrate-${Date.now()}.db`);
     tfDb = initTaskflowDb(dbFile);
+    seedLegacyScheduledTasksTable(tfDb);
     inboundDb = new Database(':memory:');
     inboundDb.exec(INBOUND_SCHEMA);
   });
@@ -275,5 +309,83 @@ describe('migrateScheduledTasks', () => {
     });
 
     expect(calledWith).toEqual({ gf: 'gf-1', cj: 'cj-1@g.us' });
+  });
+
+  it('returns zero result when scheduled_tasks table is missing (post-drop)', () => {
+    tfDb.exec(`DROP TABLE scheduled_tasks`);
+    const result = migrateScheduledTasks(tfDb, () => inboundDb);
+    expect(result).toEqual({ migrated: 0, skipped: 0, failed: 0 });
+  });
+});
+
+describe('dropScheduledTasksIfDrained', () => {
+  let dbFile: string;
+  let tfDb: Database.Database;
+
+  beforeEach(() => {
+    fs.mkdirSync(TMPROOT, { recursive: true });
+    dbFile = path.join(TMPROOT, `drop-${Date.now()}.db`);
+    tfDb = initTaskflowDb(dbFile);
+    seedLegacyScheduledTasksTable(tfDb);
+  });
+
+  afterEach(() => {
+    try {
+      tfDb.close();
+    } catch {}
+    fs.rmSync(dbFile, { force: true });
+  });
+
+  function seed(id: string, status: string): void {
+    tfDb
+      .prepare(
+        `INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, status, created_at)
+         VALUES (?, 'tf', '120@g.us', 'p', 'cron', '0 8 * * 1-5', ?, '2026-01-01T00:00:00Z')`,
+      )
+      .run(id, status);
+  }
+
+  function tableExists(): boolean {
+    const row = tfDb
+      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'`)
+      .get();
+    return !!row;
+  }
+
+  it('drops the table when only migrated rows remain', () => {
+    seed('a', 'migrated');
+    seed('b', 'migrated');
+    expect(tableExists()).toBe(true);
+    const dropped = dropScheduledTasksIfDrained(tfDb);
+    expect(dropped).toBe(true);
+    expect(tableExists()).toBe(false);
+  });
+
+  it('drops the table when it is empty', () => {
+    expect(tableExists()).toBe(true);
+    expect(dropScheduledTasksIfDrained(tfDb)).toBe(true);
+    expect(tableExists()).toBe(false);
+  });
+
+  it('skips drop when any active row remains', () => {
+    seed('a', 'migrated');
+    seed('b', 'active');
+    const dropped = dropScheduledTasksIfDrained(tfDb);
+    expect(dropped).toBe(false);
+    expect(tableExists()).toBe(true);
+  });
+
+  it('skips drop when any paused row remains', () => {
+    seed('a', 'paused');
+    expect(dropScheduledTasksIfDrained(tfDb)).toBe(false);
+    expect(tableExists()).toBe(true);
+  });
+
+  it('is idempotent on a host where the table is already gone', () => {
+    tfDb.exec(`DROP TABLE scheduled_tasks`);
+    const dropped = dropScheduledTasksIfDrained(tfDb);
+    // No-op — returns false (nothing to drop) and does not throw.
+    expect(dropped).toBe(false);
+    expect(tableExists()).toBe(false);
   });
 });

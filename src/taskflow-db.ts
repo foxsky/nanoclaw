@@ -227,30 +227,6 @@ CREATE TABLE IF NOT EXISTS meeting_external_participants (
 
 -- TaskFlow's standup/digest/review/onboarding crons live here.
 -- v2's per-session scheduling does NOT cover TaskFlow board runners.
-CREATE TABLE IF NOT EXISTS scheduled_tasks (
-  id TEXT PRIMARY KEY,
-  group_folder TEXT NOT NULL,
-  chat_jid TEXT NOT NULL,
-  prompt TEXT NOT NULL,
-  script TEXT,
-  schedule_type TEXT NOT NULL,
-  schedule_value TEXT NOT NULL,
-  context_mode TEXT DEFAULT 'isolated',
-  next_run TEXT,
-  last_run TEXT,
-  last_result TEXT,
-  status TEXT DEFAULT 'active',
-  created_at TEXT NOT NULL,
-  trigger_message_id TEXT,
-  trigger_chat_jid TEXT,
-  trigger_sender TEXT,
-  trigger_sender_name TEXT,
-  trigger_message_timestamp TEXT,
-  trigger_turn_id TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run);
-CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_status ON scheduled_tasks(status);
-CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_group_folder ON scheduled_tasks(group_folder);
 `;
 
 function linkedChildBoardFor(

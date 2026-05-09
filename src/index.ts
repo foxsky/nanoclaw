@@ -10,7 +10,11 @@ import { DATA_DIR } from './config.js';
 import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
 import { initDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/index.js';
-import { defaultInboundResolver, migrateScheduledTasks } from './modules/taskflow/migrate-scheduled-tasks.js';
+import {
+  defaultInboundResolver,
+  dropScheduledTasksIfDrained,
+  migrateScheduledTasks,
+} from './modules/taskflow/migrate-scheduled-tasks.js';
 import { initTaskflowDb } from './taskflow-db.js';
 import { bootstrapTaskflowDb, taskflowDbPath } from './taskflow-mount.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
@@ -83,6 +87,9 @@ async function main(): Promise<void> {
     try {
       const result = migrateScheduledTasks(tfDb, resolve);
       log.info('TaskFlow scheduled_tasks migration complete', { ...result });
+      // Drop the legacy table once every row has migrated. Re-runs are
+      // safe on already-dropped DBs.
+      dropScheduledTasksIfDrained(tfDb);
     } finally {
       closeAll();
       tfDb.close();

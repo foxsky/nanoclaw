@@ -129,10 +129,6 @@ describe('scheduleRunners (writes to session messages_in)', () => {
       reviewCronLocal: '0 11 * * 5',
     });
 
-    // scheduled_tasks must remain empty — runners now live in messages_in.
-    const legacy = db.prepare('SELECT COUNT(*) AS c FROM scheduled_tasks').get() as { c: number };
-    expect(legacy.c).toBe(0);
-
     // Three task messages with cron recurrence + JSON content shape.
     const tasks = inboundDb
       .prepare(`SELECT id, kind, recurrence, content, process_after FROM messages_in ORDER BY seq`)
@@ -200,10 +196,6 @@ describe('scheduleOnboarding (integration via in-memory taskflow.db)', () => {
       inboundDb,
       timezone: 'America/Fortaleza',
     });
-
-    // scheduled_tasks must remain empty — runners now live in messages_in.
-    const legacy = db.prepare('SELECT COUNT(*) AS c FROM scheduled_tasks').get() as { c: number };
-    expect(legacy.c).toBe(0);
 
     const tasks = inboundDb
       .prepare(`SELECT id, kind, recurrence, content, process_after FROM messages_in ORDER BY process_after`)
