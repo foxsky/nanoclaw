@@ -7,6 +7,7 @@
 import path from 'path';
 
 import { DATA_DIR } from './config.js';
+import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js';
 import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
 import { initDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/index.js';
@@ -59,11 +60,20 @@ import './channels/index.js';
 // append registry-based modules. Imported for side effects (registrations).
 import './modules/index.js';
 
+// CLI command barrel — populates the `ncl` registry before the CLI server
+// accepts connections.
+import './cli/commands/index.js';
+import './cli/delivery-action.js';
+import { startCliServer, stopCliServer } from './cli/socket-server.js';
+
 import type { ChannelAdapter, ChannelSetup } from './channels/adapter.js';
 import { initChannelAdapters, teardownChannelAdapters, getChannelAdapter } from './channels/channel-registry.js';
 
 async function main(): Promise<void> {
   log.info('NanoClaw starting');
+
+  // 0. Circuit breaker — backoff on rapid restarts
+  await enforceStartupBackoff();
 
   // 1. Init central DB
   const dbPath = path.join(DATA_DIR, 'v2.db');
@@ -117,6 +127,7 @@ async function main(): Promise<void> {
             content: JSON.stringify(message.content),
             timestamp: message.timestamp,
             isMention: message.isMention,
+            isGroup: message.isGroup,
           },
         }).catch((err) => {
           log.error('Failed to route inbound message', { channelType: adapter.channelType, err });
@@ -190,6 +201,9 @@ async function main(): Promise<void> {
   startHostSweep();
   log.info('Host sweep started');
 
+  // 7. Start the `ncl` CLI socket server (data/ncl.sock).
+  await startCliServer();
+
   log.info('NanoClaw running');
 }
 
@@ -205,8 +219,16 @@ async function shutdown(signal: string): Promise<void> {
   }
   stopDeliveryPolls();
   stopHostSweep();
-  await teardownChannelAdapters();
-  process.exit(0);
+  await stopCliServer();
+  try {
+    await teardownChannelAdapters();
+  } finally {
+    // Always reset on graceful shutdown — even if teardown threw, we got here
+    // via SIGTERM/SIGINT, not a crash, so the next start shouldn't be counted
+    // as one.
+    resetCircuitBreaker();
+    process.exit(0);
+  }
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));

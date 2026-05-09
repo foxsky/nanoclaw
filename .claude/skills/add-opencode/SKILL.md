@@ -132,12 +132,15 @@ Credentials: register provider API keys in OneCLI with the matching `--host-patt
 
 After adding a secret, **grant the agent access** — agents in `selective` mode only receive secrets they've been explicitly assigned:
 
-```bash
-# Find the agent id and secret id, then:
-onecli agents set-secrets --id <agent-id> --secret-ids <existing-ids>,<new-secret-id>
-```
+Use the safe merge pattern — `set-secrets` replaces the entire list, so always read first:
 
-Always include existing secret IDs in the list — `set-secrets` replaces, not appends.
+```bash
+AGENT_ID=$(onecli agents list | jq -r '.data[] | select(.identifier=="<agentGroupId>") | .id')
+CURRENT=$(onecli agents secrets --id "$AGENT_ID" | jq -r '[.data[]] | join(",")')
+MERGED=$(printf '%s' "$CURRENT,<new-secret-id>" | tr ',' '\n' | sort -u | paste -sd ',' -)
+onecli agents set-secrets --id "$AGENT_ID" --secret-ids "$MERGED"
+onecli agents secrets --id "$AGENT_ID"
+```
 
 #### Example: DeepSeek
 
@@ -208,7 +211,7 @@ onecli secrets create --name "OpenCode Zen" --type generic \
 
 ### Per group / per session
 
-Schema: **`agent_groups.agent_provider`** and **`sessions.agent_provider`**. Set to `opencode` for groups or sessions that should use OpenCode. The container receives `AGENT_PROVIDER` from the resolved value (session overrides group).
+Set `"provider": "opencode"` in the group's **`container.json`** (`groups/<folder>/container.json`) — the in-container runner reads `provider` from there, not from the DB. The DB columns **`agent_groups.agent_provider`** and **`sessions.agent_provider`** (session overrides group) only drive host-side provider contribution — per-session XDG mount, `OPENCODE_*` env passthrough — and do not propagate into `container.json` at spawn time. Set both, or just edit `container.json`; if they disagree, the runner uses `container.json` and the host-side resolver falls back through session → group → `container.json` → `'claude'`.
 
 Extra MCP servers still come from **`NANOCLAW_MCP_SERVERS`** / `container_config.mcpServers` on the host; the runner merges them into the same `mcpServers` object passed to **both** Claude and OpenCode providers.
 

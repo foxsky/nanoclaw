@@ -12,6 +12,8 @@ import {
   CardText,
   Actions,
   Button,
+  LinkButton,
+  type CardChild,
   type Adapter,
   type ConcurrencyStrategy,
   type Message as ChatMessage,
@@ -81,6 +83,26 @@ export interface ChatSdkBridgeConfig {
  * chunk boundary will render as two independent blocks on the receiving
  * platform, which is the same behavior as manually re-opening a fence.
  */
+/**
+ * Decode the actual option value from a button callback. Buttons are encoded
+ * with an integer index (to keep under Telegram's 64-byte callback_data cap),
+ * and the real value is looked up via `getAskQuestionRender(questionId)`.
+ * Falls back to treating the tail as a literal value so old in-flight cards
+ * (encoded before this shortening landed) still resolve.
+ */
+function resolveSelectedOption(
+  render: { options: NormalizedOption[] } | undefined,
+  eventValue: string | undefined,
+  tail: string | undefined,
+): string {
+  const candidate = eventValue ?? tail ?? '';
+  if (render && /^\d+$/.test(candidate)) {
+    const idx = Number(candidate);
+    if (render.options[idx]) return render.options[idx].value;
+  }
+  return candidate;
+}
+
 export function splitForLimit(text: string, limit: number): string[] {
   if (text.length <= limit) return [text];
   const chunks: string[] = [];
@@ -105,7 +127,11 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
   let setupConfig: ChannelSetup;
   let gatewayAbort: AbortController | null = null;
 
-  async function messageToInbound(message: ChatMessage, isMention: boolean): Promise<InboundMessage> {
+  async function messageToInbound(
+    message: ChatMessage,
+    isMention: boolean,
+    isGroup?: boolean,
+  ): Promise<InboundMessage> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const serialized = message.toJSON() as Record<string, any>;
 
@@ -162,6 +188,7 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
       content: serialized,
       timestamp: message.metadata.dateSent.toISOString(),
       isMention,
+      isGroup,
     };
   }
 
@@ -195,13 +222,17 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
       // wirings still fire on in-thread mentions.
       chat.onSubscribedMessage(async (thread, message) => {
         const channelId = adapter.channelIdFromThreadId(thread.id);
-        await setupConfig.onInbound(channelId, thread.id, await messageToInbound(message, message.isMention === true));
+        await setupConfig.onInbound(
+          channelId,
+          thread.id,
+          await messageToInbound(message, message.isMention === true, true),
+        );
       });
 
       // @mention in an unsubscribed thread — SDK-confirmed bot mention.
       chat.onNewMention(async (thread, message) => {
         const channelId = adapter.channelIdFromThreadId(thread.id);
-        await setupConfig.onInbound(channelId, thread.id, await messageToInbound(message, true));
+        await setupConfig.onInbound(channelId, thread.id, await messageToInbound(message, true, true));
       });
 
       // DMs — by definition addressed to the bot. Thread id flows through
@@ -216,7 +247,7 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
           sender: (message.author as any)?.fullName ?? (message.author as any)?.userId ?? 'unknown',
           threadId: thread.id,
         });
-        await setupConfig.onInbound(channelId, thread.id, await messageToInbound(message, true));
+        await setupConfig.onInbound(channelId, thread.id, await messageToInbound(message, true, false));
       });
 
       // Plain messages in unsubscribed threads.
@@ -224,14 +255,14 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
       // Chat SDK dispatch (handling-events.mdx §"Handler dispatch order") is
       // exclusive: subscribed → onSubscribedMessage; unsubscribed+mention →
       // onNewMention; unsubscribed+pattern-match → onNewMessage. Registering
-      // with `/./` lets the router see every plain message on every
-      // unsubscribed thread the bot can see. The router short-circuits via
+      // with `/[\s\S]*/` lets the router see every plain message (including
+      // media-only messages with empty text) on every unsubscribed thread the
       // getMessagingGroupWithAgentCount (~1 DB read) for unwired channels,
       // so forwarding every one is cheap enough to not need a bridge-side
       // flood gate.
-      chat.onNewMessage(/./, async (thread, message) => {
+      chat.onNewMessage(/[\s\S]*/, async (thread, message) => {
         const channelId = adapter.channelIdFromThreadId(thread.id);
-        await setupConfig.onInbound(channelId, thread.id, await messageToInbound(message, false));
+        await setupConfig.onInbound(channelId, thread.id, await messageToInbound(message, false, true));
       });
 
       // Handle button clicks (ask_user_question)
@@ -240,11 +271,15 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         const parts = event.actionId.split(':');
         if (parts.length < 3) return;
         const questionId = parts[1];
-        const selectedOption = event.value || '';
+        const tail = parts.slice(2).join(':');
         const userId = event.user?.userId || '';
 
         // Resolve render metadata BEFORE dispatching onAction (which deletes the row).
         const render = getAskQuestionRender(questionId);
+        // New format: button id/value is an integer index into options (kept
+        // short to fit Telegram's 64-byte callback_data cap). Old format:
+        // the full value is embedded in actionId/value directly.
+        const selectedOption = resolveSelectedOption(render, event.value, tail);
         const title = render?.title ?? '❓ Question';
         const matched = render?.options.find((o) => o.value === selectedOption);
         const selectedLabel = matched?.selectedLabel ?? selectedOption ?? '(clicked)';
@@ -272,8 +307,14 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         // Start local HTTP server to receive forwarded Gateway events (including interactions)
         const webhookUrl = await startLocalWebhookServer(gatewayAdapter, setupConfig, config.botToken);
 
+        // Exponential backoff capped at 1h. Without this, an unrecoverable
+        // failure (e.g., TokenInvalid) restarts ~10×/sec and Discord's
+        // Cloudflare layer issues a multi-hour IP block. A run that lasts
+        // longer than 5 minutes counts as healthy and resets the counter.
+        let consecutiveFailures = 0;
         const startGateway = () => {
           if (gatewayAbort?.signal.aborted) return;
+          const startedAt = Date.now();
           // Capture the long-running listener promise via waitUntil
           let listenerPromise: Promise<unknown> | undefined;
           gatewayAdapter.startGatewayListener!(
@@ -288,21 +329,30 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
           ).then(() => {
             // startGatewayListener resolves immediately with a Response;
             // the actual work is in the listenerPromise passed to waitUntil
-            if (listenerPromise) {
-              listenerPromise
-                .then(() => {
-                  if (!gatewayAbort?.signal.aborted) {
-                    log.info('Gateway listener expired, restarting', { adapter: adapter.name });
-                    startGateway();
-                  }
-                })
-                .catch((err) => {
-                  if (!gatewayAbort?.signal.aborted) {
-                    log.error('Gateway listener error, restarting in 5s', { adapter: adapter.name, err });
-                    setTimeout(startGateway, 5000);
-                  }
+            if (!listenerPromise) return;
+            const reschedule = (err?: unknown) => {
+              if (gatewayAbort?.signal.aborted) return;
+              const ranForMs = Date.now() - startedAt;
+              if (ranForMs > 5 * 60 * 1000) consecutiveFailures = 0;
+              else consecutiveFailures++;
+              const delayMs = Math.min(60 * 60 * 1000, 2 ** consecutiveFailures * 1000);
+              if (err) {
+                log.error('Gateway listener error, retrying', {
+                  adapter: adapter.name,
+                  err,
+                  consecutiveFailures,
+                  delayMs,
                 });
-            }
+              } else {
+                log.info('Gateway listener expired, restarting', {
+                  adapter: adapter.name,
+                  consecutiveFailures,
+                  delayMs,
+                });
+              }
+              setTimeout(startGateway, delayMs);
+            };
+            listenerPromise.then(() => reschedule()).catch(reschedule);
           });
         };
         startGateway();
@@ -348,8 +398,13 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
           children: [
             CardText(question),
             Actions(
-              options.map((opt) =>
-                Button({ id: `ncq:${questionId}:${opt.value}`, label: opt.label, value: opt.value }),
+              // Encode button id/value with the option index rather than the
+              // full value. Telegram caps callback_data at 64 bytes, and
+              // long values (e.g. ISO datetimes, URLs) push the JSON payload
+              // well past that. The onAction handlers resolve the index back
+              // to the real value via getAskQuestionRender(questionId).
+              options.map((opt, idx) =>
+                Button({ id: `ncq:${questionId}:${idx}`, label: opt.label, value: String(idx) }),
               ),
             ),
           ],
@@ -358,6 +413,59 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
           card,
           fallbackText: `${title}\n\n${question}\nOptions: ${options.map((o) => o.label).join(', ')}`,
         });
+        return result?.id;
+      }
+
+      // Display card (send_card MCP tool) — returns immediately, no callback flow.
+      // Non-URL actions are dropped: send_card's contract is fire-and-forget, so a
+      // callback button would have nowhere to land. URL actions render as link buttons.
+      if (content.type === 'card' && content.card && typeof content.card === 'object') {
+        const cardSpec = content.card as Record<string, unknown>;
+        const title = (cardSpec.title as string) || '';
+        const fallbackText = (content.fallbackText as string) || (cardSpec.description as string) || title || '';
+
+        const cardChildren: CardChild[] = [];
+        if (typeof cardSpec.description === 'string' && cardSpec.description) {
+          cardChildren.push(CardText(cardSpec.description));
+        }
+        if (Array.isArray(cardSpec.children)) {
+          for (const child of cardSpec.children) {
+            if (typeof child === 'string' && child) {
+              cardChildren.push(CardText(child));
+            } else if (
+              child &&
+              typeof child === 'object' &&
+              typeof (child as Record<string, unknown>).text === 'string'
+            ) {
+              cardChildren.push(CardText((child as Record<string, string>).text));
+            }
+          }
+        }
+        if (Array.isArray(cardSpec.actions)) {
+          const linkButtons = (cardSpec.actions as Array<Record<string, unknown>>)
+            .filter((a) => typeof a.url === 'string' && a.url && typeof a.label === 'string' && a.label)
+            .map((a) => {
+              const style = a.style;
+              const safeStyle: 'primary' | 'danger' | 'default' | undefined =
+                style === 'primary' || style === 'danger' || style === 'default' ? style : undefined;
+              return LinkButton({
+                label: a.label as string,
+                url: a.url as string,
+                style: safeStyle,
+              });
+            });
+          if (linkButtons.length > 0) {
+            cardChildren.push(Actions(linkButtons));
+          }
+        }
+
+        if (cardChildren.length === 0 && !title) {
+          log.warn('send_card payload empty, skipping delivery');
+          return;
+        }
+
+        const card = Card({ title, children: cardChildren });
+        const result = await adapter.postMessage(tid, { card, fallbackText });
         return result?.id;
       }
 
@@ -501,18 +609,21 @@ async function handleForwardedEvent(
     // type 3 = MessageComponent (button/select)
     if (interaction.type === 3) {
       const customId = (interaction.data as Record<string, unknown>)?.custom_id as string;
-      const user = (interaction.member as Record<string, unknown>)?.user as Record<string, string> | undefined;
+      // In guilds the clicker is at interaction.member.user; in DMs it's interaction.user directly.
+      const user =
+        ((interaction.member as Record<string, unknown>)?.user as Record<string, string> | undefined) ??
+        (interaction.user as Record<string, string> | undefined);
       const interactionId = interaction.id as string;
       const interactionToken = interaction.token as string;
 
       // Parse the selected option from custom_id
       let questionId: string | undefined;
-      let selectedOption: string | undefined;
+      let tail: string | undefined;
       if (customId?.startsWith('ncq:')) {
         const colonIdx = customId.indexOf(':', 4); // after "ncq:"
         if (colonIdx !== -1) {
           questionId = customId.slice(4, colonIdx);
-          selectedOption = customId.slice(colonIdx + 1);
+          tail = customId.slice(colonIdx + 1);
         }
       }
 
@@ -521,6 +632,9 @@ async function handleForwardedEvent(
         ((interaction.message as Record<string, unknown>)?.embeds as Array<Record<string, unknown>>) || [];
       const originalDescription = (originalEmbeds[0]?.description as string) || '';
       const render = questionId ? getAskQuestionRender(questionId) : undefined;
+      // Discord custom_id mirrors the new index-based encoding (see Button
+      // construction). Decode back to the real option value for downstream.
+      const selectedOption = resolveSelectedOption(render, tail, tail);
       const cardTitle = render?.title ?? ((originalEmbeds[0]?.title as string) || '❓ Question');
       const matchedOpt = render?.options.find((o) => o.value === selectedOption);
       const selectedLabel = matchedOpt?.selectedLabel ?? selectedOption ?? customId;
