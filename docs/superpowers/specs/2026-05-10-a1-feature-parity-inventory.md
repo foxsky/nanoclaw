@@ -127,12 +127,53 @@ This blocker is more severe than the A5 CLAUDE.md regeneration finding because e
 
 Total Tier A1 status: ~60% complete. SQL table inventory + CLAUDE.md walk still pending.
 
-## 3. SQL table inventory (TODO)
+## 3. SQL table inventory (PARTIAL — done 2026-05-10)
 
-Not yet started. Need to:
-- Enumerate every table v1 reads/writes (from prod's taskflow.db + messages.db)
-- Compare to v2's reads/writes (from migrations + engine code)
-- Schema diff for any shared tables
+### v1 prod tables
+- `taskflow.db`: 27 tables (boards, tasks, board_people, archive, task_history, board_chat, users, sessions, organizations, org_members, org_invites, board_admins, board_config, board_runtime_config, board_groups, board_holidays, board_id_counters, child_board_registrations, external_contacts, meeting_external_participants, subtask_requests, agent_heartbeats, csp_reports, attachment_audit_log, otp_requests, people, revoked_tokens)
+- `messages.db`: 11 tables (agent_turn_messages, agent_turns, chats, messages, outbound_messages, registered_groups, router_state, scheduled_tasks, send_message_log, sessions, task_run_logs)
+
+### v2 schema
+- Host bootstraps 15 TaskFlow tables (via `src/taskflow-db.ts` on skill branch): archive, attachment_audit_log, board_admins, board_config, board_groups, board_holidays, board_id_counters, board_people, board_runtime_config, boards, child_board_registrations, external_contacts, meeting_external_participants, task_history, tasks
+- Engine creates 5 more on first use (via `container/agent-runner/src/taskflow-engine.ts`): board_holidays, board_id_counters, external_contacts, meeting_external_participants, subtask_requests
+- Central DB (`data/v2.db`): agent_groups, messaging_groups, messaging_group_agents, user_roles, agent_group_members, pending_approvals, agent_destinations, dropped_messages, sessions, container_configs, etc.
+- Per-session: `inbound.db` (messages_in + routing) + `outbound.db` (messages_out + session_state)
+
+### v1 tables not present in v2 host schema (12)
+
+| Table | v1 rows | Status / risk |
+|---|---|---|
+| `board_chat` | 224 | **REAL GAP** — 0 references in v2 source. v1 logs agent outputs here; v2 doesn't. Any consumer of board_chat will return empty after migration. |
+| `users` | 33 | Probably mapped: v2 has `src/modules/permissions/db/users.ts` (central DB user table). Need to verify migration script transforms v1 users → v2 users + user_roles. |
+| `sessions` | 18 | v1's auth/session tracking. v2's `sessions` is different concept (agent_group×messaging_group session routing). v1 sessions table appears legacy; need migration verification. |
+| `organizations` | 2 | Multi-tenant org model. v2 has no `organizations` — its entity model is users + agent_groups + messaging_groups. Need product decision: are orgs required? |
+| `org_members` | 5 | Same as above. |
+| `org_invites` | 2 | Same as above. |
+| `agent_heartbeats` | 0 | Unused in prod. v2 uses file-touch heartbeat instead (per memory). Safe. |
+| `csp_reports` | 0 | Web frontend security reports. Unused. Safe. |
+| `otp_requests` | 0 | v2 has its own send_otp/pending_otp flow. Verify migration not needed. |
+| `people` | 0 | Empty; data lives in board_people instead. Safe. |
+| `revoked_tokens` | 0 | Unused. Safe. |
+| `subtask_requests` | 0 | Empty in prod — cross-board subtask approval. v2 engine creates this table lazily. Safe. |
+
+### Real schema gaps to address before cutover
+
+**A7 (new blocker) — `board_chat` not written by v2:**
+- 224 rows in prod, actively populated by v1's `appendAgentOutputToBoardChat()` in `src/index.ts`
+- v2 source has zero `board_chat` references
+- Impact: post-cutover, agent outputs aren't logged. Any feature reading this table (board history, board-level audit) silently returns empty.
+- Fix: either (a) port `appendAgentOutputToBoardChat` to v2 host's delivery path, or (b) document that v2 deliberately drops board_chat and update any downstream consumers.
+
+**A8 (new — migration question) — multi-tenant org model:**
+- v1 has `organizations / org_members / org_invites` (small but live data)
+- v2 has no equivalent — entity model is users + agent_groups + messaging_groups
+- Migration question: how do v1 orgs map to v2 agent_groups? Each org → one agent_group? Or are orgs irrelevant in the v2 model?
+- Effort to decide: 1-2h with product owner.
+
+**A9 (new — migration verification) — users/sessions mapping:**
+- v1 `users` (33 rows) and `sessions` (18 rows) need explicit v2 mapping
+- v2 entity model has user_roles, agent_groups, agent_group_members, messaging_groups — different shape
+- Migration script (`bash migrate-v2.sh`) must transform v1 users → v2 user_roles + agent_group_members. Verify in Tier A3.
 
 ## 4. CLAUDE.md instruction inventory (TODO)
 
