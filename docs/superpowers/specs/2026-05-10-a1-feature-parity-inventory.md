@@ -266,18 +266,18 @@ Effort: 3-4h for F1 or F2.
 | A2 | Mutation parity (full 235 corpus) | 1-2 days | pending | original |
 | A3 | Migration safety | 2-3 days | pending | original |
 | A4 | Rollback verified | 1 day | pending | original |
-| A5 | Per-board CLAUDE.md regeneration | 1-2 days | **blocked on A11** | A1.4 |
+| A5 | Per-board CLAUDE.md regeneration | 1-2 days | **unblocked 2026-05-10** (A11 done) | A1.4 |
 | A6 | Migration carries forward .mcp.json (refined) | 1-2h | ✅ DONE 2026-05-10 (commits 995b3211 → a798557d → 714b5b78) | A1.5 |
 | ~~A7~~ | ~~board_chat not written by v2~~ | ~~4-6h~~ | ✅ CLOSED 2026-05-10 — deferred to tf-mcontrol-deploy | A1.3 |
 | ~~A8~~ | ~~Multi-tenant org model migration~~ | ~~1-2h~~ | ✅ CLOSED 2026-05-10 — phantom blocker, dead schema | A1.3 |
 | A9 | users/sessions migration mapping | (verified in A3) | pending | A1.3 |
 | A10 | Meeting-type task MCP exposure | 3-4h | ✅ DONE 2026-05-10 (commit 7d6f6eaf — `api_create_meeting_task` MCP tool, 9 new tests + multi-participant notification verification, shared `finalizeCreatedTaskResult` helper + `PRIORITIES` constant) | A1.6 |
-| **A11** | **Build missing v2 MCP tools (5 wrappers: move/admin/reassign/undo/report; hierarchy+dependency fold into update/admin)** | **revised ~1 week** | in_progress (1/5 done) | A1.4 |
+| **A11** | **Build missing v2 MCP tools (5 wrappers: move/admin/reassign/undo/report; hierarchy+dependency fold into update/admin)** | **revised ~1 week** | ✅ DONE 2026-05-10 (all 5 sub-tools shipped — A11 closed) | A1.4 |
 | A11.1 | `api_move` — state-machine (10 actions) | 2-3h | ✅ DONE 2026-05-10 (commit 2c0076f8) | A1.4 |
 | A11.2 | `api_admin` — 17-action meta-dispatcher | 4-6h | ✅ DONE 2026-05-10 (commit 215dec45) | A1.4 |
 | A11.3 | `api_reassign` — single-purpose | 1-2h | ✅ DONE 2026-05-10 (commit e09c1212; also extracted shared `finalizeMutationResult` helper used by move/admin/reassign) | A1.4 |
 | A11.4 | `api_undo` — single-purpose | 1-2h | ✅ DONE 2026-05-10 (commit e3e50292) | A1.4 |
-| A11.5 | `api_report` — read-side report | 1-2h | pending | A1.4 |
+| A11.5 | `api_report` — read-side report | 1-2h | ✅ DONE 2026-05-10 (commit c4b6a23b) | A1.4 |
 
 **Remaining Tier A engineering:** A11 (1-2w) → A5 (1-2d) + A10 (3-4h). A2-A4 validation (~5-6d). **Total: ~2-3 weeks** to clear Tier A (revised up from 8-10 days because A11 surfaced).
 
