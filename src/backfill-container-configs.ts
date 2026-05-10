@@ -4,6 +4,14 @@
  *
  * Runs after migrations, before channel adapters start. Idempotent — skips
  * groups that already have a config row.
+ *
+ * Also reads legacy `.mcp.json` (v1 placed per-board MCP servers there
+ * rather than in container.json). When both files exist, container.json's
+ * mcpServers wins on any shared key; .mcp.json fills in keys container.json
+ * doesn't have. This brings forward the sqlite MCP server that v1 TaskFlow
+ * boards rely on for the standup / digest / review runner prompts —
+ * without this carry-forward, those runners crash on first fire after
+ * migration with "Unknown tool: mcp__sqlite__read_query".
  */
 import fs from 'fs';
 import path from 'path';
@@ -42,6 +50,26 @@ export function backfillContainerConfigs(): void {
         legacy = JSON.parse(fs.readFileSync(filePath, 'utf8')) as LegacyContainerJson;
       } catch (err) {
         log.warn('Backfill: failed to parse container.json, using defaults', {
+          folder: group.folder,
+          err: String(err),
+        });
+      }
+    }
+
+    // Carry forward MCP servers from .mcp.json (v1 stored per-board MCP
+    // config there instead of container.json). container.json wins for
+    // any shared key.
+    const mcpJsonPath = path.join(GROUPS_DIR, group.folder, '.mcp.json');
+    if (fs.existsSync(mcpJsonPath)) {
+      try {
+        const mcpJson = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8')) as {
+          mcpServers?: Record<string, McpServerConfig>;
+        };
+        if (mcpJson.mcpServers && Object.keys(mcpJson.mcpServers).length > 0) {
+          legacy.mcpServers = { ...mcpJson.mcpServers, ...(legacy.mcpServers ?? {}) };
+        }
+      } catch (err) {
+        log.warn('Backfill: failed to parse .mcp.json, ignoring', {
           folder: group.folder,
           err: String(err),
         });
