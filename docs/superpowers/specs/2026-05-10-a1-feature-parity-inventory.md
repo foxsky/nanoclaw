@@ -158,11 +158,12 @@ Total Tier A1 status: ~60% complete. SQL table inventory + CLAUDE.md walk still 
 
 ### Real schema gaps to address before cutover
 
-**A7 (new blocker) — `board_chat` not written by v2:**
-- 224 rows in prod, actively populated by v1's `appendAgentOutputToBoardChat()` in `src/index.ts`
-- v2 source has zero `board_chat` references
-- Impact: post-cutover, agent outputs aren't logged. Any feature reading this table (board history, board-level audit) silently returns empty.
-- Fix: either (a) port `appendAgentOutputToBoardChat` to v2 host's delivery path, or (b) document that v2 deliberately drops board_chat and update any downstream consumers.
+**A7 (CLOSED 2026-05-10 — deferred to tf-mcontrol-deploy) — `board_chat` write path:**
+- Investigated 2026-05-10. `board_chat` last write was 2026-04-02 (~38 days ago); active `task_history` last write was 2026-05-08 (~2 days ago). Sample senders are all QA fixtures (`QA-Validator`, `PF-Test`, `QA-R22-debug-*`, `badge-test-*`).
+- The reader is tf-mcontrol's dashboard (`taskflow-dashboard/src/components/BoardChat.tsx`, polls `/chat` every 5s). tf-mcontrol is **not deployed to prod** (`ls ~/tf-mcontrol` fails on remote `192.168.2.63`).
+- The `send_board_chat` MCP tool that v1 used appears only in legacy `data/sessions/*/agent-runner-src/ipc-mcp-stdio.ts` IPC stubs — not in any active v2 skill. **0 calls in 14d of prod session corpora**.
+- **Decision: not a v2-cutover blocker.** When tf-mcontrol deploys, add `send_board_chat` MCP tool (or wire the dashboard to consume agent responses on a different channel) — that's a tf-mcontrol-deploy gate, not a v2-cutover gate.
+- See memory `project_v2_a7_phantom_blocker.md` for the searches and evidence.
 
 **A8 (CLOSED 2026-05-10) — multi-tenant org model — phantom blocker:**
 - Investigated 2026-05-10. v1 has the schema but it is dead code. Searches in v1 prod's taskflow-engine.ts, MCP tool surface, board CLAUDE.md, all 3 session corpora, migrate-v2.sh, and setup/migrate-v2/ all returned **zero** references.
@@ -178,9 +179,16 @@ Total Tier A1 status: ~60% complete. SQL table inventory + CLAUDE.md walk still 
 
 ## 4. Per-board CLAUDE.md inventory (DONE 2026-05-10)
 
-37 board CLAUDE.md files cloned from prod (28 active + 9 test/seed). Every single board references v1 tool names AND SQLite MCP tools:
+37 board CLAUDE.md files cloned from prod (28 active + 9 test/seed). Every single board references v1 tool names AND SQLite MCP tools.
 
-| Tier | Boards | v1 tool refs | sqlite_ref |
+**Revised 2026-05-10 (deeper inspection):**
+- All 37 files have **distinct md5 hashes** — not a clean template set; each board is personalized.
+- Size: ~125-126 KB per file. Tool refs: median 198 per board, max 225, min 0.
+- v1 tool refs are embedded in **workflow language** with full call signatures (e.g. `taskflow_move({task_id, action: 'review', sender_name: SENDER})`), not as standalone identifiers. Text substitution is not viable.
+
+**Critical finding — A5 is downstream of missing MCP tools (A11):** v2 lacks MCP exposure for `taskflow_move`, `taskflow_reassign`, `taskflow_admin`, `taskflow_undo`, `taskflow_report`, `taskflow_hierarchy`, and `taskflow_dependency`. The engine methods exist but no MCP wrappers exist. Rewriting CLAUDE.md to use only v2's current surface (`api_update_simple_task`, `api_filter_board_tasks`, etc.) would regress agent capabilities (no state-machine moves, no reparenting, no undo, no reports). See memory `project_v2_a5_blocked_on_missing_mcp_tools.md`.
+
+| Variant (rough) | Boards | v1 tool refs | sqlite_ref |
 |---|---|---|---|
 | Parent / SECTI-level | 12 | ~221 each | 5 each |
 | SEAF / GE-sup | 6 | ~196 each | 4 each |
@@ -188,7 +196,7 @@ Total Tier A1 status: ~60% complete. SQL table inventory + CLAUDE.md walk still 
 | sm-setd / hudson / edilson | 3 | 183 | 4 |
 | infra-setd-secti | 1 | 187 | 4 |
 
-Variation suggests **3-4 CLAUDE.md templates** in use (parent-level, SEAF, subordinate, leaf). Regen tooling can target templates rather than per-board.
+(Variants are statistical proxies — every file is still individually personalized.)
 
 A5 confirmed at full scale: all 37 boards need CLAUDE.md regen before cutover.
 A6 confirmed at full scale: all 37 boards reference SQLite MCP tools (4-5 refs each).
@@ -250,7 +258,7 @@ Effort: 3-4h for F1 or F2.
 
 **A1 status: 100% complete.**
 
-## Final Tier A blocker list (9 must-pass items, was 10; was 4 originally)
+## Final Tier A blocker list (9 must-pass items; A7 and A8 closed)
 
 | # | Blocker | Effort | Status | Source |
 |---|---|---|---|---|
@@ -258,16 +266,17 @@ Effort: 3-4h for F1 or F2.
 | A2 | Mutation parity (full 235 corpus) | 1-2 days | pending | original |
 | A3 | Migration safety | 2-3 days | pending | original |
 | A4 | Rollback verified | 1 day | pending | original |
-| A5 | Per-board CLAUDE.md regeneration | 1-2 days | pending | A1.4 |
+| A5 | Per-board CLAUDE.md regeneration | 1-2 days | **blocked on A11** | A1.4 |
 | A6 | Migration carries forward .mcp.json (refined) | 1-2h | ✅ DONE 2026-05-10 (commits 995b3211 → a798557d → 714b5b78) | A1.5 |
-| A7 | board_chat not written by v2 | 4-6h | pending | A1.3 |
+| ~~A7~~ | ~~board_chat not written by v2~~ | ~~4-6h~~ | ✅ CLOSED 2026-05-10 — deferred to tf-mcontrol-deploy | A1.3 |
 | ~~A8~~ | ~~Multi-tenant org model migration~~ | ~~1-2h~~ | ✅ CLOSED 2026-05-10 — phantom blocker, dead schema | A1.3 |
 | A9 | users/sessions migration mapping | (verified in A3) | pending | A1.3 |
 | A10 | Meeting-type task MCP exposure | 3-4h | pending | A1.6 |
+| **A11** | **Build missing v2 MCP tools (taskflow_move, taskflow_reassign, taskflow_admin, taskflow_undo, taskflow_report, taskflow_hierarchy, taskflow_dependency)** | **1-2 weeks** | pending | A1.4 |
 
-**Remaining Tier A engineering (post-A6, post-A8):** A5 (1-2d) + A7 (4-6h) + A10 (3-4h) = ~3-4 days bug-fix work. Plus A2-A4 validation (~5-6d). **Total: ~8-10 days dedicated work to clear Tier A** (revised down from 10-13).
+**Remaining Tier A engineering:** A11 (1-2w) → A5 (1-2d) + A10 (3-4h). A2-A4 validation (~5-6d). **Total: ~2-3 weeks** to clear Tier A (revised up from 8-10 days because A11 surfaced).
 
-Total realistic timeline to production: **12-15 weeks**.
+Total realistic timeline to production: **14-17 weeks** (revised up from 12-15).
 
 ---
 
