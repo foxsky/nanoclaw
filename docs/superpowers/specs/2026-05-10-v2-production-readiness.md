@@ -87,6 +87,25 @@ Before promoting `skill/taskflow-v2` to production, prove three things:
 
 **Effort:** 1 day.
 
+### A5: Per-board CLAUDE.md regeneration (DISCOVERED 2026-05-10)
+
+**What:** v2 refactored the MCP tool surface — v1's `taskflow_query`, `taskflow_report`, `taskflow_move`, `taskflow_reassign`, `taskflow_update`, `taskflow_admin`, `taskflow_create`, `taskflow_dependency`, `taskflow_hierarchy` tool names don't exist as v2 MCP tools. v2's replacements are `api_board_activity`, `api_filter_board_tasks`, `api_linked_tasks`, `api_create_simple_task`, `api_update_simple_task` (covers update + move + reassign), `api_task_add_note`, `api_delete_simple_task`, etc.
+
+Prod's per-board `groups/<board>/CLAUDE.md` references v1 tool names **219 times** in the sec-secti sample alone. Without regeneration to use v2 tool names, board agents will fail every interaction with "tool not found."
+
+**How:**
+1. Author a v2 CLAUDE.md template that uses v2's MCP tool names (per-tool capability sections rewritten)
+2. Per-board: regenerate CLAUDE.md from the v2 template + per-board variables (board name, members, holiday calendar, custom rules)
+3. Diff each regenerated CLAUDE.md against its v1 version to confirm: (a) all instructions preserved semantically, (b) all tool references updated, (c) no v1-only tool names remain
+
+**Pass criteria:**
+- 0 occurrences of v1 tool names (`taskflow_query`, `taskflow_report`, `taskflow_move`, `taskflow_reassign`, `taskflow_update`, `taskflow_admin`, `taskflow_create`, `taskflow_dependency`, `taskflow_hierarchy`) in any board's regenerated CLAUDE.md
+- All v1 instructions semantically preserved (manual review per board)
+
+**Effort:** 1-2 days for template + tooling + per-board diff review.
+
+**Critical:** This is THE prerequisite for v2 board agents to function. Without it, A3 migration succeeds technically but every board breaks at first user message.
+
 ---
 
 ## Test plan — Tier B (SHOULD PASS before broad rollout)
@@ -253,6 +272,7 @@ The 2/10 mutation-slice "failures" were **data-drift artifacts**: between v1's o
 - **A1** (feature parity inventory) — silent feature loss is the highest risk
 - **A3** (migration safety) — corrupted prod data has no recovery
 - **A4** (rollback verified) — without working rollback, every cutover is gambling
+- **A5** (per-board CLAUDE.md regeneration) — without v2-tool-name updates, every board breaks at first interaction (NEW 2026-05-10)
 - **C2** (single-board canary) — proves the actual cutover machinery works
 
 ## What CAN ship without (with explicit risk acceptance)
