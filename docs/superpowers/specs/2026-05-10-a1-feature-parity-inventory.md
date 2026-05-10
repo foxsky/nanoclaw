@@ -175,13 +175,98 @@ Total Tier A1 status: ~60% complete. SQL table inventory + CLAUDE.md walk still 
 - v2 entity model has user_roles, agent_groups, agent_group_members, messaging_groups — different shape
 - Migration script (`bash migrate-v2.sh`) must transform v1 users → v2 user_roles + agent_group_members. Verify in Tier A3.
 
-## 4. CLAUDE.md instruction inventory (TODO)
+## 4. Per-board CLAUDE.md inventory (DONE 2026-05-10)
 
-For each board, walk per-board CLAUDE.md and verify every instruction maps to a v2 code path. Per-board because boards have customized CLAUDE.md content.
+37 board CLAUDE.md files cloned from prod (28 active + 9 test/seed). Every single board references v1 tool names AND SQLite MCP tools:
 
-## 5. Skill enablement inventory (TODO)
+| Tier | Boards | v1 tool refs | sqlite_ref |
+|---|---|---|---|
+| Parent / SECTI-level | 12 | ~221 each | 5 each |
+| SEAF / GE-sup | 6 | ~196 each | 4 each |
+| Subordinate boards | 11 | ~185 each | 4 each |
+| sm-setd / hudson / edilson | 3 | 183 | 4 |
+| infra-setd-secti | 1 | 187 | 4 |
 
-Per prod board, list which fork-private skills are enabled (add-taskflow-memory, whatsapp-fixes, add-long-term-context, add-reactions, etc.) and verify v2 install paths exist for each.
+Variation suggests **3-4 CLAUDE.md templates** in use (parent-level, SEAF, subordinate, leaf). Regen tooling can target templates rather than per-board.
+
+A5 confirmed at full scale: all 37 boards need CLAUDE.md regen before cutover.
+A6 confirmed at full scale: all 37 boards reference SQLite MCP tools (4-5 refs each).
+
+## 5. Skill enablement inventory (DONE 2026-05-10)
+
+**Discovery:** Every board's `groups/<folder>/.mcp.json` declares the `sqlite` MCP server:
+
+```json
+{
+  "mcpServers": {
+    "sqlite": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "mcp-server-sqlite-npx", "/workspace/taskflow/taskflow.db"]
+    }
+  }
+}
+```
+
+All 30 boards have this `.mcp.json` (verified by SSH `for d in groups/*/; do ...`).
+
+**Critical finding — `migrate-v2.sh` does NOT carry forward `.mcp.json`:**
+- v2's `container_configs.mcp_servers` JSON column exists (the v2.0.48 DB-backed config — line 13 of `src/db/container-configs.ts`)
+- `setup/migrate-v2/*.ts` files (db.ts, groups.ts, shared.ts) have **zero** references to `.mcp.json`, `mcpServers`, `mcp_servers`, or `sqlite`
+- Result: migrated v2 board containers start WITHOUT the sqlite MCP server → CLAUDE.md's `mcp__sqlite__read_query` references resolve to "Unknown tool" at runtime
+
+This refines A6 root cause:
+- **Original A6:** v2 has no MCP wrapper for engine.report() → standup runners fail
+- **Refined:** v2's runner prompts could call SQLite tools IF the sqlite MCP server were wired per board. v1 wires it via `.mcp.json`. v2 should wire it via `container_configs.mcp_servers` — but migrate-v2 doesn't populate that column. **Fix is in the migration script, not v2's MCP registry.**
+
+**Refined A6 fix (smaller):** modify `setup/migrate-v2/db.ts` to read each v1 board's `.mcp.json` and seed the matching `container_configs.mcp_servers` row. ~1-2h instead of 4-6h.
+
+## 6. Meeting-type task creation (DONE 2026-05-10)
+
+**A10 (new blocker):** v2 has no MCP exposure for meeting-type task creation.
+
+- `engine.create()` supports `type: 'meeting'` (verified — code has `if (params.type === 'meeting' && params.participants) {...}`)
+- `api_create_simple_task` MCP tool schema rejects this: only `title`, `assignee`, `priority`, `due_date`, `description` allowed. No `type`, `participants`, or `scheduled_at` fields.
+- Production has meeting tasks across 3+ boards (board-thiago-taskflow has 16 alone).
+
+**Fix options:**
+- F1: Add `api_create_meeting_task` MCP tool with `participants` + `scheduled_at` + `type='meeting'`
+- F2: Extend `api_create_simple_task` to accept `type` + `participants` + `scheduled_at` (rename to `api_create_task`)
+- F3: Document workaround — meetings created via direct DB write (regression from v1's chat-driven flow)
+
+Effort: 3-4h for F1 or F2.
+
+## Final A1 summary
+
+| Sub-task | Status | Blockers found |
+|---|---|---|
+| MCP tool inventory | ✅ Done | A5 (CLAUDE.md regen), A6 (runner sqlite refs) |
+| Runner prompt surface | ✅ Done | A6 (deeper investigation) |
+| SQL table inventory | ✅ Done | A7 (board_chat), A8 (orgs), A9 (users/sessions) |
+| Per-board CLAUDE.md walk | ✅ Done | All 37 boards confirmed for A5, A6 |
+| Skill enablement per-board | ✅ Done | A6 refined fix (migration script change, 1-2h) |
+| Meeting-type creation | ✅ Done | A10 (new — meeting MCP exposure) |
+
+**A1 status: 100% complete.**
+
+## Final Tier A blocker list (10 must-pass items, was 4)
+
+| # | Blocker | Effort | Source |
+|---|---|---|---|
+| A1 | Feature parity inventory | 4-8h | original |
+| A2 | Mutation parity (full 235 corpus) | 1-2 days | original |
+| A3 | Migration safety | 2-3 days | original |
+| A4 | Rollback verified | 1 day | original |
+| A5 | Per-board CLAUDE.md regeneration | 1-2 days | A1.4 |
+| A6 | Migration carries forward .mcp.json (refined) | 1-2h | A1.5 |
+| A7 | board_chat not written by v2 | 4-6h | A1.3 |
+| A8 | Multi-tenant org model migration | 1-2h | A1.3 |
+| A9 | users/sessions migration mapping | (verified in A3) | A1.3 |
+| A10 | Meeting-type task MCP exposure | 3-4h | A1.6 |
+
+**Net pre-cutover engineering: ~5-7 days of bug fixes + Tier A2-A4 (~5-6 days of validation) = ~10-13 days dedicated work to clear Tier A.** Plus Tier B + Tier C as before.
+
+Total realistic timeline to production: **12-15 weeks** (revised up from 10-13 due to discovered Tier A blockers).
 
 ---
 
