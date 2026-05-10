@@ -12,6 +12,47 @@ vi.mock('./config.js', async (orig) => {
   return { ...real, GROUPS_DIR: TEST_GROUPS_DIR, DATA_DIR: TEST_DATA_DIR };
 });
 
+/** Boot a fresh DB + return the helpers each test needs. */
+async function setupTestDb() {
+  const [{ initDb }, { runMigrations }, agentGroupsMod, containerConfigsMod, backfillMod] = await Promise.all([
+    import('./db/connection.js'),
+    import('./db/migrations/index.js'),
+    import('./db/agent-groups.js'),
+    import('./db/container-configs.js'),
+    import('./backfill-container-configs.js'),
+  ]);
+  const db = initDb(path.join(TEST_DATA_DIR, 'v2.db'));
+  runMigrations(db);
+  return {
+    createAgentGroup: agentGroupsMod.createAgentGroup,
+    getContainerConfig: containerConfigsMod.getContainerConfig,
+    createContainerConfig: containerConfigsMod.createContainerConfig,
+    backfillContainerConfigs: backfillMod.backfillContainerConfigs,
+  };
+}
+
+function mkGroupDir(folder: string): string {
+  const d = path.join(TEST_GROUPS_DIR, folder);
+  fs.mkdirSync(d, { recursive: true });
+  return d;
+}
+
+function makeAgentGroup(id: string, folder: string) {
+  return { id, name: id, folder, agent_provider: null, created_at: new Date().toISOString() };
+}
+
+function makeEmptyContainerConfig(id: string, mcpServers: Record<string, unknown> = {}) {
+  return {
+    agent_group_id: id, provider: null, model: null, effort: null,
+    image_tag: null, assistant_name: null, max_messages_per_prompt: null,
+    skills: JSON.stringify('all'),
+    mcp_servers: JSON.stringify(mcpServers),
+    packages_apt: JSON.stringify([]), packages_npm: JSON.stringify([]),
+    additional_mounts: JSON.stringify([]), cli_scope: 'group' as const,
+    updated_at: new Date().toISOString(),
+  };
+}
+
 beforeEach(() => {
   fs.rmSync(TMPROOT, { recursive: true, force: true });
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
@@ -24,35 +65,20 @@ afterEach(() => {
 
 describe('backfillContainerConfigs — .mcp.json carry-forward (A6 fix)', () => {
   it('reads .mcp.json sqlite server when container.json is absent', async () => {
-    const { initDb } = await import('./db/connection.js');
-    const { runMigrations } = await import('./db/migrations/index.js');
-    const { createAgentGroup } = await import('./db/agent-groups.js');
-    const { getContainerConfig } = await import('./db/container-configs.js');
-
-    const db = initDb(path.join(TEST_DATA_DIR, 'v2.db'));
-    runMigrations(db);
-
-    const id = 'ag-seci';
-    createAgentGroup({ id, name: 'SECI', folder: 'seci-taskflow', agent_provider: null, created_at: new Date().toISOString() });
-    const groupDir = path.join(TEST_GROUPS_DIR, 'seci-taskflow');
-    fs.mkdirSync(groupDir, { recursive: true });
+    const { createAgentGroup, getContainerConfig, backfillContainerConfigs } = await setupTestDb();
+    createAgentGroup(makeAgentGroup('ag-seci', 'seci-taskflow'));
     fs.writeFileSync(
-      path.join(groupDir, '.mcp.json'),
+      path.join(mkGroupDir('seci-taskflow'), '.mcp.json'),
       JSON.stringify({
         mcpServers: {
-          sqlite: {
-            type: 'stdio',
-            command: 'npx',
-            args: ['-y', 'mcp-server-sqlite-npx', '/workspace/taskflow/taskflow.db'],
-          },
+          sqlite: { type: 'stdio', command: 'npx', args: ['-y', 'mcp-server-sqlite-npx', '/workspace/taskflow/taskflow.db'] },
         },
       }),
     );
 
-    const { backfillContainerConfigs } = await import('./backfill-container-configs.js');
     backfillContainerConfigs();
 
-    const cfg = getContainerConfig(id);
+    const cfg = getContainerConfig('ag-seci');
     expect(cfg).toBeDefined();
     const mcp = JSON.parse(cfg!.mcp_servers as unknown as string) as Record<string, any>;
     expect(mcp.sqlite).toBeDefined();
@@ -60,185 +86,88 @@ describe('backfillContainerConfigs — .mcp.json carry-forward (A6 fix)', () => 
   });
 
   it('container.json mcpServers wins over .mcp.json on shared keys', async () => {
-    const { initDb } = await import('./db/connection.js');
-    const { runMigrations } = await import('./db/migrations/index.js');
-    const { createAgentGroup } = await import('./db/agent-groups.js');
-    const { getContainerConfig } = await import('./db/container-configs.js');
+    const { createAgentGroup, getContainerConfig, backfillContainerConfigs } = await setupTestDb();
+    createAgentGroup(makeAgentGroup('ag-mixed', 'mixed'));
+    const d = mkGroupDir('mixed');
+    fs.writeFileSync(path.join(d, 'container.json'), JSON.stringify({ mcpServers: { sqlite: { type: 'stdio', command: 'modern' } } }));
+    fs.writeFileSync(path.join(d, '.mcp.json'), JSON.stringify({ mcpServers: { sqlite: { type: 'stdio', command: 'legacy' } } }));
 
-    const db = initDb(path.join(TEST_DATA_DIR, 'v2.db'));
-    runMigrations(db);
-
-    const id = 'ag-mixed';
-    createAgentGroup({ id, name: 'Mixed', folder: 'mixed', agent_provider: null, created_at: new Date().toISOString() });
-    const groupDir = path.join(TEST_GROUPS_DIR, 'mixed');
-    fs.mkdirSync(groupDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(groupDir, 'container.json'),
-      JSON.stringify({ mcpServers: { sqlite: { type: 'stdio', command: 'modern' } } }),
-    );
-    fs.writeFileSync(
-      path.join(groupDir, '.mcp.json'),
-      JSON.stringify({ mcpServers: { sqlite: { type: 'stdio', command: 'legacy' } } }),
-    );
-
-    const { backfillContainerConfigs } = await import('./backfill-container-configs.js');
     backfillContainerConfigs();
 
-    const cfg = getContainerConfig(id);
+    const cfg = getContainerConfig('ag-mixed');
     const mcp = JSON.parse(cfg!.mcp_servers as unknown as string) as Record<string, any>;
     expect(mcp.sqlite.command).toBe('modern');
   });
 
   it('retrofills existing rows with empty mcp_servers from .mcp.json (Codex BLOCKER fix)', async () => {
-    const { initDb } = await import('./db/connection.js');
-    const { runMigrations } = await import('./db/migrations/index.js');
-    const { createAgentGroup } = await import('./db/agent-groups.js');
-    const { getContainerConfig, createContainerConfig } = await import('./db/container-configs.js');
+    const { createAgentGroup, getContainerConfig, createContainerConfig, backfillContainerConfigs } = await setupTestDb();
+    createAgentGroup(makeAgentGroup('ag-empty', 'empty-mcp'));
+    fs.writeFileSync(
+      path.join(mkGroupDir('empty-mcp'), '.mcp.json'),
+      JSON.stringify({ mcpServers: { sqlite: { type: 'stdio', command: 'npx' } } }),
+    );
+    createContainerConfig(makeEmptyContainerConfig('ag-empty'));
 
-    const db = initDb(path.join(TEST_DATA_DIR, 'v2.db'));
-    runMigrations(db);
-
-    const id = 'ag-empty';
-    createAgentGroup({ id, name: 'E', folder: 'empty-mcp', agent_provider: null, created_at: new Date().toISOString() });
-    const groupDir = path.join(TEST_GROUPS_DIR, 'empty-mcp');
-    fs.mkdirSync(groupDir, { recursive: true });
-    fs.writeFileSync(path.join(groupDir, '.mcp.json'), JSON.stringify({
-      mcpServers: { sqlite: { type: 'stdio', command: 'npx' } },
-    }));
-
-    // Simulate: prior backfill ran without the .mcp.json fix → row exists, mcp_servers = '{}'
-    createContainerConfig({
-      agent_group_id: id, provider: null, model: null, effort: null,
-      image_tag: null, assistant_name: null, max_messages_per_prompt: null,
-      skills: JSON.stringify('all'),
-      mcp_servers: JSON.stringify({}),
-      packages_apt: JSON.stringify([]), packages_npm: JSON.stringify([]),
-      additional_mounts: JSON.stringify([]), cli_scope: 'group',
-      updated_at: new Date().toISOString(),
-    });
-
-    const { backfillContainerConfigs } = await import('./backfill-container-configs.js');
     backfillContainerConfigs();
 
-    const cfg = getContainerConfig(id);
+    const cfg = getContainerConfig('ag-empty');
     const mcp = JSON.parse(cfg!.mcp_servers as unknown as string) as Record<string, any>;
     expect(mcp.sqlite).toBeDefined();
     expect(mcp.sqlite.command).toBe('npx');
   });
 
   it('retrofill does NOT overwrite operator-set keys (absent-keys-only merge)', async () => {
-    const { initDb } = await import('./db/connection.js');
-    const { runMigrations } = await import('./db/migrations/index.js');
-    const { createAgentGroup } = await import('./db/agent-groups.js');
-    const { getContainerConfig, createContainerConfig } = await import('./db/container-configs.js');
+    const { createAgentGroup, getContainerConfig, createContainerConfig, backfillContainerConfigs } = await setupTestDb();
+    createAgentGroup(makeAgentGroup('ag-op', 'operator-set'));
+    fs.writeFileSync(
+      path.join(mkGroupDir('operator-set'), '.mcp.json'),
+      JSON.stringify({
+        mcpServers: { sqlite: { type: 'stdio', command: 'OLD' }, redis: { type: 'stdio', command: 'redis' } },
+      }),
+    );
+    createContainerConfig(makeEmptyContainerConfig('ag-op', { sqlite: { type: 'stdio', command: 'NEW' } }));
 
-    const db = initDb(path.join(TEST_DATA_DIR, 'v2.db'));
-    runMigrations(db);
-
-    const id = 'ag-op';
-    createAgentGroup({ id, name: 'O', folder: 'operator-set', agent_provider: null, created_at: new Date().toISOString() });
-    const groupDir = path.join(TEST_GROUPS_DIR, 'operator-set');
-    fs.mkdirSync(groupDir, { recursive: true });
-    // .mcp.json says sqlite = old config
-    fs.writeFileSync(path.join(groupDir, '.mcp.json'), JSON.stringify({
-      mcpServers: { sqlite: { type: 'stdio', command: 'OLD' }, redis: { type: 'stdio', command: 'redis' } },
-    }));
-    // Operator already configured sqlite differently via ncl
-    createContainerConfig({
-      agent_group_id: id, provider: null, model: null, effort: null,
-      image_tag: null, assistant_name: null, max_messages_per_prompt: null,
-      skills: JSON.stringify('all'),
-      mcp_servers: JSON.stringify({ sqlite: { type: 'stdio', command: 'NEW' } }),
-      packages_apt: JSON.stringify([]), packages_npm: JSON.stringify([]),
-      additional_mounts: JSON.stringify([]), cli_scope: 'group',
-      updated_at: new Date().toISOString(),
-    });
-
-    const { backfillContainerConfigs } = await import('./backfill-container-configs.js');
     backfillContainerConfigs();
 
-    const cfg = getContainerConfig(id);
+    const cfg = getContainerConfig('ag-op');
     const mcp = JSON.parse(cfg!.mcp_servers as unknown as string) as Record<string, any>;
-    expect(mcp.sqlite.command).toBe('NEW'); // operator config preserved
-    expect(mcp.redis).toBeDefined();         // absent key added from .mcp.json
+    expect(mcp.sqlite.command).toBe('NEW');
+    expect(mcp.redis).toBeDefined();
     expect(mcp.redis.command).toBe('redis');
   });
 
   it('handles malformed .mcp.json gracefully', async () => {
-    const { initDb } = await import('./db/connection.js');
-    const { runMigrations } = await import('./db/migrations/index.js');
-    const { createAgentGroup } = await import('./db/agent-groups.js');
-    const { getContainerConfig } = await import('./db/container-configs.js');
+    const { createAgentGroup, getContainerConfig, backfillContainerConfigs } = await setupTestDb();
+    createAgentGroup(makeAgentGroup('ag-bad', 'bad-json'));
+    fs.writeFileSync(path.join(mkGroupDir('bad-json'), '.mcp.json'), '{ this is not valid JSON');
 
-    const db = initDb(path.join(TEST_DATA_DIR, 'v2.db'));
-    runMigrations(db);
-
-    const id = 'ag-bad';
-    createAgentGroup({ id, name: 'B', folder: 'bad-json', agent_provider: null, created_at: new Date().toISOString() });
-    const groupDir = path.join(TEST_GROUPS_DIR, 'bad-json');
-    fs.mkdirSync(groupDir, { recursive: true });
-    fs.writeFileSync(path.join(groupDir, '.mcp.json'), '{ this is not valid JSON');
-
-    const { backfillContainerConfigs } = await import('./backfill-container-configs.js');
     expect(() => backfillContainerConfigs()).not.toThrow();
 
-    const cfg = getContainerConfig(id);
+    const cfg = getContainerConfig('ag-bad');
     expect(cfg).toBeDefined();
     expect(cfg!.mcp_servers).toBe('{}');
   });
 
   it('rejects non-object mcpServers shape (e.g., string)', async () => {
-    const { initDb } = await import('./db/connection.js');
-    const { runMigrations } = await import('./db/migrations/index.js');
-    const { createAgentGroup } = await import('./db/agent-groups.js');
-    const { getContainerConfig } = await import('./db/container-configs.js');
+    const { createAgentGroup, getContainerConfig, backfillContainerConfigs } = await setupTestDb();
+    createAgentGroup(makeAgentGroup('ag-bad-shape', 'bad-shape'));
+    fs.writeFileSync(path.join(mkGroupDir('bad-shape'), '.mcp.json'), JSON.stringify({ mcpServers: 'sqlite' }));
 
-    const db = initDb(path.join(TEST_DATA_DIR, 'v2.db'));
-    runMigrations(db);
-
-    const id = 'ag-bad-shape';
-    createAgentGroup({ id, name: 'BS', folder: 'bad-shape', agent_provider: null, created_at: new Date().toISOString() });
-    const groupDir = path.join(TEST_GROUPS_DIR, 'bad-shape');
-    fs.mkdirSync(groupDir, { recursive: true });
-    fs.writeFileSync(path.join(groupDir, '.mcp.json'), JSON.stringify({ mcpServers: 'sqlite' }));
-
-    const { backfillContainerConfigs } = await import('./backfill-container-configs.js');
     backfillContainerConfigs();
 
-    const cfg = getContainerConfig(id);
-    // Empty mcpServers — wrong shape rejected, no numeric-key spread
+    const cfg = getContainerConfig('ag-bad-shape');
     expect(cfg!.mcp_servers).toBe('{}');
   });
 
-  it('skips groups that already have a container_config row with no .mcp.json', async () => {
-    const { initDb } = await import('./db/connection.js');
-    const { runMigrations } = await import('./db/migrations/index.js');
-    const { createAgentGroup } = await import('./db/agent-groups.js');
-    const { getContainerConfig, createContainerConfig } = await import('./db/container-configs.js');
+  it('skips groups with existing row and no .mcp.json', async () => {
+    const { createAgentGroup, getContainerConfig, createContainerConfig, backfillContainerConfigs } = await setupTestDb();
+    createAgentGroup(makeAgentGroup('ag-pre', 'pre-existing'));
+    mkGroupDir('pre-existing'); // no .mcp.json
+    createContainerConfig(makeEmptyContainerConfig('ag-pre', { existing: { type: 'stdio' } }));
 
-    const db = initDb(path.join(TEST_DATA_DIR, 'v2.db'));
-    runMigrations(db);
-
-    const id = 'ag-pre';
-    createAgentGroup({ id, name: 'P', folder: 'pre-existing', agent_provider: null, created_at: new Date().toISOString() });
-    const groupDir = path.join(TEST_GROUPS_DIR, 'pre-existing');
-    fs.mkdirSync(groupDir, { recursive: true });
-    // No .mcp.json at all
-
-    createContainerConfig({
-      agent_group_id: id, provider: null, model: null, effort: null,
-      image_tag: null, assistant_name: null, max_messages_per_prompt: null,
-      skills: JSON.stringify('all'),
-      mcp_servers: JSON.stringify({ existing: { type: 'stdio' } }),
-      packages_apt: JSON.stringify([]), packages_npm: JSON.stringify([]),
-      additional_mounts: JSON.stringify([]), cli_scope: 'group',
-      updated_at: new Date().toISOString(),
-    });
-
-    const { backfillContainerConfigs } = await import('./backfill-container-configs.js');
     backfillContainerConfigs();
 
-    const cfg = getContainerConfig(id);
+    const cfg = getContainerConfig('ag-pre');
     const mcp = JSON.parse(cfg!.mcp_servers as unknown as string) as Record<string, unknown>;
     expect(mcp.existing).toBeDefined();
   });
