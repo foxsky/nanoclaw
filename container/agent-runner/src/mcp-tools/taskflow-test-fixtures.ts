@@ -28,6 +28,7 @@ export function setupEngineDb(boardId: string, opts: SetupEngineDbOptions = {}):
       role TEXT NOT NULL DEFAULT 'member',
       status TEXT NOT NULL DEFAULT 'active',
       notification_group_jid TEXT,
+      wip_limit INTEGER,
       PRIMARY KEY (board_id, person_id)
     );
     CREATE TABLE board_runtime_config (

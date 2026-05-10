@@ -9,7 +9,10 @@ let db: Database;
 const BOARD = 'b1';
 
 beforeEach(() => {
-  db = setupEngineDb(BOARD);
+  // withBoardAdmins: true is required for engine.move (which always calls
+  // isManager() to compute permissions). Strict superset — does not affect
+  // create/delete tests which don't query board_admins.
+  db = setupEngineDb(BOARD, { withBoardAdmins: true });
 });
 
 afterEach(() => {
@@ -386,5 +389,180 @@ describe('api_create_meeting_task MCP tool (A10)', () => {
     expect(result.notification_events.length).toBe(2);
     const targets = result.notification_events.map((n: { target_person_id: string }) => n.target_person_id).sort();
     expect(targets).toEqual(['bob', 'carol']);
+  });
+});
+
+describe('api_move MCP tool (A11.1)', () => {
+  it('exports a tool with name "api_move"', async () => {
+    const { apiMoveTool } = await import('./taskflow-api-mutate.ts');
+    expect(apiMoveTool.tool.name).toBe('api_move');
+  });
+
+  it('declares required board_id/task_id/action/sender_name and optional reason/subtask_id/confirmed_task_id; action enum covers 10 transitions', async () => {
+    const { apiMoveTool } = await import('./taskflow-api-mutate.ts');
+    const schema = apiMoveTool.tool.inputSchema as {
+      required: string[];
+      properties: Record<string, { enum?: string[] }>;
+    };
+    expect(schema.required).toEqual(
+      expect.arrayContaining(['board_id', 'task_id', 'action', 'sender_name']),
+    );
+    expect(schema.properties).toHaveProperty('reason');
+    expect(schema.properties).toHaveProperty('subtask_id');
+    expect(schema.properties).toHaveProperty('confirmed_task_id');
+    expect(schema.properties.action.enum).toEqual(
+      expect.arrayContaining([
+        'start', 'wait', 'resume', 'return', 'review',
+        'approve', 'reject', 'conclude', 'reopen', 'force_start',
+      ]),
+    );
+  });
+
+  it('happy path: start inbox task → response shows from=inbox, to=in_progress', async () => {
+    const { apiCreateSimpleTaskTool, apiMoveTool } = await import('./taskflow-api-mutate.ts');
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Move me',
+      sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+
+    const response = await apiMoveTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      action: 'start',
+      sender_name: 'alice',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data.task_id).toBe(taskId);
+    expect(result.data.from_column).toBe('inbox');
+    expect(result.data.to_column).toBe('in_progress');
+    expect(Array.isArray(result.notification_events)).toBe(true);
+  });
+
+  it('wait action with reason: persists reason in task_history', async () => {
+    const { apiCreateSimpleTaskTool, apiMoveTool } = await import('./taskflow-api-mutate.ts');
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Wait me',
+      sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+
+    const response = await apiMoveTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      action: 'wait',
+      sender_name: 'alice',
+      reason: 'blocked on Edilson',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data.to_column).toBe('waiting');
+
+    const historyRow = db
+      .prepare(`SELECT details FROM task_history WHERE task_id = ? AND action = 'wait' LIMIT 1`)
+      .get(taskId) as { details: string } | undefined;
+    expect(historyRow).toBeDefined();
+    expect(historyRow!.details).toMatch(/blocked on Edilson/);
+  });
+
+  it('rejects unknown action via schema enum', async () => {
+    const { apiMoveTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiMoveTool.handler({
+      board_id: BOARD,
+      task_id: 'T1',
+      action: 'teleport' as unknown as 'start',
+      sender_name: 'alice',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/action/);
+  });
+
+  it('engine rejects invalid transition (approve from inbox) → propagated as Permission denied (self-assignee) or invalid-transition', async () => {
+    const { apiCreateSimpleTaskTool, apiMoveTool } = await import('./taskflow-api-mutate.ts');
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Bad transition',
+      sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+
+    const response = await apiMoveTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      action: 'approve',
+      sender_name: 'alice',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    // alice IS self-assignee (auto-assigned at create) AND task is in inbox.
+    // Permission check fires first → "Self-approval is not allowed".
+    expect(result.error).toMatch(/Self-approval|Cannot.*approve/);
+  });
+
+  it('engine rejects move on missing task → propagated as "Task not found"', async () => {
+    const { apiMoveTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiMoveTool.handler({
+      board_id: BOARD,
+      task_id: 'T-missing',
+      action: 'start',
+      sender_name: 'alice',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Task not found/);
+  });
+
+  it('rejects non-string task_id', async () => {
+    const { apiMoveTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiMoveTool.handler({
+      board_id: BOARD,
+      task_id: undefined as unknown as string,
+      action: 'start',
+      sender_name: 'alice',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/task_id/);
+  });
+
+  it('rejects non-string reason', async () => {
+    const { apiMoveTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiMoveTool.handler({
+      board_id: BOARD,
+      task_id: 'T1',
+      action: 'wait',
+      sender_name: 'alice',
+      reason: 42 as unknown as string,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/reason/);
+  });
+
+  it('move-with-notification: non-self assignee receives notification_event', async () => {
+    const { apiCreateSimpleTaskTool, apiMoveTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Bob task',
+      sender_name: 'alice',
+      assignee: 'bob',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+    // alice (manager, non-assignee) moves bob's task → bob gets notified
+    const response = await apiMoveTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      action: 'start',
+      sender_name: 'alice',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.notification_events.length).toBeGreaterThanOrEqual(1);
+    const targets = result.notification_events.map((n: { target_person_id: string }) => n.target_person_id);
+    expect(targets).toContain('bob');
   });
 });

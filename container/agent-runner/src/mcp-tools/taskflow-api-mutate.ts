@@ -11,10 +11,17 @@ import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
+import { normalizeEngineNotificationEvents } from './taskflow-helpers.js';
 import { err, jsonResponse, parseTaskActorArgs, requireString } from './util.js';
 
 const PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
 type Priority = (typeof PRIORITIES)[number];
+
+const MOVE_ACTIONS = [
+  'start', 'wait', 'resume', 'return', 'review',
+  'approve', 'reject', 'conclude', 'reopen', 'force_start',
+] as const;
+type MoveAction = (typeof MOVE_ACTIONS)[number];
 
 interface CreateLikeResult {
   success: boolean;
@@ -292,4 +299,77 @@ export const apiDeleteSimpleTaskTool: McpToolDefinition = {
   },
 };
 
-registerTools([apiCreateSimpleTaskTool, apiCreateMeetingTaskTool, apiDeleteSimpleTaskTool]);
+export const apiMoveTool: McpToolDefinition = {
+  tool: {
+    name: 'api_move',
+    description:
+      'Move a task across the state machine. Actions: start, wait, resume, return, review, approve, reject, conclude, reopen, force_start. Engine enforces from-column transition + role-based permissions.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+        task_id: { type: 'string' },
+        action: { type: 'string', enum: [...MOVE_ACTIONS] },
+        sender_name: { type: 'string' },
+        reason: { type: 'string' },
+        subtask_id: { type: 'string' },
+        confirmed_task_id: { type: 'string' },
+      },
+      required: ['board_id', 'task_id', 'action', 'sender_name'],
+    },
+  },
+  async handler(args) {
+    const parsed = parseTaskActorArgs(args);
+    if (!parsed.ok) return parsed.error;
+    const { boardId, taskId, senderName } = parsed;
+    if (typeof args.action !== 'string' || !MOVE_ACTIONS.includes(args.action as MoveAction)) {
+      return err(`action: expected one of ${MOVE_ACTIONS.join(' | ')}`);
+    }
+    const action = args.action as MoveAction;
+
+    let reason: string | undefined;
+    if (args.reason !== undefined) {
+      if (typeof args.reason !== 'string') return err('reason: expected string');
+      reason = args.reason;
+    }
+    let subtaskId: string | undefined;
+    if (args.subtask_id !== undefined) {
+      if (typeof args.subtask_id !== 'string') return err('subtask_id: expected string');
+      subtaskId = args.subtask_id;
+    }
+    let confirmedTaskId: string | undefined;
+    if (args.confirmed_task_id !== undefined) {
+      if (typeof args.confirmed_task_id !== 'string') return err('confirmed_task_id: expected string');
+      confirmedTaskId = args.confirmed_task_id;
+    }
+
+    try {
+      const db = getTaskflowDb();
+      const engine = new TaskflowEngine(db, boardId);
+      const result = engine.move({
+        board_id: boardId,
+        task_id: taskId,
+        action,
+        sender_name: senderName,
+        reason,
+        subtask_id: subtaskId,
+        confirmed_task_id: confirmedTaskId,
+      });
+      // Strip `notifications` (rewritten as `notification_events`) but
+      // preserve every other engine field on both paths so callers see
+      // structured fields they may need: success → wip_warning,
+      // project_update, parent_notification etc.; failure → error_code,
+      // expected_task_id, actual_task_id (magnetism retry contract,
+      // required to honor confirmed_task_id on retry).
+      const { notifications: _notifications, success, ...rest } = result;
+      const notification_events = normalizeEngineNotificationEvents(result);
+      if (!success) return jsonResponse({ success: false, ...rest, notification_events });
+      return jsonResponse({ success: true, data: rest, notification_events });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error: msg });
+    }
+  },
+};
+
+registerTools([apiCreateSimpleTaskTool, apiCreateMeetingTaskTool, apiMoveTool, apiDeleteSimpleTaskTool]);
