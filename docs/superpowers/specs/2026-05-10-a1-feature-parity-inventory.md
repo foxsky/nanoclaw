@@ -146,9 +146,9 @@ Total Tier A1 status: ~60% complete. SQL table inventory + CLAUDE.md walk still 
 | `board_chat` | 224 | **REAL GAP** — 0 references in v2 source. v1 logs agent outputs here; v2 doesn't. Any consumer of board_chat will return empty after migration. |
 | `users` | 33 | Probably mapped: v2 has `src/modules/permissions/db/users.ts` (central DB user table). Need to verify migration script transforms v1 users → v2 users + user_roles. |
 | `sessions` | 18 | v1's auth/session tracking. v2's `sessions` is different concept (agent_group×messaging_group session routing). v1 sessions table appears legacy; need migration verification. |
-| `organizations` | 2 | Multi-tenant org model. v2 has no `organizations` — its entity model is users + agent_groups + messaging_groups. Need product decision: are orgs required? |
-| `org_members` | 5 | Same as above. |
-| `org_invites` | 2 | Same as above. |
+| `organizations` | 2 | **Dead schema.** Both rows are E2E test fixtures (slugs `e2e-org-test`, `test-org-qa`). Zero refs in v1 prod engine, MCP surface, board CLAUDE.md, or any session corpus. v2 migrator can drop silently. See A8 closed-as-not-a-blocker (2026-05-10). |
+| `org_members` | 5 | Same — all 5 reference the two E2E orgs. Drop silently. |
+| `org_invites` | 2 | Both phone-based, both expired 2026-04-09. Drop silently. |
 | `agent_heartbeats` | 0 | Unused in prod. v2 uses file-touch heartbeat instead (per memory). Safe. |
 | `csp_reports` | 0 | Web frontend security reports. Unused. Safe. |
 | `otp_requests` | 0 | v2 has its own send_otp/pending_otp flow. Verify migration not needed. |
@@ -164,11 +164,12 @@ Total Tier A1 status: ~60% complete. SQL table inventory + CLAUDE.md walk still 
 - Impact: post-cutover, agent outputs aren't logged. Any feature reading this table (board history, board-level audit) silently returns empty.
 - Fix: either (a) port `appendAgentOutputToBoardChat` to v2 host's delivery path, or (b) document that v2 deliberately drops board_chat and update any downstream consumers.
 
-**A8 (new — migration question) — multi-tenant org model:**
-- v1 has `organizations / org_members / org_invites` (small but live data)
-- v2 has no equivalent — entity model is users + agent_groups + messaging_groups
-- Migration question: how do v1 orgs map to v2 agent_groups? Each org → one agent_group? Or are orgs irrelevant in the v2 model?
-- Effort to decide: 1-2h with product owner.
+**A8 (CLOSED 2026-05-10) — multi-tenant org model — phantom blocker:**
+- Investigated 2026-05-10. v1 has the schema but it is dead code. Searches in v1 prod's taskflow-engine.ts, MCP tool surface, board CLAUDE.md, all 3 session corpora, migrate-v2.sh, and setup/migrate-v2/ all returned **zero** references.
+- The 2 organizations rows are E2E test fixtures (slugs `e2e-org-test`, `test-org-qa`). The 2 org_invites are both expired 2026-04-09. The 5 org_members reference only the test fixtures.
+- **Decision: drop silently in v2 migrator.** No migration logic needed.
+- Effort consumed: ~15 min investigation, 0h code. Tier A blocker count: 10 → 9.
+- See memory `project_v2_a8_phantom_blocker.md` for the searches and evidence.
 
 **A9 (new — migration verification) — users/sessions mapping:**
 - v1 `users` (33 rows) and `sessions` (18 rows) need explicit v2 mapping
@@ -249,24 +250,24 @@ Effort: 3-4h for F1 or F2.
 
 **A1 status: 100% complete.**
 
-## Final Tier A blocker list (10 must-pass items, was 4)
+## Final Tier A blocker list (9 must-pass items, was 10; was 4 originally)
 
-| # | Blocker | Effort | Source |
-|---|---|---|---|
-| A1 | Feature parity inventory | 4-8h | original |
-| A2 | Mutation parity (full 235 corpus) | 1-2 days | original |
-| A3 | Migration safety | 2-3 days | original |
-| A4 | Rollback verified | 1 day | original |
-| A5 | Per-board CLAUDE.md regeneration | 1-2 days | A1.4 |
-| A6 | Migration carries forward .mcp.json (refined) | 1-2h | A1.5 |
-| A7 | board_chat not written by v2 | 4-6h | A1.3 |
-| A8 | Multi-tenant org model migration | 1-2h | A1.3 |
-| A9 | users/sessions migration mapping | (verified in A3) | A1.3 |
-| A10 | Meeting-type task MCP exposure | 3-4h | A1.6 |
+| # | Blocker | Effort | Status | Source |
+|---|---|---|---|---|
+| A1 | Feature parity inventory | 4-8h | ✅ DONE 2026-05-10 | original |
+| A2 | Mutation parity (full 235 corpus) | 1-2 days | pending | original |
+| A3 | Migration safety | 2-3 days | pending | original |
+| A4 | Rollback verified | 1 day | pending | original |
+| A5 | Per-board CLAUDE.md regeneration | 1-2 days | pending | A1.4 |
+| A6 | Migration carries forward .mcp.json (refined) | 1-2h | ✅ DONE 2026-05-10 (commits 995b3211 → a798557d → 714b5b78) | A1.5 |
+| A7 | board_chat not written by v2 | 4-6h | pending | A1.3 |
+| ~~A8~~ | ~~Multi-tenant org model migration~~ | ~~1-2h~~ | ✅ CLOSED 2026-05-10 — phantom blocker, dead schema | A1.3 |
+| A9 | users/sessions migration mapping | (verified in A3) | pending | A1.3 |
+| A10 | Meeting-type task MCP exposure | 3-4h | pending | A1.6 |
 
-**Net pre-cutover engineering: ~5-7 days of bug fixes + Tier A2-A4 (~5-6 days of validation) = ~10-13 days dedicated work to clear Tier A.** Plus Tier B + Tier C as before.
+**Remaining Tier A engineering (post-A6, post-A8):** A5 (1-2d) + A7 (4-6h) + A10 (3-4h) = ~3-4 days bug-fix work. Plus A2-A4 validation (~5-6d). **Total: ~8-10 days dedicated work to clear Tier A** (revised down from 10-13).
 
-Total realistic timeline to production: **12-15 weeks** (revised up from 10-13 due to discovered Tier A blockers).
+Total realistic timeline to production: **12-15 weeks**.
 
 ---
 
