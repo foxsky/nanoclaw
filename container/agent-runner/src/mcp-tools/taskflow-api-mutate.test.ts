@@ -372,6 +372,34 @@ describe('api_create_meeting_task MCP tool (A10)', () => {
     expect(JSON.stringify(response.content)).toMatch(/recurrence_anchor/);
   });
 
+  it('requires_close_approval=true is forwarded for meetings (/simplify parallel fix)', async () => {
+    const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateMeetingTaskTool.handler({
+      board_id: BOARD,
+      title: 'Approval-gated meeting',
+      sender_name: 'alice',
+      requires_close_approval: true,
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    const row = db
+      .prepare(`SELECT requires_close_approval FROM tasks WHERE id = ?`)
+      .get(result.data.id) as { requires_close_approval: number };
+    expect(row.requires_close_approval).toBe(1);
+  });
+
+  it('rejects non-boolean requires_close_approval on meeting tool', async () => {
+    const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateMeetingTaskTool.handler({
+      board_id: BOARD,
+      title: 'X',
+      sender_name: 'alice',
+      requires_close_approval: 'yes' as unknown as boolean,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/requires_close_approval/);
+  });
+
   it('multiple non-self non-assignee participants → one notification_event each', async () => {
     const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
     db.prepare(
@@ -1531,5 +1559,35 @@ describe('api_create_task MCP tool (A5.2.1 — multi-type create)', () => {
     });
     expect(response.isError).toBe(true);
     expect(JSON.stringify(response.content)).toMatch(/recurrence/);
+  });
+
+  it('requires_close_approval=true is forwarded to the engine (Codex IMPORTANT fix)', async () => {
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateTaskTool.handler({
+      board_id: BOARD,
+      type: 'simple',
+      title: 'Needs approval',
+      sender_name: 'alice',
+      requires_close_approval: true,
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    const row = db
+      .prepare(`SELECT requires_close_approval FROM tasks WHERE id = ?`)
+      .get(result.data.id) as { requires_close_approval: number };
+    expect(row.requires_close_approval).toBe(1);
+  });
+
+  it('rejects non-boolean requires_close_approval', async () => {
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateTaskTool.handler({
+      board_id: BOARD,
+      type: 'simple',
+      title: 'X',
+      sender_name: 'alice',
+      requires_close_approval: 'yes' as unknown as boolean,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/requires_close_approval/);
   });
 });

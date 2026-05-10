@@ -83,6 +83,44 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     expect(result.output).toBe('Use api_create_task to register new tasks.');
   });
 
+  it('taskflow_create with type NOT first field still routes by type (Codex BLOCKER fix)', () => {
+    const input =
+      "`taskflow_create({ title: 'SEMA', type: 'meeting', scheduled_at: '2026-06-15T14:00:00Z', sender_name: 'alice' })`";
+    const result = migrateBoardClaudeMd(input);
+    // type is the second field; routing must still detect 'meeting'
+    expect(result.output).toContain('api_create_meeting_task({ board_id: BOARD_ID,');
+    expect(result.output).not.toMatch(/taskflow_create/);
+  });
+
+  it('taskflow_create with double-quoted type → routes by type (Codex BLOCKER fix)', () => {
+    const input = `taskflow_create({ type: "meeting", title: "X", sender_name: "alice" })`;
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('api_create_meeting_task({ board_id: BOARD_ID,');
+  });
+
+  it('taskflow_create with type buried after multiple fields → still routes correctly', () => {
+    const input =
+      "`taskflow_create({ title: 'X', assignee: 'bob', priority: 'high', type: 'project', sender_name: 'alice' })`";
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('api_create_task({ board_id: BOARD_ID,');
+    // Body preserves the type literal so engine still routes by it
+    expect(result.output).toContain("type: 'project'");
+  });
+
+  it('empty body `taskflow_create({})` → no trailing comma in output', () => {
+    const input = 'taskflow_create({})';
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toBe('api_create_task({ board_id: BOARD_ID })');
+    expect(result.output).not.toMatch(/,\s*\}/);
+  });
+
+  it('taskflow_create with type:meeting as LAST field → no trailing comma after strip', () => {
+    const input = "taskflow_create({ title: 'X', type: 'meeting' })";
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toBe("api_create_meeting_task({ board_id: BOARD_ID, title: 'X' })");
+    expect(result.output).not.toMatch(/,\s*\}/);
+  });
+
   it('reports counts: substituted vs unmigrated', () => {
     const input = [
       "`taskflow_move({ task_id: 'T1', action: 'start', sender_name: 'alice' })`",

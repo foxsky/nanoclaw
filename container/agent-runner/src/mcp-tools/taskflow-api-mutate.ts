@@ -202,6 +202,7 @@ export const apiCreateMeetingTaskTool: McpToolDefinition = {
         intended_weekday: { type: 'string' },
         allow_non_business_day: { type: 'boolean' },
         due_date: { type: ['string', 'null'] },
+        requires_close_approval: { type: 'boolean' },
       },
       required: ['board_id', 'title', 'sender_name'],
     },
@@ -284,6 +285,13 @@ export const apiCreateMeetingTaskTool: McpToolDefinition = {
       if (typeof args.due_date !== 'string') return err('due_date: expected string or null');
       dueDate = args.due_date;
     }
+    let requiresCloseApproval: boolean | undefined;
+    if (args.requires_close_approval !== undefined) {
+      if (typeof args.requires_close_approval !== 'boolean') {
+        return err('requires_close_approval: expected boolean');
+      }
+      requiresCloseApproval = args.requires_close_approval;
+    }
 
     try {
       const db = getTaskflowDb();
@@ -304,6 +312,7 @@ export const apiCreateMeetingTaskTool: McpToolDefinition = {
         intended_weekday: intendedWeekday,
         allow_non_business_day: allowNonBusinessDay,
         due_date: dueDate,
+        requires_close_approval: requiresCloseApproval,
       });
       return finalizeCreatedTaskResult(db, engine, boardId, result);
     } catch (e: unknown) {
@@ -725,6 +734,7 @@ export const apiCreateTaskTool: McpToolDefinition = {
         max_cycles: { type: 'integer' },
         allow_non_business_day: { type: 'boolean' },
         intended_weekday: { type: 'string' },
+        requires_close_approval: { type: 'boolean' },
       },
       required: ['board_id', 'title', 'sender_name', 'type'],
     },
@@ -830,6 +840,13 @@ export const apiCreateTaskTool: McpToolDefinition = {
       }
       allowNonBusinessDay = args.allow_non_business_day;
     }
+    let requiresCloseApproval: boolean | undefined;
+    if (args.requires_close_approval !== undefined) {
+      if (typeof args.requires_close_approval !== 'boolean') {
+        return err('requires_close_approval: expected boolean');
+      }
+      requiresCloseApproval = args.requires_close_approval;
+    }
 
     try {
       const db = getTaskflowDb();
@@ -850,6 +867,7 @@ export const apiCreateTaskTool: McpToolDefinition = {
         max_cycles: maxCycles,
         intended_weekday: intendedWeekday,
         allow_non_business_day: allowNonBusinessDay,
+        requires_close_approval: requiresCloseApproval,
       });
       return finalizeCreatedTaskResult(db, engine, boardId, result);
     } catch (e: unknown) {

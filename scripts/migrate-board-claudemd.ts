@@ -1,23 +1,28 @@
 /**
- * A5 Phase 1 — migrate per-board CLAUDE.md from v1 to v2 tool vocabulary.
+ * A5 — migrate per-board CLAUDE.md from v1 to v2 tool vocabulary.
  *
  * v1 TaskFlow MCP tools ran in-process per board, so `board_id` was injected
  * from the engine's closure and never appeared in CLAUDE.md call sites. v2's
  * `api_*` tools (shipped in A11) require `board_id` explicitly — this script
- * adds `board_id: BOARD_ID,` to every direct-substitute call site so boards
- * can keep using the same vocabulary with the new tool names.
+ * adds `board_id: BOARD_ID,` to every substitute call site so boards can
+ * keep using v1's vocabulary with the new tool names.
  *
- * Direct substitution applies to 5 tools whose v1→v2 schemas are identical
- * shape-for-shape (only the name + the prepended board_id change):
+ * Phase 1 — direct substitution for 5 tools whose v1→v2 schemas are
+ * identical except for the prepended board_id:
  *   taskflow_move      → api_move
  *   taskflow_admin     → api_admin
  *   taskflow_reassign  → api_reassign
  *   taskflow_undo      → api_undo
  *   taskflow_report    → api_report
  *
- * NOT touched here (different param shapes — Phase 2):
+ * Phase 2 partial — taskflow_create routed by `type:` literal:
+ *   taskflow_create({type:'meeting',...})    → api_create_meeting_task
+ *   taskflow_create({type:'simple'|...,...}) → api_create_task
+ *   taskflow_create (no inline type literal) → api_create_task fallback
+ *   Bare taskflow_create mentions             → api_create_task
+ *
+ * NOT touched here (Phase 2 still pending — different param shapes):
  *   taskflow_query      (sub-query model differs — partial overlap with api_filter_board_tasks)
- *   taskflow_create     (split: api_create_simple_task / api_create_meeting_task)
  *   taskflow_update     (refactored: api_update_simple_task + note tools)
  *   taskflow_hierarchy  (partial overlap with api_linked_tasks)
  *   taskflow_dependency (folds into api_update_simple_task or api_admin)
@@ -77,28 +82,34 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
   }
 
   // taskflow_create → api_create_task / api_create_meeting_task.
-  // Type-aware routing: type: 'meeting' uses the dedicated tool (A10);
-  // simple|project|recurring|inbox use api_create_task (A5.2.1). Call
-  // sites without a `type:` field (rare — usually "use taskflow_create"
-  // in prose) fall back to api_create_task as the broadest target.
+  // Capture the whole call object literal first, then peek inside the body
+  // for `type: '<X>'` to choose the v2 tool. This handles type-anywhere
+  // (not just first field) and both single- and double-quoted values.
+  // [^()]* in the body is safe for CLAUDE.md call signatures which never
+  // contain inner parens — Codex caught the first-field-only regex as a
+  // BLOCKER, this is the broader form.
   output = output.replace(
-    /\btaskflow_create\(\{\s*type:\s*'([a-z_]+)'\s*,\s*/g,
-    (_match, taskType) => {
+    /\btaskflow_create\(\{([^()]*)\}\)/g,
+    (_match, body: string) => {
       substituted++;
+      const typeMatch = /\btype:\s*['"]([a-z_]+)['"]/.exec(body);
+      const taskType = typeMatch?.[1] ?? null;
       const v2Tool = taskType === 'meeting' ? 'api_create_meeting_task' : 'api_create_task';
-      // For api_create_task we keep `type:` since it remains a required param.
-      // For api_create_meeting_task we drop `type:` since the tool implies it.
-      const typeField = v2Tool === 'api_create_task' ? `type: '${taskType}', ` : '';
-      return `${v2Tool}({ board_id: BOARD_ID, ${typeField}`;
+      // For api_create_meeting_task the tool name implies type='meeting',
+      // so strip the `type: 'meeting'` field from the body. For
+      // api_create_task the type is the discriminator and must remain.
+      let normalizedBody = body;
+      if (v2Tool === 'api_create_meeting_task') {
+        normalizedBody = normalizedBody.replace(/\btype:\s*['"][a-z_]+['"]\s*,?\s*/g, '');
+      }
+      // Clean up leading/trailing commas + whitespace introduced by the
+      // strip-and-rebuild. Empty body → emit `{ board_id: BOARD_ID }`
+      // with no trailing comma; non-empty → `{ board_id: BOARD_ID, ...body }`.
+      const trimmed = normalizedBody.trim().replace(/^,\s*/, '').replace(/,\s*$/, '');
+      if (trimmed.length === 0) return `${v2Tool}({ board_id: BOARD_ID })`;
+      return `${v2Tool}({ board_id: BOARD_ID, ${trimmed} })`;
     },
   );
-  // Catch any remaining `taskflow_create({` without an inline type literal
-  // (e.g. line-wrapped or computed type) — route to api_create_task as
-  // the broadest target; agent will need to pass type explicitly.
-  output = output.replace(/\btaskflow_create\(\{\s*/g, (_match) => {
-    substituted++;
-    return 'api_create_task({ board_id: BOARD_ID, ';
-  });
   // Bare `taskflow_create` mentions (prose) → api_create_task.
   output = output.replace(/\btaskflow_create\b/g, 'api_create_task');
 
