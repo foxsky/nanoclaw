@@ -1264,3 +1264,117 @@ describe('api_undo MCP tool (A11.4)', () => {
     ).toBe('in_progress');
   });
 });
+
+describe('api_report MCP tool (A11.5)', () => {
+  it('exports a tool with name "api_report"', async () => {
+    const { apiReportTool } = await import('./taskflow-api-mutate.ts');
+    expect(apiReportTool.tool.name).toBe('api_report');
+  });
+
+  it('declares required board_id/type; type enum standup/digest/weekly', async () => {
+    const { apiReportTool } = await import('./taskflow-api-mutate.ts');
+    const schema = apiReportTool.tool.inputSchema as {
+      required: string[];
+      properties: Record<string, { enum?: string[] }>;
+    };
+    expect(schema.required).toEqual(expect.arrayContaining(['board_id', 'type']));
+    expect(schema.properties.type.enum).toEqual(
+      expect.arrayContaining(['standup', 'digest', 'weekly']),
+    );
+  });
+
+  it('standup happy path: returns data with overdue/in_progress/review arrays', async () => {
+    const { apiReportTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiReportTool.handler({
+      board_id: BOARD,
+      type: 'standup',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data.date).toBeDefined();
+    expect(Array.isArray(result.data.overdue)).toBe(true);
+    expect(Array.isArray(result.data.in_progress)).toBe(true);
+    expect(Array.isArray(result.data.review)).toBe(true);
+    expect(Array.isArray(result.data.waiting)).toBe(true);
+    expect(Array.isArray(result.data.per_person)).toBe(true);
+  });
+
+  it('digest type: returns formatted_report and next_48h', async () => {
+    const { apiReportTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiReportTool.handler({
+      board_id: BOARD,
+      type: 'digest',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(typeof result.data.formatted_report).toBe('string');
+    expect(Array.isArray(result.data.next_48h)).toBe(true);
+  });
+
+  it('weekly type: returns formatted_report and stats', async () => {
+    const { apiReportTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiReportTool.handler({
+      board_id: BOARD,
+      type: 'weekly',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(typeof result.data.formatted_report).toBe('string');
+    expect(result.data.stats).toBeDefined();
+    expect(typeof result.data.stats.total_active).toBe('number');
+  });
+
+  it('report after task creation shows the task in in_progress', async () => {
+    const { apiCreateSimpleTaskTool, apiMoveTool, apiReportTool } = await import('./taskflow-api-mutate.ts');
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Active work',
+      sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+    await apiMoveTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      action: 'start',
+      sender_name: 'alice',
+    });
+
+    const response = await apiReportTool.handler({
+      board_id: BOARD,
+      type: 'standup',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    const ids = result.data.in_progress.map((t: { id: string }) => t.id);
+    expect(ids).toContain(taskId);
+  });
+
+  it('rejects non-string board_id', async () => {
+    const { apiReportTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiReportTool.handler({
+      board_id: 42 as unknown as string,
+      type: 'standup',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/board_id/);
+  });
+
+  it('rejects invalid type enum value', async () => {
+    const { apiReportTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiReportTool.handler({
+      board_id: BOARD,
+      type: 'monthly' as unknown as 'standup',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/type/);
+  });
+
+  it('rejects missing type', async () => {
+    const { apiReportTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiReportTool.handler({
+      board_id: BOARD,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/type/);
+  });
+});

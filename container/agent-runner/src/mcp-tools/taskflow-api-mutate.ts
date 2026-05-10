@@ -9,7 +9,7 @@
 import type { Database } from 'bun:sqlite';
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
-import type { AdminParams, ReassignParams, UndoParams } from '../taskflow-engine.js';
+import type { AdminParams, ReassignParams, ReportParams, UndoParams } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { normalizeEngineNotificationEvents } from './taskflow-helpers.js';
@@ -23,6 +23,9 @@ const MOVE_ACTIONS = [
   'approve', 'reject', 'conclude', 'reopen', 'force_start',
 ] as const;
 type MoveAction = (typeof MOVE_ACTIONS)[number];
+
+const REPORT_TYPES = ['standup', 'digest', 'weekly'] as const;
+type ReportType = (typeof REPORT_TYPES)[number];
 
 const ADMIN_ACTIONS = [
   'register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin',
@@ -659,7 +662,42 @@ export const apiUndoTool: McpToolDefinition = {
   },
 };
 
+export const apiReportTool: McpToolDefinition = {
+  tool: {
+    name: 'api_report',
+    description:
+      'Build a board report. type=standup returns the daily-standup shape (overdue/in_progress/review/due_today/waiting/blocked/per_person) AND runs the bundled housekeeping that v1 ran inline: auto-archives done tasks older than 30 days (cleanup failures are swallowed and never break the report). type=digest adds next_48h, completed_today, stale_24h, inbox, and a formatted_report string. type=weekly adds completed_week, waiting_5d, next_week_deadlines, stale_tasks, and stats (total_active, completed_week, created_week, trend).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+        type: { type: 'string', enum: [...REPORT_TYPES] },
+      },
+      required: ['board_id', 'type'],
+    },
+  },
+  async handler(args) {
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) return err('board_id: required string');
+    if (typeof args.type !== 'string' || !REPORT_TYPES.includes(args.type as ReportType)) {
+      return err(`type: expected one of ${REPORT_TYPES.join(' | ')}`);
+    }
+    const reportType = args.type as ReportType;
+
+    try {
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      const reportParams: ReportParams = { board_id: boardId, type: reportType };
+      const result = engine.report(reportParams);
+      return jsonResponse(result);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error: msg });
+    }
+  },
+};
+
 registerTools([
   apiCreateSimpleTaskTool, apiCreateMeetingTaskTool, apiMoveTool,
-  apiAdminTool, apiReassignTool, apiUndoTool, apiDeleteSimpleTaskTool,
+  apiAdminTool, apiReassignTool, apiUndoTool, apiReportTool,
+  apiDeleteSimpleTaskTool,
 ]);
