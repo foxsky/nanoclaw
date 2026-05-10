@@ -5,10 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { INBOUND_SCHEMA } from '../../db/schema.js';
 import { initTaskflowDb } from '../../taskflow-db.js';
-import {
-  dropScheduledTasksIfDrained,
-  migrateScheduledTasks,
-} from './migrate-scheduled-tasks.js';
+import { dropScheduledTasksIfDrained, migrateScheduledTasks } from './migrate-scheduled-tasks.js';
 
 const TMPROOT = path.join(os.tmpdir(), `nanoclaw-migrate-scheduled-test-${process.pid}`);
 
@@ -346,9 +343,7 @@ describe('dropScheduledTasksIfDrained', () => {
   }
 
   function tableExists(): boolean {
-    const row = tfDb
-      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'`)
-      .get();
+    const row = tfDb.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'`).get();
     return !!row;
   }
 

@@ -172,9 +172,7 @@ export function defaultInboundResolver(): { resolve: InboundResolver; closeAll: 
 }
 
 function scheduledTasksTableExists(tfDb: Database.Database): boolean {
-  const row = tfDb
-    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'`)
-    .get();
+  const row = tfDb.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_tasks'`).get();
   return !!row;
 }
 
@@ -187,9 +185,9 @@ function scheduledTasksTableExists(tfDb: Database.Database): boolean {
 export function dropScheduledTasksIfDrained(tfDb: Database.Database): boolean {
   if (!scheduledTasksTableExists(tfDb)) return false;
   const undrained = (
-    tfDb
-      .prepare(`SELECT COUNT(*) AS c FROM scheduled_tasks WHERE status IN ('active', 'paused')`)
-      .get() as { c: number }
+    tfDb.prepare(`SELECT COUNT(*) AS c FROM scheduled_tasks WHERE status IN ('active', 'paused')`).get() as {
+      c: number;
+    }
   ).c;
   if (undrained > 0) {
     log.warn('dropScheduledTasksIfDrained: undrained rows remain, skipping drop', { undrained });

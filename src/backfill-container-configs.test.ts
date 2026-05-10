@@ -43,12 +43,19 @@ function makeAgentGroup(id: string, folder: string) {
 
 function makeEmptyContainerConfig(id: string, mcpServers: Record<string, unknown> = {}) {
   return {
-    agent_group_id: id, provider: null, model: null, effort: null,
-    image_tag: null, assistant_name: null, max_messages_per_prompt: null,
+    agent_group_id: id,
+    provider: null,
+    model: null,
+    effort: null,
+    image_tag: null,
+    assistant_name: null,
+    max_messages_per_prompt: null,
     skills: JSON.stringify('all'),
     mcp_servers: JSON.stringify(mcpServers),
-    packages_apt: JSON.stringify([]), packages_npm: JSON.stringify([]),
-    additional_mounts: JSON.stringify([]), cli_scope: 'group' as const,
+    packages_apt: JSON.stringify([]),
+    packages_npm: JSON.stringify([]),
+    additional_mounts: JSON.stringify([]),
+    cli_scope: 'group' as const,
     updated_at: new Date().toISOString(),
   };
 }
@@ -71,7 +78,11 @@ describe('backfillContainerConfigs — .mcp.json carry-forward (A6 fix)', () => 
       path.join(mkGroupDir('seci-taskflow'), '.mcp.json'),
       JSON.stringify({
         mcpServers: {
-          sqlite: { type: 'stdio', command: 'npx', args: ['-y', 'mcp-server-sqlite-npx', '/workspace/taskflow/taskflow.db'] },
+          sqlite: {
+            type: 'stdio',
+            command: 'npx',
+            args: ['-y', 'mcp-server-sqlite-npx', '/workspace/taskflow/taskflow.db'],
+          },
         },
       }),
     );
@@ -89,8 +100,14 @@ describe('backfillContainerConfigs — .mcp.json carry-forward (A6 fix)', () => 
     const { createAgentGroup, getContainerConfig, backfillContainerConfigs } = await setupTestDb();
     createAgentGroup(makeAgentGroup('ag-mixed', 'mixed'));
     const d = mkGroupDir('mixed');
-    fs.writeFileSync(path.join(d, 'container.json'), JSON.stringify({ mcpServers: { sqlite: { type: 'stdio', command: 'modern' } } }));
-    fs.writeFileSync(path.join(d, '.mcp.json'), JSON.stringify({ mcpServers: { sqlite: { type: 'stdio', command: 'legacy' } } }));
+    fs.writeFileSync(
+      path.join(d, 'container.json'),
+      JSON.stringify({ mcpServers: { sqlite: { type: 'stdio', command: 'modern' } } }),
+    );
+    fs.writeFileSync(
+      path.join(d, '.mcp.json'),
+      JSON.stringify({ mcpServers: { sqlite: { type: 'stdio', command: 'legacy' } } }),
+    );
 
     backfillContainerConfigs();
 
@@ -100,7 +117,8 @@ describe('backfillContainerConfigs — .mcp.json carry-forward (A6 fix)', () => 
   });
 
   it('retrofills existing rows with empty mcp_servers from .mcp.json (Codex BLOCKER fix)', async () => {
-    const { createAgentGroup, getContainerConfig, createContainerConfig, backfillContainerConfigs } = await setupTestDb();
+    const { createAgentGroup, getContainerConfig, createContainerConfig, backfillContainerConfigs } =
+      await setupTestDb();
     createAgentGroup(makeAgentGroup('ag-empty', 'empty-mcp'));
     fs.writeFileSync(
       path.join(mkGroupDir('empty-mcp'), '.mcp.json'),
@@ -117,7 +135,8 @@ describe('backfillContainerConfigs — .mcp.json carry-forward (A6 fix)', () => 
   });
 
   it('retrofill does NOT overwrite operator-set keys (absent-keys-only merge)', async () => {
-    const { createAgentGroup, getContainerConfig, createContainerConfig, backfillContainerConfigs } = await setupTestDb();
+    const { createAgentGroup, getContainerConfig, createContainerConfig, backfillContainerConfigs } =
+      await setupTestDb();
     createAgentGroup(makeAgentGroup('ag-op', 'operator-set'));
     fs.writeFileSync(
       path.join(mkGroupDir('operator-set'), '.mcp.json'),
@@ -160,7 +179,8 @@ describe('backfillContainerConfigs — .mcp.json carry-forward (A6 fix)', () => 
   });
 
   it('skips groups with existing row and no .mcp.json', async () => {
-    const { createAgentGroup, getContainerConfig, createContainerConfig, backfillContainerConfigs } = await setupTestDb();
+    const { createAgentGroup, getContainerConfig, createContainerConfig, backfillContainerConfigs } =
+      await setupTestDb();
     createAgentGroup(makeAgentGroup('ag-pre', 'pre-existing'));
     mkGroupDir('pre-existing'); // no .mcp.json
     createContainerConfig(makeEmptyContainerConfig('ag-pre', { existing: { type: 'stdio' } }));
