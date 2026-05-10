@@ -57,17 +57,75 @@ These exist in v2 but aren't seen in v1 prod traffic. Most are operational/admin
 
 ## 2. Action items before Tier A1 can be marked complete
 
-| # | Action | Effort |
-|---|---|---|
-| AI-1 | Confirm `api_update_simple_task` actually covers move + reassign (read source + test) | 1h |
-| AI-2 | Determine if `taskflow_report` capability has a v2 MCP exposure — if not, document the workaround (compose from api_filter_board_tasks calls) | 2h |
-| AI-3 | Verify `api_linked_tasks` covers `taskflow_hierarchy` | 30min |
-| AI-4 | Determine fate of `taskflow_dependency` — has it always meant `blocked_by` updates? If yes, `api_update_simple_task` covers it | 30min |
-| AI-5 | Document `nanoclaw` MCP tool — what does it do? Is it raw SQL? Read-only? | 30min |
-| AI-6 | Confirm `add-taskflow-memory` skill has `memory_recall` equivalent (Phase 1 shipped per memory) | 30min |
-| AI-7 | Verify meeting-type task creation in v2 (api_create_simple_task seems to be simple-only) | 1h |
+| # | Action | Effort | Status |
+|---|---|---|---|
+| AI-1 | Confirm `api_update_simple_task` covers move + reassign | 1h | Verified — description: "(field updates, column move, reassign)" |
+| AI-2 | Determine `taskflow_report` v2 MCP exposure | 2h | **CONFIRMED MISSING** — see Section 6 |
+| AI-3 | Verify `api_linked_tasks` covers `taskflow_hierarchy` | 30min | Likely yes per description "Board linked tasks" |
+| AI-4 | Determine fate of `taskflow_dependency` | 30min | Probably folded into `api_update_simple_task.updates.blocked_by` |
+| AI-5 | Document `nanoclaw` MCP tool | 30min | **It's not a tool** — it's the server name (`Server({name: 'nanoclaw'})` in server.ts) |
+| AI-6 | Confirm `add-taskflow-memory` has `memory_recall` equivalent | 30min | TBD — separate skill |
+| AI-7 | Verify meeting-type task creation in v2 | 1h | TBD |
 
-Total: ~6h of focused investigation.
+## 6. CRITICAL FINDING — runner prompts reference non-existent SQLite MCP tools
+
+**Evidence:**
+
+v2's STANDUP_PROMPT (in `src/modules/taskflow/provision-shared.ts` on skill/taskflow-v2):
+> "[TF-STANDUP] You are running the morning standup for this group. **Query the board from /workspace/taskflow/taskflow.db using the SQLite MCP tools — SELECT from tasks, board_people, board_config for your board_id.** If no tasks exist on your board AND no parent-board tasks are assigned to your people, do NOT send any message — just perform housekeeping (archival) silently and exit. Otherwise: 1) Send the Kanban board to this group via send_message (grouped by column, show overdue with 🔴). 2) Include per-person sections in the group message with their personal board, WIP status (X/Y), and prompt for updates. 3) Check for tasks with column = 'done' and updated_at older than 30 days — INSERT them into archive and DELETE from tasks. 4) List any inbox items that need processing."
+
+**Problem:** v2's MCP registry exposes the following tools (verified from `container/agent-runner/src/mcp-tools/*.ts` on skill/taskflow-v2):
+
+```
+add_destination, add_mcp_server, add_reaction, api_board_activity,
+api_create_simple_task, api_delete_simple_task, api_filter_board_tasks,
+api_linked_tasks, api_task_add_note, api_task_edit_note, api_task_remove_note,
+api_update_simple_task, ask_user_question, cancel_task, create_agent,
+create_group, edit_message, install_packages, list_tasks, pause_task,
+provision_child_board, provision_root_board, resume_task, schedule_task,
+send_card, send_file, send_message, send_otp, update_task
+```
+
+**No `mcp__sqlite__*` tool.** No raw-SQL tool. No exposure of `engine.report()`.
+
+The standup runner expects to "SELECT from tasks, board_people, board_config" — Claude will try to call a SQLite tool that doesn't exist and the runner will fail.
+
+**Impact:**
+- standup runner: BROKEN
+- digest runner: BROKEN (same pattern)
+- weekly review runner: BROKEN (same pattern)
+- These are the 3 daily-fire runners on all 28 boards. ~84+ daily firings across prod.
+
+**Engine method `engine.report()` exists** (verified earlier: 462 prod calls replayed cleanly through it in the read-side validation), but **it's orphaned** — no MCP tool wraps it. The replay test bypassed the MCP layer and called the engine method directly, which is why the gap wasn't caught earlier.
+
+**Possible fixes (need product decision):**
+
+**Option F1: Add v2 MCP wrapper for `engine.report()`**
+- Add `api_board_report` (or similar) MCP tool that calls `engine.report({type})`
+- Update runner prompts to call this tool
+- Effort: 4-6h (tool definition + handler + tests + prompt updates)
+- Pro: Preserves v1's "one structured report call" pattern that Claude finds easy to use
+- Con: Adds back complexity that v2's refactor tried to remove
+
+**Option F2: Expose SQLite MCP tool**
+- Wire an SQLite MCP server alongside the nanoclaw server (as v1 did)
+- Add `mcp__sqlite__read_query` to v2
+- Pro: STANDUP_PROMPT works as-is
+- Con: Re-introduces raw SQL surface that v2's structured API was designed to replace
+
+**Option F3: Rewrite runner prompts to use api_* tools**
+- Update STANDUP_PROMPT, DIGEST_PROMPT, REVIEW_PROMPT to use `api_filter_board_tasks` + `api_board_activity` + `api_linked_tasks` instead of raw SQL
+- Effort: 1-2 days (prompt design + per-runner testing)
+- Pro: Aligns with v2's design intent (no raw SQL)
+- Con: Prompts get longer (must compose from multiple tool calls) — more LLM turns per runner
+
+**Recommended:** F1 (re-expose engine.report via MCP) — preserves runner UX without re-introducing raw SQL. Cleanest path to behavior parity with v1.
+
+This blocker is more severe than the A5 CLAUDE.md regeneration finding because even AFTER regenerating CLAUDE.md with new tool names, the runner prompts ALSO reference non-existent SQLite tools.
+
+**Updated A1 conclusion:** v2's MCP tool surface is INCOMPLETE for the runner use case. This is a Tier A hard blocker that must ship before cutover.
+
+Total Tier A1 status: ~60% complete. SQL table inventory + CLAUDE.md walk still pending.
 
 ## 3. SQL table inventory (TODO)
 
