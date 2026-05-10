@@ -276,7 +276,7 @@ Effort: 3-4h for F1 or F2.
 | A11.1 | `api_move` — state-machine (10 actions) | 2-3h | ✅ DONE 2026-05-10 (commit 2c0076f8) | A1.4 |
 | A11.2 | `api_admin` — 17-action meta-dispatcher | 4-6h | ✅ DONE 2026-05-10 (commit 215dec45) | A1.4 |
 | A11.3 | `api_reassign` — single-purpose | 1-2h | ✅ DONE 2026-05-10 (commit e09c1212; also extracted shared `finalizeMutationResult` helper used by move/admin/reassign) | A1.4 |
-| A11.4 | `api_undo` — single-purpose | 1-2h | pending | A1.4 |
+| A11.4 | `api_undo` — single-purpose | 1-2h | ✅ DONE 2026-05-10 (commit e3e50292) | A1.4 |
 | A11.5 | `api_report` — read-side report | 1-2h | pending | A1.4 |
 
 **Remaining Tier A engineering:** A11 (1-2w) → A5 (1-2d) + A10 (3-4h). A2-A4 validation (~5-6d). **Total: ~2-3 weeks** to clear Tier A (revised up from 8-10 days because A11 surfaced).
