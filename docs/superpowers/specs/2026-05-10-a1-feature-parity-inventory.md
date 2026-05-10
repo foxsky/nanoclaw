@@ -271,7 +271,7 @@ Effort: 3-4h for F1 or F2.
 | ~~A7~~ | ~~board_chat not written by v2~~ | ~~4-6h~~ | ✅ CLOSED 2026-05-10 — deferred to tf-mcontrol-deploy | A1.3 |
 | ~~A8~~ | ~~Multi-tenant org model migration~~ | ~~1-2h~~ | ✅ CLOSED 2026-05-10 — phantom blocker, dead schema | A1.3 |
 | A9 | users/sessions migration mapping | (verified in A3) | pending | A1.3 |
-| A10 | Meeting-type task MCP exposure | 3-4h | pending | A1.6 |
+| A10 | Meeting-type task MCP exposure | 3-4h | ✅ DONE 2026-05-10 (commit 7d6f6eaf — `api_create_meeting_task` MCP tool, 9 new tests + multi-participant notification verification, shared `finalizeCreatedTaskResult` helper + `PRIORITIES` constant) | A1.6 |
 | **A11** | **Build missing v2 MCP tools (taskflow_move, taskflow_reassign, taskflow_admin, taskflow_undo, taskflow_report, taskflow_hierarchy, taskflow_dependency)** | **1-2 weeks** | pending | A1.4 |
 
 **Remaining Tier A engineering:** A11 (1-2w) → A5 (1-2d) + A10 (3-4h). A2-A4 validation (~5-6d). **Total: ~2-3 weeks** to clear Tier A (revised up from 8-10 days because A11 surfaced).
