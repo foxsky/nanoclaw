@@ -9,6 +9,7 @@
 import type { Database } from 'bun:sqlite';
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
+import type { AdminParams } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { normalizeEngineNotificationEvents } from './taskflow-helpers.js';
@@ -22,6 +23,20 @@ const MOVE_ACTIONS = [
   'approve', 'reject', 'conclude', 'reopen', 'force_start',
 ] as const;
 type MoveAction = (typeof MOVE_ACTIONS)[number];
+
+const ADMIN_ACTIONS = [
+  'register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin',
+  'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays',
+  'process_minutes', 'process_minutes_decision', 'accept_external_invite',
+  'reparent_task', 'detach_task', 'merge_project', 'handle_subtask_approval',
+] as const;
+type AdminAction = (typeof ADMIN_ACTIONS)[number];
+
+const HOLIDAY_OPS = ['add', 'remove', 'set_year', 'list'] as const;
+type HolidayOp = (typeof HOLIDAY_OPS)[number];
+
+const ADMIN_DECISIONS = ['approve', 'reject', 'create_task', 'create_inbox'] as const;
+type AdminDecision = (typeof ADMIN_DECISIONS)[number];
 
 interface CreateLikeResult {
   success: boolean;
@@ -372,4 +387,170 @@ export const apiMoveTool: McpToolDefinition = {
   },
 };
 
-registerTools([apiCreateSimpleTaskTool, apiCreateMeetingTaskTool, apiMoveTool, apiDeleteSimpleTaskTool]);
+export const apiAdminTool: McpToolDefinition = {
+  tool: {
+    name: 'api_admin',
+    description:
+      'Board/team administration actions. Engine validates per-action required params (e.g. cancel_task needs task_id; set_wip_limit needs person_name + wip_limit; reparent_task needs task_id + target_parent_id; manage_holidays needs holiday_operation).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+        action: { type: 'string', enum: [...ADMIN_ACTIONS] },
+        sender_name: { type: 'string' },
+        person_name: { type: 'string' },
+        phone: { type: 'string' },
+        role: { type: 'string' },
+        wip_limit: { type: 'number' },
+        task_id: { type: 'string' },
+        confirmed: { type: 'boolean' },
+        force: { type: 'boolean' },
+        group_name: { type: 'string' },
+        group_folder: { type: 'string' },
+        holiday_operation: { type: 'string', enum: [...HOLIDAY_OPS] },
+        holidays: { type: 'array' },
+        holiday_dates: { type: 'array', items: { type: 'string' } },
+        holiday_year: { type: 'integer' },
+        note_id: { type: 'integer' },
+        create: { type: 'object' },
+        sender_external_id: { type: 'string' },
+        target_parent_id: { type: 'string' },
+        source_project_id: { type: 'string' },
+        target_project_id: { type: 'string' },
+        request_id: { type: 'string' },
+        decision: { type: 'string', enum: [...ADMIN_DECISIONS] },
+        reason: { type: 'string' },
+      },
+      required: ['board_id', 'action', 'sender_name'],
+    },
+  },
+  async handler(args) {
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) return err('board_id: required string');
+    const senderName = requireString(args, 'sender_name');
+    if (senderName === null) return err('sender_name: required string');
+    if (typeof args.action !== 'string' || !ADMIN_ACTIONS.includes(args.action as AdminAction)) {
+      return err(`action: expected one of ${ADMIN_ACTIONS.join(' | ')}`);
+    }
+    const action = args.action as AdminAction;
+
+    // Type-check each AdminParams optional field. Engine handles
+    // per-action presence/value validation; we only police shapes.
+    const adminParams: AdminParams = {
+      board_id: boardId,
+      action,
+      sender_name: senderName,
+    };
+
+    for (const key of [
+      'person_name', 'phone', 'role', 'task_id', 'group_name', 'group_folder',
+      'sender_external_id', 'target_parent_id', 'source_project_id',
+      'target_project_id', 'request_id', 'reason',
+    ] as const) {
+      if (args[key] !== undefined) {
+        if (typeof args[key] !== 'string') return err(`${key}: expected string`);
+        adminParams[key] = args[key];
+      }
+    }
+    if (args.wip_limit !== undefined) {
+      if (typeof args.wip_limit !== 'number') return err('wip_limit: expected number');
+      adminParams.wip_limit = args.wip_limit;
+    }
+    for (const key of ['holiday_year', 'note_id'] as const) {
+      if (args[key] !== undefined) {
+        if (typeof args[key] !== 'number' || !Number.isInteger(args[key])) {
+          return err(`${key}: expected integer`);
+        }
+        adminParams[key] = args[key];
+      }
+    }
+    for (const key of ['confirmed', 'force'] as const) {
+      if (args[key] !== undefined) {
+        if (typeof args[key] !== 'boolean') return err(`${key}: expected boolean`);
+        adminParams[key] = args[key];
+      }
+    }
+    if (args.holiday_operation !== undefined) {
+      if (typeof args.holiday_operation !== 'string' ||
+          !HOLIDAY_OPS.includes(args.holiday_operation as HolidayOp)) {
+        return err(`holiday_operation: expected one of ${HOLIDAY_OPS.join(' | ')}`);
+      }
+      adminParams.holiday_operation = args.holiday_operation as HolidayOp;
+    }
+    if (args.decision !== undefined) {
+      if (typeof args.decision !== 'string' ||
+          !ADMIN_DECISIONS.includes(args.decision as AdminDecision)) {
+        return err(`decision: expected one of ${ADMIN_DECISIONS.join(' | ')}`);
+      }
+      // Per-action narrowing: handle_subtask_approval only accepts approve|reject
+      // (engine reads it as an approval verdict). process_minutes_decision only
+      // accepts create_task|create_inbox (engine reads it as a routing choice and
+      // mishandles approve/reject — see taskflow-engine.ts:8004).
+      if (action === 'handle_subtask_approval' && args.decision !== 'approve' && args.decision !== 'reject') {
+        return err(`decision: handle_subtask_approval requires "approve" or "reject"`);
+      }
+      if (action === 'process_minutes_decision' && args.decision !== 'create_task' && args.decision !== 'create_inbox') {
+        return err(`decision: process_minutes_decision requires "create_task" or "create_inbox"`);
+      }
+      adminParams.decision = args.decision as AdminDecision;
+    }
+    if (args.holidays !== undefined) {
+      if (!Array.isArray(args.holidays)) return err('holidays: expected array');
+      for (let i = 0; i < args.holidays.length; i++) {
+        const h = args.holidays[i];
+        if (!h || typeof h !== 'object' || Array.isArray(h)) {
+          return err(`holidays[${i}]: expected object`);
+        }
+        if (typeof (h as { date?: unknown }).date !== 'string') {
+          return err(`holidays[${i}].date: expected string`);
+        }
+        const label = (h as { label?: unknown }).label;
+        if (label !== undefined && typeof label !== 'string') {
+          return err(`holidays[${i}].label: expected string`);
+        }
+      }
+      adminParams.holidays = args.holidays;
+    }
+    if (args.holiday_dates !== undefined) {
+      if (!Array.isArray(args.holiday_dates) ||
+          args.holiday_dates.some((d) => typeof d !== 'string')) {
+        return err('holiday_dates: expected array of strings');
+      }
+      adminParams.holiday_dates = args.holiday_dates;
+    }
+    if (args.create !== undefined) {
+      if (typeof args.create !== 'object' || args.create === null || Array.isArray(args.create)) {
+        return err('create: expected object');
+      }
+      const c = args.create as Record<string, unknown>;
+      if (typeof c.type !== 'string') return err('create.type: expected string');
+      if (typeof c.title !== 'string') return err('create.title: expected string');
+      if (c.assignee !== undefined && typeof c.assignee !== 'string') {
+        return err('create.assignee: expected string');
+      }
+      if (c.labels !== undefined) {
+        if (!Array.isArray(c.labels) || c.labels.some((l) => typeof l !== 'string')) {
+          return err('create.labels: expected array of strings');
+        }
+      }
+      adminParams.create = args.create as AdminParams['create'];
+    }
+
+    try {
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      const result = engine.admin(adminParams);
+      const { notifications: _notifications, success, ...rest } = result;
+      const notification_events = normalizeEngineNotificationEvents(result);
+      if (!success) return jsonResponse({ success: false, ...rest, notification_events });
+      return jsonResponse({ success: true, data: rest, notification_events });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error: msg });
+    }
+  },
+};
+
+registerTools([
+  apiCreateSimpleTaskTool, apiCreateMeetingTaskTool, apiMoveTool,
+  apiAdminTool, apiDeleteSimpleTaskTool,
+]);

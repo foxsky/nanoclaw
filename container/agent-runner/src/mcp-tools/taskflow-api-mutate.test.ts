@@ -566,3 +566,247 @@ describe('api_move MCP tool (A11.1)', () => {
     expect(targets).toContain('bob');
   });
 });
+
+describe('api_admin MCP tool (A11.2)', () => {
+  it('exports a tool with name "api_admin"', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    expect(apiAdminTool.tool.name).toBe('api_admin');
+  });
+
+  it('declares required board_id/action/sender_name; action enum covers all 17 admin actions', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const schema = apiAdminTool.tool.inputSchema as {
+      required: string[];
+      properties: Record<string, { enum?: string[] }>;
+    };
+    expect(schema.required).toEqual(expect.arrayContaining(['board_id', 'action', 'sender_name']));
+    expect(schema.properties.action.enum).toEqual(
+      expect.arrayContaining([
+        'register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin',
+        'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays',
+        'process_minutes', 'process_minutes_decision', 'accept_external_invite',
+        'reparent_task', 'detach_task', 'merge_project', 'handle_subtask_approval',
+      ]),
+    );
+  });
+
+  it('cancel_task happy path: archives task, success', async () => {
+    const { apiCreateSimpleTaskTool, apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Cancel me',
+      sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'cancel_task',
+      sender_name: 'alice',
+      task_id: taskId,
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    const row = db.prepare('SELECT id FROM tasks WHERE id = ?').get(taskId);
+    expect(row).toBeNull();
+    const archived = db.prepare('SELECT task_id FROM archive WHERE task_id = ?').get(taskId) as
+      | { task_id: string }
+      | null;
+    expect(archived?.task_id).toBe(taskId);
+  });
+
+  it('set_wip_limit happy path: persists wip_limit on board_people', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'set_wip_limit',
+      sender_name: 'alice',
+      person_name: 'bob',
+      wip_limit: 3,
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    const row = db
+      .prepare('SELECT wip_limit FROM board_people WHERE board_id = ? AND person_id = ?')
+      .get(BOARD, 'bob') as { wip_limit: number };
+    expect(row.wip_limit).toBe(3);
+  });
+
+  it('engine rejects set_wip_limit with negative value', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'set_wip_limit',
+      sender_name: 'alice',
+      person_name: 'bob',
+      wip_limit: -1,
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/wip_limit/);
+  });
+
+  it('engine rejects reparent_task missing target_parent_id', async () => {
+    const { apiCreateSimpleTaskTool, apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Orphan',
+      sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'reparent_task',
+      sender_name: 'alice',
+      task_id: taskId,
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/target_parent_id/);
+  });
+
+  it('rejects unknown action via schema enum', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'nuke_board' as unknown as 'cancel_task',
+      sender_name: 'alice',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/action/);
+  });
+
+  it('rejects non-number wip_limit', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'set_wip_limit',
+      sender_name: 'alice',
+      person_name: 'bob',
+      wip_limit: '3' as unknown as number,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/wip_limit/);
+  });
+
+  it('rejects non-string person_name', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'register_person',
+      sender_name: 'alice',
+      person_name: 42 as unknown as string,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/person_name/);
+  });
+
+  it('rejects non-boolean confirmed', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'cancel_task',
+      sender_name: 'alice',
+      task_id: 'T1',
+      confirmed: 'yes' as unknown as boolean,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/confirmed/);
+  });
+
+  it('rejects non-array holidays', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'manage_holidays',
+      sender_name: 'alice',
+      holiday_operation: 'add',
+      holidays: 'not-an-array' as unknown as Array<{ date: string }>,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/holidays/);
+  });
+
+  it('engine rejects cancel_task on missing task → propagated', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'cancel_task',
+      sender_name: 'alice',
+      task_id: 'T-missing',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Task not found/);
+  });
+
+  it('rejects decision="approve" with action="process_minutes_decision" (per-action enum narrowing)', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'process_minutes_decision',
+      sender_name: 'alice',
+      decision: 'approve',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/process_minutes_decision/);
+  });
+
+  it('rejects decision="create_task" with action="handle_subtask_approval" (per-action enum narrowing)', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'handle_subtask_approval',
+      sender_name: 'alice',
+      decision: 'create_task',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/handle_subtask_approval/);
+  });
+
+  it('rejects malformed holidays element (missing date)', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'manage_holidays',
+      sender_name: 'alice',
+      holiday_operation: 'add',
+      holidays: [{ label: 'no date here' }] as unknown as Array<{ date: string }>,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/holidays\[0\]\.date/);
+  });
+
+  it('rejects create object missing required type', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'process_minutes_decision',
+      sender_name: 'alice',
+      decision: 'create_task',
+      create: { title: 'No type' } as unknown as { type: string; title: string },
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/create\.type/);
+  });
+
+  it('rejects non-integer holiday_year', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'manage_holidays',
+      sender_name: 'alice',
+      holiday_operation: 'set_year',
+      holiday_year: 2026.5,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/holiday_year/);
+  });
+});
