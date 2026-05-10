@@ -6,11 +6,57 @@
  * MCP response shape is `{ success, data, notification_events }` for
  * happy paths and `{ success: false, error_code?, error }` otherwise.
  */
+import type { Database } from 'bun:sqlite';
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { err, jsonResponse, parseTaskActorArgs, requireString } from './util.js';
+
+const PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
+type Priority = (typeof PRIORITIES)[number];
+
+interface CreateLikeResult {
+  success: boolean;
+  task_id?: string;
+  error?: string;
+  notifications?: Array<{ target_person_id?: string; message: string }>;
+}
+
+/**
+ * Post-create result shaping shared by `api_create_simple_task` and
+ * `api_create_meeting_task`: turn an engine `CreateResult` into the
+ * MCP-tool JSON response `{ success, data, notification_events }`.
+ * Re-queries the row + JOIN on boards so serializeApiTask receives the
+ * full denormalized shape; engine.create's post-commit verification
+ * only selects `id`, not the joined columns.
+ */
+function finalizeCreatedTaskResult(
+  db: Database,
+  engine: TaskflowEngine,
+  boardId: string,
+  result: CreateLikeResult,
+) {
+  if (!result.success) return jsonResponse({ success: false, error: result.error });
+  if (!result.task_id) {
+    return jsonResponse({ success: false, error: 'engine returned success without task_id' });
+  }
+  const row = db
+    .prepare(
+      `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ? AND t.board_id = ?`,
+    )
+    .get(result.task_id, boardId) as Record<string, unknown>;
+  const data = engine.serializeApiTask(row);
+  const notification_events = (result.notifications ?? [])
+    .filter((n) => n.target_person_id)
+    .map((n) => ({
+      kind: 'deferred_notification',
+      board_id: boardId,
+      target_person_id: n.target_person_id!,
+      message: n.message,
+    }));
+  return jsonResponse({ success: true, data, notification_events });
+}
 
 export const apiCreateSimpleTaskTool: McpToolDefinition = {
   tool: {
@@ -43,17 +89,12 @@ export const apiCreateSimpleTaskTool: McpToolDefinition = {
       if (typeof args.assignee !== 'string') return err('assignee: expected string');
       assignee = args.assignee;
     }
-    let priority: 'low' | 'normal' | 'high' | 'urgent' | undefined;
+    let priority: Priority | undefined;
     if (args.priority !== undefined) {
-      if (
-        args.priority !== 'low' &&
-        args.priority !== 'normal' &&
-        args.priority !== 'high' &&
-        args.priority !== 'urgent'
-      ) {
-        return err('priority: expected one of low | normal | high | urgent');
+      if (!PRIORITIES.includes(args.priority as Priority)) {
+        return err(`priority: expected one of ${PRIORITIES.join(' | ')}`);
       }
-      priority = args.priority;
+      priority = args.priority as Priority;
     }
     let dueDate: string | null | undefined;
     if (args.due_date !== undefined) {
@@ -80,31 +121,140 @@ export const apiCreateSimpleTaskTool: McpToolDefinition = {
         priority,
         due_date: dueDate ?? undefined,
       });
-      if (!result.success) {
-        return jsonResponse({ success: false, error: result.error });
+      return finalizeCreatedTaskResult(db, engine, boardId, result);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error: msg });
+    }
+  },
+};
+
+export const apiCreateMeetingTaskTool: McpToolDefinition = {
+  tool: {
+    name: 'api_create_meeting_task',
+    description:
+      'Create a meeting-type task. Meetings use scheduled_at (not due_date) and can carry participants. Engine will reject if due_date is supplied or if recurrence is set without scheduled_at.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+        title: { type: 'string' },
+        sender_name: { type: 'string' },
+        scheduled_at: { type: ['string', 'null'] },
+        participants: { type: 'array', items: { type: 'string' } },
+        assignee: { type: 'string' },
+        priority: { type: 'string', enum: ['low', 'normal', 'high', 'urgent'] },
+        recurrence: { type: 'string', enum: ['daily', 'weekly', 'monthly', 'yearly'] },
+        recurrence_anchor: { type: 'string' },
+        recurrence_end_date: { type: 'string' },
+        max_cycles: { type: 'integer' },
+        intended_weekday: { type: 'string' },
+        allow_non_business_day: { type: 'boolean' },
+        due_date: { type: ['string', 'null'] },
+      },
+      required: ['board_id', 'title', 'sender_name'],
+    },
+  },
+  async handler(args) {
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) return err('board_id: required string');
+    const title = requireString(args, 'title');
+    if (title === null) return err('title: required string');
+    const senderName = requireString(args, 'sender_name');
+    if (senderName === null) return err('sender_name: required string');
+
+    let scheduledAt: string | undefined;
+    if (args.scheduled_at !== undefined && args.scheduled_at !== null) {
+      if (typeof args.scheduled_at !== 'string') return err('scheduled_at: expected string or null');
+      scheduledAt = args.scheduled_at;
+    }
+    let participants: string[] | undefined;
+    if (args.participants !== undefined) {
+      if (!Array.isArray(args.participants) || args.participants.some((p) => typeof p !== 'string')) {
+        return err('participants: expected array of strings');
       }
-      if (!result.task_id) {
-        return jsonResponse({
-          success: false,
-          error: 'engine returned success without task_id',
-        });
+      participants = args.participants as string[];
+    }
+    let assignee: string | undefined;
+    if (args.assignee !== undefined) {
+      if (typeof args.assignee !== 'string') return err('assignee: expected string');
+      assignee = args.assignee;
+    }
+    let priority: Priority | undefined;
+    if (args.priority !== undefined) {
+      if (!PRIORITIES.includes(args.priority as Priority)) {
+        return err(`priority: expected one of ${PRIORITIES.join(' | ')}`);
       }
-      const taskId = result.task_id;
-      const row = db
-        .prepare(
-          `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ? AND t.board_id = ?`,
-        )
-        .get(taskId, boardId) as Record<string, unknown>;
-      const data = engine.serializeApiTask(row);
-      const notification_events = (result.notifications ?? [])
-        .filter((n) => n.target_person_id)
-        .map((n) => ({
-          kind: 'deferred_notification',
-          board_id: boardId,
-          target_person_id: n.target_person_id!,
-          message: n.message,
-        }));
-      return jsonResponse({ success: true, data, notification_events });
+      priority = args.priority as Priority;
+    }
+    let recurrence: 'daily' | 'weekly' | 'monthly' | 'yearly' | undefined;
+    if (args.recurrence !== undefined) {
+      if (
+        args.recurrence !== 'daily' &&
+        args.recurrence !== 'weekly' &&
+        args.recurrence !== 'monthly' &&
+        args.recurrence !== 'yearly'
+      ) {
+        return err('recurrence: expected one of daily | weekly | monthly | yearly');
+      }
+      recurrence = args.recurrence;
+    }
+    let recurrenceAnchor: string | undefined;
+    if (args.recurrence_anchor !== undefined) {
+      if (typeof args.recurrence_anchor !== 'string') return err('recurrence_anchor: expected string');
+      recurrenceAnchor = args.recurrence_anchor;
+    }
+    let recurrenceEndDate: string | undefined;
+    if (args.recurrence_end_date !== undefined) {
+      if (typeof args.recurrence_end_date !== 'string') return err('recurrence_end_date: expected string');
+      recurrenceEndDate = args.recurrence_end_date;
+    }
+    let maxCycles: number | undefined;
+    if (args.max_cycles !== undefined) {
+      if (typeof args.max_cycles !== 'number' || !Number.isInteger(args.max_cycles)) {
+        return err('max_cycles: expected integer');
+      }
+      maxCycles = args.max_cycles;
+    }
+    let intendedWeekday: string | undefined;
+    if (args.intended_weekday !== undefined) {
+      if (typeof args.intended_weekday !== 'string') return err('intended_weekday: expected string');
+      intendedWeekday = args.intended_weekday;
+    }
+    let allowNonBusinessDay: boolean | undefined;
+    if (args.allow_non_business_day !== undefined) {
+      if (typeof args.allow_non_business_day !== 'boolean') {
+        return err('allow_non_business_day: expected boolean');
+      }
+      allowNonBusinessDay = args.allow_non_business_day;
+    }
+    let dueDate: string | undefined;
+    if (args.due_date !== undefined && args.due_date !== null) {
+      if (typeof args.due_date !== 'string') return err('due_date: expected string or null');
+      dueDate = args.due_date;
+    }
+
+    try {
+      const db = getTaskflowDb();
+      const engine = new TaskflowEngine(db, boardId);
+      const result = engine.create({
+        board_id: boardId,
+        type: 'meeting',
+        title,
+        sender_name: senderName,
+        assignee,
+        priority,
+        scheduled_at: scheduledAt,
+        participants,
+        recurrence,
+        recurrence_anchor: recurrenceAnchor,
+        recurrence_end_date: recurrenceEndDate,
+        max_cycles: maxCycles,
+        intended_weekday: intendedWeekday,
+        allow_non_business_day: allowNonBusinessDay,
+        due_date: dueDate,
+      });
+      return finalizeCreatedTaskResult(db, engine, boardId, result);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });
@@ -142,4 +292,4 @@ export const apiDeleteSimpleTaskTool: McpToolDefinition = {
   },
 };
 
-registerTools([apiCreateSimpleTaskTool, apiDeleteSimpleTaskTool]);
+registerTools([apiCreateSimpleTaskTool, apiCreateMeetingTaskTool, apiDeleteSimpleTaskTool]);

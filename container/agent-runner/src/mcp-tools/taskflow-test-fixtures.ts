@@ -27,7 +27,13 @@ export function setupEngineDb(boardId: string, opts: SetupEngineDbOptions = {}):
       board_id TEXT NOT NULL, person_id TEXT NOT NULL, name TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'member',
       status TEXT NOT NULL DEFAULT 'active',
+      notification_group_jid TEXT,
       PRIMARY KEY (board_id, person_id)
+    );
+    CREATE TABLE board_runtime_config (
+      board_id TEXT PRIMARY KEY,
+      language TEXT NOT NULL DEFAULT 'pt-BR',
+      timezone TEXT NOT NULL DEFAULT 'America/Fortaleza'
     );
     CREATE TABLE board_id_counters (
       board_id TEXT NOT NULL, prefix TEXT NOT NULL,

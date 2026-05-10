@@ -224,3 +224,167 @@ describe('api_delete_simple_task MCP tool', () => {
     expect(JSON.stringify(response.content)).toMatch(/task_id/);
   });
 });
+
+describe('api_create_meeting_task MCP tool (A10)', () => {
+  it('exports a tool with name "api_create_meeting_task"', async () => {
+    const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
+    expect(apiCreateMeetingTaskTool.tool.name).toBe('api_create_meeting_task');
+  });
+
+  it('declares required board_id/title/sender_name and optional scheduled_at/participants/assignee/priority', async () => {
+    const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
+    const schema = apiCreateMeetingTaskTool.tool.inputSchema as {
+      required: string[];
+      properties: Record<string, unknown>;
+    };
+    expect(schema.required).toEqual(expect.arrayContaining(['board_id', 'title', 'sender_name']));
+    expect(schema.properties).toHaveProperty('scheduled_at');
+    expect(schema.properties).toHaveProperty('participants');
+    expect(schema.properties).toHaveProperty('assignee');
+    expect(schema.properties).toHaveProperty('priority');
+    expect(schema.properties).toHaveProperty('recurrence');
+    expect(schema.properties).toHaveProperty('max_cycles');
+    // description is intentionally absent — engine.create CreateParams has
+    // no description slot, so advertising it at MCP would be a silent drop.
+    expect(schema.properties).not.toHaveProperty('description');
+  });
+
+  it('creates a meeting → returns success with type=meeting and M-prefix id', async () => {
+    const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateMeetingTaskTool.handler({
+      board_id: BOARD,
+      title: 'Quarterly review',
+      sender_name: 'alice',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data.type).toBe('meeting');
+    expect(result.data.id).toMatch(/^M\d+$/);
+    expect(result.data.title).toBe('Quarterly review');
+    expect(Array.isArray(result.notification_events)).toBe(true);
+  });
+
+  it('creates a meeting with scheduled_at → persisted (engine normalizes to UTC)', async () => {
+    const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateMeetingTaskTool.handler({
+      board_id: BOARD,
+      title: 'SEMA',
+      sender_name: 'alice',
+      scheduled_at: '2026-06-15T14:00:00Z',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data.scheduled_at).toBeTruthy();
+  });
+
+  it('creates a meeting with participants → resolved + stored', async () => {
+    const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+    const response = await apiCreateMeetingTaskTool.handler({
+      board_id: BOARD,
+      title: 'Sync with bob',
+      sender_name: 'alice',
+      participants: ['bob'],
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    const row = db.prepare(`SELECT participants FROM tasks WHERE id = ?`).get(result.data.id) as {
+      participants: string;
+    };
+    expect(row.participants).toBe(JSON.stringify(['bob']));
+  });
+
+  it('engine rejects meeting with due_date → propagated as error', async () => {
+    const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateMeetingTaskTool.handler({
+      board_id: BOARD,
+      title: 'Bad meeting',
+      sender_name: 'alice',
+      due_date: '2026-06-15',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/scheduled_at/);
+  });
+
+  it('engine rejects recurring meeting without scheduled_at → propagated as error', async () => {
+    const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateMeetingTaskTool.handler({
+      board_id: BOARD,
+      title: 'Weekly standup',
+      sender_name: 'alice',
+      recurrence: 'weekly',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/scheduled_at/);
+  });
+
+  it('rejects non-string board_id', async () => {
+    const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateMeetingTaskTool.handler({
+      board_id: 42 as unknown as string,
+      title: 'X',
+      sender_name: 'alice',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/board_id/);
+  });
+
+  it('rejects non-array participants', async () => {
+    const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateMeetingTaskTool.handler({
+      board_id: BOARD,
+      title: 'X',
+      sender_name: 'alice',
+      participants: 'bob' as unknown as string[],
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/participants/);
+  });
+
+  it('rejects non-integer max_cycles', async () => {
+    const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateMeetingTaskTool.handler({
+      board_id: BOARD,
+      title: 'X',
+      sender_name: 'alice',
+      max_cycles: 1.5 as unknown as number,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/max_cycles/);
+  });
+
+  it('rejects non-string recurrence_anchor', async () => {
+    const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateMeetingTaskTool.handler({
+      board_id: BOARD,
+      title: 'X',
+      sender_name: 'alice',
+      recurrence_anchor: 42 as unknown as string,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/recurrence_anchor/);
+  });
+
+  it('multiple non-self non-assignee participants → one notification_event each', async () => {
+    const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member'), (?, 'carol', 'carol', 'member')`,
+    ).run(BOARD, BOARD);
+    const response = await apiCreateMeetingTaskTool.handler({
+      board_id: BOARD,
+      title: 'Tri-party sync',
+      sender_name: 'alice',
+      participants: ['bob', 'carol'],
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    // alice is sender + auto-assignee; bob and carol each get a notification
+    expect(result.notification_events.length).toBe(2);
+    const targets = result.notification_events.map((n: { target_person_id: string }) => n.target_person_id).sort();
+    expect(targets).toEqual(['bob', 'carol']);
+  });
+});
