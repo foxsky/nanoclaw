@@ -1080,3 +1080,187 @@ describe('api_reassign MCP tool (A11.3)', () => {
     expect(targets).toContain('bob');
   });
 });
+
+describe('api_undo MCP tool (A11.4)', () => {
+  it('exports a tool with name "api_undo"', async () => {
+    const { apiUndoTool } = await import('./taskflow-api-mutate.ts');
+    expect(apiUndoTool.tool.name).toBe('api_undo');
+  });
+
+  it('declares required board_id/sender_name and optional force', async () => {
+    const { apiUndoTool } = await import('./taskflow-api-mutate.ts');
+    const schema = apiUndoTool.tool.inputSchema as {
+      required: string[];
+      properties: Record<string, { type?: string }>;
+    };
+    expect(schema.required).toEqual(expect.arrayContaining(['board_id', 'sender_name']));
+    expect(schema.properties).toHaveProperty('force');
+    expect(schema.properties.force.type).toBe('boolean');
+  });
+
+  it('happy path: undo a recent move → reverts to previous column', async () => {
+    const { apiCreateSimpleTaskTool, apiMoveTool, apiUndoTool } = await import('./taskflow-api-mutate.ts');
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Undo me',
+      sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+
+    await apiMoveTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      action: 'start',
+      sender_name: 'alice',
+    });
+    expect(
+      (db.prepare('SELECT column FROM tasks WHERE id = ?').get(taskId) as { column: string }).column,
+    ).toBe('in_progress');
+
+    const undoResponse = await apiUndoTool.handler({
+      board_id: BOARD,
+      sender_name: 'alice',
+    });
+    const undoResult = JSON.parse(undoResponse.content[0].text);
+    expect(undoResult.success).toBe(true);
+    expect(undoResult.data.task_id).toBe(taskId);
+    // engine.undo records the original action verb (`start`, `wait`, ...), not 'moved'
+    expect(undoResult.data.undone_action).toBe('start');
+    expect(
+      (db.prepare('SELECT column FROM tasks WHERE id = ?').get(taskId) as { column: string }).column,
+    ).toBe('inbox');
+  });
+
+  it('engine rejects "Nothing to undo" on empty mutation history', async () => {
+    const { apiUndoTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiUndoTool.handler({
+      board_id: BOARD,
+      sender_name: 'alice',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Nothing to undo/);
+  });
+
+  it('engine rejects undo of creation (only "created" mutation exists)', async () => {
+    const { apiCreateSimpleTaskTool, apiUndoTool } = await import('./taskflow-api-mutate.ts');
+    await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Only created',
+      sender_name: 'alice',
+    });
+
+    const response = await apiUndoTool.handler({
+      board_id: BOARD,
+      sender_name: 'alice',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Cannot undo creation/);
+  });
+
+  it('engine rejects permission: non-author non-manager cannot undo', async () => {
+    const { apiCreateSimpleTaskTool, apiMoveTool, apiUndoTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Alice mutates',
+      sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+    await apiMoveTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      action: 'start',
+      sender_name: 'alice',
+    });
+
+    // bob (non-author, non-manager) tries to undo alice's move
+    const response = await apiUndoTool.handler({
+      board_id: BOARD,
+      sender_name: 'bob',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Permission denied/);
+  });
+
+  it('rejects non-string board_id', async () => {
+    const { apiUndoTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiUndoTool.handler({
+      board_id: 42 as unknown as string,
+      sender_name: 'alice',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/board_id/);
+  });
+
+  it('rejects non-boolean force', async () => {
+    const { apiUndoTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiUndoTool.handler({
+      board_id: BOARD,
+      sender_name: 'alice',
+      force: 'yes' as unknown as boolean,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/force/);
+  });
+
+  it('WIP guard: force=false hits WIP error; force=true (manager) bypasses', async () => {
+    const { apiCreateSimpleTaskTool, apiMoveTool, apiUndoTool } = await import('./taskflow-api-mutate.ts');
+    // alice (manager) is WIP-limited to 1. Build state where undoing the
+    // most recent mutation would restore a task INTO in_progress while
+    // another task already occupies alice's WIP slot.
+    //
+    // engine.move's WIP check fires on 'start'/'resume'/'reject' — but NOT
+    // 'force_start' (manager-only override). We use force_start to push
+    // T3 into in_progress past the limit so we can then `wait` it (no WIP
+    // check on the way out) and create the undo-target snapshot.
+    db.prepare(`UPDATE board_people SET wip_limit = 1 WHERE board_id = ? AND person_id = 'alice'`).run(BOARD);
+
+    // T2 (so it gets ID T2): start → fills WIP slot.
+    const c1 = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD, title: 'T1 inbox', sender_name: 'alice',
+    });
+    expect(JSON.parse(c1.content[0].text).data.id).toBe('T1');
+    const c2 = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD, title: 'T2 wip', sender_name: 'alice',
+    });
+    expect(JSON.parse(c2.content[0].text).data.id).toBe('T2');
+    await apiMoveTool.handler({ board_id: BOARD, task_id: 'T2', action: 'start', sender_name: 'alice' });
+
+    // T3: force_start (bypasses WIP gate) → wait. Latest mutation now is
+    // T3.wait with snapshot.column='in_progress'.
+    const c3 = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD, title: 'T3', sender_name: 'alice',
+    });
+    const t3 = JSON.parse(c3.content[0].text).data.id;
+    const forceStart = await apiMoveTool.handler({
+      board_id: BOARD, task_id: t3, action: 'force_start', sender_name: 'alice',
+    });
+    expect(JSON.parse(forceStart.content[0].text).success).toBe(true);
+    await apiMoveTool.handler({ board_id: BOARD, task_id: t3, action: 'wait', sender_name: 'alice' });
+
+    // Undo T3.wait without force → WIP error (restoring t3 into in_progress
+    // would mean alice has 2 in_progress, exceeding wip_limit=1).
+    const noForce = await apiUndoTool.handler({ board_id: BOARD, sender_name: 'alice' });
+    const noForceResult = JSON.parse(noForce.content[0].text);
+    expect(noForceResult.success).toBe(false);
+    expect(noForceResult.error).toMatch(/WIP limit/);
+
+    // Undo with force=true (alice is manager) → succeeds, restoring t3 to in_progress.
+    const withForce = await apiUndoTool.handler({
+      board_id: BOARD,
+      sender_name: 'alice',
+      force: true,
+    });
+    const withForceResult = JSON.parse(withForce.content[0].text);
+    expect(withForceResult.success).toBe(true);
+    expect(withForceResult.data.task_id).toBe(t3);
+    expect(
+      (db.prepare('SELECT column FROM tasks WHERE id = ?').get(t3) as { column: string }).column,
+    ).toBe('in_progress');
+  });
+});

@@ -9,7 +9,7 @@
 import type { Database } from 'bun:sqlite';
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
-import type { AdminParams, ReassignParams } from '../taskflow-engine.js';
+import type { AdminParams, ReassignParams, UndoParams } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { normalizeEngineNotificationEvents } from './taskflow-helpers.js';
@@ -616,7 +616,50 @@ export const apiReassignTool: McpToolDefinition = {
   },
 };
 
+export const apiUndoTool: McpToolDefinition = {
+  tool: {
+    name: 'api_undo',
+    description:
+      'Undo the most recent task mutation on the board. Only the mutation author or a manager may undo. Engine rejects undo of creation (use api_admin cancel_task instead) and undo into in_progress that exceeds the assignee WIP limit (set force=true to override, manager-only).',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+        sender_name: { type: 'string' },
+        force: { type: 'boolean' },
+      },
+      required: ['board_id', 'sender_name'],
+    },
+  },
+  async handler(args) {
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) return err('board_id: required string');
+    const senderName = requireString(args, 'sender_name');
+    if (senderName === null) return err('sender_name: required string');
+
+    let force: boolean | undefined;
+    if (args.force !== undefined) {
+      if (typeof args.force !== 'boolean') return err('force: expected boolean');
+      force = args.force;
+    }
+
+    try {
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      const undoParams: UndoParams = {
+        board_id: boardId,
+        sender_name: senderName,
+        force,
+      };
+      const result = engine.undo(undoParams);
+      return finalizeMutationResult(result);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error: msg });
+    }
+  },
+};
+
 registerTools([
   apiCreateSimpleTaskTool, apiCreateMeetingTaskTool, apiMoveTool,
-  apiAdminTool, apiReassignTool, apiDeleteSimpleTaskTool,
+  apiAdminTool, apiReassignTool, apiUndoTool, apiDeleteSimpleTaskTool,
 ]);
