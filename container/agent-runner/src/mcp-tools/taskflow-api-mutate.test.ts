@@ -810,3 +810,273 @@ describe('api_admin MCP tool (A11.2)', () => {
     expect(JSON.stringify(response.content)).toMatch(/holiday_year/);
   });
 });
+
+describe('api_reassign MCP tool (A11.3)', () => {
+  it('exports a tool with name "api_reassign"', async () => {
+    const { apiReassignTool } = await import('./taskflow-api-mutate.ts');
+    expect(apiReassignTool.tool.name).toBe('api_reassign');
+  });
+
+  it('declares required board_id/target_person/sender_name/confirmed; optional task_id/source_person', async () => {
+    const { apiReassignTool } = await import('./taskflow-api-mutate.ts');
+    const schema = apiReassignTool.tool.inputSchema as {
+      required: string[];
+      properties: Record<string, unknown>;
+    };
+    expect(schema.required).toEqual(
+      expect.arrayContaining(['board_id', 'target_person', 'sender_name', 'confirmed']),
+    );
+    expect(schema.properties).toHaveProperty('task_id');
+    expect(schema.properties).toHaveProperty('source_person');
+  });
+
+  it('single-task confirmed=true: reassigns assignee and persists', async () => {
+    const { apiCreateSimpleTaskTool, apiReassignTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Reassign me',
+      sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+
+    const response = await apiReassignTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      target_person: 'bob',
+      sender_name: 'alice',
+      confirmed: true,
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(Array.isArray(result.data.tasks_affected)).toBe(true);
+    expect(result.data.tasks_affected.length).toBe(1);
+    const row = db
+      .prepare('SELECT assignee FROM tasks WHERE id = ?')
+      .get(taskId) as { assignee: string };
+    expect(row.assignee).toBe('bob');
+  });
+
+  it('dry run (confirmed=false): returns requires_confirmation in data, no DB change', async () => {
+    const { apiCreateSimpleTaskTool, apiReassignTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Dry-run me',
+      sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+
+    const response = await apiReassignTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      target_person: 'bob',
+      sender_name: 'alice',
+      confirmed: false,
+    });
+    const result = JSON.parse(response.content[0].text);
+    // Engine returns success=true on dry-run with requires_confirmation set.
+    expect(result.success).toBe(true);
+    expect(typeof result.data.requires_confirmation).toBe('string');
+    expect(result.data.requires_confirmation).toMatch(/confirmed=true to execute/);
+    const row = db
+      .prepare('SELECT assignee FROM tasks WHERE id = ?')
+      .get(taskId) as { assignee: string };
+    expect(row.assignee).toBe('alice'); // unchanged
+  });
+
+  it('engine rejects neither task_id nor source_person provided', async () => {
+    const { apiReassignTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiReassignTool.handler({
+      board_id: BOARD,
+      target_person: 'bob',
+      sender_name: 'alice',
+      confirmed: true,
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/task_id|source_person/);
+  });
+
+  it('engine rejects missing task → Task not found propagated', async () => {
+    const { apiReassignTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiReassignTool.handler({
+      board_id: BOARD,
+      task_id: 'T-missing',
+      target_person: 'alice',
+      sender_name: 'alice',
+      confirmed: true,
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Task not found/);
+  });
+
+  it('engine rejects reassign to same person', async () => {
+    const { apiCreateSimpleTaskTool, apiReassignTool } = await import('./taskflow-api-mutate.ts');
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Same person',
+      sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+
+    const response = await apiReassignTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      target_person: 'alice',
+      sender_name: 'alice',
+      confirmed: true,
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/already assigned/);
+  });
+
+  it('rejects non-string board_id', async () => {
+    const { apiReassignTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiReassignTool.handler({
+      board_id: 42 as unknown as string,
+      target_person: 'bob',
+      sender_name: 'alice',
+      confirmed: true,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/board_id/);
+  });
+
+  it('rejects non-string target_person', async () => {
+    const { apiReassignTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiReassignTool.handler({
+      board_id: BOARD,
+      target_person: 42 as unknown as string,
+      sender_name: 'alice',
+      confirmed: true,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/target_person/);
+  });
+
+  it('rejects non-boolean confirmed', async () => {
+    const { apiReassignTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiReassignTool.handler({
+      board_id: BOARD,
+      target_person: 'bob',
+      sender_name: 'alice',
+      confirmed: 'yes' as unknown as boolean,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/confirmed/);
+  });
+
+  it('bulk transfer (source_person): reassigns all active tasks; dry-run preserves them', async () => {
+    const { apiCreateSimpleTaskTool, apiReassignTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member'), (?, 'carol', 'carol', 'member')`,
+    ).run(BOARD, BOARD);
+    // alice (manager) assigns 2 tasks to bob
+    const c1 = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD, title: 'Bulk 1', sender_name: 'alice', assignee: 'bob',
+    });
+    const c2 = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD, title: 'Bulk 2', sender_name: 'alice', assignee: 'bob',
+    });
+    const t1 = JSON.parse(c1.content[0].text).data.id;
+    const t2 = JSON.parse(c2.content[0].text).data.id;
+
+    // Dry run — should list both tasks, leave assignees alone
+    const dry = await apiReassignTool.handler({
+      board_id: BOARD,
+      source_person: 'bob',
+      target_person: 'carol',
+      sender_name: 'alice',
+      confirmed: false,
+    });
+    const dryResult = JSON.parse(dry.content[0].text);
+    expect(dryResult.success).toBe(true);
+    expect(dryResult.data.tasks_affected.length).toBe(2);
+    expect(
+      (db.prepare('SELECT assignee FROM tasks WHERE id = ?').get(t1) as { assignee: string }).assignee,
+    ).toBe('bob');
+
+    // Commit — both tasks move to carol
+    const commit = await apiReassignTool.handler({
+      board_id: BOARD,
+      source_person: 'bob',
+      target_person: 'carol',
+      sender_name: 'alice',
+      confirmed: true,
+    });
+    const commitResult = JSON.parse(commit.content[0].text);
+    expect(commitResult.success).toBe(true);
+    expect(commitResult.data.tasks_affected.length).toBe(2);
+    expect(
+      (db.prepare('SELECT assignee FROM tasks WHERE id = ?').get(t1) as { assignee: string }).assignee,
+    ).toBe('carol');
+    expect(
+      (db.prepare('SELECT assignee FROM tasks WHERE id = ?').get(t2) as { assignee: string }).assignee,
+    ).toBe('carol');
+  });
+
+  it('engine rejects permission denied: non-manager non-assignee cannot reassign', async () => {
+    const { apiCreateSimpleTaskTool, apiReassignTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member'), (?, 'carol', 'carol', 'member')`,
+    ).run(BOARD, BOARD);
+    // alice (manager) creates a task assigned to bob
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Bob task',
+      sender_name: 'alice',
+      assignee: 'bob',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+
+    // carol (non-manager, non-assignee) tries to reassign → denied
+    const response = await apiReassignTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      target_person: 'carol',
+      sender_name: 'carol',
+      confirmed: true,
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Permission denied/);
+    // Confirm assignee unchanged
+    const row = db
+      .prepare('SELECT assignee FROM tasks WHERE id = ?')
+      .get(taskId) as { assignee: string };
+    expect(row.assignee).toBe('bob');
+  });
+
+  it('reassign-with-notification: target person gets notified', async () => {
+    const { apiCreateSimpleTaskTool, apiReassignTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Notify me',
+      sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+
+    const response = await apiReassignTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      target_person: 'bob',
+      sender_name: 'alice',
+      confirmed: true,
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.notification_events.length).toBeGreaterThanOrEqual(1);
+    const targets = result.notification_events.map((n: { target_person_id: string }) => n.target_person_id);
+    expect(targets).toContain('bob');
+  });
+});

@@ -9,7 +9,7 @@
 import type { Database } from 'bun:sqlite';
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
-import type { AdminParams } from '../taskflow-engine.js';
+import type { AdminParams, ReassignParams } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { normalizeEngineNotificationEvents } from './taskflow-helpers.js';
@@ -78,6 +78,26 @@ function finalizeCreatedTaskResult(
       message: n.message,
     }));
   return jsonResponse({ success: true, data, notification_events });
+}
+
+/**
+ * Post-mutation result shaping shared by `api_move`, `api_admin`, and
+ * `api_reassign`. Strips `notifications` (rewritten as `notification_events`
+ * via the shared normalizer) and preserves every other engine field on
+ * BOTH paths:
+ *   success → `{success: true, data: rest, notification_events}` keeps
+ *     wip_warning, project_update, parent_notification, tasks_affected,
+ *     requires_confirmation (dry run), auto_provision_request, etc.
+ *   failure → `{success: false, ...rest, notification_events}` keeps
+ *     error_code, expected_task_id, actual_task_id (magnetism retry
+ *     contract), offer_register, etc. — without us picking winners on
+ *     which engine fields to forward.
+ */
+function finalizeMutationResult(result: { success: boolean; notifications?: unknown }) {
+  const { notifications: _notifications, success, ...rest } = result;
+  const notification_events = normalizeEngineNotificationEvents(result);
+  if (!success) return jsonResponse({ success: false, ...rest, notification_events });
+  return jsonResponse({ success: true, data: rest, notification_events });
 }
 
 export const apiCreateSimpleTaskTool: McpToolDefinition = {
@@ -370,16 +390,7 @@ export const apiMoveTool: McpToolDefinition = {
         subtask_id: subtaskId,
         confirmed_task_id: confirmedTaskId,
       });
-      // Strip `notifications` (rewritten as `notification_events`) but
-      // preserve every other engine field on both paths so callers see
-      // structured fields they may need: success → wip_warning,
-      // project_update, parent_notification etc.; failure → error_code,
-      // expected_task_id, actual_task_id (magnetism retry contract,
-      // required to honor confirmed_task_id on retry).
-      const { notifications: _notifications, success, ...rest } = result;
-      const notification_events = normalizeEngineNotificationEvents(result);
-      if (!success) return jsonResponse({ success: false, ...rest, notification_events });
-      return jsonResponse({ success: true, data: rest, notification_events });
+      return finalizeMutationResult(result);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });
@@ -539,10 +550,65 @@ export const apiAdminTool: McpToolDefinition = {
     try {
       const engine = new TaskflowEngine(getTaskflowDb(), boardId);
       const result = engine.admin(adminParams);
-      const { notifications: _notifications, success, ...rest } = result;
-      const notification_events = normalizeEngineNotificationEvents(result);
-      if (!success) return jsonResponse({ success: false, ...rest, notification_events });
-      return jsonResponse({ success: true, data: rest, notification_events });
+      return finalizeMutationResult(result);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error: msg });
+    }
+  },
+};
+
+export const apiReassignTool: McpToolDefinition = {
+  tool: {
+    name: 'api_reassign',
+    description:
+      'Reassign a single task (task_id) or bulk-transfer all active tasks from one person (source_person) to another (target_person). Engine requires confirmed=true to commit; confirmed=false runs a dry-run that returns a human-readable summary in `requires_confirmation`.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+        target_person: { type: 'string' },
+        sender_name: { type: 'string' },
+        confirmed: { type: 'boolean' },
+        task_id: { type: 'string' },
+        source_person: { type: 'string' },
+      },
+      required: ['board_id', 'target_person', 'sender_name', 'confirmed'],
+    },
+  },
+  async handler(args) {
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) return err('board_id: required string');
+    const targetPerson = requireString(args, 'target_person');
+    if (targetPerson === null) return err('target_person: required string');
+    const senderName = requireString(args, 'sender_name');
+    if (senderName === null) return err('sender_name: required string');
+    if (typeof args.confirmed !== 'boolean') return err('confirmed: required boolean');
+    const confirmed = args.confirmed;
+
+    let taskId: string | undefined;
+    if (args.task_id !== undefined) {
+      if (typeof args.task_id !== 'string') return err('task_id: expected string');
+      taskId = args.task_id;
+    }
+    let sourcePerson: string | undefined;
+    if (args.source_person !== undefined) {
+      if (typeof args.source_person !== 'string') return err('source_person: expected string');
+      sourcePerson = args.source_person;
+    }
+
+    try {
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      const reassignParams: ReassignParams = {
+        board_id: boardId,
+        target_person: targetPerson,
+        sender_name: senderName,
+        confirmed,
+        task_id: taskId,
+        source_person: sourcePerson,
+      };
+      const result = engine.reassign(reassignParams);
+      return finalizeMutationResult(result);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });
@@ -552,5 +618,5 @@ export const apiAdminTool: McpToolDefinition = {
 
 registerTools([
   apiCreateSimpleTaskTool, apiCreateMeetingTaskTool, apiMoveTool,
-  apiAdminTool, apiDeleteSimpleTaskTool,
+  apiAdminTool, apiReassignTool, apiDeleteSimpleTaskTool,
 ]);
