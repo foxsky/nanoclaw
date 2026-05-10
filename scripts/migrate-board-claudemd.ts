@@ -36,7 +36,6 @@ const DIRECT_SUBSTITUTIONS = [
 
 const UNMIGRATED_TOOLS = [
   'taskflow_query',
-  'taskflow_create',
   'taskflow_update',
   'taskflow_hierarchy',
   'taskflow_dependency',
@@ -76,6 +75,32 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
     const bare = new RegExp(`\\b${v1Name}\\b`, 'g');
     output = output.replace(bare, v2Name);
   }
+
+  // taskflow_create → api_create_task / api_create_meeting_task.
+  // Type-aware routing: type: 'meeting' uses the dedicated tool (A10);
+  // simple|project|recurring|inbox use api_create_task (A5.2.1). Call
+  // sites without a `type:` field (rare — usually "use taskflow_create"
+  // in prose) fall back to api_create_task as the broadest target.
+  output = output.replace(
+    /\btaskflow_create\(\{\s*type:\s*'([a-z_]+)'\s*,\s*/g,
+    (_match, taskType) => {
+      substituted++;
+      const v2Tool = taskType === 'meeting' ? 'api_create_meeting_task' : 'api_create_task';
+      // For api_create_task we keep `type:` since it remains a required param.
+      // For api_create_meeting_task we drop `type:` since the tool implies it.
+      const typeField = v2Tool === 'api_create_task' ? `type: '${taskType}', ` : '';
+      return `${v2Tool}({ board_id: BOARD_ID, ${typeField}`;
+    },
+  );
+  // Catch any remaining `taskflow_create({` without an inline type literal
+  // (e.g. line-wrapped or computed type) — route to api_create_task as
+  // the broadest target; agent will need to pass type explicitly.
+  output = output.replace(/\btaskflow_create\(\{\s*/g, (_match) => {
+    substituted++;
+    return 'api_create_task({ board_id: BOARD_ID, ';
+  });
+  // Bare `taskflow_create` mentions (prose) → api_create_task.
+  output = output.replace(/\btaskflow_create\b/g, 'api_create_task');
 
   const unmigrated = Object.fromEntries(
     UNMIGRATED_TOOLS.map((tool) => [tool, countOccurrences(output, tool)]),

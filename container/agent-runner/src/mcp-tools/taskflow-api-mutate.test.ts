@@ -1378,3 +1378,158 @@ describe('api_report MCP tool (A11.5)', () => {
     expect(JSON.stringify(response.content)).toMatch(/type/);
   });
 });
+
+describe('api_create_task MCP tool (A5.2.1 — multi-type create)', () => {
+  it('exports a tool with name "api_create_task"', async () => {
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    expect(apiCreateTaskTool.tool.name).toBe('api_create_task');
+  });
+
+  it('declares required board_id/title/sender_name/type; type enum simple|project|recurring|inbox', async () => {
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const schema = apiCreateTaskTool.tool.inputSchema as {
+      required: string[];
+      properties: Record<string, { enum?: string[] }>;
+    };
+    expect(schema.required).toEqual(
+      expect.arrayContaining(['board_id', 'title', 'sender_name', 'type']),
+    );
+    expect(schema.properties.type.enum).toEqual(
+      expect.arrayContaining(['simple', 'project', 'recurring', 'inbox']),
+    );
+    // 'meeting' is intentionally NOT in this tool's enum — use api_create_meeting_task instead
+    expect(schema.properties.type.enum).not.toContain('meeting');
+  });
+
+  it('type=simple → task created in next_action column (NOT inbox)', async () => {
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateTaskTool.handler({
+      board_id: BOARD,
+      type: 'simple',
+      title: 'Simple task',
+      sender_name: 'alice',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data.column).toBe('next_action');
+    expect(result.data.id).toMatch(/^T\d+$/);
+  });
+
+  it('type=inbox → task created in inbox column', async () => {
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateTaskTool.handler({
+      board_id: BOARD,
+      type: 'inbox',
+      title: 'Inbox capture',
+      sender_name: 'alice',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data.column).toBe('inbox');
+    expect(result.data.id).toMatch(/^T\d+$/);
+  });
+
+  it('type=project with subtasks → P-prefix id, subtasks created', async () => {
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+    const response = await apiCreateTaskTool.handler({
+      board_id: BOARD,
+      type: 'project',
+      title: 'Big project',
+      sender_name: 'alice',
+      assignee: 'bob',
+      subtasks: ['Step A', 'Step B'],
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data.id).toMatch(/^P\d+$/);
+    // Subtasks live under the parent project id
+    const subRows = db
+      .prepare(`SELECT id, title FROM tasks WHERE parent_task_id = ? ORDER BY id`)
+      .all(result.data.id) as Array<{ id: string; title: string }>;
+    expect(subRows.length).toBe(2);
+    expect(subRows.map((r) => r.title)).toEqual(['Step A', 'Step B']);
+  });
+
+  it('type=recurring with recurrence → R-prefix id, recurrence persisted', async () => {
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateTaskTool.handler({
+      board_id: BOARD,
+      type: 'recurring',
+      title: 'Weekly review',
+      sender_name: 'alice',
+      recurrence: 'weekly',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data.id).toMatch(/^R\d+$/);
+    const row = db
+      .prepare(`SELECT recurrence FROM tasks WHERE id = ?`)
+      .get(result.data.id) as { recurrence: string };
+    expect(row.recurrence).toBe('weekly');
+  });
+
+  it('rejects type=meeting (use api_create_meeting_task instead)', async () => {
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateTaskTool.handler({
+      board_id: BOARD,
+      type: 'meeting' as unknown as 'simple',
+      title: 'Meeting',
+      sender_name: 'alice',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/type/);
+  });
+
+  it('rejects unknown type value', async () => {
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateTaskTool.handler({
+      board_id: BOARD,
+      type: 'bogus' as unknown as 'simple',
+      title: 'X',
+      sender_name: 'alice',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/type/);
+  });
+
+  it('rejects non-string board_id', async () => {
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateTaskTool.handler({
+      board_id: 42 as unknown as string,
+      type: 'simple',
+      title: 'X',
+      sender_name: 'alice',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/board_id/);
+  });
+
+  it('rejects non-array subtasks', async () => {
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateTaskTool.handler({
+      board_id: BOARD,
+      type: 'project',
+      title: 'X',
+      sender_name: 'alice',
+      subtasks: 'oops' as unknown as string[],
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/subtasks/);
+  });
+
+  it('rejects invalid recurrence enum value', async () => {
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateTaskTool.handler({
+      board_id: BOARD,
+      type: 'recurring',
+      title: 'X',
+      sender_name: 'alice',
+      recurrence: 'biweekly' as unknown as 'weekly',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/recurrence/);
+  });
+});

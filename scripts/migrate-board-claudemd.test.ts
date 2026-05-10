@@ -33,10 +33,9 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     expect(result.output).toBe('When you call api_move, the engine validates.');
   });
 
-  it('leaves taskflow_query, taskflow_create, taskflow_update, taskflow_hierarchy, taskflow_dependency UNTOUCHED', () => {
+  it('leaves taskflow_query/update/hierarchy/dependency UNTOUCHED (still in Phase 2)', () => {
     const input = [
       "`taskflow_query({ query: 'task_details', task_id: 'T1' })`",
-      "`taskflow_create({ type: 'simple', title: 'X', sender_name: 'alice' })`",
       "`taskflow_update({ task_id: 'T1', updates: { add_note: 'X' }, sender_name: 'alice' })`",
       "`taskflow_hierarchy({ task_id: 'P1' })`",
       "`taskflow_dependency({ task_id: 'T1' })`",
@@ -44,10 +43,44 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     const result = migrateBoardClaudeMd(input);
     expect(result.output).toBe(input);
     expect(result.unmigrated.taskflow_query).toBe(1);
-    expect(result.unmigrated.taskflow_create).toBe(1);
     expect(result.unmigrated.taskflow_update).toBe(1);
     expect(result.unmigrated.taskflow_hierarchy).toBe(1);
     expect(result.unmigrated.taskflow_dependency).toBe(1);
+  });
+
+  it('taskflow_create with type:simple → api_create_task with type preserved', () => {
+    const input = "`taskflow_create({ type: 'simple', title: 'X', sender_name: 'alice' })`";
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain("api_create_task({ board_id: BOARD_ID, type: 'simple',");
+    expect(result.output).not.toMatch(/taskflow_create/);
+  });
+
+  it('taskflow_create with type:meeting → api_create_meeting_task (type dropped)', () => {
+    const input =
+      "`taskflow_create({ type: 'meeting', title: 'SEMA', scheduled_at: '2026-06-15T14:00:00Z', sender_name: 'alice' })`";
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('api_create_meeting_task({ board_id: BOARD_ID,');
+    expect(result.output).not.toContain("type: 'meeting'");
+    expect(result.output).not.toMatch(/taskflow_create/);
+  });
+
+  it('taskflow_create with type:project preserved → api_create_task with type:project', () => {
+    const input =
+      "`taskflow_create({ type: 'project', title: 'Big', subtasks: ['A', 'B'], sender_name: 'alice' })`";
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain("api_create_task({ board_id: BOARD_ID, type: 'project',");
+  });
+
+  it('taskflow_create without inline type literal falls back to api_create_task', () => {
+    const input = '`taskflow_create({title: VAR, type: VAR2, sender_name: SENDER})`';
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('api_create_task({ board_id: BOARD_ID,');
+  });
+
+  it('bare `taskflow_create` mention (no paren) → api_create_task', () => {
+    const input = 'Use taskflow_create to register new tasks.';
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toBe('Use api_create_task to register new tasks.');
   });
 
   it('reports counts: substituted vs unmigrated', () => {

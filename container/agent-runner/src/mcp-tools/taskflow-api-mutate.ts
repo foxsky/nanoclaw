@@ -27,6 +27,12 @@ type MoveAction = (typeof MOVE_ACTIONS)[number];
 const REPORT_TYPES = ['standup', 'digest', 'weekly'] as const;
 type ReportType = (typeof REPORT_TYPES)[number];
 
+const CREATE_TASK_TYPES = ['simple', 'project', 'recurring', 'inbox'] as const;
+type CreateTaskType = (typeof CREATE_TASK_TYPES)[number];
+
+const RECURRENCES = ['daily', 'weekly', 'monthly', 'yearly'] as const;
+type Recurrence = (typeof RECURRENCES)[number];
+
 const ADMIN_ACTIONS = [
   'register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin',
   'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays',
@@ -696,8 +702,165 @@ export const apiReportTool: McpToolDefinition = {
   },
 };
 
+export const apiCreateTaskTool: McpToolDefinition = {
+  tool: {
+    name: 'api_create_task',
+    description:
+      'Create a task of type simple/project/recurring/inbox. type=simple goes to next_action; type=inbox stays in inbox; type=project allocates a P-prefix id and creates subtask rows; type=recurring allocates an R-prefix id and persists the recurrence cycle. Use api_create_meeting_task for meetings.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+        type: { type: 'string', enum: [...CREATE_TASK_TYPES] },
+        title: { type: 'string' },
+        sender_name: { type: 'string' },
+        assignee: { type: 'string' },
+        priority: { type: 'string', enum: [...PRIORITIES] },
+        due_date: { type: ['string', 'null'] },
+        labels: { type: 'array', items: { type: 'string' } },
+        subtasks: { type: 'array' },
+        recurrence: { type: 'string', enum: [...RECURRENCES] },
+        recurrence_anchor: { type: 'string' },
+        recurrence_end_date: { type: 'string' },
+        max_cycles: { type: 'integer' },
+        allow_non_business_day: { type: 'boolean' },
+        intended_weekday: { type: 'string' },
+      },
+      required: ['board_id', 'title', 'sender_name', 'type'],
+    },
+  },
+  async handler(args) {
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) return err('board_id: required string');
+    const title = requireString(args, 'title');
+    if (title === null) return err('title: required string');
+    const senderName = requireString(args, 'sender_name');
+    if (senderName === null) return err('sender_name: required string');
+    if (
+      typeof args.type !== 'string' ||
+      !CREATE_TASK_TYPES.includes(args.type as CreateTaskType)
+    ) {
+      return err(`type: expected one of ${CREATE_TASK_TYPES.join(' | ')}`);
+    }
+    const taskType = args.type as CreateTaskType;
+
+    let assignee: string | undefined;
+    if (args.assignee !== undefined) {
+      if (typeof args.assignee !== 'string') return err('assignee: expected string');
+      assignee = args.assignee;
+    }
+    let priority: Priority | undefined;
+    if (args.priority !== undefined) {
+      if (!PRIORITIES.includes(args.priority as Priority)) {
+        return err(`priority: expected one of ${PRIORITIES.join(' | ')}`);
+      }
+      priority = args.priority as Priority;
+    }
+    let dueDate: string | undefined;
+    if (args.due_date !== undefined && args.due_date !== null) {
+      if (typeof args.due_date !== 'string') return err('due_date: expected string or null');
+      dueDate = args.due_date;
+    }
+    let labels: string[] | undefined;
+    if (args.labels !== undefined) {
+      if (!Array.isArray(args.labels) || args.labels.some((l) => typeof l !== 'string')) {
+        return err('labels: expected array of strings');
+      }
+      labels = args.labels as string[];
+    }
+    // Subtasks accept either a string (title-only) or {title, assignee?}.
+    // We validate shape but defer assignee-resolution to the engine.
+    let subtasks: Array<string | { title: string; assignee?: string }> | undefined;
+    if (args.subtasks !== undefined) {
+      if (!Array.isArray(args.subtasks)) return err('subtasks: expected array');
+      const validated: Array<string | { title: string; assignee?: string }> = [];
+      for (let i = 0; i < args.subtasks.length; i++) {
+        const sub = args.subtasks[i];
+        if (typeof sub === 'string') {
+          validated.push(sub);
+        } else if (sub && typeof sub === 'object' && !Array.isArray(sub)) {
+          const s = sub as Record<string, unknown>;
+          if (typeof s.title !== 'string') return err(`subtasks[${i}].title: expected string`);
+          if (s.assignee !== undefined && typeof s.assignee !== 'string') {
+            return err(`subtasks[${i}].assignee: expected string`);
+          }
+          validated.push({ title: s.title, assignee: s.assignee as string | undefined });
+        } else {
+          return err(`subtasks[${i}]: expected string or object`);
+        }
+      }
+      subtasks = validated;
+    }
+    let recurrence: Recurrence | undefined;
+    if (args.recurrence !== undefined) {
+      if (
+        typeof args.recurrence !== 'string' ||
+        !RECURRENCES.includes(args.recurrence as Recurrence)
+      ) {
+        return err(`recurrence: expected one of ${RECURRENCES.join(' | ')}`);
+      }
+      recurrence = args.recurrence as Recurrence;
+    }
+    let recurrenceAnchor: string | undefined;
+    if (args.recurrence_anchor !== undefined) {
+      if (typeof args.recurrence_anchor !== 'string') return err('recurrence_anchor: expected string');
+      recurrenceAnchor = args.recurrence_anchor;
+    }
+    let recurrenceEndDate: string | undefined;
+    if (args.recurrence_end_date !== undefined) {
+      if (typeof args.recurrence_end_date !== 'string') return err('recurrence_end_date: expected string');
+      recurrenceEndDate = args.recurrence_end_date;
+    }
+    let maxCycles: number | undefined;
+    if (args.max_cycles !== undefined) {
+      if (typeof args.max_cycles !== 'number' || !Number.isInteger(args.max_cycles)) {
+        return err('max_cycles: expected integer');
+      }
+      maxCycles = args.max_cycles;
+    }
+    let intendedWeekday: string | undefined;
+    if (args.intended_weekday !== undefined) {
+      if (typeof args.intended_weekday !== 'string') return err('intended_weekday: expected string');
+      intendedWeekday = args.intended_weekday;
+    }
+    let allowNonBusinessDay: boolean | undefined;
+    if (args.allow_non_business_day !== undefined) {
+      if (typeof args.allow_non_business_day !== 'boolean') {
+        return err('allow_non_business_day: expected boolean');
+      }
+      allowNonBusinessDay = args.allow_non_business_day;
+    }
+
+    try {
+      const db = getTaskflowDb();
+      const engine = new TaskflowEngine(db, boardId);
+      const result = engine.create({
+        board_id: boardId,
+        type: taskType,
+        title,
+        sender_name: senderName,
+        assignee,
+        priority,
+        due_date: dueDate,
+        labels,
+        subtasks,
+        recurrence,
+        recurrence_anchor: recurrenceAnchor,
+        recurrence_end_date: recurrenceEndDate,
+        max_cycles: maxCycles,
+        intended_weekday: intendedWeekday,
+        allow_non_business_day: allowNonBusinessDay,
+      });
+      return finalizeCreatedTaskResult(db, engine, boardId, result);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error: msg });
+    }
+  },
+};
+
 registerTools([
-  apiCreateSimpleTaskTool, apiCreateMeetingTaskTool, apiMoveTool,
-  apiAdminTool, apiReassignTool, apiUndoTool, apiReportTool,
+  apiCreateSimpleTaskTool, apiCreateMeetingTaskTool, apiCreateTaskTool,
+  apiMoveTool, apiAdminTool, apiReassignTool, apiUndoTool, apiReportTool,
   apiDeleteSimpleTaskTool,
 ]);
