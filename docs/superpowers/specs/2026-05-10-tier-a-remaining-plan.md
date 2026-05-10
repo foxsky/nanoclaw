@@ -104,9 +104,12 @@ This document scopes the four Tier A items still open before v2 production cutov
 
 **Sub-tasks:**
 
-1. **A5.2.1 — Decide per-tool approach** (2-3h)
+1. **A5.2.0 — Discovery (2026-05-10): substitution alone is insufficient.** When attempting to extend `scripts/migrate-board-claudemd.ts` for `taskflow_create`, found that **v2's `api_create_simple_task` hardcodes `type: 'inbox'`** in its `engine.create()` call (`container/agent-runner/src/mcp-tools/taskflow-api-mutate.ts:76`). v1's `taskflow_create({type: 'simple', ...})` placed tasks in `next_action`; substituting to `api_create_simple_task` silently re-routes them to `inbox`. Same shape problem for `type: 'project'` / `'recurring'`. **Conclusion:** A5 Phase 2 is gated on broader v2 surface work (A5.2.1 below).
+
+2. **A5.2.1 — Decide per-tool approach** (2-3h)
    - For each of the 5: ship a new MCP wrapper that preserves v1 vocabulary (like A11 did for move/admin/etc.), OR rewrite CLAUDE.md workflow language to compose v2's split surface.
    - Cost trade-off: new wrappers cost ~1-3h each but make A5 Phase 2 mechanical; workflow rewrites cost more per-board but no engine changes.
+   - The `taskflow_create`-→ `api_create_simple_task` mismatch above is the type case (hardcoded `type: 'inbox'`). To make substitution mechanical, either: (a) extend `api_create_simple_task` to accept `type: 'simple' | 'inbox' | 'project' | 'recurring'`; (b) ship `api_create_project_task` / `api_create_recurring_task` to mirror `api_create_meeting_task` (A10).
 
 2. **A5.2.2 — Build wrappers for chosen tools** (4-12h depending on count)
    - Same pattern as A11: TDD-RED → GREEN → Codex → /simplify → commit.
