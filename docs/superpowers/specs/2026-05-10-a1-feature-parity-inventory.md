@@ -266,7 +266,7 @@ Effort: 3-4h for F1 or F2.
 | A2 | Mutation parity (full 235 corpus) | 1-2 days | pending | original |
 | A3 | Migration safety | 2-3 days | pending | original |
 | A4 | Rollback verified | 1 day | pending | original |
-| A5 | Per-board CLAUDE.md regeneration | 1-2 days | **unblocked 2026-05-10** (A11 done) | A1.4 |
+| A5 | Per-board CLAUDE.md regeneration | 1-2 days | **Phase 1 DONE 2026-05-10** (commit 191bd5fb — 26.2% mechanical coverage, 1697 substitutions / 4774 remaining for Phase 2). Plan: [tier-a-remaining-plan.md](./2026-05-10-tier-a-remaining-plan.md#a5-phase-2--claudemd-regen-for-the-remaining-4774-v1-refs) | A1.4 |
 | A6 | Migration carries forward .mcp.json (refined) | 1-2h | ✅ DONE 2026-05-10 (commits 995b3211 → a798557d → 714b5b78) | A1.5 |
 | ~~A7~~ | ~~board_chat not written by v2~~ | ~~4-6h~~ | ✅ CLOSED 2026-05-10 — deferred to tf-mcontrol-deploy | A1.3 |
 | ~~A8~~ | ~~Multi-tenant org model migration~~ | ~~1-2h~~ | ✅ CLOSED 2026-05-10 — phantom blocker, dead schema | A1.3 |
