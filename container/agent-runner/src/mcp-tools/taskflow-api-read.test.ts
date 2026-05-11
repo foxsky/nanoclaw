@@ -12,11 +12,26 @@ import {
 let db: Database;
 
 function seedReadFixtures(d: Database): void {
-  // Compute "today" / "+3 days" in JS UTC to match the engine's `today()`
-  // helper (`new Date().toISOString().slice(0, 10)`). Local-time would
-  // drift across the UTC-vs-local-timezone boundary near midnight.
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const threeDaysStr = new Date(Date.now() + 3 * 86400 * 1000).toISOString().slice(0, 10);
+  // Two engine code paths use DIFFERENT "today" sources:
+  //   - apiBoardActivity changes_today uses SQLite `date('now', 'localtime')`.
+  //   - apiFilterBoardTasks due_today uses JS `localDateString(new Date())`.
+  // Under bun:test these can disagree because the JS runtime reports
+  // `Intl.tz: UTC` while SQLite's C++ layer honors the OS-level TZ. So we
+  // seed each fixture with the source its own filter consults. The history
+  // row uses SQLite-now; the task due_date fields use JS-now. Within each
+  // filter the comparison is self-consistent regardless of timezone drift.
+  const localTodaySql = (d.prepare(`SELECT date('now', 'localtime') AS d`).get() as { d: string }).d;
+  const now = new Date();
+  const localTodayJs =
+    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  // "due this week" filter spans today..today+6 (JS local). Anchor on JS.
+  const threeDaysJs = new Date(Date.now() + 3 * 86400 * 1000);
+  const threeDaysStr =
+    `${threeDaysJs.getFullYear()}-${String(threeDaysJs.getMonth() + 1).padStart(2, '0')}-${String(threeDaysJs.getDate()).padStart(2, '0')}`;
+  // `todayStr` is the variable used by the existing seed SQL below — point
+  // it at the JS-side value so the due_date fixtures stay aligned with
+  // apiFilterBoardTasks. The history row uses `localTodaySql` directly.
+  const todayStr = localTodayJs;
   d.exec(`
     CREATE TABLE boards (
       id TEXT PRIMARY KEY, short_code TEXT, name TEXT, created_at TEXT NOT NULL
@@ -53,7 +68,7 @@ function seedReadFixtures(d: Database): void {
     INSERT INTO task_history (board_id, task_id, action, "by", "at", details)
       VALUES
         ('b1','t2','update','alice', '2020-01-01T00:00:00Z', '{"source":"old"}'),
-        ('b1','t1','create','alice', '${todayStr}T12:00:00', '{"source":"seed"}');
+        ('b1','t1','create','alice', '${localTodaySql}T12:00:00', '{"source":"seed"}');
   `);
 }
 
