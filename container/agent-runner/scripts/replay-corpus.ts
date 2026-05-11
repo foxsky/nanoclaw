@@ -16,11 +16,15 @@
  *
  * Usage:
  *   bun container/agent-runner/scripts/replay-corpus.ts \\
- *     --jsonls "/tmp/v2-pilot/all-sessions/<board>/.claude/projects/*\/*.jsonl" \\
+ *     --jsonls /tmp/v2-pilot/all-sessions \\
  *     --ref-db /tmp/v2-pilot/taskflow.db \\
  *     --board-from path:0 \\
  *     [--report-json /tmp/replay-report.json] \\
  *     [--limit 50]
+ *
+ * `--jsonls` is a ROOT DIRECTORY (the script walks it recursively for any
+ * `.jsonl` file). Don't pass a shell glob — quoting/expansion mismatches
+ * would silently zero-match.
  *
  * The `--board-from` arg controls how board_id is derived from a JSONL path:
  *   path:N        — split the JSONL's path-relative-to-the-jsonls-root and
@@ -98,11 +102,23 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 function findJsonls(root: string): string[] {
+  // Surface the root readdir error explicitly (Codex flagged silent swallow).
+  // Nested readdir errors are still tolerated — a single unreadable sub-dir
+  // shouldn't kill the corpus, just trim what we replay. The summary will
+  // surface engine_error counts so a wholesale failure is still visible.
+  const rootStat = fs.statSync(root); // throws ENOENT if root is missing
+  if (!rootStat.isDirectory()) {
+    throw new Error(`--jsonls must be a directory, got: ${root}`);
+  }
   const out: string[] = [];
   function walk(dir: string) {
     let entries: fs.Dirent[];
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
-    catch { return; }
+    catch (e) {
+      if (dir === root) throw e;
+      console.warn(`  WARN: skipped unreadable subdir ${dir}: ${e}`);
+      return;
+    }
     for (const e of entries) {
       const full = path.join(dir, e.name);
       if (e.isDirectory()) walk(full);
@@ -140,6 +156,14 @@ interface Record {
 async function main() {
   const args = parseArgs(process.argv);
   fs.mkdirSync(args.scratchDir, { recursive: true });
+
+  // Preflight: refDb must exist + be readable. Without this check, a wrong
+  // path silently fails per-mutation as engine_error and shows up only as
+  // `cannot_compare` in the final summary (Codex flagged this).
+  const refDbStat = fs.statSync(args.refDb); // ENOENT throws
+  if (!refDbStat.isFile()) {
+    throw new Error(`--ref-db must be a file, got: ${args.refDb}`);
+  }
 
   const jsonls = findJsonls(args.jsonlsRoot);
   if (jsonls.length === 0) {
@@ -184,7 +208,9 @@ async function main() {
       } catch (e: unknown) {
         engineError = e instanceof Error ? e.message : String(e);
       } finally {
-        for (const suffix of ['', '-wal', '-shm']) {
+        // Include -journal alongside -wal/-shm — DELETE-mode and rollback
+        // journals leave a different sidecar than WAL mode (Codex NICE).
+        for (const suffix of ['', '-wal', '-shm', '-journal']) {
           try { fs.unlinkSync(scratch + suffix); } catch { /* not present */ }
         }
       }
@@ -248,6 +274,24 @@ async function main() {
   if (args.reportJson) {
     fs.writeFileSync(args.reportJson, JSON.stringify({ records, verdictCounts, toolCounts }, null, 2));
     console.log(`\nWrote full report to ${args.reportJson}`);
+  }
+
+  // Codex IMPORTANT: if engine errors dominate, treat as broken-run rather
+  // than a successful corpus comparison. A misconfigured --ref-db or
+  // missing tables in the cloned DB will surface here as a wall of
+  // engine_error → all `cannot_compare`. Exit nonzero so the user knows
+  // the run is invalid.
+  const engineErrorCount = records.filter((r) => r.engine_error).length;
+  if (records.length > 0 && engineErrorCount / records.length >= 0.5) {
+    console.error(
+      `\nFAIL: ${engineErrorCount}/${records.length} mutations hit engine errors. ` +
+      `Likely the ref DB is missing tables or has incompatible schema. ` +
+      `Sample errors:`,
+    );
+    for (const r of records.filter((r) => r.engine_error).slice(0, 5)) {
+      console.error(`  [${r.tool_name}] ${r.engine_error}`);
+    }
+    process.exit(1);
   }
 }
 
