@@ -5310,10 +5310,10 @@ export class TaskflowEngine {
             // resolves 'parent_board' via agent_destinations (host wires this
             // at child-board provisioning time). Engine no longer emits JIDs.
             // (A12 2026-05-11.)
-            const parentBoard = this.db
-              .prepare(`SELECT group_folder FROM boards WHERE id = ?`)
-              .get(owningBoardId) as { group_folder: string } | undefined;
-            if (!parentBoard) {
+            const parentBoardExists = this.db
+              .prepare(`SELECT 1 FROM boards WHERE id = ?`)
+              .get(owningBoardId);
+            if (!parentBoardExists) {
               return {
                 success: false,
                 error: `Não foi possível enviar a solicitação para o quadro pai: registro do quadro ${owningBoardId} não encontrado. Peça ao gestor para verificar o cadastro do quadro.`,
@@ -8354,15 +8354,18 @@ export class TaskflowEngine {
           const hsaNow = new Date().toISOString();
           const subtasksToCreate: Array<{ title: string; assignee?: string | null }> = JSON.parse(req.subtasks_json);
 
-          // Look up the source board's short_code to build a symbolic
-          // destination_name 'source-<short_code>'. The parent agent's
-          // send_message MCP tool resolves the name via agent_destinations
-          // (host registers one row per wired child board). (A12 2026-05-11.)
+          // Look up the source board's group_folder to build the symbolic
+          // destination_name 'source-<group_folder>'. group_folder is
+          // boards.NOT NULL (taskflow-db.ts:21); short_code is optional and
+          // would yield 'source-null' on the common register-person path.
+          // The parent agent's send_message MCP tool resolves the name via
+          // agent_destinations (host registers one row per wired child).
+          // (A12 2026-05-11.)
           const sourceBoardRow = this.db
-            .prepare(`SELECT short_code FROM boards WHERE id = ?`)
-            .get(req.source_board_id) as { short_code: string | null } | null;
-          const sourceDestinationName = sourceBoardRow?.short_code
-            ? `source-${sourceBoardRow.short_code}`
+            .prepare(`SELECT group_folder FROM boards WHERE id = ?`)
+            .get(req.source_board_id) as { group_folder: string } | null;
+          const sourceDestinationName = sourceBoardRow
+            ? `source-${sourceBoardRow.group_folder}`
             : null;
 
           if (params.decision === 'reject') {

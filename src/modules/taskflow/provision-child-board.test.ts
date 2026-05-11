@@ -234,11 +234,11 @@ describe('handleProvisionChildBoard', () => {
     expect(wiring.engage_mode).toBe('pattern');
     expect(wiring.engage_pattern).toBe('.');
 
-    // A12: cross-board approval needs symbolic destinations on BOTH ends so the
-    // child agent's send_message can route 'parent_board' to the parent's chat
-    // and the parent agent's send_message can route 'source-<short_code>' to
-    // each wired child's chat. Auto-registered at provision time to mirror v1's
-    // automatic cross-board approval routing.
+    // A12: cross-board approval needs symbolic destinations on BOTH ends.
+    // Child registers 'parent_board' → parent's messaging_group. Parent
+    // registers 'source-<child_folder>' → child's messaging_group. The
+    // group_folder (NOT NULL per schema) is used instead of short_code
+    // (optional) so the name never collapses to 'source-null'.
     const childParentDest = getDb()
       .prepare(
         `SELECT target_type, target_id FROM agent_destinations
@@ -257,17 +257,17 @@ describe('handleProvisionChildBoard', () => {
       )
       .get(newAg!.id) as { id: string };
 
-    // Parent's source-<short_code> destination → child's messaging_group.
-    // Query by pattern (don't hardcode the short_code derivation).
+    // Parent's destination is 'source-<child_folder>'. The child's folder
+    // is 'ux-setd-secti-taskflow' per the validInput fixture.
     const parentSourceDest = getDb()
       .prepare(
-        `SELECT local_name, target_type, target_id FROM agent_destinations
-         WHERE agent_group_id = 'ag-eng' AND local_name LIKE 'source-%' AND target_id = ?`,
+        `SELECT target_type, target_id FROM agent_destinations
+         WHERE agent_group_id = 'ag-eng' AND local_name = 'source-ux-setd-secti-taskflow'`,
       )
-      .get(childMg.id) as { local_name: string; target_type: string; target_id: string } | undefined;
+      .get() as { target_type: string; target_id: string } | undefined;
     expect(parentSourceDest).toBeDefined();
     expect(parentSourceDest!.target_type).toBe('channel');
-    expect(parentSourceDest!.local_name).toMatch(/^source-\S+$/);
+    expect(parentSourceDest!.target_id).toBe(childMg.id);
   });
 
   it('drops when person already registered on this parent board', async () => {

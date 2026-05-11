@@ -6,7 +6,7 @@ import { DATA_DIR, GROUPS_DIR } from '../../config.js';
 import { getChannelAdapter } from '../../channels/channel-registry.js';
 import { getAgentGroup, getAllAgentGroups } from '../../db/agent-groups.js';
 import { getAllMessagingGroups, getMessagingGroup } from '../../db/messaging-groups.js';
-import { createDestination } from '../agent-to-agent/db/agent-destinations.js';
+import { createDestination, getDestinationByName } from '../agent-to-agent/db/agent-destinations.js';
 import { writeDestinations } from '../agent-to-agent/write-destinations.js';
 import { getDb as getCentralDb } from '../../db/connection.js';
 import { hasTable } from '../../db/connection.js';
@@ -501,33 +501,41 @@ export async function handleProvisionChildBoard(
       log.info('provision_child_board: v2 wiring complete', { childAgentGroupId, folder, childGroupJid });
 
       // A12: register symbolic destinations for cross-board approval routing.
-      // Mirrors v1's automatic parent↔child message routing. The child's
-      // send_message('parent_board') and parent's send_message
-      // ('source-<short_code>') resolve at runtime via agent_destinations.
-      // Skip silently if the agent-to-agent module isn't installed (same
-      // guard pattern as messaging-groups.ts:213) or if the parent session
-      // has no messaging_group_id (DM-only path).
-      if (session.messaging_group_id && hasTable(getCentralDb(), 'agent_destinations')) {
+      // Child uses 'parent_board'; parent uses 'source-<child_folder>'.
+      // boards.group_folder is NOT NULL + unique, so the source-* name
+      // never collides on null and never collides cross-child (unlike
+      // boards.short_code which is optional and would yield 'source-null').
+      // Guard: skip when the agent-to-agent module isn't installed (same
+      // pattern as messaging-groups.ts:213) or session is DM-only.
+      // Idempotency: getDestinationByName precondition mirrors
+      // messaging-groups.ts:222-227 / create-agent.ts:99-103. Without it
+      // a re-provision throws on PK (agent_group_id, local_name).
+      const parentMgId = session.messaging_group_id;
+      if (parentMgId && hasTable(getCentralDb(), 'agent_destinations')) {
         const destTs = new Date().toISOString();
-        createDestination({
-          agent_group_id: childAgentGroupId,
-          local_name: 'parent_board',
-          target_type: 'channel',
-          target_id: session.messaging_group_id,
-          created_at: destTs,
-        });
-        createDestination({
-          agent_group_id: session.agent_group_id,
-          local_name: `source-${parsed.shortCode}`,
-          target_type: 'channel',
-          target_id: childMessagingGroupId,
-          created_at: destTs,
-        });
-        // Propagate the new 'source-<short_code>' destination to the running
-        // parent container's inbound.db so the agent can route the approval-
-        // decision notification at next call without waiting for container
-        // wake (see top-of-file invariant in agent-destinations.ts).
-        writeDestinations(session.agent_group_id, session.id);
+        if (!getDestinationByName(childAgentGroupId, 'parent_board')) {
+          createDestination({
+            agent_group_id: childAgentGroupId,
+            local_name: 'parent_board',
+            target_type: 'channel',
+            target_id: parentMgId,
+            created_at: destTs,
+          });
+        }
+        const sourceName = `source-${folder}`;
+        if (!getDestinationByName(session.agent_group_id, sourceName)) {
+          createDestination({
+            agent_group_id: session.agent_group_id,
+            local_name: sourceName,
+            target_type: 'channel',
+            target_id: childMessagingGroupId,
+            created_at: destTs,
+          });
+          // Propagate to the running parent container's inbound.db
+          // (top-of-file invariant in agent-destinations.ts). Only when
+          // actually inserted — an existing row is already projected.
+          writeDestinations(session.agent_group_id, session.id);
+        }
       }
     } catch (err) {
       log.error('provision_child_board: failed to wire v2', { err, childAgentGroupId });

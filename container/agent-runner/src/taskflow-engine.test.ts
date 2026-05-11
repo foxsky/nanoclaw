@@ -6271,10 +6271,11 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
       expect((r as any).data.created_subtask_ids).toContain('P1.2');
       expect((r as any).notifications).toBeDefined();
       // A12: notification routes to the source board by symbolic destination
-      // name 'source-<short_code>'; the parent agent's send_message MCP
-      // resolves this name via its agent_destinations registry. CHI is the
-      // child board's short_code seeded at test setup (line 6156).
-      expect((r as any).notifications[0].destination_name).toBe('source-CHI');
+      // name 'source-<group_folder>'. group_folder is required-non-null per
+      // taskflow-db.ts schema; short_code is optional and would yield
+      // 'source-null' on register-person paths. 'child' is the test
+      // fixture's group_folder for CHILD_BOARD (line 6156).
+      expect((r as any).notifications[0].destination_name).toBe('source-child');
       expect((r as any).notifications[0].target_chat_jid).toBeUndefined();
 
       // Subtask created on parent board
