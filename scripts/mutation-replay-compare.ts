@@ -1,26 +1,6 @@
 /**
- * A2.1.b — pure parity-verdict function for mutation replay.
- *
- * Given a v1 tool_result output (from session JSONL) and a v2 engine
- * output (or wrapped MCP-tool output), returns a structured verdict on
- * whether v2's behavior matches v1's.
- *
- * Verdicts:
- *   match              — both succeeded with consistent payload, OR both
- *                        failed with matching error_code.
- *   both_rejected      — both failed but error messages differ. Usually
- *                        acceptable (engine error-message wording can
- *                        evolve); flag for review.
- *   regression         — v1 success, v2 failure. Investigate.
- *   relaxation         — v1 failure, v2 success. Investigate (engine
- *                        became more permissive).
- *   divergent_payload  — both succeeded but the result payload differs
- *                        in a load-bearing field (task_id mismatch, etc.).
- *   cannot_compare     — v1 output is missing (orphan tool_use).
- *
- * v2 results may be either raw engine output ({success, task_id, ...}) or
- * wrapped MCP-tool output ({success, data: {...}, notification_events}).
- * We unwrap the `data` envelope before comparing task_id-shaped fields.
+ * Pure parity-verdict function for mutation replay. The Verdict union
+ * documents the result space.
  */
 
 export type ToolResult = Record<string, unknown> | null;
@@ -81,20 +61,17 @@ export function compareReplayResult(v1: ToolResult, v2: ToolResult): ReplayCompa
     return {
       ...base,
       verdict: 'regression',
-      divergence: `v1 succeeded; v2 failed: ${stringField(v2, 'error') ?? '(no error message)'}`,
+      divergence: `v1 succeeded; v2 failed: ${extractFailureReason(v2)}`,
     };
   }
-  // !v1Success && v2Success
   return {
     ...base,
     verdict: 'relaxation',
-    divergence: `v1 failed (${stringField(v1, 'error') ?? '(no v1 error)'}); v2 succeeded`,
+    divergence: `v1 failed (${extractFailureReason(v1)}); v2 succeeded`,
   };
 }
 
 function checkPayloadMatch(v1: Record<string, unknown>, v2: Record<string, unknown>, base: ReplayComparison): ReplayComparison {
-  // v2 MCP-wrapper shape: { success, data: {...inner...}, notification_events }
-  // Unwrap so the task_id check works against either shape.
   const v2Inner = unwrapData(v2);
   const v1Tid = stringField(v1, 'task_id');
   const v2Tid = stringField(v2Inner, 'task_id') ?? stringField(v2, 'task_id');
@@ -113,14 +90,12 @@ function resolveBothRejected(v1: Record<string, unknown>, v2: Record<string, unk
   const v1ErrCode = stringField(v1, 'error_code');
   const v2ErrCode = stringField(v2, 'error_code');
   if (v1ErrCode && v2ErrCode && v1ErrCode === v2ErrCode) {
-    return base; // exact match on error_code → 'match'
+    return base;
   }
-  // Both failed; either no error_code or mismatching codes. Surface as
-  // 'both_rejected' so callers can decide if message-text drift matters.
   return {
     ...base,
     verdict: 'both_rejected',
-    divergence: `v1=${stringField(v1, 'error') ?? '?'} | v2=${stringField(v2, 'error') ?? '?'}`,
+    divergence: `v1=${extractFailureReason(v1)} | v2=${extractFailureReason(v2)}`,
   };
 }
 
@@ -135,4 +110,25 @@ function unwrapData(result: Record<string, unknown>): Record<string, unknown> {
 function stringField(obj: Record<string, unknown>, key: string): string | undefined {
   const value = obj[key];
   return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * Engine rejections surface via `error` (string) OR `offer_register` (object
+ * emitted by buildOfferRegisterError when a referenced person isn't registered).
+ * Both must be checked or we lose the reason on the offer_register branch.
+ */
+function extractFailureReason(result: Record<string, unknown>): string {
+  const errorStr = stringField(result, 'error');
+  if (errorStr) return errorStr;
+
+  const offer = result.offer_register;
+  if (offer && typeof offer === 'object' && !Array.isArray(offer)) {
+    const o = offer as Record<string, unknown>;
+    const name = stringField(o, 'name');
+    const message = stringField(o, 'message');
+    if (name || message) {
+      return `offer_register${name ? ` (${name})` : ''}${message ? `: ${message}` : ''}`;
+    }
+  }
+  return '(no error message)';
 }

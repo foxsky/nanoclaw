@@ -165,6 +165,78 @@ describe('parseJsonlForMutations — extract v1 mutation tool calls from session
     expect(result).toHaveLength(1);
   });
 
+  it('captures the JSONL line timestamp on each extracted mutation', () => {
+    // A2.4 sequential replay sorts mutations across all sessions chronologically.
+    // Each tool_use must therefore carry the timestamp of its source JSONL line.
+    const lines = [
+      JSON.stringify({
+        timestamp: '2026-04-08T15:38:09.618Z',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'tu_1', name: 'mcp__nanoclaw__taskflow_move',
+              input: { task_id: 'T1', action: 'start', sender_name: 'alice' } },
+          ],
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-04-08T15:38:11.842Z',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'tu_2', name: 'mcp__nanoclaw__taskflow_update',
+              input: { task_id: 'T1', updates: { add_note: 'X' }, sender_name: 'alice' } },
+          ],
+        },
+      }),
+    ];
+    const result = parseJsonlForMutations(lines.join('\n'));
+    expect(result).toHaveLength(2);
+    expect(result[0].timestamp).toBe('2026-04-08T15:38:09.618Z');
+    expect(result[1].timestamp).toBe('2026-04-08T15:38:11.842Z');
+  });
+
+  it('captures monotonic line_index for stable secondary ordering (Codex IMPORTANT)', () => {
+    // Same JSONL line may hold multiple tool_use blocks; same-timestamp
+    // mutations across different lines need a stable secondary order to
+    // disambiguate. line_index is 0-based across the WHOLE JSONL.
+    const lines = [
+      JSON.stringify({
+        timestamp: '2026-04-08T15:38:09.618Z',
+        message: { role: 'assistant', content: [
+          { type: 'tool_use', id: 'tu_1', name: 'mcp__nanoclaw__taskflow_move',
+            input: { task_id: 'T1', action: 'start', sender_name: 'a' } },
+          { type: 'tool_use', id: 'tu_2', name: 'mcp__nanoclaw__taskflow_update',
+            input: { task_id: 'T1', updates: { add_note: 'X' }, sender_name: 'a' } },
+        ]},
+      }),
+      JSON.stringify({
+        timestamp: '2026-04-08T15:38:11.842Z',
+        message: { role: 'assistant', content: [
+          { type: 'tool_use', id: 'tu_3', name: 'mcp__nanoclaw__taskflow_move',
+            input: { task_id: 'T2', action: 'start', sender_name: 'a' } },
+        ]},
+      }),
+    ];
+    const result = parseJsonlForMutations(lines.join('\n'));
+    expect(result).toHaveLength(3);
+    // tu_1 and tu_2 share a timestamp but tu_1 comes first in the line
+    expect(result[0].line_index).toBeLessThan(result[1].line_index!);
+    expect(result[1].line_index).toBeLessThan(result[2].line_index!);
+  });
+
+  it('timestamp is undefined when the JSONL line has none', () => {
+    const lines = [
+      JSON.stringify({
+        message: { role: 'assistant', content: [
+          { type: 'tool_use', id: 'tu_1', name: 'mcp__nanoclaw__taskflow_move', input: {} },
+        ]},
+      }),
+    ];
+    const result = parseJsonlForMutations(lines.join('\n'));
+    expect(result[0].timestamp).toBeUndefined();
+  });
+
   it('all 8 v1 mutation tools are recognized (including dependency + hierarchy)', () => {
     const tools = [
       'taskflow_move', 'taskflow_admin', 'taskflow_reassign',

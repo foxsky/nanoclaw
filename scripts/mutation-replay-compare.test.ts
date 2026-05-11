@@ -39,6 +39,34 @@ describe('compareReplayResult — judge v1 vs v2 mutation parity', () => {
     expect(result.divergence).toContain('Permission denied');
   });
 
+  it('v2 failure with offer_register (no error field) → divergence surfaces the offer message', () => {
+    // engine.buildOfferRegisterError returns { success:false, offer_register:{name,message} }
+    // with no `error` field. Without explicit handling, the divergence string fell
+    // through to "(no error message)", masking the real reason (unknown person).
+    const result = compareReplayResult(
+      { success: true, task_id: 'T89' },
+      {
+        success: false,
+        offer_register: {
+          name: 'rafael',
+          message: 'Preciso do nome exibido no grupo, telefone e cargo.',
+        },
+      },
+    );
+    expect(result.verdict).toBe('regression');
+    expect(result.divergence).toContain('offer_register');
+    expect(result.divergence).toContain('rafael');
+    expect(result.divergence).not.toContain('(no error message)');
+  });
+
+  it('v2 failure with offer_register prefers offer.message over no-error fallback', () => {
+    const result = compareReplayResult(
+      { success: true },
+      { success: false, offer_register: { name: 'laizys', message: 'register first' } },
+    );
+    expect(result.divergence).toContain('register first');
+  });
+
   it('v1 failure / v2 success → relaxation flag (engine became more permissive)', () => {
     const result = compareReplayResult(
       { success: false, error: 'Permission denied' },

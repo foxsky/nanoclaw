@@ -1,19 +1,7 @@
 /**
- * A2.1 — Mutation-replay harness building blocks.
- *
- * Two pure functions used by the mutation-parity test (A2):
- *
- *   parseJsonlForMutations: extract paired (tool_use + tool_result) records
- *     from a session JSONL, filtered to the 6 v1 mutation tool names.
- *
- *   v1ToV2EngineCall: map a v1 tool name + input to a v2 engine method name
- *     + params, injecting board_id (which v1 took implicitly from its engine
- *     closure but v2 requires explicitly).
- *
- * A separate runner (not in this file) opens a v2 TaskflowEngine against a
- * scratch DB, dispatches engine[method](params), captures the result, and
- * diffs the post-state against v1's known post-state. This file owns the
- * pure logic so it is unit-testable without a SQLite dependency.
+ * Pure mutation-replay building blocks. SQLite-free so they are
+ * unit-testable on the host. The Bun-side runner (mutation-replay-runner.ts)
+ * dispatches engine[method](params) using the call shape produced here.
  */
 
 const V1_MUTATION_TOOLS = [
@@ -23,9 +11,6 @@ const V1_MUTATION_TOOLS = [
   'taskflow_undo',
   'taskflow_create',
   'taskflow_update',
-  // Codex flagged 2026-05-10: dependency + hierarchy are both v1 wrapper tools
-  // that mutate state (`engine.dependency(...)`, `engine.hierarchy(...)`),
-  // so a "full corpus" replay must include them.
   'taskflow_dependency',
   'taskflow_hierarchy',
 ] as const;
@@ -49,6 +34,11 @@ export interface ExtractedMutation {
   input: Record<string, unknown>;
   /** Parsed JSON of the tool_result.content[0].text, or null if no result paired. */
   output: Record<string, unknown> | null;
+  /** ISO-8601 timestamp of the JSONL line that emitted the tool_use, if present. */
+  timestamp?: string;
+  /** Monotonic 0-based index across all tool_use blocks in this JSONL file.
+   *  Secondary sort key for same-timestamp mutations. */
+  line_index?: number;
 }
 
 export interface V2EngineCall {
@@ -78,10 +68,11 @@ interface JsonlContentBlock {
 export function parseJsonlForMutations(jsonl: string): ExtractedMutation[] {
   const uses = new Map<string, ExtractedMutation>();
   const lines = jsonl.split('\n');
+  let toolUseIndex = 0;
 
   for (const line of lines) {
     if (!line.trim()) continue;
-    let parsed: { message?: { content?: JsonlContentBlock[] } };
+    let parsed: { message?: { content?: JsonlContentBlock[] }; timestamp?: string };
     try {
       parsed = JSON.parse(line);
     } catch {
@@ -89,6 +80,7 @@ export function parseJsonlForMutations(jsonl: string): ExtractedMutation[] {
     }
     const content = parsed?.message?.content;
     if (!Array.isArray(content)) continue;
+    const lineTimestamp = typeof parsed.timestamp === 'string' ? parsed.timestamp : undefined;
 
     for (const block of content) {
       if (block.type === 'tool_use' && block.id && typeof block.name === 'string') {
@@ -99,6 +91,8 @@ export function parseJsonlForMutations(jsonl: string): ExtractedMutation[] {
             tool_name: bare,
             input: block.input as Record<string, unknown>,
             output: null,
+            line_index: toolUseIndex++,
+            ...(lineTimestamp ? { timestamp: lineTimestamp } : {}),
           });
         }
       } else if (block.type === 'tool_result' && block.tool_use_id) {
