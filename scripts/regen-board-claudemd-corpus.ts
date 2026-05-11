@@ -18,19 +18,44 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { migrateBoardClaudeMd } from './migrate-board-claudemd.js';
 
-interface Args { in: string; out: string; report?: string; }
+interface Args {
+  in: string;
+  out: string;
+  report?: string;
+  /** Pre-substitution board_id remaps for prod rename history. Applied
+   *  before migrateBoardClaudeMd, so SQL/prose references that hardcode
+   *  an old board_id get rewritten to the current one. Required when v1
+   *  source files predate a boards-table rename (e.g., the 'sec-taskflow'
+   *  → 'sec-secti' rename surfaced by Codex on 2026-05-11). */
+  aliases: Record<string, string>;
+}
 
 function parseArgs(argv: string[]): Args {
   const args: Record<string, string> = {};
+  const aliases: Record<string, string> = {};
   for (let i = 2; i < argv.length; i += 2) {
-    if (!argv[i].startsWith('--')) throw new Error(`Unexpected arg: ${argv[i]}`);
-    args[argv[i].slice(2)] = argv[i + 1] ?? '';
+    const k = argv[i];
+    if (!k.startsWith('--')) throw new Error(`Unexpected arg: ${k}`);
+    const name = k.slice(2);
+    const val = argv[i + 1] ?? '';
+    if (name === 'alias') {
+      const eq = val.indexOf('=');
+      if (eq < 1) throw new Error(`--alias requires OLD=NEW, got ${val}`);
+      aliases[val.slice(0, eq)] = val.slice(eq + 1);
+    } else {
+      args[name] = val;
+    }
   }
   if (!args.in || !args.out) {
-    console.error('Usage: --in <dir> --out <dir> [--report <file.json>]');
+    console.error('Usage: --in <dir> --out <dir> [--report <file.json>] [--alias OLD=NEW]...');
     process.exit(2);
   }
-  return { in: args.in, out: args.out, report: args.report };
+  return { in: args.in, out: args.out, report: args.report, aliases };
+}
+
+/** Escape a literal string for safe use inside a global RegExp. */
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 interface PerBoard {
@@ -73,6 +98,9 @@ function main() {
         error: `read failed: ${e instanceof Error ? e.message : String(e)}`,
       });
       continue;
+    }
+    for (const [oldId, newId] of Object.entries(args.aliases)) {
+      raw = raw.replace(new RegExp(escapeRegex(oldId), 'g'), newId);
     }
     const result = migrateBoardClaudeMd(raw, { boardId });
     const outDir = path.join(args.out, folder);
