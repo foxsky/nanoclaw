@@ -15,17 +15,20 @@
  *   taskflow_undo      → api_undo
  *   taskflow_report    → api_report
  *
- * Phase 2 partial — composite-shape ports:
- *   taskflow_update    → api_update_task (composite updates: {...})
- *   taskflow_query     → api_query (composite query: 'X' discriminator)
+ * Phase 2 — composite-shape ports:
+ *   taskflow_update    → api_update_task     (composite updates: {...})
+ *   taskflow_query     → api_query           (composite query: 'X' discriminator)
+ *   taskflow_hierarchy → api_hierarchy       (link/unlink/refresh_rollup/tag_parent action)
+ *   taskflow_dependency → api_dependency     (add_dep/remove_dep/add_reminder/remove_reminder)
  *   taskflow_create({type:'meeting',...})    → api_create_meeting_task
  *   taskflow_create({type:'simple'|...,...}) → api_create_task
  *   taskflow_create (no inline type literal) → api_create_task fallback
  *   Bare taskflow_create mentions             → api_create_task
  *
- * NOT touched here (Phase 2 still pending — different param shapes):
- *   taskflow_hierarchy  (partial overlap with api_linked_tasks)
- *   taskflow_dependency (folds into api_update_simple_task or api_admin)
+ * A5 Phase 2 is complete — all v1 taskflow_* tools now have a v2
+ * substitute. Remaining work for full A5 closure is verifying the
+ * generated CLAUDE.md content against a live v2 agent on a sample
+ * board (qualitative review), then deploying to the 36 prod boards.
  *
  * BOARD_ID is a placeholder the agent resolves from session context, same
  * convention as SENDER (which v1 CLAUDE.md already uses).
@@ -42,12 +45,13 @@ const DIRECT_SUBSTITUTIONS: Record<string, string> = {
   taskflow_report: 'api_report',
   taskflow_update: 'api_update_task',
   taskflow_query: 'api_query',
+  taskflow_hierarchy: 'api_hierarchy',
+  taskflow_dependency: 'api_dependency',
 };
 
-const UNMIGRATED_TOOLS = [
-  'taskflow_hierarchy',
-  'taskflow_dependency',
-] as const;
+// Phase 2 complete — all v1 taskflow_* tools now have a v2 substitute.
+// Empty tuple is preserved for the type-shape of MigrationResult.unmigrated.
+const UNMIGRATED_TOOLS = [] as const;
 
 export interface MigrationResult {
   output: string;

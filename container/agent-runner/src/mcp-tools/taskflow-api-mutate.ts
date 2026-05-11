@@ -9,7 +9,7 @@
 import type { Database } from 'bun:sqlite';
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
-import type { AdminParams, QueryParams, ReassignParams, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
+import type { AdminParams, DependencyParams, HierarchyParams, QueryParams, ReassignParams, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { normalizeEngineNotificationEvents } from './taskflow-helpers.js';
@@ -26,6 +26,12 @@ type MoveAction = (typeof MOVE_ACTIONS)[number];
 
 const REPORT_TYPES = ['standup', 'digest', 'weekly'] as const;
 type ReportType = (typeof REPORT_TYPES)[number];
+
+const HIERARCHY_ACTIONS = ['link', 'unlink', 'refresh_rollup', 'tag_parent'] as const;
+type HierarchyAction = (typeof HIERARCHY_ACTIONS)[number];
+
+const DEPENDENCY_ACTIONS = ['add_dep', 'remove_dep', 'add_reminder', 'remove_reminder'] as const;
+type DependencyAction = (typeof DEPENDENCY_ACTIONS)[number];
 
 const CREATE_TASK_TYPES = ['simple', 'project', 'recurring', 'inbox'] as const;
 type CreateTaskType = (typeof CREATE_TASK_TYPES)[number];
@@ -986,8 +992,128 @@ export const apiQueryTool: McpToolDefinition = {
   },
 };
 
+export const apiHierarchyTool: McpToolDefinition = {
+  tool: {
+    name: 'api_hierarchy',
+    description:
+      "Hierarchy / parent-board linking ops via engine.hierarchy. Actions: link (delegate task to a child board owned by person_name); unlink (sever the child-board delegation); refresh_rollup (recompute the linked task's rollup status); tag_parent (mark this task as a child of parent_task_id on the parent board).",
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+        action: { type: 'string', enum: [...HIERARCHY_ACTIONS] },
+        task_id: { type: 'string' },
+        sender_name: { type: 'string' },
+        person_name: { type: 'string' },
+        parent_task_id: { type: 'string' },
+      },
+      required: ['board_id', 'action', 'task_id', 'sender_name'],
+    },
+  },
+  async handler(args) {
+    const parsed = parseTaskActorArgs(args);
+    if (!parsed.ok) return parsed.error;
+    const { boardId, taskId, senderName } = parsed;
+    if (typeof args.action !== 'string' || !HIERARCHY_ACTIONS.includes(args.action as HierarchyAction)) {
+      return err(`action: expected one of ${HIERARCHY_ACTIONS.join(' | ')}`);
+    }
+    const action = args.action as HierarchyAction;
+
+    let personName: string | undefined;
+    if (args.person_name !== undefined) {
+      if (typeof args.person_name !== 'string') return err('person_name: expected string');
+      personName = args.person_name;
+    }
+    let parentTaskId: string | undefined;
+    if (args.parent_task_id !== undefined) {
+      if (typeof args.parent_task_id !== 'string') return err('parent_task_id: expected string');
+      parentTaskId = args.parent_task_id;
+    }
+
+    try {
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      const params: HierarchyParams = {
+        board_id: boardId,
+        action,
+        task_id: taskId,
+        sender_name: senderName,
+        person_name: personName,
+        parent_task_id: parentTaskId,
+      };
+      const result = engine.hierarchy(params);
+      return finalizeMutationResult(result);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error: msg });
+    }
+  },
+};
+
+export const apiDependencyTool: McpToolDefinition = {
+  tool: {
+    name: 'api_dependency',
+    description:
+      "Dependency + reminder ops via engine.dependency. Actions: add_dep / remove_dep (manage task blockers via target_task_id); add_reminder / remove_reminder (schedule a follow-up nudge via reminder_days from now).",
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+        action: { type: 'string', enum: [...DEPENDENCY_ACTIONS] },
+        task_id: { type: 'string' },
+        sender_name: { type: 'string' },
+        target_task_id: { type: 'string' },
+        reminder_days: { type: 'integer' },
+      },
+      required: ['board_id', 'action', 'task_id', 'sender_name'],
+    },
+  },
+  async handler(args) {
+    const parsed = parseTaskActorArgs(args);
+    if (!parsed.ok) return parsed.error;
+    const { boardId, taskId, senderName } = parsed;
+    if (
+      typeof args.action !== 'string' ||
+      !DEPENDENCY_ACTIONS.includes(args.action as DependencyAction)
+    ) {
+      return err(`action: expected one of ${DEPENDENCY_ACTIONS.join(' | ')}`);
+    }
+    const action = args.action as DependencyAction;
+
+    let targetTaskId: string | undefined;
+    if (args.target_task_id !== undefined) {
+      if (typeof args.target_task_id !== 'string') return err('target_task_id: expected string');
+      targetTaskId = args.target_task_id;
+    }
+    let reminderDays: number | undefined;
+    if (args.reminder_days !== undefined) {
+      if (typeof args.reminder_days !== 'number' || !Number.isInteger(args.reminder_days)) {
+        return err('reminder_days: expected integer');
+      }
+      reminderDays = args.reminder_days;
+    }
+
+    try {
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      const params: DependencyParams = {
+        board_id: boardId,
+        action,
+        task_id: taskId,
+        sender_name: senderName,
+        target_task_id: targetTaskId,
+        reminder_days: reminderDays,
+      };
+      const result = engine.dependency(params);
+      return finalizeMutationResult(result);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error: msg });
+    }
+  },
+};
+
 registerTools([
   apiCreateSimpleTaskTool, apiCreateMeetingTaskTool, apiCreateTaskTool,
   apiMoveTool, apiAdminTool, apiReassignTool, apiUndoTool, apiReportTool,
-  apiUpdateTaskTool, apiQueryTool, apiDeleteSimpleTaskTool,
+  apiUpdateTaskTool, apiQueryTool, apiHierarchyTool, apiDependencyTool,
+  apiDeleteSimpleTaskTool,
 ]);

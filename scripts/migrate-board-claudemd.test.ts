@@ -33,15 +33,32 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     expect(result.output).toBe('When you call api_move, the engine validates.');
   });
 
-  it('leaves taskflow_hierarchy/dependency UNTOUCHED (still in Phase 2)', () => {
-    const input = [
-      "`taskflow_hierarchy({ task_id: 'P1' })`",
-      "`taskflow_dependency({ task_id: 'T1' })`",
-    ].join('\n');
+  it('all v1 taskflow_* tools now have a v2 substitute (Phase 2 complete)', () => {
+    const result = migrateBoardClaudeMd('');
+    // unmigrated dict has no keys — every former v1 tool routes somewhere
+    expect(Object.keys(result.unmigrated)).toEqual([]);
+  });
+
+  it('taskflow_hierarchy → api_hierarchy with action body preserved', () => {
+    const input =
+      "`taskflow_hierarchy({ task_id: 'P1', action: 'link', person_name: 'bob', sender_name: SENDER })`";
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toBe(input);
-    expect(result.unmigrated.taskflow_hierarchy).toBe(1);
-    expect(result.unmigrated.taskflow_dependency).toBe(1);
+    expect(result.output).toContain("api_hierarchy({ board_id: BOARD_ID, task_id: 'P1',");
+    expect(result.output).toContain("action: 'link'");
+  });
+
+  it('taskflow_dependency → api_dependency with action body preserved', () => {
+    const input =
+      "`taskflow_dependency({ task_id: 'T1', action: 'add_dep', target_task_id: 'T2', sender_name: SENDER })`";
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain("api_dependency({ board_id: BOARD_ID, task_id: 'T1',");
+    expect(result.output).toContain("action: 'add_dep'");
+  });
+
+  it('bare taskflow_hierarchy / taskflow_dependency mentions → api_*', () => {
+    const input = 'Use taskflow_hierarchy or taskflow_dependency for these flows.';
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toBe('Use api_hierarchy or api_dependency for these flows.');
   });
 
   it('taskflow_query → api_query with discriminator body preserved', () => {
@@ -161,15 +178,16 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     expect(result.output).not.toMatch(/,\s*\}/);
   });
 
-  it('reports counts: substituted vs unmigrated', () => {
+  it('reports counts: substituted (formerly also unmigrated; Phase 2 complete leaves unmigrated empty)', () => {
     const input = [
       "`taskflow_move({ task_id: 'T1', action: 'start', sender_name: 'alice' })`",
       "`taskflow_move({ task_id: 'T2', action: 'wait', sender_name: 'alice' })`",
-      "`taskflow_hierarchy({ task_id: 'P1' })`",
+      "`taskflow_hierarchy({ task_id: 'P1', action: 'unlink', sender_name: 'alice' })`",
     ].join('\n');
     const result = migrateBoardClaudeMd(input);
-    expect(result.substituted).toBe(2);
-    expect(result.unmigrated.taskflow_hierarchy).toBe(1);
+    expect(result.substituted).toBe(3);
+    // After Phase 2, every v1 tool routes somewhere; no unmigrated keys.
+    expect(Object.keys(result.unmigrated)).toEqual([]);
   });
 
   it('idempotent: running twice on the same input produces the same output', () => {

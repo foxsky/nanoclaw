@@ -1841,3 +1841,162 @@ describe('api_query MCP tool (A5.2.3 — composite read-side wrapper)', () => {
     expect(JSON.stringify(response.content)).toMatch(/task_id/);
   });
 });
+
+describe('api_hierarchy MCP tool (A5.2.4)', () => {
+  it('exports a tool with name "api_hierarchy"', async () => {
+    const { apiHierarchyTool } = await import('./taskflow-api-mutate.ts');
+    expect(apiHierarchyTool.tool.name).toBe('api_hierarchy');
+  });
+
+  it('declares required board_id/action/task_id/sender_name; action enum covers 4 ops', async () => {
+    const { apiHierarchyTool } = await import('./taskflow-api-mutate.ts');
+    const schema = apiHierarchyTool.tool.inputSchema as {
+      required: string[];
+      properties: Record<string, { enum?: string[] }>;
+    };
+    expect(schema.required).toEqual(
+      expect.arrayContaining(['board_id', 'action', 'task_id', 'sender_name']),
+    );
+    expect(schema.properties.action.enum).toEqual(
+      expect.arrayContaining(['link', 'unlink', 'refresh_rollup', 'tag_parent']),
+    );
+  });
+
+  it('rejects unknown action via enum', async () => {
+    const { apiHierarchyTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiHierarchyTool.handler({
+      board_id: BOARD,
+      action: 'nuke' as unknown as 'link',
+      task_id: 'T1',
+      sender_name: 'alice',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/action/);
+  });
+
+  it('engine rejects unlink on missing task → propagated as error', async () => {
+    const { apiHierarchyTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiHierarchyTool.handler({
+      board_id: BOARD,
+      action: 'unlink',
+      task_id: 'T-missing',
+      sender_name: 'alice',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(typeof result.error).toBe('string');
+  });
+
+  it('rejects non-string board_id', async () => {
+    const { apiHierarchyTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiHierarchyTool.handler({
+      board_id: 42 as unknown as string,
+      action: 'unlink',
+      task_id: 'T1',
+      sender_name: 'alice',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/board_id/);
+  });
+
+  it('rejects non-string parent_task_id', async () => {
+    const { apiHierarchyTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiHierarchyTool.handler({
+      board_id: BOARD,
+      action: 'tag_parent',
+      task_id: 'T1',
+      sender_name: 'alice',
+      parent_task_id: 42 as unknown as string,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/parent_task_id/);
+  });
+});
+
+describe('api_dependency MCP tool (A5.2.4)', () => {
+  it('exports a tool with name "api_dependency"', async () => {
+    const { apiDependencyTool } = await import('./taskflow-api-mutate.ts');
+    expect(apiDependencyTool.tool.name).toBe('api_dependency');
+  });
+
+  it('declares required board_id/action/task_id/sender_name; action enum covers 4 ops', async () => {
+    const { apiDependencyTool } = await import('./taskflow-api-mutate.ts');
+    const schema = apiDependencyTool.tool.inputSchema as {
+      required: string[];
+      properties: Record<string, { enum?: string[] }>;
+    };
+    expect(schema.required).toEqual(
+      expect.arrayContaining(['board_id', 'action', 'task_id', 'sender_name']),
+    );
+    expect(schema.properties.action.enum).toEqual(
+      expect.arrayContaining(['add_dep', 'remove_dep', 'add_reminder', 'remove_reminder']),
+    );
+  });
+
+  it('rejects unknown action via enum', async () => {
+    const { apiDependencyTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiDependencyTool.handler({
+      board_id: BOARD,
+      action: 'cascade' as unknown as 'add_dep',
+      task_id: 'T1',
+      sender_name: 'alice',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/action/);
+  });
+
+  it('add_dep happy path: persists target_task_id in blocked_by', async () => {
+    const { apiCreateSimpleTaskTool, apiDependencyTool } = await import('./taskflow-api-mutate.ts');
+    const created1 = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD, title: 'A', sender_name: 'alice',
+    });
+    const created2 = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD, title: 'B', sender_name: 'alice',
+    });
+    const t1 = JSON.parse(created1.content[0].text).data.id;
+    const t2 = JSON.parse(created2.content[0].text).data.id;
+
+    const response = await apiDependencyTool.handler({
+      board_id: BOARD,
+      action: 'add_dep',
+      task_id: t1,
+      target_task_id: t2,
+      sender_name: 'alice',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    const row = db.prepare(`SELECT blocked_by FROM tasks WHERE id = ?`).get(t1) as { blocked_by: string };
+    expect(row.blocked_by).toContain(t2);
+  });
+
+  it('engine rejects add_dep with missing target_task_id', async () => {
+    const { apiCreateSimpleTaskTool, apiDependencyTool } = await import('./taskflow-api-mutate.ts');
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD, title: 'X', sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+
+    const response = await apiDependencyTool.handler({
+      board_id: BOARD,
+      action: 'add_dep',
+      task_id: taskId,
+      sender_name: 'alice',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/target_task_id/);
+  });
+
+  it('rejects non-integer reminder_days', async () => {
+    const { apiDependencyTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiDependencyTool.handler({
+      board_id: BOARD,
+      action: 'add_reminder',
+      task_id: 'T1',
+      sender_name: 'alice',
+      reminder_days: 1.5 as unknown as number,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/reminder_days/);
+  });
+});
