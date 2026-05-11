@@ -9,7 +9,7 @@
 import type { Database } from 'bun:sqlite';
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
-import type { AdminParams, ReassignParams, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
+import type { AdminParams, QueryParams, ReassignParams, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { normalizeEngineNotificationEvents } from './taskflow-helpers.js';
@@ -938,8 +938,56 @@ export const apiUpdateTaskTool: McpToolDefinition = {
   },
 };
 
+export const apiQueryTool: McpToolDefinition = {
+  tool: {
+    name: 'api_query',
+    description:
+      "Composite read-side wrapper for engine.query. The `query` discriminator selects the sub-query: board, task_details (needs task_id), task_history (needs task_id), my_tasks/next_action/overdue/waiting/urgent/review/upcoming_meetings/meetings/summary/statistics/month_statistics (board-wide views), person_tasks/person_waiting/person_completed/person_review/person_statistics (need person_name), search/archive_search (need search_text), and others. Engine rejects unknown discriminators.",
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+        query: { type: 'string' },
+        sender_name: { type: 'string' },
+        person_name: { type: 'string' },
+        task_id: { type: 'string' },
+        search_text: { type: 'string' },
+        label: { type: 'string' },
+        since: { type: 'string' },
+        at: { type: 'string' },
+      },
+      required: ['board_id', 'query'],
+    },
+  },
+  async handler(args) {
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) return err('board_id: required string');
+    const query = requireString(args, 'query');
+    if (query === null) return err('query: required string');
+
+    const queryParams: QueryParams = { query };
+    for (const key of [
+      'sender_name', 'person_name', 'task_id', 'search_text', 'label', 'since', 'at',
+    ] as const) {
+      if (args[key] !== undefined) {
+        if (typeof args[key] !== 'string') return err(`${key}: expected string`);
+        (queryParams as unknown as Record<string, unknown>)[key] = args[key];
+      }
+    }
+
+    try {
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      const result = engine.query(queryParams);
+      return jsonResponse(result);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error: msg });
+    }
+  },
+};
+
 registerTools([
   apiCreateSimpleTaskTool, apiCreateMeetingTaskTool, apiCreateTaskTool,
   apiMoveTool, apiAdminTool, apiReassignTool, apiUndoTool, apiReportTool,
-  apiUpdateTaskTool, apiDeleteSimpleTaskTool,
+  apiUpdateTaskTool, apiQueryTool, apiDeleteSimpleTaskTool,
 ]);

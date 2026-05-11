@@ -33,17 +33,37 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     expect(result.output).toBe('When you call api_move, the engine validates.');
   });
 
-  it('leaves taskflow_query/hierarchy/dependency UNTOUCHED (still in Phase 2)', () => {
+  it('leaves taskflow_hierarchy/dependency UNTOUCHED (still in Phase 2)', () => {
     const input = [
-      "`taskflow_query({ query: 'task_details', task_id: 'T1' })`",
       "`taskflow_hierarchy({ task_id: 'P1' })`",
       "`taskflow_dependency({ task_id: 'T1' })`",
     ].join('\n');
     const result = migrateBoardClaudeMd(input);
     expect(result.output).toBe(input);
-    expect(result.unmigrated.taskflow_query).toBe(1);
     expect(result.unmigrated.taskflow_hierarchy).toBe(1);
     expect(result.unmigrated.taskflow_dependency).toBe(1);
+  });
+
+  it('taskflow_query → api_query with discriminator body preserved', () => {
+    const input = "`taskflow_query({ query: 'task_details', task_id: 'T1' })`";
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain(
+      "api_query({ board_id: BOARD_ID, query: 'task_details', task_id: 'T1' })",
+    );
+    expect(result.output).not.toMatch(/taskflow_query/);
+  });
+
+  it('taskflow_query with person_name → api_query body preserved', () => {
+    const input = "taskflow_query({ query: 'person_tasks', person_name: 'alice' })";
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain("api_query({ board_id: BOARD_ID, query: 'person_tasks',");
+    expect(result.output).toContain("person_name: 'alice'");
+  });
+
+  it('bare taskflow_query mention → api_query', () => {
+    const input = 'Use taskflow_query for reads.';
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toBe('Use api_query for reads.');
   });
 
   it('taskflow_update → api_update_task with composite updates body preserved', () => {
@@ -145,11 +165,11 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     const input = [
       "`taskflow_move({ task_id: 'T1', action: 'start', sender_name: 'alice' })`",
       "`taskflow_move({ task_id: 'T2', action: 'wait', sender_name: 'alice' })`",
-      "`taskflow_query({ query: 'task_details', task_id: 'T1' })`",
+      "`taskflow_hierarchy({ task_id: 'P1' })`",
     ].join('\n');
     const result = migrateBoardClaudeMd(input);
     expect(result.substituted).toBe(2);
-    expect(result.unmigrated.taskflow_query).toBe(1);
+    expect(result.unmigrated.taskflow_hierarchy).toBe(1);
   });
 
   it('idempotent: running twice on the same input produces the same output', () => {

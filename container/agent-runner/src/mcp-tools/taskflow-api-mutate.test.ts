@@ -1714,6 +1714,22 @@ describe('api_update_task MCP tool (A5.2.2 — composite updates wrapper)', () =
     expect(JSON.stringify(response.content)).toMatch(/updates/);
   });
 
+  it('forwards through to engine.update — confirmed_task_id magnetism param accepted', async () => {
+    const { apiCreateSimpleTaskTool, apiUpdateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD, title: 'X', sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+    const response = await apiUpdateTaskTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      sender_name: 'alice',
+      updates: { add_note: 'X' },
+      confirmed_task_id: taskId,
+    });
+    expect(JSON.parse(response.content[0].text).success).toBe(true);
+  });
+
   it('empty updates object → engine no-ops with success=true (engine does not require operations)', async () => {
     const { apiCreateSimpleTaskTool, apiUpdateTaskTool } = await import('./taskflow-api-mutate.ts');
     const created = await apiCreateSimpleTaskTool.handler({
@@ -1730,5 +1746,98 @@ describe('api_update_task MCP tool (A5.2.2 — composite updates wrapper)', () =
     // engine.update doesn't gate on empty updates — succeeds as no-op.
     // Mirrors v1 behavior. Caller is expected to send at least one op.
     expect(result.success).toBe(true);
+  });
+});
+
+describe('api_query MCP tool (A5.2.3 — composite read-side wrapper)', () => {
+  it('exports a tool with name "api_query"', async () => {
+    const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    expect(apiQueryTool.tool.name).toBe('api_query');
+  });
+
+  it('declares required board_id/query; common optional discriminator fields present', async () => {
+    const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    const schema = apiQueryTool.tool.inputSchema as {
+      required: string[];
+      properties: Record<string, unknown>;
+    };
+    expect(schema.required).toEqual(expect.arrayContaining(['board_id', 'query']));
+    expect(schema.properties).toHaveProperty('task_id');
+    expect(schema.properties).toHaveProperty('person_name');
+    expect(schema.properties).toHaveProperty('sender_name');
+    expect(schema.properties).toHaveProperty('search_text');
+    expect(schema.properties).toHaveProperty('label');
+    expect(schema.properties).toHaveProperty('since');
+    expect(schema.properties).toHaveProperty('at');
+  });
+
+  it('query=board → returns column-grouped tasks', async () => {
+    const { apiCreateSimpleTaskTool, apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    await apiCreateSimpleTaskTool.handler({ board_id: BOARD, title: 'X', sender_name: 'alice' });
+    const response = await apiQueryTool.handler({
+      board_id: BOARD,
+      query: 'board',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data).toBeDefined();
+    expect(result.data.columns).toBeDefined();
+  });
+
+  it('query=task_details with task_id → returns the specific task', async () => {
+    const { apiCreateSimpleTaskTool, apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD, title: 'Lookup target', sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+
+    const response = await apiQueryTool.handler({
+      board_id: BOARD,
+      query: 'task_details',
+      task_id: taskId,
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data).toBeDefined();
+  });
+
+  it('engine rejects unknown query discriminator', async () => {
+    const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiQueryTool.handler({
+      board_id: BOARD,
+      query: 'definitely_not_a_real_query',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects non-string board_id', async () => {
+    const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiQueryTool.handler({
+      board_id: 42 as unknown as string,
+      query: 'board',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/board_id/);
+  });
+
+  it('rejects missing query', async () => {
+    const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiQueryTool.handler({
+      board_id: BOARD,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/query/);
+  });
+
+  it('rejects non-string task_id', async () => {
+    const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiQueryTool.handler({
+      board_id: BOARD,
+      query: 'task_details',
+      task_id: 42 as unknown as string,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/task_id/);
   });
 });

@@ -17,13 +17,13 @@
  *
  * Phase 2 partial — composite-shape ports:
  *   taskflow_update    → api_update_task (composite updates: {...})
+ *   taskflow_query     → api_query (composite query: 'X' discriminator)
  *   taskflow_create({type:'meeting',...})    → api_create_meeting_task
  *   taskflow_create({type:'simple'|...,...}) → api_create_task
  *   taskflow_create (no inline type literal) → api_create_task fallback
  *   Bare taskflow_create mentions             → api_create_task
  *
  * NOT touched here (Phase 2 still pending — different param shapes):
- *   taskflow_query      (sub-query model differs — partial overlap with api_filter_board_tasks)
  *   taskflow_hierarchy  (partial overlap with api_linked_tasks)
  *   taskflow_dependency (folds into api_update_simple_task or api_admin)
  *
@@ -41,10 +41,10 @@ const DIRECT_SUBSTITUTIONS: Record<string, string> = {
   taskflow_undo: 'api_undo',
   taskflow_report: 'api_report',
   taskflow_update: 'api_update_task',
+  taskflow_query: 'api_query',
 };
 
 const UNMIGRATED_TOOLS = [
-  'taskflow_query',
   'taskflow_hierarchy',
   'taskflow_dependency',
 ] as const;
