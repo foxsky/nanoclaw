@@ -43,6 +43,28 @@ const TOOL_MAP: Record<string, string[]> = {
   send_message: ['mcp__nanoclaw__send_message'],
   schedule_task: ['mcp__nanoclaw__schedule_task'],
   add_reaction: ['mcp__nanoclaw__add_reaction'],
+  // v1 used raw SQL when no MCP tool existed; v2 ships api_* for the same
+  // reads/writes. Keep self-match so legitimate v2 sqlite fallback (the
+  // documented escape hatch) still counts as a match.
+  mcp__sqlite__read_query: [
+    'mcp__sqlite__read_query',
+    'mcp__nanoclaw__api_query',
+    'mcp__nanoclaw__api_board_activity',
+    'mcp__nanoclaw__api_filter_board_tasks',
+    'mcp__nanoclaw__api_linked_tasks',
+  ],
+  mcp__sqlite__write_query: [
+    'mcp__sqlite__write_query',
+    'mcp__nanoclaw__api_admin',
+    'mcp__nanoclaw__api_update_task',
+    'mcp__nanoclaw__api_update_simple_task',
+  ],
+  // SDK builtin "search" family — v1 and v2 both have these. v2 may pick
+  // a sibling (Glob/Grep/Read swap for the same semantic intent).
+  Grep: ['Grep', 'Glob', 'Read'],
+  Glob: ['Glob', 'Grep', 'Read'],
+  Read: ['Read'],
+  Bash: ['Bash'],
 };
 
 /** Map a v1 tool name to its canonical v2 equivalent(s), or itself if no map entry. */
