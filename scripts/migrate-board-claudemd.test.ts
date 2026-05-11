@@ -235,6 +235,100 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     expect(result.output).toContain('taskflow_max_depth');
   });
 
+  it('A5 follow-up — pending_approval shape: target_chat_jid → destination_name (A12-aligned)', () => {
+    const input = '`{ success: false, pending_approval: { request_id, target_chat_jid, message, parent_board_id } }`';
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('destination_name');
+    expect(result.output).not.toContain('target_chat_jid');
+  });
+
+  it('A5 follow-up — send_message object-shorthand call: target_chat_jid → to + destination_name', () => {
+    const input = '`send_message({ target_chat_jid, text: message })`';
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('send_message({ to: pending_approval.destination_name, text: pending_approval.message })');
+    expect(result.output).not.toContain('target_chat_jid');
+  });
+
+  it('A5 follow-up — send_message literal-args call (parent_group_jid example) rewrites to named destination', () => {
+    const input = "send_message({ target_chat_jid: '<parent_group_jid>', text: '<forward message>' })";
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain("send_message({ to: pending_approval.destination_name, text: pending_approval.message })");
+    expect(result.output).not.toContain('target_chat_jid');
+  });
+
+  it('A5 follow-up — send_message tool-signature doc line: drops sender, JID→destination name placeholder', () => {
+    const input = 'send_message(text: "[MESSAGE]", sender: "[OPTIONAL_ROLE_NAME]", target_chat_jid: "[OPTIONAL_JID]")';
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('send_message({ text: "[MESSAGE]", to: "[OPTIONAL_DESTINATION_NAME]" })');
+    expect(result.output).not.toContain('target_chat_jid');
+    expect(result.output).not.toContain('sender:');
+  });
+
+  it('A5 follow-up — schedule_task tool signature: v1 schedule_type/value → v2 processAfter/recurrence', () => {
+    const input = 'schedule_task(prompt: "[PROMPT]", schedule_type: "[cron|interval|once]", schedule_value: "[CRON_OR_TIMESTAMP]", context_mode: "group")';
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('schedule_task({ prompt: "[PROMPT]", processAfter: "[ISO_TIMESTAMP_OR_NULL]", recurrence: "[OPTIONAL_CRON]" })');
+    expect(result.output).not.toContain('schedule_type');
+    expect(result.output).not.toContain('schedule_value');
+  });
+
+  it('A5 follow-up — prose mention "schedule_task with schedule_type: \'once\'" → "with processAfter"', () => {
+    const input = "Use `schedule_task` with `schedule_type: 'once'`. If the user specifies a time, schedule it.";
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).not.toContain('schedule_type');
+    expect(result.output).toContain('processAfter');
+  });
+
+  it('A5 follow-up — duplicate_warning block (force_create flow) is removed (v2 has no such field)', () => {
+    const input = [
+      'Some preceding text.',
+      '',
+      'When `taskflow_create` returns `duplicate_warning` (85-94% similar), present it:',
+      '> "Já tem uma tarefa parecida: ..."',
+      'If the user **explicitly** confirms (e.g. "sim", "criar"), re-call `taskflow_create` with `force_create: true`. If the user repeats the same "Inbox: ..." command without confirming, treat it as NOT a confirmation — remind them the task already exists.',
+      '',
+      'Following text.',
+    ].join('\n');
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).not.toContain('duplicate_warning');
+    expect(result.output).not.toContain('force_create');
+    expect(result.output).toContain('Some preceding text.');
+    expect(result.output).toContain('Following text.');
+  });
+
+  it('A5 follow-up — Notification Dispatch section collapses to 2-line v2 truth (engine auto-dispatches)', () => {
+    // v1 had a multi-paragraph rule telling the agent to relay
+    // notifications[*].target_chat_jid via send_message. v2's engine
+    // dispatches everything itself; the notification_events array is
+    // informational only.
+    const input = [
+      'Preceding section.',
+      '',
+      '## Notification Dispatch',
+      '',
+      'After any successful mutation tool call, inspect `notifications` and `parent_notification` for explicit transport work. Relay only cross-chat deliveries; never create a same-group duplicate.',
+      '',
+      'For each notification:',
+      '',
+      '1. If `notification_group_jid` is set and it differs from the current group, call `send_message` with the notification\'s `message` text and pass that JID as `target_chat_jid`',
+      '2. If `notification_group_jid` is null, missing, or the current group, do NOT call `send_message` — the normal assistant reply already covers the current chat',
+      '3. Do NOT modify the notification text',
+      '',
+      'Notifications are **bidirectional**: when a manager updates an assignee\'s task, the assignee is notified.',
+      '',
+      'Also check for `parent_notification` in the result. If present and `parent_notification.parent_group_jid` differs from the current group, call `send_message` with `target_chat_jid` set to `parent_notification.parent_group_jid`.',
+      '',
+      '## Schema Reference',
+    ].join('\n');
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('## Notification Dispatch');
+    expect(result.output).toContain('engine dispatches');
+    expect(result.output).not.toContain('notification_group_jid');
+    expect(result.output).not.toContain('parent_notification');
+    expect(result.output).toContain('Preceding section.');
+    expect(result.output).toContain('## Schema Reference');
+  });
+
   it('idempotent: running twice on the same input produces the same output', () => {
     const input = "`taskflow_move({ task_id: 'T1', action: 'start', sender_name: 'alice' })`";
     const r1 = migrateBoardClaudeMd(input);

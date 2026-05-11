@@ -133,6 +133,84 @@ export function migrateBoardClaudeMd(input: string, options?: MigrationOptions):
   // which would otherwise tell the agent to call tools that no longer exist.
   output = output.replace(/\btaskflow_\*/g, 'api_*');
 
+  // A5 follow-up — v2 send_message + schedule_task schema rewrites.
+  // The earlier mechanical pass only handled v1 tool RENAMES (taskflow_* →
+  // api_*). v1 prose also encodes the OLD schemas of send_message and
+  // schedule_task, which differ in v2. These substitutions rewrite the
+  // shapes the agent literally calls.
+
+  // 1. pending_approval envelope — engine now emits `destination_name`
+  //    (per A12), not `target_chat_jid`.
+  output = output.replace(
+    /\bpending_approval:\s*\{\s*request_id,\s*target_chat_jid,\s*message,\s*parent_board_id\s*\}/g,
+    'pending_approval: { request_id, destination_name, message, parent_board_id }',
+  );
+
+  // 2. Approval-mode forward call — v1 used the raw JID, v2 uses the
+  //    symbolic destination_name from the engine's pending_approval.
+  //    Object-shorthand variant ({ target_chat_jid, text: message }).
+  output = output.replace(
+    /\bsend_message\(\{\s*target_chat_jid,\s*text:\s*message\s*\}\)/g,
+    'send_message({ to: pending_approval.destination_name, text: pending_approval.message })',
+  );
+  //    Literal-args variant (target_chat_jid: '<parent_group_jid>', text:'<forward message>').
+  output = output.replace(
+    /\bsend_message\(\{\s*target_chat_jid:\s*'<parent_group_jid>',\s*text:\s*'<forward message>'\s*\}\)/g,
+    "send_message({ to: pending_approval.destination_name, text: pending_approval.message })",
+  );
+
+  // 3. send_message tool-signature documentation line — v2 dropped
+  //    `sender` and renamed `target_chat_jid` → `to`.
+  output = output.replace(
+    /send_message\(text:\s*"\[MESSAGE\]",\s*sender:\s*"\[OPTIONAL_ROLE_NAME\]",\s*target_chat_jid:\s*"\[OPTIONAL_JID\]"\)/g,
+    'send_message({ text: "[MESSAGE]", to: "[OPTIONAL_DESTINATION_NAME]" })',
+  );
+
+  // 4. schedule_task tool signature — v1 had schedule_type/schedule_value;
+  //    v2 has processAfter + optional recurrence.
+  output = output.replace(
+    /schedule_task\(prompt:\s*"\[PROMPT\]",\s*schedule_type:\s*"\[cron\|interval\|once\]",\s*schedule_value:\s*"\[CRON_OR_TIMESTAMP\]",\s*context_mode:\s*"group"\)/g,
+    'schedule_task({ prompt: "[PROMPT]", processAfter: "[ISO_TIMESTAMP_OR_NULL]", recurrence: "[OPTIONAL_CRON]" })',
+  );
+
+  // 5. Prose "schedule_task with schedule_type: 'X'" — drop the obsolete
+  //    field reference. Match common phrasings.
+  output = output.replace(
+    /`schedule_task`\s+with\s+`schedule_type:\s*'[a-z]+'`/g,
+    '`schedule_task` with `processAfter`',
+  );
+
+  // 6. duplicate_warning / force_create block — v2 api_create_task has
+  //    neither field. The whole paragraph (lead sentence through the
+  //    force_create-true rerun instruction) is obsolete. Pattern matches
+  //    the post-rename text (taskflow_create → api_create_task already
+  //    applied above).
+  output = output.replace(
+    /\nWhen `api_create_task` returns `duplicate_warning`[\s\S]*?command without confirming, treat it as NOT a confirmation — remind them the task already exists\.\n/g,
+    '\n',
+  );
+
+  // 6b. Blanket prose mentions: backtick-wrapped v1 identifiers that no
+  //     longer exist in v2's schema. Catches lines like "DM delivery via
+  //     `target_chat_jid`" — the named code/call references have already
+  //     been rewritten by patches 1-5; what remains is documentation
+  //     prose that needs the new identifier to stay coherent.
+  output = output.replace(/`target_chat_jid`/g, '`to`');
+  output = output.replace(/`schedule_value`/g, '`processAfter`');
+  output = output.replace(/`schedule_type`/g, '`processAfter`');
+  // Backticked example values like `schedule_value: "2026-03-18T07:30:00"`
+  // — preserve the literal value, just rename the field.
+  output = output.replace(/`schedule_value:\s*"([^"]*)"`/g, '`processAfter: "$1"`');
+
+  // 7. Notification Dispatch section — v1's multi-paragraph rule told
+  //    the agent to relay notifications[*].target_chat_jid via
+  //    send_message. v2's engine auto-dispatches; tool responses carry
+  //    `notification_events` for inspection only.
+  output = output.replace(
+    /## Notification Dispatch\n[\s\S]*?(?=\n## )/,
+    '## Notification Dispatch\n\nThe v2 engine dispatches all cross-chat notifications itself. Tool responses may carry a `notification_events` array — **informational only; do NOT relay**. Your normal assistant reply still covers the current chat.\n\n',
+  );
+
   // When a boardId is supplied, render the BOARD_ID placeholder to the literal
   // value, matching v2's provision-shared {{BOARD_ID}} host-side templating.
   // Without this, the agent would pass the string "BOARD_ID" as board_id and
