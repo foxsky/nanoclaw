@@ -64,7 +64,15 @@ export interface MigrationResult {
   unmigrated: Record<(typeof UNMIGRATED_TOOLS)[number], number>;
 }
 
-export function migrateBoardClaudeMd(input: string): MigrationResult {
+export interface MigrationOptions {
+  /** When set, replace the BOARD_ID placeholder with the literal value at the
+   *  end of substitution. Matches v2's provision-shared {{BOARD_ID}} pattern
+   *  (host-side render before the agent sees it). Omit to keep BOARD_ID as
+   *  a placeholder for downstream templating. */
+  boardId?: string;
+}
+
+export function migrateBoardClaudeMd(input: string, options?: MigrationOptions): MigrationResult {
   let output = input;
   let substituted = 0;
 
@@ -117,6 +125,21 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
   );
   // Bare `taskflow_create` mentions (prose) → api_create_task.
   output = output.replace(/\btaskflow_create\b/g, 'api_create_task');
+
+  // Wildcard prose references like `taskflow_*` → `api_*`. The bare-rename
+  // pass at the top uses `\b...\b` and so misses these (asterisk is not a
+  // word character). v1 CLAUDE.md has 3 such mentions ("use `taskflow_*`
+  // MCP tools", "operations that have NO `taskflow_*` equivalent", etc.)
+  // which would otherwise tell the agent to call tools that no longer exist.
+  output = output.replace(/\btaskflow_\*/g, 'api_*');
+
+  // When a boardId is supplied, render the BOARD_ID placeholder to the literal
+  // value, matching v2's provision-shared {{BOARD_ID}} host-side templating.
+  // Without this, the agent would pass the string "BOARD_ID" as board_id and
+  // the engine would fail board lookup.
+  if (options?.boardId) {
+    output = output.replace(/\bBOARD_ID\b/g, `'${options.boardId}'`);
+  }
 
   const unmigrated = Object.fromEntries(
     UNMIGRATED_TOOLS.map((tool) => [tool, countOccurrences(output, tool)]),

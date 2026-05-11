@@ -190,6 +190,51 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     expect(Object.keys(result.unmigrated)).toEqual([]);
   });
 
+  it('when boardId is provided, BOARD_ID is substituted with the literal value (matches v2 provision-shared {{BOARD_ID}} pattern)', () => {
+    // v2's provision-shared.ts renders `{{BOARD_ID}}` to the literal board_id
+    // at provision time (host-side). The agent never sees a placeholder.
+    // Without this, `BOARD_ID` would get passed as a literal string to api_*
+    // tools, the engine would look for a board with id='BOARD_ID', and fail.
+    const input = "taskflow_move({ task_id: 'T1', sender_name: SENDER })";
+    const result = migrateBoardClaudeMd(input, { boardId: 'board-seci-taskflow' });
+    expect(result.output).toContain("api_move({ board_id: 'board-seci-taskflow', task_id: 'T1', sender_name: SENDER })");
+    expect(result.output).not.toContain('BOARD_ID');
+  });
+
+  it('default (no boardId arg): backwards-compatible — emits BOARD_ID placeholder for callers that template downstream', () => {
+    // Skill tests + existing call sites pass no boardId. Preserve that contract.
+    const input = "taskflow_move({ task_id: 'T1', sender_name: SENDER })";
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('api_move({ board_id: BOARD_ID,');
+  });
+
+  it('A5 quality finding: literal `taskflow_*` pattern (with asterisk) becomes `api_*`', () => {
+    // The v1 CLAUDE.md has 3 generic references like "use `taskflow_*` MCP tools"
+    // that the word-boundary bare-rename pass misses (because `*` is not a word char).
+    // Post-migration, those should read "use `api_*` MCP tools" so the agent isn't
+    // told to call tools that no longer exist.
+    const input = [
+      'Execute each action via its own `taskflow_*` tool call IN SEQUENCE',
+      'always instruct the subagent to use `taskflow_*` MCP tools',
+      'operations that have NO `taskflow_*` equivalent',
+    ].join('\n');
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('`api_*` tool call');
+    expect(result.output).toContain('`api_*` MCP tools');
+    expect(result.output).toContain('NO `api_*` equivalent');
+    expect(result.output).not.toMatch(/`taskflow_\*`/);
+  });
+
+  it('does NOT touch unrelated taskflow_-prefixed identifiers (taskflow_managed, taskflow_max_depth)', () => {
+    // These are DB column names referenced in CLAUDE.md, not tool names.
+    // The bare-rename pass should leave them alone (no `\b...\b` match because
+    // they're not in our explicit tool list).
+    const input = '`taskflow_managed = true` and `current level + 1 <= taskflow_max_depth`';
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('taskflow_managed = true');
+    expect(result.output).toContain('taskflow_max_depth');
+  });
+
   it('idempotent: running twice on the same input produces the same output', () => {
     const input = "`taskflow_move({ task_id: 'T1', action: 'start', sender_name: 'alice' })`";
     const r1 = migrateBoardClaudeMd(input);
