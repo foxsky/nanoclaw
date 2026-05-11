@@ -52,23 +52,23 @@ function seedReadFixtures(d: Database): void {
       action TEXT NOT NULL, "by" TEXT,
       "at" TEXT NOT NULL, details TEXT
     );
-    INSERT INTO boards VALUES ('b1', 'TF', 'Test Board', '2024-01-01T00:00:00Z');
+    INSERT INTO boards VALUES ('board-b1', 'TF', 'Test Board', '2024-01-01T00:00:00Z');
     INSERT INTO tasks (
       id, board_id, title, "column", type, assignee, priority, due_date, labels,
       description, notes, parent_task_id, scheduled_at, created_at, updated_at,
       child_exec_board_id, child_exec_person_id, child_exec_rollup_status
     ) VALUES
-      ('t1','b1','Urgent Task','todo','simple','alice','urgente','2099-01-01','["bug"]',NULL,'[{"id":"n1","author":"alice","content":"seed note","created_at":"2024-01-01T00:00:00Z"}]',NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
-      ('t2','b1','Overdue Task','todo','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
-      ('t3','b1','Linked Task','todo','simple',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z','child-board-1',NULL,NULL),
-      ('t4','b1','Done Task','done','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
-      ('t5','b1','Due Today Task','todo','simple',NULL,NULL,'${todayStr}','[]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
-      ('t6','b1','Due This Week Task','todo','simple',NULL,NULL,'${threeDaysStr}','["backend"]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
-      ('t7','b1','High Priority Task','todo','simple',NULL,'alta','2099-02-01','[]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL);
+      ('t1','board-b1','Urgent Task','todo','simple','alice','urgente','2099-01-01','["bug"]',NULL,'[{"id":"n1","author":"alice","content":"seed note","created_at":"2024-01-01T00:00:00Z"}]',NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t2','board-b1','Overdue Task','todo','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t3','board-b1','Linked Task','todo','simple',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z','child-board-1',NULL,NULL),
+      ('t4','board-b1','Done Task','done','simple',NULL,NULL,'2020-01-01',NULL,NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t5','board-b1','Due Today Task','todo','simple',NULL,NULL,'${todayStr}','[]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t6','board-b1','Due This Week Task','todo','simple',NULL,NULL,'${threeDaysStr}','["backend"]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL),
+      ('t7','board-b1','High Priority Task','todo','simple',NULL,'alta','2099-02-01','[]',NULL,NULL,NULL,NULL,'2024-01-01T00:00:00Z','2024-01-01T00:00:00Z',NULL,NULL,NULL);
     INSERT INTO task_history (board_id, task_id, action, "by", "at", details)
       VALUES
-        ('b1','t2','update','alice', '2020-01-01T00:00:00Z', '{"source":"old"}'),
-        ('b1','t1','create','alice', '${localTodaySql}T12:00:00', '{"source":"seed"}');
+        ('board-b1','t2','update','alice', '2020-01-01T00:00:00Z', '{"source":"old"}'),
+        ('board-b1','t1','create','alice', '${localTodaySql}T12:00:00', '{"source":"seed"}');
   `);
 }
 
@@ -91,25 +91,31 @@ describe('api_board_activity MCP tool', () => {
     expect(apiBoardActivityTool.tool.name).toBe('api_board_activity');
   });
 
-  it('declares board_id required and mode/since optional', async () => {
+  it('does not advertise board_id (env-injected) and exposes mode/since', async () => {
+    // v1 parity: agent never sees board_id. The host injects it from
+    // NANOCLAW_TASKFLOW_BOARD_ID at the MCP boundary, identical to v1's
+    // `engine.X({ ...args, board_id: boardId })` pattern. Advertising the
+    // property would mislead the model — env-overwrite makes any agent
+    // value silently ignored (Codex IMPORTANT 2026-05-11).
     const { apiBoardActivityTool } = await import('./taskflow-api-read.ts');
     const schema = apiBoardActivityTool.tool.inputSchema as {
       properties: Record<string, unknown>;
       required: string[];
     };
-    expect(schema.required).toEqual(['board_id']);
+    expect(schema.required).toEqual([]);
+    expect(schema.properties).not.toHaveProperty('board_id');
     expect(schema.properties).toHaveProperty('mode');
     expect(schema.properties).toHaveProperty('since');
   });
 
   it('returns history rows for changes_today', async () => {
     const { apiBoardActivityTool } = await import('./taskflow-api-read.ts');
-    const result = await apiBoardActivityTool.handler({ board_id: 'b1', mode: 'changes_today' });
+    const result = await apiBoardActivityTool.handler({ board_id: 'board-b1', mode: 'changes_today' });
     const rows = rowsFromResult(result);
     expect(rows.length).toBeGreaterThanOrEqual(1);
     const row = rows[0];
     expect(row).toHaveProperty('id');
-    expect(row).toHaveProperty('board_id', 'b1');
+    expect(row).toHaveProperty('board_id', 'board-b1');
     expect(row).toHaveProperty('task_id');
     expect(row).toHaveProperty('action');
     expect(row).toHaveProperty('by');
@@ -120,7 +126,7 @@ describe('api_board_activity MCP tool', () => {
   it('returns history rows for changes_since', async () => {
     const { apiBoardActivityTool } = await import('./taskflow-api-read.ts');
     const result = await apiBoardActivityTool.handler({
-      board_id: 'b1',
+      board_id: 'board-b1',
       mode: 'changes_since',
       since: '2021-01-01T00:00:00Z',
     });
@@ -143,13 +149,13 @@ describe('api_filter_board_tasks MCP tool', () => {
       required: string[];
       properties: Record<string, unknown>;
     };
-    expect(schema.required).toEqual(expect.arrayContaining(['board_id', 'filter']));
+    expect(schema.required).toEqual(expect.arrayContaining(['filter']));
     expect(schema.properties).toHaveProperty('label');
   });
 
   it('returns urgent tasks with notes + labels arrays', async () => {
     const { apiFilterBoardTasksTool } = await import('./taskflow-api-read.ts');
-    const result = await apiFilterBoardTasksTool.handler({ board_id: 'b1', filter: 'urgent' });
+    const result = await apiFilterBoardTasksTool.handler({ board_id: 'board-b1', filter: 'urgent' });
     const rows = rowsFromResult(result);
     expect(rows).toHaveLength(1);
     expect(rows[0].id).toBe('t1');
@@ -163,7 +169,7 @@ describe('api_filter_board_tasks MCP tool', () => {
   it('supports overdue, due_today, due_this_week, high_priority, by_label filters', async () => {
     const { apiFilterBoardTasksTool } = await import('./taskflow-api-read.ts');
     const ids = async (filter: string, extra: Record<string, unknown> = {}) => {
-      const r = await apiFilterBoardTasksTool.handler({ board_id: 'b1', filter, ...extra });
+      const r = await apiFilterBoardTasksTool.handler({ board_id: 'board-b1', filter, ...extra });
       return rowsFromResult(r).map((x) => x.id);
     };
     expect(await ids('overdue')).toEqual(['t2']);
@@ -182,7 +188,7 @@ describe('api_linked_tasks MCP tool', () => {
 
   it('returns only tasks with child_exec_board_id', async () => {
     const { apiLinkedTasksTool } = await import('./taskflow-api-read.ts');
-    const result = await apiLinkedTasksTool.handler({ board_id: 'b1' });
+    const result = await apiLinkedTasksTool.handler({ board_id: 'board-b1' });
     const rows = rowsFromResult(result);
     expect(rows).toHaveLength(1);
     expect(rows[0].id).toBe('t3');
@@ -234,14 +240,14 @@ describe('v1-parity validation surface (zod equivalent)', () => {
 
   it('api_board_activity rejects unknown mode (v1 zod enum failure)', async () => {
     const { apiBoardActivityTool } = await import('./taskflow-api-read.ts');
-    const result = await apiBoardActivityTool.handler({ board_id: 'b1', mode: 'invalid' });
+    const result = await apiBoardActivityTool.handler({ board_id: 'board-b1', mode: 'invalid' });
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result.content)).toMatch(/mode/);
   });
 
   it('api_filter_board_tasks rejects non-string filter', async () => {
     const { apiFilterBoardTasksTool } = await import('./taskflow-api-read.ts');
-    const result = await apiFilterBoardTasksTool.handler({ board_id: 'b1', filter: 7 as unknown as string });
+    const result = await apiFilterBoardTasksTool.handler({ board_id: 'board-b1', filter: 7 as unknown as string });
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result.content)).toMatch(/filter/);
   });
@@ -256,7 +262,7 @@ describe('v1-parity validation surface (zod equivalent)', () => {
   it('api_filter_board_tasks rejects non-string label when provided', async () => {
     const { apiFilterBoardTasksTool } = await import('./taskflow-api-read.ts');
     const result = await apiFilterBoardTasksTool.handler({
-      board_id: 'b1',
+      board_id: 'board-b1',
       filter: 'urgent',
       label: 99 as unknown as string,
     });

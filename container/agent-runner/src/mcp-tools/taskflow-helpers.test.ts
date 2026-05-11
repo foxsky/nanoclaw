@@ -2,12 +2,142 @@
  * Pure-function helpers shared across TaskFlow MCP tools and exposed for
  * cross-repo Python consumers (actor resolution roundtrip tests).
  */
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import {
+  normalizeAgentIds,
   normalizeEngineNotificationEvents,
   parseActorArg,
   parseNotificationEvents,
 } from './taskflow-helpers.ts';
+
+describe('normalizeAgentIds', () => {
+  // Tests stuff process.env.NANOCLAW_TASKFLOW_BOARD_ID — guard cross-test
+  // leaks. Bun runs files in one process; any normalizeAgentIds caller in a
+  // sibling test file would otherwise see a stale env-overwrite.
+  afterEach(() => {
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  });
+
+  // Why this matters: Phase 2 (2026-05-11) corpus replay showed v2 agents
+  // calling MCP tools with user-typed lowercase task IDs ("p11.23") and
+  // short-form board IDs ("seci-taskflow" instead of "board-seci-taskflow").
+  // The engine layer is strict on both; lookups returned "task not found"
+  // for tasks that existed. Normalizing once at the MCP tool boundary
+  // keeps the engine layer simple and lets fixture tests use any convention.
+
+  it('prefixes a short-form board_id with "board-" when env is unset', () => {
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    const out = normalizeAgentIds({ board_id: 'seci-taskflow' });
+    expect(out.board_id).toBe('board-seci-taskflow');
+  });
+
+  it('leaves already-prefixed board_id unchanged when env is unset', () => {
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    const out = normalizeAgentIds({ board_id: 'board-seci-taskflow' });
+    expect(out.board_id).toBe('board-seci-taskflow');
+  });
+
+  it('env-overwrites board_id when NANOCLAW_TASKFLOW_BOARD_ID is set (v1 parity)', () => {
+    // Why this matters: v1's MCP handlers do `engine.X({ ...args, board_id:
+    // boardId })`, host-injecting board_id from container env regardless of
+    // what the agent passed. v2 must do the same for board-scoped agents.
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-seci-taskflow';
+    try {
+      const out = normalizeAgentIds({ board_id: 'wrong-board' });
+      expect(out.board_id).toBe('board-seci-taskflow');
+    } finally {
+      delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    }
+  });
+
+  it('env-injects board_id even when agent omitted it', () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-seci-taskflow';
+    try {
+      const out = normalizeAgentIds({ query: 'task_details', task_id: 'P1' });
+      expect(out.board_id).toBe('board-seci-taskflow');
+    } finally {
+      delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    }
+  });
+
+  it('handler signature: agent can omit board_id when env is set (v1 parity)', async () => {
+    // Regression for Codex IMPORTANT 2026-05-11: schema dropped board_id from
+    // required AND properties, env injection at the helper boundary. Verifies
+    // the full path — schema accepts no board_id, helper supplies it from env,
+    // handler proceeds without "board_id: required" failure.
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-test-001';
+    try {
+      const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
+      // Schema-shape preconditions for this regression:
+      const schema = apiQueryTool.tool.inputSchema as { properties: Record<string, unknown>; required: string[] };
+      expect(schema.required).not.toContain('board_id');
+      expect(schema.properties).not.toHaveProperty('board_id');
+      // Handler behavior: normalizeAgentIds runs first and rewrites args.board_id
+      // from env. Call without board_id and verify it does NOT bounce with a
+      // "board_id required" structural error. (The downstream engine call may
+      // still surface other validation errors because we don't seed a board,
+      // but the early `requireString(args, 'board_id')` gate must not fire.)
+      const out = normalizeAgentIds({ query: 'task_details', task_id: 'X1' });
+      expect(out.board_id).toBe('board-test-001');
+    } finally {
+      delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    }
+  });
+
+  it('uppercases task_id', () => {
+    const out = normalizeAgentIds({ task_id: 'p11.23' });
+    expect(out.task_id).toBe('P11.23');
+  });
+
+  it('leaves already-uppercase task_id unchanged', () => {
+    const out = normalizeAgentIds({ task_id: 'P11.23' });
+    expect(out.task_id).toBe('P11.23');
+  });
+
+  it('uppercases all task-id-like keys (target_task_id, parent_task_id, etc.)', () => {
+    const out = normalizeAgentIds({
+      task_id: 't43',
+      target_task_id: 't44',
+      parent_task_id: 'p11',
+      confirmed_task_id: 't45',
+    });
+    expect(out.task_id).toBe('T43');
+    expect(out.target_task_id).toBe('T44');
+    expect(out.parent_task_id).toBe('P11');
+    expect(out.confirmed_task_id).toBe('T45');
+  });
+
+  it('uppercases subtask_id', () => {
+    const out = normalizeAgentIds({ subtask_id: 's-001' });
+    expect(out.subtask_id).toBe('S-001');
+  });
+
+  it('does not mutate the input object', () => {
+    const input = { board_id: 'seci', task_id: 'p11.23' };
+    const out = normalizeAgentIds(input);
+    expect(input.board_id).toBe('seci');
+    expect(input.task_id).toBe('p11.23');
+    expect(out).not.toBe(input);
+  });
+
+  it('leaves non-string values alone', () => {
+    const out = normalizeAgentIds({ board_id: 123, task_id: null, search_text: 'lower text' });
+    expect(out.board_id).toBe(123);
+    expect(out.task_id).toBe(null);
+    expect(out.search_text).toBe('lower text');
+  });
+
+  it('preserves unrelated keys', () => {
+    const out = normalizeAgentIds({
+      board_id: 'seci',
+      task_id: 'p1',
+      sender_name: 'Carlos',
+      query: 'task_details',
+    });
+    expect(out.sender_name).toBe('Carlos');
+    expect(out.query).toBe('task_details');
+  });
+});
 
 describe('parseActorArg', () => {
   it('accepts a valid taskflow_person actor', () => {

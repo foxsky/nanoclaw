@@ -31,6 +31,7 @@ import { stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
 import { validateAdditionalMounts } from './modules/mount-security/index.js';
 import { ensureTaskflowDb, taskflowDir } from './taskflow-mount.js';
+import { resolveTaskflowBoardId } from './taskflow-db.js';
 // Provider host-side config barrel — each provider that needs host-side
 // container setup self-registers on import.
 import './providers/index.js';
@@ -421,6 +422,19 @@ async function buildContainerArgs(
   // Environment — only vars read by code we don't own.
   // Everything NanoClaw-specific is in container.json (read by runner at startup).
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Opt-in tool_use capture for the v1↔v2 comparator harness. Off in prod.
+  if (process.env.NANOCLAW_TOOL_USES_PATH) {
+    args.push('-e', `NANOCLAW_TOOL_USES_PATH=${process.env.NANOCLAW_TOOL_USES_PATH}`);
+  }
+
+  // v1 parity: MCP handlers host-inject board_id from this env so the agent
+  // never has to construct it. Resolve via the boards table — folder→id is
+  // NOT always `board-<folder>` (historical renames, board_groups mapping).
+  const taskflowBoardId = resolveTaskflowBoardId(agentGroup.folder, true);
+  if (taskflowBoardId) {
+    args.push('-e', `NANOCLAW_TASKFLOW_BOARD_ID=${taskflowBoardId}`);
+  }
 
   // Provider-contributed env vars (e.g. XDG_DATA_HOME, OPENCODE_*, NO_PROXY).
   if (providerContribution.env) {

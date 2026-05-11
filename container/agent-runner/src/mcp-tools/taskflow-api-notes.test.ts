@@ -6,7 +6,7 @@ import { setupEngineDb } from './taskflow-test-fixtures.js';
 let db: Database;
 let taskId: string;
 
-const BOARD = 'b1';
+const BOARD = 'board-b1';
 
 beforeEach(async () => {
   db = setupEngineDb(BOARD, { withBoardAdmins: true });
@@ -36,7 +36,7 @@ describe('api_task_add_note MCP tool', () => {
       properties: Record<string, unknown>;
     };
     expect(schema.required).toEqual(
-      expect.arrayContaining(['board_id', 'task_id', 'sender_name', 'text']),
+      expect.arrayContaining(['task_id', 'sender_name', 'text']),
     );
     expect(schema.properties).toHaveProperty('sender_is_service');
     expect(schema.properties).toHaveProperty('parent_note_id');

@@ -102,7 +102,7 @@ function main() {
     for (const [oldId, newId] of Object.entries(args.aliases)) {
       raw = raw.replace(new RegExp(escapeRegex(oldId), 'g'), newId);
     }
-    const result = migrateBoardClaudeMd(raw, { boardId });
+    const result = migrateBoardClaudeMd(raw);
     const outDir = path.join(args.out, folder);
     fs.mkdirSync(outDir, { recursive: true });
     fs.writeFileSync(path.join(outDir, 'CLAUDE.md'), result.output);

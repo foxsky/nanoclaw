@@ -4,6 +4,7 @@ import path from 'path';
 import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 
 import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
+import { appendToolEvents, extractToolEvents } from './claude-tool-capture.js';
 import { registerProvider } from './provider-registry.js';
 import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 
@@ -22,6 +23,9 @@ function log(msg: string): void {
 //   the question and blocks on the real reply.
 // - EnterPlanMode / ExitPlanMode / EnterWorktree / ExitWorktree: Claude
 //   Code UI affordances; in a headless container they'd appear stuck.
+// - mcp__sqlite__list_tables / mcp__sqlite__describe_table: schema
+//   introspection that api_query / CLAUDE.md already covers; exposing it
+//   invites the agent to "explore" the DB on routine reads.
 const SDK_DISALLOWED_TOOLS = [
   'CronCreate',
   'CronDelete',
@@ -32,6 +36,8 @@ const SDK_DISALLOWED_TOOLS = [
   'ExitPlanMode',
   'EnterWorktree',
   'ExitWorktree',
+  'mcp__sqlite__list_tables',
+  'mcp__sqlite__describe_table',
 ];
 
 // Tool allowlist for NanoClaw agent containers. MCP-tool entries are derived
@@ -315,11 +321,23 @@ export class ClaudeProvider implements AgentProvider {
 
     let aborted = false;
 
+    // Opt-in tool_use capture for the v1↔v2 comparator harness; off in prod.
+    const toolCapturePath = process.env.NANOCLAW_TOOL_USES_PATH;
+
     async function* translateEvents(): AsyncGenerator<ProviderEvent> {
       let messageCount = 0;
       for await (const message of sdkResult) {
         if (aborted) return;
         messageCount++;
+
+        if (toolCapturePath) {
+          try {
+            const events = extractToolEvents(message);
+            if (events.length > 0) appendToolEvents(toolCapturePath, events);
+          } catch (err) {
+            log(`tool-capture: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
 
         // Yield activity for every SDK event so the poll loop knows the agent is working
         yield { type: 'activity' };

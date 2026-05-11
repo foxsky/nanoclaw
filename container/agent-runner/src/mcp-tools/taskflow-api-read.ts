@@ -10,6 +10,7 @@
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
+import { normalizeAgentIds } from './taskflow-helpers.js';
 import type { McpToolDefinition } from './types.js';
 import { err, requireString } from './util.js';
 
@@ -33,14 +34,14 @@ export const apiBoardActivityTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         mode: { type: 'string', enum: ['changes_today', 'changes_since'] },
         since: { type: 'string' },
       },
-      required: ['board_id'],
+      required: [],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const boardId = requireString(args, 'board_id');
     if (boardId === null) return err('board_id: required string');
     let mode: 'changes_today' | 'changes_since' | undefined;
@@ -67,14 +68,14 @@ export const apiFilterBoardTasksTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         filter: { type: 'string' },
         label: { type: 'string' },
       },
-      required: ['board_id', 'filter'],
+      required: ['filter'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const boardId = requireString(args, 'board_id');
     if (boardId === null) return err('board_id: required string');
     const filter = requireString(args, 'filter');
@@ -96,12 +97,12 @@ export const apiLinkedTasksTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
       },
-      required: ['board_id'],
+      required: [],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const boardId = requireString(args, 'board_id');
     if (boardId === null) return err('board_id: required string');
     const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });

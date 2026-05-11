@@ -6,7 +6,7 @@ import { setupEngineDb } from './taskflow-test-fixtures.js';
 let db: Database;
 
 
-const BOARD = 'b1';
+const BOARD = 'board-b1';
 
 beforeEach(() => {
   // withBoardAdmins: true is required for engine.move (which always calls
@@ -31,7 +31,7 @@ describe('api_create_simple_task MCP tool', () => {
       required: string[];
       properties: Record<string, unknown>;
     };
-    expect(schema.required).toEqual(expect.arrayContaining(['board_id', 'title', 'sender_name']));
+    expect(schema.required).toEqual(expect.arrayContaining(['title', 'sender_name']));
     expect(schema.properties).toHaveProperty('assignee');
     expect(schema.properties).toHaveProperty('priority');
     expect(schema.properties).toHaveProperty('due_date');
@@ -137,7 +137,7 @@ describe('api_delete_simple_task MCP tool', () => {
       properties: Record<string, unknown>;
     };
     expect(schema.required).toEqual(
-      expect.arrayContaining(['board_id', 'task_id', 'sender_name']),
+      expect.arrayContaining(['task_id', 'sender_name']),
     );
     expect(schema.properties).toHaveProperty('sender_is_service');
   });
@@ -240,7 +240,7 @@ describe('api_create_meeting_task MCP tool (A10)', () => {
       required: string[];
       properties: Record<string, unknown>;
     };
-    expect(schema.required).toEqual(expect.arrayContaining(['board_id', 'title', 'sender_name']));
+    expect(schema.required).toEqual(expect.arrayContaining(['title', 'sender_name']));
     expect(schema.properties).toHaveProperty('scheduled_at');
     expect(schema.properties).toHaveProperty('participants');
     expect(schema.properties).toHaveProperty('assignee');
@@ -433,7 +433,7 @@ describe('api_move MCP tool (A11.1)', () => {
       properties: Record<string, { enum?: string[] }>;
     };
     expect(schema.required).toEqual(
-      expect.arrayContaining(['board_id', 'task_id', 'action', 'sender_name']),
+      expect.arrayContaining(['task_id', 'action', 'sender_name']),
     );
     expect(schema.properties).toHaveProperty('reason');
     expect(schema.properties).toHaveProperty('subtask_id');
@@ -607,7 +607,7 @@ describe('api_admin MCP tool (A11.2)', () => {
       required: string[];
       properties: Record<string, { enum?: string[] }>;
     };
-    expect(schema.required).toEqual(expect.arrayContaining(['board_id', 'action', 'sender_name']));
+    expect(schema.required).toEqual(expect.arrayContaining(['action', 'sender_name']));
     expect(schema.properties.action.enum).toEqual(
       expect.arrayContaining([
         'register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin',
@@ -852,7 +852,7 @@ describe('api_reassign MCP tool (A11.3)', () => {
       properties: Record<string, unknown>;
     };
     expect(schema.required).toEqual(
-      expect.arrayContaining(['board_id', 'target_person', 'sender_name', 'confirmed']),
+      expect.arrayContaining(['target_person', 'sender_name', 'confirmed']),
     );
     expect(schema.properties).toHaveProperty('task_id');
     expect(schema.properties).toHaveProperty('source_person');
@@ -1121,7 +1121,7 @@ describe('api_undo MCP tool (A11.4)', () => {
       required: string[];
       properties: Record<string, { type?: string }>;
     };
-    expect(schema.required).toEqual(expect.arrayContaining(['board_id', 'sender_name']));
+    expect(schema.required).toEqual(expect.arrayContaining(['sender_name']));
     expect(schema.properties).toHaveProperty('force');
     expect(schema.properties.force.type).toBe('boolean');
   });
@@ -1305,7 +1305,7 @@ describe('api_report MCP tool (A11.5)', () => {
       required: string[];
       properties: Record<string, { enum?: string[] }>;
     };
-    expect(schema.required).toEqual(expect.arrayContaining(['board_id', 'type']));
+    expect(schema.required).toEqual(expect.arrayContaining(['type']));
     expect(schema.properties.type.enum).toEqual(
       expect.arrayContaining(['standup', 'digest', 'weekly']),
     );
@@ -1420,7 +1420,7 @@ describe('api_create_task MCP tool (A5.2.1 — multi-type create)', () => {
       properties: Record<string, { enum?: string[] }>;
     };
     expect(schema.required).toEqual(
-      expect.arrayContaining(['board_id', 'title', 'sender_name', 'type']),
+      expect.arrayContaining(['title', 'sender_name', 'type']),
     );
     expect(schema.properties.type.enum).toEqual(
       expect.arrayContaining(['simple', 'project', 'recurring', 'inbox']),
@@ -1605,7 +1605,7 @@ describe('api_update_task MCP tool (A5.2.2 — composite updates wrapper)', () =
       properties: Record<string, { type?: string }>;
     };
     expect(schema.required).toEqual(
-      expect.arrayContaining(['board_id', 'task_id', 'sender_name', 'updates']),
+      expect.arrayContaining(['task_id', 'sender_name', 'updates']),
     );
     expect(schema.properties.updates.type).toBe('object');
   });
@@ -1761,7 +1761,7 @@ describe('api_query MCP tool (A5.2.3 — composite read-side wrapper)', () => {
       required: string[];
       properties: Record<string, unknown>;
     };
-    expect(schema.required).toEqual(expect.arrayContaining(['board_id', 'query']));
+    expect(schema.required).toEqual(expect.arrayContaining(['query']));
     expect(schema.properties).toHaveProperty('task_id');
     expect(schema.properties).toHaveProperty('person_name');
     expect(schema.properties).toHaveProperty('sender_name');
@@ -1855,7 +1855,7 @@ describe('api_hierarchy MCP tool (A5.2.4)', () => {
       properties: Record<string, { enum?: string[] }>;
     };
     expect(schema.required).toEqual(
-      expect.arrayContaining(['board_id', 'action', 'task_id', 'sender_name']),
+      expect.arrayContaining(['action', 'task_id', 'sender_name']),
     );
     expect(schema.properties.action.enum).toEqual(
       expect.arrayContaining(['link', 'unlink', 'refresh_rollup', 'tag_parent']),
@@ -1926,7 +1926,7 @@ describe('api_dependency MCP tool (A5.2.4)', () => {
       properties: Record<string, { enum?: string[] }>;
     };
     expect(schema.required).toEqual(
-      expect.arrayContaining(['board_id', 'action', 'task_id', 'sender_name']),
+      expect.arrayContaining(['action', 'task_id', 'sender_name']),
     );
     expect(schema.properties.action.enum).toEqual(
       expect.arrayContaining(['add_dep', 'remove_dep', 'add_reminder', 'remove_reminder']),

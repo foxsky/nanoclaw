@@ -54,3 +54,4 @@ export function openTaskflowDb(dataDir: string): Database.Database {
   db.pragma('foreign_keys = ON');
   return db;
 }
+

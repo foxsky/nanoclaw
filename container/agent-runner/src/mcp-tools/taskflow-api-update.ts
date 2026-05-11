@@ -5,6 +5,7 @@
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
+import { normalizeAgentIds } from './taskflow-helpers.js';
 import type { McpToolDefinition } from './types.js';
 import { err, jsonResponse, parseTaskActorArgs } from './util.js';
 
@@ -15,7 +16,6 @@ export const apiUpdateSimpleTaskTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         task_id: { type: 'string' },
         sender_name: { type: 'string' },
         sender_is_service: { type: 'boolean' },
@@ -27,10 +27,11 @@ export const apiUpdateSimpleTaskTool: McpToolDefinition = {
         due_date: { type: ['string', 'null'] },
         labels: { type: ['array', 'null'], items: { type: 'string' } },
       },
-      required: ['board_id', 'task_id', 'sender_name'],
+      required: ['task_id', 'sender_name'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const parsed = parseTaskActorArgs(args);
     if (!parsed.ok) return parsed.error;
     const { boardId, taskId, senderName, senderIsService } = parsed;

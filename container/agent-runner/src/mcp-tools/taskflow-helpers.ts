@@ -67,6 +67,41 @@ type RawParentNotification = {
   message?: string;
 };
 
+/**
+ * Normalize user-facing ID args before forwarding to the engine.
+ *
+ * Two layers:
+ *
+ *   1. **`board_id` host-injection (v1 parity).** If the container env
+ *      defines `NANOCLAW_TASKFLOW_BOARD_ID`, it OVERWRITES whatever the
+ *      agent passed (or didn't pass). Matches v1's `engine.X({ ...args,
+ *      board_id: boardId })` pattern — the agent never has to think about
+ *      board_id for board-scoped operations. When the env var is absent
+ *      (non-taskflow agents), fall back to the agent's value with a
+ *      `board-` prefix added if missing.
+ *
+ *   2. **task ID case-folding.** Agents sometimes pass user-typed lowercase
+ *      IDs (`p11.23` for `P11.23`). Uppercase every `*task_id` key plus
+ *      `subtask_id` so SQLite's BINARY-collated lookups still match.
+ *
+ * Returns a new object; the input is not mutated.
+ */
+export function normalizeAgentIds(args: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...args };
+  const envBoard = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (envBoard) {
+    out.board_id = envBoard;
+  } else if (typeof out.board_id === 'string' && !out.board_id.startsWith('board-')) {
+    out.board_id = 'board-' + out.board_id;
+  }
+  for (const key of Object.keys(out)) {
+    if ((key.endsWith('task_id') || key === 'subtask_id') && typeof out[key] === 'string') {
+      out[key] = (out[key] as string).toUpperCase();
+    }
+  }
+  return out;
+}
+
 export function parseActorArg(raw: unknown): ResolvedActor {
   if (!raw || typeof raw !== 'object') {
     throw new Error('actor: expected object');

@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { migrateBoardClaudeMd } from './migrate-board-claudemd.js';
 
 describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
-  it('substitutes taskflow_move( → api_move({ board_id: BOARD_ID,', () => {
+  it('substitutes taskflow_move( → api_move({ ', () => {
     const input = `Call \`taskflow_move({ task_id: 'TXXX', action: 'start', sender_name: SENDER })\``;
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toContain('api_move({ board_id: BOARD_ID, task_id:');
+    expect(result.output).toContain('api_move({ task_id:');
     expect(result.output).not.toMatch(/taskflow_move\(/);
     expect(result.substituted).toBeGreaterThan(0);
   });
@@ -19,11 +19,11 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
       "`taskflow_report({ type: 'standup' })`",
     ].join('\n');
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toContain('api_move({ board_id: BOARD_ID,');
-    expect(result.output).toContain('api_admin({ board_id: BOARD_ID,');
-    expect(result.output).toContain('api_reassign({ board_id: BOARD_ID,');
-    expect(result.output).toContain('api_undo({ board_id: BOARD_ID,');
-    expect(result.output).toContain('api_report({ board_id: BOARD_ID,');
+    expect(result.output).toContain('api_move({ ');
+    expect(result.output).toContain('api_admin({ ');
+    expect(result.output).toContain('api_reassign({ ');
+    expect(result.output).toContain('api_undo({ ');
+    expect(result.output).toContain('api_report({ ');
     expect(result.substituted).toBe(5);
   });
 
@@ -43,7 +43,7 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     const input =
       "`taskflow_hierarchy({ task_id: 'P1', action: 'link', person_name: 'bob', sender_name: SENDER })`";
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toContain("api_hierarchy({ board_id: BOARD_ID, task_id: 'P1',");
+    expect(result.output).toContain("api_hierarchy({ task_id: 'P1',");
     expect(result.output).toContain("action: 'link'");
   });
 
@@ -51,7 +51,7 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     const input =
       "`taskflow_dependency({ task_id: 'T1', action: 'add_dep', target_task_id: 'T2', sender_name: SENDER })`";
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toContain("api_dependency({ board_id: BOARD_ID, task_id: 'T1',");
+    expect(result.output).toContain("api_dependency({ task_id: 'T1',");
     expect(result.output).toContain("action: 'add_dep'");
   });
 
@@ -65,7 +65,7 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     const input = "`taskflow_query({ query: 'task_details', task_id: 'T1' })`";
     const result = migrateBoardClaudeMd(input);
     expect(result.output).toContain(
-      "api_query({ board_id: BOARD_ID, query: 'task_details', task_id: 'T1' })",
+      "api_query({ query: 'task_details', task_id: 'T1' })",
     );
     expect(result.output).not.toMatch(/taskflow_query/);
   });
@@ -73,7 +73,7 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
   it('taskflow_query with person_name → api_query body preserved', () => {
     const input = "taskflow_query({ query: 'person_tasks', person_name: 'alice' })";
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toContain("api_query({ board_id: BOARD_ID, query: 'person_tasks',");
+    expect(result.output).toContain("api_query({ query: 'person_tasks',");
     expect(result.output).toContain("person_name: 'alice'");
   });
 
@@ -87,7 +87,7 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     const input = "`taskflow_update({ task_id: 'T1', updates: { add_note: 'X' }, sender_name: SENDER })`";
     const result = migrateBoardClaudeMd(input);
     expect(result.output).toContain(
-      "api_update_task({ board_id: BOARD_ID, task_id: 'T1', updates: { add_note: 'X' }, sender_name: SENDER })",
+      "api_update_task({ task_id: 'T1', updates: { add_note: 'X' }, sender_name: SENDER })",
     );
     expect(result.output).not.toMatch(/taskflow_update/);
   });
@@ -95,7 +95,7 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
   it('taskflow_update with multi-field updates body → preserved verbatim', () => {
     const input = "taskflow_update({ task_id: 'T14', updates: { due_date: '2026-04-30' }, sender_name: SENDER })";
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toContain("api_update_task({ board_id: BOARD_ID, task_id: 'T14',");
+    expect(result.output).toContain("api_update_task({ task_id: 'T14',");
     expect(result.output).toContain("updates: { due_date: '2026-04-30' }");
   });
 
@@ -108,7 +108,7 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
   it('taskflow_create with type:simple → api_create_task with type preserved', () => {
     const input = "`taskflow_create({ type: 'simple', title: 'X', sender_name: 'alice' })`";
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toContain("api_create_task({ board_id: BOARD_ID, type: 'simple',");
+    expect(result.output).toContain("api_create_task({ type: 'simple',");
     expect(result.output).not.toMatch(/taskflow_create/);
   });
 
@@ -116,7 +116,7 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     const input =
       "`taskflow_create({ type: 'meeting', title: 'SEMA', scheduled_at: '2026-06-15T14:00:00Z', sender_name: 'alice' })`";
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toContain('api_create_meeting_task({ board_id: BOARD_ID,');
+    expect(result.output).toContain('api_create_meeting_task({ ');
     expect(result.output).not.toContain("type: 'meeting'");
     expect(result.output).not.toMatch(/taskflow_create/);
   });
@@ -125,13 +125,13 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     const input =
       "`taskflow_create({ type: 'project', title: 'Big', subtasks: ['A', 'B'], sender_name: 'alice' })`";
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toContain("api_create_task({ board_id: BOARD_ID, type: 'project',");
+    expect(result.output).toContain("api_create_task({ type: 'project',");
   });
 
   it('taskflow_create without inline type literal falls back to api_create_task', () => {
     const input = '`taskflow_create({title: VAR, type: VAR2, sender_name: SENDER})`';
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toContain('api_create_task({ board_id: BOARD_ID,');
+    expect(result.output).toContain('api_create_task({ ');
   });
 
   it('bare `taskflow_create` mention (no paren) → api_create_task', () => {
@@ -145,36 +145,36 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
       "`taskflow_create({ title: 'SEMA', type: 'meeting', scheduled_at: '2026-06-15T14:00:00Z', sender_name: 'alice' })`";
     const result = migrateBoardClaudeMd(input);
     // type is the second field; routing must still detect 'meeting'
-    expect(result.output).toContain('api_create_meeting_task({ board_id: BOARD_ID,');
+    expect(result.output).toContain('api_create_meeting_task({ ');
     expect(result.output).not.toMatch(/taskflow_create/);
   });
 
   it('taskflow_create with double-quoted type → routes by type (Codex BLOCKER fix)', () => {
     const input = `taskflow_create({ type: "meeting", title: "X", sender_name: "alice" })`;
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toContain('api_create_meeting_task({ board_id: BOARD_ID,');
+    expect(result.output).toContain('api_create_meeting_task({ ');
   });
 
   it('taskflow_create with type buried after multiple fields → still routes correctly', () => {
     const input =
       "`taskflow_create({ title: 'X', assignee: 'bob', priority: 'high', type: 'project', sender_name: 'alice' })`";
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toContain('api_create_task({ board_id: BOARD_ID,');
+    expect(result.output).toContain('api_create_task({ ');
     // Body preserves the type literal so engine still routes by it
     expect(result.output).toContain("type: 'project'");
   });
 
-  it('empty body `taskflow_create({})` → no trailing comma in output', () => {
+  it('empty body `taskflow_create({})` → empty braces in output', () => {
     const input = 'taskflow_create({})';
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toBe('api_create_task({ board_id: BOARD_ID })');
+    expect(result.output).toBe('api_create_task({})');
     expect(result.output).not.toMatch(/,\s*\}/);
   });
 
   it('taskflow_create with type:meeting as LAST field → no trailing comma after strip', () => {
     const input = "taskflow_create({ title: 'X', type: 'meeting' })";
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toBe("api_create_meeting_task({ board_id: BOARD_ID, title: 'X' })");
+    expect(result.output).toBe("api_create_meeting_task({ title: 'X' })");
     expect(result.output).not.toMatch(/,\s*\}/);
   });
 
@@ -190,22 +190,21 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     expect(Object.keys(result.unmigrated)).toEqual([]);
   });
 
-  it('when boardId is provided, BOARD_ID is substituted with the literal value (matches v2 provision-shared {{BOARD_ID}} pattern)', () => {
-    // v2's provision-shared.ts renders `{{BOARD_ID}}` to the literal board_id
-    // at provision time (host-side). The agent never sees a placeholder.
-    // Without this, `BOARD_ID` would get passed as a literal string to api_*
-    // tools, the engine would look for a board with id='BOARD_ID', and fail.
+  it('output is host-inject-clean: no `board_id:` and no BOARD_ID placeholder anywhere', () => {
+    // v2 host-injects board_id at the MCP boundary via NANOCLAW_TASKFLOW_BOARD_ID.
+    // The migration must NOT leak BOARD_ID placeholders or `board_id:` literals.
     const input = "taskflow_move({ task_id: 'T1', sender_name: SENDER })";
-    const result = migrateBoardClaudeMd(input, { boardId: 'board-seci-taskflow' });
-    expect(result.output).toContain("api_move({ board_id: 'board-seci-taskflow', task_id: 'T1', sender_name: SENDER })");
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain("api_move({ task_id: 'T1', sender_name: SENDER })");
     expect(result.output).not.toContain('BOARD_ID');
+    expect(result.output).not.toContain('board_id:');
   });
 
   it('default (no boardId arg): backwards-compatible — emits BOARD_ID placeholder for callers that template downstream', () => {
     // Skill tests + existing call sites pass no boardId. Preserve that contract.
     const input = "taskflow_move({ task_id: 'T1', sender_name: SENDER })";
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toContain('api_move({ board_id: BOARD_ID,');
+    expect(result.output).toContain('api_move({ ');
   });
 
   it('A5 quality finding: literal `taskflow_*` pattern (with asterisk) becomes `api_*`', () => {
@@ -348,7 +347,9 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
   it('handles zero whitespace after { — `taskflow_move({task_id:...})`', () => {
     const input = "taskflow_move({task_id:'T1',action:'start'})";
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toBe("api_move({ board_id: BOARD_ID, task_id:'T1',action:'start'})");
+    // After dropping board_id injection, the substitution is a pure rename;
+    // whitespace is preserved exactly as the v1 source had it.
+    expect(result.output).toBe("api_move({task_id:'T1',action:'start'})");
     expect(result.substituted).toBe(1);
   });
 
@@ -357,7 +358,31 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
       "| \"comecando TXXX\" / \"iniciando TXXX\" | `taskflow_move({ task_id: 'TXXX', action: 'start', sender_name: SENDER })` |";
     const result = migrateBoardClaudeMd(input);
     expect(result.output).toBe(
-      "| \"comecando TXXX\" / \"iniciando TXXX\" | `api_move({ board_id: BOARD_ID, task_id: 'TXXX', action: 'start', sender_name: SENDER })` |",
+      "| \"comecando TXXX\" / \"iniciando TXXX\" | `api_move({ task_id: 'TXXX', action: 'start', sender_name: SENDER })` |",
     );
+  });
+
+  // Codex IMPORTANT 2026-05-11: prompt regression. Generated v2 docs must
+  // not teach the agent to pass `board_id` in api_* calls — the host
+  // injects it via NANOCLAW_TASKFLOW_BOARD_ID at the MCP boundary.
+  it('regression: no `api_*({ board_id:` patterns leak into output (any tool, any whitespace)', () => {
+    const inputs = [
+      "taskflow_move({ task_id: 'T1', action: 'start', sender_name: SENDER })",
+      "taskflow_update({ task_id: 'T1', updates: { add_note: 'X' }, sender_name: SENDER })",
+      "taskflow_query({ query: 'task_details', task_id: 'T1' })",
+      "taskflow_reassign({ task_id: 'T1', target_person: 'Alice', confirmed: true, sender_name: SENDER })",
+      "taskflow_create({ type: 'simple', title: 'X', sender_name: SENDER })",
+      "taskflow_create({ type: 'meeting', title: 'M', scheduled_at: '...' })",
+      "taskflow_admin({ action: 'register_person', name: 'X', phone: '...', sender_name: SENDER })",
+      "taskflow_create({})",
+      "taskflow_move({task_id:'T1',action:'start'})", // zero whitespace
+    ];
+    for (const input of inputs) {
+      const result = migrateBoardClaudeMd(input);
+      // Any `api_<name>({ board_id:` (with optional whitespace around `:`) is a leak.
+      expect(result.output).not.toMatch(/api_[a-z_]+\(\{\s*board_id\s*:/);
+      // And explicit BOARD_ID placeholder must never appear (migration cleanup).
+      expect(result.output).not.toContain('BOARD_ID');
+    }
   });
 });

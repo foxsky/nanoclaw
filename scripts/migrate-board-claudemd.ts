@@ -1,14 +1,16 @@
 /**
  * A5 — migrate per-board CLAUDE.md from v1 to v2 tool vocabulary.
  *
- * v1 TaskFlow MCP tools ran in-process per board, so `board_id` was injected
- * from the engine's closure and never appeared in CLAUDE.md call sites. v2's
- * `api_*` tools (shipped in A11) require `board_id` explicitly — this script
- * adds `board_id: BOARD_ID,` to every substitute call site so boards can
- * keep using v1's vocabulary with the new tool names.
+ * Pure rename of v1 `taskflow_*` MCP tool names to their v2 `api_*`
+ * equivalents. v1's `board_id` was host-injected from the engine's closure
+ * and never appeared in CLAUDE.md call sites; v2 preserves that contract
+ * by host-injecting from the NANOCLAW_TASKFLOW_BOARD_ID env var at the
+ * MCP handler boundary (see `normalizeAgentIds` in
+ * container/agent-runner/src/mcp-tools/taskflow-helpers.ts). This script
+ * therefore does NOT touch arg lists — the v1 examples already omit
+ * board_id, and v2 reads it from env.
  *
- * Phase 1 — direct substitution for 5 tools whose v1→v2 schemas are
- * identical except for the prepended board_id:
+ * Phase 1 — direct rename for 5 simple tools:
  *   taskflow_move      → api_move
  *   taskflow_admin     → api_admin
  *   taskflow_reassign  → api_reassign
@@ -25,13 +27,6 @@
  *   taskflow_create (no inline type literal) → api_create_task fallback
  *   Bare taskflow_create mentions             → api_create_task
  *
- * A5 Phase 2 is complete — all v1 taskflow_* tools now have a v2
- * substitute. Remaining work for full A5 closure is verifying the
- * generated CLAUDE.md content against a live v2 agent on a sample
- * board (qualitative review), then deploying to the 36 prod boards.
- *
- * BOARD_ID is a placeholder the agent resolves from session context, same
- * convention as SENDER (which v1 CLAUDE.md already uses).
  */
 
 // Map v1 tool name → v2 tool name. Most are `taskflow_xxx` → `api_xxx`,
@@ -55,36 +50,29 @@ const UNMIGRATED_TOOLS = [] as const;
 
 export interface MigrationResult {
   output: string;
-  /** Count of call-site board_id injections (`taskflow_xxx({` → `api_xxx({ board_id: BOARD_ID,`).
-   *  Bare-name renames (`taskflow_xxx` not followed by `({`) are also performed
-   *  but not counted here — they're usually prose mentions, not call sites, and
-   *  the migration-progress metric we care about is "how many call signatures
-   *  now carry the v2 board_id contract." */
+  /** Count of call-site renames (`taskflow_xxx({` → `api_xxx({`). Bare-name
+   *  renames (`taskflow_xxx` not followed by `({`) are also performed but
+   *  not counted here — they're usually prose mentions, not call signatures,
+   *  and the migration-progress metric is "how many call signatures got
+   *  retargeted to the v2 tool surface." */
   substituted: number;
   unmigrated: Record<(typeof UNMIGRATED_TOOLS)[number], number>;
 }
 
-export interface MigrationOptions {
-  /** When set, replace the BOARD_ID placeholder with the literal value at the
-   *  end of substitution. Matches v2's provision-shared {{BOARD_ID}} pattern
-   *  (host-side render before the agent sees it). Omit to keep BOARD_ID as
-   *  a placeholder for downstream templating. */
-  boardId?: string;
-}
-
-export function migrateBoardClaudeMd(input: string, options?: MigrationOptions): MigrationResult {
+export function migrateBoardClaudeMd(input: string): MigrationResult {
   let output = input;
   let substituted = 0;
 
   for (const [v1Name, v2Name] of Object.entries(DIRECT_SUBSTITUTIONS)) {
-    // 1) `taskflow_xxx({` — opening of a call object. Inject board_id.
-    //    `\b` is a word boundary (excludes `[A-Za-z0-9_]` neighbors), so
-    //    a hypothetical `taskflow_move_extra(` won't match here. `\s*`
-    //    handles `({task_id` (no space) and `({\n  task_id` (newline).
-    const withParen = new RegExp(`\\b${v1Name}\\(\\{\\s*`, 'g');
+    // 1) `taskflow_xxx({` — opening of a call object. Pure rename — v2
+    //    host-injects board_id at the MCP boundary (see `normalizeAgentIds`
+    //    in container/agent-runner/src/mcp-tools/taskflow-helpers.ts), so
+    //    examples don't need to teach the agent to pass it. `\b` excludes
+    //    word-suffix matches like `taskflow_move_extra`.
+    const withParen = new RegExp(`\\b${v1Name}\\(\\{`, 'g');
     output = output.replace(withParen, (_match) => {
       substituted++;
-      return `${v2Name}({ board_id: BOARD_ID, `;
+      return `${v2Name}({`;
     });
 
     // 2) Bare `taskflow_xxx` (no opening paren-brace after). Just rename.
@@ -116,11 +104,10 @@ export function migrateBoardClaudeMd(input: string, options?: MigrationOptions):
         normalizedBody = normalizedBody.replace(/\btype:\s*['"][a-z_]+['"]\s*,?\s*/g, '');
       }
       // Clean up leading/trailing commas + whitespace introduced by the
-      // strip-and-rebuild. Empty body → emit `{ board_id: BOARD_ID }`
-      // with no trailing comma; non-empty → `{ board_id: BOARD_ID, ...body }`.
+      // strip-and-rebuild. No board_id injection — see pattern 1 above.
       const trimmed = normalizedBody.trim().replace(/^,\s*/, '').replace(/,\s*$/, '');
-      if (trimmed.length === 0) return `${v2Tool}({ board_id: BOARD_ID })`;
-      return `${v2Tool}({ board_id: BOARD_ID, ${trimmed} })`;
+      if (trimmed.length === 0) return `${v2Tool}({})`;
+      return `${v2Tool}({ ${trimmed} })`;
     },
   );
   // Bare `taskflow_create` mentions (prose) → api_create_task.
@@ -210,14 +197,6 @@ export function migrateBoardClaudeMd(input: string, options?: MigrationOptions):
     /## Notification Dispatch\n[\s\S]*?(?=\n## )/,
     '## Notification Dispatch\n\nThe v2 engine dispatches all cross-chat notifications itself. Tool responses may carry a `notification_events` array — **informational only; do NOT relay**. Your normal assistant reply still covers the current chat.\n\n',
   );
-
-  // When a boardId is supplied, render the BOARD_ID placeholder to the literal
-  // value, matching v2's provision-shared {{BOARD_ID}} host-side templating.
-  // Without this, the agent would pass the string "BOARD_ID" as board_id and
-  // the engine would fail board lookup.
-  if (options?.boardId) {
-    output = output.replace(/\bBOARD_ID\b/g, `'${options.boardId}'`);
-  }
 
   const unmigrated = Object.fromEntries(
     UNMIGRATED_TOOLS.map((tool) => [tool, countOccurrences(output, tool)]),

@@ -6,7 +6,7 @@ import { setupEngineDb } from './taskflow-test-fixtures.js';
 let db: Database;
 let taskId: string;
 
-const BOARD = 'b1';
+const BOARD = 'board-b1';
 
 beforeEach(async () => {
   db = setupEngineDb(BOARD);

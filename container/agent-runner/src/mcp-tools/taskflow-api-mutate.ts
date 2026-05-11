@@ -12,7 +12,7 @@ import { TaskflowEngine } from '../taskflow-engine.js';
 import type { AdminParams, DependencyParams, HierarchyParams, QueryParams, ReassignParams, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
-import { normalizeEngineNotificationEvents } from './taskflow-helpers.js';
+import { normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
 import { err, jsonResponse, parseTaskActorArgs, requireString } from './util.js';
 
 const PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
@@ -122,7 +122,6 @@ export const apiCreateSimpleTaskTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         title: { type: 'string' },
         sender_name: { type: 'string' },
         assignee: { type: 'string' },
@@ -130,10 +129,11 @@ export const apiCreateSimpleTaskTool: McpToolDefinition = {
         due_date: { type: ['string', 'null'] },
         description: { type: ['string', 'null'] },
       },
-      required: ['board_id', 'title', 'sender_name'],
+      required: ['title', 'sender_name'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const boardId = requireString(args, 'board_id');
     if (boardId === null) return err('board_id: required string');
     const title = requireString(args, 'title');
@@ -194,7 +194,6 @@ export const apiCreateMeetingTaskTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         title: { type: 'string' },
         sender_name: { type: 'string' },
         scheduled_at: { type: ['string', 'null'] },
@@ -210,10 +209,11 @@ export const apiCreateMeetingTaskTool: McpToolDefinition = {
         due_date: { type: ['string', 'null'] },
         requires_close_approval: { type: 'boolean' },
       },
-      required: ['board_id', 'title', 'sender_name'],
+      required: ['title', 'sender_name'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const boardId = requireString(args, 'board_id');
     if (boardId === null) return err('board_id: required string');
     const title = requireString(args, 'title');
@@ -335,15 +335,15 @@ export const apiDeleteSimpleTaskTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         task_id: { type: 'string' },
         sender_name: { type: 'string' },
         sender_is_service: { type: 'boolean' },
       },
-      required: ['board_id', 'task_id', 'sender_name'],
+      required: ['task_id', 'sender_name'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const parsed = parseTaskActorArgs(args);
     if (!parsed.ok) return parsed.error;
 
@@ -366,7 +366,6 @@ export const apiMoveTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         task_id: { type: 'string' },
         action: { type: 'string', enum: [...MOVE_ACTIONS] },
         sender_name: { type: 'string' },
@@ -374,10 +373,11 @@ export const apiMoveTool: McpToolDefinition = {
         subtask_id: { type: 'string' },
         confirmed_task_id: { type: 'string' },
       },
-      required: ['board_id', 'task_id', 'action', 'sender_name'],
+      required: ['task_id', 'action', 'sender_name'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const parsed = parseTaskActorArgs(args);
     if (!parsed.ok) return parsed.error;
     const { boardId, taskId, senderName } = parsed;
@@ -430,7 +430,6 @@ export const apiAdminTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         action: { type: 'string', enum: [...ADMIN_ACTIONS] },
         sender_name: { type: 'string' },
         person_name: { type: 'string' },
@@ -456,10 +455,11 @@ export const apiAdminTool: McpToolDefinition = {
         decision: { type: 'string', enum: [...ADMIN_DECISIONS] },
         reason: { type: 'string' },
       },
-      required: ['board_id', 'action', 'sender_name'],
+      required: ['action', 'sender_name'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const boardId = requireString(args, 'board_id');
     if (boardId === null) return err('board_id: required string');
     const senderName = requireString(args, 'sender_name');
@@ -590,17 +590,17 @@ export const apiReassignTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         target_person: { type: 'string' },
         sender_name: { type: 'string' },
         confirmed: { type: 'boolean' },
         task_id: { type: 'string' },
         source_person: { type: 'string' },
       },
-      required: ['board_id', 'target_person', 'sender_name', 'confirmed'],
+      required: ['target_person', 'sender_name', 'confirmed'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const boardId = requireString(args, 'board_id');
     if (boardId === null) return err('board_id: required string');
     const targetPerson = requireString(args, 'target_person');
@@ -648,14 +648,14 @@ export const apiUndoTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         sender_name: { type: 'string' },
         force: { type: 'boolean' },
       },
-      required: ['board_id', 'sender_name'],
+      required: ['sender_name'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const boardId = requireString(args, 'board_id');
     if (boardId === null) return err('board_id: required string');
     const senderName = requireString(args, 'sender_name');
@@ -691,13 +691,13 @@ export const apiReportTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         type: { type: 'string', enum: [...REPORT_TYPES] },
       },
-      required: ['board_id', 'type'],
+      required: ['type'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const boardId = requireString(args, 'board_id');
     if (boardId === null) return err('board_id: required string');
     if (typeof args.type !== 'string' || !REPORT_TYPES.includes(args.type as ReportType)) {
@@ -725,7 +725,6 @@ export const apiCreateTaskTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         type: { type: 'string', enum: [...CREATE_TASK_TYPES] },
         title: { type: 'string' },
         sender_name: { type: 'string' },
@@ -742,10 +741,11 @@ export const apiCreateTaskTool: McpToolDefinition = {
         intended_weekday: { type: 'string' },
         requires_close_approval: { type: 'boolean' },
       },
-      required: ['board_id', 'title', 'sender_name', 'type'],
+      required: ['title', 'sender_name', 'type'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const boardId = requireString(args, 'board_id');
     if (boardId === null) return err('board_id: required string');
     const title = requireString(args, 'title');
@@ -891,17 +891,17 @@ export const apiUpdateTaskTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         task_id: { type: 'string' },
         sender_name: { type: 'string' },
         updates: { type: 'object' },
         sender_external_id: { type: 'string' },
         confirmed_task_id: { type: 'string' },
       },
-      required: ['board_id', 'task_id', 'sender_name', 'updates'],
+      required: ['task_id', 'sender_name', 'updates'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const parsed = parseTaskActorArgs(args);
     if (!parsed.ok) return parsed.error;
     const { boardId, taskId, senderName } = parsed;
@@ -952,7 +952,6 @@ export const apiQueryTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         query: { type: 'string' },
         sender_name: { type: 'string' },
         person_name: { type: 'string' },
@@ -962,10 +961,11 @@ export const apiQueryTool: McpToolDefinition = {
         since: { type: 'string' },
         at: { type: 'string' },
       },
-      required: ['board_id', 'query'],
+      required: ['query'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const boardId = requireString(args, 'board_id');
     if (boardId === null) return err('board_id: required string');
     const query = requireString(args, 'query');
@@ -1007,17 +1007,17 @@ export const apiHierarchyTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         action: { type: 'string', enum: [...HIERARCHY_ACTIONS] },
         task_id: { type: 'string' },
         sender_name: { type: 'string' },
         person_name: { type: 'string' },
         parent_task_id: { type: 'string' },
       },
-      required: ['board_id', 'action', 'task_id', 'sender_name'],
+      required: ['action', 'task_id', 'sender_name'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const parsed = parseTaskActorArgs(args);
     if (!parsed.ok) return parsed.error;
     const { boardId, taskId, senderName } = parsed;
@@ -1064,17 +1064,17 @@ export const apiDependencyTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         action: { type: 'string', enum: [...DEPENDENCY_ACTIONS] },
         task_id: { type: 'string' },
         sender_name: { type: 'string' },
         target_task_id: { type: 'string' },
         reminder_days: { type: 'integer' },
       },
-      required: ['board_id', 'action', 'task_id', 'sender_name'],
+      required: ['action', 'task_id', 'sender_name'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const parsed = parseTaskActorArgs(args);
     if (!parsed.ok) return parsed.error;
     const { boardId, taskId, senderName } = parsed;

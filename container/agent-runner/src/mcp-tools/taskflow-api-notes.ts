@@ -2,6 +2,7 @@
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
+import { normalizeAgentIds } from './taskflow-helpers.js';
 import type { McpToolDefinition } from './types.js';
 import { err, jsonResponse, parseTaskActorArgs } from './util.js';
 
@@ -12,17 +13,17 @@ export const apiTaskAddNoteTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         task_id: { type: 'string' },
         sender_name: { type: 'string' },
         sender_is_service: { type: 'boolean' },
         text: { type: 'string' },
         parent_note_id: { type: 'integer' },
       },
-      required: ['board_id', 'task_id', 'sender_name', 'text'],
+      required: ['task_id', 'sender_name', 'text'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const parsed = parseTaskActorArgs(args);
     if (!parsed.ok) return parsed.error;
     if (typeof args.text !== 'string' || args.text.length === 0) {
@@ -55,17 +56,17 @@ export const apiTaskEditNoteTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         task_id: { type: 'string' },
         sender_name: { type: 'string' },
         sender_is_service: { type: 'boolean' },
         note_id: { type: 'integer' },
         text: { type: 'string' },
       },
-      required: ['board_id', 'task_id', 'sender_name', 'note_id', 'text'],
+      required: ['task_id', 'sender_name', 'note_id', 'text'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const parsed = parseTaskActorArgs(args);
     if (!parsed.ok) return parsed.error;
     if (typeof args.note_id !== 'number' || !Number.isInteger(args.note_id)) {
@@ -94,16 +95,16 @@ export const apiTaskRemoveNoteTool: McpToolDefinition = {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        board_id: { type: 'string' },
         task_id: { type: 'string' },
         sender_name: { type: 'string' },
         sender_is_service: { type: 'boolean' },
         note_id: { type: 'integer' },
       },
-      required: ['board_id', 'task_id', 'sender_name', 'note_id'],
+      required: ['task_id', 'sender_name', 'note_id'],
     },
   },
   async handler(args) {
+    args = normalizeAgentIds(args);
     const parsed = parseTaskActorArgs(args);
     if (!parsed.ok) return parsed.error;
     if (typeof args.note_id !== 'number' || !Number.isInteger(args.note_id)) {
