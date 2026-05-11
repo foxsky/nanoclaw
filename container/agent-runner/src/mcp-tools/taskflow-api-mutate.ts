@@ -9,7 +9,7 @@
 import type { Database } from 'bun:sqlite';
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
-import type { AdminParams, ReassignParams, ReportParams, UndoParams } from '../taskflow-engine.js';
+import type { AdminParams, ReassignParams, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { normalizeEngineNotificationEvents } from './taskflow-helpers.js';
@@ -877,8 +877,69 @@ export const apiCreateTaskTool: McpToolDefinition = {
   },
 };
 
+export const apiUpdateTaskTool: McpToolDefinition = {
+  tool: {
+    name: 'api_update_task',
+    description:
+      "Apply a v1-shape composite update to a task. The `updates` object accepts any field engine.update's UpdateParams.updates supports: title, priority, requires_close_approval, due_date, description, next_action, add_label, remove_label, add_note, edit_note ({id, text}), remove_note, parent_note_id, scheduled_at, participant ops, set_note_status, subtask ops (add/rename/reopen/assign/unassign), recurrence ops. Engine validates per-sub-key.",
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+        task_id: { type: 'string' },
+        sender_name: { type: 'string' },
+        updates: { type: 'object' },
+        sender_external_id: { type: 'string' },
+        confirmed_task_id: { type: 'string' },
+      },
+      required: ['board_id', 'task_id', 'sender_name', 'updates'],
+    },
+  },
+  async handler(args) {
+    const parsed = parseTaskActorArgs(args);
+    if (!parsed.ok) return parsed.error;
+    const { boardId, taskId, senderName } = parsed;
+
+    if (args.updates === undefined) return err('updates: required object');
+    if (
+      args.updates === null ||
+      typeof args.updates !== 'object' ||
+      Array.isArray(args.updates)
+    ) {
+      return err('updates: expected object');
+    }
+    let senderExternalId: string | undefined;
+    if (args.sender_external_id !== undefined) {
+      if (typeof args.sender_external_id !== 'string') return err('sender_external_id: expected string');
+      senderExternalId = args.sender_external_id;
+    }
+    let confirmedTaskId: string | undefined;
+    if (args.confirmed_task_id !== undefined) {
+      if (typeof args.confirmed_task_id !== 'string') return err('confirmed_task_id: expected string');
+      confirmedTaskId = args.confirmed_task_id;
+    }
+
+    try {
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      const updateParams: UpdateParams = {
+        board_id: boardId,
+        task_id: taskId,
+        sender_name: senderName,
+        updates: args.updates as UpdateParams['updates'],
+        sender_external_id: senderExternalId,
+        confirmed_task_id: confirmedTaskId,
+      };
+      const result = engine.update(updateParams);
+      return finalizeMutationResult(result);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error: msg });
+    }
+  },
+};
+
 registerTools([
   apiCreateSimpleTaskTool, apiCreateMeetingTaskTool, apiCreateTaskTool,
   apiMoveTool, apiAdminTool, apiReassignTool, apiUndoTool, apiReportTool,
-  apiDeleteSimpleTaskTool,
+  apiUpdateTaskTool, apiDeleteSimpleTaskTool,
 ]);

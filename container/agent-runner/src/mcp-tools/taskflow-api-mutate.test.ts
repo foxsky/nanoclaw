@@ -1591,3 +1591,144 @@ describe('api_create_task MCP tool (A5.2.1 — multi-type create)', () => {
     expect(JSON.stringify(response.content)).toMatch(/requires_close_approval/);
   });
 });
+
+describe('api_update_task MCP tool (A5.2.2 — composite updates wrapper)', () => {
+  it('exports a tool with name "api_update_task"', async () => {
+    const { apiUpdateTaskTool } = await import('./taskflow-api-mutate.ts');
+    expect(apiUpdateTaskTool.tool.name).toBe('api_update_task');
+  });
+
+  it('declares required board_id/task_id/sender_name/updates; updates is an object', async () => {
+    const { apiUpdateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const schema = apiUpdateTaskTool.tool.inputSchema as {
+      required: string[];
+      properties: Record<string, { type?: string }>;
+    };
+    expect(schema.required).toEqual(
+      expect.arrayContaining(['board_id', 'task_id', 'sender_name', 'updates']),
+    );
+    expect(schema.properties.updates.type).toBe('object');
+  });
+
+  it('add_note: engine appends a note row to the task', async () => {
+    const { apiCreateSimpleTaskTool, apiUpdateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD, title: 'Note target', sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+
+    const response = await apiUpdateTaskTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      sender_name: 'alice',
+      updates: { add_note: 'Important context' },
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    const row = db.prepare(`SELECT notes FROM tasks WHERE id = ?`).get(taskId) as { notes: string };
+    expect(row.notes).toMatch(/Important context/);
+  });
+
+  it('due_date: persists the new due_date on the task', async () => {
+    const { apiCreateSimpleTaskTool, apiUpdateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD, title: 'Date target', sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+
+    const response = await apiUpdateTaskTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      sender_name: 'alice',
+      updates: { due_date: '2026-12-01' },
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    const row = db.prepare(`SELECT due_date FROM tasks WHERE id = ?`).get(taskId) as { due_date: string };
+    expect(row.due_date).toBe('2026-12-01');
+  });
+
+  it('title: renames the task', async () => {
+    const { apiCreateSimpleTaskTool, apiUpdateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD, title: 'Old name', sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+
+    const response = await apiUpdateTaskTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      sender_name: 'alice',
+      updates: { title: 'New name' },
+    });
+    expect(JSON.parse(response.content[0].text).success).toBe(true);
+    const row = db.prepare(`SELECT title FROM tasks WHERE id = ?`).get(taskId) as { title: string };
+    expect(row.title).toBe('New name');
+  });
+
+  it('engine rejects update on missing task → "Task not found" propagated', async () => {
+    const { apiUpdateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiUpdateTaskTool.handler({
+      board_id: BOARD,
+      task_id: 'T-missing',
+      sender_name: 'alice',
+      updates: { add_note: 'X' },
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Task not found/);
+  });
+
+  it('rejects non-string board_id', async () => {
+    const { apiUpdateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiUpdateTaskTool.handler({
+      board_id: 42 as unknown as string,
+      task_id: 'T1',
+      sender_name: 'alice',
+      updates: { add_note: 'X' },
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/board_id/);
+  });
+
+  it('rejects missing updates field', async () => {
+    const { apiUpdateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiUpdateTaskTool.handler({
+      board_id: BOARD,
+      task_id: 'T1',
+      sender_name: 'alice',
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/updates/);
+  });
+
+  it('rejects non-object updates (e.g. string)', async () => {
+    const { apiUpdateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiUpdateTaskTool.handler({
+      board_id: BOARD,
+      task_id: 'T1',
+      sender_name: 'alice',
+      updates: 'add_note' as unknown as Record<string, unknown>,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.content)).toMatch(/updates/);
+  });
+
+  it('empty updates object → engine no-ops with success=true (engine does not require operations)', async () => {
+    const { apiCreateSimpleTaskTool, apiUpdateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD, title: 'X', sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+    const response = await apiUpdateTaskTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      sender_name: 'alice',
+      updates: {},
+    });
+    const result = JSON.parse(response.content[0].text);
+    // engine.update doesn't gate on empty updates — succeeds as no-op.
+    // Mirrors v1 behavior. Caller is expected to send at least one op.
+    expect(result.success).toBe(true);
+  });
+});

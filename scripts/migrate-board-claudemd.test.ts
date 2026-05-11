@@ -33,19 +33,39 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     expect(result.output).toBe('When you call api_move, the engine validates.');
   });
 
-  it('leaves taskflow_query/update/hierarchy/dependency UNTOUCHED (still in Phase 2)', () => {
+  it('leaves taskflow_query/hierarchy/dependency UNTOUCHED (still in Phase 2)', () => {
     const input = [
       "`taskflow_query({ query: 'task_details', task_id: 'T1' })`",
-      "`taskflow_update({ task_id: 'T1', updates: { add_note: 'X' }, sender_name: 'alice' })`",
       "`taskflow_hierarchy({ task_id: 'P1' })`",
       "`taskflow_dependency({ task_id: 'T1' })`",
     ].join('\n');
     const result = migrateBoardClaudeMd(input);
     expect(result.output).toBe(input);
     expect(result.unmigrated.taskflow_query).toBe(1);
-    expect(result.unmigrated.taskflow_update).toBe(1);
     expect(result.unmigrated.taskflow_hierarchy).toBe(1);
     expect(result.unmigrated.taskflow_dependency).toBe(1);
+  });
+
+  it('taskflow_update → api_update_task with composite updates body preserved', () => {
+    const input = "`taskflow_update({ task_id: 'T1', updates: { add_note: 'X' }, sender_name: SENDER })`";
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain(
+      "api_update_task({ board_id: BOARD_ID, task_id: 'T1', updates: { add_note: 'X' }, sender_name: SENDER })",
+    );
+    expect(result.output).not.toMatch(/taskflow_update/);
+  });
+
+  it('taskflow_update with multi-field updates body → preserved verbatim', () => {
+    const input = "taskflow_update({ task_id: 'T14', updates: { due_date: '2026-04-30' }, sender_name: SENDER })";
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain("api_update_task({ board_id: BOARD_ID, task_id: 'T14',");
+    expect(result.output).toContain("updates: { due_date: '2026-04-30' }");
+  });
+
+  it('bare taskflow_update mention → api_update_task', () => {
+    const input = 'Use taskflow_update to add a note.';
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toBe('Use api_update_task to add a note.');
   });
 
   it('taskflow_create with type:simple → api_create_task with type preserved', () => {

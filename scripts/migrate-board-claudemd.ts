@@ -15,7 +15,8 @@
  *   taskflow_undo      → api_undo
  *   taskflow_report    → api_report
  *
- * Phase 2 partial — taskflow_create routed by `type:` literal:
+ * Phase 2 partial — composite-shape ports:
+ *   taskflow_update    → api_update_task (composite updates: {...})
  *   taskflow_create({type:'meeting',...})    → api_create_meeting_task
  *   taskflow_create({type:'simple'|...,...}) → api_create_task
  *   taskflow_create (no inline type literal) → api_create_task fallback
@@ -23,7 +24,6 @@
  *
  * NOT touched here (Phase 2 still pending — different param shapes):
  *   taskflow_query      (sub-query model differs — partial overlap with api_filter_board_tasks)
- *   taskflow_update     (refactored: api_update_simple_task + note tools)
  *   taskflow_hierarchy  (partial overlap with api_linked_tasks)
  *   taskflow_dependency (folds into api_update_simple_task or api_admin)
  *
@@ -31,17 +31,20 @@
  * convention as SENDER (which v1 CLAUDE.md already uses).
  */
 
-const DIRECT_SUBSTITUTIONS = [
-  'taskflow_move',
-  'taskflow_admin',
-  'taskflow_reassign',
-  'taskflow_undo',
-  'taskflow_report',
-] as const;
+// Map v1 tool name → v2 tool name. Most are `taskflow_xxx` → `api_xxx`,
+// but `taskflow_update` → `api_update_task` (the v2 name disambiguates
+// from `api_update_simple_task` which is a different flat-fields tool).
+const DIRECT_SUBSTITUTIONS: Record<string, string> = {
+  taskflow_move: 'api_move',
+  taskflow_admin: 'api_admin',
+  taskflow_reassign: 'api_reassign',
+  taskflow_undo: 'api_undo',
+  taskflow_report: 'api_report',
+  taskflow_update: 'api_update_task',
+};
 
 const UNMIGRATED_TOOLS = [
   'taskflow_query',
-  'taskflow_update',
   'taskflow_hierarchy',
   'taskflow_dependency',
 ] as const;
@@ -61,9 +64,7 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
   let output = input;
   let substituted = 0;
 
-  for (const v1Name of DIRECT_SUBSTITUTIONS) {
-    const v2Name = v1Name.replace(/^taskflow/, 'api');
-
+  for (const [v1Name, v2Name] of Object.entries(DIRECT_SUBSTITUTIONS)) {
     // 1) `taskflow_xxx({` — opening of a call object. Inject board_id.
     //    `\b` is a word boundary (excludes `[A-Za-z0-9_]` neighbors), so
     //    a hypothetical `taskflow_move_extra(` won't match here. `\s*`
