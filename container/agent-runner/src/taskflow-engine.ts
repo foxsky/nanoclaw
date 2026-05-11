@@ -5306,14 +5306,16 @@ export class TaskflowEngine {
           }
           if (mode === 'approval') {
             // Persist the request and return pending_approval with a symbolic
-            // destination_name. The child agent's send_message MCP tool
-            // resolves 'parent_board' via agent_destinations (host wires this
-            // at child-board provisioning time). Engine no longer emits JIDs.
-            // (A12 2026-05-11.)
-            const parentBoardExists = this.db
-              .prepare(`SELECT 1 FROM boards WHERE id = ?`)
-              .get(owningBoardId);
-            if (!parentBoardExists) {
+            // destination_name `parent-<owning_board.group_folder>`. Per-parent
+            // naming supports multi-parent children (child_board_registrations
+            // can link the same child under several parents). The child agent's
+            // send_message MCP tool resolves the name via agent_destinations
+            // (host wires it at child-board provisioning + cross-parent link).
+            // (A12 + A12-part-2, 2026-05-11.)
+            const owningBoard = this.db
+              .prepare(`SELECT group_folder FROM boards WHERE id = ?`)
+              .get(owningBoardId) as { group_folder: string } | undefined;
+            if (!owningBoard) {
               return {
                 success: false,
                 error: `Não foi possível enviar a solicitação para o quadro pai: registro do quadro ${owningBoardId} não encontrado. Peça ao gestor para verificar o cadastro do quadro.`,
@@ -5359,7 +5361,7 @@ export class TaskflowEngine {
               success: false,
               pending_approval: {
                 request_id: requestId,
-                destination_name: 'parent_board',
+                destination_name: `parent-${owningBoard.group_folder}`,
                 message: requestMessage,
                 parent_board_id: owningBoardId,
               },

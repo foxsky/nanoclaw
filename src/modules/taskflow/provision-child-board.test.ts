@@ -239,15 +239,16 @@ describe('handleProvisionChildBoard', () => {
     // registers 'source-<child_folder>' → child's messaging_group. The
     // group_folder (NOT NULL per schema) is used instead of short_code
     // (optional) so the name never collapses to 'source-null'.
+    // A12-part-2: per-parent destination 'parent-<parent_folder>' on the
+    // child. Parent's group_folder is 'eng-taskflow' in the fixture.
     const childParentDest = getDb()
       .prepare(
         `SELECT target_type, target_id FROM agent_destinations
-         WHERE agent_group_id = ? AND local_name = 'parent_board'`,
+         WHERE agent_group_id = ? AND local_name = 'parent-eng-taskflow'`,
       )
       .get(newAg!.id) as { target_type: string; target_id: string } | undefined;
     expect(childParentDest).toBeDefined();
     expect(childParentDest!.target_type).toBe('channel');
-    // target_id is the parent's messaging_group_id (seeded as 'mg-eng' in fixture)
     expect(childParentDest!.target_id).toBe('mg-eng');
 
     const childMg = getDb()
@@ -317,6 +318,36 @@ describe('handleProvisionChildBoard', () => {
     );
     db.close();
 
+    // Seed v2 state for the existing child so A12-part-2 can register
+    // cross-board destinations during the link. The agent_groups.folder
+    // must match the existing-board.group_folder for getAgentGroupByFolder.
+    getDb()
+      .prepare(`INSERT INTO agent_groups (id, name, folder, agent_provider, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .run('ag-existing-elsewhere', 'Case', 'existing-elsewhere', 'claude', now);
+    getDb()
+      .prepare(
+        `INSERT INTO messaging_groups (id, channel_type, platform_id, name, is_group, unknown_sender_policy, is_main_control, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run('mg-existing-elsewhere', 'whatsapp', '120363555@g.us', 'Existing Elsewhere', 1, 'strict', 0, now);
+    getDb()
+      .prepare(
+        `INSERT INTO messaging_group_agents (id, messaging_group_id, agent_group_id, engage_mode, engage_pattern, sender_scope, ignored_message_policy, session_mode, priority, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'mga-existing-elsewhere',
+        'mg-existing-elsewhere',
+        'ag-existing-elsewhere',
+        'pattern',
+        '.',
+        'all',
+        'drop',
+        'shared',
+        0,
+        now,
+      );
+
     const { handleProvisionChildBoard } = await import('./provision-child-board.js');
     await handleProvisionChildBoard(validInput, parentSession, {} as never);
 
@@ -331,6 +362,27 @@ describe('handleProvisionChildBoard', () => {
       .get('board-eng-taskflow', 'p-002') as { notification_group_jid: string | null };
     expect(notif.notification_group_jid).toBe('120363555@g.us');
     dbAfter.close();
+
+    // A12-part-2: linked child should have a 'parent-eng-taskflow' destination
+    // pointing to this new parent's messaging_group, AND the new parent should
+    // have a 'source-existing-elsewhere' destination pointing to the existing
+    // child's messaging_group.
+    const childParentDest = getDb()
+      .prepare(
+        `SELECT target_id FROM agent_destinations
+         WHERE agent_group_id = 'ag-existing-elsewhere' AND local_name = 'parent-eng-taskflow'`,
+      )
+      .get() as { target_id: string } | undefined;
+    expect(childParentDest).toBeDefined();
+    expect(childParentDest!.target_id).toBe('mg-eng');
+    const parentSourceDest = getDb()
+      .prepare(
+        `SELECT target_id FROM agent_destinations
+         WHERE agent_group_id = 'ag-eng' AND local_name = 'source-existing-elsewhere'`,
+      )
+      .get() as { target_id: string } | undefined;
+    expect(parentSourceDest).toBeDefined();
+    expect(parentSourceDest!.target_id).toBe('mg-existing-elsewhere');
   });
 
   it('retroactively links existing parent-board tasks assigned to the new person', async () => {

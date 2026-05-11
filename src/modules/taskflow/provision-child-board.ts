@@ -4,7 +4,7 @@ import type DatabaseType from 'better-sqlite3';
 
 import { DATA_DIR, GROUPS_DIR } from '../../config.js';
 import { getChannelAdapter } from '../../channels/channel-registry.js';
-import { getAgentGroup, getAllAgentGroups } from '../../db/agent-groups.js';
+import { getAgentGroup, getAgentGroupByFolder, getAllAgentGroups } from '../../db/agent-groups.js';
 import { getAllMessagingGroups, getMessagingGroup } from '../../db/messaging-groups.js';
 import { createDestination, getDestinationByName } from '../agent-to-agent/db/agent-destinations.js';
 import { writeDestinations } from '../agent-to-agent/write-destinations.js';
@@ -420,6 +420,43 @@ export async function handleProvisionChildBoard(
     if (existingElsewhere) {
       try {
         linkExistingBoardToParent(tfDb, parent.parentBoard, parsed, existingElsewhere);
+        // A12-part-2: register cross-board destinations for the linked
+        // child. Multi-parent capable per the symmetric per-folder names —
+        // existing child gets ANOTHER 'parent-<folder>' for this parent;
+        // this parent gets a new 'source-<folder>' for the existing child.
+        const parentMgId = session.messaging_group_id;
+        if (parentMgId && hasTable(getCentralDb(), 'agent_destinations')) {
+          const existingChildAg = getAgentGroupByFolder(existingElsewhere.group_folder);
+          const existingChildMg = existingChildAg
+            ? (getCentralDb()
+                .prepare('SELECT messaging_group_id FROM messaging_group_agents WHERE agent_group_id = ?')
+                .get(existingChildAg.id) as { messaging_group_id: string } | undefined)
+            : undefined;
+          if (existingChildAg && existingChildMg) {
+            const destTs = new Date().toISOString();
+            const parentName = `parent-${parent.parentBoard.group_folder}`;
+            if (!getDestinationByName(existingChildAg.id, parentName)) {
+              createDestination({
+                agent_group_id: existingChildAg.id,
+                local_name: parentName,
+                target_type: 'channel',
+                target_id: parentMgId,
+                created_at: destTs,
+              });
+            }
+            const sourceName = `source-${existingElsewhere.group_folder}`;
+            if (!getDestinationByName(session.agent_group_id, sourceName)) {
+              createDestination({
+                agent_group_id: session.agent_group_id,
+                local_name: sourceName,
+                target_type: 'channel',
+                target_id: existingChildMg.messaging_group_id,
+                created_at: destTs,
+              });
+              writeDestinations(session.agent_group_id, session.id);
+            }
+          }
+        }
       } catch (err) {
         log.error('provision_child_board: failed to link existing board', {
           err,
@@ -500,23 +537,27 @@ export async function handleProvisionChildBoard(
       childMessagingGroupId = wired.messagingGroupId;
       log.info('provision_child_board: v2 wiring complete', { childAgentGroupId, folder, childGroupJid });
 
-      // A12: register symbolic destinations for cross-board approval routing.
-      // Child uses 'parent_board'; parent uses 'source-<child_folder>'.
-      // boards.group_folder is NOT NULL + unique, so the source-* name
-      // never collides on null and never collides cross-child (unlike
-      // boards.short_code which is optional and would yield 'source-null').
+      // A12 + A12-part-2: register symbolic destinations for cross-board
+      // approval routing, per-parent and per-child. Child uses
+      // 'parent-<parent_folder>' (one per linked parent); parent uses
+      // 'source-<child_folder>' (one per linked child). Both sides use
+      // boards.group_folder (NOT NULL + unique per board) so names never
+      // collapse to '-null' and never collide cross-child or cross-parent.
+      // Multi-parent children (cross_board_registrations) get one
+      // 'parent-<folder>' row per linked parent — same pattern as parent's
+      // multiple 'source-<folder>' rows.
       // Guard: skip when the agent-to-agent module isn't installed (same
       // pattern as messaging-groups.ts:213) or session is DM-only.
       // Idempotency: getDestinationByName precondition mirrors
-      // messaging-groups.ts:222-227 / create-agent.ts:99-103. Without it
-      // a re-provision throws on PK (agent_group_id, local_name).
+      // messaging-groups.ts:222-227 / create-agent.ts:99-103.
       const parentMgId = session.messaging_group_id;
       if (parentMgId && hasTable(getCentralDb(), 'agent_destinations')) {
         const destTs = new Date().toISOString();
-        if (!getDestinationByName(childAgentGroupId, 'parent_board')) {
+        const parentName = `parent-${parent.parentBoard.group_folder}`;
+        if (!getDestinationByName(childAgentGroupId, parentName)) {
           createDestination({
             agent_group_id: childAgentGroupId,
-            local_name: 'parent_board',
+            local_name: parentName,
             target_type: 'channel',
             target_id: parentMgId,
             created_at: destTs,

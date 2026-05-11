@@ -6206,10 +6206,10 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
       expect(subtask).toBeNull();
     });
 
-    it('mode=approval: creates pending request with destination_name=parent_board (A12)', () => {
-      // A12: engine emits the symbolic destination name 'parent_board' instead
-      // of a raw JID. The child agent's send_message MCP tool resolves the
-      // name via agent_destinations registered by host wiring.
+    it('mode=approval: pending request uses destination_name=parent-<owning_folder> (A12 + A12-part-2)', () => {
+      // A12-part-2: per-parent symbolic name so multi-parent children
+      // (linked via cross_board_registrations) route correctly. 'parent'
+      // is the test fixture's group_folder for PARENT_BOARD (line 6148).
       db.exec(`UPDATE board_runtime_config SET cross_board_subtask_mode = 'approval' WHERE board_id = '${PARENT_BOARD}'`);
 
       const r = childEngine.update({
@@ -6221,7 +6221,7 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
       expect(r.success).toBe(false);
       expect((r as any).pending_approval).toBeTruthy();
       expect((r as any).pending_approval.request_id).toMatch(/^req-\d+-[a-z0-9]+$/);
-      expect((r as any).pending_approval.destination_name).toBe('parent_board');
+      expect((r as any).pending_approval.destination_name).toBe('parent-parent');
       expect((r as any).pending_approval.target_chat_jid).toBeUndefined();
       expect((r as any).pending_approval.parent_board_id).toBe(PARENT_BOARD);
       expect((r as any).pending_approval.message).toContain('🔔 *Solicitação de subtarefa*');
