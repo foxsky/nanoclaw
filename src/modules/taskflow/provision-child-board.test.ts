@@ -233,6 +233,41 @@ describe('handleProvisionChildBoard', () => {
       .get(newAg!.id) as { engage_mode: string; engage_pattern: string | null };
     expect(wiring.engage_mode).toBe('pattern');
     expect(wiring.engage_pattern).toBe('.');
+
+    // A12: cross-board approval needs symbolic destinations on BOTH ends so the
+    // child agent's send_message can route 'parent_board' to the parent's chat
+    // and the parent agent's send_message can route 'source-<short_code>' to
+    // each wired child's chat. Auto-registered at provision time to mirror v1's
+    // automatic cross-board approval routing.
+    const childParentDest = getDb()
+      .prepare(
+        `SELECT target_type, target_id FROM agent_destinations
+         WHERE agent_group_id = ? AND local_name = 'parent_board'`,
+      )
+      .get(newAg!.id) as { target_type: string; target_id: string } | undefined;
+    expect(childParentDest).toBeDefined();
+    expect(childParentDest!.target_type).toBe('channel');
+    // target_id is the parent's messaging_group_id (seeded as 'mg-eng' in fixture)
+    expect(childParentDest!.target_id).toBe('mg-eng');
+
+    const childMg = getDb()
+      .prepare(
+        `SELECT id FROM messaging_groups
+         WHERE id IN (SELECT messaging_group_id FROM messaging_group_agents WHERE agent_group_id = ?)`,
+      )
+      .get(newAg!.id) as { id: string };
+
+    // Parent's source-<short_code> destination → child's messaging_group.
+    // Query by pattern (don't hardcode the short_code derivation).
+    const parentSourceDest = getDb()
+      .prepare(
+        `SELECT local_name, target_type, target_id FROM agent_destinations
+         WHERE agent_group_id = 'ag-eng' AND local_name LIKE 'source-%' AND target_id = ?`,
+      )
+      .get(childMg.id) as { local_name: string; target_type: string; target_id: string } | undefined;
+    expect(parentSourceDest).toBeDefined();
+    expect(parentSourceDest!.target_type).toBe('channel');
+    expect(parentSourceDest!.local_name).toMatch(/^source-\S+$/);
   });
 
   it('drops when person already registered on this parent board', async () => {

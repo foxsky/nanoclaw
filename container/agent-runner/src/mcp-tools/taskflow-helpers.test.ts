@@ -146,6 +146,28 @@ describe('parseNotificationEvents', () => {
       parseNotificationEvents([{ kind: 'deferred_notification', message: 'No person' }]),
     ).toThrow(/target_person_id/);
   });
+
+  it('accepts destination_message — symbolic-name routing for cross-board approval flows (A12)', () => {
+    // The agent's send_message MCP tool resolves the destination_name via
+    // agent_destinations. The engine emits this kind for cross-board
+    // approval forwarding where it cannot know the receiving agent's
+    // local destination names ahead of time.
+    const result = parseNotificationEvents([
+      { kind: 'destination_message', destination_name: 'parent_board', message: 'Request' },
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0].kind).toBe('destination_message');
+    if (result[0].kind === 'destination_message') {
+      expect(result[0].destination_name).toBe('parent_board');
+      expect(result[0].message).toBe('Request');
+    }
+  });
+
+  it('rejects destination_message missing required destination_name (A12)', () => {
+    expect(() =>
+      parseNotificationEvents([{ kind: 'destination_message', message: 'No destination' }]),
+    ).toThrow(/destination_name/);
+  });
 });
 
 describe('normalizeEngineNotificationEvents', () => {
@@ -190,6 +212,20 @@ describe('normalizeEngineNotificationEvents', () => {
     expect(() =>
       normalizeEngineNotificationEvents({ notifications: [{ message: 'missing route' }] }),
     ).toThrow(/missing routing target/);
+  });
+
+  it('normalizes engine destination_name into destination_message kind (A12 cross-board approval)', () => {
+    // Engine emits { destination_name, message } in notifications when it
+    // wants the receiving agent to resolve the destination by name via its
+    // own agent_destinations registry (rather than passing a JID directly).
+    const result = normalizeEngineNotificationEvents({
+      notifications: [
+        { destination_name: 'source-CHI', message: '✅ Solicitação aprovada' },
+      ],
+    });
+    expect(result).toEqual([
+      { kind: 'destination_message', destination_name: 'source-CHI', message: '✅ Solicitação aprovada' },
+    ]);
   });
 
   it('routes target_kind=dm via target_chat_jid', () => {

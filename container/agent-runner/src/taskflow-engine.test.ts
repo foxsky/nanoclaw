@@ -6206,7 +6206,10 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
       expect(subtask).toBeNull();
     });
 
-    it('mode=approval: creates pending request with parent board target_chat_jid', () => {
+    it('mode=approval: creates pending request with destination_name=parent_board (A12)', () => {
+      // A12: engine emits the symbolic destination name 'parent_board' instead
+      // of a raw JID. The child agent's send_message MCP tool resolves the
+      // name via agent_destinations registered by host wiring.
       db.exec(`UPDATE board_runtime_config SET cross_board_subtask_mode = 'approval' WHERE board_id = '${PARENT_BOARD}'`);
 
       const r = childEngine.update({
@@ -6218,7 +6221,8 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
       expect(r.success).toBe(false);
       expect((r as any).pending_approval).toBeTruthy();
       expect((r as any).pending_approval.request_id).toMatch(/^req-\d+-[a-z0-9]+$/);
-      expect((r as any).pending_approval.target_chat_jid).toBe('parent@g.us');
+      expect((r as any).pending_approval.destination_name).toBe('parent_board');
+      expect((r as any).pending_approval.target_chat_jid).toBeUndefined();
       expect((r as any).pending_approval.parent_board_id).toBe(PARENT_BOARD);
       expect((r as any).pending_approval.message).toContain('🔔 *Solicitação de subtarefa*');
       expect((r as any).pending_approval.message).toContain('Implement login page');
@@ -6266,7 +6270,12 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
       expect((r as any).data.decision).toBe('approve');
       expect((r as any).data.created_subtask_ids).toContain('P1.2');
       expect((r as any).notifications).toBeDefined();
-      expect((r as any).notifications[0].target_chat_jid).toBe('child@g.us');
+      // A12: notification routes to the source board by symbolic destination
+      // name 'source-<short_code>'; the parent agent's send_message MCP
+      // resolves this name via its agent_destinations registry. CHI is the
+      // child board's short_code seeded at test setup (line 6156).
+      expect((r as any).notifications[0].destination_name).toBe('source-CHI');
+      expect((r as any).notifications[0].target_chat_jid).toBeUndefined();
 
       // Subtask created on parent board
       const sub = db.prepare(`SELECT * FROM tasks WHERE board_id = ? AND id = 'P1.2'`).get(PARENT_BOARD) as any;

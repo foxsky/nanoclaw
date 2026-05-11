@@ -38,16 +38,27 @@ export type ParentNotificationEvent = {
   message: string;
 };
 
+/** Routed by symbolic name; the receiving agent's send_message MCP tool
+ *  resolves the name via its agent_destinations registry. Used by cross-
+ *  board approval flows where engine can't know peer destination names. */
+export type DestinationMessageEvent = {
+  kind: 'destination_message';
+  destination_name: string;
+  message: string;
+};
+
 export type NotificationEvent =
   | DeferredNotificationEvent
   | DirectMessageEvent
-  | ParentNotificationEvent;
+  | ParentNotificationEvent
+  | DestinationMessageEvent;
 
 type RawEngineNotification = {
   target_kind?: 'group' | 'dm';
   target_person_id?: string;
   notification_group_jid?: string | null;
   target_chat_jid?: string | null;
+  destination_name?: string | null;
   message?: string;
 };
 
@@ -127,6 +138,13 @@ function parseNotificationEvent(raw: unknown, label: string): NotificationEvent 
       message: requireNonEmptyString(obj.message, `${label}.message`),
     };
   }
+  if (obj.kind === 'destination_message') {
+    return {
+      kind: 'destination_message',
+      destination_name: requireNonEmptyString(obj.destination_name, `${label}.destination_name`),
+      message: requireNonEmptyString(obj.message, `${label}.message`),
+    };
+  }
   throw new Error(`${label}.kind: unknown value "${String(obj.kind)}"`);
 }
 
@@ -186,6 +204,14 @@ export function normalizeEngineNotificationEvents(raw: unknown): NotificationEve
         normalized.push({
           kind: 'deferred_notification',
           target_person_id: notification.target_person_id,
+          message,
+        });
+        continue;
+      }
+      if (typeof notification.destination_name === 'string' && notification.destination_name) {
+        normalized.push({
+          kind: 'destination_message',
+          destination_name: notification.destination_name,
           message,
         });
         continue;

@@ -5305,19 +5305,18 @@ export class TaskflowEngine {
             };
           }
           if (mode === 'approval') {
-            // Persist the request and return pending_approval with the formatted
-            // message the child-board agent should relay to the parent board.
-            // Look up the parent board's group_jid FIRST — if we can't
-            // find it, refuse the request creation instead of persisting
-            // a row that nobody can be notified about.
-            // (Codex review 2026-04-12 finding I.)
+            // Persist the request and return pending_approval with a symbolic
+            // destination_name. The child agent's send_message MCP tool
+            // resolves 'parent_board' via agent_destinations (host wires this
+            // at child-board provisioning time). Engine no longer emits JIDs.
+            // (A12 2026-05-11.)
             const parentBoard = this.db
-              .prepare(`SELECT group_jid, group_folder FROM boards WHERE id = ?`)
-              .get(owningBoardId) as { group_jid: string; group_folder: string } | undefined;
-            if (!parentBoard || !parentBoard.group_jid) {
+              .prepare(`SELECT group_folder FROM boards WHERE id = ?`)
+              .get(owningBoardId) as { group_folder: string } | undefined;
+            if (!parentBoard) {
               return {
                 success: false,
-                error: `Não foi possível enviar a solicitação para o quadro pai: registro do quadro ${owningBoardId} não encontrado ou sem group_jid. Peça ao gestor para verificar o cadastro do quadro.`,
+                error: `Não foi possível enviar a solicitação para o quadro pai: registro do quadro ${owningBoardId} não encontrado. Peça ao gestor para verificar o cadastro do quadro.`,
               };
             }
 
@@ -5360,7 +5359,7 @@ export class TaskflowEngine {
               success: false,
               pending_approval: {
                 request_id: requestId,
-                target_chat_jid: parentBoard.group_jid,
+                destination_name: 'parent_board',
                 message: requestMessage,
                 parent_board_id: owningBoardId,
               },
@@ -8355,10 +8354,16 @@ export class TaskflowEngine {
           const hsaNow = new Date().toISOString();
           const subtasksToCreate: Array<{ title: string; assignee?: string | null }> = JSON.parse(req.subtasks_json);
 
-          // Look up the source board's group_jid for the notification-back
+          // Look up the source board's short_code to build a symbolic
+          // destination_name 'source-<short_code>'. The parent agent's
+          // send_message MCP tool resolves the name via agent_destinations
+          // (host registers one row per wired child board). (A12 2026-05-11.)
           const sourceBoardRow = this.db
-            .prepare(`SELECT group_jid FROM boards WHERE id = ?`)
-            .get(req.source_board_id) as { group_jid: string } | null;
+            .prepare(`SELECT short_code FROM boards WHERE id = ?`)
+            .get(req.source_board_id) as { short_code: string | null } | null;
+          const sourceDestinationName = sourceBoardRow?.short_code
+            ? `source-${sourceBoardRow.short_code}`
+            : null;
 
           if (params.decision === 'reject') {
             // Compare-and-swap on status='pending' to survive a cross-process
@@ -8378,7 +8383,7 @@ export class TaskflowEngine {
             return {
               success: true,
               data: { decision: 'reject', request_id: req.request_id, message: `Solicitação ${req.request_id} rejeitada.` },
-              notifications: sourceBoardRow ? [{ target_chat_jid: sourceBoardRow.group_jid, message: rejectNotice }] : [],
+              notifications: sourceDestinationName ? [{ destination_name: sourceDestinationName, message: rejectNotice }] : [],
             };
           }
 
@@ -8446,7 +8451,7 @@ export class TaskflowEngine {
           return {
             success: true,
             data: { decision: 'approve', request_id: req.request_id, created_subtask_ids: createdIds, message: `Solicitação ${req.request_id} aprovada. Subtarefas ${createdIds.join(', ')} criadas em ${parentTask.id}.` },
-            notifications: sourceBoardRow ? [{ target_chat_jid: sourceBoardRow.group_jid, message: approveNotice }] : [],
+            notifications: sourceDestinationName ? [{ destination_name: sourceDestinationName, message: approveNotice }] : [],
           };
         }
 
