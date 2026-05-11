@@ -982,7 +982,14 @@ export const apiQueryTool: McpToolDefinition = {
     }
 
     try {
-      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      // {readonly: true} matches the other read-side tools (api_board_activity,
+      // api_filter_board_tasks, api_linked_tasks). Without it the constructor
+      // runs migrations + delegation-link reconciliation that mutates rows on
+      // a supposedly read-only path. Codex flagged 2026-05-10.
+      // Note: query: 'search' falls back to lexical because query_vector /
+      // embedding_reader aren't exposed through this MCP schema (engine still
+      // supports semantic ranking via those fields).
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
       const result = engine.query(queryParams);
       return jsonResponse(result);
     } catch (e: unknown) {
