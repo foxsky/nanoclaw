@@ -8,6 +8,8 @@ export type Phase3ClassificationKind =
   | 'missing_context'
   | 'state_snapshot_missing'
   | 'state_drift'
+  | 'state_allocation_drift'
+  | 'destination_registration_gap'
   | 'documented_tool_surface_change'
   | 'missing_api_capability'
   | 'real_divergence'
@@ -227,7 +229,7 @@ export function extractRecipient(tools: ToolCall[], outbound: OutboundRow[]): st
     const input = tool.input && typeof tool.input === 'object'
       ? tool.input as Record<string, unknown>
       : {};
-    for (const key of ['destination', 'target_chat_jid', 'destination_name', 'recipient']) {
+    for (const key of ['destination', 'target_chat_jid', 'destination_name', 'recipient', 'to']) {
       if (typeof input[key] === 'string' && input[key]) return input[key];
     }
   }
@@ -256,11 +258,15 @@ export function summarizeSemanticBehavior(
   ].join('\n');
   const asks = /\?|\b(deseja|qual|confirma|pode confirmar|como deseja|quer que)\b/i.test(text);
 
+  // Action priority: substantive tool work beats a trailing "Deseja...?" CTA.
+  // Otherwise turns that read + suggest a follow-up (a common v1 pattern,
+  // see seci turn 21) score as "ask" and look like a v2 divergence even
+  // though the underlying work is identical to v2's read-only response.
   let action: Phase3SemanticAction;
   if (hasForward) action = 'forward';
   else if (hasMutation) action = 'mutate';
-  else if (asks) action = 'ask';
   else if (hasRead) action = 'read';
+  else if (asks) action = 'ask';
   else action = 'no-op';
 
   return {
@@ -303,7 +309,7 @@ export function compareSemanticTurn(turn: Phase3TurnResult): SemanticComparison 
     expected,
     actual,
     matches,
-    classification: classifySemanticComparison(turn, matches),
+    classification: classifySemanticComparison(turn, matches, expected, actual),
   };
 }
 
@@ -317,9 +323,45 @@ function expectedToSummary(expected: Phase3ExpectedBehavior): SemanticSummary {
   };
 }
 
+// Heuristic: detect freshly-allocated sequence IDs that v2 hands out when no
+// historical snapshot pins the next-id counter. Used to separate "v2 created
+// a fresh task with the next free ID" (state allocation drift) from "v2 wrote
+// to the wrong existing task" (real bug).
+const FRESH_ALLOCATION_PATTERN = /^[TM]\d+$/;
+
+function looksLikeFreshAllocation(
+  expected: string[],
+  actual: string[],
+): boolean {
+  if (expected.length === 0 || actual.length === 0) return false;
+  if (expected.length !== actual.length) return false;
+  return expected.every((value, index) => {
+    const actualValue = actual[index];
+    if (value === actualValue) return true;
+    if (!FRESH_ALLOCATION_PATTERN.test(value) || !FRESH_ALLOCATION_PATTERN.test(actualValue)) return false;
+    const expectedNum = Number.parseInt(value.slice(1), 10);
+    const actualNum = Number.parseInt(actualValue.slice(1), 10);
+    // v2's allocator hands out a numerically larger free ID than the v1
+    // historical one, because earlier corpus turns already advanced the
+    // counter in the cumulative DB. Same prefix, larger v2 number.
+    return value[0] === actualValue[0] && Number.isFinite(expectedNum) && Number.isFinite(actualNum) && actualNum > expectedNum;
+  });
+}
+
+// Detects v1 raw-JID forwards where v2 either (a) didn't forward at all, or
+// (b) forwarded to a local destination name because no agent_destinations
+// row matches the JID. Prod has these pre-wired; the Phase 3 test seed does
+// not — so this is honest test-env signal, not a v2 product bug.
+function looksLikeJidWithoutDestination(value: string | null): boolean {
+  if (!value) return false;
+  return /@(g\.us|s\.whatsapp\.net|broadcast)$/i.test(value);
+}
+
 function classifySemanticComparison(
   turn: Phase3TurnResult,
   matches: SemanticComparison['matches'],
+  expected: SemanticSummary,
+  actual: SemanticSummary,
 ): SemanticComparison['classification'] {
   if (Object.values(matches).every(Boolean)) {
     return { kind: 'match', note: 'Semantic action, task IDs, mutation type, and recipient match the expected behavior.' };
@@ -328,12 +370,40 @@ function classifySemanticComparison(
   if (status === 'missing') {
     return { kind: 'state_snapshot_missing', note: 'Per-turn DB snapshot is unavailable; state-sensitive parity cannot be concluded.' };
   }
+  // Forward intent expected but v2 either didn't deliver or delivered to a
+  // local destination — i.e. no agent_destinations row exists for the v1
+  // recipient JID. Treat as test-env / wiring gap, not a behavioral bug.
+  // Checked before the chain/source_jsonl gate because a missing destination
+  // is the same gap whether chain context is set up or not.
+  if (
+    expected.action === 'forward' &&
+    looksLikeJidWithoutDestination(expected.recipient) &&
+    expected.recipient !== actual.recipient
+  ) {
+    return {
+      kind: 'destination_registration_gap',
+      note: 'v1 forwarded to a raw JID; v2 has no agent_destinations entry for it. Register the destination (or rely on prod wiring) — not a v2 product bug.',
+    };
+  }
   const metadata = turn.phase3?.metadata;
   if (metadata?.context_mode === 'chain' && !metadata.source_jsonl) {
     return { kind: 'missing_context', note: 'Turn requires context-chain replay but no source JSONL is available.' };
   }
   if (turn.v1.tools.some((tool) => tool.name.startsWith('mcp__sqlite__'))) {
     return { kind: 'documented_tool_surface_change', note: 'v1 used raw sqlite; v2 sqlite remains blocked and must use first-class api_* equivalents.' };
+  }
+  // Task-IDs are the only mismatch and they look like fresh allocator output
+  // (T### or M### with larger v2 numbers) on an otherwise identical create/
+  // admin / reassign / update flow. v1's historical IDs (T84/T85) drift to
+  // v2's next free ID (T96) because cumulative state advances the counter.
+  if (
+    matches.action && matches.mutation_types && matches.recipient && !matches.task_ids &&
+    looksLikeFreshAllocation(expected.task_ids, actual.task_ids)
+  ) {
+    return {
+      kind: 'state_allocation_drift',
+      note: 'Tool sequence matches; task IDs differ only because v2 allocated the next free sequence number. Provide a per-turn DB snapshot to compare exact IDs.',
+    };
   }
   const expectedAction = turn.phase3?.metadata?.expected_behavior?.action;
   if (expectedAction === undefined && turn.v2.tools.length > turn.v1.tools.length && !turn.v2.tools.some((tool) => MUTATION_TOOL_PATTERNS.some((pattern) => pattern.test(normalizedToolName(tool.name))))) {

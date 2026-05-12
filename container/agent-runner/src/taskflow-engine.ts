@@ -7347,6 +7347,39 @@ export class TaskflowEngine {
           return { success: true, data: matches };
         }
 
+        /* ----- Cross-board read: locate a task by id across the org ----- */
+
+        // Mirror `find_person_in_organization` for tasks. v1 used a raw
+        // sqlite SELECT with no board scope to read sibling-board tasks
+        // (Phase 3 turn 17: "t43" → T43 lives on Laizys's SEAF-SECTI board,
+        // a sibling of seci-taskflow). v2 keeps sqlite blocked but exposes a
+        // controlled api_* read that scopes to the agent's org tree only.
+        // Read-only: agents still cannot mutate cross-board via this path
+        // (mutation paths continue to use the strict `getTask`).
+        case 'find_task_in_organization': {
+          if (!params.task_id) {
+            return { success: false, error: 'Missing required parameter: task_id' };
+          }
+          const orgBoardIds = this.getOrgBoardIds();
+          if (orgBoardIds.length === 0) return { success: true, data: [] };
+          const rawId = params.task_id.toUpperCase();
+          const boardPh = orgBoardIds.map(() => '?').join(',');
+          const rows = this.db
+            .prepare(
+              `SELECT t.id AS task_id, t.board_id, t.type, t.title, t.column,
+                      t.assignee, t.due_date, t.parent_task_id, t.requires_close_approval,
+                      b.group_folder AS board_group_folder, b.group_jid,
+                      bp.name AS assignee_name
+                 FROM tasks t
+                 JOIN boards b ON b.id = t.board_id
+            LEFT JOIN board_people bp ON bp.board_id = t.board_id AND bp.person_id = t.assignee
+                WHERE t.id = ? AND t.board_id IN (${boardPh})
+                ORDER BY b.group_folder`,
+            )
+            .all(rawId, ...orgBoardIds);
+          return { success: true, data: rows };
+        }
+
         /* ---------- Unknown ---------- */
 
         default:

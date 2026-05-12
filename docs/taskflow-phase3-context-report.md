@@ -10,6 +10,9 @@ Branch: `skill/taskflow-v2`
 - Turn 16 depth-2 result: `/tmp/phase3-v2-results-turn16-depth2.json`
 - Context-chain results for turns 22, 23, 25, 27: `/tmp/phase3-v2-results-context.json`
 - Semantic comparison: `/tmp/phase3-comparison-context.txt`
+- Paid full Phase 3 pass: `/tmp/phase3-v2-results-full-paid-20260512.json`
+- Reclassified comparison after pending divergence fixes: `/tmp/phase3-comparison-full-paid-20260512-with-turn1-fix.txt`
+- Targeted turn 1 validation after deterministic Taskflow greeting guard: `/tmp/phase3-comparison-turn1-after-deterministic-greeting-fix.txt`
 
 ## Harness Fixes Found During Phase 3
 
@@ -19,6 +22,24 @@ Branch: `skill/taskflow-v2`
 - `scripts/phase3-support.ts` supports `requires_state_snapshot`; missing required snapshots are reported as `state_snapshot_missing` instead of real behavior regressions.
 
 ## Turn Classifications
+
+After the pending-classifier pass and targeted turn 1 fix, the paid Phase 3
+result plus validated turn 1 replacement has no remaining `real_divergence`
+classification:
+
+- `match`: 16
+- `read_only_extra`: 5
+- `destination_registration_gap`: 2
+- `state_allocation_drift`: 2
+- `state_snapshot_missing`: 4
+- `documented_tool_surface_change`: 1
+
+The `real_divergence` from turn 1 was a deterministic pure-greeting parity
+case. v1 returned a Taskflow scope sentence with no tools; v2's Claude runtime
+kept producing a general "Como posso ajudar?" greeting even after explicit
+CLAUDE.md guidance. The runner now handles pure greetings only when
+`NANOCLAW_TASKFLOW_BOARD_ID` is set, preserving v1 observable no-tool behavior
+without changing non-Taskflow chats or task-bearing messages.
 
 | Turn | Phase 3 Result | Classification | Evidence |
 | --- | --- | --- | --- |

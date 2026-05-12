@@ -120,6 +120,18 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
   // which would otherwise tell the agent to call tools that no longer exist.
   output = output.replace(/\btaskflow_\*/g, 'api_*');
 
+  if (!output.includes('Pure greetings with no task intent')) {
+    output = output.replace(
+      /You are a task management assistant ONLY\. If the message is NOT about tasks, board, capture, status, scheduling, people, deadlines, or any topic covered in this document, reply with a single short sentence in ([^.]+?) explaining you only handle task management, and suggest `ajuda`, `comandos`, or `help`\. Do NOT query the database for off-topic requests\./,
+      (match) =>
+        [
+          match,
+          '',
+          'Pure greetings with no task intent (for example, "oi", "olá", "bom dia") are off-topic for TaskFlow. Classify this by the latest `<message>` body, even if the prompt also includes recent history or board context. Reply in this scope-guard shape: "Oi, [nome]! Aqui só cuido de gestão de tarefas. Use `ajuda` ou `quadro` para começar." Do not ask the open-ended general-assistant question "Como posso ajudar?".',
+        ].join('\n'),
+    );
+  }
+
   if (!output.includes('**Delivery format is mandatory.**')) {
     output = output.replace(
       /All output in [^.]+?\./,

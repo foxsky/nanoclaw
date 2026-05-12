@@ -1875,6 +1875,42 @@ describe('api_query MCP tool (A5.2.3 — composite read-side wrapper)', () => {
     expect(result.success).toBe(false);
   });
 
+  // Phase 3 compliance — Turn 17 (T43 read on sibling board).
+  // The wrapper must pass `find_task_in_organization` through unchanged so
+  // the engine handles cross-board scope; nothing in the wrapper should
+  // accidentally board-scope the query.
+  it('query=find_task_in_organization routes through to engine (cross-board read)', async () => {
+    const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    // The shared test fixture omits `parent_board_id` from `boards` (it
+    // mirrors v1's minimal schema). Add it locally — ALTER TABLE is the
+    // same forward-migration pattern the engine uses for new columns.
+    db.exec(`ALTER TABLE boards ADD COLUMN parent_board_id TEXT`);
+    // Seed a sibling board + cross-board task within the same org tree.
+    const now = new Date().toISOString();
+    db.exec(
+      `INSERT INTO boards (id, short_code, name, board_role, group_folder, group_jid, parent_board_id)
+       VALUES ('board-root', NULL, 'Root', 'standard', 'root-folder', 'root@g.us', NULL);
+       INSERT INTO boards (id, short_code, name, board_role, group_folder, group_jid, parent_board_id)
+       VALUES ('board-sibling', NULL, 'Sibling', 'standard', 'sibling-folder', 'sib@g.us', 'board-root');
+       UPDATE boards SET parent_board_id = 'board-root' WHERE id = '${BOARD}';`,
+    );
+    db.exec(
+      `INSERT INTO tasks (id, board_id, type, title, column, requires_close_approval, created_at, updated_at)
+       VALUES ('T43', 'board-sibling', 'simple', 'Cobrar ofício', 'next_action', 0, '${now}', '${now}')`,
+    );
+
+    const response = await apiQueryTool.handler({
+      board_id: BOARD,
+      query: 'find_task_in_organization',
+      task_id: 'T43',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0].task_id).toBe('T43');
+    expect(result.data[0].board_id).toBe('board-sibling');
+  });
+
   it('rejects non-string board_id', async () => {
     const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
     const response = await apiQueryTool.handler({

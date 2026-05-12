@@ -887,6 +887,121 @@ describe('TaskflowEngine', () => {
     });
   });
 
+  /* ---------------------------------------------------------------- */
+  /*  query: find_task_in_organization                                  */
+  /*  Phase 3 compliance — Turn 17 (T43 read on sibling board)          */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: find_task_in_organization', () => {
+    function seedOrgTreeWithTasks(db: Database) {
+      // Same shape as find_person_in_organization's seedOrgTree, plus tasks.
+      //   root (seci-secti) ─┬─ child (BOARD_ID, current board)
+      //                      ├─ sibling (thiago-taskflow)
+      //                      └─ sibling2 (setec-secti-taskflow)
+      // T43 lives on sibling2 (mirrors the prod Turn 17 setup where T43 was
+      // on Laizys's board, a sibling of seci-taskflow).
+      db.exec(
+        `INSERT INTO boards VALUES ('board-root', 'root@g.us', 'seci-secti', 'standard', 0, 2, NULL, NULL, NULL);
+         INSERT INTO boards VALUES ('board-sibling', 'sibling@g.us', 'thiago-taskflow', 'standard', 1, 2, 'board-root', NULL, 'thiago');
+         INSERT INTO boards VALUES ('board-sibling2', 'sibling2@g.us', 'setec-secti-taskflow', 'standard', 1, 2, 'board-root', NULL, 'rafael');
+         UPDATE boards SET parent_board_id = 'board-root', hierarchy_level = 1 WHERE id = '${BOARD_ID}';
+         INSERT INTO board_people VALUES ('board-sibling2', 'laizys', 'Laizys', '5586000000000', 'Dev', 3, NULL);`,
+      );
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at)
+         VALUES ('T43', 'board-sibling2', 'simple', 'Cobrar ofício João Pessoa', 'laizys', 'next_action', 0, '${now}', '${now}')`,
+      );
+    }
+
+    it('finds a task that lives on a sibling board in the same org', () => {
+      seedOrgTreeWithTasks(db);
+      // Sanity: T43 is NOT on the current board, so task_details rejects it.
+      const local = engine.query({ query: 'task_details', task_id: 'T43' });
+      expect(local.success).toBe(false);
+      // find_task_in_organization scopes to the org tree and locates T43.
+      const r = engine.query({ query: 'find_task_in_organization', task_id: 'T43' });
+      expect(r.success).toBe(true);
+      const rows = r.data as Array<{ task_id: string; board_id: string; title: string }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0].task_id).toBe('T43');
+      expect(rows[0].board_id).toBe('board-sibling2');
+      expect(rows[0].title).toBe('Cobrar ofício João Pessoa');
+    });
+
+    it('returns owning_board metadata so the agent can label the cross-board read', () => {
+      seedOrgTreeWithTasks(db);
+      const r = engine.query({ query: 'find_task_in_organization', task_id: 'T43' });
+      const row = (r.data as Array<{
+        board_group_folder: string;
+        column: string;
+        assignee_name: string | null;
+      }>)[0];
+      expect(row.board_group_folder).toBe('setec-secti-taskflow');
+      expect(row.column).toBe('next_action');
+      expect(row.assignee_name).toBe('Laizys');
+    });
+
+    it('also finds tasks on the current board (no false-negative for local reads)', () => {
+      seedOrgTreeWithTasks(db);
+      // T-001 is on the current board (BOARD_ID) per the default seed.
+      const r = engine.query({ query: 'find_task_in_organization', task_id: 'T-001' });
+      expect(r.success).toBe(true);
+      const rows = r.data as Array<{ board_id: string }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0].board_id).toBe(BOARD_ID);
+    });
+
+    it('does not leak tasks from a different organization (separate parent tree)', () => {
+      // Make sure tasks on a board whose root is NOT this board's root are
+      // invisible. Mirrors the find_person_in_organization isolation property.
+      db.exec(
+        `INSERT INTO boards VALUES ('board-other-root', 'other@g.us', 'other-org', 'standard', 0, 1, NULL, NULL, NULL)`,
+      );
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, column, requires_close_approval, created_at, updated_at)
+         VALUES ('TX99', 'board-other-root', 'simple', 'Other org task', 'next_action', 0, '${now}', '${now}')`,
+      );
+      const r = engine.query({ query: 'find_task_in_organization', task_id: 'TX99' });
+      expect(r.success).toBe(true);
+      expect(r.data).toEqual([]);
+    });
+
+    it('returns an empty list (success) when the task does not exist anywhere', () => {
+      seedOrgTreeWithTasks(db);
+      const r = engine.query({ query: 'find_task_in_organization', task_id: 'T-NEVER' });
+      expect(r.success).toBe(true);
+      expect(r.data).toEqual([]);
+    });
+
+    it('errors when task_id is missing', () => {
+      seedOrgTreeWithTasks(db);
+      const r = engine.query({ query: 'find_task_in_organization' });
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/task_id/i);
+    });
+
+    it('normalises lowercase task_id (matches MCP normalizeAgentIds upstream)', () => {
+      // The MCP layer uppercases task_id at the boundary, but the engine
+      // should still accept lowercase as a defensive measure — otherwise a
+      // direct engine caller (tests, scripts) would silently miss matches.
+      seedOrgTreeWithTasks(db);
+      const r = engine.query({ query: 'find_task_in_organization', task_id: 't43' });
+      const rows = r.data as Array<{ task_id: string }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0].task_id).toBe('T43');
+    });
+
+    it('is read-only — does not enable cross-board mutation', () => {
+      seedOrgTreeWithTasks(db);
+      // After locating the cross-board task, the engine's mutation path
+      // (getTask) must still reject writes to it because T43 isn't delegated
+      // to the current board.
+      expect(engine.getTask('T43')).toBeNull();
+    });
+  });
+
   describe('maskPhoneForDisplay', () => {
     it('returns null for null input', () => {
       expect(maskPhoneForDisplay(null)).toBeNull();

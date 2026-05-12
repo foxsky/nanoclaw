@@ -30,6 +30,32 @@ export function hasWakeTrigger(messages: Pick<MessageInRow, 'trigger'>[]): boole
   return messages.some((m) => m.trigger === 1);
 }
 
+export function taskflowPureGreetingReply(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): string | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const [msg] = messages;
+  if (msg.kind !== 'chat' && msg.kind !== 'chat-sdk') return null;
+  const content = parseJsonContent(msg.content);
+  const text = typeof content.text === 'string' ? content.text.trim() : '';
+  if (!/^(oi|ol[aá]|bom dia|boa tarde|boa noite)[.!?\s]*$/i.test(text)) return null;
+
+  const sender = typeof content.sender === 'string' ? content.sender.trim() : '';
+  const firstName = sender.split(/\s+/)[0] || '';
+  const greeting = firstName ? `Oi, ${firstName}!` : 'Oi!';
+  return `${greeting} Aqui só cuido de gestão de tarefas. Use \`ajuda\` ou \`quadro\` para começar.`;
+}
+
+function parseJsonContent(content: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+  } catch {
+    return { text: content };
+  }
+}
+
 export interface PollLoopConfig {
   provider: AgentProvider;
   /**
@@ -162,6 +188,22 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     if (keep.length === 0) {
       log(`All ${normalMessages.length} non-command message(s) gated by script, skipping query`);
+      continue;
+    }
+
+    const taskflowGreeting = taskflowPureGreetingReply(keep);
+    if (taskflowGreeting) {
+      writeMessageOut({
+        id: generateId(),
+        in_reply_to: routing.inReplyTo,
+        kind: 'chat',
+        platform_id: routing.platformId,
+        channel_type: routing.channelType,
+        thread_id: routing.threadId,
+        content: JSON.stringify({ text: taskflowGreeting }),
+      });
+      markCompleted(keep.map((m) => m.id));
+      log('Handled pure TaskFlow greeting without provider query');
       continue;
     }
 

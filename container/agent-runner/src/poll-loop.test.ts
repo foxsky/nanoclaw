@@ -5,7 +5,7 @@ import { getPendingMessages, markCompleted } from './db/messages-in.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
 import { formatMessages, extractRouting } from './formatter.js';
 import { MockProvider } from './providers/mock.js';
-import { hasWakeTrigger } from './poll-loop.js';
+import { hasWakeTrigger, taskflowPureGreetingReply } from './poll-loop.js';
 
 beforeEach(() => {
   initTestSessionDb();
@@ -141,6 +141,35 @@ describe('accumulate gate (trigger column)', () => {
       .run();
     const [msg] = getPendingMessages();
     expect(msg.trigger).toBe(1);
+  });
+});
+
+describe('TaskFlow pure greeting guard', () => {
+  it('returns a v1-style scope reply for pure greetings on TaskFlow boards', () => {
+    const reply = taskflowPureGreetingReply(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'oi' }) }],
+      true,
+    );
+
+    expect(reply).toBe('Oi, Carlos! Aqui só cuido de gestão de tarefas. Use `ajuda` ou `quadro` para começar.');
+  });
+
+  it('does not intercept non-greeting TaskFlow messages', () => {
+    const reply = taskflowPureGreetingReply(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'oi, quadro' }) }],
+      true,
+    );
+
+    expect(reply).toBeNull();
+  });
+
+  it('does not intercept greetings outside TaskFlow boards', () => {
+    const reply = taskflowPureGreetingReply(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'oi' }) }],
+      false,
+    );
+
+    expect(reply).toBeNull();
   });
 });
 

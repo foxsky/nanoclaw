@@ -102,6 +102,17 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     expect(result.output).toContain('no-tool replies');
   });
 
+  it('adds pure-greeting scope guidance to preserve v1 no-tool behavior', () => {
+    const input =
+      'You are a task management assistant ONLY. If the message is NOT about tasks, board, capture, status, scheduling, people, deadlines, or any topic covered in this document, reply with a single short sentence in pt-BR explaining you only handle task management, and suggest `ajuda`, `comandos`, or `help`. Do NOT query the database for off-topic requests.';
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('Pure greetings with no task intent');
+    expect(result.output).toContain('latest `<message>` body');
+    expect(result.output).toContain('Aqui só cuido de gestão de tarefas');
+    expect(result.output).toContain('"oi"');
+    expect(result.output).toContain('Do not ask the open-ended general-assistant question "Como posso ajudar?"');
+  });
+
   it('adds bare activity phrase guidance near intent analysis', () => {
     const input =
       'The user\'s words are clues, not commands. "Me lembre de ligar pro João" is a reminder — the user expects to be notified, not to find an inbox item. "Anotar: comprar café" is a capture. "Tarefa para Giovanni: revisar relatório" is an assigned task. But always consider the full context — the same words can mean different things depending on the situation.';
