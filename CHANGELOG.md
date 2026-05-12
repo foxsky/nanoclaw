@@ -4,6 +4,10 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## [Unreleased]
+
+- Fixed routing and delivery regressions in channel approval and outbound handling: approved non-threaded groups now keep group/mention engagement, direct denial replies write through a writable outbound DB handle, accumulated context-only follow-ups no longer wake active agent queries, and missing channel adapters now go through delivery retry/failure handling instead of being silently marked delivered.
+
 ## [2.0.48] - 2026-05-09
 
 - **Container config moved to DB.** Per-agent-group container runtime config (provider, model, packages, MCP servers, mounts, skills) now lives in the `container_configs` table instead of `groups/<folder>/container.json`. Existing filesystem configs are backfilled automatically on startup. Managed via `ncl groups config get/update` and `config add-mcp-server/remove-mcp-server/add-package/remove-package`.
