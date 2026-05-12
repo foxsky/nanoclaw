@@ -12,7 +12,7 @@ import { err, jsonResponse, parseTaskActorArgs } from './util.js';
 export const apiUpdateSimpleTaskTool: McpToolDefinition = {
   tool: {
     name: 'api_update_simple_task',
-    description: 'Update a simple task via the REST API (field updates, column move, reassign)',
+    description: 'Update a simple task via the REST API (flat field updates and column moves). Do not use for explicit assignment commands like "atribuir P11.23 para Rodrigo"; use api_reassign so v1 reassignment semantics, confirmations, and already-assigned handling are preserved.',
     inputSchema: {
       type: 'object' as const,
       properties: {

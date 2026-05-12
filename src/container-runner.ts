@@ -427,6 +427,9 @@ async function buildContainerArgs(
   if (process.env.NANOCLAW_TOOL_USES_PATH) {
     args.push('-e', `NANOCLAW_TOOL_USES_PATH=${process.env.NANOCLAW_TOOL_USES_PATH}`);
   }
+  if (process.env.NANOCLAW_PHASE2_RAW_PROMPT === '1') {
+    args.push('-e', 'NANOCLAW_PHASE2_RAW_PROMPT=1');
+  }
 
   // v1 parity: MCP handlers host-inject board_id from this env so the agent
   // never has to construct it. Resolve via the boards table — folder→id is

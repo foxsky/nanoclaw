@@ -362,8 +362,9 @@ async function processChain(corpus: Corpus, targetCorpusIdx: number, depth: numb
     let allEvents = readToolEvents(captureFile);
     if (captureBytesBefore > 0) {
       // Drop the first N events that fit in the byte prefix from context turns.
-      // Simpler: read raw bytes after offset.
-      const rawAfter = fs.readFileSync(captureFile, 'utf8').slice(captureBytesBefore);
+      // Simpler: read raw bytes after offset. Use Buffer slicing because
+      // captureBytesBefore is a byte count, not a JavaScript string index.
+      const rawAfter = fs.readFileSync(captureFile).subarray(captureBytesBefore).toString('utf8');
       allEvents = rawAfter.split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l) as V2ToolEvent);
     }
     const outbound = readOutboundMessages(AGENT_GROUP_ID, session.id, outboundBaselineSeq);

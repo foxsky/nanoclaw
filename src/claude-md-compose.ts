@@ -7,7 +7,7 @@
  *   - optional per-skill fragments (skills that ship `instructions.md`)
  *   - optional per-MCP-server fragments (inline `instructions` field in
  *     `container.json`)
- *   - per-group agent memory (`CLAUDE.local.md`, auto-loaded by Claude Code)
+ *   - per-group agent memory/instructions (`CLAUDE.local.md`)
  *
  * Runs on every spawn from `container-runner.buildMounts()`. Deterministic —
  * same inputs produce the same CLAUDE.md, and stale fragments are pruned.
@@ -121,8 +121,10 @@ export function composeGroupClaudeMd(group: AgentGroup): void {
     }
   }
 
-  // Composed entry — imports only.
-  const imports = ['@./.claude-shared.md'];
+  // Composed entry — imports only. Import CLAUDE.local.md explicitly; the
+  // headless SDK path used by the agent-runner should not rely on Claude Code
+  // auto-loading local memory.
+  const imports = ['@./.claude-shared.md', '@./CLAUDE.local.md'];
   for (const name of [...desired.keys()].sort()) {
     imports.push(`@./.claude-fragments/${name}`);
   }

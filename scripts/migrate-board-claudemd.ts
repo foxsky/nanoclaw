@@ -120,6 +120,141 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
   // which would otherwise tell the agent to call tools that no longer exist.
   output = output.replace(/\btaskflow_\*/g, 'api_*');
 
+  if (!output.includes('**Delivery format is mandatory.**')) {
+    output = output.replace(
+      /All output in [^.]+?\./,
+      (match) =>
+        [
+          match,
+          '',
+          '**Delivery format is mandatory.** Every user-visible reply must be wrapped in a `<message to="...">...</message>` block using the incoming message\'s `from` destination. Text outside `<message>` blocks is scratchpad only and will not be sent. This applies even to short greetings, ambiguity questions, and no-tool replies.',
+        ].join('\n'),
+    );
+  }
+
+  output = output.replace(
+    /(^|\n)## Welcome Check\n\nOn the FIRST interaction in a new session, check if a welcome message has been sent:\n1\. Query: `SELECT welcome_sent FROM board_runtime_config WHERE board_id = '[^']+'`\n2\. If `welcome_sent = 0`: send a brief welcome, then `UPDATE board_runtime_config SET welcome_sent = 1 WHERE board_id = '[^']+'`\n/g,
+    '$1',
+  );
+
+  if (!output.includes('**Hierarchy status sync synonym:**')) {
+    output = output.replace(
+      /\*\*Command synonyms:\*\* "consolidado" \/ "consolidar" = "quadro" \(board view\)\. "atividades" = "minhas tarefas" \(my tasks\)\. "finalizar" \/ "concluir" \/ "fechar" = conclude\. "cancelar" \(bare, no task ID\) = ask which task to cancel or what to cancel\. When a user says "concluir tarefa" without specifying an ID and has only one active task, apply it to that task\. If multiple are active, list them and ask\./,
+      [
+        '**Command synonyms:** "consolidado" / "consolidar" = "quadro" (board view). "atividades" = "minhas tarefas" (my tasks). "finalizar" / "concluir" / "fechar" = conclude. "cancelar" (bare, no task ID) = ask which task to cancel or what to cancel. When a user says "concluir tarefa" without specifying an ID and has only one active task, apply it to that task. If multiple are active, list them and ask.',
+        '',
+        "**Hierarchy status sync synonym:** \"atualizar status TXXX/PXXX.N\" or \"sincronizar TXXX/PXXX.N\" means pull the linked child-board rollup: `api_hierarchy({ action: 'refresh_rollup', task_id: 'TXXX/PXXX.N', sender_name: SENDER })`. It is NOT a request to choose a new status or ask what status to set.",
+      ].join('\n'),
+    );
+  }
+
+  if (!output.includes('**Pre-tool command gate.**')) {
+    output = output.replace(
+      /## Command -> Tool Mapping\n\nWhen the user sends a command, call the matching MCP tool\. The tool handles all validation, permission checks, and side effects\./,
+      [
+        '## Command -> Tool Mapping',
+        '',
+        '**Pre-tool command gate.** Before calling any TaskFlow tool, first decide whether the user gave an explicit command. A standalone infinitive planning goal is NOT an explicit command, even if it describes actionable work. For messages like "Submeter ao menos 1 proposta a financiador externo", "Realizar 8 edições mensais do Inova Talks (mai-dez/2026)", or "Aguardar e acompanhar licitação...", reply in plain text asking whether to register/capture it, then stop. Do not call `api_query`, `api_create_task`, or any other tool for that turn.',
+        '',
+        'When the user sends a command, call the matching MCP tool. The tool handles all validation, permission checks, and side effects.',
+      ].join('\n'),
+    );
+  }
+
+  if (!output.includes('**Bare goal/activity phrases are not task-creation commands.**')) {
+    output = output.replace(
+      /The user's words are clues, not commands\. "Me lembre de ligar pro João" is a reminder — the user expects to be notified, not to find an inbox item\. "Anotar: comprar café" is a capture\. "Tarefa para Giovanni: revisar relatório" is an assigned task\. But always consider the full context — the same words can mean different things depending on the situation\./,
+      [
+        'The user\'s words are clues, not commands. "Me lembre de ligar pro João" is a reminder — the user expects to be notified, not to find an inbox item. "Anotar: comprar café" is a capture. "Tarefa para Giovanni: revisar relatório" is an assigned task. But always consider the full context — the same words can mean different things depending on the situation.',
+        '',
+        '**Bare goal/activity phrases are not task-creation commands.** If the user sends a standalone activity/status/goal phrase such as "Aguardar e acompanhar X", "Submeter X", "Realizar X", "Acompanhar X", or "Verificar se X" without explicitly asking to create/register/add/capture a task, do NOT search or create automatically. Treat it as ambiguous context: answer from available context and ask whether to capture/register it.',
+      ].join('\n'),
+    );
+  }
+  if (!output.includes('**Plain-text ambiguity questions.**')) {
+    output = output.replace(
+      /\*\*Bare goal\/activity phrases are not task-creation commands\.\*\* If the user sends a standalone activity\/status\/goal phrase such as "Aguardar e acompanhar X", "Submeter X", "Realizar X", "Acompanhar X", or "Verificar se X" without explicitly asking to create\/register\/add\/capture a task, do NOT search or create automatically\. Treat it as ambiguous context: answer from available context and ask whether to capture\/register it\./,
+      [
+        '**Bare goal/activity phrases are not task-creation commands.** If the user sends a standalone activity/status/goal phrase such as "Aguardar e acompanhar X", "Submeter X", "Realizar X", "Acompanhar X", or "Verificar se X" without explicitly asking to create/register/add/capture a task, do NOT search or create automatically. Treat it as ambiguous context: answer from available context and ask whether to capture/register it.',
+        '',
+        '**Plain-text ambiguity questions.** In TaskFlow command handling, "ask" means reply with a normal chat message unless a section explicitly says to present a card/buttons. Do NOT call `ask_user_question` just to ask whether an ambiguous phrase should become a task; v1 asked these questions in plain text with no tool call.',
+      ].join('\n'),
+    );
+  }
+  if (!output.includes('Do NOT treat standalone planning goals as create commands.')) {
+    output = output.replace(
+      /"tarefa" with "para Y" creates an assigned task\. Without "para Y", it goes to inbox \(see Quick Capture above\)\./,
+      [
+        '"tarefa" with "para Y" creates an assigned task. Without "para Y", it goes to inbox (see Quick Capture above).',
+        '',
+        'Do NOT treat standalone planning goals as create commands. These are ambiguity questions, not tool calls:',
+        '',
+        '| User says | Correct behavior |',
+        '|-----------|------------------|',
+        '| "Submeter ao menos 1 proposta a financiador externo" | Ask in plain text whether to register/capture it; do not call `api_query` or `api_create_task` |',
+        '| "Realizar 8 edições mensais do Inova Talks (mai-dez/2026)" | Ask in plain text whether to register/capture it; do not create a project or subtasks |',
+        '| "Aguardar e acompanhar licitação para reforma do prédio" | Ask in plain text whether to register/capture it; do not create a task |',
+      ].join('\n'),
+    );
+  }
+
+  // Phase 2 replay gap: v1 handled "P11 acrescentar/adicionar tarefa X" by
+  // creating a simple task, then reparenting that task under the project via
+  // taskflow_admin({ action: 'reparent_task' }). The mechanical v2 prompt
+  // only documented the narrower "adicionar etapa" wording. Add synonym rows
+  // idempotently so corpus-derived board prompts preserve the v1 two-call
+  // behavior without hand-editing every per-board CLAUDE.md.
+  if (!output.includes('"PXXX acrescentar/adicionar tarefa X"')) {
+    output = output.replace(
+      /\| "diario\/semanal\/mensal\/anual para Y: X" \| `api_create_task\(\{ type: 'recurring', title: 'X', assignee: 'Y', recurrence: FREQ, sender_name: SENDER \}\)` \|/,
+      [
+        '| "diario/semanal/mensal/anual para Y: X" | `api_create_task({ type: \'recurring\', title: \'X\', assignee: \'Y\', recurrence: FREQ, sender_name: SENDER })` |',
+        '| "PXXX acrescentar/adicionar tarefa X" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'X\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
+        '| "adicionar em PXXX a tarefa X" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'X\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
+        '| "[nome do projeto] adicionar/acrescentar tarefa X" | Do NOT use `api_create_task`. Use `api_update_task({ task_id: \'<matched_project_id>\', updates: { add_subtask: \'X\' }, sender_name: SENDER })` when the project is identifiable from board context; if multiple projects match, ask which one |',
+      ].join('\n'),
+    );
+  }
+  if (!output.includes('"[nome do projeto] adicionar/acrescentar tarefa X"')) {
+    output = output.replace(
+      /\| "PXXX acrescentar\/adicionar tarefa X" \| Two calls in sequence: \(1\) `api_create_task\(\{ type: 'simple', title: 'X', assignee: SENDER, sender_name: SENDER \}\)`; \(2\) `api_admin\(\{ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER \}\)` \|/,
+      [
+        '| "PXXX acrescentar/adicionar tarefa X" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'X\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
+        '| "adicionar em PXXX a tarefa X" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'X\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
+        '| "[nome do projeto] adicionar/acrescentar tarefa X" | Do NOT use `api_create_task`. Use `api_update_task({ task_id: \'<matched_project_id>\', updates: { add_subtask: \'X\' }, sender_name: SENDER })` when the project is identifiable from board context; if multiple projects match, ask which one |',
+      ].join('\n'),
+    );
+  }
+  if (!output.includes('"adicionar em PXXX a tarefa X"')) {
+    output = output.replace(
+      /\| "PXXX acrescentar\/adicionar tarefa X" \| Two calls in sequence: \(1\) `api_create_task\(\{ type: 'simple', title: 'X', assignee: SENDER, sender_name: SENDER \}\)`; \(2\) `api_admin\(\{ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER \}\)` \|/,
+      [
+        '| "PXXX acrescentar/adicionar tarefa X" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'X\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
+        '| "adicionar em PXXX a tarefa X" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'X\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
+      ].join('\n'),
+    );
+  }
+  if (!output.includes('"PXXX acrescentar/adicionar tarefa titulo"')) {
+    output = output.replace(
+      /\| "adicionar etapa PXXX: titulo" \| `api_update_task\(\{ task_id: 'PXXX', updates: \{ add_subtask: 'titulo' \}, sender_name: SENDER \}\)` \|/,
+      [
+        '| "adicionar etapa PXXX: titulo" | `api_update_task({ task_id: \'PXXX\', updates: { add_subtask: \'titulo\' }, sender_name: SENDER })` |',
+        '| "PXXX acrescentar/adicionar tarefa titulo" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'titulo\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
+        '| "adicionar em PXXX a tarefa titulo" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'titulo\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
+        '| "[nome do projeto] adicionar/acrescentar tarefa titulo" | Do NOT use `api_create_task`. Use `api_update_task({ task_id: \'<matched_project_id>\', updates: { add_subtask: \'titulo\' }, sender_name: SENDER })` when the project is identifiable from board context; if multiple projects match, ask which one |',
+      ].join('\n'),
+    );
+  }
+  if (!output.includes('"adicionar em PXXX a tarefa titulo"')) {
+    output = output.replace(
+      /\| "PXXX acrescentar\/adicionar tarefa titulo" \| Two calls in sequence: \(1\) `api_create_task\(\{ type: 'simple', title: 'titulo', assignee: SENDER, sender_name: SENDER \}\)`; \(2\) `api_admin\(\{ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER \}\)` \|/,
+      [
+        '| "PXXX acrescentar/adicionar tarefa titulo" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'titulo\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
+        '| "adicionar em PXXX a tarefa titulo" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'titulo\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
+      ].join('\n'),
+    );
+  }
+
   // A5 follow-up — v2 send_message + schedule_task schema rewrites.
   // The earlier mechanical pass only handled v1 tool RENAMES (taskflow_* →
   // api_*). v1 prose also encodes the OLD schemas of send_message and

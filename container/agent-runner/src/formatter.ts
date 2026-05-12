@@ -127,6 +127,9 @@ export function extractRouting(messages: MessageInRow[]): RoutingContext {
  * Strips routing fields — the agent never sees platform_id, channel_type, thread_id.
  */
 export function formatMessages(messages: MessageInRow[]): string {
+  const phase2RawPrompt = maybePhase2RawPrompt(messages);
+  if (phase2RawPrompt !== null) return phase2RawPrompt;
+
   const header = `<context timezone="${escapeXml(TIMEZONE)}" />\n`;
   if (messages.length === 0) return header;
 
@@ -152,6 +155,12 @@ export function formatMessages(messages: MessageInRow[]): string {
   }
 
   return header + parts.join('\n\n');
+}
+
+function maybePhase2RawPrompt(messages: MessageInRow[]): string | null {
+  if (process.env.NANOCLAW_PHASE2_RAW_PROMPT !== '1' || messages.length !== 1) return null;
+  const content = parseContent(messages[0].content);
+  return typeof content.phase2RawPrompt === 'string' ? content.phase2RawPrompt : null;
 }
 
 function formatChatMessages(messages: MessageInRow[]): string {

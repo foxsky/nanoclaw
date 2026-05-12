@@ -38,6 +38,12 @@ describe('api_update_simple_task MCP tool', () => {
     expect(apiUpdateSimpleTaskTool.tool.name).toBe('api_update_simple_task');
   });
 
+  it('description keeps explicit assignment commands on api_reassign', async () => {
+    const { apiUpdateSimpleTaskTool } = await import('./taskflow-api-update.ts');
+    expect(apiUpdateSimpleTaskTool.tool.description).toContain('Do not use for explicit assignment commands');
+    expect(apiUpdateSimpleTaskTool.tool.description).toContain('api_reassign');
+  });
+
   it('updates present fields', async () => {
     const resp = await update({
       board_id: BOARD,

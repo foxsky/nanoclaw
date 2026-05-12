@@ -115,6 +115,55 @@ function finalizeMutationResult(result: { success: boolean; notifications?: unkn
   return jsonResponse({ success: true, data: rest, notification_events });
 }
 
+function pickTaskSummary(task: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  if (!task) return null;
+  const summary: Record<string, unknown> = {};
+  for (const key of [
+    'id',
+    'type',
+    'title',
+    'description',
+    'assignee',
+    'assignee_name',
+    'column',
+    'priority',
+    'due_date',
+    'scheduled_at',
+    'parent_task_id',
+  ]) {
+    if (task[key] !== undefined && task[key] !== null && task[key] !== '') summary[key] = task[key];
+  }
+  return summary;
+}
+
+function compactTaskDetailsQueryResult(result: unknown): unknown {
+  if (
+    !result ||
+    typeof result !== 'object' ||
+    (result as { success?: unknown }).success !== true
+  ) {
+    return result;
+  }
+  const data = (result as { data?: unknown }).data;
+  if (!data || typeof data !== 'object') return result;
+
+  const details = data as Record<string, unknown>;
+  const compact: Record<string, unknown> = {
+    formatted_task_details: details.formatted_task_details,
+    task: pickTaskSummary(details.task as Record<string, unknown> | null | undefined),
+  };
+
+  if (Array.isArray(details.subtask_rows)) {
+    compact.subtask_count = details.subtask_rows.length;
+    compact.subtasks = details.subtask_rows.map((row) => pickTaskSummary(row as Record<string, unknown>));
+  }
+  for (const key of ['parent_project', 'recent_history', 'external_participants', 'delegation_chain']) {
+    if (details[key] !== undefined) compact[key] = details[key];
+  }
+
+  return { success: true, data: compact };
+}
+
 export const apiCreateSimpleTaskTool: McpToolDefinition = {
   tool: {
     name: 'api_create_simple_task',
@@ -586,7 +635,7 @@ export const apiReassignTool: McpToolDefinition = {
   tool: {
     name: 'api_reassign',
     description:
-      'Reassign a single task (task_id) or bulk-transfer all active tasks from one person (source_person) to another (target_person). Engine requires confirmed=true to commit; confirmed=false runs a dry-run that returns a human-readable summary in `requires_confirmation`.',
+      'Reassign a single task (task_id) or bulk-transfer all active tasks from one person (source_person) to another (target_person). Use this for explicit assignment commands such as "atribuir P11.23 para Rodrigo"; do not route those through api_update_simple_task. Engine requires confirmed=true to commit; confirmed=false runs a dry-run that returns a human-readable summary in `requires_confirmation`.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -721,7 +770,7 @@ export const apiCreateTaskTool: McpToolDefinition = {
   tool: {
     name: 'api_create_task',
     description:
-      'Create a task of type simple/project/recurring/inbox. type=simple goes to next_action; type=inbox stays in inbox; type=project allocates a P-prefix id and creates subtask rows; type=recurring allocates an R-prefix id and persists the recurrence cycle. Use api_create_meeting_task for meetings.',
+      'Create a task of type simple/project/recurring/inbox. Use this only when the user explicitly asks to create/register/add/capture work. MUST NOT call this for bare standalone goal/activity phrases like "Aguardar e acompanhar X", "Submeter X", or "Realizar X"; those are ambiguous and must be confirmed first. type=simple goes to next_action; type=inbox stays in inbox; type=project allocates a P-prefix id and creates subtask rows; type=recurring allocates the recurrence cycle. Use api_create_meeting_task for meetings. If the user is adding a new task to an existing project by explicit ID (for example "P11 acrescentar tarefa X" or "adicionar em P3 a tarefa X"), first create type=simple, then call api_admin action=reparent_task with task_id=data.id and target_parent_id=P11/P3. If the user names the existing project by title (for example "Projeto de Operação da SECTI adicionar tarefa X") and the project is identifiable, do NOT use api_create_task; use api_update_task with updates.add_subtask on the matched project id.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -887,7 +936,7 @@ export const apiUpdateTaskTool: McpToolDefinition = {
   tool: {
     name: 'api_update_task',
     description:
-      "Apply a v1-shape composite update to a task. The `updates` object accepts any field engine.update's UpdateParams.updates supports: title, priority, requires_close_approval, due_date, description, next_action, add_label, remove_label, add_note, edit_note ({id, text}), remove_note, parent_note_id, scheduled_at, participant ops, set_note_status, subtask ops (add/rename/reopen/assign/unassign), recurrence ops. Engine validates per-sub-key.",
+      "Apply a v1-shape composite update to a task. The `updates` object accepts any field engine.update's UpdateParams.updates supports: title, priority, requires_close_approval, due_date, description, next_action, add_label, remove_label, add_note, edit_note ({id, text}), remove_note, parent_note_id, scheduled_at, participant ops, set_note_status, subtask ops (add/rename/reopen/assign/unassign), recurrence ops. Engine validates per-sub-key. Use updates.add_subtask for explicit subtask/step wording like \"adicionar etapa P3: X\" and for named-project requests like \"Projeto de Operação da SECTI adicionar tarefa X\". Do not use this for explicit project-ID task-add commands like \"adicionar em P3 a tarefa X\"; those mirror v1 as api_create_task(type=simple) followed by api_admin(reparent_task).",
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -948,7 +997,7 @@ export const apiQueryTool: McpToolDefinition = {
   tool: {
     name: 'api_query',
     description:
-      "Composite read-side wrapper for engine.query. The `query` discriminator selects the sub-query: board, task_details (needs task_id), task_history (needs task_id), my_tasks/next_action/overdue/waiting/urgent/review/upcoming_meetings/meetings/summary/statistics/month_statistics (board-wide views), person_tasks/person_waiting/person_completed/person_review/person_statistics (need person_name), search/archive_search (need search_text), and others. Engine rejects unknown discriminators.",
+      "Composite read-side wrapper for engine.query. The `query` discriminator selects the sub-query: board, task_details (needs task_id and returns compact formatted_task_details plus small task/subtask summaries; use this for IDs like P11), task_history (needs task_id), my_tasks/next_action/overdue/waiting/urgent/review/upcoming_meetings/meetings/summary/statistics/month_statistics (board-wide views), person_tasks/person_waiting/person_completed/person_review/person_statistics (need person_name), search/archive_search (need search_text), and others. Engine rejects unknown discriminators.",
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -991,6 +1040,9 @@ export const apiQueryTool: McpToolDefinition = {
       // supports semantic ranking via those fields).
       const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
       const result = engine.query(queryParams);
+      if (query === 'task_details') {
+        return jsonResponse(compactTaskDetailsQueryResult(result));
+      }
       return jsonResponse(result);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -1003,7 +1055,7 @@ export const apiHierarchyTool: McpToolDefinition = {
   tool: {
     name: 'api_hierarchy',
     description:
-      "Hierarchy / parent-board linking ops via engine.hierarchy. Actions: link (delegate task to a child board owned by person_name); unlink (sever the child-board delegation); refresh_rollup (recompute the linked task's rollup status); tag_parent (mark this task as a child of parent_task_id on the parent board).",
+      "Hierarchy / parent-board linking ops via engine.hierarchy. Actions: link (delegate task to a child board owned by person_name); unlink (sever the child-board delegation); refresh_rollup (recompute the linked task's rollup status); tag_parent (mark this task as a child of parent_task_id on the parent board). User phrases like 'atualizar status P11.19' or 'sincronizar P11.19' mean action=refresh_rollup, not a request to ask which status to set.",
     inputSchema: {
       type: 'object' as const,
       properties: {

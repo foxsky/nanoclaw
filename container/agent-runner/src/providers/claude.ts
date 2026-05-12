@@ -23,10 +23,33 @@ function log(msg: string): void {
 //   the question and blocks on the real reply.
 // - EnterPlanMode / ExitPlanMode / EnterWorktree / ExitWorktree: Claude
 //   Code UI affordances; in a headless container they'd appear stuck.
-// - mcp__sqlite__list_tables / mcp__sqlite__describe_table: schema
-//   introspection that api_query / CLAUDE.md already covers; exposing it
-//   invites the agent to "explore" the DB on routine reads.
-const SDK_DISALLOWED_TOOLS = [
+// - ToolSearch: introduced by newer Claude Code/SDK builds. v1's recorded
+//   TaskFlow behavior did not expose it, and Phase 2 replay shows it adds
+//   selection-only tool calls before every routine MCP operation.
+// - Bash/Read/Write/Edit/MultiEdit/Glob/Grep/LS/Agent/TodoWrite/Skill/
+//   NotebookEdit: general Claude Code workspace tools. The TaskFlow v1 replay
+//   surface is MCP-tool driven; exposing these in v2 caused routine greetings
+//   to spawn shell/file/subagent exploration instead of the recorded no-tool
+//   behavior.
+// - mcp__nanoclaw__ask_user_question: newer interactive card flow. v1 TaskFlow
+//   asked ambiguity questions in plain text, so exposing this changes the
+//   observable reply shape and adds extra tool calls in Phase 2 replay.
+// - mcp__sqlite__*: raw database access bypasses the TaskFlow API surface and
+//   is exposed by per-board project .mcp.json files for legacy v1 behavior.
+//   v2 parity validation routes board reads/writes through api_* tools instead.
+export const SDK_DISALLOWED_TOOLS = [
+  'Bash',
+  'Read',
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'Glob',
+  'Grep',
+  'LS',
+  'Agent',
+  'TodoWrite',
+  'Skill',
+  'NotebookEdit',
   'CronCreate',
   'CronDelete',
   'CronList',
@@ -36,6 +59,12 @@ const SDK_DISALLOWED_TOOLS = [
   'ExitPlanMode',
   'EnterWorktree',
   'ExitWorktree',
+  'ToolSearch',
+  'WebSearch',
+  'WebFetch',
+  'mcp__nanoclaw__ask_user_question',
+  'mcp__sqlite__read_query',
+  'mcp__sqlite__write_query',
   'mcp__sqlite__list_tables',
   'mcp__sqlite__describe_table',
 ];
@@ -45,15 +74,13 @@ const SDK_DISALLOWED_TOOLS = [
 // added via `add_mcp_server` (or wired in container.json directly) is
 // reachable to the agent — without this, the SDK's allowedTools filter
 // silently drops every MCP namespace not listed here.
-const TOOL_ALLOWLIST = [
+export const TOOL_ALLOWLIST = [
   'Bash',
   'Read',
   'Write',
   'Edit',
   'Glob',
   'Grep',
-  'WebSearch',
-  'WebFetch',
   'Task',
   'TaskOutput',
   'TaskStop',
@@ -61,7 +88,6 @@ const TOOL_ALLOWLIST = [
   'TeamDelete',
   'SendMessage',
   'TodoWrite',
-  'ToolSearch',
   'Skill',
   'NotebookEdit',
 ];
@@ -69,9 +95,17 @@ const TOOL_ALLOWLIST = [
 // MCP server names are sanitized by the SDK when forming tool prefixes:
 // any character outside [A-Za-z0-9_-] becomes '_'. Mirror that here so our
 // allowlist patterns match what the SDK actually exposes.
-function mcpAllowPattern(serverName: string): string {
-  return `mcp__${serverName.replace(/[^a-zA-Z0-9_-]/g, '_')}__*`;
+export function mcpAllowPattern(serverName: string): string | null {
+  const sanitized = serverName.replace(/[^a-zA-Z0-9_-]/g, '_');
+  if (sanitized === 'sqlite') return null;
+  return `mcp__${sanitized}__*`;
 }
+
+function isSdkVisibleMcpServer(serverName: string): boolean {
+  return mcpAllowPattern(serverName) !== null;
+}
+
+export const SDK_SETTING_SOURCES: [] = [];
 
 interface SDKUserMessage {
   type: 'user';
@@ -288,6 +322,9 @@ export class ClaudeProvider implements AgentProvider {
     stream.push(input.prompt);
 
     const instructions = input.systemContext?.instructions;
+    const visibleMcpServers = Object.fromEntries(
+      Object.entries(this.mcpServers).filter(([serverName]) => isSdkVisibleMcpServer(serverName)),
+    );
 
     const sdkResult = sdkQuery({
       prompt: stream,
@@ -299,7 +336,7 @@ export class ClaudeProvider implements AgentProvider {
         systemPrompt: instructions ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions } : undefined,
         allowedTools: [
           ...TOOL_ALLOWLIST,
-          ...Object.keys(this.mcpServers).map(mcpAllowPattern),
+          ...Object.keys(visibleMcpServers).map(mcpAllowPattern).filter((tool): tool is string => tool !== null),
         ],
         disallowedTools: SDK_DISALLOWED_TOOLS,
         env: this.env,
@@ -308,8 +345,8 @@ export class ClaudeProvider implements AgentProvider {
         effort: this.effort as any,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
-        settingSources: ['project', 'user'],
-        mcpServers: this.mcpServers,
+        settingSources: SDK_SETTING_SOURCES,
+        mcpServers: visibleMcpServers,
         hooks: {
           PreToolUse: [{ hooks: [preToolUseHook] }],
           PostToolUse: [{ hooks: [postToolUseHook] }],

@@ -61,10 +61,36 @@ const TASK_REF_RE_GLOBAL =
   /\b(?:[A-Z]{2,}-)?(?:T|P|M|R)\d+(?:\.\d+)*\b|\bSEC-[A-Z0-9]+(?:[.-][A-Z0-9]+)*\b/gi;
 const MAGNETISM_CONFIRM_VERBS =
   /\b(Cancelar|Mover|Atualizar|Reagendar|Concluir|Aprovar|Rejeitar|Remover|Arquivar|Fechar|Finalizar|Iniciar|Reabrir|Atribuir|Reatribuir)\b/i;
+const SEARCH_STOPWORDS = new Set([
+  'a', 'as', 'ao', 'aos', 'da', 'das', 'de', 'do', 'dos', 'e', 'em', 'na',
+  'nas', 'no', 'nos', 'o', 'os', 'para', 'pela', 'pelas', 'pelo', 'pelos',
+  'por', 'que', 'sobre', 'um', 'uma',
+]);
 
 const MAGNETISM_SHADOW_FLAG = 'magnetism_shadow_flag';
 const MAGNETISM_OVERRIDE = 'magnetism_override';
 export const AMBIGUOUS_TASK_CONTEXT = 'ambiguous_task_context';
+
+function normalizeSearchText(value: unknown): string {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function extractSearchTokens(value: string): string[] {
+  const seen = new Set<string>();
+  const tokens = normalizeSearchText(value)
+    .split(/[^a-z0-9]+/i)
+    .filter((token) => token.length >= 2 && !SEARCH_STOPWORDS.has(token));
+  const out: string[] = [];
+  for (const token of tokens) {
+    if (seen.has(token)) continue;
+    seen.add(token);
+    out.push(token);
+  }
+  return out;
+}
 
 type CompletionRenderCommon = {
   taskId: string;
@@ -1790,6 +1816,112 @@ export class TaskflowEngine {
 
   private getTasksByAssignee(personId: string): any[] {
     return this.queryVisibleTasks('AND t.assignee = ?', [personId]);
+  }
+
+  private rankTokenSearchMatches(searchText: string, existingMatches: any[] = []): any[] {
+    const tokens = extractSearchTokens(searchText);
+    if (tokens.length < 2) return [];
+
+    const existingKeys = new Set(
+      existingMatches.map((task: any) => `${task.board_id}:${task.id}`),
+    );
+    const minScore = tokens.length <= 2 ? tokens.length : Math.ceil(tokens.length * 0.6);
+    const candidates = this.queryVisibleTasks();
+    const ranked: Array<{ task: any; score: number }> = [];
+
+    for (const task of candidates) {
+      const key = `${task.board_id}:${task.id}`;
+      if (existingKeys.has(key)) continue;
+      const title = normalizeSearchText(task.title);
+      const haystack = normalizeSearchText([
+        task.id,
+        task.title,
+        task.description,
+        task.next_action,
+        task.parent_title,
+        task.labels,
+      ].filter(Boolean).join(' '));
+
+      let score = 0;
+      for (const token of tokens) {
+        if (!haystack.includes(token)) continue;
+        score += title.includes(token) ? 2 : 1;
+      }
+      if (score >= minScore) {
+        ranked.push({ task, score });
+      }
+    }
+
+    ranked.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return String(a.task.id).localeCompare(String(b.task.id), undefined, { numeric: true });
+    });
+    return ranked.slice(0, 20).map((entry) => entry.task);
+  }
+
+  private formatTaskDetails(task: any, subtaskRows: any[] = []): string {
+    const nameCache = new Map<string, string>();
+    const nameOf = (personId: string | null | undefined): string | null => {
+      if (!personId) return null;
+      const cached = nameCache.get(personId);
+      if (cached !== undefined) return cached;
+      const row = this.db
+        .prepare(`SELECT name FROM board_people WHERE person_id = ? LIMIT 1`)
+        .get(personId) as { name: string } | null;
+      const name = row?.name ?? personId;
+      nameCache.set(personId, name);
+      return name;
+    };
+
+    const colLabel = (column: string | null | undefined): string => {
+      switch (column) {
+        case 'inbox': return 'Inbox';
+        case 'next_action': return 'Próximas Ações';
+        case 'in_progress': return 'Em andamento';
+        case 'waiting': return 'Aguardando';
+        case 'review': return 'Revisão';
+        case 'done': return 'Concluída';
+        default: return column ?? 'Sem coluna';
+      }
+    };
+    const icon = task.type === 'project' ? '📁' : task.type === 'meeting' ? '📅' : task.type === 'recurring' ? '🔄' : '📋';
+    const lines: string[] = [`${icon} *${task.id}* — ${task.title}`];
+    const assignee = nameOf(task.assignee);
+    if (assignee) lines.push(`👤 *Responsável:* ${assignee}`);
+    lines.push(`⏭️ *Coluna:* ${colLabel(task.column)}`);
+    if (task.due_date) lines.push(`⏰ *Prazo:* ${task.due_date.slice(8, 10)}/${task.due_date.slice(5, 7)}`);
+    if (task.scheduled_at) lines.push(`📆 *Agendada:* ${task.scheduled_at}`);
+    if (task.parent_title) lines.push(`📁 *Projeto:* ${task.parent_task_id} — ${task.parent_title}`);
+
+    if (task.type === 'project' && subtaskRows.length > 0) {
+      const active = subtaskRows.filter((row) => row.column !== 'done');
+      const doneCount = subtaskRows.length - active.length;
+      const groups: Array<[string, string]> = [
+        ['in_progress', '🔄 *Em andamento*'],
+        ['next_action', '📋 *Próximas Ações*'],
+        ['waiting', '⏳ *Aguardando*'],
+        ['review', '🔍 *Revisão*'],
+        ['inbox', '📥 *Inbox*'],
+      ];
+      lines.push(TaskflowEngine.SEP);
+      lines.push(`*Etapas ativas:* ${active.length}`);
+      for (const [column, label] of groups) {
+        const rows = active.filter((row) => row.column === column);
+        if (rows.length === 0) continue;
+        lines.push(label);
+        for (const row of rows.slice(0, 12)) {
+          const parts = [`• *${row.id}* — ${row.title}`];
+          const rowAssignee = nameOf(row.assignee);
+          if (rowAssignee) parts.push(`— ${rowAssignee}`);
+          if (row.due_date) parts.push(`⏰ ${row.due_date.slice(8, 10)}/${row.due_date.slice(5, 7)}`);
+          lines.push(parts.join(' '));
+        }
+        if (rows.length > 12) lines.push(`• ... +${rows.length - 12} etapas`);
+      }
+      if (doneCount > 0) lines.push(`✅ *Concluídas:* ${doneCount}`);
+    }
+
+    return lines.join('\n');
   }
 
   private getSubtaskRows(parentTaskId: string, boardId = this.boardId): any[] {
@@ -6612,6 +6744,8 @@ export class TaskflowEngine {
             "AND (t.title LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\')",
             [pattern, pattern],
           ) as any[];
+          const tokenMatches = this.rankTokenSearchMatches(params.search_text, textMatches);
+          const lexicalMatches = [...textMatches, ...tokenMatches];
           /* Also try resolving search_text as a task ID (raw or prefixed) */
           const idMatch = this.getTask(params.search_text);
 
@@ -6630,7 +6764,7 @@ export class TaskflowEngine {
                 // Use composite key (board_id:id) to avoid collision between
                 // local and delegated tasks that share the same raw ID
                 const scored = new Map<string, { task: any; score: number }>();
-                for (const task of textMatches) {
+                for (const task of lexicalMatches) {
                   scored.set(`${task.board_id}:${task.id}`, { task, score: 0.2 });
                 }
                 for (const sem of semanticResults) {
@@ -6661,10 +6795,10 @@ export class TaskflowEngine {
             }
           }
 
-          if (idMatch && !textMatches.some((t: any) => t.id === idMatch.id && t.board_id === idMatch.board_id)) {
-            return { success: true, data: [idMatch, ...textMatches] };
+          if (idMatch && !lexicalMatches.some((t: any) => t.id === idMatch.id && t.board_id === idMatch.board_id)) {
+            return { success: true, data: [idMatch, ...lexicalMatches] };
           }
-          return { success: true, data: textMatches };
+          return { success: true, data: lexicalMatches };
         }
 
         case 'urgent':
@@ -6697,6 +6831,7 @@ export class TaskflowEngine {
           if (task.type === 'project') {
             data.subtask_rows = this.getSubtaskRows(task.id, this.taskBoardId(task));
           }
+          data.formatted_task_details = this.formatTaskDetails(task, data.subtask_rows ?? []);
           // Include parent project info for subtasks — always use the subtask's owning board
           // to avoid picking up a same-ID task from the local board.
           if (task.parent_task_id) {

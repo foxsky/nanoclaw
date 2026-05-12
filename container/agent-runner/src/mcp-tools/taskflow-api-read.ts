@@ -64,7 +64,8 @@ export const apiBoardActivityTool: McpToolDefinition = {
 export const apiFilterBoardTasksTool: McpToolDefinition = {
   tool: {
     name: 'api_filter_board_tasks',
-    description: 'Board task filter',
+    description:
+      'Board task filter. Valid filter values only: overdue, due_today, due_this_week, urgent, high_priority, by_label. Do not use this for project/task IDs like "P11"; use api_query with query=task_details and task_id instead.',
     inputSchema: {
       type: 'object' as const,
       properties: {

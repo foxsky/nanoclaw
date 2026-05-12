@@ -845,6 +845,12 @@ describe('api_reassign MCP tool (A11.3)', () => {
     expect(apiReassignTool.tool.name).toBe('api_reassign');
   });
 
+  it('description routes explicit assignment commands through api_reassign', async () => {
+    const { apiReassignTool } = await import('./taskflow-api-mutate.ts');
+    expect(apiReassignTool.tool.description).toContain('atribuir P11.23 para Rodrigo');
+    expect(apiReassignTool.tool.description).toContain('do not route those through api_update_simple_task');
+  });
+
   it('declares required board_id/target_person/sender_name/confirmed; optional task_id/source_person', async () => {
     const { apiReassignTool } = await import('./taskflow-api-mutate.ts');
     const schema = apiReassignTool.tool.inputSchema as {
@@ -1413,6 +1419,14 @@ describe('api_create_task MCP tool (A5.2.1 — multi-type create)', () => {
     expect(apiCreateTaskTool.tool.name).toBe('api_create_task');
   });
 
+  it('description preserves v1 create+reparent for explicit project-ID task-add commands', async () => {
+    const { apiCreateTaskTool, apiUpdateTaskTool } = await import('./taskflow-api-mutate.ts');
+    expect(apiCreateTaskTool.tool.description).toContain('adicionar em P3 a tarefa X');
+    expect(apiCreateTaskTool.tool.description).toContain('api_admin action=reparent_task');
+    expect(apiUpdateTaskTool.tool.description).toContain('Do not use this for explicit project-ID task-add commands');
+    expect(apiUpdateTaskTool.tool.description).toContain('adicionar em P3 a tarefa X');
+  });
+
   it('declares required board_id/title/sender_name/type; type enum simple|project|recurring|inbox', async () => {
     const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
     const schema = apiCreateTaskTool.tool.inputSchema as {
@@ -1799,6 +1813,56 @@ describe('api_query MCP tool (A5.2.3 — composite read-side wrapper)', () => {
     const result = JSON.parse(response.content[0].text);
     expect(result.success).toBe(true);
     expect(result.data).toBeDefined();
+  });
+
+  it('query=search uses token fallback for non-contiguous Portuguese phrases', async () => {
+    const { apiCreateTaskTool, apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    await apiCreateTaskTool.handler({
+      board_id: BOARD,
+      type: 'simple',
+      title: 'Extrato de contas da PMT nos bancos pelo Banco Central',
+      sender_name: 'alice',
+    });
+
+    const response = await apiQueryTool.handler({
+      board_id: BOARD,
+      query: 'search',
+      search_text: 'extrato contas PMT bancos',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data[0].title).toBe('Extrato de contas da PMT nos bancos pelo Banco Central');
+  });
+
+  it('query=task_details returns a compact formatted project summary with subtasks', async () => {
+    const { apiCreateTaskTool, apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    const created = await apiCreateTaskTool.handler({
+      board_id: BOARD,
+      type: 'project',
+      title: 'Operação da SECTI',
+      sender_name: 'alice',
+      subtasks: ['Treinamento E-governe', 'Pesquisa TIC Governo 2025'],
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+
+    const response = await apiQueryTool.handler({
+      board_id: BOARD,
+      query: 'task_details',
+      task_id: taskId,
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data.formatted_task_details).toContain(`*${taskId}* — Operação da SECTI`);
+    expect(result.data.formatted_task_details).toContain('Treinamento E-governe');
+    expect(result.data.formatted_task_details).toContain('Pesquisa TIC Governo 2025');
+    expect(result.data.subtask_rows).toBeUndefined();
+    expect(result.data.subtask_count).toBe(2);
+    expect(result.data.subtasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ title: 'Treinamento E-governe' }),
+        expect.objectContaining({ title: 'Pesquisa TIC Governo 2025' }),
+      ]),
+    );
   });
 
   it('engine rejects unknown query discriminator', async () => {

@@ -62,6 +62,28 @@ describe('context timezone header', () => {
   });
 });
 
+describe('Phase 2 replay raw prompt', () => {
+  it('uses the recorded v1 prompt verbatim only when explicitly enabled', () => {
+    const previous = process.env.NANOCLAW_PHASE2_RAW_PROMPT;
+    process.env.NANOCLAW_PHASE2_RAW_PROMPT = '1';
+    try {
+      const rawPrompt = '--- Recent conversation history ---\n<context timezone="America/Fortaleza" />';
+      insertMessage('m1', 'chat', { sender: 'Alice', text: 'ignored', phase2RawPrompt: rawPrompt });
+      expect(formatMessages(getPendingMessages())).toBe(rawPrompt);
+    } finally {
+      if (previous === undefined) delete process.env.NANOCLAW_PHASE2_RAW_PROMPT;
+      else process.env.NANOCLAW_PHASE2_RAW_PROMPT = previous;
+    }
+  });
+
+  it('escapes the same field in normal production formatting', () => {
+    insertMessage('m1', 'chat', { sender: 'Alice', text: 'visible', phase2RawPrompt: '<raw>' });
+    const result = formatMessages(getPendingMessages());
+    expect(result).toContain('visible</message>');
+    expect(result).not.toBe('<raw>');
+  });
+});
+
 describe('timestamp formatting', () => {
   it('renders time via formatLocalTime (user TZ)', () => {
     // 2026-06-15T12:00:00Z — timezone-agnostic assertions (year is stable)

@@ -153,6 +153,13 @@ describe('api_filter_board_tasks MCP tool', () => {
     expect(schema.properties).toHaveProperty('label');
   });
 
+  it('documents valid filters and routes project IDs to api_query task_details', async () => {
+    const { apiFilterBoardTasksTool } = await import('./taskflow-api-read.ts');
+    expect(apiFilterBoardTasksTool.tool.description).toContain('overdue');
+    expect(apiFilterBoardTasksTool.tool.description).toContain('task_details');
+    expect(apiFilterBoardTasksTool.tool.description).toContain('P11');
+  });
+
   it('returns urgent tasks with notes + labels arrays', async () => {
     const { apiFilterBoardTasksTool } = await import('./taskflow-api-read.ts');
     const result = await apiFilterBoardTasksTool.handler({ board_id: 'board-b1', filter: 'urgent' });
@@ -272,11 +279,13 @@ describe('v1-parity validation surface (zod equivalent)', () => {
 });
 
 describe('tool metadata', () => {
-  it('exposes the v1 tool descriptions verbatim', async () => {
+  it('exposes concise read-tool descriptions plus filter contract details', async () => {
     const { apiBoardActivityTool, apiFilterBoardTasksTool, apiLinkedTasksTool } =
       await import('./taskflow-api-read.ts');
     expect(apiBoardActivityTool.tool.description).toBe('Board activity log');
-    expect(apiFilterBoardTasksTool.tool.description).toBe('Board task filter');
+    expect(apiFilterBoardTasksTool.tool.description).toContain('Board task filter');
+    expect(apiFilterBoardTasksTool.tool.description).toContain('Valid filter values');
+    expect(apiFilterBoardTasksTool.tool.description).toContain('task_details');
     expect(apiLinkedTasksTool.tool.description).toBe('Board linked tasks');
   });
 });

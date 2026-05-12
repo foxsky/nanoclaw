@@ -61,6 +61,60 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     expect(result.output).toBe('Use api_hierarchy or api_dependency for these flows.');
   });
 
+  it('adds hierarchy status-sync synonym near command synonyms', () => {
+    const input =
+      '**Command synonyms:** "consolidado" / "consolidar" = "quadro" (board view). "atividades" = "minhas tarefas" (my tasks). "finalizar" / "concluir" / "fechar" = conclude. "cancelar" (bare, no task ID) = ask which task to cancel or what to cancel. When a user says "concluir tarefa" without specifying an ID and has only one active task, apply it to that task. If multiple are active, list them and ask.';
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('**Hierarchy status sync synonym:**');
+    expect(result.output).toContain("api_hierarchy({ action: 'refresh_rollup'");
+    expect(result.output).not.toContain('taskflow_hierarchy');
+  });
+
+  it('adds a pre-tool gate for standalone planning goals', () => {
+    const input =
+      '## Command -> Tool Mapping\n\nWhen the user sends a command, call the matching MCP tool. The tool handles all validation, permission checks, and side effects.';
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('**Pre-tool command gate.**');
+    expect(result.output).toContain('standalone infinitive planning goal is NOT an explicit command');
+    expect(result.output).toContain('Do not call `api_query`, `api_create_task`, or any other tool');
+  });
+
+  it('removes the first-interaction welcome SQL check', () => {
+    const input = [
+      '## Welcome Check',
+      '',
+      'On the FIRST interaction in a new session, check if a welcome message has been sent:',
+      "1. Query: `SELECT welcome_sent FROM board_runtime_config WHERE board_id = 'board-seci-taskflow'`",
+      "2. If `welcome_sent = 0`: send a brief welcome, then `UPDATE board_runtime_config SET welcome_sent = 1 WHERE board_id = 'board-seci-taskflow'`",
+      '',
+      '## Security',
+    ].join('\n');
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).not.toContain('## Welcome Check');
+    expect(result.output).not.toContain('welcome_sent');
+    expect(result.output).toContain('## Security');
+  });
+
+  it('adds an explicit message delivery wrapper reminder', () => {
+    const result = migrateBoardClaudeMd('All output in pt-BR.');
+    expect(result.output).toContain('**Delivery format is mandatory.**');
+    expect(result.output).toContain('<message to="...">');
+    expect(result.output).toContain('no-tool replies');
+  });
+
+  it('adds bare activity phrase guidance near intent analysis', () => {
+    const input =
+      'The user\'s words are clues, not commands. "Me lembre de ligar pro João" is a reminder — the user expects to be notified, not to find an inbox item. "Anotar: comprar café" is a capture. "Tarefa para Giovanni: revisar relatório" is an assigned task. But always consider the full context — the same words can mean different things depending on the situation.';
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('**Bare goal/activity phrases are not task-creation commands.**');
+    expect(result.output).toContain('"Aguardar e acompanhar X"');
+    expect(result.output).toContain('"Submeter X"');
+    expect(result.output).toContain('"Realizar X"');
+    expect(result.output).toContain('do NOT search or create automatically');
+    expect(result.output).toContain('**Plain-text ambiguity questions.**');
+    expect(result.output).toContain('Do NOT call `ask_user_question`');
+  });
+
   it('taskflow_query → api_query with discriminator body preserved', () => {
     const input = "`taskflow_query({ query: 'task_details', task_id: 'T1' })`";
     const result = migrateBoardClaudeMd(input);
@@ -97,6 +151,40 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     const result = migrateBoardClaudeMd(input);
     expect(result.output).toContain("api_update_task({ task_id: 'T14',");
     expect(result.output).toContain("updates: { due_date: '2026-04-30' }");
+  });
+
+  it('adds project create+reparent synonym rows for acrescentar/adicionar tarefa wording', () => {
+    const input = [
+      '| "diario/semanal/mensal/anual para Y: X" | `taskflow_create({ type: \'recurring\', title: \'X\', assignee: \'Y\', recurrence: FREQ, sender_name: SENDER })` |',
+      '| "adicionar etapa PXXX: titulo" | `taskflow_update({ task_id: \'PXXX\', updates: { add_subtask: \'titulo\' }, sender_name: SENDER })` |',
+    ].join('\n');
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('"PXXX acrescentar/adicionar tarefa X"');
+    expect(result.output).toContain('"adicionar em PXXX a tarefa X"');
+    expect(result.output).toContain('"PXXX acrescentar/adicionar tarefa titulo"');
+    expect(result.output).toContain('"adicionar em PXXX a tarefa titulo"');
+    expect(result.output).toContain('"[nome do projeto] adicionar/acrescentar tarefa X"');
+    expect(result.output).toContain('"[nome do projeto] adicionar/acrescentar tarefa titulo"');
+    expect(result.output).toContain("api_create_task({ type: 'simple', title: 'X', assignee: SENDER, sender_name: SENDER })");
+    expect(result.output).toContain("api_create_task({ type: 'simple', title: 'titulo', assignee: SENDER, sender_name: SENDER })");
+    expect(result.output).toContain("api_admin({ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER })");
+    expect(result.output).toContain('Do NOT use `api_create_task`');
+    expect(result.output).toContain(
+      "api_update_task({ task_id: '<matched_project_id>', updates: { add_subtask: 'X' }, sender_name: SENDER })",
+    );
+    expect(result.output).toContain(
+      "api_update_task({ task_id: '<matched_project_id>', updates: { add_subtask: 'titulo' }, sender_name: SENDER })",
+    );
+    expect(result.output).not.toContain('taskflow_update');
+  });
+
+  it('adds negative examples for standalone planning goals before task creation mappings', () => {
+    const input = '"tarefa" with "para Y" creates an assigned task. Without "para Y", it goes to inbox (see Quick Capture above).';
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('Do NOT treat standalone planning goals as create commands.');
+    expect(result.output).toContain('"Submeter ao menos 1 proposta a financiador externo"');
+    expect(result.output).toContain('do not call `api_query` or `api_create_task`');
+    expect(result.output).toContain('"Realizar 8 edições mensais do Inova Talks (mai-dez/2026)"');
   });
 
   it('bare taskflow_update mention → api_update_task', () => {
