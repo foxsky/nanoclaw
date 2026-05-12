@@ -21,6 +21,7 @@ import {
   resolveSession,
   writeSessionMessage,
   writeSessionRouting,
+  writeOutboundDirect,
   initSessionFolder,
   sessionDir,
   inboundDbPath,
@@ -162,6 +163,45 @@ describe('session manager', () => {
 
     clearOutbox('ag-1', 'sess-test', 'msg-1');
     expect(fs.existsSync(msgOutbox)).toBe(false);
+  });
+
+  it('should write direct outbound replies through a writable outbound handle', () => {
+    initSessionFolder('ag-1', 'sess-test');
+
+    expect(() =>
+      writeOutboundDirect('ag-1', 'sess-test', {
+        id: 'direct-denial-1',
+        kind: 'chat',
+        platformId: 'chan-123',
+        channelType: 'discord',
+        threadId: null,
+        content: JSON.stringify({ text: 'Permission denied.' }),
+      }),
+    ).not.toThrow();
+
+    const outDb = new Database(outboundDbPath('ag-1', 'sess-test'));
+    const row = outDb
+      .prepare('SELECT id, kind, platform_id, channel_type, thread_id, content FROM messages_out WHERE id = ?')
+      .get('direct-denial-1') as
+      | {
+          id: string;
+          kind: string;
+          platform_id: string;
+          channel_type: string;
+          thread_id: string | null;
+          content: string;
+        }
+      | undefined;
+    outDb.close();
+
+    expect(row).toMatchObject({
+      id: 'direct-denial-1',
+      kind: 'chat',
+      platform_id: 'chan-123',
+      channel_type: 'discord',
+      thread_id: null,
+      content: JSON.stringify({ text: 'Permission denied.' }),
+    });
   });
 
   it('should reject inbound attachment writes through a pre-placed symlinked inbox dir', () => {

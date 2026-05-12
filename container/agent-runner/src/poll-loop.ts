@@ -26,6 +26,10 @@ function generateId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+export function hasWakeTrigger(messages: Pick<MessageInRow, 'trigger'>[]): boolean {
+  return messages.some((m) => m.trigger === 1);
+}
+
 export interface PollLoopConfig {
   provider: AgentProvider;
   /**
@@ -92,7 +96,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // (and potentially responding to) every accumulate-only batch, defeating
     // the "store as context, don't engage" contract. Host-side countDueMessages
     // gates the same way for wake-from-cold (see src/db/session-db.ts).
-    if (!messages.some((m) => m.trigger === 1)) {
+    if (!hasWakeTrigger(messages)) {
       await sleep(POLL_INTERVAL_MS);
       continue;
     }
@@ -308,6 +312,7 @@ async function processQuery(
         // host-generated welcome trigger with null thread vs a Discord DM reply).
         const newMessages = pending.filter((m) => m.kind !== 'system');
         if (newMessages.length === 0) return;
+        if (!hasWakeTrigger(newMessages)) return;
 
         const newIds = newMessages.map((m) => m.id);
         markProcessing(newIds);

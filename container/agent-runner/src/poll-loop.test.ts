@@ -5,6 +5,7 @@ import { getPendingMessages, markCompleted } from './db/messages-in.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
 import { formatMessages, extractRouting } from './formatter.js';
 import { MockProvider } from './providers/mock.js';
+import { hasWakeTrigger } from './poll-loop.js';
 
 beforeEach(() => {
   initTestSessionDb();
@@ -110,16 +111,23 @@ describe('accumulate gate (trigger column)', () => {
     const messages = getPendingMessages();
     // This is the exact predicate the poll loop uses to skip accumulate-only
     // batches — gate should be false, so the loop sleeps without waking the agent.
-    expect(messages.some((m) => m.trigger === 1)).toBe(false);
+    expect(hasWakeTrigger(messages)).toBe(false);
   });
 
   it('mixed batch: gate is true → loop proceeds, accumulated rows ride along', () => {
     insertMessage('m1', 'chat', { sender: 'A', text: 'earlier chatter' }, { trigger: 0 });
     insertMessage('m2', 'chat', { sender: 'B', text: 'the real mention' }, { trigger: 1 });
     const messages = getPendingMessages();
-    expect(messages.some((m) => m.trigger === 1)).toBe(true);
+    expect(hasWakeTrigger(messages)).toBe(true);
     // Both messages are present for the formatter → agent sees the prior context.
     expect(messages.map((m) => m.id).sort()).toEqual(['m1', 'm2']);
+  });
+
+  it('active-query follow-up gate also rejects trigger=0-only batches', () => {
+    insertMessage('m1', 'chat', { sender: 'A', text: 'background chatter' }, { trigger: 0 });
+    const followUps = getPendingMessages().filter((m) => m.kind !== 'system');
+    expect(followUps).toHaveLength(1);
+    expect(hasWakeTrigger(followUps)).toBe(false);
   });
 
   it('trigger column defaults to 1 for legacy inserts without explicit value', () => {

@@ -17,7 +17,7 @@
  */
 import { recordDroppedMessage } from '../../db/dropped-messages.js';
 import { getAgentGroup, getAllAgentGroups } from '../../db/agent-groups.js';
-import { createMessagingGroupAgent, setMessagingGroupDeniedAt } from '../../db/messaging-groups.js';
+import { createMessagingGroupAgent, getMessagingGroup, setMessagingGroupDeniedAt } from '../../db/messaging-groups.js';
 import {
   routeInbound,
   setAccessGate,
@@ -63,6 +63,15 @@ interface PendingNameInput {
   dmPlatformId: string;
 }
 const awaitingNameInput = new Map<string, PendingNameInput>();
+
+function isGroupChannelEvent(event: InboundEvent, messagingGroupId: string): boolean {
+  if (typeof event.message.isGroup === 'boolean') return event.message.isGroup;
+
+  const messagingGroup = getMessagingGroup(messagingGroupId);
+  if (messagingGroup) return messagingGroup.is_group === 1;
+
+  return event.threadId !== null;
+}
 
 function extractAndUpsertUser(event: InboundEvent): string | null {
   let content: Record<string, unknown>;
@@ -452,7 +461,7 @@ async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<
     return true;
   }
 
-  const isGroup = event.threadId !== null;
+  const isGroup = isGroupChannelEvent(event, row.messaging_group_id);
   const engageMode: MessagingGroupAgent['engage_mode'] = isGroup ? 'mention-sticky' : 'pattern';
   const engagePattern = isGroup ? null : '.';
 
@@ -552,7 +561,7 @@ setMessageInterceptor(async (event: InboundEvent): Promise<boolean> => {
     return true;
   }
 
-  const isGroup = originalEvent.threadId !== null;
+  const isGroup = isGroupChannelEvent(originalEvent, row.messaging_group_id);
   const engageMode: MessagingGroupAgent['engage_mode'] = isGroup ? 'mention-sticky' : 'pattern';
   const engagePattern = isGroup ? null : '.';
 
