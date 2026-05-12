@@ -132,17 +132,24 @@ function countOutbound(agentGroupId: string, sessionId: string): number {
 }
 
 /** Drop the existing session row + dir so the next resolveSession is fresh.
- *  Manual cascade for FK refs (sessions(id) ← pending_questions, pending_approvals).
- *  Phase 2 multi_tool turns left pending_questions behind when v2 emitted an
- *  ask-question card mid-flow; without this cascade the FK constraint fires. */
+ *  Manual cascade in a transaction for FK refs
+ *  (sessions(id) ← pending_questions, pending_approvals). Phase 2 multi_tool
+ *  turns leave pending_questions behind when v2 emits an ask-question card;
+ *  without cascade the FK fires. The transaction prevents a half-deleted
+ *  state if the script is interrupted mid-cascade. */
 function resetSession(agentGroupId: string, messagingGroupId: string): void {
   const db = getDb();
   const rows = db.prepare(`SELECT id FROM sessions WHERE agent_group_id = ? AND messaging_group_id = ?`)
     .all(agentGroupId, messagingGroupId) as { id: string }[];
+  const cascade = db.transaction((sessionIds: string[]) => {
+    for (const id of sessionIds) {
+      db.prepare('DELETE FROM pending_questions WHERE session_id = ?').run(id);
+      db.prepare('DELETE FROM pending_approvals WHERE session_id = ?').run(id);
+      db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+    }
+  });
+  cascade(rows.map((r) => r.id));
   for (const r of rows) {
-    db.prepare('DELETE FROM pending_questions WHERE session_id = ?').run(r.id);
-    db.prepare('DELETE FROM pending_approvals WHERE session_id = ?').run(r.id);
-    db.prepare('DELETE FROM sessions WHERE id = ?').run(r.id);
     const dir = sessionDir(agentGroupId, r.id);
     if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
   }

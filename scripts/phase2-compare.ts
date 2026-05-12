@@ -30,7 +30,11 @@ interface TurnResult {
 const TOOL_MAP: Record<string, string[]> = {
   taskflow_query: ['mcp__nanoclaw__api_query', 'mcp__nanoclaw__api_hierarchy', 'mcp__nanoclaw__api_dependency'],
   taskflow_create: ['mcp__nanoclaw__api_create_task', 'mcp__nanoclaw__api_create_simple_task'],
-  taskflow_update: ['mcp__nanoclaw__api_update_simple_task', 'mcp__nanoclaw__api_admin'],
+  taskflow_update: [
+    'mcp__nanoclaw__api_update_task',
+    'mcp__nanoclaw__api_update_simple_task',
+    'mcp__nanoclaw__api_admin',
+  ],
   taskflow_delete: ['mcp__nanoclaw__api_delete_simple_task', 'mcp__nanoclaw__api_admin'],
   taskflow_move: ['mcp__nanoclaw__api_move'],
   taskflow_admin: ['mcp__nanoclaw__api_admin'],
@@ -88,21 +92,32 @@ interface TurnDiff {
 function diffTurn(turn: TurnResult): TurnDiff {
   const v1Names = turn.v1.tools.map((t) => t.name);
   const v2Names = turn.v2.tools.map((t) => t.name);
-  const v2Set = new Set(v2Names);
 
+  // Multiset consumption: each v1 call consumes exactly one v2 occurrence
+  // of an equivalent tool. Without this, a v1 call to `taskflow_query` that
+  // maps to `api_query` would mark ALL repeated api_query uses in v2 as
+  // matched, hiding the over-tool ratio (Codex BLOCKER 2026-05-11).
+  const v2Remaining = [...v2Names];
   const matched: { v1: string; v2: string }[] = [];
   const v1Unmatched: string[] = [];
 
   for (const v1Name of v1Names) {
     const equivalents = v1ToV2Equivalents(v1Name);
-    const hit = equivalents.find((eq) => v2Set.has(eq));
-    if (hit) matched.push({ v1: v1Name, v2: hit });
-    else v1Unmatched.push(v1Name);
+    let consumedAt = -1;
+    for (const eq of equivalents) {
+      const idx = v2Remaining.indexOf(eq);
+      if (idx >= 0) { consumedAt = idx; break; }
+    }
+    if (consumedAt >= 0) {
+      matched.push({ v1: v1Name, v2: v2Remaining[consumedAt] });
+      v2Remaining.splice(consumedAt, 1);
+    } else {
+      v1Unmatched.push(v1Name);
+    }
   }
 
-  // v2-only: tools v2 used that don't appear as a target in matched
-  const matchedV2 = new Set(matched.map((m) => m.v2));
-  const v2Unique = v2Names.filter((n) => !matchedV2.has(n));
+  // v2-only: whatever's left after consumption.
+  const v2Unique = v2Remaining;
 
   return {
     turn_index: turn.turn_index,
