@@ -40,6 +40,8 @@ import { initDb, getDb } from '../src/db/connection.js';
 import { runMigrations } from '../src/db/migrations/index.js';
 import { resolveSession, writeSessionMessage, sessionDir, outboundDbPath } from '../src/session-manager.js';
 import { wakeContainer } from '../src/container-runner.js';
+import { extractConversationTurns, type ConversationTurn } from './whatsapp-replay-extract.js';
+import { taskflowDbPath } from '../src/taskflow-mount.js';
 
 const AGENT_GROUP_ID = 'ag-phase2-seci';
 const MESSAGING_GROUP_ID = 'mg-phase2-seci';
@@ -54,6 +56,7 @@ const POLL_INTERVAL_MS = 2_000;
 
 interface ParsedMessage { sender: string; time: string; text: string }
 interface CuratedTurn {
+  user_message: string;
   parsed_messages: ParsedMessage[];
   tool_uses: { tool_use_id: string; tool_name: string; input: unknown; output: unknown }[];
   turn_index: number;
@@ -85,10 +88,22 @@ interface TurnResult {
   };
 }
 
-interface Args { turn?: number; all: boolean; from?: number; to?: number; resume: boolean }
+interface Args {
+  turn?: number;
+  all: boolean;
+  from?: number;
+  to?: number;
+  resume: boolean;
+  chain?: { targetCorpusIdx: number; depth: number };
+  sourceRoot: string;
+}
 
 function parseArgs(): Args {
-  const a: Args = { all: false, resume: false };
+  const a: Args = {
+    all: false,
+    resume: false,
+    sourceRoot: '/tmp/v2-pilot/all-sessions/seci-taskflow',
+  };
   for (let i = 2; i < process.argv.length; i++) {
     const k = process.argv[i];
     if (k === '--turn') a.turn = Number.parseInt(process.argv[++i], 10);
@@ -96,6 +111,16 @@ function parseArgs(): Args {
     else if (k === '--from') a.from = Number.parseInt(process.argv[++i], 10);
     else if (k === '--to') a.to = Number.parseInt(process.argv[++i], 10);
     else if (k === '--resume') a.resume = true;
+    else if (k === '--source-root') a.sourceRoot = process.argv[++i];
+    else if (k === '--chain') {
+      // --chain N or --chain N:K
+      const raw = process.argv[++i];
+      const [tgt, depthStr] = raw.split(':');
+      a.chain = {
+        targetCorpusIdx: Number.parseInt(tgt, 10),
+        depth: depthStr ? Number.parseInt(depthStr, 10) : 1,
+      };
+    }
     else throw new Error(`Unknown arg: ${k}`);
   }
   return a;
@@ -109,23 +134,23 @@ function readToolEvents(captureFile: string): V2ToolEvent[] {
     .map((l) => JSON.parse(l) as V2ToolEvent);
 }
 
-function readOutboundMessages(agentGroupId: string, sessionId: string): { kind: string; content: string }[] {
+function readOutboundMessages(agentGroupId: string, sessionId: string, afterSeq = 0): { kind: string; content: string }[] {
   const dbPath = outboundDbPath(agentGroupId, sessionId);
   if (!fs.existsSync(dbPath)) return [];
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
   try {
-    return db.prepare('SELECT kind, content FROM messages_out ORDER BY seq').all() as { kind: string; content: string }[];
+    return db.prepare('SELECT kind, content FROM messages_out WHERE seq > ? ORDER BY seq').all(afterSeq) as { kind: string; content: string }[];
   } finally {
     db.close();
   }
 }
 
-function countOutbound(agentGroupId: string, sessionId: string): number {
+function maxOutboundSeq(agentGroupId: string, sessionId: string): number {
   const dbPath = outboundDbPath(agentGroupId, sessionId);
   if (!fs.existsSync(dbPath)) return 0;
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
   try {
-    return (db.prepare('SELECT COUNT(*) AS n FROM messages_out').get() as { n: number }).n;
+    return (db.prepare('SELECT COALESCE(MAX(seq), 0) AS n FROM messages_out').get() as { n: number }).n;
   } finally {
     db.close();
   }
@@ -173,23 +198,201 @@ function stopContainer(name: string): void {
   }
 }
 
-async function waitForSettled(agentGroupId: string, sessionId: string): Promise<{ settle_reason: string; elapsed_ms: number }> {
+async function waitForSettled(agentGroupId: string, sessionId: string, baselineSeq = 0): Promise<{ settle_reason: string; elapsed_ms: number }> {
   const start = Date.now();
-  let lastCount = 0;
+  let lastSeq = baselineSeq;
   let lastChange = start;
   await new Promise((r) => setTimeout(r, SETTLE_INITIAL_MS));
   while (Date.now() - start < CONTAINER_TIMEOUT_MS) {
-    const n = countOutbound(agentGroupId, sessionId);
-    if (n !== lastCount) {
-      lastCount = n;
+    const n = maxOutboundSeq(agentGroupId, sessionId);
+    if (n !== lastSeq) {
+      lastSeq = n;
       lastChange = Date.now();
-      console.log(`  [poll] outbound rows: ${n} (t+${Math.round((Date.now() - start) / 1000)}s)`);
-    } else if (n > 0 && Date.now() - lastChange >= SETTLE_QUIET_MS) {
+      console.log(`  [poll] outbound max seq: ${n} (t+${Math.round((Date.now() - start) / 1000)}s)`);
+    } else if (n > baselineSeq && Date.now() - lastChange >= SETTLE_QUIET_MS) {
       return { settle_reason: 'outbound_stable', elapsed_ms: Date.now() - start };
     }
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
   return { settle_reason: 'timeout', elapsed_ms: Date.now() - start };
+}
+
+/** Drive one prompt through the v2 stack without resetting the session +
+ *  without capturing/scoring. Used for "context-building" turns ahead of
+ *  the target in --chain mode. Returns when the agent settles. */
+async function driveContextTurn(
+  session: { id: string },
+  text: string,
+  sender: string,
+  userMessage: string,
+  tag: string,
+): Promise<void> {
+  const captureFile = path.join(sessionDir(AGENT_GROUP_ID, session.id), '.tool-uses.jsonl');
+  const messageId = `phase2-ctx-${tag}-${Date.now()}`;
+  const content = JSON.stringify({ sender, text, phase2RawPrompt: userMessage });
+  writeSessionMessage(AGENT_GROUP_ID, session.id, {
+    id: messageId,
+    kind: 'chat',
+    timestamp: new Date().toISOString(),
+    platformId: GROUP_JID,
+    channelType: 'whatsapp',
+    threadId: null,
+    content,
+    trigger: 1,
+  });
+
+  const outboundBaselineSeq = maxOutboundSeq(AGENT_GROUP_ID, session.id);
+  const captureBytesBefore = fs.existsSync(captureFile) ? fs.statSync(captureFile).size : 0;
+  const woke = await wakeContainer(session as never);
+  if (!woke) throw new Error(`wakeContainer returned false for context turn ${tag}`);
+
+  const settled = await waitForSettled(AGENT_GROUP_ID, session.id, outboundBaselineSeq);
+  console.log(`    [ctx ${tag}] settled: ${settled.settle_reason} (${Math.round(settled.elapsed_ms / 1000)}s)`);
+
+  const running = findRunningContainer();
+  if (running) {
+    stopContainer(running);
+    await new Promise((r) => setTimeout(r, 2_000));
+  }
+
+  // Audit: how much capture got appended (so the chain summary shows context cost)
+  const captureBytesAfter = fs.existsSync(captureFile) ? fs.statSync(captureFile).size : 0;
+  console.log(`    [ctx ${tag}] context tool-events: ~${captureBytesAfter - captureBytesBefore}B`);
+}
+
+/** Snapshot taskflow.db to a temp file so chain context-turns can mutate it
+ *  freely; restored after the target turn captures. Returns the snapshot
+ *  path; pass to restoreTaskflowDb. */
+function snapshotTaskflowDb(): string {
+  const src = taskflowDbPath(DATA_DIR);
+  const dst = `${src}.phase2-chain-${process.pid}-${Date.now()}`;
+  fs.copyFileSync(src, dst);
+  return dst;
+}
+
+function restoreTaskflowDb(snapshot: string): void {
+  const src = taskflowDbPath(DATA_DIR);
+  fs.copyFileSync(snapshot, src);
+  fs.rmSync(snapshot, { force: true });
+}
+
+/** Resolve a chain of prior turns from the source JSONL up to the target.
+ *  Returns the prior turns (oldest first) and the target turn from the
+ *  re-extracted source list, plus the matching corpus entry (for v1 scoring). */
+function resolveChain(
+  corpus: Corpus,
+  targetCorpusIdx: number,
+  depth: number,
+  sourceRoot: string,
+): { prior: ConversationTurn[]; target: ConversationTurn; corpusTurn: CuratedTurn } {
+  const corpusTurn = corpus.turns[targetCorpusIdx];
+  if (!corpusTurn) throw new Error(`Corpus has no turn at index ${targetCorpusIdx}`);
+  if (!corpusTurn.jsonl) throw new Error(`Corpus turn ${targetCorpusIdx} has no jsonl field`);
+  const absJsonl = path.join(sourceRoot, corpusTurn.jsonl);
+  if (!fs.existsSync(absJsonl)) throw new Error(`Source JSONL not found: ${absJsonl}`);
+  const sourceTurns = extractConversationTurns(fs.readFileSync(absJsonl, 'utf8'));
+  const target = sourceTurns[corpusTurn.turn_index];
+  if (!target) throw new Error(`Target turn index ${corpusTurn.turn_index} not present in ${absJsonl}`);
+  const start = Math.max(0, corpusTurn.turn_index - depth);
+  const prior = sourceTurns.slice(start, corpusTurn.turn_index);
+  return { prior, target, corpusTurn };
+}
+
+async function processChain(corpus: Corpus, targetCorpusIdx: number, depth: number, sourceRoot: string): Promise<TurnResult> {
+  const { prior, target, corpusTurn } = resolveChain(corpus, targetCorpusIdx, depth, sourceRoot);
+  const targetParsed = corpusTurn.parsed_messages[0];
+  console.log(`\n=== Chain to corpus turn ${targetCorpusIdx} (${corpusTurn.category}) ===`);
+  console.log(`  source: ${corpusTurn.jsonl}#${corpusTurn.turn_index}`);
+  console.log(`  chain depth: ${prior.length} prior turn(s) before target`);
+  console.log(`  target sender: ${targetParsed.sender}`);
+  console.log(`  target text:   ${targetParsed.text.slice(0, 100)}`);
+  console.log(`  v1 tool sequence (target): [${corpusTurn.tool_uses.map((t) => t.tool_name).join(', ')}]`);
+
+  // Snapshot taskflow.db so context-turn mutations don't bleed into the
+  // pristine DB between chain runs.
+  const snapshot = snapshotTaskflowDb();
+  resetSession(AGENT_GROUP_ID, MESSAGING_GROUP_ID);
+  const { session } = resolveSession(AGENT_GROUP_ID, MESSAGING_GROUP_ID, null, 'shared');
+  console.log(`  session: ${session.id} (fresh; will be reused for all chain turns)`);
+
+  try {
+    for (let i = 0; i < prior.length; i++) {
+      const p = prior[i];
+      const psm = p.parsed_messages[0];
+      const psender = psm?.sender ?? 'context';
+      const ptext = psm?.text ?? '<no parsed_messages — using raw user_message>';
+      console.log(`  --- context turn ${i + 1}/${prior.length}: ${psender}: "${ptext.slice(0, 80)}"`);
+      await driveContextTurn(session, ptext, psender, p.user_message, `${targetCorpusIdx}-pre${i}`);
+    }
+
+    // Now drive the target turn, capturing tool_use + outbound just for it.
+    const captureFile = path.join(sessionDir(AGENT_GROUP_ID, session.id), '.tool-uses.jsonl');
+    const captureBytesBefore = fs.existsSync(captureFile) ? fs.statSync(captureFile).size : 0;
+    const messageId = `phase2-tgt-${targetCorpusIdx}-${Date.now()}`;
+    const content = JSON.stringify({
+      sender: targetParsed.sender,
+      text: targetParsed.text,
+      phase2RawPrompt: corpusTurn.user_message,
+    });
+    writeSessionMessage(AGENT_GROUP_ID, session.id, {
+      id: messageId,
+      kind: 'chat',
+      timestamp: new Date().toISOString(),
+      platformId: GROUP_JID,
+      channelType: 'whatsapp',
+      threadId: null,
+      content,
+      trigger: 1,
+    });
+
+    const outboundBaselineSeq = maxOutboundSeq(AGENT_GROUP_ID, session.id);
+    const woke = await wakeContainer(session);
+    if (!woke) throw new Error(`wakeContainer returned false for target turn ${targetCorpusIdx}`);
+    const settled = await waitForSettled(AGENT_GROUP_ID, session.id, outboundBaselineSeq);
+    console.log(`  [target] settled: ${settled.settle_reason} (${Math.round(settled.elapsed_ms / 1000)}s)`);
+    const running = findRunningContainer();
+    if (running) {
+      console.log(`  stopping container: ${running}`);
+      stopContainer(running);
+      await new Promise((r) => setTimeout(r, 3_000));
+    }
+
+    // Read ONLY the target-turn events (everything appended after the
+    // context-turn snapshot point).
+    let allEvents = readToolEvents(captureFile);
+    if (captureBytesBefore > 0) {
+      // Drop the first N events that fit in the byte prefix from context turns.
+      // Simpler: read raw bytes after offset.
+      const rawAfter = fs.readFileSync(captureFile, 'utf8').slice(captureBytesBefore);
+      allEvents = rawAfter.split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l) as V2ToolEvent);
+    }
+    const outbound = readOutboundMessages(AGENT_GROUP_ID, session.id, outboundBaselineSeq);
+
+    const result: TurnResult = {
+      turn_index: targetCorpusIdx,
+      category: corpusTurn.category,
+      sender: targetParsed.sender,
+      text: targetParsed.text,
+      session_id: session.id,
+      v1: {
+        tools: corpusTurn.tool_uses.map((t) => ({ name: t.tool_name, input: t.input })),
+        final_response: corpusTurn.final_response,
+      },
+      v2: {
+        tools: allEvents.filter((e) => e.kind === 'tool_use').map((e) => ({ name: e.name as string, input: e.input })),
+        results: allEvents.filter((e) => e.kind === 'tool_result').map((e) => ({ id: e.id, is_error: e.is_error === true })),
+        outbound,
+        elapsed_ms: settled.elapsed_ms,
+        settle_reason: settled.settle_reason,
+      },
+    };
+    console.log(`  [target] v2 tool sequence: [${result.v2.tools.map((t) => t.name).join(', ')}]`);
+    console.log(`  [target] v2 outbound: ${outbound.length} rows`);
+    return result;
+  } finally {
+    restoreTaskflowDb(snapshot);
+    console.log(`  taskflow.db restored from snapshot`);
+  }
 }
 
 async function processTurn(turn: CuratedTurn, idx: number): Promise<TurnResult> {
@@ -204,8 +407,9 @@ async function processTurn(turn: CuratedTurn, idx: number): Promise<TurnResult> 
   console.log(`  session: ${session.id} (fresh)`);
 
   const captureFile = path.join(sessionDir(AGENT_GROUP_ID, session.id), '.tool-uses.jsonl');
+  fs.rmSync(captureFile, { force: true });
   const messageId = `phase2-msg-${idx}-${Date.now()}`;
-  const content = JSON.stringify({ sender: parsed.sender, text: parsed.text });
+  const content = JSON.stringify({ sender: parsed.sender, text: parsed.text, phase2RawPrompt: turn.user_message });
   writeSessionMessage(AGENT_GROUP_ID, session.id, {
     id: messageId,
     kind: 'chat',
@@ -217,10 +421,11 @@ async function processTurn(turn: CuratedTurn, idx: number): Promise<TurnResult> 
     trigger: 1,
   });
 
+  const outboundBaselineSeq = maxOutboundSeq(AGENT_GROUP_ID, session.id);
   const woke = await wakeContainer(session);
   if (!woke) throw new Error(`wakeContainer returned false for turn ${idx}`);
 
-  const settled = await waitForSettled(AGENT_GROUP_ID, session.id);
+  const settled = await waitForSettled(AGENT_GROUP_ID, session.id, outboundBaselineSeq);
   console.log(`  settled: ${settled.settle_reason} (${Math.round(settled.elapsed_ms / 1000)}s)`);
 
   const running = findRunningContainer();
@@ -231,7 +436,7 @@ async function processTurn(turn: CuratedTurn, idx: number): Promise<TurnResult> 
   }
 
   const events = readToolEvents(captureFile);
-  const outbound = readOutboundMessages(AGENT_GROUP_ID, session.id);
+  const outbound = readOutboundMessages(AGENT_GROUP_ID, session.id, outboundBaselineSeq);
 
   const result: TurnResult = {
     turn_index: idx,
@@ -275,11 +480,26 @@ async function main(): Promise<void> {
     console.error('NANOCLAW_TOOL_USES_PATH must be set');
     process.exit(2);
   }
+  process.env.NANOCLAW_PHASE2_RAW_PROMPT = '1';
   initDb(path.join(DATA_DIR, 'v2.db'));
   runMigrations(getDb());
 
   const args = parseArgs();
   const corpus = JSON.parse(fs.readFileSync(CORPUS, 'utf8')) as Corpus;
+
+  // --chain mode: drive K prior turns from the same source JSONL into the
+  // session (no reset between), then drive + capture the target turn. Lets
+  // v2 build genuine in-session context the way v1 had it. taskflow.db is
+  // snapshotted before and restored after so context mutations don't pollute
+  // future runs.
+  if (args.chain) {
+    const result = await processChain(corpus, args.chain.targetCorpusIdx, args.chain.depth, args.sourceRoot);
+    const results = args.resume ? loadExistingResults() : [];
+    results.push(result);
+    saveResults(results);
+    console.log(`\nDone. Chain target ${args.chain.targetCorpusIdx} recorded → ${OUT_FILE}`);
+    return;
+  }
 
   let indices: number[];
   if (args.all) {
@@ -292,7 +512,7 @@ async function main(): Promise<void> {
   } else if (args.turn !== undefined) {
     indices = [args.turn];
   } else {
-    console.error('Must pass --turn N, --all, or --from/--to range');
+    console.error('Must pass --turn N, --all, --from/--to range, or --chain N[:K]');
     process.exit(2);
   }
 

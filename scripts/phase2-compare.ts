@@ -87,7 +87,91 @@ interface TurnDiff {
   matched_pairs: { v1: string; v2: string }[];
   v2_used_extra_tools: boolean;
   v1_had_unmatched: boolean;
+  classification?: {
+    kind:
+      | 'missing_context'
+      | 'state_drift'
+      | 'documented_tool_surface_change'
+      | 'read_only_extra'
+      | 'fixed_after_baseline';
+    note: string;
+  };
 }
+
+const KNOWN_DIVERGENCES: Record<number, NonNullable<TurnDiff['classification']>> = {
+  0: {
+    kind: 'read_only_extra',
+    note: 'v2 performs one grounding search but still asks before creating; no over-autonomy mutation.',
+  },
+  2: {
+    kind: 'read_only_extra',
+    note: 'v2 performs grounding reads for a standalone goal phrase, then asks how to register it; no mutation.',
+  },
+  3: {
+    kind: 'read_only_extra',
+    note: 'v2 performs one grounding search for a standalone activity phrase; no mutation.',
+  },
+  4: {
+    kind: 'read_only_extra',
+    note: 'v2 reads bare task id P11.20; v1 recorded no tool for this isolated turn.',
+  },
+  5: {
+    kind: 'read_only_extra',
+    note: 'v2 reads bare task id T43; v1 recorded no tool for this isolated turn.',
+  },
+  6: {
+    kind: 'missing_context',
+    note: 'Prompt gives only a deadline with no task id; v2 asks for the missing task instead of guessing.',
+  },
+  9: {
+    kind: 'fixed_after_baseline',
+    note: 'Post-baseline engine patch adds token-ranked search; first query "extrato contas PMT bancos" now returns T84.',
+  },
+  15: {
+    kind: 'missing_context',
+    note: 'Raw prompt says only "esta tarefa"; v1 relied on prior in-session T43 context and raw sqlite sibling-board lookup.',
+  },
+  16: {
+    kind: 'missing_context',
+    note: 'Raw prompt is only "sim"; v1 was answering a prior forwarding confirmation not present in this isolated replay turn.',
+  },
+  17: {
+    kind: 'documented_tool_surface_change',
+    note: 'v1 used raw sqlite to inspect sibling board task T43; v2 intentionally blocks raw sqlite and board-scoped api_query cannot read that sibling row.',
+  },
+  20: {
+    kind: 'fixed_after_baseline',
+    note: 'Post-baseline MCP compaction returns compact formatted_task_details for project IDs, avoiding tool-result file parsing loops.',
+  },
+  21: {
+    kind: 'documented_tool_surface_change',
+    note: 'v2 task_details includes enough task history in one api_query to answer; v1 used two taskflow_query calls.',
+  },
+  22: {
+    kind: 'missing_context',
+    note: 'Raw prompt is only "Sim"; v1 relied on the prior P6.7 confirmation context from the live session.',
+  },
+  23: {
+    kind: 'missing_context',
+    note: 'Prompt lacks the prior P6.7 task reference; v1 used raw sqlite write/read plus move to repair that specific task.',
+  },
+  25: {
+    kind: 'missing_context',
+    note: 'Prompt omits the task being assigned; v1 inherited T84 from the immediately prior live turn.',
+  },
+  27: {
+    kind: 'missing_context',
+    note: 'Prompt omits the task being assigned; v1 inherited T85 from the immediately prior live turn.',
+  },
+  28: {
+    kind: 'state_drift',
+    note: 'Current DB already has ana-beatriz on M1 and M2, so v2 correctly no-ops instead of replaying v1 mutations.',
+  },
+  29: {
+    kind: 'documented_tool_surface_change',
+    note: 'v1 used filesystem/Agent tools to gather meeting details; v2 obtains the same details via api_query and sends the outbound message.',
+  },
+};
 
 function diffTurn(turn: TurnResult): TurnDiff {
   const v1Names = turn.v1.tools.map((t) => t.name);
@@ -119,7 +203,7 @@ function diffTurn(turn: TurnResult): TurnDiff {
   // v2-only: whatever's left after consumption.
   const v2Unique = v2Remaining;
 
-  return {
+  const diff: TurnDiff = {
     turn_index: turn.turn_index,
     category: turn.category,
     text_excerpt: turn.text.slice(0, 80),
@@ -131,17 +215,23 @@ function diffTurn(turn: TurnResult): TurnDiff {
     v2_used_extra_tools: v2Unique.length > 0,
     v1_had_unmatched: v1Unmatched.length > 0,
   };
+  const classification = KNOWN_DIVERGENCES[turn.turn_index];
+  if (classification && (diff.v1_had_unmatched || diff.v2_used_extra_tools)) {
+    diff.classification = classification;
+  }
+  return diff;
 }
 
 function summarize(diffs: TurnDiff[]): string {
-  const byCategory: Record<string, { total: number; v1_unmatched: number; v2_extra: number; clean: number }> = {};
+  const byCategory: Record<string, { total: number; v1_unmatched: number; v2_extra: number; clean: number; documented: number }> = {};
   for (const d of diffs) {
     const c = d.category;
-    byCategory[c] = byCategory[c] ?? { total: 0, v1_unmatched: 0, v2_extra: 0, clean: 0 };
+    byCategory[c] = byCategory[c] ?? { total: 0, v1_unmatched: 0, v2_extra: 0, clean: 0, documented: 0 };
     byCategory[c].total += 1;
     if (d.v1_had_unmatched) byCategory[c].v1_unmatched += 1;
     if (d.v2_used_extra_tools) byCategory[c].v2_extra += 1;
     if (!d.v1_had_unmatched && !d.v2_used_extra_tools) byCategory[c].clean += 1;
+    if (d.classification) byCategory[c].documented += 1;
   }
 
   const lines: string[] = [];
@@ -149,10 +239,10 @@ function summarize(diffs: TurnDiff[]): string {
   lines.push(`Total turns analyzed: ${diffs.length}`);
   lines.push('');
   lines.push('By category:');
-  lines.push('category      | total | clean | v2 over-tool | v1 unmatched');
-  lines.push('--------------|-------|-------|--------------|-------------');
+  lines.push('category      | total | clean | documented | v2 over-tool | v1 unmatched');
+  lines.push('--------------|-------|-------|------------|--------------|-------------');
   for (const [c, s] of Object.entries(byCategory).sort()) {
-    lines.push(`${c.padEnd(13)} | ${String(s.total).padStart(5)} | ${String(s.clean).padStart(5)} | ${String(s.v2_extra).padStart(12)} | ${String(s.v1_unmatched).padStart(11)}`);
+    lines.push(`${c.padEnd(13)} | ${String(s.total).padStart(5)} | ${String(s.clean).padStart(5)} | ${String(s.documented).padStart(10)} | ${String(s.v2_extra).padStart(12)} | ${String(s.v1_unmatched).padStart(11)}`);
   }
   lines.push('');
   lines.push('Per-turn details (problem turns first):');
@@ -170,6 +260,9 @@ function summarize(diffs: TurnDiff[]): string {
     }
     if (d.v2_unique.length > 0) {
       lines.push(`  v2 extra: [${d.v2_unique.join(', ')}]`);
+    }
+    if (d.classification) {
+      lines.push(`  classification: ${d.classification.kind} — ${d.classification.note}`);
     }
   }
   return lines.join('\n');
