@@ -1785,6 +1785,13 @@ describe('api_query MCP tool (A5.2.3 — composite read-side wrapper)', () => {
     expect(schema.properties).toHaveProperty('at');
   });
 
+  it('documents exact task ID scope for dotted subtasks', async () => {
+    const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    expect(apiQueryTool.tool.description).toContain('Exact IDs stay exact');
+    expect(apiQueryTool.tool.description).toContain('task_id=P6.7');
+    expect(apiQueryTool.tool.description).toContain('not parent P6');
+  });
+
   it('query=board → returns column-grouped tasks', async () => {
     const { apiCreateSimpleTaskTool, apiQueryTool } = await import('./taskflow-api-mutate.ts');
     await apiCreateSimpleTaskTool.handler({ board_id: BOARD, title: 'X', sender_name: 'alice' });

@@ -1,0 +1,91 @@
+[
+  {
+    "turn_index": 16,
+    "context_mode": "chain",
+    "source_jsonl": ".claude/projects/-workspace-group/2a379532-1cda-4302-98b1-1985bcde4d95.jsonl",
+    "source_turn_index": 17,
+    "prior_turn_depth": 2,
+    "expected_behavior": {
+      "action": "forward",
+      "task_ids": ["T43"],
+      "recipient": "120363425774136187@g.us",
+      "recipient_aliases": ["Laizys"]
+    }
+  },
+  {
+    "turn_index": 22,
+    "context_mode": "chain",
+    "source_jsonl": ".claude/projects/-workspace-group/0971472d-7497-4837-8fa9-a8d31339299d.jsonl",
+    "source_turn_index": 2,
+    "prior_turn_depth": 1,
+    "state_snapshot": "/tmp/phase3-state/seci-reconstructed-20260512/pre-turn21/taskflow.db",
+    "requires_state_snapshot": true
+  },
+  {
+    "turn_index": 23,
+    "context_mode": "chain",
+    "source_jsonl": ".claude/projects/-workspace-group/0971472d-7497-4837-8fa9-a8d31339299d.jsonl",
+    "source_turn_index": 3,
+    "prior_turn_depth": 2,
+    "state_snapshot": "/tmp/phase3-state/seci-reconstructed-20260512/pre-turn21/taskflow.db",
+    "target_state_snapshot": "/tmp/phase3-state/seci-reconstructed-20260512/pre-turn23/taskflow.db",
+    "requires_state_snapshot": true,
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": ["P6.7"],
+      "mutation_types": ["move", "update"],
+      "outbound_intent": "informational"
+    }
+  },
+  {
+    "turn_index": 24,
+    "context_mode": "fresh",
+    "state_snapshot": "/tmp/phase3-state/seci-reconstructed-20260512/pre-turn24/taskflow.db",
+    "requires_state_snapshot": true
+  },
+  {
+    "turn_index": 25,
+    "context_mode": "chain",
+    "source_jsonl": ".claude/projects/-workspace-group/0971472d-7497-4837-8fa9-a8d31339299d.jsonl",
+    "source_turn_index": 7,
+    "prior_turn_depth": 1,
+    "state_snapshot": "/tmp/phase3-state/seci-reconstructed-20260512/pre-turn24/taskflow.db",
+    "requires_state_snapshot": true
+  },
+  {
+    "turn_index": 26,
+    "context_mode": "fresh",
+    "state_snapshot": "/tmp/phase3-state/seci-reconstructed-20260512/pre-turn26/taskflow.db",
+    "requires_state_snapshot": true
+  },
+  {
+    "turn_index": 27,
+    "context_mode": "chain",
+    "source_jsonl": ".claude/projects/-workspace-group/0971472d-7497-4837-8fa9-a8d31339299d.jsonl",
+    "source_turn_index": 10,
+    "prior_turn_depth": 1,
+    "state_snapshot": "/tmp/phase3-state/seci-reconstructed-20260512/pre-turn26/taskflow.db",
+    "requires_state_snapshot": true
+  },
+  {
+    "turn_index": 28,
+    "context_mode": "fresh",
+    "v1_bug": {
+      "description": "weekday resolution: user said 'quinta-feira 11h' on Tue 2026-04-14; quinta-feira = 2026-04-16 (Thursday). v1 wrote scheduled_at: 2026-04-17 (Friday) and confirmed 'reagendada para quinta, 17/04'. User self-corrected 32 min later via 'Reunião reagendada para 16/04/2026 às 11:00' at 2026-04-14T11:36:29.528Z.",
+      "detected_by": "auditor_self_correction",
+      "corrected_at": "2026-04-14T11:36:29.528Z",
+      "expected_correction": "scheduled_at: 2026-04-16T11:00:00 (or any Thursday-resolving date for 'quinta-feira' on Tue 2026-04-14)"
+    }
+  },
+  {
+    "turn_index": 29,
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "forward",
+      "task_ids": ["M1", "M2"],
+      "allow_extra_task_ids": true,
+      "recipient": "120363426975449622@g.us",
+      "recipient_aliases": ["Ana Beatriz"]
+    }
+  }
+]

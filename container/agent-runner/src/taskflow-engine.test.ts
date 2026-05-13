@@ -1000,6 +1000,26 @@ describe('TaskflowEngine', () => {
       // to the current board.
       expect(engine.getTask('T43')).toBeNull();
     });
+
+    it('does not cluster orphan boards under a dangling parent_board_id', () => {
+      // Parallels the existing find_person_in_organization dangling-parent
+      // guard: two unrelated orphan boards pointing at the same phantom
+      // parent must not over-merge into a single org for task lookup either.
+      db.exec(
+        `INSERT INTO boards VALUES ('board-orphan-a', 'oa@g.us', 'orphan-a', 'standard', 0, 1, 'board-phantom', NULL, NULL);
+         INSERT INTO boards VALUES ('board-orphan-b', 'ob@g.us', 'orphan-b', 'standard', 0, 1, 'board-phantom', NULL, NULL);`,
+      );
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, column, requires_close_approval, created_at, updated_at)
+         VALUES ('TX', 'board-orphan-b', 'simple', 'On orphan-b only', 'next_action', 0, '${now}', '${now}')`,
+      );
+      const orphanEngine = new TaskflowEngine(db, 'board-orphan-a');
+      const r = orphanEngine.query({ query: 'find_task_in_organization', task_id: 'TX' });
+      expect(r.success).toBe(true);
+      // Must NOT return TX (lives on the other orphan sharing the phantom parent).
+      expect(r.data).toEqual([]);
+    });
   });
 
   describe('maskPhoneForDisplay', () => {

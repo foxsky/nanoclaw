@@ -1206,6 +1206,11 @@ export class TaskflowEngine {
     );
     try { this.db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_linked_parent ON tasks(board_id, linked_parent_board_id, linked_parent_task_id) WHERE linked_parent_board_id IS NOT NULL`); } catch {}
     try { this.db.exec(`CREATE INDEX IF NOT EXISTS idx_archive_linked_parent ON archive(board_id, linked_parent_board_id, linked_parent_task_id)`); } catch {}
+    // `find_task_in_organization` selects by `t.id` across an IN-list of
+    // org board_ids. The PK is `(board_id, id)`, so id-first lookup needs
+    // its own index — otherwise SQLite scans every row whose board_id is
+    // in the org, which amplifies on the cross-mount taskflow.db.
+    try { this.db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_id ON tasks(id)`); } catch {}
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS board_holidays (
@@ -1737,6 +1742,19 @@ export class TaskflowEngine {
       }
     }
     return [...visited];
+  }
+
+  /**
+   * Resolve the agent's org-scope board list + SQL placeholder string for
+   * the `IN (?...)` clause. Returns `null` when the org is empty so callers
+   * can short-circuit with `{ success: true, data: [] }`. Both
+   * `find_person_in_organization` and `find_task_in_organization` use this
+   * to keep the empty-org guard + placeholder-build pattern in one place.
+   */
+  private orgScopeOrNull(): { boardIds: string[]; placeholders: string } | null {
+    const boardIds = this.getOrgBoardIds();
+    if (boardIds.length === 0) return null;
+    return { boardIds, placeholders: boardIds.map(() => '?').join(',') };
   }
 
   /**
@@ -7292,11 +7310,8 @@ export class TaskflowEngine {
             return { success: false, error: 'search_text must contain at least one name' };
           }
 
-          const orgBoardIds = this.getOrgBoardIds();
-          if (orgBoardIds.length === 0) {
-            return { success: true, data: [] };
-          }
-          const boardPh = orgBoardIds.map(() => '?').join(',');
+          const scope = this.orgScopeOrNull();
+          if (!scope) return { success: true, data: [] };
           // Escape LIKE metacharacters in each term so a user typing "%" or
           // "_" as a name cannot enumerate the directory. `\` is the ESCAPE
           // char — note the triple-escape for the backslash in the replace.
@@ -7314,10 +7329,10 @@ export class TaskflowEngine {
                       b.owner_person_id
                  FROM board_people bp
                  JOIN boards b ON b.id = bp.board_id
-                WHERE bp.board_id IN (${boardPh}) AND (${likeClauses})
+                WHERE bp.board_id IN (${scope.placeholders}) AND (${likeClauses})
                 ORDER BY b.group_folder, bp.name`,
             )
-            .all(...orgBoardIds, ...likeBinds) as Array<{
+            .all(...scope.boardIds, ...likeBinds) as Array<{
               board_id: string;
               person_id: string;
               name: string;
@@ -7360,10 +7375,9 @@ export class TaskflowEngine {
           if (!params.task_id) {
             return { success: false, error: 'Missing required parameter: task_id' };
           }
-          const orgBoardIds = this.getOrgBoardIds();
-          if (orgBoardIds.length === 0) return { success: true, data: [] };
+          const scope = this.orgScopeOrNull();
+          if (!scope) return { success: true, data: [] };
           const rawId = params.task_id.toUpperCase();
-          const boardPh = orgBoardIds.map(() => '?').join(',');
           const rows = this.db
             .prepare(
               `SELECT t.id AS task_id, t.board_id, t.type, t.title, t.column,
@@ -7373,10 +7387,10 @@ export class TaskflowEngine {
                  FROM tasks t
                  JOIN boards b ON b.id = t.board_id
             LEFT JOIN board_people bp ON bp.board_id = t.board_id AND bp.person_id = t.assignee
-                WHERE t.id = ? AND t.board_id IN (${boardPh})
+                WHERE t.id = ? AND t.board_id IN (${scope.placeholders})
                 ORDER BY b.group_folder`,
             )
-            .all(rawId, ...orgBoardIds);
+            .all(rawId, ...scope.boardIds);
           return { success: true, data: rows };
         }
 

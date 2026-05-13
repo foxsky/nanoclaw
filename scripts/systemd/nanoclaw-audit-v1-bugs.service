@@ -1,0 +1,25 @@
+[Unit]
+Description=NanoClaw v1-bug auditor (daily)
+After=network.target nanoclaw.service
+# Doesn't Require=nanoclaw.service — the auditor opens taskflow.db
+# read-only, so it can run even if the host service is restarting.
+
+[Service]
+Type=oneshot
+User=nanoclaw
+Group=nanoclaw
+WorkingDirectory=/root/nanoclaw
+ExecStart=/root/nanoclaw/node_modules/.bin/tsx /root/nanoclaw/scripts/audit-v1-bugs-daily.ts
+StandardOutput=append:/root/nanoclaw/logs/audit-v1-bugs.log
+StandardError=append:/root/nanoclaw/logs/audit-v1-bugs.error.log
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/nanoclaw
+# Read-only DB access; refuse any privilege escalation by the script.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/root/nanoclaw/data/audit /root/nanoclaw/logs
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

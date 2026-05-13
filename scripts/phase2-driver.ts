@@ -276,6 +276,16 @@ function restoreTaskflowDb(snapshot: string): void {
   fs.rmSync(snapshot, { force: true });
 }
 
+function restoreTargetTaskflowDbIfRequested(): void {
+  const targetSnapshot = process.env.NANOCLAW_PHASE3_TARGET_STATE_SNAPSHOT;
+  if (!targetSnapshot) return;
+  if (!fs.existsSync(targetSnapshot)) {
+    throw new Error(`NANOCLAW_PHASE3_TARGET_STATE_SNAPSHOT does not exist: ${targetSnapshot}`);
+  }
+  fs.copyFileSync(targetSnapshot, taskflowDbPath(DATA_DIR));
+  console.log(`  target taskflow.db restored from ${targetSnapshot}`);
+}
+
 /** Resolve a chain of prior turns from the source JSONL up to the target.
  *  Returns the prior turns (oldest first) and the target turn from the
  *  re-extracted source list, plus the matching corpus entry (for v1 scoring). */
@@ -324,6 +334,8 @@ async function processChain(corpus: Corpus, targetCorpusIdx: number, depth: numb
       console.log(`  --- context turn ${i + 1}/${prior.length}: ${psender}: "${ptext.slice(0, 80)}"`);
       await driveContextTurn(session, ptext, psender, p.user_message, `${targetCorpusIdx}-pre${i}`);
     }
+
+    restoreTargetTaskflowDbIfRequested();
 
     // Now drive the target turn, capturing tool_use + outbound just for it.
     const captureFile = path.join(sessionDir(AGENT_GROUP_ID, session.id), '.tool-uses.jsonl');

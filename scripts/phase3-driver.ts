@@ -40,6 +40,7 @@ interface Args {
   phase2Out: string;
   sourceRoot: string;
   turn?: number;
+  turns?: number[];
   all: boolean;
   from?: number;
   to?: number;
@@ -69,6 +70,7 @@ function parseArgs(): Args {
     else if (key === '--phase2-out') args.phase2Out = process.argv[++i];
     else if (key === '--source-root') args.sourceRoot = process.argv[++i];
     else if (key === '--turn') args.turn = Number.parseInt(process.argv[++i], 10);
+    else if (key === '--turns') args.turns = process.argv[++i].split(',').map((value) => Number.parseInt(value, 10));
     else if (key === '--all') args.all = true;
     else if (key === '--from') args.from = Number.parseInt(process.argv[++i], 10);
     else if (key === '--to') args.to = Number.parseInt(process.argv[++i], 10);
@@ -81,6 +83,7 @@ function parseArgs(): Args {
 
 function selectedIndices(args: Args, corpus: Corpus): number[] {
   if (args.all) return corpus.turns.map((_, i) => i);
+  if (args.turns) return args.turns;
   if (args.from !== undefined || args.to !== undefined) {
     const from = args.from ?? 0;
     const to = args.to ?? corpus.turns.length - 1;
@@ -89,7 +92,7 @@ function selectedIndices(args: Args, corpus: Corpus): number[] {
     return out;
   }
   if (args.turn !== undefined) return [args.turn];
-  throw new Error('Must pass --turn N, --all, --from/--to, or --plan-only with one of those selectors.');
+  throw new Error('Must pass --turn N, --turns A,B, --all, --from/--to, or --plan-only with one of those selectors.');
 }
 
 function loadExisting(outPath: string): Phase3TurnResult[] {
@@ -112,6 +115,11 @@ function runPhase2Driver(metadata: Phase3TurnMetadata, args: Args): void {
     NANOCLAW_PHASE2_RAW_PROMPT: '1',
   };
   if (!env.NANOCLAW_TOOL_USES_PATH) env.NANOCLAW_TOOL_USES_PATH = '/workspace/.tool-uses.jsonl';
+  if (metadata.target_state_snapshot) {
+    env.NANOCLAW_PHASE3_TARGET_STATE_SNAPSHOT = metadata.target_state_snapshot;
+  } else {
+    delete env.NANOCLAW_PHASE3_TARGET_STATE_SNAPSHOT;
+  }
 
   fs.rmSync(PHASE2_DRIVER_OUT, { force: true });
   if (args.phase2Out !== PHASE2_DRIVER_OUT) fs.rmSync(args.phase2Out, { force: true });
@@ -143,9 +151,10 @@ function printPlan(rows: Phase3TurnMetadata[]): void {
   console.log('=== Phase 3 replay plan ===');
   for (const row of rows) {
     const state = row.state_snapshot ? `snapshot=${row.state_snapshot}` : 'snapshot=<none>';
+    const targetState = row.target_state_snapshot ? ` target_snapshot=${row.target_state_snapshot}` : '';
     const source = row.source_jsonl ? `source=${row.source_jsonl}#${row.source_turn_index ?? '?'}` : 'source=<none>';
     const depth = row.context_mode === 'chain' ? ` depth=${row.prior_turn_depth ?? 1}` : '';
-    console.log(`turn ${row.turn_index}: ${row.context_mode}${depth}; ${source}; ${state}`);
+    console.log(`turn ${row.turn_index}: ${row.context_mode}${depth}; ${source}; ${state}${targetState}`);
   }
 }
 

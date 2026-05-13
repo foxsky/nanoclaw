@@ -113,6 +113,20 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     expect(result.output).toContain('Do not ask the open-ended general-assistant question "Como posso ajudar?"');
   });
 
+  it('injects exact-ID and cross-board note-forward parity rules into migrated board prompts', () => {
+    const input = [
+      "**CRITICAL — NEVER display task details from memory.** When a user mentions a task ID (e.g. \"P1.9\", \"T41\", \"detalhes T3\"), you MUST call `taskflow_query({ query: 'task_details', task_id: '...' })` BEFORE showing any task information (title, assignee, column, dates, notes). NEVER generate task titles, descriptions, or status from memory or conversation history — always read from the database first. Hallucinated task details propagate through session resume and context summaries, causing persistent wrong information. This rule has NO exceptions.",
+      "**Cross-board task lookup (fallback).** When `task_details` returns `Task not found` for a task ID that may live on a sibling/parent board (e.g. the user mentions a `T###` you don't recognise on this board), call `taskflow_query({ query: 'find_task_in_organization', task_id: 'TXXX' })`. It scopes to this board's org tree (root + descendants, same scope as `find_person_in_organization`) and returns `[{ task_id, board_id, board_group_folder, type, title, column, assignee, assignee_name, due_date, parent_task_id, requires_close_approval, group_jid }]`. Use the result to show the task with a clear \"Quadro: <board_group_folder>\" label so the user knows it's a cross-board read. This is **read-only** — to mutate the task, the user must act from its owning board. Do NOT fall back to `mcp__sqlite__read_query` for cross-board task lookups.",
+    ].join('\n\n');
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('**Exact task-ID scope lock.**');
+    expect(result.output).toContain("api_query({ query: 'task_history', task_id: 'P6.7' })");
+    expect(result.output).toContain("api_move({ task_id: 'P6.7', action: 'reopen'");
+    expect(result.output).toContain('**Cross-board note-forward confirmation.**');
+    expect(result.output).toContain('confirmation is for the forward action');
+    expect(result.output).not.toContain('taskflow_query');
+  });
+
   it('adds bare activity phrase guidance near intent analysis', () => {
     const input =
       'The user\'s words are clues, not commands. "Me lembre de ligar pro João" is a reminder — the user expects to be notified, not to find an inbox item. "Anotar: comprar café" is a capture. "Tarefa para Giovanni: revisar relatório" is an assigned task. But always consider the full context — the same words can mean different things depending on the situation.';
@@ -483,5 +497,35 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
       // And explicit BOARD_ID placeholder must never appear (migration cleanup).
       expect(result.output).not.toContain('BOARD_ID');
     }
+  });
+
+  // The Phase-3 fallback prose for cross-board task lookup must survive
+  // substitution so the deployed CLAUDE.local.md teaches the agent to fall
+  // back to find_task_in_organization. If the migration starts dropping
+  // prose, the regenerated file becomes silently incomplete and the next
+  // paid Phase 3 run sees v2 stop at "Task not found".
+  it('preserves the cross-board task lookup fallback rule after substitution', () => {
+    const input = `**Cross-board task lookup (fallback).** When \`task_details\` returns \`Task not found\` for a task ID that may live on a sibling/parent board, call \`taskflow_query({ query: 'find_task_in_organization', task_id: 'TXXX' })\`. Do NOT fall back to \`mcp__sqlite__read_query\` for cross-board task lookups.`;
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('find_task_in_organization');
+    // taskflow_query → api_query rename must apply here too.
+    expect(result.output).toContain('api_query');
+    expect(result.output).not.toContain('taskflow_query');
+    // The "Cross-board task lookup" heading and surrounding prose stay.
+    expect(result.output).toContain('Cross-board task lookup');
+  });
+
+  it('preserves exact task-ID and cross-board note-forward rules after substitution', () => {
+    const input = [
+      "**Exact task-ID scope lock.** When the user names an exact task/subtask ID, keep that exact ID through the whole read/confirm/mutate flow. If you ask _\"Deseja reabrir e exigir aprovação para P6.7?\"_ and the user answers _\"sim\"_, execute exactly: `taskflow_move({ task_id: 'P6.7', action: 'reopen', sender_name: SENDER })` then `taskflow_update({ task_id: 'P6.7', updates: { requires_close_approval: true }, sender_name: SENDER })`.",
+      "**Cross-board note-forward confirmation.** If the user tried to add a note/update to an exact task ID and the user identifies the destination board/person, keep the pending note text and ask a concrete forwarding confirmation. If the next user message is a bare confirmation, call `send_message` to the registered destination name.",
+    ].join('\n\n');
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('Exact task-ID scope lock');
+    expect(result.output).toContain('Cross-board note-forward confirmation');
+    expect(result.output).toContain('api_move');
+    expect(result.output).toContain('api_update_task');
+    expect(result.output).not.toContain('taskflow_move');
+    expect(result.output).not.toContain('taskflow_update');
   });
 });

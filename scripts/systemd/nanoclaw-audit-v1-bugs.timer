@@ -1,0 +1,17 @@
+[Unit]
+Description=Run NanoClaw v1-bug auditor every morning at 06:00 local
+Documentation=https://github.com/foxsky/nanoclaw
+
+[Timer]
+# Daily at 06:00 in the host's local timezone. Aligns with the rest of
+# the morning operational rituals; doesn't compete with the v2 agent's
+# 07:00 standup task window.
+OnCalendar=*-*-* 06:00:00
+# If the host was off at 06:00, catch up on next boot.
+Persistent=true
+# Add up to 5 min of jitter so multi-host fleets don't stampede the DB.
+RandomizedDelaySec=300
+Unit=nanoclaw-audit-v1-bugs.service
+
+[Install]
+WantedBy=timers.target

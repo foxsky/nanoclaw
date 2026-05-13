@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { isWhatsAppJid } from '../src/phone.js';
+
 export type Phase3ContextMode = 'fresh' | 'chain';
 export type Phase3SemanticAction = 'ask' | 'read' | 'mutate' | 'forward' | 'no-op';
 export type Phase3ClassificationKind =
@@ -12,6 +14,7 @@ export type Phase3ClassificationKind =
   | 'destination_registration_gap'
   | 'documented_tool_surface_change'
   | 'missing_api_capability'
+  | 'v1_bug_flagged'
   | 'real_divergence'
   | 'read_only_extra';
 
@@ -28,9 +31,30 @@ export interface OutboundRow {
 export interface Phase3ExpectedBehavior {
   action?: Phase3SemanticAction;
   task_ids?: string[];
+  allow_extra_task_ids?: boolean;
   mutation_types?: string[];
   recipient?: string;
+  recipient_aliases?: string[];
   outbound_intent?: string;
+}
+
+// Annotation for corpus turns where v1's recorded behavior is itself a bug
+// (e.g. weekday-resolution error, magnetism mis-target). The Phase 3 parity
+// comparator treats v1 as ground truth, so without this flag a v2 that
+// CORRECTS the bug would be marked `real_divergence` and a v2 that REPEATS
+// the bug would be marked `match`. Surface these turns explicitly so they
+// require manual verification before cutover.
+export interface Phase3V1BugAnnotation {
+  description: string;
+  detected_by: 'auditor_self_correction' | 'manual_review';
+  // Wall-clock timestamp of the user's correction message (the second half
+  // of the same-task / same-user / <60min mutation pair). Used to cross-
+  // reference task_history and the source JSONL.
+  corrected_at?: string;
+  // Best-effort description of what v2 *should* produce. The comparator
+  // does not value-check task update payloads; this field is currently
+  // documentation-only.
+  expected_correction?: string;
 }
 
 export interface Phase3TurnMetadata {
@@ -40,8 +64,10 @@ export interface Phase3TurnMetadata {
   source_turn_index?: number;
   prior_turn_depth?: number;
   state_snapshot?: string;
+  target_state_snapshot?: string;
   requires_state_snapshot?: boolean;
   expected_behavior?: Phase3ExpectedBehavior;
+  v1_bug?: Phase3V1BugAnnotation;
 }
 
 export interface Phase3CorpusTurn {
@@ -53,8 +79,10 @@ export interface Phase3CorpusTurn {
   prior_turn_depth?: number;
   state_snapshot?: string;
   db_snapshot?: string;
+  target_state_snapshot?: string;
   requires_state_snapshot?: boolean;
   expected_behavior?: Phase3ExpectedBehavior;
+  v1_bug?: Phase3V1BugAnnotation;
 }
 
 export interface Phase3TurnResult {
@@ -85,6 +113,12 @@ export interface SemanticComparison {
     task_ids: boolean;
     mutation_types: boolean;
     recipient: boolean;
+    // True when the outbound intent classes are equivalent. Distinguishes
+    // "v2 grounded with a clarifying ask" from "v2 quietly failed to find
+    // what v1 found": both produce action=read with the same task_ids,
+    // but the intent class flips informational → asks_user / not_found,
+    // which must not be excused as a match.
+    outbound_intent: boolean;
   };
   classification: {
     kind: Phase3ClassificationKind;
@@ -169,8 +203,10 @@ export function inferPhase3Metadata(
     source_turn_index: turn.source_turn_index ?? turn.turn_index,
     prior_turn_depth: contextMode === 'chain' ? depth ?? 1 : undefined,
     state_snapshot: turn.state_snapshot ?? turn.db_snapshot,
+    target_state_snapshot: turn.target_state_snapshot,
     requires_state_snapshot: turn.requires_state_snapshot,
     expected_behavior: turn.expected_behavior,
+    v1_bug: turn.v1_bug,
   };
 }
 
@@ -293,16 +329,44 @@ function sameStringSet(a: string[], b: string[]): boolean {
   return aa.length === bb.length && aa.every((v, i) => v === bb[i]);
 }
 
+function stringSetContains(container: string[], expectedSubset: string[]): boolean {
+  const values = new Set(container);
+  return expectedSubset.every((value) => values.has(value));
+}
+
+// Outbound intent classes that flag "v2 produced the same shape but failed
+// the underlying request" — these must not be silently collapsed with v1's
+// informational reply (the canonical case: v1 read a sibling-board task
+// and showed details; v2 returned "Task not found" and asked the user to
+// clarify, so action=read and task_ids both look identical, but the
+// substance diverges). Other intent transitions remain match-eligible.
+const INTENT_SUBSTANTIVE_FAILURE = new Set(['asks_user', 'not_found_or_unclear']);
+
+function outboundIntentMatches(expected: string, actual: string): boolean {
+  if (expected === actual) return true;
+  if (expected === 'unspecified' || actual === 'unspecified') return true;
+  // v1 found and reported a task; v2 had to ask or returned not-found.
+  // This is the divergence we cannot let slip through as match.
+  if (expected === 'informational' && INTENT_SUBSTANTIVE_FAILURE.has(actual)) return false;
+  // The mirror direction (v1 asks_user, v2 informational) usually means
+  // v2 grounded with a read before answering — that's read_only_extra, not
+  // a regression. Leave it to the downstream classifier.
+  return true;
+}
+
 export function compareSemanticTurn(turn: Phase3TurnResult): SemanticComparison {
   const expected = turn.phase3?.metadata?.expected_behavior
     ? expectedToSummary(turn.phase3.metadata.expected_behavior)
     : summarizeSemanticBehavior(turn.v1.tools, [], turn.v1.final_response);
   const actual = summarizeSemanticBehavior(turn.v2.tools, turn.v2.outbound);
+  const recipientAliases = turn.phase3?.metadata?.expected_behavior?.recipient_aliases ?? [];
+  const allowExtraTaskIds = turn.phase3?.metadata?.expected_behavior?.allow_extra_task_ids === true;
   const matches = {
     action: expected.action === actual.action,
-    task_ids: expected.task_ids.length === 0 || sameStringSet(expected.task_ids, actual.task_ids),
+    task_ids: expected.task_ids.length === 0 || sameStringSet(expected.task_ids, actual.task_ids) || (allowExtraTaskIds && stringSetContains(actual.task_ids, expected.task_ids)),
     mutation_types: expected.mutation_types.length === 0 || sameStringSet(expected.mutation_types, actual.mutation_types),
-    recipient: expected.recipient === null || expected.recipient === actual.recipient,
+    recipient: expected.recipient === null || recipientMatches(expected.recipient, recipientAliases, actual.recipient),
+    outbound_intent: outboundIntentMatches(expected.outbound_intent, actual.outbound_intent),
   };
   return {
     turn_index: turn.turn_index,
@@ -321,6 +385,12 @@ function expectedToSummary(expected: Phase3ExpectedBehavior): SemanticSummary {
     recipient: expected.recipient ?? null,
     outbound_intent: expected.outbound_intent ?? 'unspecified',
   };
+}
+
+function recipientMatches(expected: string, aliases: string[], actual: string | null): boolean {
+  if (expected === actual) return true;
+  if (actual === null) return false;
+  return aliases.includes(actual);
 }
 
 // Heuristic: detect freshly-allocated sequence IDs that v2 hands out when no
@@ -348,14 +418,172 @@ function looksLikeFreshAllocation(
   });
 }
 
-// Detects v1 raw-JID forwards where v2 either (a) didn't forward at all, or
-// (b) forwarded to a local destination name because no agent_destinations
-// row matches the JID. Prod has these pre-wired; the Phase 3 test seed does
-// not — so this is honest test-env signal, not a v2 product bug.
-function looksLikeJidWithoutDestination(value: string | null): boolean {
-  if (!value) return false;
-  return /@(g\.us|s\.whatsapp\.net|broadcast)$/i.test(value);
+// `isWhatsAppJid` lives in src/phone.ts. Used here to detect v1 raw-JID
+// forwards where v2 either (a) didn't forward at all, or (b) forwarded to
+// a local destination name because no agent_destinations row matches the
+// JID. Prod has these pre-wired; the Phase 3 test seed does not.
+
+// Named predicates for the classification rules below. Each captures one
+// load-bearing condition; the rules table renders the priority order.
+
+// Match gate is an explicit conjunction (not Object.values(...).every) so
+// adding a future `matches.foo` field forces a compile-time decision about
+// whether it participates instead of silently widening it.
+function allDimensionsMatch(m: SemanticComparison['matches']): boolean {
+  return (
+    m.action && m.task_ids && m.mutation_types && m.recipient && m.outbound_intent
+  );
 }
+
+function snapshotMissing(turn: Phase3TurnResult): boolean {
+  return turn.phase3?.db_snapshot_status === 'missing';
+}
+
+// Corpus turn is explicitly annotated as a v1 bug (auditor self-correction
+// detector flagged this user/task within 60 min as bot-error+correction, or
+// a human review marked it). Surfaces above `match` so a v2 that reproduces
+// the v1 mistake doesn't silently pass and a v2 that corrects the mistake
+// doesn't get flagged as a regression.
+function isV1BugFlagged(turn: Phase3TurnResult): boolean {
+  return !!turn.phase3?.metadata?.v1_bug;
+}
+
+// Forward intent expected but v2 either didn't deliver or delivered to a
+// local destination — no agent_destinations row matches the v1 recipient
+// JID. Checked before the chain/source gate because a missing destination
+// is the same gap whether chain context is set up or not. Restricted to
+// no-mutation forward/no-op shapes so a v2 run that also mutated state
+// cannot hide behind this class.
+function isUnregisteredJidForward(
+  matches: SemanticComparison['matches'],
+  expected: SemanticSummary,
+  actual: SemanticSummary,
+): boolean {
+  return (
+    expected.action === 'forward' &&
+    isWhatsAppJid(expected.recipient) &&
+    !matches.recipient &&
+    actual.mutation_types.length === 0 &&
+    (actual.action === 'forward' || actual.action === 'no-op')
+  );
+}
+
+function isChainTurnWithoutSource(turn: Phase3TurnResult): boolean {
+  const md = turn.phase3?.metadata;
+  return md?.context_mode === 'chain' && !md.source_jsonl;
+}
+
+function usedRawSqlite(turn: Phase3TurnResult): boolean {
+  return turn.v1.tools.some((tool) => tool.name.startsWith('mcp__sqlite__'));
+}
+
+// Task-IDs are the only mismatch and they look like fresh allocator output
+// (T### / M### with larger v2 numbers) on an otherwise identical create/
+// admin flow. v1's historical IDs (T84/T85) drift to v2's next free ID
+// (T96) when cumulative state advances the counter. Requires the turn to
+// have actually allocated something (`create` in mutation_types) so a
+// reassign/update mismatch can't be papered over as "drift".
+function isFreshAllocationDrift(
+  matches: SemanticComparison['matches'],
+  expected: SemanticSummary,
+  actual: SemanticSummary,
+): boolean {
+  return (
+    matches.action && matches.mutation_types && matches.recipient && !matches.task_ids &&
+    actual.mutation_types.includes('create') &&
+    looksLikeFreshAllocation(expected.task_ids, actual.task_ids)
+  );
+}
+
+// v2 grounded with extra reads before answering. Suppressed when explicit
+// metadata says the expected action is something else (the metadata wins).
+function isReadOnlyExtra(turn: Phase3TurnResult): boolean {
+  const expectedAction = turn.phase3?.metadata?.expected_behavior?.action;
+  if (expectedAction !== undefined) return false;
+  if (turn.v2.tools.length <= turn.v1.tools.length) return false;
+  return !turn.v2.tools.some((tool) =>
+    MUTATION_TOOL_PATTERNS.some((pattern) => pattern.test(normalizedToolName(tool.name))),
+  );
+}
+
+// Each rule's predicate is checked in priority order; the first hit wins.
+// Ordering is load-bearing: snapshot_missing precedes everything else so
+// state-sensitive turns don't get classified as bugs; destination wiring
+// precedes missing_context so the same gap doesn't change class depending
+// on whether chain metadata happens to be set.
+type ClassificationRule = {
+  test: (
+    turn: Phase3TurnResult,
+    matches: SemanticComparison['matches'],
+    expected: SemanticSummary,
+    actual: SemanticSummary,
+  ) => boolean;
+  result: SemanticComparison['classification'];
+};
+
+const CLASSIFICATION_RULES: ClassificationRule[] = [
+  {
+    test: (t) => isV1BugFlagged(t),
+    result: {
+      kind: 'v1_bug_flagged',
+      note: 'Corpus turn annotated as a v1 bug (auditor self-correction or manual review). Manual verification required — v2 may correctly diverge from v1 here, or may reproduce the same mistake.',
+    },
+  },
+  {
+    test: (_t, m) => allDimensionsMatch(m),
+    result: {
+      kind: 'match',
+      note: 'Semantic action, task IDs, mutation type, recipient, and outbound intent match the expected behavior.',
+    },
+  },
+  {
+    test: (t) => snapshotMissing(t),
+    result: {
+      kind: 'state_snapshot_missing',
+      note: 'Per-turn DB snapshot is unavailable; state-sensitive parity cannot be concluded.',
+    },
+  },
+  {
+    test: (_t, m, e, a) => isUnregisteredJidForward(m, e, a),
+    result: {
+      kind: 'destination_registration_gap',
+      note: 'v1 forwarded to a raw JID; v2 has no agent_destinations entry for it. Register the destination (or rely on prod wiring) — not a v2 product bug.',
+    },
+  },
+  {
+    test: (t) => isChainTurnWithoutSource(t),
+    result: {
+      kind: 'missing_context',
+      note: 'Turn requires context-chain replay but no source JSONL is available.',
+    },
+  },
+  {
+    test: (t) => usedRawSqlite(t),
+    result: {
+      kind: 'documented_tool_surface_change',
+      note: 'v1 used raw sqlite; v2 sqlite remains blocked and must use first-class api_* equivalents.',
+    },
+  },
+  {
+    test: (_t, m, e, a) => isFreshAllocationDrift(m, e, a),
+    result: {
+      kind: 'state_allocation_drift',
+      note: 'Create+admin tool sequence matches; task IDs differ only because v2 allocated the next free sequence number. Provide a per-turn DB snapshot to compare exact IDs.',
+    },
+  },
+  {
+    test: (t) => isReadOnlyExtra(t),
+    result: {
+      kind: 'read_only_extra',
+      note: 'v2 performed additional read-side grounding without mutation.',
+    },
+  },
+];
+
+const REAL_DIVERGENCE: SemanticComparison['classification'] = {
+  kind: 'real_divergence',
+  note: 'Observed semantic behavior differs from expected behavior under available context/state.',
+};
 
 function classifySemanticComparison(
   turn: Phase3TurnResult,
@@ -363,58 +591,24 @@ function classifySemanticComparison(
   expected: SemanticSummary,
   actual: SemanticSummary,
 ): SemanticComparison['classification'] {
-  if (Object.values(matches).every(Boolean)) {
-    return { kind: 'match', note: 'Semantic action, task IDs, mutation type, and recipient match the expected behavior.' };
+  for (const rule of CLASSIFICATION_RULES) {
+    if (rule.test(turn, matches, expected, actual)) return rule.result;
   }
-  const status = turn.phase3?.db_snapshot_status;
-  if (status === 'missing') {
-    return { kind: 'state_snapshot_missing', note: 'Per-turn DB snapshot is unavailable; state-sensitive parity cannot be concluded.' };
-  }
-  // Forward intent expected but v2 either didn't deliver or delivered to a
-  // local destination — i.e. no agent_destinations row exists for the v1
-  // recipient JID. Treat as test-env / wiring gap, not a behavioral bug.
-  // Checked before the chain/source_jsonl gate because a missing destination
-  // is the same gap whether chain context is set up or not.
-  if (
-    expected.action === 'forward' &&
-    looksLikeJidWithoutDestination(expected.recipient) &&
-    expected.recipient !== actual.recipient
-  ) {
-    return {
-      kind: 'destination_registration_gap',
-      note: 'v1 forwarded to a raw JID; v2 has no agent_destinations entry for it. Register the destination (or rely on prod wiring) — not a v2 product bug.',
-    };
-  }
-  const metadata = turn.phase3?.metadata;
-  if (metadata?.context_mode === 'chain' && !metadata.source_jsonl) {
-    return { kind: 'missing_context', note: 'Turn requires context-chain replay but no source JSONL is available.' };
-  }
-  if (turn.v1.tools.some((tool) => tool.name.startsWith('mcp__sqlite__'))) {
-    return { kind: 'documented_tool_surface_change', note: 'v1 used raw sqlite; v2 sqlite remains blocked and must use first-class api_* equivalents.' };
-  }
-  // Task-IDs are the only mismatch and they look like fresh allocator output
-  // (T### or M### with larger v2 numbers) on an otherwise identical create/
-  // admin / reassign / update flow. v1's historical IDs (T84/T85) drift to
-  // v2's next free ID (T96) because cumulative state advances the counter.
-  if (
-    matches.action && matches.mutation_types && matches.recipient && !matches.task_ids &&
-    looksLikeFreshAllocation(expected.task_ids, actual.task_ids)
-  ) {
-    return {
-      kind: 'state_allocation_drift',
-      note: 'Tool sequence matches; task IDs differ only because v2 allocated the next free sequence number. Provide a per-turn DB snapshot to compare exact IDs.',
-    };
-  }
-  const expectedAction = turn.phase3?.metadata?.expected_behavior?.action;
-  if (expectedAction === undefined && turn.v2.tools.length > turn.v1.tools.length && !turn.v2.tools.some((tool) => MUTATION_TOOL_PATTERNS.some((pattern) => pattern.test(normalizedToolName(tool.name))))) {
-    return { kind: 'read_only_extra', note: 'v2 performed additional read-side grounding without mutation.' };
-  }
-  return { kind: 'real_divergence', note: 'Observed semantic behavior differs from expected behavior under available context/state.' };
+  return REAL_DIVERGENCE;
 }
 
 export function classifyRawSqliteTurn(turn: Phase3TurnResult): RawSqliteDecision | null {
   const sqliteTools = turn.v1.tools.map((tool) => tool.name).filter((name) => name.startsWith('mcp__sqlite__'));
   if (sqliteTools.length === 0) return null;
+  const semantic = compareSemanticTurn(turn);
+  if (semantic.classification.kind === 'match') {
+    return {
+      turn_index: turn.turn_index,
+      sqlite_tools: sqliteTools,
+      classification: 'documented_tool_surface_change',
+      recommendation: 'Covered by first-class api_* / MCP equivalent; keep raw sqlite blocked.',
+    };
+  }
   const text = turn.text.toLowerCase();
   if (text.includes('t43')) {
     return {

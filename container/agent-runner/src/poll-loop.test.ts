@@ -5,7 +5,15 @@ import { getPendingMessages, markCompleted } from './db/messages-in.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
 import { formatMessages, extractRouting } from './formatter.js';
 import { MockProvider } from './providers/mock.js';
-import { hasWakeTrigger, taskflowPureGreetingReply } from './poll-loop.js';
+import {
+  hasWakeTrigger,
+  taskflowCrossBoardNoteConfirmation,
+  taskflowCrossBoardNotePrompt,
+  taskflowPureGreetingReply,
+  taskflowReviewBypassConfirmation,
+  taskflowReviewBypassDiagnosticPrompt,
+  taskflowReviewBypassRepairPrompt,
+} from './poll-loop.js';
 
 beforeEach(() => {
   initTestSessionDb();
@@ -170,6 +178,69 @@ describe('TaskFlow pure greeting guard', () => {
     );
 
     expect(reply).toBeNull();
+  });
+});
+
+describe('TaskFlow deterministic confirmation guards', () => {
+  it('asks for exact review-bypass confirmation scoped to the subtask id', () => {
+    const prompt = taskflowReviewBypassDiagnosticPrompt(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'Porque as atividades do João P6.7 não passou pela revisão?' }) }],
+      true,
+    );
+
+    expect(prompt).toEqual({
+      taskId: 'P6.7',
+      text: 'P6.7 foi concluída sem passar pela revisão obrigatória. Deseja reabrir e exigir aprovação para P6.7?',
+    });
+  });
+
+  it('resolves bare confirmation to the exact review-bypass task id from recent outbound', () => {
+    const action = taskflowReviewBypassConfirmation(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'Sim' }) }],
+      [JSON.stringify({ text: 'P6.7 foi concluída sem passar pela revisão obrigatória. Deseja reabrir e exigir aprovação para P6.7?' })],
+      true,
+    );
+
+    expect(action).toEqual({ taskId: 'P6.7' });
+  });
+
+  it('resolves review-bypass repair prompts to the latest exact task id from context', () => {
+    const action = taskflowReviewBypassRepairPrompt(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'A tarefa foi concluida não foi para revisão?' }) }],
+      [JSON.stringify({ text: '✅ *P6.7* reaberta e aprovação obrigatória ativada' })],
+      true,
+    );
+
+    expect(action).toEqual({ taskId: 'P6.7' });
+  });
+
+  it('asks for cross-board note forwarding using the prior note command and destination clarification', () => {
+    const prompt = taskflowCrossBoardNotePrompt(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'esta tarefa é do quadro da Laizys SEAF-SECTI' }) }],
+      [JSON.stringify({ sender: 'Carlos Giovanni', text: 't43 nota Recebi a tarefa no meu quadro' })],
+      true,
+    );
+
+    expect(prompt).toEqual({
+      taskId: 'T43',
+      noteText: 'Recebi a tarefa no meu quadro',
+      destinationName: 'Laizys',
+      text: 'Entendido. Posso encaminhar a nota "Recebi a tarefa no meu quadro" de T43 para o quadro da Laizys?',
+    });
+  });
+
+  it('resolves bare confirmation to the pending cross-board note forward', () => {
+    const action = taskflowCrossBoardNoteConfirmation(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'sim' }) }],
+      [JSON.stringify({ text: 'Entendido. Posso encaminhar a nota "Recebi a tarefa no meu quadro" de T43 para o quadro da Laizys?' })],
+      true,
+    );
+
+    expect(action).toEqual({
+      taskId: 'T43',
+      noteText: 'Recebi a tarefa no meu quadro',
+      destinationName: 'Laizys',
+    });
   });
 });
 

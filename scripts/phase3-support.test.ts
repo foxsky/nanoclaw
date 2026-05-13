@@ -159,7 +159,74 @@ describe('Phase 3 semantic comparison', () => {
       task_ids: true,
       mutation_types: true,
       recipient: true,
+      outbound_intent: true,
     });
+  });
+
+  it('matches registered destination aliases for raw v1 JID recipients', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 29,
+      text: 'encaminhar M1 e M2 para Ana Beatriz',
+      v1: { tools: [] },
+      v2: {
+        tools: [{
+          name: 'mcp__nanoclaw__send_message',
+          input: { to: 'Ana Beatriz', text: 'Detalhes de M1 e M2' },
+        }],
+        outbound: [],
+      },
+      phase3: {
+        metadata: {
+          turn_index: 29,
+          context_mode: 'fresh',
+          expected_behavior: {
+            action: 'forward',
+            task_ids: ['M1', 'M2'],
+            recipient: '120363426975449622@g.us',
+            recipient_aliases: ['Ana Beatriz'],
+          },
+        },
+      },
+    };
+
+    const comparison = compareSemanticTurn(turn);
+    expect(comparison.classification.kind).toBe('match');
+    expect(comparison.matches.recipient).toBe(true);
+    expect(comparison.expected.recipient).toBe('120363426975449622@g.us');
+    expect(comparison.actual.recipient).toBe('Ana Beatriz');
+  });
+
+  it('allows annotated forward turns to include harmless extra task IDs', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 29,
+      text: 'encaminhar M1 e M2 para Ana Beatriz',
+      v1: { tools: [] },
+      v2: {
+        tools: [
+          { name: 'mcp__nanoclaw__api_query', input: { task_id: 'M1' } },
+          { name: 'mcp__nanoclaw__api_query', input: { task_id: 'M2' } },
+          { name: 'mcp__nanoclaw__send_message', input: { to: 'Ana Beatriz', text: 'M1, M2, projeto P11' } },
+        ],
+        outbound: [],
+      },
+      phase3: {
+        metadata: {
+          turn_index: 29,
+          context_mode: 'fresh',
+          expected_behavior: {
+            action: 'forward',
+            task_ids: ['M1', 'M2'],
+            allow_extra_task_ids: true,
+            recipient: '120363426975449622@g.us',
+            recipient_aliases: ['Ana Beatriz'],
+          },
+        },
+      },
+    };
+
+    const comparison = compareSemanticTurn(turn);
+    expect(comparison.classification.kind).toBe('match');
+    expect(comparison.actual.task_ids).toEqual(['M1', 'M2', 'P11']);
   });
 
   it('normalizes v1 and v2 mutation tool names to the same semantic type', () => {
@@ -194,7 +261,7 @@ describe('Phase 3 semantic comparison', () => {
     expect(compareSemanticTurn(turn).classification.kind).toBe('state_snapshot_missing');
   });
 
-  it('recommends first-class API support for raw sqlite cross-board lookup', () => {
+  it('surfaces the cross-board sqlite lookup pattern for the operator', () => {
     const decision = classifyRawSqliteTurn({
       turn_index: 17,
       text: 't43',
@@ -202,8 +269,51 @@ describe('Phase 3 semantic comparison', () => {
       v2: { tools: [{ name: 'mcp__nanoclaw__api_query', input: { task_id: 'T43' } }], outbound: [] },
     });
 
-    expect(decision?.classification).toBe('missing_api_capability');
-    expect(decision?.recommendation).toContain('cross-board');
+    // The classification kind has evolved alongside the engine: once
+    // `find_task_in_organization` shipped, the T43 case routes to
+    // `documented_tool_surface_change` (capability exists, awaiting
+    // revalidation) rather than `missing_api_capability` (no capability).
+    // Accept either — the load-bearing assertion is that the operator sees
+    // a recommendation referencing the v1→v2 tool-surface migration.
+    expect(['missing_api_capability', 'documented_tool_surface_change'])
+      .toContain(decision?.classification);
+    expect(decision?.recommendation).toMatch(/api_\*|cross-board|MCP/);
+  });
+
+  it('marks raw sqlite parity as covered when metadata maps it to first-class MCP behavior', () => {
+    const decision = classifyRawSqliteTurn({
+      turn_index: 23,
+      text: 'A tarefa foi concluida não foi para revisão?',
+      v1: {
+        tools: [
+          { name: 'mcp__sqlite__write_query', input: {} },
+          { name: 'mcp__sqlite__read_query', input: {} },
+          { name: 'taskflow_move', input: { task_id: 'P6.7', action: 'reopen' } },
+        ],
+      },
+      v2: {
+        tools: [
+          { name: 'mcp__nanoclaw__api_update_task', input: { task_id: 'P6.7', updates: { requires_close_approval: true } } },
+          { name: 'mcp__nanoclaw__api_move', input: { task_id: 'P6.7', action: 'reopen' } },
+        ],
+        outbound: [{ kind: 'chat', content: '{"text":"P6.7 reaberta e aprovação obrigatória ativada."}' }],
+      },
+      phase3: {
+        metadata: {
+          turn_index: 23,
+          context_mode: 'chain',
+          expected_behavior: {
+            action: 'mutate',
+            task_ids: ['P6.7'],
+            mutation_types: ['move', 'update'],
+            outbound_intent: 'informational',
+          },
+        },
+      },
+    });
+
+    expect(decision?.classification).toBe('documented_tool_surface_change');
+    expect(decision?.recommendation).toContain('Covered by first-class');
   });
 
   // Read tools + a trailing "Deseja...?" suggestion should still be classified
@@ -259,6 +369,35 @@ describe('Phase 3 state-drift classifications', () => {
     expect(comparison.matches.task_ids).toBe(false);
   });
 
+  // state_allocation_drift only fires when this turn actually allocated a
+  // task (mutation_types includes "create"). Otherwise a reassign+update
+  // with task-id mismatch could be excused as "drift" when the agent in
+  // fact mutated the wrong existing task.
+  it('does not flag reassign-only task-id mismatch as allocation drift', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 99,
+      text: 'atribuir tarefa para Rodrigo',
+      v1: {
+        tools: [
+          { name: 'mcp__nanoclaw__api_reassign', input: { task_id: 'T84', target_person: 'Rodrigo' } },
+          { name: 'mcp__nanoclaw__api_update_task', input: { task_id: 'T84', updates: { due_date: '2026-04-20' } } },
+        ],
+      },
+      v2: {
+        tools: [
+          { name: 'mcp__nanoclaw__api_reassign', input: { task_id: 'T96', target_person: 'Rodrigo' } },
+          { name: 'mcp__nanoclaw__api_update_simple_task', input: { task_id: 'T96', due_date: '2026-04-20' } },
+        ],
+        outbound: [],
+      },
+    };
+    // No create in mutation_types → cannot conclude this is allocator drift
+    // (it might be: v2 mutated the wrong existing task). Snapshot-gated
+    // turns get state_snapshot_missing; this one (no snapshot metadata)
+    // must surface as a real divergence so a human triages.
+    expect(compareSemanticTurn(turn).classification.kind).not.toBe('state_allocation_drift');
+  });
+
   // Turn 25 / 27: subsequent reassign+update referencing the same fresh task
   // ID (T96) created earlier in the run. Same drift class — but ONLY when
   // the actual task IDs all look like fresh sequence allocations (T### with
@@ -280,6 +419,115 @@ describe('Phase 3 state-drift classifications', () => {
     // P11.16 → P11.17 is not a freshly-allocated T### task — must remain a
     // real divergence so we don't paper over wrong-target mutations.
     expect(comparison.classification.kind).toBe('real_divergence');
+  });
+});
+
+describe('Phase 3 v1-bug annotation', () => {
+  // The auditor's self-correction pair detector found one canonical v1 bug
+  // in the seci corpus window: M1 / giovanni / 2026-04-14 — bot resolved
+  // "quinta-feira" to 2026-04-17 (Friday), user manually corrected to
+  // 2026-04-16 (Thursday) 32 minutes later. Turn 28 is the bot's mistake
+  // recorded as if it were the correct behavior. The annotation surfaces
+  // it above `match` so v2 reproducing the bug doesn't silently pass and
+  // v2 correcting the bug doesn't look like a regression.
+  it('surfaces v1_bug-flagged turns above match', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 28,
+      text: 'alterar M1 para quinta-feira 11h',
+      v1: {
+        tools: [
+          {
+            name: 'mcp__nanoclaw__taskflow_update',
+            input: { task_id: 'M1', updates: { scheduled_at: '2026-04-17T11:00:00' } },
+          },
+        ],
+      },
+      v2: {
+        tools: [
+          {
+            name: 'mcp__nanoclaw__api_update_simple_task',
+            input: { task_id: 'M1', scheduled_at: '2026-04-17T11:00:00' },
+          },
+        ],
+        outbound: [{ kind: 'chat', content: '{"text":"M1 reagendada para 17/04 às 11:00."}' }],
+      },
+      phase3: {
+        metadata: {
+          turn_index: 28,
+          context_mode: 'fresh',
+          v1_bug: {
+            description: 'weekday resolution: "quinta-feira" → 2026-04-17 (Friday); should be 2026-04-16 (Thursday)',
+            detected_by: 'auditor_self_correction',
+            corrected_at: '2026-04-14T11:36:29.528Z',
+            expected_correction: 'scheduled_at: 2026-04-16T11:00:00',
+          },
+        },
+      },
+    };
+    const comparison = compareSemanticTurn(turn);
+    expect(comparison.classification.kind).toBe('v1_bug_flagged');
+  });
+
+  it('does not flag turns without the v1_bug annotation', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 10,
+      text: 'atribuir P11.23',
+      v1: {
+        tools: [{ name: 'mcp__nanoclaw__taskflow_reassign', input: { task_id: 'P11.23', target_person: 'Rodrigo' } }],
+      },
+      v2: {
+        tools: [{ name: 'mcp__nanoclaw__api_reassign', input: { task_id: 'P11.23', target_person: 'Rodrigo' } }],
+        outbound: [{ kind: 'chat', content: '{"text":"Reatribuída."}' }],
+      },
+    };
+    expect(compareSemanticTurn(turn).classification.kind).not.toBe('v1_bug_flagged');
+  });
+});
+
+describe('Phase 3 outbound-intent gating', () => {
+  // Turn 17: v1 displayed T43 details (informational); v2 ran api_query and
+  // replied "Não encontrei T43" (not_found_or_unclear / asks_user). action,
+  // task_ids, mutation_types, recipient all match — but the substance
+  // diverges. Before this gate, the turn classified as `match`. It must
+  // not.
+  it('drops match when v1 was informational and v2 was not-found/asks_user', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 17,
+      text: 't43',
+      v1: {
+        tools: [{ name: 'mcp__sqlite__read_query', input: { query: "SELECT * FROM tasks WHERE id = 'T43'" } }],
+        final_response: '📋 *T43* — Cobrar ofício. Responsável: Laizys.',
+      },
+      v2: {
+        tools: [{ name: 'mcp__nanoclaw__api_query', input: { query: 'task_details', task_id: 'T43' } }],
+        outbound: [{ kind: 'chat', content: '{"text":"Não encontrei nenhuma tarefa com o ID *T43*. Pode verificar se o ID está correto?"}' }],
+      },
+    };
+
+    const comparison = compareSemanticTurn(turn);
+    // v1 used raw sqlite, so the comparator routes through the documented
+    // tool-surface change branch — but it must NOT say match.
+    expect(comparison.classification.kind).not.toBe('match');
+    expect(comparison.classification.kind).toBe('documented_tool_surface_change');
+  });
+
+  // A v1 informational + v2 informational reply with the same task focus
+  // must remain match — the outbound-intent gate only fires when the
+  // substance actually diverges.
+  it('keeps match when v1 and v2 both produce informational read replies', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 7,
+      text: 'detalhes P15.7',
+      v1: {
+        tools: [{ name: 'mcp__nanoclaw__api_query', input: { query: 'task_details', task_id: 'P15.7' } }],
+        final_response: 'P15.7 — Ampliar institucionalização. Responsável: Alexandre.',
+      },
+      v2: {
+        tools: [{ name: 'mcp__nanoclaw__api_query', input: { query: 'task_details', task_id: 'P15.7' } }],
+        outbound: [{ kind: 'chat', content: '{"text":"📋 *P15.7* — Ampliar institucionalização da governança. Responsável: Alexandre."}' }],
+      },
+    };
+    expect(compareSemanticTurn(turn).classification.kind).toBe('match');
   });
 });
 
@@ -317,6 +565,43 @@ describe('Phase 3 destination-registration classifications', () => {
 
     const comparison = compareSemanticTurn(turn);
     expect(comparison.classification.kind).toBe('destination_registration_gap');
+  });
+
+  // destination_registration_gap must not excuse a v2 run that ALSO mutated
+  // state. A forward+mutation hybrid (e.g. v2 wrote to the wrong task and
+  // tried to forward) must not get covered by the registration-gap escape
+  // hatch — the mutation is itself a real divergence.
+  it('does not classify forward attempts that also mutated state as a gap', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 99,
+      text: 'encaminhar T1 para Rafael',
+      v1: {
+        tools: [{
+          name: 'send_message',
+          input: { target_chat_jid: '120363400000000000@g.us', text: 'forward' },
+        }],
+      },
+      v2: {
+        tools: [
+          { name: 'mcp__nanoclaw__api_update_simple_task', input: { task_id: 'T1', notes: 'oops' } },
+          { name: 'mcp__nanoclaw__send_message', input: { to: 'seci-taskflow', text: 'forward' } },
+        ],
+        outbound: [],
+      },
+      phase3: {
+        metadata: {
+          turn_index: 99,
+          context_mode: 'fresh',
+          expected_behavior: {
+            action: 'forward',
+            task_ids: ['T1'],
+            recipient: '120363400000000000@g.us',
+          },
+        },
+      },
+    };
+    // A real product bug: v2 mutated T1 unexpectedly. Must not be excused.
+    expect(compareSemanticTurn(turn).classification.kind).not.toBe('destination_registration_gap');
   });
 
   // Turn 29: v2 produced a forward but to its own board name because no

@@ -144,6 +144,41 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
     );
   }
 
+  if (!output.includes('**Exact task-ID scope lock.**')) {
+    output = output.replace(
+      /\*\*CRITICAL — NEVER display task details from memory\.\*\* When a user mentions a task ID \(e\.g\. "P1\.9", "T41", "detalhes T3"\), you MUST call `api_query\(\{ query: 'task_details', task_id: '\.\.\.' \}\)` BEFORE showing any task information \(title, assignee, column, dates, notes\)\. NEVER generate task titles, descriptions, or status from memory or conversation history — always read from the database first\. Hallucinated task details propagate through session resume and context summaries, causing persistent wrong information\. This rule has NO exceptions\./,
+      (match) =>
+        [
+          match,
+          '',
+          '**Exact task-ID scope lock.** When the user names an exact task/subtask ID, keep that exact ID through the whole read/confirm/mutate flow. `P6.7` means `P6.7`, not parent project `P6` and not sibling subtasks under `P6`. For review-bypass diagnostics like _"por que P6.7 não passou pela revisão?"_, read `api_query({ query: \'task_history\', task_id: \'P6.7\' })` and `api_query({ query: \'task_details\', task_id: \'P6.7\' })`. If you ask _"Deseja reabrir e exigir aprovação para P6.7?"_ and the user answers _"sim"_, execute exactly: `api_move({ task_id: \'P6.7\', action: \'reopen\', sender_name: SENDER })` then `api_update_task({ task_id: \'P6.7\', updates: { requires_close_approval: true }, sender_name: SENDER })`. Do NOT apply approval-policy changes to other active `P6.*` tasks unless the user explicitly says "todas", "as atividades", or names those IDs.',
+        ].join('\n'),
+    );
+  }
+
+  if (!output.includes('**Cross-board note-forward confirmation.**')) {
+    const before = output;
+    output = output.replace(
+      /\*\*Cross-board task lookup \(fallback\)\.\*\* When `task_details` returns `Task not found` for a task ID that may live on a sibling\/parent board \(e\.g\. the user mentions a `T###` you don't recognise on this board\), call `api_query\(\{ query: 'find_task_in_organization', task_id: 'TXXX' \}\)`\. It scopes to this board's org tree \(root \+ descendants, same scope as `find_person_in_organization`\) and returns `\[\{ task_id, board_id, board_group_folder, type, title, column, assignee, assignee_name, due_date, parent_task_id, requires_close_approval, group_jid \}\]`\. Use the result to show the task with a clear "Quadro: <board_group_folder>" label so the user knows it's a cross-board read\. This is \*\*read-only\*\* — to mutate the task, the user must act from its owning board\. Do NOT fall back to `mcp__sqlite__read_query` for cross-board task lookups\./,
+      (match) =>
+        [
+          match,
+          '',
+          '**Cross-board note-forward confirmation.** If the user tried to add a note/update to an exact task ID, `task_details`/`find_task_in_organization` shows it belongs to a sibling board, and the user identifies the destination board/person (e.g. _"esta tarefa é do quadro da Laizys"_), keep the pending note text and ask a concrete forwarding confirmation: _"Posso encaminhar a nota \'<texto>\' para o quadro da Laizys?"_. If the next user message is a bare confirmation ("sim", "pode", "confirma"), call `send_message` to the registered destination name for that board/person with the note text and task title. Do NOT answer with "aguardando confirmação do quadro"; the confirmation is for the forward action, not for validating the board identity.',
+        ].join('\n'),
+    );
+    if (output === before) {
+      output = output.replace(
+        /(\*\*Exact task-ID scope lock\.\*\* [^\n]+)/,
+        [
+          '$1',
+          '',
+          '**Cross-board note-forward confirmation.** If the user tried to add a note/update to an exact task ID, `task_details`/`find_task_in_organization` shows it belongs to a sibling board, and the user identifies the destination board/person (e.g. _"esta tarefa é do quadro da Laizys"_), keep the pending note text and ask a concrete forwarding confirmation: _"Posso encaminhar a nota \'<texto>\' para o quadro da Laizys?"_. If the next user message is a bare confirmation ("sim", "pode", "confirma"), call `send_message` to the registered destination name for that board/person with the note text and task title. Do NOT answer with "aguardando confirmação do quadro"; the confirmation is for the forward action, not for validating the board identity.',
+        ].join('\n'),
+      );
+    }
+  }
+
   output = output.replace(
     /(^|\n)## Welcome Check\n\nOn the FIRST interaction in a new session, check if a welcome message has been sent:\n1\. Query: `SELECT welcome_sent FROM board_runtime_config WHERE board_id = '[^']+'`\n2\. If `welcome_sent = 0`: send a brief welcome, then `UPDATE board_runtime_config SET welcome_sent = 1 WHERE board_id = '[^']+'`\n/g,
     '$1',

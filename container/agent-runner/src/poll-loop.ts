@@ -1,7 +1,7 @@
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
 import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
-import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
+import { getInboundDb, getOutboundDb, getTaskflowDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
 import { clearCurrentInReplyTo, setCurrentInReplyTo } from './current-batch.js';
 import {
@@ -13,7 +13,9 @@ import {
   stripInternalTags,
   type RoutingContext,
 } from './formatter.js';
+import { appendToolEvents, type ToolEvent } from './providers/claude-tool-capture.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
+import { TaskflowEngine } from './taskflow-engine.js';
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
@@ -47,6 +49,136 @@ export function taskflowPureGreetingReply(
   return `${greeting} Aqui só cuido de gestão de tarefas. Use \`ajuda\` ou \`quadro\` para começar.`;
 }
 
+interface TaskflowReviewBypassPrompt {
+  taskId: string;
+  text: string;
+}
+
+interface TaskflowReviewBypassConfirmation {
+  taskId: string;
+}
+
+interface TaskflowReviewBypassRepair {
+  taskId: string;
+}
+
+interface TaskflowCrossBoardNotePrompt {
+  taskId: string;
+  noteText: string;
+  destinationName: string;
+  text: string;
+}
+
+interface TaskflowCrossBoardNoteConfirmation {
+  taskId: string;
+  noteText: string;
+  destinationName: string;
+}
+
+const BARE_CONFIRMATION_RE = /^(sim|s|pode|confirmo|confirma|ok|perfeito)[.!?\s]*$/i;
+const TASK_ID_RE = /\b((?:P|T|M|R)\d+(?:\.\d+)?)\b/i;
+
+export function taskflowReviewBypassDiagnosticPrompt(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowReviewBypassPrompt | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  const taskId = extractTaskId(message.text);
+  if (!taskId || !taskId.includes('.')) return null;
+  if (!/\b(porque|por que|pq)\b/i.test(message.text)) return null;
+  if (!/\b(revis[aã]o|aprova[cç][aã]o)\b/i.test(message.text)) return null;
+  if (!/\b(n[aã]o passou|passou|exigir|obrigat[oó]ria)\b/i.test(message.text)) return null;
+
+  return {
+    taskId,
+    text: `${taskId} foi concluída sem passar pela revisão obrigatória. Deseja reabrir e exigir aprovação para ${taskId}?`,
+  };
+}
+
+export function taskflowReviewBypassConfirmation(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  recentOutboundContents: string[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowReviewBypassConfirmation | null {
+  if (!taskflowEnabled || !isSingleBareConfirmation(messages)) return null;
+  for (const content of recentOutboundContents) {
+    const text = outboundText(content);
+    const match = text.match(/exigir aprova[cç][aã]o para ((?:P|T|M|R)\d+(?:\.\d+)?)/i);
+    if (match?.[1]) return { taskId: match[1].toUpperCase() };
+  }
+  return null;
+}
+
+export function taskflowReviewBypassRepairPrompt(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  recentContents: string[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowReviewBypassRepair | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  if (!/\btarefa\b/i.test(message.text)) return null;
+  if (!/\bconclu[ií]d[ao]?\b/i.test(message.text)) return null;
+  if (!/\bn[aã]o\b.*\brevis[aã]o\b/i.test(message.text)) return null;
+
+  const taskId = extractTaskId(message.text) ?? latestTaskIdFromContents(recentContents);
+  return taskId ? { taskId } : null;
+}
+
+export function taskflowCrossBoardNotePrompt(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  recentInboundContents: string[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowCrossBoardNotePrompt | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const current = parseSingleChat(messages[0]);
+  if (!current) return null;
+  const destMatch = current.text.match(/\bquadro da ([A-ZÁÀÂÃÉÊÍÓÔÕÚÇ][\p{L}\p{M}' -]{1,40})/iu);
+  if (!destMatch?.[1]) return null;
+  const destinationName = cleanupDestinationName(destMatch[1]);
+  if (!destinationName) return null;
+
+  for (const content of recentInboundContents) {
+    const previous = parseJsonContent(content);
+    const text = typeof previous.text === 'string' ? previous.text.trim() : '';
+    const note = text.match(/\b((?:P|T|M|R)\d+(?:\.\d+)?)\s+nota\s+(.+)/i);
+    if (!note?.[1] || !note?.[2]) continue;
+    const taskId = note[1].toUpperCase();
+    const noteText = note[2].trim();
+    return {
+      taskId,
+      noteText,
+      destinationName,
+      text: `Entendido. Posso encaminhar a nota "${noteText}" de ${taskId} para o quadro da ${destinationName}?`,
+    };
+  }
+
+  return null;
+}
+
+export function taskflowCrossBoardNoteConfirmation(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  recentOutboundContents: string[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowCrossBoardNoteConfirmation | null {
+  if (!taskflowEnabled || !isSingleBareConfirmation(messages)) return null;
+  for (const content of recentOutboundContents) {
+    const text = outboundText(content);
+    const match = text.match(/encaminhar a nota ["“](.+?)["”](?:\s+de\s+((?:P|T|M|R)\d+(?:\.\d+)?))?\s+para o quadro da ([^?]+)\?/i);
+    if (!match?.[1] || !match?.[3]) continue;
+    const taskId = match[2]?.toUpperCase() ?? extractTaskId(text);
+    if (!taskId) continue;
+    return {
+      taskId,
+      noteText: match[1].trim(),
+      destinationName: cleanupDestinationName(match[3]),
+    };
+  }
+  return null;
+}
+
 function parseJsonContent(content: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(content);
@@ -54,6 +186,232 @@ function parseJsonContent(content: string): Record<string, unknown> {
   } catch {
     return { text: content };
   }
+}
+
+function parseSingleChat(message: Pick<MessageInRow, 'kind' | 'content'>): { sender: string; text: string } | null {
+  if (message.kind !== 'chat' && message.kind !== 'chat-sdk') return null;
+  const content = parseJsonContent(message.content);
+  const text = typeof content.text === 'string' ? content.text.trim() : '';
+  if (!text) return null;
+  const sender = typeof content.sender === 'string' ? content.sender.trim() : '';
+  return { sender, text };
+}
+
+function extractTaskId(text: string): string | null {
+  return text.match(TASK_ID_RE)?.[1]?.toUpperCase() ?? null;
+}
+
+function latestTaskIdFromContents(contents: string[]): string | null {
+  for (const content of contents) {
+    const taskId = extractTaskId(outboundText(content));
+    if (taskId) return taskId;
+    const parsed = parseJsonContent(content);
+    if (typeof parsed.text === 'string') {
+      const parsedId = extractTaskId(parsed.text);
+      if (parsedId) return parsedId;
+    }
+  }
+  return null;
+}
+
+function isSingleBareConfirmation(messages: Pick<MessageInRow, 'kind' | 'content'>[]): boolean {
+  if (messages.length !== 1) return false;
+  const message = parseSingleChat(messages[0]);
+  return !!message && BARE_CONFIRMATION_RE.test(message.text);
+}
+
+function cleanupDestinationName(raw: string): string {
+  return raw
+    .replace(/\b(?:SEAF|SECTI|SEC|SECI|TASKFLOW|QUADRO)\b.*$/i, '')
+    .replace(/[.?!]+$/g, '')
+    .trim();
+}
+
+function outboundText(content: string): string {
+  const parsed = parseJsonContent(content);
+  return typeof parsed.text === 'string' ? parsed.text : content;
+}
+
+function recentOutboundContents(limit = 10): string[] {
+  try {
+    const rows = getOutboundDb().prepare(
+      `SELECT content FROM messages_out
+       WHERE kind IN ('chat', 'chat-sdk')
+       ORDER BY COALESCE(seq, rowid) DESC
+       LIMIT ?`,
+    ).all(limit) as Array<{ content: string }>;
+    return rows.map((row) => row.content);
+  } catch (err) {
+    log(`recentOutboundContents error: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
+}
+
+function recentInboundContents(limit = 10): string[] {
+  try {
+    const rows = getInboundDb().prepare(
+      `SELECT content FROM messages_in
+       WHERE kind IN ('chat', 'chat-sdk')
+       ORDER BY COALESCE(seq, rowid) DESC
+       LIMIT ?`,
+    ).all(limit) as Array<{ content: string }>;
+    return rows.map((row) => row.content);
+  } catch (err) {
+    log(`recentInboundContents error: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
+}
+
+function appendSyntheticToolCall(name: string, input: unknown, output: unknown, isError = false): void {
+  const capturePath = process.env.NANOCLAW_TOOL_USES_PATH;
+  if (!capturePath) return;
+  const id = `det-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const events: ToolEvent[] = [
+    { kind: 'tool_use', id, name, input },
+    { kind: 'tool_result', id, output, is_error: isError },
+  ];
+  appendToolEvents(capturePath, events);
+}
+
+function senderName(messages: Pick<MessageInRow, 'kind' | 'content'>[]): string {
+  const first = messages.map(parseSingleChat).find((msg): msg is { sender: string; text: string } => !!msg);
+  return first?.sender || 'usuário';
+}
+
+function writeReply(routing: RoutingContext, text: string): void {
+  writeMessageOut({
+    id: generateId(),
+    in_reply_to: routing.inReplyTo,
+    kind: 'chat',
+    platform_id: routing.platformId,
+    channel_type: routing.channelType,
+    thread_id: routing.threadId,
+    content: JSON.stringify({ text }),
+  });
+}
+
+function handleTaskflowReviewBypassConfirmation(
+  action: TaskflowReviewBypassConfirmation,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+  const moveInput = {
+    task_id: action.taskId,
+    action: 'reopen' as const,
+    sender_name: sender,
+    confirmed_task_id: action.taskId,
+  };
+  const moveResult = engine.move({ ...moveInput, board_id: boardId });
+  appendSyntheticToolCall('api_move', moveInput, moveResult, !moveResult.success);
+  if (!moveResult.success) {
+    writeReply(routing, `Não consegui reabrir ${action.taskId}: ${moveResult.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+
+  const updateInput = {
+    task_id: action.taskId,
+    sender_name: sender,
+    confirmed_task_id: action.taskId,
+    updates: { requires_close_approval: true },
+  };
+  const updateResult = engine.update({ ...updateInput, board_id: boardId });
+  appendSyntheticToolCall('api_update_task', updateInput, updateResult, !updateResult.success);
+  if (!updateResult.success) {
+    writeReply(routing, `Reabri ${action.taskId}, mas não consegui exigir aprovação: ${updateResult.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+
+  const title = typeof updateResult.title === 'string' ? ` — ${updateResult.title}` : '';
+  writeReply(routing, `✅ *${action.taskId}*${title}\n\nReabri a tarefa e ativei a aprovação obrigatória.`);
+  return true;
+}
+
+function handleTaskflowReviewBypassRepair(
+  action: TaskflowReviewBypassRepair,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+  const task = engine.getTask(action.taskId) as { column?: string; requires_close_approval?: unknown; title?: string } | null;
+  const approvalRequired =
+    task?.requires_close_approval === 1 ||
+    task?.requires_close_approval === '1' ||
+    task?.requires_close_approval === true;
+
+  if (!task || task.column !== 'done' || approvalRequired) return false;
+
+  const queryInput = { query: 'task_details', task_id: action.taskId, sender_name: sender };
+  const queryResult = engine.query(queryInput);
+  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+
+  const updateInput = {
+    task_id: action.taskId,
+    sender_name: sender,
+    confirmed_task_id: action.taskId,
+    updates: { requires_close_approval: true },
+  };
+  const updateResult = engine.update({ ...updateInput, board_id: boardId });
+  appendSyntheticToolCall('api_update_task', updateInput, updateResult, !updateResult.success);
+  if (!updateResult.success) {
+    writeReply(routing, `Não consegui ativar a aprovação obrigatória para ${action.taskId}: ${updateResult.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+
+  const moveInput = {
+    task_id: action.taskId,
+    action: 'reopen' as const,
+    sender_name: sender,
+    confirmed_task_id: action.taskId,
+  };
+  const moveResult = engine.move({ ...moveInput, board_id: boardId });
+  appendSyntheticToolCall('api_move', moveInput, moveResult, !moveResult.success);
+  if (!moveResult.success) {
+    writeReply(routing, `Ativei a aprovação obrigatória para ${action.taskId}, mas não consegui reabrir: ${moveResult.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+
+  const title = typeof task.title === 'string' ? ` — ${task.title}` : '';
+  writeReply(
+    routing,
+    `✅ Pronto! Agora está correto:\n\n*${action.taskId}*${title}\n\n• Reaberta para Próximas Ações\n• Aprovação obrigatória: *ativada* ✅\n\nDa próxima vez que o responsável concluir, irá para revisão.`,
+  );
+  return true;
+}
+
+function handleTaskflowCrossBoardNoteConfirmation(
+  action: TaskflowCrossBoardNoteConfirmation,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+  const dest = findByName(action.destinationName);
+  if (!dest) return false;
+
+  const sender = senderName(messages);
+  const senderLabel = sender.split(/\s+/).filter(Boolean).at(-1) || sender;
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
+  const queryInput = { query: 'find_task_in_organization', task_id: action.taskId, sender_name: sender };
+  const queryResult = engine.query(queryInput);
+  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+
+  const rows = Array.isArray(queryResult.data) ? queryResult.data as Array<Record<string, unknown>> : [];
+  const title = typeof rows[0]?.title === 'string' ? rows[0].title : action.taskId;
+  const forwardText = `📝 Nota do ${senderLabel} para ${action.taskId} — ${title}:\n\n"${action.noteText}"`;
+
+  sendToDestination(dest, forwardText, routing);
+  appendSyntheticToolCall('send_message', { to: action.destinationName, text: forwardText }, { success: true });
+  writeReply(routing, `Mensagem encaminhada para o quadro da ${action.destinationName}.`);
+  return true;
 }
 
 export interface PollLoopConfig {
@@ -204,6 +562,45 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       });
       markCompleted(keep.map((m) => m.id));
       log('Handled pure TaskFlow greeting without provider query');
+      continue;
+    }
+
+    const recentOut = recentOutboundContents();
+    const crossBoardNoteConfirmation = taskflowCrossBoardNoteConfirmation(keep, recentOut);
+    if (crossBoardNoteConfirmation && handleTaskflowCrossBoardNoteConfirmation(crossBoardNoteConfirmation, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow cross-board note confirmation without provider query');
+      continue;
+    }
+
+    const reviewBypassConfirmation = taskflowReviewBypassConfirmation(keep, recentOut);
+    if (reviewBypassConfirmation && handleTaskflowReviewBypassConfirmation(reviewBypassConfirmation, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow review-bypass confirmation without provider query');
+      continue;
+    }
+
+    const recentIn = recentInboundContents();
+    const reviewBypassRepair = taskflowReviewBypassRepairPrompt(keep, [...recentOut, ...recentIn]);
+    if (reviewBypassRepair && handleTaskflowReviewBypassRepair(reviewBypassRepair, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow review-bypass repair without provider query');
+      continue;
+    }
+
+    const crossBoardNotePrompt = taskflowCrossBoardNotePrompt(keep, recentIn);
+    if (crossBoardNotePrompt) {
+      writeReply(routing, crossBoardNotePrompt.text);
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow cross-board note prompt without provider query');
+      continue;
+    }
+
+    const reviewBypassPrompt = taskflowReviewBypassDiagnosticPrompt(keep);
+    if (reviewBypassPrompt) {
+      writeReply(routing, reviewBypassPrompt.text);
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow review-bypass diagnostic prompt without provider query');
       continue;
     }
 

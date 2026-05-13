@@ -35,10 +35,13 @@ Phase 3 accepts optional metadata with one row per corpus index:
     "source_turn_index": 42,
     "prior_turn_depth": 1,
     "state_snapshot": "/tmp/phase3-state/turn-16/taskflow.db",
+    "target_state_snapshot": "/tmp/phase3-state/turn-16-target/taskflow.db",
     "expected_behavior": {
       "action": "forward",
       "task_ids": ["M1", "M2"],
-      "recipient": "Ana Beatriz"
+      "allow_extra_task_ids": true,
+      "recipient": "120363426975449622@g.us",
+      "recipient_aliases": ["Ana Beatriz"]
     }
   }
 ]
@@ -51,11 +54,22 @@ Fields:
 - `source_turn_index`: source turn index inside the extracted JSONL.
 - `prior_turn_depth`: number of real prior turns to replay before the target.
 - `state_snapshot`: optional per-turn Taskflow DB snapshot.
+- `target_state_snapshot`: optional chain-mode Taskflow DB snapshot restored
+  after context turns and immediately before the scored target turn. Use this
+  when context is needed for session history but the target must start from a
+  historical DB state that differs from v2's synthetic context mutations.
 - `expected_behavior`: optional semantic expectation. If omitted, Phase 3
   derives expected behavior from v1 recorded tools.
+- `expected_behavior.allow_extra_task_ids`: optional explicit allowance for
+  forward/read turns where v2 includes parent/project IDs while preserving the
+  requested task focus.
+- `expected_behavior.recipient_aliases`: optional local v2 destination names
+  that resolve to the same raw v1 recipient JID in the test seed.
 
 Known context-chain defaults are inferred for corpus turns `16`, `22`, `23`,
 `25`, and `27`, but explicit metadata is preferred for compliance work.
+The SECI compliance metadata for this migration is checked in at
+`scripts/phase3-seci-metadata.json`.
 
 ## Planning
 
@@ -72,6 +86,17 @@ pnpm exec tsx scripts/phase3-driver.ts \
 
 ## Running Context-Chain Validation
 
+Seed the SECI dev-only named destinations before validating forward turns:
+
+```bash
+pnpm exec tsx scripts/phase3-seed-seci-destinations.ts data/v2.db
+```
+
+This inserts or updates only `ag-phase2-seci` fixture rows:
+
+- `Laizys` → `120363425774136187@g.us`
+- `Ana Beatriz` → `120363426975449622@g.us`
+
 Run a single context-dependent turn:
 
 ```bash
@@ -81,7 +106,7 @@ sudo -u nanoclaw -H env LOG_LEVEL=info \
   bash -c 'cd /root/nanoclaw && /root/nanoclaw/node_modules/.bin/tsx \
     scripts/phase3-driver.ts \
       --corpus /tmp/whatsapp-curated-seci-v4.json \
-      --metadata /tmp/phase3-metadata.json \
+      --metadata scripts/phase3-seci-metadata.json \
       --source-root /tmp/v2-pilot/all-sessions/seci-taskflow \
       --turn 16 \
       --out /tmp/phase3-v2-results-turn16.json'
@@ -91,6 +116,26 @@ The driver snapshots the live Taskflow DB before the run and restores it
 afterward. If `state_snapshot` is set and exists, it is restored before the
 turn. If it is missing, the result is marked as `state_snapshot_missing` rather
 than treated as a v2 behavior bug.
+
+## State Snapshots
+
+Exact historical per-turn Taskflow snapshots were not present in the local
+workspace as of 2026-05-12. The checked candidates
+(`/tmp/v2-pilot/taskflow*.db`, `data/taskflow/taskflow.db`, and
+`data/taskflow/taskflow.db.pre-turn24-cleanup-20260511`) already contained
+post-turn state for `P6.7`, `T84`, and `T85`.
+
+For targeted validation only, reconstructed snapshots were created under:
+
+- `/tmp/phase3-state/seci-reconstructed-20260512/pre-turn21/taskflow.db`
+- `/tmp/phase3-state/seci-reconstructed-20260512/pre-turn24/taskflow.db`
+- `/tmp/phase3-state/seci-reconstructed-20260512/pre-turn26/taskflow.db`
+
+These roll back only the state needed by the SECI corpus turns: `P6.7` before
+the Apr 10 review-flow clarification, the `T84` allocation before turn 24, and
+the `T85` allocation before turn 26. They are useful for targeted confidence
+checks, but they are not original production snapshots. For audit-grade
+compliance, replace these metadata paths with true per-turn DB captures.
 
 ## Semantic Comparison
 
@@ -164,9 +209,70 @@ the smallest set of classes that lets a reviewer act on each one. As of
   (closed by `find_task_in_organization`).
 - `missing_context` — chain-mode turn whose source JSONL is absent.
   Provide the source root or remove the chain-mode default.
+- `v1_bug_flagged` — corpus turn is annotated with `v1_bug` metadata
+  (auditor self-correction detector or human review marked v1's
+  recorded behavior as itself wrong). Surfaced above `match` so a v2
+  that reproduces the v1 mistake doesn't silently pass and a v2 that
+  corrects the mistake isn't flagged as a regression. Requires manual
+  verification of v2's tool payload before cutover.
 - `real_divergence` — none of the above; observed v2 behavior genuinely
   differs from the expected. Investigate as a candidate v2 bug or
   template gap.
+
+### Auditor self-correction detection (corpus annotation)
+
+The v1 task_history has same-task / same-user / <60-min mutation pairs
+where the second row supersedes the first with a different `details`
+value. The skill-side `auditor-script.sh` documents the recipe;
+`scripts/q.ts` against `/tmp/v2-pilot/taskflow.db` runs it directly:
+
+```sql
+SELECT a.task_id, a.by, a.at, b.at, a.details, b.details
+  FROM task_history a JOIN task_history b
+    ON a.board_id = b.board_id AND a.task_id = b.task_id
+   AND a.by = b.by AND a.id < b.id
+   AND a.details <> b.details
+   AND (julianday(b.at) - julianday(a.at)) * 1440 BETWEEN 0 AND 60
+ WHERE a.board_id = 'board-seci-taskflow'
+   AND a.action = 'updated' AND b.action = 'updated'
+   AND ((a.details LIKE '%Reuni%reagendada%' AND b.details LIKE '%Reuni%reagendada%')
+     OR (a.details LIKE '%Prazo definido%' AND b.details LIKE '%Prazo definido%'));
+```
+
+Running this against the seci board's full task_history (2026-05-12)
+surfaced **1 canonical bot-error pair**:
+
+- **M1 / giovanni / 2026-04-14T11:04 → 11:36** (32 min apart): v1 wrote
+  `Reunião reagendada para 17/04/2026 às 11:00` for user prompt
+  *"alterar M1 para quinta-feira 11h"*; user-corrected to
+  `16/04/2026 às 11:00`. April 17, 2026 is Friday; quinta-feira = Apr 16
+  (Thursday). Documented in the 2026-04-14 skill changelog as the
+  weekday-resolution + DST guard motivator.
+
+This pair lands inside the curated 30-turn corpus at **turn 28**
+(user_message timestamp `2026-04-14T11:04:01Z`, tool input
+`{ task_id: 'M1', updates: { scheduled_at: '2026-04-17T11:00:00' } }`).
+The user correction at 11:36 is outside the curated 30-turn window.
+The turn is now annotated in `scripts/phase3-seci-metadata.json` with a
+`v1_bug` block and the comparator routes it to `v1_bug_flagged`.
+
+Two additional v1 bot-error candidates were found on the board but do not
+affect this cutover corpus:
+
+- **P8 reassign round-trip**: v1 reassigned the task one way and then back
+  within the same correction window. The prompt window is outside the curated
+  30-turn replay, so it is useful as board history evidence but not a Phase 3
+  acceptance blocker for the current corpus.
+- **P22.1 reassign round-trip**: same pattern and same conclusion — outside
+  the 30 validated turns, therefore not part of the current v2 parity score.
+
+Known blind spot: the self-correction auditor only catches v1 mistakes that a
+human later corrected in task history. If v1 was wrong and nobody noticed, the
+history has no correction pair to detect. Catching that class requires a
+separate LLM-assisted corpus audit that reads each user request and compares
+it against v1's recorded tool payload and final response. That audit has not
+been run yet, so the current claim is "parity against v1, with known
+self-corrected v1 mistakes flagged", not "v1 was always semantically correct."
 
 Action-priority note: when v1 ran a `taskflow_query` / `api_query` and
 the final response also contained a `Deseja...?` follow-up, the action
@@ -212,6 +318,131 @@ in place:
 
 Each of those is independent; do them first, then schedule one paid
 pass that verifies all three at once.
+
+Update: the dev seed rows are now reproducible via
+`scripts/phase3-seed-seci-destinations.ts`, and
+`scripts/phase3-seci-metadata.json` records the local destination aliases.
+The remaining state evidence is represented by reconstructed snapshots, not
+true historical captures.
+
+Targeted pending-only replay update:
+`/tmp/phase3-comparison-pending-20260513-all-limited-closed.txt`
+validates that turns `16`, `22`, `23`, `24`, `25`, `26`, `27`, and `29` now
+match under the Phase 3 setup. Turn `23` remains documented as a v1 raw-sqlite
+tool-surface change, but the observable behavior is now covered by
+first-class MCP/API operations and raw sqlite stays blocked.
+
+The turn `16` and `22` closures are deliberately narrow runner-side TaskFlow
+confirmation handlers; turn `23` is a narrow target-state replay closure:
+
+- Turn `16`: if real replay context establishes a pending sibling-board note
+  forward and the user answers `sim`, v2 resolves the seeded named destination
+  and sends through `send_message`, preserving v1's raw-JID forward behavior
+  without re-enabling sqlite.
+- Turn `22`: if the previous assistant question asks to reopen and require
+  approval for exact task ID `P6.7`, a bare confirmation performs
+  `api_move(P6.7, reopen)` and `api_update_task(P6.7,
+  requires_close_approval=true)`. It does not mutate parent `P6` or sibling
+  subtasks.
+- Turn `23`: Phase 3 restores a target-state snapshot after replaying the
+  two context turns, so the target starts from v1's pre-target state
+  (`P6.7` done with approval disabled). v2 then performs
+  `api_query(task_details P6.7)`, `api_update_task(P6.7,
+  requires_close_approval=true)`, and `api_move(P6.7, reopen)`, replacing
+  v1's raw sqlite write/read with first-class MCP/API behavior.
+
+## Post-review hardening (2026-05-12, Codex gpt-5.5/high)
+
+A Codex review of the closure work flagged two BLOCKERs and three
+IMPORTANTs. All addressed before merge:
+
+1. **BLOCKER — turn 17 must not classify as `match` until v2 actually
+   exercises `find_task_in_organization`.** The pre-review comparator
+   ignored `outbound_intent`, so v1's "T43 details" reply and v2's
+   "Não encontrei T43" reply both reduced to `action=read, task_ids=[T43]`
+   and got marked `match`. The comparator now includes
+   `outbound_intent` in the `matches` struct and rejects the
+   `informational → asks_user|not_found_or_unclear` transition.
+   Turn 17 now correctly classifies as `documented_tool_surface_change`
+   on the pre-fix v2 results — honest "v2 needs revalidation with the
+   new tool" rather than false-positive parity.
+2. **BLOCKER — regenerated `groups/seci-taskflow/CLAUDE.local.md` had
+   reverted (no `find_task_in_organization` rule).** Re-regenerated
+   from the template. Added a `migrate-board-claudemd.test.ts`
+   regression: the substitution must preserve the cross-board task
+   lookup rule and rename `taskflow_query` → `api_query` inside it.
+3. **IMPORTANT — `state_allocation_drift` was too permissive.** Now
+   requires `actual.mutation_types.includes('create')`. A
+   reassign+update with task-id mismatch will no longer get excused as
+   allocator drift; it surfaces as `real_divergence` (or
+   `state_snapshot_missing` when explicit metadata flags it).
+4. **IMPORTANT — `destination_registration_gap` was too permissive.**
+   Now requires `actual.mutation_types.length === 0` and
+   `actual.action ∈ {forward, no-op}`. A forward+mutate hybrid cannot
+   hide behind this class.
+5. **IMPORTANT — added missing comparator/engine negative tests**:
+   v2-not-found-vs-v1-informational (BLOCKER 1 lockdown),
+   reassign-only-no-allocation-drift, forward-with-mutation-no-gap,
+   dangling-parent orphan isolation for `find_task_in_organization`,
+   and the migration regeneration regression.
+
+After these fixes, re-running the comparator on the existing v2
+results produces 14/30 matches (turn 17 demoted to
+`documented_tool_surface_change`). The current canonical artifact for
+the comparator-only re-classification is
+`/tmp/phase3-comparison-full-paid-20260512-rev2.txt`.
+
+The "Closure summary" table above (16/30, including the
+deterministic-greeting-guard turn 1 fix) reflects a separate targeted
+validation run that included the runner-side greeting guard. A fresh
+paid 30-turn pass with the rebuilt container is the only thing that
+will reconcile the two numbers honestly. Until then: 14/30 is what
+the comparator says about the unchanged v2 output, and the headline
+movement is "8 real divergences → 1 (turn 1) before the greeting
+guard, → 0 after". Turn 17 is parked as
+`documented_tool_surface_change` awaiting fresh-run revalidation of
+`find_task_in_organization`.
+
+## Ongoing v1-bug monitor (host cron)
+
+`scripts/audit-v1-bugs-daily.ts` wraps the auditor for a daily
+host-side run and writes two artifacts per day to `data/audit/`:
+
+- `v1-bugs-YYYY-MM-DD.json` — raw findings keyed by board.
+- `v1-bugs-YYYY-MM-DD.md` — grouped human-readable summary.
+
+The wrapper opens `data/taskflow/taskflow.db` read-only, so it is safe
+to run concurrently with the host nanoclaw service. Emits a one-line
+summary to stdout that systemd's journal picks up automatically.
+
+Manual invocation (the cron uses the same command):
+
+```bash
+sudo -u nanoclaw -H /root/nanoclaw/node_modules/.bin/tsx \
+  /root/nanoclaw/scripts/audit-v1-bugs-daily.ts
+```
+
+To enable the daily timer:
+
+```bash
+sudo install -m 644 /root/nanoclaw/scripts/systemd/nanoclaw-audit-v1-bugs.service /etc/systemd/system/
+sudo install -m 644 /root/nanoclaw/scripts/systemd/nanoclaw-audit-v1-bugs.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now nanoclaw-audit-v1-bugs.timer
+# Verify next firing:
+systemctl list-timers nanoclaw-audit-v1-bugs.timer
+```
+
+The timer fires at 06:00 local with up to 5 min of randomized delay
+(see `scripts/systemd/nanoclaw-audit-v1-bugs.timer`). `Persistent=true`
+catches up on next boot if the host was off at the scheduled time.
+Output is appended to `logs/audit-v1-bugs.log` and
+`logs/audit-v1-bugs.error.log`.
+
+The daily monitor is **detect-and-write only** — it does not surface
+findings to any board chat or DM. A future v2-native scheduled task
+(MCP `audit_v1_bugs` action) is the right home for in-chat surfacing
+once the cutover lands.
 
 ## Runtime Pinning Audit
 

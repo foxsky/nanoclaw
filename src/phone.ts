@@ -49,3 +49,14 @@ export function phoneToWhatsAppJid(phone: string): string {
   const digits = normalizePhone(phone) || phone.replace(/\D/g, '');
   return `${digits}@s.whatsapp.net`;
 }
+
+/**
+ * Returns true when `value` looks like a WhatsApp JID — a group (`@g.us`),
+ * a personal handle (`@s.whatsapp.net`), or a broadcast (`@broadcast`).
+ * Recognizer only; does NOT validate the local-part. Use this when you need
+ * to distinguish a raw JID from a destination_name in routing/decision code.
+ */
+export function isWhatsAppJid(value: string | null | undefined): boolean {
+  if (!value) return false;
+  return /@(g\.us|s\.whatsapp\.net|broadcast)$/i.test(value);
+}
