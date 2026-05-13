@@ -1,5 +1,25 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-05-13 — Phase 3 compliance hardening + daily v1-bug monitoring
+
+Two-front extension of the Phase 3 work shipped 2026-05-12: tighter parity classification + an ongoing monitor that surfaces v1 bot mistakes the comparator can't reach on its own.
+
+**Phase 3 comparator hardening (commits `72788847` … `e479df47`).** Four rounds of closure across `scripts/phase3-support.ts` and the seci metadata:
+- `no_outbound_timeout` classification gate: a turn now fails parity if v1 produced a user-visible reply but v2 timed out without any outbound row, even when tool/action shape matched. Catches the silent-loss case the previous match heuristic excused.
+- `v1_bug_flagged` classification gate above `match`: corpus turns with a `v1_bug` annotation block (auditor-detected self-correction or human-marked) require manual verification rather than auto-passing. Stops a v2 that reproduces v1's bug from looking like parity.
+- Tighter `state_allocation_drift` (requires `mutation_types` to include `create`) and `destination_registration_gap` (requires no v2 mutation + action in `{forward, no-op}`). Both were too permissive in the 2026-05-12 ship — Codex review flagged the gap; tests added.
+- Cross-board task lookup via `mcp__nanoclaw__api_query({ query: 'find_task_in_organization' })` — engine + MCP + template + regenerated `groups/seci-taskflow/CLAUDE.local.md`. Closes the seci T43 case (turn 17) without re-enabling `mcp__sqlite__read_query`.
+- New `scripts/audit-v1-bugs.ts` deterministic detector + `scripts/phase3-seci-metadata.json` v1-bug annotation for the M1 weekday case (turn 28). The auditor surfaces same-task / same-user / <60min self-correction pairs across all boards in `data/v2.db`; flag wires Phase 3 to skip false-positive matches.
+
+**Daily v1-bug monitoring** (host cron + v2-native + v1-monitor extensions).
+- *Host-side cron* (`scripts/audit-v1-bugs-daily.ts` + `scripts/systemd/nanoclaw-audit-v1-bugs.{service,timer}`): operator-side, org-wide aggregation. Writes `data/audit/v1-bugs-YYYY-MM-DD.{json,md}` daily; atomic writes; cwd-independent via `import.meta.url`; ProtectHome=read-only so `/root/nanoclaw` is reachable; TimeoutSec=300 + MemoryMax=512M operational fuses. Not a notification channel — purely the operator's daily trend file.
+- *V2-native* (engine + MCP, `audit_v1_bugs` query mode in `taskflow-engine.ts` + `api_query` description in `taskflow-api-mutate.ts` + skill template rule): the same three patterns (`date_field_correction`, `reassign_round_trip`, `conclude_reopen`) surface inside the agent-runner as a read-only MCP query, optional `since` filter, board-scoped. Tests cover board isolation + each pattern's positive/negative cases. Right home post-cutover; ready to wire into a daily scheduled wake.
+- *V1-monitor extensions* (`.claude/skills/add-taskflow/v1-auditor-extensions/`): staged baseline + patched + unified diffs + README for the prod v1 daily auditor. Adds `reassign_round_trip` + `conclude_reopen` (the two patterns the prod monitor's existing `selfCorrections` machinery doesn't cover) and threads a `pattern` discriminator through `correctionPairs` → `selfCorrections` → dryrun NDJSON → markdown digest. Three new agent classification rules in `auditor-prompt.txt` cover the new pattern semantics with both bot-error and legitimate-iteration counter-cases. Deployed to prod 2026-05-13 (md5-verified canonical + 33/33 per-board fan-out + `systemctl --user restart nanoclaw`; dated `.pre-self-correction-extensions-20260513T231257Z` backups in place; rollback path documented).
+
+**Catch surfaced during the v1-monitor deploy:** `auditor-script.sh` / `auditor-prompt.txt` are NOT in the host's `CORE_AGENT_RUNNER_FILES` allowlist (`src/container-runner.ts:85`). Without explicit fan-out, the first-time `cpSync` only fires on board-provision, so per-board copies stay frozen at whatever auditor version was canonical when the board was provisioned. Future canonical-only deploys of these two files require the same fan-out loop the deploy README documents.
+
+**Net effect on cutover risk:** the Phase 3 parity gate now refuses to silently match on a v2 that reproduces a v1 bug, on a v2 that times out, or on freshly-allocated task-id drift; the operator gets a daily org-wide trend file; prod's existing daily owner-DM digest now covers three pattern families instead of one; and the v2-native equivalent is in place ready for the post-cutover scheduled-wake wiring.
+
 ## 2026-05-12 — v2 migration: A2.4 / A5 / A12 / Phase 1 / Phase 2 / board scoping
 
 Six tracks of TaskFlow v1→v2 migration work landed on `skill/taskflow-v2`. Together they close the engine, template, host wiring, and replay-harness layers required for cutover.

@@ -1,0 +1,155 @@
+--- baseline/auditor-script.sh	2026-05-13 20:06:44.123381244 -0300
++++ patched/auditor-script.sh	2026-05-13 20:08:25.769316464 -0300
+@@ -432,8 +432,12 @@
+       const refs = buildSelfCorrectionRefs(correction);
+       if (refs.length === 0) continue;
+       const taskId = correction.taskId || 'sem-task';
++      // `correction.pattern` was added 2026-05-13 (v1-auditor-extensions
++      // patch); fall back to the legacy date-only label for any historical
++      // payload that predates the field.
++      const pattern = correction.pattern || 'date_field_correction';
+       boardLines.push(
+-        `- Auto-correção ${escapeMdQuote(taskId, 64)} (${escapeMdQuote(correction.secondAt, 64)}): ${escapeMdQuote(refs.join(' | '), 480)}`,
++        `- Auto-correção [${escapeMdQuote(pattern, 32)}] ${escapeMdQuote(taskId, 64)} (${escapeMdQuote(correction.secondAt, 64)}): ${escapeMdQuote(refs.join(' | '), 480)}`,
+       );
+     }
+     if (boardLines.length === 0) continue;
+@@ -470,6 +474,7 @@
+     for (const correction of board.selfCorrections || []) {
+       entries.push({
+         kind: 'self_correction',
++        pattern: correction.pattern || 'date_field_correction',
+         period: data.period,
+         boardId: board.boardId,
+         boardFolder: board.folder,
+@@ -697,6 +702,97 @@
+   ),
+ };
+ 
++// Reassign round-trip: same task / same user reassigns A→B then B→A within
++// 60 min. Signal class: bot picked the wrong assignee (magnetism /
++// ambiguity), user reverted. Uses JSON1 extraction on the details payload
++// — the reassign engine writes {from_assignee, to_assignee, ...}.
++const reassignRoundTripStmts = {
++  1: tfDb.prepare(
++    `SELECT a.task_id, a.by, a.at AS first_at, a.details AS first_details,
++            b.at AS second_at, b.details AS second_details${
++              hasTaskHistoryTriggerTurnId
++                ? ', b.trigger_turn_id AS second_trigger_turn_id'
++                : ', NULL AS second_trigger_turn_id'
++            }
++     FROM task_history a
++     JOIN task_history b ON a.task_id = b.task_id
++       AND a.by = b.by
++       AND a.board_id = b.board_id
++       AND b.at > a.at
++       AND (julianday(b.at) - julianday(a.at)) * 86400 <= 3600
++     WHERE a.board_id IN (?) AND a.at >= ? AND a.at <= ?
++       AND a.action = 'reassigned' AND b.action = 'reassigned'
++       AND a.by IS NOT NULL
++       AND json_extract(a.details, '$.from_assignee') = json_extract(b.details, '$.to_assignee')
++       AND json_extract(a.details, '$.to_assignee')   = json_extract(b.details, '$.from_assignee')
++     ORDER BY b.at ASC`
++  ),
++  2: tfDb.prepare(
++    `SELECT a.task_id, a.by, a.at AS first_at, a.details AS first_details,
++            b.at AS second_at, b.details AS second_details${
++              hasTaskHistoryTriggerTurnId
++                ? ', b.trigger_turn_id AS second_trigger_turn_id'
++                : ', NULL AS second_trigger_turn_id'
++            }
++     FROM task_history a
++     JOIN task_history b ON a.task_id = b.task_id
++       AND a.by = b.by
++       AND a.board_id = b.board_id
++       AND b.at > a.at
++       AND (julianday(b.at) - julianday(a.at)) * 86400 <= 3600
++     WHERE a.board_id IN (?, ?) AND a.at >= ? AND a.at <= ?
++       AND a.action = 'reassigned' AND b.action = 'reassigned'
++       AND a.by IS NOT NULL
++       AND json_extract(a.details, '$.from_assignee') = json_extract(b.details, '$.to_assignee')
++       AND json_extract(a.details, '$.to_assignee')   = json_extract(b.details, '$.from_assignee')
++     ORDER BY b.at ASC`
++  ),
++};
++
++// Conclude → reopen: same task / same user concludes then reopens within
++// 60 min. Signal class: bot concluded too early (terse "X" misread, or
++// confirmation routed to the wrong task). The reviewer-approval flow can
++// produce conclude/reopen pairs by DIFFERENT users (approver vs assignee),
++// which is legitimate; we filter to same user to suppress those.
++const concludeReopenStmts = {
++  1: tfDb.prepare(
++    `SELECT a.task_id, a.by, a.at AS first_at, a.details AS first_details,
++            b.at AS second_at, b.details AS second_details${
++              hasTaskHistoryTriggerTurnId
++                ? ', b.trigger_turn_id AS second_trigger_turn_id'
++                : ', NULL AS second_trigger_turn_id'
++            }
++     FROM task_history a
++     JOIN task_history b ON a.task_id = b.task_id
++       AND a.by = b.by
++       AND a.board_id = b.board_id
++       AND b.at > a.at
++       AND (julianday(b.at) - julianday(a.at)) * 86400 <= 3600
++     WHERE a.board_id IN (?) AND a.at >= ? AND a.at <= ?
++       AND a.action = 'conclude' AND b.action = 'reopen'
++       AND a.by IS NOT NULL
++     ORDER BY b.at ASC`
++  ),
++  2: tfDb.prepare(
++    `SELECT a.task_id, a.by, a.at AS first_at, a.details AS first_details,
++            b.at AS second_at, b.details AS second_details${
++              hasTaskHistoryTriggerTurnId
++                ? ', b.trigger_turn_id AS second_trigger_turn_id'
++                : ', NULL AS second_trigger_turn_id'
++            }
++     FROM task_history a
++     JOIN task_history b ON a.task_id = b.task_id
++       AND a.by = b.by
++       AND a.board_id = b.board_id
++       AND b.at > a.at
++       AND (julianday(b.at) - julianday(a.at)) * 86400 <= 3600
++     WHERE a.board_id IN (?, ?) AND a.at >= ? AND a.at <= ?
++       AND a.action = 'conclude' AND b.action = 'reopen'
++       AND a.by IS NOT NULL
++     ORDER BY b.at ASC`
++  ),
++};
++
+ // Resolve a task_history.by person_id to a display name via board_people,
+ // then filter the trigger-message lookup to messages whose sender_name
+ // matches. Without this, a busy chat silently attributes the correction
+@@ -1050,8 +1146,22 @@
+   // pair requires `a.details <> b.details` (excludes programmatic
+   // duplicate writes) and fetches the triggering message filtered to the
+   // acting user's display name (board_people.name for pair.by).
+-  const correctionPairs = selfCorrectionStmts[boardIds.length]
+-    .all(...boardIds, period.startIso, period.endIso);
++  // Three pattern families share the same correction-pair shape (task_id +
++  // by + first/second timestamps + details) so they flow through the same
++  // mapping below. The `pattern` discriminator threads through to the
++  // rendered output so the agent's classification prompt can branch by
++  // pattern (date-correction vs assignee revert vs early-conclude).
++  const datePairs = selfCorrectionStmts[boardIds.length]
++    .all(...boardIds, period.startIso, period.endIso)
++    .map((p) => ({ ...p, pattern: 'date_field_correction' }));
++  const reassignPairs = reassignRoundTripStmts[boardIds.length]
++    .all(...boardIds, period.startIso, period.endIso)
++    .map((p) => ({ ...p, pattern: 'reassign_round_trip' }));
++  const concludeReopenPairs = concludeReopenStmts[boardIds.length]
++    .all(...boardIds, period.startIso, period.endIso)
++    .map((p) => ({ ...p, pattern: 'conclude_reopen' }));
++  const correctionPairs = [...datePairs, ...reassignPairs, ...concludeReopenPairs]
++    .sort((a, b) => (a.second_at < b.second_at ? -1 : a.second_at > b.second_at ? 1 : 0));
+   const selfCorrections = correctionPairs.map((pair) => {
+     const windowStart = new Date(new Date(pair.second_at).getTime() - 600000).toISOString();
+     let trigger = null;
+@@ -1079,6 +1189,7 @@
+       taskId: pair.task_id,
+       by: pair.by,
+       byDisplayName: displayName,
++      pattern: pair.pattern,
+       firstAt: pair.first_at,
+       secondAt: pair.second_at,
+       windowMinutes: Math.round((new Date(pair.second_at).getTime() - new Date(pair.first_at).getTime()) / 60000),
