@@ -7024,6 +7024,68 @@ export class TaskflowEngine {
           return { success: true, data: rows };
         }
 
+        case 'audit_v1_bugs': {
+          // Same-task / same-user / <60min self-correction pair detector,
+          // scoped to this board. Mirrors `scripts/audit-v1-bugs.ts` so the
+          // agent-runner can run the same audit in-container daily without
+          // a host cron. Read-only on task_history. `since` (optional ISO
+          // date) filters by the first-half timestamp; useful for daily
+          // runs that only want the last 24h of signal.
+          const sinceClause = params.since ? 'AND a.at >= ?' : '';
+          const sinceBind = params.since ? [params.since] : [];
+
+          const dateSql = `
+            SELECT 'date_field_correction' AS pattern,
+                   a.task_id, a.by, a.at AS a_at, b.at AS b_at,
+                   round((julianday(b.at) - julianday(a.at)) * 1440, 1) AS dt_min,
+                   a.details AS a_details, b.details AS b_details
+              FROM task_history a JOIN task_history b
+                ON a.board_id = b.board_id AND a.task_id = b.task_id
+               AND a.by = b.by AND a.id < b.id
+               AND a.details <> b.details
+               AND (julianday(b.at) - julianday(a.at)) * 1440 BETWEEN 0 AND 60
+             WHERE a.board_id = ? AND a.action='updated' AND b.action='updated'
+               AND (
+                 (a.details LIKE '%Reuni%reagendada%' AND b.details LIKE '%Reuni%reagendada%')
+                 OR (a.details LIKE '%Prazo definido%' AND b.details LIKE '%Prazo definido%')
+               )
+               ${sinceClause}`;
+
+          const reassignSql = `
+            SELECT 'reassign_round_trip' AS pattern,
+                   a.task_id, a.by, a.at AS a_at, b.at AS b_at,
+                   round((julianday(b.at) - julianday(a.at)) * 1440, 1) AS dt_min,
+                   a.details AS a_details, b.details AS b_details
+              FROM task_history a JOIN task_history b
+                ON a.board_id = b.board_id AND a.task_id = b.task_id
+               AND a.by = b.by AND a.id < b.id
+               AND (julianday(b.at) - julianday(a.at)) * 1440 BETWEEN 0 AND 60
+             WHERE a.board_id = ? AND a.action='reassigned' AND b.action='reassigned'
+               AND json_extract(a.details, '$.from_assignee') = json_extract(b.details, '$.to_assignee')
+               AND json_extract(a.details, '$.to_assignee')   = json_extract(b.details, '$.from_assignee')
+               ${sinceClause}`;
+
+          const concludeReopenSql = `
+            SELECT 'conclude_reopen' AS pattern,
+                   a.task_id, a.by, a.at AS a_at, b.at AS b_at,
+                   round((julianday(b.at) - julianday(a.at)) * 1440, 1) AS dt_min,
+                   a.details AS a_details, b.details AS b_details
+              FROM task_history a JOIN task_history b
+                ON a.board_id = b.board_id AND a.task_id = b.task_id
+               AND a.by = b.by AND a.id < b.id
+               AND (julianday(b.at) - julianday(a.at)) * 1440 BETWEEN 0 AND 60
+             WHERE a.board_id = ? AND a.action='conclude' AND b.action='reopen'
+               ${sinceClause}`;
+
+          const rows = [
+            ...this.db.prepare(dateSql).all(this.boardId, ...sinceBind) as any[],
+            ...this.db.prepare(reassignSql).all(this.boardId, ...sinceBind) as any[],
+            ...this.db.prepare(concludeReopenSql).all(this.boardId, ...sinceBind) as any[],
+          ].sort((a, b) => (a.a_at < b.a_at ? -1 : a.a_at > b.a_at ? 1 : 0));
+
+          return { success: true, data: rows };
+        }
+
         case 'changes_this_week': {
           const rows = this.db
             .prepare(

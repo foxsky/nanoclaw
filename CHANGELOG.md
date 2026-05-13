@@ -7,6 +7,9 @@ For detailed release notes, see the [full changelog on the documentation site](h
 ## [Unreleased]
 
 - Fixed routing and delivery regressions in channel approval and outbound handling: approved non-threaded groups now keep group/mention engagement, direct denial replies write through a writable outbound DB handle, accumulated context-only follow-ups no longer wake active agent queries, and missing channel adapters now go through delivery retry/failure handling instead of being silently marked delivered.
+- Tightened Taskflow Phase 3 compliance comparison so v2 tool/action parity no longer passes when v1 produced a user-visible reply but v2 timed out without outbound output; these cases are now classified as `no_outbound_timeout`.
+- Added a Taskflow replay delivery safety fallback: bare final text from an agent is routed to the sole configured destination when exactly one destination exists, while multi-destination sessions still require explicit `<message to="...">` routing.
+- Added Taskflow v1-bug audit support through `audit_v1_bugs`, including engine/MCP coverage and template guidance for scheduled daily audits of same-task, same-user self-correction patterns.
 
 ## [2.0.48] - 2026-05-09
 

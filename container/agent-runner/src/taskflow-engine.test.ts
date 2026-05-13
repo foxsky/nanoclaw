@@ -1193,6 +1193,126 @@ describe('TaskflowEngine', () => {
   });
 
   /* ---------------------------------------------------------------- */
+  /*  query: audit_v1_bugs                                              */
+  /*  Same-task / same-user / <60min self-correction pair detector     */
+  /*  scoped to this board. Mirrors scripts/audit-v1-bugs.ts host       */
+  /*  detector so daily monitoring can run in-container via MCP.        */
+  /* ---------------------------------------------------------------- */
+
+  describe('query: audit_v1_bugs', () => {
+    function insertHistory(
+      taskId: string,
+      action: string,
+      by: string,
+      at: string,
+      details: object,
+    ) {
+      const stmt = db.prepare(
+        `INSERT INTO task_history (board_id, task_id, action, "by", "at", details)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      );
+      stmt.run(BOARD_ID, taskId, action, by, at, JSON.stringify(details));
+    }
+
+    it('flags a Reunião reagendada → Reunião reagendada pair within 60min', () => {
+      insertHistory('M1', 'updated', 'giovanni', '2026-04-14T11:04:11.450Z',
+        { changes: ['Reunião reagendada para 17/04/2026 às 11:00'] });
+      insertHistory('M1', 'updated', 'giovanni', '2026-04-14T11:36:29.528Z',
+        { changes: ['Reunião reagendada para 16/04/2026 às 11:00'] });
+
+      const r = engine.query({ query: 'audit_v1_bugs' });
+      expect(r.success).toBe(true);
+      const rows = r.data as Array<{
+        pattern: string;
+        task_id: string;
+        by: string;
+        a_at: string;
+        b_at: string;
+      }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0].pattern).toBe('date_field_correction');
+      expect(rows[0].task_id).toBe('M1');
+      expect(rows[0].by).toBe('giovanni');
+    });
+
+    it('flags a reassign round-trip (A→B then B→A) within 60min', () => {
+      insertHistory('P8', 'reassigned', 'giovanni', '2026-04-07T21:33:16.177Z',
+        { from_assignee: 'lucas', to_assignee: 'rodrigo-lima' });
+      insertHistory('P8', 'reassigned', 'giovanni', '2026-04-07T21:36:23.110Z',
+        { from_assignee: 'rodrigo-lima', to_assignee: 'lucas' });
+
+      const r = engine.query({ query: 'audit_v1_bugs' });
+      const rows = r.data as Array<{ pattern: string; task_id: string }>;
+      expect(rows.some((row) => row.pattern === 'reassign_round_trip' && row.task_id === 'P8')).toBe(true);
+    });
+
+    it('does not flag a sequential A→B then B→C reassign as a round-trip', () => {
+      insertHistory('P9', 'reassigned', 'giovanni', '2026-04-07T21:30:00Z',
+        { from_assignee: 'lucas', to_assignee: 'rodrigo-lima' });
+      insertHistory('P9', 'reassigned', 'giovanni', '2026-04-07T21:33:00Z',
+        { from_assignee: 'rodrigo-lima', to_assignee: 'mauro' });
+
+      const r = engine.query({ query: 'audit_v1_bugs' });
+      const rows = r.data as Array<{ task_id: string }>;
+      expect(rows.find((row) => row.task_id === 'P9')).toBeUndefined();
+    });
+
+    it('flags a conclude → reopen pair by the same user within 60min', () => {
+      insertHistory('T9', 'conclude', 'laizys', '2026-04-17T17:59:07.632Z',
+        { from: 'next_action', to: 'done' });
+      insertHistory('T9', 'reopen', 'laizys', '2026-04-17T18:47:27.757Z',
+        { from: 'done', to: 'next_action' });
+
+      const r = engine.query({ query: 'audit_v1_bugs' });
+      const rows = r.data as Array<{ pattern: string; task_id: string }>;
+      expect(rows.some((row) => row.pattern === 'conclude_reopen' && row.task_id === 'T9')).toBe(true);
+    });
+
+    it('honors an optional `since` filter (drop pairs whose first half predates the cutoff)', () => {
+      insertHistory('M1', 'updated', 'giovanni', '2026-04-14T11:04:11Z',
+        { changes: ['Reunião reagendada para 17/04/2026 às 11:00'] });
+      insertHistory('M1', 'updated', 'giovanni', '2026-04-14T11:36:29Z',
+        { changes: ['Reunião reagendada para 16/04/2026 às 11:00'] });
+      insertHistory('M2', 'updated', 'giovanni', '2026-05-01T08:00:00Z',
+        { changes: ['Reunião reagendada para 02/05/2026 às 10:00'] });
+      insertHistory('M2', 'updated', 'giovanni', '2026-05-01T08:30:00Z',
+        { changes: ['Reunião reagendada para 03/05/2026 às 10:00'] });
+
+      const r = engine.query({ query: 'audit_v1_bugs', since: '2026-04-30' });
+      const rows = r.data as Array<{ task_id: string }>;
+      // Only M2's pair on 2026-05-01 should appear; M1's pair on Apr 14 is older.
+      expect(rows.map((row) => row.task_id).sort()).toEqual(['M2']);
+    });
+
+    it('is board-scoped — does not return findings from other boards', () => {
+      // Insert a clear self-correction pair on a DIFFERENT board.
+      db.exec(
+        `INSERT INTO boards VALUES ('board-other', 'other@g.us', 'other', 'standard', 0, 1, NULL, NULL, NULL)`,
+      );
+      db.prepare(
+        `INSERT INTO task_history (board_id, task_id, action, "by", "at", details)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run('board-other', 'TX', 'updated', 'someone', '2026-04-14T10:00:00Z',
+        JSON.stringify({ changes: ['Reunião reagendada para 14/04/2026 às 09:00'] }));
+      db.prepare(
+        `INSERT INTO task_history (board_id, task_id, action, "by", "at", details)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run('board-other', 'TX', 'updated', 'someone', '2026-04-14T10:30:00Z',
+        JSON.stringify({ changes: ['Reunião reagendada para 15/04/2026 às 09:00'] }));
+
+      const r = engine.query({ query: 'audit_v1_bugs' });
+      expect(r.success).toBe(true);
+      expect(r.data).toEqual([]);
+    });
+
+    it('returns an empty array on a clean board (no findings)', () => {
+      const r = engine.query({ query: 'audit_v1_bugs' });
+      expect(r.success).toBe(true);
+      expect(r.data).toEqual([]);
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
   /*  API adapter reads                                                */
   /* ---------------------------------------------------------------- */
 

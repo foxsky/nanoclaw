@@ -163,6 +163,82 @@ describe('Phase 3 semantic comparison', () => {
     });
   });
 
+  it('does not pass a read turn that timed out without the v1 visible reply', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 7,
+      text: 'p15.7',
+      v1: {
+        tools: [{ name: 'taskflow_query', input: { query: 'task_details', task_id: 'P15.7' } }],
+        final_response: 'P15.7 — Ampliar institucionalização. Responsável: Lucas.',
+      },
+      v2: {
+        tools: [{ name: 'mcp__nanoclaw__api_query', input: { query: 'task_details', task_id: 'P15.7' } }],
+        outbound: [],
+        settle_reason: 'timeout',
+      },
+    };
+
+    const comparison = compareSemanticTurn(turn);
+    expect(comparison.matches).toMatchObject({
+      action: true,
+      task_ids: true,
+      mutation_types: true,
+      recipient: true,
+      outbound_intent: false,
+    });
+    expect(comparison.classification.kind).toBe('no_outbound_timeout');
+  });
+
+  it('does not pass a successful mutation that timed out before confirmation', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 19,
+      text: 'concluir atividade P20.2',
+      v1: {
+        tools: [{ name: 'taskflow_move', input: { task_id: 'P20.2', action: 'conclude' } }],
+        final_response: '✅ P20.2 concluída.',
+      },
+      v2: {
+        tools: [{ name: 'mcp__nanoclaw__api_move', input: { task_id: 'P20.2', action: 'conclude' } }],
+        outbound: [],
+        settle_reason: 'timeout',
+      },
+    };
+
+    const comparison = compareSemanticTurn(turn);
+    expect(comparison.matches.action).toBe(true);
+    expect(comparison.matches.mutation_types).toBe(true);
+    expect(comparison.matches.outbound_intent).toBe(false);
+    expect(comparison.classification.kind).toBe('no_outbound_timeout');
+  });
+
+  it('surfaces no-outbound timeout before v1-bug annotations', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 28,
+      text: 'adicionar Ana Beatriz em M2',
+      v1: {
+        tools: [{ name: 'taskflow_update', input: { task_id: 'M2', updates: { add_participant: 'Ana Beatriz' } } }],
+        final_response: '✅ M2 — Ana Beatriz adicionada como participante.',
+      },
+      v2: {
+        tools: [{ name: 'mcp__nanoclaw__api_update_task', input: { task_id: 'M2', updates: { add_participant: 'Ana Beatriz' } } }],
+        outbound: [],
+        settle_reason: 'timeout',
+      },
+      phase3: {
+        metadata: {
+          turn_index: 28,
+          context_mode: 'fresh',
+          v1_bug: {
+            description: 'v1 wrote the wrong weekday in the same turn.',
+            detected_by: 'manual_review',
+          },
+        },
+      },
+    };
+
+    expect(compareSemanticTurn(turn).classification.kind).toBe('no_outbound_timeout');
+  });
+
   it('matches registered destination aliases for raw v1 JID recipients', () => {
     const turn: Phase3TurnResult = {
       turn_index: 29,

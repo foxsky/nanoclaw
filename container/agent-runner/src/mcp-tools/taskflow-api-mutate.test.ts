@@ -1918,6 +1918,34 @@ describe('api_query MCP tool (A5.2.3 — composite read-side wrapper)', () => {
     expect(result.data[0].board_id).toBe('board-sibling');
   });
 
+  // Option B (v2-native daily v1-bug monitor). The wrapper must pass
+  // `audit_v1_bugs` through to the engine and honor the optional `since`
+  // filter. Same-task / same-user / <60min self-correction pairs on
+  // THIS board only.
+  it('query=audit_v1_bugs returns same-board self-correction pairs', async () => {
+    const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO task_history (board_id, task_id, action, "by", "at", details)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(BOARD, 'M1', 'updated', 'giovanni', '2026-04-14T11:04:11Z',
+      JSON.stringify({ changes: ['Reunião reagendada para 17/04/2026 às 11:00'] }));
+    db.prepare(
+      `INSERT INTO task_history (board_id, task_id, action, "by", "at", details)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(BOARD, 'M1', 'updated', 'giovanni', '2026-04-14T11:36:29Z',
+      JSON.stringify({ changes: ['Reunião reagendada para 16/04/2026 às 11:00'] }));
+
+    const response = await apiQueryTool.handler({
+      board_id: BOARD,
+      query: 'audit_v1_bugs',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0].pattern).toBe('date_field_correction');
+    expect(result.data[0].task_id).toBe('M1');
+  });
+
   it('rejects non-string board_id', async () => {
     const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
     const response = await apiQueryTool.handler({

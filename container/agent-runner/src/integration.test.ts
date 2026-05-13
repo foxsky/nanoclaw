@@ -113,7 +113,7 @@ describe('poll loop integration', () => {
     await loopPromise.catch(() => {});
   });
 
-  it('bare text produces no outbound messages (scratchpad only)', async () => {
+  it('bare text routes to the sole configured destination as a safety fallback', async () => {
     insertMessage('m1', { sender: 'Alice', text: 'hello' }, { platformId: 'chan-1', channelType: 'discord' });
 
     // Agent responds with bare text — no <message to="..."> wrapping
@@ -126,7 +126,30 @@ describe('poll loop integration', () => {
     controller.abort();
 
     const out = getUndeliveredMessages();
-    expect(out).toHaveLength(0);
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0].content).text).toBe('I am thinking about this...');
+    expect(out[0].platform_id).toBe('chan-1');
+
+    await loopPromise.catch(() => {});
+  });
+
+  it('bare text remains scratchpad when multiple destinations are configured', async () => {
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES ('slack-test', 'Slack Test', 'channel', 'slack', 'chan-2', NULL)`,
+      )
+      .run();
+    insertMessage('m1', { sender: 'Alice', text: 'hello' }, { platformId: 'chan-1', channelType: 'discord' });
+
+    const provider = new MockProvider({}, () => 'I am thinking about this...');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+
+    await sleep(1000);
+    controller.abort();
+
+    expect(getUndeliveredMessages()).toHaveLength(0);
 
     await loopPromise.catch(() => {});
   });

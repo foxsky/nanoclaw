@@ -7,6 +7,7 @@ export type Phase3ContextMode = 'fresh' | 'chain';
 export type Phase3SemanticAction = 'ask' | 'read' | 'mutate' | 'forward' | 'no-op';
 export type Phase3ClassificationKind =
   | 'match'
+  | 'no_outbound_timeout'
   | 'missing_context'
   | 'state_snapshot_missing'
   | 'state_drift'
@@ -345,6 +346,10 @@ const INTENT_SUBSTANTIVE_FAILURE = new Set(['asks_user', 'not_found_or_unclear']
 function outboundIntentMatches(expected: string, actual: string): boolean {
   if (expected === actual) return true;
   if (expected === 'unspecified' || actual === 'unspecified') return true;
+  // v1 produced a visible reply but v2 produced nothing. This is never
+  // compliance-equivalent: even when the tool/action shape is correct, the
+  // observable user behavior is a silent turn.
+  if (actual === 'none' && expected !== 'none') return false;
   // v1 found and reported a task; v2 had to ask or returned not-found.
   // This is the divergence we cannot let slip through as match.
   if (expected === 'informational' && INTENT_SUBSTANTIVE_FAILURE.has(actual)) return false;
@@ -448,6 +453,16 @@ function isV1BugFlagged(turn: Phase3TurnResult): boolean {
   return !!turn.phase3?.metadata?.v1_bug;
 }
 
+function isNoOutboundTimeout(
+  turn: Phase3TurnResult,
+  expected: SemanticSummary,
+  actual: SemanticSummary,
+): boolean {
+  if (expected.outbound_intent === 'none' || expected.outbound_intent === 'unspecified') return false;
+  if (actual.outbound_intent !== 'none') return false;
+  return turn.v2.settle_reason === 'timeout' || turn.v2.outbound.length === 0;
+}
+
 // Forward intent expected but v2 either didn't deliver or delivered to a
 // local destination — no agent_destinations row matches the v1 recipient
 // JID. Checked before the chain/source gate because a missing destination
@@ -522,6 +537,13 @@ type ClassificationRule = {
 };
 
 const CLASSIFICATION_RULES: ClassificationRule[] = [
+  {
+    test: (t, _m, e, a) => isNoOutboundTimeout(t, e, a),
+    result: {
+      kind: 'no_outbound_timeout',
+      note: 'v1 produced a user-visible reply, but v2 produced no outbound message before the replay timeout. Tool/action parity is not enough for compliance.',
+    },
+  },
   {
     test: (t) => isV1BugFlagged(t),
     result: {

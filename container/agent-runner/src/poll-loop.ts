@@ -876,8 +876,10 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
  * and dispatch each one to its resolved destination. Text outside of blocks
  * (including <internal>...</internal>) is scratchpad — logged but not sent.
  *
- * The agent must always wrap output in <message to="name">...</message>
- * blocks, even with a single destination. Bare text is scratchpad only.
+ * The agent should wrap output in <message to="name">...</message> blocks.
+ * As a delivery safety net, bare final text is sent to the sole configured
+ * destination when there is exactly one; with multiple destinations, bare
+ * text remains scratchpad because routing would be ambiguous.
  */
 function dispatchResultText(text: string, routing: RoutingContext): void {
   const MESSAGE_RE = /<message\s+to="([^"]+)"\s*>([\s\S]*?)<\/message>/g;
@@ -885,9 +887,11 @@ function dispatchResultText(text: string, routing: RoutingContext): void {
   let match: RegExpExecArray | null;
   let sent = 0;
   let lastIndex = 0;
+  let sawMessageBlock = false;
   const scratchpadParts: string[] = [];
 
   while ((match = MESSAGE_RE.exec(text)) !== null) {
+    sawMessageBlock = true;
     if (match.index > lastIndex) {
       scratchpadParts.push(text.slice(lastIndex, match.index));
     }
@@ -909,6 +913,15 @@ function dispatchResultText(text: string, routing: RoutingContext): void {
   }
 
   const scratchpad = stripInternalTags(scratchpadParts.join(''));
+
+  if (sent === 0 && !sawMessageBlock && scratchpad) {
+    const destinations = getAllDestinations();
+    if (destinations.length === 1) {
+      sendToDestination(destinations[0], scratchpad, routing);
+      log('Sent bare final text to sole configured destination');
+      return;
+    }
+  }
 
   if (scratchpad) {
     log(`[scratchpad] ${scratchpad.slice(0, 500)}${scratchpad.length > 500 ? '…' : ''}`);
