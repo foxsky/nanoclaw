@@ -1,5 +1,27 @@
 [
   {
+    "turn_index": 5,
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "read",
+      "task_ids": ["T43"],
+      "outbound_intent": "informational"
+    },
+    "tool_surface_change": "v1 answered from in-session/raw-sqlite cross-board context; v2 must keep sqlite blocked and use first-class MCP org-scoped lookup."
+  },
+  {
+    "turn_index": 15,
+    "context_mode": "chain",
+    "source_jsonl": ".claude/projects/-workspace-group/2a379532-1cda-4302-98b1-1985bcde4d95.jsonl",
+    "source_turn_index": 16,
+    "prior_turn_depth": 1,
+    "expected_behavior": {
+      "action": "ask",
+      "task_ids": ["T43"],
+      "outbound_intent": "asks_user"
+    }
+  },
+  {
     "turn_index": 16,
     "context_mode": "chain",
     "source_jsonl": ".claude/projects/-workspace-group/2a379532-1cda-4302-98b1-1985bcde4d95.jsonl",

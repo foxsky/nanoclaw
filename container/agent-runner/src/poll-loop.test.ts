@@ -1,18 +1,25 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
-import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from './db/connection.js';
+import { initTestSessionDb, closeSessionDb, closeTaskflowDb, getInboundDb, getOutboundDb } from './db/connection.js';
 import { getPendingMessages, markCompleted } from './db/messages-in.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
 import { formatMessages, extractRouting } from './formatter.js';
 import { MockProvider } from './providers/mock.js';
 import {
   hasWakeTrigger,
+  taskflowBareTaskDetailsCommand,
   taskflowCrossBoardNoteConfirmation,
   taskflowCrossBoardNotePrompt,
+  taskflowDueDateNeedsTaskPrompt,
+  taskflowExplicitCompletionCommand,
+  taskflowForwardDetailsCommand,
+  taskflowMeetingBatchUpdateCommand,
+  taskflowPersonTasksCommand,
   taskflowPureGreetingReply,
   taskflowReviewBypassConfirmation,
   taskflowReviewBypassDiagnosticPrompt,
   taskflowReviewBypassRepairPrompt,
+  taskflowStandaloneActivityPrompt,
 } from './poll-loop.js';
 
 beforeEach(() => {
@@ -21,6 +28,8 @@ beforeEach(() => {
 
 afterEach(() => {
   closeSessionDb();
+  closeTaskflowDb();
+  delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
 });
 
 function insertMessage(
@@ -182,16 +191,142 @@ describe('TaskFlow pure greeting guard', () => {
 });
 
 describe('TaskFlow deterministic confirmation guards', () => {
-  it('asks for exact review-bypass confirmation scoped to the subtask id', () => {
+  it('detects due-date commands that omit the task id', () => {
+    expect(taskflowDueDateNeedsTaskPrompt(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'prazo 22/04/26' }) }],
+      true,
+    )).toEqual({ dateText: '22/04' });
+
+    expect(taskflowDueDateNeedsTaskPrompt(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'vencimento para 22/04' }) }],
+      true,
+    )).toEqual({ dateText: '22/04' });
+  });
+
+  it('does not ask which task when due-date commands already include a task id', () => {
+    expect(taskflowDueDateNeedsTaskPrompt(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'P11.23 prazo 22/04/26' }) }],
+      true,
+    )).toBeNull();
+  });
+
+  it('detects meeting participant plus reschedule batches using prompt context date', () => {
+    const raw = '<context timezone="America/Fortaleza" today="2026-04-14" weekday="terça-feira" />';
+    expect(taskflowMeetingBatchUpdateCommand([
+      { kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'adicionar Ana Beatriz em M2', phase2RawPrompt: raw }) },
+      { kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'alterar M1 para quinta-feira 11h', phase2RawPrompt: raw }) },
+      { kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'm1', phase2RawPrompt: raw }) },
+    ], true)).toEqual({
+      participantTaskId: 'M2',
+      participantName: 'Ana Beatriz',
+      meetingTaskId: 'M1',
+      weekdayName: 'quinta',
+      hour: 11,
+      contextDate: '2026-04-14',
+    });
+  });
+
+  it('detects meeting batches stored only in the raw phase prompt', () => {
+    const raw = '<context timezone="America/Fortaleza" today="2026-04-14" weekday="terça-feira" />\n<messages>\n<message sender="Carlos Giovanni">adicionar Ana Beatriz em M2</message>\n<message sender="Carlos Giovanni">alterar M1 para quinta-feira 11h</message>\n<message sender="Carlos Giovanni">m1</message>\n</messages>';
+    expect(taskflowMeetingBatchUpdateCommand([
+      { kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'adicionar Ana Beatriz em M2', phase2RawPrompt: raw }) },
+    ], true)).toMatchObject({
+      participantTaskId: 'M2',
+      meetingTaskId: 'M1',
+      contextDate: '2026-04-14',
+    });
+  });
+
+  it('detects forwarding details to a named destination', () => {
+    expect(taskflowForwardDetailsCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'encaminhar os detalhes de M1 e M2 para Ana Beatriz' }) }],
+      true,
+    )).toEqual({ taskIds: ['M1', 'M2'], destinationName: 'Ana Beatriz' });
+  });
+
+  it('detects standalone activity phrases that v1 asked to triage', () => {
+    expect(taskflowStandaloneActivityPrompt(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'Submeter ao menos 1 proposta a financiador externo' }) }],
+      true,
+    )).toEqual({ text: 'Submeter ao menos 1 proposta a financiador externo' });
+
+    expect(taskflowStandaloneActivityPrompt(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'Aguardar e Acompanhar licitação para reforma do prédio pela SDU Leste' }) }],
+      true,
+    )).toEqual({ text: 'Aguardar e Acompanhar licitação para reforma do prédio pela SDU Leste' });
+  });
+
+  it('does not treat actionable task commands as standalone activity prompts', () => {
+    expect(taskflowStandaloneActivityPrompt(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'adicionar Ana Beatriz em M2' }) }],
+      true,
+    )).toBeNull();
+  });
+
+  it('detects person task-list requests', () => {
+    expect(taskflowPersonTasksCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'atividades mariany' }) }],
+      true,
+    )).toEqual({ personName: 'mariany' });
+
+    expect(taskflowPersonTasksCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'tarefas da Mariany Borges' }) }],
+      true,
+    )).toEqual({ personName: 'Mariany Borges' });
+  });
+
+  it('does not treat diagnostic task-id questions as person task-list requests', () => {
+    expect(taskflowPersonTasksCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'Porque as atividades do João P6.7 não passou pela revisão?' }) }],
+      true,
+    )).toBeNull();
+  });
+
+  it('detects bare task detail requests with a task id', () => {
+    expect(taskflowBareTaskDetailsCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'p15.7' }) }],
+      true,
+    )).toEqual({ taskId: 'P15.7' });
+
+    expect(taskflowBareTaskDetailsCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'p11' }) }],
+      true,
+    )).toEqual({ taskId: 'P11' });
+  });
+
+  it('does not treat task-id commands with other words as bare details requests', () => {
+    expect(taskflowBareTaskDetailsCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'concluir P15.7' }) }],
+      true,
+    )).toBeNull();
+  });
+
+  it('detects exact completion commands with a task id', () => {
+    expect(taskflowExplicitCompletionCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'concluir atividade P20.2' }) }],
+      true,
+    )).toEqual({ taskId: 'P20.2' });
+
+    expect(taskflowExplicitCompletionCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'p11.16 concluída' }) }],
+      true,
+    )).toEqual({ taskId: 'P11.16' });
+  });
+
+  it('does not treat diagnostic review questions as completion commands', () => {
+    expect(taskflowExplicitCompletionCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'P6.7 foi concluída não foi para revisão?' }) }],
+      true,
+    )).toBeNull();
+  });
+
+  it('detects review-bypass diagnostic questions scoped to the subtask id', () => {
     const prompt = taskflowReviewBypassDiagnosticPrompt(
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'Porque as atividades do João P6.7 não passou pela revisão?' }) }],
       true,
     );
 
-    expect(prompt).toEqual({
-      taskId: 'P6.7',
-      text: 'P6.7 foi concluída sem passar pela revisão obrigatória. Deseja reabrir e exigir aprovação para P6.7?',
-    });
+    expect(prompt).toEqual({ taskId: 'P6.7' });
   });
 
   it('resolves bare confirmation to the exact review-bypass task id from recent outbound', () => {

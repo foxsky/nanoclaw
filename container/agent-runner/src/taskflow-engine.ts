@@ -7444,13 +7444,14 @@ export class TaskflowEngine {
             .prepare(
               `SELECT t.id AS task_id, t.board_id, t.type, t.title, t.column,
                       t.assignee, t.due_date, t.parent_task_id, t.requires_close_approval,
-                      b.group_folder AS board_group_folder, b.group_jid,
+                      t.updated_at, b.group_folder AS board_group_folder, b.group_jid,
+                      b.short_code AS board_short_code,
                       bp.name AS assignee_name
                  FROM tasks t
                  JOIN boards b ON b.id = t.board_id
             LEFT JOIN board_people bp ON bp.board_id = t.board_id AND bp.person_id = t.assignee
                 WHERE t.id = ? AND t.board_id IN (${scope.placeholders})
-                ORDER BY b.group_folder`,
+                ORDER BY datetime(t.updated_at) DESC, b.group_folder`,
             )
             .all(rawId, ...scope.boardIds);
           return { success: true, data: rows };

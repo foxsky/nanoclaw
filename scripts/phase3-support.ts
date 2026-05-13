@@ -261,6 +261,14 @@ export function extractTaskIdsFromTools(tools: ToolCall[]): string[] {
   return [...ids].sort();
 }
 
+export function extractTaskIdsFromText(text: string): string[] {
+  const ids = new Set<string>();
+  for (const match of text.toUpperCase().matchAll(/\b(?:P|T|M|R)\d+(?:\.\d+)?\b/g)) {
+    ids.add(match[0]);
+  }
+  return [...ids].sort();
+}
+
 export function extractRecipient(tools: ToolCall[], outbound: OutboundRow[]): string | null {
   for (const tool of tools) {
     const input = tool.input && typeof tool.input === 'object'
@@ -291,7 +299,7 @@ export function summarizeSemanticBehavior(
   const hasRead = names.some((name) => READ_TOOL_PATTERNS.some((pattern) => pattern.test(name)));
   const text = [
     finalResponse ?? '',
-    ...outbound.map((row) => row.content),
+    ...outbound.map((row) => outboundContentText(row.content)),
   ].join('\n');
   const asks = /\?|\b(deseja|qual|confirma|pode confirmar|como deseja|quer que)\b/i.test(text);
 
@@ -306,13 +314,24 @@ export function summarizeSemanticBehavior(
   else if (asks) action = 'ask';
   else action = 'no-op';
 
+  const toolTaskIds = extractTaskIdsFromTools(tools);
   return {
     action,
-    task_ids: extractTaskIdsFromTools(tools),
+    task_ids: toolTaskIds.length > 0 ? toolTaskIds : extractTaskIdsFromText(text),
     mutation_types: [...new Set(names.map(canonicalMutationType).filter((value): value is string => value !== null))].sort(),
     recipient: extractRecipient(tools, outbound),
     outbound_intent: classifyOutboundIntent(text),
   };
+}
+
+function outboundContentText(content: string): string {
+  try {
+    const parsed = JSON.parse(content) as { text?: unknown };
+    if (typeof parsed.text === 'string') return parsed.text;
+  } catch {
+    // Fall through: some tests and older artifacts pass plain text here.
+  }
+  return content;
 }
 
 export function classifyOutboundIntent(text: string): string {

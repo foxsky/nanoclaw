@@ -440,6 +440,26 @@ describe('Phase 3 semantic comparison', () => {
     const summary = summarizeSemanticBehavior([], [], 'Qual tarefa você quer mover?');
     expect(summary.action).toBe('ask');
   });
+
+  it('classifies JSON outbound clarification rows by decoded text', () => {
+    const summary = summarizeSemanticBehavior(
+      [],
+      [{ kind: 'chat', content: JSON.stringify({ text: 'Essa atividade não está cadastrada diretamente.\n\nDeseja:\n1. Criar tarefa simples' }) }],
+    );
+
+    expect(summary.action).toBe('ask');
+    expect(summary.outbound_intent).toBe('asks_user');
+  });
+
+  it('extracts task ids from no-tool outbound context replies', () => {
+    const summary = summarizeSemanticBehavior(
+      [],
+      [{ kind: 'chat', content: JSON.stringify({ text: 'Posso encaminhar a nota de T43 para o quadro da Laizys?' }) }],
+    );
+
+    expect(summary.action).toBe('ask');
+    expect(summary.task_ids).toEqual(['T43']);
+  });
 });
 
 describe('Phase 3 state-drift classifications', () => {
