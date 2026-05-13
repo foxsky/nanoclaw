@@ -116,7 +116,31 @@ ssh nanoclaw@192.168.2.63 '
   done
 '
 
-# 5) Restart the host service so any in-flight container that holds the
+# 5) **CRITICAL** — update the `auditor-daily` scheduled task's `prompt`
+#    column. The auditor task fires daily at 04:00 BR via a row in
+#    `store/messages.db` `scheduled_tasks`. The row's `script` column
+#    is a wrapper (`bash /workspace/project/container/agent-runner/src/auditor-script.sh`)
+#    that reads the canonical script from disk at runtime — so step 2
+#    is enough for script changes. BUT the row's `prompt` column is the
+#    LLM-side classifier prompt, stored as text at task-creation time
+#    and READ from the row by the host scheduler — NOT from
+#    `auditor-prompt.txt` on disk. Step 2 alone leaves the prompt
+#    stale. Missed this on the 2026-05-13 deploy; caught by Codex
+#    review. Fix:
+ssh nanoclaw@192.168.2.63 '
+  DB=/home/nanoclaw/nanoclaw/store/messages.db
+  CANON=/home/nanoclaw/nanoclaw/container/agent-runner/src/auditor-prompt.txt
+  # Back up current prompt before overwrite (in case rollback is needed)
+  sqlite3 "$DB" "SELECT prompt FROM scheduled_tasks WHERE id = '\''auditor-daily'\''" \
+    > /tmp/auditor-daily-prompt.pre-deploy-$(date +%Y%m%dT%H%M%SZ).bak
+  # Update with the patched canonical
+  sqlite3 "$DB" "UPDATE scheduled_tasks SET prompt = readfile('\''$CANON'\'') WHERE id = '\''auditor-daily'\''"
+  # Verify byte counts match
+  echo "row length: $(sqlite3 "$DB" "SELECT length(prompt) FROM scheduled_tasks WHERE id = '\''auditor-daily'\''")"
+  echo "file length: $(wc -c < "$CANON")"
+'
+
+# 6) Restart the host service so any in-flight container that holds the
 #    auditor script open gets the new version on its next fire. The
 #    auditor itself is run fresh on each scheduled wake (`node /tmp/auditor.js`
 #    after a heredoc-extract), so this is belt-and-braces — typically not
@@ -146,13 +170,24 @@ If the patch causes any issue, restore from the dated `.pre-*` backup
 created in step 1:
 
 ```bash
-ssh nanoclaw@192.168.2.63 \
-  'cp /home/nanoclaw/nanoclaw/container/agent-runner/src/auditor-script.sh.pre-self-correction-extensions-YYYYMMDD \
-      /home/nanoclaw/nanoclaw/container/agent-runner/src/auditor-script.sh'
-ssh nanoclaw@192.168.2.63 \
-  'cp /home/nanoclaw/nanoclaw/container/agent-runner/src/auditor-prompt.txt.pre-self-correction-extensions-YYYYMMDD \
-      /home/nanoclaw/nanoclaw/container/agent-runner/src/auditor-prompt.txt'
-ssh nanoclaw@192.168.2.63 'systemctl --user restart nanoclaw'
+ssh nanoclaw@192.168.2.63 '
+  # 1. Restore canonical files from dated backup
+  cp /home/nanoclaw/nanoclaw/container/agent-runner/src/auditor-script.sh.pre-self-correction-extensions-YYYYMMDD \
+     /home/nanoclaw/nanoclaw/container/agent-runner/src/auditor-script.sh
+  cp /home/nanoclaw/nanoclaw/container/agent-runner/src/auditor-prompt.txt.pre-self-correction-extensions-YYYYMMDD \
+     /home/nanoclaw/nanoclaw/container/agent-runner/src/auditor-prompt.txt
+  # 2. Fan canonical out to all per-board copies
+  for d in /home/nanoclaw/nanoclaw/data/sessions/*/agent-runner-src; do
+    [ -d "$d" ] || continue
+    cp /home/nanoclaw/nanoclaw/container/agent-runner/src/auditor-script.sh "$d/"
+    cp /home/nanoclaw/nanoclaw/container/agent-runner/src/auditor-prompt.txt "$d/"
+  done
+  # 3. Revert the auditor-daily scheduled task prompt to the backed-up version
+  DB=/home/nanoclaw/nanoclaw/store/messages.db
+  sqlite3 "$DB" "UPDATE scheduled_tasks SET prompt = readfile(\"/tmp/auditor-daily-prompt.pre-deploy-YYYYMMDDTHHMMSSZ.bak\") WHERE id = \"auditor-daily\""
+  # 4. Restart host service
+  systemctl --user restart nanoclaw
+'
 ```
 
 The patch is purely additive (new SQL, new pattern field, new
