@@ -261,23 +261,52 @@ describe('Phase 3 semantic comparison', () => {
     expect(compareSemanticTurn(turn).classification.kind).toBe('state_snapshot_missing');
   });
 
-  it('surfaces the cross-board sqlite lookup pattern for the operator', () => {
+  it('flags uncovered cross-board sqlite reads as missing_api_capability', () => {
+    // v2 hasn't found the cross-board task. The production turn-17 v2
+    // reply asks the user to confirm the ID, so v2's outbound intent
+    // resolves to `asks_user`. Combined with v1's informational reply
+    // (it found the task and showed details), the comparator's
+    // intent-divergence guard refuses to mark the turn as match —
+    // classifyRawSqliteTurn then routes through the t43 heuristic and
+    // surfaces the gap to the operator as `missing_api_capability`.
     const decision = classifyRawSqliteTurn({
       turn_index: 17,
       text: 't43',
-      v1: { tools: [{ name: 'mcp__sqlite__read_query', input: {} }] },
-      v2: { tools: [{ name: 'mcp__nanoclaw__api_query', input: { task_id: 'T43' } }], outbound: [] },
+      v1: {
+        tools: [{ name: 'mcp__sqlite__read_query', input: {} }],
+        final_response: 'T43 — Cobrar ofício João Pessoa. Responsável: Laizys.',
+      },
+      v2: {
+        tools: [{ name: 'mcp__nanoclaw__api_query', input: { task_id: 'T43' } }],
+        outbound: [{
+          kind: 'chat',
+          content: '{"text":"Não encontrei nenhuma tarefa com o ID T43. Pode verificar se o ID está correto?"}',
+        }],
+      },
     });
+    expect(decision?.classification).toBe('missing_api_capability');
+    expect(decision?.recommendation).toContain('cross-board');
+  });
 
-    // The classification kind has evolved alongside the engine: once
-    // `find_task_in_organization` shipped, the T43 case routes to
-    // `documented_tool_surface_change` (capability exists, awaiting
-    // revalidation) rather than `missing_api_capability` (no capability).
-    // Accept either — the load-bearing assertion is that the operator sees
-    // a recommendation referencing the v1→v2 tool-surface migration.
-    expect(['missing_api_capability', 'documented_tool_surface_change'])
-      .toContain(decision?.classification);
-    expect(decision?.recommendation).toMatch(/api_\*|cross-board|MCP/);
+  it('marks raw sqlite parity as covered when first-class behavior matches', () => {
+    // v2 used find_task_in_organization and reproduced v1's informational
+    // task-details reply — the semantic comparison resolves to `match`,
+    // so the classifier should route to `documented_tool_surface_change`
+    // (capability exists and v2 demonstrated parity).
+    const decision = classifyRawSqliteTurn({
+      turn_index: 17,
+      text: 't43',
+      v1: {
+        tools: [{ name: 'mcp__sqlite__read_query', input: {} }],
+        final_response: 'T43 — Cobrar ofício João Pessoa. Responsável: Laizys.',
+      },
+      v2: {
+        tools: [{ name: 'mcp__nanoclaw__api_query', input: { query: 'find_task_in_organization', task_id: 'T43' } }],
+        outbound: [{ kind: 'chat', content: '{"text":"T43 — Cobrar ofício João Pessoa. Responsável: Laizys."}' }],
+      },
+    });
+    expect(decision?.classification).toBe('documented_tool_surface_change');
+    expect(decision?.recommendation).toMatch(/api_\*|MCP/);
   });
 
   it('marks raw sqlite parity as covered when metadata maps it to first-class MCP behavior', () => {

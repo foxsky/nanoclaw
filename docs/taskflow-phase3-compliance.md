@@ -411,9 +411,13 @@ host-side run and writes two artifacts per day to `data/audit/`:
 - `v1-bugs-YYYY-MM-DD.json` — raw findings keyed by board.
 - `v1-bugs-YYYY-MM-DD.md` — grouped human-readable summary.
 
-The wrapper opens `data/taskflow/taskflow.db` read-only, so it is safe
-to run concurrently with the host nanoclaw service. Emits a one-line
-summary to stdout that systemd's journal picks up automatically.
+The wrapper opens `data/taskflow/taskflow.db` read-only. taskflow.db
+runs in `journal_mode=DELETE` (per `src/taskflow-db.ts:484`), so the
+wrapper's shared lock can briefly block host writers; the systemd
+unit caps wall-clock with `TimeoutSec=300` to keep this bounded.
+The wrapper emits a one-line summary to stdout that the unit appends
+to `logs/audit-v1-bugs.log` (not the journal — `StandardOutput=append:`
+targets the file, not journald).
 
 Manual invocation (the cron uses the same command):
 

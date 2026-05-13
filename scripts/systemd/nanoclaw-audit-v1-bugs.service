@@ -13,13 +13,24 @@ ExecStart=/root/nanoclaw/node_modules/.bin/tsx /root/nanoclaw/scripts/audit-v1-b
 StandardOutput=append:/root/nanoclaw/logs/audit-v1-bugs.log
 StandardError=append:/root/nanoclaw/logs/audit-v1-bugs.error.log
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
-Environment=HOME=/home/nanoclaw
-# Read-only DB access; refuse any privilege escalation by the script.
+# Hardening. `ProtectHome=read-only` is intentional (not `true`): the
+# install lives under /root/nanoclaw, and `ProtectHome=true` would make
+# the whole /root tree appear empty so ExecStart can't even resolve.
+# read-only still blocks accidental writes into other users' homes;
+# ReadWritePaths then carves out the audit-output + log directories.
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=true
+ProtectHome=read-only
 ReadWritePaths=/root/nanoclaw/data/audit /root/nanoclaw/logs
 PrivateTmp=true
+# Operational fuses. The detector is sub-second on the pilot DB, but
+# task_history grows with traffic and the self-joins are exactly the
+# class of audit query that should have a bound — a runaway audit must
+# not hold a shared lock long enough to back up host writers
+# (taskflow.db uses journal_mode=DELETE; long shared locks block
+# committers).
+TimeoutSec=300
+MemoryMax=512M
 
 [Install]
 WantedBy=multi-user.target
