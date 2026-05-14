@@ -137,6 +137,36 @@ describe('TaskflowEngine', () => {
       expect(p).toEqual({ person_id: 'person-2', name: 'Giovanni' });
     });
 
+    it('finds a compound-name person by unique non-first token', () => {
+      db.exec(
+        `INSERT INTO board_people VALUES ('${BOARD_ID}', 'ana-beatriz', 'Ana Beatriz', '5585999990003', 'Dev', 3, NULL)`,
+      );
+
+      expect(engine.resolvePerson('Beatriz')).toEqual({
+        person_id: 'ana-beatriz',
+        name: 'Ana Beatriz',
+      });
+      expect(engine.resolvePerson('ana-beatriz')).toEqual({
+        person_id: 'ana-beatriz',
+        name: 'Ana Beatriz',
+      });
+    });
+
+    it('does not resolve ambiguous compound-name tokens', () => {
+      db.exec(
+        `INSERT INTO board_people VALUES ('${BOARD_ID}', 'carlos-silva', 'Carlos Silva', '5585999990003', 'Dev', 3, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO board_people VALUES ('${BOARD_ID}', 'mariana-silva', 'Mariana Silva', '5585999990004', 'Dev', 3, NULL)`,
+      );
+
+      expect(engine.resolvePerson('Silva')).toBeNull();
+      expect(engine.resolvePersonCandidates('Silva')).toEqual([
+        { person_id: 'carlos-silva', name: 'Carlos Silva' },
+        { person_id: 'mariana-silva', name: 'Mariana Silva' },
+      ]);
+    });
+
     it('returns null for unknown name', () => {
       expect(engine.resolvePerson('Nobody')).toBeNull();
     });

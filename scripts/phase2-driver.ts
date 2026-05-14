@@ -43,9 +43,10 @@ import { wakeContainer } from '../src/container-runner.js';
 import { extractConversationTurns, type ConversationTurn } from './whatsapp-replay-extract.js';
 import { taskflowDbPath } from '../src/taskflow-mount.js';
 
-const AGENT_GROUP_ID = 'ag-phase2-seci';
-const MESSAGING_GROUP_ID = 'mg-phase2-seci';
-const GROUP_JID = '120363406395935726@g.us';
+const AGENT_GROUP_ID = process.env.NANOCLAW_PHASE_REPLAY_AGENT_GROUP_ID ?? 'ag-phase2-seci';
+const MESSAGING_GROUP_ID = process.env.NANOCLAW_PHASE_REPLAY_MESSAGING_GROUP_ID ?? 'mg-phase2-seci';
+const GROUP_JID = process.env.NANOCLAW_PHASE_REPLAY_GROUP_JID ?? '120363406395935726@g.us';
+const CONTAINER_NAME_FILTER = process.env.NANOCLAW_PHASE_REPLAY_CONTAINER_NAME_FILTER ?? 'nanoclaw-v2-seci-taskflow-';
 const CORPUS = '/tmp/whatsapp-curated-seci-v4.json';
 const OUT_FILE = '/tmp/phase2-v2-results.json';
 
@@ -186,7 +187,7 @@ function resetSession(agentGroupId: string, messagingGroupId: string): void {
 
 function findRunningContainers(): string[] {
   try {
-    const out = execSync(`docker ps --filter "name=nanoclaw-v2-seci-taskflow-" --format "{{.Names}}"`, { encoding: 'utf8' });
+    const out = execSync(`docker ps --filter "name=${CONTAINER_NAME_FILTER}" --format "{{.Names}}"`, { encoding: 'utf8' });
     return out.trim().split('\n').filter(Boolean);
   } catch {
     return [];

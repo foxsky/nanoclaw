@@ -3,10 +3,10 @@
  * Phase 2 end-to-end test: seed v2.db with a SINGLE target board so a
  * running container can receive Phase 1 curated WhatsApp turns.
  *
- * Uses board=seci-taskflow with its real v1 prod group_jid so the agent
- * sees a recognizable identity. The board is treated as a STANDALONE root
- * (no parent) for the test — cross-board queries will fail but the
- * majority of turns (move/admin/update/query for own-board tasks) work.
+ * Defaults to board=seci-taskflow with its real v1 prod group_jid so the
+ * agent sees a recognizable identity. Override the constants via
+ * NANOCLAW_PHASE_REPLAY_* env vars to seed another Taskflow board for
+ * Phase 2/3 validation.
  *
  * Idempotent: skips when entities already exist.
  *
@@ -19,6 +19,7 @@ import { initDb, getDb } from '../src/db/connection.js';
 import { runMigrations } from '../src/db/migrations/index.js';
 import { DATA_DIR } from '../src/config.js';
 import { createAgentGroup, getAgentGroupByFolder } from '../src/db/agent-groups.js';
+import { ensureContainerConfig } from '../src/db/container-configs.js';
 import {
   createMessagingGroup,
   createMessagingGroupAgent,
@@ -29,10 +30,11 @@ import { upsertUser } from '../src/modules/permissions/db/users.js';
 import { grantRole, getUserRoles } from '../src/modules/permissions/db/user-roles.js';
 import { addMember } from '../src/modules/permissions/db/agent-group-members.js';
 
-const FOLDER = 'seci-taskflow';
-const AGENT_GROUP_ID = 'ag-phase2-seci';
-const GROUP_JID = '120363406395935726@g.us'; // SECI - TaskFlow prod
-const GROUP_NAME = 'SECI - TaskFlow';
+const FOLDER = process.env.NANOCLAW_PHASE_REPLAY_FOLDER ?? 'seci-taskflow';
+const AGENT_GROUP_ID = process.env.NANOCLAW_PHASE_REPLAY_AGENT_GROUP_ID ?? 'ag-phase2-seci';
+const MESSAGING_GROUP_ID = process.env.NANOCLAW_PHASE_REPLAY_MESSAGING_GROUP_ID ?? 'mg-phase2-seci';
+const GROUP_JID = process.env.NANOCLAW_PHASE_REPLAY_GROUP_JID ?? '120363406395935726@g.us'; // SECI - TaskFlow prod
+const GROUP_NAME = process.env.NANOCLAW_PHASE_REPLAY_GROUP_NAME ?? 'SECI - TaskFlow';
 const TEST_USER_ID = 'whatsapp:5585999000001'; // synthetic test user
 const TEST_USER_NAME = 'Phase2 Tester';
 
@@ -56,11 +58,13 @@ function main() {
   } else {
     console.log(`Reusing agent_group ${ag.id} (folder=${FOLDER})`);
   }
+  ensureContainerConfig(ag!.id);
+  console.log(`Ensured container_config for ${ag!.id}`);
 
   // 2. Messaging group
   let mg = getMessagingGroupByPlatform('whatsapp', GROUP_JID);
   if (!mg) {
-    const mgId = 'mg-phase2-seci';
+    const mgId = MESSAGING_GROUP_ID;
     createMessagingGroup({
       id: mgId,
       channel_type: 'whatsapp',
@@ -80,7 +84,7 @@ function main() {
   const existingMga = getMessagingGroupAgentByPair(mg!.id, ag!.id);
   if (!existingMga) {
     createMessagingGroupAgent({
-      id: 'mga-phase2-seci',
+      id: `mga-${AGENT_GROUP_ID}`,
       messaging_group_id: mg!.id,
       agent_group_id: ag!.id,
       engage_mode: 'pattern',

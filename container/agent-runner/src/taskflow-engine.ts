@@ -1601,21 +1601,55 @@ export class TaskflowEngine {
       | undefined;
     if (byId) return byId;
 
+    const all = this.db
+      .prepare(
+        `SELECT person_id, name FROM board_people WHERE board_id = ?`,
+      )
+      .all(boardId) as Array<{ person_id: string; name: string }>;
+
     // 3. First-name match: compare first word of input against first word of each name
     const firstName = name.split(/\s+/)[0];
     if (firstName) {
-      const all = this.db
-        .prepare(
-          `SELECT person_id, name FROM board_people WHERE board_id = ?`,
-        )
-        .all(boardId) as Array<{ person_id: string; name: string }>;
       const matches = all.filter(
         (p) => p.name.split(/\s+/)[0].toLowerCase() === firstName.toLowerCase(),
       );
       if (matches.length === 1) return matches[0];
     }
 
+    // 4. Unique full-name token match. This preserves v1-style shorthand
+    // such as "Beatriz" -> "Ana Beatriz" or "Lima" -> "Rodrigo Lima",
+    // while refusing ambiguous family/common-name tokens.
+    const queryTokens = extractSearchTokens(name);
+    if (queryTokens.length > 0) {
+      const matches = all.filter((person) => {
+        const personTokens = new Set([
+          ...extractSearchTokens(person.name),
+          ...extractSearchTokens(person.person_id),
+        ]);
+        return queryTokens.every((token) => personTokens.has(token));
+      });
+      if (matches.length === 1) return matches[0];
+    }
+
     return null;
+  }
+
+  /** Return candidate people for a shorthand name without guessing. */
+  resolvePersonCandidates(name: string, boardId = this.boardId): Array<{ person_id: string; name: string }> {
+    const queryTokens = extractSearchTokens(name);
+    if (queryTokens.length === 0) return [];
+    const all = this.db
+      .prepare(
+        `SELECT person_id, name FROM board_people WHERE board_id = ?`,
+      )
+      .all(boardId) as Array<{ person_id: string; name: string }>;
+    return all.filter((person) => {
+      const personTokens = new Set([
+        ...extractSearchTokens(person.name),
+        ...extractSearchTokens(person.person_id),
+      ]);
+      return queryTokens.every((token) => personTokens.has(token));
+    });
   }
 
   /** Check if this board can delegate downward (not a leaf board). */

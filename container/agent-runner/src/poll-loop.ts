@@ -826,21 +826,64 @@ function normalizeDestinationLookup(value: string): string {
     .trim();
 }
 
-function findDestinationByDisplayName(name: string): DestinationEntry | undefined {
-  const exact = findByName(name);
-  if (exact) return exact;
+function uniqueDestinations(destinations: DestinationEntry[]): DestinationEntry[] {
+  const seen = new Set<string>();
+  const unique: DestinationEntry[] = [];
+  for (const destination of destinations) {
+    const key = `${destination.type}:${destination.name}:${destination.platformId ?? destination.agentGroupId ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(destination);
+  }
+  return unique;
+}
+
+function destinationCandidatesByDisplayName(name: string): DestinationEntry[] {
   const target = normalizeDestinationLookup(name);
+  if (!target) return [];
   const destinations = getAllDestinations();
-  const exactNormalized = destinations.find((destination) =>
+  const exactNormalized = destinations.filter((destination) =>
     normalizeDestinationLookup(destination.name) === target ||
     normalizeDestinationLookup(destination.displayName) === target
   );
-  if (exactNormalized) return exactNormalized;
+  if (exactNormalized.length > 0) return uniqueDestinations(exactNormalized);
   const partial = destinations.filter((destination) => {
     const names = [destination.name, destination.displayName].map(normalizeDestinationLookup);
     return names.some((candidate) => candidate.startsWith(`${target} `) || candidate.includes(` ${target} `));
   });
-  return partial.length === 1 ? partial[0] : undefined;
+  if (partial.length > 0) return uniqueDestinations(partial);
+
+  const targetTokens = target.split(/\s+/).filter((token) => token.length > 0);
+  if (targetTokens.length === 0) return [];
+  const tokenMatches = destinations.filter((destination) => {
+    const names = [destination.name, destination.displayName].map(normalizeDestinationLookup);
+    return names.some((candidate) => {
+      const candidateTokens = new Set(candidate.split(/\s+/).filter(Boolean));
+      return targetTokens.every((token) => candidateTokens.has(token));
+    });
+  });
+  return uniqueDestinations(tokenMatches);
+}
+
+function findDestinationByDisplayName(name: string): DestinationEntry | undefined {
+  const exact = findByName(name);
+  if (exact) return exact;
+  const candidates = destinationCandidatesByDisplayName(name);
+  return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+function ambiguityOptions(names: string[]): string {
+  return names.map((name) => `- ${name}`).join('\n');
+}
+
+function destinationAmbiguityReply(rawName: string, candidates: DestinationEntry[]): string | null {
+  if (candidates.length <= 1) return null;
+  return `Encontrei mais de um destino para "${rawName}":\n${ambiguityOptions(candidates.map((candidate) => candidate.displayName || candidate.name))}\n\nQual deles?`;
+}
+
+function personAmbiguityReply(rawName: string, candidates: Array<{ name: string }>): string | null {
+  if (candidates.length <= 1) return null;
+  return `Encontrei mais de uma pessoa para "${rawName}":\n${ambiguityOptions(candidates.map((candidate) => candidate.name))}\n\nQual delas?`;
 }
 
 function outboundText(content: string): string {
@@ -1413,6 +1456,14 @@ function handleTaskflowAddParticipantsToLatestMeeting(
   if (!boardId) return false;
   const sender = senderName(messages);
   const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+  for (const participantName of action.participantNames) {
+    if (engine.resolvePerson(participantName)) continue;
+    const ambiguity = personAmbiguityReply(participantName, engine.resolvePersonCandidates(participantName));
+    if (ambiguity) {
+      writeReply(routing, ambiguity);
+      return true;
+    }
+  }
   const successes: string[] = [];
   const failures: string[] = [];
   for (const participantName of action.participantNames) {
@@ -1455,13 +1506,30 @@ function handleTaskflowNotifyMeetingAbove(
     ? participantNamesForMeeting(boardId, action.taskId)
     : action.recipientNames ?? [];
   if (recipients.length === 0) return false;
+  if (!action.useParticipants) {
+    for (const recipient of recipients) {
+      if (engine.resolvePerson(recipient)) continue;
+      const ambiguity = personAmbiguityReply(recipient, engine.resolvePersonCandidates(recipient));
+      if (ambiguity) {
+        writeReply(routing, ambiguity);
+        return true;
+      }
+    }
+  }
 
   const { title, scheduledAt } = meetingTaskSummary(queryResult.data, action.taskId);
   const when = scheduledAt ? formatFortalezaMeetingWhen(scheduledAt) : 'data não informada';
   const sent: string[] = [];
   for (const recipient of recipients) {
     const dest = findDestinationByDisplayName(recipient);
-    if (!dest) continue;
+    if (!dest) {
+      const ambiguity = destinationAmbiguityReply(recipient, destinationCandidatesByDisplayName(recipient));
+      if (ambiguity) {
+        writeReply(routing, ambiguity);
+        return true;
+      }
+      continue;
+    }
     if (!action.useParticipants) {
       const updateInput = {
         task_id: action.taskId,
@@ -1490,7 +1558,14 @@ function handleTaskflowAutoForwardMeetingConfirmation(
   const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
   if (!boardId) return false;
   const dest = findDestinationByDisplayName(action.destinationName);
-  if (!dest) return false;
+  if (!dest) {
+    const ambiguity = destinationAmbiguityReply(action.destinationName, destinationCandidatesByDisplayName(action.destinationName));
+    if (ambiguity) {
+      writeReply(routing, ambiguity);
+      return true;
+    }
+    return false;
+  }
 
   const sender = senderName(messages);
   const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
@@ -1808,7 +1883,14 @@ function handleTaskflowForwardDetails(
   const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
   if (!boardId) return false;
   const dest = findDestinationByDisplayName(action.destinationName);
-  if (!dest) return false;
+  if (!dest) {
+    const ambiguity = destinationAmbiguityReply(action.destinationName, destinationCandidatesByDisplayName(action.destinationName));
+    if (ambiguity) {
+      writeReply(routing, ambiguity);
+      return true;
+    }
+    return false;
+  }
 
   const sender = senderName(messages);
   const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
@@ -1843,7 +1925,14 @@ function handleTaskflowNotifyTaskPriority(
   const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
   if (!boardId) return false;
   const dest = findDestinationByDisplayName(action.destinationName);
-  if (!dest) return false;
+  if (!dest) {
+    const ambiguity = destinationAmbiguityReply(action.destinationName, destinationCandidatesByDisplayName(action.destinationName));
+    if (ambiguity) {
+      writeReply(routing, ambiguity);
+      return true;
+    }
+    return false;
+  }
 
   const sender = senderName(messages);
   const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });

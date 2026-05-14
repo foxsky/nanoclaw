@@ -312,6 +312,98 @@ describe('poll loop integration', () => {
     await loopPromise.catch(() => {});
   });
 
+  it('forwards TaskFlow details to a unique compound-name token destination', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-test';
+    const taskflow = setupEngineDb('board-test');
+    const now = new Date().toISOString();
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES ('ana-beatriz', 'Ana Beatriz', 'channel', 'discord', 'chan-ana', NULL)`,
+      )
+      .run();
+    taskflow
+      .prepare(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, scheduled_at, requires_close_approval, created_at, updated_at)
+         VALUES (?, ?, 'meeting', ?, NULL, 'next_action', ?, 0, ?, ?)`,
+      )
+      .run('M4', 'board-test', 'Reunião sobre CPSI na SEMAM', '2026-04-16T14:00:00.000Z', now, now);
+
+    insertMessage(
+      'm-send-details-token',
+      { sender: 'Carlos Giovanni', text: 'enviar mensagem para Beatriz com os detalhes da M4' },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-1' },
+    );
+
+    const provider = new CountingProvider({}, () => '<message to="discord-test">should not run</message>');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+
+    await waitFor(() => getUndeliveredMessages().length >= 2, 2000);
+    controller.abort();
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(2);
+    const forwarded = out.find((message) => message.platform_id === 'chan-ana');
+    const confirmation = out.find((message) => message.platform_id === 'chan-1');
+    expect(JSON.parse(forwarded!.content).text).toContain('M4');
+    expect(JSON.parse(forwarded!.content).text).toContain('Reunião sobre CPSI');
+    expect(JSON.parse(confirmation!.content).text).toContain('encaminhados para Beatriz');
+    expect(provider.queryCalls).toBe(0);
+    expect(getPendingMessages()).toHaveLength(0);
+
+    await loopPromise.catch(() => {});
+  });
+
+  it('asks for clarification when a compound-name token matches multiple destinations', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-test';
+    const taskflow = setupEngineDb('board-test');
+    const now = new Date().toISOString();
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES ('ana-silva', 'Ana Silva', 'channel', 'discord', 'chan-ana', NULL)`,
+      )
+      .run();
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES ('mariana-silva', 'Mariana Silva', 'channel', 'discord', 'chan-mariana', NULL)`,
+      )
+      .run();
+    taskflow
+      .prepare(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, scheduled_at, requires_close_approval, created_at, updated_at)
+         VALUES (?, ?, 'meeting', ?, NULL, 'next_action', ?, 0, ?, ?)`,
+      )
+      .run('M4', 'board-test', 'Reunião sobre CPSI na SEMAM', '2026-04-16T14:00:00.000Z', now, now);
+
+    insertMessage(
+      'm-send-details-ambiguous-token',
+      { sender: 'Carlos Giovanni', text: 'enviar mensagem para Silva com os detalhes da M4' },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-1' },
+    );
+
+    const provider = new CountingProvider({}, () => '<message to="discord-test">should not run</message>');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+
+    await waitFor(() => getUndeliveredMessages().length >= 1, 2000);
+    controller.abort();
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    const text = JSON.parse(out[0].content).text;
+    expect(text).toContain('mais de um destino');
+    expect(text).toContain('Ana Silva');
+    expect(text).toContain('Mariana Silva');
+    expect(out[0].platform_id).toBe('chan-1');
+    expect(provider.queryCalls).toBe(0);
+    expect(getPendingMessages()).toHaveLength(0);
+
+    await loopPromise.catch(() => {});
+  });
+
   it('sends task-priority notifications through named destinations without querying the provider', async () => {
     process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-test';
     const taskflow = setupEngineDb('board-test');
