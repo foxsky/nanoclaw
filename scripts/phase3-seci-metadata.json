@@ -1,5 +1,17 @@
 [
   {
+    "turn_index": 8,
+    "context_mode": "fresh",
+    "state_snapshot": "/tmp/phase3-state/seci-reconstructed-20260514/pre-turn8/taskflow.db",
+    "requires_state_snapshot": true
+  },
+  {
+    "turn_index": 12,
+    "context_mode": "fresh",
+    "state_snapshot": "/tmp/phase3-state/seci-reconstructed-20260514/pre-turn12/taskflow.db",
+    "requires_state_snapshot": true
+  },
+  {
     "turn_index": 5,
     "context_mode": "fresh",
     "expected_behavior": {

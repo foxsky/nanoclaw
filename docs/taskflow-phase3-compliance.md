@@ -351,6 +351,45 @@ confirmation handlers; turn `23` is a narrow target-state replay closure:
   requires_close_approval=true)`, and `api_move(P6.7, reopen)`, replacing
   v1's raw sqlite write/read with first-class MCP/API behavior.
 
+## Final SECI Closure (2026-05-14)
+
+The remaining migration gaps were closed with targeted Phase 3 replay rather
+than another full paid run. The combined evidence file replaces only the
+targeted rerun turns from the latest paid run:
+
+- Results: `/tmp/phase3-v2-results-combined-final-20260514.json`
+- Comparison: `/tmp/phase3-comparison-combined-final-20260514.txt`
+
+Final classification:
+
+| Class | Count | Turns |
+|-------|-------|-------|
+| `match` | 29 | all except 28 |
+| `v1_bug_flagged` | 1 | 28 |
+| `real_divergence` | 0 | none |
+
+Resolved items:
+
+- Turns `0`, `2`, `3`: v2 asks for clarification without mutating and now
+  preserves v1-style contextual project hints (`P13`, `P17/P17.1`, `P12`)
+  from the Phase 2 raw prompt's board context.
+- Turn `8`: reconstructed pre-turn snapshot restores `P6.1` and `P6.2` to
+  review, and v2 now answers the person-review read through the deterministic
+  MCP-backed `api_query(person_review)` path.
+- Turn `12`: reconstructed pre-turn snapshot restores `P20.2` to Mariany's
+  active tasks, and the semantic comparison matches.
+
+The reconstructed snapshots are local validation artifacts, not historical
+captures:
+
+- `/tmp/phase3-state/seci-reconstructed-20260514/pre-turn8/taskflow.db`
+- `/tmp/phase3-state/seci-reconstructed-20260514/pre-turn12/taskflow.db`
+
+Turn `28` remains deliberately annotated as `v1_bug_flagged`. v1 resolved
+`quinta-feira` to Friday; v2 must correct that behavior, not reproduce it for
+bug-for-bug parity. Cutover requires human signoff that this is an accepted
+intentional divergence from v1's mistaken output.
+
 ## Post-review hardening (2026-05-12, Codex gpt-5.5/high)
 
 A Codex review of the closure work flagged two BLOCKERs and three

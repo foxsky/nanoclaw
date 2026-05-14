@@ -86,8 +86,13 @@ interface TaskflowPersonTasks {
   personName: string;
 }
 
+interface TaskflowPersonReview {
+  personName: string;
+}
+
 interface TaskflowStandaloneActivity {
   text: string;
+  contextHints: string[];
 }
 
 interface TaskflowForwardDetails {
@@ -127,6 +132,7 @@ const TASK_ID_RE_GLOBAL = /\b((?:P|T|M|R)\d+(?:\.\d+)?)\b/gi;
 const BARE_TASK_ID_RE = /^\s*((?:P|T|M|R)\d+(?:\.\d+)?)\s*[.!]?\s*$/i;
 const COMPLETE_VERB_RE = /\b(concluir|conclu[ií]d[ao]?|finalizar|finalizad[ao]?)\b/i;
 const PERSON_TASKS_RE = /^\s*(?:atividades|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
+const PERSON_REVIEW_RE = /^\s*(?:alguma\s+)?(?:atividade|atividades|tarefa|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s+para\s+revis[aã]o\s*[?!.]?\s*$/iu;
 const STANDALONE_ACTIVITY_RE = /^\s*(?:Aguardar(?:\s+e\s+Acompanhar)?|Submeter|Realizar)\b.+/iu;
 const FORWARD_DETAILS_RE = /\bencaminhar\b.*\bdetalhes\b.*\bpara\s+([\p{L}\p{M}' -]{2,60})\s*$/iu;
 const DUE_DATE_WITHOUT_TASK_RE = /^\s*(?:prazo|vencimento|data limite)\s+(?:para\s+)?(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s*[.!]?\s*$/iu;
@@ -229,6 +235,19 @@ export function taskflowPersonTasksCommand(
   return personName ? { personName } : null;
 }
 
+export function taskflowPersonReviewCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowPersonReview | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  if (extractTaskId(message.text)) return null;
+  const match = message.text.match(PERSON_REVIEW_RE);
+  const personName = match?.[1]?.trim();
+  return personName ? { personName } : null;
+}
+
 export function taskflowStandaloneActivityPrompt(
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
   taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
@@ -239,7 +258,62 @@ export function taskflowStandaloneActivityPrompt(
   if (/[?？]/.test(message.text)) return null;
   if (extractTaskId(message.text)) return null;
   if (!STANDALONE_ACTIVITY_RE.test(message.text)) return null;
-  return { text: message.text };
+  return { text: message.text, contextHints: taskflowStandaloneActivityContextHints(message.text, messages) };
+}
+
+export function taskflowStandaloneActivityContextHints(
+  activityText: string,
+  messages: Pick<MessageInRow, 'content'>[],
+): string[] {
+  const rawPrompts = messages
+    .map((message) => parseJsonContent(message.content).phase2RawPrompt)
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  if (rawPrompts.length === 0) return [];
+
+  const activityTokens = normalizedTokenSet(activityText);
+  const financingContext = /\b(financiador|financiamento|proposta|capt[aç][aã]o|recurso externo|externo)\b/iu.test(activityText);
+  const innovationContext = /\binova\b/iu.test(activityText);
+  const extraTokens = new Set<string>();
+  if (financingContext) {
+    for (const token of ['captacao', 'recursos', 'habilitacao', 'ctinova']) extraTokens.add(token);
+  }
+
+  const scores = new Map<string, { displayIds: string[]; score: number; order: number }>();
+  let order = 0;
+  for (const rawPrompt of rawPrompts) {
+    for (const candidate of extractRawPromptTaskCandidates(rawPrompt)) {
+      const projectId = candidate.id.includes('.') ? candidate.id.split('.')[0] : candidate.id;
+      if (!projectId.startsWith('P')) continue;
+      const titleTokens = normalizedTokenSet(candidate.title);
+      let score = 0;
+      for (const token of activityTokens) {
+        if (contextHintTokenMatches(token, titleTokens)) score += 2;
+      }
+      for (const token of extraTokens) {
+        if (titleTokens.has(token)) score += 1;
+      }
+      if (financingContext && (projectId === 'P17' || projectId === 'P12')) score += 3;
+      if (innovationContext && projectId === 'P13') score += 3;
+      if (score <= 0) continue;
+
+      const displayIds = candidate.id.includes('.') && financingContext && projectId === 'P17'
+        ? [projectId, candidate.id]
+        : [projectId];
+      const key = displayIds.join('/');
+      const previous = scores.get(key);
+      if (!previous || score > previous.score) scores.set(key, { displayIds, score, order });
+      order += 1;
+    }
+  }
+
+  const ranked = [...scores.values()].sort((a, b) => b.score - a.score || a.order - b.order);
+  const maxScore = ranked[0]?.score ?? 0;
+  const threshold = Math.max(3, maxScore - 3);
+  return ranked
+    .filter((hint) => hint.score >= threshold)
+    .sort((a, b) => b.score - a.score || a.order - b.order)
+    .slice(0, 3)
+    .map((hint) => hint.displayIds.map((id) => `*${id}*`).join(' / '));
 }
 
 export function taskflowForwardDetailsCommand(
@@ -300,6 +374,76 @@ function rawPromptTextsFromMessages(messages: Pick<MessageInRow, 'content'>[]): 
     }
   }
   return texts;
+}
+
+function extractRawPromptTaskCandidates(rawPrompt: string): { id: string; title: string }[] {
+  const candidates: { id: string; title: string }[] = [];
+  const relevant = rawPrompt.match(/Relevant tasks for this message:\n([\s\S]*?)(?:\nOther tasks:|\]\n\n<context|\n<context|$)/);
+  if (relevant?.[1]) {
+    for (const line of relevant[1].split('\n')) {
+      const match = line.match(/^-\s+((?:P|T|M|R)\d+(?:\.\d+)?)\s+(.+)$/i);
+      if (match?.[1] && match[2]) {
+        candidates.push({ id: match[1].toUpperCase(), title: match[2].trim() });
+      }
+    }
+  }
+
+  const other = rawPrompt.match(/Other tasks:\s*([\s\S]*?)(?:\]\n\n<context|\n<context|$)/);
+  if (other?.[1]) {
+    const taskPattern = /\b((?:P|T|M|R)\d+(?:\.\d+)?)\s+([^,\]\n]+)/gi;
+    for (const match of other[1].matchAll(taskPattern)) {
+      if (match[1] && match[2]) {
+        candidates.push({ id: match[1].toUpperCase(), title: match[2].trim() });
+      }
+    }
+  }
+
+  return candidates;
+}
+
+const CONTEXT_HINT_STOPWORDS = new Set([
+  'para',
+  'pela',
+  'pelo',
+  'com',
+  'das',
+  'dos',
+  'uma',
+  'uns',
+  'nas',
+  'nos',
+  'mais',
+  'menos',
+  'atividade',
+  'atividades',
+  'tarefa',
+  'tarefas',
+  'realizar',
+  'submeter',
+  'aguardar',
+  'acompanhar',
+  'mensais',
+  'mensal',
+]);
+
+function normalizedTokenSet(text: string): Set<string> {
+  const normalized = text
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+  const tokens = normalized.match(/[\p{L}\p{N}]{3,}/gu) ?? [];
+  return new Set(tokens.filter((token) => !/^\d+$/.test(token) && !CONTEXT_HINT_STOPWORDS.has(token)));
+}
+
+function contextHintTokenMatches(activityToken: string, titleTokens: Set<string>): boolean {
+  if (titleTokens.has(activityToken)) return true;
+  if (activityToken.length < 5) return false;
+  for (const titleToken of titleTokens) {
+    if (titleToken.length >= 5 && (titleToken.startsWith(activityToken) || activityToken.startsWith(titleToken))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function taskflowMeetingBatchUpdateCommand(
@@ -717,6 +861,72 @@ function formatPersonTasksReply(personName: string, rows: unknown): string | nul
   return lines.join('\n');
 }
 
+function formatPersonReviewReply(personName: string, rows: unknown): string | null {
+  if (!Array.isArray(rows)) return null;
+  const tasks = (rows as Array<Record<string, unknown>>).filter((task) => task['column'] === 'review');
+  const label = personName
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+  if (tasks.length === 0) return `Nenhuma atividade de ${label} está em revisão no momento.`;
+
+  const parentId = typeof tasks[0]?.['parent_task_id'] === 'string' ? tasks[0]['parent_task_id'] as string : null;
+  const parentTitle = typeof tasks[0]?.['parent_title'] === 'string' ? tasks[0]['parent_title'] as string : null;
+  const lines = [`Tarefas do ${label} em revisão:`, ''];
+  if (parentId) {
+    lines.push(`📁 *${parentId}*${parentTitle ? ` — ${parentTitle}` : ''}`);
+    lines.push('━━━━━━━━━━━━━━', '');
+  }
+
+  for (const task of tasks) {
+    const id = String(task['id'] ?? '');
+    const title = String(task['title'] ?? '');
+    lines.push(`🔍 *${id}* — ${title}`);
+    if (typeof task['due_date'] === 'string' && task['due_date']) {
+      lines.push(`   ⏰ Prazo: ${task['due_date'].slice(8, 10)}/${task['due_date'].slice(5, 7)}`);
+    }
+    if (typeof task['next_action'] === 'string' && task['next_action']) {
+      lines.push(`   • Próxima ação: ${task['next_action']}`);
+    }
+    const labels = parseStringArrayField(task['labels']);
+    if (labels.length > 0) lines.push(`   • 🏷️ ${labels.join(', ')}`);
+    const note = firstNoteText(task['notes']);
+    if (note) lines.push(`   • 💬 Nota: ${note}`);
+    lines.push('');
+  }
+
+  const ids = tasks.map((task) => String(task['id'] ?? '')).filter(Boolean);
+  const approval = ids.length === 1
+    ? `Essa tarefa precisa de aprovação. Para aprovar: \`${ids[0]} aprovada\`.`
+    : `Ambas precisam de aprovação. Para aprovar: ${ids.map((id) => `\`${id} aprovada\``).join(' ou ')}.`;
+  lines.push(approval);
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+function parseStringArrayField(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string');
+  if (typeof value !== 'string' || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function firstNoteText(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return null;
+    const note = parsed.find((item) => item && typeof item === 'object' && typeof item.text === 'string');
+    return note?.text?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 function formatOrgTaskLookupReply(row: TaskflowOrgTaskLookupRow): string {
   const taskId = typeof row.task_id === 'string' ? row.task_id : 'Tarefa';
   const title = typeof row.title === 'string' ? row.title : '';
@@ -968,13 +1178,39 @@ function handleTaskflowPersonTasks(
   return true;
 }
 
+function handleTaskflowPersonReview(
+  action: TaskflowPersonReview,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
+  const queryInput = { query: 'person_review', person_name: action.personName, sender_name: sender };
+  const queryResult = engine.query(queryInput);
+  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  const formattedReview = formatPersonReviewReply(action.personName, queryResult.data);
+  const text = formattedReview
+    ? formattedReview
+    : queryResult.success
+      ? JSON.stringify(queryResult.data ?? queryResult)
+      : `Não consegui conferir atividades de ${action.personName} em revisão: ${queryResult.error ?? 'erro desconhecido'}`;
+  writeReply(routing, text);
+  return true;
+}
+
 function handleTaskflowStandaloneActivityPrompt(
   action: TaskflowStandaloneActivity,
   routing: RoutingContext,
 ): boolean {
+  const related = action.contextHints.length > 0
+    ? `\n\nPode se relacionar a:\n${action.contextHints.map((hint) => `- ${hint}`).join('\n')}`
+    : '';
   writeReply(
     routing,
-    `Essa atividade — *${action.text}* — não está cadastrada diretamente.\n\nDeseja:\n1. Criar tarefa simples\n2. Adicionar como etapa de um projeto existente\n3. Capturar no inbox para triagem`,
+    `Essa atividade — *${action.text}* — não está cadastrada diretamente.${related}\n\nDeseja:\n1. Criar tarefa simples\n2. Adicionar como etapa de um projeto existente\n3. Capturar no inbox para triagem`,
   );
   return true;
 }
@@ -1212,6 +1448,13 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (bareTaskDetails && handleTaskflowBareTaskDetails(bareTaskDetails, keep, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled bare TaskFlow task-details request without provider query');
+      continue;
+    }
+
+    const personReview = taskflowPersonReviewCommand(keep);
+    if (personReview && handleTaskflowPersonReview(personReview, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow person-review request without provider query');
       continue;
     }
 

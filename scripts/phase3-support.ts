@@ -12,6 +12,7 @@ export type Phase3ClassificationKind =
   | 'state_snapshot_missing'
   | 'state_drift'
   | 'state_allocation_drift'
+  | 'ask_context_hint_gap'
   | 'destination_registration_gap'
   | 'documented_tool_surface_change'
   | 'missing_api_capability'
@@ -529,6 +530,43 @@ function isFreshAllocationDrift(
   );
 }
 
+function isAskContextHintGap(
+  matches: SemanticComparison['matches'],
+  expected: SemanticSummary,
+  actual: SemanticSummary,
+): boolean {
+  return (
+    matches.action &&
+    matches.mutation_types &&
+    matches.recipient &&
+    matches.outbound_intent &&
+    !matches.task_ids &&
+    expected.action === 'ask' &&
+    actual.action === 'ask' &&
+    expected.mutation_types.length === 0 &&
+    actual.mutation_types.length === 0
+  );
+}
+
+function isReadStateDrift(
+  turn: Phase3TurnResult,
+  matches: SemanticComparison['matches'],
+  expected: SemanticSummary,
+  actual: SemanticSummary,
+): boolean {
+  return (
+    turn.phase3?.db_snapshot_status !== 'restored' &&
+    matches.action &&
+    matches.mutation_types &&
+    matches.recipient &&
+    !matches.task_ids &&
+    expected.action === 'read' &&
+    actual.action === 'read' &&
+    actual.outbound_intent === 'informational' &&
+    expected.outbound_intent !== 'none'
+  );
+}
+
 // v2 grounded with extra reads before answering. Suppressed when explicit
 // metadata says the expected action is something else (the metadata wins).
 function isReadOnlyExtra(turn: Phase3TurnResult): boolean {
@@ -610,6 +648,20 @@ const CLASSIFICATION_RULES: ClassificationRule[] = [
     result: {
       kind: 'state_allocation_drift',
       note: 'Create+admin tool sequence matches; task IDs differ only because v2 allocated the next free sequence number. Provide a per-turn DB snapshot to compare exact IDs.',
+    },
+  },
+  {
+    test: (_t, m, e, a) => isAskContextHintGap(m, e, a),
+    result: {
+      kind: 'ask_context_hint_gap',
+      note: 'Both versions asked instead of mutating, but v2 omitted or changed the contextual task/project hints that v1 mentioned. This is observable prose drift, not an engine mutation bug.',
+    },
+  },
+  {
+    test: (t, m, e, a) => isReadStateDrift(t, m, e, a),
+    result: {
+      kind: 'state_drift',
+      note: 'Both versions performed a read and answered informationally, but the task set differs without a restored per-turn DB snapshot. Treat as state drift unless a matching historical snapshot proves otherwise.',
     },
   },
   {

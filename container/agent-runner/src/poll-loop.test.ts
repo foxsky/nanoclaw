@@ -14,11 +14,13 @@ import {
   taskflowExplicitCompletionCommand,
   taskflowForwardDetailsCommand,
   taskflowMeetingBatchUpdateCommand,
+  taskflowPersonReviewCommand,
   taskflowPersonTasksCommand,
   taskflowPureGreetingReply,
   taskflowReviewBypassConfirmation,
   taskflowReviewBypassDiagnosticPrompt,
   taskflowReviewBypassRepairPrompt,
+  taskflowStandaloneActivityContextHints,
   taskflowStandaloneActivityPrompt,
 } from './poll-loop.js';
 
@@ -248,12 +250,49 @@ describe('TaskFlow deterministic confirmation guards', () => {
     expect(taskflowStandaloneActivityPrompt(
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'Submeter ao menos 1 proposta a financiador externo' }) }],
       true,
-    )).toEqual({ text: 'Submeter ao menos 1 proposta a financiador externo' });
+    )).toEqual({ text: 'Submeter ao menos 1 proposta a financiador externo', contextHints: [] });
 
     expect(taskflowStandaloneActivityPrompt(
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'Aguardar e Acompanhar licitação para reforma do prédio pela SDU Leste' }) }],
       true,
-    )).toEqual({ text: 'Aguardar e Acompanhar licitação para reforma do prédio pela SDU Leste' });
+    )).toEqual({ text: 'Aguardar e Acompanhar licitação para reforma do prédio pela SDU Leste', contextHints: [] });
+  });
+
+  it('extracts related project hints from Phase 2 raw prompt task context', () => {
+    const raw = `[Board context: 2 inbox.
+Relevant tasks for this message:
+- P17.1 Habilitação p/ Captação de Recursos SECTI (next_action, Mauro, prazo 10/04)
+- P13 Ecossistema de Inovação (next_action, Mauro)
+Other tasks: P12 CTInova II, P14 Balcão do Trabalhador e MIS]
+<messages>
+<message sender="Mariany Borges">Submeter ao menos 1 proposta a financiador externo</message>
+</messages>`;
+
+    expect(taskflowStandaloneActivityContextHints(
+      'Submeter ao menos 1 proposta a financiador externo',
+      [{ content: JSON.stringify({ phase2RawPrompt: raw }) }],
+    )).toEqual(['*P17* / *P17.1*', '*P12*']);
+  });
+
+  it('keeps standalone activity context hints focused on strongest related projects', () => {
+    const raw = `[Board context: 2 inbox.
+Relevant tasks for this message:
+- P13.2 Implementação Software AMI (SDU Leste) (next_action, Mauro Cesar)
+- T85 Uso do Waze for Cities pela SDU Sudeste e ETURB (next_action, Mauro Cesar)
+Other tasks: P2 Agência INOVATHE, P13 Ecossistema de Inovação]
+<messages>
+<message sender="Mariany Borges">Realizar 8 edições mensais do Inova Talks (mai-dez/2026)</message>
+</messages>`;
+
+    expect(taskflowStandaloneActivityContextHints(
+      'Aguardar e Acompanhar licitação para reforma do prédio pela SDU Leste',
+      [{ content: JSON.stringify({ phase2RawPrompt: raw }) }],
+    )).toEqual(['*P13*']);
+
+    expect(taskflowStandaloneActivityContextHints(
+      'Realizar 8 edições mensais do Inova Talks (mai-dez/2026)',
+      [{ content: JSON.stringify({ phase2RawPrompt: raw }) }],
+    )).toEqual(['*P13*']);
   });
 
   it('does not treat actionable task commands as standalone activity prompts', () => {
@@ -273,6 +312,18 @@ describe('TaskFlow deterministic confirmation guards', () => {
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'tarefas da Mariany Borges' }) }],
       true,
     )).toEqual({ personName: 'Mariany Borges' });
+  });
+
+  it('detects person review-list requests', () => {
+    expect(taskflowPersonReviewCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'Alguma atividade do João para revisão' }) }],
+      true,
+    )).toEqual({ personName: 'João' });
+
+    expect(taskflowPersonReviewCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'tarefas de João Antonio para revisão?' }) }],
+      true,
+    )).toEqual({ personName: 'João Antonio' });
   });
 
   it('does not treat diagnostic task-id questions as person task-list requests', () => {

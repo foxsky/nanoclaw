@@ -463,6 +463,48 @@ describe('Phase 3 semantic comparison', () => {
 });
 
 describe('Phase 3 state-drift classifications', () => {
+  it('classifies ask-only task hint differences as a context hint gap', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 0,
+      text: 'Aguardar e Acompanhar licitação para reforma do prédio pela SDU Leste',
+      v1: {
+        tools: [],
+        final_response: 'Pode se relacionar ao P13. Deseja registrar?',
+      },
+      v2: {
+        tools: [],
+        outbound: [{ kind: 'chat', content: '{"text":"Deseja criar tarefa simples, adicionar como etapa ou capturar no inbox?"}' }],
+      },
+    };
+
+    const comparison = compareSemanticTurn(turn);
+    expect(comparison.classification.kind).toBe('ask_context_hint_gap');
+    expect(comparison.matches.action).toBe(true);
+    expect(comparison.matches.task_ids).toBe(false);
+  });
+
+  it('classifies read-only task-set mismatches without restored snapshots as state drift', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 8,
+      text: 'Alguma atividade do João para revisão',
+      v1: {
+        tools: [{ name: 'mcp__nanoclaw__taskflow_query', input: { query: 'person_review', person_name: 'João Antonio' } }],
+        final_response: 'Tarefas do João em revisão: P6.1 e P6.2.',
+      },
+      v2: {
+        tools: [{ name: 'mcp__nanoclaw__api_query', input: { query: 'person_review', person_name: 'João Antonio' } }],
+        outbound: [{ kind: 'chat', content: '{"text":"Nenhuma atividade do João Antonio está em revisão. P6.10 e P6.12 estão ativas."}' }],
+      },
+      phase3: {
+        db_snapshot_status: 'not_requested',
+      },
+    };
+
+    const comparison = compareSemanticTurn(turn);
+    expect(comparison.classification.kind).toBe('state_drift');
+    expect(comparison.matches.task_ids).toBe(false);
+  });
+
   // Turn 24 / 26: v1 historical task IDs (T84/T85) differ from v2's
   // freshly-allocated ID (T96) because the per-turn DB snapshot is missing
   // and the allocator hands out the next free slot. Treat as state drift,
