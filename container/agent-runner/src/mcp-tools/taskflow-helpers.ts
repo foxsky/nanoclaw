@@ -81,8 +81,9 @@ type RawParentNotification = {
  *      `board-` prefix added if missing.
  *
  *   2. **task ID case-folding.** Agents sometimes pass user-typed lowercase
- *      IDs (`p11.23` for `P11.23`). Uppercase every `*task_id` key plus
- *      `subtask_id` so SQLite's BINARY-collated lookups still match.
+ *      IDs (`p11.23` for `P11.23`). Uppercase every `*task_id` key,
+ *      `subtask_id`, and string arrays under `*task_ids` so SQLite's
+ *      BINARY-collated lookups still match.
  *
  * Returns a new object; the input is not mutated.
  */
@@ -97,6 +98,12 @@ export function normalizeAgentIds(args: Record<string, unknown>): Record<string,
   for (const key of Object.keys(out)) {
     if ((key.endsWith('task_id') || key === 'subtask_id') && typeof out[key] === 'string') {
       out[key] = (out[key] as string).toUpperCase();
+    } else if (
+      key.endsWith('task_ids') &&
+      Array.isArray(out[key]) &&
+      (out[key] as unknown[]).every((value) => typeof value === 'string')
+    ) {
+      out[key] = (out[key] as string[]).map((value) => value.toUpperCase());
     }
   }
   return out;

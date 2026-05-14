@@ -112,6 +112,11 @@ describe('normalizeAgentIds', () => {
     expect(out.subtask_id).toBe('S-001');
   });
 
+  it('uppercases task_ids arrays', () => {
+    const out = normalizeAgentIds({ task_ids: ['p11.17', 'p11.19'] });
+    expect(out.task_ids).toEqual(['P11.17', 'P11.19']);
+  });
+
   it('does not mutate the input object', () => {
     const input = { board_id: 'seci', task_id: 'p11.23' };
     const out = normalizeAgentIds(input);

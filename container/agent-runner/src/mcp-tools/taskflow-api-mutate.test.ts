@@ -447,15 +447,18 @@ describe('api_move MCP tool (A11.1)', () => {
     expect(apiMoveTool.tool.name).toBe('api_move');
   });
 
-  it('declares required board_id/task_id/action/sender_name and optional reason/subtask_id/confirmed_task_id; action enum covers 10 transitions', async () => {
+  it('declares required action/sender_name, single task_id or bulk task_ids, and optional reason/subtask_id/confirmed_task_id; action enum covers 10 transitions', async () => {
     const { apiMoveTool } = await import('./taskflow-api-mutate.ts');
     const schema = apiMoveTool.tool.inputSchema as {
       required: string[];
       properties: Record<string, { enum?: string[] }>;
     };
     expect(schema.required).toEqual(
-      expect.arrayContaining(['task_id', 'action', 'sender_name']),
+      expect.arrayContaining(['action', 'sender_name']),
     );
+    expect(schema.required).not.toContain('task_id');
+    expect(schema.properties).toHaveProperty('task_id');
+    expect(schema.properties).toHaveProperty('task_ids');
     expect(schema.properties).toHaveProperty('reason');
     expect(schema.properties).toHaveProperty('subtask_id');
     expect(schema.properties).toHaveProperty('confirmed_task_id');
@@ -487,7 +490,48 @@ describe('api_move MCP tool (A11.1)', () => {
     expect(result.data.task_id).toBe(taskId);
     expect(result.data.from_column).toBe('inbox');
     expect(result.data.to_column).toBe('in_progress');
+    expect(result.data.formatted).toContain(`${taskId} — Move me`);
     expect(Array.isArray(result.notification_events)).toBe(true);
+  });
+
+  it('bulk approve: task_ids moves all review tasks and returns a formatted summary', async () => {
+    const { apiCreateSimpleTaskTool, apiMoveTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+    const first = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Bulk first',
+      sender_name: 'alice',
+      assignee: 'bob',
+    });
+    const second = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Bulk second',
+      sender_name: 'alice',
+      assignee: 'bob',
+    });
+    const firstId = JSON.parse(first.content[0].text).data.id;
+    const secondId = JSON.parse(second.content[0].text).data.id;
+    await apiMoveTool.handler({ board_id: BOARD, task_id: firstId, action: 'review', sender_name: 'alice' });
+    await apiMoveTool.handler({ board_id: BOARD, task_id: secondId, action: 'review', sender_name: 'alice' });
+
+    const response = await apiMoveTool.handler({
+      board_id: BOARD,
+      task_ids: [firstId.toLowerCase(), secondId.toLowerCase()],
+      action: 'approve',
+      sender_name: 'alice',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data.bulk).toBe(true);
+    expect(result.data.success_count).toBe(2);
+    expect(result.data.formatted).toContain('2 de 2 tarefa(s)');
+    expect(result.data.results.map((r: { task_id: string }) => r.task_id)).toEqual([firstId, secondId]);
+    const rows = db
+      .query(`SELECT id, column FROM tasks WHERE board_id = ? AND id IN (?, ?) ORDER BY id`)
+      .all(BOARD, firstId, secondId) as Array<{ id: string; column: string }>;
+    expect(rows.map((r) => r.column)).toEqual(['done', 'done']);
   });
 
   it('wait action with reason: persists reason in task_history', async () => {

@@ -9,7 +9,7 @@
 import type { Database } from 'bun:sqlite';
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
-import type { AdminParams, DependencyParams, HierarchyParams, QueryParams, ReassignParams, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
+import type { AdminParams, DependencyParams, HierarchyParams, MoveResult, QueryParams, ReassignParams, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
@@ -121,6 +121,18 @@ function finalizeMutationResult(result: { success: boolean; notifications?: unkn
   const notification_events = normalizeEngineNotificationEvents(result);
   if (!success) return jsonResponse({ success: false, ...rest, notification_events });
   return jsonResponse({ success: true, data: rest, notification_events });
+}
+
+function addMoveFormattedResult(result: MoveResult, action: MoveAction): MoveResult {
+  if (!result.success || result.formatted) return result;
+  const title = result.title ? ` — ${result.title}` : '';
+  const transition = result.from_column && result.to_column
+    ? ` (${result.from_column} → ${result.to_column})`
+    : '';
+  return {
+    ...result,
+    formatted: `${result.task_id ?? 'Tarefa'}${title}: ação "${action}" concluída${transition}.`,
+  };
 }
 
 function pickTaskSummary(task: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
@@ -419,29 +431,45 @@ export const apiMoveTool: McpToolDefinition = {
   tool: {
     name: 'api_move',
     description:
-      'Move a task across the state machine. Actions: start, wait, resume, return, review, approve, reject, conclude, reopen, force_start. Engine enforces from-column transition + role-based permissions.',
+      'Move one task or a batch of tasks across the state machine. Actions: start, wait, resume, return, review, approve, reject, conclude, reopen, force_start. Use task_ids for explicit bulk approvals such as "aprovar todas as tarefas de Nome" after querying review candidates. Engine enforces from-column transition + role-based permissions.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         task_id: { type: 'string' },
+        task_ids: { type: 'array', items: { type: 'string' } },
         action: { type: 'string', enum: [...MOVE_ACTIONS] },
         sender_name: { type: 'string' },
         reason: { type: 'string' },
         subtask_id: { type: 'string' },
         confirmed_task_id: { type: 'string' },
       },
-      required: ['task_id', 'action', 'sender_name'],
+      required: ['action', 'sender_name'],
     },
   },
   async handler(args) {
     args = normalizeAgentIds(args);
-    const parsed = parseTaskActorArgs(args);
-    if (!parsed.ok) return parsed.error;
-    const { boardId, taskId, senderName } = parsed;
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) return err('board_id: required string');
+    const senderName = requireString(args, 'sender_name');
+    if (senderName === null) return err('sender_name: required string');
     if (typeof args.action !== 'string' || !MOVE_ACTIONS.includes(args.action as MoveAction)) {
       return err(`action: expected one of ${MOVE_ACTIONS.join(' | ')}`);
     }
     const action = args.action as MoveAction;
+
+    let taskIds: string[];
+    if (args.task_ids !== undefined) {
+      if (!Array.isArray(args.task_ids) || args.task_ids.some((id) => typeof id !== 'string')) {
+        return err('task_ids: expected array of strings');
+      }
+      taskIds = args.task_ids as string[];
+      if (taskIds.length === 0) return err('task_ids: expected at least one task id');
+      if (args.task_id !== undefined) return err('provide either task_id or task_ids, not both');
+    } else {
+      const taskId = requireString(args, 'task_id');
+      if (taskId === null) return err('task_id: required string');
+      taskIds = [taskId];
+    }
 
     let reason: string | undefined;
     if (args.reason !== undefined) {
@@ -462,16 +490,54 @@ export const apiMoveTool: McpToolDefinition = {
     try {
       const db = getTaskflowDb();
       const engine = new TaskflowEngine(db, boardId);
-      const result = engine.move({
-        board_id: boardId,
-        task_id: taskId,
-        action,
-        sender_name: senderName,
-        reason,
-        subtask_id: subtaskId,
-        confirmed_task_id: confirmedTaskId,
+      if (taskIds.length === 1) {
+        const result = engine.move({
+          board_id: boardId,
+          task_id: taskIds[0],
+          action,
+          sender_name: senderName,
+          reason,
+          subtask_id: subtaskId,
+          confirmed_task_id: confirmedTaskId,
+        });
+        return finalizeMutationResult(addMoveFormattedResult(result, action));
+      }
+
+      const results: MoveResult[] = [];
+      const notifications: unknown[] = [];
+      for (const taskId of taskIds) {
+        const result = engine.move({
+          board_id: boardId,
+          task_id: taskId,
+          action,
+          sender_name: senderName,
+          reason,
+          subtask_id: subtaskId,
+          confirmed_task_id: confirmedTaskId,
+        });
+        results.push(result);
+        if (Array.isArray(result.notifications)) notifications.push(...result.notifications);
+      }
+      const successes = results.filter((r) => r.success);
+      const failures = results.filter((r) => !r.success);
+      const formatted = [
+        `${successes.length} de ${results.length} tarefa(s) processada(s) com ação "${action}".`,
+        ...successes.map((r) => `- ${r.task_id} — ${r.title ?? ''}`.trim()),
+        ...failures.map((r) => `- ${r.task_id ?? 'unknown'} falhou: ${r.error ?? 'erro desconhecido'}`),
+      ].join('\n');
+      return jsonResponse({
+        success: failures.length === 0,
+        data: {
+          bulk: true,
+          action,
+          processed_count: results.length,
+          success_count: successes.length,
+          failure_count: failures.length,
+          results: results.map(({ notifications: _notifications, ...result }) => result),
+          formatted,
+        },
+        notification_events: normalizeEngineNotificationEvents({ success: failures.length === 0, notifications }),
       });
-      return finalizeMutationResult(result);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });

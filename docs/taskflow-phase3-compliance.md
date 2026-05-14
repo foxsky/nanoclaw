@@ -287,6 +287,17 @@ Main findings from that coverage replay:
   `formatted` no-review summary for `person_review`; targeted replay
   `/tmp/phase3-v2-results-seci-coverage-turn35-afterfix-20260514.json`
   confirms the real agent path now sends outbound instead of timing out.
+- Reconstructed snapshots for the bulk approval family were created under
+  `/tmp/phase3-state/seci-coverage-bulk/` and replayed through
+  `/tmp/whatsapp-seci-bulk-approval-snapshots-20260514.json`. Those snapshots
+  showed a real v2 gap: after reading review candidates, the agent could
+  either report "approved" without mutating or perform several individual
+  moves and fail to send a final confirmation. The MCP surface now supports
+  `api_move({ task_ids: [...] })`, single moves include a formatted
+  confirmation, and the Taskflow template maps "aprovar todas as
+  tarefas/atividades de Nome" to query-plus-bulk-move. Replay
+  `/tmp/phase3-v2-results-seci-bulk-approval-bulkmove-20260514.json`
+  confirms the bulk family now uses MCP mutation calls and sends outbound.
 
 ## Comparator Classifications
 
