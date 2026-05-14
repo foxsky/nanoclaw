@@ -6,6 +6,7 @@ For detailed release notes, see the [full changelog on the documentation site](h
 
 ## [Unreleased]
 
+- Added first-class Taskflow project-summary reads (`projects`, `project_next_actions`, and `projects_detailed`) so v2 can answer project list, per-project next-action, and detailed project/activity/note report requests with one `api_query` instead of fanning out through dozens of per-project lookups.
 - Added a Taskflow full-history replay coverage audit that compares a validated migration corpus against all extracted historical WhatsApp turns, reports uncovered behavior signatures, and emits the next coverage-oriented replay candidate set without running a paid agent replay.
 - Fixed Phase 3 custom-corpus replay plumbing so `phase3-driver.ts --corpus` is forwarded into the underlying Phase 2 driver instead of silently replaying the original SECI 30-turn corpus, and scoped the original corpus's default chain-mode turn indexes so generated corpuses stay fresh unless metadata says otherwise.
 - Fixed meeting creation parity when a typed participant is not registered: `api_create_meeting_task` now creates the meeting with registered participants, returns `unresolved_participants` plus a registration/external-participant prompt, and avoids causing the agent to fall back to a plain task.

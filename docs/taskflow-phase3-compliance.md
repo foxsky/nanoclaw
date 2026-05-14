@@ -258,6 +258,24 @@ The first paid 40-turn coverage replay was run on 2026-05-14:
   `8` read-only-extra classifications, `3` documented raw-sqlite
   tool-surface changes, and `1` allocation-drift case.
 
+The highest fan-out read regressions in that replay were project-summary
+requests. v2 now exposes three first-class MCP query discriminators:
+
+- `api_query({ query: 'projects' })` for compact active project lists;
+- `api_query({ query: 'project_next_actions' })` for one-shot next actions
+  grouped by project;
+- `api_query({ query: 'projects_detailed' })` for projects, active
+  activities, and note excerpts.
+
+A targeted paid replay after this fix used:
+
+- results: `/tmp/phase3-v2-results-seci-projects-afterfix-20260514.json`;
+- turns: `6`, `25`, and `26`;
+- outcome: each turn used exactly one `api_query` and produced one outbound
+  response. This removed the prior 32-call detailed-report loop, 40-call
+  project-next-actions loop, and 27-call project-list loop from the coverage
+  replay.
+
 Main findings from that coverage replay:
 
 - Bulk approval/review flows are not proven by the original 30-turn corpus.

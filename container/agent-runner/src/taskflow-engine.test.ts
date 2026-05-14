@@ -223,6 +223,55 @@ describe('TaskflowEngine', () => {
     });
   });
 
+  describe('query: project summaries', () => {
+    beforeEach(() => {
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, notes, created_at, updated_at)
+         VALUES ('P-100', '${BOARD_ID}', 'project', 'Project Alpha', 'person-1', 'next_action', 0,
+                 '[{"id":1,"text":"Project note"}]', '${now}', '${now}')`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, parent_task_id, next_action, notes, created_at, updated_at)
+         VALUES ('P-100.1', '${BOARD_ID}', 'simple', 'Draft plan', 'person-2', 'next_action', 0, 'P-100',
+                 'Write the first draft', '[{"id":1,"text":"Subtask note"}]', '${now}', '${now}')`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, parent_task_id, waiting_for, created_at, updated_at)
+         VALUES ('P-100.2', '${BOARD_ID}', 'simple', 'Collect data', 'person-1', 'waiting', 0, 'P-100',
+                 'Dataset from partner', '${now}', '${now}')`,
+      );
+    });
+
+    it('projects returns a compact active project list', () => {
+      const r = engine.query({ query: 'projects' });
+      expect(r.success).toBe(true);
+      const project = r.data.find((p: any) => p.id === 'P-100');
+      expect(project.title).toBe('Project Alpha');
+      expect(project.assignee_name).toBe('Alexandre');
+      expect(project.active_subtask_count).toBe(2);
+      expect(r.formatted).toContain('Projetos ativos');
+      expect(r.formatted).toContain('P-100 — Project Alpha');
+    });
+
+    it('project_next_actions returns project child next actions in one query', () => {
+      const r = engine.query({ query: 'project_next_actions' });
+      const project = r.data.find((p: any) => p.id === 'P-100');
+      expect(project.next_actions.map((a: any) => a.id)).toEqual(['P-100.1', 'P-100.2']);
+      expect(r.formatted).toContain('Write the first draft');
+      expect(r.formatted).toContain('Dataset from partner');
+    });
+
+    it('projects_detailed includes note excerpts without per-project task_details calls', () => {
+      const r = engine.query({ query: 'projects_detailed' });
+      const project = r.data.find((p: any) => p.id === 'P-100');
+      expect(project.notes).toEqual(['Project note']);
+      expect(project.next_actions[0].notes).toEqual(['Subtask note']);
+      expect(r.formatted).toContain('nota do projeto: Project note');
+      expect(r.formatted).toContain('nota: Subtask note');
+    });
+  });
+
   /* ---------------------------------------------------------------- */
   /*  query: person_tasks                                              */
   /* ---------------------------------------------------------------- */

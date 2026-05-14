@@ -92,6 +92,10 @@ function extractSearchTokens(value: string): string[] {
   return out;
 }
 
+function naturalTaskIdCompare(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+}
+
 type CompletionRenderCommon = {
   taskId: string;
   title: string;
@@ -6083,6 +6087,128 @@ export class TaskflowEngine {
     return { allTasks, topLevel, subtaskMap, taskCount, projectCount, subtaskCount };
   }
 
+  private boardPersonNameMap(): Map<string, string> {
+    const rows = this.db
+      .prepare(`SELECT person_id, name FROM board_people WHERE board_id = ?`)
+      .all(this.boardId) as Array<{ person_id: string; name: string }>;
+    return new Map(rows.map((p) => [p.person_id, p.name]));
+  }
+
+  private parseNoteTexts(raw: unknown, limit = 4): string[] {
+    if (typeof raw !== 'string' || raw.trim() === '') return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((note) => typeof note?.text === 'string' ? note.text.trim() : '')
+        .filter(Boolean)
+        .slice(0, limit);
+    } catch {
+      return [];
+    }
+  }
+
+  private buildProjectSummaries(mode: 'list' | 'next_actions' | 'detailed'): {
+    projects: Array<Record<string, unknown>>;
+    formatted: string;
+  } {
+    const { topLevel, subtaskMap } = this.fetchActiveTasks();
+    const nameOf = this.boardPersonNameMap();
+    const personName = (id: string | null | undefined) => id ? nameOf.get(id) ?? id : null;
+    const todayStr = today();
+    const projects = topLevel
+      .filter((task: any) => task.type === 'project')
+      .sort((a: any, b: any) => naturalTaskIdCompare(String(a.id), String(b.id)))
+      .map((project: any) => {
+        const subtasks = (subtaskMap.get(project.id) ?? [])
+          .filter((task: any) => task.column !== 'done')
+          .sort((a: any, b: any) => naturalTaskIdCompare(String(a.id), String(b.id)));
+        const counts = {
+          next_action: subtasks.filter((task: any) => task.column === 'next_action').length,
+          in_progress: subtasks.filter((task: any) => task.column === 'in_progress').length,
+          waiting: subtasks.filter((task: any) => task.column === 'waiting').length,
+          review: subtasks.filter((task: any) => task.column === 'review').length,
+          overdue: subtasks.filter((task: any) => task.due_date && task.due_date < todayStr).length,
+        };
+        const nextActions = subtasks
+          .filter((task: any) => task.column === 'next_action' || task.next_action || task.waiting_for || task.column === 'in_progress' || task.column === 'waiting' || task.column === 'review')
+          .map((task: any) => ({
+            id: this.displayId(task),
+            title: task.title,
+            assignee: task.assignee,
+            assignee_name: personName(task.assignee),
+            column: task.column,
+            due_date: task.due_date,
+            next_action: task.next_action,
+            waiting_for: task.waiting_for,
+            notes: mode === 'detailed' ? this.parseNoteTexts(task.notes, 3) : undefined,
+          }));
+        return {
+          id: this.displayId(project),
+          title: project.title,
+          assignee: project.assignee,
+          assignee_name: personName(project.assignee),
+          column: project.column,
+          due_date: project.due_date,
+          next_action: project.next_action,
+          active_subtask_count: subtasks.length,
+          counts,
+          ...(mode !== 'list' ? { next_actions: nextActions } : {}),
+          ...(mode === 'detailed' ? { notes: this.parseNoteTexts(project.notes, 4) } : {}),
+        };
+      });
+
+    const lines: string[] = [];
+    const title = mode === 'list'
+      ? `Projetos ativos (${projects.length})`
+      : mode === 'next_actions'
+        ? `Próximas ações por projeto (${projects.length})`
+        : `Relatório de projetos, atividades e notas (${projects.length})`;
+    lines.push(`*${title}*`);
+    for (const project of projects) {
+      const assignee = project.assignee_name ? ` — ${project.assignee_name}` : '';
+      const due = project.due_date ? `, prazo ${project.due_date}` : '';
+      const counts = project.counts as Record<string, number>;
+      const countText = [
+        `${project.active_subtask_count} ativa(s)`,
+        counts.in_progress ? `${counts.in_progress} em andamento` : '',
+        counts.waiting ? `${counts.waiting} aguardando` : '',
+        counts.review ? `${counts.review} em revisão` : '',
+        counts.overdue ? `${counts.overdue} atrasada(s)` : '',
+      ].filter(Boolean).join(' • ');
+      lines.push(`- ${project.id} — ${project.title}${assignee}${due}${countText ? ` (${countText})` : ''}`);
+      const actions = (project.next_actions as Array<Record<string, unknown>> | undefined) ?? [];
+      if (mode !== 'list') {
+        if (actions.length === 0) {
+          lines.push('  • Sem próximas ações/subtarefas ativas registradas.');
+        } else {
+          for (const action of actions.slice(0, mode === 'detailed' ? 12 : 6)) {
+            const actionAssignee = action.assignee_name ? ` — ${action.assignee_name}` : '';
+            const actionDue = action.due_date ? `, prazo ${action.due_date}` : '';
+            const actionNext = action.next_action ? `, próxima ação: ${action.next_action}` : '';
+            const waiting = action.waiting_for ? `, aguardando: ${action.waiting_for}` : '';
+            lines.push(`  • ${action.id} — ${action.title}${actionAssignee} [${action.column}]${actionDue}${actionNext}${waiting}`);
+            if (mode === 'detailed') {
+              for (const note of (action.notes as string[] | undefined) ?? []) {
+                lines.push(`    - nota: ${note}`);
+              }
+            }
+          }
+          if (actions.length > (mode === 'detailed' ? 12 : 6)) {
+            lines.push(`  • ... e mais ${actions.length - (mode === 'detailed' ? 12 : 6)} atividade(s).`);
+          }
+        }
+      }
+      if (mode === 'detailed') {
+        for (const note of (project.notes as string[] | undefined) ?? []) {
+          lines.push(`  - nota do projeto: ${note}`);
+        }
+      }
+    }
+
+    return { projects, formatted: lines.join('\n') };
+  }
+
   /* ---------------------------------------------------------------- */
   /*  Compact board header (for digest/weekly reports)                  */
   /* ---------------------------------------------------------------- */
@@ -6698,6 +6824,33 @@ export class TaskflowEngine {
 
         case 'review':
           return { success: true, data: this.getTasksByColumn('review') };
+
+        case 'projects': {
+          const result = this.buildProjectSummaries('list');
+          return {
+            success: true,
+            data: result.projects,
+            formatted: result.formatted,
+          };
+        }
+
+        case 'project_next_actions': {
+          const result = this.buildProjectSummaries('next_actions');
+          return {
+            success: true,
+            data: result.projects,
+            formatted: result.formatted,
+          };
+        }
+
+        case 'projects_detailed': {
+          const result = this.buildProjectSummaries('detailed');
+          return {
+            success: true,
+            data: result.projects,
+            formatted: result.formatted,
+          };
+        }
 
         case 'in_progress':
           return { success: true, data: this.getTasksByColumn('in_progress') };

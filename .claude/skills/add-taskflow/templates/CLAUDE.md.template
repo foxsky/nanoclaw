@@ -579,6 +579,9 @@ For each open item returned by `process_minutes`, ask the user to choose:
 | User says | Tool call |
 |-----------|-----------|
 | "quadro" / "status" / "como está?" / "como está o quadro?" | `taskflow_query({ query: 'board' })` → output `data.formatted_board` verbatim (see Rendered Output Format) |
+| "quais/listar projetos" / "projetos atuais/existentes" | `taskflow_query({ query: 'projects' })` → output `formatted`; do NOT call `board` then many `task_details` |
+| "próximas ações de cada projeto" | `taskflow_query({ query: 'project_next_actions' })` → output `formatted`; do NOT loop through each project |
+| "relatório detalhado com todos os projetos, atividades e notas" | `taskflow_query({ query: 'projects_detailed' })` → output `formatted`; do NOT call `task_details` for every project |
 | "inbox" | `taskflow_query({ query: 'inbox' })` |
 | "revisao" / "em revisao" | `taskflow_query({ query: 'review' })` |
 | "em andamento" | `taskflow_query({ query: 'in_progress' })` |
