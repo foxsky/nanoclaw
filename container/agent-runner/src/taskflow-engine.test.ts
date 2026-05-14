@@ -1418,6 +1418,14 @@ describe('TaskflowEngine', () => {
       );
       const r = engine.query({ query: 'person_review', person_name: 'Giovanni' });
       expect(r.data).toHaveLength(1);
+      expect(r.formatted).toContain('Giovanni: 1 tarefa(s) em revisão');
+      expect(r.formatted).toContain('T-003');
+    });
+
+    it('formats empty review results explicitly', () => {
+      const r = engine.query({ query: 'person_review', person_name: 'Giovanni' });
+      expect(r.data).toHaveLength(0);
+      expect(r.formatted).toBe('Giovanni: nenhuma tarefa em revisão.');
     });
   });
 

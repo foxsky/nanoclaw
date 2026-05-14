@@ -1076,6 +1076,19 @@ export class TaskflowEngine {
     return sc ? `${sc}-${task.id}` : task.id;
   }
 
+  private formatPersonColumnTasks(personName: string, columnLabel: string, tasks: any[]): string {
+    if (tasks.length === 0) {
+      return `${personName}: nenhuma tarefa em ${columnLabel}.`;
+    }
+    const lines = [`${personName}: ${tasks.length} tarefa(s) em ${columnLabel}:`];
+    for (const task of tasks) {
+      const due = task.due_date ? `, prazo ${task.due_date}` : '';
+      const parent = task.parent_title ? `, projeto ${task.parent_title}` : '';
+      lines.push(`- ${this.displayId(task)} — ${task.title}${parent}${due}`);
+    }
+    return lines.join('\n');
+  }
+
   /** Determine the viewer board for a notification recipient.
    *  If the target person has a child board under the task's board, they see it from the child board (needs prefix).
    *  Otherwise they see it from the task's board (no prefix). */
@@ -6728,9 +6741,14 @@ export class TaskflowEngine {
 
         case 'person_review': {
           const person = this.requirePerson(params.person_name, 'person_name');
-          return { success: true, data: this.queryVisibleTasks(
+          const tasks = this.queryVisibleTasks(
             "AND t.assignee = ? AND t.column = 'review'", [person.person_id],
-          ) };
+          );
+          return {
+            success: true,
+            data: tasks,
+            formatted: this.formatPersonColumnTasks(person.name, 'revisão', tasks),
+          };
         }
 
         /* ---------- Due-date filters ---------- */

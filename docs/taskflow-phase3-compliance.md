@@ -280,6 +280,13 @@ Main findings from that coverage replay:
   for staff/external registration. Targeted replay
   `/tmp/phase3-v2-results-seci-coverage-turn2-afterfix-20260514.json`
   confirms the real agent path now uses only `api_create_meeting_task`.
+- Candidate turn 35 exposed a real no-outbound failure on an empty
+  `person_review` read for "aprovar tarefas josele". The current DB already
+  has the historical v1 target task in `done`, so the correct v2 behavior
+  under current state is a no-op explanation. The engine now returns a
+  `formatted` no-review summary for `person_review`; targeted replay
+  `/tmp/phase3-v2-results-seci-coverage-turn35-afterfix-20260514.json`
+  confirms the real agent path now sends outbound instead of timing out.
 
 ## Comparator Classifications
 
