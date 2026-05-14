@@ -6,6 +6,7 @@ For detailed release notes, see the [full changelog on the documentation site](h
 
 ## [Unreleased]
 
+- Fixed remaining Taskflow Phase 3 context-chain meeting-forwarding gaps: v2 now deterministically creates dated meetings, adds participants to the latest meeting, forwards "meeting above" notifications using MCP-backed Taskflow state, and accepts recurring meeting-forward confirmations without relying on raw sqlite or slow model exploration.
 - Added Taskflow person notification destination backfill from `board_people.notification_group_jid`, preserving v1 raw-JID forwarding behavior through v2 named destinations instead of re-enabling sqlite/JID sends.
 - Fixed deterministic Taskflow forwarding for "send message with details" and "ask person to prioritize task" wording, so v2 uses `api_query` plus named-destination `send_message` without model-driven over-searching.
 - Fixed Taskflow bulk approval commands such as "aprovar todas as atividades de Nome" so v2 deterministically checks that person's review queue, bulk-approves matching tasks when present, and immediately replies when the current DB has nothing to approve instead of stalling or doing read-only clarification.

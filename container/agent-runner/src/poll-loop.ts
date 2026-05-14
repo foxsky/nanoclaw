@@ -109,6 +109,29 @@ interface TaskflowNotifyTaskPriority {
   destinationName: string;
 }
 
+interface TaskflowCreateMeeting {
+  title: string;
+  scheduledAt: string;
+  intendedWeekday?: string;
+  parentProjectTitle?: string;
+}
+
+interface TaskflowAddParticipantsToLatestMeeting {
+  taskId: string;
+  participantNames: string[];
+}
+
+interface TaskflowNotifyMeetingAbove {
+  taskId: string;
+  recipientNames?: string[];
+  useParticipants: boolean;
+}
+
+interface TaskflowAutoForwardMeetingConfirmation {
+  taskId: string;
+  destinationName: string;
+}
+
 interface TaskflowDueDateNeedsTask {
   dateText: string;
 }
@@ -149,6 +172,12 @@ const SEND_DETAILS_TO_PERSON_RE = /\b(?:enviar|mandar)\s+mensagem\s+para\s+(?:o\
 const NOTIFY_TASK_PRIORITY_RE = /\b(?:enviar|mandar)\s+mensagem\s+para\s+(?:o\s+|a\s+)?([\p{L}\p{M}' -]{2,60}?)\s+.*\bpriorizar\b.*\b(?:tarefa|atividade)\s+((?:P|T|M|R)\d+(?:\.\d+)?)\b/iu;
 const DUE_DATE_WITHOUT_TASK_RE = /^\s*(?:prazo|vencimento|data limite)\s+(?:para\s+)?(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s*[.!]?\s*$/iu;
 const ADD_PARTICIPANT_RE = /\badicionar\s+([\p{L}\p{M}' -]{2,60})\s+em\s+(M\d+)\b/iu;
+const ADD_PARTICIPANTS_ONLY_RE = /^\s*adicionar\s+([\p{L}\p{M}', -]+?)\s*[.!]?\s*$/iu;
+const CREATE_MEETING_DATE_RE = /^\s*(?:agendar|marcar)\s+(.+?)\s+no\s+dia\s+(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(?:às|as)\s+(\d{1,2})(?:(?:h|:)(\d{2})?)?\s*[.!]?\s*$/iu;
+const CREATE_PROJECT_MEETING_WEEKDAY_RE = /^\s*adicionar\s+uma\s+tarefa\s+no\s+projeto\s+d[ao]\s+(.+?):\s*(.+?)\s+para\s+(segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado|domingo)(?:-feira)?\s+(?:às|as)\s+(\d{1,2})(?:(?:h|:)(\d{2})?)?\s*[.!]?\s*$/iu;
+const NOTIFY_MEETING_ABOVE_RE = /^\s*avisar\s+(?:o\s+|a\s+|os\s+|as\s+)?([\p{L}\p{M}', -]+?)\s+sobre\s+a\s+reuni[aã]o\s+acima\s*[.!]?\s*$/iu;
+const NOTIFY_MEETING_PARTICIPANTS_RE = /^\s*(?:enviar|mandar)\s+mensagem\s+para\s+eles\s+avisando\s+da\s+reuni[aã]o\s*[.!]?\s*$/iu;
+const AUTO_FORWARD_MEETINGS_CONFIRMATION_RE = /^\s*sim\s+e\s+todas\s+as\s+novas\s+reuni[oõ]es\s*[.!]?\s*$/iu;
 const RESCHEDULE_MEETING_RE = /\balterar\s+(M\d+)\s+para\s+(segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado|domingo)(?:-feira)?\s+(\d{1,2})(?:h|:\d{2})?\b/iu;
 const WEEKDAY_INDEX: Record<string, number> = {
   domingo: 0,
@@ -382,6 +411,144 @@ export function taskflowNotifyTaskPriorityCommand(
   };
 }
 
+function normalizeMeetingTitle(raw: string): string {
+  const title = raw.replace(/^(?:uma\s+)?reuni[aã]o\b/iu, 'Reunião').trim();
+  return /^reuni[aã]o\b/iu.test(title) ? title : `Reunião ${title}`;
+}
+
+function scheduledAtLocalIso(day: string, month: string, year: string, hour: string, minute?: string): string {
+  const yyyy = year.length === 2 ? `20${year}` : year;
+  return `${yyyy}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${hour.padStart(2, '0')}:${(minute || '00').padStart(2, '0')}:00`;
+}
+
+function baseDateFromMessage(message: Pick<MessageInRow, 'content'>): string | null {
+  const content = parseJsonContent(message.content);
+  const rawPrompt = typeof content.phase2RawPrompt === 'string' ? content.phase2RawPrompt : '';
+  const today = rawPrompt.match(/\btoday="(\d{4}-\d{2}-\d{2})"/)?.[1];
+  if (today) return today;
+  const time = rawPrompt.match(/\btime="([A-Z][a-z]{2})\s+(\d{1,2}),\s+(\d{4}),/);
+  if (!time?.[1] || !time[2] || !time[3]) return null;
+  const months: Record<string, string> = {
+    Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06',
+    Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12',
+  };
+  const month = months[time[1]];
+  if (!month) return null;
+  return `${time[3]}-${month}-${time[2].padStart(2, '0')}`;
+}
+
+function nextWeekdayLocalIso(contextDate: string, weekdayName: string, hour: string, minute?: string): string | null {
+  const targetDow = WEEKDAY_INDEX[normalizeWeekdayName(weekdayName)];
+  if (targetDow === undefined) return null;
+  const [year, month, day] = contextDate.split('-').map((part) => Number.parseInt(part, 10));
+  const parsedHour = Number.parseInt(hour, 10);
+  if (!year || !month || !day || !Number.isInteger(parsedHour)) return null;
+  const base = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  let delta = (targetDow - base.getUTCDay() + 7) % 7;
+  if (delta === 0) delta = 7;
+  const target = new Date(Date.UTC(year, month - 1, day + delta, 12, 0, 0));
+  return scheduledAtLocalIso(
+    String(target.getUTCDate()),
+    String(target.getUTCMonth() + 1),
+    String(target.getUTCFullYear()),
+    String(parsedHour),
+    minute,
+  );
+}
+
+function weekdayNameForLocalIso(localIso: string): string | undefined {
+  const [datePart] = localIso.split('T');
+  const [year, month, day] = datePart.split('-').map((part) => Number.parseInt(part, 10));
+  if (!year || !month || !day) return undefined;
+  const names = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
+  return names[new Date(Date.UTC(year, month - 1, day, 12, 0, 0)).getUTCDay()];
+}
+
+export function taskflowCreateMeetingCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowCreateMeeting | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  const match = message.text.match(CREATE_MEETING_DATE_RE);
+  if (match?.[1] && match[2] && match[3] && match[4] && match[5]) {
+    const scheduledAt = scheduledAtLocalIso(match[2], match[3], match[4], match[5], match[6]);
+    return {
+      title: normalizeMeetingTitle(match[1]),
+      scheduledAt,
+      intendedWeekday: weekdayNameForLocalIso(scheduledAt),
+    };
+  }
+  const projectMatch = message.text.match(CREATE_PROJECT_MEETING_WEEKDAY_RE);
+  if (!projectMatch?.[1] || !projectMatch[2] || !projectMatch[3] || !projectMatch[4]) return null;
+  const contextDate = baseDateFromMessage(messages[0]);
+  if (!contextDate) return null;
+  const scheduledAt = nextWeekdayLocalIso(contextDate, projectMatch[3], projectMatch[4], projectMatch[5]);
+  if (!scheduledAt) return null;
+  return {
+    title: normalizeMeetingTitle(projectMatch[2]),
+    scheduledAt,
+    intendedWeekday: weekdayNameForLocalIso(scheduledAt),
+    parentProjectTitle: projectMatch[1].trim(),
+  };
+}
+
+function splitPersonNames(raw: string): string[] {
+  return raw
+    .split(/\s*,\s*|\s+e\s+/iu)
+    .map((part) => cleanupDestinationName(part).replace(/^(?:o|a|os|as)\s+/iu, '').trim())
+    .filter((part) => part.length > 0);
+}
+
+export function taskflowAddParticipantsToLatestMeetingCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  recentContents: string[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowAddParticipantsToLatestMeeting | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  if (extractTaskId(message.text)) return null;
+  const match = message.text.match(ADD_PARTICIPANTS_ONLY_RE);
+  if (!match?.[1]) return null;
+  const taskId = latestMeetingTaskIdFromContents(recentContents);
+  if (!taskId) return null;
+  const participantNames = splitPersonNames(match[1]);
+  return participantNames.length > 0 ? { taskId, participantNames } : null;
+}
+
+export function taskflowNotifyMeetingAboveCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  recentContents: string[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowNotifyMeetingAbove | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  const taskId = latestMeetingTaskIdFromContents(recentContents);
+  if (!taskId) return null;
+  const participants = message.text.match(NOTIFY_MEETING_PARTICIPANTS_RE);
+  if (participants) return { taskId, useParticipants: true };
+  const explicit = message.text.match(NOTIFY_MEETING_ABOVE_RE);
+  if (!explicit?.[1]) return null;
+  const recipientNames = splitPersonNames(explicit[1]);
+  return recipientNames.length > 0 ? { taskId, recipientNames, useParticipants: false } : null;
+}
+
+export function taskflowAutoForwardMeetingConfirmation(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  recentContents: string[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowAutoForwardMeetingConfirmation | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message || !AUTO_FORWARD_MEETINGS_CONFIRMATION_RE.test(message.text)) return null;
+  const taskId = latestMeetingTaskIdFromContents(recentContents);
+  const destinationName = latestMeetingVisibilityDestination(recentContents);
+  return taskId && destinationName ? { taskId, destinationName } : null;
+}
+
 export function taskflowDueDateNeedsTaskPrompt(
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
   taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
@@ -604,6 +771,35 @@ function latestTaskIdFromContents(contents: string[]): string | null {
       const parsedId = extractTaskId(parsed.text);
       if (parsedId) return parsedId;
     }
+  }
+  return null;
+}
+
+function latestMeetingTaskIdFromContents(contents: string[]): string | null {
+  for (const content of contents) {
+    const text = outboundText(content);
+    for (const match of text.matchAll(TASK_ID_RE_GLOBAL)) {
+      const taskId = match[1].toUpperCase();
+      if (taskId.startsWith('M')) return taskId;
+    }
+    const parsed = parseJsonContent(content);
+    if (typeof parsed.text === 'string') {
+      for (const match of parsed.text.matchAll(TASK_ID_RE_GLOBAL)) {
+        const taskId = match[1].toUpperCase();
+        if (taskId.startsWith('M')) return taskId;
+      }
+    }
+  }
+  return null;
+}
+
+function latestMeetingVisibilityDestination(contents: string[]): string | null {
+  for (const content of contents) {
+    const text = outboundText(content);
+    const inbound = text.match(/\ba\s+([\p{L}\p{M}' ]{2,60}?)\s+n[aã]o\s+est[aá]\s+visualizando\s+os\s+detalhes\s+d[aeo]\s+M\d+/iu);
+    if (inbound?.[1]) return cleanupDestinationName(inbound[1]);
+    const outbound = text.match(/reuni[oõ]es?\s+(?:com\s+)?(?:a\s+|o\s+)?([\p{L}\p{M}' ]{2,60}?)(?:,|\s+eu\s+envio|\s+receba|\s+visualize)/iu);
+    if (outbound?.[1]) return cleanupDestinationName(outbound[1]);
   }
   return null;
 }
@@ -1058,6 +1254,266 @@ function formatFortalezaDateTimePt(iso: string): string {
   const year = local.getUTCFullYear();
   const hour = String(local.getUTCHours()).padStart(2, '0');
   return `${day}/${month}/${year} às ${hour}:00`;
+}
+
+function formatFortalezaMeetingWhen(iso: string): string {
+  const date = new Date(iso);
+  const local = new Date(date.getTime() - 3 * 60 * 60 * 1000);
+  const weekdays = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
+  const weekday = weekdays[local.getUTCDay()];
+  const day = String(local.getUTCDate()).padStart(2, '0');
+  const month = String(local.getUTCMonth() + 1).padStart(2, '0');
+  const hour = String(local.getUTCHours()).padStart(2, '0');
+  const minute = String(local.getUTCMinutes()).padStart(2, '0');
+  return `${weekday}, ${day}/${month} às ${hour}h${minute === '00' ? '' : minute}`;
+}
+
+function meetingTaskSummary(data: unknown, taskId: string): { title: string; scheduledAt: string | null; formatted: string } {
+  const record = data && typeof data === 'object' ? data as Record<string, unknown> : {};
+  const task = record.task && typeof record.task === 'object' ? record.task as Record<string, unknown> : {};
+  const title = typeof task.title === 'string' ? task.title : taskId;
+  const scheduledAt = typeof task.scheduled_at === 'string' ? task.scheduled_at : null;
+  const formatted = typeof record.formatted_task_details === 'string' && record.formatted_task_details.trim()
+    ? record.formatted_task_details
+    : `📅 *${taskId}* — ${title}${scheduledAt ? `\nData: ${formatFortalezaDateTimePt(scheduledAt)}` : ''}`;
+  return { title, scheduledAt, formatted };
+}
+
+function participantNamesForMeeting(boardId: string, taskId: string): string[] {
+  const db = getTaskflowDb();
+  const row = db.prepare(`SELECT participants FROM tasks WHERE board_id = ? AND id = ?`)
+    .get(boardId, taskId) as { participants?: string | null } | undefined;
+  if (!row?.participants) return [];
+  let ids: string[] = [];
+  try {
+    const parsed = JSON.parse(row.participants);
+    if (Array.isArray(parsed)) ids = parsed.filter((item): item is string => typeof item === 'string');
+  } catch {
+    return [];
+  }
+  if (ids.length === 0) return [];
+  const people = db.prepare(`SELECT person_id, name FROM board_people WHERE board_id = ?`)
+    .all(boardId) as Array<{ person_id: string; name: string }>;
+  const names = new Map(people.map((person) => [person.person_id, person.name]));
+  return ids.map((id) => names.get(id) ?? id);
+}
+
+function nextLocalMorningIso(): string {
+  const now = new Date();
+  const local = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+  local.setUTCDate(local.getUTCDate() + 1);
+  local.setUTCHours(9, 0, 0, 0);
+  while (local.getUTCDay() === 0 || local.getUTCDay() === 6) {
+    local.setUTCDate(local.getUTCDate() + 1);
+  }
+  const year = local.getUTCFullYear();
+  const month = String(local.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(local.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}T09:00:00`;
+}
+
+function writeScheduleTaskAction(routing: RoutingContext, prompt: string, processAfter: string, recurrence: string): void {
+  const id = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  writeMessageOut({
+    id,
+    in_reply_to: routing.inReplyTo,
+    kind: 'system',
+    platform_id: routing.platformId,
+    channel_type: routing.channelType,
+    thread_id: routing.threadId,
+    content: JSON.stringify({
+      action: 'schedule_task',
+      taskId: id,
+      prompt,
+      script: null,
+      processAfter,
+      recurrence,
+      platformId: routing.platformId,
+      channelType: routing.channelType,
+      threadId: routing.threadId,
+    }),
+  });
+}
+
+function normalizeLookupText(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function findProjectIdByTitle(boardId: string, title: string): string | null {
+  const target = normalizeLookupText(title);
+  if (!target) return null;
+  const rows = getTaskflowDb().prepare(`SELECT id, title FROM tasks WHERE board_id = ? AND type = 'project'`)
+    .all(boardId) as Array<{ id: string; title: string }>;
+  const exact = rows.find((row) => normalizeLookupText(row.title) === target);
+  if (exact) return exact.id;
+  const targetTokens = target.split(' ').filter(Boolean);
+  const matches = rows.filter((row) => {
+    const normalized = normalizeLookupText(row.title);
+    return targetTokens.every((token) => normalized.includes(token));
+  });
+  return matches.length === 1 ? matches[0].id : null;
+}
+
+function handleTaskflowCreateMeeting(
+  action: TaskflowCreateMeeting,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+  const input = {
+    type: 'meeting' as const,
+    title: action.title,
+    scheduled_at: action.scheduledAt,
+    sender_name: sender,
+    intended_weekday: action.intendedWeekday,
+  };
+  const result = engine.create({ ...input, board_id: boardId });
+  appendSyntheticToolCall('api_create_meeting_task', input, result, !result.success);
+  if (!result.success) {
+    writeReply(routing, `Não consegui criar a reunião: ${result.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+  const taskId = typeof result.task_id === 'string' ? result.task_id : typeof result.id === 'string' ? result.id : 'reunião';
+  let parentLine = '';
+  if (action.parentProjectTitle && taskId !== 'reunião') {
+    const parentId = findProjectIdByTitle(boardId, action.parentProjectTitle);
+    if (parentId) {
+      const adminInput = {
+        action: 'reparent_task' as const,
+        task_id: taskId,
+        target_parent_id: parentId,
+        sender_name: sender,
+      };
+      const adminResult = engine.admin({ ...adminInput, board_id: boardId });
+      appendSyntheticToolCall('api_admin', adminInput, adminResult, !adminResult.success);
+      if (adminResult.success) parentLine = `\n📁 *Projeto:* ${parentId} — ${action.parentProjectTitle}`;
+    }
+  }
+  writeReply(
+    routing,
+    `✅ *Reunião criada*\n━━━━━━━━━━━━━━\n\n*${taskId}* — ${action.title}${parentLine}\n📅 *Data:* ${formatFortalezaDateTimePt(action.scheduledAt)}\n⏭️ *Coluna:* Próximas Ações`,
+  );
+  return true;
+}
+
+function handleTaskflowAddParticipantsToLatestMeeting(
+  action: TaskflowAddParticipantsToLatestMeeting,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+  const successes: string[] = [];
+  const failures: string[] = [];
+  for (const participantName of action.participantNames) {
+    const input = {
+      task_id: action.taskId,
+      sender_name: sender,
+      updates: { add_participant: participantName },
+    };
+    const result = engine.update({ ...input, board_id: boardId });
+    appendSyntheticToolCall('api_update_task', input, result, !result.success);
+    if (result.success) successes.push(participantName);
+    else failures.push(`${participantName}: ${result.error ?? 'erro desconhecido'}`);
+  }
+  if (successes.length > 0) {
+    writeReply(routing, `✅ ${successes.join(' e ')} adicionados em *${action.taskId}*.`);
+  } else {
+    writeReply(routing, `Não consegui adicionar participantes em ${action.taskId}:\n${failures.join('\n')}`);
+  }
+  return true;
+}
+
+function handleTaskflowNotifyMeetingAbove(
+  action: TaskflowNotifyMeetingAbove,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: false });
+  const queryInput = { query: 'task_details', task_id: action.taskId, sender_name: sender };
+  const queryResult = engine.query(queryInput);
+  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  if (!queryResult.success) {
+    writeReply(routing, `Não consegui consultar ${action.taskId}: ${queryResult.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+
+  const recipients = action.useParticipants
+    ? participantNamesForMeeting(boardId, action.taskId)
+    : action.recipientNames ?? [];
+  if (recipients.length === 0) return false;
+
+  const { title, scheduledAt } = meetingTaskSummary(queryResult.data, action.taskId);
+  const when = scheduledAt ? formatFortalezaMeetingWhen(scheduledAt) : 'data não informada';
+  const sent: string[] = [];
+  for (const recipient of recipients) {
+    const dest = findDestinationByDisplayName(recipient);
+    if (!dest) continue;
+    if (!action.useParticipants) {
+      const updateInput = {
+        task_id: action.taskId,
+        sender_name: sender,
+        updates: { add_participant: recipient },
+      };
+      const updateResult = engine.update({ ...updateInput, board_id: boardId });
+      appendSyntheticToolCall('api_update_task', updateInput, updateResult, !updateResult.success);
+    }
+    const text = `Olá, ${recipient}! ${sender} pediu para te avisar sobre a seguinte reunião:\n\n📅 *${title}*\n${when}`;
+    sendToDestination(dest, text, routing);
+    appendSyntheticToolCall('send_message', { to: dest.name, text }, { success: true });
+    sent.push(recipient);
+  }
+
+  if (sent.length === 0) return false;
+  writeReply(routing, `${sent.join(' e ')} avisados sobre a reunião ${scheduledAt ? `de ${when}` : action.taskId}.`);
+  return true;
+}
+
+function handleTaskflowAutoForwardMeetingConfirmation(
+  action: TaskflowAutoForwardMeetingConfirmation,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+  const dest = findDestinationByDisplayName(action.destinationName);
+  if (!dest) return false;
+
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
+  const queryInput = { query: 'task_details', task_id: action.taskId, sender_name: sender };
+  const queryResult = engine.query(queryInput);
+  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  if (!queryResult.success) {
+    writeReply(routing, `Não consegui consultar ${action.taskId}: ${queryResult.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+
+  const { formatted } = meetingTaskSummary(queryResult.data, action.taskId);
+  const forwardText = `Olá, ${action.destinationName}! ${sender} pediu para encaminhar os detalhes desta reunião:\n\n${formatted}`;
+  sendToDestination(dest, forwardText, routing);
+  appendSyntheticToolCall('send_message', { to: dest.name, text: forwardText }, { success: true });
+
+  const prompt = `Enviar para ${action.destinationName} os detalhes de novas reuniões da SECI quando forem criadas ou reagendadas.`;
+  const processAfter = nextLocalMorningIso();
+  const recurrence = '0 9 * * 1-5';
+  writeScheduleTaskAction(routing, prompt, processAfter, recurrence);
+  appendSyntheticToolCall('schedule_task', { prompt, processAfter, recurrence }, { success: true });
+  writeReply(routing, `Combinado. Encaminhei ${action.taskId} para ${action.destinationName} e agendei o acompanhamento das novas reuniões.`);
+  return true;
 }
 
 function handleTaskflowMeetingBatchUpdate(
@@ -1603,10 +2059,19 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     }
 
     const recentOut = recentOutboundContents();
+    const recentIn = recentInboundContents();
+    const recentContext = [...recentOut, ...recentIn];
     const explicitCompletion = taskflowExplicitCompletionCommand(keep);
     if (explicitCompletion && handleTaskflowExplicitCompletion(explicitCompletion, keep, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled explicit TaskFlow completion without provider query');
+      continue;
+    }
+
+    const createMeeting = taskflowCreateMeetingCommand(keep);
+    if (createMeeting && handleTaskflowCreateMeeting(createMeeting, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow meeting creation without provider query');
       continue;
     }
 
@@ -1652,6 +2117,27 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       continue;
     }
 
+    const addParticipantsToLatestMeeting = taskflowAddParticipantsToLatestMeetingCommand(keep, recentContext);
+    if (addParticipantsToLatestMeeting && handleTaskflowAddParticipantsToLatestMeeting(addParticipantsToLatestMeeting, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow participant add to latest meeting without provider query');
+      continue;
+    }
+
+    const notifyMeetingAbove = taskflowNotifyMeetingAboveCommand(keep, recentContext);
+    if (notifyMeetingAbove && handleTaskflowNotifyMeetingAbove(notifyMeetingAbove, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow meeting notification without provider query');
+      continue;
+    }
+
+    const autoForwardMeetingConfirmation = taskflowAutoForwardMeetingConfirmation(keep, recentContext);
+    if (autoForwardMeetingConfirmation && handleTaskflowAutoForwardMeetingConfirmation(autoForwardMeetingConfirmation, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow meeting auto-forward confirmation without provider query');
+      continue;
+    }
+
     const forwardDetails = taskflowForwardDetailsCommand(keep);
     if (forwardDetails && handleTaskflowForwardDetails(forwardDetails, keep, routing)) {
       markCompleted(keep.map((m) => m.id));
@@ -1687,7 +2173,6 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       continue;
     }
 
-    const recentIn = recentInboundContents();
     const reviewBypassRepair = taskflowReviewBypassRepairPrompt(keep, [...recentOut, ...recentIn]);
     if (reviewBypassRepair && handleTaskflowReviewBypassRepair(reviewBypassRepair, keep, routing)) {
       markCompleted(keep.map((m) => m.id));

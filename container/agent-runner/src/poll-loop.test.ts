@@ -9,12 +9,16 @@ import {
   hasWakeTrigger,
   taskflowBareTaskDetailsCommand,
   taskflowBulkApprovalCommand,
+  taskflowAddParticipantsToLatestMeetingCommand,
+  taskflowAutoForwardMeetingConfirmation,
+  taskflowCreateMeetingCommand,
   taskflowCrossBoardNoteConfirmation,
   taskflowCrossBoardNotePrompt,
   taskflowDueDateNeedsTaskPrompt,
   taskflowExplicitCompletionCommand,
   taskflowForwardDetailsCommand,
   taskflowMeetingBatchUpdateCommand,
+  taskflowNotifyMeetingAboveCommand,
   taskflowNotifyTaskPriorityCommand,
   taskflowPersonReviewCommand,
   taskflowPersonTasksCommand,
@@ -227,6 +231,76 @@ describe('TaskFlow deterministic confirmation guards', () => {
       weekdayName: 'quinta',
       hour: 11,
       contextDate: '2026-04-14',
+    });
+  });
+
+  it('detects explicit dated meeting creation without provider exploration', () => {
+    expect(taskflowCreateMeetingCommand([
+      { kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'agendar Reunião sobre CPSI na SEMAM no dia 16/04/26 às 11h' }) },
+    ], true)).toEqual({
+      title: 'Reunião sobre CPSI na SEMAM',
+      scheduledAt: '2026-04-16T11:00:00',
+      intendedWeekday: 'quinta-feira',
+    });
+
+    const raw = '<context timezone="America/Fortaleza" />\n<messages>\n<message sender="Carlos Giovanni" time="Apr 9, 2026, 3:56 PM">Adicionar uma tarefa no projeto da Operação da SECTI: Reunião de alinhamento entre ATI-Timon e SECTI (SETD, SECI e SETEC) para terça-feira às 11h</message>\n</messages>';
+    expect(taskflowCreateMeetingCommand([
+      {
+        kind: 'chat',
+        content: JSON.stringify({
+          sender: 'Carlos Giovanni',
+          text: 'Adicionar uma tarefa no projeto da Operação da SECTI: Reunião de alinhamento entre ATI-Timon e SECTI (SETD, SECI e SETEC) para terça-feira às 11h',
+          phase2RawPrompt: raw,
+        }),
+      },
+    ], true)).toEqual({
+      title: 'Reunião de alinhamento entre ATI-Timon e SECTI (SETD, SECI e SETEC)',
+      scheduledAt: '2026-04-14T11:00:00',
+      intendedWeekday: 'terça-feira',
+      parentProjectTitle: 'Operação da SECTI',
+    });
+  });
+
+  it('detects adding named participants to the latest meeting from context', () => {
+    expect(taskflowAddParticipantsToLatestMeetingCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'adicionar Ana Beatriz e Rodrigo Lima' }) }],
+      [JSON.stringify({ text: '✅ *Reunião criada*\n*M4* — Reunião sobre CPSI na SEMAM' })],
+      true,
+    )).toEqual({
+      taskId: 'M4',
+      participantNames: ['Ana Beatriz', 'Rodrigo Lima'],
+    });
+  });
+
+  it('detects meeting-above notifications using recent meeting context', () => {
+    expect(taskflowNotifyMeetingAboveCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'avisar o Rafael e o Thiago sobre a reunião acima' }) }],
+      [JSON.stringify({ text: '✅ *M1* — Reunião de alinhamento entre ATI-Timon e SECTI' })],
+      true,
+    )).toEqual({
+      taskId: 'M1',
+      recipientNames: ['Rafael', 'Thiago'],
+      useParticipants: false,
+    });
+
+    expect(taskflowNotifyMeetingAboveCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'enviar mensagem para eles avisando da reunião' }) }],
+      [JSON.stringify({ text: '✅ Ana Beatriz e Rodrigo Lima adicionados em *M4*.' })],
+      true,
+    )).toEqual({
+      taskId: 'M4',
+      useParticipants: true,
+    });
+  });
+
+  it('detects confirmation for automatic forwarding of meeting details', () => {
+    expect(taskflowAutoForwardMeetingConfirmation(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'sim e todas as novas reuniões' }) }],
+      [JSON.stringify({ text: 'a Ana Beatriz não está visualizando os detalhes da M1' })],
+      true,
+    )).toEqual({
+      taskId: 'M1',
+      destinationName: 'Ana Beatriz',
     });
   });
 
