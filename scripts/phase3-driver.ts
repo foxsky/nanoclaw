@@ -107,10 +107,10 @@ function saveResults(outPath: string, rows: Phase3TurnResult[]): void {
 
 function runPhase2Driver(metadata: Phase3TurnMetadata, args: Args): void {
   const phase2Args = metadata.context_mode === 'chain'
-    ? ['scripts/phase2-driver.ts', '--chain', `${metadata.turn_index}:${metadata.prior_turn_depth ?? 1}`, '--source-root', args.sourceRoot]
-    : ['scripts/phase2-driver.ts', '--turn', String(metadata.turn_index)];
+    ? ['scripts/phase2-driver.ts', '--corpus', args.corpus, '--chain', `${metadata.turn_index}:${metadata.prior_turn_depth ?? 1}`, '--source-root', args.sourceRoot]
+    : ['scripts/phase2-driver.ts', '--corpus', args.corpus, '--turn', String(metadata.turn_index)];
 
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     NANOCLAW_PHASE2_RAW_PROMPT: '1',
   };
@@ -163,7 +163,13 @@ function main(): void {
   const corpus = JSON.parse(fs.readFileSync(args.corpus, 'utf8')) as Corpus;
   const overrides = loadPhase3Metadata(args.metadata);
   const indices = selectedIndices(args, corpus);
-  const plan = indices.map((index) => inferPhase3Metadata(corpus.turns[index], index, overrides.get(index)));
+  const useDefaultChainDepths = path.resolve(args.corpus) === path.resolve(DEFAULT_CORPUS);
+  const plan = indices.map((index) => inferPhase3Metadata(
+    corpus.turns[index],
+    index,
+    overrides.get(index),
+    { useDefaultChainDepths },
+  ));
 
   if (args.planOnly) {
     printPlan(plan);

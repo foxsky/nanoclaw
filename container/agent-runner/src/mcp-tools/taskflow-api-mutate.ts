@@ -57,6 +57,8 @@ interface CreateLikeResult {
   success: boolean;
   task_id?: string;
   error?: string;
+  unresolved_participants?: string[];
+  offer_register?: { name: string; message: string };
   notifications?: Array<{ target_person_id?: string; message: string }>;
 }
 
@@ -92,7 +94,13 @@ function finalizeCreatedTaskResult(
       target_person_id: n.target_person_id!,
       message: n.message,
     }));
-  return jsonResponse({ success: true, data, notification_events });
+  return jsonResponse({
+    success: true,
+    data,
+    notification_events,
+    ...(result.unresolved_participants ? { unresolved_participants: result.unresolved_participants } : {}),
+    ...(result.offer_register ? { offer_register: result.offer_register } : {}),
+  });
 }
 
 /**

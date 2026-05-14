@@ -299,6 +299,27 @@ describe('api_create_meeting_task MCP tool (A10)', () => {
     expect(row.participants).toBe(JSON.stringify(['bob']));
   });
 
+  it('creates a meeting when a typed participant is not registered and surfaces the registration prompt', async () => {
+    const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiCreateMeetingTaskTool.handler({
+      board_id: BOARD,
+      title: 'Sync with Cleonildo',
+      sender_name: 'alice',
+      participants: ['Cleonildo'],
+      scheduled_at: '2026-06-15T14:00:00Z',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data.type).toBe('meeting');
+    expect(result.data.id).toMatch(/^M\d+$/);
+    expect(result.unresolved_participants).toEqual(['Cleonildo']);
+    expect(result.offer_register.message).toContain('Cleonildo');
+    const row = db.prepare(`SELECT participants FROM tasks WHERE id = ?`).get(result.data.id) as {
+      participants: string | null;
+    };
+    expect(row.participants).toBe(JSON.stringify([]));
+  });
+
   it('engine rejects meeting with due_date → propagated as error', async () => {
     const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
     const response = await apiCreateMeetingTaskTool.handler({

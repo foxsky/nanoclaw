@@ -187,6 +187,7 @@ export function inferPhase3Metadata(
   turn: Phase3CorpusTurn,
   corpusIndex: number,
   override?: Phase3TurnMetadata,
+  options?: { useDefaultChainDepths?: boolean },
 ): Phase3TurnMetadata {
   if (override) {
     return {
@@ -196,7 +197,8 @@ export function inferPhase3Metadata(
     };
   }
 
-  const depth = turn.prior_turn_depth ?? DEFAULT_CHAIN_DEPTHS[corpusIndex];
+  const useDefaultChainDepths = options?.useDefaultChainDepths ?? true;
+  const depth = turn.prior_turn_depth ?? (useDefaultChainDepths ? DEFAULT_CHAIN_DEPTHS[corpusIndex] : undefined);
   const contextMode = turn.context_mode ?? (depth ? 'chain' : 'fresh');
   return {
     turn_index: corpusIndex,

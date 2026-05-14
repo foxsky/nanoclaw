@@ -112,6 +112,22 @@ sudo -u nanoclaw -H env LOG_LEVEL=info \
       --out /tmp/phase3-v2-results-turn16.json'
 ```
 
+`phase3-driver.ts --corpus` is forwarded into the underlying Phase 2 driver,
+so Phase 3 can replay either the original 30-turn corpus or a generated
+coverage-audit candidate corpus. The original 30-turn corpus has built-in
+chain-mode defaults for its known missing-context turns; generated corpuses
+stay fresh by default unless their own metadata asks for chain mode. For
+example, after producing
+`/tmp/whatsapp-seci-next-candidates-20260514.json`, plan it with:
+
+```bash
+pnpm exec tsx scripts/phase3-driver.ts \
+  --corpus /tmp/whatsapp-seci-next-candidates-20260514.json \
+  --source-root /tmp/v2-pilot/all-sessions/seci-taskflow \
+  --all \
+  --plan-only
+```
+
 The driver snapshots the live Taskflow DB before the run and restores it
 afterward. If `state_snapshot` is set and exists, it is restored before the
 turn. If it is missing, the result is marked as `state_snapshot_missing` rather
@@ -175,6 +191,95 @@ scope as `find_person_in_organization`) and returns owning-board
 metadata for the agent to render. Mutation paths still go through the
 strict, board-scoped `getTask` — no new cross-board write surface was
 introduced. Do not re-enable raw sqlite.
+
+## Full-History Coverage Audit
+
+The SECI 30-turn corpus is the compliance baseline used for the Phase 2/3
+migration closure, but it is not the entire historical interaction space. To
+avoid over-claiming from one curated slice, run the coverage audit against all
+extracted human WhatsApp turns before declaring full-board migration
+confidence.
+
+First extract the full historical corpus without truncation:
+
+```bash
+pnpm exec tsx scripts/whatsapp-replay-curate.ts \
+  --jsonls /tmp/v2-pilot/all-sessions/seci-taskflow \
+  --out /tmp/whatsapp-all-seci-$(date +%Y%m%d).json \
+  --max 10000
+```
+
+Then compare that full corpus with the validated baseline:
+
+```bash
+pnpm exec tsx scripts/taskflow-replay-coverage-audit.ts \
+  --all /tmp/whatsapp-all-seci-20260514.json \
+  --baseline /tmp/whatsapp-curated-seci-v4.json \
+  --out-json /tmp/taskflow-full-history-coverage-20260514.json \
+  --out-text /tmp/taskflow-full-history-coverage-20260514.txt \
+  --candidate-out /tmp/whatsapp-seci-next-candidates-20260514.json
+```
+
+The audit is free: it reads v1-recorded transcripts and does not run an agent.
+It groups turns by behavior signature, reports which signatures the validated
+baseline did not cover, and emits a candidate replay corpus focused on
+uncovered or under-sampled behavior. As of the 2026-05-14 SECI audit:
+
+- full extracted human turns: `295`;
+- validated baseline turns: `30`;
+- behavior signatures covered by the baseline: `23/87`;
+- uncovered signatures: `64`, including `56` high-priority signatures;
+- suggested next replay set: `40` turns.
+
+The highest-risk uncovered buckets were:
+
+- meeting/project/inbox creation flows;
+- scheduling/reminder flows;
+- bulk admin reparent/detach and approval flows;
+- Agent/Bash-assisted summaries and board reviews;
+- archive-search and search-plus-details read flows;
+- v1 raw-sqlite notification/cross-board routing reads that need explicit
+  `api_*` equivalents or documented tool-surface-change classification.
+
+Use the generated candidate corpus as the next paid replay target only after
+approval. The candidate corpus is intentionally coverage-oriented rather than
+random: it tries to prove missing behavior classes, not re-run already-proven
+single-tool basics. If that pass exposes real v2 bugs, patch the canonical
+engine/MCP/provider/template layer and add regression tests before expanding
+again.
+
+The first paid 40-turn coverage replay was run on 2026-05-14:
+
+- results: `/tmp/phase3-v2-results-seci-coverage-20260514.json`;
+- comparison: `/tmp/phase3-comparison-seci-coverage-20260514.txt`;
+- completed all `40/40` turns;
+- semantic comparator baseline: `5/40` matches, `3` no-outbound timeouts,
+  `13` real-divergence candidates, `7` state-drift classifications,
+  `8` read-only-extra classifications, `3` documented raw-sqlite
+  tool-surface changes, and `1` allocation-drift case.
+
+Main findings from that coverage replay:
+
+- Bulk approval/review flows are not proven by the original 30-turn corpus.
+  The replay surfaced no-outbound or no-op behavior on examples such as
+  "aprovar todas as atividades de Rodrigo Lima", "aprovar tarefas josele",
+  and "aprovar todas as tarefas de João Antonio". The current DB already has
+  the v1-targeted tasks in `done`, so exact verdicts require historical
+  per-turn DB snapshots before treating these as v2 product bugs.
+- Broad project/report queries complete but often fan out into many
+  `api_query` calls and sometimes `Monitor`/`TaskOutput`. This is a result
+  shape/performance gap: prefer compact first-class MCP summaries over prompt
+  steering.
+- Several raw-sqlite forwarding/routing turns now need explicit
+  tool-surface decisions: either accepted v1→v2 change, seeded named
+  destination/context-chain replay, or a narrow first-class `api_*` read.
+- Candidate turn 2 exposed a real meeting-create bug: when the agent supplied
+  an unregistered participant, v2 fell back from meeting creation to a plain
+  task. This was fixed in the engine/MCP layer: meetings are now created with
+  registered participants and return `unresolved_participants` plus a prompt
+  for staff/external registration. Targeted replay
+  `/tmp/phase3-v2-results-seci-coverage-turn2-afterfix-20260514.json`
+  confirms the real agent path now uses only `api_create_meeting_task`.
 
 ## Comparator Classifications
 

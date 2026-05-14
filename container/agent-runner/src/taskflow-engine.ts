@@ -126,6 +126,7 @@ export interface CreateParams {
 export interface CreateResult extends TaskflowResult {
   task_id?: string;
   column?: string;
+  unresolved_participants?: string[];
   offer_register?: {
     name: string;
     message: string;
@@ -3161,6 +3162,13 @@ export class TaskflowEngine {
     };
   }
 
+  private buildUnresolvedMeetingParticipantPrompt(name: string): { name: string; message: string } {
+    return {
+      name,
+      message: `${name} não está cadastrado(a) neste quadro. Ele(a) é membro da equipe ou participante externo? Se for externo, informe o telefone para enviar o convite.`,
+    };
+  }
+
   /** Insert a subtask row linked to a parent project. */
   private insertSubtaskRow(opts: {
     boardId?: string;
@@ -3337,11 +3345,15 @@ export class TaskflowEngine {
 
       /* --- Participant resolution (meetings only) --- */
       let participantIds: string[] | null = null;
+      const unresolvedParticipants: string[] = [];
       if (params.type === 'meeting' && params.participants) {
         participantIds = [];
         for (const pName of params.participants) {
           const person = this.resolvePerson(pName);
-          if (!person) return this.buildOfferRegisterError(pName);
+          if (!person) {
+            unresolvedParticipants.push(pName);
+            continue;
+          }
           participantIds.push(person.person_id);
         }
       }
@@ -3558,6 +3570,10 @@ export class TaskflowEngine {
         success: true,
         task_id: taskId,
         column,
+        ...(unresolvedParticipants.length > 0 ? {
+          unresolved_participants: unresolvedParticipants,
+          offer_register: this.buildUnresolvedMeetingParticipantPrompt(unresolvedParticipants[0]),
+        } : {}),
         ...(notifications.length > 0 ? { notifications } : {}),
       };
   }

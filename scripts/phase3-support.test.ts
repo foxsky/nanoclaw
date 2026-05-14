@@ -50,6 +50,16 @@ describe('Phase 3 metadata inference', () => {
     expect(meta.source_jsonl).toBe('explicit.jsonl');
     expect(meta.source_turn_index).toBe(99);
   });
+
+  it('can disable original-corpus default chain depths for generated corpuses', () => {
+    const meta = inferPhase3Metadata({
+      jsonl: 'candidate.jsonl',
+      turn_index: 31,
+    }, 16, undefined, { useDefaultChainDepths: false });
+
+    expect(meta.context_mode).toBe('fresh');
+    expect(meta.prior_turn_depth).toBeUndefined();
+  });
 });
 
 describe('Phase 3 DB snapshot helpers', () => {

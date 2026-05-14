@@ -26,7 +26,7 @@
  *   sudo -u nanoclaw -H env LOG_LEVEL=info \
  *     NANOCLAW_TOOL_USES_PATH=/workspace/.tool-uses.jsonl \
  *     bash -c '/root/nanoclaw/node_modules/.bin/tsx scripts/phase2-driver.ts \
- *       [--turn N] [--all] [--from N] [--to N] [--resume]'
+ *       [--corpus PATH] [--turn N] [--all] [--from N] [--to N] [--resume]'
  */
 
 import { execSync, spawnSync } from 'node:child_process';
@@ -60,6 +60,7 @@ interface CuratedTurn {
   parsed_messages: ParsedMessage[];
   tool_uses: { tool_use_id: string; tool_name: string; input: unknown; output: unknown }[];
   turn_index: number;
+  jsonl?: string;
   category: string;
   final_response: string | null;
 }
@@ -89,6 +90,7 @@ interface TurnResult {
 }
 
 interface Args {
+  corpus: string;
   turn?: number;
   all: boolean;
   from?: number;
@@ -100,13 +102,15 @@ interface Args {
 
 function parseArgs(): Args {
   const a: Args = {
+    corpus: CORPUS,
     all: false,
     resume: false,
     sourceRoot: '/tmp/v2-pilot/all-sessions/seci-taskflow',
   };
   for (let i = 2; i < process.argv.length; i++) {
     const k = process.argv[i];
-    if (k === '--turn') a.turn = Number.parseInt(process.argv[++i], 10);
+    if (k === '--corpus') a.corpus = process.argv[++i];
+    else if (k === '--turn') a.turn = Number.parseInt(process.argv[++i], 10);
     else if (k === '--all') a.all = true;
     else if (k === '--from') a.from = Number.parseInt(process.argv[++i], 10);
     else if (k === '--to') a.to = Number.parseInt(process.argv[++i], 10);
@@ -180,13 +184,12 @@ function resetSession(agentGroupId: string, messagingGroupId: string): void {
   }
 }
 
-function findRunningContainer(): string | null {
+function findRunningContainers(): string[] {
   try {
     const out = execSync(`docker ps --filter "name=nanoclaw-v2-seci-taskflow-" --format "{{.Names}}"`, { encoding: 'utf8' });
-    const name = out.trim().split('\n').filter(Boolean)[0];
-    return name || null;
+    return out.trim().split('\n').filter(Boolean);
   } catch {
-    return null;
+    return [];
   }
 }
 
@@ -249,9 +252,9 @@ async function driveContextTurn(
   const settled = await waitForSettled(AGENT_GROUP_ID, session.id, outboundBaselineSeq);
   console.log(`    [ctx ${tag}] settled: ${settled.settle_reason} (${Math.round(settled.elapsed_ms / 1000)}s)`);
 
-  const running = findRunningContainer();
-  if (running) {
-    stopContainer(running);
+  const running = findRunningContainers();
+  if (running.length > 0) {
+    for (const name of running) stopContainer(name);
     await new Promise((r) => setTimeout(r, 2_000));
   }
 
@@ -362,10 +365,10 @@ async function processChain(corpus: Corpus, targetCorpusIdx: number, depth: numb
     if (!woke) throw new Error(`wakeContainer returned false for target turn ${targetCorpusIdx}`);
     const settled = await waitForSettled(AGENT_GROUP_ID, session.id, outboundBaselineSeq);
     console.log(`  [target] settled: ${settled.settle_reason} (${Math.round(settled.elapsed_ms / 1000)}s)`);
-    const running = findRunningContainer();
-    if (running) {
-      console.log(`  stopping container: ${running}`);
-      stopContainer(running);
+    const running = findRunningContainers();
+    if (running.length > 0) {
+      console.log(`  stopping containers: ${running.join(', ')}`);
+      for (const name of running) stopContainer(name);
       await new Promise((r) => setTimeout(r, 3_000));
     }
 
@@ -441,10 +444,10 @@ async function processTurn(turn: CuratedTurn, idx: number): Promise<TurnResult> 
   const settled = await waitForSettled(AGENT_GROUP_ID, session.id, outboundBaselineSeq);
   console.log(`  settled: ${settled.settle_reason} (${Math.round(settled.elapsed_ms / 1000)}s)`);
 
-  const running = findRunningContainer();
-  if (running) {
-    console.log(`  stopping container: ${running}`);
-    stopContainer(running);
+  const running = findRunningContainers();
+  if (running.length > 0) {
+    console.log(`  stopping containers: ${running.join(', ')}`);
+    for (const name of running) stopContainer(name);
     await new Promise((r) => setTimeout(r, 3_000));
   }
 
@@ -498,7 +501,7 @@ async function main(): Promise<void> {
   runMigrations(getDb());
 
   const args = parseArgs();
-  const corpus = JSON.parse(fs.readFileSync(CORPUS, 'utf8')) as Corpus;
+  const corpus = JSON.parse(fs.readFileSync(args.corpus, 'utf8')) as Corpus;
 
   // --chain mode: drive K prior turns from the same source JSONL into the
   // session (no reset between), then drive + capture the target turn. Lets
