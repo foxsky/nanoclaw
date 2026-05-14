@@ -15,6 +15,7 @@ import {
   taskflowExplicitCompletionCommand,
   taskflowForwardDetailsCommand,
   taskflowMeetingBatchUpdateCommand,
+  taskflowNotifyTaskPriorityCommand,
   taskflowPersonReviewCommand,
   taskflowPersonTasksCommand,
   taskflowPureGreetingReply,
@@ -245,6 +246,18 @@ describe('TaskFlow deterministic confirmation guards', () => {
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'encaminhar os detalhes de M1 e M2 para Ana Beatriz' }) }],
       true,
     )).toEqual({ taskIds: ['M1', 'M2'], destinationName: 'Ana Beatriz' });
+
+    expect(taskflowForwardDetailsCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'enviar mensagem para a Ana Beatriz com os detalhes da M4' }) }],
+      true,
+    )).toEqual({ taskIds: ['M4'], destinationName: 'Ana Beatriz' });
+  });
+
+  it('detects person priority notifications for a task', () => {
+    expect(taskflowNotifyTaskPriorityCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'enviar mensagem para o Mauro priorizar a tarefa p2.5' }) }],
+      true,
+    )).toEqual({ taskId: 'P2.5', destinationName: 'Mauro' });
   });
 
   it('detects standalone activity phrases that v1 asked to triage', () => {

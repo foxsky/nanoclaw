@@ -104,6 +104,11 @@ interface TaskflowForwardDetails {
   destinationName: string;
 }
 
+interface TaskflowNotifyTaskPriority {
+  taskId: string;
+  destinationName: string;
+}
+
 interface TaskflowDueDateNeedsTask {
   dateText: string;
 }
@@ -140,6 +145,8 @@ const PERSON_REVIEW_RE = /^\s*(?:alguma\s+)?(?:atividade|atividades|tarefa|taref
 const BULK_APPROVAL_RE = /^\s*aprovar\s+(?:todas\s+as\s+)?(?:atividades|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
 const STANDALONE_ACTIVITY_RE = /^\s*(?:Aguardar(?:\s+e\s+Acompanhar)?|Submeter|Realizar)\b.+/iu;
 const FORWARD_DETAILS_RE = /\bencaminhar\b.*\bdetalhes\b.*\bpara\s+([\p{L}\p{M}' -]{2,60})\s*$/iu;
+const SEND_DETAILS_TO_PERSON_RE = /\b(?:enviar|mandar)\s+mensagem\s+para\s+(?:o\s+|a\s+)?([\p{L}\p{M}' -]{2,60}?)\s+com\s+(?:os\s+)?detalhes\s+d[aeo]\s+((?:P|T|M|R)\d+(?:\.\d+)?)\b/iu;
+const NOTIFY_TASK_PRIORITY_RE = /\b(?:enviar|mandar)\s+mensagem\s+para\s+(?:o\s+|a\s+)?([\p{L}\p{M}' -]{2,60}?)\s+.*\bpriorizar\b.*\b(?:tarefa|atividade)\s+((?:P|T|M|R)\d+(?:\.\d+)?)\b/iu;
 const DUE_DATE_WITHOUT_TASK_RE = /^\s*(?:prazo|vencimento|data limite)\s+(?:para\s+)?(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s*[.!]?\s*$/iu;
 const ADD_PARTICIPANT_RE = /\badicionar\s+([\p{L}\p{M}' -]{2,60})\s+em\s+(M\d+)\b/iu;
 const RESCHEDULE_MEETING_RE = /\balterar\s+(M\d+)\s+para\s+(segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado|domingo)(?:-feira)?\s+(\d{1,2})(?:h|:\d{2})?\b/iu;
@@ -341,6 +348,13 @@ export function taskflowForwardDetailsCommand(
   if (!taskflowEnabled || messages.length !== 1) return null;
   const message = parseSingleChat(messages[0]);
   if (!message) return null;
+  const sendDetails = message.text.match(SEND_DETAILS_TO_PERSON_RE);
+  if (sendDetails?.[1] && sendDetails[2]) {
+    return {
+      taskIds: [sendDetails[2].toUpperCase()],
+      destinationName: cleanupDestinationName(sendDetails[1]),
+    };
+  }
   const forward = message.text.match(FORWARD_DETAILS_RE);
   if (!forward?.[1]) return null;
   const taskIds = [...message.text.matchAll(TASK_ID_RE_GLOBAL)]
@@ -350,6 +364,21 @@ export function taskflowForwardDetailsCommand(
   return {
     taskIds: uniqueTaskIds,
     destinationName: cleanupDestinationName(forward[1]),
+  };
+}
+
+export function taskflowNotifyTaskPriorityCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowNotifyTaskPriority | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  const match = message.text.match(NOTIFY_TASK_PRIORITY_RE);
+  if (!match?.[1] || !match[2]) return null;
+  return {
+    destinationName: cleanupDestinationName(match[1]),
+    taskId: match[2].toUpperCase(),
   };
 }
 
@@ -605,10 +634,17 @@ function findDestinationByDisplayName(name: string): DestinationEntry | undefine
   const exact = findByName(name);
   if (exact) return exact;
   const target = normalizeDestinationLookup(name);
-  return getAllDestinations().find((destination) =>
+  const destinations = getAllDestinations();
+  const exactNormalized = destinations.find((destination) =>
     normalizeDestinationLookup(destination.name) === target ||
     normalizeDestinationLookup(destination.displayName) === target
   );
+  if (exactNormalized) return exactNormalized;
+  const partial = destinations.filter((destination) => {
+    const names = [destination.name, destination.displayName].map(normalizeDestinationLookup);
+    return names.some((candidate) => candidate.startsWith(`${target} `) || candidate.includes(` ${target} `));
+  });
+  return partial.length === 1 ? partial[0] : undefined;
 }
 
 function outboundText(content: string): string {
@@ -1343,6 +1379,43 @@ function handleTaskflowForwardDetails(
   return true;
 }
 
+function handleTaskflowNotifyTaskPriority(
+  action: TaskflowNotifyTaskPriority,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+  const dest = findDestinationByDisplayName(action.destinationName);
+  if (!dest) return false;
+
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
+  const queryInput = { query: 'task_details', task_id: action.taskId, sender_name: sender };
+  const queryResult = engine.query(queryInput);
+  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  if (!queryResult.success) {
+    writeReply(routing, `Não consegui consultar ${action.taskId}: ${queryResult.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+
+  const data = queryResult.data as Record<string, unknown> | undefined;
+  const task = data?.task as Record<string, unknown> | undefined;
+  const title = typeof data?.title === 'string'
+    ? data.title
+    : typeof task?.title === 'string'
+      ? task.title
+      : action.taskId;
+  const column = typeof data?.column === 'string' ? data.column : typeof task?.column === 'string' ? task.column : '';
+  const status = column ? `\nStatus atual: ${columnLabelForReply(column)}` : '';
+  const forwardText = `${action.destinationName}, ${sender} pede para você priorizar a tarefa *${action.taskId}* — ${title}.${status}`;
+
+  sendToDestination(dest, forwardText, routing);
+  appendSyntheticToolCall('send_message', { to: dest.name, text: forwardText }, { success: true });
+  writeReply(routing, `Mensagem sobre ${action.taskId} encaminhada para ${action.destinationName}.`);
+  return true;
+}
+
 function handleTaskflowDueDateNeedsTaskPrompt(
   action: TaskflowDueDateNeedsTask,
   routing: RoutingContext,
@@ -1569,6 +1642,13 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (standaloneActivity && handleTaskflowStandaloneActivityPrompt(standaloneActivity, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled standalone TaskFlow activity prompt without provider query');
+      continue;
+    }
+
+    const notifyTaskPriority = taskflowNotifyTaskPriorityCommand(keep);
+    if (notifyTaskPriority && handleTaskflowNotifyTaskPriority(notifyTaskPriority, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow priority notification without provider query');
       continue;
     }
 

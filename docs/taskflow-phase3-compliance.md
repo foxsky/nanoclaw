@@ -288,6 +288,27 @@ approval handler:
   state-drift/no-op evidence; the mutation path is covered by the integration
   test that bulk-approves a seeded review queue without querying the provider.
 
+The raw-sqlite forwarding bucket now has a v2-native destination path:
+
+- `scripts/backfill-taskflow-person-destinations.ts` reads
+  `board_people.notification_group_jid`, creates/reuses `messaging_groups`
+  rows, and wires `agent_destinations` by person name.
+- `scripts/phase3-seed-seci-destinations.ts` also seeds Phase 3-only
+  forwarding fixtures for Rafael and Thiago, whose v1 turn looked outside the
+  SECI board_people rows.
+- deterministic forwarding now handles:
+  - `enviar mensagem para o Mauro priorizar a tarefa P2.5`;
+  - `enviar mensagem para Ana Beatriz com os detalhes da M4`.
+
+Targeted paid replay after this fix used:
+
+- results: `/tmp/phase3-v2-results-seci-forwarding-afterfix-20260514.json`;
+- turns: `3` and `28`;
+- outcome: both turns used `api_query` + `send_message` and produced two
+  outbound rows. Turn `28` still depends on historical state because the
+  current DB no longer has `M4`, so the routing behavior is fixed but exact
+  content parity requires the missing pre-turn DB snapshot.
+
 Main findings from that coverage replay:
 
 - Bulk approval/review flows are not proven by the original 30-turn corpus.

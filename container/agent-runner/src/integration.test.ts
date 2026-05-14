@@ -269,6 +269,92 @@ describe('poll loop integration', () => {
     await loopPromise.catch(() => {});
   });
 
+  it('forwards TaskFlow details from "send message with details" wording', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-test';
+    const taskflow = setupEngineDb('board-test');
+    const now = new Date().toISOString();
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES ('ana-beatriz', 'Ana Beatriz', 'channel', 'discord', 'chan-ana', NULL)`,
+      )
+      .run();
+    taskflow
+      .prepare(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, scheduled_at, requires_close_approval, created_at, updated_at)
+         VALUES (?, ?, 'meeting', ?, NULL, 'next_action', ?, 0, ?, ?)`,
+      )
+      .run('M4', 'board-test', 'Reunião sobre CPSI na SEMAM', '2026-04-16T14:00:00.000Z', now, now);
+
+    insertMessage(
+      'm-send-details',
+      { sender: 'Carlos Giovanni', text: 'enviar mensagem para a Ana Beatriz com os detalhes da M4' },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-1' },
+    );
+
+    const provider = new CountingProvider({}, () => '<message to="discord-test">should not run</message>');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+
+    await waitFor(() => getUndeliveredMessages().length >= 2, 2000);
+    controller.abort();
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(2);
+    const forwarded = out.find((message) => message.platform_id === 'chan-ana');
+    const confirmation = out.find((message) => message.platform_id === 'chan-1');
+    expect(JSON.parse(forwarded!.content).text).toContain('M4');
+    expect(JSON.parse(forwarded!.content).text).toContain('Reunião sobre CPSI');
+    expect(JSON.parse(confirmation!.content).text).toContain('encaminhados para Ana Beatriz');
+    expect(provider.queryCalls).toBe(0);
+    expect(getPendingMessages()).toHaveLength(0);
+
+    await loopPromise.catch(() => {});
+  });
+
+  it('sends task-priority notifications through named destinations without querying the provider', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-test';
+    const taskflow = setupEngineDb('board-test');
+    const now = new Date().toISOString();
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES ('Mauro Cesar', 'Mauro Cesar', 'channel', 'discord', 'chan-mauro', NULL)`,
+      )
+      .run();
+    taskflow
+      .prepare(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at)
+         VALUES (?, ?, 'simple', ?, NULL, 'next_action', 0, ?, ?)`,
+      )
+      .run('P2.5', 'board-test', 'Elaborar convênio entre SECTI e INOVATHE', now, now);
+
+    insertMessage(
+      'm-priority',
+      { sender: 'Carlos Giovanni', text: 'enviar mensagem para o Mauro priorizar a tarefa p2.5' },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-1' },
+    );
+
+    const provider = new CountingProvider({}, () => '<message to="discord-test">should not run</message>');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+
+    await waitFor(() => getUndeliveredMessages().length >= 2, 2000);
+    controller.abort();
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(2);
+    const forwarded = out.find((message) => message.platform_id === 'chan-mauro');
+    const confirmation = out.find((message) => message.platform_id === 'chan-1');
+    expect(JSON.parse(forwarded!.content).text).toContain('priorizar a tarefa *P2.5*');
+    expect(JSON.parse(forwarded!.content).text).toContain('Elaborar convênio');
+    expect(JSON.parse(confirmation!.content).text).toContain('encaminhada para Mauro');
+    expect(provider.queryCalls).toBe(0);
+    expect(getPendingMessages()).toHaveLength(0);
+
+    await loopPromise.catch(() => {});
+  });
+
   it('explains review-bypass diagnostics before asking for repair', async () => {
     process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-test';
     const taskflow = setupEngineDb('board-test');

@@ -40,40 +40,45 @@ try {
       target_type = excluded.target_type,
       target_id = excluded.target_id
   `);
+  const findGroupByPlatform = db.prepare(`
+    SELECT id FROM messaging_groups WHERE channel_type = @channel_type AND platform_id = @platform_id
+  `);
+
+  function ensureGroup(destination: { id: string; name: string; platformId: string }): string {
+    const existing = findGroupByPlatform.get({ channel_type: 'whatsapp', platform_id: destination.platformId }) as { id: string } | undefined;
+    if (existing?.id) return existing.id;
+    insertGroup.run({
+      id: destination.id,
+      channel_type: 'whatsapp',
+      platform_id: destination.platformId,
+      name: destination.name,
+      is_group: 1,
+      unknown_sender_policy: 'strict',
+      created_at: now,
+    });
+    return destination.id;
+  }
+
+  const destinations = [
+    { id: 'mg-phase3-laizys-taskflow', localName: 'Laizys', name: 'Laizys - TaskFlow', platformId: '120363425774136187@g.us' },
+    { id: 'mg-phase3-ana-beatriz', localName: 'Ana Beatriz', name: 'Ana Beatriz', platformId: '120363426975449622@g.us' },
+    { id: 'mg-phase3-mauro', localName: 'Mauro Cesar', name: 'Mauro Cesar', platformId: '120363407206502707@g.us' },
+    { id: 'mg-phase3-rodrigo-lima', localName: 'Rodrigo Lima', name: 'Rodrigo Lima', platformId: '120363423592620469@g.us' },
+    { id: 'mg-phase3-rafael', localName: 'Rafael', name: 'Rafael', platformId: '120363408810515104@g.us' },
+    { id: 'mg-phase3-thiago', localName: 'Thiago', name: 'Thiago', platformId: '120363423211033081@g.us' },
+  ];
 
   db.transaction(() => {
-    insertGroup.run({
-      id: 'mg-phase3-laizys-taskflow',
-      channel_type: 'whatsapp',
-      platform_id: '120363425774136187@g.us',
-      name: 'Laizys - TaskFlow',
-      is_group: 1,
-      unknown_sender_policy: 'strict',
-      created_at: now,
-    });
-    insertGroup.run({
-      id: 'mg-phase3-ana-beatriz',
-      channel_type: 'whatsapp',
-      platform_id: '120363426975449622@g.us',
-      name: 'Ana Beatriz',
-      is_group: 1,
-      unknown_sender_policy: 'strict',
-      created_at: now,
-    });
-    insertDestination.run({
-      agent_group_id: 'ag-phase2-seci',
-      local_name: 'Laizys',
-      target_type: 'channel',
-      target_id: 'mg-phase3-laizys-taskflow',
-      created_at: now,
-    });
-    insertDestination.run({
-      agent_group_id: 'ag-phase2-seci',
-      local_name: 'Ana Beatriz',
-      target_type: 'channel',
-      target_id: 'mg-phase3-ana-beatriz',
-      created_at: now,
-    });
+    for (const destination of destinations) {
+      const targetId = ensureGroup(destination);
+      insertDestination.run({
+        agent_group_id: 'ag-phase2-seci',
+        local_name: destination.localName,
+        target_type: 'channel',
+        target_id: targetId,
+        created_at: now,
+      });
+    }
   })();
 
   console.log(`Seeded Phase 3 SECI destinations in ${dbPath}`);
