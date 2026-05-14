@@ -391,6 +391,84 @@ describe('poll loop integration', () => {
     await loopPromise.catch(() => {});
   });
 
+  it('bulk-approves a person review queue without querying the provider', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-test';
+    const taskflow = setupEngineDb('board-test', { withBoardAdmins: true });
+    const now = new Date().toISOString();
+    taskflow
+      .prepare(`INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, ?, ?, 'member')`)
+      .run('board-test', 'mauro', 'Mauro Cesar');
+    taskflow
+      .prepare(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at)
+         VALUES (?, ?, 'simple', ?, ?, 'review', 1, ?, ?)`,
+      )
+      .run('P1.11', 'board-test', 'Priorizar BID Lab', 'mauro', now, now);
+    taskflow
+      .prepare(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at)
+         VALUES (?, ?, 'simple', ?, ?, 'review', 1, ?, ?)`,
+      )
+      .run('P1.12', 'board-test', 'Atualizar CIIAR', 'mauro', now, now);
+
+    insertMessage(
+      'm-bulk-approve',
+      { sender: 'alice', text: 'aprovar todas as atividades de Mauro' },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-1' },
+    );
+
+    const provider = new CountingProvider({}, () => '<message to="discord-test">should not run</message>');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+
+    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
+    controller.abort();
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    const text = JSON.parse(out[0].content).text;
+    expect(text).toContain('2 de 2 tarefa(s) de Mauro aprovada(s)');
+    expect(text).toContain('P1.11');
+    expect(text).toContain('P1.12');
+    const rows = taskflow
+      .prepare(`SELECT id, column FROM tasks WHERE board_id='board-test' AND id IN ('P1.11', 'P1.12') ORDER BY id`)
+      .all() as Array<{ id: string; column: string }>;
+    expect(rows.map((row) => [row.id, row.column])).toEqual([['P1.11', 'done'], ['P1.12', 'done']]);
+    expect(provider.queryCalls).toBe(0);
+    expect(getPendingMessages()).toHaveLength(0);
+
+    await loopPromise.catch(() => {});
+  });
+
+  it('answers empty bulk approval queues without querying the provider', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-test';
+    const taskflow = setupEngineDb('board-test', { withBoardAdmins: true });
+    taskflow
+      .prepare(`INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, ?, ?, 'member')`)
+      .run('board-test', 'mauro', 'Mauro Cesar');
+
+    insertMessage(
+      'm-empty-bulk-approve',
+      { sender: 'alice', text: 'aprovar todas as atividades de Mauro.' },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-1' },
+    );
+
+    const provider = new CountingProvider({}, () => '<message to="discord-test">should not run</message>');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+
+    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
+    controller.abort();
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0].content).text).toBe('Mauro não possui nenhuma tarefa em revisão no momento. Nada a aprovar.');
+    expect(provider.queryCalls).toBe(0);
+    expect(getPendingMessages()).toHaveLength(0);
+
+    await loopPromise.catch(() => {});
+  });
+
   it('answers bare TaskFlow task-id lookups without querying the provider', async () => {
     process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-test';
     const taskflow = setupEngineDb('board-test');

@@ -90,6 +90,10 @@ interface TaskflowPersonReview {
   personName: string;
 }
 
+interface TaskflowBulkApproval {
+  personName: string;
+}
+
 interface TaskflowStandaloneActivity {
   text: string;
   contextHints: string[];
@@ -133,6 +137,7 @@ const BARE_TASK_ID_RE = /^\s*((?:P|T|M|R)\d+(?:\.\d+)?)\s*[.!]?\s*$/i;
 const COMPLETE_VERB_RE = /\b(concluir|conclu[ií]d[ao]?|finalizar|finalizad[ao]?)\b/i;
 const PERSON_TASKS_RE = /^\s*(?:atividades|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
 const PERSON_REVIEW_RE = /^\s*(?:alguma\s+)?(?:atividade|atividades|tarefa|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s+para\s+revis[aã]o\s*[?!.]?\s*$/iu;
+const BULK_APPROVAL_RE = /^\s*aprovar\s+(?:todas\s+as\s+)?(?:atividades|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
 const STANDALONE_ACTIVITY_RE = /^\s*(?:Aguardar(?:\s+e\s+Acompanhar)?|Submeter|Realizar)\b.+/iu;
 const FORWARD_DETAILS_RE = /\bencaminhar\b.*\bdetalhes\b.*\bpara\s+([\p{L}\p{M}' -]{2,60})\s*$/iu;
 const DUE_DATE_WITHOUT_TASK_RE = /^\s*(?:prazo|vencimento|data limite)\s+(?:para\s+)?(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s*[.!]?\s*$/iu;
@@ -244,6 +249,19 @@ export function taskflowPersonReviewCommand(
   if (!message) return null;
   if (extractTaskId(message.text)) return null;
   const match = message.text.match(PERSON_REVIEW_RE);
+  const personName = match?.[1]?.trim();
+  return personName ? { personName } : null;
+}
+
+export function taskflowBulkApprovalCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowBulkApproval | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  if (extractTaskId(message.text)) return null;
+  const match = message.text.match(BULK_APPROVAL_RE);
   const personName = match?.[1]?.trim();
   return personName ? { personName } : null;
 }
@@ -1201,6 +1219,81 @@ function handleTaskflowPersonReview(
   return true;
 }
 
+function handleTaskflowBulkApproval(
+  action: TaskflowBulkApproval,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+  const queryInput = { query: 'person_review', person_name: action.personName, sender_name: sender };
+  const queryResult = engine.query(queryInput);
+  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  if (!queryResult.success) {
+    writeReply(
+      routing,
+      `Não consegui conferir atividades de ${action.personName} em revisão: ${queryResult.error ?? 'erro desconhecido'}`,
+    );
+    return true;
+  }
+
+  const tasks = Array.isArray(queryResult.data)
+    ? (queryResult.data as Array<Record<string, unknown>>).filter((task) => task['column'] === 'review')
+    : [];
+  if (tasks.length === 0) {
+    writeReply(routing, `${action.personName} não possui nenhuma tarefa em revisão no momento. Nada a aprovar.`);
+    return true;
+  }
+
+  const taskIds = tasks
+    .map((task) => typeof task['id'] === 'string' ? task['id'] : '')
+    .filter(Boolean);
+  const results = taskIds.map((taskId) => engine.move({
+    board_id: boardId,
+    task_id: taskId,
+    action: 'approve',
+    sender_name: sender,
+    confirmed_task_id: taskId,
+  }));
+  const successes = results.filter((result) => result.success);
+  const failures = results.filter((result) => !result.success);
+  const moveInput = { task_ids: taskIds, action: 'approve', sender_name: sender };
+  const moveOutput = {
+    success: failures.length === 0,
+    data: {
+      bulk: true,
+      action: 'approve',
+      processed_count: results.length,
+      success_count: successes.length,
+      failure_count: failures.length,
+      results,
+    },
+  };
+  appendSyntheticToolCall('api_move', moveInput, moveOutput, failures.length > 0);
+
+  if (successes.length === 0) {
+    writeReply(
+      routing,
+      `Não consegui aprovar as tarefas de ${action.personName}: ${failures.map((r) => r.error ?? 'erro desconhecido').join('; ')}`,
+    );
+    return true;
+  }
+
+  const lines = [
+    `✅ ${successes.length} de ${results.length} tarefa(s) de ${action.personName} aprovada(s).`,
+    ...successes.map((result) => `- *${result.task_id}*${result.title ? ` — ${result.title}` : ''}`),
+  ];
+  if (failures.length > 0) {
+    lines.push('', 'Falhas:');
+    lines.push(...failures.map((result) => `- ${result.task_id ?? 'tarefa'}: ${result.error ?? 'erro desconhecido'}`));
+  }
+  writeReply(routing, lines.join('\n'));
+  return true;
+}
+
 function handleTaskflowStandaloneActivityPrompt(
   action: TaskflowStandaloneActivity,
   routing: RoutingContext,
@@ -1448,6 +1541,13 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (bareTaskDetails && handleTaskflowBareTaskDetails(bareTaskDetails, keep, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled bare TaskFlow task-details request without provider query');
+      continue;
+    }
+
+    const bulkApproval = taskflowBulkApprovalCommand(keep);
+    if (bulkApproval && handleTaskflowBulkApproval(bulkApproval, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow bulk approval without provider query');
       continue;
     }
 

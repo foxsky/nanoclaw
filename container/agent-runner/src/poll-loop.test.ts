@@ -8,6 +8,7 @@ import { MockProvider } from './providers/mock.js';
 import {
   hasWakeTrigger,
   taskflowBareTaskDetailsCommand,
+  taskflowBulkApprovalCommand,
   taskflowCrossBoardNoteConfirmation,
   taskflowCrossBoardNotePrompt,
   taskflowDueDateNeedsTaskPrompt,
@@ -324,6 +325,18 @@ Other tasks: P2 Agência INOVATHE, P13 Ecossistema de Inovação]
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'tarefas de João Antonio para revisão?' }) }],
       true,
     )).toEqual({ personName: 'João Antonio' });
+  });
+
+  it('detects bulk approval commands for a person', () => {
+    expect(taskflowBulkApprovalCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'aprovar todas as atividades de Mauro.' }) }],
+      true,
+    )).toEqual({ personName: 'Mauro' });
+
+    expect(taskflowBulkApprovalCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'aprovar tarefas josele' }) }],
+      true,
+    )).toEqual({ personName: 'josele' });
   });
 
   it('does not treat diagnostic task-id questions as person task-list requests', () => {

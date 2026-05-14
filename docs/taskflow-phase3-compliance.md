@@ -276,6 +276,18 @@ A targeted paid replay after this fix used:
   project-next-actions loop, and 27-call project-list loop from the coverage
   replay.
 
+The bulk person-approval bucket was then validated after adding a deterministic
+approval handler:
+
+- results:
+  `/tmp/phase3-v2-results-seci-bulk-approval-after-deterministic-20260514.json`;
+- turns: `7`, `34`, `35`, and `36`;
+- outcome: each turn used one `api_query` and produced one outbound response.
+  Turn `7` no longer times out. Because the current DB has no review tasks for
+  Mauro, Rodrigo Lima, Joselé, or João Antonio, these targeted replays are
+  state-drift/no-op evidence; the mutation path is covered by the integration
+  test that bulk-approves a seeded review queue without querying the provider.
+
 Main findings from that coverage replay:
 
 - Bulk approval/review flows are not proven by the original 30-turn corpus.
