@@ -75,6 +75,26 @@ Known context-chain defaults are inferred for corpus turns `16`, `22`, `23`,
 The SECI compliance metadata for this migration is checked in at
 `scripts/phase3-seci-metadata.json`.
 
+## Exclusive Replay
+
+Phase 3 writes synthetic inbound rows into the same session DB that the normal
+host service watches. Stop the background host before any paid replay:
+
+```bash
+systemctl stop nanoclaw
+```
+
+Restart it after the replay and comparison:
+
+```bash
+systemctl start nanoclaw
+```
+
+The driver fails fast when `nanoclaw` is active, because a second host process
+can spawn a second container without replay-only env overrides and contaminate
+the outbound/tool trace. Set `NANOCLAW_PHASE3_ALLOW_ACTIVE_HOST=1` only when
+the replay uses an isolated DB that the host service cannot observe.
+
 ## Planning
 
 Print the inferred Phase 3 plan without running containers:

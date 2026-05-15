@@ -81,6 +81,19 @@ function parseArgs(): Args {
   return args;
 }
 
+function assertExclusiveReplayHost(): void {
+  if (process.env.NANOCLAW_PHASE3_ALLOW_ACTIVE_HOST === '1') return;
+  const result = spawnSync('systemctl', ['is-active', 'nanoclaw'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (result.status === 0 && result.stdout.trim() === 'active') {
+    throw new Error(
+      'Phase 3 replay requires exclusive access to the replay session DB. Stop the background host first: systemctl stop nanoclaw. Set NANOCLAW_PHASE3_ALLOW_ACTIVE_HOST=1 only if you are using an isolated DB.',
+    );
+  }
+}
+
 function selectedIndices(args: Args, corpus: Corpus): number[] {
   if (args.all) return corpus.turns.map((_, i) => i);
   if (args.turns) return args.turns;
@@ -163,6 +176,7 @@ function printPlan(rows: Phase3TurnMetadata[]): void {
 
 function main(): void {
   const args = parseArgs();
+  if (!args.planOnly) assertExclusiveReplayHost();
   const corpus = JSON.parse(fs.readFileSync(args.corpus, 'utf8')) as Corpus;
   const overrides = loadPhase3Metadata(args.metadata);
   const indices = selectedIndices(args, corpus);
