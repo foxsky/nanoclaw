@@ -277,6 +277,60 @@ single-tool basics. If that pass exposes real v2 bugs, patch the canonical
 engine/MCP/provider/template layer and add regression tests before expanding
 again.
 
+## ASSE Production-Message Replay
+
+On 2026-05-15, Phase 3 was expanded from the original SECI JSONL corpus to
+production `messages.db` candidates. The ASSE board was the first non-SECI
+board run with a paid 40-turn replay:
+
+- corpus: `/tmp/prod-interactions-latest/corpora/asse-seci-taskflow.json`;
+- clean results: `/tmp/phase3-v2-results-asse-seci-prodmsg-20260515-clean.json`;
+- clean comparison:
+  `/tmp/phase3-comparison-asse-seci-prodmsg-20260515-clean.txt`;
+- contaminated pre-run to ignore:
+  `/tmp/phase3-v2-results-asse-seci-prodmsg-20260515-rerun.json`.
+
+The contaminated pre-run had the background `nanoclaw` host service active, so
+it spawned duplicate containers without the Phase 3 board override. The clean
+run was executed with the host stopped and completed `40/40` turns with no
+timeouts, no duplicate host contamination, and no `board_id` schema failures.
+Strict comparison on the pre-fix output was `13/40` semantic matches,
+`6` allocation-drift cases, and `21` real-divergence candidates. That number is
+not a final compliance verdict because this corpus is generated from
+`messages.db`: it has v1 outbound text, but not v1 tool traces, and the replay
+uses a final production Taskflow snapshot rather than historical per-turn
+snapshots.
+
+Two real v2 bugs were found and fixed from this ASSE pass:
+
+- Turn `7`, `P11.11 atribuir de Lucas para Rodrigo Lima`: v1 correctly said
+  the task belongs to the SECI parent board and must be reassigned there. v2
+  asked to register Rodrigo Lima locally on ASSE. Fixed by making
+  `api_reassign` report an ancestor-board write boundary before local person
+  registration prompts.
+- Turn `20`, `P11`: v1 returned the P11 stages linked to this ASSE board. v2
+  returned only the parent project header. Fixed by enriching
+  `find_task_in_organization` for parent-board projects with parent subtasks
+  delegated to the current board plus local tasks linked to that parent
+  project.
+
+The remaining ASSE divergence candidates are classified as follows until a new
+paid replay is approved:
+
+| Turns | Classification | Evidence / action |
+| --- | --- | --- |
+| `3`, `11`, `15`, `17`, `35`, `36` | allocation drift | v2 creates the right task shape, but every replay allocates `T25` because the final snapshot counter is used. Need historical pre-turn snapshots to compare exact IDs. |
+| `4`, `5`, `16`, `37`, `39` | missing in-session context | Bare note/deadline follow-ups relied on prior conversation state in v1. Fresh production-message replay lacks the earlier prompt context, so v2 asks which task. Need chain metadata or richer source turns. |
+| `8`, `14`, `28`, `30`, `38` | final-snapshot state drift/no-op | The final production DB already has the target cancelled, done, or note already present. Need per-turn snapshots for mutation parity; current v2 no-op answers are not product bugs. |
+| `6`, `13`, `22`, `24` | comparator strictness / read-only extra | v2 asks or gives the same no-op/unclear answer shape after a harmless read. These should be reclassified or covered by metadata, not fixed with behavior changes. |
+| `12`, `19`, `23`, `26`, `27` | needs historical snapshot or fresh replay after fixes | These compare against moving project/task state. Turn `19` is especially state-sensitive: the historical request moved `P5.9` to waiting on 2026-04-27, but the final snapshot has it done on 2026-04-30. |
+
+Recommended next ASSE step: do not spend another full paid ASSE replay just to
+re-score the old output. First add metadata for missing-context and known
+state-drift turns, or reconstruct targeted snapshots for the state-sensitive
+turns above. Then run a smaller targeted Phase 3 replay for turns `7`, `20`,
+and any turns whose metadata/snapshot evidence changes the verdict.
+
 The first paid 40-turn coverage replay was run on 2026-05-14:
 
 - results: `/tmp/phase3-v2-results-seci-coverage-20260514.json`;
