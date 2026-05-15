@@ -1060,6 +1060,49 @@ describe('TaskflowEngine', () => {
       expect((r.data as any).formatted_task_details).toContain('*SEC-T99*');
     });
 
+    it('includes current-board related tasks when reading a parent-board project', () => {
+      seedOrgTreeWithTasks(db);
+      db.exec(`UPDATE boards SET short_code = 'SEC' WHERE id = 'board-root'`);
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO board_people VALUES ('board-root', 'person-1', 'Alexandre', '5585999990001', 'Dev', 3, NULL);
+         INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at)
+         VALUES ('P11', 'board-root', 'project', 'Operação da SECTI', 'person-1', 'next_action', 0, '${now}', '${now}');
+         INSERT INTO tasks (
+           id, board_id, type, title, assignee, column, requires_close_approval,
+           child_exec_enabled, child_exec_board_id, child_exec_person_id,
+           due_date, parent_task_id, created_at, updated_at
+         )
+         VALUES
+           ('P11.11', 'board-root', 'simple', 'Sistema de ponto', 'person-1', 'waiting', 0,
+            1, '${BOARD_ID}', 'person-1', '2026-05-29', 'P11', '${now}', '${now}'),
+           ('P11.22', 'board-root', 'simple', 'Monitoramento de VMs', 'person-1', 'done', 0,
+            1, '${BOARD_ID}', 'person-1', NULL, 'P11', '${now}', '${now}'),
+           ('P11.6', 'board-root', 'simple', 'Outro quadro', 'person-1', 'next_action', 0,
+            1, 'board-sibling', 'person-1', NULL, 'P11', '${now}', '${now}');
+         INSERT INTO tasks (
+           id, board_id, type, title, assignee, column, requires_close_approval,
+           linked_parent_board_id, linked_parent_task_id, created_at, updated_at
+         )
+         VALUES ('T4', '${BOARD_ID}', 'simple', 'Agenda 2030', 'person-1', 'done', 0,
+                 'board-root', 'P11', '${now}', '${now}')`,
+      );
+
+      const r = engine.query({ query: 'find_task_in_organization', task_id: 'P11' });
+      expect(r.success).toBe(true);
+      const project = (r.data as any[])[0];
+      expect(project.task_id).toBe('P11');
+      expect(project.current_board_related_task_count).toBe(3);
+      expect(project.current_board_related_tasks.map((row: any) => row.task_id)).toEqual([
+        'P11.11',
+        'P11.22',
+        'T4',
+      ]);
+      expect(project.formatted_current_board_project_summary).toContain('*P11.11*');
+      expect(project.formatted_current_board_project_summary).toContain('*T4*');
+      expect(project.formatted_current_board_project_summary).not.toContain('P11.6');
+    });
+
     it('also finds tasks on the current board (no false-negative for local reads)', () => {
       seedOrgTreeWithTasks(db);
       // T-001 is on the current board (BOARD_ID) per the default seed.

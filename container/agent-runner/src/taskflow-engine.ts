@@ -2067,6 +2067,89 @@ export class TaskflowEngine {
       .all(boardId, parentTaskId);
   }
 
+  private getCurrentBoardProjectRelatedTasks(parentBoardId: string, parentTaskId: string): any[] {
+    const delegatedParentSubtasks = this.db
+      .prepare(
+        `SELECT t.id AS task_id, t.board_id, t.type, t.title, t.column,
+                t.assignee, t.due_date, t.parent_task_id, t.updated_at,
+                bp.name AS assignee_name,
+                'delegated_parent_subtask' AS relation
+           FROM tasks t
+      LEFT JOIN board_people bp ON bp.board_id = t.board_id AND bp.person_id = t.assignee
+          WHERE t.board_id = ?
+            AND t.parent_task_id = ?
+            AND t.child_exec_enabled = 1
+            AND t.child_exec_board_id = ?`,
+      )
+      .all(parentBoardId, parentTaskId, this.boardId) as Array<Record<string, any>>;
+
+    const localLinkedTasks = this.db
+      .prepare(
+        `SELECT t.id AS task_id, t.board_id, t.type, t.title, t.column,
+                t.assignee, t.due_date, t.parent_task_id, t.updated_at,
+                bp.name AS assignee_name,
+                'local_linked_task' AS relation
+           FROM tasks t
+      LEFT JOIN board_people bp ON bp.board_id = t.board_id AND bp.person_id = t.assignee
+          WHERE t.board_id = ?
+            AND t.linked_parent_board_id = ?
+            AND t.linked_parent_task_id = ?`,
+      )
+      .all(this.boardId, parentBoardId, parentTaskId) as Array<Record<string, any>>;
+
+    const columnRank: Record<string, number> = {
+      in_progress: 0,
+      next_action: 1,
+      waiting: 2,
+      review: 3,
+      inbox: 4,
+      done: 5,
+    };
+
+    return [...delegatedParentSubtasks, ...localLinkedTasks].sort((a, b) => {
+      const aRank = columnRank[String(a.column ?? '')] ?? 9;
+      const bRank = columnRank[String(b.column ?? '')] ?? 9;
+      if (aRank !== bRank) return aRank - bRank;
+      const aDue = String(a.due_date ?? '9999-12-31');
+      const bDue = String(b.due_date ?? '9999-12-31');
+      if (aDue !== bDue) return aDue.localeCompare(bDue);
+      return String(a.task_id).localeCompare(String(b.task_id), undefined, { numeric: true });
+    });
+  }
+
+  private formatCurrentBoardProjectSummary(project: Record<string, any>, relatedTasks: any[]): string {
+    const board = this.db
+      .prepare(`SELECT short_code, group_folder FROM boards WHERE id = ?`)
+      .get(project.board_id) as { short_code: string | null; group_folder: string | null } | null;
+    const boardLabel = board?.short_code ?? board?.group_folder ?? project.board_id;
+    const lines = [
+      `📁 *${project.task_id}* — ${project.title}`,
+      `_Quadro pai: ${boardLabel}_`,
+      TaskflowEngine.SEP,
+    ];
+    const active = relatedTasks.filter((row) => row.column !== 'done');
+    const done = relatedTasks.filter((row) => row.column === 'done');
+    if (active.length > 0) {
+      lines.push('*Etapas vinculadas ativas neste quadro:*');
+      for (const row of active.slice(0, 12)) {
+        const parts = [`• ${row.column === 'waiting' ? '⏳' : row.column === 'in_progress' ? '🔄' : '⏭️'} *${row.task_id}* — ${row.title}`];
+        if (row.due_date) parts.push(`⏰ ${String(row.due_date).slice(8, 10)}/${String(row.due_date).slice(5, 7)}`);
+        lines.push(parts.join(' '));
+      }
+      if (active.length > 12) lines.push(`• ... +${active.length - 12} etapas ativas`);
+    } else {
+      lines.push('*Etapas vinculadas ativas neste quadro:* nenhuma');
+    }
+    if (done.length > 0) {
+      lines.push('*Concluídas vinculadas recentes:*');
+      for (const row of done.slice(0, 8)) {
+        lines.push(`• ✅ *${row.task_id}* — ${row.title}`);
+      }
+      if (done.length > 8) lines.push(`• ... +${done.length - 8} concluídas`);
+    }
+    return lines.join('\n');
+  }
+
   /** Next subtask suffix number for a parent task, based on the max existing suffix. */
   private nextSubtaskNum(subtasks: Array<{ id: string }>): number {
     return subtasks.reduce((max, s) => {
@@ -7785,6 +7868,14 @@ export class TaskflowEngine {
             if (aUpdated !== bUpdated) return bUpdated - aUpdated;
             return String(a.board_group_folder ?? '').localeCompare(String(b.board_group_folder ?? ''));
           });
+          for (const row of rows) {
+            if (row.type !== 'project') continue;
+            const relatedTasks = this.getCurrentBoardProjectRelatedTasks(String(row.board_id), String(row.task_id));
+            if (relatedTasks.length === 0) continue;
+            row.current_board_related_task_count = relatedTasks.length;
+            row.current_board_related_tasks = relatedTasks;
+            row.formatted_current_board_project_summary = this.formatCurrentBoardProjectSummary(row, relatedTasks);
+          }
           return { success: true, data: rows };
         }
 
