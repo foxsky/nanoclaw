@@ -6,7 +6,7 @@ For detailed release notes, see the [full changelog on the documentation site](h
 
 ## [Unreleased]
 
-- Added a production WhatsApp message-corpus extractor for Taskflow Phase 3 coverage expansion. It clones `messages.db`-style agent turns into board-specific semantic replay candidates, preserving observed v1 outbound text while explicitly marking that these cases do not include v1 tool-use traces.
+- Added a production WhatsApp message-corpus extractor for Taskflow Phase 3 coverage expansion. It clones `messages.db`-style agent turns into board-specific semantic replay candidates, preserves observed v1 outbound text, and attaches the matching Taskflow DB snapshot for per-turn restore while explicitly marking that these cases do not include v1 tool-use traces.
 - Fixed Laizys/SEAF Taskflow Phase 3 exact-ID note handling: board-prefixed delegated IDs such as `SEC-T41` are preserved through MCP note mutations, and missing exact-ID note updates such as `T1- ...` now ask for confirmation instead of mutating a guessed search candidate.
 - Added Laizys/SEAF Phase 3 metadata classification so archived replays can distinguish true v2 behavior bugs from unavailable historical DB snapshots, allocation drift, read-only grounding, and exact-ID confirmation gaps.
 - Fixed Taskflow compound-name shorthand resolution so unique non-first tokens such as "Beatriz" can resolve to "Ana Beatriz" for assignees, meeting participants, and named outbound destinations, while ambiguous tokens such as "Silva" now ask with concrete matching options.

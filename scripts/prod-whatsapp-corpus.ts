@@ -13,7 +13,8 @@
  *     --db /tmp/prod-interactions-latest/messages.db \
  *     --out-dir /tmp/prod-interactions-latest/corpora \
  *     --max-per-board 40 \
- *     --reply-window-minutes 15
+ *     --reply-window-minutes 15 \
+ *     --state-snapshot /tmp/prod-interactions-latest/taskflow.db
  */
 
 import fs from 'node:fs';
@@ -35,6 +36,7 @@ interface Args {
   folder?: string;
   maxPerBoard: number;
   replyWindowMinutes: number;
+  stateSnapshot?: string;
 }
 
 interface RegisteredGroupRow {
@@ -85,6 +87,8 @@ interface CandidateTurn {
   turn_index: number;
   jsonl: string;
   category: 'no_tools';
+  state_snapshot?: string;
+  requires_state_snapshot?: boolean;
   source_kind: 'prod_messages_db';
   source_turn_id: string;
   source_chat_jid: string;
@@ -124,6 +128,7 @@ function parseArgs(argv: string[]): Args {
     folder: args.folder,
     maxPerBoard: args['max-per-board'] ? Number.parseInt(args['max-per-board'], 10) : 40,
     replyWindowMinutes: args['reply-window-minutes'] ? Number.parseInt(args['reply-window-minutes'], 10) : 15,
+    stateSnapshot: args['state-snapshot'] || defaultStateSnapshot(args.db),
   };
 }
 
@@ -194,6 +199,11 @@ function priorityFor(signature: string, expectedAction: Phase3SemanticAction): '
 
 function outputSafeName(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]/g, '-');
+}
+
+function defaultStateSnapshot(messagesDb: string): string | undefined {
+  const candidate = path.join(path.dirname(messagesDb), 'taskflow.db');
+  return fs.existsSync(candidate) ? candidate : undefined;
 }
 
 function addMinutes(timestamp: string, minutes: number): string {
@@ -340,6 +350,8 @@ function buildCandidate(
     turn_index: index,
     jsonl: `messages.db#agent_turns/${turn.id}`,
     category: 'no_tools',
+    state_snapshot: args.stateSnapshot,
+    requires_state_snapshot: !!args.stateSnapshot,
     source_kind: 'prod_messages_db',
     source_turn_id: turn.id,
     source_chat_jid: turn.chat_jid,
@@ -427,6 +439,7 @@ function writeSummary(args: Args, corpora: BoardCorpus[]): void {
   lines.push('Production WhatsApp Phase 3 Candidate Corpus Summary');
   lines.push('');
   lines.push(`Source DB: ${args.db}`);
+  lines.push(`State snapshot: ${args.stateSnapshot ?? '<none>'}`);
   lines.push(`Output dir: ${args.outDir}`);
   lines.push(`Boards: ${corpora.length}`);
   lines.push(`Candidate turns: ${corpora.reduce((sum, corpus) => sum + corpus.curated_count, 0)}`);
@@ -446,6 +459,7 @@ function writeSummary(args: Args, corpora: BoardCorpus[]): void {
   fs.writeFileSync(path.join(args.outDir, 'summary.json'), JSON.stringify({
     generated_at: new Date().toISOString(),
     source_db: args.db,
+    state_snapshot: args.stateSnapshot,
     boards: corpora.map((corpus) => ({
       folder: corpus.board.folder,
       jid: corpus.board.jid,
