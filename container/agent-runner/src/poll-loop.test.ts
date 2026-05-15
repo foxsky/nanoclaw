@@ -23,6 +23,7 @@ import {
   taskflowPersonReviewCommand,
   taskflowPersonTasksCommand,
   taskflowPureGreetingReply,
+  taskflowReadyForReviewUpdateCommand,
   taskflowReviewBypassConfirmation,
   taskflowReviewBypassDiagnosticPrompt,
   taskflowReviewBypassRepairPrompt,
@@ -462,6 +463,16 @@ Other tasks: P2 Agência INOVATHE, P13 Ecossistema de Inovação]
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'p11.16 concluída' }) }],
       true,
     )).toEqual({ taskId: 'P11.16' });
+  });
+
+  it('detects ready-for-review task note updates', () => {
+    expect(taskflowReadyForReviewUpdateCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Reginaldo Graça', text: 'T18 - DFD pronto para assinatura e envio ao Gabinete- BA-138203.' }) }],
+      true,
+    )).toEqual({
+      taskId: 'T18',
+      noteText: 'DFD pronto para assinatura e envio ao Gabinete. Processo: BA-138203.',
+    });
   });
 
   it('does not treat diagnostic review questions as completion commands', () => {

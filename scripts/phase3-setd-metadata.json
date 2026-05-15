@@ -4,7 +4,23 @@
     "context_mode": "chain",
     "source_jsonl": ".claude/projects/-workspace-group/66c5ef49-0c5d-483f-83fa-f2d2e320c429.jsonl",
     "source_turn_index": 1,
-    "prior_turn_depth": 1
+    "prior_turn_depth": 1,
+    "state_snapshot": "/tmp/phase3-state/setd-reconstructed-20260514/pre-turn0/taskflow.db",
+    "target_state_snapshot": "/tmp/phase3-state/setd-reconstructed-20260514/post-turn0/taskflow.db"
+  },
+  {
+    "turn_index": 5,
+    "context_mode": "fresh",
+    "source_jsonl": ".claude/projects/-workspace-group/4d18dc42-b801-46c2-9221-1e57ed786fce.jsonl",
+    "source_turn_index": 0,
+    "state_snapshot": "/tmp/phase3-state/setd-reconstructed-20260514/pre-turn5/taskflow.db"
+  },
+  {
+    "turn_index": 6,
+    "context_mode": "fresh",
+    "source_jsonl": ".claude/projects/-workspace-group/66c5ef49-0c5d-483f-83fa-f2d2e320c429.jsonl",
+    "source_turn_index": 0,
+    "state_snapshot": "/tmp/phase3-state/setd-reconstructed-20260514/pre-turn6/taskflow.db"
   },
   {
     "turn_index": 8,

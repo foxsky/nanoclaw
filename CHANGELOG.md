@@ -8,6 +8,7 @@ For detailed release notes, see the [full changelog on the documentation site](h
 
 - Fixed Taskflow compound-name shorthand resolution so unique non-first tokens such as "Beatriz" can resolve to "Ana Beatriz" for assignees, meeting participants, and named outbound destinations, while ambiguous tokens such as "Silva" now ask with concrete matching options.
 - Added non-SECI Phase 3 replay support by parameterizing the Phase 2/3 replay target and adding SETD-SECTI context-chain metadata.
+- Fixed SETD Phase 3 ready-for-review updates so delegated parent-board task messages such as "T18 - DFD pronto..." use MCP mutations (`api_update_task` + `api_move`) instead of sending a false confirmation without changing Taskflow state.
 - Fixed remaining Taskflow Phase 3 context-chain meeting-forwarding gaps: v2 now deterministically creates dated meetings, adds participants to the latest meeting, forwards "meeting above" notifications using MCP-backed Taskflow state, and accepts recurring meeting-forward confirmations without relying on raw sqlite or slow model exploration.
 - Added Taskflow person notification destination backfill from `board_people.notification_group_jid`, preserving v1 raw-JID forwarding behavior through v2 named destinations instead of re-enabling sqlite/JID sends.
 - Fixed deterministic Taskflow forwarding for "send message with details" and "ask person to prioritize task" wording, so v2 uses `api_query` plus named-destination `send_message` without model-driven over-searching.

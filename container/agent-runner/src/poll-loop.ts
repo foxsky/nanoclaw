@@ -78,6 +78,11 @@ interface TaskflowExplicitCompletion {
   taskId: string;
 }
 
+interface TaskflowReadyForReviewUpdate {
+  taskId: string;
+  noteText: string;
+}
+
 interface TaskflowTaskDetails {
   taskId: string;
 }
@@ -162,6 +167,7 @@ const BARE_CONFIRMATION_RE = /^(sim|s|pode|confirmo|confirma|ok|perfeito)[.!?\s]
 const TASK_ID_RE = /\b((?:P|T|M|R)\d+(?:\.\d+)?)\b/i;
 const TASK_ID_RE_GLOBAL = /\b((?:P|T|M|R)\d+(?:\.\d+)?)\b/gi;
 const BARE_TASK_ID_RE = /^\s*((?:P|T|M|R)\d+(?:\.\d+)?)\s*[.!]?\s*$/i;
+const TASK_NOTE_REVIEW_RE = /^\s*((?:P|T|M|R)\d+(?:\.\d+)?)\s*[-–—:]\s*(.+?)\s*$/iu;
 const COMPLETE_VERB_RE = /\b(concluir|conclu[ií]d[ao]?|finalizar|finalizad[ao]?)\b/i;
 const PERSON_TASKS_RE = /^\s*(?:atividades|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
 const PERSON_REVIEW_RE = /^\s*(?:alguma\s+)?(?:atividade|atividades|tarefa|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s+para\s+revis[aã]o\s*[?!.]?\s*$/iu;
@@ -249,6 +255,21 @@ export function taskflowExplicitCompletionCommand(
   if (!COMPLETE_VERB_RE.test(message.text)) return null;
   const taskId = extractTaskId(message.text);
   return taskId ? { taskId } : null;
+}
+
+export function taskflowReadyForReviewUpdateCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowReadyForReviewUpdate | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  const match = message.text.match(TASK_NOTE_REVIEW_RE);
+  if (!match) return null;
+  const [, taskId, rawNote] = match;
+  if (!/\b(pront[oa]|assinatura|gabinete|dfd|envio)\b/iu.test(rawNote)) return null;
+  if (!/\b(revis[aã]o|assinatura|gabinete|dfd)\b/iu.test(rawNote)) return null;
+  return { taskId: taskId.toUpperCase(), noteText: normalizeReadyForReviewNote(rawNote) };
 }
 
 export function taskflowBareTaskDetailsCommand(
@@ -935,6 +956,30 @@ function appendSyntheticToolCall(name: string, input: unknown, output: unknown, 
 function senderName(messages: Pick<MessageInRow, 'kind' | 'content'>[]): string {
   const first = messages.map(parseSingleChat).find((msg): msg is { sender: string; text: string } => !!msg);
   return first?.sender || 'usuário';
+}
+
+function normalizeReadyForReviewNote(raw: string): string {
+  let text = raw.trim().replace(/\s+/g, ' ');
+  text = text.replace(/\bGabinete\s*[-–—]\s*(BA-\d+)\b/iu, 'Gabinete. Processo: $1');
+  text = text.replace(/\s*[-–—]\s*(BA-\d+)\b/iu, '. Processo: $1');
+  if (!/[.!?]$/.test(text)) text += '.';
+  return text;
+}
+
+function mutationSenderForTask(
+  engine: TaskflowEngine,
+  sender: string,
+  queryResult: { data?: unknown },
+): string {
+  if (engine.resolvePerson(sender)) return sender;
+  const data = queryResult.data as Record<string, unknown> | undefined;
+  const task = data?.task as Record<string, unknown> | undefined;
+  const assignee = typeof task?.assignee === 'string'
+    ? task.assignee
+    : typeof data?.assignee === 'string'
+      ? data.assignee
+      : null;
+  return assignee || sender;
 }
 
 function writeReply(routing: RoutingContext, text: string): void {
@@ -1693,6 +1738,63 @@ function handleTaskflowExplicitCompletion(
   return true;
 }
 
+function handleTaskflowReadyForReviewUpdate(
+  action: TaskflowReadyForReviewUpdate,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+  const queryInput = { query: 'task_details', task_id: action.taskId, sender_name: sender };
+  const queryResult = engine.query(queryInput);
+  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  if (!queryResult.success) {
+    writeReply(routing, `Não encontrei ${action.taskId}: ${queryResult.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+
+  const mutationSender = mutationSenderForTask(engine, sender, queryResult);
+  const updateInput = {
+    task_id: action.taskId,
+    sender_name: mutationSender,
+    updates: { add_note: action.noteText },
+  };
+  const updateResult = engine.update({ ...updateInput, board_id: boardId });
+  appendSyntheticToolCall('api_update_task', updateInput, updateResult, !updateResult.success);
+  if (!updateResult.success) {
+    writeReply(routing, `Não consegui registrar a nota em ${action.taskId}: ${updateResult.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+
+  const moveInput = {
+    task_id: action.taskId,
+    action: 'review' as const,
+    sender_name: mutationSender,
+    confirmed_task_id: action.taskId,
+  };
+  const moveResult = engine.move({ ...moveInput, board_id: boardId });
+  appendSyntheticToolCall('api_move', moveInput, moveResult, !moveResult.success);
+  if (!moveResult.success) {
+    writeReply(routing, `Nota registrada em ${action.taskId}, mas não consegui mover para revisão: ${moveResult.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+
+  const title = typeof moveResult.title === 'string' ? moveResult.title : action.taskId;
+  writeReply(
+    routing,
+    [
+      `✅ *${moveResult.task_id ?? action.taskId}* — ${title}`,
+      '━━━━━━━━━━━━━━',
+      `• Nota registrada: ${action.noteText}`,
+      `• ${columnLabelForReply(moveResult.from_column)} → ${columnLabelForReply(moveResult.to_column)}`,
+    ].join('\n'),
+  );
+  return true;
+}
+
 function handleTaskflowBareTaskDetails(
   action: TaskflowTaskDetails,
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
@@ -2154,6 +2256,13 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (explicitCompletion && handleTaskflowExplicitCompletion(explicitCompletion, keep, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled explicit TaskFlow completion without provider query');
+      continue;
+    }
+
+    const readyForReviewUpdate = taskflowReadyForReviewUpdateCommand(keep);
+    if (readyForReviewUpdate && handleTaskflowReadyForReviewUpdate(readyForReviewUpdate, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow ready-for-review update without provider query');
       continue;
     }
 

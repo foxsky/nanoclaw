@@ -742,6 +742,73 @@ describe('poll loop integration', () => {
     await loopPromise.catch(() => {});
   });
 
+  it('updates delegated task notes and moves ready work to review without querying the provider', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-test';
+    const taskflow = setupEngineDb('board-test', { withBoardAdmins: true });
+    const now = new Date().toISOString();
+    taskflow.exec(`
+      INSERT INTO boards (id, short_code, name, group_folder, group_jid)
+      VALUES ('board-parent', 'PARENT', 'Parent Board', 'parent-taskflow', 'parent@g.us');
+    `);
+    taskflow
+      .prepare(`INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, ?, ?, 'member')`)
+      .run('board-test', 'reginaldo-graca', 'Reginaldo Graça');
+    taskflow
+      .prepare(`INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, ?, ?, 'member')`)
+      .run('board-parent', 'reginaldo-graca', 'Reginaldo Graça');
+    taskflow
+      .prepare(
+        `INSERT INTO tasks (
+          id, board_id, type, title, assignee, column, notes, next_note_id,
+          child_exec_enabled, child_exec_board_id, child_exec_person_id,
+          requires_close_approval, created_at, updated_at
+        ) VALUES (?, ?, 'simple', ?, ?, ?, ?, ?, 1, ?, ?, 1, ?, ?)`,
+      )
+      .run(
+        'T18',
+        'board-parent',
+        'Iniciar processo de contratação de solução de mensageria',
+        'reginaldo-graca',
+        'next_action',
+        '[]',
+        1,
+        'board-test',
+        'reginaldo-graca',
+        now,
+        now,
+      );
+
+    insertMessage(
+      'm-ready-review',
+      { sender: '👨🏽‍💻', text: 'T18 - DFD pronto para assinatura e envio ao Gabinete- BA-138203.' },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-1' },
+    );
+
+    const provider = new CountingProvider({}, () => '<message to="discord-test">should not run</message>');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+
+    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
+    controller.abort();
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    const text = JSON.parse(out[0].content).text;
+    expect(text).toContain('*T18*');
+    expect(text).toContain('Nota registrada');
+    expect(text).toContain('Revisão');
+    expect(provider.queryCalls).toBe(0);
+
+    const row = taskflow
+      .prepare(`SELECT "column", notes FROM tasks WHERE board_id = ? AND id = ?`)
+      .get('board-parent', 'T18') as { column: string; notes: string } | null;
+    expect(row?.column).toBe('review');
+    expect(row?.notes).toContain('Processo: BA-138203');
+    expect(getPendingMessages()).toHaveLength(0);
+
+    await loopPromise.catch(() => {});
+  });
+
   it('should pick up a message, process it, and write a response', async () => {
     insertMessage('m1', { sender: 'Alice', text: 'What is the meaning of life?' }, { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-1' });
 
