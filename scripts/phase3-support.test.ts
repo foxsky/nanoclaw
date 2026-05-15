@@ -616,6 +616,21 @@ describe('Phase 3 semantic comparison', () => {
     expect(summary.task_ids).toEqual(['T10', 'T79']);
   });
 
+  it('classifies "não encontrei" replies as not-found instead of mutation confirmations', () => {
+    const summary = summarizeSemanticBehavior(
+      [{ name: 'api_query', input: { query: 'search', search_text: '00080.000094/2026-92' } }],
+      [{
+        kind: 'chat',
+        content: JSON.stringify({
+          text: 'Fiz a busca pelo número do processo, mas não encontrei nenhuma tarefa vinculada a ele. O processo ainda não foi registrado como tarefa. Você sabe o assunto?',
+        }),
+      }],
+    );
+
+    expect(summary.action).toBe('read');
+    expect(summary.outbound_intent).toBe('not_found_or_unclear');
+  });
+
   it('extracts task ids from no-tool outbound context replies', () => {
     const summary = summarizeSemanticBehavior(
       [],

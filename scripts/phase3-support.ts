@@ -463,19 +463,19 @@ export function classifyOutboundIntent(text: string): string {
   if (!text.trim()) return 'none';
   if (/\bAPI Error:\s*\d{3}\b/i.test(text)) return 'provider_error';
   if (
-    /\b(n[aã]o encontr|n[aã]o localizada|n[aã]o existe)\b/i.test(text) &&
+    /\b(n[aã]o encontr\w*|n[aã]o localizada|n[aã]o existe)\b/i.test(text) &&
     /\b(?:encontrei\s+[\s\S]{0,80})?(relacionad[ao]s?|candidat[ao]s?|op[cç][oõ]es)\b/i.test(text) &&
     extractTaskIdsFromText(text).length > 0
   ) {
     return 'informational';
   }
   if (
-    /\b(n[aã]o encontr|n[aã]o localizada|n[aã]o existe)\b/i.test(text) &&
+    /\b(n[aã]o encontr\w*|n[aã]o localizada|n[aã]o existe)\b/i.test(text) &&
     /\b(voc[eê]\s+quis\s+dizer|preciso que voc[eê] confirme|confirme o ID|me confirma)\b/i.test(text)
   ) {
     return 'asks_user';
   }
-  if (/\b(n[aã]o encontr|n[aã]o localizada|n[aã]o existe)\b/i.test(text)) return 'not_found_or_unclear';
+  if (/\b(n[aã]o encontr\w*|n[aã]o localizada|n[aã]o existe)\b/i.test(text)) return 'not_found_or_unclear';
   if (/\b(encaminh|enviei|detalhes.*encaminhados)\b/i.test(text)) return 'forward_confirmation';
   if (
     /\b(?:Em atraso|Vence hoje|Pr[oó]ximas A[cç][oõ]es|Inbox|Aguardando|Conclu[ií]das)\s*:/i.test(text) &&

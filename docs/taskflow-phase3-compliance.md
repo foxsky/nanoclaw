@@ -289,6 +289,9 @@ board run with a paid 40-turn replay:
   `/tmp/phase3-comparison-asse-seci-prodmsg-20260515-clean.txt`;
 - contaminated pre-run to ignore:
   `/tmp/phase3-v2-results-asse-seci-prodmsg-20260515-rerun.json`.
+- metadata: `scripts/phase3-asse-metadata.json`;
+- metadata-adjusted comparison:
+  `/tmp/phase3-comparison-asse-seci-prodmsg-20260515-clean-with-metadata.txt`.
 
 The contaminated pre-run had the background `nanoclaw` host service active, so
 it spawned duplicate containers without the Phase 3 board override. The clean
@@ -300,6 +303,13 @@ not a final compliance verdict because this corpus is generated from
 `messages.db`: it has v1 outbound text, but not v1 tool traces, and the replay
 uses a final production Taskflow snapshot rather than historical per-turn
 snapshots.
+
+After adding ASSE metadata and fixing the comparator's Portuguese
+`não encontrei...` not-found detection, the same pre-fix output reclassifies as
+`18/40` matches, `5` missing-context turns, `6` allocation-drift turns, `9`
+state-drift turns, and `2` real divergences. The two remaining real divergences
+are turns `7` and `20`, both fixed after the clean replay and awaiting targeted
+replay confirmation.
 
 Two real v2 bugs were found and fixed from this ASSE pass:
 

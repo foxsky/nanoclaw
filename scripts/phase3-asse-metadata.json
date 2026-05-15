@@ -1,0 +1,161 @@
+[
+  {
+    "turn_index": 4,
+    "context_mode": "chain",
+    "source_jsonl": null,
+    "prior_turn_depth": 1
+  },
+  {
+    "turn_index": 5,
+    "context_mode": "chain",
+    "source_jsonl": null,
+    "prior_turn_depth": 1
+  },
+  {
+    "turn_index": 6,
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "read",
+      "task_ids": ["T10"],
+      "outbound_intent": "informational"
+    }
+  },
+  {
+    "turn_index": 8,
+    "context_mode": "fresh",
+    "requires_state_snapshot": true,
+    "state_drift": {
+      "description": "Historical v1 turn cancelled T18, but the available final production snapshot already has T18 archived/cancelled.",
+      "evidence": "task_history shows T18 cancelled on 2026-05-05; no active T18 row remains.",
+      "expected_with_historical_snapshot": "cancel_task/no-op parity should be judged against a pre-turn snapshot where T18 is active."
+    }
+  },
+  {
+    "turn_index": 12,
+    "context_mode": "fresh",
+    "requires_state_snapshot": true,
+    "state_drift": {
+      "description": "Historical flow created a duplicate T24, then added the same title under P5 and asked whether to cancel T24. The final snapshot has the P5.12 result and T24 already archived.",
+      "evidence": "task_history has board-asse-seci-taskflow T24 created/cancelled on 2026-05-11 and board-seci-taskflow P5.12 created.",
+      "expected_with_historical_snapshot": "Use the exact pre-turn snapshot to validate duplicate-detection wording and final DB diff."
+    }
+  },
+  {
+    "turn_index": 13,
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "read",
+      "outbound_intent": "asks_user"
+    }
+  },
+  {
+    "turn_index": 14,
+    "context_mode": "fresh",
+    "requires_state_snapshot": true,
+    "state_drift": {
+      "description": "Historical v1 concluded P5.10 on 2026-04-24; the final snapshot already has P5.10 done.",
+      "expected_with_historical_snapshot": "Conclude parity must be judged before P5.10's historical done transition."
+    }
+  },
+  {
+    "turn_index": 16,
+    "context_mode": "chain",
+    "source_jsonl": null,
+    "prior_turn_depth": 1
+  },
+  {
+    "turn_index": 19,
+    "context_mode": "fresh",
+    "requires_state_snapshot": true,
+    "state_drift": {
+      "description": "Historical v1 moved P5.9 to waiting on 2026-04-27, but the final snapshot has P5.9 done after 2026-04-30.",
+      "evidence": "task_history shows P5.9 wait on 2026-04-27T16:37:32Z and conclude on 2026-04-30T14:08:55Z.",
+      "expected_with_historical_snapshot": "With a pre-2026-04-27T16:37 snapshot, v2 should move P5.9 from next_action to waiting once."
+    }
+  },
+  {
+    "turn_index": 22,
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "read",
+      "outbound_intent": "not_found_or_unclear"
+    }
+  },
+  {
+    "turn_index": 23,
+    "context_mode": "fresh",
+    "requires_state_snapshot": true,
+    "state_drift": {
+      "description": "Agenda2030 search compared an April 20 v1 reply with the final snapshot, which includes later-created/updated Agenda2030 rows.",
+      "expected_with_historical_snapshot": "Search result IDs and ranking should be judged against the April 20 board state."
+    }
+  },
+  {
+    "turn_index": 24,
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "read",
+      "outbound_intent": "asks_user"
+    }
+  },
+  {
+    "turn_index": 26,
+    "context_mode": "fresh",
+    "requires_state_snapshot": true,
+    "state_drift": {
+      "description": "The 'minhas tarefas' expected list is from April 20, but the replay uses the final May 15 task snapshot.",
+      "expected_with_historical_snapshot": "Person task list IDs should be judged against the April 20 board state."
+    }
+  },
+  {
+    "turn_index": 27,
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "read",
+      "allow_extra_task_ids": true,
+      "outbound_intent": "informational"
+    },
+    "state_drift": {
+      "description": "The production extractor found no v1 outbound inside the configured reply window, but the user request is a normal current task-list read."
+    }
+  },
+  {
+    "turn_index": 28,
+    "context_mode": "fresh",
+    "requires_state_snapshot": true,
+    "state_drift": {
+      "description": "Historical v1 checked/concluded P11.3 around April 27; the final snapshot already has P11.3 done.",
+      "expected_with_historical_snapshot": "Conclude/no-op parity must be judged against the pre-turn P11.3 state."
+    }
+  },
+  {
+    "turn_index": 30,
+    "context_mode": "fresh",
+    "requires_state_snapshot": true,
+    "state_drift": {
+      "description": "The final snapshot already contains the P20.5 note that v1 added historically.",
+      "expected_with_historical_snapshot": "Note-add parity must be judged before the note exists."
+    }
+  },
+  {
+    "turn_index": 37,
+    "context_mode": "chain",
+    "source_jsonl": null,
+    "prior_turn_depth": 1
+  },
+  {
+    "turn_index": 38,
+    "context_mode": "fresh",
+    "requires_state_snapshot": true,
+    "state_drift": {
+      "description": "The final snapshot already contains the T12 Agenda2030 note that v1 added historically.",
+      "expected_with_historical_snapshot": "Note-add parity must be judged before the note exists."
+    }
+  },
+  {
+    "turn_index": 39,
+    "context_mode": "chain",
+    "source_jsonl": null,
+    "prior_turn_depth": 1
+  }
+]
