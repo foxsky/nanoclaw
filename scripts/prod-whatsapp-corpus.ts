@@ -43,6 +43,7 @@ interface RegisteredGroupRow {
   jid: string;
   name: string;
   folder: string;
+  taskflow_board_id?: string;
 }
 
 interface AgentTurnRow {
@@ -89,6 +90,7 @@ interface CandidateTurn {
   category: 'no_tools';
   state_snapshot?: string;
   requires_state_snapshot?: boolean;
+  taskflow_board_id?: string;
   source_kind: 'prod_messages_db';
   source_turn_id: string;
   source_chat_jid: string;
@@ -177,8 +179,7 @@ function expectedActionFromReply(replyText: string | null): Phase3SemanticAction
   if (!replyText?.trim()) return 'no-op';
   if (/\b(nenhuma a[cç][aã]o realizada|sem a[cç][aã]o|n[aã]o fiz nenhuma altera[cç][aã]o)\b/i.test(replyText)) return 'no-op';
   if (
-    /\b(tarefa criada|criad[ao]s?|atualizad[ao]s?|nota registrada|prazo definido|movid[ao]s?|enviada para|registrad[ao]s?)\b/i.test(replyText) ||
-    /✅[\s\S]{0,80}\b(?:Tarefa|[TPMR]\d+(?:\.\d+)?)\b/i.test(replyText)
+    /✅[^\n]{0,120}(?:\bTarefa\b|\b[TPMR]\d+(?:\.\d+)?\b)[^\n]{0,120}\b(?:criad[ao]s?|atualizad[ao]s?|adicionad[ao]s?|registrad[ao]s?|movid[ao]s?|conclu[ií]d[ao]?|finalizad[ao]?)\b/i.test(replyText)
   ) {
     return 'mutate';
   }
@@ -204,6 +205,26 @@ function outputSafeName(value: string): string {
 function defaultStateSnapshot(messagesDb: string): string | undefined {
   const candidate = path.join(path.dirname(messagesDb), 'taskflow.db');
   return fs.existsSync(candidate) ? candidate : undefined;
+}
+
+function resolveTaskflowBoardId(stateSnapshot: string | undefined, group: RegisteredGroupRow): string | undefined {
+  if (!stateSnapshot || !fs.existsSync(stateSnapshot)) return undefined;
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(stateSnapshot, { readonly: true, fileMustExist: true });
+    const byJid = db.prepare('SELECT id FROM boards WHERE group_jid = ? LIMIT 1').get(group.jid) as
+      | { id: string }
+      | undefined;
+    if (byJid?.id) return byJid.id;
+    const byFolder = db.prepare('SELECT id FROM boards WHERE group_folder = ? LIMIT 1').get(group.folder) as
+      | { id: string }
+      | undefined;
+    return byFolder?.id;
+  } catch {
+    return undefined;
+  } finally {
+    db?.close();
+  }
 }
 
 function addMinutes(timestamp: string, minutes: number): string {
@@ -310,6 +331,7 @@ function buildCandidate(
   turn: AgentTurnRow,
   nextTurn: AgentTurnRow | null,
   index: number,
+  taskflowBoardId: string | undefined,
 ): CandidateTurn | null {
   const messages = loadTurnMessages(db, turn.id)
     .filter((message) => typeof message.content === 'string' && message.content.trim())
@@ -352,6 +374,7 @@ function buildCandidate(
     category: 'no_tools',
     state_snapshot: args.stateSnapshot,
     requires_state_snapshot: !!args.stateSnapshot,
+    taskflow_board_id: taskflowBoardId,
     source_kind: 'prod_messages_db',
     source_turn_id: turn.id,
     source_chat_jid: turn.chat_jid,
@@ -411,17 +434,19 @@ function chooseCandidates(turns: CandidateTurn[], max: number): CandidateTurn[] 
 }
 
 function writeBoardCorpus(args: Args, db: Database.Database, group: RegisteredGroupRow): BoardCorpus {
+  const taskflowBoardId = resolveTaskflowBoardId(args.stateSnapshot, group);
+  const board = { ...group, taskflow_board_id: taskflowBoardId };
   const turns = loadTurns(db, group.folder);
   const nextByTurn = nextTurnByChat(turns);
   const allCandidates = turns
-    .map((turn, index) => buildCandidate(args, db, turn, nextByTurn.get(turn.id) ?? null, index))
+    .map((turn, index) => buildCandidate(args, db, turn, nextByTurn.get(turn.id) ?? null, index, taskflowBoardId))
     .filter((turn): turn is CandidateTurn => turn !== null);
   const selected = chooseCandidates(allCandidates, args.maxPerBoard);
   const corpus: BoardCorpus = {
     source: 'prod_messages_db',
     source_db: args.db,
     generated_at: new Date().toISOString(),
-    board: group,
+    board,
     total_turns: allCandidates.length,
     curated_count: selected.length,
     selection: 'semantic_message_candidates',

@@ -120,6 +120,9 @@ function runPhase2Driver(metadata: Phase3TurnMetadata, args: Args): void {
   } else {
     delete env.NANOCLAW_PHASE3_TARGET_STATE_SNAPSHOT;
   }
+  if (metadata.taskflow_board_id) {
+    env.NANOCLAW_PHASE_REPLAY_TASKFLOW_BOARD_ID = metadata.taskflow_board_id;
+  }
 
   fs.rmSync(PHASE2_DRIVER_OUT, { force: true });
   if (args.phase2Out !== PHASE2_DRIVER_OUT) fs.rmSync(args.phase2Out, { force: true });

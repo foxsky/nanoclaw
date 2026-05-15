@@ -31,10 +31,12 @@ describe('Phase 3 metadata inference', () => {
     const meta = inferPhase3Metadata({
       jsonl: 'session.jsonl',
       turn_index: 4,
+      taskflow_board_id: 'board-asse-seci-taskflow',
     }, 9);
 
     expect(meta.context_mode).toBe('fresh');
     expect(meta.prior_turn_depth).toBeUndefined();
+    expect(meta.taskflow_board_id).toBe('board-asse-seci-taskflow');
   });
 
   it('honors explicit metadata overrides', () => {
@@ -180,6 +182,16 @@ describe('Phase 3 semantic comparison', () => {
     );
 
     expect(summary.board_refs).toEqual(['sec']);
+  });
+
+  it('treats board/project section reports as informational despite completed-section labels', () => {
+    const summary = summarizeSemanticBehavior(
+      [],
+      [],
+      '📁 *P11* — Operação\n\n*Próximas Ações:*\n• *T14* — Fazer algo\n\n*✅ Concluídas:*\n• *T11* — Finalizada',
+    );
+
+    expect(summary.outbound_intent).toBe('informational');
   });
 
   it('classifies already-recorded informational replies before trailing CTAs', () => {

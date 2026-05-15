@@ -434,7 +434,15 @@ async function buildContainerArgs(
   // v1 parity: MCP handlers host-inject board_id from this env so the agent
   // never has to construct it. Resolve via the boards table — folder→id is
   // NOT always `board-<folder>` (historical renames, board_groups mapping).
-  const taskflowBoardId = resolveTaskflowBoardId(agentGroup.folder, true);
+  // Phase 3 production-snapshot replays can intentionally run a local fixture
+  // folder against a historical DB snapshot where the board's production
+  // folder name differs. Keep normal production resolution folder-driven, but
+  // allow the explicit replay-only board id to pin the restored snapshot board.
+  const taskflowBoardId = resolveTaskflowBoardId(
+    agentGroup.folder,
+    true,
+    process.env.NANOCLAW_PHASE_REPLAY_TASKFLOW_BOARD_ID,
+  );
   if (taskflowBoardId) {
     args.push('-e', `NANOCLAW_TASKFLOW_BOARD_ID=${taskflowBoardId}`);
   }

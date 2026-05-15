@@ -70,6 +70,7 @@ export interface Phase3StateDriftAnnotation {
 export interface Phase3TurnMetadata {
   turn_index: number;
   context_mode: Phase3ContextMode;
+  taskflow_board_id?: string;
   source_jsonl?: string;
   source_turn_index?: number;
   prior_turn_depth?: number;
@@ -84,6 +85,7 @@ export interface Phase3TurnMetadata {
 export interface Phase3CorpusTurn {
   jsonl?: string;
   turn_index?: number;
+  taskflow_board_id?: string;
   context_mode?: Phase3ContextMode;
   source_jsonl?: string;
   source_turn_index?: number;
@@ -217,6 +219,7 @@ export function inferPhase3Metadata(
   return {
     turn_index: corpusIndex,
     context_mode: contextMode,
+    taskflow_board_id: turn.taskflow_board_id,
     source_jsonl: turn.source_jsonl ?? turn.jsonl,
     source_turn_index: turn.source_turn_index ?? turn.turn_index,
     prior_turn_depth: contextMode === 'chain' ? depth ?? 1 : undefined,
@@ -474,6 +477,12 @@ export function classifyOutboundIntent(text: string): string {
   }
   if (/\b(n[aã]o encontr|n[aã]o localizada|n[aã]o existe)\b/i.test(text)) return 'not_found_or_unclear';
   if (/\b(encaminh|enviei|detalhes.*encaminhados)\b/i.test(text)) return 'forward_confirmation';
+  if (
+    /\b(?:Em atraso|Vence hoje|Pr[oó]ximas A[cç][oõ]es|Inbox|Aguardando|Conclu[ií]das)\s*:/i.test(text) &&
+    extractTaskIdsFromText(text).length >= 2
+  ) {
+    return 'informational';
+  }
   if (/\b(j[aá]|foi|foram)\b[\s\S]{0,80}\b(atualizad[ao]?|adicionad[ao]?|registrad[ao]?)\b/i.test(text)) return 'mutation_confirmation';
   if (
     /\b(TASKFLOW BOARD|Board|QUADRO TASKFLOW|Vinculada conclu[ií]da|TAREFAS VINCULADAS|Respons[aá]vel|Coluna)\b/i.test(text) &&
