@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import {
   classifyRawSqliteTurn,
   compareSemanticTurn,
+  loadPhase3Metadata,
   type Phase3TurnResult,
   type RawSqliteDecision,
   type SemanticComparison,
@@ -20,6 +21,7 @@ interface Args {
   inPath: string;
   outJson: string;
   outText: string;
+  metadata?: string;
 }
 
 function parseArgs(): Args {
@@ -33,6 +35,7 @@ function parseArgs(): Args {
     if (key === '--in') args.inPath = process.argv[++i];
     else if (key === '--out') args.outJson = process.argv[++i];
     else if (key === '--out-text') args.outText = process.argv[++i];
+    else if (key === '--metadata') args.metadata = process.argv[++i];
     else throw new Error(`Unknown arg: ${key}`);
   }
   return args;
@@ -69,6 +72,7 @@ function summarize(comparisons: SemanticComparison[], sqlite: RawSqliteDecision[
     lines.push(`  action: ${c.expected.action} -> ${c.actual.action} [${statusIcon(c.matches.action)}]`);
     lines.push(`  task_ids: [${c.expected.task_ids.join(', ') || '*'}] -> [${c.actual.task_ids.join(', ') || '∅'}] [${statusIcon(c.matches.task_ids)}]`);
     lines.push(`  mutation_types: [${c.expected.mutation_types.join(', ') || '*'}] -> [${c.actual.mutation_types.join(', ') || '∅'}] [${statusIcon(c.matches.mutation_types)}]`);
+    lines.push(`  board_refs: [${c.expected.board_refs.join(', ') || '*'}] -> [${c.actual.board_refs.join(', ') || '∅'}] [${statusIcon(c.matches.board_refs)}]`);
     lines.push(`  recipient: ${c.expected.recipient ?? '*'} -> ${c.actual.recipient ?? '∅'} [${statusIcon(c.matches.recipient)}]`);
     lines.push(`  outbound_intent: ${c.expected.outbound_intent} -> ${c.actual.outbound_intent}`);
   }
@@ -88,7 +92,22 @@ function summarize(comparisons: SemanticComparison[], sqlite: RawSqliteDecision[
 function main(): void {
   const args = parseArgs();
   const raw = JSON.parse(fs.readFileSync(args.inPath, 'utf8'));
-  const turns: Phase3TurnResult[] = Array.isArray(raw) ? raw : [raw];
+  const loadedTurns: Phase3TurnResult[] = Array.isArray(raw) ? raw : [raw];
+  const metadata = loadPhase3Metadata(args.metadata);
+  const turns = loadedTurns.map((turn) => {
+    const override = metadata.get(turn.turn_index);
+    if (!override) return turn;
+    return {
+      ...turn,
+      phase3: {
+        ...(turn.phase3 ?? {}),
+        metadata: {
+          ...(turn.phase3?.metadata ?? {}),
+          ...override,
+        },
+      },
+    };
+  });
   const comparisons = turns.map(compareSemanticTurn);
   const rawSqlite = turns.map(classifyRawSqliteTurn).filter(Boolean) as RawSqliteDecision[];
   const out = { count: turns.length, comparisons, raw_sqlite: rawSqlite };
@@ -100,4 +119,3 @@ function main(): void {
 }
 
 main();
-

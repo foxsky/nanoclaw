@@ -9,6 +9,20 @@
     "target_state_snapshot": "/tmp/phase3-state/setd-reconstructed-20260514/post-turn0/taskflow.db"
   },
   {
+    "turn_index": 2,
+    "context_mode": "fresh",
+    "source_jsonl": ".claude/projects/-workspace-group/05b1e11e-4c2a-4465-8c27-abc8c3bd6535.jsonl",
+    "source_turn_index": 0,
+    "state_snapshot": "/tmp/phase3-state/setd-reconstructed-20260514/pre-turn2/taskflow.db"
+  },
+  {
+    "turn_index": 3,
+    "context_mode": "fresh",
+    "source_jsonl": ".claude/projects/-workspace-group/05b1e11e-4c2a-4465-8c27-abc8c3bd6535.jsonl",
+    "source_turn_index": 1,
+    "state_snapshot": "/tmp/phase3-state/setd-reconstructed-20260514/pre-turn3/taskflow.db"
+  },
+  {
     "turn_index": 5,
     "context_mode": "fresh",
     "source_jsonl": ".claude/projects/-workspace-group/4d18dc42-b801-46c2-9221-1e57ed786fce.jsonl",
@@ -27,20 +41,28 @@
     "context_mode": "chain",
     "source_jsonl": ".claude/projects/-workspace-group/dec8af28-f94a-4abe-8746-e4df362ccce2.jsonl",
     "source_turn_index": 1,
-    "prior_turn_depth": 1
+    "prior_turn_depth": 1,
+    "state_snapshot": "/tmp/phase3-state/setd-reconstructed-20260514/pre-turn10/taskflow.db",
+    "v1_bug": {
+      "description": "v1 answered a bare confirmation by exploring filesystem/Bash paths and then claimed it could not access the parent board/T79. v2 should not reproduce that raw-tool failure path; a targeted clarification is acceptable.",
+      "detected_by": "manual_review",
+      "expected_correction": "Ask for the missing T79 title/details or continue the task lookup through first-class api_* tools once the user provides more context."
+    }
   },
   {
     "turn_index": 9,
     "context_mode": "chain",
     "source_jsonl": ".claude/projects/-workspace-group/dec8af28-f94a-4abe-8746-e4df362ccce2.jsonl",
     "source_turn_index": 2,
-    "prior_turn_depth": 2
+    "prior_turn_depth": 2,
+    "state_snapshot": "/tmp/phase3-state/setd-reconstructed-20260514/pre-turn10/taskflow.db"
   },
   {
     "turn_index": 10,
     "context_mode": "chain",
     "source_jsonl": ".claude/projects/-workspace-group/dec8af28-f94a-4abe-8746-e4df362ccce2.jsonl",
     "source_turn_index": 3,
-    "prior_turn_depth": 3
+    "prior_turn_depth": 3,
+    "state_snapshot": "/tmp/phase3-state/setd-reconstructed-20260514/pre-turn10/taskflow.db"
   }
 ]

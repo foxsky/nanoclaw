@@ -83,6 +83,11 @@ interface TaskflowReadyForReviewUpdate {
   noteText: string;
 }
 
+interface TaskflowExactIdNoteCandidate {
+  taskId: string;
+  noteText: string;
+}
+
 interface TaskflowTaskDetails {
   taskId: string;
 }
@@ -102,6 +107,12 @@ interface TaskflowBulkApproval {
 interface TaskflowStandaloneActivity {
   text: string;
   contextHints: string[];
+}
+
+interface TaskflowMissingTaskFollowup {
+  missingTaskId: string;
+  text: string;
+  confirmationOnly: boolean;
 }
 
 interface TaskflowForwardDetails {
@@ -167,6 +178,7 @@ const BARE_CONFIRMATION_RE = /^(sim|s|pode|confirmo|confirma|ok|perfeito)[.!?\s]
 const TASK_ID_RE = /\b((?:P|T|M|R)\d+(?:\.\d+)?)\b/i;
 const TASK_ID_RE_GLOBAL = /\b((?:P|T|M|R)\d+(?:\.\d+)?)\b/gi;
 const BARE_TASK_ID_RE = /^\s*((?:P|T|M|R)\d+(?:\.\d+)?)\s*[.!]?\s*$/i;
+const EXACT_TASK_NOTE_RE = /^\s*((?:[A-Z]{2,}-)?(?:P|T|M|R)\d+(?:\.\d+)?)\s*[-–—:]\s*(.+?)\s*$/iu;
 const TASK_NOTE_REVIEW_RE = /^\s*((?:P|T|M|R)\d+(?:\.\d+)?)\s*[-–—:]\s*(.+?)\s*$/iu;
 const COMPLETE_VERB_RE = /\b(concluir|conclu[ií]d[ao]?|finalizar|finalizad[ao]?)\b/i;
 const PERSON_TASKS_RE = /^\s*(?:atividades|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
@@ -272,6 +284,18 @@ export function taskflowReadyForReviewUpdateCommand(
   return { taskId: taskId.toUpperCase(), noteText: normalizeReadyForReviewNote(rawNote) };
 }
 
+export function taskflowExactIdNoteCandidate(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowExactIdNoteCandidate | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  const match = message.text.match(EXACT_TASK_NOTE_RE);
+  if (!match?.[1] || !match[2]) return null;
+  return { taskId: match[1].toUpperCase(), noteText: match[2].trim() };
+}
+
 export function taskflowBareTaskDetailsCommand(
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
   taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
@@ -334,6 +358,52 @@ export function taskflowStandaloneActivityPrompt(
   if (extractTaskId(message.text)) return null;
   if (!STANDALONE_ACTIVITY_RE.test(message.text)) return null;
   return { text: message.text, contextHints: taskflowStandaloneActivityContextHints(message.text, messages) };
+}
+
+function storedMessageText(rawContent: string): string {
+  const content = parseJsonContent(rawContent);
+  if (typeof content.text === 'string') return content.text;
+  if (typeof content.message === 'string') return content.message;
+  return rawContent;
+}
+
+function latestMissingTaskId(recentOutboundContents: string[]): string | null {
+  for (const raw of recentOutboundContents) {
+    const text = storedMessageText(raw);
+    const match =
+      text.match(/\b(?:N[aã]o encontrei|Task not found:)\s*((?:T|P|M|R)\d+(?:\.\d+)?)/iu) ??
+      text.match(/\b((?:T|P|M|R)\d+(?:\.\d+)?)\b[\s\S]{0,80}\b(?:n[aã]o encontr|n[aã]o existe|Task not found)\b/iu);
+    if (match?.[1]) return match[1].toUpperCase();
+  }
+  return null;
+}
+
+function isShortLookupPhrase(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.length > 80) return false;
+  if (/[?？]/.test(trimmed)) return false;
+  if (/^(quadro|status|inbox|ajuda|comandos|help|manual|guia r[aá]pido)$/iu.test(trimmed)) return false;
+  const tokens = trimmed.match(/[\p{L}\p{N}]{2,}/gu) ?? [];
+  return tokens.length >= 1 && tokens.length <= 6;
+}
+
+export function taskflowMissingTaskFollowupCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  recentOutboundContents: string[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowMissingTaskFollowup | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  if (extractTaskId(message.text)) return null;
+  const missingTaskId = latestMissingTaskId(recentOutboundContents);
+  if (!missingTaskId) return null;
+  const text = message.text.trim();
+  if (/^(sim|s|pode|confirma|confirmo|isso|ok)$/iu.test(text)) {
+    return { missingTaskId, text, confirmationOnly: true };
+  }
+  if (!isShortLookupPhrase(text)) return null;
+  return { missingTaskId, text, confirmationOnly: false };
 }
 
 export function taskflowStandaloneActivityContextHints(
@@ -1032,6 +1102,29 @@ function handleTaskflowReviewBypassConfirmation(
 
   const title = typeof updateResult.title === 'string' ? ` — ${updateResult.title}` : '';
   writeReply(routing, `✅ *${action.taskId}*${title}\n\nReabri a tarefa e ativei a aprovação obrigatória.`);
+  return true;
+}
+
+function handleTaskflowMissingExactIdNote(
+  action: TaskflowExactIdNoteCandidate,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
+  if (engine.getTask(action.taskId)) return false;
+
+  const queryInput = { query: 'task_details', task_id: action.taskId, sender_name: sender };
+  const queryResult = engine.query(queryInput);
+  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+
+  writeReply(
+    routing,
+    `Não encontrei uma tarefa *${action.taskId}* neste quadro. Recebi a atualização "${action.noteText}", mas preciso que você confirme o ID correto antes de registrar em outra tarefa.`,
+  );
   return true;
 }
 
@@ -1977,6 +2070,79 @@ function handleTaskflowStandaloneActivityPrompt(
   return true;
 }
 
+function searchTermsForMissingTaskFollowup(text: string): string[] {
+  const terms: string[] = [text.trim()];
+  const tokens = text.match(/[\p{L}\p{N}]{3,}/gu) ?? [];
+  for (const token of tokens.sort((a, b) => b.length - a.length)) {
+    if (!terms.some((term) => term.toLowerCase() === token.toLowerCase())) terms.push(token);
+  }
+  return terms.slice(0, 4);
+}
+
+function displayTaskIdForBoard(db: ReturnType<typeof getTaskflowDb>, currentBoardId: string, task: any): string {
+  const owningBoardId = task?.owning_board_id ?? task?.board_id;
+  if (!owningBoardId || owningBoardId === currentBoardId) return String(task?.id ?? '');
+  const row = db
+    .prepare(`SELECT short_code FROM boards WHERE id = ? LIMIT 1`)
+    .get(owningBoardId) as { short_code: string | null } | undefined;
+  const shortCode = row?.short_code?.trim();
+  return shortCode ? `${shortCode}-${task.id}` : String(task?.id ?? '');
+}
+
+function handleTaskflowMissingTaskFollowup(
+  action: TaskflowMissingTaskFollowup,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+  if (action.confirmationOnly) {
+    writeReply(routing, `Pode me enviar o título ou mais detalhes da ${action.missingTaskId}? Assim eu busco no quadro e nos vínculos.`);
+    return true;
+  }
+
+  const sender = senderName(messages);
+  const db = getTaskflowDb();
+  const engine = new TaskflowEngine(db, boardId, { readonly: true });
+  const seen = new Set<string>();
+  const matches: any[] = [];
+  for (const term of searchTermsForMissingTaskFollowup(action.text)) {
+    const input = { query: 'search', search_text: term, sender_name: sender };
+    const result = engine.query(input);
+    appendSyntheticToolCall('api_query', input, result, !result.success);
+    const rows = Array.isArray(result.data) ? result.data : [];
+    for (const row of rows) {
+      const key = `${row.board_id ?? boardId}:${row.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      matches.push(row);
+    }
+    if (matches.length > 0) break;
+  }
+
+  if (matches.length === 0) {
+    writeReply(
+      routing,
+      `Não encontrei a ${action.missingTaskId}, nem tarefas relacionadas a "${action.text}". Pode informar o board, responsável ou mais algum trecho do título?`,
+    );
+    return true;
+  }
+
+  const lines = [
+    `Entendi. A ${action.missingTaskId} continua não localizada neste board, mas encontrei tarefa(s) relacionada(s) a "${action.text}":`,
+    '',
+    ...matches.slice(0, 5).map((task) => {
+      const id = displayTaskIdForBoard(db, boardId, task);
+      const status = task.column === 'done' ? ' — concluída' : task.column ? ` — ${task.column}` : '';
+      return `• *${id}* — ${task.title}${status}`;
+    }),
+    '',
+    `O que você precisa fazer com a ${action.missingTaskId} ou com esse assunto?`,
+  ];
+  writeReply(routing, lines.join('\n'));
+  return true;
+}
+
 function handleTaskflowForwardDetails(
   action: TaskflowForwardDetails,
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
@@ -2298,6 +2464,20 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (personTasks && handleTaskflowPersonTasks(personTasks, keep, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow person-tasks request without provider query');
+      continue;
+    }
+
+    const missingTaskFollowup = taskflowMissingTaskFollowupCommand(keep, recentOut);
+    if (missingTaskFollowup && handleTaskflowMissingTaskFollowup(missingTaskFollowup, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow missing-task follow-up without provider query');
+      continue;
+    }
+
+    const exactIdNote = taskflowExactIdNoteCandidate(keep);
+    if (exactIdNote && handleTaskflowMissingExactIdNote(exactIdNote, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled missing exact-ID TaskFlow note without provider query');
       continue;
     }
 

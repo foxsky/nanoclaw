@@ -15,9 +15,11 @@ import {
   taskflowCrossBoardNoteConfirmation,
   taskflowCrossBoardNotePrompt,
   taskflowDueDateNeedsTaskPrompt,
+  taskflowExactIdNoteCandidate,
   taskflowExplicitCompletionCommand,
   taskflowForwardDetailsCommand,
   taskflowMeetingBatchUpdateCommand,
+  taskflowMissingTaskFollowupCommand,
   taskflowNotifyMeetingAboveCommand,
   taskflowNotifyTaskPriorityCommand,
   taskflowPersonReviewCommand,
@@ -345,6 +347,49 @@ describe('TaskFlow deterministic confirmation guards', () => {
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'Aguardar e Acompanhar licitação para reforma do prédio pela SDU Leste' }) }],
       true,
     )).toEqual({ text: 'Aguardar e Acompanhar licitação para reforma do prédio pela SDU Leste', contextHints: [] });
+  });
+
+  it('detects short follow-ups after a missing task lookup', () => {
+    const recent = [JSON.stringify({ text: 'Não encontrei T79: Task not found: T79' })];
+
+    expect(taskflowMissingTaskFollowupCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Reginaldo Graça', text: 'Sim' }) }],
+      recent,
+      true,
+    )).toEqual({ missingTaskId: 'T79', text: 'Sim', confirmationOnly: true });
+
+    expect(taskflowMissingTaskFollowupCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Reginaldo Graça', text: 'SEI  Anatel/IA' }) }],
+      recent,
+      true,
+    )).toEqual({ missingTaskId: 'T79', text: 'SEI  Anatel/IA', confirmationOnly: false });
+  });
+
+  it('detects exact-ID note/update candidates before the agent can mutate a guessed substitute', () => {
+    expect(taskflowExactIdNoteCandidate(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Laizys', text: 'T1- Preparando mapa comparativo e justificativa de preço' }) }],
+      true,
+    )).toEqual({
+      taskId: 'T1',
+      noteText: 'Preparando mapa comparativo e justificativa de preço',
+    });
+
+    expect(taskflowExactIdNoteCandidate(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Laizys', text: 'sec-t41 : processo enviado para a CMG' }) }],
+      true,
+    )).toEqual({
+      taskId: 'SEC-T41',
+      noteText: 'processo enviado para a CMG',
+    });
+  });
+
+  it('does not treat normal board commands as missing-task title follow-ups', () => {
+    const recent = [JSON.stringify({ text: 'Não encontrei T79: Task not found: T79' })];
+    expect(taskflowMissingTaskFollowupCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Reginaldo Graça', text: 'quadro' }) }],
+      recent,
+      true,
+    )).toBeNull();
   });
 
   it('extracts related project hints from Phase 2 raw prompt task context', () => {

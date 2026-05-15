@@ -7,6 +7,7 @@ export type Phase3ContextMode = 'fresh' | 'chain';
 export type Phase3SemanticAction = 'ask' | 'read' | 'mutate' | 'forward' | 'no-op';
 export type Phase3ClassificationKind =
   | 'match'
+  | 'provider_error'
   | 'no_outbound_timeout'
   | 'missing_context'
   | 'state_snapshot_missing'
@@ -35,6 +36,7 @@ export interface Phase3ExpectedBehavior {
   task_ids?: string[];
   allow_extra_task_ids?: boolean;
   mutation_types?: string[];
+  board_refs?: string[];
   recipient?: string;
   recipient_aliases?: string[];
   outbound_intent?: string;
@@ -59,6 +61,12 @@ export interface Phase3V1BugAnnotation {
   expected_correction?: string;
 }
 
+export interface Phase3StateDriftAnnotation {
+  description: string;
+  evidence?: string;
+  expected_with_historical_snapshot?: string;
+}
+
 export interface Phase3TurnMetadata {
   turn_index: number;
   context_mode: Phase3ContextMode;
@@ -70,6 +78,7 @@ export interface Phase3TurnMetadata {
   requires_state_snapshot?: boolean;
   expected_behavior?: Phase3ExpectedBehavior;
   v1_bug?: Phase3V1BugAnnotation;
+  state_drift?: Phase3StateDriftAnnotation;
 }
 
 export interface Phase3CorpusTurn {
@@ -85,6 +94,7 @@ export interface Phase3CorpusTurn {
   requires_state_snapshot?: boolean;
   expected_behavior?: Phase3ExpectedBehavior;
   v1_bug?: Phase3V1BugAnnotation;
+  state_drift?: Phase3StateDriftAnnotation;
 }
 
 export interface Phase3TurnResult {
@@ -102,6 +112,7 @@ export interface SemanticSummary {
   action: Phase3SemanticAction;
   task_ids: string[];
   mutation_types: string[];
+  board_refs: string[];
   recipient: string | null;
   outbound_intent: string;
 }
@@ -114,6 +125,7 @@ export interface SemanticComparison {
     action: boolean;
     task_ids: boolean;
     mutation_types: boolean;
+    board_refs: boolean;
     recipient: boolean;
     // True when the outbound intent classes are equivalent. Distinguishes
     // "v2 grounded with a clarifying ask" from "v2 quietly failed to find
@@ -149,6 +161,7 @@ const DEFAULT_CHAIN_DEPTHS: Record<number, number> = {
 const MUTATION_TOOL_PATTERNS = [
   /taskflow_(create|update|delete|move|admin|reassign|undo|hierarchy|dependency)/,
   /api_(create|update|delete|move|admin|reassign|undo|hierarchy|dependency)/,
+  /api_task_(add_note|edit_note|remove_note)/,
   /mcp__sqlite__write_query/,
 ];
 
@@ -166,6 +179,7 @@ function normalizedToolName(name: string): string {
 function canonicalMutationType(name: string): string | null {
   const normalized = normalizedToolName(name);
   if (normalized === 'mcp__sqlite__write_query') return 'sqlite_write';
+  if (/^api_task_(add_note|edit_note|remove_note)$/.test(normalized)) return 'update';
   const match = normalized.match(/^(?:taskflow|api)_(create|create_task|create_simple_task|update|update_task|update_simple_task|delete|delete_simple_task|move|admin|reassign|undo|hierarchy|dependency)/);
   if (!match) return null;
   const raw = match[1];
@@ -211,11 +225,28 @@ export function inferPhase3Metadata(
     requires_state_snapshot: turn.requires_state_snapshot,
     expected_behavior: turn.expected_behavior,
     v1_bug: turn.v1_bug,
+    state_drift: turn.state_drift,
   };
 }
 
 export function taskflowDbPath(dataDir: string): string {
   return path.join(dataDir, 'taskflow', 'taskflow.db');
+}
+
+function sqliteSidecarPaths(dbPath: string): string[] {
+  return [`${dbPath}-wal`, `${dbPath}-shm`];
+}
+
+function copyIfExists(from: string, to: string): boolean {
+  if (!fs.existsSync(from)) return false;
+  fs.copyFileSync(from, to);
+  return true;
+}
+
+function removeSQLiteSidecars(dbPath: string): void {
+  for (const sidecar of sqliteSidecarPaths(dbPath)) {
+    fs.rmSync(sidecar, { force: true });
+  }
 }
 
 export function restoreDbSnapshot(
@@ -225,18 +256,38 @@ export function restoreDbSnapshot(
 ): 'restored' | 'missing' | 'not_requested' {
   if (!snapshotPath) return required ? 'missing' : 'not_requested';
   if (!fs.existsSync(snapshotPath)) return 'missing';
-  fs.copyFileSync(snapshotPath, taskflowDbPath(dataDir));
+  const livePath = taskflowDbPath(dataDir);
+  removeSQLiteSidecars(livePath);
+  fs.copyFileSync(snapshotPath, livePath);
+  removeSQLiteSidecars(livePath);
   return 'restored';
 }
 
 export function withTaskflowDbSnapshot<T>(dataDir: string, fn: () => T): T {
   const livePath = taskflowDbPath(dataDir);
   const snapshot = `${livePath}.phase3-${process.pid}-${Date.now()}`;
+  const sidecarSnapshots = sqliteSidecarPaths(livePath).map((sidecar) => ({
+    live: sidecar,
+    snapshot: `${sidecar}.phase3-${process.pid}-${Date.now()}`,
+    existed: false,
+  }));
   fs.copyFileSync(livePath, snapshot);
+  for (const sidecar of sidecarSnapshots) {
+    sidecar.existed = copyIfExists(sidecar.live, sidecar.snapshot);
+  }
   try {
     return fn();
   } finally {
+    removeSQLiteSidecars(livePath);
     fs.copyFileSync(snapshot, livePath);
+    for (const sidecar of sidecarSnapshots) {
+      if (sidecar.existed) {
+        fs.copyFileSync(sidecar.snapshot, sidecar.live);
+      } else {
+        fs.rmSync(sidecar.live, { force: true });
+      }
+      fs.rmSync(sidecar.snapshot, { force: true });
+    }
     fs.rmSync(snapshot, { force: true });
   }
 }
@@ -272,6 +323,38 @@ export function extractTaskIdsFromText(text: string): string[] {
   return [...ids].sort();
 }
 
+function normalizeBoardRef(value: string): string | null {
+  const normalized = value
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .replace(/[*_`]/g, '')
+    .trim()
+    .toLowerCase();
+  if (!normalized) return null;
+  return normalized
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9_-]/g, '');
+}
+
+export function extractBoardRefsFromText(text: string): string[] {
+  const refs = new Set<string>();
+  for (const match of text.matchAll(/\bboard[ \t]+(?:(?:do|da|de)[ \t]+)?([A-Z0-9][A-Za-z0-9_-]*)/g)) {
+    const ref = normalizeBoardRef(match[1]);
+    if (ref) refs.add(ref);
+  }
+  for (const match of text.matchAll(/(?:^|[^A-Za-z0-9])quadro:\s*([^\n_*]+)/gim)) {
+    for (const part of match[1].trim().split(/\s+-\s+|\s+—\s+/)) {
+      const ref = normalizeBoardRef(part);
+      if (ref) refs.add(ref);
+    }
+  }
+  for (const match of text.matchAll(/\b([A-Z]{2,})-(?:T|P|M|R)\d+(?:\.\d+)?\b/g)) {
+    const ref = normalizeBoardRef(match[1]);
+    if (ref) refs.add(ref);
+  }
+  return [...refs].sort();
+}
+
 export function extractRecipient(tools: ToolCall[], outbound: OutboundRow[]): string | null {
   for (const tool of tools) {
     const input = tool.input && typeof tool.input === 'object'
@@ -291,20 +374,51 @@ export function extractRecipient(tools: ToolCall[], outbound: OutboundRow[]): st
   return null;
 }
 
+function toolInputRecord(tool: ToolCall): Record<string, unknown> {
+  return tool.input && typeof tool.input === 'object'
+    ? tool.input as Record<string, unknown>
+    : {};
+}
+
+function sendMessageHasRecipient(tool: ToolCall): boolean {
+  if (normalizedToolName(tool.name) !== 'send_message') return false;
+  const input = toolInputRecord(tool);
+  return ['destination', 'target_chat_jid', 'destination_name', 'recipient', 'to'].some((key) =>
+    typeof input[key] === 'string' && input[key],
+  );
+}
+
+function sendMessageTexts(tools: ToolCall[]): string[] {
+  const texts: string[] = [];
+  for (const tool of tools) {
+    if (normalizedToolName(tool.name) !== 'send_message') continue;
+    const input = toolInputRecord(tool);
+    if (typeof input.text === 'string') texts.push(input.text);
+  }
+  return texts;
+}
+
 export function summarizeSemanticBehavior(
   tools: ToolCall[],
   outbound: OutboundRow[] = [],
   finalResponse?: string | null,
 ): SemanticSummary {
   const names = tools.map((tool) => normalizedToolName(tool.name));
-  const hasForward = names.includes('send_message');
+  const hasForward = tools.some(sendMessageHasRecipient);
   const hasMutation = names.some((name) => MUTATION_TOOL_PATTERNS.some((pattern) => pattern.test(name)));
   const hasRead = names.some((name) => READ_TOOL_PATTERNS.some((pattern) => pattern.test(name)));
   const text = [
     finalResponse ?? '',
+    ...sendMessageTexts(tools),
     ...outbound.map((row) => outboundContentText(row.content)),
   ].join('\n');
-  const asks = /\?|\b(deseja|qual|confirma|pode confirmar|como deseja|quer que)\b/i.test(text);
+  const asks = /\?|\b(deseja|qual|confirma|confirme|confirmar|pode confirmar|como deseja|quer que|preciso que voc[eê] confirme)\b/i.test(text);
+  const outboundIntent = classifyOutboundIntent(text);
+  const failedMutationIntent = hasMutation &&
+    (outboundIntent === 'asks_user' || outboundIntent === 'not_found_or_unclear') &&
+    /\b(n[aã]o encontr|n[aã]o localizada|n[aã]o existe|confirma|confirmar)\b/i.test(text) &&
+    !/\b(j[aá]|foi|foram)\b[\s\S]{0,80}\b(atualizad[ao]?|adicionad[ao]?|registrad[ao]?)\b/i.test(text);
+  const effectiveHasMutation = hasMutation && !failedMutationIntent;
 
   // Action priority: substantive tool work beats a trailing "Deseja...?" CTA.
   // Otherwise turns that read + suggest a follow-up (a common v1 pattern,
@@ -312,18 +426,23 @@ export function summarizeSemanticBehavior(
   // though the underlying work is identical to v2's read-only response.
   let action: Phase3SemanticAction;
   if (hasForward) action = 'forward';
-  else if (hasMutation) action = 'mutate';
+  else if (effectiveHasMutation) action = 'mutate';
+  else if (hasRead && asks && outboundIntent === 'asks_user' && /\b(voc[eê]\s+quis\s+dizer|preciso que voc[eê] confirme|confirme o ID|me confirma)\b/i.test(text)) action = 'ask';
   else if (hasRead) action = 'read';
-  else if (asks) action = 'ask';
+  else if (asks && outboundIntent === 'asks_user') action = 'ask';
   else action = 'no-op';
+  if (failedMutationIntent && outboundIntent === 'asks_user') action = 'ask';
 
   const toolTaskIds = extractTaskIdsFromTools(tools);
   return {
     action,
     task_ids: toolTaskIds.length > 0 ? toolTaskIds : extractTaskIdsFromText(text),
-    mutation_types: [...new Set(names.map(canonicalMutationType).filter((value): value is string => value !== null))].sort(),
+    mutation_types: effectiveHasMutation
+      ? [...new Set(names.map(canonicalMutationType).filter((value): value is string => value !== null))].sort()
+      : [],
+    board_refs: extractBoardRefsFromText(text),
     recipient: extractRecipient(tools, outbound),
-    outbound_intent: classifyOutboundIntent(text),
+    outbound_intent: outboundIntent,
   };
 }
 
@@ -339,10 +458,31 @@ function outboundContentText(content: string): string {
 
 export function classifyOutboundIntent(text: string): string {
   if (!text.trim()) return 'none';
-  if (/\?|\b(deseja|qual|confirma|como deseja|quer que)\b/i.test(text)) return 'asks_user';
+  if (/\bAPI Error:\s*\d{3}\b/i.test(text)) return 'provider_error';
+  if (
+    /\b(n[aã]o encontr|n[aã]o localizada|n[aã]o existe)\b/i.test(text) &&
+    /\b(?:encontrei\s+[\s\S]{0,80})?(relacionad[ao]s?|candidat[ao]s?|op[cç][oõ]es)\b/i.test(text) &&
+    extractTaskIdsFromText(text).length > 0
+  ) {
+    return 'informational';
+  }
+  if (
+    /\b(n[aã]o encontr|n[aã]o localizada|n[aã]o existe)\b/i.test(text) &&
+    /\b(voc[eê]\s+quis\s+dizer|preciso que voc[eê] confirme|confirme o ID|me confirma)\b/i.test(text)
+  ) {
+    return 'asks_user';
+  }
+  if (/\b(n[aã]o encontr|n[aã]o localizada|n[aã]o existe)\b/i.test(text)) return 'not_found_or_unclear';
   if (/\b(encaminh|enviei|detalhes.*encaminhados)\b/i.test(text)) return 'forward_confirmation';
-  if (/\b(conclu[ií]d|movid|atualizad|adicionad|criad|registrad)\b/i.test(text)) return 'mutation_confirmation';
-  if (/\b(n[aã]o encontr|não está cadastrada|n[aã]o localizada)\b/i.test(text)) return 'not_found_or_unclear';
+  if (/\b(j[aá]|foi|foram)\b[\s\S]{0,80}\b(atualizad[ao]?|adicionad[ao]?|registrad[ao]?)\b/i.test(text)) return 'mutation_confirmation';
+  if (
+    /\b(TASKFLOW BOARD|Board|QUADRO TASKFLOW|Vinculada conclu[ií]da|TAREFAS VINCULADAS|Respons[aá]vel|Coluna)\b/i.test(text) &&
+    extractTaskIdsFromText(text).length > 0
+  ) {
+    return 'informational';
+  }
+  if (/\?|\b(deseja|qual|confirma|confirme|confirmar|como deseja|quer que)\b/i.test(text)) return 'asks_user';
+  if (/\b(conclu[ií]d|movid[ao]?|atualizad[ao]?|adicionad[ao]?|criad[ao]?|registrad[ao]?)\b/i.test(text)) return 'mutation_confirmation';
   return 'informational';
 }
 
@@ -355,6 +495,18 @@ function sameStringSet(a: string[], b: string[]): boolean {
 function stringSetContains(container: string[], expectedSubset: string[]): boolean {
   const values = new Set(container);
   return expectedSubset.every((value) => values.has(value));
+}
+
+function boardRefsMatch(expected: string[], actual: string[]): boolean {
+  if (expected.length === 0) return true;
+  if (actual.length === 0) return false;
+  return expected.every((expectedRef) =>
+    actual.some((actualRef) => {
+      if (expectedRef === actualRef) return true;
+      if (expectedRef.length <= 3) return actualRef.startsWith(`${expectedRef}-`);
+      return actualRef.includes(expectedRef) || expectedRef.includes(actualRef);
+    }),
+  );
 }
 
 // Outbound intent classes that flag "v2 produced the same shape but failed
@@ -392,6 +544,7 @@ export function compareSemanticTurn(turn: Phase3TurnResult): SemanticComparison 
     action: expected.action === actual.action,
     task_ids: expected.task_ids.length === 0 || sameStringSet(expected.task_ids, actual.task_ids) || (allowExtraTaskIds && stringSetContains(actual.task_ids, expected.task_ids)),
     mutation_types: expected.mutation_types.length === 0 || sameStringSet(expected.mutation_types, actual.mutation_types),
+    board_refs: boardRefsMatch(expected.board_refs, actual.board_refs),
     recipient: expected.recipient === null || recipientMatches(expected.recipient, recipientAliases, actual.recipient),
     outbound_intent: outboundIntentMatches(expected.outbound_intent, actual.outbound_intent),
   };
@@ -409,6 +562,10 @@ function expectedToSummary(expected: Phase3ExpectedBehavior): SemanticSummary {
     action: expected.action ?? 'no-op',
     task_ids: [...new Set(expected.task_ids ?? [])].map((id) => id.toUpperCase()).sort(),
     mutation_types: [...new Set(expected.mutation_types ?? [])].sort(),
+    board_refs: [...new Set(expected.board_refs ?? [])]
+      .map((ref) => normalizeBoardRef(ref))
+      .filter((ref): ref is string => ref !== null)
+      .sort(),
     recipient: expected.recipient ?? null,
     outbound_intent: expected.outbound_intent ?? 'unspecified',
   };
@@ -458,8 +615,12 @@ function looksLikeFreshAllocation(
 // whether it participates instead of silently widening it.
 function allDimensionsMatch(m: SemanticComparison['matches']): boolean {
   return (
-    m.action && m.task_ids && m.mutation_types && m.recipient && m.outbound_intent
+    m.action && m.task_ids && m.mutation_types && m.board_refs && m.recipient && m.outbound_intent
   );
+}
+
+function hasProviderError(actual: SemanticSummary): boolean {
+  return actual.outbound_intent === 'provider_error';
 }
 
 function snapshotMissing(turn: Phase3TurnResult): boolean {
@@ -473,6 +634,10 @@ function snapshotMissing(turn: Phase3TurnResult): boolean {
 // doesn't get flagged as a regression.
 function isV1BugFlagged(turn: Phase3TurnResult): boolean {
   return !!turn.phase3?.metadata?.v1_bug;
+}
+
+function stateDriftAnnotation(turn: Phase3TurnResult): Phase3StateDriftAnnotation | undefined {
+  return turn.phase3?.metadata?.state_drift;
 }
 
 function isNoOutboundTimeout(
@@ -526,7 +691,7 @@ function isFreshAllocationDrift(
   actual: SemanticSummary,
 ): boolean {
   return (
-    matches.action && matches.mutation_types && matches.recipient && !matches.task_ids &&
+    matches.action && matches.mutation_types && matches.board_refs && matches.recipient && !matches.task_ids &&
     actual.mutation_types.includes('create') &&
     looksLikeFreshAllocation(expected.task_ids, actual.task_ids)
   );
@@ -540,6 +705,7 @@ function isAskContextHintGap(
   return (
     matches.action &&
     matches.mutation_types &&
+    matches.board_refs &&
     matches.recipient &&
     matches.outbound_intent &&
     !matches.task_ids &&
@@ -560,6 +726,7 @@ function isReadStateDrift(
     turn.phase3?.db_snapshot_status !== 'restored' &&
     matches.action &&
     matches.mutation_types &&
+    matches.board_refs &&
     matches.recipient &&
     !matches.task_ids &&
     expected.action === 'read' &&
@@ -571,9 +738,10 @@ function isReadStateDrift(
 
 // v2 grounded with extra reads before answering. Suppressed when explicit
 // metadata says the expected action is something else (the metadata wins).
-function isReadOnlyExtra(turn: Phase3TurnResult): boolean {
+function isReadOnlyExtra(turn: Phase3TurnResult, matches: SemanticComparison['matches']): boolean {
   const expectedAction = turn.phase3?.metadata?.expected_behavior?.action;
   if (expectedAction !== undefined) return false;
+  if (!matches.task_ids || !matches.board_refs || !matches.recipient || !matches.outbound_intent) return false;
   if (turn.v2.tools.length <= turn.v1.tools.length) return false;
   return !turn.v2.tools.some((tool) =>
     MUTATION_TOOL_PATTERNS.some((pattern) => pattern.test(normalizedToolName(tool.name))),
@@ -596,6 +764,13 @@ type ClassificationRule = {
 };
 
 const CLASSIFICATION_RULES: ClassificationRule[] = [
+  {
+    test: (_t, _m, _e, a) => hasProviderError(a),
+    result: {
+      kind: 'provider_error',
+      note: 'Replay hit a provider/API error, so this turn must be re-run before behavior can be judged.',
+    },
+  },
   {
     test: (t, _m, e, a) => isNoOutboundTimeout(t, e, a),
     result: {
@@ -667,7 +842,7 @@ const CLASSIFICATION_RULES: ClassificationRule[] = [
     },
   },
   {
-    test: (t) => isReadOnlyExtra(t),
+    test: (t, m) => isReadOnlyExtra(t, m),
     result: {
       kind: 'read_only_extra',
       note: 'v2 performed additional read-side grounding without mutation.',
@@ -686,6 +861,32 @@ function classifySemanticComparison(
   expected: SemanticSummary,
   actual: SemanticSummary,
 ): SemanticComparison['classification'] {
+  if (hasProviderError(actual)) {
+    return {
+      kind: 'provider_error',
+      note: 'Replay hit a provider/API error, so this turn must be re-run before behavior can be judged.',
+    };
+  }
+  if (isNoOutboundTimeout(turn, expected, actual)) {
+    return {
+      kind: 'no_outbound_timeout',
+      note: 'v1 produced a user-visible reply, but v2 produced no outbound message before the replay timeout. Tool/action parity is not enough for compliance.',
+    };
+  }
+  if (isV1BugFlagged(turn)) {
+    return {
+      kind: 'v1_bug_flagged',
+      note: 'Corpus turn annotated as a v1 bug (auditor self-correction or manual review). Manual verification required — v2 may correctly diverge from v1 here, or may reproduce the same mistake.',
+    };
+  }
+  const drift = stateDriftAnnotation(turn);
+  if (drift && !allDimensionsMatch(matches)) {
+    const suffix = drift.evidence ? ` Evidence: ${drift.evidence}` : '';
+    return {
+      kind: 'state_drift',
+      note: `Annotated DB state drift: ${drift.description}${suffix}`,
+    };
+  }
   for (const rule of CLASSIFICATION_RULES) {
     if (rule.test(turn, matches, expected, actual)) return rule.result;
   }

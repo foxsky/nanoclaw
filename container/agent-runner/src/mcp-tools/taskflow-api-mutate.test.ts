@@ -445,6 +445,7 @@ describe('api_move MCP tool (A11.1)', () => {
   it('exports a tool with name "api_move"', async () => {
     const { apiMoveTool } = await import('./taskflow-api-mutate.ts');
     expect(apiMoveTool.tool.name).toBe('api_move');
+    expect(apiMoveTool.tool.description).toContain('SEC-T41 must stay SEC-T41');
   });
 
   it('declares required action/sender_name, single task_id or bulk task_ids, and optional reason/subtask_id/confirmed_task_id; action enum covers 10 transitions', async () => {

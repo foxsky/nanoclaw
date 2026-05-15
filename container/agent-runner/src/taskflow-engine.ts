@@ -345,6 +345,7 @@ export interface ReportResult extends TaskflowResult {
     blocked: Array<{ id: string; title: string; assignee_name: string | null; blocked_by: string[] }>;
     completed_today: Array<{ id: string; title: string; assignee_name: string | null }>;
     completed_week?: Array<{ id: string; title: string; assignee_name: string | null }>;
+    linked_completed?: Array<{ id: string; title: string; assignee_name: string | null; completed_at: string | null }>;
     stale_24h?: Array<{ id: string; title: string; assignee_name: string | null; column: string; updated_at: string }>;
     stale_tasks?: Array<{ id: string; title: string; assignee_name: string | null; column: string; updated_at: string }>;
     inbox?: Array<{ id: string; title: string; assignee_name: string | null }>;
@@ -1942,6 +1943,15 @@ export class TaskflowEngine {
       nameCache.set(personId, name);
       return name;
     };
+    const taskBoardId = this.taskBoardId(task);
+    const taskIdForDisplay = (): string => {
+      if (taskBoardId === this.boardId) return task.id;
+      const board = this.db
+        .prepare(`SELECT short_code FROM boards WHERE id = ? LIMIT 1`)
+        .get(taskBoardId) as { short_code: string | null } | null;
+      const shortCode = board?.short_code?.trim();
+      return shortCode ? `${shortCode}-${task.id}` : task.id;
+    };
 
     const colLabel = (column: string | null | undefined): string => {
       switch (column) {
@@ -1955,7 +1965,7 @@ export class TaskflowEngine {
       }
     };
     const icon = task.type === 'project' ? '📁' : task.type === 'meeting' ? '📅' : task.type === 'recurring' ? '🔄' : '📋';
-    const lines: string[] = [`${icon} *${task.id}* — ${task.title}`];
+    const lines: string[] = [`${icon} *${taskIdForDisplay()}* — ${task.title}`];
     const assignee = nameOf(task.assignee);
     if (assignee) lines.push(`👤 *Responsável:* ${assignee}`);
     lines.push(`⏭️ *Coluna:* ${colLabel(task.column)}`);
@@ -2027,6 +2037,27 @@ export class TaskflowEngine {
          LEFT JOIN tasks pt ON pt.board_id = t.board_id AND pt.id = t.parent_task_id
          WHERE t.child_exec_board_id = ? AND t.child_exec_enabled = 1
          ORDER BY t.id`,
+      )
+      .all(this.boardId);
+  }
+
+  private getCompletedLinkedTasks(): any[] {
+    return this.db
+      .prepare(
+        `SELECT t.*, pt.title AS parent_title,
+                (
+                  SELECT MAX(th.at)
+                  FROM task_history th
+                  WHERE th.board_id = t.board_id
+                    AND th.task_id = t.id
+                    AND ${this.completionHistoryWhere('th')}
+                ) AS completed_at
+         FROM tasks t
+         LEFT JOIN tasks pt ON pt.board_id = t.board_id AND pt.id = t.parent_task_id
+         WHERE t.child_exec_board_id = ?
+           AND t.child_exec_enabled = 1
+           AND t.column = 'done'
+         ORDER BY completed_at DESC, t.updated_at DESC, t.id`,
       )
       .all(this.boardId);
   }
@@ -2305,9 +2336,7 @@ export class TaskflowEngine {
   }): TaskflowResult & { data?: Record<string, unknown> } {
     try {
       const txResult = this.db.transaction(() => {
-        const task = this.db
-          .prepare('SELECT * FROM tasks WHERE id = ? AND board_id = ?')
-          .get(params.task_id, params.board_id) as Record<string, any> | null;
+        const task = this.getTask(params.task_id) as Record<string, any> | null;
         if (!task) {
           return { success: false, error_code: 'not_found', error: `Task not found: ${params.task_id}` } as any;
         }
@@ -2331,14 +2360,16 @@ export class TaskflowEngine {
           return { success: false, error_code: 'validation_error', error: out.error } as any;
         }
 
-        this.db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ? AND board_id = ?').run(now, params.task_id, params.board_id);
-        this.recordHistory(params.task_id, 'updated', params.sender_name, JSON.stringify({ note_added: true }));
-        return { success: true, change: out.change } as any;
+        if (out.changed) {
+          this.db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ? AND board_id = ?').run(now, task.id, taskBoardId);
+          this.recordHistory(task.id, 'updated', params.sender_name, JSON.stringify({ note_added: true }), taskBoardId);
+        }
+        return { success: true, change: out.change, task_id: task.id, task_board_id: taskBoardId } as any;
       })();
       if (!txResult.success) return txResult;
       const row = this.db.prepare(
         `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ? AND t.board_id = ?`
-      ).get(params.task_id, params.board_id) as Record<string, unknown>;
+      ).get(txResult.task_id, txResult.task_board_id) as Record<string, unknown>;
       return { success: true, data: this.serializeApiTask(row), changes: [txResult.change] } as any;
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
@@ -2355,9 +2386,7 @@ export class TaskflowEngine {
   }): TaskflowResult & { data?: Record<string, unknown> } {
     try {
       const txResult = this.db.transaction(() => {
-        const task = this.db
-          .prepare('SELECT * FROM tasks WHERE id = ? AND board_id = ?')
-          .get(params.task_id, params.board_id) as Record<string, any> | null;
+        const task = this.getTask(params.task_id) as Record<string, any> | null;
         if (!task) {
           return { success: false, error_code: 'not_found', error: `Task not found: ${params.task_id}` } as any;
         }
@@ -2381,14 +2410,14 @@ export class TaskflowEngine {
           return { success: false, error_code: 'validation_error', error: out.error } as any;
         }
 
-        this.db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ? AND board_id = ?').run(now, params.task_id, params.board_id);
-        this.recordHistory(params.task_id, 'updated', params.sender_name, JSON.stringify({ note_edited: params.note_id }));
-        return { success: true, change: out.change } as any;
+        this.db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ? AND board_id = ?').run(now, task.id, taskBoardId);
+        this.recordHistory(task.id, 'updated', params.sender_name, JSON.stringify({ note_edited: params.note_id }), taskBoardId);
+        return { success: true, change: out.change, task_id: task.id, task_board_id: taskBoardId } as any;
       })();
       if (!txResult.success) return txResult;
       const row = this.db.prepare(
         `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ? AND t.board_id = ?`
-      ).get(params.task_id, params.board_id) as Record<string, unknown>;
+      ).get(txResult.task_id, txResult.task_board_id) as Record<string, unknown>;
       return { success: true, data: this.serializeApiTask(row), changes: [txResult.change] } as any;
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
@@ -2404,9 +2433,7 @@ export class TaskflowEngine {
   }): TaskflowResult & { data?: Record<string, unknown> } {
     try {
       const txResult = this.db.transaction(() => {
-        const task = this.db
-          .prepare('SELECT * FROM tasks WHERE id = ? AND board_id = ?')
-          .get(params.task_id, params.board_id) as Record<string, any> | null;
+        const task = this.getTask(params.task_id) as Record<string, any> | null;
         if (!task) {
           return { success: false, error_code: 'not_found', error: `Task not found: ${params.task_id}` } as any;
         }
@@ -2429,14 +2456,14 @@ export class TaskflowEngine {
           return { success: false, error_code: 'validation_error', error: out.error } as any;
         }
 
-        this.db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ? AND board_id = ?').run(now, params.task_id, params.board_id);
-        this.recordHistory(params.task_id, 'updated', params.sender_name, JSON.stringify({ note_removed: params.note_id }));
-        return { success: true, change: out.change } as any;
+        this.db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ? AND board_id = ?').run(now, task.id, taskBoardId);
+        this.recordHistory(task.id, 'updated', params.sender_name, JSON.stringify({ note_removed: params.note_id }), taskBoardId);
+        return { success: true, change: out.change, task_id: task.id, task_board_id: taskBoardId } as any;
       })();
       if (!txResult.success) return txResult;
       const row = this.db.prepare(
         `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ? AND t.board_id = ?`
-      ).get(params.task_id, params.board_id) as Record<string, unknown>;
+      ).get(txResult.task_id, txResult.task_board_id) as Record<string, unknown>;
       return { success: true, data: this.serializeApiTask(row), changes: [txResult.change] } as any;
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
@@ -4588,7 +4615,7 @@ export class TaskflowEngine {
     },
     text: string,
     parentNoteId?: number,
-  ): { success: false; error: string } | { success: true; change: string } {
+  ): { success: false; error: string } | { success: true; change: string; changed: boolean } {
     const { task, taskBoardId, senderPersonId, sender, isMgr, isAssignee, isExternalSender, hasExternalGrant, senderName, senderExternalId, now } = ctx;
 
     // Meeting note authorization: participants can add notes
@@ -4600,6 +4627,12 @@ export class TaskflowEngine {
     }
 
     const notes: Array<any> = JSON.parse(task.notes ?? '[]');
+    const normalizeNoteText = (value: unknown): string =>
+      String(value ?? '').replace(/\s+/g, ' ').trim();
+    const normalizedText = normalizeNoteText(text);
+    if (notes.some((note: any) => normalizeNoteText(note?.text) === normalizedText)) {
+      return { success: true, change: `Nota já existente: ${text}`, changed: false };
+    }
     const noteId = task.next_note_id ?? 1;
     const noteEntry: any = { id: noteId, text, at: now, by: senderName };
 
@@ -4634,7 +4667,7 @@ export class TaskflowEngine {
     this.db
       .prepare(`UPDATE tasks SET notes = ?, next_note_id = ? WHERE board_id = ? AND id = ?`)
       .run(JSON.stringify(notes), noteId + 1, taskBoardId, task.id);
-    return { success: true, change: `Nota: ${text}` };
+    return { success: true, change: `Nota: ${text}`, changed: true };
   }
 
   private editNoteCore(
@@ -5114,7 +5147,7 @@ export class TaskflowEngine {
           updates.parent_note_id,
         );
         if (!out.success) return { success: false, error: out.error };
-        changes.push(out.change);
+        if (out.changed) changes.push(out.change);
       }
 
       /* Edit note */
@@ -5736,20 +5769,22 @@ export class TaskflowEngine {
       }
 
       /* --- After all updates: set updated_at, _last_mutation, record history --- */
-      this.db
-        .prepare(
-          `UPDATE tasks SET _last_mutation = ?, updated_at = ?
-           WHERE board_id = ? AND id = ?`,
-        )
-        .run(snapshot, now, taskBoardId, task.id);
+      if (changes.length > 0) {
+        this.db
+          .prepare(
+            `UPDATE tasks SET _last_mutation = ?, updated_at = ?
+             WHERE board_id = ? AND id = ?`,
+          )
+          .run(snapshot, now, taskBoardId, task.id);
 
-      this.recordHistory(
-        task.id,
-        'updated',
-        params.sender_name,
-        JSON.stringify({ changes }),
-        taskBoardId,
-      );
+        this.recordHistory(
+          task.id,
+          'updated',
+          params.sender_name,
+          JSON.stringify({ changes }),
+          taskBoardId,
+        );
+      }
 
       /* --- Notification for task owner --- */
       if (senderPersonId && changes.length > 0) {
@@ -6597,6 +6632,19 @@ export class TaskflowEngine {
         }
         lines.push('');
       }
+    }
+
+    const completedLinked = this.getCompletedLinkedTasks();
+    if (completedLinked.length > 0) {
+      lines.push('', SEP, '', '✅ *TAREFAS VINCULADAS CONCLUÍDAS*', '');
+      for (const t of completedLinked.slice(0, 12)) {
+        const assignee = t.assignee ? extName(t.assignee) : null;
+        const completedAt = t.completed_at ?? t.updated_at ?? null;
+        const completed = completedAt ? ` ✅ (${fmtDate(completedAt.slice(0, 10))})` : ' ✅';
+        const responsible = assignee ? ` — ${assignee}` : '';
+        lines.push(`• *${dId(t)}* — ${t.title}${completed}${responsible}`);
+      }
+      if (completedLinked.length > 12) lines.push(`• ... +${completedLinked.length - 12} concluída(s)`);
     }
 
     return lines.join('\n');
@@ -7660,6 +7708,8 @@ export class TaskflowEngine {
           }
           const scope = this.orgScopeOrNull();
           if (!scope) return { success: true, data: [] };
+          const lineage = this.getBoardLineage();
+          const lineageRank = new Map(lineage.map((boardId, index) => [boardId, index]));
           const rawId = params.task_id.toUpperCase();
           const rows = this.db
             .prepare(
@@ -7671,10 +7721,18 @@ export class TaskflowEngine {
                  FROM tasks t
                  JOIN boards b ON b.id = t.board_id
             LEFT JOIN board_people bp ON bp.board_id = t.board_id AND bp.person_id = t.assignee
-                WHERE t.id = ? AND t.board_id IN (${scope.placeholders})
-                ORDER BY datetime(t.updated_at) DESC, b.group_folder`,
+                WHERE t.id = ? AND t.board_id IN (${scope.placeholders})`,
             )
-            .all(rawId, ...scope.boardIds);
+            .all(rawId, ...scope.boardIds) as Array<Record<string, any>>;
+          rows.sort((a, b) => {
+            const aRank = lineageRank.get(String(a.board_id)) ?? 1_000;
+            const bRank = lineageRank.get(String(b.board_id)) ?? 1_000;
+            if (aRank !== bRank) return aRank - bRank;
+            const aUpdated = Date.parse(String(a.updated_at ?? '')) || 0;
+            const bUpdated = Date.parse(String(b.updated_at ?? '')) || 0;
+            if (aUpdated !== bUpdated) return bUpdated - aUpdated;
+            return String(a.board_group_folder ?? '').localeCompare(String(b.board_group_folder ?? ''));
+          });
           return { success: true, data: rows };
         }
 
@@ -8952,6 +9010,19 @@ export class TaskflowEngine {
       const personMap = new Map(people.map((p) => [p.person_id, p.name]));
       const resolveName = (personId: string | null): string | null =>
         personId ? personMap.get(personId) ?? null : null;
+      const externalPersonCache = new Map<string, string | null>();
+      const resolveAnyName = (personId: string | null): string | null => {
+        if (!personId) return null;
+        const localName = resolveName(personId);
+        if (localName) return localName;
+        if (externalPersonCache.has(personId)) return externalPersonCache.get(personId) ?? null;
+        const row = this.db
+          .prepare(`SELECT name FROM board_people WHERE person_id = ? LIMIT 1`)
+          .get(personId) as { name: string } | null;
+        const name = row?.name ?? null;
+        externalPersonCache.set(personId, name);
+        return name;
+      };
 
       /* --- Overdue tasks --- */
       const overdue = this.db
@@ -9428,6 +9499,7 @@ export class TaskflowEngine {
         const sc = shortCodes.get(owning) ?? null;
         return sc ? `${sc}-${task.id}` : task.id;
       };
+      const linkedCompleted = this.getCompletedLinkedTasks();
 
       /* --- Assemble result --- */
       const reportData: NonNullable<ReportResult['data']> = {
@@ -9502,6 +9574,12 @@ export class TaskflowEngine {
                 assignee_name: resolveName(t.assignee),
               }))
             : [],
+          linked_completed: linkedCompleted.map((t) => ({
+            id: dId(t),
+            title: t.title,
+            assignee_name: resolveAnyName(t.assignee),
+            completed_at: t.completed_at ?? null,
+          })),
           ...(isWeekly
             ? {
                 completed_week: completedWeekTasks.map((t) => ({

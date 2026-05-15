@@ -69,10 +69,14 @@ describe('Phase 3 DB snapshot helpers', () => {
     const live = taskflowDbPath(tmp);
     const snapshot = path.join(tmp, 'snapshot.db');
     fs.writeFileSync(live, 'live');
+    fs.writeFileSync(`${live}-wal`, 'stale wal');
+    fs.writeFileSync(`${live}-shm`, 'stale shm');
     fs.writeFileSync(snapshot, 'snapshot');
 
     expect(restoreDbSnapshot(snapshot, tmp)).toBe('restored');
     expect(fs.readFileSync(live, 'utf8')).toBe('snapshot');
+    expect(fs.existsSync(`${live}-wal`)).toBe(false);
+    expect(fs.existsSync(`${live}-shm`)).toBe(false);
   });
 
   it('reports missing snapshots without mutating live DB', () => {
@@ -100,14 +104,20 @@ describe('Phase 3 DB snapshot helpers', () => {
     fs.mkdirSync(path.join(tmp, 'taskflow'), { recursive: true });
     const live = taskflowDbPath(tmp);
     fs.writeFileSync(live, 'before');
+    fs.writeFileSync(`${live}-wal`, 'before wal');
+    fs.writeFileSync(`${live}-shm`, 'before shm');
 
     const result = withTaskflowDbSnapshot(tmp, () => {
       fs.writeFileSync(live, 'during');
+      fs.writeFileSync(`${live}-wal`, 'during wal');
+      fs.rmSync(`${live}-shm`, { force: true });
       return 'ok';
     });
 
     expect(result).toBe('ok');
     expect(fs.readFileSync(live, 'utf8')).toBe('before');
+    expect(fs.readFileSync(`${live}-wal`, 'utf8')).toBe('before wal');
+    expect(fs.readFileSync(`${live}-shm`, 'utf8')).toBe('before shm');
   });
 });
 
@@ -134,6 +144,63 @@ describe('Phase 3 semantic comparison', () => {
 
     expect(summary.action).toBe('forward');
     expect(summary.recipient).toBe('seci-taskflow');
+  });
+
+  it('treats send_message without a recipient as a same-chat reply', () => {
+    const summary = summarizeSemanticBehavior([
+      {
+        name: 'send_message',
+        input: { text: 'A tarefa T79 não existe neste board. Você consegue verificar o título?' },
+      },
+      {
+        name: 'taskflow_query',
+        input: { query: 'search', search_text: '79' },
+      },
+    ]);
+
+    expect(summary.action).toBe('read');
+    expect(summary.recipient).toBeNull();
+    expect(summary.outbound_intent).toBe('not_found_or_unclear');
+  });
+
+  it('does not extract board refs across paragraph breaks', () => {
+    const summary = summarizeSemanticBehavior(
+      [],
+      [],
+      'A tarefa não existe neste board\n\nSe Rafael atribuiu essa tarefa, confirme o título.',
+    );
+
+    expect(summary.board_refs).toEqual([]);
+  });
+
+  it('extracts board refs from prefixed task ids', () => {
+    const summary = summarizeSemanticBehavior(
+      [],
+      [{ kind: 'chat', content: JSON.stringify({ text: '📋 *SEC-T10* — SEI de homologação' }) }],
+    );
+
+    expect(summary.board_refs).toEqual(['sec']);
+  });
+
+  it('classifies already-recorded informational replies before trailing CTAs', () => {
+    const summary = summarizeSemanticBehavior(
+      [],
+      [{ kind: 'chat', content: JSON.stringify({ text: 'A T79 já foi atualizada com esses repositórios. Deseja adicionar algo diferente?' }) }],
+    );
+
+    expect(summary.action).toBe('no-op');
+    expect(summary.outbound_intent).toBe('mutation_confirmation');
+  });
+
+  it('does not classify hypothetical created-elsewhere not-found text as mutation confirmation', () => {
+    const summary = summarizeSemanticBehavior(
+      [{ name: 'taskflow_query', input: { query: 'search', search_text: '79' } }],
+      [],
+      'A tarefa T79 não existe neste board. Ela pode ter sido criada em outro board. Você consegue verificar?',
+    );
+
+    expect(summary.action).toBe('read');
+    expect(summary.outbound_intent).toBe('not_found_or_unclear');
   });
 
 
@@ -168,6 +235,7 @@ describe('Phase 3 semantic comparison', () => {
       action: true,
       task_ids: true,
       mutation_types: true,
+      board_refs: true,
       recipient: true,
       outbound_intent: true,
     });
@@ -327,6 +395,48 @@ describe('Phase 3 semantic comparison', () => {
     expect(v2.mutation_types).toEqual(['move']);
   });
 
+  it('normalizes note-only MCP tools as update mutations', () => {
+    const summary = summarizeSemanticBehavior([
+      { name: 'mcp__nanoclaw__api_task_add_note', input: { task_id: 'T79', text: 'Repositórios' } },
+    ]);
+
+    expect(summary.action).toBe('mutate');
+    expect(summary.mutation_types).toEqual(['update']);
+  });
+
+  it('flags provider API errors as inconclusive replay noise', () => {
+    const comparison = compareSemanticTurn({
+      turn_index: 1,
+      text: 'SEI IA',
+      v1: { tools: [], final_response: 'Pode me dar mais contexto?' },
+      v2: {
+        tools: [],
+        outbound: [{ kind: 'chat', content: '{"text":"API Error: 529 Overloaded."}' }],
+      },
+    });
+
+    expect(comparison.classification.kind).toBe('provider_error');
+  });
+
+  it('does not pass duplicate task IDs when the board reference differs', () => {
+    const comparison = compareSemanticTurn({
+      turn_index: 3,
+      text: 'T10',
+      v1: {
+        tools: [{ name: 'taskflow_query', input: { query: 'task_details', task_id: 'T10' } }],
+        final_response: '🔗 *T10* (board SEC) — Pedir ao Reginaldo Graça.',
+      },
+      v2: {
+        tools: [{ name: 'mcp__nanoclaw__api_query', input: { query: 'task_details', task_id: 'T10' } }],
+        outbound: [{ kind: 'chat', content: '{"text":"📋 *T10*\\n\\n_Quadro: ASSE-SECI - asse-seci-taskflow_"}' }],
+      },
+    });
+
+    expect(comparison.matches.task_ids).toBe(true);
+    expect(comparison.matches.board_refs).toBe(false);
+    expect(comparison.classification.kind).toBe('real_divergence');
+  });
+
   it('marks unavailable state snapshots as inconclusive instead of a v2 bug', () => {
     const turn: Phase3TurnResult = {
       turn_index: 28,
@@ -461,6 +571,39 @@ describe('Phase 3 semantic comparison', () => {
     expect(summary.outbound_intent).toBe('asks_user');
   });
 
+  it('keeps board output informational despite a trailing generic CTA', () => {
+    const summary = summarizeSemanticBehavior(
+      [{ name: 'mcp__nanoclaw__api_report', input: { type: 'standup' } }],
+      [{
+        kind: 'chat',
+        content: JSON.stringify({
+          text: '📊 *Board — Sexta, 15/05/2026*\n\n✅ *Vinculada concluída:*\n• *SEC-T10* — SEI de homologação PGM/SEMDEC ✅ (Reginaldo Graça)\n\nQuer adicionar alguma tarefa?',
+        }),
+      }],
+    );
+
+    expect(summary.action).toBe('read');
+    expect(summary.outbound_intent).toBe('informational');
+    expect(summary.task_ids).toEqual(['T10']);
+    expect(summary.board_refs).toEqual(['sec']);
+  });
+
+  it('treats missing-id plus related-task grounding as informational', () => {
+    const summary = summarizeSemanticBehavior(
+      [{ name: 'api_query', input: { query: 'search', search_text: 'SEI' } }],
+      [{
+        kind: 'chat',
+        content: JSON.stringify({
+          text: 'A T79 continua não localizada neste board, mas encontrei tarefa relacionada:\n\n• *SEC-T10* — SEI de homologação — concluída\n\nO que você precisa fazer com a T79?',
+        }),
+      }],
+    );
+
+    expect(summary.action).toBe('read');
+    expect(summary.outbound_intent).toBe('informational');
+    expect(summary.task_ids).toEqual(['T10', 'T79']);
+  });
+
   it('extracts task ids from no-tool outbound context replies', () => {
     const summary = summarizeSemanticBehavior(
       [],
@@ -493,6 +636,41 @@ describe('Phase 3 state-drift classifications', () => {
     expect(comparison.matches.task_ids).toBe(false);
   });
 
+  it('treats failed mutation attempts followed by a not-found clarification as ask behavior', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 11,
+      text: 'T1- Preparando mapa comparativo e justificativa de preço',
+      v1: {
+        tools: [],
+        final_response: 'Não encontrei uma tarefa T1. Você quis dizer T41?',
+      },
+      v2: {
+        tools: [
+          { name: 'mcp__nanoclaw__api_task_add_note', input: { task_id: 'T1', text: 'Preparando mapa comparativo' } },
+          { name: 'mcp__nanoclaw__api_query', input: { query: 'search', search_text: 'T1' } },
+        ],
+        outbound: [{ kind: 'chat', content: '{"text":"Não encontrei nenhuma tarefa com o ID T1. Você quis dizer T75? Me confirma."}' }],
+      },
+      phase3: {
+        metadata: {
+          turn_index: 11,
+          context_mode: 'fresh',
+          expected_behavior: {
+            action: 'ask',
+            task_ids: ['T1', 'T41'],
+            mutation_types: [],
+            outbound_intent: 'asks_user',
+          },
+        },
+      },
+    };
+
+    const comparison = compareSemanticTurn(turn);
+    expect(comparison.actual.action).toBe('ask');
+    expect(comparison.actual.mutation_types).toEqual([]);
+    expect(comparison.classification.kind).toBe('ask_context_hint_gap');
+  });
+
   it('classifies read-only task-set mismatches without restored snapshots as state drift', () => {
     const turn: Phase3TurnResult = {
       turn_index: 8,
@@ -513,6 +691,41 @@ describe('Phase 3 state-drift classifications', () => {
     const comparison = compareSemanticTurn(turn);
     expect(comparison.classification.kind).toBe('state_drift');
     expect(comparison.matches.task_ids).toBe(false);
+  });
+
+  it('classifies annotated mutation mismatches as state drift', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 8,
+      text: 'sec-t41 : processo enviado para a CMG aguardando retorno com aprovação',
+      v1: {
+        tools: [
+          { name: 'mcp__nanoclaw__taskflow_move', input: { task_id: 'SEC-T41', action: 'wait' } },
+          { name: 'mcp__nanoclaw__taskflow_update', input: { task_id: 'SEC-T41', updates: { add_note: 'Processo enviado para a CMG.' } } },
+        ],
+        final_response: '✅ SEC-T41 atualizada.',
+      },
+      v2: {
+        tools: [
+          { name: 'mcp__nanoclaw__api_task_add_note', input: { task_id: 'SEC-T41', text: 'Processo enviado para a CMG.' } },
+        ],
+        outbound: [{ kind: 'chat', content: '{"text":"SEC-T41 já está concluída. Deseja reabrir?"}' }],
+      },
+      phase3: {
+        db_snapshot_status: 'not_requested',
+        metadata: {
+          turn_index: 8,
+          context_mode: 'fresh',
+          state_drift: {
+            description: 'Current DB already has SEC-T41 done with the same note, while v1 recorded this turn before completion.',
+            evidence: 'SEC-T41 column=done; note already present.',
+          },
+        },
+      },
+    };
+
+    const comparison = compareSemanticTurn(turn);
+    expect(comparison.classification.kind).toBe('state_drift');
+    expect(comparison.classification.note).toContain('SEC-T41 column=done');
   });
 
   // Turn 24 / 26: v1 historical task IDs (T84/T85) differ from v2's

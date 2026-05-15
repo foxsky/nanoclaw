@@ -120,6 +120,9 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     ].join('\n\n');
     const result = migrateBoardClaudeMd(input);
     expect(result.output).toContain('**Exact task-ID scope lock.**');
+    expect(result.output).toContain('SEC-T41');
+    expect(result.output).toContain('not local `T41`');
+    expect(result.output).toContain('do NOT mutate a searched candidate as a substitute');
     expect(result.output).toContain("api_query({ query: 'task_history', task_id: 'P6.7' })");
     expect(result.output).toContain("api_move({ task_id: 'P6.7', action: 'reopen'");
     expect(result.output).toContain('**Cross-board note-forward confirmation.**');
@@ -136,8 +139,25 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     expect(result.output).toContain('"Submeter X"');
     expect(result.output).toContain('"Realizar X"');
     expect(result.output).toContain('do NOT search or create automatically');
+    expect(result.output).toContain('**Short follow-up after a missing task lookup.**');
+    expect(result.output).toContain("api_query({ query: 'search', search_text: '<phrase>' })");
+    expect(result.output).toContain('NOT as a new task proposal');
+    expect(result.output).toContain('A bare confirmation ("sim", "pode", "confirma")');
+    expect(result.output).toContain('instead of resetting with "como posso ajudar?"');
     expect(result.output).toContain('**Plain-text ambiguity questions.**');
     expect(result.output).toContain('Do NOT call `ask_user_question`');
+  });
+
+  it('injects missing-task short follow-up lookup guidance when plain-text ambiguity guidance already exists', () => {
+    const input = [
+      '**Bare goal/activity phrases are not task-creation commands.** If the user sends a standalone activity/status/goal phrase such as "Aguardar e acompanhar X", "Submeter X", "Realizar X", "Acompanhar X", or "Verificar se X" without explicitly asking to create/register/add/capture a task, do NOT search or create automatically. Treat it as ambiguous context: answer from available context and ask whether to capture/register it.',
+      '',
+      '**Plain-text ambiguity questions.** In TaskFlow command handling, "ask" means reply with a normal chat message unless a section explicitly says to present a card/buttons. Do NOT call `ask_user_question` just to ask whether an ambiguous phrase should become a task; v1 asked these questions in plain text with no tool call.',
+    ].join('\n');
+    const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('**Short follow-up after a missing task lookup.**');
+    expect(result.output).toContain("api_query({ query: 'search', search_text: '<phrase>' })");
+    expect(result.output).toMatch(/missing task lookup[\s\S]+Plain-text ambiguity questions/);
   });
 
   it('taskflow_query → api_query with discriminator body preserved', () => {

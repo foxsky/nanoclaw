@@ -431,7 +431,7 @@ export const apiMoveTool: McpToolDefinition = {
   tool: {
     name: 'api_move',
     description:
-      'Move one task or a batch of tasks across the state machine. Actions: start, wait, resume, return, review, approve, reject, conclude, reopen, force_start. Use task_ids for explicit bulk approvals such as "aprovar todas as tarefas de Nome" after querying review candidates. Engine enforces from-column transition + role-based permissions.',
+      'Move one task or a batch of tasks across the state machine. Preserve board-prefixed task IDs exactly, e.g. SEC-T41 must stay SEC-T41, not T41. Actions: start, wait, resume, return, review, approve, reject, conclude, reopen, force_start. Use task_ids for explicit bulk approvals such as "aprovar todas as tarefas de Nome" after querying review candidates. Engine enforces from-column transition + role-based permissions.',
     inputSchema: {
       type: 'object' as const,
       properties: {

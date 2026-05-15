@@ -1021,6 +1021,45 @@ describe('TaskflowEngine', () => {
       expect(row.assignee_name).toBe('Laizys');
     });
 
+    it('prefers current-board lineage before sibling boards for duplicate IDs', () => {
+      seedOrgTreeWithTasks(db);
+      const now = new Date().toISOString();
+      const newer = new Date(Date.now() + 60_000).toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at)
+         VALUES ('T43', 'board-root', 'simple', 'Parent board T43', NULL, 'done', 0, '${now}', '${now}')`,
+      );
+      db.exec(
+        `UPDATE tasks SET updated_at = '${newer}' WHERE board_id = 'board-sibling2' AND id = 'T43'`,
+      );
+
+      const r = engine.query({ query: 'find_task_in_organization', task_id: 'T43' });
+      expect(r.success).toBe(true);
+      const rows = r.data as Array<{ board_id: string; title: string }>;
+      expect(rows.map((row) => row.board_id)).toEqual(['board-root', 'board-sibling2']);
+      expect(rows[0].title).toBe('Parent board T43');
+    });
+
+    it('formats delegated parent task details with the owning board short code', () => {
+      seedOrgTreeWithTasks(db);
+      db.exec(`UPDATE boards SET short_code = 'SEC' WHERE id = 'board-root'`);
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (
+           id, board_id, type, title, assignee, column, requires_close_approval,
+           child_exec_enabled, child_exec_board_id, created_at, updated_at
+         )
+         VALUES (
+           'T99', 'board-root', 'simple', 'Parent linked task', NULL, 'done', 0,
+           1, '${BOARD_ID}', '${now}', '${now}'
+         )`,
+      );
+
+      const r = engine.query({ query: 'task_details', task_id: 'T99' });
+      expect(r.success).toBe(true);
+      expect((r.data as any).formatted_task_details).toContain('*SEC-T99*');
+    });
+
     it('also finds tasks on the current board (no false-negative for local reads)', () => {
       seedOrgTreeWithTasks(db);
       // T-001 is on the current board (BOARD_ID) per the default seed.
@@ -3201,6 +3240,37 @@ describe('TaskflowEngine', () => {
       expect(notes[1].id).toBe(2);
       expect(notes[1].text).toBe('Second note');
       expect(task.next_note_id).toBe(3);
+    });
+
+    it('duplicate add note is a no-op and does not write history', () => {
+      const r1 = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { add_note: 'Already captured' },
+      });
+      expect(r1.success).toBe(true);
+      const historyBefore = db
+        .prepare(`SELECT COUNT(*) AS count FROM task_history WHERE board_id = ? AND task_id = ?`)
+        .get(BOARD_ID, 'T-001') as { count: number };
+
+      const r2 = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        sender_name: 'Alexandre',
+        updates: { add_note: '  Already   captured  ' },
+      });
+
+      expect(r2.success).toBe(true);
+      expect(r2.changes).toEqual([]);
+      const task = engine.getTask('T-001');
+      const notes = JSON.parse(task.notes);
+      expect(notes).toHaveLength(1);
+      expect(task.next_note_id).toBe(2);
+      const historyAfter = db
+        .prepare(`SELECT COUNT(*) AS count FROM task_history WHERE board_id = ? AND task_id = ?`)
+        .get(BOARD_ID, 'T-001') as { count: number };
+      expect(historyAfter.count).toBe(historyBefore.count);
     });
 
     it('edit note by ID', () => {
@@ -5788,6 +5858,35 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
       expect(board).toContain('T-002');
     });
 
+    it('standup includes completed linked parent-board tasks', () => {
+      const { ownerBoardId, taskId } = seedLinkedTask(db, BOARD_ID, {
+        taskId: 'T-904',
+        column: 'done',
+        title: 'Parent board handoff',
+      });
+      const completedAt = '2026-03-13T12:00:00.000Z';
+      db.exec(`UPDATE boards SET short_code = 'SEC' WHERE id = '${ownerBoardId}'`);
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+         VALUES ('${ownerBoardId}', '${taskId}', 'conclude', 'person-2', '${completedAt}', '{"to":"done"}')`,
+      );
+
+      const r = engine.report({ board_id: BOARD_ID, type: 'standup' });
+      expect(r.success).toBe(true);
+      expect(r.data!.linked_completed).toEqual([
+        {
+          id: 'SEC-T-904',
+          title: 'Parent board handoff',
+          assignee_name: 'Giovanni',
+          completed_at: completedAt,
+        },
+      ]);
+      expect(r.data!.formatted_board).toContain('TAREFAS VINCULADAS CONCLUÍDAS');
+      expect(r.data!.formatted_board).toContain('*SEC-T-904*');
+      expect(r.data!.formatted_board).toContain('Parent board handoff');
+      expect(r.data!.formatted_board).toContain('13/03');
+    });
+
     it('digest compact header omits completed line when zero completions', () => {
       const r = engine.report({ board_id: BOARD_ID, type: 'digest' });
       expect(r.success).toBe(true);
@@ -6802,6 +6901,87 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
       });
       expect(r.success).toBe(true);
     });
+  });
+});
+
+
+describe('api task note wrappers', () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    seedTestDb(db, BOARD_ID);
+    seedLinkedTask(db, BOARD_ID, {
+      ownerBoardId: 'board-sec',
+      taskId: 'T41',
+      assignee: 'person-2',
+      title: 'Delegated SEC task',
+    });
+    db.prepare(`UPDATE boards SET short_code = 'SEC' WHERE id = 'board-sec'`).run();
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('adds notes to delegated tasks addressed by prefixed board ID', () => {
+    const engine = new TaskflowEngine(db, BOARD_ID);
+
+    const result = engine.apiAddNote({
+      board_id: BOARD_ID,
+      task_id: 'SEC-T41',
+      sender_name: 'Giovanni',
+      text: 'Processo enviado para a CMG.',
+    }) as any;
+
+    expect(result.success).toBe(true);
+    expect(result.data.id).toBe('T41');
+    expect(result.data.board_id).toBe('board-sec');
+
+    const task = db
+      .prepare(`SELECT notes FROM tasks WHERE board_id = 'board-sec' AND id = 'T41'`)
+      .get() as { notes: string };
+    expect(JSON.parse(task.notes)[0].text).toBe('Processo enviado para a CMG.');
+
+    const history = db
+      .prepare(`SELECT board_id, task_id, action FROM task_history WHERE task_id = 'T41'`)
+      .get() as { board_id: string; task_id: string; action: string };
+    expect(history).toEqual({ board_id: 'board-sec', task_id: 'T41', action: 'updated' });
+  });
+
+  it('edits and removes notes on delegated tasks addressed by prefixed board ID', () => {
+    const engine = new TaskflowEngine(db, BOARD_ID);
+    const added = engine.apiAddNote({
+      board_id: BOARD_ID,
+      task_id: 'SEC-T41',
+      sender_name: 'Giovanni',
+      text: 'Rascunho',
+    });
+    expect(added.success).toBe(true);
+
+    const edited = engine.apiEditNote({
+      board_id: BOARD_ID,
+      task_id: 'SEC-T41',
+      sender_name: 'Giovanni',
+      note_id: 1,
+      text: 'Nota final',
+    }) as any;
+    expect(edited.success).toBe(true);
+    expect(edited.data.board_id).toBe('board-sec');
+
+    const removed = engine.apiRemoveNote({
+      board_id: BOARD_ID,
+      task_id: 'SEC-T41',
+      sender_name: 'Giovanni',
+      note_id: 1,
+    }) as any;
+    expect(removed.success).toBe(true);
+    expect(removed.data.board_id).toBe('board-sec');
+
+    const task = db
+      .prepare(`SELECT notes FROM tasks WHERE board_id = 'board-sec' AND id = 'T41'`)
+      .get() as { notes: string };
+    expect(JSON.parse(task.notes)).toEqual([]);
   });
 });
 

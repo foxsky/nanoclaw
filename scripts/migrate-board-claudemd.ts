@@ -151,7 +151,7 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
         [
           match,
           '',
-          '**Exact task-ID scope lock.** When the user names an exact task/subtask ID, keep that exact ID through the whole read/confirm/mutate flow. `P6.7` means `P6.7`, not parent project `P6` and not sibling subtasks under `P6`. For review-bypass diagnostics like _"por que P6.7 não passou pela revisão?"_, read `api_query({ query: \'task_history\', task_id: \'P6.7\' })` and `api_query({ query: \'task_details\', task_id: \'P6.7\' })`. If you ask _"Deseja reabrir e exigir aprovação para P6.7?"_ and the user answers _"sim"_, execute exactly: `api_move({ task_id: \'P6.7\', action: \'reopen\', sender_name: SENDER })` then `api_update_task({ task_id: \'P6.7\', updates: { requires_close_approval: true }, sender_name: SENDER })`. Do NOT apply approval-policy changes to other active `P6.*` tasks unless the user explicitly says "todas", "as atividades", or names those IDs.',
+          '**Exact task-ID scope lock.** When the user names an exact task/subtask ID, keep that exact ID through the whole read/confirm/mutate flow. `P6.7` means `P6.7`, not parent project `P6` and not sibling subtasks under `P6`. Board-prefixed IDs are exact IDs too: `SEC-T41` means `SEC-T41`, not local `T41`; preserve the prefix in every `task_id` tool argument for reads, notes, moves, reassignment, and updates. If an exact ID does not resolve, you may search and show candidates, but do NOT mutate a searched candidate as a substitute until the user confirms that candidate ID. For review-bypass diagnostics like _"por que P6.7 não passou pela revisão?"_, read `api_query({ query: \'task_history\', task_id: \'P6.7\' })` and `api_query({ query: \'task_details\', task_id: \'P6.7\' })`. If you ask _"Deseja reabrir e exigir aprovação para P6.7?"_ and the user answers _"sim"_, execute exactly: `api_move({ task_id: \'P6.7\', action: \'reopen\', sender_name: SENDER })` then `api_update_task({ task_id: \'P6.7\', updates: { requires_close_approval: true }, sender_name: SENDER })`. Do NOT apply approval-policy changes to other active `P6.*` tasks unless the user explicitly says "todas", "as atividades", or names those IDs.',
         ].join('\n'),
     );
   }
@@ -224,7 +224,19 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
       [
         '**Bare goal/activity phrases are not task-creation commands.** If the user sends a standalone activity/status/goal phrase such as "Aguardar e acompanhar X", "Submeter X", "Realizar X", "Acompanhar X", or "Verificar se X" without explicitly asking to create/register/add/capture a task, do NOT search or create automatically. Treat it as ambiguous context: answer from available context and ask whether to capture/register it.',
         '',
+        '**Short follow-up after a missing task lookup.** If recent context has an unresolved task-ID lookup that was not found (for example T79), keep that context alive for short follow-ups. A bare confirmation ("sim", "pode", "confirma") means the user is continuing that lookup; ask specifically for the missing task\'s title/details instead of resetting with "como posso ajudar?". If the user then sends a short noun/title phrase (for example "SEI Anatel/IA"), treat it as lookup context for that missing task, NOT as a new task proposal. Call `api_query({ query: \'search\', search_text: \'<phrase>\' })` first; if relevant tasks are found, explain the relationship to the missing ID and ask what the user wants to do next.',
+        '',
         '**Plain-text ambiguity questions.** In TaskFlow command handling, "ask" means reply with a normal chat message unless a section explicitly says to present a card/buttons. Do NOT call `ask_user_question` just to ask whether an ambiguous phrase should become a task; v1 asked these questions in plain text with no tool call.',
+      ].join('\n'),
+    );
+  }
+  if (!output.includes('**Short follow-up after a missing task lookup.**')) {
+    output = output.replace(
+      /\*\*Bare goal\/activity phrases are not task-creation commands\.\*\* If the user sends a standalone activity\/status\/goal phrase such as "Aguardar e acompanhar X", "Submeter X", "Realizar X", "Acompanhar X", or "Verificar se X" without explicitly asking to create\/register\/add\/capture a task, do NOT search or create automatically\. Treat it as ambiguous context: answer from available context and ask whether to capture\/register it\./,
+      [
+        '**Bare goal/activity phrases are not task-creation commands.** If the user sends a standalone activity/status/goal phrase such as "Aguardar e acompanhar X", "Submeter X", "Realizar X", "Acompanhar X", or "Verificar se X" without explicitly asking to create/register/add/capture a task, do NOT search or create automatically. Treat it as ambiguous context: answer from available context and ask whether to capture/register it.',
+        '',
+        '**Short follow-up after a missing task lookup.** If recent context has an unresolved task-ID lookup that was not found (for example T79), keep that context alive for short follow-ups. A bare confirmation ("sim", "pode", "confirma") means the user is continuing that lookup; ask specifically for the missing task\'s title/details instead of resetting with "como posso ajudar?". If the user then sends a short noun/title phrase (for example "SEI Anatel/IA"), treat it as lookup context for that missing task, NOT as a new task proposal. Call `api_query({ query: \'search\', search_text: \'<phrase>\' })` first; if relevant tasks are found, explain the relationship to the missing ID and ask what the user wants to do next.',
       ].join('\n'),
     );
   }

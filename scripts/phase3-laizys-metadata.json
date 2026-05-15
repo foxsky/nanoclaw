@@ -1,0 +1,69 @@
+[
+  {
+    "turn_index": 6,
+    "context_mode": "fresh",
+    "source_jsonl": ".claude/projects/-workspace-group/3085f89d-2df6-4d47-b8cd-a71676eb083d.jsonl",
+    "source_turn_index": 2,
+    "state_drift": {
+      "description": "v1 interpreted bare P1 as historical local subtask P1.2, but the raw prompt has no board-context preamble and the current validation DB has no local P1 row.",
+      "evidence": "Current data/taskflow/taskflow.db: board-laizys-taskflow has P1.2 done with parent_task_id=P1, while bare P1 resolves in the org tree to board-seci-taskflow P1.",
+      "expected_with_historical_snapshot": "With the historical pre-turn snapshot/context, v2 should resolve the user shorthand to P1.2 and add the note there."
+    }
+  },
+  {
+    "turn_index": 7,
+    "context_mode": "fresh",
+    "source_jsonl": ".claude/projects/-workspace-group/a4975c32-08fd-4dc1-9ef4-44c428a5a24b.jsonl",
+    "source_turn_index": 4,
+    "state_drift": {
+      "description": "v1 moved a historical local P1, but the current validation DB no longer has that local P1 row; bare P1 now resolves to a different SECI project.",
+      "evidence": "Current data/taskflow/taskflow.db: no board-laizys-taskflow P1 row exists; board-seci-taskflow P1 is CIIAR Brasil, not v1's 'Adesão Ata/Prefeitura de Nísia Floresta' final response.",
+      "expected_with_historical_snapshot": "With the historical pre-turn snapshot, v2 should move the then-existing local P1 to waiting with the PGM legal-opinion reason."
+    }
+  },
+  {
+    "turn_index": 8,
+    "context_mode": "fresh",
+    "source_jsonl": ".claude/projects/-workspace-group/10719192-5c63-4f60-9940-8ef1785eeca0.jsonl",
+    "source_turn_index": 0,
+    "state_drift": {
+      "description": "v1 recorded SEC-T41 while it was still active/waiting, but the current validation DB already has SEC-T41 completed with the same CMG note present.",
+      "evidence": "Current data/taskflow/taskflow.db: board-sec-taskflow T41 column=done, child_exec_board_id=board-laizys-taskflow, note 'Processo enviado para a CMG. Aguardando retorno com aprovação.' already exists.",
+      "expected_with_historical_snapshot": "With a pre-completion snapshot, v2 should preserve SEC-T41, add the note on board-sec-taskflow, and move SEC-T41 to waiting."
+    }
+  },
+  {
+    "turn_index": 9,
+    "context_mode": "fresh",
+    "source_jsonl": ".claude/projects/-workspace-group/3085f89d-2df6-4d47-b8cd-a71676eb083d.jsonl",
+    "source_turn_index": 0,
+    "state_drift": {
+      "description": "v1 recorded a resume on SEC-T75 before the note/state already existed in the current DB; the current DB has SEC-T75 waiting and the 'Refazendo o ETP e o TR.' note already present.",
+      "evidence": "Current data/taskflow/taskflow.db: board-sec-taskflow T75 column=waiting, child_exec_board_id=board-laizys-taskflow, note 'Refazendo o ETP e o TR.' already exists.",
+      "expected_with_historical_snapshot": "With the historical pre-turn snapshot, v2 should add the note and resume SEC-T75 from waiting."
+    }
+  },
+  {
+    "turn_index": 10,
+    "context_mode": "fresh",
+    "source_jsonl": ".claude/projects/-workspace-group/3085f89d-2df6-4d47-b8cd-a71676eb083d.jsonl",
+    "source_turn_index": 0,
+    "state_drift": {
+      "description": "v1 recorded an update/resume on SEC-T9 before the task reached done; the current DB has SEC-T9 done and the same note already present.",
+      "evidence": "Current data/taskflow/taskflow.db: board-sec-taskflow T9 column=done, child_exec_board_id=board-laizys-taskflow, note 'Reunião realizada. Testes em andamento.' already exists.",
+      "expected_with_historical_snapshot": "With the historical pre-turn snapshot, v2 should add the note and resume SEC-T9."
+    }
+  },
+  {
+    "turn_index": 11,
+    "context_mode": "fresh",
+    "source_jsonl": ".claude/projects/-workspace-group/3085f89d-2df6-4d47-b8cd-a71676eb083d.jsonl",
+    "source_turn_index": 3,
+    "expected_behavior": {
+      "action": "ask",
+      "task_ids": ["T1", "T41"],
+      "mutation_types": [],
+      "outbound_intent": "asks_user"
+    }
+  }
+]

@@ -202,6 +202,22 @@ function stopContainer(name: string): void {
   }
 }
 
+function sqliteSidecarPaths(dbPath: string): string[] {
+  return [`${dbPath}-wal`, `${dbPath}-shm`];
+}
+
+function copyIfExists(from: string, to: string): boolean {
+  if (!fs.existsSync(from)) return false;
+  fs.copyFileSync(from, to);
+  return true;
+}
+
+function removeSQLiteSidecars(dbPath: string): void {
+  for (const sidecar of sqliteSidecarPaths(dbPath)) {
+    fs.rmSync(sidecar, { force: true });
+  }
+}
+
 async function waitForSettled(agentGroupId: string, sessionId: string, baselineSeq = 0): Promise<{ settle_reason: string; elapsed_ms: number }> {
   const start = Date.now();
   let lastSeq = baselineSeq;
@@ -271,12 +287,26 @@ function snapshotTaskflowDb(): string {
   const src = taskflowDbPath(DATA_DIR);
   const dst = `${src}.phase2-chain-${process.pid}-${Date.now()}`;
   fs.copyFileSync(src, dst);
+  for (const sidecar of sqliteSidecarPaths(src)) {
+    copyIfExists(sidecar, `${dst}${sidecar.slice(src.length)}`);
+  }
   return dst;
 }
 
 function restoreTaskflowDb(snapshot: string): void {
   const src = taskflowDbPath(DATA_DIR);
+  removeSQLiteSidecars(src);
   fs.copyFileSync(snapshot, src);
+  for (const sidecar of sqliteSidecarPaths(src)) {
+    const suffix = sidecar.slice(src.length);
+    const sidecarSnapshot = `${snapshot}${suffix}`;
+    if (fs.existsSync(sidecarSnapshot)) {
+      fs.copyFileSync(sidecarSnapshot, sidecar);
+      fs.rmSync(sidecarSnapshot, { force: true });
+    } else {
+      fs.rmSync(sidecar, { force: true });
+    }
+  }
   fs.rmSync(snapshot, { force: true });
 }
 
@@ -286,7 +316,10 @@ function restoreTargetTaskflowDbIfRequested(): void {
   if (!fs.existsSync(targetSnapshot)) {
     throw new Error(`NANOCLAW_PHASE3_TARGET_STATE_SNAPSHOT does not exist: ${targetSnapshot}`);
   }
-  fs.copyFileSync(targetSnapshot, taskflowDbPath(DATA_DIR));
+  const livePath = taskflowDbPath(DATA_DIR);
+  removeSQLiteSidecars(livePath);
+  fs.copyFileSync(targetSnapshot, livePath);
+  removeSQLiteSidecars(livePath);
   console.log(`  target taskflow.db restored from ${targetSnapshot}`);
 }
 

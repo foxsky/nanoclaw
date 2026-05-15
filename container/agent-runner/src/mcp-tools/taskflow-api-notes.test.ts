@@ -27,6 +27,7 @@ describe('api_task_add_note MCP tool', () => {
   it('exports a tool with name "api_task_add_note"', async () => {
     const { apiTaskAddNoteTool } = await import('./taskflow-api-notes.ts');
     expect(apiTaskAddNoteTool.tool.name).toBe('api_task_add_note');
+    expect(apiTaskAddNoteTool.tool.description).toContain('SEC-T41 must stay SEC-T41');
   });
 
   it('declares required board_id, task_id, sender_name, text; optional sender_is_service, parent_note_id', async () => {
@@ -91,6 +92,7 @@ describe('api_task_edit_note MCP tool', () => {
   it('exports a tool with name "api_task_edit_note"', async () => {
     const { apiTaskEditNoteTool } = await import('./taskflow-api-notes.ts');
     expect(apiTaskEditNoteTool.tool.name).toBe('api_task_edit_note');
+    expect(apiTaskEditNoteTool.tool.description).toContain('SEC-T41 must stay SEC-T41');
   });
 
   it('edits an existing note (sender_is_service)', async () => {
@@ -145,6 +147,7 @@ describe('api_task_remove_note MCP tool', () => {
   it('exports a tool with name "api_task_remove_note"', async () => {
     const { apiTaskRemoveNoteTool } = await import('./taskflow-api-notes.ts');
     expect(apiTaskRemoveNoteTool.tool.name).toBe('api_task_remove_note');
+    expect(apiTaskRemoveNoteTool.tool.description).toContain('SEC-T41 must stay SEC-T41');
   });
 
   it('removes an existing note (sender_is_service)', async () => {

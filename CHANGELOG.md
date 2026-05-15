@@ -6,6 +6,8 @@ For detailed release notes, see the [full changelog on the documentation site](h
 
 ## [Unreleased]
 
+- Fixed Laizys/SEAF Taskflow Phase 3 exact-ID note handling: board-prefixed delegated IDs such as `SEC-T41` are preserved through MCP note mutations, and missing exact-ID note updates such as `T1- ...` now ask for confirmation instead of mutating a guessed search candidate.
+- Added Laizys/SEAF Phase 3 metadata classification so archived replays can distinguish true v2 behavior bugs from unavailable historical DB snapshots, allocation drift, read-only grounding, and exact-ID confirmation gaps.
 - Fixed Taskflow compound-name shorthand resolution so unique non-first tokens such as "Beatriz" can resolve to "Ana Beatriz" for assignees, meeting participants, and named outbound destinations, while ambiguous tokens such as "Silva" now ask with concrete matching options.
 - Added non-SECI Phase 3 replay support by parameterizing the Phase 2/3 replay target and adding SETD-SECTI context-chain metadata.
 - Fixed SETD Phase 3 ready-for-review updates so delegated parent-board task messages such as "T18 - DFD pronto..." use MCP mutations (`api_update_task` + `api_move`) instead of sending a false confirmation without changing Taskflow state.

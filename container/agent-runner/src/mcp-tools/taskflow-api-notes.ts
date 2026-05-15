@@ -9,7 +9,7 @@ import { err, jsonResponse, parseTaskActorArgs } from './util.js';
 export const apiTaskAddNoteTool: McpToolDefinition = {
   tool: {
     name: 'api_task_add_note',
-    description: 'Add a note to a task; delegates to engine.apiAddNote (shares engine.update logic)',
+    description: 'Add a note to a task; delegates to engine.apiAddNote (shares engine.update logic). Preserve board-prefixed task IDs exactly, e.g. SEC-T41 must stay SEC-T41, not T41.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -52,7 +52,7 @@ export const apiTaskAddNoteTool: McpToolDefinition = {
 export const apiTaskEditNoteTool: McpToolDefinition = {
   tool: {
     name: 'api_task_edit_note',
-    description: 'Edit a note on a task; delegates to engine.apiEditNote',
+    description: 'Edit a note on a task; delegates to engine.apiEditNote. Preserve board-prefixed task IDs exactly, e.g. SEC-T41 must stay SEC-T41, not T41.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -91,7 +91,7 @@ export const apiTaskEditNoteTool: McpToolDefinition = {
 export const apiTaskRemoveNoteTool: McpToolDefinition = {
   tool: {
     name: 'api_task_remove_note',
-    description: 'Remove a note from a task; delegates to engine.apiRemoveNote',
+    description: 'Remove a note from a task; delegates to engine.apiRemoveNote. Preserve board-prefixed task IDs exactly, e.g. SEC-T41 must stay SEC-T41, not T41.',
     inputSchema: {
       type: 'object' as const,
       properties: {
