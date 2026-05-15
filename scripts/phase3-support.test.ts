@@ -600,6 +600,37 @@ describe('Phase 3 semantic comparison', () => {
     expect(summary.board_refs).toEqual(['sec']);
   });
 
+  it('counts informational outbound task IDs even when a broad project ID was queried', () => {
+    const summary = summarizeSemanticBehavior(
+      [{ name: 'api_query', input: { query: 'task_details', task_id: 'P11' } }],
+      [{
+        kind: 'chat',
+        content: JSON.stringify({
+          text: '📁 *P11* — Operação\n• ⏳ *P11.11* — Sistema de ponto\n• ✅ *P11.13* — Acesso',
+        }),
+      }],
+    );
+
+    expect(summary.action).toBe('read');
+    expect(summary.task_ids).toEqual(['P11', 'P11.11', 'P11.13']);
+  });
+
+  it('does not treat parent-board boundary replies as successful mutations', () => {
+    const summary = summarizeSemanticBehavior(
+      [{ name: 'api_reassign', input: { task_id: 'P11.11', target_person: 'Rodrigo Lima' } }],
+      [{
+        kind: 'chat',
+        content: JSON.stringify({
+          text: 'A tarefa P11.11 pertence ao quadro pai SECI e esta apenas vinculada aqui para execucao. A reatribuicao precisa ser feita a partir do quadro pai.',
+        }),
+      }],
+    );
+
+    expect(summary.action).toBe('read');
+    expect(summary.mutation_types).toEqual([]);
+    expect(summary.task_ids).toEqual(['P11.11']);
+  });
+
   it('treats missing-id plus related-task grounding as informational', () => {
     const summary = summarizeSemanticBehavior(
       [{ name: 'api_query', input: { query: 'search', search_text: 'SEI' } }],

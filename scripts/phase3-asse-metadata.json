@@ -74,6 +74,16 @@
     }
   },
   {
+    "turn_index": 20,
+    "context_mode": "fresh",
+    "requires_state_snapshot": true,
+    "state_drift": {
+      "description": "Historical v1 summarized P11 from an older state where P11.11 was overdue on 2026-04-17 and P11.3 was still active; the available production snapshot has P11.11 rescheduled to 2026-05-29 and P11.3 done.",
+      "evidence": "Targeted replay after the engine fix returns the parent-project summary in one api_query; remaining differences are the overdue/ask CTA and exact active/completed set from changed task state.",
+      "expected_with_historical_snapshot": "With the exact pre-turn P11 snapshot, v2 should show P11.11/P11.3 as active and ask whether to reschedule or act on overdue P11.11."
+    }
+  },
+  {
     "turn_index": 22,
     "context_mode": "fresh",
     "expected_behavior": {

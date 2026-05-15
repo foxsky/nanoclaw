@@ -1949,9 +1949,8 @@ describe('api_query MCP tool (A5.2.3 — composite read-side wrapper)', () => {
   });
 
   // Phase 3 compliance — Turn 17 (T43 read on sibling board).
-  // The wrapper must pass `find_task_in_organization` through unchanged so
-  // the engine handles cross-board scope; nothing in the wrapper should
-  // accidentally board-scope the query.
+  // The wrapper must preserve the engine's cross-board scope; nothing in the
+  // wrapper should accidentally board-scope the query.
   it('query=find_task_in_organization routes through to engine (cross-board read)', async () => {
     const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
     // The shared test fixture omits `parent_board_id` from `boards` (it
@@ -1982,6 +1981,38 @@ describe('api_query MCP tool (A5.2.3 — composite read-side wrapper)', () => {
     expect(result.data).toHaveLength(1);
     expect(result.data[0].task_id).toBe('T43');
     expect(result.data[0].board_id).toBe('board-sibling');
+  });
+
+  it('query=find_task_in_organization promotes parent project current-board summary', async () => {
+    const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    db.exec(`ALTER TABLE boards ADD COLUMN parent_board_id TEXT`);
+    const now = new Date().toISOString();
+    db.exec(
+      `INSERT INTO boards (id, short_code, name, board_role, group_folder, group_jid, parent_board_id)
+       VALUES ('board-root', 'SECI', 'Root', 'standard', 'seci-taskflow', 'root@g.us', NULL);
+       UPDATE boards SET parent_board_id = 'board-root' WHERE id = '${BOARD}';
+       INSERT INTO board_people VALUES ('board-root', 'person-1', 'Alexandre', '5585999990001', 'Dev', 3, NULL);
+       INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at)
+       VALUES ('P11', 'board-root', 'project', 'Operação da SECTI', 'person-1', 'next_action', 0, '${now}', '${now}');
+       INSERT INTO tasks (
+         id, board_id, type, title, assignee, column, requires_close_approval,
+         child_exec_enabled, child_exec_board_id, child_exec_person_id,
+         parent_task_id, created_at, updated_at
+       )
+       VALUES ('P11.11', 'board-root', 'simple', 'Sistema de ponto', 'person-1', 'waiting', 0,
+               1, '${BOARD}', 'person-1', 'P11', '${now}', '${now}')`,
+    );
+
+    const response = await apiQueryTool.handler({
+      board_id: BOARD,
+      query: 'find_task_in_organization',
+      task_id: 'P11',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.primary_match.formatted_task_details).toContain('*P11.11*');
+    expect(result.primary_match.formatted_task_details).toContain('Sistema de ponto');
+    expect(result.data[0].formatted_task_details).toBe(result.primary_match.formatted_task_details);
   });
 
   // Option B (v2-native daily v1-bug monitor). The wrapper must pass

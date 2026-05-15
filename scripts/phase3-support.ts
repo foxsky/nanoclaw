@@ -421,7 +421,12 @@ export function summarizeSemanticBehavior(
     (outboundIntent === 'asks_user' || outboundIntent === 'not_found_or_unclear') &&
     /\b(n[aã]o encontr|n[aã]o localizada|n[aã]o existe|confirma|confirmar)\b/i.test(text) &&
     !/\b(j[aá]|foi|foram)\b[\s\S]{0,80}\b(atualizad[ao]?|adicionad[ao]?|registrad[ao]?)\b/i.test(text);
-  const effectiveHasMutation = hasMutation && !failedMutationIntent;
+  const blockedMutationIntent = hasMutation &&
+    outboundIntent === 'informational' &&
+    /\b(pertence ao quadro pai|apenas vinculad[ao]|precisa ser feita|faca a reatribuicao|faça a reatribuiç[aã]o|n[aã]o pode)\b/i.test(text) &&
+    !/\b(j[aá]|foi|foram)\b[\s\S]{0,80}\b(atualizad[ao]?|adicionad[ao]?|registrad[ao]?|reatribu[ií]d[ao]?)\b/i.test(text);
+  const effectiveHasMutation = hasMutation && !failedMutationIntent && !blockedMutationIntent;
+  const textTaskIds = extractTaskIdsFromText(text);
 
   // Action priority: substantive tool work beats a trailing "Deseja...?" CTA.
   // Otherwise turns that read + suggest a follow-up (a common v1 pattern,
@@ -432,14 +437,18 @@ export function summarizeSemanticBehavior(
   else if (effectiveHasMutation) action = 'mutate';
   else if (hasRead && asks && outboundIntent === 'asks_user' && /\b(voc[eê]\s+quis\s+dizer|preciso que voc[eê] confirme|confirme o ID|me confirma)\b/i.test(text)) action = 'ask';
   else if (hasRead) action = 'read';
+  else if (textTaskIds.length > 0 && outboundIntent === 'informational') action = 'read';
   else if (asks && outboundIntent === 'asks_user') action = 'ask';
   else action = 'no-op';
   if (failedMutationIntent && outboundIntent === 'asks_user') action = 'ask';
 
   const toolTaskIds = extractTaskIdsFromTools(tools);
+  const taskIds = outboundIntent === 'informational'
+    ? [...new Set([...toolTaskIds, ...textTaskIds])].sort()
+    : (toolTaskIds.length > 0 ? toolTaskIds : textTaskIds);
   return {
     action,
-    task_ids: toolTaskIds.length > 0 ? toolTaskIds : extractTaskIdsFromText(text),
+    task_ids: taskIds,
     mutation_types: effectiveHasMutation
       ? [...new Set(names.map(canonicalMutationType).filter((value): value is string => value !== null))].sort()
       : [],

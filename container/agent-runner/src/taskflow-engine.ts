@@ -1791,6 +1791,51 @@ export class TaskflowEngine {
     return `A tarefa ${rawId} pertence ao quadro pai ${boardLabel} (${this.taskBoardId(task)}) e nao esta delegada para este quadro. Faca a reatribuicao no quadro pai.${targetClause}`;
   }
 
+  private buildDelegatedParentReassignBoundaryError(task: any, targetPersonName: string): string | null {
+    const owningBoardId = this.taskBoardId(task);
+    if (owningBoardId === this.boardId) return null;
+
+    const localTarget = this.resolvePerson(targetPersonName);
+    if (localTarget) return null;
+
+    const parentTarget = this.resolvePerson(targetPersonName, owningBoardId);
+    if (!parentTarget) return null;
+
+    const boardInfo = this.db
+      .prepare(`SELECT id, short_code, group_folder FROM boards WHERE id = ?`)
+      .get(owningBoardId) as { id: string; short_code: string | null; group_folder: string | null } | null;
+    const boardLabel = boardInfo?.short_code ?? boardInfo?.group_folder ?? boardInfo?.id ?? owningBoardId;
+
+    return `A tarefa ${task.id} pertence ao quadro pai ${boardLabel} (${owningBoardId}) e esta apenas vinculada aqui para execucao. ${parentTarget.name} tambem esta cadastrado no quadro pai, nao neste. A reatribuicao precisa ser feita a partir do quadro pai.`;
+  }
+
+  private findCurrentBoardProjectDetailsInOrganization(taskId: string): any | null {
+    const result = this.query({ query: 'find_task_in_organization', task_id: taskId }) as any;
+    if (!result?.success || !Array.isArray(result.data)) return null;
+    const project = result.data.find((row: any) => row?.formatted_current_board_project_summary);
+    if (!project) return null;
+
+    return {
+      task: {
+        id: project.task_id,
+        board_id: project.board_id,
+        type: project.type,
+        title: project.title,
+        column: project.column,
+        assignee: project.assignee,
+        due_date: project.due_date,
+        parent_task_id: project.parent_task_id,
+        assignee_name: project.assignee_name,
+        board_group_folder: project.board_group_folder,
+        board_short_code: project.board_short_code,
+      },
+      formatted_task_details: project.formatted_current_board_project_summary,
+      subtask_rows: project.current_board_related_tasks ?? [],
+      current_board_related_task_count: project.current_board_related_task_count ?? 0,
+      current_board_related_tasks: project.current_board_related_tasks ?? [],
+    };
+  }
+
   /** This board + ancestors via parent_board_id chain, capped at 10 levels. */
   private getBoardLineage(): string[] {
     const chain: string[] = [this.boardId];
@@ -4468,6 +4513,15 @@ export class TaskflowEngine {
       if (params.task_id) {
         const boundaryError = this.buildAncestorTaskWriteBoundaryError(params.task_id, params.target_person);
         if (boundaryError) return { success: false, error: boundaryError };
+
+        const visibleTask = this.getTask(params.task_id);
+        if (visibleTask) {
+          const delegatedParentBoundaryError = this.buildDelegatedParentReassignBoundaryError(
+            visibleTask,
+            params.target_person,
+          );
+          if (delegatedParentBoundaryError) return { success: false, error: delegatedParentBoundaryError };
+        }
       }
 
       /* --- Resolve target person --- */
@@ -7246,7 +7300,18 @@ export class TaskflowEngine {
         /* ---------- Task details & history ---------- */
 
         case 'task_details': {
-          const task = this.requireVisibleTask(params.task_id);
+          if (!params.task_id) {
+            return { success: false, error: 'Missing required parameter: task_id' };
+          }
+
+          let task: any;
+          try {
+            task = this.requireVisibleTask(params.task_id);
+          } catch (err) {
+            const projectDetails = this.findCurrentBoardProjectDetailsInOrganization(params.task_id);
+            if (projectDetails) return { success: true, data: projectDetails };
+            throw err;
+          }
           const history = this.getHistory(task.id, 5, this.taskBoardId(task));
           const data: any = { task, recent_history: history };
           // Include subtask rows for project tasks

@@ -184,6 +184,46 @@ function compactTaskDetailsQueryResult(result: unknown): unknown {
   return { success: true, data: compact };
 }
 
+function compactFindTaskInOrganizationQueryResult(result: unknown): unknown {
+  if (
+    !result ||
+    typeof result !== 'object' ||
+    (result as { success?: unknown }).success !== true
+  ) {
+    return result;
+  }
+  const data = (result as { data?: unknown }).data;
+  if (!Array.isArray(data)) return result;
+
+  const compactRows = data.map((row) => {
+    if (!row || typeof row !== 'object') return row;
+    const source = row as Record<string, unknown>;
+    const formatted = source.formatted_current_board_project_summary;
+    const compact: Record<string, unknown> = {};
+    if (formatted !== undefined) compact.formatted_task_details = formatted;
+    for (const key of [
+      'task_id',
+      'board_id',
+      'board_group_folder',
+      'board_short_code',
+      'type',
+      'title',
+      'column',
+      'assignee_name',
+      'assignee',
+      'due_date',
+      'parent_task_id',
+      'current_board_related_task_count',
+      'current_board_related_tasks',
+    ]) {
+      if (source[key] !== undefined) compact[key] = source[key];
+    }
+    return compact;
+  });
+
+  return { success: true, primary_match: compactRows[0] ?? null, data: compactRows };
+}
+
 export const apiCreateSimpleTaskTool: McpToolDefinition = {
   tool: {
     name: 'api_create_simple_task',
@@ -1116,6 +1156,9 @@ export const apiQueryTool: McpToolDefinition = {
       const result = engine.query(queryParams);
       if (query === 'task_details') {
         return jsonResponse(compactTaskDetailsQueryResult(result));
+      }
+      if (query === 'find_task_in_organization') {
+        return jsonResponse(compactFindTaskInOrganizationQueryResult(result));
       }
       return jsonResponse(result);
     } catch (e: unknown) {

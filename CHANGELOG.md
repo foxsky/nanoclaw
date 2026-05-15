@@ -6,6 +6,9 @@ For detailed release notes, see the [full changelog on the documentation site](h
 
 ## [Unreleased]
 
+- Fixed ASSE Phase 3 remaining divergence cases: delegated parent-board reassignments to parent-only people now return the v1 boundary message without mutating, and `task_details` can directly summarize related parent-board projects from a child board.
+- Tightened Phase 3 semantic comparison so business-boundary mutation attempts that do not change state are not counted as mutations, and informational project summaries count task IDs mentioned in outbound text.
+- Annotated ASSE P11 turn 20 as state drift: the available production snapshot has P11.11 rescheduled and P11.3 completed, so the old v1 overdue follow-up cannot be judged without an exact historical pre-turn DB snapshot.
 - Fixed Taskflow child-board reassignment parity for parent-board task IDs: `api_reassign` now reports that an ancestor-owned, non-delegated task must be reassigned from the owning parent board instead of asking to register the target person on the local child board.
 - Fixed Taskflow child-board reads for parent-board projects: `api_query({ query: "find_task_in_organization" })` now includes parent subtasks delegated to the current board and local tasks linked to that parent project, allowing v2 to answer child-board `P11`-style project lookups with the relevant execution stages instead of only the parent project header.
 - Added ASSE Phase 3 replay metadata and fixed the semantic comparator's Portuguese not-found detection so "não encontrei..." replies are not misclassified as mutation confirmations.

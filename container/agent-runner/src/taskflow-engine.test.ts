@@ -1103,6 +1103,29 @@ describe('TaskflowEngine', () => {
       expect(project.formatted_current_board_project_summary).not.toContain('P11.6');
     });
 
+    it('task_details returns current-board summary for a related parent-board project', () => {
+      seedOrgTreeWithTasks(db);
+      db.exec(`UPDATE boards SET short_code = 'SEC' WHERE id = 'board-root'`);
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO board_people VALUES ('board-root', 'person-1', 'Alexandre', '5585999990001', 'Dev', 3, NULL);
+         INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at)
+         VALUES ('P11', 'board-root', 'project', 'Operação da SECTI', 'person-1', 'next_action', 0, '${now}', '${now}');
+         INSERT INTO tasks (
+           id, board_id, type, title, assignee, column, requires_close_approval,
+           child_exec_enabled, child_exec_board_id, child_exec_person_id,
+           due_date, parent_task_id, created_at, updated_at
+         )
+         VALUES ('P11.11', 'board-root', 'simple', 'Sistema de ponto', 'person-1', 'waiting', 0,
+                 1, '${BOARD_ID}', 'person-1', '2026-05-29', 'P11', '${now}', '${now}')`,
+      );
+
+      const r = engine.query({ query: 'task_details', task_id: 'P11' });
+      expect(r.success).toBe(true);
+      expect((r.data as any).formatted_task_details).toContain('*P11.11*');
+      expect((r.data as any).subtask_rows.map((row: any) => row.task_id)).toEqual(['P11.11']);
+    });
+
     it('also finds tasks on the current board (no false-negative for local reads)', () => {
       seedOrgTreeWithTasks(db);
       // T-001 is on the current board (BOARD_ID) per the default seed.
@@ -2901,6 +2924,37 @@ describe('TaskflowEngine', () => {
       expect(task.child_exec_enabled).toBe(1);
       expect(task.child_exec_board_id).toBe('child-board-giovanni');
       expect(task.child_exec_person_id).toBe('person-2');
+    });
+
+    it('delegated parent task reassign to parent-only person reports parent-board boundary', () => {
+      const { ownerBoardId, taskId } = seedLinkedTask(db, BOARD_ID, {
+        taskId: 'P11.11',
+        assignee: 'person-1',
+      });
+
+      db.exec(
+        `UPDATE boards SET short_code = 'SECI' WHERE id = '${ownerBoardId}';
+         INSERT INTO board_people VALUES ('${ownerBoardId}', 'rodrigo-lima', 'Rodrigo Lima', '5585999990042', 'Gestor', 3, NULL)`,
+      );
+
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: taskId,
+        target_person: 'Rodrigo Lima',
+        sender_name: 'Alexandre',
+        confirmed: true,
+      });
+
+      expect(r.success).toBe(false);
+      expect(r.offer_register).toBeUndefined();
+      expect(r.error).toContain('P11.11');
+      expect(r.error).toContain('quadro pai SECI');
+      expect(r.error).toContain('Rodrigo Lima');
+
+      const task = db
+        .prepare(`SELECT assignee FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(ownerBoardId, taskId) as any;
+      expect(task.assignee).toBe('person-1');
     });
 
     it('reassign delegated task to person not on parent board → succeeds, parent board shows under accountable person', () => {
