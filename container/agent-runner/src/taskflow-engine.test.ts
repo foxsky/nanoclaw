@@ -2712,6 +2712,48 @@ describe('TaskflowEngine', () => {
       expect(r.offer_register!.message).toContain('Giovanni');
     });
 
+    it('parent-board task reassign from child board reports write boundary before local registration', () => {
+      const parentBoardId = 'board-parent-seci';
+      const now = new Date().toISOString();
+
+      db.exec(
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'parent@g.us', 'seci-taskflow', 'standard', 0, 2, NULL, 'SECI', NULL)`,
+      );
+      db.exec(`UPDATE boards SET parent_board_id = '${parentBoardId}' WHERE id = '${BOARD_ID}'`);
+      db.exec(
+        `INSERT INTO board_people VALUES ('${parentBoardId}', 'person-1', 'Alexandre', '5585999990001', 'Dev', 3, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO board_people VALUES ('${parentBoardId}', 'rodrigo-lima', 'Rodrigo Lima', '5585999990042', 'Dev', 3, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO board_admins VALUES ('${parentBoardId}', 'person-1', '5585999990001', 'manager', 1)`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at, parent_task_id)
+         VALUES ('P11.11', '${parentBoardId}', 'simple', 'Parent-only task', 'person-1', 'waiting', 1, '${now}', '${now}', 'P11')`,
+      );
+
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: 'P11.11',
+        target_person: 'Rodrigo Lima',
+        sender_name: 'Alexandre',
+        confirmed: true,
+      });
+
+      expect(r.success).toBe(false);
+      expect(r.offer_register).toBeUndefined();
+      expect(r.error).toContain('P11.11');
+      expect(r.error).toContain('quadro pai SECI');
+      expect(r.error).toContain('Rodrigo Lima');
+
+      const parentTask = db
+        .prepare(`SELECT assignee FROM tasks WHERE board_id = ? AND id = 'P11.11'`)
+        .get(parentBoardId) as any;
+      expect(parentTask.assignee).toBe('person-1');
+    });
+
     it('reassign linked task → auto-relinks', () => {
       const now = new Date().toISOString();
       // Set up T-001 with child_exec_enabled=1

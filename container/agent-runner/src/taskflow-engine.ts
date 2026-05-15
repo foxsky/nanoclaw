@@ -1744,6 +1744,53 @@ export class TaskflowEngine {
     return null;
   }
 
+  /**
+   * Mutation paths must not silently convert an ancestor-board task reference
+   * into a local-board person-registration problem. If a child board can see
+   * the parent board through hierarchy but the exact task is not delegated
+   * here, tell the agent to perform the write from the owning board.
+   */
+  private buildAncestorTaskWriteBoundaryError(taskId: string, targetPersonName?: string): string | null {
+    if (this.getTask(taskId)) return null;
+
+    const { boardId: targetBoardId, rawId } = this.resolveInputTaskId(taskId);
+    let lineage: string[];
+    try {
+      lineage = this.getBoardLineage();
+    } catch {
+      return null;
+    }
+    const ancestorBoards = lineage.filter((id) => id !== this.boardId);
+    if (ancestorBoards.length === 0) return null;
+
+    let task: any | null = null;
+    if (targetBoardId) {
+      if (!ancestorBoards.includes(targetBoardId)) return null;
+      task = this.db
+        .prepare(`SELECT tasks.*, tasks.board_id AS owning_board_id FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(targetBoardId, rawId) as any | null;
+    } else {
+      for (const boardId of ancestorBoards) {
+        task = this.db
+          .prepare(`SELECT tasks.*, tasks.board_id AS owning_board_id FROM tasks WHERE board_id = ? AND id = ?`)
+          .get(boardId, rawId) as any | null;
+        if (task) break;
+      }
+    }
+
+    if (!task) return null;
+
+    const boardInfo = this.db
+      .prepare(`SELECT id, short_code, group_folder FROM boards WHERE id = ?`)
+      .get(this.taskBoardId(task)) as { id: string; short_code: string | null; group_folder: string | null } | null;
+    const boardLabel = boardInfo?.short_code ?? boardInfo?.group_folder ?? boardInfo?.id ?? this.taskBoardId(task);
+    const targetClause = targetPersonName
+      ? ` Nao cadastre "${targetPersonName}" no quadro local para reatribuir essa tarefa.`
+      : '';
+
+    return `A tarefa ${rawId} pertence ao quadro pai ${boardLabel} (${this.taskBoardId(task)}) e nao esta delegada para este quadro. Faca a reatribuicao no quadro pai.${targetClause}`;
+  }
+
   /** This board + ancestors via parent_board_id chain, capped at 10 levels. */
   private getBoardLineage(): string[] {
     const chain: string[] = [this.boardId];
@@ -4333,6 +4380,11 @@ export class TaskflowEngine {
       /* --- Must specify either task_id or source_person --- */
       if (!params.task_id && !params.source_person) {
         return { success: false, error: 'Must provide either task_id (single) or source_person (bulk transfer).' };
+      }
+
+      if (params.task_id) {
+        const boundaryError = this.buildAncestorTaskWriteBoundaryError(params.task_id, params.target_person);
+        if (boundaryError) return { success: false, error: boundaryError };
       }
 
       /* --- Resolve target person --- */
