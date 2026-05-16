@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import type { Database } from 'bun:sqlite';
+import { Database } from 'bun:sqlite';
 import { closeTaskflowDb } from '../db/connection.js';
 import { applyBoardConfigColumns, setupEngineDb } from './taskflow-test-fixtures.js';
 import { TaskflowEngine, normalizePhone } from '../taskflow-engine.js';
@@ -565,6 +565,105 @@ describe('engine.deleteBoard', () => {
     const r = new TaskflowEngine(db, B).deleteBoard(B);
     expect(r.success).toBe(true);
     expect(db.prepare('SELECT 1 FROM boards WHERE id=?').get(B)).toBeNull();
+  });
+});
+
+/**
+ * Codex BLOCKER (2026-05-16): the prod taskflow DB is opened with
+ * `PRAGMA foreign_keys = ON` (connection.ts:209 initTaskflowDb — the
+ * exact path the tf-mcontrol MCP subprocess uses). Several board-owned
+ * tables declare `REFERENCES boards(id)` in canonical src/taskflow-db.ts
+ * — `board_admins`, `board_groups`, `attachment_audit_log`, and
+ * `child_board_registrations` (FK on BOTH parent_board_id AND
+ * child_board_id). If deleteBoard's cascade omits any of them,
+ * `DELETE FROM boards` raises FOREIGN KEY constraint failed — the
+ * method does NOT return idempotent success, it THROWS. The shared
+ * setupEngineDb fixture hides this (its schema declares zero
+ * REFERENCES), so this block adds genuinely FK-bearing child tables.
+ * Single-engine = the engine is now source-of-truth, so leaving
+ * FK-backed rows is a real delete bug, not parity-deferred cleanup
+ * (Codex scope verdict overturns the prior "mirror old FastAPI list").
+ */
+describe('engine.deleteBoard — FK-enforced schema (no FK-constraint throw)', () => {
+  const PARENT = 'board-b0';
+  beforeEach(() => {
+    db.exec(
+      `CREATE TABLE board_groups (board_id TEXT REFERENCES boards(id), group_jid TEXT NOT NULL, group_folder TEXT NOT NULL, PRIMARY KEY (board_id, group_jid))`,
+    );
+    db.exec(
+      `CREATE TABLE attachment_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL REFERENCES boards(id), source TEXT NOT NULL, filename TEXT NOT NULL, at TEXT NOT NULL)`,
+    );
+    db.exec(
+      `CREATE TABLE board_chat (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, body TEXT)`,
+    );
+    // meeting_external_participants + board_id_counters are created (FK-free)
+    // by the engine's ensureTaskSchema — seed into those, don't re-create.
+    db.prepare(`INSERT INTO boards (id, short_code, name) VALUES (?, 'P0', 'Parent')`).run(PARENT);
+    db.prepare(
+      `INSERT INTO board_groups (board_id, group_jid, group_folder) VALUES (?, 'g@x', 'f')`,
+    ).run(BOARD);
+    db.prepare(
+      `INSERT INTO attachment_audit_log (board_id, source, filename, at) VALUES (?, 'whatsapp', 'a.pdf', '2026-01-01')`,
+    ).run(BOARD);
+    db.prepare(`INSERT INTO board_chat (board_id, body) VALUES (?, 'hi')`).run(BOARD);
+    db.prepare(
+      `INSERT INTO meeting_external_participants (board_id, meeting_task_id, occurrence_scheduled_at, external_id, created_by, created_at, updated_at) VALUES (?, 'M1', '2026-01-01', 'x', 'p1', '2026-01-01', '2026-01-01')`,
+    ).run(BOARD);
+    // child_board_registrations exists FK-free in setupEngineDb (SQLite
+    // can't ALTER-add a constraint), but the OR-scoping is still a
+    // correctness requirement: BOARD as a child of PARENT, and BOARD
+    // itself as a parent of PARENT.
+    db.prepare(
+      `INSERT INTO child_board_registrations (parent_board_id, person_id, child_board_id) VALUES (?, 'pa', ?)`,
+    ).run(PARENT, BOARD);
+    db.prepare(
+      `INSERT INTO child_board_registrations (parent_board_id, person_id, child_board_id) VALUES (?, 'pb', ?)`,
+    ).run(BOARD, PARENT);
+  });
+
+  it('does NOT throw FOREIGN KEY constraint failed; returns success and removes the board', () => {
+    const r = new TaskflowEngine(db, BOARD).deleteBoard(BOARD);
+    expect(r.success).toBe(true);
+    expect(db.prepare('SELECT 1 FROM boards WHERE id=?').get(BOARD)).toBeNull();
+  });
+
+  it('clears the FK-backed board-owned tables (no orphaned referencing rows)', () => {
+    new TaskflowEngine(db, BOARD).deleteBoard(BOARD);
+    expect(
+      db.prepare('SELECT 1 FROM board_groups WHERE board_id=?').get(BOARD),
+    ).toBeNull();
+    expect(
+      db.prepare('SELECT 1 FROM attachment_audit_log WHERE board_id=?').get(BOARD),
+    ).toBeNull();
+  });
+
+  it('clears child_board_registrations on BOTH the parent and child side', () => {
+    new TaskflowEngine(db, BOARD).deleteBoard(BOARD);
+    expect(
+      db
+        .prepare(
+          'SELECT 1 FROM child_board_registrations WHERE parent_board_id=? OR child_board_id=?',
+        )
+        .get(BOARD, BOARD),
+    ).toBeNull();
+  });
+
+  it('also clears non-FK board-owned state (source-of-truth delete)', () => {
+    new TaskflowEngine(db, BOARD).deleteBoard(BOARD);
+    expect(db.prepare('SELECT 1 FROM board_chat WHERE board_id=?').get(BOARD)).toBeNull();
+    expect(
+      db.prepare('SELECT 1 FROM board_id_counters WHERE board_id=?').get(BOARD),
+    ).toBeNull();
+    expect(
+      db
+        .prepare('SELECT 1 FROM meeting_external_participants WHERE board_id=?')
+        .get(BOARD),
+    ).toBeNull();
+  });
+
+  it('leaves the unrelated parent board row intact', () => {
+    new TaskflowEngine(db, BOARD).deleteBoard(BOARD);
+    expect(db.prepare('SELECT 1 FROM boards WHERE id=?').get(PARENT)).not.toBeNull();
   });
 });
 

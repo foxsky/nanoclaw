@@ -393,6 +393,11 @@ export interface HierarchyResult extends TaskflowResult {
 /* ------------------------------------------------------------------ */
 
 function today(): string {
+  const replayNow = process.env.NANOCLAW_PHASE_REPLAY_NOW?.trim();
+  if (replayNow) {
+    const date = new Date(replayNow);
+    if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10);
+  }
   return new Date().toISOString().slice(0, 10);
 }
 
@@ -8257,45 +8262,83 @@ export class TaskflowEngine {
   }
 
   /**
-   * 0f-batch: delete a board + its board-scoped dependents. Strict
-   * parity with the live FastAPI `DELETE /api/v1/boards/{id}` handler
-   * (idempotent — no existence check: `call_mcp_mutation` 404-prechecks
-   * before the engine, owner auth is FastAPI-side per R2.3), PLUS the
-   * tracked bug fix: the FastAPI handler's dependent list OMITS
-   * `board_holidays` (which has no FK / ON DELETE), so its rows orphan
-   * on board delete — `engine.deleteBoard` also clears it. Each table
-   * is existence-guarded (mirrors FastAPI `if table_exists`). The
-   * multi-DELETE runs in one transaction (Codex post-impl IMPORTANT-1
-   * pattern — all-or-nothing). Self-consistent on the `boardId` param
-   * (no `this.boardId` core), so no boardId guard is needed.
+   * 0f-batch: delete a board + its board-scoped dependents. Idempotent
+   * (no existence check: `call_mcp_mutation` 404-prechecks before the
+   * engine, owner auth is FastAPI-side per R2.3). The multi-DELETE runs
+   * in one transaction (Codex IMPORTANT-1 pattern — all-or-nothing).
+   * Each table is existence-guarded (mirrors FastAPI `if table_exists`).
+   * Self-consistent on the `boardId` param (no `this.boardId` core), so
+   * no boardId guard is needed.
    *
-   * NOTE: the FastAPI list also omits other board-scoped tables
-   * (board_admins, board_id_counters, child_board_registrations,
-   * board_groups, subtask_requests). Those are a separate broader
-   * orphan-cleanup decision, intentionally OUT of this tracked scope
-   * (memory: "api_delete_board (+ the board_holidays cascade bug)").
+   * Cascade scope is the ENGINE's, NOT the old FastAPI handler's. The
+   * tf-mcontrol MCP subprocess opens the DB with `PRAGMA foreign_keys =
+   * ON` (connection.ts:209), and the canonical schema (src/taskflow-db.ts)
+   * declares `REFERENCES boards(id)` on `board_admins`, `board_groups`,
+   * `attachment_audit_log`, and `child_board_registrations` (FK on BOTH
+   * parent_board_id AND child_board_id). The legacy FastAPI handler
+   * omitted those — under enforced FKs that makes `DELETE FROM boards`
+   * THROW `FOREIGN KEY constraint failed`, not orphan-then-succeed.
+   * Single-engine = the engine is the source of truth, so parity with
+   * the old buggy list yields to FK-correctness (Codex BLOCKER + scope
+   * verdict, 2026-05-16). Also clears non-FK board-owned tables
+   * (`board_holidays`/`board_id_counters`/`meeting_external_participants`/
+   * `subtask_requests`) the engine now owns — left behind they orphan.
+   * Out of scope: clearing other boards' `tasks.child_exec_board_id`
+   * (a cross-board hierarchy-detach, not delete-cascade) and the
+   * `boards.parent_board_id` self-FK edge (deleting a live hierarchy
+   * parent) — both pre-existing, neither in the old handler.
    */
   deleteBoard(boardId: string): { success: true } {
-    // Hardcoded allowlist (NOT user input): the FastAPI delete_board
-    // dependent set + `board_holidays` (the tracked bug fix).
+    const tableExists = (t: string): boolean =>
+      this.db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?")
+        .get(t) != null;
+    // Hardcoded allowlist (NOT user input). board_id-keyed: FK-backed
+    // (board_admins/board_groups/attachment_audit_log/board_people/
+    // board_config/board_runtime_config/tasks — MUST precede `DELETE
+    // FROM boards` or FK throws) + non-FK board-owned (task_history/
+    // archive/board_chat/board_holidays/board_id_counters/
+    // meeting_external_participants — engine-owned, cleared for
+    // source-of-truth completeness).
     const dependents = [
       'task_history',
       'archive',
       'board_chat',
       'board_people',
+      'board_admins',
+      'board_groups',
+      'attachment_audit_log',
       'board_config',
       'board_runtime_config',
+      'board_id_counters',
+      'meeting_external_participants',
       'tasks',
       'board_holidays',
     ];
     return this.db.transaction(() => {
       for (const table of dependents) {
-        const exists = this.db
-          .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?")
-          .get(table);
-        if (exists) {
+        if (tableExists(table)) {
           this.db.prepare(`DELETE FROM ${table} WHERE board_id = ?`).run(boardId);
         }
+      }
+      // OR-scoped board-owned tables (no single `board_id` column).
+      // child_board_registrations FKs on BOTH parent_board_id AND
+      // child_board_id — a row on either side blocks `DELETE FROM
+      // boards`. subtask_requests is engine-owned, board-scoped via
+      // source_board_id/target_board_id (non-FK; source-of-truth).
+      if (tableExists('child_board_registrations')) {
+        this.db
+          .prepare(
+            'DELETE FROM child_board_registrations WHERE parent_board_id = ? OR child_board_id = ?',
+          )
+          .run(boardId, boardId);
+      }
+      if (tableExists('subtask_requests')) {
+        this.db
+          .prepare(
+            'DELETE FROM subtask_requests WHERE source_board_id = ? OR target_board_id = ?',
+          )
+          .run(boardId, boardId);
       }
       this.db.prepare('DELETE FROM boards WHERE id = ?').run(boardId);
       return { success: true as const };
