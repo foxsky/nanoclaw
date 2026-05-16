@@ -8141,6 +8141,70 @@ export class TaskflowEngine {
     }
   }
 
+  /**
+   * Shared remove-person core (single-engine rework, design Revision 2.1):
+   * DB-only, ZERO auth, caller-owned transaction, operates on an
+   * ALREADY-RESOLVED person. The `api_admin remove_person` case (WhatsApp)
+   * resolves via fuzzy `requirePerson()` then calls this; the future
+   * FastAPI public wrapper resolves by exact person_id then calls the
+   * same core — mutation logic single-sourced. WhatsApp byte-output is
+   * guarded by taskflow-api-admin-byte-oracle.test.ts (must stay
+   * byte-identical).
+   */
+  private _removeBoardPersonCore(
+    person: { person_id: string; name: string },
+    force: boolean | undefined,
+  ): AdminResult {
+    /* Check for active tasks */
+    const activeTasks = this.db
+      .prepare(
+        `SELECT id, title FROM tasks
+         WHERE board_id = ? AND assignee = ? AND column != 'done'
+         ORDER BY id`,
+      )
+      .all(this.boardId, person.person_id) as Array<{ id: string; title: string }>;
+
+    if (activeTasks.length > 0 && !force) {
+      return {
+        success: true,
+        tasks_to_reassign: activeTasks.map((t) => ({ task_id: t.id, title: t.title })),
+        data: {
+          message: `${person.name} has ${activeTasks.length} active task(s). Use force=true to unassign them, or reassign first.`,
+        },
+      };
+    }
+
+    /* If force, unassign active tasks */
+    if (activeTasks.length > 0 && force) {
+      const now = new Date().toISOString();
+      this.db
+        .prepare(
+          `UPDATE tasks SET assignee = NULL, updated_at = ?
+           WHERE board_id = ? AND assignee = ? AND column != 'done'`,
+        )
+        .run(now, this.boardId, person.person_id);
+    }
+
+    /* Delete from board_admins first (FK-like cleanup) */
+    this.db
+      .prepare(
+        `DELETE FROM board_admins WHERE board_id = ? AND person_id = ?`,
+      )
+      .run(this.boardId, person.person_id);
+
+    /* Delete from board_people */
+    this.db
+      .prepare(
+        `DELETE FROM board_people WHERE board_id = ? AND person_id = ?`,
+      )
+      .run(this.boardId, person.person_id);
+
+    return {
+      success: true,
+      data: { removed: person.name, tasks_unassigned: force ? activeTasks.length : 0 },
+    };
+  }
+
   /* ---------------------------------------------------------------- */
   /*  admin — taskflow_admin                                           */
   /* ---------------------------------------------------------------- */
@@ -8283,56 +8347,11 @@ export class TaskflowEngine {
 
         /* ---- remove_person ---- */
         case 'remove_person': {
+          // WhatsApp keeps fuzzy resolution (byte parity); the shared
+          // core (_removeBoardPersonCore) is DB-only and takes the
+          // resolved person. FastAPI's wrapper will resolve by exact id.
           const person = this.requirePerson(params.person_name, 'person_name');
-
-          /* Check for active tasks */
-          const activeTasks = this.db
-            .prepare(
-              `SELECT id, title FROM tasks
-               WHERE board_id = ? AND assignee = ? AND column != 'done'
-               ORDER BY id`,
-            )
-            .all(this.boardId, person.person_id) as Array<{ id: string; title: string }>;
-
-          if (activeTasks.length > 0 && !params.force) {
-            return {
-              success: true,
-              tasks_to_reassign: activeTasks.map((t) => ({ task_id: t.id, title: t.title })),
-              data: {
-                message: `${person.name} has ${activeTasks.length} active task(s). Use force=true to unassign them, or reassign first.`,
-              },
-            };
-          }
-
-          /* If force, unassign active tasks */
-          if (activeTasks.length > 0 && params.force) {
-            const now = new Date().toISOString();
-            this.db
-              .prepare(
-                `UPDATE tasks SET assignee = NULL, updated_at = ?
-                 WHERE board_id = ? AND assignee = ? AND column != 'done'`,
-              )
-              .run(now, this.boardId, person.person_id);
-          }
-
-          /* Delete from board_admins first (FK-like cleanup) */
-          this.db
-            .prepare(
-              `DELETE FROM board_admins WHERE board_id = ? AND person_id = ?`,
-            )
-            .run(this.boardId, person.person_id);
-
-          /* Delete from board_people */
-          this.db
-            .prepare(
-              `DELETE FROM board_people WHERE board_id = ? AND person_id = ?`,
-            )
-            .run(this.boardId, person.person_id);
-
-          return {
-            success: true,
-            data: { removed: person.name, tasks_unassigned: params.force ? activeTasks.length : 0 },
-          };
+          return this._removeBoardPersonCore(person, params.force);
         }
 
         /* ---- add_manager ---- */
