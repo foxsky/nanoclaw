@@ -1,12 +1,63 @@
 # 0h-v2 — native outbound delivery for the FastAPI MCP path (design memo)
 
-**Status:** design / decision-required. **Author:** nanoclaw side, 2026-05-16.
-**Audience:** owner + tf-mcontrol. **Scope:** the *only* remaining nanoclaw
-deliverable before Phase 3 (`POST /chat → api_send_chat`, then 0j-b).
+**Status:** ✅ **DECIDED 2026-05-16 — Option A** (owner, via tf-mcontrol
+Banner #9). This memo is now the build spec; §3–6 are retained as the
+rationale record. **Author:** nanoclaw side. **Scope:** the *only* remaining
+nanoclaw deliverable before Phase 3 (`POST /chat → api_send_chat`, then 0j-b).
 
-This is a decision memo: verified constraints, options with trade-offs, a
-recommendation, the proposed helper signature, and the open decisions. It is
-**not** an implementation.
+---
+
+## 0. Decision + folded-in refinements (2026-05-16)
+
+**Chosen: Option A** — dedicated TaskFlow "service session" +
+`taskflow_notify` delivery-action + `enqueueOutboundMessage(...)` engine
+helper (reuses the `send_otp` out-of-turn pattern and the existing
+`delivery.ts` drain loop).
+
+**§7 decisions resolved (Banner #9):**
+1. **Keep the in-container WhatsApp path as-is** — confirmed (both sides).
+   Byte-oracle parity is the cheapest regression-gate; don't trade it for
+   path-unification with no second consumer.
+2. **Service-session bootstrap = nanoclaw's call.** tf-mcontrol only needs
+   the FastAPI-originated `messages_out` rows to reach a *registered*
+   session's `outbound.db` that `delivery.ts` drains.
+3. **Phase-3 order:** (a) helper + service session live → (b) tf wires
+   `POST /chat → api_send_chat` → (c) flip `notify_task_commented` from
+   inline-IPC to MCP-tool-result-with-engine-enqueue → (d) 0j-b deletes the
+   IPC writer.
+
+**Codex review #2 (gpt-5.5/xhigh) — three REQUIRED build constraints
+(verified at source; fold into implementation, not optional):**
+- **Path-aware + race-safe enqueue.** Do **not** reuse `writeMessageOut`
+  as-is: it is hardcoded to `/workspace/{inbound,outbound}.db`
+  (`container/agent-runner/src/db/connection.ts:23`) and does
+  read-max-seq-then-insert (`messages-out.ts:49,60`) with a `UNIQUE seq`
+  (`src/db/schema.ts:223`) → a racing FastAPI enqueue can throw/drop.
+  `enqueueOutboundMessage` must take the service session's DB paths
+  explicitly and use an atomic/retry-safe insert. **Reuse the
+  `writeOutboundDirect` pattern** (`src/session-manager.ts:377`) — the
+  existing host-side direct-outbound primitive — rather than the
+  seq-racing `writeMessageOut`.
+- **Fail-closed routing.** `board_people.notification_group_jid` is
+  nullable (`src/taskflow-db.ts:37`; root person seeded `null` in
+  `provision-root-board.ts:171`) and `messaging_groups` is **not**
+  FK-linked to boards (host lookup is platform-only,
+  `src/db/messaging-groups.ts:43`). The `taskflow_notify` host handler
+  MUST explicitly log+error (never silent-drop) when `board_id`+target
+  cannot resolve to `(channel_type, platform_id, chat target)`.
+- **Service-session bootstrap = confirmed feasible** (Codex Part 2 #2):
+  `getActiveSessions()` filters only `status='active'`
+  (`src/db/sessions.ts:66`); a never-messaged synthetic session IS drained
+  by the 60s `pollSweep` provided it has an `agent_groups` row + an
+  initialized session DB pair + `status='active'` (not `running`/`idle`).
+  Not a hidden blocker.
+
+**Open note (not blocking):** Codex flagged the in-container delivery of
+TaskFlow `notification_events` is not source-enforced — migration text says
+"do NOT relay" (`scripts/migrate-board-claudemd.ts:386`). Whether the
+in-container path actually delivers comment/assignee notifications today is
+a *separate* question; it does not affect Option A (which owns the FastAPI
+path). Track separately.
 
 ---
 
