@@ -55,17 +55,29 @@ export function enqueueOutboundMessage(
   const db = new Database(serviceOutboundDbPath);
   try {
     db.exec('PRAGMA busy_timeout = 5000');
+    // ON CONFLICT(id) DO NOTHING makes a retry with the same id
+    // idempotent — but, unlike INSERT OR IGNORE, a failure on ANY other
+    // constraint (UNIQUE seq, NOT NULL, …) still throws instead of
+    // silently no-op'ing into a phantom "enqueued" return.
     db.prepare(
-      `INSERT OR IGNORE INTO messages_out
+      `INSERT INTO messages_out
          (id, seq, timestamp, kind, platform_id, channel_type, thread_id, content)
        VALUES
          (?, (SELECT COALESCE(MAX(seq), 0) + 2 FROM messages_out),
-          datetime('now'), 'system', NULL, NULL, NULL, ?)`,
+          datetime('now'), 'system', NULL, NULL, NULL, ?)
+       ON CONFLICT(id) DO NOTHING`,
     ).run(params.id, content);
     const row = db
       .prepare('SELECT seq FROM messages_out WHERE id = ?')
       .get(params.id) as { seq: number } | null;
-    return row?.seq ?? 0;
+    if (!row) {
+      // Insert affected no row and none pre-existed — fail loud rather
+      // than return a sentinel the caller would read as "delivered".
+      throw new Error(
+        `enqueueOutboundMessage: row not persisted for id=${params.id}`,
+      );
+    }
+    return row.seq;
   } finally {
     db.close();
   }

@@ -102,4 +102,34 @@ describe('enqueueOutboundMessage', () => {
     expect(seqs[1]).toBeLessThan(seqs[2]);
     expect(new Set(seqs).size).toBe(3);
   });
+
+  it('throws (fail-loud) when the row is not persisted for a NON-id reason — never a silent sentinel 0', async () => {
+    // INSERT OR IGNORE swallows ANY constraint, not just the id-PK
+    // idempotency we want; a non-id failure would leave no row and the
+    // helper would return a sentinel 0 that callers read as "enqueued
+    // at seq 0". Provoke a non-id constraint (a CHECK the 'system' kind
+    // violates) and require a thrown error, not a 0.
+    const constrainedDir = mkdtempSync(join(tmpdir(), 'tf-outbound-chk-'));
+    const constrainedPath = join(constrainedDir, 'outbound.db');
+    const cd = new Database(constrainedPath);
+    cd.exec(`
+      CREATE TABLE messages_out (
+        id TEXT PRIMARY KEY, seq INTEGER UNIQUE, in_reply_to TEXT,
+        timestamp TEXT NOT NULL, deliver_after TEXT, recurrence TEXT,
+        kind TEXT NOT NULL CHECK (kind = 'chat'), platform_id TEXT,
+        channel_type TEXT, thread_id TEXT, content TEXT NOT NULL
+      );
+    `);
+    cd.close();
+    const { enqueueOutboundMessage } = await import('./taskflow-outbound.ts');
+    expect(() =>
+      enqueueOutboundMessage(constrainedPath, {
+        id: 'x',
+        board_id: 'b',
+        target: { kind: 'group', group_jid: 'g' },
+        text: 't',
+      }),
+    ).toThrow();
+    rmSync(constrainedDir, { recursive: true, force: true });
+  });
 });
