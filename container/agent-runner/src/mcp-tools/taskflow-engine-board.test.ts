@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { closeTaskflowDb } from '../db/connection.js';
 import { setupEngineDb } from './taskflow-test-fixtures.js';
-import { TaskflowEngine } from '../taskflow-engine.js';
+import { TaskflowEngine, normalizePhone } from '../taskflow-engine.js';
 
 /**
  * `engine.updateBoard` — dedicated FastAPI-only board mutation (design
@@ -173,5 +173,124 @@ describe('engine.removeBoardPerson', () => {
     expect(
       db.prepare('SELECT 1 FROM board_people WHERE board_id=? AND person_id=?').get(BOARD, 'bob'),
     ).toBeNull();
+  });
+});
+
+/**
+ * `engine.addBoardPerson` — public FastAPI wrapper around the shared
+ * `_addBoardPersonCore` (design Revision 2.1 R2.1.a/R2.2/R2.3). ZERO
+ * engine owner auth (R2.3, FastAPI-side). The handler derives the
+ * person_id (phone-digits / uuid4) + owns validation_error; this
+ * wrapper does: board-exists → R2.2 hierarchy guard → phone
+ * canonicalization (same normalizePhone the WhatsApp register_person
+ * path uses, for true single-engine parity) → core → map dup to a
+ * conflict + build the FastAPI echo.
+ *
+ * R2.2: UI add-person on a delegating/hierarchy board is the explicit,
+ * documented gap (no child-board auto-provision from the subprocess) —
+ * reject with error_code 'hierarchy_provision_unsupported' BEFORE any
+ * insert (tf-mcontrol maps it to HTTP 422). WhatsApp keeps full
+ * auto-provision via api_admin (byte-oracle unaffected).
+ */
+describe('engine.addBoardPerson', () => {
+  beforeEach(() => {
+    // Prod columns the shared engine fixture omits: board_people.phone
+    // (the core inserts it) + boards.hierarchy_level/max_depth (the R2.2
+    // guard reads them via canDelegateDown(); NULL ⇒ non-hierarchy).
+    db.exec(`ALTER TABLE board_people ADD COLUMN phone TEXT`);
+    db.exec(`ALTER TABLE boards ADD COLUMN hierarchy_level INTEGER`);
+    db.exec(`ALTER TABLE boards ADD COLUMN max_depth INTEGER`);
+  });
+
+  it('missing board → {success:false, error_code:not_found, "Board not found"}', () => {
+    const r = engine.addBoardPerson('board-nope', {
+      person_id: 'p1',
+      name: 'P One',
+      phone: null,
+      role: 'member',
+    });
+    expect(r.success).toBe(false);
+    if (r.success) throw new Error('unreachable');
+    expect(r.error_code).toBe('not_found');
+    expect(r.error).toBe('Board not found');
+  });
+
+  it('R2.2: delegating board → hierarchy_provision_unsupported, NO row inserted', () => {
+    db.prepare(`UPDATE boards SET hierarchy_level = 0, max_depth = 2 WHERE id = ?`).run(BOARD);
+    const r = engine.addBoardPerson(BOARD, {
+      person_id: 'p1',
+      name: 'P One',
+      phone: '5585999990000',
+      role: 'member',
+    });
+    expect(r.success).toBe(false);
+    if (r.success) throw new Error('unreachable');
+    expect(r.error_code).toBe('hierarchy_provision_unsupported');
+    expect(r.error).toBe(
+      'Add this member via WhatsApp until UI child-board provisioning lands',
+    );
+    expect(
+      db.prepare('SELECT 1 FROM board_people WHERE board_id=? AND person_id=?').get(BOARD, 'p1'),
+    ).toBeNull();
+  });
+
+  it('non-hierarchy, no phone → success echo {ok,person_id,name,phone:null,role}; row inserted', () => {
+    const r = engine.addBoardPerson(BOARD, {
+      person_id: 'uuid-1',
+      name: 'Carol',
+      phone: null,
+      role: 'member',
+    });
+    expect(r.success).toBe(true);
+    if (!r.success) throw new Error('unreachable');
+    expect(r.data).toEqual({
+      ok: true,
+      person_id: 'uuid-1',
+      name: 'Carol',
+      phone: null,
+      role: 'member',
+    });
+    const row = db
+      .prepare('SELECT name, phone, role FROM board_people WHERE board_id=? AND person_id=?')
+      .get(BOARD, 'uuid-1') as { name: string; phone: string | null; role: string };
+    expect(row).toEqual({ name: 'Carol', phone: null, role: 'member' });
+  });
+
+  it('canonicalizes phone via normalizePhone (single-engine parity) — stored == echoed', () => {
+    const input = '+55 (85) 99999-0000';
+    const r = engine.addBoardPerson(BOARD, {
+      person_id: '5585999990000',
+      name: 'Dan',
+      phone: input,
+      role: 'Tecnico',
+    });
+    expect(r.success).toBe(true);
+    if (!r.success) throw new Error('unreachable');
+    const expected = normalizePhone(input) || input;
+    expect(r.data.phone).toBe(expected);
+    const row = db
+      .prepare('SELECT phone, role FROM board_people WHERE board_id=? AND person_id=?')
+      .get(BOARD, '5585999990000') as { phone: string; role: string };
+    expect(row.phone).toBe(expected);
+    expect(row.role).toBe('Tecnico');
+  });
+
+  it('duplicate person_id → {success:false, error_code:conflict}', () => {
+    engine.addBoardPerson(BOARD, {
+      person_id: 'dup',
+      name: 'First',
+      phone: null,
+      role: 'member',
+    });
+    const r = engine.addBoardPerson(BOARD, {
+      person_id: 'dup',
+      name: 'Second',
+      phone: null,
+      role: 'member',
+    });
+    expect(r.success).toBe(false);
+    if (r.success) throw new Error('unreachable');
+    expect(r.error_code).toBe('conflict');
+    expect(r.error).toBe('Person already on this board');
   });
 });

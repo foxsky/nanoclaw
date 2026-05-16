@@ -8317,7 +8317,10 @@ export class TaskflowEngine {
     personId: string,
     personName: string,
     phone: string | null,
-    params: AdminParams,
+    // Narrowed to exactly what the core reads (AdminParams is structurally
+    // assignable, so the WhatsApp api_admin caller is unaffected) — lets
+    // the FastAPI engine.addBoardPerson wrapper pass a clean {role}.
+    params: { role?: string; wip_limit?: number | null },
   ): AdminResult {
     /* Check for duplicate */
     const existing = this.db
@@ -8347,6 +8350,82 @@ export class TaskflowEngine {
       success: true,
       person_id: personId,
       data: { name: personName, person_id: personId },
+    };
+  }
+
+  /**
+   * Public FastAPI wrapper for add-person (design Revision 2.1
+   * R2.1.a/R2.2/R2.3). ZERO engine owner auth (R2.3 — FastAPI-side).
+   * The handler derives `person_id` (phone-digits / uuid4) and owns
+   * validation_error; this wrapper does board-exists → the R2.2
+   * hierarchy guard → phone canonicalization (the SAME `normalizePhone`
+   * the WhatsApp `register_person` path applies, so the stored row is
+   * identical regardless of surface — single-engine parity; a
+   * deliberate change from the old pure-SQL raw store) → the shared
+   * `_addBoardPersonCore` → maps the core's duplicate failure to a
+   * FastAPI `conflict` and builds the echo.
+   *
+   * R2.2: UI add-person on a delegating/hierarchy board is the
+   * explicit documented gap (the FastAPI subprocess cannot
+   * host-dispatch child-board auto-provisioning) — reject BEFORE any
+   * insert (R2.9 Q1). WhatsApp keeps full auto-provision via
+   * `api_admin`, so the byte-oracle is unaffected.
+   */
+  addBoardPerson(
+    boardId: string,
+    params: { person_id: string; name: string; phone: string | null; role: string },
+  ):
+    | {
+        success: true;
+        data: {
+          ok: true;
+          person_id: string;
+          name: string;
+          phone: string | null;
+          role: string;
+        };
+      }
+    | {
+        success: false;
+        error_code: 'not_found' | 'hierarchy_provision_unsupported' | 'conflict';
+        error: string;
+      } {
+    const board = this.db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
+    if (!board) {
+      return { success: false, error_code: 'not_found', error: 'Board not found' };
+    }
+    if (this.canDelegateDown()) {
+      return {
+        success: false,
+        error_code: 'hierarchy_provision_unsupported',
+        error: 'Add this member via WhatsApp until UI child-board provisioning lands',
+      };
+    }
+    const normalizedPhone = params.phone
+      ? normalizePhone(params.phone) || params.phone
+      : null;
+    const r = this._addBoardPersonCore(params.person_id, params.name, normalizedPhone, {
+      role: params.role,
+    });
+    if (!r.success) {
+      // The core's only failure mode is the duplicate check; its
+      // WhatsApp-shaped error string must NOT gain an error_code (the
+      // byte-oracle locks it), so the FastAPI conflict is mapped here.
+      return {
+        success: false,
+        error_code: 'conflict',
+        error: 'Person already on this board',
+      };
+    }
+    return {
+      success: true,
+      data: {
+        ok: true,
+        person_id: params.person_id,
+        name: params.name,
+        phone: normalizedPhone,
+        role: params.role,
+      },
     };
   }
 

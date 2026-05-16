@@ -162,32 +162,16 @@ export const apiAddBoardPersonTool: McpToolDefinition = {
     }
 
     try {
-      const db = getTaskflowDb();
-      const board = db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
-      if (!board) {
-        return jsonResponse({
-          success: false,
-          error_code: 'not_found',
-          error: 'Board not found',
-        });
-      }
-      const existing = db
-        .prepare('SELECT person_id FROM board_people WHERE board_id = ? AND person_id = ?')
-        .get(boardId, personId);
-      if (existing) {
-        return jsonResponse({
-          success: false,
-          error_code: 'conflict',
-          error: 'Person already on this board',
-        });
-      }
-      db.prepare(
-        'INSERT INTO board_people (board_id, person_id, name, phone, role) VALUES (?, ?, ?, ?, ?)',
-      ).run(boardId, personId, name, phone || null, role);
-      return jsonResponse({
-        success: true,
-        data: { ok: true, person_id: personId, name, phone, role },
-      });
+      // Single-engine (R2.8 step 4b-iii): engine.addBoardPerson does
+      // ZERO owner auth (R2.3, FastAPI-side), rejects delegating boards
+      // (R2.2 hierarchy_provision_unsupported), canonicalizes the phone
+      // like the WhatsApp register_person path, and goes through the
+      // shared _addBoardPersonCore. Its result IS the tool payload
+      // (success → {data:{ok,...}}; not_found/conflict/hierarchy_*).
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      return jsonResponse(
+        engine.addBoardPerson(boardId, { person_id: personId, name, phone, role }),
+      );
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error_code: 'internal_error', error: msg });

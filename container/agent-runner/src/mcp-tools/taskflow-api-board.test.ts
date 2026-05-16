@@ -69,98 +69,16 @@ afterEach(() => {
  */
 
 /**
- * Parity: FastAPI `POST /api/v1/boards/{id}/people` (main.py:2786).
- *   - name required, trimmed, non-empty
- *   - phone optional; person_id = digits-only(phone) OR uuid4 if no phone
- *   - phone with no digits → 400
- *   - role default 'member' (falsy → 'member'), NOT trimmed
- *   - dup (board_id, person_id) → 409
- *   - response echo {ok, person_id, name, phone, role} (golden status 201)
- *   - no sender_name; owner auth FastAPI-side
- *   - must NOT reuse engine register_person (slug id / hierarchy
- *     auto-provision) — direct-SQL parity (Codex finding 5)
+ * `api_add_board_person` was repointed at `engine.addBoardPerson`
+ * (R2.8 step 4b-iii) — a deliberate behavior change (R2.2 hierarchy
+ * guard, phone canonicalized like the WhatsApp path). Its tests +
+ * the add plain-UUID R2.7 regression moved to
+ * `taskflow-api-add-board-person.test.ts` on a `setupEngineDb`
+ * fixture.
  */
-async function addPerson(args: Record<string, unknown>) {
-  const { apiAddBoardPersonTool } = await import('./taskflow-api-board.ts');
-  return JSON.parse((await apiAddBoardPersonTool.handler(args)).content[0].text);
-}
 
-describe('api_add_board_person MCP tool', () => {
-  it('exports a tool named api_add_board_person', async () => {
-    const { apiAddBoardPersonTool } = await import('./taskflow-api-board.ts');
-    expect(apiAddBoardPersonTool.tool.name).toBe('api_add_board_person');
-  });
-
-  it('derives person_id from phone digits, echoes {ok,person_id,name,phone,role}, inserts the row', async () => {
-    const r = await addPerson({
-      board_id: BOARD,
-      name: 'Alice',
-      phone: '+55 (85) 99999-0001',
-      role: 'Tecnico',
-    });
-    expect(r.success).toBe(true);
-    expect(r.data).toEqual({
-      ok: true,
-      person_id: '5585999990001',
-      name: 'Alice',
-      phone: '+55 (85) 99999-0001',
-      role: 'Tecnico',
-    });
-    const row = db
-      .prepare('SELECT name, phone, role FROM board_people WHERE board_id = ? AND person_id = ?')
-      .get(BOARD, '5585999990001') as { name: string; phone: string; role: string };
-    expect(row).toEqual({ name: 'Alice', phone: '+55 (85) 99999-0001', role: 'Tecnico' });
-  });
-
-  it('generates a uuid person_id when no phone, stores phone NULL, echoes phone null', async () => {
-    const r = await addPerson({ board_id: BOARD, name: 'Bob' });
-    expect(r.success).toBe(true);
-    expect(r.data.person_id).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-    );
-    expect(r.data.phone).toBeNull();
-    expect(r.data.role).toBe('member');
-    const row = db
-      .prepare('SELECT phone FROM board_people WHERE board_id = ? AND person_id = ?')
-      .get(BOARD, r.data.person_id) as { phone: string | null };
-    expect(row.phone).toBeNull();
-  });
-
-  it('rejects missing/empty name with validation_error', async () => {
-    expect((await addPerson({ board_id: BOARD })).error_code).toBe('validation_error');
-    expect((await addPerson({ board_id: BOARD, name: '   ' })).error_code).toBe(
-      'validation_error',
-    );
-  });
-
-  it('rejects a phone with no digits (validation_error)', async () => {
-    const r = await addPerson({ board_id: BOARD, name: 'X', phone: 'abc-def' });
-    expect(r.success).toBe(false);
-    expect(r.error_code).toBe('validation_error');
-  });
-
-  it('returns conflict when the person is already on the board', async () => {
-    await addPerson({ board_id: BOARD, name: 'Alice', phone: '5585999990001' });
-    const r = await addPerson({ board_id: BOARD, name: 'Alice again', phone: '5585999990001' });
-    expect(r.success).toBe(false);
-    expect(r.error_code).toBe('conflict');
-  });
-
-  it('defaults role to member when absent or falsy', async () => {
-    expect((await addPerson({ board_id: BOARD, name: 'A', phone: '111' })).data.role).toBe(
-      'member',
-    );
-    expect(
-      (await addPerson({ board_id: BOARD, name: 'B', phone: '222', role: '' })).data.role,
-    ).toBe('member');
-  });
-
-  it('returns not_found for a missing board', async () => {
-    const r = await addPerson({ board_id: 'board-nope', name: 'A', phone: '999' });
-    expect(r.success).toBe(false);
-    expect(r.error_code).toBe('not_found');
-  });
-});
+// api_add_board_person tests live in taskflow-api-add-board-person.test.ts
+// (engine-backed; needs the full setupEngineDb schema).
 
 /**
  * `api_remove_board_person` was repointed at `engine.removeBoardPerson`
@@ -262,31 +180,8 @@ describe('api_update_board_person MCP tool', () => {
   });
 });
 
-/**
- * R2.7 shipped-bug regression: FastAPI creates plain-UUID boards. The
- * board-config tools must use the URL board_id VERBATIM — never
- * `normalizeAgentIds` (which `board-`-prefixes non-prefixed ids and
- * would look up the wrong board). One representative read+write path
- * each; intent = "no board_id rewriting", not per-tool exhaustiveness.
- */
-describe('plain-UUID board ids — no board- prefixing (FastAPI parity)', () => {
-  const UUID_BOARD = '550e8400-e29b-41d4-a716-446655440000';
-  beforeEach(() => {
-    db.prepare(
-      `INSERT INTO boards (id, board_role, name, created_at, updated_at)
-       VALUES (?, 'hierarchy', 'UUID Board', '2026-01-01 00:00:00', '2026-01-01 00:00:00')`,
-    ).run(UUID_BOARD);
-  });
-
-  // api_update_board's plain-UUID regression moved with it to
-  // taskflow-api-update-board.test.ts (engine-backed; needs full schema).
-
-  it('api_add_board_person operates on the exact UUID board id', async () => {
-    const r = await addPerson({ board_id: UUID_BOARD, name: 'Z', phone: '111' });
-    expect(r.success).toBe(true);
-    const row = db
-      .prepare('SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?')
-      .get(UUID_BOARD, '111');
-    expect(row).not.toBeNull();
-  });
-});
+// R2.7 plain-UUID regressions now live per-tool with each repointed
+// tool (taskflow-api-update-board.test.ts, taskflow-api-remove-board-
+// person.test.ts, taskflow-api-add-board-person.test.ts). The last
+// pure-SQL tool here (api_update_board_person) keeps verbatim board_id
+// by construction (no normalizeAgentIds import in taskflow-api-board.ts).
