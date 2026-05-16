@@ -366,3 +366,36 @@ describe('api_update_board_person MCP tool', () => {
     expect(r.error_code).toBe('not_found');
   });
 });
+
+/**
+ * R2.7 shipped-bug regression: FastAPI creates plain-UUID boards. The
+ * board-config tools must use the URL board_id VERBATIM — never
+ * `normalizeAgentIds` (which `board-`-prefixes non-prefixed ids and
+ * would look up the wrong board). One representative read+write path
+ * each; intent = "no board_id rewriting", not per-tool exhaustiveness.
+ */
+describe('plain-UUID board ids — no board- prefixing (FastAPI parity)', () => {
+  const UUID_BOARD = '550e8400-e29b-41d4-a716-446655440000';
+  beforeEach(() => {
+    db.prepare(
+      `INSERT INTO boards (id, board_role, name, created_at, updated_at)
+       VALUES (?, 'hierarchy', 'UUID Board', '2026-01-01 00:00:00', '2026-01-01 00:00:00')`,
+    ).run(UUID_BOARD);
+  });
+
+  it('api_update_board operates on the exact UUID id', async () => {
+    const r = await update({ board_id: UUID_BOARD, name: 'Renamed' });
+    expect(r.success).toBe(true);
+    expect(r.data.id).toBe(UUID_BOARD);
+    expect(r.data.name).toBe('Renamed');
+  });
+
+  it('api_add_board_person operates on the exact UUID board id', async () => {
+    const r = await addPerson({ board_id: UUID_BOARD, name: 'Z', phone: '111' });
+    expect(r.success).toBe(true);
+    const row = db
+      .prepare('SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?')
+      .get(UUID_BOARD, '111');
+    expect(row).not.toBeNull();
+  });
+});

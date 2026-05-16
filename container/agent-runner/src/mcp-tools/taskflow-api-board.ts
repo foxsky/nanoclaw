@@ -10,7 +10,6 @@
  */
 import { getTaskflowDb } from '../db/connection.js';
 import { registerTools } from './server.js';
-import { normalizeAgentIds } from './taskflow-helpers.js';
 import type { McpToolDefinition } from './types.js';
 import { jsonResponse, requireString } from './util.js';
 
@@ -32,7 +31,8 @@ export const apiUpdateBoardTool: McpToolDefinition = {
     },
   },
   async handler(args) {
-    args = normalizeAgentIds(args);
+    // FastAPI passes the URL board_id verbatim (plain UUID for new
+    // boards). Do NOT normalize/prefix it (R2.7; Codex 2026-05-16).
     const boardId = requireString(args, 'board_id');
     if (boardId === null) {
       return jsonResponse({
@@ -136,7 +136,8 @@ export const apiAddBoardPersonTool: McpToolDefinition = {
     },
   },
   async handler(args) {
-    args = normalizeAgentIds(args);
+    // FastAPI passes the URL board_id verbatim (plain UUID for new
+    // boards). Do NOT normalize/prefix it (R2.7; Codex 2026-05-16).
     const boardId = requireString(args, 'board_id');
     if (boardId === null) {
       return jsonResponse({
@@ -231,7 +232,8 @@ export const apiRemoveBoardPersonTool: McpToolDefinition = {
     },
   },
   async handler(args) {
-    args = normalizeAgentIds(args);
+    // FastAPI passes the URL board_id verbatim (plain UUID for new
+    // boards). Do NOT normalize/prefix it (R2.7; Codex 2026-05-16).
     const boardId = requireString(args, 'board_id');
     if (boardId === null) {
       return jsonResponse({
@@ -301,7 +303,8 @@ export const apiUpdateBoardPersonTool: McpToolDefinition = {
     },
   },
   async handler(args) {
-    args = normalizeAgentIds(args);
+    // FastAPI passes the URL board_id verbatim (plain UUID for new
+    // boards). Do NOT normalize/prefix it (R2.7; Codex 2026-05-16).
     const boardId = requireString(args, 'board_id');
     if (boardId === null) {
       return jsonResponse({
