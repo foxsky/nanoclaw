@@ -567,3 +567,83 @@ describe('engine.deleteBoard', () => {
     expect(db.prepare('SELECT 1 FROM boards WHERE id=?').get(B)).toBeNull();
   });
 });
+
+/**
+ * `engine.addBoardHoliday` / `engine.removeBoardHoliday` — strict
+ * parity with the live FastAPI holiday handlers
+ * (taskflow-api/app/main.py). board_holidays prod schema:
+ * (board_id, holiday_date, label, PK(board_id,holiday_date)). ZERO
+ * engine owner auth (R2.3 — FastAPI-side). The date-format regex
+ * (^\d{4}-\d{2}-\d{2}$) is handler-side validation_error; the engine
+ * persists. add = INSERT OR REPLACE (upsert), no existence check
+ * (parity); returns {ok,date,label}. remove = existence check →
+ * not_found "Holiday not found" if absent, else DELETE (not
+ * idempotent — parity). Self-consistent on the boardId param.
+ */
+describe('engine board holidays', () => {
+  const B = 'board-hol';
+  const OTHER = 'board-hol-2';
+  beforeEach(() => {
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS board_holidays (board_id TEXT NOT NULL, holiday_date TEXT NOT NULL, label TEXT, PRIMARY KEY (board_id, holiday_date))`,
+    );
+  });
+
+  it('addBoardHoliday inserts the row and echoes {ok,date,label}', () => {
+    const r = new TaskflowEngine(db, B).addBoardHoliday(B, '2026-12-25', 'Natal');
+    expect(r).toEqual({ success: true, data: { ok: true, date: '2026-12-25', label: 'Natal' } });
+    const row = db
+      .prepare('SELECT label FROM board_holidays WHERE board_id=? AND holiday_date=?')
+      .get(B, '2026-12-25') as { label: string | null };
+    expect(row.label).toBe('Natal');
+  });
+
+  it('addBoardHoliday stores/echoes null label when not provided', () => {
+    const r = new TaskflowEngine(db, B).addBoardHoliday(B, '2026-01-01', null);
+    expect(r.success).toBe(true);
+    if (!r.success) throw new Error('unreachable');
+    expect(r.data.label).toBeNull();
+    const row = db
+      .prepare('SELECT label FROM board_holidays WHERE board_id=? AND holiday_date=?')
+      .get(B, '2026-01-01') as { label: string | null };
+    expect(row.label).toBeNull();
+  });
+
+  it('addBoardHoliday is an upsert (re-add same date replaces label; one row)', () => {
+    const e = new TaskflowEngine(db, B);
+    e.addBoardHoliday(B, '2026-12-25', 'Natal');
+    e.addBoardHoliday(B, '2026-12-25', 'Christmas');
+    const rows = db
+      .prepare('SELECT label FROM board_holidays WHERE board_id=? AND holiday_date=?')
+      .all(B, '2026-12-25') as Array<{ label: string }>;
+    expect(rows).toEqual([{ label: 'Christmas' }]);
+  });
+
+  it('removeBoardHoliday deletes an existing holiday → {success:true}', () => {
+    const e = new TaskflowEngine(db, B);
+    e.addBoardHoliday(B, '2026-12-25', 'Natal');
+    const r = e.removeBoardHoliday(B, '2026-12-25');
+    expect(r).toEqual({ success: true });
+    expect(
+      db.prepare('SELECT 1 FROM board_holidays WHERE board_id=? AND holiday_date=?').get(B, '2026-12-25'),
+    ).toBeNull();
+  });
+
+  it('removeBoardHoliday → not_found when the holiday is absent (not idempotent; parity)', () => {
+    const r = new TaskflowEngine(db, B).removeBoardHoliday(B, '2099-01-01');
+    expect(r.success).toBe(false);
+    if (r.success) throw new Error('unreachable');
+    expect(r.error_code).toBe('not_found');
+    expect(r.error).toBe('Holiday not found');
+  });
+
+  it('holiday ops are board-scoped', () => {
+    new TaskflowEngine(db, B).addBoardHoliday(B, '2026-12-25', 'Natal');
+    new TaskflowEngine(db, OTHER).addBoardHoliday(OTHER, '2026-12-25', 'Other');
+    new TaskflowEngine(db, B).removeBoardHoliday(B, '2026-12-25');
+    const row = db
+      .prepare('SELECT label FROM board_holidays WHERE board_id=? AND holiday_date=?')
+      .get(OTHER, '2026-12-25') as { label: string };
+    expect(row.label).toBe('Other');
+  });
+});

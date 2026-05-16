@@ -8303,6 +8303,60 @@ export class TaskflowEngine {
   }
 
   /**
+   * 0f-batch: add/replace a board holiday. Strict parity with the
+   * live FastAPI `POST /boards/{id}/holidays` handler — `INSERT OR
+   * REPLACE` (upsert on PK (board_id, holiday_date)); NO existence
+   * check (parity); echoes `{ok,date,label}`. ZERO engine owner auth
+   * (R2.3 — FastAPI-side). The date-format regex
+   * (^\d{4}-\d{2}-\d{2}$) is handler-side validation_error; the engine
+   * persists what it is given. Self-consistent on the boardId param.
+   */
+  addBoardHoliday(
+    boardId: string,
+    holidayDate: string,
+    label: string | null,
+  ): { success: true; data: { ok: true; date: string; label: string | null } } {
+    this.db
+      .prepare(
+        'INSERT OR REPLACE INTO board_holidays (board_id, holiday_date, label) VALUES (?, ?, ?)',
+      )
+      .run(boardId, holidayDate, label);
+    return { success: true, data: { ok: true, date: holidayDate, label } };
+  }
+
+  /**
+   * 0f-batch: remove a board holiday. Strict parity with the live
+   * FastAPI `DELETE /boards/{id}/holidays/{date}` handler — existence
+   * check then DELETE; NOT idempotent (absent → not_found "Holiday
+   * not found"), 204 on success. ZERO engine owner auth (R2.3).
+   * SELECT+DELETE in one transaction (Codex post-impl IMPORTANT-1
+   * pattern). Self-consistent on the boardId param.
+   */
+  removeBoardHoliday(
+    boardId: string,
+    holidayDate: string,
+  ): { success: true } | { success: false; error_code: 'not_found'; error: string } {
+    return this.db.transaction(() => {
+      const row = this.db
+        .prepare(
+          'SELECT 1 FROM board_holidays WHERE board_id = ? AND holiday_date = ?',
+        )
+        .get(boardId, holidayDate);
+      if (!row) {
+        return {
+          success: false,
+          error_code: 'not_found',
+          error: 'Holiday not found',
+        } as const;
+      }
+      this.db
+        .prepare('DELETE FROM board_holidays WHERE board_id = ? AND holiday_date = ?')
+        .run(boardId, holidayDate);
+      return { success: true as const };
+    })();
+  }
+
+  /**
    * Dedicated FastAPI-only board name/description mutation (design
    * Revision 2.1 R2.1: no WhatsApp competitor — a fresh engine method,
    * not a shared core). Single source of the `PATCH /boards` mutation

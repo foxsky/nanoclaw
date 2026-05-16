@@ -174,6 +174,113 @@ export const apiDeleteBoardTool: McpToolDefinition = {
   },
 };
 
+/** FastAPI `POST /boards/{id}/holidays` (main.py:2868) →
+ *  engine.addBoardHoliday. date must be YYYY-MM-DD (handler
+ *  validation_error); upsert; echoes {ok,date,label}. Flat args, no
+ *  actor/sender_name; owner auth FastAPI-side (R2.3). */
+export const apiAddHolidayTool: McpToolDefinition = {
+  tool: {
+    name: 'api_add_holiday',
+    description:
+      'Add (or replace) a board holiday. date is YYYY-MM-DD. Owner authorization is enforced by the API layer before this tool runs.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+        date: { type: 'string' },
+        label: { type: ['string', 'null'] },
+      },
+      required: ['board_id', 'date'],
+    },
+  },
+  async handler(args) {
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) {
+      return jsonResponse({
+        success: false,
+        error_code: 'validation_error',
+        error: 'board_id: required string',
+      });
+    }
+    if (typeof args.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(args.date)) {
+      return jsonResponse({
+        success: false,
+        error_code: 'validation_error',
+        error: 'date must be YYYY-MM-DD',
+      });
+    }
+    // FastAPI: `label = body.get("label") or None` — falsy → null.
+    let label: string | null = null;
+    if (args.label !== undefined && args.label !== null && args.label !== '') {
+      if (typeof args.label !== 'string') {
+        return jsonResponse({
+          success: false,
+          error_code: 'validation_error',
+          error: 'label: expected string or null',
+        });
+      }
+      label = args.label;
+    }
+    try {
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      return jsonResponse(engine.addBoardHoliday(boardId, args.date, label));
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error_code: 'internal_error', error: msg });
+    }
+  },
+};
+
+/** FastAPI `DELETE /boards/{id}/holidays/{date}` (main.py:2895) →
+ *  engine.removeBoardHoliday. Existence-checked (absent → not_found
+ *  "Holiday not found"; NOT idempotent — parity); 204 →
+ *  {success:true, data:null}. Flat args; owner auth FastAPI-side. */
+export const apiRemoveHolidayTool: McpToolDefinition = {
+  tool: {
+    name: 'api_remove_holiday',
+    description:
+      'Remove a board holiday by date. Owner authorization is enforced by the API layer before this tool runs.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+        holiday_date: { type: 'string' },
+      },
+      required: ['board_id', 'holiday_date'],
+    },
+  },
+  async handler(args) {
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) {
+      return jsonResponse({
+        success: false,
+        error_code: 'validation_error',
+        error: 'board_id: required string',
+      });
+    }
+    const holidayDate = requireString(args, 'holiday_date');
+    if (holidayDate === null) {
+      return jsonResponse({
+        success: false,
+        error_code: 'validation_error',
+        error: 'holiday_date: required string',
+      });
+    }
+    try {
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      const r = engine.removeBoardHoliday(boardId, holidayDate);
+      if (!r.success) {
+        return jsonResponse({ success: false, error_code: r.error_code, error: r.error });
+      }
+      // FastAPI returns 204 no body; surface as data:null.
+      return jsonResponse({ success: true, data: null });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error_code: 'internal_error', error: msg });
+    }
+  },
+};
+
 /** Parity: FastAPI `PATCH /api/v1/boards/{id}` (main.py:2744) +
  *  UpdateBoardPayload validators (main.py:268-288). */
 export const apiUpdateBoardTool: McpToolDefinition = {
@@ -510,6 +617,8 @@ export const apiUpdateBoardPersonTool: McpToolDefinition = {
 registerTools([
   apiCreateBoardTool,
   apiDeleteBoardTool,
+  apiAddHolidayTool,
+  apiRemoveHolidayTool,
   apiUpdateBoardTool,
   apiAddBoardPersonTool,
   apiRemoveBoardPersonTool,

@@ -56,6 +56,8 @@ const FASTAPI_ALLOWLIST: ReadonlySet<string> = new Set([
   // comment tools add their names here when they land.
   'api_create_board',
   'api_delete_board',
+  'api_add_holiday',
+  'api_remove_holiday',
   'api_update_board',
   'api_add_board_person',
   'api_remove_board_person',
