@@ -72,6 +72,9 @@ export interface Phase3TurnMetadata {
   context_mode: Phase3ContextMode;
   taskflow_board_id?: string;
   source_jsonl?: string;
+  source_turn_id?: string;
+  user_timestamp?: string;
+  text?: string;
   source_turn_index?: number;
   prior_turn_depth?: number;
   state_snapshot?: string;
@@ -85,9 +88,11 @@ export interface Phase3TurnMetadata {
 export interface Phase3CorpusTurn {
   jsonl?: string;
   turn_index?: number;
+  user_timestamp?: string;
   taskflow_board_id?: string;
   context_mode?: Phase3ContextMode;
   source_jsonl?: string;
+  source_turn_id?: string;
   source_turn_index?: number;
   prior_turn_depth?: number;
   state_snapshot?: string;
@@ -97,6 +102,8 @@ export interface Phase3CorpusTurn {
   expected_behavior?: Phase3ExpectedBehavior;
   v1_bug?: Phase3V1BugAnnotation;
   state_drift?: Phase3StateDriftAnnotation;
+  parsed_messages?: Array<{ sender?: string; time?: string; text?: string }>;
+  user_message?: string;
 }
 
 export interface Phase3TurnResult {
@@ -191,12 +198,109 @@ function canonicalMutationType(name: string): string | null {
   return raw;
 }
 
-export function loadPhase3Metadata(pathname: string | undefined): Map<number, Phase3TurnMetadata> {
+export type Phase3MetadataKey = number | string;
+export type Phase3MetadataOverrides = Map<Phase3MetadataKey, Phase3TurnMetadata>;
+
+function normalizedTurnText(text: string | undefined): string {
+  return (text ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function corpusTurnText(turn: Phase3CorpusTurn): string {
+  const parsed = Array.isArray(turn.parsed_messages) ? turn.parsed_messages[0] : undefined;
+  return parsed?.text ?? turn.user_message ?? '';
+}
+
+function resultTurnText(turn: Phase3TurnResult): string {
+  return turn.text ?? '';
+}
+
+function metadataStableKeys(row: Phase3TurnMetadata): string[] {
+  const keys: string[] = [];
+  if (row.source_turn_id) keys.push(`source_turn_id:${row.source_turn_id}`);
+  if (row.source_jsonl && row.source_turn_index !== undefined) {
+    keys.push(`source:${row.source_jsonl}#${row.source_turn_index}`);
+  }
+  if (row.source_jsonl) keys.push(`source_jsonl:${row.source_jsonl}`);
+  if (row.user_timestamp && row.text) {
+    keys.push(`timestamp_text:${row.user_timestamp}:${normalizedTurnText(row.text)}`);
+  }
+  return keys;
+}
+
+function corpusStableKeys(turn: Phase3CorpusTurn): string[] {
+  const sourceJsonl = turn.source_jsonl ?? turn.jsonl;
+  const keys: string[] = [];
+  if (turn.source_turn_id) keys.push(`source_turn_id:${turn.source_turn_id}`);
+  if (sourceJsonl && turn.source_turn_index !== undefined) {
+    keys.push(`source:${sourceJsonl}#${turn.source_turn_index}`);
+  }
+  if (sourceJsonl) keys.push(`source_jsonl:${sourceJsonl}`);
+  if (turn.user_timestamp) {
+    keys.push(`timestamp_text:${turn.user_timestamp}:${normalizedTurnText(corpusTurnText(turn))}`);
+  }
+  return keys;
+}
+
+function resultStableKeys(turn: Phase3TurnResult): string[] {
+  const md = turn.phase3?.metadata;
+  const keys: string[] = [];
+  if (md?.source_turn_id) keys.push(`source_turn_id:${md.source_turn_id}`);
+  if (md?.source_jsonl && md.source_turn_index !== undefined) {
+    keys.push(`source:${md.source_jsonl}#${md.source_turn_index}`);
+  }
+  if (md?.source_jsonl) keys.push(`source_jsonl:${md.source_jsonl}`);
+  if (md?.user_timestamp) {
+    keys.push(`timestamp_text:${md.user_timestamp}:${normalizedTurnText(resultTurnText(turn))}`);
+  }
+  return keys;
+}
+
+function metadataHasStableKey(row: Phase3TurnMetadata): boolean {
+  return metadataStableKeys(row).length > 0;
+}
+
+export function loadPhase3Metadata(pathname: string | undefined): Phase3MetadataOverrides {
   if (!pathname || !fs.existsSync(pathname)) return new Map();
   const parsed = JSON.parse(fs.readFileSync(pathname, 'utf8'));
   const rows: Phase3TurnMetadata[] = Array.isArray(parsed) ? parsed : parsed.turns;
   if (!Array.isArray(rows)) throw new Error(`Invalid Phase 3 metadata file: ${pathname}`);
-  return new Map(rows.map((row) => [row.turn_index, row]));
+  const out: Phase3MetadataOverrides = new Map();
+  for (const row of rows) {
+    out.set(row.turn_index, row);
+    for (const key of metadataStableKeys(row)) out.set(key, row);
+  }
+  return out;
+}
+
+export function phase3MetadataOverrideForCorpusTurn(
+  overrides: Phase3MetadataOverrides,
+  turn: Phase3CorpusTurn,
+  corpusIndex: number,
+  options?: { allowIndexOnly?: boolean },
+): Phase3TurnMetadata | undefined {
+  for (const key of corpusStableKeys(turn)) {
+    const byStableKey = overrides.get(key);
+    if (byStableKey) return byStableKey;
+  }
+  const byIndex = overrides.get(corpusIndex);
+  if (!byIndex) return undefined;
+  if (metadataHasStableKey(byIndex)) return undefined;
+  return options?.allowIndexOnly === true ? byIndex : undefined;
+}
+
+export function phase3MetadataOverrideForResultTurn(
+  overrides: Phase3MetadataOverrides,
+  turn: Phase3TurnResult,
+  options?: { allowIndexOnly?: boolean },
+): Phase3TurnMetadata | undefined {
+  for (const key of resultStableKeys(turn)) {
+    const byStableKey = overrides.get(key);
+    if (byStableKey) return byStableKey;
+  }
+  const byIndex = overrides.get(turn.turn_index);
+  if (!byIndex) return undefined;
+  if (metadataHasStableKey(byIndex)) return undefined;
+  return options?.allowIndexOnly === true ? byIndex : undefined;
 }
 
 export function inferPhase3Metadata(
@@ -213,6 +317,8 @@ export function inferPhase3Metadata(
     context_mode: contextMode,
     taskflow_board_id: turn.taskflow_board_id,
     source_jsonl: turn.source_jsonl ?? turn.jsonl,
+    source_turn_id: turn.source_turn_id,
+    user_timestamp: turn.user_timestamp,
     source_turn_index: turn.source_turn_index ?? turn.turn_index,
     prior_turn_depth: contextMode === 'chain' ? depth ?? 1 : undefined,
     state_snapshot: turn.state_snapshot ?? turn.db_snapshot,

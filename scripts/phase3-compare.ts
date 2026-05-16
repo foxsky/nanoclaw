@@ -12,6 +12,7 @@ import {
   classifyRawSqliteTurn,
   compareSemanticTurn,
   loadPhase3Metadata,
+  phase3MetadataOverrideForResultTurn,
   type Phase3TurnResult,
   type RawSqliteDecision,
   type SemanticComparison,
@@ -95,7 +96,7 @@ function main(): void {
   const loadedTurns: Phase3TurnResult[] = Array.isArray(raw) ? raw : [raw];
   const metadata = loadPhase3Metadata(args.metadata);
   const turns = loadedTurns.map((turn) => {
-    const override = metadata.get(turn.turn_index);
+    const override = phase3MetadataOverrideForResultTurn(metadata, turn);
     if (!override) return turn;
     return {
       ...turn,

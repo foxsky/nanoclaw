@@ -20,6 +20,7 @@ import { DATA_DIR } from '../src/config.js';
 import {
   inferPhase3Metadata,
   loadPhase3Metadata,
+  phase3MetadataOverrideForCorpusTurn,
   restoreDbSnapshot,
   taskflowDbPath,
   withTaskflowDbSnapshot,
@@ -214,7 +215,9 @@ function main(): void {
   const plan = indices.map((index) => inferPhase3Metadata(
     corpus.turns[index],
     index,
-    overrides.get(index),
+    phase3MetadataOverrideForCorpusTurn(overrides, corpus.turns[index], index, {
+      allowIndexOnly: useDefaultChainDepths,
+    }),
     { useDefaultChainDepths },
   ));
 

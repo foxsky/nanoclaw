@@ -7,6 +7,9 @@ import {
   classifyRawSqliteTurn,
   compareSemanticTurn,
   inferPhase3Metadata,
+  loadPhase3Metadata,
+  phase3MetadataOverrideForCorpusTurn,
+  phase3MetadataOverrideForResultTurn,
   restoreDbSnapshot,
   summarizeSemanticBehavior,
   taskflowDbPath,
@@ -66,6 +69,71 @@ describe('Phase 3 metadata inference', () => {
       task_ids: ['T10'],
       outbound_intent: 'informational',
     });
+  });
+
+  it('matches metadata overrides by stable source id before turn index', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'phase3-md-'));
+    const metadataPath = path.join(tmp, 'metadata.json');
+    fs.writeFileSync(metadataPath, JSON.stringify([
+      {
+        turn_index: 26,
+        source_turn_id: 'old-turn',
+        context_mode: 'fresh',
+        state_drift: { description: 'old annotation' },
+      },
+      {
+        turn_index: 28,
+        source_turn_id: 'my-tasks-turn',
+        context_mode: 'fresh',
+        state_drift: { description: 'stable annotation' },
+      },
+    ]));
+    const overrides = loadPhase3Metadata(metadataPath);
+
+    const staleIndexMatch = phase3MetadataOverrideForCorpusTurn(
+      overrides,
+      { source_turn_id: 'new-turn-at-old-index', user_message: 'qual a tarefa?' },
+      26,
+    );
+    expect(staleIndexMatch).toBeUndefined();
+
+    const stableMatch = phase3MetadataOverrideForCorpusTurn(
+      overrides,
+      { source_turn_id: 'my-tasks-turn', user_message: 'minhas tarefas' },
+      29,
+    );
+    expect(stableMatch?.state_drift?.description).toBe('stable annotation');
+  });
+
+  it('does not apply index-only metadata to source-keyed generated result turns', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'phase3-md-'));
+    const metadataPath = path.join(tmp, 'metadata.json');
+    fs.writeFileSync(metadataPath, JSON.stringify([
+      {
+        turn_index: 26,
+        context_mode: 'fresh',
+        state_drift: { description: 'index-only stale annotation' },
+      },
+    ]));
+    const overrides = loadPhase3Metadata(metadataPath);
+    const turn: Phase3TurnResult = {
+      turn_index: 26,
+      text: 'qual a tarefa?',
+      v1: { tools: [], final_response: 'não encontrei' },
+      v2: { tools: [], outbound: [] },
+      phase3: {
+        metadata: {
+          turn_index: 26,
+          context_mode: 'fresh',
+          source_turn_id: 'new-source-turn',
+          source_jsonl: 'messages.db#agent_turns/new-source-turn',
+        },
+      },
+    };
+
+    expect(phase3MetadataOverrideForResultTurn(overrides, turn)).toBeUndefined();
+    expect(phase3MetadataOverrideForResultTurn(overrides, turn, { allowIndexOnly: true })?.state_drift?.description)
+      .toBe('index-only stale annotation');
   });
 
   it('can disable original-corpus default chain depths for generated corpuses', () => {
