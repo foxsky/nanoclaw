@@ -953,6 +953,7 @@ describe('api_reassign MCP tool (A11.3)', () => {
     expect(result.success).toBe(true);
     expect(Array.isArray(result.data.tasks_affected)).toBe(true);
     expect(result.data.tasks_affected.length).toBe(1);
+    expect(result.data.formatted).toContain(`${taskId} — Reassign me: reatribuída para bob.`);
     const row = db
       .prepare('SELECT assignee FROM tasks WHERE id = ?')
       .get(taskId) as { assignee: string };
@@ -1114,6 +1115,8 @@ describe('api_reassign MCP tool (A11.3)', () => {
     const commitResult = JSON.parse(commit.content[0].text);
     expect(commitResult.success).toBe(true);
     expect(commitResult.data.tasks_affected.length).toBe(2);
+    expect(commitResult.data.formatted).toContain('2 tarefas reatribuídas para carol');
+    expect(commitResult.data.formatted).toContain(`${t1} — Bulk 1`);
     expect(
       (db.prepare('SELECT assignee FROM tasks WHERE id = ?').get(t1) as { assignee: string }).assignee,
     ).toBe('carol');

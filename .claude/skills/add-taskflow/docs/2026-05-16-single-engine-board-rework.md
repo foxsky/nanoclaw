@@ -43,7 +43,7 @@
 > **scoping decision**, not a §2 patch. See memory
 > `project_tfmcontrol_mcp_engine_0f_0h`.
 
-**Status:** §0–§9 SUPERSEDED. **Authoritative scope = Revision 2 (end
+**Status:** §0–§9 + R2.3–R2.6-as-originally-written SUPERSEDED. **Authoritative = Revision 2 + Revision 2.1 (Codex-corrected, implementable).** Implementation = fresh multi-session TDD; next Codex = post-implementation.
 of doc): pragmatic subset.** No tool code until Revision 2 is reviewed.
 **Date:** 2026-05-16. **Owner:** nanoclaw side (`skill/taskflow-v2`).
 **Driver:** user requirement — the MCP server is the single gateway so
@@ -349,3 +349,104 @@ alone is insufficient — `taskflow-api-mutate.ts:119` finalizer reshapes;
   `force` field name from `taskflow-engine.ts:8285-8330`.
 - R2.2: is `canDelegateDown()` the correct + only predicate for "would
   auto-provision", or are there other trigger paths to guard?
+
+---
+
+# Revision 2.1 (2026-05-16) — Codex gpt-5.5/xhigh corrections (AUTHORITATIVE; supersedes R2.3–R2.6 where they conflict)
+
+Codex review of R2.3–R2.6 found 3 BLOCKERs + 4 IMPORTANT (verdict: not
+implementable as-is). All code-verified; corrections below are now the
+implementation spec. §R2.9 Q1/Q3 + owner-trust safety were *confirmed*.
+
+## R2.1.a Cores take a RESOLVED person; auth lives in WRAPPERS not cores (fixes BLOCKER 1 + 3)
+
+R2.3 ("manager gate inside the core") and R2.6 ("cores have no auth")
+**contradicted** — R2.6 wins. Final contract:
+- Private `_…Core(db, boardId, resolvedPersonId, params)` = **DB-only**,
+  caller-owned transaction, **ZERO auth**, **no person resolution**,
+  never calls `normalizeAgentIds`.
+- `api_admin` wrapper: keeps its existing pre-switch manager gate
+  (`taskflow-engine.ts:8151`) AND resolves the target via the existing
+  fuzzy `requirePerson()`/`resolvePerson()` (`:2755`,`:1624`) so
+  WhatsApp byte-output is preserved, then calls the core.
+- FastAPI/`api_service` wrapper: **no engine auth** (owner-OR-static-agent
+  prechecked FastAPI-side — `main.py:1659`; BLOCKER-B test-enforced) and
+  resolves the target by **exact `person_id` or `not_found`** (FastAPI
+  routes are exact-id: `main.py:2826`,`2939` — must NOT inherit
+  `requirePerson()` fuzzy/name matching), then calls the same core.
+⇒ The genuinely shared single-engine cores are **add-person
+(non-hierarchy) and remove-person only**. `update_board` (name/desc),
+`setBoardPersonRole`, and the FastAPI wip path have **no byte-matching
+WhatsApp competitor** → dedicated FastAPI-only engine methods, not
+shared cores (parallels the already-accepted `update_board` case).
+
+## R2.4 corrected to engine truth (fixes BLOCKER 2)
+
+`remove_person` actual shapes (`taskflow-engine.ts:8297`,`8300`,`8332`):
+- active tasks, no force → `success:true`, **top-level
+  `tasks_to_reassign:[…]`**, `data:{message:…}` (NOT
+  `data:{tasks_to_reassign,removed:false}` as R2.4 said).
+- force / no blocking tasks → `success:true`,
+  `data:{ removed:<name>, tasks_unassigned:<n> }` (NOT `data:null`).
+- not found → `requirePerson()` throws → `{success:false,error}`.
+`api_remove_board_person` maps from THIS truth: no-active → HTTP 204;
+active+no-force → 200 + top-level `tasks_to_reassign`; force → 200 with
+`{removed,tasks_unassigned}`. Verify the exact `force` field name at
+impl from `:8285-8330` (R2.9 Q2).
+
+## R2.5 corrected — role grant + WIP coherence (fixes IMPORTANT 5,6)
+
+- **Gestor is a privilege grant.** REST edit/delete gate on
+  `board_people.role==='Gestor'` (`taskflow-api-update.ts:171`,
+  `taskflow-engine.ts:2492`). **Decision: ALLOW** a board owner to set
+  any `board_people.role` incl. `Gestor` (owner authority over their
+  board's roles is the product intent; FastAPI owner-precheck gates it).
+  `setBoardPersonRole` must: validate role is a known value, and a test
+  must assert the `Gestor`→edit/delete implication is intentional + the
+  change is history/audit-logged. Not a silent plain-field write.
+- **WIP semantics diverge** — engine `set_wip_limit` rejects `null`,
+  accepts `0` (`:8465`); FastAPI rejects `<1`, allows `null`-clear
+  (`main.py:2928`). The FastAPI `api_update_board_person` wip path is
+  **its own dedicated method** keeping the FastAPI contract
+  (null→clear, reject `<1` incl. 0); the WhatsApp `api_admin
+  set_wip_limit` keeps its semantics unchanged (byte parity). WIP is
+  NOT a shared core.
+
+## R2.6 — mandatory byte-oracle fixtures (fixes IMPORTANT 7)
+
+Semantic replay corpus is candidate/insufficient. Repointed `api_admin`
+cases require **raw-MCP-JSON byte-oracle unit tests** (capture
+pre-extraction output, assert identical post-extraction) for ALL of:
+register success-leaf; register hierarchy success w/
+`auto_provision_request`; register hierarchy missing-fields; duplicate
+register; remove not-found; remove active-no-force; remove force; remove
+no-active; set WIP success; set WIP `0`; set WIP `null`/negative;
+non-manager permission denial. The `finalizeMutationResult()` reshape
+(`taskflow-api-mutate.ts:119`) and the throw→`{success:false,error}`
+catch (`taskflow-engine.ts:8139`) are where parity breaks — fixtures
+must cover both success and thrown-error paths.
+
+## R2.9 — answered (Codex-confirmed)
+
+- **Q1 (separability): YES, but the reusable slice is AFTER hierarchy
+  validation** — slug → dup-check → phone-normalize → insert
+  (`taskflow-engine.ts:8222`,`8243`). `api_service` add-person must
+  reject delegating boards (`hierarchy_provision_unsupported`) BEFORE
+  that slice, not at the doc's earlier-claimed cut point.
+- **Q3 (guard completeness): CONFIRMED.** The only
+  `auto_provision_request` construction is gated by
+  `params.phone && this.canDelegateDown()` (`taskflow-engine.ts:8262`);
+  hierarchy validation forces phone/group fields when
+  `canDelegateDown()` is true (`:8206`). `provision_child_board` is a
+  separate tool, not a `register_person` path. The R2.2 guard
+  (`canDelegateDown()` → reject) is complete.
+- Q2: exact `force` field name → verify at impl (`:8285-8330`).
+
+## Net
+
+Design is converged and implementable. Shared cores: add-person
+(non-hierarchy) + remove-person, taking a resolved person_id, auth in
+wrappers. Dedicated FastAPI methods: update_board, setBoardPersonRole,
+wip. Implementation is TDD against the R2.6 byte-oracle fixture list +
+the per-tool behavioral tests; the NEXT Codex pass is post-implementation
+(no further design round needed). Multi-session — start fresh.

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -227,12 +228,14 @@ describe('Phase 3 DB snapshot helpers', () => {
     fs.writeFileSync(live, 'live');
     fs.writeFileSync(`${live}-wal`, 'stale wal');
     fs.writeFileSync(`${live}-shm`, 'stale shm');
+    fs.writeFileSync(`${live}-journal`, 'stale rollback journal');
     fs.writeFileSync(snapshot, 'snapshot');
 
     expect(restoreDbSnapshot(snapshot, tmp)).toBe('restored');
     expect(fs.readFileSync(live, 'utf8')).toBe('snapshot');
     expect(fs.existsSync(`${live}-wal`)).toBe(false);
     expect(fs.existsSync(`${live}-shm`)).toBe(false);
+    expect(fs.existsSync(`${live}-journal`)).toBe(false);
   });
 
   it('reports missing snapshots without mutating live DB', () => {
@@ -255,6 +258,31 @@ describe('Phase 3 DB snapshot helpers', () => {
     expect(fs.readFileSync(live, 'utf8')).toBe('live');
   });
 
+  it('normalizes restored SQLite snapshots to DELETE journal mode', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'phase3-db-'));
+    fs.mkdirSync(path.join(tmp, 'taskflow'), { recursive: true });
+    const live = taskflowDbPath(tmp);
+    const snapshot = path.join(tmp, 'snapshot.db');
+
+    let db = new Database(live);
+    db.exec('CREATE TABLE tasks (id TEXT PRIMARY KEY, updated_at TEXT)');
+    db.close();
+
+    db = new Database(snapshot);
+    db.exec('CREATE TABLE tasks (id TEXT PRIMARY KEY, updated_at TEXT)');
+    expect(db.pragma('journal_mode = WAL', { simple: true })).toBe('wal');
+    db.close();
+
+    expect(restoreDbSnapshot(snapshot, tmp)).toBe('restored');
+
+    db = new Database(live);
+    expect(db.pragma('journal_mode', { simple: true })).toBe('delete');
+    db.close();
+    expect(fs.existsSync(`${live}-wal`)).toBe(false);
+    expect(fs.existsSync(`${live}-shm`)).toBe(false);
+    expect(fs.existsSync(`${live}-journal`)).toBe(false);
+  });
+
   it('restores the original live DB after a callback mutates it', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'phase3-db-'));
     fs.mkdirSync(path.join(tmp, 'taskflow'), { recursive: true });
@@ -262,11 +290,13 @@ describe('Phase 3 DB snapshot helpers', () => {
     fs.writeFileSync(live, 'before');
     fs.writeFileSync(`${live}-wal`, 'before wal');
     fs.writeFileSync(`${live}-shm`, 'before shm');
+    fs.writeFileSync(`${live}-journal`, 'before rollback journal');
 
     const result = withTaskflowDbSnapshot(tmp, () => {
       fs.writeFileSync(live, 'during');
       fs.writeFileSync(`${live}-wal`, 'during wal');
       fs.rmSync(`${live}-shm`, { force: true });
+      fs.rmSync(`${live}-journal`, { force: true });
       return 'ok';
     });
 
@@ -274,6 +304,7 @@ describe('Phase 3 DB snapshot helpers', () => {
     expect(fs.readFileSync(live, 'utf8')).toBe('before');
     expect(fs.readFileSync(`${live}-wal`, 'utf8')).toBe('before wal');
     expect(fs.readFileSync(`${live}-shm`, 'utf8')).toBe('before shm');
+    expect(fs.readFileSync(`${live}-journal`, 'utf8')).toBe('before rollback journal');
   });
 });
 

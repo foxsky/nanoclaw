@@ -9,7 +9,7 @@
 import type { Database } from 'bun:sqlite';
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
-import type { AdminParams, DependencyParams, HierarchyParams, MoveResult, QueryParams, ReassignParams, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
+import type { AdminParams, DependencyParams, HierarchyParams, MoveResult, QueryParams, ReassignParams, ReassignResult, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
@@ -132,6 +132,19 @@ function addMoveFormattedResult(result: MoveResult, action: MoveAction): MoveRes
   return {
     ...result,
     formatted: `${result.task_id ?? 'Tarefa'}${title}: ação "${action}" concluída${transition}.`,
+  };
+}
+
+function addReassignFormattedResult(result: ReassignResult, targetPerson: string): ReassignResult {
+  if (!result.success || result.formatted || result.requires_confirmation) return result;
+  const tasks = result.tasks_affected ?? [];
+  if (tasks.length === 0) return result;
+  const taskLines = tasks.map((task) => `- ${task.task_id} — ${task.title}`);
+  return {
+    ...result,
+    formatted: tasks.length === 1
+      ? `${tasks[0].task_id} — ${tasks[0].title}: reatribuída para ${targetPerson}.`
+      : `${tasks.length} tarefas reatribuídas para ${targetPerson}:\n${taskLines.join('\n')}`,
   };
 }
 
@@ -795,7 +808,7 @@ export const apiReassignTool: McpToolDefinition = {
         source_person: sourcePerson,
       };
       const result = engine.reassign(reassignParams);
-      return finalizeMutationResult(result);
+      return finalizeMutationResult(addReassignFormattedResult(result, targetPerson));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });

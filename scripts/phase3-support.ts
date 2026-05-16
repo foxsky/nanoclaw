@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -356,13 +357,24 @@ export function taskflowDbPath(dataDir: string): string {
 }
 
 function sqliteSidecarPaths(dbPath: string): string[] {
-  return [`${dbPath}-wal`, `${dbPath}-shm`];
+  return [`${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`];
 }
 
 function copyIfExists(from: string, to: string): boolean {
   if (!fs.existsSync(from)) return false;
   copyFileSyncWithDockerFallback(from, to);
   return true;
+}
+
+function isSQLiteDatabase(filePath: string): boolean {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const header = Buffer.alloc(16);
+    const bytesRead = fs.readSync(fd, header, 0, header.length, 0);
+    return bytesRead === header.length && header.toString('binary') === 'SQLite format 3\0';
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 function copyFileSyncWithDockerFallback(from: string, to: string): void {
@@ -397,9 +409,78 @@ function copyFileSyncWithDockerFallback(from: string, to: string): void {
   }
 }
 
+function removeFileSyncWithDockerFallback(filePath: string): void {
+  try {
+    fs.rmSync(filePath, { force: true });
+    return;
+  } catch (error) {
+    const code = typeof error === 'object' && error && 'code' in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+    if (code !== 'EACCES' && code !== 'EPERM') throw error;
+    const result = spawnSync('docker', [
+      'run',
+      '--rm',
+      '--user',
+      '1000:1000',
+      '-v',
+      `${path.dirname(filePath)}:/target`,
+      'busybox',
+      'rm',
+      '-f',
+      `/target/${path.basename(filePath)}`,
+    ], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (result.status !== 0) {
+      throw new Error(`docker remove fallback failed (${result.status}): ${result.stderr || result.stdout}`);
+    }
+  }
+}
+
 function removeSQLiteSidecars(dbPath: string): void {
   for (const sidecar of sqliteSidecarPaths(dbPath)) {
-    fs.rmSync(sidecar, { force: true });
+    removeFileSyncWithDockerFallback(sidecar);
+  }
+}
+
+function normalizeRestoredTaskflowDb(dbPath: string): void {
+  if (!isSQLiteDatabase(dbPath)) return;
+  const db = new Database(dbPath);
+  try {
+    db.pragma('journal_mode = DELETE');
+    db.pragma('busy_timeout = 5000');
+  } finally {
+    db.close();
+  }
+}
+
+function shouldUseDockerOwnershipFix(dataDir: string): boolean {
+  return path.resolve(dataDir) === path.resolve(process.cwd(), 'data');
+}
+
+function makeContainerWritableDbFile(dbPath: string, dataDir: string): void {
+  if (!shouldUseDockerOwnershipFix(dataDir)) return;
+  if (!fs.existsSync(dbPath)) return;
+  for (const command of [
+    ['chown', '1000:1000', `/target/${path.basename(dbPath)}`],
+    ['chmod', '664', `/target/${path.basename(dbPath)}`],
+  ]) {
+    const result = spawnSync('docker', [
+      'run',
+      '--rm',
+      '-v',
+      `${path.dirname(dbPath)}:/target`,
+      'busybox',
+      ...command,
+    ], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (result.status !== 0) {
+      throw new Error(`docker db ownership fallback failed (${result.status}): ${result.stderr || result.stdout}`);
+    }
   }
 }
 
@@ -413,7 +494,9 @@ export function restoreDbSnapshot(
   const livePath = taskflowDbPath(dataDir);
   removeSQLiteSidecars(livePath);
   copyFileSyncWithDockerFallback(snapshotPath, livePath);
+  normalizeRestoredTaskflowDb(livePath);
   removeSQLiteSidecars(livePath);
+  makeContainerWritableDbFile(livePath, dataDir);
   return 'restored';
 }
 
@@ -435,14 +518,16 @@ export function withTaskflowDbSnapshot<T>(dataDir: string, fn: () => T): T {
   } finally {
     removeSQLiteSidecars(livePath);
     copyFileSyncWithDockerFallback(snapshot, livePath);
+    normalizeRestoredTaskflowDb(livePath);
     for (const sidecar of sidecarSnapshots) {
       if (sidecar.existed) {
         copyFileSyncWithDockerFallback(sidecar.snapshot, sidecar.live);
       } else {
-        fs.rmSync(sidecar.live, { force: true });
+        removeFileSyncWithDockerFallback(sidecar.live);
       }
       fs.rmSync(sidecar.snapshot, { force: true });
     }
+    makeContainerWritableDbFile(livePath, dataDir);
     fs.rmSync(snapshot, { force: true });
     fs.rmSync(snapshotDir, { recursive: true, force: true });
   }

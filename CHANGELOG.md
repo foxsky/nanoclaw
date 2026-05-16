@@ -6,6 +6,8 @@ For detailed release notes, see the [full changelog on the documentation site](h
 
 ## [Unreleased]
 
+- Hardened Phase 3 Taskflow DB snapshot restore for mutation replays by normalizing restored SQLite snapshots back to DELETE journal mode, cleaning rollback-journal sidecars (`taskflow.db-journal`) as well as WAL/SHM files, and fixing mapped-uid ownership so production snapshots remain writable from the replay container.
+- Added formatted `api_reassign` success output so reassignment turns give the model an immediate v1-style confirmation summary instead of a bare `tasks_affected` payload.
 - Hardened Phase 3 metadata matching for regenerated production corpora: annotations can now bind to stable source identifiers (`source_turn_id`, `source_jsonl`, timestamp+text), `messages.db#agent_turns/<id>` pseudo-sources normalize to the same key, and index-only metadata is ignored for source-keyed generated turns. Turns with no v1 tool or outbound evidence now classify as `no_v1_observable` instead of false regressions.
 - Hardened Phase 3 paid replay plumbing for mapped-uid development environments: the Phase 3 driver now spawns nested Phase 2 runs through `node --import tsx`, DB snapshot restore falls back to Docker uid mapping when host writes hit `EACCES`, and replay sessions are chowned for the agent container before wake.
 - Added a production v1-bug metadata overlay for source-keyed Phase 3 replays, covering the SEC M7 date correction, SECI P22.1 reassignment round-trip, and Thiago P6/T56 deadline correction candidates found in the synced production snapshot.
