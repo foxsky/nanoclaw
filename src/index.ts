@@ -17,6 +17,7 @@ import {
   dropScheduledTasksIfDrained,
   migrateScheduledTasks,
 } from './modules/taskflow/migrate-scheduled-tasks.js';
+import { ensureTaskflowServiceSession } from './modules/taskflow/service-session.js';
 import { initTaskflowDb } from './taskflow-db.js';
 import { bootstrapTaskflowDb, taskflowDbPath } from './taskflow-mount.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
@@ -113,6 +114,13 @@ async function main(): Promise<void> {
 
   // 1c. One-time filesystem cutover — idempotent, no-op after first run.
   migrateGroupsToClaudeLocal();
+
+  // 1d. TaskFlow "service session" (0h-v2 Option A) — the always-active
+  // synthetic session whose outbound.db receives FastAPI-originated
+  // `taskflow_notify` rows. Idempotent + self-healing (re-activates if
+  // ever closed); pollSweep only drains status='active' sessions.
+  ensureTaskflowServiceSession();
+  log.info('TaskFlow service session ready');
 
   // 2. Container runtime
   ensureContainerRuntimeRunning();
