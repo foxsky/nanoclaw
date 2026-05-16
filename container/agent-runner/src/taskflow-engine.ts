@@ -8142,6 +8142,54 @@ export class TaskflowEngine {
   }
 
   /**
+   * Dedicated FastAPI-only board name/description mutation (design
+   * Revision 2.1 R2.1: no WhatsApp competitor — a fresh engine method,
+   * not a shared core). Single source of the `PATCH /boards` mutation
+   * logic the reworked `api_update_board` tool calls. Receives an
+   * ALREADY-NORMALIZED write intent (handler pre-trims/validates `name`,
+   * pre-trims-or-nulls `description`); the engine does the DB mutation
+   * only. ZERO owner auth (R2.3: FastAPI's require_board_owner gates it
+   * before call_mcp_mutation). Empty intent → row returned UNCHANGED
+   * with NO updated_at bump (an unchanged PATCH stays idempotent).
+   */
+  updateBoard(
+    boardId: string,
+    fields: { name?: string; description?: string | null },
+  ):
+    | { success: true; data: Record<string, unknown> }
+    | { success: false; error_code: 'not_found'; error: string } {
+    const existing = this.db
+      .prepare('SELECT * FROM boards WHERE id = ?')
+      .get(boardId) as Record<string, unknown> | null;
+    if (!existing) {
+      return { success: false, error_code: 'not_found', error: 'Board not found' };
+    }
+
+    const sets: string[] = [];
+    const values: (string | null)[] = [];
+    if (fields.name !== undefined) {
+      sets.push('name = ?');
+      values.push(fields.name);
+    }
+    if ('description' in fields) {
+      sets.push('description = ?');
+      values.push(fields.description ?? null);
+    }
+    if (sets.length === 0) {
+      return { success: true, data: existing };
+    }
+
+    sets.push("updated_at = datetime('now')");
+    this.db
+      .prepare(`UPDATE boards SET ${sets.join(', ')} WHERE id = ?`)
+      .run(...values, boardId);
+    const row = this.db
+      .prepare('SELECT * FROM boards WHERE id = ?')
+      .get(boardId) as Record<string, unknown>;
+    return { success: true, data: row };
+  }
+
+  /**
    * Shared remove-person core (single-engine rework, design Revision 2.1):
    * DB-only, ZERO auth, caller-owned transaction, operates on an
    * ALREADY-RESOLVED person. The `api_admin remove_person` case (WhatsApp)
