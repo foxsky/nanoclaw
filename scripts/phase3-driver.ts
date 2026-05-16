@@ -158,8 +158,7 @@ function runPhase2Driver(metadata: Phase3TurnMetadata, args: Args): void {
 
 function chainSourceUnavailable(metadata: Phase3TurnMetadata): boolean {
   if (metadata.context_mode !== 'chain') return false;
-  if (!metadata.source_jsonl) return true;
-  return metadata.source_jsonl.includes('messages.db#') || metadata.source_jsonl.startsWith('messages.db');
+  return !metadata.source_jsonl;
 }
 
 function syntheticMissingContextResult(corpusTurn: Phase3CorpusTurn, metadata: Phase3TurnMetadata): Phase3TurnResult {

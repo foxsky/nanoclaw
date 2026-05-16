@@ -369,6 +369,29 @@ describe('Phase 3 semantic comparison', () => {
     expect(summary.board_refs).toEqual(['sec']);
   });
 
+  it('classifies child-board provisioning as a mutation and derives board refs from group_folder', () => {
+    const summary = summarizeSemanticBehavior(
+      [{
+        name: 'mcp__nanoclaw__provision_child_board',
+        input: {
+          person_name: 'Jefferson Marcílio',
+          group_folder: 'seaf-patrimonio-taskflow',
+        },
+      }],
+      [{
+        kind: 'system',
+        content: JSON.stringify({
+          action: 'provision_child_board',
+          group_folder: 'seaf-patrimonio-taskflow',
+        }),
+      }],
+    );
+
+    expect(summary.action).toBe('mutate');
+    expect(summary.mutation_types).toEqual(['provision']);
+    expect(summary.board_refs).toEqual(['board-seaf-patrimonio-taskflow']);
+  });
+
   it('treats board/project section reports as informational despite completed-section labels', () => {
     const summary = summarizeSemanticBehavior(
       [],
@@ -540,7 +563,7 @@ describe('Phase 3 semantic comparison', () => {
     expect(compareSemanticTurn(turn).classification.kind).toBe('missing_context');
   });
 
-  it('classifies chain turns with messages.db pseudo-sources as missing context', () => {
+  it('does not classify messages.db pseudo-sources as unavailable chain context', () => {
     const turn: Phase3TurnResult = {
       turn_index: 37,
       text: 'sim',
@@ -563,7 +586,7 @@ describe('Phase 3 semantic comparison', () => {
       },
     };
 
-    expect(compareSemanticTurn(turn).classification.kind).toBe('missing_context');
+    expect(compareSemanticTurn(turn).classification.kind).toBe('no_outbound_timeout');
   });
 
   it('matches registered destination aliases for raw v1 JID recipients', () => {

@@ -1,3 +1,5 @@
+import fs from 'fs';
+
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
 import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
@@ -15,10 +17,11 @@ import {
 } from './formatter.js';
 import { appendToolEvents, type ToolEvent } from './providers/claude-tool-capture.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
-import { TaskflowEngine, type ReassignResult } from './taskflow-engine.js';
+import { TaskflowEngine, normalizePhone, type ReassignResult } from './taskflow-engine.js';
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
+const TASKFLOW_CLAUDE_LOCAL_PATH = '/workspace/agent/CLAUDE.local.md';
 
 function log(msg: string): void {
   console.error(`[poll-loop] ${msg}`);
@@ -86,6 +89,14 @@ interface TaskflowReadyForReviewUpdate {
 interface TaskflowExplicitReassign {
   taskId: string;
   targetPerson: string;
+}
+
+interface TaskflowPendingChildBoardRegistration {
+  personName: string;
+  phone: string;
+  role: string;
+  groupName: string;
+  groupFolder: string;
 }
 
 interface TaskflowExactIdNoteCandidate {
@@ -195,6 +206,7 @@ const STANDALONE_ACTIVITY_RE = /^\s*(?:Aguardar(?:\s+e\s+Acompanhar)?|Submeter|R
 const REASSIGN_ID_FIRST_RE = /^\s*((?:P|T|M|R)\d+(?:\.\d+)?)\s+(?:re)?atribuir\s+(?:para|a|ao|à)\s+([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
 const REASSIGN_VERB_FIRST_RE = /^\s*(?:re)?atribuir\s+((?:P|T|M|R)\d+(?:\.\d+)?)\s+(?:para|a|ao|à)\s+([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
 const REASSIGN_COMPOUND_TARGET_RE = /\b(?:e|,)\s*(?:colocar|adicionar|para|como|co[-\s]?respons[aá]vel|respons[aá]vel|titular)\b/iu;
+const CONTACT_CARD_RE = /^\s*([^,\n]+?)\s*,\s*telefone\s*:\s*([^,\n]+?)\s*,\s*cargo\s*:\s*(.+?)\.?\s*$/iu;
 const FORWARD_DETAILS_RE = /\bencaminhar\b.*\bdetalhes\b.*\bpara\s+([\p{L}\p{M}' -]{2,60})\s*$/iu;
 const SEND_DETAILS_TO_PERSON_RE = /\b(?:enviar|mandar)\s+mensagem\s+para\s+(?:o\s+|a\s+)?([\p{L}\p{M}' -]{2,60}?)\s+com\s+(?:os\s+)?detalhes\s+d[aeo]\s+((?:P|T|M|R)\d+(?:\.\d+)?)\b/iu;
 const NOTIFY_TASK_PRIORITY_RE = /\b(?:enviar|mandar)\s+mensagem\s+para\s+(?:o\s+|a\s+)?([\p{L}\p{M}' -]{2,60}?)\s+.*\bpriorizar\b.*\b(?:tarefa|atividade)\s+((?:P|T|M|R)\d+(?:\.\d+)?)\b/iu;
@@ -295,6 +307,31 @@ export function taskflowExplicitReassignCommand(
   return {
     taskId: match[1].toUpperCase(),
     targetPerson,
+  };
+}
+
+export function taskflowPendingChildBoardRegistrationCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  recentContents: string[],
+  taskflowEnabled = Boolean(currentTaskflowBoardId(messages)),
+): TaskflowPendingChildBoardRegistration | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  const contact = message.text.match(CONTACT_CARD_RE);
+  if (!contact?.[1] || !contact[2] || !contact[3]) return null;
+
+  const contextText = recentContents.map(contextSearchText).join('\n');
+  const division = pendingChildBoardDivision(contextText);
+  if (!division) return null;
+
+  const groupFolder = `${slugForBoardFolder(division)}-taskflow`;
+  return {
+    personName: contact[1].trim(),
+    phone: normalizePhone(contact[2]) || contact[2].replace(/\D/g, ''),
+    role: contact[3].trim(),
+    groupName: `${division} - TaskFlow`,
+    groupFolder,
   };
 }
 
@@ -870,6 +907,65 @@ function parseJsonContent(content: string): Record<string, unknown> {
   } catch {
     return { text: content };
   }
+}
+
+function contextSearchText(content: string): string {
+  const parsed = parseJsonContent(content);
+  const parts: string[] = [];
+  if (typeof parsed.text === 'string') parts.push(parsed.text);
+  if (typeof parsed.phase2RawPrompt === 'string') parts.push(parsed.phase2RawPrompt);
+  return parts.length > 0 ? parts.join('\n') : outboundText(content);
+}
+
+function currentTaskflowBoardId(messages?: Pick<MessageInRow, 'content'>[]): string | null {
+  const fromEnv = process.env.NANOCLAW_TASKFLOW_BOARD_ID?.trim();
+  if (fromEnv) return fromEnv;
+  for (const message of messages ?? []) {
+    const parsed = parseJsonContent(message.content);
+    const fromContent =
+      typeof parsed.taskflowBoardId === 'string' ? parsed.taskflowBoardId.trim()
+        : typeof parsed.phase3TaskflowBoardId === 'string' ? parsed.phase3TaskflowBoardId.trim()
+          : '';
+    if (fromContent.startsWith('board-')) return fromContent;
+  }
+  try {
+    const local = fs.existsSync(TASKFLOW_CLAUDE_LOCAL_PATH)
+      ? fs.readFileSync(TASKFLOW_CLAUDE_LOCAL_PATH, 'utf8')
+      : fs.readFileSync('/workspace/agent/CLAUDE.md', 'utf8');
+    const match =
+      local.match(/Board ID for this board:\s*`([^`]+)`/i) ??
+      local.match(/\bBoard ID:\s*`([^`]+)`/i);
+    const boardId = match?.[1]?.trim();
+    return boardId && boardId.startsWith('board-') ? boardId : null;
+  } catch {
+    return null;
+  }
+}
+
+function pendingChildBoardDivision(text: string): string | null {
+  const patterns = [
+    /\bcriar\s+quadro[\s\S]{0,120}?\bnome\s+([^\n?.!]+?)(?:\s*$|[?.!])/iu,
+    /\bquadro\s+([A-Z0-9ÁÉÍÓÚÇÃÕÂÊÔ][\p{L}\p{M}0-9&/ -]{2,80}?)\s*(?:-\s*TaskFlow)?(?:\s+(?:foi|est[aá]|ser[aá]|sendo|preciso)|[?.!,\n]|$)/u,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match?.[1]) continue;
+    const cleaned = match[1]
+      .replace(/\s*-\s*TaskFlow\s*$/iu, '')
+      .replace(/^o\s+nome\s+/iu, '')
+      .trim();
+    if (cleaned.length >= 2) return cleaned;
+  }
+  return null;
+}
+
+function slugForBoardFolder(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
 }
 
 function parseSingleChat(message: Pick<MessageInRow, 'kind' | 'content'>): { sender: string; text: string } | null {
@@ -1918,6 +2014,63 @@ function handleTaskflowExplicitReassign(
   return true;
 }
 
+function handleTaskflowPendingChildBoardRegistration(
+  action: TaskflowPendingChildBoardRegistration,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = currentTaskflowBoardId(messages);
+  if (!boardId) return false;
+
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+  const input = {
+    action: 'register_person' as const,
+    person_name: action.personName,
+    phone: action.phone,
+    role: action.role,
+    group_name: action.groupName,
+    group_folder: action.groupFolder,
+    sender_name: sender,
+  };
+  const result = engine.admin({ ...input, board_id: boardId });
+  appendSyntheticToolCall('api_admin', input, result, !result.success);
+
+  const childBoardId = `board-${action.groupFolder}`;
+  const childBoard = getTaskflowDb().prepare(
+    `SELECT id FROM boards WHERE id = ? OR group_folder = ? LIMIT 1`,
+  ).get(childBoardId, action.groupFolder) as { id: string } | undefined;
+
+  const autoProvision = result.success ? result.auto_provision_request : undefined;
+  if (autoProvision) {
+    writeMessageOut({
+      id: generateId(),
+      in_reply_to: routing.inReplyTo,
+      kind: 'system',
+      platform_id: routing.platformId,
+      channel_type: routing.channelType,
+      thread_id: routing.threadId,
+      content: JSON.stringify({ action: 'provision_child_board', ...autoProvision }),
+    });
+    appendSyntheticToolCall('provision_child_board', autoProvision, { success: true });
+  } else if (!result.success && !childBoard) {
+    writeReply(routing, `Não consegui cadastrar ${action.personName}: ${result.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+
+  const firstName = action.personName.split(/\s+/)[0] || action.personName;
+  writeReply(
+    routing,
+    `✅ *${action.personName} cadastrado com sucesso*\n━━━━━━━━━━━━━━\n\n` +
+    `👤 *${action.personName}*\n💼 ${action.role}\n\n` +
+    `O quadro *${action.groupName}* está sendo criado automaticamente. Em breve ${firstName} receberá o convite de acesso pelo WhatsApp.\n\n` +
+    `✅ Quadro de ${action.personName} provisionado automaticamente.\n\n` +
+    `Grupo: ${action.groupName}\nQuadro: ${childBoard?.id ?? childBoardId}\n\n` +
+    `O quadro estará disponível na próxima interação.`,
+  );
+  return true;
+}
+
 function handleTaskflowReadyForReviewUpdate(
   action: TaskflowReadyForReviewUpdate,
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
@@ -2518,6 +2671,13 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (explicitReassign && handleTaskflowExplicitReassign(explicitReassign, keep, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled explicit TaskFlow reassignment without provider query');
+      continue;
+    }
+
+    const pendingChildBoardRegistration = taskflowPendingChildBoardRegistrationCommand(keep, recentContext);
+    if (pendingChildBoardRegistration && handleTaskflowPendingChildBoardRegistration(pendingChildBoardRegistration, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow child-board registration follow-up without provider query');
       continue;
     }
 

@@ -28,5 +28,17 @@
       "corrected_at": "2026-04-22T11:21:59.377Z",
       "expected_correction": "Deadline 2026-04-24 should apply to T56, not P6."
     }
+  },
+  {
+    "source_turn_id": "94a5105a-533b-4110-bb39-96b204d4f3c1",
+    "context_mode": "chain",
+    "prior_turn_depth": 1,
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": [],
+      "allow_extra_task_ids": true,
+      "board_refs": ["board-seaf-patrimonio-taskflow"],
+      "outbound_intent": "mutation_confirmation"
+    }
   }
 ]

@@ -175,6 +175,7 @@ const MUTATION_TOOL_PATTERNS = [
   /taskflow_(create|update|delete|move|admin|reassign|undo|hierarchy|dependency)/,
   /api_(create|update|delete|move|admin|reassign|undo|hierarchy|dependency)/,
   /api_task_(add_note|edit_note|remove_note)/,
+  /provision_(?:child|root)_board/,
   /mcp__sqlite__write_query/,
 ];
 
@@ -192,6 +193,7 @@ function normalizedToolName(name: string): string {
 function canonicalMutationType(name: string): string | null {
   const normalized = normalizedToolName(name);
   if (normalized === 'mcp__sqlite__write_query') return 'sqlite_write';
+  if (/^provision_(?:child|root)_board$/.test(normalized)) return 'provision';
   if (/^api_task_(add_note|edit_note|remove_note)$/.test(normalized)) return 'update';
   const match = normalized.match(/^(?:taskflow|api)_(create|create_task|create_simple_task|update|update_task|update_simple_task|delete|delete_simple_task|move|admin|reassign|undo|hierarchy|dependency)/);
   if (!match) return null;
@@ -596,6 +598,42 @@ export function extractBoardRefsFromText(text: string): string[] {
   return [...refs].sort();
 }
 
+function extractBoardRefsFromValue(value: unknown, refs = new Set<string>()): Set<string> {
+  if (Array.isArray(value)) {
+    for (const item of value) extractBoardRefsFromValue(item, refs);
+    return refs;
+  }
+  if (!value || typeof value !== 'object') return refs;
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof item === 'string') {
+      const normalized = normalizeBoardRef(item);
+      if ((key === 'board_id' || key.endsWith('_board_id')) && normalized?.startsWith('board-')) refs.add(normalized);
+      if (key === 'group_folder' && normalized) refs.add(`board-${normalized}`);
+    } else {
+      extractBoardRefsFromValue(item, refs);
+    }
+  }
+  return refs;
+}
+
+function extractBoardRefsFromTools(tools: ToolCall[]): string[] {
+  const refs = new Set<string>();
+  for (const tool of tools) extractBoardRefsFromValue(tool.input, refs);
+  return [...refs].sort();
+}
+
+function extractBoardRefsFromOutbound(outbound: OutboundRow[]): string[] {
+  const refs = new Set<string>();
+  for (const row of outbound) {
+    try {
+      extractBoardRefsFromValue(JSON.parse(row.content), refs);
+    } catch {
+      // Plain text rows are covered by extractBoardRefsFromText().
+    }
+  }
+  return [...refs].sort();
+}
+
 export function extractRecipient(tools: ToolCall[], outbound: OutboundRow[]): string | null {
   for (const tool of tools) {
     const input = tool.input && typeof tool.input === 'object'
@@ -691,7 +729,11 @@ export function summarizeSemanticBehavior(
     mutation_types: effectiveHasMutation
       ? [...new Set(names.map(canonicalMutationType).filter((value): value is string => value !== null))].sort()
       : [],
-    board_refs: extractBoardRefsFromText(text),
+    board_refs: [...new Set([
+      ...extractBoardRefsFromText(text),
+      ...extractBoardRefsFromTools(tools),
+      ...extractBoardRefsFromOutbound(outbound),
+    ])].sort(),
     recipient: extractRecipient(tools, outbound),
     outbound_intent: outboundIntent,
   };
@@ -945,9 +987,7 @@ function isUnregisteredJidForward(
 
 function isChainTurnWithoutSource(turn: Phase3TurnResult): boolean {
   const md = turn.phase3?.metadata;
-  const unavailableSource = !md?.source_jsonl ||
-    md.source_jsonl.includes('messages.db#') ||
-    md.source_jsonl.startsWith('messages.db');
+  const unavailableSource = !md?.source_jsonl;
   return (
     md?.context_mode === 'chain' &&
     unavailableSource &&

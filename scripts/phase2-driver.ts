@@ -65,7 +65,7 @@ interface CuratedTurn {
   category: string;
   final_response: string | null;
 }
-interface Corpus { curated_count: number; total_turns: number; turns: CuratedTurn[] }
+interface Corpus { curated_count: number; total_turns: number; turns: CuratedTurn[]; source_db?: string }
 interface V2ToolEvent {
   kind: 'tool_use' | 'tool_result';
   id: string;
@@ -88,6 +88,20 @@ interface TurnResult {
     elapsed_ms: number;
     settle_reason: string;
   };
+}
+
+interface AgentTurnRow {
+  id: string;
+  group_folder: string;
+  chat_jid: string;
+  created_at: string;
+}
+
+interface AgentTurnMessageRow {
+  sender: string | null;
+  sender_name: string | null;
+  message_timestamp: string;
+  content: string | null;
 }
 
 interface Args {
@@ -275,7 +289,14 @@ async function driveContextTurn(
 ): Promise<void> {
   const captureFile = path.join(sessionDir(AGENT_GROUP_ID, session.id), '.tool-uses.jsonl');
   const messageId = `phase2-ctx-${tag}-${Date.now()}`;
-  const content = JSON.stringify({ sender, text, phase2RawPrompt: userMessage });
+  const content = JSON.stringify({
+    sender,
+    text,
+    phase2RawPrompt: userMessage,
+    ...(process.env.NANOCLAW_PHASE_REPLAY_TASKFLOW_BOARD_ID
+      ? { phase3TaskflowBoardId: process.env.NANOCLAW_PHASE_REPLAY_TASKFLOW_BOARD_ID }
+      : {}),
+  });
   writeSessionMessage(AGENT_GROUP_ID, session.id, {
     id: messageId,
     kind: 'chat',
@@ -350,11 +371,126 @@ function restoreTargetTaskflowDbIfRequested(): void {
   console.log(`  target taskflow.db restored from ${targetSnapshot}`);
 }
 
+function xmlEscape(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function messageEnvelope(messages: ParsedMessage[]): string {
+  const body = messages
+    .map((message) =>
+      `<message sender="${xmlEscape(message.sender)}" time="${xmlEscape(message.time)}">${xmlEscape(message.text)}</message>`,
+    )
+    .join('\n');
+  return `<messages>\n${body}\n</messages>`;
+}
+
+function sourceTurnIdFromMessagesDbRef(ref: string | undefined): string | null {
+  const match = ref?.match(/^messages\.db#agent_turns\/(.+)$/);
+  return match?.[1] ?? null;
+}
+
+function resolveMessagesDbPath(corpus: Corpus, corpusPath: string, sourceRoot: string): string {
+  const candidates = [
+    corpus.source_db,
+    path.join(path.dirname(corpusPath), '..', 'messages.db'),
+    path.join(path.dirname(corpusPath), 'messages.db'),
+    path.join(sourceRoot, 'messages.db'),
+  ].filter((value): value is string => typeof value === 'string' && value.length > 0);
+  for (const candidate of candidates) {
+    const resolved = path.resolve(candidate);
+    if (fs.existsSync(resolved)) return resolved;
+  }
+  throw new Error(`Could not resolve messages.db for generated corpus ${corpusPath}`);
+}
+
+function loadMessagesDbConversationTurn(db: Database.Database, turnId: string): ConversationTurn {
+  const rows = db.prepare(`
+    SELECT
+      atm.sender,
+      atm.sender_name,
+      atm.message_timestamp,
+      m.content
+    FROM agent_turn_messages atm
+    LEFT JOIN messages m
+      ON m.id = atm.message_id
+     AND m.chat_jid = atm.message_chat_jid
+    WHERE atm.turn_id = ?
+    ORDER BY atm.ordinal
+  `).all(turnId) as AgentTurnMessageRow[];
+  const messages = rows
+    .filter((row) => typeof row.content === 'string' && row.content.trim())
+    .map((row) => ({
+      sender: row.sender_name || row.sender || 'context',
+      time: row.message_timestamp,
+      text: row.content!.trim(),
+    }));
+  return {
+    user_message: messageEnvelope(messages),
+    user_timestamp: messages[0]?.time ?? '',
+    parsed_messages: messages,
+    tool_uses: [],
+    outbound_messages: [],
+    outbound_text: null,
+    final_response: null,
+  };
+}
+
+function resolveMessagesDbChain(
+  corpus: Corpus,
+  corpusPath: string,
+  targetCorpusIdx: number,
+  depth: number,
+  sourceRoot: string,
+): { prior: ConversationTurn[]; target: ConversationTurn; corpusTurn: CuratedTurn } {
+  const corpusTurn = corpus.turns[targetCorpusIdx];
+  if (!corpusTurn) throw new Error(`Corpus has no turn at index ${targetCorpusIdx}`);
+  const targetTurnId = sourceTurnIdFromMessagesDbRef(corpusTurn.jsonl);
+  if (!targetTurnId) throw new Error(`Corpus turn ${targetCorpusIdx} is not a messages.db source: ${corpusTurn.jsonl}`);
+  const dbPath = resolveMessagesDbPath(corpus, corpusPath, sourceRoot);
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    const targetRow = db.prepare(`
+      SELECT id, group_folder, chat_jid, created_at
+      FROM agent_turns
+      WHERE id = ?
+    `).get(targetTurnId) as AgentTurnRow | undefined;
+    if (!targetRow) throw new Error(`messages.db has no agent_turns row for ${targetTurnId}`);
+    const priorRows = db.prepare(`
+      SELECT id, group_folder, chat_jid, created_at
+      FROM agent_turns
+      WHERE group_folder = ?
+        AND chat_jid = ?
+        AND (created_at < ? OR (created_at = ? AND id < ?))
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `).all(
+      targetRow.group_folder,
+      targetRow.chat_jid,
+      targetRow.created_at,
+      targetRow.created_at,
+      targetRow.id,
+      depth,
+    ) as AgentTurnRow[];
+    const prior = priorRows
+      .reverse()
+      .map((row) => loadMessagesDbConversationTurn(db, row.id));
+    const target = loadMessagesDbConversationTurn(db, targetRow.id);
+    return { prior, target, corpusTurn };
+  } finally {
+    db.close();
+  }
+}
+
 /** Resolve a chain of prior turns from the source JSONL up to the target.
  *  Returns the prior turns (oldest first) and the target turn from the
  *  re-extracted source list, plus the matching corpus entry (for v1 scoring). */
 function resolveChain(
   corpus: Corpus,
+  corpusPath: string,
   targetCorpusIdx: number,
   depth: number,
   sourceRoot: string,
@@ -362,6 +498,9 @@ function resolveChain(
   const corpusTurn = corpus.turns[targetCorpusIdx];
   if (!corpusTurn) throw new Error(`Corpus has no turn at index ${targetCorpusIdx}`);
   if (!corpusTurn.jsonl) throw new Error(`Corpus turn ${targetCorpusIdx} has no jsonl field`);
+  if (sourceTurnIdFromMessagesDbRef(corpusTurn.jsonl)) {
+    return resolveMessagesDbChain(corpus, corpusPath, targetCorpusIdx, depth, sourceRoot);
+  }
   const absJsonl = path.join(sourceRoot, corpusTurn.jsonl);
   if (!fs.existsSync(absJsonl)) throw new Error(`Source JSONL not found: ${absJsonl}`);
   const sourceTurns = extractConversationTurns(fs.readFileSync(absJsonl, 'utf8'));
@@ -372,8 +511,8 @@ function resolveChain(
   return { prior, target, corpusTurn };
 }
 
-async function processChain(corpus: Corpus, targetCorpusIdx: number, depth: number, sourceRoot: string): Promise<TurnResult> {
-  const { prior, target, corpusTurn } = resolveChain(corpus, targetCorpusIdx, depth, sourceRoot);
+async function processChain(corpus: Corpus, corpusPath: string, targetCorpusIdx: number, depth: number, sourceRoot: string): Promise<TurnResult> {
+  const { prior, target, corpusTurn } = resolveChain(corpus, corpusPath, targetCorpusIdx, depth, sourceRoot);
   const targetParsed = corpusTurn.parsed_messages[0];
   console.log(`\n=== Chain to corpus turn ${targetCorpusIdx} (${corpusTurn.category}) ===`);
   console.log(`  source: ${corpusTurn.jsonl}#${corpusTurn.turn_index}`);
@@ -409,6 +548,9 @@ async function processChain(corpus: Corpus, targetCorpusIdx: number, depth: numb
       sender: targetParsed.sender,
       text: targetParsed.text,
       phase2RawPrompt: corpusTurn.user_message,
+      ...(process.env.NANOCLAW_PHASE_REPLAY_TASKFLOW_BOARD_ID
+        ? { phase3TaskflowBoardId: process.env.NANOCLAW_PHASE_REPLAY_TASKFLOW_BOARD_ID }
+        : {}),
     });
     writeSessionMessage(AGENT_GROUP_ID, session.id, {
       id: messageId,
@@ -487,7 +629,14 @@ async function processTurn(turn: CuratedTurn, idx: number): Promise<TurnResult> 
   const captureFile = path.join(sessionDir(AGENT_GROUP_ID, session.id), '.tool-uses.jsonl');
   fs.rmSync(captureFile, { force: true });
   const messageId = `phase2-msg-${idx}-${Date.now()}`;
-  const content = JSON.stringify({ sender: parsed.sender, text: parsed.text, phase2RawPrompt: turn.user_message });
+  const content = JSON.stringify({
+    sender: parsed.sender,
+    text: parsed.text,
+    phase2RawPrompt: turn.user_message,
+    ...(process.env.NANOCLAW_PHASE_REPLAY_TASKFLOW_BOARD_ID
+      ? { phase3TaskflowBoardId: process.env.NANOCLAW_PHASE_REPLAY_TASKFLOW_BOARD_ID }
+      : {}),
+  });
   writeSessionMessage(AGENT_GROUP_ID, session.id, {
     id: messageId,
     kind: 'chat',
@@ -572,7 +721,7 @@ async function main(): Promise<void> {
   // snapshotted before and restored after so context mutations don't pollute
   // future runs.
   if (args.chain) {
-    const result = await processChain(corpus, args.chain.targetCorpusIdx, args.chain.depth, args.sourceRoot);
+    const result = await processChain(corpus, args.corpus, args.chain.targetCorpusIdx, args.chain.depth, args.sourceRoot);
     const results = args.resume ? loadExistingResults() : [];
     results.push(result);
     saveResults(results);

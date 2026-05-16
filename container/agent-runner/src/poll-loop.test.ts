@@ -23,6 +23,7 @@ import {
   taskflowMissingTaskFollowupCommand,
   taskflowNotifyMeetingAboveCommand,
   taskflowNotifyTaskPriorityCommand,
+  taskflowPendingChildBoardRegistrationCommand,
   taskflowPersonReviewCommand,
   taskflowPersonTasksCommand,
   taskflowPureGreetingReply,
@@ -553,6 +554,73 @@ Other tasks: P2 Agência INOVATHE, P13 Ecossistema de Inovação]
 
     expect(taskflowExplicitReassignCommand(
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Laizys', text: 'Atribuir T50 para Maura e para Francisco' }) }],
+      true,
+    )).toBeNull();
+  });
+
+  it('detects child-board registration contact cards after a create-board prompt', () => {
+    expect(taskflowPendingChildBoardRegistrationCommand(
+      [{
+        kind: 'chat',
+        content: JSON.stringify({
+          sender: 'Laizys',
+          text: 'Jefferson Marcílio Daniel Correia, telefone: 86 98830-4190, cargo: chefe de divisão de material, patrimônio e almoxarifado.',
+        }),
+      }],
+      [
+        JSON.stringify({
+          sender: 'Laizys',
+          text: 'Criar quadro para a minha unidade com o nome SEAF-PATRIMÔNIO',
+        }),
+        JSON.stringify({
+          text: 'Para criar o quadro SEAF-PATRIMÔNIO, preciso saber quem será o responsável.',
+        }),
+      ],
+      true,
+    )).toEqual({
+      personName: 'Jefferson Marcílio Daniel Correia',
+      phone: '5586988304190',
+      role: 'chefe de divisão de material, patrimônio e almoxarifado',
+      groupName: 'SEAF-PATRIMÔNIO - TaskFlow',
+      groupFolder: 'seaf-patrimonio-taskflow',
+    });
+  });
+
+  it('detects child-board registration when Phase 3 provides the replay board id in message metadata', () => {
+    expect(taskflowPendingChildBoardRegistrationCommand(
+      [{
+        kind: 'chat',
+        content: JSON.stringify({
+          sender: 'Laizys',
+          text: 'Jefferson Marcílio Daniel Correia, telefone: 86 98830-4190, cargo: chefe de divisão de material.',
+          phase3TaskflowBoardId: 'board-laizys-taskflow',
+        }),
+      }],
+      [
+        JSON.stringify({
+          sender: 'Laizys',
+          text: 'Criar quadro para a minha unidade com o nome SEAF-PATRIMÔNIO',
+        }),
+      ],
+    )).toEqual({
+      personName: 'Jefferson Marcílio Daniel Correia',
+      phone: '5586988304190',
+      role: 'chefe de divisão de material',
+      groupName: 'SEAF-PATRIMÔNIO - TaskFlow',
+      groupFolder: 'seaf-patrimonio-taskflow',
+    });
+  });
+
+  it('does not treat standalone contact cards as child-board registration follow-ups', () => {
+    expect(taskflowPendingChildBoardRegistrationCommand(
+      [{
+        kind: 'chat',
+        content: JSON.stringify({
+          sender: 'Laizys',
+          text: 'Jefferson Marcílio Daniel Correia, telefone: 86 98830-4190, cargo: chefe de divisão de material.',
+        }),
+      }],
+      [],
       true,
     )).toBeNull();
   });
