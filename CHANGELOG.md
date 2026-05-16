@@ -6,6 +6,7 @@ For detailed release notes, see the [full changelog on the documentation site](h
 
 ## [Unreleased]
 
+- Added a deterministic Taskflow reassignment fast-path for clear commands like `P22.1 atribuir para Mariany`, using MCP-backed `api_reassign` behavior and direct confirmations instead of waiting on model finalization after a successful mutation.
 - Hardened Phase 3 Taskflow DB snapshot restore for mutation replays by normalizing restored SQLite snapshots back to DELETE journal mode, cleaning rollback-journal sidecars (`taskflow.db-journal`) as well as WAL/SHM files, and fixing mapped-uid ownership so production snapshots remain writable from the replay container.
 - Added formatted `api_reassign` success output so reassignment turns give the model an immediate v1-style confirmation summary instead of a bare `tasks_affected` payload.
 - Hardened Phase 3 metadata matching for regenerated production corpora: annotations can now bind to stable source identifiers (`source_turn_id`, `source_jsonl`, timestamp+text), `messages.db#agent_turns/<id>` pseudo-sources normalize to the same key, and index-only metadata is ignored for source-keyed generated turns. Turns with no v1 tool or outbound evidence now classify as `no_v1_observable` instead of false regressions.

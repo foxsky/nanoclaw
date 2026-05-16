@@ -17,6 +17,7 @@ import {
   taskflowDueDateNeedsTaskPrompt,
   taskflowExactIdNoteCandidate,
   taskflowExplicitCompletionCommand,
+  taskflowExplicitReassignCommand,
   taskflowForwardDetailsCommand,
   taskflowMeetingBatchUpdateCommand,
   taskflowMissingTaskFollowupCommand,
@@ -518,6 +519,30 @@ Other tasks: P2 Agência INOVATHE, P13 Ecossistema de Inovação]
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'p11.16 concluída' }) }],
       true,
     )).toEqual({ taskId: 'P11.16' });
+  });
+
+  it('detects explicit reassignment commands with a task id', () => {
+    expect(taskflowExplicitReassignCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'P22.1 atribuir para Mariany' }) }],
+      true,
+    )).toEqual({ taskId: 'P22.1', targetPerson: 'Mariany' });
+
+    expect(taskflowExplicitReassignCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'reatribuir p11.23 para Rodrigo Lima' }) }],
+      true,
+    )).toEqual({ taskId: 'P11.23', targetPerson: 'Rodrigo Lima' });
+  });
+
+  it('does not treat reassignment questions or negations as deterministic commands', () => {
+    expect(taskflowExplicitReassignCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'P22.1 atribuir para Mariany?' }) }],
+      true,
+    )).toBeNull();
+
+    expect(taskflowExplicitReassignCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'não atribuir P22.1 para Mariany' }) }],
+      true,
+    )).toBeNull();
   });
 
   it('detects ready-for-review task note updates', () => {

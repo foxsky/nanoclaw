@@ -15,7 +15,7 @@ import {
 } from './formatter.js';
 import { appendToolEvents, type ToolEvent } from './providers/claude-tool-capture.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
-import { TaskflowEngine } from './taskflow-engine.js';
+import { TaskflowEngine, type ReassignResult } from './taskflow-engine.js';
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
@@ -81,6 +81,11 @@ interface TaskflowExplicitCompletion {
 interface TaskflowReadyForReviewUpdate {
   taskId: string;
   noteText: string;
+}
+
+interface TaskflowExplicitReassign {
+  taskId: string;
+  targetPerson: string;
 }
 
 interface TaskflowExactIdNoteCandidate {
@@ -187,6 +192,8 @@ const MY_TASKS_RE = /^\s*(?:quais\s+s[aã]o\s+)?minhas\s+(?:tarefas|atividades)\
 const PERSON_REVIEW_RE = /^\s*(?:alguma\s+)?(?:atividade|atividades|tarefa|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s+para\s+revis[aã]o\s*[?!.]?\s*$/iu;
 const BULK_APPROVAL_RE = /^\s*aprovar\s+(?:todas\s+as\s+)?(?:atividades|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
 const STANDALONE_ACTIVITY_RE = /^\s*(?:Aguardar(?:\s+e\s+Acompanhar)?|Submeter|Realizar)\b.+/iu;
+const REASSIGN_ID_FIRST_RE = /^\s*((?:P|T|M|R)\d+(?:\.\d+)?)\s+(?:re)?atribuir\s+(?:para|a|ao|à)\s+([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
+const REASSIGN_VERB_FIRST_RE = /^\s*(?:re)?atribuir\s+((?:P|T|M|R)\d+(?:\.\d+)?)\s+(?:para|a|ao|à)\s+([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
 const FORWARD_DETAILS_RE = /\bencaminhar\b.*\bdetalhes\b.*\bpara\s+([\p{L}\p{M}' -]{2,60})\s*$/iu;
 const SEND_DETAILS_TO_PERSON_RE = /\b(?:enviar|mandar)\s+mensagem\s+para\s+(?:o\s+|a\s+)?([\p{L}\p{M}' -]{2,60}?)\s+com\s+(?:os\s+)?detalhes\s+d[aeo]\s+((?:P|T|M|R)\d+(?:\.\d+)?)\b/iu;
 const NOTIFY_TASK_PRIORITY_RE = /\b(?:enviar|mandar)\s+mensagem\s+para\s+(?:o\s+|a\s+)?([\p{L}\p{M}' -]{2,60}?)\s+.*\bpriorizar\b.*\b(?:tarefa|atividade)\s+((?:P|T|M|R)\d+(?:\.\d+)?)\b/iu;
@@ -269,6 +276,23 @@ export function taskflowExplicitCompletionCommand(
   if (!COMPLETE_VERB_RE.test(message.text)) return null;
   const taskId = extractTaskId(message.text);
   return taskId ? { taskId } : null;
+}
+
+export function taskflowExplicitReassignCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowExplicitReassign | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  if (/[?？]/.test(message.text)) return null;
+  if (/\bn[aã]o\b/i.test(message.text)) return null;
+  const match = message.text.match(REASSIGN_ID_FIRST_RE) ?? message.text.match(REASSIGN_VERB_FIRST_RE);
+  if (!match?.[1] || !match[2]) return null;
+  return {
+    taskId: match[1].toUpperCase(),
+    targetPerson: match[2].trim(),
+  };
 }
 
 export function taskflowReadyForReviewUpdateCommand(
@@ -1836,6 +1860,61 @@ function handleTaskflowExplicitCompletion(
   return true;
 }
 
+function formatReassignReply(result: ReassignResult, taskId: string, targetPerson: string): string {
+  const tasks = result.tasks_affected ?? [];
+  if (typeof result.formatted === 'string' && result.formatted.trim()) return `✅ ${result.formatted}`;
+  if (tasks.length === 1) {
+    return `✅ *${tasks[0].task_id ?? taskId}* — ${tasks[0].title}\n\nReatribuída para ${targetPerson}.`;
+  }
+  if (tasks.length > 1) {
+    return [
+      `✅ ${tasks.length} tarefas reatribuídas para ${targetPerson}:`,
+      '',
+      ...tasks.map((task) => `• *${task.task_id}* — ${task.title}`),
+    ].join('\n');
+  }
+  return `✅ *${taskId}* reatribuída para ${targetPerson}.`;
+}
+
+function handleTaskflowExplicitReassign(
+  action: TaskflowExplicitReassign,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+  const candidatePeople = engine.resolvePersonCandidates(action.targetPerson);
+  if (!engine.resolvePerson(action.targetPerson) && candidatePeople.length > 1) {
+    writeReply(routing, personAmbiguityReply(action.targetPerson, candidatePeople) ?? `Qual ${action.targetPerson}?`);
+    return true;
+  }
+
+  const target = engine.resolvePerson(action.targetPerson)?.name ?? action.targetPerson;
+  const reassignInput = {
+    task_id: action.taskId,
+    target_person: action.targetPerson,
+    sender_name: sender,
+    confirmed: true,
+  };
+  const reassignResult = engine.reassign({ ...reassignInput, board_id: boardId });
+  appendSyntheticToolCall('api_reassign', reassignInput, reassignResult, !reassignResult.success);
+
+  if (!reassignResult.success) {
+    if (reassignResult.offer_register?.message) {
+      writeReply(routing, reassignResult.offer_register.message);
+      return true;
+    }
+    writeReply(routing, `Não consegui reatribuir ${action.taskId}: ${reassignResult.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+
+  writeReply(routing, formatReassignReply(reassignResult, action.taskId, target));
+  return true;
+}
+
 function handleTaskflowReadyForReviewUpdate(
   action: TaskflowReadyForReviewUpdate,
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
@@ -2429,6 +2508,13 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (explicitCompletion && handleTaskflowExplicitCompletion(explicitCompletion, keep, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled explicit TaskFlow completion without provider query');
+      continue;
+    }
+
+    const explicitReassign = taskflowExplicitReassignCommand(keep);
+    if (explicitReassign && handleTaskflowExplicitReassign(explicitReassign, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled explicit TaskFlow reassignment without provider query');
       continue;
     }
 
