@@ -2837,6 +2837,95 @@ export class TaskflowEngine {
   }
 
   /* ---------------------------------------------------------------- */
+  /*  API comment wrapper — single-engine source of truth for the     */
+  /*  tf-mcontrol POST /tasks/{id}/comments handler (retired onto      */
+  /*  this); the in-container WhatsApp agent uses the SAME method.     */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Add a task comment: a `task_history` `action='comment'` row
+   * (distinct from notes, which live in `tasks.notes`) + a
+   * `tasks.updated_at` bump. Mirrors the DB effects of the live
+   * FastAPI `add_task_comment` handler. Auth/payload validation is
+   * NOT here (R2.3 — FastAPI resolves the author + gates access; the
+   * tool handler mirrors the CreateCommentPayload validators).
+   *
+   * Notification is engine-canonical: `task.assignee` is a person_id
+   * (consistent with the 5 sibling notifying tools / resolveNotifTarget)
+   * — notify the assignee unless there is none or the author IS the
+   * assignee. **DELIBERATE v1 divergence (owner-approved 2026-05-16):**
+   * the comment is shown IN FULL — NO `message[:80]` truncation and NO
+   * "Digite <id> para ver detalhes" pull-pointer that v1
+   * `notify_task_commented` used. Single engine ⇒ WhatsApp + FastAPI
+   * both inherit this; tf-mcontrol's own notify_task_commented becomes
+   * dead code for the comment path once it routes here. Wrapped in one
+   * transaction (Codex IMPORTANT-1 — atomic).
+   */
+  apiAddTaskComment(params: {
+    board_id: string;
+    task_id: string;
+    author_id: string;
+    author_name: string;
+    message: string;
+  }): TaskflowResult & { data?: Record<string, unknown>; notifications?: NotificationEntry[] } {
+    return this.db.transaction(() => {
+      const task = this.getTask(params.task_id) as Record<string, any> | null;
+      if (!task) {
+        return {
+          success: false,
+          error_code: 'not_found',
+          error: `Task not found: ${params.task_id}`,
+        } as any;
+      }
+      const taskBoardId = this.taskBoardId(task);
+      const now = new Date().toISOString();
+      const info = this.db
+        .prepare(
+          `INSERT INTO task_history (board_id, task_id, action, "by", "at", details) VALUES (?, ?, 'comment', ?, ?, ?)`,
+        )
+        .run(taskBoardId, task.id, params.author_id, now, params.message);
+      this.db
+        .prepare('UPDATE tasks SET updated_at = ? WHERE board_id = ? AND id = ?')
+        .run(now, taskBoardId, task.id);
+
+      const notifications: NotificationEntry[] = [];
+      const assigneePersonId = (task.assignee as string | null) ?? null;
+      if (assigneePersonId && assigneePersonId !== params.author_id) {
+        const person = this.db
+          .prepare(
+            `SELECT notification_group_jid FROM board_people WHERE board_id = ? AND person_id = ?`,
+          )
+          .get(taskBoardId, assigneePersonId) as
+          | { notification_group_jid: string | null }
+          | undefined;
+        if (person) {
+          notifications.push({
+            target_person_id: assigneePersonId,
+            notification_group_jid: person.notification_group_jid ?? null,
+            message:
+              `\u{1F4AC} *Novo comentário na sua tarefa*\n\n` +
+              `*${task.id}* — ${task.title}\n` +
+              `*${params.author_name}:* ${params.message}`,
+          });
+        }
+      }
+
+      return {
+        success: true,
+        data: {
+          id: Number(info.lastInsertRowid),
+          task_id: params.task_id,
+          author_id: params.author_id,
+          author_name: params.author_name,
+          message: params.message,
+          created_at: now,
+        },
+        notifications,
+      } as any;
+    })();
+  }
+
+  /* ---------------------------------------------------------------- */
   /*  Mutation helpers (shared across create/move/update/etc.)          */
   /* ---------------------------------------------------------------- */
 

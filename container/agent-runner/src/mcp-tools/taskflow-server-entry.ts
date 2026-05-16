@@ -27,6 +27,7 @@ import './taskflow-api-mutate.js';
 import './taskflow-api-update.js';
 import './taskflow-api-notes.js';
 import './taskflow-api-board.js';
+import './taskflow-api-comment.js';
 import { startMcpServer } from './server.js';
 
 /**
@@ -62,6 +63,10 @@ const FASTAPI_ALLOWLIST: ReadonlySet<string> = new Set([
   'api_add_board_person',
   'api_remove_board_person',
   'api_update_board_person',
+  // task comment (engine-backed; FastAPI-path push delivery is the
+  // tracked 0h-v2 / Phase-3 item — the DB write + WhatsApp-path
+  // notify land now).
+  'api_add_task_comment',
 ]);
 
 const dbIdx = process.argv.indexOf('--db');
