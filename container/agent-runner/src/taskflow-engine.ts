@@ -2889,18 +2889,25 @@ export class TaskflowEngine {
         .run(now, taskBoardId, task.id);
 
       const notifications: NotificationEntry[] = [];
-      const assigneePersonId = (task.assignee as string | null) ?? null;
-      if (assigneePersonId && assigneePersonId !== params.author_id) {
+      // `tasks.assignee` is NOT reliably a person_id: the engine core
+      // (createTaskInternal/reassign) writes person_id, but
+      // api_update_simple_task + legacy v1 write the display NAME.
+      // Resolve by person_id OR name (mirrors api_update_simple_task's
+      // own person lookup) and notify/skip on the RESOLVED person_id —
+      // a raw `WHERE person_id = <name>` silently never matched, so the
+      // assignee notification was dead for name-keyed tasks (Codex #1).
+      const rawAssignee = (task.assignee as string | null) ?? null;
+      if (rawAssignee) {
         const person = this.db
           .prepare(
-            `SELECT notification_group_jid FROM board_people WHERE board_id = ? AND person_id = ?`,
+            `SELECT person_id, notification_group_jid FROM board_people WHERE board_id = ? AND (person_id = ? OR name = ?)`,
           )
-          .get(taskBoardId, assigneePersonId) as
-          | { notification_group_jid: string | null }
+          .get(taskBoardId, rawAssignee, rawAssignee) as
+          | { person_id: string; notification_group_jid: string | null }
           | undefined;
-        if (person) {
+        if (person && person.person_id !== params.author_id) {
           notifications.push({
-            target_person_id: assigneePersonId,
+            target_person_id: person.person_id,
             notification_group_jid: person.notification_group_jid ?? null,
             message:
               `\u{1F4AC} *Novo comentário na sua tarefa*\n\n` +
@@ -8428,6 +8435,21 @@ export class TaskflowEngine {
             'DELETE FROM subtask_requests WHERE source_board_id = ? OR target_board_id = ?',
           )
           .run(boardId, boardId);
+      }
+      // Detach child boards: canonical `boards.parent_board_id REFERENCES
+      // boards(id)` (src/taskflow-db.ts) — deleting a board that is
+      // another board's hierarchy parent would otherwise throw FOREIGN
+      // KEY constraint failed under foreign_keys=ON. Children survive
+      // as standalone boards, link severed (mirrors the
+      // child_board_registrations cleanup; Codex review #5).
+      // Column-guarded: minimal test fixtures omit parent_board_id.
+      const boardsHasParentCol = (
+        this.db.prepare("PRAGMA table_info('boards')").all() as Array<{ name: string }>
+      ).some((c) => c.name === 'parent_board_id');
+      if (boardsHasParentCol) {
+        this.db
+          .prepare('UPDATE boards SET parent_board_id = NULL WHERE parent_board_id = ?')
+          .run(boardId);
       }
       this.db.prepare('DELETE FROM boards WHERE id = ?').run(boardId);
       return { success: true as const };

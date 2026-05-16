@@ -203,6 +203,28 @@ describe('api_task_add_comment MCP tool (engine-backed)', () => {
     }
   });
 
+  it('in-container path: board_id injected from NANOCLAW_TASKFLOW_BOARD_ID when omitted (Codex #3: normalize must precede validation)', async () => {
+    // Non-verbatim (default). The WhatsApp agent omits board_id and
+    // relies on env injection inside normalizeAgentIds. Validating
+    // args.board_id BEFORE normalizeAgentIds spuriously rejected it.
+    const prev = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = SEED;
+    try {
+      const r = await call({
+        // board_id intentionally OMITTED
+        task_id: 'T1',
+        author_id: 'alice',
+        author_name: 'Alice',
+        message: 'env-injected board',
+      });
+      expect(r.success).toBe(true);
+      expect(r.data.task_id).toBe('T1');
+    } finally {
+      if (prev === undefined) delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+      else process.env.NANOCLAW_TASKFLOW_BOARD_ID = prev;
+    }
+  });
+
   it('passes through engine not_found for a missing task', async () => {
     const r = await call({
       board_id: SEED,

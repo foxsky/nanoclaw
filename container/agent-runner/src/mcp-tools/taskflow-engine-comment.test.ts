@@ -147,6 +147,40 @@ describe('engine.apiAddTaskComment', () => {
     expect(r.notifications).toEqual([]);
   });
 
+  it('notifies a NAME-keyed assignee too (Codex #1: api_update_simple_task stores tasks.assignee as the display name, not person_id)', () => {
+    // `Bob` is the display name; person_id is `bob`. Pre-fix the engine
+    // did `WHERE person_id = task.assignee` → no row for a name →
+    // notification silently dead for every task last touched via
+    // api_update_simple_task / legacy v1. Must resolve by person_id OR
+    // name and notify the resolved person.
+    db.prepare(
+      `INSERT INTO tasks (id, board_id, title, assignee, created_at, updated_at) VALUES ('T-name', ?, 'Name-keyed', 'Bob', '2026-01-01', '2026-01-01')`,
+    ).run(BOARD);
+    const r = comment({
+      task_id: 'T-name',
+      author_id: 'alice',
+      author_name: 'Alice',
+      message: 'ping',
+    }) as { success: true; notifications: Array<Record<string, unknown>> };
+    expect(r.success).toBe(true);
+    expect(r.notifications).toHaveLength(1);
+    expect(r.notifications[0].target_person_id).toBe('bob');
+    expect(r.notifications[0].notification_group_jid).toBe('g-bob@x');
+  });
+
+  it('does NOT notify when the resolved assignee IS the author (name-keyed; skip on resolved person_id)', () => {
+    db.prepare(
+      `INSERT INTO tasks (id, board_id, title, assignee, created_at, updated_at) VALUES ('T-self', ?, 'Self', 'Bob', '2026-01-01', '2026-01-01')`,
+    ).run(BOARD);
+    const r = comment({
+      task_id: 'T-self',
+      author_id: 'bob', // resolved actor person_id == the assignee's person_id
+      author_name: 'Bob',
+      message: 'note to self',
+    }) as { success: true; notifications: unknown[] };
+    expect(r.notifications).toEqual([]);
+  });
+
   it('returns not_found for a missing task (FastAPI fetch_task_row 404 parity)', () => {
     const r = comment({
       task_id: 'NOPE',

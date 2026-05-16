@@ -47,38 +47,37 @@ export const apiTaskAddCommentTool: McpToolDefinition = {
     },
   },
   async handler(args) {
-    if (typeof args.board_id !== 'string' || args.board_id.trim() === '') {
+    // ID handling = the sibling note-tool path, and it MUST run BEFORE
+    // validation (Codex #3): normalizeAgentIds is verbatim-AWARE — in
+    // the FastAPI subprocess (setVerbatimIds(true)) it is a no-op, so
+    // board_id AND task_id are used exactly as FastAPI's fetch_task_row
+    // already resolved them; for the in-container WhatsApp agent it
+    // INJECTS board_id from NANOCLAW_TASKFLOW_BOARD_ID + case-folds
+    // task_id like every other task tool. Validating board_id before
+    // this ran rejected the legitimate env-injection path.
+    const norm = normalizeAgentIds(args);
+    if (typeof norm.board_id !== 'string' || norm.board_id.trim() === '') {
       return validationError('board_id: required non-empty string');
     }
-    if (typeof args.task_id !== 'string' || args.task_id.trim() === '') {
+    if (typeof norm.task_id !== 'string' || norm.task_id.trim() === '') {
       return validationError('task_id: required non-empty string');
     }
     // CreateCommentPayload.validate_author / validate_message (main.py:151):
     // strip, then reject empty — surfaced as the same messages.
-    if (typeof args.author_id !== 'string' || args.author_id.trim() === '') {
+    if (typeof norm.author_id !== 'string' || norm.author_id.trim() === '') {
       return validationError('Author ID is required');
     }
-    if (typeof args.message !== 'string' || args.message.trim() === '') {
+    if (typeof norm.message !== 'string' || norm.message.trim() === '') {
       return validationError('Comment message is required');
     }
-
-    // ID handling = the sibling note-tool path. normalizeAgentIds is
-    // verbatim-AWARE: in the FastAPI subprocess (setVerbatimIds(true))
-    // it is a no-op, so board_id AND task_id are used exactly as
-    // FastAPI's fetch_task_row already resolved them; for the
-    // in-container WhatsApp agent it injects board_id + case-folds
-    // task_id like every other task tool. (A blunt unconditional
-    // .toUpperCase() here was the `Task not found: TASK-SIMPLE` .61
-    // regression — it mangled FastAPI's already-resolved id.)
-    const norm = normalizeAgentIds(args);
     const boardId = norm.board_id as string;
     const taskId = norm.task_id as string;
-    const authorId = args.author_id.trim();
+    const authorId = (norm.author_id as string).trim();
     const authorName =
-      typeof args.author_name === 'string' && args.author_name.trim() !== ''
-        ? args.author_name
+      typeof norm.author_name === 'string' && norm.author_name.trim() !== ''
+        ? norm.author_name
         : authorId;
-    const message = args.message.trim();
+    const message = (norm.message as string).trim();
 
     // Engine call + notification normalization wrapped in try/catch like
     // every sibling FastAPI tool (api_update_simple_task etc.): an
