@@ -294,3 +294,113 @@ describe('engine.addBoardPerson', () => {
     expect(r.error).toBe('Person already on this board');
   });
 });
+
+/**
+ * `engine.setBoardPersonWip` / `engine.setBoardPersonRole` — dedicated
+ * FastAPI-only methods (design Revision 2.1 R2.5; NOT shared cores —
+ * the WhatsApp `api_admin set_wip_limit` keeps its own semantics, which
+ * the byte-oracle locks). ZERO engine owner auth (R2.3, FastAPI-side);
+ * resolve by EXACT person_id (R2.1.a); board/person → not_found.
+ *
+ * WIP semantics here are the FastAPI contract: null clears the limit
+ * (the reject-<1-incl-0 validation_error stays handler-side). This
+ * intentionally DIVERGES from engine `set_wip_limit` (accepts 0,
+ * rejects null) — that is why wip is its own method, not a shared core.
+ *
+ * R2.5 decision (user, 2026-05-16): a board owner MAY set any
+ * `board_people.role` incl. 'Gestor'. 'Gestor' is a deliberate
+ * privilege grant — it gates REST task edit/delete of unowned tasks
+ * (`taskflow-api-update.ts:172`, `taskflow-engine.ts:2496`). Roles are
+ * free-form (no codebase whitelist: member/Tecnico/manager/Gestor…),
+ * so the method persists any non-empty role; the Gestor implication is
+ * asserted below as INTENTIONAL. Audit-logging is deferred (no
+ * person/role audit table exists; the analogous WhatsApp privilege
+ * ops don't log either).
+ */
+describe('engine.setBoardPersonWip', () => {
+  beforeEach(() => {
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role, wip_limit) VALUES (?, 'bob', 'Bob', 'member', 7)`,
+    ).run(BOARD);
+  });
+
+  it('missing board → not_found "Board not found"', () => {
+    const r = engine.setBoardPersonWip('board-nope', 'bob', 3);
+    expect(r.success).toBe(false);
+    if (r.success) throw new Error('unreachable');
+    expect(r.error_code).toBe('not_found');
+    expect(r.error).toBe('Board not found');
+  });
+
+  it('missing person (exact id) → not_found "Person not found"', () => {
+    const r = engine.setBoardPersonWip(BOARD, 'ghost', 3);
+    expect(r.success).toBe(false);
+    if (r.success) throw new Error('unreachable');
+    expect(r.error_code).toBe('not_found');
+    expect(r.error).toBe('Person not found');
+  });
+
+  it('sets a positive wip_limit', () => {
+    const r = engine.setBoardPersonWip(BOARD, 'bob', 5);
+    expect(r.success).toBe(true);
+    const row = db
+      .prepare('SELECT wip_limit FROM board_people WHERE board_id=? AND person_id=?')
+      .get(BOARD, 'bob') as { wip_limit: number };
+    expect(row.wip_limit).toBe(5);
+  });
+
+  it('null clears the wip_limit (FastAPI contract; diverges from engine set_wip_limit)', () => {
+    const r = engine.setBoardPersonWip(BOARD, 'bob', null);
+    expect(r.success).toBe(true);
+    const row = db
+      .prepare('SELECT wip_limit FROM board_people WHERE board_id=? AND person_id=?')
+      .get(BOARD, 'bob') as { wip_limit: number | null };
+    expect(row.wip_limit).toBeNull();
+  });
+});
+
+describe('engine.setBoardPersonRole', () => {
+  beforeEach(() => {
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'Bob', 'member')`,
+    ).run(BOARD);
+  });
+
+  it('missing board → not_found "Board not found"', () => {
+    const r = engine.setBoardPersonRole('board-nope', 'bob', 'Tecnico');
+    expect(r.success).toBe(false);
+    if (r.success) throw new Error('unreachable');
+    expect(r.error_code).toBe('not_found');
+    expect(r.error).toBe('Board not found');
+  });
+
+  it('missing person (exact id) → not_found "Person not found"', () => {
+    const r = engine.setBoardPersonRole(BOARD, 'ghost', 'Tecnico');
+    expect(r.success).toBe(false);
+    if (r.success) throw new Error('unreachable');
+    expect(r.error_code).toBe('not_found');
+    expect(r.error).toBe('Person not found');
+  });
+
+  it('persists a free-form role', () => {
+    const r = engine.setBoardPersonRole(BOARD, 'bob', 'Tecnico');
+    expect(r.success).toBe(true);
+    const row = db
+      .prepare('SELECT role FROM board_people WHERE board_id=? AND person_id=?')
+      .get(BOARD, 'bob') as { role: string };
+    expect(row.role).toBe('Tecnico');
+  });
+
+  it("INTENTIONAL (R2.5): owner may set role 'Gestor' — a privilege grant gating REST task edit/delete of unowned tasks (taskflow-api-update.ts:172)", () => {
+    const r = engine.setBoardPersonRole(BOARD, 'bob', 'Gestor');
+    expect(r.success).toBe(true);
+    const row = db
+      .prepare('SELECT role FROM board_people WHERE board_id=? AND person_id=?')
+      .get(BOARD, 'bob') as { role: string };
+    // Deliberate: this row now satisfies the `role === 'Gestor'` gate at
+    // taskflow-engine.ts:2496 / taskflow-api-update.ts:172. Owner
+    // authority over their board's roles is the product intent; the
+    // FastAPI owner-precheck (BLOCKER B) gates who may call this.
+    expect(row.role).toBe('Gestor');
+  });
+});

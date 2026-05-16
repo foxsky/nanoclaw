@@ -315,34 +315,25 @@ export const apiUpdateBoardPersonTool: McpToolDefinition = {
     }
 
     try {
-      const db = getTaskflowDb();
-      const board = db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
-      if (!board) {
-        return jsonResponse({
-          success: false,
-          error_code: 'not_found',
-          error: 'Board not found',
-        });
-      }
-      const row = db
-        .prepare('SELECT person_id FROM board_people WHERE board_id = ? AND person_id = ?')
-        .get(boardId, personId);
-      if (!row) {
-        return jsonResponse({
-          success: false,
-          error_code: 'not_found',
-          error: 'Person not found',
-        });
-      }
+      // Single-engine (R2.8 step 4b-iv): dedicated FastAPI methods —
+      // engine.setBoardPersonWip (null clears; ≠ engine set_wip_limit)
+      // and engine.setBoardPersonRole (free-form; 'Gestor' is a
+      // privilege grant). ZERO owner auth (R2.3, FastAPI-side). Each
+      // does its own board/person not_found. Behavior-preserving — the
+      // FastAPI contract is unchanged (handler still owns every
+      // validation_error + builds the echo from validated args).
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
       if ('wip_limit' in args) {
-        db.prepare(
-          'UPDATE board_people SET wip_limit = ? WHERE board_id = ? AND person_id = ?',
-        ).run((wip ?? null) as number | null, boardId, personId);
+        const r = engine.setBoardPersonWip(
+          boardId,
+          personId,
+          (wip ?? null) as number | null,
+        );
+        if (!r.success) return jsonResponse(r);
       }
       if (role !== undefined && role !== null) {
-        db.prepare(
-          'UPDATE board_people SET role = ? WHERE board_id = ? AND person_id = ?',
-        ).run((role as string).trim(), boardId, personId);
+        const r = engine.setBoardPersonRole(boardId, personId, (role as string).trim());
+        if (!r.success) return jsonResponse(r);
       }
       return jsonResponse({
         success: true,

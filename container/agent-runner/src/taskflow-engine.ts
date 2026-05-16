@@ -8429,6 +8429,72 @@ export class TaskflowEngine {
     };
   }
 
+  /**
+   * Dedicated FastAPI-only WIP mutation (design Revision 2.1 R2.5 — a
+   * fresh method, NOT a shared core: the WhatsApp `api_admin
+   * set_wip_limit` keeps its own semantics, which the byte-oracle
+   * locks). ZERO engine owner auth (R2.3, FastAPI-side); resolves by
+   * EXACT person_id (R2.1.a). FastAPI contract: `null` clears the
+   * limit (the reject-<1-incl-0 validation_error stays handler-side).
+   * Intentionally diverges from engine `set_wip_limit` (accepts 0,
+   * rejects null) — that is why wip is its own method.
+   */
+  setBoardPersonWip(
+    boardId: string,
+    personId: string,
+    wipLimit: number | null,
+  ): { success: true } | { success: false; error_code: 'not_found'; error: string } {
+    const board = this.db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
+    if (!board) {
+      return { success: false, error_code: 'not_found', error: 'Board not found' };
+    }
+    const person = this.db
+      .prepare('SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?')
+      .get(boardId, personId);
+    if (!person) {
+      return { success: false, error_code: 'not_found', error: 'Person not found' };
+    }
+    this.db
+      .prepare('UPDATE board_people SET wip_limit = ? WHERE board_id = ? AND person_id = ?')
+      .run(wipLimit, boardId, personId);
+    return { success: true };
+  }
+
+  /**
+   * Dedicated FastAPI-only role mutation (design Revision 2.1 R2.5 —
+   * no WhatsApp competitor). ZERO engine owner auth (R2.3,
+   * FastAPI-side); resolves by EXACT person_id (R2.1.a). Roles are
+   * free-form (no codebase whitelist), so any non-empty role (already
+   * trimmed/validated handler-side) is persisted. ⚠ `role === 'Gestor'`
+   * is a DELIBERATE privilege grant: it gates REST task edit/delete of
+   * unowned tasks (`taskflow-api-update.ts:172`,
+   * `taskflow-engine.ts:2496`). Owner authority over their board's
+   * roles is the product intent; the FastAPI owner-precheck (BLOCKER B)
+   * gates who may call this. Audit-logging deferred per the user
+   * decision (no person/role audit table; analogous WhatsApp privilege
+   * ops don't log either).
+   */
+  setBoardPersonRole(
+    boardId: string,
+    personId: string,
+    role: string,
+  ): { success: true } | { success: false; error_code: 'not_found'; error: string } {
+    const board = this.db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
+    if (!board) {
+      return { success: false, error_code: 'not_found', error: 'Board not found' };
+    }
+    const person = this.db
+      .prepare('SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?')
+      .get(boardId, personId);
+    if (!person) {
+      return { success: false, error_code: 'not_found', error: 'Person not found' };
+    }
+    this.db
+      .prepare('UPDATE board_people SET role = ? WHERE board_id = ? AND person_id = ?')
+      .run(role, boardId, personId);
+    return { success: true };
+  }
+
   /* ---------------------------------------------------------------- */
   /*  admin — taskflow_admin                                           */
   /* ---------------------------------------------------------------- */
