@@ -1,6 +1,49 @@
 # Design: true single-engine board-config (UI == WhatsApp)
 
-**Status:** Design — no tool code until this is reviewed.
+> **⚠ REVISION REQUIRED — Codex review gpt-5.5/xhigh, 2026-05-16: §2 is
+> INVALID; do not implement.** Verified against code:
+> - **§2 collapses.** Child-board creation is NOT DB-only: parent is
+>   resolved from `session.agent_group_id`/folder, `createGroup`
+>   produces the real `childGroupJid` written to `boards.group_jid`, v2
+>   agent/messaging-group wiring + destination registration +
+>   filesystem/runners/onboarding are all **host-only**
+>   (`src/modules/taskflow/provision-child-board.ts:75,269,475,525,553,586`,
+>   `provision-shared.ts:422`). A FastAPI-subprocess `engine.provisionChildBoard`
+>   cannot reproduce this.
+> - **"Phase-1 emits no outbound" is FALSE when auto-provision fires** —
+>   the provision tool writes a `kind:"system"` `messages_out` row
+>   (`mcp-tools/provision-child-board.ts:41`) → host dispatches invite /
+>   confirmation / welcome / onboarding (`provision-child-board.ts:494,654,666,673`).
+> - **add-person payload/person-id mismatch unresolved** — FastAPI
+>   name/phone/role + phone-digits/uuid id vs engine slug-from-name + a
+>   hierarchy-board requirement for `phone`+`group_name`+`group_folder`
+>   (`main.py:2780`, `taskflow-engine.ts:8206,8222`).
+> - §1 footgun: the engine must **not** trust an `owner_prechecked` flag
+>   from MCP args — owner auth stays purely FastAPI-side (BLOCKER B), the
+>   engine just doesn't do owner auth for `api_service`.
+> - §3 factual fix: active-task `remove_person` returns
+>   `success:true` + `tasks_to_reassign` (NOT a failure) —
+>   `taskflow-engine.ts:8297`.
+> - §4: `board_people.role` is a job/UI role and `role==='Gestor'`
+>   grants REST edit/delete privilege — distinct from WhatsApp
+>   manager/delegate (`board_admins`); name/scope it accordingly.
+> - §7: allowlist must filter the **call path** too (`server.ts:42`
+>   resolves `tools/call` from `toolMap`, not the listed set) and must
+>   include the 6 production task/note tools FastAPI already calls.
+> - Independent shipped bug: the 4 board tools call `normalizeAgentIds`
+>   which `board-`-prefixes FastAPI's plain-UUID board ids
+>   (`taskflow-api-board.ts:35`, `taskflow-helpers.ts:90`) — must use
+>   flat args, trust the URL board_id exactly.
+>
+> Core finding: the engine's rich board behaviors (hierarchy
+> auto-provision, manager auth, outbound) are **host/session-coupled**
+> and unreachable from the FastAPI MCP subprocess. "Identical behavior"
+> for board-config is not achievable without solving host-dispatch
+> (the 0h-v2-class problem this doc tried to scope out). Next step is a
+> **scoping decision**, not a §2 patch. See memory
+> `project_tfmcontrol_mcp_engine_0f_0h`.
+
+**Status:** Design — SUPERSEDED pending scoping decision. No tool code.
 **Date:** 2026-05-16. **Owner:** nanoclaw side (`skill/taskflow-v2`).
 **Driver:** user requirement — the MCP server is the single gateway so
 tf-mcontrol (UI) drives the *same engine path* the in-container WhatsApp
