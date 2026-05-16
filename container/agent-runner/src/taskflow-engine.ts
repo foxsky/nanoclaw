@@ -1833,6 +1833,41 @@ export class TaskflowEngine {
     return `A tarefa ${rawId} pertence ao quadro pai ${boardLabel} (${this.taskBoardId(task)}) e nao esta delegada para este quadro. Faca a reatribuicao no quadro pai.${targetClause}`;
   }
 
+  private getAncestorTaskForExactWrite(taskId: string): any | null {
+    const { boardId: targetBoardId, rawId } = this.resolveInputTaskId(taskId);
+    let lineage: string[];
+    try {
+      lineage = this.getBoardLineage();
+    } catch {
+      return null;
+    }
+    const ancestorBoards = lineage.filter((id) => id !== this.boardId);
+    if (ancestorBoards.length === 0) return null;
+
+    if (targetBoardId) {
+      if (!ancestorBoards.includes(targetBoardId)) return null;
+      return this.db
+        .prepare(`SELECT tasks.*, tasks.board_id AS owning_board_id FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(targetBoardId, rawId) as any | null;
+    }
+
+    const matches: any[] = [];
+    for (const boardId of ancestorBoards) {
+      const task = this.db
+        .prepare(`SELECT tasks.*, tasks.board_id AS owning_board_id FROM tasks WHERE board_id = ? AND id = ?`)
+        .get(boardId, rawId) as any | null;
+      if (task) matches.push(task);
+    }
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  private senderCanWriteAncestorTask(senderName: string, task: any, senderIsService = false): boolean {
+    if (senderIsService) return true;
+    const taskBoardId = this.taskBoardId(task);
+    if (taskBoardId === this.boardId) return true;
+    return !!this.resolvePerson(senderName, taskBoardId);
+  }
+
   private buildDelegatedParentReassignBoundaryError(task: any, targetPersonName: string): string | null {
     const owningBoardId = this.taskBoardId(task);
     if (owningBoardId === this.boardId) return null;
@@ -2553,18 +2588,28 @@ export class TaskflowEngine {
   }): TaskflowResult & { data?: Record<string, unknown> } {
     try {
       const txResult = this.db.transaction(() => {
-        const task = this.getTask(params.task_id) as Record<string, any> | null;
+        const strictTask = this.getTask(params.task_id) as Record<string, any> | null;
+        const ancestorTask = strictTask ? null : this.getAncestorTaskForExactWrite(params.task_id) as Record<string, any> | null;
+        const task = strictTask ?? ancestorTask;
         if (!task) {
           return { success: false, error_code: 'not_found', error: `Task not found: ${params.task_id}` } as any;
         }
         const taskBoardId = this.taskBoardId(task);
-        const sender = this.resolvePerson(params.sender_name);
+        const isAncestorWrite = !!ancestorTask && taskBoardId !== this.boardId;
+        const actorBoardId = isAncestorWrite ? taskBoardId : this.boardId;
+        const sender = this.resolvePerson(params.sender_name, actorBoardId);
         const senderPersonId = sender?.person_id ?? null;
         const isAssignee = senderPersonId != null && task.assignee === senderPersonId;
-        const isMgr = this.isManager(params.sender_name) || !!params.sender_is_service;
+        const isMgr = this.isManager(params.sender_name, actorBoardId) || !!params.sender_is_service;
         const now = new Date().toISOString();
 
-        if (!params.sender_is_service && task.type !== 'meeting' && !isMgr && !isAssignee) {
+        if (
+          !params.sender_is_service &&
+          task.type !== 'meeting' &&
+          !isMgr &&
+          !isAssignee &&
+          !(isAncestorWrite && this.senderCanWriteAncestorTask(params.sender_name, task))
+        ) {
           return { success: false, error_code: 'actor_type_not_allowed', error: `Not authorized to add notes to this task` } as any;
         }
 
@@ -4553,7 +4598,9 @@ export class TaskflowEngine {
       }
 
       if (params.task_id) {
-        const boundaryError = this.buildAncestorTaskWriteBoundaryError(params.task_id, params.target_person);
+        const boundaryError = this.getAncestorTaskForExactWrite(params.task_id)
+          ? null
+          : this.buildAncestorTaskWriteBoundaryError(params.task_id, params.target_person);
         if (boundaryError) return { success: false, error: boundaryError };
 
         const visibleTask = this.getTask(params.task_id);
@@ -4567,7 +4614,19 @@ export class TaskflowEngine {
       }
 
       /* --- Resolve target person --- */
-      const targetPerson = this.resolvePerson(params.target_person);
+      const ancestorTask = params.task_id && !this.getTask(params.task_id)
+        ? this.getAncestorTaskForExactWrite(params.task_id)
+        : null;
+      const targetBoardId = ancestorTask ? this.taskBoardId(ancestorTask) : this.boardId;
+      let targetPersonBoardId = targetBoardId;
+      let targetPerson = this.resolvePerson(params.target_person, targetBoardId);
+      if (!targetPerson && ancestorTask) {
+        const localTarget = this.resolvePerson(params.target_person, this.boardId);
+        if (localTarget) {
+          targetPerson = localTarget;
+          targetPersonBoardId = this.boardId;
+        }
+      }
       if (!targetPerson) return this.buildOfferRegisterError(params.target_person);
 
       /* --- Collect tasks to reassign --- */
@@ -4575,7 +4634,7 @@ export class TaskflowEngine {
 
       if (params.task_id) {
         /* --- Single task reassignment --- */
-        const task = this.getTask(params.task_id);
+        const task = this.getTask(params.task_id) ?? ancestorTask;
         if (!task) {
           return { success: false, error: `Task not found: ${params.task_id}` };
         }
@@ -4584,11 +4643,14 @@ export class TaskflowEngine {
         }
 
         /* --- Permission: sender must be assignee or manager --- */
-        const sender = this.resolvePerson(params.sender_name);
+        const taskBoardId = this.taskBoardId(task);
+        const isAncestorWrite = !!ancestorTask && taskBoardId !== this.boardId;
+        const actorBoardId = isAncestorWrite ? taskBoardId : this.boardId;
+        const sender = this.resolvePerson(params.sender_name, actorBoardId);
         const senderPersonId = sender?.person_id ?? null;
         const isAssignee = senderPersonId != null && task.assignee === senderPersonId;
-        const isMgr = this.isManager(params.sender_name);
-        if (!isAssignee && !isMgr) {
+        const isMgr = this.isManager(params.sender_name, actorBoardId);
+        if (!isAssignee && !isMgr && !(isAncestorWrite && this.senderCanWriteAncestorTask(params.sender_name, task))) {
           return { success: false, error: `Permission denied: "${params.sender_name}" is neither the assignee nor a manager.` };
         }
 
@@ -4707,7 +4769,7 @@ export class TaskflowEngine {
               `SELECT name, notification_group_jid FROM board_people
                WHERE board_id = ? AND person_id = ?`,
             )
-            .get(this.boardId, targetPerson.person_id) as
+            .get(targetPersonBoardId, targetPerson.person_id) as
             | { name: string; notification_group_jid: string | null }
             | undefined
         : undefined;
@@ -8139,6 +8201,59 @@ export class TaskflowEngine {
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }
+  }
+
+  /**
+   * 0f option (b): create a board with a FastAPI-preallocated id.
+   * Strict parity with the live FastAPI `POST /api/v1/boards` handler —
+   * INSERT (id, org_id, group_folder='', group_jid='',
+   * board_role='hierarchy', name, description, owner_user_id,
+   * created_at=datetime('now'), updated_at=datetime('now')) then return
+   * the FLAT board row. ZERO engine owner auth (R2.3 — FastAPI 403s
+   * agents before this). The engine does NOT resolve/create orgs:
+   * `org_id` is passed in guaranteed-existing (FastAPI-owned; a bad id
+   * fails the FK insert). `board_id` is used verbatim (no
+   * normalizeAgentIds — matches the other board tools / R2.7).
+   * Constructing the engine for a not-yet-existing board is safe (0f
+   * section, Codex-verified). Self-consistent on the `boardId` param
+   * (no `this.boardId` core), so no boardId guard is needed. The
+   * dup-check + insert run in one transaction (Codex post-impl
+   * IMPORTANT 1 pattern — atomic, closes a dup-insert TOCTOU).
+   */
+  createBoard(
+    boardId: string,
+    fields: {
+      name: string;
+      description: string | null;
+      owner_user_id: string | null;
+      org_id: string | null;
+    },
+  ):
+    | { success: true; data: Record<string, unknown> }
+    | { success: false; error_code: 'conflict'; error: string } {
+    return this.db.transaction(() => {
+      const existing = this.db
+        .prepare('SELECT 1 FROM boards WHERE id = ?')
+        .get(boardId);
+      if (existing) {
+        return {
+          success: false,
+          error_code: 'conflict',
+          error: 'Board already exists',
+        } as const;
+      }
+      this.db
+        .prepare(
+          `INSERT INTO boards
+             (id, org_id, group_folder, group_jid, board_role, name, description, owner_user_id, created_at, updated_at)
+           VALUES (?, ?, '', '', 'hierarchy', ?, ?, ?, datetime('now'), datetime('now'))`,
+        )
+        .run(boardId, fields.org_id, fields.name, fields.description, fields.owner_user_id);
+      const row = this.db
+        .prepare('SELECT * FROM boards WHERE id = ?')
+        .get(boardId) as Record<string, unknown>;
+      return { success: true as const, data: row };
+    })();
   }
 
   /**

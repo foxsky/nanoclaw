@@ -54,6 +54,7 @@ const FASTAPI_ALLOWLIST: ReadonlySet<string> = new Set([
   'api_linked_tasks',
   // board-config / people — built + registered (R2.7). Holiday/chat/
   // comment tools add their names here when they land.
+  'api_create_board',
   'api_update_board',
   'api_add_board_person',
   'api_remove_board_person',

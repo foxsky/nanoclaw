@@ -395,3 +395,98 @@ describe('engine.updateBoardPerson', () => {
     expect(row).toEqual({ wip_limit: 7, role: 'member' }); // unchanged
   });
 });
+
+/**
+ * `engine.createBoard` — 0f option (b): FastAPI preallocates the
+ * board_id and owns org resolution; the engine just inserts the row.
+ * Strict parity with the live FastAPI handler
+ * (`taskflow-api/app/main.py` create_board): INSERT (id, org_id,
+ * group_folder='', group_jid='', board_role='hierarchy', name,
+ * description, owner_user_id, created_at=datetime('now'),
+ * updated_at=datetime('now')) → return the FLAT board row. ZERO engine
+ * owner auth (R2.3, FastAPI-side; agents 403'd there). The engine does
+ * NOT resolve/create orgs — `org_id` is passed in guaranteed-existing
+ * (FastAPI-owned). Constructing the engine for a not-yet-existing board
+ * is safe (0f section, Codex-verified).
+ */
+describe('engine.createBoard', () => {
+  const NEW = 'board-new-001';
+
+  it('inserts the board with handler-parity columns; returns the flat row', () => {
+    const r = new TaskflowEngine(db, NEW).createBoard(NEW, {
+      name: 'New Board',
+      description: 'desc',
+      owner_user_id: 'u1',
+      org_id: 'o1',
+    });
+    expect(r.success).toBe(true);
+    if (!r.success) throw new Error('unreachable');
+    expect(r.data.id).toBe(NEW);
+    expect(r.data.name).toBe('New Board');
+    expect(r.data.description).toBe('desc');
+    expect(r.data.owner_user_id).toBe('u1');
+    expect(r.data.org_id).toBe('o1');
+    expect(r.data.board_role).toBe('hierarchy');
+    expect(r.data.group_jid).toBe('');
+    expect(r.data.group_folder).toBe('');
+    const row = db.prepare('SELECT 1 FROM boards WHERE id = ?').get(NEW);
+    expect(row).not.toBeNull();
+  });
+
+  it("created_at/updated_at use SQLite datetime('now') format (space, no 'T'/tz)", () => {
+    const r = new TaskflowEngine(db, NEW).createBoard(NEW, {
+      name: 'X',
+      description: null,
+      owner_user_id: 'u1',
+      org_id: 'o1',
+    });
+    expect(r.success).toBe(true);
+    if (!r.success) throw new Error('unreachable');
+    const fmt = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+    expect(String(r.data.created_at)).toMatch(fmt);
+    expect(String(r.data.updated_at)).toMatch(fmt);
+  });
+
+  it('null description is stored/echoed as null', () => {
+    const r = new TaskflowEngine(db, NEW).createBoard(NEW, {
+      name: 'X',
+      description: null,
+      owner_user_id: 'u1',
+      org_id: 'o1',
+    });
+    expect(r.success).toBe(true);
+    if (!r.success) throw new Error('unreachable');
+    expect(r.data.description).toBeNull();
+  });
+
+  it('engine does NOT resolve orgs — passes org_id through verbatim', () => {
+    const r = new TaskflowEngine(db, NEW).createBoard(NEW, {
+      name: 'X',
+      description: null,
+      owner_user_id: 'u1',
+      org_id: 'org-verbatim-xyz',
+    });
+    expect(r.success).toBe(true);
+    if (!r.success) throw new Error('unreachable');
+    expect(r.data.org_id).toBe('org-verbatim-xyz');
+  });
+
+  it('duplicate board_id → {success:false, error_code:conflict}', () => {
+    new TaskflowEngine(db, NEW).createBoard(NEW, {
+      name: 'First',
+      description: null,
+      owner_user_id: 'u1',
+      org_id: 'o1',
+    });
+    const r = new TaskflowEngine(db, NEW).createBoard(NEW, {
+      name: 'Second',
+      description: null,
+      owner_user_id: 'u1',
+      org_id: 'o1',
+    });
+    expect(r.success).toBe(false);
+    if (r.success) throw new Error('unreachable');
+    expect(r.error_code).toBe('conflict');
+    expect(r.error).toBe('Board already exists');
+  });
+});

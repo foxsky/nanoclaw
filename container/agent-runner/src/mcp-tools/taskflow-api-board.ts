@@ -20,6 +20,119 @@ import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { jsonResponse, requireString } from './util.js';
 
+/** FastAPI `POST /api/v1/boards` (main.py:2719) → engine.createBoard
+ *  (0f option (b): FastAPI preallocates board_id + resolves org_id /
+ *  owner_user_id server-side and passes them flat; the engine inserts
+ *  the row). Handler mirrors CreateBoardPayload validators
+ *  (main.py:236): name trim+non-empty, description trim→null, org_id
+ *  trim+non-empty. Flat args, no actor/sender_name (matches the other
+ *  board tools / settled contract); owner auth is FastAPI-side. */
+export const apiCreateBoardTool: McpToolDefinition = {
+  tool: {
+    name: 'api_create_board',
+    description:
+      'Create a board with a caller-preallocated board_id. org_id and owner_user_id are resolved by the API layer; owner authorization is enforced there before this tool runs.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+        name: { type: 'string' },
+        description: { type: ['string', 'null'] },
+        org_id: { type: ['string', 'null'] },
+        owner_user_id: { type: ['string', 'null'] },
+      },
+      required: ['board_id', 'name'],
+    },
+  },
+  async handler(args) {
+    // FastAPI passes the preallocated board_id verbatim. Do NOT
+    // normalize/prefix it (R2.7; matches the other board tools).
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) {
+      return jsonResponse({
+        success: false,
+        error_code: 'validation_error',
+        error: 'board_id: required string',
+      });
+    }
+
+    // name: required; trim; empty-after-trim rejected (parity with
+    // CreateBoardPayload.validate_name).
+    if (typeof args.name !== 'string') {
+      return jsonResponse({
+        success: false,
+        error_code: 'validation_error',
+        error: 'name: expected string',
+      });
+    }
+    const name = args.name.trim();
+    if (name === '') {
+      return jsonResponse({
+        success: false,
+        error_code: 'validation_error',
+        error: 'Board name cannot be empty',
+      });
+    }
+
+    // description: optional; null or trimmed (whitespace/empty → null).
+    let description: string | null = null;
+    if (args.description !== undefined && args.description !== null) {
+      if (typeof args.description !== 'string') {
+        return jsonResponse({
+          success: false,
+          error_code: 'validation_error',
+          error: 'description: expected string or null',
+        });
+      }
+      description = args.description.trim() || null;
+    }
+
+    // org_id: FastAPI-resolved (guaranteed-existing); if present must be
+    // a non-empty string (parity with CreateBoardPayload.validate_org_id).
+    let orgId: string | null = null;
+    if (args.org_id !== undefined && args.org_id !== null) {
+      if (typeof args.org_id !== 'string' || args.org_id.trim() === '') {
+        return jsonResponse({
+          success: false,
+          error_code: 'validation_error',
+          error: 'org_id cannot be empty',
+        });
+      }
+      orgId = args.org_id.trim();
+    }
+
+    // owner_user_id: FastAPI-supplied (= caller); pass through.
+    let ownerUserId: string | null = null;
+    if (args.owner_user_id !== undefined && args.owner_user_id !== null) {
+      if (typeof args.owner_user_id !== 'string') {
+        return jsonResponse({
+          success: false,
+          error_code: 'validation_error',
+          error: 'owner_user_id: expected string or null',
+        });
+      }
+      ownerUserId = args.owner_user_id;
+    }
+
+    try {
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      const r = engine.createBoard(boardId, {
+        name,
+        description,
+        owner_user_id: ownerUserId,
+        org_id: orgId,
+      });
+      if (!r.success) {
+        return jsonResponse({ success: false, error_code: r.error_code, error: r.error });
+      }
+      return jsonResponse({ success: true, data: r.data });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error_code: 'internal_error', error: msg });
+    }
+  },
+};
+
 /** Parity: FastAPI `PATCH /api/v1/boards/{id}` (main.py:2744) +
  *  UpdateBoardPayload validators (main.py:268-288). */
 export const apiUpdateBoardTool: McpToolDefinition = {
@@ -354,6 +467,7 @@ export const apiUpdateBoardPersonTool: McpToolDefinition = {
 };
 
 registerTools([
+  apiCreateBoardTool,
   apiUpdateBoardTool,
   apiAddBoardPersonTool,
   apiRemoveBoardPersonTool,
