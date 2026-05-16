@@ -105,3 +105,37 @@ export function setupEngineDb(boardId: string, opts: SetupEngineDbOptions = {}):
   new TaskflowEngine(d, boardId);
   return d;
 }
+
+/**
+ * Centralizes the FastAPI board-config column superset the engine-backed
+ * board tools' tests need (Codex post-impl NICE 1 — "schema drift caught
+ * once" instead of ad-hoc per-file ALTERs).
+ *
+ * ⚠ The authoritative prod board-config schema spans BOTH repos:
+ * `src/taskflow-db.ts` (the base `boards`/`board_people` here) PLUS the
+ * tf-mcontrol FastAPI migrations that add `description`/`org_id`/
+ * `owner_user_id`/`created_at`/`updated_at` (not in this repo's base
+ * schema). Keep this list in sync with that union when the FastAPI
+ * board schema changes. Idempotent (mirrors the engine's
+ * `ensureTaskSchema` ALTER-in-try pattern) so it is safe to call once
+ * per fixture regardless of the base `setupEngineDb` shape.
+ */
+export function applyBoardConfigColumns(d: Database): void {
+  const alters = [
+    `ALTER TABLE boards ADD COLUMN description TEXT`,
+    `ALTER TABLE boards ADD COLUMN org_id TEXT`,
+    `ALTER TABLE boards ADD COLUMN owner_user_id TEXT`,
+    `ALTER TABLE boards ADD COLUMN created_at TEXT`,
+    `ALTER TABLE boards ADD COLUMN updated_at TEXT`,
+    `ALTER TABLE boards ADD COLUMN hierarchy_level INTEGER`,
+    `ALTER TABLE boards ADD COLUMN max_depth INTEGER`,
+    `ALTER TABLE board_people ADD COLUMN phone TEXT`,
+  ];
+  for (const sql of alters) {
+    try {
+      d.exec(sql);
+    } catch {
+      /* column already present — idempotent */
+    }
+  }
+}

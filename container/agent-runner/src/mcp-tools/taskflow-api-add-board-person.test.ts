@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { closeTaskflowDb } from '../db/connection.js';
-import { setupEngineDb } from './taskflow-test-fixtures.js';
+import { applyBoardConfigColumns, setupEngineDb } from './taskflow-test-fixtures.js';
 import { normalizePhone } from '../taskflow-engine.js';
 
 /**
@@ -26,12 +26,7 @@ let db: Database;
 
 beforeEach(() => {
   db = setupEngineDb(BOARD, { withBoardAdmins: true });
-  // Prod columns the shared fixture omits: board_people.phone (core
-  // inserts it) + boards.hierarchy_level/max_depth (R2.2 guard reads
-  // them via canDelegateDown(); NULL ⇒ non-hierarchy).
-  db.exec(`ALTER TABLE board_people ADD COLUMN phone TEXT`);
-  db.exec(`ALTER TABLE boards ADD COLUMN hierarchy_level INTEGER`);
-  db.exec(`ALTER TABLE boards ADD COLUMN max_depth INTEGER`);
+  applyBoardConfigColumns(db); // prod board-config superset (NICE 1)
 });
 
 afterEach(() => {

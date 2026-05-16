@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { closeTaskflowDb } from '../db/connection.js';
-import { setupEngineDb } from './taskflow-test-fixtures.js';
+import { applyBoardConfigColumns, setupEngineDb } from './taskflow-test-fixtures.js';
 import { TaskflowEngine, normalizePhone } from '../taskflow-engine.js';
 
 /**
@@ -27,9 +27,7 @@ let engine: TaskflowEngine;
 
 beforeEach(() => {
   db = setupEngineDb(BOARD, { withBoardAdmins: true });
-  // Prod boards columns the shared fixture omits (Codex finding 7).
-  db.exec(`ALTER TABLE boards ADD COLUMN description TEXT`);
-  db.exec(`ALTER TABLE boards ADD COLUMN updated_at TEXT`);
+  applyBoardConfigColumns(db); // prod board-config superset (NICE 1)
   db.prepare(
     `UPDATE boards SET name = 'Original', description = 'old desc', updated_at = '2026-01-01 00:00:00' WHERE id = ?`,
   ).run(BOARD);
@@ -196,15 +194,6 @@ describe('engine.removeBoardPerson', () => {
  * auto-provision via api_admin (byte-oracle unaffected).
  */
 describe('engine.addBoardPerson', () => {
-  beforeEach(() => {
-    // Prod columns the shared engine fixture omits: board_people.phone
-    // (the core inserts it) + boards.hierarchy_level/max_depth (the R2.2
-    // guard reads them via canDelegateDown(); NULL ⇒ non-hierarchy).
-    db.exec(`ALTER TABLE board_people ADD COLUMN phone TEXT`);
-    db.exec(`ALTER TABLE boards ADD COLUMN hierarchy_level INTEGER`);
-    db.exec(`ALTER TABLE boards ADD COLUMN max_depth INTEGER`);
-  });
-
   it('missing board → {success:false, error_code:not_found, "Board not found"}', () => {
     // Mirror the real tool call: engine constructed with the request's
     // board id (IMPORTANT-2 guard requires boardId === this.boardId).

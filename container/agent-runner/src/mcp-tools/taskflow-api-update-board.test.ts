@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { closeTaskflowDb } from '../db/connection.js';
-import { setupEngineDb } from './taskflow-test-fixtures.js';
+import { applyBoardConfigColumns, setupEngineDb } from './taskflow-test-fixtures.js';
 
 /**
  * `api_update_board` behavioral contract (R2.8 step 4b-i). Split out of
@@ -28,12 +28,7 @@ let db: Database;
 
 beforeEach(() => {
   db = setupEngineDb(BOARD, { withBoardAdmins: true });
-  // Prod boards columns the shared engine fixture omits (Codex finding 7).
-  db.exec(`ALTER TABLE boards ADD COLUMN description TEXT`);
-  db.exec(`ALTER TABLE boards ADD COLUMN org_id TEXT`);
-  db.exec(`ALTER TABLE boards ADD COLUMN owner_user_id TEXT`);
-  db.exec(`ALTER TABLE boards ADD COLUMN created_at TEXT`);
-  db.exec(`ALTER TABLE boards ADD COLUMN updated_at TEXT`);
+  applyBoardConfigColumns(db); // prod board-config superset (NICE 1)
   // Match the original board-test seed (board_role 'hierarchy' is the
   // setupEngineDb column default; the rest set here).
   db.prepare(
