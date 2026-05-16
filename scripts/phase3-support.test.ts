@@ -989,6 +989,22 @@ describe('Phase 3 state-drift classifications', () => {
     expect(summary.outbound_intent).toBe('not_found_or_unclear');
   });
 
+  it('treats completion attempts against already-done tasks as non-mutating behavior', () => {
+    const summary = summarizeSemanticBehavior(
+      [
+        { name: 'mcp__nanoclaw__api_move', input: { task_id: 'T12', action: 'conclude' } },
+      ],
+      [{
+        kind: 'chat',
+        content: '{"text":"Não consegui concluir T12: Cannot \\"conclude\\" task T12: task is in \\"done\\", expected one of [inbox, review]."}',
+      }],
+    );
+
+    expect(summary.action).toBe('read');
+    expect(summary.mutation_types).toEqual([]);
+    expect(summary.task_ids).toEqual(['T12']);
+  });
+
   it('classifies read-only task-set mismatches without restored snapshots as state drift', () => {
     const turn: Phase3TurnResult = {
       turn_index: 8,
@@ -1044,6 +1060,42 @@ describe('Phase 3 state-drift classifications', () => {
     const comparison = compareSemanticTurn(turn);
     expect(comparison.classification.kind).toBe('state_drift');
     expect(comparison.classification.note).toContain('SEC-T41 column=done');
+  });
+
+  it('classifies current-state no-op replies as state drift when the synced DB already has the requested change', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 5,
+      text: 'Atribuir T51 a Mario e colocar Flávia como co-responsável',
+      v1: {
+        tools: [],
+        final_response: 'Encontrei Mário. Confirma que é esse o Mário que você quer como titular da T51?',
+      },
+      v2: {
+        tools: [
+          { name: 'mcp__nanoclaw__api_query', input: { query: 'find_task', task_id: 'T51' } },
+        ],
+        outbound: [{
+          kind: 'chat',
+          content: '{"text":"✅ A T51 já está com as atualizações que você pediu. Essas alterações já haviam sido aplicadas hoje. Nenhuma ação adicional necessária!"}',
+        }],
+      },
+      phase3: {
+        db_snapshot_status: 'restored',
+        metadata: {
+          turn_index: 5,
+          context_mode: 'fresh',
+          expected_behavior: {
+            action: 'ask',
+            task_ids: ['T51'],
+            outbound_intent: 'asks_user',
+          },
+        },
+      },
+    };
+
+    const comparison = compareSemanticTurn(turn);
+    expect(comparison.actual.action).toBe('read');
+    expect(comparison.classification.kind).toBe('state_drift');
   });
 
   // Turn 24 / 26: v1 historical task IDs (T84/T85) differ from v2's

@@ -6,6 +6,8 @@ For detailed release notes, see the [full changelog on the documentation site](h
 
 ## [Unreleased]
 
+- Tightened the deterministic Taskflow reassignment fast-path so compound assignment/co-responsibility requests such as `Atribuir T51 a Mario e colocar Flávia como co-responsável` and multi-assignee phrasing such as `Atribuir T50 para Maura e para Francisco` stay on the normal clarification path instead of being collapsed into a single `api_reassign`.
+- Improved Phase 3 state-drift classification for production-snapshot replays where the synced DB already contains the requested assignment, note, or completion; v2 current-state/no-op replies now classify as DB drift instead of product regressions.
 - Added a deterministic Taskflow reassignment fast-path for clear commands like `P22.1 atribuir para Mariany`, using MCP-backed `api_reassign` behavior and direct confirmations instead of waiting on model finalization after a successful mutation.
 - Hardened Phase 3 Taskflow DB snapshot restore for mutation replays by normalizing restored SQLite snapshots back to DELETE journal mode, cleaning rollback-journal sidecars (`taskflow.db-journal`) as well as WAL/SHM files, and fixing mapped-uid ownership so production snapshots remain writable from the replay container.
 - Added formatted `api_reassign` success output so reassignment turns give the model an immediate v1-style confirmation summary instead of a bare `tasks_affected` payload.

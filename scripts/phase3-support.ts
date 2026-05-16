@@ -661,7 +661,7 @@ export function summarizeSemanticBehavior(
     !/\b(j[aá]|foi|foram)\b[\s\S]{0,80}\b(atualizad[ao]?|adicionad[ao]?|registrad[ao]?)\b/i.test(text);
   const blockedMutationIntent = hasMutation &&
     outboundIntent === 'informational' &&
-    /\b(pertence ao quadro pai|apenas vinculad[ao]|precisa ser feita|faca a reatribuicao|faça a reatribuiç[aã]o|n[aã]o pode)\b/i.test(text) &&
+    /(pertence ao quadro pai|apenas vinculad[ao]|precisa ser feita|faca a reatribuicao|faça a reatribuiç[aã]o|n[aã]o pode|already assigned|already configured|task .* is in "done"|j[aá]\s+est[aá])/i.test(text) &&
     !/\b(j[aá]|foi|foram)\b[\s\S]{0,80}\b(atualizad[ao]?|adicionad[ao]?|registrad[ao]?|reatribu[ií]d[ao]?)\b/i.test(text);
   const effectiveHasMutation = hasMutation && !failedMutationIntent && !blockedMutationIntent;
   const textTaskIds = extractTaskIdsFromText(text);
@@ -1018,6 +1018,27 @@ function isReadStateDrift(
   );
 }
 
+function isAlreadyAppliedStateDrift(
+  turn: Phase3TurnResult,
+  matches: SemanticComparison['matches'],
+  expected: SemanticSummary,
+  actual: SemanticSummary,
+): boolean {
+  const taskIdsCompatible = matches.task_ids ||
+    (actual.task_ids.length > 0 && stringSetContains(expected.task_ids, actual.task_ids));
+  if (!taskIdsCompatible || !matches.board_refs || !matches.recipient) return false;
+  if (!['ask', 'read', 'mutate'].includes(expected.action)) return false;
+  if (!['read', 'no-op'].includes(actual.action)) return false;
+  if (actual.mutation_types.length > 0) return false;
+
+  const text = phase3ObservableText(turn.v2.outbound);
+  return /(?:j[aá]\s+(?:est[aá]|estava|haviam|havia)|already\s+(?:assigned|configured|in)|nenhuma\s+(?:altera[cç][aã]o|a[cç][aã]o)\s+(?:adicional\s+)?necess[aá]ria|nenhuma\s+altera[cç][aã]o\s+necess[aá]ria|task .* is in "done")/iu.test(text);
+}
+
+function phase3ObservableText(outbound: OutboundRow[]): string {
+  return outbound.map((row) => outboundContentText(row.content)).join('\n');
+}
+
 // v2 grounded with extra reads before answering. Suppressed when explicit
 // metadata says the expected action is something else (the metadata wins).
 function isReadOnlyExtra(turn: Phase3TurnResult, matches: SemanticComparison['matches']): boolean {
@@ -1127,6 +1148,13 @@ const CLASSIFICATION_RULES: ClassificationRule[] = [
     result: {
       kind: 'state_drift',
       note: 'Both versions performed a read and answered informationally, but the task set differs without a restored per-turn DB snapshot. Treat as state drift unless a matching historical snapshot proves otherwise.',
+    },
+  },
+  {
+    test: (t, m, e, a) => isAlreadyAppliedStateDrift(t, m, e, a),
+    result: {
+      kind: 'state_drift',
+      note: 'The synced DB already reflects the requested change, so v2 returned a no-op/current-state answer instead of replaying v1\'s historical mutation.',
     },
   },
   {

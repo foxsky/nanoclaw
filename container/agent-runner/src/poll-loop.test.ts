@@ -545,6 +545,18 @@ Other tasks: P2 Agência INOVATHE, P13 Ecossistema de Inovação]
     )).toBeNull();
   });
 
+  it('does not treat compound reassignment/co-responsibility requests as deterministic commands', () => {
+    expect(taskflowExplicitReassignCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Laizys', text: 'Atribuir T51 a Mario e colocar Flávia como co-responsável' }) }],
+      true,
+    )).toBeNull();
+
+    expect(taskflowExplicitReassignCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Laizys', text: 'Atribuir T50 para Maura e para Francisco' }) }],
+      true,
+    )).toBeNull();
+  });
+
   it('detects ready-for-review task note updates', () => {
     expect(taskflowReadyForReviewUpdateCommand(
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Reginaldo Graça', text: 'T18 - DFD pronto para assinatura e envio ao Gabinete- BA-138203.' }) }],

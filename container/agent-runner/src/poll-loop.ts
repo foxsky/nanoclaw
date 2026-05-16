@@ -194,6 +194,7 @@ const BULK_APPROVAL_RE = /^\s*aprovar\s+(?:todas\s+as\s+)?(?:atividades|tarefas)
 const STANDALONE_ACTIVITY_RE = /^\s*(?:Aguardar(?:\s+e\s+Acompanhar)?|Submeter|Realizar)\b.+/iu;
 const REASSIGN_ID_FIRST_RE = /^\s*((?:P|T|M|R)\d+(?:\.\d+)?)\s+(?:re)?atribuir\s+(?:para|a|ao|à)\s+([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
 const REASSIGN_VERB_FIRST_RE = /^\s*(?:re)?atribuir\s+((?:P|T|M|R)\d+(?:\.\d+)?)\s+(?:para|a|ao|à)\s+([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
+const REASSIGN_COMPOUND_TARGET_RE = /\b(?:e|,)\s*(?:colocar|adicionar|para|como|co[-\s]?respons[aá]vel|respons[aá]vel|titular)\b/iu;
 const FORWARD_DETAILS_RE = /\bencaminhar\b.*\bdetalhes\b.*\bpara\s+([\p{L}\p{M}' -]{2,60})\s*$/iu;
 const SEND_DETAILS_TO_PERSON_RE = /\b(?:enviar|mandar)\s+mensagem\s+para\s+(?:o\s+|a\s+)?([\p{L}\p{M}' -]{2,60}?)\s+com\s+(?:os\s+)?detalhes\s+d[aeo]\s+((?:P|T|M|R)\d+(?:\.\d+)?)\b/iu;
 const NOTIFY_TASK_PRIORITY_RE = /\b(?:enviar|mandar)\s+mensagem\s+para\s+(?:o\s+|a\s+)?([\p{L}\p{M}' -]{2,60}?)\s+.*\bpriorizar\b.*\b(?:tarefa|atividade)\s+((?:P|T|M|R)\d+(?:\.\d+)?)\b/iu;
@@ -289,9 +290,11 @@ export function taskflowExplicitReassignCommand(
   if (/\bn[aã]o\b/i.test(message.text)) return null;
   const match = message.text.match(REASSIGN_ID_FIRST_RE) ?? message.text.match(REASSIGN_VERB_FIRST_RE);
   if (!match?.[1] || !match[2]) return null;
+  const targetPerson = match[2].trim();
+  if (REASSIGN_COMPOUND_TARGET_RE.test(targetPerson)) return null;
   return {
     taskId: match[1].toUpperCase(),
-    targetPerson: match[2].trim(),
+    targetPerson,
   };
 }
 
