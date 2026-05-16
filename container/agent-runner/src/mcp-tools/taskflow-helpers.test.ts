@@ -8,6 +8,7 @@ import {
   normalizeEngineNotificationEvents,
   parseActorArg,
   parseNotificationEvents,
+  setVerbatimIds,
 } from './taskflow-helpers.ts';
 
 describe('normalizeAgentIds', () => {
@@ -376,5 +377,53 @@ describe('normalizeEngineNotificationEvents', () => {
     expect(result).toEqual([
       { kind: 'direct_message', target_chat_jid: 'alice@s.whatsapp.net', message: 'dm-routed' },
     ]);
+  });
+});
+
+/**
+ * Codex BLOCKER 2026-05-16: `normalizeAgentIds` board-prefixes
+ * plain-UUID board ids — wrong for the FastAPI subprocess, which passes
+ * canonical ids verbatim. The standalone taskflow entrypoint enables
+ * verbatim mode so EVERY FastAPI-facing tool (task/note/read, not just
+ * the 4 board tools) skips rewriting. In-container barrel never sets it
+ * → zero behavior change for the WhatsApp agent.
+ */
+describe('setVerbatimIds (FastAPI subprocess passthrough)', () => {
+  afterEach(() => {
+    setVerbatimIds(false);
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  });
+
+  it('verbatim mode: plain-UUID board_id is NOT prefixed, task_id NOT uppercased', () => {
+    setVerbatimIds(true);
+    const out = normalizeAgentIds({
+      board_id: '550e8400-e29b-41d4-a716-446655440000',
+      task_id: 'p11.23',
+    });
+    expect(out.board_id).toBe('550e8400-e29b-41d4-a716-446655440000');
+    expect(out.task_id).toBe('p11.23');
+  });
+
+  it('verbatim mode overrides even a set NANOCLAW_TASKFLOW_BOARD_ID env', () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-injected';
+    setVerbatimIds(true);
+    const out = normalizeAgentIds({ board_id: 'uuid-x' });
+    expect(out.board_id).toBe('uuid-x');
+  });
+
+  it('still returns a new object (input not mutated) in verbatim mode', () => {
+    setVerbatimIds(true);
+    const input = { board_id: 'uuid-x' };
+    const out = normalizeAgentIds(input);
+    expect(out).not.toBe(input);
+    expect(out).toEqual({ board_id: 'uuid-x' });
+  });
+
+  it('resetting verbatim mode restores normal prefixing/uppercasing', () => {
+    setVerbatimIds(true);
+    setVerbatimIds(false);
+    const out = normalizeAgentIds({ board_id: 'seci-taskflow', task_id: 'p1' });
+    expect(out.board_id).toBe('board-seci-taskflow');
+    expect(out.task_id).toBe('P1');
   });
 });

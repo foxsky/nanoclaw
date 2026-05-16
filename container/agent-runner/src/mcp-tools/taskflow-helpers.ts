@@ -87,8 +87,24 @@ type RawParentNotification = {
  *
  * Returns a new object; the input is not mutated.
  */
+/**
+ * FastAPI-subprocess "verbatim ids" mode. The standalone taskflow MCP
+ * entrypoint passes canonical ids exactly (plain-UUID board ids,
+ * already-cased task ids) and must NOT have them rewritten — this is the
+ * Codex-flagged BLOCKER fix applied to EVERY FastAPI-facing tool, not
+ * just the 4 board tools. Set once by `taskflow-server-entry.ts` before
+ * serving; the in-container barrel never sets it, so the WhatsApp
+ * agent's id-injection/casing is unchanged (zero regression).
+ * Process-level, not a request arg — can't be spoofed by MCP input.
+ */
+let _verbatimIds = false;
+export function setVerbatimIds(verbatim: boolean): void {
+  _verbatimIds = verbatim;
+}
+
 export function normalizeAgentIds(args: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...args };
+  if (_verbatimIds) return out;
   const envBoard = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
   if (envBoard) {
     out.board_id = envBoard;

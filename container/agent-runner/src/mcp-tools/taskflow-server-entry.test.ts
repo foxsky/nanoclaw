@@ -123,6 +123,38 @@ describe('taskflow-server-entry (tf-mcontrol runtime contract)', () => {
       const callTxt: string =
         JSON.parse(line3 as string).result?.content?.[0]?.text ?? '';
       expect(callTxt).toContain('Unknown tool');
+
+      // Positive: an ALLOWLISTED tool still EXECUTES through the gate
+      // (a gate inversion that blocked allowed names would otherwise
+      // pass). api_update_board on a nonexistent board → the handler's
+      // structured not_found, NOT "Unknown tool". Also exercises
+      // verbatim-ids: the plain (non-`board-`) id must reach the engine
+      // unrewritten (handler looks up exactly 'nope-uuid').
+      proc.stdin.write(
+        rpc({
+          jsonrpc: '2.0',
+          id: 4,
+          method: 'tools/call',
+          params: {
+            name: 'api_update_board',
+            arguments: { board_id: 'nope-uuid', name: 'X' },
+          },
+        }),
+      );
+      await proc.stdin.flush();
+      const out4 = await readUntil(proc.stdout, (a) => a.includes('"id":4'), 10000);
+      const line4 = out4.split('\n').find((l) => l.includes('"id":4'));
+      expect(line4, 'allowlisted tools/call response not received').toBeTruthy();
+      const okTxt: string =
+        JSON.parse(line4 as string).result?.content?.[0]?.text ?? '';
+      // Proves the handler RAN (gate didn't over-block): a structured
+      // {success:false,error_code} envelope, not the gate's plain
+      // "Unknown tool" text. (The tmp db is schemaless so the exact
+      // code is internal_error/not_found — don't over-couple to it.)
+      expect(okTxt).not.toContain('Unknown tool');
+      const okResp = JSON.parse(okTxt);
+      expect(okResp.success).toBe(false);
+      expect(typeof okResp.error_code).toBe('string');
     } finally {
       proc.kill();
       rmSync(dir, { recursive: true, force: true });
