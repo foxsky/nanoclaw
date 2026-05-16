@@ -1,8 +1,8 @@
 # TaskFlow Skill Package Changelog
 
-## 2026-05-16 — Phase 1 MCP tools: board CRUD + people (3 of 4 board-config)
+## 2026-05-16 — Phase 1 MCP tools: board-config COMPLETE (4 of 4)
 
-First three of the four Phase-1 board-config tools that unblock the tf-mcontrol endpoint migration. New `container/agent-runner/src/mcp-tools/taskflow-api-board.ts` + `apiUpdateBoardTool`, registered in **both** the tf-mcontrol entrypoint (`taskflow-server-entry.ts`) and the in-container barrel (`index.ts`).
+All four Phase-1 board-config tools that unblock the tf-mcontrol endpoint migration. New `container/agent-runner/src/mcp-tools/taskflow-api-board.ts` + `apiUpdateBoardTool`, registered in **both** the tf-mcontrol entrypoint (`taskflow-server-entry.ts`) and the in-container barrel (`index.ts`).
 
 Pure-SQL parity with FastAPI `PATCH /api/v1/boards/{id}` (`main.py:2744`) + `UpdateBoardPayload` validators (`main.py:268-288`) — no engine method (mirrors `api_update_simple_task`'s handler-owned pattern): `name` trimmed, empty-after-trim → `validation_error`; `description` trimmed, whitespace/empty → `NULL`; explicit `null`/absent `name` skipped; **no-op (no name/description) returns the row unchanged with no `updated_at` bump**; otherwise `updated_at = datetime('now')` + return the **flat board row** (not a `{board:…}` wrapper). Structured `{success:false, error_code, error}` (`validation_error` / `not_found` / `internal_error`) per the 0i contract. **No `sender_name`** — board endpoints resolve no actor; owner auth stays FastAPI-side before `call_mcp_mutation` (Codex pre-impl review findings 2–4, 7). TDD: RED (module-not-found) → GREEN 8/8; container `tsc --noEmit` clean; 174/0 regression on entry + taskflow tool tests.
 
@@ -10,7 +10,9 @@ Pure-SQL parity with FastAPI `PATCH /api/v1/boards/{id}` (`main.py:2744`) + `Upd
 
 **`api_remove_board_person`** — parity with FastAPI `DELETE /api/v1/boards/{id}/people/{pid}` (`main.py:2814`). Missing board → `not_found` ("Board not found"); person row absent → `not_found` ("Person not found"); else `DELETE` the `board_people` row and return `{success:true, data:null}` (FastAPI 204 no-body; `tests/golden/remove_board_person.json` body=null). `person_id` is never normalized (it's a phone-digits or uuid id, not a task id). TDD RED→GREEN 21/21; `tsc` clean; 187/0 regression.
 
-Remaining Phase-1 tool (next): `api_update_board_person`.
+**`api_update_board_person`** — parity with FastAPI `PATCH /api/v1/boards/{id}/people/{pid}` (`main.py:2919`). Body keys must be ⊆ `{wip_limit, role}` and non-empty (else `validation_error`); `wip_limit` null OR positive int — bool/float/≤0 rejected (Python `type(x) is not int`); `role` null OR non-empty string, stored + echoed `.strip()`'d; `"wip_limit" in body` → UPDATE (incl. explicit `null`→`NULL`); `role != null` → UPDATE; person absent → `not_found`. Echo `{ok, person_id, wip_limit, role}` matching `tests/golden/update_board_person.json` (status 200). TDD RED→GREEN 29/29; `tsc` clean; 195/0 regression.
+
+**Phase 1 board-config is complete** — all 4 tools (`api_update_board`, `api_add_board_person`, `api_remove_board_person`, `api_update_board_person`) live in `taskflow-api-board.ts`, registered in both the tf-mcontrol entrypoint and the in-container barrel. tf-mcontrol can wire `PATCH /boards`, `POST/DELETE/PATCH /boards/{id}/people` to the engine once its `.61` `client.py` `node`→`bun` flip lands (BLOCKER A). Remaining MCP tools (Phase 2/3): `api_create_board`, `api_delete_board`, `api_add_holiday`, `api_remove_holiday`, `api_send_chat`, `api_add_task_comment` (the last two gated on 0h-v2 design).
 
 ## 2026-05-15 — MCP-engine migration: 0f decided, 0h-v2 blocker found (tf-mcontrol coordination)
 

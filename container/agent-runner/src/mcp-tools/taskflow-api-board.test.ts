@@ -274,3 +274,95 @@ describe('api_remove_board_person MCP tool', () => {
     expect(r2.error_code).toBe('not_found');
   });
 });
+
+/**
+ * Parity: FastAPI `PATCH /api/v1/boards/{id}/people/{pid}` (main.py:2919).
+ *   - body keys ⊆ {wip_limit, role} and non-empty → else 400
+ *   - wip_limit: null OR positive int; bool/float/≤0 → 400
+ *   - role: null OR non-empty string; stored + echoed .strip()'d
+ *   - "wip_limit" in body → UPDATE (incl. null→NULL); role!=null → UPDATE
+ *   - echo {ok, person_id, wip_limit, role} (golden status 200)
+ *   - person absent → 404; no sender_name; owner auth FastAPI-side
+ */
+async function updatePerson(args: Record<string, unknown>) {
+  const { apiUpdateBoardPersonTool } = await import('./taskflow-api-board.ts');
+  return JSON.parse((await apiUpdateBoardPersonTool.handler(args)).content[0].text);
+}
+
+describe('api_update_board_person MCP tool', () => {
+  const PID = 'upd-me';
+  beforeEach(() => {
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role, wip_limit) VALUES (?, ?, 'Ann', 'member', 2)`,
+    ).run(BOARD, PID);
+  });
+
+  it('exports a tool named api_update_board_person', async () => {
+    const { apiUpdateBoardPersonTool } = await import('./taskflow-api-board.ts');
+    expect(apiUpdateBoardPersonTool.tool.name).toBe('api_update_board_person');
+  });
+
+  it('updates wip_limit + role (role trimmed), echoes {ok,person_id,wip_limit,role}', async () => {
+    const r = await updatePerson({
+      board_id: BOARD,
+      person_id: PID,
+      wip_limit: 5,
+      role: '  Gestor  ',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data).toEqual({ ok: true, person_id: PID, wip_limit: 5, role: 'Gestor' });
+    const row = db
+      .prepare('SELECT wip_limit, role FROM board_people WHERE board_id=? AND person_id=?')
+      .get(BOARD, PID) as { wip_limit: number; role: string };
+    expect(row).toEqual({ wip_limit: 5, role: 'Gestor' });
+  });
+
+  it('explicit null wip_limit sets the column NULL and echoes null', async () => {
+    const r = await updatePerson({ board_id: BOARD, person_id: PID, wip_limit: null });
+    expect(r.success).toBe(true);
+    expect(r.data.wip_limit).toBeNull();
+    const row = db
+      .prepare('SELECT wip_limit FROM board_people WHERE board_id=? AND person_id=?')
+      .get(BOARD, PID) as { wip_limit: number | null };
+    expect(row.wip_limit).toBeNull();
+  });
+
+  it('role-only update leaves wip_limit untouched; echo wip_limit null', async () => {
+    const r = await updatePerson({ board_id: BOARD, person_id: PID, role: 'Tecnico' });
+    expect(r.success).toBe(true);
+    expect(r.data).toEqual({ ok: true, person_id: PID, wip_limit: null, role: 'Tecnico' });
+    const row = db
+      .prepare('SELECT wip_limit FROM board_people WHERE board_id=? AND person_id=?')
+      .get(BOARD, PID) as { wip_limit: number };
+    expect(row.wip_limit).toBe(2); // unchanged
+  });
+
+  it('rejects wip_limit that is zero, negative, float, or boolean', async () => {
+    for (const bad of [0, -1, 1.5, true]) {
+      const r = await updatePerson({ board_id: BOARD, person_id: PID, wip_limit: bad });
+      expect(r.success).toBe(false);
+      expect(r.error_code).toBe('validation_error');
+    }
+  });
+
+  it('rejects empty/whitespace role', async () => {
+    expect(
+      (await updatePerson({ board_id: BOARD, person_id: PID, role: '   ' })).error_code,
+    ).toBe('validation_error');
+  });
+
+  it('rejects empty body and unknown keys', async () => {
+    expect((await updatePerson({ board_id: BOARD, person_id: PID })).error_code).toBe(
+      'validation_error',
+    );
+    expect(
+      (await updatePerson({ board_id: BOARD, person_id: PID, name: 'X' })).error_code,
+    ).toBe('validation_error');
+  });
+
+  it('returns not_found when the person is not on the board', async () => {
+    const r = await updatePerson({ board_id: BOARD, person_id: 'ghost', role: 'X' });
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('not_found');
+  });
+});

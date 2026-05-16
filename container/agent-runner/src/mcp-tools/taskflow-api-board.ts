@@ -282,4 +282,130 @@ export const apiRemoveBoardPersonTool: McpToolDefinition = {
   },
 };
 
-registerTools([apiUpdateBoardTool, apiAddBoardPersonTool, apiRemoveBoardPersonTool]);
+/** Parity: FastAPI `PATCH /api/v1/boards/{id}/people/{pid}`
+ *  (main.py:2919). Only wip_limit and/or role; echo response. */
+export const apiUpdateBoardPersonTool: McpToolDefinition = {
+  tool: {
+    name: 'api_update_board_person',
+    description:
+      "Update a board member's wip_limit and/or role. Owner authorization is enforced by the API layer before this tool runs.",
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+        person_id: { type: 'string' },
+        wip_limit: { type: ['integer', 'null'] },
+        role: { type: ['string', 'null'] },
+      },
+      required: ['board_id', 'person_id'],
+    },
+  },
+  async handler(args) {
+    args = normalizeAgentIds(args);
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) {
+      return jsonResponse({
+        success: false,
+        error_code: 'validation_error',
+        error: 'board_id: required string',
+      });
+    }
+    const personId = requireString(args, 'person_id');
+    if (personId === null) {
+      return jsonResponse({
+        success: false,
+        error_code: 'validation_error',
+        error: 'person_id: required string',
+      });
+    }
+
+    // body.keys() <= {wip_limit, role} and non-empty.
+    const updateKeys = Object.keys(args).filter(
+      (k) => k !== 'board_id' && k !== 'person_id',
+    );
+    if (
+      updateKeys.length === 0 ||
+      updateKeys.some((k) => k !== 'wip_limit' && k !== 'role')
+    ) {
+      return jsonResponse({
+        success: false,
+        error_code: 'validation_error',
+        error: 'Only wip_limit and/or role can be updated',
+      });
+    }
+
+    const wip = args.wip_limit;
+    if (wip !== undefined && wip !== null) {
+      // type(wip_limit) is not int (bool/float excluded) or < 1.
+      if (typeof wip !== 'number' || !Number.isInteger(wip) || wip < 1) {
+        return jsonResponse({
+          success: false,
+          error_code: 'validation_error',
+          error: 'wip_limit must be a positive integer or null',
+        });
+      }
+    }
+    const role = args.role;
+    if (role !== undefined && role !== null) {
+      if (typeof role !== 'string' || role.trim() === '') {
+        return jsonResponse({
+          success: false,
+          error_code: 'validation_error',
+          error: 'role must be a non-empty string or omitted',
+        });
+      }
+    }
+
+    try {
+      const db = getTaskflowDb();
+      const board = db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
+      if (!board) {
+        return jsonResponse({
+          success: false,
+          error_code: 'not_found',
+          error: 'Board not found',
+        });
+      }
+      const row = db
+        .prepare('SELECT person_id FROM board_people WHERE board_id = ? AND person_id = ?')
+        .get(boardId, personId);
+      if (!row) {
+        return jsonResponse({
+          success: false,
+          error_code: 'not_found',
+          error: 'Person not found',
+        });
+      }
+      if ('wip_limit' in args) {
+        db.prepare(
+          'UPDATE board_people SET wip_limit = ? WHERE board_id = ? AND person_id = ?',
+        ).run((wip ?? null) as number | null, boardId, personId);
+      }
+      if (role !== undefined && role !== null) {
+        db.prepare(
+          'UPDATE board_people SET role = ? WHERE board_id = ? AND person_id = ?',
+        ).run((role as string).trim(), boardId, personId);
+      }
+      return jsonResponse({
+        success: true,
+        data: {
+          ok: true,
+          person_id: personId,
+          wip_limit: wip === undefined ? null : (wip as number | null),
+          role:
+            role === undefined || role === null ? null : (role as string).trim(),
+        },
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error_code: 'internal_error', error: msg });
+    }
+  },
+};
+
+registerTools([
+  apiUpdateBoardTool,
+  apiAddBoardPersonTool,
+  apiRemoveBoardPersonTool,
+  apiUpdateBoardPersonTool,
+]);
