@@ -118,6 +118,43 @@ export const apiUpdateSimpleTaskTool: McpToolDefinition = {
         )
         .get(taskId, boardId) as Record<string, unknown> | null;
       if (!existing) {
+        const visibleTask = engine.getTask(taskId) as Record<string, unknown> | null;
+        const visibleTaskBoardId = typeof visibleTask?.board_id === 'string' ? visibleTask.board_id : null;
+        if (visibleTask && visibleTaskBoardId && visibleTaskBoardId !== boardId) {
+          if (hasColumn || hasAssignee || hasLabels) {
+            return jsonResponse({
+              success: false,
+              error_code: 'not_found',
+              error: `Task not found: ${taskId}`,
+            });
+          }
+
+          const updates: Parameters<TaskflowEngine['update']>[0]['updates'] = {};
+          if (hasTitle) updates.title = args.title as string;
+          if (hasDescription && args.description !== null) updates.description = args.description as string;
+          if (hasPriority) {
+            const priorityMap: Record<string, 'low' | 'normal' | 'high' | 'urgent'> = {
+              urgent: 'urgent',
+              high: 'high',
+              normal: 'normal',
+              low: 'low',
+              urgente: 'urgent',
+              alta: 'high',
+              baixa: 'low',
+            };
+            updates.priority = priorityMap[(args.priority as string) ?? ''] ?? (args.priority as any);
+          }
+          if (hasDueDate) updates.due_date = (args.due_date as string | null | undefined) ?? null;
+
+          const result = engine.update({
+            board_id: boardId,
+            task_id: taskId,
+            sender_name: senderName,
+            updates,
+          });
+          return jsonResponse(result);
+        }
+
         return jsonResponse({
           success: false,
           error_code: 'not_found',

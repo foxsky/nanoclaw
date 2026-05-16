@@ -15,9 +15,9 @@
     "turn_index": 6,
     "context_mode": "fresh",
     "expected_behavior": {
-      "action": "read",
+      "action": "no-op",
       "task_ids": ["T10"],
-      "outbound_intent": "informational"
+      "outbound_intent": "not_found_or_unclear"
     }
   },
   {
@@ -62,6 +62,16 @@
     "context_mode": "chain",
     "source_jsonl": null,
     "prior_turn_depth": 1
+  },
+  {
+    "turn_index": 18,
+    "context_mode": "fresh",
+    "requires_state_snapshot": true,
+    "state_drift": {
+      "description": "Historical v1 moved P11.15 to waiting on April 24, but the available production snapshot already has P11.15 concluded on April 27.",
+      "evidence": "task_history for P11.15 shows the waiting state in the undo snapshot before the 2026-04-27 conclude; current row is column=done.",
+      "expected_with_historical_snapshot": "With a pre-April-24 snapshot, v2 should move P11.15 to waiting with the CAST reason."
+    }
   },
   {
     "turn_index": 19,

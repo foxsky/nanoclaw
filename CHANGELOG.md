@@ -6,6 +6,7 @@ For detailed release notes, see the [full changelog on the documentation site](h
 
 ## [Unreleased]
 
+- Closed the latest ASSE Phase 3 replay's real-divergence queue: metadata overlays now preserve corpus board/source fields, unavailable `messages.db#agent_turns` chain sources are classified as missing context instead of aborting the paid run, absent-note removals return a terminal no-op result, and delegated parent-board due-date edits route through the Taskflow engine instead of forwarding a false request. Final ASSE evidence has 17 direct semantic matches, 5 missing-context source gaps, 6 allocation-drift cases, 12 DB state-drift cases, and 0 remaining real divergences.
 - Fixed ASSE Phase 3 remaining divergence cases: delegated parent-board reassignments to parent-only people now return the v1 boundary message without mutating, and `task_details` can directly summarize related parent-board projects from a child board.
 - Tightened Phase 3 semantic comparison so business-boundary mutation attempts that do not change state are not counted as mutations, and informational project summaries count task IDs mentioned in outbound text.
 - Annotated ASSE P11 turn 20 as state drift: the available production snapshot has P11.11 rescheduled and P11.3 completed, so the old v1 overdue follow-up cannot be judged without an exact historical pre-turn DB snapshot.

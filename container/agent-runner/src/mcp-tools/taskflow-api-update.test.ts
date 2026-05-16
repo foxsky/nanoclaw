@@ -94,6 +94,43 @@ describe('api_update_simple_task MCP tool', () => {
     expect(result.error_code).toBe('not_found');
   });
 
+  it('updates visible delegated parent-board task fields through the engine path', async () => {
+    const now = new Date().toISOString();
+    const parentBoardId = 'board-parent';
+    db.exec(`ALTER TABLE boards ADD COLUMN parent_board_id TEXT`);
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS board_admins (
+         board_id TEXT NOT NULL, person_id TEXT NOT NULL, phone TEXT, admin_role TEXT NOT NULL,
+         PRIMARY KEY (board_id, person_id, admin_role)
+       );
+       INSERT INTO boards (id, short_code, name, board_role, group_folder, group_jid)
+       VALUES ('${parentBoardId}', 'SECI', 'Parent', 'standard', 'seci-taskflow', 'parent@g.us');
+       UPDATE boards SET parent_board_id = '${parentBoardId}' WHERE id = '${BOARD}';
+       INSERT INTO board_people (board_id, person_id, name, role) VALUES ('${parentBoardId}', 'alice', 'alice', 'member');
+       INSERT INTO tasks (
+         id, board_id, type, title, assignee, column, due_date,
+         requires_close_approval, child_exec_enabled, child_exec_board_id, child_exec_person_id,
+         created_at, updated_at
+       )
+       VALUES ('P11.11', '${parentBoardId}', 'simple', 'Delegated parent task', 'alice', 'waiting', '2026-05-29',
+               0, 1, '${BOARD}', 'alice', '${now}', '${now}')`,
+    );
+
+    const resp = await update({
+      board_id: BOARD,
+      task_id: 'P11.11',
+      sender_name: 'alice',
+      due_date: '2026-04-24',
+    });
+    const result = JSON.parse(resp.content[0].text);
+    expect(result.success).toBe(true);
+
+    const row = db
+      .prepare(`SELECT due_date FROM tasks WHERE board_id = ? AND id = 'P11.11'`)
+      .get(parentBoardId) as { due_date: string } | null;
+    expect(row?.due_date).toBe('2026-04-24');
+  });
+
   it('returns conflict when moving to done with close_approval required', async () => {
     db.prepare(`UPDATE tasks SET requires_close_approval = 1 WHERE id = ?`).run(taskId);
     const resp = await update({

@@ -205,18 +205,10 @@ export function inferPhase3Metadata(
   override?: Phase3TurnMetadata,
   options?: { useDefaultChainDepths?: boolean },
 ): Phase3TurnMetadata {
-  if (override) {
-    return {
-      ...override,
-      turn_index: override.turn_index ?? corpusIndex,
-      context_mode: override.context_mode ?? 'fresh',
-    };
-  }
-
   const useDefaultChainDepths = options?.useDefaultChainDepths ?? true;
   const depth = turn.prior_turn_depth ?? (useDefaultChainDepths ? DEFAULT_CHAIN_DEPTHS[corpusIndex] : undefined);
   const contextMode = turn.context_mode ?? (depth ? 'chain' : 'fresh');
-  return {
+  const inferred: Phase3TurnMetadata = {
     turn_index: corpusIndex,
     context_mode: contextMode,
     taskflow_board_id: turn.taskflow_board_id,
@@ -229,6 +221,17 @@ export function inferPhase3Metadata(
     expected_behavior: turn.expected_behavior,
     v1_bug: turn.v1_bug,
     state_drift: turn.state_drift,
+  };
+  if (!override) return inferred;
+  return {
+    ...inferred,
+    ...override,
+    turn_index: override.turn_index ?? inferred.turn_index,
+    context_mode: override.context_mode ?? inferred.context_mode,
+    expected_behavior: {
+      ...inferred.expected_behavior,
+      ...override.expected_behavior,
+    },
   };
 }
 
@@ -419,7 +422,7 @@ export function summarizeSemanticBehavior(
   const outboundIntent = classifyOutboundIntent(text);
   const failedMutationIntent = hasMutation &&
     (outboundIntent === 'asks_user' || outboundIntent === 'not_found_or_unclear') &&
-    /\b(n[aã]o encontr|n[aã]o localizada|n[aã]o existe|confirma|confirmar)\b/i.test(text) &&
+    /\b(n[aã]o (?:foi )?encontr\w*|n[aã]o localizada|n[aã]o existe|confirma|confirmar)\b/i.test(text) &&
     !/\b(j[aá]|foi|foram)\b[\s\S]{0,80}\b(atualizad[ao]?|adicionad[ao]?|registrad[ao]?)\b/i.test(text);
   const blockedMutationIntent = hasMutation &&
     outboundIntent === 'informational' &&
@@ -436,6 +439,7 @@ export function summarizeSemanticBehavior(
   if (hasForward) action = 'forward';
   else if (effectiveHasMutation) action = 'mutate';
   else if (hasRead && asks && outboundIntent === 'asks_user' && /\b(voc[eê]\s+quis\s+dizer|preciso que voc[eê] confirme|confirme o ID|me confirma)\b/i.test(text)) action = 'ask';
+  else if (hasRead && asks && outboundIntent === 'asks_user' && /\b(em qual tarefa|a qual tarefa|qual tarefa devo|qual tarefa voc[eê])\b/i.test(text)) action = 'ask';
   else if (hasRead) action = 'read';
   else if (textTaskIds.length > 0 && outboundIntent === 'informational') action = 'read';
   else if (asks && outboundIntent === 'asks_user') action = 'ask';
@@ -472,19 +476,19 @@ export function classifyOutboundIntent(text: string): string {
   if (!text.trim()) return 'none';
   if (/\bAPI Error:\s*\d{3}\b/i.test(text)) return 'provider_error';
   if (
-    /\b(n[aã]o encontr\w*|n[aã]o localizada|n[aã]o existe)\b/i.test(text) &&
+    /\b(n[aã]o (?:foi )?encontr\w*|n[aã]o localizada|n[aã]o existe)\b/i.test(text) &&
     /\b(?:encontrei\s+[\s\S]{0,80})?(relacionad[ao]s?|candidat[ao]s?|op[cç][oõ]es)\b/i.test(text) &&
     extractTaskIdsFromText(text).length > 0
   ) {
     return 'informational';
   }
   if (
-    /\b(n[aã]o encontr\w*|n[aã]o localizada|n[aã]o existe)\b/i.test(text) &&
+    /\b(n[aã]o (?:foi )?encontr\w*|n[aã]o localizada|n[aã]o existe)\b/i.test(text) &&
     /\b(voc[eê]\s+quis\s+dizer|preciso que voc[eê] confirme|confirme o ID|me confirma)\b/i.test(text)
   ) {
     return 'asks_user';
   }
-  if (/\b(n[aã]o encontr\w*|n[aã]o localizada|n[aã]o existe)\b/i.test(text)) return 'not_found_or_unclear';
+  if (/\b(n[aã]o (?:foi )?encontr\w*|n[aã]o localizada|n[aã]o existe)\b/i.test(text)) return 'not_found_or_unclear';
   if (/\b(encaminh|enviei|detalhes.*encaminhados)\b/i.test(text)) return 'forward_confirmation';
   if (
     /\b(?:Em atraso|Vence hoje|Pr[oó]ximas A[cç][oõ]es|Inbox|Aguardando|Conclu[ií]das)\s*:/i.test(text) &&
@@ -690,7 +694,16 @@ function isUnregisteredJidForward(
 
 function isChainTurnWithoutSource(turn: Phase3TurnResult): boolean {
   const md = turn.phase3?.metadata;
-  return md?.context_mode === 'chain' && !md.source_jsonl;
+  const unavailableSource = !md?.source_jsonl ||
+    md.source_jsonl.includes('messages.db#') ||
+    md.source_jsonl.startsWith('messages.db');
+  return (
+    md?.context_mode === 'chain' &&
+    unavailableSource &&
+    turn.v2.tools.length === 0 &&
+    turn.v2.outbound.length === 0 &&
+    turn.v2.settle_reason === 'missing_context_not_run'
+  );
 }
 
 function usedRawSqlite(turn: Phase3TurnResult): boolean {
@@ -767,10 +780,9 @@ function isReadOnlyExtra(turn: Phase3TurnResult, matches: SemanticComparison['ma
 }
 
 // Each rule's predicate is checked in priority order; the first hit wins.
-// Ordering is load-bearing: snapshot_missing precedes everything else so
-// state-sensitive turns don't get classified as bugs; destination wiring
-// precedes missing_context so the same gap doesn't change class depending
-// on whether chain metadata happens to be set.
+// Ordering is load-bearing: missing-context/no-outbound/provider cases must
+// be surfaced before normal semantic matching, and snapshot_missing precedes
+// state-sensitive bug classifications.
 type ClassificationRule = {
   test: (
     turn: Phase3TurnResult,
@@ -787,6 +799,13 @@ const CLASSIFICATION_RULES: ClassificationRule[] = [
     result: {
       kind: 'provider_error',
       note: 'Replay hit a provider/API error, so this turn must be re-run before behavior can be judged.',
+    },
+  },
+  {
+    test: (t) => isChainTurnWithoutSource(t),
+    result: {
+      kind: 'missing_context',
+      note: 'Turn requires context-chain replay but no source JSONL is available.',
     },
   },
   {
@@ -822,13 +841,6 @@ const CLASSIFICATION_RULES: ClassificationRule[] = [
     result: {
       kind: 'destination_registration_gap',
       note: 'v1 forwarded to a raw JID; v2 has no agent_destinations entry for it. Register the destination (or rely on prod wiring) — not a v2 product bug.',
-    },
-  },
-  {
-    test: (t) => isChainTurnWithoutSource(t),
-    result: {
-      kind: 'missing_context',
-      note: 'Turn requires context-chain replay but no source JSONL is available.',
     },
   },
   {
@@ -883,6 +895,12 @@ function classifySemanticComparison(
     return {
       kind: 'provider_error',
       note: 'Replay hit a provider/API error, so this turn must be re-run before behavior can be judged.',
+    };
+  }
+  if (isChainTurnWithoutSource(turn)) {
+    return {
+      kind: 'missing_context',
+      note: 'Turn requires context-chain replay but no source JSONL is available.',
     };
   }
   if (isNoOutboundTimeout(turn, expected, actual)) {

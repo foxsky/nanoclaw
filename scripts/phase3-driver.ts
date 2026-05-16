@@ -155,6 +155,36 @@ function runPhase2Driver(metadata: Phase3TurnMetadata, args: Args): void {
   }
 }
 
+function chainSourceUnavailable(metadata: Phase3TurnMetadata): boolean {
+  if (metadata.context_mode !== 'chain') return false;
+  if (!metadata.source_jsonl) return true;
+  return metadata.source_jsonl.includes('messages.db#') || metadata.source_jsonl.startsWith('messages.db');
+}
+
+function syntheticMissingContextResult(corpusTurn: Phase3CorpusTurn, metadata: Phase3TurnMetadata): Phase3TurnResult {
+  const raw = corpusTurn as any;
+  const parsed = Array.isArray(raw.parsed_messages) ? raw.parsed_messages[0] : undefined;
+  return {
+    turn_index: metadata.turn_index,
+    text: parsed?.text ?? raw.user_message ?? '',
+    v1: {
+      tools: Array.isArray(raw.tool_uses)
+        ? raw.tool_uses.map((tool: any) => ({ name: tool.tool_name, input: tool.input }))
+        : [],
+      final_response: raw.final_response ?? raw.outbound_text ?? null,
+    },
+    v2: {
+      tools: [],
+      outbound: [],
+      settle_reason: 'missing_context_not_run',
+    },
+    phase3: {
+      metadata,
+      db_snapshot_status: 'not_requested',
+    },
+  };
+}
+
 function readPhase2TargetResult(phase2Out: string, turnIndex: number): Phase3TurnResult {
   const parsed = JSON.parse(fs.readFileSync(phase2Out, 'utf8'));
   const rows: Phase3TurnResult[] = Array.isArray(parsed) ? parsed : [parsed];
@@ -197,6 +227,13 @@ function main(): void {
   const done = new Set(results.map((row) => row.turn_index));
   for (const metadata of plan) {
     if (done.has(metadata.turn_index)) continue;
+    if (chainSourceUnavailable(metadata)) {
+      const row = syntheticMissingContextResult(corpus.turns[metadata.turn_index], metadata);
+      results.push(row);
+      saveResults(args.out, results);
+      console.log(`Phase 3 skipped turn ${metadata.turn_index} as missing context source → ${args.out}`);
+      continue;
+    }
     const run = () => {
       const restoreStatus = restoreDbSnapshot(metadata.state_snapshot, DATA_DIR, metadata.requires_state_snapshot === true);
       runPhase2Driver(metadata, args);

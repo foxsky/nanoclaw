@@ -91,7 +91,7 @@ export const apiTaskEditNoteTool: McpToolDefinition = {
 export const apiTaskRemoveNoteTool: McpToolDefinition = {
   tool: {
     name: 'api_task_remove_note',
-    description: 'Remove a note from a task; delegates to engine.apiRemoveNote. Preserve board-prefixed task IDs exactly, e.g. SEC-T41 must stay SEC-T41, not T41.',
+    description: 'Remove a note from a task; delegates to engine.apiRemoveNote. Preserve board-prefixed task IDs exactly, e.g. SEC-T41 must stay SEC-T41, not T41. If the note is already absent, the tool returns success with no_op=true; tell the user it was not found and do not retry or forward the request.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -118,6 +118,21 @@ export const apiTaskRemoveNoteTool: McpToolDefinition = {
       sender_is_service: parsed.senderIsService,
       note_id: args.note_id,
     });
+    if (
+      result.success === false &&
+      (result as any).error_code === 'validation_error' &&
+      typeof result.error === 'string' &&
+      /^Note #\d+ not found\./.test(result.error)
+    ) {
+      return jsonResponse({
+        success: true,
+        no_op: true,
+        reason: 'note_not_found',
+        task_id: parsed.taskId,
+        note_id: args.note_id,
+        formatted_response: `A nota #${args.note_id} não foi encontrada em ${parsed.taskId}.`,
+      });
+    }
     return jsonResponse(result);
   },
 };

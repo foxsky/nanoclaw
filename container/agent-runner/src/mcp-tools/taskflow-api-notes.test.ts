@@ -169,6 +169,22 @@ describe('api_task_remove_note MCP tool', () => {
     expect(JSON.parse(resp.content[0].text).success).toBe(true);
   });
 
+  it('returns a no-op success when the note is already absent', async () => {
+    const { apiTaskRemoveNoteTool } = await import('./taskflow-api-notes.ts');
+    const resp = await apiTaskRemoveNoteTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      sender_name: 'alice',
+      sender_is_service: true,
+      note_id: 99,
+    });
+    const result = JSON.parse(resp.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.no_op).toBe(true);
+    expect(result.reason).toBe('note_not_found');
+    expect(result.formatted_response).toContain('nota #99');
+  });
+
   it('rejects non-integer note_id', async () => {
     const { apiTaskRemoveNoteTool } = await import('./taskflow-api-notes.ts');
     const resp = await apiTaskRemoveNoteTool.handler({

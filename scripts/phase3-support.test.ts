@@ -40,17 +40,32 @@ describe('Phase 3 metadata inference', () => {
   });
 
   it('honors explicit metadata overrides', () => {
-    const meta = inferPhase3Metadata({}, 22, {
+    const meta = inferPhase3Metadata({
+      taskflow_board_id: 'board-asse-seci-taskflow',
+      expected_behavior: {
+        action: 'read',
+        task_ids: ['T10'],
+      },
+    }, 22, {
       turn_index: 22,
       context_mode: 'chain',
       prior_turn_depth: 3,
       source_jsonl: 'explicit.jsonl',
       source_turn_index: 99,
+      expected_behavior: {
+        outbound_intent: 'informational',
+      },
     });
 
     expect(meta.prior_turn_depth).toBe(3);
     expect(meta.source_jsonl).toBe('explicit.jsonl');
     expect(meta.source_turn_index).toBe(99);
+    expect(meta.taskflow_board_id).toBe('board-asse-seci-taskflow');
+    expect(meta.expected_behavior).toEqual({
+      action: 'read',
+      task_ids: ['T10'],
+      outbound_intent: 'informational',
+    });
   });
 
   it('can disable original-corpus default chain depths for generated corpuses', () => {
@@ -329,6 +344,58 @@ describe('Phase 3 semantic comparison', () => {
     expect(compareSemanticTurn(turn).classification.kind).toBe('no_outbound_timeout');
   });
 
+  it('classifies chain turns with no source JSONL as missing context before no-outbound timeout', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 4,
+      text: 'Nota: contexto depende da conversa anterior',
+      v1: {
+        tools: [],
+        final_response: '✅ T11 atualizada.',
+      },
+      v2: {
+        tools: [],
+        outbound: [],
+        settle_reason: 'missing_context_not_run',
+      },
+      phase3: {
+        metadata: {
+          turn_index: 4,
+          context_mode: 'chain',
+          source_jsonl: undefined,
+          prior_turn_depth: 1,
+        },
+      },
+    };
+
+    expect(compareSemanticTurn(turn).classification.kind).toBe('missing_context');
+  });
+
+  it('classifies chain turns with messages.db pseudo-sources as missing context', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 37,
+      text: 'sim',
+      v1: {
+        tools: [],
+        final_response: '✅ T11 atualizada.',
+      },
+      v2: {
+        tools: [],
+        outbound: [],
+        settle_reason: 'missing_context_not_run',
+      },
+      phase3: {
+        metadata: {
+          turn_index: 37,
+          context_mode: 'chain',
+          source_jsonl: 'messages.db#agent_turns/abc',
+          prior_turn_depth: 1,
+        },
+      },
+    };
+
+    expect(compareSemanticTurn(turn).classification.kind).toBe('missing_context');
+  });
+
   it('matches registered destination aliases for raw v1 JID recipients', () => {
     const turn: Phase3TurnResult = {
       turn_index: 29,
@@ -566,6 +633,16 @@ describe('Phase 3 semantic comparison', () => {
     expect(summary.action).toBe('read');
   });
 
+  it('keeps read-grounded missing-task-note replies classified as ask', () => {
+    const summary = summarizeSemanticBehavior(
+      [{ name: 'mcp__nanoclaw__api_query', input: { query: 'person_tasks', person_name: 'Lucas' } }],
+      [],
+      'Lucas, recebi a nota. A qual tarefa devo vinculá-la?',
+    );
+    expect(summary.action).toBe('ask');
+    expect(summary.outbound_intent).toBe('asks_user');
+  });
+
   // No tools + asks pattern still resolves to ask. This guards against the
   // priority change above accidentally swallowing pure clarification turns.
   it('still classifies pure clarification turns as ask', () => {
@@ -727,6 +804,19 @@ describe('Phase 3 state-drift classifications', () => {
     expect(comparison.actual.action).toBe('ask');
     expect(comparison.actual.mutation_types).toEqual([]);
     expect(comparison.classification.kind).toBe('ask_context_hint_gap');
+  });
+
+  it('treats a no-op note removal where the note was not found as non-mutating behavior', () => {
+    const summary = summarizeSemanticBehavior(
+      [
+        { name: 'mcp__nanoclaw__api_task_remove_note', input: { task_id: 'T10', note_id: 7 } },
+      ],
+      [{ kind: 'chat', content: '{"text":"A nota #7 não foi encontrada na tarefa T10."}' }],
+    );
+
+    expect(summary.action).toBe('no-op');
+    expect(summary.mutation_types).toEqual([]);
+    expect(summary.outbound_intent).toBe('not_found_or_unclear');
   });
 
   it('classifies read-only task-set mismatches without restored snapshots as state drift', () => {
