@@ -1,5 +1,13 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-05-16 — Phase 1 MCP tools: `api_update_board` (1 of 4 board-config)
+
+First of the four Phase-1 board-config tools that unblock the tf-mcontrol endpoint migration. New `container/agent-runner/src/mcp-tools/taskflow-api-board.ts` + `apiUpdateBoardTool`, registered in **both** the tf-mcontrol entrypoint (`taskflow-server-entry.ts`) and the in-container barrel (`index.ts`).
+
+Pure-SQL parity with FastAPI `PATCH /api/v1/boards/{id}` (`main.py:2744`) + `UpdateBoardPayload` validators (`main.py:268-288`) — no engine method (mirrors `api_update_simple_task`'s handler-owned pattern): `name` trimmed, empty-after-trim → `validation_error`; `description` trimmed, whitespace/empty → `NULL`; explicit `null`/absent `name` skipped; **no-op (no name/description) returns the row unchanged with no `updated_at` bump**; otherwise `updated_at = datetime('now')` + return the **flat board row** (not a `{board:…}` wrapper). Structured `{success:false, error_code, error}` (`validation_error` / `not_found` / `internal_error`) per the 0i contract. **No `sender_name`** — board endpoints resolve no actor; owner auth stays FastAPI-side before `call_mcp_mutation` (Codex pre-impl review findings 2–4, 7). TDD: RED (module-not-found) → GREEN 8/8; container `tsc --noEmit` clean; 174/0 regression on entry + taskflow tool tests.
+
+Remaining Phase-1 tools (next): `api_add_board_person`, `api_remove_board_person`, `api_update_board_person`.
+
 ## 2026-05-15 — MCP-engine migration: 0f decided, 0h-v2 blocker found (tf-mcontrol coordination)
 
 Cross-repo coordination work on the tf-mcontrol FastAPI→MCP-engine migration, which is gated on two nanoclaw-side Phase-0 decisions. **No skill/engine code shipped this session** — the deliverable is the decisions, a published MCP-tool contract, and a runtime blocker, all recorded in tf-mcontrol's v2 plan doc (`docs/plans/2026-05-15-mcp-engine-migration-v2.md`, committed tf-mcontrol `c49c440`). Authoritative-doc note: the `2026-05-14` plan is superseded/v1-anchored and the on-disk `HANDOFF-from-tf-mcontrol.md` is also v1-anchored — the `2026-05-15` v2 doc is the live coordination surface.

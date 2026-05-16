@@ -23,6 +23,7 @@ import './taskflow-api-read.js';
 import './taskflow-api-mutate.js';
 import './taskflow-api-update.js';
 import './taskflow-api-notes.js';
+import './taskflow-api-board.js';
 import { startMcpServer } from './server.js';
 
 const dbIdx = process.argv.indexOf('--db');
