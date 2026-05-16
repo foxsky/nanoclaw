@@ -80,26 +80,37 @@ export const apiTaskAddCommentTool: McpToolDefinition = {
         : authorId;
     const message = args.message.trim();
 
-    const engine = new TaskflowEngine(getTaskflowDb(), boardId);
-    const result = engine.apiAddTaskComment({
-      board_id: boardId,
-      task_id: taskId,
-      author_id: authorId,
-      author_name: authorName,
-      message,
-    });
-    if (!result.success) {
-      return jsonResponse({
-        success: false,
-        error_code: (result as { error_code?: string }).error_code,
-        error: result.error,
+    // Engine call + notification normalization wrapped in try/catch like
+    // every sibling FastAPI tool (api_update_simple_task etc.): an
+    // engine-side throw MUST become a structured {success:false,
+    // error_code:'internal_error'} envelope, never escape as a JSON-RPC
+    // error (which FastAPI's parse_mcp_mutation_result rejects as
+    // "missing boolean success" → opaque 503).
+    try {
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      const result = engine.apiAddTaskComment({
+        board_id: boardId,
+        task_id: taskId,
+        author_id: authorId,
+        author_name: authorName,
+        message,
       });
+      if (!result.success) {
+        return jsonResponse({
+          success: false,
+          error_code: (result as { error_code?: string }).error_code,
+          error: result.error,
+        });
+      }
+      return jsonResponse({
+        success: true,
+        data: result.data,
+        notification_events: normalizeEngineNotificationEvents(result),
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error_code: 'internal_error', error: msg });
     }
-    return jsonResponse({
-      success: true,
-      data: result.data,
-      notification_events: normalizeEngineNotificationEvents(result),
-    });
   },
 };
 

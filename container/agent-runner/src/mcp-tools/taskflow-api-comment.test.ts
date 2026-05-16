@@ -168,6 +168,41 @@ describe('api_task_add_comment MCP tool (engine-backed)', () => {
     }
   });
 
+  it('an engine-side throw surfaces as a structured {success:false,error_code:internal_error} envelope — never an escaped exception', async () => {
+    // The .61 503 root cause: the golden runs the MCP server against
+    // conftest `_base_schema()` whose `board_people` has NO
+    // `notification_group_jid`; for an assignee'd task the engine's
+    // notification SELECT throws. Every sibling FastAPI tool wraps the
+    // engine call in try/catch → a structured envelope; this one didn't,
+    // so the throw escaped as JSON-RPC -32603 → FastAPI
+    // `parse_mcp_mutation_result` "missing boolean success" → 503.
+    setVerbatimIds(true);
+    try {
+      db.exec('DROP TABLE board_people');
+      db.exec(
+        `CREATE TABLE board_people (board_id TEXT NOT NULL, person_id TEXT NOT NULL, name TEXT NOT NULL, phone TEXT, role TEXT, wip_limit INTEGER, PRIMARY KEY (board_id, person_id))`,
+      );
+      db.prepare(
+        `INSERT INTO board_people (board_id, person_id, name) VALUES (?, 'person-1', 'Alice')`,
+      ).run(SEED);
+      db.prepare(
+        `INSERT INTO tasks (id, board_id, title, assignee, created_at, updated_at) VALUES ('task-x', ?, 'X', 'Alice', '2026-01-01', '2026-01-01')`,
+      ).run(SEED);
+      const r = await call({
+        board_id: SEED,
+        task_id: 'task-x',
+        author_id: 'taskflow-api',
+        author_name: 'taskflow-api',
+        message: 'c',
+      });
+      expect(r.success).toBe(false);
+      expect(r.error_code).toBe('internal_error');
+      expect(typeof r.error).toBe('string');
+    } finally {
+      setVerbatimIds(false);
+    }
+  });
+
   it('passes through engine not_found for a missing task', async () => {
     const r = await call({
       board_id: SEED,
