@@ -8205,6 +8205,56 @@ export class TaskflowEngine {
     };
   }
 
+  /**
+   * Shared add-person core (single-engine rework, design Revision 2.1 +
+   * R2.9 Q1): DB-only, ZERO auth, caller-owned transaction. Takes an
+   * already-derived `personId` and an already-canonicalized `phone`
+   * (person-id derivation differs per caller — WhatsApp slugs the name,
+   * FastAPI uses phone-digits/uuid — so it stays in the wrapper, per
+   * R2.1.a "cores take a resolved id, no person resolution"). The
+   * WhatsApp-only `auto_provision_request` (hierarchy boards) is built
+   * by the `api_admin` wrapper, NOT here — FastAPI api_service rejects
+   * delegating boards entirely (R2.2/R2.9 Q3). WhatsApp byte-output is
+   * guarded by taskflow-api-admin-byte-oracle.test.ts (must stay
+   * byte-identical).
+   */
+  private _addBoardPersonCore(
+    personId: string,
+    personName: string,
+    phone: string | null,
+    params: AdminParams,
+  ): AdminResult {
+    /* Check for duplicate */
+    const existing = this.db
+      .prepare(
+        `SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?`,
+      )
+      .get(this.boardId, personId);
+    if (existing) {
+      return { success: false, error: `Person "${personName}" (${personId}) already exists on this board.` };
+    }
+
+    this.db
+      .prepare(
+        `INSERT INTO board_people (board_id, person_id, name, phone, role, wip_limit)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        this.boardId,
+        personId,
+        personName,
+        phone,
+        params.role ?? 'member',
+        params.wip_limit ?? null,
+      );
+
+    return {
+      success: true,
+      person_id: personId,
+      data: { name: personName, person_id: personId },
+    };
+  }
+
   /* ---------------------------------------------------------------- */
   /*  admin — taskflow_admin                                           */
   /* ---------------------------------------------------------------- */
@@ -8291,16 +8341,6 @@ export class TaskflowEngine {
             .replace(/[^a-z0-9]+/g, '-')
             .replace(/^-|-$/g, '');
 
-          /* Check for duplicate */
-          const existing = this.db
-            .prepare(
-              `SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?`,
-            )
-            .get(this.boardId, personId);
-          if (existing) {
-            return { success: false, error: `Person "${params.person_name}" (${personId}) already exists on this board.` };
-          }
-
           // Canonicalize at the write boundary so stored rows are comparable
           // across boards without per-read prefix normalization. See
           // src/phone.ts on the host side for the full contract.
@@ -8308,20 +8348,18 @@ export class TaskflowEngine {
             ? normalizePhone(params.phone) || params.phone
             : null;
 
-          this.db
-            .prepare(
-              `INSERT INTO board_people (board_id, person_id, name, phone, role, wip_limit)
-               VALUES (?, ?, ?, ?, ?, ?)`,
-            )
-            .run(
-              this.boardId,
-              personId,
-              params.person_name,
-              normalizedPhone,
-              params.role ?? 'member',
-              params.wip_limit ?? null,
-            );
+          // Shared single-engine core: dup-check + insert (R2.9 Q1 slice).
+          // person_name is guaranteed non-empty by the guard above.
+          const result = this._addBoardPersonCore(
+            personId,
+            params.person_name,
+            normalizedPhone,
+            params,
+          );
+          if (!result.success) return result;
 
+          // auto_provision_request is WhatsApp-only (hierarchy boards);
+          // built here, never in the shared core (R2.2 / R2.9 Q3).
           let autoProvisionRequest: AdminResult['auto_provision_request'];
           if (params.phone && this.canDelegateDown()) {
             autoProvisionRequest = {
@@ -8335,14 +8373,9 @@ export class TaskflowEngine {
             };
           }
 
-          return {
-            success: true,
-            person_id: personId,
-            data: { name: params.person_name, person_id: personId },
-            ...(autoProvisionRequest
-              ? { auto_provision_request: autoProvisionRequest }
-              : {}),
-          };
+          return autoProvisionRequest
+            ? { ...result, auto_provision_request: autoProvisionRequest }
+            : result;
         }
 
         /* ---- remove_person ---- */
