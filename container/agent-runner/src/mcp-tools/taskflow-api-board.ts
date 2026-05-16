@@ -116,4 +116,102 @@ export const apiUpdateBoardTool: McpToolDefinition = {
   },
 };
 
-registerTools([apiUpdateBoardTool]);
+/** Parity: FastAPI `POST /api/v1/boards/{id}/people` (main.py:2786).
+ *  Direct-SQL — deliberately NOT the engine `register_person` path
+ *  (slug person_id, hierarchy auto-provision, different semantics). */
+export const apiAddBoardPersonTool: McpToolDefinition = {
+  tool: {
+    name: 'api_add_board_person',
+    description:
+      "Add a person to a board. person_id is the phone's digits, or a uuid4 when no phone. Owner authorization is enforced by the API layer before this tool runs.",
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+        name: { type: 'string' },
+        phone: { type: ['string', 'null'] },
+        role: { type: 'string' },
+      },
+      required: ['board_id', 'name'],
+    },
+  },
+  async handler(args) {
+    args = normalizeAgentIds(args);
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) {
+      return jsonResponse({
+        success: false,
+        error_code: 'validation_error',
+        error: 'board_id: required string',
+      });
+    }
+    if (typeof args.name !== 'string' || args.name.trim() === '') {
+      return jsonResponse({
+        success: false,
+        error_code: 'validation_error',
+        error: 'name is required',
+      });
+    }
+    const name = args.name.trim();
+
+    // phone: str(phone).strip() if present, else None (mirrors FastAPI).
+    const phone =
+      args.phone === undefined || args.phone === null
+        ? null
+        : String(args.phone).trim();
+    // role: body.get("role","member") or "member" — absent/falsy → member;
+    // not trimmed.
+    const role =
+      args.role === undefined || args.role === null || args.role === ''
+        ? 'member'
+        : String(args.role);
+
+    let personId: string;
+    if (phone) {
+      personId = phone.replace(/[^0-9]/g, '');
+      if (personId === '') {
+        return jsonResponse({
+          success: false,
+          error_code: 'validation_error',
+          error: 'phone must contain digits',
+        });
+      }
+    } else {
+      personId = crypto.randomUUID();
+    }
+
+    try {
+      const db = getTaskflowDb();
+      const board = db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
+      if (!board) {
+        return jsonResponse({
+          success: false,
+          error_code: 'not_found',
+          error: 'Board not found',
+        });
+      }
+      const existing = db
+        .prepare('SELECT person_id FROM board_people WHERE board_id = ? AND person_id = ?')
+        .get(boardId, personId);
+      if (existing) {
+        return jsonResponse({
+          success: false,
+          error_code: 'conflict',
+          error: 'Person already on this board',
+        });
+      }
+      db.prepare(
+        'INSERT INTO board_people (board_id, person_id, name, phone, role) VALUES (?, ?, ?, ?, ?)',
+      ).run(boardId, personId, name, phone || null, role);
+      return jsonResponse({
+        success: true,
+        data: { ok: true, person_id: personId, name, phone, role },
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error_code: 'internal_error', error: msg });
+    }
+  },
+};
+
+registerTools([apiUpdateBoardTool, apiAddBoardPersonTool]);

@@ -42,6 +42,18 @@ beforeEach(() => {
     `INSERT INTO boards (id, board_role, name, description, org_id, owner_user_id, created_at, updated_at)
      VALUES (?, 'hierarchy', 'Original', 'old desc', 'o1', 'u1', '2026-01-01 00:00:00', '2026-01-01 00:00:00')`,
   ).run(BOARD);
+  db.exec(`
+    CREATE TABLE board_people (
+      board_id TEXT,
+      person_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      phone TEXT,
+      role TEXT DEFAULT 'member',
+      wip_limit INTEGER,
+      notification_group_jid TEXT,
+      PRIMARY KEY (board_id, person_id)
+    );
+  `);
 });
 
 afterEach(() => {
@@ -109,6 +121,100 @@ describe('api_update_board MCP tool', () => {
 
   it('returns not_found for a missing board', async () => {
     const r = await update({ board_id: 'board-nope', name: 'X' });
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('not_found');
+  });
+});
+
+/**
+ * Parity: FastAPI `POST /api/v1/boards/{id}/people` (main.py:2786).
+ *   - name required, trimmed, non-empty
+ *   - phone optional; person_id = digits-only(phone) OR uuid4 if no phone
+ *   - phone with no digits → 400
+ *   - role default 'member' (falsy → 'member'), NOT trimmed
+ *   - dup (board_id, person_id) → 409
+ *   - response echo {ok, person_id, name, phone, role} (golden status 201)
+ *   - no sender_name; owner auth FastAPI-side
+ *   - must NOT reuse engine register_person (slug id / hierarchy
+ *     auto-provision) — direct-SQL parity (Codex finding 5)
+ */
+async function addPerson(args: Record<string, unknown>) {
+  const { apiAddBoardPersonTool } = await import('./taskflow-api-board.ts');
+  return JSON.parse((await apiAddBoardPersonTool.handler(args)).content[0].text);
+}
+
+describe('api_add_board_person MCP tool', () => {
+  it('exports a tool named api_add_board_person', async () => {
+    const { apiAddBoardPersonTool } = await import('./taskflow-api-board.ts');
+    expect(apiAddBoardPersonTool.tool.name).toBe('api_add_board_person');
+  });
+
+  it('derives person_id from phone digits, echoes {ok,person_id,name,phone,role}, inserts the row', async () => {
+    const r = await addPerson({
+      board_id: BOARD,
+      name: 'Alice',
+      phone: '+55 (85) 99999-0001',
+      role: 'Tecnico',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data).toEqual({
+      ok: true,
+      person_id: '5585999990001',
+      name: 'Alice',
+      phone: '+55 (85) 99999-0001',
+      role: 'Tecnico',
+    });
+    const row = db
+      .prepare('SELECT name, phone, role FROM board_people WHERE board_id = ? AND person_id = ?')
+      .get(BOARD, '5585999990001') as { name: string; phone: string; role: string };
+    expect(row).toEqual({ name: 'Alice', phone: '+55 (85) 99999-0001', role: 'Tecnico' });
+  });
+
+  it('generates a uuid person_id when no phone, stores phone NULL, echoes phone null', async () => {
+    const r = await addPerson({ board_id: BOARD, name: 'Bob' });
+    expect(r.success).toBe(true);
+    expect(r.data.person_id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(r.data.phone).toBeNull();
+    expect(r.data.role).toBe('member');
+    const row = db
+      .prepare('SELECT phone FROM board_people WHERE board_id = ? AND person_id = ?')
+      .get(BOARD, r.data.person_id) as { phone: string | null };
+    expect(row.phone).toBeNull();
+  });
+
+  it('rejects missing/empty name with validation_error', async () => {
+    expect((await addPerson({ board_id: BOARD })).error_code).toBe('validation_error');
+    expect((await addPerson({ board_id: BOARD, name: '   ' })).error_code).toBe(
+      'validation_error',
+    );
+  });
+
+  it('rejects a phone with no digits (validation_error)', async () => {
+    const r = await addPerson({ board_id: BOARD, name: 'X', phone: 'abc-def' });
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('validation_error');
+  });
+
+  it('returns conflict when the person is already on the board', async () => {
+    await addPerson({ board_id: BOARD, name: 'Alice', phone: '5585999990001' });
+    const r = await addPerson({ board_id: BOARD, name: 'Alice again', phone: '5585999990001' });
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('conflict');
+  });
+
+  it('defaults role to member when absent or falsy', async () => {
+    expect((await addPerson({ board_id: BOARD, name: 'A', phone: '111' })).data.role).toBe(
+      'member',
+    );
+    expect(
+      (await addPerson({ board_id: BOARD, name: 'B', phone: '222', role: '' })).data.role,
+    ).toBe('member');
+  });
+
+  it('returns not_found for a missing board', async () => {
+    const r = await addPerson({ board_id: 'board-nope', name: 'A', phone: '999' });
     expect(r.success).toBe(false);
     expect(r.error_code).toBe('not_found');
   });
