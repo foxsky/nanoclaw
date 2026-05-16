@@ -2898,11 +2898,17 @@ export class TaskflowEngine {
       // assignee notification was dead for name-keyed tasks (Codex #1).
       const rawAssignee = (task.assignee as string | null) ?? null;
       if (rawAssignee) {
+        // `board_people.name` is NOT unique and can collide with
+        // another person's `person_id`. Order so an exact person_id
+        // match always wins over a name match, with a stable
+        // `person_id ASC` tiebreak among name duplicates — otherwise
+        // `.get()` returns an arbitrary rowid-order row and the WRONG
+        // person is notified (Codex #2).
         const person = this.db
           .prepare(
-            `SELECT person_id, notification_group_jid FROM board_people WHERE board_id = ? AND (person_id = ? OR name = ?)`,
+            `SELECT person_id, notification_group_jid FROM board_people WHERE board_id = ? AND (person_id = ? OR name = ?) ORDER BY (person_id = ?) DESC, person_id ASC LIMIT 1`,
           )
-          .get(taskBoardId, rawAssignee, rawAssignee) as
+          .get(taskBoardId, rawAssignee, rawAssignee, rawAssignee) as
           | { person_id: string; notification_group_jid: string | null }
           | undefined;
         if (person && person.person_id !== params.author_id) {

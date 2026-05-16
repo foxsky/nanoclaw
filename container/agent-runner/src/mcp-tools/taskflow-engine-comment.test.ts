@@ -181,6 +181,34 @@ describe('engine.apiAddTaskComment', () => {
     expect(r.notifications).toEqual([]);
   });
 
+  it('resolves a person_id-vs-name collision deterministically — person_id wins (Codex #2: no ORDER BY → wrong person)', () => {
+    // `board_people.name` is NOT unique and can collide with another
+    // person's person_id. With (person_id=? OR name=?) + bare .get()
+    // and no ORDER BY, SQLite returns an arbitrary (rowid-order) row →
+    // the WRONG person gets notified / wrong self-skip. Insert the
+    // name-collision row FIRST so a rowid-order .get() would pick it.
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name) VALUES (?, 'alpha', 'beta')`,
+    ).run(BOARD); // person 'alpha' whose NAME is 'beta' (inserted first)
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, notification_group_jid) VALUES (?, 'beta', 'Zeta', 'g-beta@x')`,
+    ).run(BOARD); // person whose person_id IS 'beta'
+    db.prepare(
+      `INSERT INTO tasks (id, board_id, title, assignee, created_at, updated_at) VALUES ('T-coll', ?, 'Collide', 'beta', '2026-01-01', '2026-01-01')`,
+    ).run(BOARD);
+    const r = comment({
+      task_id: 'T-coll',
+      author_id: 'alice',
+      author_name: 'Alice',
+      message: 'who gets pinged?',
+    }) as { success: true; notifications: Array<Record<string, unknown>> };
+    expect(r.notifications).toHaveLength(1);
+    // The person whose person_id === 'beta' must win, not the person
+    // merely *named* 'beta'.
+    expect(r.notifications[0].target_person_id).toBe('beta');
+    expect(r.notifications[0].notification_group_jid).toBe('g-beta@x');
+  });
+
   it('returns not_found for a missing task (FastAPI fetch_task_row 404 parity)', () => {
     const r = comment({
       task_id: 'NOPE',
