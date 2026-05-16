@@ -224,6 +224,20 @@ export function resolveProviderName(
   return (sessionProvider || containerConfigProvider || 'claude').toLowerCase();
 }
 
+export function replayContainerEnvArgs(env: NodeJS.ProcessEnv = process.env): string[] {
+  const args: string[] = [];
+  if (env.NANOCLAW_TOOL_USES_PATH) {
+    args.push('-e', `NANOCLAW_TOOL_USES_PATH=${env.NANOCLAW_TOOL_USES_PATH}`);
+  }
+  if (env.NANOCLAW_PHASE2_RAW_PROMPT === '1') {
+    args.push('-e', 'NANOCLAW_PHASE2_RAW_PROMPT=1');
+  }
+  if (env.NANOCLAW_PHASE_REPLAY_NOW) {
+    args.push('-e', `NANOCLAW_PHASE_REPLAY_NOW=${env.NANOCLAW_PHASE_REPLAY_NOW}`);
+  }
+  return args;
+}
+
 function resolveProviderContribution(
   session: Session,
   agentGroup: AgentGroup,
@@ -424,12 +438,7 @@ async function buildContainerArgs(
   args.push('-e', `TZ=${TIMEZONE}`);
 
   // Opt-in tool_use capture for the v1↔v2 comparator harness. Off in prod.
-  if (process.env.NANOCLAW_TOOL_USES_PATH) {
-    args.push('-e', `NANOCLAW_TOOL_USES_PATH=${process.env.NANOCLAW_TOOL_USES_PATH}`);
-  }
-  if (process.env.NANOCLAW_PHASE2_RAW_PROMPT === '1') {
-    args.push('-e', 'NANOCLAW_PHASE2_RAW_PROMPT=1');
-  }
+  args.push(...replayContainerEnvArgs());
 
   // v1 parity: MCP handlers host-inject board_id from this env so the agent
   // never has to construct it. Resolve via the boards table — folder→id is

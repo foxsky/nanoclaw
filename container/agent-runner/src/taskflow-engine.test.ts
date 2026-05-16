@@ -2784,7 +2784,7 @@ describe('TaskflowEngine', () => {
       expect(r.offer_register!.message).toContain('Giovanni');
     });
 
-    it('parent-board task reassign from child board reports write boundary before local registration', () => {
+    it('reassigns an exact parent-board task from a child board through the scoped MCP path', () => {
       const parentBoardId = 'board-parent-seci';
       const now = new Date().toISOString();
 
@@ -2814,16 +2814,50 @@ describe('TaskflowEngine', () => {
         confirmed: true,
       });
 
-      expect(r.success).toBe(false);
-      expect(r.offer_register).toBeUndefined();
-      expect(r.error).toContain('P11.11');
-      expect(r.error).toContain('quadro pai SECI');
-      expect(r.error).toContain('Rodrigo Lima');
+      expect(r.success).toBe(true);
+      expect(r.tasks_affected?.[0]?.task_id).toBe('P11.11');
 
       const parentTask = db
         .prepare(`SELECT assignee FROM tasks WHERE board_id = ? AND id = 'P11.11'`)
         .get(parentBoardId) as any;
-      expect(parentTask.assignee).toBe('person-1');
+      expect(parentTask.assignee).toBe('rodrigo-lima');
+    });
+
+    it('reassigns an exact parent-board task to a target registered on the child board', () => {
+      const parentBoardId = 'board-parent-seci';
+      const now = new Date().toISOString();
+
+      db.exec(
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'parent@g.us', 'seci-taskflow', 'standard', 0, 2, NULL, 'SECI', NULL)`,
+      );
+      db.exec(`UPDATE boards SET parent_board_id = '${parentBoardId}' WHERE id = '${BOARD_ID}'`);
+      db.exec(
+        `INSERT INTO board_people VALUES ('${parentBoardId}', 'person-1', 'Alexandre', '5585999990001', 'Dev', 3, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO board_admins VALUES ('${parentBoardId}', 'person-1', '5585999990001', 'manager', 1)`,
+      );
+      db.exec(
+        `INSERT INTO board_people VALUES ('${BOARD_ID}', 'maura-rodrigues-da-silva', 'Maura Rodrigues da Silva', '5585999990099', 'Dev', 3, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at)
+         VALUES ('T96', '${parentBoardId}', 'simple', 'Parent-only task', 'person-1', 'waiting', 1, '${now}', '${now}')`,
+      );
+
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: 'T96',
+        target_person: 'Maura',
+        sender_name: 'Alexandre',
+        confirmed: true,
+      });
+
+      expect(r.success).toBe(true);
+      const parentTask = db
+        .prepare(`SELECT assignee FROM tasks WHERE board_id = ? AND id = 'T96'`)
+        .get(parentBoardId) as any;
+      expect(parentTask.assignee).toBe('maura-rodrigues-da-silva');
     });
 
     it('reassign linked task → auto-relinks', () => {
@@ -7092,6 +7126,34 @@ describe('api task note wrappers', () => {
       .prepare(`SELECT board_id, task_id, action FROM task_history WHERE task_id = 'T41'`)
       .get() as { board_id: string; task_id: string; action: string };
     expect(history).toEqual({ board_id: 'board-sec', task_id: 'T41', action: 'updated' });
+  });
+
+  it('adds notes to exact parent-board task IDs when the sender is registered on the parent board', () => {
+    const now = new Date().toISOString();
+    db.exec(
+      `UPDATE boards SET parent_board_id = 'board-sec' WHERE id = '${BOARD_ID}';
+       INSERT INTO board_people VALUES ('board-sec', 'giovanni', 'Giovanni', '5585999990002', 'Dev', 3, NULL);
+       INSERT INTO board_people VALUES ('board-sec', 'maura', 'Maura', '5585999990009', 'Dev', 3, NULL);
+       INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at)
+       VALUES ('T96', 'board-sec', 'simple', 'Parent task', 'maura', 'next_action', 1, '${now}', '${now}')`,
+    );
+    const engine = new TaskflowEngine(db, BOARD_ID);
+
+    const result = engine.apiAddNote({
+      board_id: BOARD_ID,
+      task_id: 'T96',
+      sender_name: 'Giovanni',
+      text: 'Entrar em contato com o estagiário.',
+    }) as any;
+
+    expect(result.success).toBe(true);
+    expect(result.data.id).toBe('T96');
+    expect(result.data.board_id).toBe('board-sec');
+
+    const task = db
+      .prepare(`SELECT notes FROM tasks WHERE board_id = 'board-sec' AND id = 'T96'`)
+      .get() as { notes: string };
+    expect(JSON.parse(task.notes)[0].text).toBe('Entrar em contato com o estagiário.');
   });
 
   it('edits and removes notes on delegated tasks addressed by prefixed board ID', () => {

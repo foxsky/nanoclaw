@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveProviderName } from './container-runner.js';
+import { replayContainerEnvArgs, resolveProviderName } from './container-runner.js';
 
 describe('resolveProviderName', () => {
   it('prefers session over container config', () => {
@@ -23,5 +23,24 @@ describe('resolveProviderName', () => {
   it('treats empty string as unset (falls through)', () => {
     expect(resolveProviderName('', 'opencode')).toBe('opencode');
     expect(resolveProviderName(null, '')).toBe('claude');
+  });
+});
+
+describe('replayContainerEnvArgs', () => {
+  it('passes Phase 3 historical replay time into the container', () => {
+    expect(
+      replayContainerEnvArgs({
+        NANOCLAW_TOOL_USES_PATH: '/workspace/.tool-uses.jsonl',
+        NANOCLAW_PHASE2_RAW_PROMPT: '1',
+        NANOCLAW_PHASE_REPLAY_NOW: '2026-05-12T13:59:45.000Z',
+      }),
+    ).toEqual([
+      '-e',
+      'NANOCLAW_TOOL_USES_PATH=/workspace/.tool-uses.jsonl',
+      '-e',
+      'NANOCLAW_PHASE2_RAW_PROMPT=1',
+      '-e',
+      'NANOCLAW_PHASE_REPLAY_NOW=2026-05-12T13:59:45.000Z',
+    ]);
   });
 });

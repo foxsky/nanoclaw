@@ -60,6 +60,20 @@ describe('context timezone header', () => {
     expect(ctxIdx).toBeGreaterThanOrEqual(0);
     expect(msgsIdx).toBeGreaterThan(ctxIdx);
   });
+
+  it('includes replay date context when Phase 3 sets a historical now', () => {
+    const previous = process.env.NANOCLAW_PHASE_REPLAY_NOW;
+    process.env.NANOCLAW_PHASE_REPLAY_NOW = '2026-05-04T13:12:29.000Z';
+    try {
+      const result = formatMessages([]);
+      expect(result).toContain('now="2026-05-04T13:12:29.000Z"');
+      expect(result).toContain('today="2026-05-04"');
+      expect(result).toContain('weekday="segunda-feira"');
+    } finally {
+      if (previous === undefined) delete process.env.NANOCLAW_PHASE_REPLAY_NOW;
+      else process.env.NANOCLAW_PHASE_REPLAY_NOW = previous;
+    }
+  });
 });
 
 describe('Phase 2 replay raw prompt', () => {
@@ -73,6 +87,26 @@ describe('Phase 2 replay raw prompt', () => {
     } finally {
       if (previous === undefined) delete process.env.NANOCLAW_PHASE2_RAW_PROMPT;
       else process.env.NANOCLAW_PHASE2_RAW_PROMPT = previous;
+    }
+  });
+
+  it('adds replay date context around raw prompts only for Phase 3 historical replay', () => {
+    const previousRaw = process.env.NANOCLAW_PHASE2_RAW_PROMPT;
+    const previousNow = process.env.NANOCLAW_PHASE_REPLAY_NOW;
+    process.env.NANOCLAW_PHASE2_RAW_PROMPT = '1';
+    process.env.NANOCLAW_PHASE_REPLAY_NOW = '2026-05-12T13:59:45.000Z';
+    try {
+      const rawPrompt = '<messages><message sender="Alice">Criar tarefa. Prazo 14/05</message></messages>';
+      insertMessage('m1', 'chat', { sender: 'Alice', text: 'ignored', phase2RawPrompt: rawPrompt });
+      const result = formatMessages(getPendingMessages());
+      expect(result).toContain('now="2026-05-12T13:59:45.000Z"');
+      expect(result).toContain('today="2026-05-12"');
+      expect(result.endsWith(rawPrompt)).toBe(true);
+    } finally {
+      if (previousRaw === undefined) delete process.env.NANOCLAW_PHASE2_RAW_PROMPT;
+      else process.env.NANOCLAW_PHASE2_RAW_PROMPT = previousRaw;
+      if (previousNow === undefined) delete process.env.NANOCLAW_PHASE_REPLAY_NOW;
+      else process.env.NANOCLAW_PHASE_REPLAY_NOW = previousNow;
     }
   });
 

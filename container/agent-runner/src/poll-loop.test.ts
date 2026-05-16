@@ -386,6 +386,17 @@ describe('TaskFlow deterministic confirmation guards', () => {
     });
   });
 
+  it('splits exact-ID note plus same-task reassignment commands', () => {
+    expect(taskflowExactIdNoteCandidate(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Laizys', text: 'T96: adicionar nota: Entrar em contato com o estagiário. Atribuir T96 para Maura' }) }],
+      true,
+    )).toEqual({
+      taskId: 'T96',
+      noteText: 'Entrar em contato com o estagiário',
+      reassignTarget: 'Maura',
+    });
+  });
+
   it('does not treat normal board commands as missing-task title follow-ups', () => {
     const recent = [JSON.stringify({ text: 'Não encontrei T79: Task not found: T79' })];
     expect(taskflowMissingTaskFollowupCommand(

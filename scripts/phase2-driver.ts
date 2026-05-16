@@ -103,6 +103,11 @@ interface AgentTurnMessageRow {
   message_timestamp: string;
   content: string | null;
 }
+interface BotContextMessage {
+  sender: string;
+  time: string;
+  text: string;
+}
 
 interface Args {
   corpus: string;
@@ -285,6 +290,7 @@ async function driveContextTurn(
   text: string,
   sender: string,
   userMessage: string,
+  timestamp: string | undefined,
   tag: string,
 ): Promise<void> {
   const captureFile = path.join(sessionDir(AGENT_GROUP_ID, session.id), '.tool-uses.jsonl');
@@ -300,7 +306,7 @@ async function driveContextTurn(
   writeSessionMessage(AGENT_GROUP_ID, session.id, {
     id: messageId,
     kind: 'chat',
-    timestamp: new Date().toISOString(),
+    timestamp: timestamp || new Date().toISOString(),
     platformId: GROUP_JID,
     channelType: 'whatsapp',
     threadId: null,
@@ -439,13 +445,55 @@ function loadMessagesDbConversationTurn(db: Database.Database, turnId: string): 
   };
 }
 
+function priorBotMessageDepth(): number {
+  const raw = process.env.NANOCLAW_PHASE3_PRIOR_BOT_MESSAGE_DEPTH;
+  if (!raw) return 0;
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function botSenderName(raw: unknown): string {
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  if (!value || /^\d+$/.test(value) || value.includes('@')) return 'Case';
+  return value;
+}
+
+function loadPriorBotMessages(
+  db: Database.Database,
+  targetRow: AgentTurnRow,
+  depth: number,
+): BotContextMessage[] {
+  if (depth <= 0) return [];
+  const rows = db.prepare(`
+    SELECT sender_name, sender, timestamp, content
+      FROM messages
+     WHERE chat_jid = ?
+       AND timestamp < ?
+       AND is_bot_message = 1
+       AND content IS NOT NULL
+       AND trim(content) != ''
+     ORDER BY timestamp DESC
+     LIMIT ?
+  `).all(targetRow.chat_jid, targetRow.created_at, depth) as Array<{
+    sender_name: string | null;
+    sender: string | null;
+    timestamp: string;
+    content: string | null;
+  }>;
+  return rows.reverse().map((row) => ({
+    sender: botSenderName(row.sender_name ?? row.sender),
+    time: row.timestamp,
+    text: String(row.content ?? '').trim(),
+  }));
+}
+
 function resolveMessagesDbChain(
   corpus: Corpus,
   corpusPath: string,
   targetCorpusIdx: number,
   depth: number,
   sourceRoot: string,
-): { prior: ConversationTurn[]; target: ConversationTurn; corpusTurn: CuratedTurn } {
+): { prior: ConversationTurn[]; target: ConversationTurn; corpusTurn: CuratedTurn; botContext: BotContextMessage[] } {
   const corpusTurn = corpus.turns[targetCorpusIdx];
   if (!corpusTurn) throw new Error(`Corpus has no turn at index ${targetCorpusIdx}`);
   const targetTurnId = sourceTurnIdFromMessagesDbRef(corpusTurn.jsonl);
@@ -479,7 +527,8 @@ function resolveMessagesDbChain(
       .reverse()
       .map((row) => loadMessagesDbConversationTurn(db, row.id));
     const target = loadMessagesDbConversationTurn(db, targetRow.id);
-    return { prior, target, corpusTurn };
+    const botContext = loadPriorBotMessages(db, targetRow, priorBotMessageDepth());
+    return { prior, target, corpusTurn, botContext };
   } finally {
     db.close();
   }
@@ -494,7 +543,7 @@ function resolveChain(
   targetCorpusIdx: number,
   depth: number,
   sourceRoot: string,
-): { prior: ConversationTurn[]; target: ConversationTurn; corpusTurn: CuratedTurn } {
+): { prior: ConversationTurn[]; target: ConversationTurn; corpusTurn: CuratedTurn; botContext: BotContextMessage[] } {
   const corpusTurn = corpus.turns[targetCorpusIdx];
   if (!corpusTurn) throw new Error(`Corpus has no turn at index ${targetCorpusIdx}`);
   if (!corpusTurn.jsonl) throw new Error(`Corpus turn ${targetCorpusIdx} has no jsonl field`);
@@ -508,11 +557,11 @@ function resolveChain(
   if (!target) throw new Error(`Target turn index ${corpusTurn.turn_index} not present in ${absJsonl}`);
   const start = Math.max(0, corpusTurn.turn_index - depth);
   const prior = sourceTurns.slice(start, corpusTurn.turn_index);
-  return { prior, target, corpusTurn };
+  return { prior, target, corpusTurn, botContext: [] };
 }
 
 async function processChain(corpus: Corpus, corpusPath: string, targetCorpusIdx: number, depth: number, sourceRoot: string): Promise<TurnResult> {
-  const { prior, target, corpusTurn } = resolveChain(corpus, corpusPath, targetCorpusIdx, depth, sourceRoot);
+  const { prior, target, corpusTurn, botContext } = resolveChain(corpus, corpusPath, targetCorpusIdx, depth, sourceRoot);
   const targetParsed = corpusTurn.parsed_messages[0];
   console.log(`\n=== Chain to corpus turn ${targetCorpusIdx} (${corpusTurn.category}) ===`);
   console.log(`  source: ${corpusTurn.jsonl}#${corpusTurn.turn_index}`);
@@ -535,7 +584,7 @@ async function processChain(corpus: Corpus, corpusPath: string, targetCorpusIdx:
       const psender = psm?.sender ?? 'context';
       const ptext = psm?.text ?? '<no parsed_messages — using raw user_message>';
       console.log(`  --- context turn ${i + 1}/${prior.length}: ${psender}: "${ptext.slice(0, 80)}"`);
-      await driveContextTurn(session, ptext, psender, p.user_message, `${targetCorpusIdx}-pre${i}`);
+      await driveContextTurn(session, ptext, psender, p.user_message, psm?.time, `${targetCorpusIdx}-pre${i}`);
     }
 
     restoreTargetTaskflowDbIfRequested();
@@ -543,6 +592,29 @@ async function processChain(corpus: Corpus, corpusPath: string, targetCorpusIdx:
     // Now drive the target turn, capturing tool_use + outbound just for it.
     const captureFile = path.join(sessionDir(AGENT_GROUP_ID, session.id), '.tool-uses.jsonl');
     const captureBytesBefore = fs.existsSync(captureFile) ? fs.statSync(captureFile).size : 0;
+    for (let i = 0; i < botContext.length; i++) {
+      const bot = botContext[i];
+      const botContent = JSON.stringify({
+        sender: bot.sender,
+        text: bot.text,
+        phase2RawPrompt: messageEnvelope([bot]),
+        phase3ReplayContext: 'prior_bot_message',
+        ...(process.env.NANOCLAW_PHASE_REPLAY_TASKFLOW_BOARD_ID
+          ? { phase3TaskflowBoardId: process.env.NANOCLAW_PHASE_REPLAY_TASKFLOW_BOARD_ID }
+          : {}),
+      });
+      writeSessionMessage(AGENT_GROUP_ID, session.id, {
+        id: `phase3-botctx-${targetCorpusIdx}-${i}-${Date.now()}`,
+        kind: 'chat',
+        timestamp: bot.time,
+        platformId: GROUP_JID,
+        channelType: 'whatsapp',
+        threadId: null,
+        content: botContent,
+        trigger: 0,
+      });
+      console.log(`  --- bot context ${i + 1}/${botContext.length}: ${bot.sender}: "${bot.text.slice(0, 80)}"`);
+    }
     const messageId = `phase2-tgt-${targetCorpusIdx}-${Date.now()}`;
     const content = JSON.stringify({
       sender: targetParsed.sender,
@@ -555,7 +627,7 @@ async function processChain(corpus: Corpus, corpusPath: string, targetCorpusIdx:
     writeSessionMessage(AGENT_GROUP_ID, session.id, {
       id: messageId,
       kind: 'chat',
-      timestamp: new Date().toISOString(),
+      timestamp: targetParsed.time || new Date().toISOString(),
       platformId: GROUP_JID,
       channelType: 'whatsapp',
       threadId: null,
@@ -640,7 +712,7 @@ async function processTurn(turn: CuratedTurn, idx: number): Promise<TurnResult> 
   writeSessionMessage(AGENT_GROUP_ID, session.id, {
     id: messageId,
     kind: 'chat',
-    timestamp: new Date().toISOString(),
+    timestamp: parsed.time || new Date().toISOString(),
     platformId: GROUP_JID,
     channelType: 'whatsapp',
     threadId: null,

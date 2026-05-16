@@ -102,6 +102,7 @@ interface TaskflowPendingChildBoardRegistration {
 interface TaskflowExactIdNoteCandidate {
   taskId: string;
   noteText: string;
+  reassignTarget?: string;
 }
 
 interface TaskflowTaskDetails {
@@ -359,7 +360,23 @@ export function taskflowExactIdNoteCandidate(
   if (!message) return null;
   const match = message.text.match(EXACT_TASK_NOTE_RE);
   if (!match?.[1] || !match[2]) return null;
-  return { taskId: match[1].toUpperCase(), noteText: match[2].trim() };
+  const taskId = match[1].toUpperCase();
+  let noteText = match[2].trim();
+  let reassignTarget: string | undefined;
+  const reassign = noteText.match(/\b(?:re)?atribuir\s+((?:P|T|M|R)\d+(?:\.\d+)?)?\s*(?:para|a|ao|à)\s+([\p{L}\p{M}' -]{2,60})\s*$/iu);
+  if (reassign?.[2]) {
+    const reassignTaskId = reassign[1]?.toUpperCase();
+    if (!reassignTaskId || taskId.endsWith(reassignTaskId)) {
+      reassignTarget = reassign[2].trim();
+      noteText = noteText.slice(0, reassign.index).trim();
+    }
+  }
+  noteText = noteText
+    .replace(/^\s*adicionar\s+nota\s*:?\s*/iu, '')
+    .replace(/[.;]\s*$/u, '')
+    .trim();
+  if (!noteText) return null;
+  return { taskId, noteText, reassignTarget };
 }
 
 export function taskflowBareTaskDetailsCommand(
@@ -1242,12 +1259,69 @@ function handleTaskflowMissingExactIdNote(
   if (!boardId) return false;
 
   const sender = senderName(messages);
-  const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId);
   if (engine.getTask(action.taskId)) return false;
 
-  const queryInput = { query: 'task_details', task_id: action.taskId, sender_name: sender };
+  const queryInput = { query: 'find_task_in_organization', task_id: action.taskId, sender_name: sender };
   const queryResult = engine.query(queryInput);
   appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  const orgRows = Array.isArray(queryResult.data) ? queryResult.data as Array<Record<string, unknown>> : [];
+
+  if (orgRows.length > 0) {
+    const noteInput = {
+      task_id: action.taskId,
+      sender_name: sender,
+      text: action.noteText,
+    };
+    const noteResult = engine.apiAddNote({ ...noteInput, board_id: boardId });
+    appendSyntheticToolCall('api_task_add_note', noteInput, noteResult, !noteResult.success);
+
+    if (noteResult.success) {
+      let reassignResult: ReassignResult | null = null;
+      if (action.reassignTarget) {
+        const reassignInput = {
+          task_id: action.taskId,
+          target_person: action.reassignTarget,
+          sender_name: sender,
+          confirmed: true,
+        };
+        reassignResult = engine.reassign({ ...reassignInput, board_id: boardId });
+        const alreadyAssigned = !reassignResult.success && /already assigned/i.test(reassignResult.error ?? '');
+        appendSyntheticToolCall('api_reassign', reassignInput, reassignResult, !reassignResult.success && !alreadyAssigned);
+      }
+
+      const data = (noteResult as any).data as Record<string, any> | undefined;
+      const boardCode = typeof data?.board_code === 'string' && data.board_code ? `${data.board_code}-` : '';
+      const displayId = `${boardCode}${String(data?.id ?? action.taskId)}`;
+      const title = typeof data?.title === 'string' ? ` — ${data.title}` : '';
+      const noteChange = Array.isArray((noteResult as any).changes) ? String((noteResult as any).changes[0] ?? '') : '';
+      const noteLine = /Nota já existente/i.test(noteChange)
+        ? `• Nota já existente: ${action.noteText}`
+        : `• Nota registrada: ${action.noteText}`;
+      const lines = [`✅ *${displayId}*${title}`, '━━━━━━━━━━━━━━', '', noteLine];
+
+      if (action.reassignTarget && reassignResult) {
+        if (reassignResult.success) {
+          lines.push(`• 👤 Reatribuída para ${action.reassignTarget}`);
+        } else if (/already assigned/i.test(reassignResult.error ?? '')) {
+          lines.push(`• 👤 Já estava atribuída para ${action.reassignTarget}`);
+        } else {
+          lines.push(`• Reatribuição não aplicada: ${reassignResult.error ?? 'erro desconhecido'}`);
+        }
+      }
+
+      writeReply(routing, lines.join('\n'));
+      return true;
+    }
+
+    const row = orgRows[0] ?? {};
+    const boardLabel = String(row.board_short_code ?? row.board_group_folder ?? row.board_id ?? 'outro quadro');
+    writeReply(
+      routing,
+      `Encontrei *${action.taskId}* no quadro ${boardLabel}, mas não consegui registrar a nota por aqui: ${noteResult.error ?? 'erro desconhecido'}`,
+    );
+    return true;
+  }
 
   writeReply(
     routing,

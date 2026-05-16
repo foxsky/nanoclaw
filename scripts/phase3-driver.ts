@@ -137,6 +137,16 @@ function runPhase2Driver(metadata: Phase3TurnMetadata, args: Args): void {
   if (metadata.taskflow_board_id) {
     env.NANOCLAW_PHASE_REPLAY_TASKFLOW_BOARD_ID = metadata.taskflow_board_id;
   }
+  if (metadata.prior_bot_message_depth !== undefined) {
+    env.NANOCLAW_PHASE3_PRIOR_BOT_MESSAGE_DEPTH = String(metadata.prior_bot_message_depth);
+  } else {
+    delete env.NANOCLAW_PHASE3_PRIOR_BOT_MESSAGE_DEPTH;
+  }
+  if (metadata.user_timestamp) {
+    env.NANOCLAW_PHASE_REPLAY_NOW = metadata.user_timestamp;
+  } else {
+    delete env.NANOCLAW_PHASE_REPLAY_NOW;
+  }
 
   fs.rmSync(PHASE2_DRIVER_OUT, { force: true });
   if (args.phase2Out !== PHASE2_DRIVER_OUT) fs.rmSync(args.phase2Out, { force: true });

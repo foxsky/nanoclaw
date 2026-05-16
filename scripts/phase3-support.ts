@@ -81,6 +81,7 @@ export interface Phase3TurnMetadata {
   text?: string;
   source_turn_index?: number;
   prior_turn_depth?: number;
+  prior_bot_message_depth?: number;
   state_snapshot?: string;
   target_state_snapshot?: string;
   requires_state_snapshot?: boolean;
@@ -99,6 +100,7 @@ export interface Phase3CorpusTurn {
   source_turn_id?: string;
   source_turn_index?: number;
   prior_turn_depth?: number;
+  prior_bot_message_depth?: number;
   state_snapshot?: string;
   db_snapshot?: string;
   target_state_snapshot?: string;
@@ -336,6 +338,7 @@ export function inferPhase3Metadata(
     user_timestamp: turn.user_timestamp,
     source_turn_index: turn.source_turn_index ?? turn.turn_index,
     prior_turn_depth: contextMode === 'chain' ? depth ?? 1 : undefined,
+    prior_bot_message_depth: turn.prior_bot_message_depth,
     state_snapshot: turn.state_snapshot ?? turn.db_snapshot,
     target_state_snapshot: turn.target_state_snapshot,
     requires_state_snapshot: turn.requires_state_snapshot,
@@ -1017,7 +1020,12 @@ function isFreshAllocationDrift(
   actual: SemanticSummary,
 ): boolean {
   return (
-    matches.action && matches.mutation_types && matches.board_refs && matches.recipient && !matches.task_ids &&
+    matches.action &&
+    matches.mutation_types &&
+    matches.board_refs &&
+    matches.recipient &&
+    matches.outbound_intent &&
+    !matches.task_ids &&
     actual.mutation_types.includes('create') &&
     looksLikeFreshAllocation(expected.task_ids, actual.task_ids)
   );

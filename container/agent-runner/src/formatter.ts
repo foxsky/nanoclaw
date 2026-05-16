@@ -128,9 +128,13 @@ export function extractRouting(messages: MessageInRow[]): RoutingContext {
  */
 export function formatMessages(messages: MessageInRow[]): string {
   const phase2RawPrompt = maybePhase2RawPrompt(messages);
-  if (phase2RawPrompt !== null) return phase2RawPrompt;
+  if (phase2RawPrompt !== null) {
+    return process.env.NANOCLAW_PHASE_REPLAY_NOW?.trim()
+      ? contextHeader() + phase2RawPrompt
+      : phase2RawPrompt;
+  }
 
-  const header = `<context timezone="${escapeXml(TIMEZONE)}" />\n`;
+  const header = contextHeader();
   if (messages.length === 0) return header;
 
   // Group by kind
@@ -155,6 +159,24 @@ export function formatMessages(messages: MessageInRow[]): string {
   }
 
   return header + parts.join('\n\n');
+}
+
+function contextHeader(): string {
+  const replayNow = process.env.NANOCLAW_PHASE_REPLAY_NOW?.trim();
+  if (!replayNow) return `<context timezone="${escapeXml(TIMEZONE)}" />\n`;
+  const date = new Date(replayNow);
+  if (Number.isNaN(date.getTime())) return `<context timezone="${escapeXml(TIMEZONE)}" />\n`;
+  const today = new Intl.DateTimeFormat('en-CA', {
+    timeZone: TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+  const weekday = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: TIMEZONE,
+    weekday: 'long',
+  }).format(date);
+  return `<context timezone="${escapeXml(TIMEZONE)}" now="${escapeXml(replayNow)}" today="${escapeXml(today)}" weekday="${escapeXml(weekday)}" />\n`;
 }
 
 function maybePhase2RawPrompt(messages: MessageInRow[]): string | null {

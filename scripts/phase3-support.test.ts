@@ -54,6 +54,7 @@ describe('Phase 3 metadata inference', () => {
       turn_index: 22,
       context_mode: 'chain',
       prior_turn_depth: 3,
+      prior_bot_message_depth: 1,
       source_jsonl: 'explicit.jsonl',
       source_turn_index: 99,
       expected_behavior: {
@@ -62,6 +63,7 @@ describe('Phase 3 metadata inference', () => {
     });
 
     expect(meta.prior_turn_depth).toBe(3);
+    expect(meta.prior_bot_message_depth).toBe(1);
     expect(meta.source_jsonl).toBe('explicit.jsonl');
     expect(meta.source_turn_index).toBe(99);
     expect(meta.taskflow_board_id).toBe('board-asse-seci-taskflow');
@@ -1177,6 +1179,42 @@ describe('Phase 3 state-drift classifications', () => {
     expect(comparison.matches.action).toBe(true);
     expect(comparison.matches.mutation_types).toBe(true);
     expect(comparison.matches.task_ids).toBe(false);
+  });
+
+  it('does not classify create allocation drift when the outbound intent differs', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 24,
+      text: 'p11 acrescentar tarefa Extrato de contas da PMT',
+      v1: {
+        tools: [
+          { name: 'mcp__nanoclaw__api_create_task', input: { title: 'Extrato', type: 'simple' } },
+          { name: 'mcp__nanoclaw__api_admin', input: { action: 'reparent_task', task_id: 'T84', target_parent_id: 'P11' } },
+        ],
+        final_response: '✅ Etapa adicionada. T84 — Extrato de contas...',
+      },
+      v2: {
+        tools: [
+          { name: 'mcp__nanoclaw__api_create_task', input: { title: 'Extrato', type: 'simple' } },
+          { name: 'mcp__nanoclaw__api_admin', input: { action: 'reparent_task', task_id: 'T96', target_parent_id: 'P11' } },
+        ],
+        outbound: [{ kind: 'chat', content: '{"text":"Não encontrei a tarefa. Qual tarefa você quer criar?"}' }],
+      },
+      phase3: {
+        metadata: {
+          turn_index: 24,
+          context_mode: 'fresh',
+          expected_behavior: {
+            action: 'mutate',
+            task_ids: ['T84'],
+            outbound_intent: 'informational',
+          },
+        },
+      },
+    };
+
+    const comparison = compareSemanticTurn(turn);
+    expect(comparison.matches.outbound_intent).toBe(false);
+    expect(comparison.classification.kind).toBe('real_divergence');
   });
 
   // state_allocation_drift only fires when this turn actually allocated a

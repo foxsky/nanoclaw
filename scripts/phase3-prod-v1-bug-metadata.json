@@ -59,12 +59,52 @@
     }
   },
   {
+    "source_turn_id": "8bd7aaf6-0307-4782-b7a7-960c739d55d7",
+    "context_mode": "chain",
+    "prior_turn_depth": 1,
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": ["T47"],
+      "allow_extra_task_ids": true,
+      "board_refs": [],
+      "outbound_intent": "mutation_confirmation"
+    }
+  },
+  {
+    "source_turn_id": "ed88cf20-b2ac-49f3-b87a-719530083567",
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": ["T44"],
+      "allow_extra_task_ids": true,
+      "board_refs": [],
+      "outbound_intent": "mutation_confirmation"
+    },
+    "state_drift": {
+      "description": "Generated corpus final_response is misaligned with the prior SEC-T41 user message; this turn's user text asks to update T44. The synced DB is post-event and T44 is already done, so v2's current-state answer is a state-drift/no-op result.",
+      "expected_with_historical_snapshot": "Historical pre-turn state would move or annotate T44 as waiting for documentation."
+    }
+  },
+  {
     "source_turn_id": "d4d60a7f-fffd-4654-b368-804ce404f50c",
     "context_mode": "fresh",
     "v1_bug": {
       "description": "Generated corpus has no v1 outbound for an explicit SEC-T41 note update, but v2 correctly records the note through MCP. Treat v2's visible confirmation as a human-review improvement over v1 silence.",
       "detected_by": "manual_review",
       "expected_correction": "v2 should preserve the SEC-T41 note mutation instead of reproducing the no-response behavior."
+    }
+  },
+  {
+    "source_turn_id": "1d13dee3-f736-45e9-884b-1a53d685e62a",
+    "context_mode": "chain",
+    "prior_turn_depth": 0,
+    "prior_bot_message_depth": 1,
+    "expected_behavior": {
+      "action": "read",
+      "task_ids": [],
+      "allow_extra_task_ids": true,
+      "board_refs": [],
+      "outbound_intent": "informational"
     }
   },
   {
@@ -86,6 +126,21 @@
       "mutation_types": ["schedule"],
       "board_refs": [],
       "outbound_intent": "informational"
+    }
+  },
+  {
+    "source_turn_id": "bfc38360-f550-428a-b1e1-c4280ec1b9a7",
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": ["T96"],
+      "allow_extra_task_ids": true,
+      "board_refs": ["sec"],
+      "outbound_intent": "mutation_confirmation"
+    },
+    "state_drift": {
+      "description": "Generated corpus final_response includes neighboring SEC-T41/T44 replies from delayed v1 batching, but this user turn asks only to note and reassign SEC T96. The synced DB already contains the T96 note and Maura assignment, so an idempotent no-op confirmation is acceptable.",
+      "expected_with_historical_snapshot": "Historical pre-turn state would add the T96 note and reassign T96 to Maura on board-sec-taskflow."
     }
   },
   {
