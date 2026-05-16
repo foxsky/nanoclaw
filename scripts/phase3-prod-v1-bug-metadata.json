@@ -1,0 +1,32 @@
+[
+  {
+    "source_turn_id": "60e6ae26-9ad8-48e9-94fd-c791d7e01682",
+    "context_mode": "fresh",
+    "v1_bug": {
+      "description": "SEC M7 date correction candidate: v1 first rescheduled the meeting to 13/05/2026 10:00, then the user corrected it to 14/05/2026 10:00 about one minute later.",
+      "detected_by": "auditor_self_correction",
+      "corrected_at": "2026-05-13T15:18:52.581Z",
+      "expected_correction": "scheduled_at should resolve to 2026-05-14T10:00:00, not 2026-05-13T10:00:00."
+    }
+  },
+  {
+    "source_turn_id": "03759518-483a-4adc-9fd9-7410d0a0dd11",
+    "context_mode": "fresh",
+    "v1_bug": {
+      "description": "SECI P22.1 reassignment round-trip candidate: v1 reassigned from Rodrigo Lima to Mariany, then the same user corrected it back to Rodrigo Lima about two minutes later.",
+      "detected_by": "auditor_self_correction",
+      "corrected_at": "2026-04-23T13:23:38.645Z",
+      "expected_correction": "Human review required; v2 should not be judged compliant solely for repeating the first reassignment if the intended assignee was Rodrigo Lima."
+    }
+  },
+  {
+    "source_turn_id": "44df5fd1-1484-4d00-a5bb-4f3c05e6939f",
+    "context_mode": "fresh",
+    "v1_bug": {
+      "description": "Thiago P6/T56 deadline correction candidate: v1 applied the 24/04 deadline to P6, then the user clarified that the deadline belonged to T56.",
+      "detected_by": "auditor_self_correction",
+      "corrected_at": "2026-04-22T11:21:59.377Z",
+      "expected_correction": "Deadline 2026-04-24 should apply to T56, not P6."
+    }
+  }
+]
