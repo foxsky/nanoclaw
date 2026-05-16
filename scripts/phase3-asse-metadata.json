@@ -1,18 +1,25 @@
 [
   {
-    "turn_index": 4,
+    "source_turn_id": "4619cd84-bfe6-4c27-9209-44e23f3bef75",
+    "context_mode": "fresh",
+    "requires_state_snapshot": true,
+    "state_drift": {
+      "description": "Historical v1 added the T12 process note on 2026-04-20, but the synced final production snapshot already contains later task state.",
+      "expected_with_historical_snapshot": "Note-add parity should be judged against a pre-turn snapshot before the T12 note exists."
+    }
+  },
+  {
+    "source_turn_id": "dc5e09b9-eae9-4f41-8116-f8e90e5211e8",
     "context_mode": "chain",
-    "source_jsonl": null,
     "prior_turn_depth": 1
   },
   {
-    "turn_index": 5,
+    "source_turn_id": "442b85b9-8766-4bab-86f5-115225bf45c5",
     "context_mode": "chain",
-    "source_jsonl": null,
     "prior_turn_depth": 1
   },
   {
-    "turn_index": 6,
+    "source_turn_id": "c2b7dc8b-5836-4ea7-982b-79379abdc4af",
     "context_mode": "fresh",
     "expected_behavior": {
       "action": "no-op",
@@ -21,80 +28,71 @@
     }
   },
   {
-    "turn_index": 8,
+    "source_turn_id": "2d46fff2-389e-414f-8e04-063de35233ce",
     "context_mode": "fresh",
     "requires_state_snapshot": true,
     "state_drift": {
-      "description": "Historical v1 turn cancelled T18, but the available final production snapshot already has T18 archived/cancelled.",
+      "description": "Historical v1 cancelled T18 on 2026-05-05, but the synced production snapshot already has T18 archived/cancelled.",
       "evidence": "task_history shows T18 cancelled on 2026-05-05; no active T18 row remains.",
-      "expected_with_historical_snapshot": "cancel_task/no-op parity should be judged against a pre-turn snapshot where T18 is active."
+      "expected_with_historical_snapshot": "Cancel/no-op parity should be judged against a pre-turn snapshot where T18 is active."
     }
   },
   {
-    "turn_index": 12,
+    "source_turn_id": "84ec33ce-7159-48e6-8452-3e51a4515ff2",
     "context_mode": "fresh",
     "requires_state_snapshot": true,
     "state_drift": {
-      "description": "Historical flow created a duplicate T24, then added the same title under P5 and asked whether to cancel T24. The final snapshot has the P5.12 result and T24 already archived.",
+      "description": "Historical flow created a duplicate T24, then added the same title under P5 and asked whether to cancel T24. The synced final snapshot already has the P5.12 result and T24 archived.",
       "evidence": "task_history has board-asse-seci-taskflow T24 created/cancelled on 2026-05-11 and board-seci-taskflow P5.12 created.",
       "expected_with_historical_snapshot": "Use the exact pre-turn snapshot to validate duplicate-detection wording and final DB diff."
     }
   },
   {
-    "turn_index": 13,
-    "context_mode": "fresh",
-    "expected_behavior": {
-      "action": "read",
-      "outbound_intent": "asks_user"
-    }
-  },
-  {
-    "turn_index": 14,
+    "source_turn_id": "46ff3612-6a45-423f-98ae-5db988948674",
     "context_mode": "fresh",
     "requires_state_snapshot": true,
     "state_drift": {
-      "description": "Historical v1 concluded P5.10 on 2026-04-24; the final snapshot already has P5.10 done.",
+      "description": "Historical v1 concluded P5.10 on 2026-04-24; the synced final snapshot already has P5.10 done.",
       "expected_with_historical_snapshot": "Conclude parity must be judged before P5.10's historical done transition."
     }
   },
   {
-    "turn_index": 16,
+    "source_turn_id": "9af725a1-f23a-40b1-8cb5-39dba1d7e06c",
     "context_mode": "chain",
-    "source_jsonl": null,
     "prior_turn_depth": 1
   },
   {
-    "turn_index": 18,
+    "source_turn_id": "5ebff875-8a5c-4582-be81-47c659ab0f27",
     "context_mode": "fresh",
     "requires_state_snapshot": true,
     "state_drift": {
-      "description": "Historical v1 moved P11.15 to waiting on April 24, but the available production snapshot already has P11.15 concluded on April 27.",
-      "evidence": "task_history for P11.15 shows the waiting state in the undo snapshot before the 2026-04-27 conclude; current row is column=done.",
-      "expected_with_historical_snapshot": "With a pre-April-24 snapshot, v2 should move P11.15 to waiting with the CAST reason."
+      "description": "Historical v1 moved P11.15 to waiting on April 22, but the synced production snapshot already has P11.15 concluded later.",
+      "evidence": "task_history for P11.15 shows the waiting state before the later conclude; current row is column=done.",
+      "expected_with_historical_snapshot": "With a pre-turn snapshot, v2 should move P11.15 to waiting with the CAST reason."
     }
   },
   {
-    "turn_index": 19,
+    "source_turn_id": "a1f15ced-147f-4cf5-b85b-35dcb5df5e43",
     "context_mode": "fresh",
     "requires_state_snapshot": true,
     "state_drift": {
-      "description": "Historical v1 moved P5.9 to waiting on 2026-04-27, but the final snapshot has P5.9 done after 2026-04-30.",
+      "description": "Historical v1 moved P5.9 to waiting on 2026-04-27, but the synced final snapshot has P5.9 done after 2026-04-30.",
       "evidence": "task_history shows P5.9 wait on 2026-04-27T16:37:32Z and conclude on 2026-04-30T14:08:55Z.",
       "expected_with_historical_snapshot": "With a pre-2026-04-27T16:37 snapshot, v2 should move P5.9 from next_action to waiting once."
     }
   },
   {
-    "turn_index": 20,
+    "source_turn_id": "505d5538-4b08-4c25-b7e8-8cb450b163e7",
     "context_mode": "fresh",
     "requires_state_snapshot": true,
     "state_drift": {
-      "description": "Historical v1 summarized P11 from an older state where P11.11 was overdue on 2026-04-17 and P11.3 was still active; the available production snapshot has P11.11 rescheduled to 2026-05-29 and P11.3 done.",
-      "evidence": "Targeted replay after the engine fix returns the parent-project summary in one api_query; remaining differences are the overdue/ask CTA and exact active/completed set from changed task state.",
-      "expected_with_historical_snapshot": "With the exact pre-turn P11 snapshot, v2 should show P11.11/P11.3 as active and ask whether to reschedule or act on overdue P11.11."
+      "description": "Historical v1 summarized P11 from an April 20 state where P11.11 was overdue and P11.3 was still active; the synced final snapshot has later P11 state.",
+      "evidence": "Targeted replay returns the parent-project summary in one api_query; remaining differences are exact active/completed sets from changed task state.",
+      "expected_with_historical_snapshot": "With the exact pre-turn P11 snapshot, v2 should show the April 20 active/overdue set."
     }
   },
   {
-    "turn_index": 22,
+    "source_turn_id": "673e972c-e7df-425a-8dbe-ad0a56cb1f38",
     "context_mode": "fresh",
     "expected_behavior": {
       "action": "read",
@@ -102,16 +100,16 @@
     }
   },
   {
-    "turn_index": 23,
+    "source_turn_id": "6a9e03a8-8e1a-4228-b43e-b63aa3c13947",
     "context_mode": "fresh",
     "requires_state_snapshot": true,
     "state_drift": {
-      "description": "Agenda2030 search compared an April 20 v1 reply with the final snapshot, which includes later-created/updated Agenda2030 rows.",
+      "description": "Agenda2030 search compared an April 20 v1 reply with the synced final snapshot, which includes later-created/updated Agenda2030 rows.",
       "expected_with_historical_snapshot": "Search result IDs and ranking should be judged against the April 20 board state."
     }
   },
   {
-    "turn_index": 24,
+    "source_turn_id": "181c5035-5b9d-41d1-ae52-cff87c999ac0",
     "context_mode": "fresh",
     "expected_behavior": {
       "action": "read",
@@ -119,63 +117,35 @@
     }
   },
   {
-    "turn_index": 26,
+    "source_turn_id": "202d1857-24be-47bd-83ea-b56b3cd9e247",
     "context_mode": "fresh",
     "requires_state_snapshot": true,
     "state_drift": {
-      "description": "The 'minhas tarefas' expected list is from April 20, but the replay uses the final May 15 task snapshot.",
+      "description": "The 'minhas tarefas' expected list is from April 20, but the synced snapshot is May 15 and includes later task updates.",
       "expected_with_historical_snapshot": "Person task list IDs should be judged against the April 20 board state."
     }
   },
   {
-    "turn_index": 27,
-    "context_mode": "fresh",
-    "expected_behavior": {
-      "action": "read",
-      "allow_extra_task_ids": true,
-      "outbound_intent": "informational"
-    },
-    "state_drift": {
-      "description": "The production extractor found no v1 outbound inside the configured reply window, but the user request is a normal current task-list read."
-    }
-  },
-  {
-    "turn_index": 28,
+    "source_turn_id": "95be4433-a723-4088-ba53-59c030f6ce36",
     "context_mode": "fresh",
     "requires_state_snapshot": true,
     "state_drift": {
-      "description": "Historical v1 checked/concluded P11.3 around April 27; the final snapshot already has P11.3 done.",
+      "description": "Historical v1 checked/concluded P11.3 around April 27; the synced final snapshot already has P11.3 done.",
       "expected_with_historical_snapshot": "Conclude/no-op parity must be judged against the pre-turn P11.3 state."
     }
   },
   {
-    "turn_index": 30,
+    "source_turn_id": "eac05151-33b1-4a85-b429-ac86a540868e",
     "context_mode": "fresh",
     "requires_state_snapshot": true,
     "state_drift": {
-      "description": "The final snapshot already contains the P20.5 note that v1 added historically.",
+      "description": "The synced final snapshot already contains the P20.5 note that v1 added historically.",
       "expected_with_historical_snapshot": "Note-add parity must be judged before the note exists."
     }
   },
   {
-    "turn_index": 37,
+    "source_turn_id": "2d8e2f58-e22f-4e84-98f7-9a73ab56ea6a",
     "context_mode": "chain",
-    "source_jsonl": null,
-    "prior_turn_depth": 1
-  },
-  {
-    "turn_index": 38,
-    "context_mode": "fresh",
-    "requires_state_snapshot": true,
-    "state_drift": {
-      "description": "The final snapshot already contains the T12 Agenda2030 note that v1 added historically.",
-      "expected_with_historical_snapshot": "Note-add parity must be judged before the note exists."
-    }
-  },
-  {
-    "turn_index": 39,
-    "context_mode": "chain",
-    "source_jsonl": null,
     "prior_turn_depth": 1
   }
 ]

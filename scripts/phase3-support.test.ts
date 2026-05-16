@@ -105,6 +105,77 @@ describe('Phase 3 metadata inference', () => {
     expect(stableMatch?.state_drift?.description).toBe('stable annotation');
   });
 
+  it('matches source id metadata against messages.db pseudo-source paths', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'phase3-md-'));
+    const metadataPath = path.join(tmp, 'metadata.json');
+    fs.writeFileSync(metadataPath, JSON.stringify([
+      {
+        source_turn_id: '202d1857-24be-47bd-83ea-b56b3cd9e247',
+        context_mode: 'fresh',
+        state_drift: { description: 'person task state drift' },
+      },
+    ]));
+    const overrides = loadPhase3Metadata(metadataPath);
+
+    const stableMatch = phase3MetadataOverrideForCorpusTurn(
+      overrides,
+      {
+        jsonl: 'messages.db#agent_turns/202d1857-24be-47bd-83ea-b56b3cd9e247',
+        user_message: 'minhas tarefas',
+      },
+      28,
+    );
+
+    expect(stableMatch?.state_drift?.description).toBe('person task state drift');
+  });
+
+  it('infers source_turn_id from messages.db pseudo-source paths', () => {
+    const meta = inferPhase3Metadata({
+      jsonl: 'messages.db#agent_turns/7e64b9d6-5d15-4fb0-be92-419f6bd5ee98',
+      user_message: 'minhas tarefas',
+    }, 29, undefined, { useDefaultChainDepths: false });
+
+    expect(meta.source_turn_id).toBe('7e64b9d6-5d15-4fb0-be92-419f6bd5ee98');
+  });
+
+  it('preserves the regenerated corpus index when applying a stable override', () => {
+    const meta = inferPhase3Metadata(
+      { source_turn_id: 'stable-turn', user_message: 'minhas tarefas' },
+      29,
+      {
+        turn_index: 26,
+        source_turn_id: 'stable-turn',
+        context_mode: 'fresh',
+        state_drift: { description: 'old index annotation' },
+      },
+      { useDefaultChainDepths: false },
+    );
+
+    expect(meta.turn_index).toBe(29);
+    expect(meta.state_drift?.description).toBe('old index annotation');
+  });
+
+  it('allows stable metadata rows without a turn_index', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'phase3-md-'));
+    const metadataPath = path.join(tmp, 'metadata.json');
+    fs.writeFileSync(metadataPath, JSON.stringify([
+      {
+        source_turn_id: 'stable-only',
+        context_mode: 'fresh',
+        state_drift: { description: 'stable only annotation' },
+      },
+    ]));
+
+    const overrides = loadPhase3Metadata(metadataPath);
+    const stableMatch = phase3MetadataOverrideForCorpusTurn(
+      overrides,
+      { source_turn_id: 'stable-only', user_message: 'minhas tarefas' },
+      99,
+    );
+
+    expect(stableMatch?.state_drift?.description).toBe('stable only annotation');
+  });
+
   it('does not apply index-only metadata to source-keyed generated result turns', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'phase3-md-'));
     const metadataPath = path.join(tmp, 'metadata.json');
@@ -1247,5 +1318,31 @@ describe('Phase 3 destination-registration classifications', () => {
 
     const comparison = compareSemanticTurn(turn);
     expect(comparison.classification.kind).toBe('destination_registration_gap');
+  });
+});
+
+describe('Phase 3 production extraction gaps', () => {
+  it('classifies turns with no v1 tool or outbound evidence as not comparable', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 29,
+      text: 'minhas tarefas',
+      v1: {
+        tools: [],
+        final_response: null,
+      },
+      v2: {
+        tools: [{ name: 'mcp__nanoclaw__api_query', input: { query: 'my_tasks' } }],
+        outbound: [{ kind: 'chat', content: '{"text":"👤 *Lucas* — 15 tarefas ativas"}' }],
+      },
+      phase3: {
+        metadata: {
+          turn_index: 29,
+          context_mode: 'fresh',
+          source_turn_id: '7e64b9d6-5d15-4fb0-be92-419f6bd5ee98',
+        },
+      },
+    };
+
+    expect(compareSemanticTurn(turn).classification.kind).toBe('no_v1_observable');
   });
 });

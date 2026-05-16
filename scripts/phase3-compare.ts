@@ -105,6 +105,7 @@ function main(): void {
         metadata: {
           ...(turn.phase3?.metadata ?? {}),
           ...override,
+          turn_index: turn.turn_index,
         },
       },
     };

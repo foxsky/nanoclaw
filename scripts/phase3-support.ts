@@ -8,6 +8,7 @@ export type Phase3SemanticAction = 'ask' | 'read' | 'mutate' | 'forward' | 'no-o
 export type Phase3ClassificationKind =
   | 'match'
   | 'provider_error'
+  | 'no_v1_observable'
   | 'no_outbound_timeout'
   | 'missing_context'
   | 'state_snapshot_missing'
@@ -68,7 +69,7 @@ export interface Phase3StateDriftAnnotation {
 }
 
 export interface Phase3TurnMetadata {
-  turn_index: number;
+  turn_index?: number;
   context_mode: Phase3ContextMode;
   taskflow_board_id?: string;
   source_jsonl?: string;
@@ -205,6 +206,10 @@ function normalizedTurnText(text: string | undefined): string {
   return (text ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+function sourceTurnIdFromSourceJsonl(sourceJsonl: string | undefined): string | undefined {
+  return sourceJsonl?.match(/(?:^|#)agent_turns\/([^#\s]+)/)?.[1];
+}
+
 function corpusTurnText(turn: Phase3CorpusTurn): string {
   const parsed = Array.isArray(turn.parsed_messages) ? turn.parsed_messages[0] : undefined;
   return parsed?.text ?? turn.user_message ?? '';
@@ -216,7 +221,8 @@ function resultTurnText(turn: Phase3TurnResult): string {
 
 function metadataStableKeys(row: Phase3TurnMetadata): string[] {
   const keys: string[] = [];
-  if (row.source_turn_id) keys.push(`source_turn_id:${row.source_turn_id}`);
+  const sourceTurnId = row.source_turn_id ?? sourceTurnIdFromSourceJsonl(row.source_jsonl);
+  if (sourceTurnId) keys.push(`source_turn_id:${sourceTurnId}`);
   if (row.source_jsonl && row.source_turn_index !== undefined) {
     keys.push(`source:${row.source_jsonl}#${row.source_turn_index}`);
   }
@@ -230,7 +236,8 @@ function metadataStableKeys(row: Phase3TurnMetadata): string[] {
 function corpusStableKeys(turn: Phase3CorpusTurn): string[] {
   const sourceJsonl = turn.source_jsonl ?? turn.jsonl;
   const keys: string[] = [];
-  if (turn.source_turn_id) keys.push(`source_turn_id:${turn.source_turn_id}`);
+  const sourceTurnId = turn.source_turn_id ?? sourceTurnIdFromSourceJsonl(sourceJsonl);
+  if (sourceTurnId) keys.push(`source_turn_id:${sourceTurnId}`);
   if (sourceJsonl && turn.source_turn_index !== undefined) {
     keys.push(`source:${sourceJsonl}#${turn.source_turn_index}`);
   }
@@ -244,7 +251,8 @@ function corpusStableKeys(turn: Phase3CorpusTurn): string[] {
 function resultStableKeys(turn: Phase3TurnResult): string[] {
   const md = turn.phase3?.metadata;
   const keys: string[] = [];
-  if (md?.source_turn_id) keys.push(`source_turn_id:${md.source_turn_id}`);
+  const sourceTurnId = md?.source_turn_id ?? sourceTurnIdFromSourceJsonl(md?.source_jsonl);
+  if (sourceTurnId) keys.push(`source_turn_id:${sourceTurnId}`);
   if (md?.source_jsonl && md.source_turn_index !== undefined) {
     keys.push(`source:${md.source_jsonl}#${md.source_turn_index}`);
   }
@@ -266,7 +274,7 @@ export function loadPhase3Metadata(pathname: string | undefined): Phase3Metadata
   if (!Array.isArray(rows)) throw new Error(`Invalid Phase 3 metadata file: ${pathname}`);
   const out: Phase3MetadataOverrides = new Map();
   for (const row of rows) {
-    out.set(row.turn_index, row);
+    if (row.turn_index !== undefined) out.set(row.turn_index, row);
     for (const key of metadataStableKeys(row)) out.set(key, row);
   }
   return out;
@@ -317,7 +325,7 @@ export function inferPhase3Metadata(
     context_mode: contextMode,
     taskflow_board_id: turn.taskflow_board_id,
     source_jsonl: turn.source_jsonl ?? turn.jsonl,
-    source_turn_id: turn.source_turn_id,
+    source_turn_id: turn.source_turn_id ?? sourceTurnIdFromSourceJsonl(turn.source_jsonl ?? turn.jsonl),
     user_timestamp: turn.user_timestamp,
     source_turn_index: turn.source_turn_index ?? turn.turn_index,
     prior_turn_depth: contextMode === 'chain' ? depth ?? 1 : undefined,
@@ -332,7 +340,7 @@ export function inferPhase3Metadata(
   return {
     ...inferred,
     ...override,
-    turn_index: override.turn_index ?? inferred.turn_index,
+    turn_index: inferred.turn_index,
     context_mode: override.context_mode ?? inferred.context_mode,
     expected_behavior: {
       ...inferred.expected_behavior,
@@ -778,6 +786,22 @@ function isNoOutboundTimeout(
   return turn.v2.settle_reason === 'timeout' || turn.v2.outbound.length === 0;
 }
 
+function hasNoV1Observable(turn: Phase3TurnResult): boolean {
+  const expected = turn.phase3?.metadata?.expected_behavior;
+  if (
+    expected &&
+    !(
+      (expected.action === undefined || expected.action === 'no-op') &&
+      (expected.outbound_intent === undefined || expected.outbound_intent === 'none') &&
+      (expected.task_ids?.length ?? 0) === 0 &&
+      (expected.mutation_types?.length ?? 0) === 0
+    )
+  ) {
+    return false;
+  }
+  return turn.v1.tools.length === 0 && !turn.v1.final_response?.trim();
+}
+
 // Forward intent expected but v2 either didn't deliver or delivered to a
 // local destination — no agent_destinations row matches the v1 recipient
 // JID. Checked before the chain/source gate because a missing destination
@@ -905,6 +929,13 @@ const CLASSIFICATION_RULES: ClassificationRule[] = [
     result: {
       kind: 'provider_error',
       note: 'Replay hit a provider/API error, so this turn must be re-run before behavior can be judged.',
+    },
+  },
+  {
+    test: (t) => hasNoV1Observable(t),
+    result: {
+      kind: 'no_v1_observable',
+      note: 'The production extractor found no v1 tool use or outbound reply for this user turn, so v2 behavior cannot be judged against a v1 observable baseline.',
     },
   },
   {
