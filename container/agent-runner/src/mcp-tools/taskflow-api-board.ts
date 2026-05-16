@@ -201,12 +201,13 @@ export const apiRemoveBoardPersonTool: McpToolDefinition = {
   tool: {
     name: 'api_remove_board_person',
     description:
-      'Remove a person from a board. Owner authorization is enforced by the API layer before this tool runs.',
+      'Remove a person from a board (single-engine: same path as the WhatsApp agent). Active non-done tasks block removal and return tasks_to_reassign unless force=true (which unassigns them). Owner authorization is enforced by the API layer before this tool runs.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         board_id: { type: 'string' },
         person_id: { type: 'string' },
+        force: { type: 'boolean' },
       },
       required: ['board_id', 'person_id'],
     },
@@ -230,33 +231,23 @@ export const apiRemoveBoardPersonTool: McpToolDefinition = {
         error: 'person_id: required string',
       });
     }
+    if (args.force !== undefined && typeof args.force !== 'boolean') {
+      return jsonResponse({
+        success: false,
+        error_code: 'validation_error',
+        error: 'force: expected boolean',
+      });
+    }
+    const force = args.force === true;
 
     try {
-      const db = getTaskflowDb();
-      const board = db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
-      if (!board) {
-        return jsonResponse({
-          success: false,
-          error_code: 'not_found',
-          error: 'Board not found',
-        });
-      }
-      const row = db
-        .prepare('SELECT person_id FROM board_people WHERE board_id = ? AND person_id = ?')
-        .get(boardId, personId);
-      if (!row) {
-        return jsonResponse({
-          success: false,
-          error_code: 'not_found',
-          error: 'Person not found',
-        });
-      }
-      db.prepare('DELETE FROM board_people WHERE board_id = ? AND person_id = ?').run(
-        boardId,
-        personId,
-      );
-      // FastAPI returns 204 with no body; the golden body is null.
-      return jsonResponse({ success: true, data: null });
+      // Single-engine (R2.8 step 4b-ii): engine.removeBoardPerson does
+      // ZERO owner auth (R2.3, FastAPI-side), resolves by EXACT
+      // person_id (R2.1.a), and delegates to the shared
+      // _removeBoardPersonCore. Its result IS the tool payload
+      // (success → {tasks_to_reassign?, data}; not_found → error_code).
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      return jsonResponse(engine.removeBoardPerson(boardId, personId, force));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error_code: 'internal_error', error: msg });

@@ -8254,6 +8254,53 @@ export class TaskflowEngine {
   }
 
   /**
+   * Public FastAPI wrapper for remove-person (design Revision 2.1
+   * R2.1.a + R2.3 + R2.4). Does ZERO engine owner auth — api_service's
+   * owner check is FastAPI-side (`require_board_owner` before
+   * `call_mcp_mutation`, BLOCKER B). Resolves the target by EXACT
+   * `person_id` — NOT the fuzzy `requirePerson()` the WhatsApp
+   * `api_admin` path uses (FastAPI routes are exact-id) — then
+   * delegates the mutation to the shared `_removeBoardPersonCore` and
+   * surfaces its truth verbatim so tf-mcontrol maps HTTP (204 vs
+   * 200 + `tasks_to_reassign`). `boardId` equals `this.boardId` by
+   * construction (the tool builds `new TaskflowEngine(db, boardId)`),
+   * matching the existing `api_admin`/`updateBoard` convention.
+   */
+  removeBoardPerson(
+    boardId: string,
+    personId: string,
+    force?: boolean,
+  ):
+    | {
+        success: true;
+        tasks_to_reassign?: Array<{ task_id: string; title: string }>;
+        data: Record<string, unknown>;
+      }
+    | { success: false; error_code: 'not_found'; error: string } {
+    const board = this.db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
+    if (!board) {
+      return { success: false, error_code: 'not_found', error: 'Board not found' };
+    }
+    const person = this.db
+      .prepare('SELECT person_id, name FROM board_people WHERE board_id = ? AND person_id = ?')
+      .get(boardId, personId) as { person_id: string; name: string } | null;
+    if (!person) {
+      return { success: false, error_code: 'not_found', error: 'Person not found' };
+    }
+    // _removeBoardPersonCore always returns success:true (active-no-force,
+    // force, or no-active); it operates on this.boardId (== boardId).
+    const r = this._removeBoardPersonCore(
+      { person_id: person.person_id, name: person.name },
+      force,
+    );
+    return r as {
+      success: true;
+      tasks_to_reassign?: Array<{ task_id: string; title: string }>;
+      data: Record<string, unknown>;
+    };
+  }
+
+  /**
    * Shared add-person core (single-engine rework, design Revision 2.1 +
    * R2.9 Q1): DB-only, ZERO auth, caller-owned transaction. Takes an
    * already-derived `personId` and an already-canonicalized `phone`

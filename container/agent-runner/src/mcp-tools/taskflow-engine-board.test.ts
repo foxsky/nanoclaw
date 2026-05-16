@@ -85,3 +85,93 @@ describe('engine.updateBoard', () => {
     expect(r.error).toBe('Board not found');
   });
 });
+
+/**
+ * `engine.removeBoardPerson` — public FastAPI wrapper around the shared
+ * `_removeBoardPersonCore` (design Revision 2.1 R2.1.a + R2.4). It does
+ * ZERO engine owner auth (R2.3: FastAPI's require_board_owner gates it)
+ * and resolves the target by EXACT person_id — NOT the fuzzy
+ * `requirePerson()` the WhatsApp `api_admin` path uses (FastAPI routes
+ * are exact-id). Surfaces the engine truth verbatim (R2.4):
+ *   - no active tasks → delete (incl. board_admins) → {removed,tasks_unassigned:0}
+ *   - active tasks, no force → success:true + top-level tasks_to_reassign
+ *     + data.message; the person is NOT deleted
+ *   - active tasks + force → unassign + delete → {removed,tasks_unassigned:n}
+ *   - board / person absent → {success:false, error_code:'not_found'}
+ */
+describe('engine.removeBoardPerson', () => {
+  beforeEach(() => {
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name) VALUES (?, 'bob', 'Bob')`,
+    ).run(BOARD);
+    db.prepare(
+      `INSERT INTO board_admins (board_id, person_id, admin_role) VALUES (?, 'bob', 'manager')`,
+    ).run(BOARD);
+  });
+
+  it('missing board → {success:false, error_code:not_found, "Board not found"}', () => {
+    const r = engine.removeBoardPerson('board-nope', 'bob');
+    expect(r.success).toBe(false);
+    if (r.success) throw new Error('unreachable');
+    expect(r.error_code).toBe('not_found');
+    expect(r.error).toBe('Board not found');
+  });
+
+  it('person absent by EXACT id → not_found (no fuzzy resolve)', () => {
+    // 'Bob' (display name) must NOT resolve — only the exact person_id.
+    const r = engine.removeBoardPerson(BOARD, 'Bob');
+    expect(r.success).toBe(false);
+    if (r.success) throw new Error('unreachable');
+    expect(r.error_code).toBe('not_found');
+    expect(r.error).toBe('Person not found');
+  });
+
+  it('no active tasks → deletes board_people + board_admins; {removed,tasks_unassigned:0}', () => {
+    const r = engine.removeBoardPerson(BOARD, 'bob');
+    expect(r.success).toBe(true);
+    if (!r.success) throw new Error('unreachable');
+    expect(r.data.removed).toBe('Bob');
+    expect(r.data.tasks_unassigned).toBe(0);
+    expect(
+      db.prepare('SELECT 1 FROM board_people WHERE board_id=? AND person_id=?').get(BOARD, 'bob'),
+    ).toBeNull();
+    expect(
+      db.prepare('SELECT 1 FROM board_admins WHERE board_id=? AND person_id=?').get(BOARD, 'bob'),
+    ).toBeNull();
+  });
+
+  it('active tasks, no force → success + top-level tasks_to_reassign; person NOT deleted', () => {
+    db.prepare(
+      `INSERT INTO tasks (id, board_id, title, assignee, column, created_at, updated_at)
+       VALUES ('T1', ?, 'Task one', 'bob', 'inbox', '2026-05-16T00:00:00.000Z', '2026-05-16T00:00:00.000Z')`,
+    ).run(BOARD);
+    const r = engine.removeBoardPerson(BOARD, 'bob');
+    expect(r.success).toBe(true);
+    if (!r.success) throw new Error('unreachable');
+    expect(r.tasks_to_reassign).toEqual([{ task_id: 'T1', title: 'Task one' }]);
+    expect(typeof r.data.message).toBe('string');
+    // Not deleted — the caller must reassign or force.
+    expect(
+      db.prepare('SELECT 1 FROM board_people WHERE board_id=? AND person_id=?').get(BOARD, 'bob'),
+    ).not.toBeNull();
+  });
+
+  it('active tasks + force → unassign + delete; {removed,tasks_unassigned:1}', () => {
+    db.prepare(
+      `INSERT INTO tasks (id, board_id, title, assignee, column, created_at, updated_at)
+       VALUES ('T1', ?, 'Task one', 'bob', 'inbox', '2026-05-16T00:00:00.000Z', '2026-05-16T00:00:00.000Z')`,
+    ).run(BOARD);
+    const r = engine.removeBoardPerson(BOARD, 'bob', true);
+    expect(r.success).toBe(true);
+    if (!r.success) throw new Error('unreachable');
+    expect(r.data.removed).toBe('Bob');
+    expect(r.data.tasks_unassigned).toBe(1);
+    const task = db.prepare('SELECT assignee FROM tasks WHERE id=?').get('T1') as {
+      assignee: string | null;
+    };
+    expect(task.assignee).toBeNull();
+    expect(
+      db.prepare('SELECT 1 FROM board_people WHERE board_id=? AND person_id=?').get(BOARD, 'bob'),
+    ).toBeNull();
+  });
+});

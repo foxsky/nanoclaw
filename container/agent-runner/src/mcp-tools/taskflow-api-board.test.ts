@@ -163,59 +163,12 @@ describe('api_add_board_person MCP tool', () => {
 });
 
 /**
- * Parity: FastAPI `DELETE /api/v1/boards/{id}/people/{pid}` (main.py:2814).
- *   - person row absent → 404 "Person not found"
- *   - else DELETE the board_people row; 204 no body (golden body=null)
- *   - no sender_name; owner auth FastAPI-side
+ * `api_remove_board_person` was repointed at `engine.removeBoardPerson`
+ * (R2.8 step 4b-ii) — a deliberate behavior change per R2.4 (active
+ * tasks block / force / board_admins cleanup). Its tests moved to
+ * `taskflow-api-remove-board-person.test.ts` on a `setupEngineDb`
+ * fixture (engine construction needs the full schema).
  */
-async function removePerson(args: Record<string, unknown>) {
-  const { apiRemoveBoardPersonTool } = await import('./taskflow-api-board.ts');
-  return JSON.parse((await apiRemoveBoardPersonTool.handler(args)).content[0].text);
-}
-
-describe('api_remove_board_person MCP tool', () => {
-  it('exports a tool named api_remove_board_person', async () => {
-    const { apiRemoveBoardPersonTool } = await import('./taskflow-api-board.ts');
-    expect(apiRemoveBoardPersonTool.tool.name).toBe('api_remove_board_person');
-  });
-
-  it('deletes an existing board_people row and returns success with null data', async () => {
-    db.prepare(
-      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, '5585999990001', 'Alice', 'Tecnico')`,
-    ).run(BOARD);
-    const r = await removePerson({ board_id: BOARD, person_id: '5585999990001' });
-    expect(r.success).toBe(true);
-    expect(r.data).toBeNull();
-    const row = db
-      .prepare('SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?')
-      .get(BOARD, '5585999990001');
-    expect(row).toBeNull();
-  });
-
-  it('returns not_found when the person is not on the board', async () => {
-    const r = await removePerson({ board_id: BOARD, person_id: 'ghost' });
-    expect(r.success).toBe(false);
-    expect(r.error_code).toBe('not_found');
-    expect(r.error).toContain('Person');
-  });
-
-  it('returns not_found for a missing board', async () => {
-    const r = await removePerson({ board_id: 'board-nope', person_id: 'x' });
-    expect(r.success).toBe(false);
-    expect(r.error_code).toBe('not_found');
-    expect(r.error).toContain('Board');
-  });
-
-  it('second removal of the same person is not_found (idempotent surface)', async () => {
-    db.prepare(
-      `INSERT INTO board_people (board_id, person_id, name) VALUES (?, 'p2', 'Bob')`,
-    ).run(BOARD);
-    expect((await removePerson({ board_id: BOARD, person_id: 'p2' })).success).toBe(true);
-    const r2 = await removePerson({ board_id: BOARD, person_id: 'p2' });
-    expect(r2.success).toBe(false);
-    expect(r2.error_code).toBe('not_found');
-  });
-});
 
 /**
  * Parity: FastAPI `PATCH /api/v1/boards/{id}/people/{pid}` (main.py:2919).
