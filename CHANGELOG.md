@@ -6,6 +6,7 @@ For detailed release notes, see the [full changelog on the documentation site](h
 
 ## [Unreleased]
 
+- Hardened Laizys/SEAF Phase 3 parity: child-board provisioning now derives `group_folder` from the division `group_name` instead of falling back to person-based board names, completed-task reassignment failures use the v1-style "create a new task?" question, and the semantic comparator treats scheduling/system rows as first-class mutations without polluting user-facing intent.
 - Added Phase 3 support for production `messages.db#agent_turns` context-chain replay and replay-scoped Taskflow board metadata, allowing generated WhatsApp corpora to validate context-dependent turns without carrying synthetic v2 session state; child-board provisioning turns now classify `provision_child_board` as a semantic board mutation via `group_folder`.
 - Tightened the deterministic Taskflow reassignment fast-path so compound assignment/co-responsibility requests such as `Atribuir T51 a Mario e colocar Flávia como co-responsável` and multi-assignee phrasing such as `Atribuir T50 para Maura e para Francisco` stay on the normal clarification path instead of being collapsed into a single `api_reassign`.
 - Improved Phase 3 state-drift classification for production-snapshot replays where the synced DB already contains the requested assignment, note, or completion; v2 current-state/no-op replies now classify as DB drift instead of product regressions.

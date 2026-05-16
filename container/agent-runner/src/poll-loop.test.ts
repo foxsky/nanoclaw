@@ -18,6 +18,7 @@ import {
   taskflowExactIdNoteCandidate,
   taskflowExplicitCompletionCommand,
   taskflowExplicitReassignCommand,
+  formatTaskflowReassignFailureReply,
   taskflowForwardDetailsCommand,
   taskflowMeetingBatchUpdateCommand,
   taskflowMissingTaskFollowupCommand,
@@ -556,6 +557,14 @@ Other tasks: P2 Agência INOVATHE, P13 Ecossistema de Inovação]
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Laizys', text: 'Atribuir T50 para Maura e para Francisco' }) }],
       true,
     )).toBeNull();
+  });
+
+  it('formats completed-task reassignment failures as the v1 create-new-task question', () => {
+    expect(formatTaskflowReassignFailureReply(
+      'T2',
+      'João Henrique',
+      'Cannot reassign completed task T2.',
+    )).toBe('T2 já está concluída e não pode ser reatribuída. Deseja que eu crie uma nova tarefa para João Henrique com o mesmo conteúdo?');
   });
 
   it('detects child-board registration contact cards after a create-board prompt', () => {

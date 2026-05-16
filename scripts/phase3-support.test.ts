@@ -392,6 +392,33 @@ describe('Phase 3 semantic comparison', () => {
     expect(summary.board_refs).toEqual(['board-seaf-patrimonio-taskflow']);
   });
 
+  it('classifies scheduled task creation as a mutation', () => {
+    const summary = summarizeSemanticBehavior([
+      {
+        name: 'mcp__nanoclaw__schedule_task',
+        input: { prompt: 'Enviar lembrete diário', recurrence: '0 8 * * *' },
+      },
+    ]);
+
+    expect(summary.action).toBe('mutate');
+    expect(summary.mutation_types).toEqual(['schedule']);
+  });
+
+  it('does not count failed completed-task reassignment prompts as mutations', () => {
+    const summary = summarizeSemanticBehavior(
+      [{ name: 'api_reassign', input: { task_id: 'T2', target_person: 'João Henrique' } }],
+      [{
+        kind: 'chat',
+        content: JSON.stringify({
+          text: 'T2 já está concluída e não pode ser reatribuída. Deseja que eu crie uma nova tarefa para João Henrique com o mesmo conteúdo?',
+        }),
+      }],
+    );
+
+    expect(summary.action).toBe('ask');
+    expect(summary.mutation_types).toEqual([]);
+  });
+
   it('treats board/project section reports as informational despite completed-section labels', () => {
     const summary = summarizeSemanticBehavior(
       [],

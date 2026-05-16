@@ -42,6 +42,32 @@ describe('provision_child_board MCP tool (container side)', () => {
     expect(JSON.stringify(result.content)).toMatch(/role/i);
   });
 
+  it('errors without group_folder or group_name so child boards never fall back to person names', async () => {
+    const { provisionChildBoardTool } = await import('./provision-child-board.ts');
+    const result = await provisionChildBoardTool.handler(validInput);
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toMatch(/group_folder/i);
+  });
+
+  it('derives group_folder from group_name when the model omits it', async () => {
+    const { provisionChildBoardTool } = await import('./provision-child-board.ts');
+    const result = await provisionChildBoardTool.handler({
+      ...validInput,
+      group_name: 'SEAF-PATRIMÔNIO - TaskFlow',
+      short_code: 'SEAFP',
+    });
+    expect(result.isError).toBeFalsy();
+
+    const row = getOutboundDb().query('SELECT kind, content FROM messages_out').get() as {
+      kind: string;
+      content: string;
+    };
+    expect(row.kind).toBe('system');
+    const content = JSON.parse(row.content);
+    expect(content.group_name).toBe('SEAF-PATRIMÔNIO - TaskFlow');
+    expect(content.group_folder).toBe('seaf-patrimonio-taskflow');
+  });
+
   it('on valid input writes kind:"system" outbound row with action="provision_child_board"', async () => {
     const { provisionChildBoardTool } = await import('./provision-child-board.ts');
     const result = await provisionChildBoardTool.handler({

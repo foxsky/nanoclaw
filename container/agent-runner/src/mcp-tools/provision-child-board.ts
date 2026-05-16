@@ -3,9 +3,26 @@ import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { err, generateId, log, nonEmptyString, ok } from './util.js';
 
-
-
 const REQUIRED_FIELDS = ['person_id', 'person_name', 'person_phone', 'person_role'] as const;
+
+function slugForBoardFolder(value: string): string {
+  return value
+    .replace(/\s*-\s*TaskFlow\s*$/iu, '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+function resolvedGroupFolder(args: Record<string, unknown>): string | null {
+  const groupFolder = typeof args.group_folder === 'string' ? args.group_folder.trim() : '';
+  if (groupFolder) return groupFolder;
+  const groupName = typeof args.group_name === 'string' ? args.group_name.trim() : '';
+  if (!groupName) return null;
+  const slug = slugForBoardFolder(groupName);
+  return slug ? `${slug}-taskflow` : null;
+}
 
 export const provisionChildBoardTool: McpToolDefinition = {
   tool: {
@@ -23,9 +40,9 @@ export const provisionChildBoardTool: McpToolDefinition = {
         group_folder: {
           type: 'string',
           description:
-            "Optional folder name. STRONGLY recommended: pass the assignee's division/group name (e.g. 'ux-setd-secti-taskflow'). If omitted, falls back to a person-based name which is brittle for cross-parent unification.",
+            "Folder name for the child board. Pass the assignee's division/group name (e.g. 'ux-setd-secti-taskflow'). If omitted but group_name is present, it is derived from group_name; it never falls back to the person name.",
         },
-        group_name: { type: 'string', description: "Optional group name (default: '<personName> - TaskFlow')." },
+        group_name: { type: 'string', description: "Child board/group display name, usually '<division> - TaskFlow'." },
       },
       required: [...REQUIRED_FIELDS],
     },
@@ -36,12 +53,16 @@ export const provisionChildBoardTool: McpToolDefinition = {
         return err(`${field} is required and must be a non-empty string`);
       }
     }
+    const groupFolder = resolvedGroupFolder(args);
+    if (!groupFolder) {
+      return err('group_folder is required unless group_name is provided; child boards must be named after the division/group, never the person');
+    }
 
     const requestId = generateId();
     writeMessageOut({
       id: requestId,
       kind: 'system',
-      content: JSON.stringify({ action: 'provision_child_board', ...args }),
+      content: JSON.stringify({ action: 'provision_child_board', ...args, group_folder: groupFolder }),
     });
 
     log(`provision_child_board: ${requestId} → ${args.person_id} ("${args.person_name}")`);

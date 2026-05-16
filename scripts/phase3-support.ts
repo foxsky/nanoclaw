@@ -176,6 +176,7 @@ const MUTATION_TOOL_PATTERNS = [
   /api_(create|update|delete|move|admin|reassign|undo|hierarchy|dependency)/,
   /api_task_(add_note|edit_note|remove_note)/,
   /provision_(?:child|root)_board/,
+  /schedule_task/,
   /mcp__sqlite__write_query/,
 ];
 
@@ -194,6 +195,7 @@ function canonicalMutationType(name: string): string | null {
   const normalized = normalizedToolName(name);
   if (normalized === 'mcp__sqlite__write_query') return 'sqlite_write';
   if (/^provision_(?:child|root)_board$/.test(normalized)) return 'provision';
+  if (normalized === 'schedule_task') return 'schedule';
   if (/^api_task_(add_note|edit_note|remove_note)$/.test(normalized)) return 'update';
   const match = normalized.match(/^(?:taskflow|api)_(create|create_task|create_simple_task|update|update_task|update_simple_task|delete|delete_simple_task|move|admin|reassign|undo|hierarchy|dependency)/);
   if (!match) return null;
@@ -689,13 +691,15 @@ export function summarizeSemanticBehavior(
   const text = [
     finalResponse ?? '',
     ...sendMessageTexts(tools),
-    ...outbound.map((row) => outboundContentText(row.content)),
+    ...outbound
+      .filter((row) => row.kind === 'chat' || row.kind === 'chat-sdk')
+      .map((row) => outboundContentText(row.content)),
   ].join('\n');
   const asks = /\?|\b(deseja|qual|confirma|confirme|confirmar|pode confirmar|como deseja|quer que|preciso que voc[eê] confirme)\b/i.test(text);
   const outboundIntent = classifyOutboundIntent(text);
   const failedMutationIntent = hasMutation &&
     (outboundIntent === 'asks_user' || outboundIntent === 'not_found_or_unclear') &&
-    /\b(n[aã]o (?:foi )?encontr\w*|n[aã]o localizada|n[aã]o existe|confirma|confirmar)\b/i.test(text) &&
+    /\b(n[aã]o (?:foi )?encontr\w*|n[aã]o localizada|n[aã]o existe|n[aã]o pode ser reatribu[ií]d[ao]?|preciso que voc[eê] confirme|confirme o ID|me confirma)\b/i.test(text) &&
     !/\b(j[aá]|foi|foram)\b[\s\S]{0,80}\b(atualizad[ao]?|adicionad[ao]?|registrad[ao]?)\b/i.test(text);
   const blockedMutationIntent = hasMutation &&
     outboundIntent === 'informational' &&

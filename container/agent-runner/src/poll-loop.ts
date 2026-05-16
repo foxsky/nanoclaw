@@ -1975,6 +1975,13 @@ function formatReassignReply(result: ReassignResult, taskId: string, targetPerso
   return `✅ *${taskId}* reatribuída para ${targetPerson}.`;
 }
 
+export function formatTaskflowReassignFailureReply(taskId: string, targetPerson: string, error?: string): string {
+  if (error && /Cannot reassign completed task/i.test(error)) {
+    return `${taskId} já está concluída e não pode ser reatribuída. Deseja que eu crie uma nova tarefa para ${targetPerson} com o mesmo conteúdo?`;
+  }
+  return `Não consegui reatribuir ${taskId}: ${error ?? 'erro desconhecido'}`;
+}
+
 function handleTaskflowExplicitReassign(
   action: TaskflowExplicitReassign,
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
@@ -2006,7 +2013,7 @@ function handleTaskflowExplicitReassign(
       writeReply(routing, reassignResult.offer_register.message);
       return true;
     }
-    writeReply(routing, `Não consegui reatribuir ${action.taskId}: ${reassignResult.error ?? 'erro desconhecido'}`);
+    writeReply(routing, formatTaskflowReassignFailureReply(action.taskId, target, reassignResult.error));
     return true;
   }
 

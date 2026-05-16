@@ -40,5 +40,76 @@
       "board_refs": ["board-seaf-patrimonio-taskflow"],
       "outbound_intent": "mutation_confirmation"
     }
+  },
+  {
+    "source_turn_id": "9edd15b6-3efc-4c6b-8615-ec16b8b4dfb7",
+    "context_mode": "chain",
+    "prior_turn_depth": 1,
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": ["T51"],
+      "allow_extra_task_ids": true,
+      "board_refs": [],
+      "outbound_intent": "informational"
+    },
+    "state_drift": {
+      "description": "The synced DB already reflects the T51 reassignment and co-responsible note before the confirmation turn, so v2 confirms current state without a target-turn mutation.",
+      "evidence": "taskflow snapshot: T51 assigned to Mário with Flávia co-responsible note already present",
+      "expected_with_historical_snapshot": "Historical pre-confirmation state would let the bare 'Sim' perform the mutation on T51."
+    }
+  },
+  {
+    "source_turn_id": "d4d60a7f-fffd-4654-b368-804ce404f50c",
+    "context_mode": "fresh",
+    "v1_bug": {
+      "description": "Generated corpus has no v1 outbound for an explicit SEC-T41 note update, but v2 correctly records the note through MCP. Treat v2's visible confirmation as a human-review improvement over v1 silence.",
+      "detected_by": "manual_review",
+      "expected_correction": "v2 should preserve the SEC-T41 note mutation instead of reproducing the no-response behavior."
+    }
+  },
+  {
+    "source_turn_id": "57b876a7-64c0-40ac-ab40-359e4b207800",
+    "context_mode": "fresh",
+    "state_drift": {
+      "description": "The synced DB already has T11 in done, so v2 returns a current-state failure/confirmation instead of replaying the historical completion.",
+      "evidence": "taskflow snapshot: board-laizys-taskflow T11 column=done",
+      "expected_with_historical_snapshot": "Historical pre-turn state would allow the completion or no-op silently, depending on the exact v1 session state."
+    }
+  },
+  {
+    "source_turn_id": "75e444d3-b64b-47cd-a389-8a7ab0aba7c9",
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": [],
+      "allow_extra_task_ids": true,
+      "mutation_types": ["schedule"],
+      "board_refs": [],
+      "outbound_intent": "informational"
+    }
+  },
+  {
+    "source_turn_id": "05f4e73b-93e7-4188-92f9-75091d2842f5",
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": ["T57"],
+      "allow_extra_task_ids": true,
+      "board_refs": [],
+      "outbound_intent": "informational"
+    },
+    "state_drift": {
+      "description": "Generated corpus final_response includes the neighboring T56 confirmation, but this user turn asks only for the data-center/sala task. Judge the task creation as T57 vs the replay allocator's current next ID.",
+      "expected_with_historical_snapshot": "Create the data-center/sala task; historical v1 allocated T57."
+    }
+  },
+  {
+    "source_turn_id": "403c4970-ce4e-42aa-b434-56bed7213701",
+    "context_mode": "fresh",
+    "v1_bug": {
+      "description": "Generated production corpus has no v1 outbound for the dependent e-Governe task turn even though the neighboring history shows the task was created/configured. Treat v2's confirmation/read as a human-review improvement over v1 silence, not as a migration regression.",
+      "detected_by": "manual_review",
+      "expected_correction": "v2 may confirm the existing T56/T54 dependency state instead of reproducing v1's no-response behavior."
+    }
   }
 ]
