@@ -1,12 +1,18 @@
 /**
- * Board-config mutation MCP tools (Phase 1 of the tf-mcontrol MCP-engine
- * migration). Pure-SQL parity with the FastAPI handlers — no engine
- * method (mirrors api_update_simple_task: logic lives in the handler).
+ * Board-config mutation MCP tools (tf-mcontrol MCP-engine migration,
+ * single-engine rework R2.8 step 4). Each handler owns arg-shape
+ * validation_error + person_id derivation, then delegates the mutation
+ * to a TaskflowEngine method so the FastAPI surface drives the SAME
+ * engine path the in-container WhatsApp agent uses:
+ *   - api_update_board        → engine.updateBoard
+ *   - api_add_board_person    → engine.addBoardPerson (R2.2 guard)
+ *   - api_remove_board_person → engine.removeBoardPerson
+ *   - api_update_board_person → engine.updateBoardPerson
  *
- * Owner authorization is NOT enforced here: `call_mcp_mutation` runs
- * `require_board_owner` FastAPI-side before invoking the tool, and the
- * flat MCP args carry no non-agent user identity. Engine tools do the
- * mutation only.
+ * Owner authorization is NOT enforced here (R2.3): `call_mcp_mutation`
+ * runs `require_board_owner` FastAPI-side before invoking the tool, and
+ * the flat MCP args carry no non-agent user identity — the engine
+ * methods do ZERO owner auth.
  */
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
@@ -96,9 +102,10 @@ export const apiUpdateBoardTool: McpToolDefinition = {
   },
 };
 
-/** Parity: FastAPI `POST /api/v1/boards/{id}/people` (main.py:2786).
- *  Direct-SQL — deliberately NOT the engine `register_person` path
- *  (slug person_id, hierarchy auto-provision, different semantics). */
+/** FastAPI `POST /api/v1/boards/{id}/people` (main.py:2786) →
+ *  engine.addBoardPerson. NOT the WhatsApp `register_person` slug/
+ *  auto-provision path: FastAPI derives person_id (phone-digits/uuid4)
+ *  and delegating boards are rejected (R2.2). */
 export const apiAddBoardPersonTool: McpToolDefinition = {
   tool: {
     name: 'api_add_board_person',
@@ -315,26 +322,20 @@ export const apiUpdateBoardPersonTool: McpToolDefinition = {
     }
 
     try {
-      // Single-engine (R2.8 step 4b-iv): dedicated FastAPI methods —
-      // engine.setBoardPersonWip (null clears; ≠ engine set_wip_limit)
-      // and engine.setBoardPersonRole (free-form; 'Gestor' is a
-      // privilege grant). ZERO owner auth (R2.3, FastAPI-side). Each
-      // does its own board/person not_found. Behavior-preserving — the
+      // Single-engine (R2.8 4b-iv; Codex post-impl IMPORTANT 3
+      // hardening): ONE transactional engine.updateBoardPerson — single
+      // board/person existence check, atomic wip+role (the prior
+      // two-method sequence re-checked between fields, so a mid-call
+      // delete could leave wip changed yet return not_found on role).
+      // ZERO owner auth (R2.3, FastAPI-side). Behavior-preserving — the
       // FastAPI contract is unchanged (handler still owns every
       // validation_error + builds the echo from validated args).
       const engine = new TaskflowEngine(getTaskflowDb(), boardId);
-      if ('wip_limit' in args) {
-        const r = engine.setBoardPersonWip(
-          boardId,
-          personId,
-          (wip ?? null) as number | null,
-        );
-        if (!r.success) return jsonResponse(r);
-      }
-      if (role !== undefined && role !== null) {
-        const r = engine.setBoardPersonRole(boardId, personId, (role as string).trim());
-        if (!r.success) return jsonResponse(r);
-      }
+      const fields: { wip_limit?: number | null; role?: string } = {};
+      if ('wip_limit' in args) fields.wip_limit = (wip ?? null) as number | null;
+      if (role !== undefined && role !== null) fields.role = (role as string).trim();
+      const r = engine.updateBoardPerson(boardId, personId, fields);
+      if (!r.success) return jsonResponse(r);
       return jsonResponse({
         success: true,
         data: {

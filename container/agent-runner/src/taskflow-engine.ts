@@ -8162,7 +8162,7 @@ export class TaskflowEngine {
       .prepare('SELECT * FROM boards WHERE id = ?')
       .get(boardId) as Record<string, unknown> | null;
     if (!existing) {
-      return { success: false, error_code: 'not_found', error: 'Board not found' };
+      return { success: false, error_code: 'not_found', error: 'Board not found' } as const;
     }
 
     const sets: string[] = [];
@@ -8277,27 +8277,43 @@ export class TaskflowEngine {
         data: Record<string, unknown>;
       }
     | { success: false; error_code: 'not_found'; error: string } {
-    const board = this.db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
-    if (!board) {
-      return { success: false, error_code: 'not_found', error: 'Board not found' };
+    // Contract guard (Codex post-impl IMPORTANT 2): the shared core
+    // mutates `this.boardId`; this wrapper validates `boardId`. They are
+    // equal by construction (the tool builds `new TaskflowEngine(db,
+    // boardId)`), but a divergent reuse would validate one board and
+    // mutate another — fail loud rather than corrupt the wrong board.
+    if (boardId !== this.boardId) {
+      throw new Error(
+        `removeBoardPerson: boardId "${boardId}" != engine board "${this.boardId}"`,
+      );
     }
-    const person = this.db
-      .prepare('SELECT person_id, name FROM board_people WHERE board_id = ? AND person_id = ?')
-      .get(boardId, personId) as { person_id: string; name: string } | null;
-    if (!person) {
-      return { success: false, error_code: 'not_found', error: 'Person not found' };
-    }
-    // _removeBoardPersonCore always returns success:true (active-no-force,
-    // force, or no-active); it operates on this.boardId (== boardId).
-    const r = this._removeBoardPersonCore(
-      { person_id: person.person_id, name: person.name },
-      force,
-    );
-    return r as {
-      success: true;
-      tasks_to_reassign?: Array<{ task_id: string; title: string }>;
-      data: Record<string, unknown>;
-    };
+    // Caller-owned transaction (Codex post-impl IMPORTANT 1): the core
+    // is multi-statement (force-unassign + delete board_admins + delete
+    // board_people); the WhatsApp path gets atomicity from admin()'s
+    // transaction — the FastAPI wrapper must own one too.
+    return this.db.transaction(() => {
+      const board = this.db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
+      if (!board) {
+        return { success: false, error_code: 'not_found', error: 'Board not found' } as const;
+      }
+      const person = this.db
+        .prepare('SELECT person_id, name FROM board_people WHERE board_id = ? AND person_id = ?')
+        .get(boardId, personId) as { person_id: string; name: string } | null;
+      if (!person) {
+        return { success: false, error_code: 'not_found', error: 'Person not found' } as const;
+      }
+      // _removeBoardPersonCore always returns success:true (active-no-force,
+      // force, or no-active); it operates on this.boardId (== boardId).
+      const r = this._removeBoardPersonCore(
+        { person_id: person.person_id, name: person.name },
+        force,
+      );
+      return r as {
+        success: true;
+        tasks_to_reassign?: Array<{ task_id: string; title: string }>;
+        data: Record<string, unknown>;
+      };
+    })();
   }
 
   /**
@@ -8390,109 +8406,113 @@ export class TaskflowEngine {
         error_code: 'not_found' | 'hierarchy_provision_unsupported' | 'conflict';
         error: string;
       } {
-    const board = this.db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
-    if (!board) {
-      return { success: false, error_code: 'not_found', error: 'Board not found' };
+    // Contract guard (Codex post-impl IMPORTANT 2): the shared core +
+    // canDelegateDown() operate on `this.boardId`; this wrapper
+    // validates `boardId`. Equal by construction; fail loud if a
+    // divergent reuse would validate one board and mutate another.
+    if (boardId !== this.boardId) {
+      throw new Error(
+        `addBoardPerson: boardId "${boardId}" != engine board "${this.boardId}"`,
+      );
     }
-    if (this.canDelegateDown()) {
-      return {
-        success: false,
-        error_code: 'hierarchy_provision_unsupported',
-        error: 'Add this member via WhatsApp until UI child-board provisioning lands',
-      };
-    }
-    const normalizedPhone = params.phone
-      ? normalizePhone(params.phone) || params.phone
-      : null;
-    const r = this._addBoardPersonCore(params.person_id, params.name, normalizedPhone, {
-      role: params.role,
-    });
-    if (!r.success) {
-      // The core's only failure mode is the duplicate check; its
-      // WhatsApp-shaped error string must NOT gain an error_code (the
-      // byte-oracle locks it), so the FastAPI conflict is mapped here.
-      return {
-        success: false,
-        error_code: 'conflict',
-        error: 'Person already on this board',
-      };
-    }
-    return {
-      success: true,
-      data: {
-        ok: true,
-        person_id: params.person_id,
-        name: params.name,
-        phone: normalizedPhone,
+    // Caller-owned transaction (Codex post-impl IMPORTANT 1): the core
+    // is multi-statement (duplicate-check + insert); make the
+    // check+insert atomic (also closes a dup-insert TOCTOU race).
+    return this.db.transaction(() => {
+      const board = this.db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
+      if (!board) {
+        return { success: false, error_code: 'not_found', error: 'Board not found' } as const;
+      }
+      if (this.canDelegateDown()) {
+        return {
+          success: false,
+          error_code: 'hierarchy_provision_unsupported',
+          error: 'Add this member via WhatsApp until UI child-board provisioning lands',
+        } as const;
+      }
+      const normalizedPhone = params.phone
+        ? normalizePhone(params.phone) || params.phone
+        : null;
+      const r = this._addBoardPersonCore(params.person_id, params.name, normalizedPhone, {
         role: params.role,
-      },
-    };
+      });
+      if (!r.success) {
+        // The core's only failure mode is the duplicate check; its
+        // WhatsApp-shaped error string must NOT gain an error_code (the
+        // byte-oracle locks it), so the FastAPI conflict is mapped here.
+        return {
+          success: false,
+          error_code: 'conflict',
+          error: 'Person already on this board',
+        } as const;
+      }
+      return {
+        success: true as const,
+        data: {
+          ok: true as const,
+          person_id: params.person_id,
+          name: params.name,
+          phone: normalizedPhone,
+          role: params.role,
+        },
+      };
+    })();
   }
 
   /**
-   * Dedicated FastAPI-only WIP mutation (design Revision 2.1 R2.5 — a
-   * fresh method, NOT a shared core: the WhatsApp `api_admin
-   * set_wip_limit` keeps its own semantics, which the byte-oracle
-   * locks). ZERO engine owner auth (R2.3, FastAPI-side); resolves by
-   * EXACT person_id (R2.1.a). FastAPI contract: `null` clears the
-   * limit (the reject-<1-incl-0 validation_error stays handler-side).
-   * Intentionally diverges from engine `set_wip_limit` (accepts 0,
-   * rejects null) — that is why wip is its own method.
+   * Dedicated FastAPI-only person wip/role mutation (design Revision
+   * 2.1 R2.5). ONE method, ONE transaction, ONE board/person existence
+   * check (Codex post-impl IMPORTANT 3: the prior two-method handler
+   * sequence re-checked existence between fields, so a mid-call delete
+   * could leave wip changed yet return not_found on role). NOT a shared
+   * core: the WhatsApp `api_admin set_wip_limit` keeps its own
+   * semantics, which the byte-oracle locks.
+   *
+   * Semantics (handler owns validation_error + builds the echo):
+   *   - `'wip_limit' in fields` → write it; `null` CLEARS the limit
+   *     (FastAPI contract; intentionally diverges from engine
+   *     `set_wip_limit`, which accepts 0 and rejects null).
+   *   - `'role' in fields` → write the (already trimmed/validated)
+   *     free-form role. ⚠ `role === 'Gestor'` is a DELIBERATE privilege
+   *     grant: it gates REST task edit/delete of unowned tasks
+   *     (`taskflow-api-update.ts:172`, `taskflow-engine.ts:2496`).
+   *     Owner authority is the product intent; the FastAPI
+   *     owner-precheck (BLOCKER B) gates callers. Audit-logging deferred
+   *     per the user decision (no person/role audit table; analogous
+   *     WhatsApp privilege ops don't log either).
+   *
+   * ZERO engine owner auth (R2.3, FastAPI-side); resolves by EXACT
+   * person_id (R2.1.a). Self-consistent on the `boardId` param (no
+   * `this.boardId` core), so no boardId guard is needed.
    */
-  setBoardPersonWip(
+  updateBoardPerson(
     boardId: string,
     personId: string,
-    wipLimit: number | null,
+    fields: { wip_limit?: number | null; role?: string },
   ): { success: true } | { success: false; error_code: 'not_found'; error: string } {
-    const board = this.db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
-    if (!board) {
-      return { success: false, error_code: 'not_found', error: 'Board not found' };
-    }
-    const person = this.db
-      .prepare('SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?')
-      .get(boardId, personId);
-    if (!person) {
-      return { success: false, error_code: 'not_found', error: 'Person not found' };
-    }
-    this.db
-      .prepare('UPDATE board_people SET wip_limit = ? WHERE board_id = ? AND person_id = ?')
-      .run(wipLimit, boardId, personId);
-    return { success: true };
-  }
-
-  /**
-   * Dedicated FastAPI-only role mutation (design Revision 2.1 R2.5 —
-   * no WhatsApp competitor). ZERO engine owner auth (R2.3,
-   * FastAPI-side); resolves by EXACT person_id (R2.1.a). Roles are
-   * free-form (no codebase whitelist), so any non-empty role (already
-   * trimmed/validated handler-side) is persisted. ⚠ `role === 'Gestor'`
-   * is a DELIBERATE privilege grant: it gates REST task edit/delete of
-   * unowned tasks (`taskflow-api-update.ts:172`,
-   * `taskflow-engine.ts:2496`). Owner authority over their board's
-   * roles is the product intent; the FastAPI owner-precheck (BLOCKER B)
-   * gates who may call this. Audit-logging deferred per the user
-   * decision (no person/role audit table; analogous WhatsApp privilege
-   * ops don't log either).
-   */
-  setBoardPersonRole(
-    boardId: string,
-    personId: string,
-    role: string,
-  ): { success: true } | { success: false; error_code: 'not_found'; error: string } {
-    const board = this.db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
-    if (!board) {
-      return { success: false, error_code: 'not_found', error: 'Board not found' };
-    }
-    const person = this.db
-      .prepare('SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?')
-      .get(boardId, personId);
-    if (!person) {
-      return { success: false, error_code: 'not_found', error: 'Person not found' };
-    }
-    this.db
-      .prepare('UPDATE board_people SET role = ? WHERE board_id = ? AND person_id = ?')
-      .run(role, boardId, personId);
-    return { success: true };
+    return this.db.transaction(() => {
+      const board = this.db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
+      if (!board) {
+        return { success: false, error_code: 'not_found', error: 'Board not found' } as const;
+      }
+      const person = this.db
+        .prepare('SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?')
+        .get(boardId, personId);
+      if (!person) {
+        return { success: false, error_code: 'not_found', error: 'Person not found' } as const;
+      }
+      if ('wip_limit' in fields) {
+        this.db
+          .prepare('UPDATE board_people SET wip_limit = ? WHERE board_id = ? AND person_id = ?')
+          .run(fields.wip_limit ?? null, boardId, personId);
+      }
+      if ('role' in fields) {
+        this.db
+          .prepare('UPDATE board_people SET role = ? WHERE board_id = ? AND person_id = ?')
+          .run(fields.role as string, boardId, personId);
+      }
+      return { success: true } as const;
+    })();
   }
 
   /* ---------------------------------------------------------------- */

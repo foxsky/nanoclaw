@@ -5,10 +5,11 @@ import { setupEngineDb } from './taskflow-test-fixtures.js';
 
 /**
  * `api_update_board_person` engine-behavior contract (R2.8 step 4b-iv).
- * Repointed from pure-SQL to the dedicated FastAPI methods
- * `engine.setBoardPersonWip` + `engine.setBoardPersonRole`
- * (Revision 2.1 R2.5; ZERO engine owner auth, R2.3). The FastAPI
- * contract is UNCHANGED, so the repoint is behavior-PRESERVING — these
+ * Repointed from pure-SQL to the dedicated FastAPI method
+ * `engine.updateBoardPerson` (Revision 2.1 R2.5 + Codex post-impl
+ * IMPORTANT 3: one transactional, single existence-checked call; ZERO
+ * engine owner auth, R2.3). The FastAPI contract is UNCHANGED, so the
+ * repoint stays behavior-PRESERVING — these
  * are the exact assertions that guarded the pre-repoint pure-SQL tool
  * and stay the regression gate.
  *
