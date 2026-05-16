@@ -9,6 +9,7 @@
  * mutation only.
  */
 import { getTaskflowDb } from '../db/connection.js';
+import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { jsonResponse, requireString } from './util.js';
@@ -42,11 +43,12 @@ export const apiUpdateBoardTool: McpToolDefinition = {
       });
     }
 
-    const sets: string[] = [];
-    const values: (string | null)[] = [];
+    // Handler owns arg-shape validation + normalization (validation_error);
+    // the engine does the DB mutation (R2.8 step 4b-i — single-source the
+    // PATCH /boards logic via engine.updateBoard).
+    const fields: { name?: string; description?: string | null } = {};
 
-    // name: validate_name — None/absent skips; a string is trimmed and
-    // must be non-empty.
+    // name: None/absent skips; a string is trimmed and must be non-empty.
     if ('name' in args && args.name !== undefined && args.name !== null) {
       if (typeof args.name !== 'string') {
         return jsonResponse({
@@ -63,12 +65,10 @@ export const apiUpdateBoardTool: McpToolDefinition = {
           error: 'Board name cannot be empty',
         });
       }
-      sets.push('name = ?');
-      values.push(trimmed);
+      fields.name = trimmed;
     }
 
-    // description: validate_description + handler `if "description" in
-    // updates` — present (incl. explicit null) is a write; whitespace or
+    // description: present (incl. explicit null) is a write; whitespace or
     // empty collapses to NULL.
     if ('description' in args && args.description !== undefined) {
       if (args.description !== null && typeof args.description !== 'string') {
@@ -78,37 +78,17 @@ export const apiUpdateBoardTool: McpToolDefinition = {
           error: 'description: expected string or null',
         });
       }
-      const d =
+      fields.description =
         args.description === null ? null : (args.description as string).trim() || null;
-      sets.push('description = ?');
-      values.push(d);
     }
 
     try {
-      const db = getTaskflowDb();
-      const existing = db
-        .prepare('SELECT * FROM boards WHERE id = ?')
-        .get(boardId) as Record<string, unknown> | null;
-      if (!existing) {
-        return jsonResponse({
-          success: false,
-          error_code: 'not_found',
-          error: 'Board not found',
-        });
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      const r = engine.updateBoard(boardId, fields);
+      if (!r.success) {
+        return jsonResponse({ success: false, error_code: r.error_code, error: r.error });
       }
-      if (sets.length === 0) {
-        // FastAPI returns the unchanged row, no updated_at bump.
-        return jsonResponse({ success: true, data: existing });
-      }
-      sets.push("updated_at = datetime('now')");
-      db.prepare(`UPDATE boards SET ${sets.join(', ')} WHERE id = ?`).run(
-        ...values,
-        boardId,
-      );
-      const row = db
-        .prepare('SELECT * FROM boards WHERE id = ?')
-        .get(boardId) as Record<string, unknown>;
-      return jsonResponse({ success: true, data: row });
+      return jsonResponse({ success: true, data: r.data });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error_code: 'internal_error', error: msg });

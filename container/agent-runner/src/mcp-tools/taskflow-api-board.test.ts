@@ -60,71 +60,13 @@ afterEach(() => {
   closeTaskflowDb();
 });
 
-async function update(args: Record<string, unknown>) {
-  const { apiUpdateBoardTool } = await import('./taskflow-api-board.ts');
-  return JSON.parse((await apiUpdateBoardTool.handler(args)).content[0].text);
-}
-
-describe('api_update_board MCP tool', () => {
-  it('exports a tool named api_update_board', async () => {
-    const { apiUpdateBoardTool } = await import('./taskflow-api-board.ts');
-    expect(apiUpdateBoardTool.tool.name).toBe('api_update_board');
-  });
-
-  it('updates name + description, bumps updated_at, returns the flat board row', async () => {
-    const r = await update({ board_id: BOARD, name: 'Updated', description: 'new desc' });
-    expect(r.success).toBe(true);
-    // flat row, not a {board:...} wrapper (Codex finding 4)
-    expect(r.data.board).toBeUndefined();
-    expect(r.data.id).toBe(BOARD);
-    expect(r.data.name).toBe('Updated');
-    expect(r.data.description).toBe('new desc');
-    expect(r.data.updated_at).not.toBe('2026-01-01 00:00:00');
-    // unrelated columns preserved
-    expect(r.data.board_role).toBe('hierarchy');
-    expect(r.data.owner_user_id).toBe('u1');
-  });
-
-  it('trims name and rejects empty-after-trim', async () => {
-    const r = await update({ board_id: BOARD, name: '   ' });
-    expect(r.success).toBe(false);
-    expect(r.error_code).toBe('validation_error');
-    const row = db.prepare('SELECT name FROM boards WHERE id = ?').get(BOARD) as { name: string };
-    expect(row.name).toBe('Original'); // not mutated
-  });
-
-  it('trims a provided name before storing', async () => {
-    const r = await update({ board_id: BOARD, name: '  Spaced  ' });
-    expect(r.success).toBe(true);
-    expect(r.data.name).toBe('Spaced');
-  });
-
-  it('stores NULL when description is whitespace-only', async () => {
-    const r = await update({ board_id: BOARD, description: '   ' });
-    expect(r.success).toBe(true);
-    expect(r.data.description).toBeNull();
-  });
-
-  it('no-op (no name/description) returns the row unchanged with NO updated_at bump', async () => {
-    const r = await update({ board_id: BOARD });
-    expect(r.success).toBe(true);
-    expect(r.data.name).toBe('Original');
-    expect(r.data.updated_at).toBe('2026-01-01 00:00:00');
-  });
-
-  it('explicit name:null with no description is a no-op (no error, no bump)', async () => {
-    const r = await update({ board_id: BOARD, name: null });
-    expect(r.success).toBe(true);
-    expect(r.data.name).toBe('Original');
-    expect(r.data.updated_at).toBe('2026-01-01 00:00:00');
-  });
-
-  it('returns not_found for a missing board', async () => {
-    const r = await update({ board_id: 'board-nope', name: 'X' });
-    expect(r.success).toBe(false);
-    expect(r.error_code).toBe('not_found');
-  });
-});
+/**
+ * `api_update_board` was repointed at `engine.updateBoard` (R2.8 step
+ * 4b-i) and now constructs the engine, which needs the full schema —
+ * its tests moved to `taskflow-api-update-board.test.ts` with a
+ * `setupEngineDb` fixture. The 3 tools below stay pure-SQL on the
+ * minimal fixture until their own repoint units.
+ */
 
 /**
  * Parity: FastAPI `POST /api/v1/boards/{id}/people` (main.py:2786).
@@ -383,12 +325,8 @@ describe('plain-UUID board ids — no board- prefixing (FastAPI parity)', () => 
     ).run(UUID_BOARD);
   });
 
-  it('api_update_board operates on the exact UUID id', async () => {
-    const r = await update({ board_id: UUID_BOARD, name: 'Renamed' });
-    expect(r.success).toBe(true);
-    expect(r.data.id).toBe(UUID_BOARD);
-    expect(r.data.name).toBe('Renamed');
-  });
+  // api_update_board's plain-UUID regression moved with it to
+  // taskflow-api-update-board.test.ts (engine-backed; needs full schema).
 
   it('api_add_board_person operates on the exact UUID board id', async () => {
     const r = await addPerson({ board_id: UUID_BOARD, name: 'Z', phone: '111' });
