@@ -8257,6 +8257,52 @@ export class TaskflowEngine {
   }
 
   /**
+   * 0f-batch: delete a board + its board-scoped dependents. Strict
+   * parity with the live FastAPI `DELETE /api/v1/boards/{id}` handler
+   * (idempotent — no existence check: `call_mcp_mutation` 404-prechecks
+   * before the engine, owner auth is FastAPI-side per R2.3), PLUS the
+   * tracked bug fix: the FastAPI handler's dependent list OMITS
+   * `board_holidays` (which has no FK / ON DELETE), so its rows orphan
+   * on board delete — `engine.deleteBoard` also clears it. Each table
+   * is existence-guarded (mirrors FastAPI `if table_exists`). The
+   * multi-DELETE runs in one transaction (Codex post-impl IMPORTANT-1
+   * pattern — all-or-nothing). Self-consistent on the `boardId` param
+   * (no `this.boardId` core), so no boardId guard is needed.
+   *
+   * NOTE: the FastAPI list also omits other board-scoped tables
+   * (board_admins, board_id_counters, child_board_registrations,
+   * board_groups, subtask_requests). Those are a separate broader
+   * orphan-cleanup decision, intentionally OUT of this tracked scope
+   * (memory: "api_delete_board (+ the board_holidays cascade bug)").
+   */
+  deleteBoard(boardId: string): { success: true } {
+    // Hardcoded allowlist (NOT user input): the FastAPI delete_board
+    // dependent set + `board_holidays` (the tracked bug fix).
+    const dependents = [
+      'task_history',
+      'archive',
+      'board_chat',
+      'board_people',
+      'board_config',
+      'board_runtime_config',
+      'tasks',
+      'board_holidays',
+    ];
+    return this.db.transaction(() => {
+      for (const table of dependents) {
+        const exists = this.db
+          .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?")
+          .get(table);
+        if (exists) {
+          this.db.prepare(`DELETE FROM ${table} WHERE board_id = ?`).run(boardId);
+        }
+      }
+      this.db.prepare('DELETE FROM boards WHERE id = ?').run(boardId);
+      return { success: true as const };
+    })();
+  }
+
+  /**
    * Dedicated FastAPI-only board name/description mutation (design
    * Revision 2.1 R2.1: no WhatsApp competitor — a fresh engine method,
    * not a shared core). Single source of the `PATCH /boards` mutation

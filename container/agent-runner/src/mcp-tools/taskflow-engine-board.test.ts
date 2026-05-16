@@ -490,3 +490,80 @@ describe('engine.createBoard', () => {
     expect(r.error).toBe('Board already exists');
   });
 });
+
+/**
+ * `engine.deleteBoard` — strict parity with the live FastAPI
+ * `DELETE /api/v1/boards/{id}` handler (deletes dependents then the
+ * board row, idempotent 204; no existence check — call_mcp_mutation
+ * 404-prechecks before the engine; owner auth FastAPI-side, R2.3),
+ * PLUS the tracked bug fix: the FastAPI handler omits `board_holidays`
+ * (no FK / ON DELETE), orphaning holiday rows on delete —
+ * engine.deleteBoard ALSO clears board_holidays. Multi-DELETE wrapped
+ * in one transaction (Codex IMPORTANT-1 pattern — atomic). Each table
+ * guarded by existence (mirrors FastAPI `if table_exists`). Self-
+ * consistent on the boardId param (no this.boardId core) → no guard.
+ */
+describe('engine.deleteBoard', () => {
+  const B = 'board-del';
+  const OTHER = 'board-keep';
+  beforeEach(() => {
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS board_holidays (board_id TEXT NOT NULL, holiday_date TEXT NOT NULL, label TEXT, PRIMARY KEY (board_id, holiday_date))`,
+    );
+    for (const id of [B, OTHER]) {
+      db.prepare(`INSERT INTO boards (id, name) VALUES (?, ?)`).run(id, id);
+      db.prepare(
+        `INSERT INTO board_people (board_id, person_id, name) VALUES (?, 'p1', 'P1')`,
+      ).run(id);
+      db.prepare(
+        `INSERT INTO tasks (id, board_id, title, created_at, updated_at) VALUES ('T1', ?, 't', '2026-01-01', '2026-01-01')`,
+      ).run(id);
+      db.prepare(
+        `INSERT INTO board_holidays (board_id, holiday_date, label) VALUES (?, '2026-12-25', 'Natal')`,
+      ).run(id);
+    }
+  });
+
+  it('deletes the board row + board-scoped dependents', () => {
+    const r = new TaskflowEngine(db, B).deleteBoard(B);
+    expect(r.success).toBe(true);
+    expect(db.prepare('SELECT 1 FROM boards WHERE id=?').get(B)).toBeNull();
+    expect(
+      db.prepare('SELECT 1 FROM board_people WHERE board_id=?').get(B),
+    ).toBeNull();
+    expect(db.prepare('SELECT 1 FROM tasks WHERE board_id=?').get(B)).toBeNull();
+  });
+
+  it('BUG FIX: also clears board_holidays (FastAPI handler omits it → orphan)', () => {
+    new TaskflowEngine(db, B).deleteBoard(B);
+    expect(
+      db.prepare('SELECT 1 FROM board_holidays WHERE board_id=?').get(B),
+    ).toBeNull();
+  });
+
+  it('is board-scoped — other boards untouched', () => {
+    new TaskflowEngine(db, B).deleteBoard(B);
+    expect(db.prepare('SELECT 1 FROM boards WHERE id=?').get(OTHER)).not.toBeNull();
+    expect(
+      db.prepare('SELECT 1 FROM board_people WHERE board_id=?').get(OTHER),
+    ).not.toBeNull();
+    expect(
+      db.prepare('SELECT 1 FROM board_holidays WHERE board_id=?').get(OTHER),
+    ).not.toBeNull();
+  });
+
+  it('idempotent — deleting a missing/already-deleted board succeeds (FastAPI parity)', () => {
+    new TaskflowEngine(db, B).deleteBoard(B);
+    const r = new TaskflowEngine(db, B).deleteBoard(B);
+    expect(r.success).toBe(true);
+    const r2 = new TaskflowEngine(db, 'never-existed').deleteBoard('never-existed');
+    expect(r2.success).toBe(true);
+  });
+
+  it('robust when a dependent table is absent (mirrors FastAPI table_exists guard)', () => {
+    db.exec('DROP TABLE board_holidays');
+    const r = new TaskflowEngine(db, B).deleteBoard(B);
+    expect(r.success).toBe(true);
+    expect(db.prepare('SELECT 1 FROM boards WHERE id=?').get(B)).toBeNull();
+  });
+});

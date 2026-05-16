@@ -133,6 +133,47 @@ export const apiCreateBoardTool: McpToolDefinition = {
   },
 };
 
+/** FastAPI `DELETE /api/v1/boards/{id}` (main.py:2963) →
+ *  engine.deleteBoard. Idempotent 204; deletes board-scoped dependents
+ *  + the board row, PLUS clears `board_holidays` (the tracked FastAPI
+ *  cascade-bug fix). Flat args, no actor/sender_name; owner auth is
+ *  FastAPI-side (R2.3). 204 → {success:true, data:null}. */
+export const apiDeleteBoardTool: McpToolDefinition = {
+  tool: {
+    name: 'api_delete_board',
+    description:
+      'Delete a board and its board-scoped data. Owner authorization is enforced by the API layer before this tool runs.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+      },
+      required: ['board_id'],
+    },
+  },
+  async handler(args) {
+    // FastAPI passes the URL board_id verbatim (R2.7; no normalize).
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) {
+      return jsonResponse({
+        success: false,
+        error_code: 'validation_error',
+        error: 'board_id: required string',
+      });
+    }
+    try {
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      engine.deleteBoard(boardId);
+      // FastAPI returns 204 no body; surface as data:null (same
+      // convention the 204-equivalent siblings use).
+      return jsonResponse({ success: true, data: null });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error_code: 'internal_error', error: msg });
+    }
+  },
+};
+
 /** Parity: FastAPI `PATCH /api/v1/boards/{id}` (main.py:2744) +
  *  UpdateBoardPayload validators (main.py:268-288). */
 export const apiUpdateBoardTool: McpToolDefinition = {
@@ -468,6 +509,7 @@ export const apiUpdateBoardPersonTool: McpToolDefinition = {
 
 registerTools([
   apiCreateBoardTool,
+  apiDeleteBoardTool,
   apiUpdateBoardTool,
   apiAddBoardPersonTool,
   apiRemoveBoardPersonTool,
