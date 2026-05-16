@@ -21,7 +21,7 @@
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
-import { normalizeEngineNotificationEvents } from './taskflow-helpers.js';
+import { normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
 import type { McpToolDefinition } from './types.js';
 import { jsonResponse } from './util.js';
 
@@ -62,8 +62,17 @@ export const apiTaskAddCommentTool: McpToolDefinition = {
       return validationError('Comment message is required');
     }
 
-    const boardId = args.board_id; // verbatim — never board-prefix
-    const taskId = args.task_id.toUpperCase();
+    // ID handling = the sibling note-tool path. normalizeAgentIds is
+    // verbatim-AWARE: in the FastAPI subprocess (setVerbatimIds(true))
+    // it is a no-op, so board_id AND task_id are used exactly as
+    // FastAPI's fetch_task_row already resolved them; for the
+    // in-container WhatsApp agent it injects board_id + case-folds
+    // task_id like every other task tool. (A blunt unconditional
+    // .toUpperCase() here was the `Task not found: TASK-SIMPLE` .61
+    // regression — it mangled FastAPI's already-resolved id.)
+    const norm = normalizeAgentIds(args);
+    const boardId = norm.board_id as string;
+    const taskId = norm.task_id as string;
     const authorId = args.author_id.trim();
     const authorName =
       typeof args.author_name === 'string' && args.author_name.trim() !== ''

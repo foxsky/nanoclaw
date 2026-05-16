@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { closeTaskflowDb } from '../db/connection.js';
+import { setVerbatimIds } from './taskflow-helpers.js';
 import { setupEngineDb } from './taskflow-test-fixtures.js';
 
 /**
@@ -28,6 +29,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setVerbatimIds(false); // process-global — never leak verbatim into siblings
   closeTaskflowDb();
 });
 
@@ -78,26 +80,37 @@ describe('api_task_add_comment MCP tool (engine-backed)', () => {
     expect(r.notification_events[0].message).not.toContain('Digite');
   });
 
-  it('uses board_id VERBATIM — never board-prefixes (handoff plain-UUID BLOCKER)', async () => {
-    const UUID = '550e8400-e29b-41d4-a716-446655440000';
-    db.prepare(`INSERT INTO boards (id, short_code, name) VALUES (?, 'UU', 'U')`).run(UUID);
-    db.prepare(
-      `INSERT INTO tasks (id, board_id, title, created_at, updated_at) VALUES ('T9', ?, 't', '2026-01-01', '2026-01-01')`,
-    ).run(UUID);
-    const r = await call({
-      board_id: UUID,
-      task_id: 'T9',
-      author_id: 'svc',
-      author_name: 'svc',
-      message: 'hi',
-    });
-    expect(r.success).toBe(true);
-    expect(
-      db.prepare(`SELECT 1 FROM task_history WHERE board_id=? AND action='comment'`).get(UUID),
-    ).not.toBeNull();
-    expect(
-      db.prepare(`SELECT 1 FROM task_history WHERE board_id='board-' || ?`).get(UUID),
-    ).toBeNull();
+  it('VERBATIM (FastAPI subprocess): plain-UUID board_id is never board-prefixed (handoff BLOCKER)', async () => {
+    // The handoff BLOCKER condition is the FastAPI subprocess, which
+    // always runs setVerbatimIds(true) — that is where normalizeAgentIds
+    // must NOT prefix a plain web-POST UUID. (In the non-verbatim
+    // in-container WhatsApp path, board-prefixing a bare id IS the
+    // intended v1-parity behavior that every task tool has — so the
+    // BLOCKER is correctly asserted under verbatim, not unconditionally.)
+    setVerbatimIds(true);
+    try {
+      const UUID = '550e8400-e29b-41d4-a716-446655440000';
+      db.prepare(`INSERT INTO boards (id, short_code, name) VALUES (?, 'UU', 'U')`).run(UUID);
+      db.prepare(
+        `INSERT INTO tasks (id, board_id, title, created_at, updated_at) VALUES ('T9', ?, 't', '2026-01-01', '2026-01-01')`,
+      ).run(UUID);
+      const r = await call({
+        board_id: UUID,
+        task_id: 'T9',
+        author_id: 'svc',
+        author_name: 'svc',
+        message: 'hi',
+      });
+      expect(r.success).toBe(true);
+      expect(
+        db.prepare(`SELECT 1 FROM task_history WHERE board_id=? AND action='comment'`).get(UUID),
+      ).not.toBeNull();
+      expect(
+        db.prepare(`SELECT 1 FROM task_history WHERE board_id='board-' || ?`).get(UUID),
+      ).toBeNull();
+    } finally {
+      setVerbatimIds(false);
+    }
   });
 
   it('uppercases task_id (handoff: api_task_add_comment needs task-id normalization)', async () => {
@@ -122,6 +135,37 @@ describe('api_task_add_comment MCP tool (engine-backed)', () => {
     expect((await call({ board_id: SEED, task_id: 'T1', author_id: 'alice' })).error_code).toBe(
       'validation_error',
     );
+  });
+
+  it('VERBATIM (FastAPI subprocess): task_id is NOT uppercased — uses normalizeAgentIds like the note tools', async () => {
+    // The .61 regression: FastAPI fetch_task_row resolves and passes the
+    // canonical stored id (e.g. lowercase 'task-simple'); the subprocess
+    // runs setVerbatimIds(true) so normalizeAgentIds is a no-op. A blunt
+    // .toUpperCase() mangles it → engine getTask('TASK-SIMPLE') → 404.
+    setVerbatimIds(true);
+    try {
+      db.prepare(
+        `INSERT INTO tasks (id, board_id, title, assignee, created_at, updated_at) VALUES ('task-simple', ?, 'Lower id', 'bob', '2026-01-01', '2026-01-01')`,
+      ).run(SEED);
+      const r = await call({
+        board_id: SEED,
+        task_id: 'task-simple',
+        author_id: 'taskflow-api',
+        author_name: 'taskflow-api',
+        message: 'verbatim id must survive',
+      });
+      expect(r.success).toBe(true);
+      expect(r.data.task_id).toBe('task-simple'); // NOT 'TASK-SIMPLE'
+      expect(
+        db
+          .prepare(
+            `SELECT 1 FROM task_history WHERE board_id=? AND task_id='task-simple' AND action='comment'`,
+          )
+          .get(SEED),
+      ).not.toBeNull();
+    } finally {
+      setVerbatimIds(false);
+    }
   });
 
   it('passes through engine not_found for a missing task', async () => {
