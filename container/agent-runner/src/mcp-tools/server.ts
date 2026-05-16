@@ -32,17 +32,26 @@ export function registerTools(tools: McpToolDefinition[]): void {
   }
 }
 
-export async function startMcpServer(): Promise<void> {
+/**
+ * `allow` restricts the exposed surface to the named tools, gating BOTH
+ * `tools/list` AND the `tools/call` path (a registered-but-disallowed
+ * tool must be unlisted *and* uncallable — `tools/call` resolves from
+ * `toolMap`, not the listed set). Omit `allow` for the full in-container
+ * barrel; the standalone taskflow entrypoint passes its FastAPI-facing
+ * allowlist so the subprocess can't reach `api_admin`/hierarchy/etc.
+ */
+export async function startMcpServer(allow?: ReadonlySet<string>): Promise<void> {
   const server = new Server({ name: 'nanoclaw', version: '2.0.0' }, { capabilities: { tools: {} } });
+  const exposed = allow ? allTools.filter((t) => allow.has(t.tool.name)) : allTools;
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: allTools.map((t) => t.tool),
+    tools: exposed.map((t) => t.tool),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     const tool = toolMap.get(name);
-    if (!tool) {
+    if (!tool || (allow && !allow.has(name))) {
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }] };
     }
     return tool.handler(args ?? {});
@@ -50,5 +59,5 @@ export async function startMcpServer(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  log(`MCP server started with ${allTools.length} tools: ${allTools.map((t) => t.tool.name).join(', ')}`);
+  log(`MCP server started with ${exposed.length} tools: ${exposed.map((t) => t.tool.name).join(', ')}`);
 }

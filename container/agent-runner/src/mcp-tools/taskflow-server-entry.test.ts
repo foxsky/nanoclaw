@@ -98,6 +98,31 @@ describe('taskflow-server-entry (tf-mcontrol runtime contract)', () => {
       // Gap 3: taskflow surface present, full-barrel surface absent.
       expect(names).toContain('api_create_simple_task');
       expect(names).not.toContain('send_message');
+
+      // R2.7(b): the WhatsApp-agent-only admin/hierarchy surface is
+      // imported transitively (via taskflow-api-mutate) but MUST be
+      // allowlisted OUT of the FastAPI subprocess — unlisted...
+      expect(names).not.toContain('api_admin');
+      expect(names).not.toContain('api_hierarchy');
+      expect(names).toContain('api_update_board');
+
+      // ...AND uncallable (server.ts resolves tools/call from toolMap
+      // directly — the allowlist must gate the call path too).
+      proc.stdin.write(
+        rpc({
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'tools/call',
+          params: { name: 'api_admin', arguments: {} },
+        }),
+      );
+      await proc.stdin.flush();
+      const out3 = await readUntil(proc.stdout, (a) => a.includes('"id":3'), 10000);
+      const line3 = out3.split('\n').find((l) => l.includes('"id":3'));
+      expect(line3, 'tools/call response not received').toBeTruthy();
+      const callTxt: string =
+        JSON.parse(line3 as string).result?.content?.[0]?.text ?? '';
+      expect(callTxt).toContain('Unknown tool');
     } finally {
       proc.kill();
       rmSync(dir, { recursive: true, force: true });
