@@ -1,14 +1,16 @@
 # TaskFlow Skill Package Changelog
 
-## 2026-05-16 — Phase 1 MCP tools: `api_update_board` + `api_add_board_person` (2 of 4 board-config)
+## 2026-05-16 — Phase 1 MCP tools: board CRUD + people (3 of 4 board-config)
 
-First two of the four Phase-1 board-config tools that unblock the tf-mcontrol endpoint migration. New `container/agent-runner/src/mcp-tools/taskflow-api-board.ts` + `apiUpdateBoardTool`, registered in **both** the tf-mcontrol entrypoint (`taskflow-server-entry.ts`) and the in-container barrel (`index.ts`).
+First three of the four Phase-1 board-config tools that unblock the tf-mcontrol endpoint migration. New `container/agent-runner/src/mcp-tools/taskflow-api-board.ts` + `apiUpdateBoardTool`, registered in **both** the tf-mcontrol entrypoint (`taskflow-server-entry.ts`) and the in-container barrel (`index.ts`).
 
 Pure-SQL parity with FastAPI `PATCH /api/v1/boards/{id}` (`main.py:2744`) + `UpdateBoardPayload` validators (`main.py:268-288`) — no engine method (mirrors `api_update_simple_task`'s handler-owned pattern): `name` trimmed, empty-after-trim → `validation_error`; `description` trimmed, whitespace/empty → `NULL`; explicit `null`/absent `name` skipped; **no-op (no name/description) returns the row unchanged with no `updated_at` bump**; otherwise `updated_at = datetime('now')` + return the **flat board row** (not a `{board:…}` wrapper). Structured `{success:false, error_code, error}` (`validation_error` / `not_found` / `internal_error`) per the 0i contract. **No `sender_name`** — board endpoints resolve no actor; owner auth stays FastAPI-side before `call_mcp_mutation` (Codex pre-impl review findings 2–4, 7). TDD: RED (module-not-found) → GREEN 8/8; container `tsc --noEmit` clean; 174/0 regression on entry + taskflow tool tests.
 
 **`api_add_board_person`** — parity with FastAPI `POST /api/v1/boards/{id}/people` (`main.py:2786`). Direct-SQL, **deliberately not** the engine `register_person` path (slug person_id, hierarchy auto-provision — different semantics; Codex finding 5). `person_id` = phone digits-only, or `crypto.randomUUID()` when no phone; phone with no digits → `validation_error`; `name` required+trimmed; `role` defaults `member` (falsy → member, not trimmed); duplicate `(board_id, person_id)` → `conflict`; missing board → `not_found`; phone stored `NULL` when empty. Echo response `{ok, person_id, name, phone, role}` matching `tests/golden/add_board_person.json` (status 201; `call_mcp_mutation` returns `data` verbatim). TDD RED→GREEN 16/16; `tsc` clean; 182/0 regression.
 
-Remaining Phase-1 tools (next): `api_remove_board_person`, `api_update_board_person`.
+**`api_remove_board_person`** — parity with FastAPI `DELETE /api/v1/boards/{id}/people/{pid}` (`main.py:2814`). Missing board → `not_found` ("Board not found"); person row absent → `not_found` ("Person not found"); else `DELETE` the `board_people` row and return `{success:true, data:null}` (FastAPI 204 no-body; `tests/golden/remove_board_person.json` body=null). `person_id` is never normalized (it's a phone-digits or uuid id, not a task id). TDD RED→GREEN 21/21; `tsc` clean; 187/0 regression.
+
+Remaining Phase-1 tool (next): `api_update_board_person`.
 
 ## 2026-05-15 — MCP-engine migration: 0f decided, 0h-v2 blocker found (tf-mcontrol coordination)
 

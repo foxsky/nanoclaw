@@ -214,4 +214,72 @@ export const apiAddBoardPersonTool: McpToolDefinition = {
   },
 };
 
-registerTools([apiUpdateBoardTool, apiAddBoardPersonTool]);
+/** Parity: FastAPI `DELETE /api/v1/boards/{id}/people/{pid}`
+ *  (main.py:2814). 404 if the person row is absent; else delete. */
+export const apiRemoveBoardPersonTool: McpToolDefinition = {
+  tool: {
+    name: 'api_remove_board_person',
+    description:
+      'Remove a person from a board. Owner authorization is enforced by the API layer before this tool runs.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        board_id: { type: 'string' },
+        person_id: { type: 'string' },
+      },
+      required: ['board_id', 'person_id'],
+    },
+  },
+  async handler(args) {
+    args = normalizeAgentIds(args);
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) {
+      return jsonResponse({
+        success: false,
+        error_code: 'validation_error',
+        error: 'board_id: required string',
+      });
+    }
+    const personId = requireString(args, 'person_id');
+    if (personId === null) {
+      return jsonResponse({
+        success: false,
+        error_code: 'validation_error',
+        error: 'person_id: required string',
+      });
+    }
+
+    try {
+      const db = getTaskflowDb();
+      const board = db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
+      if (!board) {
+        return jsonResponse({
+          success: false,
+          error_code: 'not_found',
+          error: 'Board not found',
+        });
+      }
+      const row = db
+        .prepare('SELECT person_id FROM board_people WHERE board_id = ? AND person_id = ?')
+        .get(boardId, personId);
+      if (!row) {
+        return jsonResponse({
+          success: false,
+          error_code: 'not_found',
+          error: 'Person not found',
+        });
+      }
+      db.prepare('DELETE FROM board_people WHERE board_id = ? AND person_id = ?').run(
+        boardId,
+        personId,
+      );
+      // FastAPI returns 204 with no body; the golden body is null.
+      return jsonResponse({ success: true, data: null });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error_code: 'internal_error', error: msg });
+    }
+  },
+};
+
+registerTools([apiUpdateBoardTool, apiAddBoardPersonTool, apiRemoveBoardPersonTool]);
