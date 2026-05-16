@@ -1,6 +1,8 @@
 # TaskFlow Skill Package Changelog
 
-## 2026-05-16 — Phase 1 MCP tools: board-config COMPLETE (4 of 4)
+## 2026-05-16 — Phase 1 MCP tools: board-config (4 tools) — ⚠ SUPERSEDED, rework pending
+
+> **⚠ Correction (same day): these 4 tools are architecturally superseded and NOT done.** The user clarified the hard requirement: the MCP server is the single gateway so tf-mcontrol (UI) drives the **same engine path the WhatsApp agent uses** — identical behavior + side effects. These tools were built as pure-SQL replicas of the *current FastAPI* handlers, which for board/people ops already diverge from the engine/WhatsApp path (engine `api_admin`: phone-normalization, hierarchy child-board auto-provision, task-reassignment-on-remove, notifications/history). They give UI==current-API + 0d-golden parity but **UI≠WhatsApp** — the opposite of the principle. Rework: extract `register_person`/`remove_person`/`set_wip_limit`(+role) from the `api_admin` dispatcher into named engine methods that both `api_admin` and these `api_*` tools call; re-baseline the 0d goldens (behavior intentionally changes). The implementation below stands only as the SQL/contract reference for the rework. **Phase 1 is not complete.**
 
 All four Phase-1 board-config tools that unblock the tf-mcontrol endpoint migration. New `container/agent-runner/src/mcp-tools/taskflow-api-board.ts` + `apiUpdateBoardTool`, registered in **both** the tf-mcontrol entrypoint (`taskflow-server-entry.ts`) and the in-container barrel (`index.ts`).
 
