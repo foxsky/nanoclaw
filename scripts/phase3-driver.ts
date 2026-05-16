@@ -140,7 +140,7 @@ function runPhase2Driver(metadata: Phase3TurnMetadata, args: Args): void {
 
   fs.rmSync(PHASE2_DRIVER_OUT, { force: true });
   if (args.phase2Out !== PHASE2_DRIVER_OUT) fs.rmSync(args.phase2Out, { force: true });
-  const result = spawnSync(path.join(process.cwd(), 'node_modules', '.bin', 'tsx'), phase2Args, {
+  const result = spawnSync(process.execPath, ['--import', 'tsx', ...phase2Args], {
     cwd: process.cwd(),
     env,
     stdio: 'inherit',

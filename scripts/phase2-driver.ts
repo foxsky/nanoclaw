@@ -202,6 +202,32 @@ function stopContainer(name: string): void {
   }
 }
 
+function makeContainerWritable(hostPath: string): void {
+  if (!fs.existsSync(hostPath)) return;
+  const result = spawnSync('docker', [
+    'run',
+    '--rm',
+    '-v',
+    `${hostPath}:/target`,
+    'busybox',
+    'chown',
+    '-R',
+    '1000:1000',
+    '/target',
+  ], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (result.status !== 0) {
+    throw new Error(`docker chown fallback failed for ${hostPath}: ${result.stderr || result.stdout}`);
+  }
+}
+
+function prepareReplayContainerWritablePaths(sessionId: string): void {
+  makeContainerWritable(sessionDir(AGENT_GROUP_ID, sessionId));
+  makeContainerWritable(path.join(DATA_DIR, 'v2-sessions', AGENT_GROUP_ID, '.claude-shared'));
+}
+
 function sqliteSidecarPaths(dbPath: string): string[] {
   return [`${dbPath}-wal`, `${dbPath}-shm`];
 }
@@ -260,6 +286,7 @@ async function driveContextTurn(
     content,
     trigger: 1,
   });
+  prepareReplayContainerWritablePaths(session.id);
 
   const outboundBaselineSeq = maxOutboundSeq(AGENT_GROUP_ID, session.id);
   const captureBytesBefore = fs.existsSync(captureFile) ? fs.statSync(captureFile).size : 0;
@@ -393,6 +420,7 @@ async function processChain(corpus: Corpus, targetCorpusIdx: number, depth: numb
       content,
       trigger: 1,
     });
+    prepareReplayContainerWritablePaths(session.id);
 
     const outboundBaselineSeq = maxOutboundSeq(AGENT_GROUP_ID, session.id);
     const woke = await wakeContainer(session);
@@ -470,6 +498,7 @@ async function processTurn(turn: CuratedTurn, idx: number): Promise<TurnResult> 
     content,
     trigger: 1,
   });
+  prepareReplayContainerWritablePaths(session.id);
 
   const outboundBaselineSeq = maxOutboundSeq(AGENT_GROUP_ID, session.id);
   const woke = await wakeContainer(session);

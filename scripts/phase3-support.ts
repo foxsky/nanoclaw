@@ -1,4 +1,6 @@
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import { isWhatsAppJid } from '../src/phone.js';
@@ -359,8 +361,40 @@ function sqliteSidecarPaths(dbPath: string): string[] {
 
 function copyIfExists(from: string, to: string): boolean {
   if (!fs.existsSync(from)) return false;
-  fs.copyFileSync(from, to);
+  copyFileSyncWithDockerFallback(from, to);
   return true;
+}
+
+function copyFileSyncWithDockerFallback(from: string, to: string): void {
+  try {
+    fs.copyFileSync(from, to);
+    return;
+  } catch (error) {
+    const code = typeof error === 'object' && error && 'code' in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+    if (code !== 'EACCES') throw error;
+    const result = spawnSync('docker', [
+      'run',
+      '--rm',
+      '--user',
+      '1000:1000',
+      '-v',
+      `${path.dirname(from)}:/from:ro`,
+      '-v',
+      `${path.dirname(to)}:/to`,
+      'busybox',
+      'cp',
+      `/from/${path.basename(from)}`,
+      `/to/${path.basename(to)}`,
+    ], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (result.status !== 0) {
+      throw new Error(`docker copy fallback failed (${result.status}): ${result.stderr || result.stdout}`);
+    }
+  }
 }
 
 function removeSQLiteSidecars(dbPath: string): void {
@@ -378,20 +412,21 @@ export function restoreDbSnapshot(
   if (!fs.existsSync(snapshotPath)) return 'missing';
   const livePath = taskflowDbPath(dataDir);
   removeSQLiteSidecars(livePath);
-  fs.copyFileSync(snapshotPath, livePath);
+  copyFileSyncWithDockerFallback(snapshotPath, livePath);
   removeSQLiteSidecars(livePath);
   return 'restored';
 }
 
 export function withTaskflowDbSnapshot<T>(dataDir: string, fn: () => T): T {
   const livePath = taskflowDbPath(dataDir);
-  const snapshot = `${livePath}.phase3-${process.pid}-${Date.now()}`;
+  const snapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), 'phase3-db-'));
+  const snapshot = path.join(snapshotDir, path.basename(livePath));
   const sidecarSnapshots = sqliteSidecarPaths(livePath).map((sidecar) => ({
     live: sidecar,
-    snapshot: `${sidecar}.phase3-${process.pid}-${Date.now()}`,
+    snapshot: path.join(snapshotDir, path.basename(sidecar)),
     existed: false,
   }));
-  fs.copyFileSync(livePath, snapshot);
+  copyFileSyncWithDockerFallback(livePath, snapshot);
   for (const sidecar of sidecarSnapshots) {
     sidecar.existed = copyIfExists(sidecar.live, sidecar.snapshot);
   }
@@ -399,16 +434,17 @@ export function withTaskflowDbSnapshot<T>(dataDir: string, fn: () => T): T {
     return fn();
   } finally {
     removeSQLiteSidecars(livePath);
-    fs.copyFileSync(snapshot, livePath);
+    copyFileSyncWithDockerFallback(snapshot, livePath);
     for (const sidecar of sidecarSnapshots) {
       if (sidecar.existed) {
-        fs.copyFileSync(sidecar.snapshot, sidecar.live);
+        copyFileSyncWithDockerFallback(sidecar.snapshot, sidecar.live);
       } else {
         fs.rmSync(sidecar.live, { force: true });
       }
       fs.rmSync(sidecar.snapshot, { force: true });
     }
     fs.rmSync(snapshot, { force: true });
+    fs.rmSync(snapshotDir, { recursive: true, force: true });
   }
 }
 
