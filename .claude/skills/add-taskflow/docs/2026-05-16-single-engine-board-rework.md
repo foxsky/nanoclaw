@@ -43,7 +43,8 @@
 > **scoping decision**, not a §2 patch. See memory
 > `project_tfmcontrol_mcp_engine_0f_0h`.
 
-**Status:** Design — SUPERSEDED pending scoping decision. No tool code.
+**Status:** §0–§9 SUPERSEDED. **Authoritative scope = Revision 2 (end
+of doc): pragmatic subset.** No tool code until Revision 2 is reviewed.
 **Date:** 2026-05-16. **Owner:** nanoclaw side (`skill/taskflow-v2`).
 **Driver:** user requirement — the MCP server is the single gateway so
 tf-mcontrol (UI) drives the *same engine path* the in-container WhatsApp
@@ -240,3 +241,111 @@ must not change WhatsApp output.
   manager/admin person.
 - §3: should `force` be a tool input, or should the UI always be
   required to resolve tasks first (never force from UI)?
+
+---
+
+# Revision 2 (2026-05-16) — pragmatic subset (AUTHORITATIVE; supersedes §0–§9)
+
+User scoping decision: single-engine board-config **only for the
+non-host-coupled ops**. Host-coupled hierarchy auto-provisioning + UI
+outbound are explicitly OUT until host-dispatch (0h-v2-class) lands.
+Every Codex gpt-5.5/xhigh correction (2026-05-16) is baked in.
+
+## R2.1 In scope (engine-extractable, no host/session dependency)
+
+| Tool | Engine method | Source |
+|---|---|---|
+| `api_update_board` | new `engine.updateBoard(boardId, {name?,desc?}, auth)` | no WhatsApp competitor — fresh method, not a divergence |
+| `api_add_board_person` | new `engine.addBoardPerson(...)` extracted from `register_person`'s **non-hierarchy** path only | `taskflow-engine.ts:8206-8258` (the pre-auto_provision insert) |
+| `api_update_board_person` | `engine.updateBoardPersonWip` (extracted from `set_wip_limit`) + new `engine.setBoardPersonRole` (`board_people.role`) | `:8461-8479`; role has no WhatsApp competitor |
+| `api_remove_board_person` | new `engine.removeBoardPerson(...)` extracted from `remove_person` | `:8285-8330` |
+
+## R2.2 Out of scope — explicit, documented behavior gap
+
+**UI add-person on a delegating/hierarchy board does NOT auto-provision
+a child board.** `engine.addBoardPerson` with `auth.kind==='api_service'`,
+when the board is delegating (`canDelegateDown()` true,
+`taskflow-engine.ts:1699-1703`), **rejects** with
+`{success:false, error_code:'hierarchy_provision_unsupported',
+error:'Add this member via WhatsApp until UI child-board provisioning
+lands'}` — explicit, never a silent half-provision. WhatsApp
+(`taskflow_person`) keeps full auto-provision unchanged. Revisit when
+the host-dispatch problem (≈0h-v2) is solved.
+
+## R2.3 Auth (corrects §1 footgun)
+
+`type EngineAuth = { kind:'taskflow_person'; board_id; sender_name }
+| { kind:'api_service'; board_id }`. **No `owner_prechecked` flag — the
+engine never trusts auth state from MCP args.** For `api_service` the
+engine does **zero** owner/manager auth: owner auth is purely
+FastAPI-side (`require_board_owner` before `call_mcp_mutation`, per
+BLOCKER B, with the per-endpoint non-owner negative test). For
+`taskflow_person` the existing manager/role gate
+(`taskflow-engine.ts:8151`) runs inside the core. Logic single-sourced;
+auth simply does-not-run for api_service (structurally, not via a
+trusted boolean).
+
+## R2.4 remove-person semantics (corrects §3 to engine truth)
+
+Codex: active-task `remove_person` returns **`success:true` +
+`tasks_to_reassign`** (NOT a failure) — `taskflow-engine.ts:8297`.
+So `api_remove_board_person`:
+- no active tasks → delete; `{success:true, data:null}` (HTTP 204-equiv).
+- active tasks, no `force` → `{success:true,
+  data:{tasks_to_reassign:[...], removed:false}}` — FastAPI returns
+  **200 + the list** (NOT 409; engine reports success). UI must handle.
+- `force:true` → unassign active tasks + delete `board_admins` + delete
+  `board_people` (`:8307-8330`).
+
+## R2.5 role (corrects §4)
+
+`engine.setBoardPersonRole` mutates `board_people.role`. ⚠ This is the
+**job/UI role**, and `role==='Gestor'` grants REST task edit/delete
+privilege (`taskflow-engine.ts:2492`, `taskflow-api-update.ts:165`) —
+it is NOT WhatsApp manager/delegate authority (`board_admins`,
+`add_manager`/`add_delegate`). Name + document accordingly; no WhatsApp
+competitor (legitimate new method, like `updateBoard`).
+
+## R2.6 Extraction shape + parity guard (Codex #4)
+
+Private `_…Core` (logic+DB, caller-owned txn, no auth) + thin public
+methods (own txn + the §R2.3 auth fork). `api_admin` cases repoint at
+the cores inside its existing transaction/gate, returning admin-shaped
+data. **Byte-oracle unit tests** for the repointed `api_admin`
+register_person/remove_person/set_wip_limit cases (semantic replay
+alone is insufficient — `taskflow-api-mutate.ts:119` finalizer reshapes;
+`requirePerson()` throw→`{success:false}` at `:2760,8139`).
+
+## R2.7 Independent fixes — land FIRST, no design dependency
+
+1. **Shipped bug:** drop `normalizeAgentIds` from all 4 board tools
+   (`taskflow-api-board.ts:35`) — it `board-`-prefixes FastAPI's
+   plain-UUID board ids (`taskflow-helpers.ts:90`; HANDOFF:85). Use
+   flat args, trust the URL `board_id` verbatim.
+2. **D1 entrypoint allowlist:** must gate the **call path**
+   (`server.ts:42` resolves `tools/call` from `toolMap`, not the listed
+   set) AND the list; allowlist = the 6 prod task/note tools FastAPI
+   already calls + the board-config api_* tools; assert `api_admin`/
+   `api_hierarchy` absent in the entry test (both list and call).
+3. Fix the false "taskflow-only" comment in `taskflow-server-entry.ts`.
+
+## R2.8 Sequence
+
+1. R2.7 independent fixes (bounded; ship + commit each, TDD).
+2. R2.3 `EngineAuth` type + predicate (no behavior change).
+3. Extract `_…Core` helpers; repoint `api_admin` cases; byte-oracle
+   tests + WhatsApp replay-corpus regression (must stay identical).
+4. Public engine methods + rework the 4 `api_*` tools to call them +
+   the R2.2 hierarchy guard; rewrite their tests to engine-behavior parity.
+5. tf-mcontrol: wire the 4 endpoints to `call_mcp_mutation`, add
+   behavioral tests, re-baseline goldens, handle R2.4 responses.
+
+## R2.9 Open questions for the next Codex review
+
+- R2.1: is `register_person`'s non-hierarchy insert cleanly separable
+  from the hierarchy/auto_provision branch, or are they entangled
+  pre-`canDelegateDown`?
+- R2.4: confirm exact `success:true`+`tasks_to_reassign` shape and the
+  `force` field name from `taskflow-engine.ts:8285-8330`.
+- R2.2: is `canDelegateDown()` the correct + only predicate for "would
+  auto-provision", or are there other trigger paths to guard?
