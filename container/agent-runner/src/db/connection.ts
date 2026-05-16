@@ -195,6 +195,21 @@ export function getTaskflowDb(): Database {
   return _taskflow;
 }
 
+/** Open the TaskFlow DB at a caller-supplied path. Used by the standalone
+ *  taskflow MCP server entrypoint, which receives `--db <path>` from its
+ *  parent (tf-mcontrol's MCPSubprocessClient) instead of the fixed
+ *  container mount. Mirrors getTaskflowDb()'s pragmas — journal_mode=DELETE
+ *  is load-bearing for cross-mount visibility (see the file header). Call
+ *  once before the first getTaskflowDb(). */
+export function initTaskflowDb(path: string): Database {
+  _taskflow?.close();
+  _taskflow = new Database(path);
+  _taskflow.exec('PRAGMA journal_mode = DELETE');
+  _taskflow.exec('PRAGMA busy_timeout = 5000');
+  _taskflow.exec('PRAGMA foreign_keys = ON');
+  return _taskflow;
+}
+
 /** For tests — :memory: TaskFlow DB. Schema is the caller's responsibility
  *  (the engine's `ensureTaskSchema()` only fires for non-readonly use). */
 export function initTestTaskflowDb(): Database {
