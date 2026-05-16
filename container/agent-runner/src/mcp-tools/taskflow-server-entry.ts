@@ -66,7 +66,7 @@ const FASTAPI_ALLOWLIST: ReadonlySet<string> = new Set([
   // task comment (engine-backed; FastAPI-path push delivery is the
   // tracked 0h-v2 / Phase-3 item — the DB write + WhatsApp-path
   // notify land now).
-  'api_add_task_comment',
+  'api_task_add_comment',
 ]);
 
 const dbIdx = process.argv.indexOf('--db');

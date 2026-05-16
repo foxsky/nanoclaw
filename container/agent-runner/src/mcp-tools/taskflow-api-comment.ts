@@ -1,5 +1,5 @@
 /**
- * `api_add_task_comment` — single-engine MCP tool for the tf-mcontrol
+ * `api_task_add_comment` — single-engine MCP tool for the tf-mcontrol
  * `POST /boards/{id}/tasks/{tid}/comments` handler (retired onto
  * `engine.apiAddTaskComment`); the in-container WhatsApp agent uses the
  * same engine method. Flat FastAPI contract: the author is resolved
@@ -29,9 +29,9 @@ function validationError(error: string) {
   return jsonResponse({ success: false, error_code: 'validation_error', error });
 }
 
-export const apiAddTaskCommentTool: McpToolDefinition = {
+export const apiTaskAddCommentTool: McpToolDefinition = {
   tool: {
-    name: 'api_add_task_comment',
+    name: 'api_task_add_comment',
     description:
       'Add a comment to a task (a task_history action=comment row + updated_at bump); delegates to engine.apiAddTaskComment. board_id is used verbatim; the author is resolved by the API layer and passed flat.',
     inputSchema: {
@@ -94,4 +94,4 @@ export const apiAddTaskCommentTool: McpToolDefinition = {
   },
 };
 
-registerTools([apiAddTaskCommentTool]);
+registerTools([apiTaskAddCommentTool]);

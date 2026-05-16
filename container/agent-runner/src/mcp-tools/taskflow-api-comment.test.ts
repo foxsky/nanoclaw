@@ -4,7 +4,7 @@ import { closeTaskflowDb } from '../db/connection.js';
 import { setupEngineDb } from './taskflow-test-fixtures.js';
 
 /**
- * `api_add_task_comment` MCP tool — flat FastAPI contract (mirrors
+ * `api_task_add_comment` MCP tool — flat FastAPI contract (mirrors
  * `add_task_comment` / `CreateCommentPayload` at main.py:151,3512).
  * Author is resolved FastAPI-side and passed flat (no sender_name /
  * actor parsing — R2.3). board_id is VERBATIM (handoff BLOCKER: the
@@ -32,14 +32,14 @@ afterEach(() => {
 });
 
 async function call(args: Record<string, unknown>) {
-  const { apiAddTaskCommentTool } = await import('./taskflow-api-comment.ts');
-  return JSON.parse((await apiAddTaskCommentTool.handler(args)).content[0].text);
+  const { apiTaskAddCommentTool } = await import('./taskflow-api-comment.ts');
+  return JSON.parse((await apiTaskAddCommentTool.handler(args)).content[0].text);
 }
 
-describe('api_add_task_comment MCP tool (engine-backed)', () => {
-  it('exports a tool named api_add_task_comment', async () => {
-    const { apiAddTaskCommentTool } = await import('./taskflow-api-comment.ts');
-    expect(apiAddTaskCommentTool.tool.name).toBe('api_add_task_comment');
+describe('api_task_add_comment MCP tool (engine-backed)', () => {
+  it('exports a tool named api_task_add_comment', async () => {
+    const { apiTaskAddCommentTool } = await import('./taskflow-api-comment.ts');
+    expect(apiTaskAddCommentTool.tool.name).toBe('api_task_add_comment');
   });
 
   it('writes the comment and returns the FastAPI 201 parity body as data', async () => {
@@ -100,7 +100,7 @@ describe('api_add_task_comment MCP tool (engine-backed)', () => {
     ).toBeNull();
   });
 
-  it('uppercases task_id (handoff: api_add_task_comment needs task-id normalization)', async () => {
+  it('uppercases task_id (handoff: api_task_add_comment needs task-id normalization)', async () => {
     const r = await call({
       board_id: SEED,
       task_id: 't1',
