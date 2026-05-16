@@ -312,6 +312,9 @@ describe('TaskflowEngine', () => {
       expect(r.success).toBe(true);
       expect(r.data).toHaveLength(1);
       expect(r.data[0].id).toBe('T-001');
+      expect(r.formatted).toContain('*Alexandre*');
+      expect(r.formatted).toContain('T-001');
+      expect(r.formatted).toContain('Fix login bug');
     });
 
     it('errors for unknown person', () => {
@@ -371,6 +374,9 @@ describe('TaskflowEngine', () => {
       expect(r.success).toBe(true);
       expect(r.data).toHaveLength(1);
       expect(r.data[0].id).toBe('T-002');
+      expect(r.formatted).toContain('*Giovanni*');
+      expect(r.formatted).toContain('T-002');
+      expect(r.formatted).toContain('Update docs');
     });
   });
 

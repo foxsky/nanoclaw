@@ -94,6 +94,7 @@ interface TaskflowTaskDetails {
 
 interface TaskflowPersonTasks {
   personName: string;
+  self?: boolean;
 }
 
 interface TaskflowPersonReview {
@@ -182,6 +183,7 @@ const EXACT_TASK_NOTE_RE = /^\s*((?:[A-Z]{2,}-)?(?:P|T|M|R)\d+(?:\.\d+)?)\s*[-�
 const TASK_NOTE_REVIEW_RE = /^\s*((?:P|T|M|R)\d+(?:\.\d+)?)\s*[-–—:]\s*(.+?)\s*$/iu;
 const COMPLETE_VERB_RE = /\b(concluir|conclu[ií]d[ao]?|finalizar|finalizad[ao]?)\b/i;
 const PERSON_TASKS_RE = /^\s*(?:atividades|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
+const MY_TASKS_RE = /^\s*(?:quais\s+s[aã]o\s+)?minhas\s+(?:tarefas|atividades)\s*[?!.]?\s*$/iu;
 const PERSON_REVIEW_RE = /^\s*(?:alguma\s+)?(?:atividade|atividades|tarefa|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s+para\s+revis[aã]o\s*[?!.]?\s*$/iu;
 const BULK_APPROVAL_RE = /^\s*aprovar\s+(?:todas\s+as\s+)?(?:atividades|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
 const STANDALONE_ACTIVITY_RE = /^\s*(?:Aguardar(?:\s+e\s+Acompanhar)?|Submeter|Realizar)\b.+/iu;
@@ -314,6 +316,9 @@ export function taskflowPersonTasksCommand(
   if (!taskflowEnabled || messages.length !== 1) return null;
   const message = parseSingleChat(messages[0]);
   if (!message) return null;
+  if (MY_TASKS_RE.test(message.text)) {
+    return { personName: message.sender || 'usuário', self: true };
+  }
   if (/[?？]/.test(message.text)) return null;
   if (extractTaskId(message.text)) return null;
   const match = message.text.match(PERSON_TASKS_RE);
@@ -1943,7 +1948,9 @@ function handleTaskflowPersonTasks(
 
   const sender = senderName(messages);
   const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
-  const queryInput = { query: 'person_tasks', person_name: action.personName, sender_name: sender };
+  const queryInput = action.self
+    ? { query: 'my_tasks', sender_name: sender }
+    : { query: 'person_tasks', person_name: action.personName, sender_name: sender };
   const queryResult = engine.query(queryInput);
   appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
   const formattedPersonTasks = formatPersonTasksReply(action.personName, queryResult.data);

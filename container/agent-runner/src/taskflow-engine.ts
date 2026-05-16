@@ -1094,6 +1094,48 @@ export class TaskflowEngine {
     return lines.join('\n');
   }
 
+  private formatPersonTasksSummary(personName: string, tasks: any[]): string {
+    const active = tasks.filter((task) => task.column !== 'done');
+    const todayStr = today();
+    const seen = new Set<string>();
+    const pick = (predicate: (task: any) => boolean) => active.filter((task) => {
+      const key = `${task.board_id ?? this.boardId}:${task.id}`;
+      if (seen.has(key) || !predicate(task)) return false;
+      seen.add(key);
+      return true;
+    });
+    const overdue = pick((task) => typeof task.due_date === 'string' && task.due_date < todayStr);
+    const dueToday = pick((task) => task.due_date === todayStr);
+    const inProgress = pick((task) => task.column === 'in_progress');
+    const nextAction = pick((task) => task.column === 'next_action');
+    const waiting = pick((task) => task.column === 'waiting');
+    const review = pick((task) => task.column === 'review');
+    const inbox = pick((task) => task.column === 'inbox');
+
+    const lines = [`👤 *${personName}* — ${active.length} tarefa${active.length === 1 ? '' : 's'} ativa${active.length === 1 ? '' : 's'}`];
+    const appendGroup = (heading: string, rows: any[]) => {
+      if (rows.length === 0) return;
+      lines.push('', heading);
+      for (const task of rows.slice(0, 20)) {
+        const due = task.due_date ? ` ⏰ ${String(task.due_date).slice(8, 10)}/${String(task.due_date).slice(5, 7)}` : '';
+        const parent = task.parent_title ? `\n  _(${task.parent_task_id} — ${task.parent_title})_` : '';
+        const wait = task.waiting_for ? ` → ${task.waiting_for}` : '';
+        const next = task.next_action ? ` → ${task.next_action}` : '';
+        lines.push(`• ${this.displayId(task)} — ${task.title}${due}${wait || next}${parent}`);
+      }
+      if (rows.length > 20) lines.push(`• ... +${rows.length - 20} tarefas`);
+    };
+
+    appendGroup('⚠️ *Em atraso:*', overdue);
+    appendGroup('⏰ *Vence hoje:*', dueToday);
+    appendGroup('🔄 *Em andamento:*', inProgress);
+    appendGroup('⏭️ *Próximas ações:*', nextAction);
+    appendGroup('⏳ *Aguardando:*', waiting);
+    appendGroup('🔍 *Revisão:*', review);
+    appendGroup('📥 *Inbox:*', inbox);
+    return lines.join('\n');
+  }
+
   /** Determine the viewer board for a notification recipient.
    *  If the target person has a child board under the task's board, they see it from the child board (needs prefix).
    *  Otherwise they see it from the task's board (no prefix). */
@@ -7136,12 +7178,14 @@ export class TaskflowEngine {
 
         case 'my_tasks': {
           const person = this.requirePerson(params.sender_name, 'sender_name');
-          return { success: true, data: this.getTasksByAssignee(person.person_id) };
+          const tasks = this.getTasksByAssignee(person.person_id);
+          return { success: true, data: tasks, formatted: this.formatPersonTasksSummary(person.name, tasks) };
         }
 
         case 'person_tasks': {
           const person = this.requirePerson(params.person_name, 'person_name');
-          return { success: true, data: this.getTasksByAssignee(person.person_id) };
+          const tasks = this.getTasksByAssignee(person.person_id);
+          return { success: true, data: tasks, formatted: this.formatPersonTasksSummary(person.name, tasks) };
         }
 
         case 'person_waiting': {

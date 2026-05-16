@@ -438,6 +438,16 @@ Other tasks: P2 Agência INOVATHE, P13 Ecossistema de Inovação]
 
   it('detects person task-list requests', () => {
     expect(taskflowPersonTasksCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Lucas Batista', text: 'minhas tarefas' }) }],
+      true,
+    )).toEqual({ personName: 'Lucas Batista', self: true });
+
+    expect(taskflowPersonTasksCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Lucas Batista', text: 'quais são minhas atividades?' }) }],
+      true,
+    )).toEqual({ personName: 'Lucas Batista', self: true });
+
+    expect(taskflowPersonTasksCommand(
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'atividades mariany' }) }],
       true,
     )).toEqual({ personName: 'mariany' });
