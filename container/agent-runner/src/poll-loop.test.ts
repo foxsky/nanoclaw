@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
 import { initTestSessionDb, closeSessionDb, closeTaskflowDb, getInboundDb, getOutboundDb } from './db/connection.js';
+import {
+  clearCurrentWebOrigin,
+  crossesWebChatBoundary,
+  setCurrentWebOrigin,
+} from './current-batch.js';
 import { getPendingMessages, markCompleted } from './db/messages-in.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
 import { formatMessages, extractRouting } from './formatter.js';
@@ -27,6 +32,9 @@ import {
   taskflowPendingChildBoardRegistrationCommand,
   taskflowPersonReviewCommand,
   taskflowPersonTasksCommand,
+  taskflowProjectExistenceLookupCommand,
+  taskflowProjectReportCommand,
+  taskflowProjectTitleLookupCommand,
   taskflowPureGreetingReply,
   taskflowReadyForReviewUpdateCommand,
   taskflowReviewBypassConfirmation,
@@ -41,6 +49,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearCurrentWebOrigin(); // module-global; never bleed web ctx across tests
   closeSessionDb();
   closeTaskflowDb();
   delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
@@ -161,6 +170,43 @@ describe('accumulate gate (trigger column)', () => {
     expect(hasWakeTrigger(followUps)).toBe(false);
   });
 
+  it('active-query follow-up: poller ends the stream across the web-chat boundary, both directions (Codex P1 + resume)', () => {
+    // WHY: the processQuery follow-up poller's guard is
+    // `crossesWebChatBoundary(pending, routing)`. It must end the
+    // stream (leaving rows pending for the outer loop's per-batch
+    // setCurrentWebOrigin) in BOTH misroute directions, and only those.
+
+    // Direction A — web row arrives during a NON-web turn (ctx null):
+    // pushing it would emit the web reply with no ctx → channel adapter.
+    clearCurrentWebOrigin();
+    insertMessage(
+      'taskflow-web:7',
+      'chat',
+      { text: 'oi', sender: 'web', origin: 'taskflow_web', board_id: 'b1', board_chat_id: 7 },
+      { trigger: 1 },
+    );
+    let pending = getPendingMessages().filter((m) => m.kind !== 'system');
+    expect(crossesWebChatBoundary(pending, extractRouting(pending))).toBe(true);
+    markCompleted(['taskflow-web:7']);
+
+    // No boundary — normal follow-up, non-web turn → push proceeds.
+    insertMessage('wa:1', 'chat', { sender: 'A', text: 'normal follow-up' }, { trigger: 1 });
+    pending = getPendingMessages().filter((m) => m.kind !== 'system');
+    expect(crossesWebChatBoundary(pending, extractRouting(pending))).toBe(false);
+
+    // Direction B — a normal WhatsApp follow-up arrives during an
+    // ACTIVE web turn (ctx set by the outer loop): pushing it would
+    // rewrite its reply into board_chat (same-session routing-match).
+    setCurrentWebOrigin({
+      board_id: 'b1',
+      board_chat_id: 99,
+      platformId: 'whatsapp',
+      channelType: 'whatsapp',
+      threadId: null,
+    });
+    expect(crossesWebChatBoundary(pending, extractRouting(pending))).toBe(true);
+  });
+
   it('trigger column defaults to 1 for legacy inserts without explicit value', () => {
     // The schema default is 1 (see src/db/schema.ts INBOUND_SCHEMA) — existing
     // rows / tests without the column set are effectively wake-eligible.
@@ -220,6 +266,52 @@ describe('TaskFlow deterministic confirmation guards', () => {
   it('does not ask which task when due-date commands already include a task id', () => {
     expect(taskflowDueDateNeedsTaskPrompt(
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'P11.23 prazo 22/04/26' }) }],
+      true,
+    )).toBeNull();
+  });
+
+  it('detects project report requests without provider exploration', () => {
+    expect(taskflowProjectReportCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'Quais os projetos atuais?' }) }],
+      true,
+    )).toEqual({ query: 'projects' });
+
+    expect(taskflowProjectReportCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'Inclua as próximas ações de cada projeto' }) }],
+      true,
+    )).toEqual({ query: 'project_next_actions' });
+
+    expect(taskflowProjectReportCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'Preciso de um relatório de todos os projetos com as respectivas notas que foram adicionadas' }) }],
+      true,
+    )).toEqual({ query: 'projects_detailed' });
+
+    expect(taskflowProjectReportCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'proximas acoes' }) }],
+      true,
+    )).toBeNull();
+  });
+
+  it('detects project title lookups without provider exploration', () => {
+    expect(taskflowProjectTitleLookupCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'qual o projeto da Operação da SECTI' }) }],
+      true,
+    )).toEqual({ title: 'Operação da SECTI' });
+
+    expect(taskflowProjectTitleLookupCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'qual projeto está em andamento?' }) }],
+      true,
+    )).toBeNull();
+  });
+
+  it('detects project existence lookups without provider exploration', () => {
+    expect(taskflowProjectExistenceLookupCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'existe algum projeto do ELITHE?' }) }],
+      true,
+    )).toEqual({ searchText: 'ELITHE' });
+
+    expect(taskflowProjectExistenceLookupCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'existe algum prazo do ELITHE?' }) }],
       true,
     )).toBeNull();
   });
@@ -350,6 +442,11 @@ describe('TaskFlow deterministic confirmation guards', () => {
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'Aguardar e Acompanhar licitação para reforma do prédio pela SDU Leste' }) }],
       true,
     )).toEqual({ text: 'Aguardar e Acompanhar licitação para reforma do prédio pela SDU Leste', contextHints: [] });
+
+    expect(taskflowStandaloneActivityPrompt(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'Elaborar 3 projetos-gaveta (P03, P05, P07) para editais e emendas' }) }],
+      true,
+    )).toEqual({ text: 'Elaborar 3 projetos-gaveta (P03, P05, P07) para editais e emendas', contextHints: [] });
   });
 
   it('detects short follow-ups after a missing task lookup', () => {

@@ -5,7 +5,14 @@ import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } 
 import { writeMessageOut } from './db/messages-out.js';
 import { getInboundDb, getOutboundDb, getTaskflowDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
-import { clearCurrentInReplyTo, setCurrentInReplyTo } from './current-batch.js';
+import {
+  clearCurrentInReplyTo,
+  clearCurrentWebOrigin,
+  crossesWebChatBoundary,
+  detectWebOrigin,
+  setCurrentInReplyTo,
+  setCurrentWebOrigin,
+} from './current-batch.js';
 import {
   formatMessages,
   extractRouting,
@@ -170,6 +177,18 @@ interface TaskflowDueDateNeedsTask {
   dateText: string;
 }
 
+interface TaskflowProjectReport {
+  query: 'projects' | 'project_next_actions' | 'projects_detailed';
+}
+
+interface TaskflowProjectTitleLookup {
+  title: string;
+}
+
+interface TaskflowProjectExistenceLookup {
+  searchText: string;
+}
+
 interface TaskflowMeetingBatchUpdate {
   participantTaskId: string;
   participantName: string;
@@ -203,7 +222,8 @@ const PERSON_TASKS_RE = /^\s*(?:atividades|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p
 const MY_TASKS_RE = /^\s*(?:quais\s+s[aã]o\s+)?minhas\s+(?:tarefas|atividades)\s*[?!.]?\s*$/iu;
 const PERSON_REVIEW_RE = /^\s*(?:alguma\s+)?(?:atividade|atividades|tarefa|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s+para\s+revis[aã]o\s*[?!.]?\s*$/iu;
 const BULK_APPROVAL_RE = /^\s*aprovar\s+(?:todas\s+as\s+)?(?:atividades|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
-const STANDALONE_ACTIVITY_RE = /^\s*(?:Aguardar(?:\s+e\s+Acompanhar)?|Submeter|Realizar)\b.+/iu;
+const STANDALONE_ACTIVITY_RE = /^\s*(?:Aguardar(?:\s+e\s+Acompanhar)?|Submeter|Realizar|Elaborar)\b.+/iu;
+const ZERO_PADDED_PROJECT_CODE_RE = /\bP0\d+\b/iu;
 const REASSIGN_ID_FIRST_RE = /^\s*((?:P|T|M|R)\d+(?:\.\d+)?)\s+(?:re)?atribuir\s+(?:para|a|ao|à)\s+([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
 const REASSIGN_VERB_FIRST_RE = /^\s*(?:re)?atribuir\s+((?:P|T|M|R)\d+(?:\.\d+)?)\s+(?:para|a|ao|à)\s+([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
 const REASSIGN_COMPOUND_TARGET_RE = /\b(?:e|,)\s*(?:colocar|adicionar|para|como|co[-\s]?respons[aá]vel|respons[aá]vel|titular)\b/iu;
@@ -212,6 +232,11 @@ const FORWARD_DETAILS_RE = /\bencaminhar\b.*\bdetalhes\b.*\bpara\s+([\p{L}\p{M}'
 const SEND_DETAILS_TO_PERSON_RE = /\b(?:enviar|mandar)\s+mensagem\s+para\s+(?:o\s+|a\s+)?([\p{L}\p{M}' -]{2,60}?)\s+com\s+(?:os\s+)?detalhes\s+d[aeo]\s+((?:P|T|M|R)\d+(?:\.\d+)?)\b/iu;
 const NOTIFY_TASK_PRIORITY_RE = /\b(?:enviar|mandar)\s+mensagem\s+para\s+(?:o\s+|a\s+)?([\p{L}\p{M}' -]{2,60}?)\s+.*\bpriorizar\b.*\b(?:tarefa|atividade)\s+((?:P|T|M|R)\d+(?:\.\d+)?)\b/iu;
 const DUE_DATE_WITHOUT_TASK_RE = /^\s*(?:prazo|vencimento|data limite)\s+(?:para\s+)?(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s*[.!]?\s*$/iu;
+const PROJECT_NEXT_ACTIONS_REPORT_RE = /\b(?:inclu(?:a|ir)|listar|mostrar|ver|relat[oó]rio|quais\s+s[aã]o)\b[\s\S]*\bpr[oó]ximas?\s+a[cç][oõ]es\b[\s\S]*\b(?:cada\s+projeto|projetos?)\b/iu;
+const PROJECT_NOTES_REPORT_RE = /\brelat[oó]rio\b[\s\S]*\b(?:todos\s+os\s+)?projetos?\b[\s\S]*\bnotas?\b/iu;
+const PROJECTS_LIST_RE = /^\s*(?:quais\s+(?:s[aã]o\s+)?os\s+)?projetos\s+(?:atuais|ativos)\s*[?!.]?\s*$/iu;
+const PROJECT_TITLE_LOOKUP_RE = /^\s*qual\s+(?:é\s+)?o\s+projeto\s+d[ao]\s+(.+?)\s*[?!.]?\s*$/iu;
+const PROJECT_EXISTENCE_LOOKUP_RE = /^\s*existe\s+algum\s+projeto\s+d[eo]\s+(.+?)\s*[?!.]?\s*$/iu;
 const ADD_PARTICIPANT_RE = /\badicionar\s+([\p{L}\p{M}' -]{2,60})\s+em\s+(M\d+)\b/iu;
 const ADD_PARTICIPANTS_ONLY_RE = /^\s*adicionar\s+([\p{L}\p{M}', -]+?)\s*[.!]?\s*$/iu;
 const CREATE_MEETING_DATE_RE = /^\s*(?:agendar|marcar)\s+(.+?)\s+no\s+dia\s+(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(?:às|as)\s+(\d{1,2})(?:(?:h|:)(\d{2})?)?\s*[.!]?\s*$/iu;
@@ -441,8 +466,8 @@ export function taskflowStandaloneActivityPrompt(
   const message = parseSingleChat(messages[0]);
   if (!message) return null;
   if (/[?？]/.test(message.text)) return null;
-  if (extractTaskId(message.text)) return null;
   if (!STANDALONE_ACTIVITY_RE.test(message.text)) return null;
+  if (extractTaskId(message.text) && !ZERO_PADDED_PROJECT_CODE_RE.test(message.text)) return null;
   return { text: message.text, contextHints: taskflowStandaloneActivityContextHints(message.text, messages) };
 }
 
@@ -738,6 +763,43 @@ export function taskflowDueDateNeedsTaskPrompt(
   const match = message.text.match(DUE_DATE_WITHOUT_TASK_RE);
   if (!match?.[1]) return null;
   return { dateText: match[1].replace(/^(\d{1,2}\/\d{1,2})\/\d{2,4}$/u, '$1') };
+}
+
+export function taskflowProjectReportCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowProjectReport | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  if (PROJECTS_LIST_RE.test(message.text)) return { query: 'projects' };
+  if (PROJECT_NEXT_ACTIONS_REPORT_RE.test(message.text)) return { query: 'project_next_actions' };
+  if (PROJECT_NOTES_REPORT_RE.test(message.text)) return { query: 'projects_detailed' };
+  return null;
+}
+
+export function taskflowProjectTitleLookupCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowProjectTitleLookup | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  const match = message.text.match(PROJECT_TITLE_LOOKUP_RE);
+  const title = match?.[1]?.trim();
+  return title ? { title } : null;
+}
+
+export function taskflowProjectExistenceLookupCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowProjectExistenceLookup | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  const match = message.text.match(PROJECT_EXISTENCE_LOOKUP_RE);
+  const searchText = match?.[1]?.trim();
+  return searchText ? { searchText } : null;
 }
 
 function contextDateFromMessages(messages: Pick<MessageInRow, 'content'>[]): string | null {
@@ -2560,6 +2622,124 @@ function handleTaskflowDueDateNeedsTaskPrompt(
   return true;
 }
 
+function handleTaskflowProjectReport(
+  action: TaskflowProjectReport,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
+  const queryInput = { query: action.query, sender_name: sender };
+  const queryResult = engine.query(queryInput);
+  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  let text = typeof queryResult.formatted === 'string' && queryResult.formatted.trim()
+    ? queryResult.formatted
+    : queryResult.success
+      ? JSON.stringify(queryResult.data ?? queryResult)
+      : `Não consegui gerar o relatório de projetos: ${queryResult.error ?? 'erro desconhecido'}`;
+  if (queryResult.success && action.query === 'projects') {
+    text = `${text}\n\nDeseja ver as etapas de algum projeto específico?`;
+  }
+  writeReply(routing, text);
+  return true;
+}
+
+function handleTaskflowProjectTitleLookup(
+  action: TaskflowProjectTitleLookup,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+
+  const sender = senderName(messages);
+  const projectId = findProjectIdByTitle(boardId, action.title);
+  if (!projectId) {
+    writeReply(routing, `Não encontrei um projeto único para "${action.title}".`);
+    return true;
+  }
+
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
+  const queryInput = { query: 'task_details', task_id: projectId, sender_name: sender };
+  const queryResult = engine.query(queryInput);
+  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  const data = queryResult.data as { formatted_task_details?: unknown } | undefined;
+  const text = typeof queryResult.formatted === 'string' && queryResult.formatted.trim()
+    ? queryResult.formatted
+    : typeof data?.formatted_task_details === 'string' && data.formatted_task_details.trim()
+      ? data.formatted_task_details
+      : queryResult.success
+        ? JSON.stringify(queryResult.data ?? queryResult)
+        : `Não consegui consultar ${projectId}: ${queryResult.error ?? 'erro desconhecido'}`;
+  writeReply(routing, text);
+  return true;
+}
+
+function parseFirstNoteText(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  try {
+    const notes = JSON.parse(raw);
+    if (!Array.isArray(notes)) return null;
+    const text = notes.find((note) => typeof note?.text === 'string')?.text;
+    return typeof text === 'string' && text.trim() ? text.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatTaskflowProjectExistenceReply(searchText: string, rows: Array<Record<string, unknown>>): string {
+  const normalizedSearch = normalizeLookupText(searchText);
+  const dedicatedProjects = rows.filter((row) =>
+    row.type === 'project' && normalizeLookupText(String(row.title ?? '')).includes(normalizedSearch));
+  const related = rows.slice(0, 8);
+  const lines = dedicatedProjects.length > 0
+    ? [`Encontrei projeto(s) dedicado(s) para *${searchText}*:`]
+    : [`Não há um projeto dedicado ao *${searchText}* no quadro. Itens relacionados encontrados:`];
+  lines.push('');
+  for (const row of related) {
+    const id = String(row.id ?? '');
+    const title = String(row.title ?? '');
+    const assignee = row.assignee ? ` — ${String(row.assignee)}` : '';
+    const column = row.column ? ` [${String(row.column)}]` : '';
+    const due = row.due_date ? `, prazo ${String(row.due_date)}` : '';
+    const parent = row.parent_task_id ? ` (subtarefa de *${String(row.parent_task_id)}*)` : '';
+    lines.push(`• *${id}* — ${title}${parent}${assignee}${column}${due}`);
+    const note = parseFirstNoteText(row.notes);
+    if (note) lines.push(`  Nota: ${note}`);
+  }
+  if (related.length === 0) {
+    lines.push('Nenhum item relacionado foi encontrado.');
+  }
+  if (dedicatedProjects.length === 0) {
+    lines.push('', `Quer criar um projeto para organizar as ações de ${searchText}?`);
+  }
+  return lines.join('\n');
+}
+
+function handleTaskflowProjectExistenceLookup(
+  action: TaskflowProjectExistenceLookup,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
+  const queryInput = { query: 'search', search_text: action.searchText, sender_name: sender };
+  const queryResult = engine.query(queryInput);
+  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  const rows = Array.isArray(queryResult.data) ? queryResult.data as Array<Record<string, unknown>> : [];
+  const text = queryResult.success
+    ? formatTaskflowProjectExistenceReply(action.searchText, rows)
+    : `Não consegui buscar projetos relacionados a ${action.searchText}: ${queryResult.error ?? 'erro desconhecido'}`;
+  writeReply(routing, text);
+  return true;
+}
+
 function handleTaskflowCrossBoardNoteConfirmation(
   action: TaskflowCrossBoardNoteConfirmation,
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
@@ -2630,6 +2810,11 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   let pollCount = 0;
   let isFirstPoll = true;
   while (true) {
+    // 0h-v2 (memo §0.3 step 4): clear web-origin every iteration BEFORE
+    // anything, so an early `continue` (no messages, command-gate, etc.)
+    // before `extractRouting` can never carry a stale ctx into the next
+    // batch's `writeMessageOut` (Codex#4 stale-cross-batch finding).
+    clearCurrentWebOrigin();
     // Skip system messages — they're responses for MCP tools (e.g., ask_user_question)
     const messages = getPendingMessages(isFirstPoll).filter((m) => m.kind !== 'system');
     isFirstPoll = false;
@@ -2662,6 +2847,15 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     markProcessing(ids);
 
     const routing = extractRouting(messages);
+
+    // 0h-v2 (memo §0.3 step 4): set web-origin HERE — after routing is
+    // known, before ANY batch `writeMessageOut` (command-gate replies
+    // @~2723/2773, fast-path `writeReply` helpers, error path, and the
+    // provider's send_* tools all run after this point but before
+    // `setCurrentInReplyTo`). The gate in `messages-out.ts` reads it to
+    // route the reply-to-THIS-conversation into board_chat. Codex#4: must
+    // precede the fast-paths, not sit next to setCurrentInReplyTo.
+    setCurrentWebOrigin(detectWebOrigin(messages, routing));
 
     // Command handling: the host router gates filtered and unauthorized
     // admin commands before they reach the container. The only command
@@ -2874,6 +3068,27 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       continue;
     }
 
+    const projectReport = taskflowProjectReportCommand(keep);
+    if (projectReport && handleTaskflowProjectReport(projectReport, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow project report without provider query');
+      continue;
+    }
+
+    const projectTitleLookup = taskflowProjectTitleLookupCommand(keep);
+    if (projectTitleLookup && handleTaskflowProjectTitleLookup(projectTitleLookup, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow project title lookup without provider query');
+      continue;
+    }
+
+    const projectExistenceLookup = taskflowProjectExistenceLookupCommand(keep);
+    if (projectExistenceLookup && handleTaskflowProjectExistenceLookup(projectExistenceLookup, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow project existence lookup without provider query');
+      continue;
+    }
+
     const crossBoardNoteConfirmation = taskflowCrossBoardNoteConfirmation(keep, recentOut);
     if (crossBoardNoteConfirmation && handleTaskflowCrossBoardNoteConfirmation(crossBoardNoteConfirmation, keep, routing)) {
       markCompleted(keep.map((m) => m.id));
@@ -2959,6 +3174,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       });
     } finally {
       clearCurrentInReplyTo();
+      clearCurrentWebOrigin();
     }
 
     // Ensure completed even if processQuery ended without a result event
@@ -3043,6 +3259,22 @@ async function processQuery(
         // canonical command path + formatMessagesWithCommands.
         if (pending.some((m) => isRunnerCommand(m))) {
           log('Pending slash command — ending stream so outer loop can process');
+          endedForCommand = true;
+          query.end();
+          return;
+        }
+
+        // 0h-v2 (memo §0.3 step 4 / Codex P1 + resume): never merge a
+        // follow-up across the web-chat boundary. (A) a web row during a
+        // non-web turn would emit its reply with no ctx → channel
+        // adapter instead of board_chat; (B) ANY follow-up during an
+        // active web turn would have its reply rewritten into board_chat
+        // by the still-set ctx (same-session routing-match can't tell a
+        // WhatsApp follow-up apart — boards ARE WhatsApp groups). Same
+        // remedy as slash commands: end the stream, leave the rows
+        // pending; the outer loop re-determines web-origin per batch.
+        if (crossesWebChatBoundary(pending, routing)) {
+          log('Web-chat boundary (active or incoming) — ending stream for outer loop');
           endedForCommand = true;
           query.end();
           return;
