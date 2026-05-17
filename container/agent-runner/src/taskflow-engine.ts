@@ -1287,6 +1287,24 @@ export class TaskflowEngine {
       )
     `);
 
+    // 0h-v2 dashboard web-chat transcript (NOT WhatsApp). Same DDL as
+    // the host canonical schema (src/taskflow-db.ts, commit 3be41950);
+    // mirrored here because host + container schemas are separate,
+    // never-shared modules and `apiSendChat` INSERTs into board_chat.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS board_chat (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        board_id TEXT NOT NULL,
+        sender_name TEXT,
+        sender_type TEXT,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `);
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_board_chat_created_at ON board_chat(created_at)`,
+    );
+
     try { this.db.exec(`ALTER TABLE boards ADD COLUMN short_code TEXT`); } catch {}
 
     try { this.db.exec(`ALTER TABLE board_runtime_config ADD COLUMN country TEXT`); } catch {}
@@ -2934,6 +2952,43 @@ export class TaskflowEngine {
           created_at: now,
         },
         notifications,
+      } as any;
+    })();
+  }
+
+  /**
+   * 0h-v2 web-chat INGRESS write (memo §0.3). tf-mcontrol
+   * `POST /boards/{id}/chat` retires onto this: INSERT the dashboard
+   * transcript row into `board_chat` (`sender_type='user'`), which
+   * `GET /chat` renders. NOT WhatsApp. Auth/actor resolved FastAPI-side
+   * and passed flat (sibling-tool convention). `created_at` is ISO-Z
+   * (Codex#4 — the dashboard sorts on it). The returned row id is the
+   * load-bearing correlation: the tool uses it for the
+   * `taskflow-web:${id}` ingress dedup key + the bus payload.
+   */
+  apiSendChat(params: {
+    board_id: string;
+    sender_name: string;
+    content: string;
+  }): TaskflowResult & { data?: Record<string, unknown> } {
+    return this.db.transaction(() => {
+      const now = new Date().toISOString();
+      const info = this.db
+        .prepare(
+          `INSERT INTO board_chat (board_id, sender_name, sender_type, content, created_at)
+           VALUES (?, ?, 'user', ?, ?)`,
+        )
+        .run(params.board_id, params.sender_name, params.content, now);
+      return {
+        success: true,
+        data: {
+          id: Number(info.lastInsertRowid),
+          board_id: params.board_id,
+          sender_name: params.sender_name,
+          sender_type: 'user',
+          content: params.content,
+          created_at: now,
+        },
       } as any;
     })();
   }

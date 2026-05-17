@@ -28,6 +28,7 @@ import './taskflow-api-update.js';
 import './taskflow-api-notes.js';
 import './taskflow-api-board.js';
 import './taskflow-api-comment.js';
+import './taskflow-api-chat.js';
 import { startMcpServer } from './server.js';
 
 /**
@@ -67,6 +68,9 @@ const FASTAPI_ALLOWLIST: ReadonlySet<string> = new Set([
   // tracked 0h-v2 / Phase-3 item — the DB write + WhatsApp-path
   // notify land now).
   'api_task_add_comment',
+  // web-chat ingress (0h-v2 §0.3): board_chat round-trip, dashboard-
+  // only, NOT WhatsApp. tf-mcontrol POST /chat → this tool.
+  'api_send_chat',
 ]);
 
 const dbIdx = process.argv.indexOf('--db');

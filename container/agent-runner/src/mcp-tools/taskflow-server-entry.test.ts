@@ -110,6 +110,7 @@ describe('taskflow-server-entry (tf-mcontrol runtime contract)', () => {
       expect(names).toContain('api_add_holiday');
       expect(names).toContain('api_remove_holiday');
       expect(names).toContain('api_task_add_comment');
+      expect(names).toContain('api_send_chat');
 
       // ...AND uncallable (server.ts resolves tools/call from toolMap
       // directly — the allowlist must gate the call path too).

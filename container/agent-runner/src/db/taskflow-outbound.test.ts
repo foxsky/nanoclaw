@@ -133,3 +133,59 @@ describe('enqueueOutboundMessage', () => {
     rmSync(constrainedDir, { recursive: true, force: true });
   });
 });
+
+/**
+ * `enqueueWebChatInbound` — the 0h-v2 web-chat INGRESS carrier (memo
+ * §0.3). Same service-session bus + the same race-safe/idempotent/
+ * fail-loud row writer as `enqueueOutboundMessage`, but a DISTINCT
+ * action+payload: `taskflow_web_chat_inbound` (board_id, board_chat_id,
+ * sender_name, content, created_at). The host delivery-action resolves
+ * board→session and writes a trigger-bypassed `messages_in` row.
+ */
+describe('enqueueWebChatInbound', () => {
+  it('writes a system row carrying the taskflow_web_chat_inbound payload; routing cols NULL', async () => {
+    const { enqueueWebChatInbound } = await import('./taskflow-outbound.ts');
+    const seq = enqueueWebChatInbound(dbPath, {
+      id: 'taskflow-web:42',
+      board_id: 'board-x',
+      board_chat_id: 42,
+      sender_name: 'web:Alice',
+      content: 'hello from the dashboard',
+      created_at: '2026-05-17T12:00:00.000Z',
+    });
+    expect(typeof seq).toBe('number');
+    expect(seq).toBeGreaterThan(0);
+    const all = rows();
+    expect(all).toHaveLength(1);
+    const row = all[0];
+    expect(row.id).toBe('taskflow-web:42');
+    expect(row.kind).toBe('system');
+    expect(row.platform_id).toBeNull();
+    expect(row.channel_type).toBeNull();
+    expect(row.thread_id).toBeNull();
+    const content = JSON.parse(row.content as string);
+    expect(content).toEqual({
+      action: 'taskflow_web_chat_inbound',
+      board_id: 'board-x',
+      board_chat_id: 42,
+      sender_name: 'web:Alice',
+      content: 'hello from the dashboard',
+      created_at: '2026-05-17T12:00:00.000Z',
+    });
+  });
+
+  it('is idempotent on id (retry of the same board_chat row does not duplicate)', async () => {
+    const { enqueueWebChatInbound } = await import('./taskflow-outbound.ts');
+    const p = {
+      id: 'taskflow-web:7',
+      board_id: 'b',
+      board_chat_id: 7,
+      sender_name: 'web:Bob',
+      content: 'hi',
+      created_at: '2026-05-17T00:00:00.000Z',
+    };
+    enqueueWebChatInbound(dbPath, p);
+    enqueueWebChatInbound(dbPath, p);
+    expect(rows()).toHaveLength(1);
+  });
+});
