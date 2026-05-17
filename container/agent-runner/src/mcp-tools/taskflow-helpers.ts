@@ -102,6 +102,25 @@ export function setVerbatimIds(verbatim: boolean): void {
   _verbatimIds = verbatim;
 }
 
+/**
+ * 0h-v2 Option A — the TaskFlow service session's `outbound.db` absolute
+ * path, handed to this subprocess by tf-mcontrol via
+ * `--service-outbound-db` (ACKed contract). `enqueueOutboundMessage`
+ * callers (`api_send_chat`, the FastAPI comment push) read it here.
+ * Process-level like `_verbatimIds` — set once at entrypoint from argv,
+ * never a per-request MCP arg, so tool input can't redirect outbound
+ * writes. Absent is legal: tf fail-mode (b) — the caller fail-closes
+ * per-call (returns a routing-failure error_code) rather than the
+ * subprocess refusing to start.
+ */
+let _serviceOutboundDbPath: string | undefined;
+export function setServiceOutboundDbPath(path: string | undefined): void {
+  _serviceOutboundDbPath = path;
+}
+export function getServiceOutboundDbPath(): string | undefined {
+  return _serviceOutboundDbPath;
+}
+
 export function normalizeAgentIds(args: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...args };
   if (_verbatimIds) return out;

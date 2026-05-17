@@ -20,7 +20,7 @@
  *   - MCP JSON-RPC over stdio (StdioServerTransport)
  */
 import { initTaskflowDb } from '../db/connection.js';
-import { setVerbatimIds } from './taskflow-helpers.js';
+import { setServiceOutboundDbPath, setVerbatimIds } from './taskflow-helpers.js';
 // Side-effect imports — each calls registerTools([...]) at module scope.
 import './taskflow-api-read.js';
 import './taskflow-api-mutate.js';
@@ -75,6 +75,15 @@ if (!dbPath) {
   process.stderr.write('taskflow-server-entry: missing required --db <path>\n');
   process.exit(2);
 }
+
+// 0h-v2 Option A: the TaskFlow service session's outbound.db path
+// (ACKed `--service-outbound-db` contract). OPTIONAL — unlike `--db`,
+// absence does NOT exit: tf fail-mode (b) is that `enqueueOutboundMessage`
+// callers fail-closed per-call, keeping non-notify tools usable during
+// the partial-deploy window before the operator sets the env.
+const svcIdx = process.argv.indexOf('--service-outbound-db');
+const svcOutboundDb = svcIdx === -1 ? undefined : process.argv[svcIdx + 1];
+setServiceOutboundDbPath(svcOutboundDb);
 
 // FastAPI passes canonical ids verbatim — disable normalizeAgentIds'
 // board-prefixing/task-id-casing for the WHOLE subprocess (covers

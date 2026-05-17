@@ -6,10 +6,41 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import {
   normalizeAgentIds,
   normalizeEngineNotificationEvents,
+  getServiceOutboundDbPath,
   parseActorArg,
   parseNotificationEvents,
+  setServiceOutboundDbPath,
   setVerbatimIds,
 } from './taskflow-helpers.ts';
+
+/**
+ * 0h-v2 Option A — Unit 4: the service-session outbound.db path the
+ * FastAPI subprocess is handed via `--service-outbound-db`. Process-
+ * level (like `setVerbatimIds`), not a per-request MCP arg, so it can't
+ * be spoofed by tool input. Absent is legal (tf fail-mode (b) — the
+ * enqueue caller fail-closes per-call); the getter returns undefined.
+ */
+describe('service-outbound-db path (Unit 4)', () => {
+  afterEach(() => setServiceOutboundDbPath(undefined));
+
+  it('defaults to undefined (absent --service-outbound-db is legal — fail-mode (b))', () => {
+    setServiceOutboundDbPath(undefined);
+    expect(getServiceOutboundDbPath()).toBeUndefined();
+  });
+
+  it('round-trips the absolute path the entrypoint parsed', () => {
+    setServiceOutboundDbPath('/root/nanoclaw/data/v2-sessions/taskflow-service/taskflow-service/outbound.db');
+    expect(getServiceOutboundDbPath()).toBe(
+      '/root/nanoclaw/data/v2-sessions/taskflow-service/taskflow-service/outbound.db',
+    );
+  });
+
+  it('can be cleared back to undefined', () => {
+    setServiceOutboundDbPath('/x/outbound.db');
+    setServiceOutboundDbPath(undefined);
+    expect(getServiceOutboundDbPath()).toBeUndefined();
+  });
+});
 
 describe('normalizeAgentIds', () => {
   // Tests stuff process.env.NANOCLAW_TASKFLOW_BOARD_ID — guard cross-test
