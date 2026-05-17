@@ -65,5 +65,38 @@
       "mutation_types": [],
       "outbound_intent": "asks_user"
     }
+  },
+  {
+    "turn_index": 10,
+    "context_mode": "chain",
+    "source_jsonl": "messages.db#agent_turns/94a5105a-533b-4110-bb39-96b204d4f3c1",
+    "prior_turn_depth": 1,
+    "expected_behavior": {
+      "action": "mutate",
+      "board_refs": ["board-seaf-patrimonio-taskflow"],
+      "mutation_types": ["admin"],
+      "outbound_intent": "mutation_confirmation"
+    }
+  },
+  {
+    "turn_index": 20,
+    "context_mode": "fresh",
+    "source_jsonl": "messages.db#agent_turns/0f6f3e64-24e5-4b15-8a25-bc65c4ea7e09",
+    "expected_behavior": {
+      "action": "ask",
+      "mutation_types": [],
+      "outbound_intent": "asks_user"
+    }
+  },
+  {
+    "turn_index": 30,
+    "context_mode": "fresh",
+    "source_jsonl": "messages.db#agent_turns/411e0d47-39cd-45a0-af91-2369a5494440",
+    "expected_behavior": {
+      "action": "ask",
+      "task_ids": ["T47"],
+      "mutation_types": [],
+      "outbound_intent": "asks_user"
+    }
   }
 ]

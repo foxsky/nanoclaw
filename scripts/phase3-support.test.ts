@@ -872,6 +872,16 @@ describe('Phase 3 semantic comparison', () => {
     expect(summary.action).toBe('ask');
   });
 
+  it('classifies Portuguese info requests without question marks as ask', () => {
+    const summary = summarizeSemanticBehavior(
+      [],
+      [],
+      'Para criar o quadro SEAF-PATRIMÔNIO, preciso saber quem será o(a) responsável por ele. Pode me informar nome completo, telefone e cargo?',
+    );
+    expect(summary.action).toBe('ask');
+    expect(summary.outbound_intent).toBe('asks_user');
+  });
+
   it('classifies JSON outbound clarification rows by decoded text', () => {
     const summary = summarizeSemanticBehavior(
       [],

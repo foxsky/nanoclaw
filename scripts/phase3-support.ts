@@ -707,7 +707,7 @@ export function summarizeSemanticBehavior(
       .filter((row) => row.kind === 'chat' || row.kind === 'chat-sdk')
       .map((row) => outboundContentText(row.content)),
   ].join('\n');
-  const asks = /\?|\b(deseja|qual|confirma|confirme|confirmar|pode confirmar|como deseja|quer que|preciso que voc[eê] confirme)\b/i.test(text);
+  const asks = /\?|\b(deseja|qual|confirma|confirme|confirmar|pode confirmar|pode me informar|como deseja|quer que|preciso saber|preciso que voc[eê] confirme|me informe)\b/i.test(text);
   const outboundIntent = classifyOutboundIntent(text);
   const failedMutationIntent = hasMutation &&
     (outboundIntent === 'asks_user' || outboundIntent === 'not_found_or_unclear') &&
@@ -797,7 +797,7 @@ export function classifyOutboundIntent(text: string): string {
   ) {
     return 'informational';
   }
-  if (/\?|\b(deseja|qual|confirma|confirme|confirmar|como deseja|quer que)\b/i.test(text)) return 'asks_user';
+  if (/\?|\b(deseja|qual|confirma|confirme|confirmar|como deseja|quer que|pode me informar|preciso saber|me informe)\b/i.test(text)) return 'asks_user';
   if (/\b(conclu[ií]d|movid[ao]?|atualizad[ao]?|adicionad[ao]?|criad[ao]?|registrad[ao]?)\b/i.test(text)) return 'mutation_confirmation';
   return 'informational';
 }

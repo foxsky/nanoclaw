@@ -16,6 +16,7 @@ import {
   taskflowBulkApprovalCommand,
   taskflowAddParticipantsToLatestMeetingCommand,
   taskflowAutoForwardMeetingConfirmation,
+  taskflowChildBoardCreationPrompt,
   taskflowCreateMeetingCommand,
   taskflowCrossBoardNoteConfirmation,
   taskflowCrossBoardNotePrompt,
@@ -26,6 +27,7 @@ import {
   taskflowExplicitReassignCommand,
   formatTaskflowReassignFailureReply,
   taskflowForwardDetailsCommand,
+  taskflowIncompleteNoteRequestCommand,
   taskflowMeetingBatchUpdateCommand,
   taskflowMissingTaskFollowupCommand,
   taskflowNotifyMeetingAboveCommand,
@@ -752,6 +754,21 @@ Other tasks: P2 Agência INOVATHE, P13 Ecossistema de Inovação]
     });
   });
 
+  it('detects child-board creation prompts before provider exploration', () => {
+    expect(taskflowChildBoardCreationPrompt(
+      [{
+        kind: 'chat',
+        content: JSON.stringify({
+          sender: 'Laizys',
+          text: 'Criar quadro para a minha unidade com o nome SEAF-PATRIMÔNIO',
+        }),
+      }],
+      true,
+    )).toEqual({
+      groupName: 'SEAF-PATRIMÔNIO',
+    });
+  });
+
   it('detects child-board registration when Phase 3 provides the replay board id in message metadata', () => {
     expect(taskflowPendingChildBoardRegistrationCommand(
       [{
@@ -787,6 +804,30 @@ Other tasks: P2 Agência INOVATHE, P13 Ecossistema de Inovação]
         }),
       }],
       [],
+      true,
+    )).toBeNull();
+  });
+
+  it('asks for note text when the user requests a note without providing its content', () => {
+    expect(taskflowIncompleteNoteRequestCommand(
+      [{
+        kind: 'chat',
+        content: JSON.stringify({
+          sender: 'Laizys',
+          text: 'Solicitar atribuição de nota de atualização da T47 para Maura',
+        }),
+      }],
+      true,
+    )).toEqual({ taskId: 'T47' });
+
+    expect(taskflowIncompleteNoteRequestCommand(
+      [{
+        kind: 'chat',
+        content: JSON.stringify({
+          sender: 'Laizys',
+          text: 'Adicionar nota a T47: após levantamento, repassar os dados para Rose',
+        }),
+      }],
       true,
     )).toBeNull();
   });

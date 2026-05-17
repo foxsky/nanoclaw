@@ -106,10 +106,18 @@ interface TaskflowPendingChildBoardRegistration {
   groupFolder: string;
 }
 
+interface TaskflowChildBoardCreationPrompt {
+  groupName: string;
+}
+
 interface TaskflowExactIdNoteCandidate {
   taskId: string;
   noteText: string;
   reassignTarget?: string;
+}
+
+interface TaskflowIncompleteNoteRequest {
+  taskId: string;
 }
 
 interface TaskflowTaskDetails {
@@ -245,6 +253,8 @@ const REASSIGN_ID_FIRST_RE = /^\s*((?:P|T|M|R)\d+(?:\.\d+)?)\s+(?:re)?atribuir\s
 const REASSIGN_VERB_FIRST_RE = /^\s*(?:re)?atribuir\s+((?:P|T|M|R)\d+(?:\.\d+)?)\s+(?:para|a|ao|à)\s+([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
 const REASSIGN_COMPOUND_TARGET_RE = /\b(?:e|,)\s*(?:colocar|adicionar|para|como|co[-\s]?respons[aá]vel|respons[aá]vel|titular)\b/iu;
 const CONTACT_CARD_RE = /^\s*([^,\n]+?)\s*,\s*telefone\s*:\s*([^,\n]+?)\s*,\s*cargo\s*:\s*(.+?)\.?\s*$/iu;
+const CREATE_CHILD_BOARD_RE = /^\s*criar\s+quadro\b[\s\S]{0,120}?\bnome\s+([^\n?.!]+?)(?:\s*$|[?.!])/iu;
+const INCOMPLETE_NOTE_REQUEST_RE = /^\s*(?:solicitar|solicito|pedir|peço)\b[\s\S]{0,80}\bnota\b[\s\S]{0,80}\b((?:P|T|M|R)\d+(?:\.\d+)?)\b/iu;
 const FORWARD_DETAILS_RE = /\bencaminhar\b.*\bdetalhes\b.*\bpara\s+([\p{L}\p{M}' -]{2,60})\s*$/iu;
 const SEND_DETAILS_TO_PERSON_RE = /\b(?:enviar|mandar)\s+mensagem\s+para\s+(?:o\s+|a\s+)?([\p{L}\p{M}' -]{2,60}?)\s+com\s+(?:os\s+)?detalhes\s+d[aeo]\s+((?:P|T|M|R)\d+(?:\.\d+)?)\b/iu;
 const NOTIFY_TASK_PRIORITY_RE = /\b(?:enviar|mandar)\s+mensagem\s+para\s+(?:o\s+|a\s+)?([\p{L}\p{M}' -]{2,60}?)\s+.*\bpriorizar\b.*\b(?:tarefa|atividade)\s+((?:P|T|M|R)\d+(?:\.\d+)?)\b/iu;
@@ -383,6 +393,21 @@ export function taskflowPendingChildBoardRegistrationCommand(
   };
 }
 
+export function taskflowChildBoardCreationPrompt(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(currentTaskflowBoardId(messages)),
+): TaskflowChildBoardCreationPrompt | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  const match = message.text.match(CREATE_CHILD_BOARD_RE);
+  if (!match?.[1]) return null;
+  const groupName = match[1]
+    .replace(/\s*-\s*TaskFlow\s*$/iu, '')
+    .trim();
+  return groupName.length >= 2 ? { groupName } : null;
+}
+
 export function taskflowReadyForReviewUpdateCommand(
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
   taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
@@ -424,6 +449,19 @@ export function taskflowExactIdNoteCandidate(
     .trim();
   if (!noteText) return null;
   return { taskId, noteText, reassignTarget };
+}
+
+export function taskflowIncompleteNoteRequestCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowIncompleteNoteRequest | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  if (/[?？]/.test(message.text)) return null;
+  if (/\b(?:adicionar|registrar)\s+nota\s*:/iu.test(message.text)) return null;
+  const match = message.text.match(INCOMPLETE_NOTE_REQUEST_RE);
+  return match?.[1] ? { taskId: match[1].toUpperCase() } : null;
 }
 
 export function taskflowBareTaskDetailsCommand(
@@ -2294,6 +2332,20 @@ function handleTaskflowPendingChildBoardRegistration(
   return true;
 }
 
+function handleTaskflowChildBoardCreationPrompt(
+  action: TaskflowChildBoardCreationPrompt,
+  routing: RoutingContext,
+): boolean {
+  writeReply(
+    routing,
+    `Para criar o quadro ${action.groupName}, preciso saber quem será o(a) responsável por ele. Pode me informar:\n\n` +
+    '• *Nome completo* da pessoa responsável\n' +
+    '• *Telefone* (com DDD)\n' +
+    '• *Cargo/função*',
+  );
+  return true;
+}
+
 function handleTaskflowReadyForReviewUpdate(
   action: TaskflowReadyForReviewUpdate,
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
@@ -2393,6 +2445,14 @@ function handleTaskflowBareTaskDetails(
       ? JSON.stringify(queryResult.data ?? queryResult)
       : `Não encontrei ${action.taskId}: ${queryResult.error ?? 'erro desconhecido'}`;
   writeReply(routing, text);
+  return true;
+}
+
+function handleTaskflowIncompleteNoteRequest(
+  action: TaskflowIncompleteNoteRequest,
+  routing: RoutingContext,
+): boolean {
+  writeReply(routing, `Qual o texto da nota que deseja registrar em ${action.taskId}?`);
   return true;
 }
 
@@ -3309,6 +3369,13 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       continue;
     }
 
+    const childBoardCreationPrompt = taskflowChildBoardCreationPrompt(keep);
+    if (childBoardCreationPrompt && handleTaskflowChildBoardCreationPrompt(childBoardCreationPrompt, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow child-board creation prompt without provider query');
+      continue;
+    }
+
     const readyForReviewUpdate = taskflowReadyForReviewUpdateCommand(keep);
     if (readyForReviewUpdate && handleTaskflowReadyForReviewUpdate(readyForReviewUpdate, keep, routing)) {
       markCompleted(keep.map((m) => m.id));
@@ -3355,6 +3422,13 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (missingTaskFollowup && handleTaskflowMissingTaskFollowup(missingTaskFollowup, keep, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow missing-task follow-up without provider query');
+      continue;
+    }
+
+    const incompleteNoteRequest = taskflowIncompleteNoteRequestCommand(keep);
+    if (incompleteNoteRequest && handleTaskflowIncompleteNoteRequest(incompleteNoteRequest, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled incomplete TaskFlow note request without provider query');
       continue;
     }
 
