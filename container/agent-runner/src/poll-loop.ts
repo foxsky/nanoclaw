@@ -2779,6 +2779,13 @@ export interface PollLoopConfig {
   systemContext?: {
     instructions?: string;
   };
+  /** = RunnerConfig.assistantName; 0h-v2 reply `sender_name`. */
+  assistantName: string;
+  /**
+   * = RunnerConfig.agentGroupId; 0h-v2 `source_outbound_id` prefix
+   * (globally-unique idempotency key for tf's agent-reply dedupe).
+   */
+  agentGroupId: string;
 }
 
 /**
@@ -2855,7 +2862,41 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // `setCurrentInReplyTo`). The gate in `messages-out.ts` reads it to
     // route the reply-to-THIS-conversation into board_chat. Codex#4: must
     // precede the fast-paths, not sit next to setCurrentInReplyTo.
-    setCurrentWebOrigin(detectWebOrigin(messages, routing));
+    const _wo = detectWebOrigin(messages, routing);
+    if (_wo && _wo.crossBoardSkipped > 0) {
+      // G3 FAIL-CLOSED (Codex iter-3): two boards share one group_jid (a
+      // config-invariant violation) → their web rows co-batched in one
+      // session. The same-board filter alone is NOT enough: the foreign
+      // board's message is still in `messages`, so it would (a) leak
+      // into THIS board's reply via the shared agent prompt and (b) be
+      // markCompleted unreplied. Leaving rows pending would livelock
+      // (they'd re-mix forever). So refuse the ENTIRE batch: drain it
+      // (markCompleted = no retry, no livelock) and `continue` BEFORE
+      // the web gate / command handling / provider — the agent never
+      // sees any of it. Sacrifices the legit board's message too, by
+      // design: the operator must fix the board→group_jid mapping;
+      // future un-mixed batches then flow normally.
+      log(
+        `0h-v2 FAIL-CLOSED: cross-board web rows co-batched (${_wo.crossBoardSkipped} foreign + board ` +
+          `${_wo.board_id}) — two boards share a group_jid. Refusing the WHOLE batch (NOT sent to the ` +
+          `agent, NOT replied). Fix the board→group_jid mapping. Drained ids: ${ids.join(', ')}`,
+      );
+      markCompleted(ids);
+      continue;
+    }
+    setCurrentWebOrigin(
+      _wo
+        ? {
+            board_id: _wo.board_id,
+            board_chat_ids: _wo.board_chat_ids,
+            platformId: _wo.platformId,
+            channelType: _wo.channelType,
+            threadId: _wo.threadId,
+            sender_name: config.assistantName,
+            source_id_prefix: config.agentGroupId,
+          }
+        : null,
+    );
 
     // Command handling: the host router gates filtered and unauthorized
     // admin commands before they reach the container. The only command

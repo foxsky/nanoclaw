@@ -43,11 +43,38 @@ export function getCurrentInReplyTo(): string | null {
  */
 export interface WebOriginCtx {
   board_id: string;
-  board_chat_id: number;
+  /**
+   * ALL web-origin user `board_chat` ids in the batch (V1 batch-level
+   * `some(isWebOrigin)` → mark-read targets). tf's `agent-reply`
+   * `in_reply_to_chat_ids` must be the full list, not just the first.
+   */
+  board_chat_ids: number[];
   platformId: string | null;
   channelType: string | null;
   threadId: string | null;
+  /** = config.assistantName; tf `agent-reply.sender_name`. */
+  sender_name: string;
+  /**
+   * = config.agentGroupId. The gate builds the globally-unique
+   * `source_outbound_id = ${source_id_prefix}:${outboundMsgId}` — the
+   * agent-group prefix disambiguates the non-UUID, container-local
+   * `generateId()` across boards so tf's single-column partial-unique
+   * dedupe never collides two different boards' replies.
+   */
+  source_id_prefix: string;
 }
+
+/**
+ * What `detectWebOrigin` produces from the batch alone — the
+ * config-derived `sender_name`/`source_id_prefix` are layered on by the
+ * poll loop (which has the `RunnerConfig`) before `setCurrentWebOrigin`.
+ */
+export type WebOriginDetection = Omit<WebOriginCtx, 'sender_name' | 'source_id_prefix'> & {
+  /** G3: # of valid web rows skipped because they belong to a
+   * DIFFERENT board than the first (board:group_jid misconfig). The
+   * poll loop logs this loudly — those rows are NOT replied. */
+  crossBoardSkipped: number;
+};
 
 let currentWebOrigin: WebOriginCtx | null = null;
 
@@ -73,17 +100,21 @@ export function getCurrentWebOrigin(): WebOriginCtx | null {
  * message can carry arbitrary JSON in its body but cannot make its
  * router-assigned id exactly equal `taskflow-web:${its own claimed
  * board_chat_id}`; requiring exact equality (not just the prefix)
- * also rejects a row whose id/board_chat_id disagree. The ctx carries
- * the first web row's board ids plus
- * the batch's triggering routing (the gate in `messages-out.ts` matches
- * an outbound row's routing against this to find the reply to THIS
- * conversation, not a cross-destination send). Returns null on
- * malformed/partial rows — never a partial ctx.
+ * also rejects a row whose id/board_chat_id disagree. Collects ALL
+ * valid web rows' `board_chat_id`s (V1 batch-level mark-read targets;
+ * board_id from the first — a web batch is one board, one session)
+ * plus the batch's triggering routing (the gate in `messages-out.ts`
+ * matches an outbound row's routing against this to find the reply to
+ * THIS conversation, not a cross-destination send). Returns null if no
+ * valid web row — never a partial detection.
  */
 export function detectWebOrigin(
   messages: MessageInRow[],
   routing: RoutingContext,
-): WebOriginCtx | null {
+): WebOriginDetection | null {
+  let boardId: string | null = null;
+  const boardChatIds: number[] = [];
+  let crossBoardSkipped = 0;
   for (const m of messages) {
     if (!m.id.startsWith('taskflow-web:')) continue;
     let parsed: { origin?: unknown; board_id?: unknown; board_chat_id?: unknown };
@@ -100,15 +131,27 @@ export function detectWebOrigin(
     ) {
       continue;
     }
-    return {
-      board_id: parsed.board_id,
-      board_chat_id: parsed.board_chat_id,
-      platformId: routing.platformId,
-      channelType: routing.channelType,
-      threadId: routing.threadId,
-    };
+    if (boardId === null) boardId = parsed.board_id;
+    // G3: a batch is one board (one group_jid→session). boards.group_jid
+    // is NOT schema-unique, so defend: only collect rows for the FIRST
+    // board — never mark-read or attribute a cross-board row to the
+    // wrong board. A mixed batch is a routing anomaly (misconfig); count
+    // the skips so the poll loop can fail LOUD (not silently drop).
+    if (parsed.board_id !== boardId) {
+      crossBoardSkipped++;
+      continue;
+    }
+    boardChatIds.push(parsed.board_chat_id);
   }
-  return null;
+  if (boardId === null) return null;
+  return {
+    board_id: boardId,
+    board_chat_ids: boardChatIds,
+    platformId: routing.platformId,
+    channelType: routing.channelType,
+    threadId: routing.threadId,
+    crossBoardSkipped,
+  };
 }
 
 /**

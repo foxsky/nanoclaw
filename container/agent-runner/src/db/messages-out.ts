@@ -4,6 +4,8 @@
  * Writes to outbound.db (container-owned).
  * The host polls this DB (read-only) for undelivered messages.
  */
+import { randomUUID } from 'node:crypto';
+
 import { getCurrentWebOrigin } from '../current-batch.js';
 import { getInboundDb, getOutboundDb } from './connection.js';
 
@@ -99,8 +101,21 @@ export function writeMessageOut(msg: WriteMessageOut): number {
       content: JSON.stringify({
         action: 'taskflow_web_chat_reply',
         board_id: web.board_id,
-        board_chat_id: web.board_chat_id,
+        // FULL batch list of web-origin user rows (V1 batch-level
+        // mark-read targets) → tf agent-reply.in_reply_to_chat_ids.
+        board_chat_ids: web.board_chat_ids,
         text,
+        // G2: never emit an empty sender_name (RunnerConfig.assistantName
+        // defaults to '' and the host CLI accepts blank) — tf would 400
+        // missing_sender_name and 5b would fail-closed → reply silently
+        // lost. Matches the codebase fallback (providers/claude.ts).
+        sender_name: web.sender_name.trim() || 'Assistant',
+        // G1: globally-unique, collision-proof, stable idempotency key.
+        // randomUUID() (not generateId()'s timestamp+rand6, which can
+        // collide same-ms same-group); written ONCE into this row so
+        // delivery.ts retries re-POST the same key → tf dedupes. The
+        // agent-group prefix is for traceability only ('ag' if blank).
+        source_outbound_id: `${web.source_id_prefix || 'ag'}:${randomUUID()}`,
       }),
     };
   }

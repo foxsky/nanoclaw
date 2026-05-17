@@ -24,7 +24,13 @@ import {
 } from '../current-batch.js';
 
 const TRIGGER = { platformId: '120363@g.us', channelType: 'whatsapp', threadId: null };
-const WEB = { board_id: 'board-1', board_chat_id: 42, ...TRIGGER };
+const WEB = {
+  board_id: 'board-1',
+  board_chat_ids: [42],
+  ...TRIGGER,
+  sender_name: 'Case',
+  source_id_prefix: 'ag-board',
+};
 
 function rows() {
   return getOutboundDb()
@@ -68,12 +74,60 @@ describe('writeMessageOut — web-origin reply gate', () => {
     expect(r[0].platform_id).toBeNull();
     expect(r[0].channel_type).toBeNull();
     expect(r[0].thread_id).toBeNull();
-    expect(JSON.parse(r[0].content as string)).toEqual({
+    const payload = JSON.parse(r[0].content as string);
+    const { source_outbound_id, ...rest } = payload;
+    expect(rest).toEqual({
       action: 'taskflow_web_chat_reply',
       board_id: 'board-1',
-      board_chat_id: 42,
+      board_chat_ids: [42],
       text: 'the agent reply',
+      sender_name: 'Case',
     });
+    // G1: collision-proof, prefix-namespaced UUID (stable per row).
+    expect(source_outbound_id).toMatch(
+      /^ag-board:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+  });
+
+  it('G2: empty sender_name falls back to "Assistant" (never emit blank → tf 400/lost)', () => {
+    setCurrentWebOrigin({ ...WEB, sender_name: '' });
+    writeMessageOut({
+      id: 'r2',
+      kind: 'chat',
+      platform_id: TRIGGER.platformId,
+      channel_type: TRIGGER.channelType,
+      thread_id: TRIGGER.threadId,
+      content: JSON.stringify({ text: 'reply' }),
+    });
+    expect(JSON.parse(rows()[0].content as string).sender_name).toBe('Assistant');
+  });
+
+  it('G2: WHITESPACE-only sender_name also falls back (tf .strip() would 400 → lost)', () => {
+    setCurrentWebOrigin({ ...WEB, sender_name: '   ' });
+    writeMessageOut({
+      id: 'r2b',
+      kind: 'chat',
+      platform_id: TRIGGER.platformId,
+      channel_type: TRIGGER.channelType,
+      thread_id: TRIGGER.threadId,
+      content: JSON.stringify({ text: 'reply' }),
+    });
+    expect(JSON.parse(rows()[0].content as string).sender_name).toBe('Assistant');
+  });
+
+  it('G1: empty source_id_prefix → "ag:" prefix, still globally unique', () => {
+    setCurrentWebOrigin({ ...WEB, source_id_prefix: '' });
+    writeMessageOut({
+      id: 'r3',
+      kind: 'chat',
+      platform_id: TRIGGER.platformId,
+      channel_type: TRIGGER.channelType,
+      thread_id: TRIGGER.threadId,
+      content: JSON.stringify({ text: 'reply' }),
+    });
+    expect(JSON.parse(rows()[0].content as string).source_outbound_id).toMatch(
+      /^ag:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
   });
 
   it('does NOT transform a chat sent to a DIFFERENT destination (explicit send/a2a — routing differs)', () => {

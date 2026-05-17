@@ -6,6 +6,7 @@ import {
   detectWebOrigin,
   setCurrentWebOrigin,
   type WebOriginCtx,
+  type WebOriginDetection,
 } from './current-batch.js';
 import type { RoutingContext } from './formatter.js';
 import type { MessageInRow } from './db/messages-in.js';
@@ -45,20 +46,31 @@ const webContent = (boardId: string, boardChatId: number) =>
     board_chat_id: boardChatId,
   });
 
+const WEB_CTX: WebOriginCtx = {
+  board_id: 'b1',
+  board_chat_ids: [1],
+  platformId: 'whatsapp',
+  channelType: 'whatsapp',
+  threadId: null,
+  sender_name: 'Case',
+  source_id_prefix: 'ag-board',
+};
+
 describe('detectWebOrigin', () => {
   it('builds ctx from the web message content + the batch routing', () => {
     // WHY: the gate in messages-out.ts matches the outbound row's
     // routing against ctx.platform/channel/thread, and writes
-    // board_chat using ctx.board_id/board_chat_id — so the ctx must
+    // board_chat using ctx.board_id/board_chat_ids — so the ctx must
     // carry the message's board ids AND the batch's triggering routing.
     const ctx = detectWebOrigin([msg('taskflow-web:42', webContent('b1', 42))], ROUTING);
     expect(ctx).toEqual({
       board_id: 'b1',
-      board_chat_id: 42,
+      board_chat_ids: [42],
       platformId: 'whatsapp',
       channelType: 'whatsapp',
       threadId: null,
-    } satisfies WebOriginCtx);
+      crossBoardSkipped: 0,
+    } satisfies WebOriginDetection);
   });
 
   it('is batch-level: ANY web message in the batch triggers it (V1 some())', () => {
@@ -68,16 +80,33 @@ describe('detectWebOrigin', () => {
       [msg('wa:1', JSON.stringify({ text: 'hi' })), msg('taskflow-web:7', webContent('b9', 7))],
       ROUTING,
     );
-    expect(ctx?.board_chat_id).toBe(7);
+    expect(ctx?.board_chat_ids).toEqual([7]);
     expect(ctx?.board_id).toBe('b9');
   });
 
-  it('returns the FIRST web message ids when several are present', () => {
+  it('collects ALL same-board web rows\' board_chat_ids (V1 batch-level mark-read targets)', () => {
+    // WHY (5a): tf agent-reply.in_reply_to_chat_ids must mark-read
+    // EVERY web-origin user row in the (single-board) batch.
+    const ctx = detectWebOrigin(
+      [msg('taskflow-web:3', webContent('bX', 3)), msg('taskflow-web:4', webContent('bX', 4))],
+      ROUTING,
+    );
+    expect(ctx?.board_chat_ids).toEqual([3, 4]);
+    expect(ctx?.board_id).toBe('bX');
+    expect(ctx?.crossBoardSkipped).toBe(0);
+  });
+
+  it('G3 defensive: a cross-board row in the same batch is NOT collected (anomaly-safe)', () => {
+    // WHY (Codex G3): boards.group_jid is not schema-unique. If two
+    // boards' web rows ever co-batch, replying/mark-reading the wrong
+    // board would corrupt — collect only the FIRST board's ids.
     const ctx = detectWebOrigin(
       [msg('taskflow-web:3', webContent('bX', 3)), msg('taskflow-web:4', webContent('bY', 4))],
       ROUTING,
     );
-    expect(ctx?.board_chat_id).toBe(3);
+    expect(ctx?.board_id).toBe('bX');
+    expect(ctx?.board_chat_ids).toEqual([3]);
+    expect(ctx?.crossBoardSkipped).toBe(1); // bY skipped → poll-loop logs loud
   });
 
   it('returns null for a non-web batch', () => {
@@ -150,13 +179,7 @@ describe('crossesWebChatBoundary', () => {
     // same board/group, pushed into the active web query, gets its
     // reply rewritten into board_chat by the still-set ctx (routing
     // matches — same session). The inverse misroute.
-    setCurrentWebOrigin({
-      board_id: 'b1',
-      board_chat_id: 1,
-      platformId: 'whatsapp',
-      channelType: 'whatsapp',
-      threadId: null,
-    } satisfies WebOriginCtx);
+    setCurrentWebOrigin(WEB_CTX);
     expect(crossesWebChatBoundary(normal, ROUTING)).toBe(true);
   });
 
@@ -166,13 +189,7 @@ describe('crossesWebChatBoundary', () => {
   });
 
   it('web row during an active web turn → true', () => {
-    setCurrentWebOrigin({
-      board_id: 'b1',
-      board_chat_id: 1,
-      platformId: 'whatsapp',
-      channelType: 'whatsapp',
-      threadId: null,
-    } satisfies WebOriginCtx);
+    setCurrentWebOrigin(WEB_CTX);
     expect(crossesWebChatBoundary(web, ROUTING)).toBe(true);
   });
 
@@ -182,24 +199,12 @@ describe('crossesWebChatBoundary', () => {
     // already markProcessing'd, so pending=[]). The ctx clause must be
     // gated on an actual follow-up — otherwise every web turn's own
     // stream is killed mid-flight before it replies.
-    setCurrentWebOrigin({
-      board_id: 'b1',
-      board_chat_id: 1,
-      platformId: 'whatsapp',
-      channelType: 'whatsapp',
-      threadId: null,
-    } satisfies WebOriginCtx);
+    setCurrentWebOrigin(WEB_CTX);
     expect(crossesWebChatBoundary([], ROUTING)).toBe(false);
   });
 
   it('active web turn with system-only pending → false (no real follow-up to defer)', () => {
-    setCurrentWebOrigin({
-      board_id: 'b1',
-      board_chat_id: 1,
-      platformId: 'whatsapp',
-      channelType: 'whatsapp',
-      threadId: null,
-    } satisfies WebOriginCtx);
+    setCurrentWebOrigin(WEB_CTX);
     const systemOnly = [{ ...msg('s1', '{}'), kind: 'system' }];
     expect(crossesWebChatBoundary(systemOnly, ROUTING)).toBe(false);
   });
@@ -210,25 +215,13 @@ describe('crossesWebChatBoundary', () => {
     // answered, so it can't misroute — ending the stream for it would
     // truncate the in-flight web reply on mere background chatter. Only
     // a wake-eligible (trigger===1) non-system follow-up can misroute.
-    setCurrentWebOrigin({
-      board_id: 'b1',
-      board_chat_id: 1,
-      platformId: 'whatsapp',
-      channelType: 'whatsapp',
-      threadId: null,
-    } satisfies WebOriginCtx);
+    setCurrentWebOrigin(WEB_CTX);
     const accumulateOnly = [{ ...msg('m1', JSON.stringify({ text: 'bg chatter' })), trigger: 0 }];
     expect(crossesWebChatBoundary(accumulateOnly, ROUTING)).toBe(false);
   });
 
   it('active web turn + mixed trigger=0/1 pending → true (wake-eligible follow-up present)', () => {
-    setCurrentWebOrigin({
-      board_id: 'b1',
-      board_chat_id: 1,
-      platformId: 'whatsapp',
-      channelType: 'whatsapp',
-      threadId: null,
-    } satisfies WebOriginCtx);
+    setCurrentWebOrigin(WEB_CTX);
     const mixed = [
       { ...msg('m0', JSON.stringify({ text: 'noise' })), trigger: 0 },
       { ...msg('m1', JSON.stringify({ text: 'real reply' })), trigger: 1 },

@@ -199,10 +199,12 @@ describe('accumulate gate (trigger column)', () => {
     // rewrite its reply into board_chat (same-session routing-match).
     setCurrentWebOrigin({
       board_id: 'b1',
-      board_chat_id: 99,
+      board_chat_ids: [99],
       platformId: 'whatsapp',
       channelType: 'whatsapp',
       threadId: null,
+      sender_name: 'Case',
+      source_id_prefix: 'ag-board',
     });
     expect(crossesWebChatBoundary(pending, extractRouting(pending))).toBe(true);
   });
