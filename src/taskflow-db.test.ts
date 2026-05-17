@@ -33,15 +33,11 @@ describe('initTaskflowDb', () => {
     // dashboard chat transcript; IF NOT EXISTS keeps prod V1 tables
     // untouched.
     const db = initTaskflowDb(':memory:');
-    const cols = (db.prepare(`PRAGMA table_info(board_chat)`).all() as Array<{ name: string }>).map(
-      (c) => c.name,
-    );
+    const cols = (db.prepare(`PRAGMA table_info(board_chat)`).all() as Array<{ name: string }>).map((c) => c.name);
     expect(cols).toEqual(
       expect.arrayContaining(['id', 'board_id', 'sender_name', 'sender_type', 'content', 'created_at']),
     );
-    const idx = (
-      db.prepare(`PRAGMA index_list(board_chat)`).all() as Array<{ name: string }>
-    ).map((i) => i.name);
+    const idx = (db.prepare(`PRAGMA index_list(board_chat)`).all() as Array<{ name: string }>).map((i) => i.name);
     expect(idx).toContain('idx_board_chat_created_at');
     db.close();
   });
