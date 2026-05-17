@@ -177,6 +177,7 @@ const MUTATION_TOOL_PATTERNS = [
   /taskflow_(create|update|delete|move|admin|reassign|undo|hierarchy|dependency)/,
   /api_(create|update|delete|move|admin|reassign|undo|hierarchy|dependency)/,
   /api_task_(add_note|edit_note|remove_note)/,
+  /api_(add|remove|update)_board_person/,
   /provision_(?:child|root)_board/,
   /schedule_task/,
   /mcp__sqlite__write_query/,
@@ -193,12 +194,20 @@ function normalizedToolName(name: string): string {
   return name.startsWith('mcp__nanoclaw__') ? name.slice('mcp__nanoclaw__'.length) : name;
 }
 
-function canonicalMutationType(name: string): string | null {
+function canonicalMutationType(tool: ToolCall): string | null {
+  const name = tool.name;
   const normalized = normalizedToolName(name);
   if (normalized === 'mcp__sqlite__write_query') return 'sqlite_write';
   if (/^provision_(?:child|root)_board$/.test(normalized)) return 'provision';
   if (normalized === 'schedule_task') return 'schedule';
+  if (/^api_(add|remove|update)_board_person$/.test(normalized)) return 'admin';
   if (/^api_task_(add_note|edit_note|remove_note)$/.test(normalized)) return 'update';
+  if (/^(?:taskflow|api)_(?:update|update_task|update_simple_task)$/.test(normalized)) {
+    const input = tool.input as { updates?: Record<string, unknown> } | null;
+    if (input?.updates && Object.prototype.hasOwnProperty.call(input.updates, 'add_subtask')) {
+      return 'create';
+    }
+  }
   const match = normalized.match(/^(?:taskflow|api)_(create|create_task|create_simple_task|update|update_task|update_simple_task|delete|delete_simple_task|move|admin|reassign|undo|hierarchy|dependency)/);
   if (!match) return null;
   const raw = match[1];
@@ -727,14 +736,15 @@ export function summarizeSemanticBehavior(
   if (failedMutationIntent && outboundIntent === 'asks_user') action = 'ask';
 
   const toolTaskIds = extractTaskIdsFromTools(tools);
-  const taskIds = outboundIntent === 'informational'
+  const includeReplyTaskIds = outboundIntent === 'informational' || outboundIntent === 'mutation_confirmation';
+  const taskIds = includeReplyTaskIds
     ? [...new Set([...toolTaskIds, ...textTaskIds])].sort()
     : (toolTaskIds.length > 0 ? toolTaskIds : textTaskIds);
   return {
     action,
     task_ids: taskIds,
     mutation_types: effectiveHasMutation
-      ? [...new Set(names.map(canonicalMutationType).filter((value): value is string => value !== null))].sort()
+      ? [...new Set(tools.map(canonicalMutationType).filter((value): value is string => value !== null))].sort()
       : [],
     board_refs: [...new Set([
       ...extractBoardRefsFromText(text),
@@ -887,7 +897,7 @@ function recipientMatches(expected: string, aliases: string[], actual: string | 
 // historical snapshot pins the next-id counter. Used to separate "v2 created
 // a fresh task with the next free ID" (state allocation drift) from "v2 wrote
 // to the wrong existing task" (real bug).
-const FRESH_ALLOCATION_PATTERN = /^[TM]\d+$/;
+const FRESH_ALLOCATION_PATTERN = /^([PTMR]\d+)(?:\.(\d+))?$/;
 
 function looksLikeFreshAllocation(
   expected: string[],
@@ -898,13 +908,20 @@ function looksLikeFreshAllocation(
   return expected.every((value, index) => {
     const actualValue = actual[index];
     if (value === actualValue) return true;
-    if (!FRESH_ALLOCATION_PATTERN.test(value) || !FRESH_ALLOCATION_PATTERN.test(actualValue)) return false;
-    const expectedNum = Number.parseInt(value.slice(1), 10);
-    const actualNum = Number.parseInt(actualValue.slice(1), 10);
+    const expectedMatch = value.match(FRESH_ALLOCATION_PATTERN);
+    const actualMatch = actualValue.match(FRESH_ALLOCATION_PATTERN);
+    if (!expectedMatch || !actualMatch) return false;
+    const expectedHasParent = expectedMatch[2] !== undefined;
+    const actualHasParent = actualMatch[2] !== undefined;
+    if (expectedHasParent !== actualHasParent) return false;
+    if (expectedHasParent && expectedMatch[1] !== actualMatch[1]) return false;
+    if (!expectedHasParent && value[0] !== actualValue[0]) return false;
+    const expectedNum = Number.parseInt(expectedMatch[2] ?? value.slice(1), 10);
+    const actualNum = Number.parseInt(actualMatch[2] ?? actualValue.slice(1), 10);
     // v2's allocator hands out a numerically larger free ID than the v1
     // historical one, because earlier corpus turns already advanced the
     // counter in the cumulative DB. Same prefix, larger v2 number.
-    return value[0] === actualValue[0] && Number.isFinite(expectedNum) && Number.isFinite(actualNum) && actualNum > expectedNum;
+    return Number.isFinite(expectedNum) && Number.isFinite(actualNum) && actualNum > expectedNum;
   });
 }
 

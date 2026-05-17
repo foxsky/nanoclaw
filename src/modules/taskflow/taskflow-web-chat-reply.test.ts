@@ -70,7 +70,7 @@ async function reply(content: Record<string, unknown>) {
 }
 
 describe('handleTaskflowWebChatReply', () => {
-  it('POSTs agent-reply mapped onto tf\'s verified contract', async () => {
+  it("POSTs agent-reply mapped onto tf's verified contract", async () => {
     await reply(payload());
     expect(postTaskflowInternal).toHaveBeenCalledOnce();
     expect(postTaskflowInternal).toHaveBeenCalledWith('/internal/board-chat/agent-reply', {

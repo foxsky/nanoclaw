@@ -129,6 +129,38 @@
     }
   },
   {
+    "source_turn_id": "c59371c9-d6e7-45da-a8a2-c5f82f41284d",
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "read",
+      "task_ids": ["P11"],
+      "allow_extra_task_ids": true,
+      "board_refs": [],
+      "outbound_intent": "informational"
+    },
+    "v1_bug": {
+      "description": "SECI exact-ID lookup 'p11' has no v1 outbound in the generated corpus. Exact task IDs should be read, not ignored.",
+      "detected_by": "manual_review",
+      "expected_correction": "v2 should return P11 details instead of reproducing v1 silence."
+    }
+  },
+  {
+    "source_turn_id": "cfa64503-baa5-4083-9e51-5400616a04e9",
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "ask",
+      "task_ids": [],
+      "allow_extra_task_ids": true,
+      "board_refs": [],
+      "outbound_intent": "asks_user"
+    },
+    "v1_bug": {
+      "description": "SECI standalone multi-step activity has no v1 outbound in the generated corpus. Silent no-op is not useful for cutover.",
+      "detected_by": "manual_review",
+      "expected_correction": "v2 should ask how to capture or attach the activity instead of timing out or silently ignoring it."
+    }
+  },
+  {
     "source_turn_id": "bfc38360-f550-428a-b1e1-c4280ec1b9a7",
     "context_mode": "fresh",
     "expected_behavior": {
@@ -165,6 +197,135 @@
       "description": "Generated production corpus has no v1 outbound for the dependent e-Governe task turn even though the neighboring history shows the task was created/configured. Treat v2's confirmation/read as a human-review improvement over v1 silence, not as a migration regression.",
       "detected_by": "manual_review",
       "expected_correction": "v2 may confirm the existing T56/T54 dependency state instead of reproducing v1's no-response behavior."
+    }
+  },
+  {
+    "source_turn_id": "86ad24ee-4b60-4152-bede-f41d90a73fda",
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "read",
+      "task_ids": [],
+      "allow_extra_task_ids": true,
+      "board_refs": [],
+      "outbound_intent": "informational"
+    },
+    "v1_bug": {
+      "description": "SECI detailed project/activity/notes report request has no v1 observable reply in the generated corpus, but the user explicitly asked for a report. Silent no-op should not be mirrored.",
+      "detected_by": "manual_review",
+      "expected_correction": "v2 should answer with a detailed project report using first-class TaskFlow reads."
+    }
+  },
+  {
+    "source_turn_id": "517c0f98-c1ce-4bcb-b592-8fdf90cfa2a4",
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "ask",
+      "task_ids": [],
+      "allow_extra_task_ids": true,
+      "board_refs": [],
+      "outbound_intent": "asks_user"
+    },
+    "v1_bug": {
+      "description": "SECI image-only message has no v1 observable reply in the generated corpus. A silent no-op is not useful; without image understanding/context, v2 should ask for clarification rather than inventing a TaskFlow mutation.",
+      "detected_by": "manual_review",
+      "expected_correction": "v2 should ask for context or explain that it cannot infer the requested TaskFlow action from the image alone."
+    }
+  },
+  {
+    "source_turn_id": "436e2344-25f2-4c17-8a2d-131723aaa452",
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "ask",
+      "task_ids": [],
+      "allow_extra_task_ids": true,
+      "board_refs": [],
+      "outbound_intent": "asks_user"
+    },
+    "v1_bug": {
+      "description": "SECI bare reassignment 'Atribuir para Rodrigo' has no task ID and no reply_to context in messages.db. The immediately prior visible context was P11.11, but v1 reassigned P22.1. Do not mirror that unsafe task inference.",
+      "detected_by": "manual_review",
+      "expected_correction": "v2 should ask which task to assign instead of guessing P22.1."
+    }
+  },
+  {
+    "source_turn_id": "12386d7a-3093-4d63-ab91-c08ef6de8c7c",
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": ["P2", "P2.15"],
+      "allow_extra_task_ids": true,
+      "board_refs": [],
+      "outbound_intent": "mutation_confirmation"
+    },
+    "state_drift": {
+      "description": "Historical v1 created P2.15 on April 30, but the synced May 16 DB snapshot already contains P2.15. v2 correctly allocates the next free P2 child ID instead of overwriting/reusing an occupied historical ID.",
+      "evidence": "Phase 3 replay on synced snapshot created P2.16 and confirmed it in outbound text.",
+      "expected_with_historical_snapshot": "With an exact pre-April-30 snapshot, v2 should allocate P2.15; with the synced May 16 snapshot, P2.16 is the safe corrected path."
+    }
+  },
+  {
+    "source_turn_id": "d9b4c407-f746-47bb-876d-3e2b57f41551",
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": ["T56"],
+      "allow_extra_task_ids": true,
+      "board_refs": [],
+      "outbound_intent": "mutation_confirmation"
+    },
+    "state_drift": {
+      "description": "SETD STRANS/Gov.BR note is already present on parent SEC-T56 in the synced production snapshot, so v2 should find T56 and confirm current state instead of creating a duplicate inbox task.",
+      "evidence": "taskflow snapshot: board-sec-taskflow T56 notes include 'Aguardando implementação de ambiente de homologação do Gov.BR por parte da Truetec.'",
+      "expected_with_historical_snapshot": "Historical pre-turn state would add the note to T56; synced state should produce an idempotent confirmation."
+    }
+  },
+  {
+    "source_turn_id": "5fd3c077-8adb-453b-976c-d0a33c26e464",
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "read",
+      "task_ids": [],
+      "allow_extra_task_ids": true,
+      "board_refs": [],
+      "outbound_intent": "informational"
+    },
+    "v1_bug": {
+      "description": "SETD role-directory question made v1 ask for Wendel's role instead of answering the explicit directory question. Do not mirror the deflection.",
+      "detected_by": "manual_review",
+      "expected_correction": "v2 should answer cargos/papéis from first-class Taskflow directory data."
+    }
+  },
+  {
+    "source_turn_id": "3ca27ec7-7053-4a9a-bd2f-deb8b23a7d1d",
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "read",
+      "task_ids": [],
+      "allow_extra_task_ids": true,
+      "board_refs": [],
+      "outbound_intent": "informational"
+    },
+    "v1_bug": {
+      "description": "SETD 'E Laizys?' is an org-directory follow-up. v1 anchored it to a missing meeting-creation context; fresh compliance should answer where Laizys is registered instead of inventing that context.",
+      "detected_by": "manual_review",
+      "expected_correction": "v2 should read the Taskflow org directory/person lookup and answer Laizys's boards."
+    }
+  },
+  {
+    "source_turn_id": "90c767bb-2d68-4669-860a-4111f4422bf1",
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": [],
+      "allow_extra_task_ids": true,
+      "mutation_types": ["admin"],
+      "board_refs": ["board-po-setd-secti-taskflow", "board-sm-setd-secti-taskflow"],
+      "outbound_intent": "mutation_confirmation"
+    },
+    "v1_bug": {
+      "description": "SETD sector placement command is explicit: put Edilson on SM-SETD-SECTI and Hudson on PO-SETD-SECTI. v1 failed to resolve the existing contacts/boards cleanly; do not preserve that failure.",
+      "detected_by": "manual_review",
+      "expected_correction": "v2 should reuse the existing people and mutate board_people through api_add_board_person/api_remove_board_person."
     }
   }
 ]

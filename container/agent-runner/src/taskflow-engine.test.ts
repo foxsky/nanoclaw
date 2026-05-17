@@ -611,6 +611,21 @@ describe('TaskflowEngine', () => {
       expect(r.data[0].id).toBe('T-002');
     });
 
+    it('matches token searches against waiting_for and notes', () => {
+      db.exec(
+        `UPDATE tasks SET
+           title = 'Sistema Procolo Strans',
+           waiting_for = 'Migração do SEI',
+           notes = '[{"text":"Aguardando implementação de ambiente de homologação do Gov.BR por parte da Truetec."}]'
+         WHERE board_id = '${BOARD_ID}' AND id = 'T-002'`,
+      );
+
+      const r = engine.query({ query: 'search', search_text: 'STRANS Gov.BR Truetec' });
+
+      expect(r.success).toBe(true);
+      expect(r.data.map((task: any) => task.id)).toContain('T-002');
+    });
+
     it('returns empty for no matches', () => {
       const r = engine.query({ query: 'search', search_text: 'zzzzz' });
       expect(r.data).toHaveLength(0);
@@ -792,6 +807,21 @@ describe('TaskflowEngine', () => {
         'setec-secti-taskflow',
       ]);
       expect(rows.every((x) => x.name === 'RAFAEL AMARAL CHAVES')).toBe(true);
+    });
+
+    it('lists org boards with responsible people through api_query board_directory', () => {
+      seedOrgTree(db);
+      const r = engine.query({ query: 'board_directory' });
+      expect(r.success).toBe(true);
+      expect((r.data as any[]).map((x) => x.group_folder).sort()).toEqual([
+        'seci-secti',
+        'setec-secti-taskflow',
+        'test',
+        'thiago-taskflow',
+      ]);
+      expect(r.formatted).toContain('*Quadros por nível:*');
+      expect(r.formatted).toContain('• thiago — Thiago Carvalho');
+      expect(r.formatted).toContain('• setec-secti — RAFAEL AMARAL CHAVES');
     });
 
     it('handles multiple comma-separated names', () => {

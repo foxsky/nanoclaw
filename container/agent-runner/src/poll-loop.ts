@@ -198,6 +198,23 @@ interface TaskflowMeetingBatchUpdate {
   contextDate: string;
 }
 
+interface TaskflowExactTaskNextActionUpdate {
+  taskId: string;
+  nextAction: string;
+}
+
+interface TaskflowOrgDirectoryQuestion {
+  kind: 'sectors' | 'roles' | 'person';
+  personName?: string;
+}
+
+interface TaskflowBoardPersonPlacement {
+  placements: Array<{
+    personName: string;
+    boardHint: string;
+  }>;
+}
+
 interface TaskflowOrgTaskLookupRow {
   task_id?: unknown;
   board_id?: unknown;
@@ -237,6 +254,11 @@ const PROJECT_NOTES_REPORT_RE = /\brelat[oó]rio\b[\s\S]*\b(?:todos\s+os\s+)?pro
 const PROJECTS_LIST_RE = /^\s*(?:quais\s+(?:s[aã]o\s+)?os\s+)?projetos\s+(?:atuais|ativos)\s*[?!.]?\s*$/iu;
 const PROJECT_TITLE_LOOKUP_RE = /^\s*qual\s+(?:é\s+)?o\s+projeto\s+d[ao]\s+(.+?)\s*[?!.]?\s*$/iu;
 const PROJECT_EXISTENCE_LOOKUP_RE = /^\s*existe\s+algum\s+projeto\s+d[eo]\s+(.+?)\s*[?!.]?\s*$/iu;
+const ORG_DIRECTORY_RE = /^\s*quais\s+(?:s[aã]o\s+)?(?:os\s+|as\s+)?(setores|cargos)\s+existem(?:\s+n[ao]\s+([A-Z0-9ÁÉÍÓÚÇÃÕÂÊÔ -]{2,40}))?\s*[?!.]?\s*$/iu;
+const ORG_PERSON_FOLLOWUP_RE = /^\s*e\s+([\p{L}\p{M}' -]{2,50})\s*[?!.]?\s*$/iu;
+const EXACT_TASK_NEXT_ACTION_RE = /^\s*((?:P|T|M|R)\d+(?:\.\d+)?)\s+(.+?)\s*[.!]?\s*$/iu;
+const NEXT_ACTION_START_RE = /^(?:pr[oó]xima\s+a[cç][aã]o\s*:\s*)?(?:enviar|mandar|preparar|providenciar|solicitar|acompanhar|verificar)\b/iu;
+const BOARD_PERSON_PLACEMENT_RE = /\b(?:coloca|colocar|adicione|adicionar)?\s*(?:o\s+|a\s+)?([\p{L}\p{M}' -]{2,60}?)\s+no\s+setor\s+([A-Z0-9ÁÉÍÓÚÇÃÕÂÊÔ -]{2,80}?)(?=\s+e\s+(?:o\s+|a\s+)?[\p{L}\p{M}]|\s*[.!,]|$)/giu;
 const ADD_PARTICIPANT_RE = /\badicionar\s+([\p{L}\p{M}' -]{2,60})\s+em\s+(M\d+)\b/iu;
 const ADD_PARTICIPANTS_ONLY_RE = /^\s*adicionar\s+([\p{L}\p{M}', -]+?)\s*[.!]?\s*$/iu;
 const CREATE_MEETING_DATE_RE = /^\s*(?:agendar|marcar)\s+(.+?)\s+no\s+dia\s+(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(?:às|as)\s+(\d{1,2})(?:(?:h|:)(\d{2})?)?\s*[.!]?\s*$/iu;
@@ -802,6 +824,62 @@ export function taskflowProjectExistenceLookupCommand(
   return searchText ? { searchText } : null;
 }
 
+export function taskflowOrgDirectoryQuestionCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowOrgDirectoryQuestion | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  const directoryMatch = message.text.match(ORG_DIRECTORY_RE);
+  if (directoryMatch?.[1]) {
+    const noun = directoryMatch[1].toLowerCase();
+    return { kind: noun.includes('cargo') ? 'roles' : 'sectors' };
+  }
+
+  const personMatch = message.text.match(ORG_PERSON_FOLLOWUP_RE);
+  const personName = personMatch?.[1]?.trim();
+  if (!personName) return null;
+  if (/^(amanh[aã]|hoje|depois|isso|esse|essa|ele|ela|eles|elas)$/iu.test(personName)) return null;
+  return { kind: 'person', personName };
+}
+
+export function taskflowExactTaskNextActionUpdateCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowExactTaskNextActionUpdate | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  const match = message.text.match(EXACT_TASK_NEXT_ACTION_RE);
+  if (!match?.[1] || !match[2]) return null;
+  const taskId = match[1].toUpperCase();
+  const nextAction = match[2].trim();
+  if (!NEXT_ACTION_START_RE.test(nextAction)) return null;
+  if (COMPLETE_VERB_RE.test(nextAction) || /\b(?:aguardando|parad[ao]|cancelad[ao]|prazo|vencimento)\b/iu.test(nextAction)) {
+    return null;
+  }
+  return { taskId, nextAction };
+}
+
+export function taskflowBoardPersonPlacementCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowBoardPersonPlacement | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  const placements: TaskflowBoardPersonPlacement['placements'] = [];
+  for (const match of message.text.matchAll(BOARD_PERSON_PLACEMENT_RE)) {
+    if (!match[1] || !match[2]) continue;
+    placements.push({
+      personName: match[1].replace(/^(?:e\s+)?(?:o|a)\s+/iu, '').trim(),
+      boardHint: match[2].trim(),
+    });
+  }
+  return placements.length > 0 ? { placements } : null;
+}
+
 function contextDateFromMessages(messages: Pick<MessageInRow, 'content'>[]): string | null {
   for (const message of messages) {
     const content = parseJsonContent(message.content);
@@ -1219,7 +1297,9 @@ function recentInboundContents(limit = 10): string[] {
   }
 }
 
-function appendSyntheticToolCall(name: string, input: unknown, output: unknown, isError = false): void {
+function appendMcpEquivalentToolCapture(name: string, input: unknown, output: unknown, isError = false): void {
+  // Deterministic TaskFlow routes call TaskflowEngine directly; this records
+  // the equivalent MCP surface so Phase replay can compare observable tools.
   const capturePath = process.env.NANOCLAW_TOOL_USES_PATH;
   if (!capturePath) return;
   const id = `det-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1288,7 +1368,7 @@ function handleTaskflowReviewBypassConfirmation(
     confirmed_task_id: action.taskId,
   };
   const moveResult = engine.move({ ...moveInput, board_id: boardId });
-  appendSyntheticToolCall('api_move', moveInput, moveResult, !moveResult.success);
+  appendMcpEquivalentToolCapture('api_move', moveInput, moveResult, !moveResult.success);
   if (!moveResult.success) {
     writeReply(routing, `Não consegui reabrir ${action.taskId}: ${moveResult.error ?? 'erro desconhecido'}`);
     return true;
@@ -1301,7 +1381,7 @@ function handleTaskflowReviewBypassConfirmation(
     updates: { requires_close_approval: true },
   };
   const updateResult = engine.update({ ...updateInput, board_id: boardId });
-  appendSyntheticToolCall('api_update_task', updateInput, updateResult, !updateResult.success);
+  appendMcpEquivalentToolCapture('api_update_task', updateInput, updateResult, !updateResult.success);
   if (!updateResult.success) {
     writeReply(routing, `Reabri ${action.taskId}, mas não consegui exigir aprovação: ${updateResult.error ?? 'erro desconhecido'}`);
     return true;
@@ -1326,7 +1406,7 @@ function handleTaskflowMissingExactIdNote(
 
   const queryInput = { query: 'find_task_in_organization', task_id: action.taskId, sender_name: sender };
   const queryResult = engine.query(queryInput);
-  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
   const orgRows = Array.isArray(queryResult.data) ? queryResult.data as Array<Record<string, unknown>> : [];
 
   if (orgRows.length > 0) {
@@ -1336,7 +1416,7 @@ function handleTaskflowMissingExactIdNote(
       text: action.noteText,
     };
     const noteResult = engine.apiAddNote({ ...noteInput, board_id: boardId });
-    appendSyntheticToolCall('api_task_add_note', noteInput, noteResult, !noteResult.success);
+    appendMcpEquivalentToolCapture('api_task_add_note', noteInput, noteResult, !noteResult.success);
 
     if (noteResult.success) {
       let reassignResult: ReassignResult | null = null;
@@ -1349,7 +1429,7 @@ function handleTaskflowMissingExactIdNote(
         };
         reassignResult = engine.reassign({ ...reassignInput, board_id: boardId });
         const alreadyAssigned = !reassignResult.success && /already assigned/i.test(reassignResult.error ?? '');
-        appendSyntheticToolCall('api_reassign', reassignInput, reassignResult, !reassignResult.success && !alreadyAssigned);
+        appendMcpEquivalentToolCapture('api_reassign', reassignInput, reassignResult, !reassignResult.success && !alreadyAssigned);
       }
 
       const data = (noteResult as any).data as Record<string, any> | undefined;
@@ -1412,7 +1492,7 @@ function handleTaskflowReviewBypassRepair(
 
   const queryInput = { query: 'task_details', task_id: action.taskId, sender_name: sender };
   const queryResult = engine.query(queryInput);
-  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
 
   const updateInput = {
     task_id: action.taskId,
@@ -1421,7 +1501,7 @@ function handleTaskflowReviewBypassRepair(
     updates: { requires_close_approval: true },
   };
   const updateResult = engine.update({ ...updateInput, board_id: boardId });
-  appendSyntheticToolCall('api_update_task', updateInput, updateResult, !updateResult.success);
+  appendMcpEquivalentToolCapture('api_update_task', updateInput, updateResult, !updateResult.success);
   if (!updateResult.success) {
     writeReply(routing, `Não consegui ativar a aprovação obrigatória para ${action.taskId}: ${updateResult.error ?? 'erro desconhecido'}`);
     return true;
@@ -1434,7 +1514,7 @@ function handleTaskflowReviewBypassRepair(
     confirmed_task_id: action.taskId,
   };
   const moveResult = engine.move({ ...moveInput, board_id: boardId });
-  appendSyntheticToolCall('api_move', moveInput, moveResult, !moveResult.success);
+  appendMcpEquivalentToolCapture('api_move', moveInput, moveResult, !moveResult.success);
   if (!moveResult.success) {
     writeReply(routing, `Ativei a aprovação obrigatória para ${action.taskId}, mas não consegui reabrir: ${moveResult.error ?? 'erro desconhecido'}`);
     return true;
@@ -1468,7 +1548,7 @@ function handleTaskflowReviewBypassDiagnosticPrompt(
   const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
   const queryInput = { query: 'task_details', task_id: action.taskId, sender_name: sender };
   const queryResult = engine.query(queryInput);
-  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
   if (!queryResult.success) {
     writeReply(routing, `Não consegui conferir ${action.taskId}: ${queryResult.error ?? 'erro desconhecido'}`);
     return true;
@@ -1821,7 +1901,7 @@ function handleTaskflowCreateMeeting(
     intended_weekday: action.intendedWeekday,
   };
   const result = engine.create({ ...input, board_id: boardId });
-  appendSyntheticToolCall('api_create_meeting_task', input, result, !result.success);
+  appendMcpEquivalentToolCapture('api_create_meeting_task', input, result, !result.success);
   if (!result.success) {
     writeReply(routing, `Não consegui criar a reunião: ${result.error ?? 'erro desconhecido'}`);
     return true;
@@ -1838,7 +1918,7 @@ function handleTaskflowCreateMeeting(
         sender_name: sender,
       };
       const adminResult = engine.admin({ ...adminInput, board_id: boardId });
-      appendSyntheticToolCall('api_admin', adminInput, adminResult, !adminResult.success);
+      appendMcpEquivalentToolCapture('api_admin', adminInput, adminResult, !adminResult.success);
       if (adminResult.success) parentLine = `\n📁 *Projeto:* ${parentId} — ${action.parentProjectTitle}`;
     }
   }
@@ -1875,7 +1955,7 @@ function handleTaskflowAddParticipantsToLatestMeeting(
       updates: { add_participant: participantName },
     };
     const result = engine.update({ ...input, board_id: boardId });
-    appendSyntheticToolCall('api_update_task', input, result, !result.success);
+    appendMcpEquivalentToolCapture('api_update_task', input, result, !result.success);
     if (result.success) successes.push(participantName);
     else failures.push(`${participantName}: ${result.error ?? 'erro desconhecido'}`);
   }
@@ -1898,7 +1978,7 @@ function handleTaskflowNotifyMeetingAbove(
   const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: false });
   const queryInput = { query: 'task_details', task_id: action.taskId, sender_name: sender };
   const queryResult = engine.query(queryInput);
-  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
   if (!queryResult.success) {
     writeReply(routing, `Não consegui consultar ${action.taskId}: ${queryResult.error ?? 'erro desconhecido'}`);
     return true;
@@ -1939,11 +2019,11 @@ function handleTaskflowNotifyMeetingAbove(
         updates: { add_participant: recipient },
       };
       const updateResult = engine.update({ ...updateInput, board_id: boardId });
-      appendSyntheticToolCall('api_update_task', updateInput, updateResult, !updateResult.success);
+      appendMcpEquivalentToolCapture('api_update_task', updateInput, updateResult, !updateResult.success);
     }
     const text = `Olá, ${recipient}! ${sender} pediu para te avisar sobre a seguinte reunião:\n\n📅 *${title}*\n${when}`;
     sendToDestination(dest, text, routing);
-    appendSyntheticToolCall('send_message', { to: dest.name, text }, { success: true });
+    appendMcpEquivalentToolCapture('send_message', { to: dest.name, text }, { success: true });
     sent.push(recipient);
   }
 
@@ -1973,7 +2053,7 @@ function handleTaskflowAutoForwardMeetingConfirmation(
   const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
   const queryInput = { query: 'task_details', task_id: action.taskId, sender_name: sender };
   const queryResult = engine.query(queryInput);
-  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
   if (!queryResult.success) {
     writeReply(routing, `Não consegui consultar ${action.taskId}: ${queryResult.error ?? 'erro desconhecido'}`);
     return true;
@@ -1982,13 +2062,13 @@ function handleTaskflowAutoForwardMeetingConfirmation(
   const { formatted } = meetingTaskSummary(queryResult.data, action.taskId);
   const forwardText = `Olá, ${action.destinationName}! ${sender} pediu para encaminhar os detalhes desta reunião:\n\n${formatted}`;
   sendToDestination(dest, forwardText, routing);
-  appendSyntheticToolCall('send_message', { to: dest.name, text: forwardText }, { success: true });
+  appendMcpEquivalentToolCapture('send_message', { to: dest.name, text: forwardText }, { success: true });
 
   const prompt = `Enviar para ${action.destinationName} os detalhes de novas reuniões da SECI quando forem criadas ou reagendadas.`;
   const processAfter = nextLocalMorningIso();
   const recurrence = '0 9 * * 1-5';
   writeScheduleTaskAction(routing, prompt, processAfter, recurrence);
-  appendSyntheticToolCall('schedule_task', { prompt, processAfter, recurrence }, { success: true });
+  appendMcpEquivalentToolCapture('schedule_task', { prompt, processAfter, recurrence }, { success: true });
   writeReply(routing, `Combinado. Encaminhei ${action.taskId} para ${action.destinationName} e agendei o acompanhamento das novas reuniões.`);
   return true;
 }
@@ -2011,7 +2091,7 @@ function handleTaskflowMeetingBatchUpdate(
     updates: { add_participant: action.participantName },
   };
   const participantResult = engine.update({ ...participantInput, board_id: boardId });
-  appendSyntheticToolCall('api_update_task', participantInput, participantResult, !participantResult.success);
+  appendMcpEquivalentToolCapture('api_update_task', participantInput, participantResult, !participantResult.success);
 
   const scheduleInput = {
     task_id: action.meetingTaskId,
@@ -2019,11 +2099,11 @@ function handleTaskflowMeetingBatchUpdate(
     updates: { scheduled_at: scheduledAt },
   };
   const scheduleResult = engine.update({ ...scheduleInput, board_id: boardId });
-  appendSyntheticToolCall('api_update_task', scheduleInput, scheduleResult, !scheduleResult.success);
+  appendMcpEquivalentToolCapture('api_update_task', scheduleInput, scheduleResult, !scheduleResult.success);
 
   const queryInput = { query: 'task_details', task_id: action.meetingTaskId, sender_name: sender };
   const queryResult = engine.query(queryInput);
-  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
 
   if (!participantResult.success || !scheduleResult.success) {
     const errors = [
@@ -2072,7 +2152,7 @@ function handleTaskflowExplicitCompletion(
     confirmed_task_id: action.taskId,
   };
   const moveResult = engine.move({ ...moveInput, board_id: boardId });
-  appendSyntheticToolCall('api_move', moveInput, moveResult, !moveResult.success);
+  appendMcpEquivalentToolCapture('api_move', moveInput, moveResult, !moveResult.success);
   if (!moveResult.success) {
     writeReply(routing, `Não consegui concluir ${action.taskId}: ${moveResult.error ?? 'erro desconhecido'}`);
     return true;
@@ -2142,7 +2222,7 @@ function handleTaskflowExplicitReassign(
     confirmed: true,
   };
   const reassignResult = engine.reassign({ ...reassignInput, board_id: boardId });
-  appendSyntheticToolCall('api_reassign', reassignInput, reassignResult, !reassignResult.success);
+  appendMcpEquivalentToolCapture('api_reassign', reassignInput, reassignResult, !reassignResult.success);
 
   if (!reassignResult.success) {
     if (reassignResult.offer_register?.message) {
@@ -2177,7 +2257,7 @@ function handleTaskflowPendingChildBoardRegistration(
     sender_name: sender,
   };
   const result = engine.admin({ ...input, board_id: boardId });
-  appendSyntheticToolCall('api_admin', input, result, !result.success);
+  appendMcpEquivalentToolCapture('api_admin', input, result, !result.success);
 
   const childBoardId = `board-${action.groupFolder}`;
   const childBoard = getTaskflowDb().prepare(
@@ -2195,7 +2275,7 @@ function handleTaskflowPendingChildBoardRegistration(
       thread_id: routing.threadId,
       content: JSON.stringify({ action: 'provision_child_board', ...autoProvision }),
     });
-    appendSyntheticToolCall('provision_child_board', autoProvision, { success: true });
+    appendMcpEquivalentToolCapture('provision_child_board', autoProvision, { success: true });
   } else if (!result.success && !childBoard) {
     writeReply(routing, `Não consegui cadastrar ${action.personName}: ${result.error ?? 'erro desconhecido'}`);
     return true;
@@ -2226,7 +2306,7 @@ function handleTaskflowReadyForReviewUpdate(
   const engine = new TaskflowEngine(getTaskflowDb(), boardId);
   const queryInput = { query: 'task_details', task_id: action.taskId, sender_name: sender };
   const queryResult = engine.query(queryInput);
-  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
   if (!queryResult.success) {
     writeReply(routing, `Não encontrei ${action.taskId}: ${queryResult.error ?? 'erro desconhecido'}`);
     return true;
@@ -2239,7 +2319,7 @@ function handleTaskflowReadyForReviewUpdate(
     updates: { add_note: action.noteText },
   };
   const updateResult = engine.update({ ...updateInput, board_id: boardId });
-  appendSyntheticToolCall('api_update_task', updateInput, updateResult, !updateResult.success);
+  appendMcpEquivalentToolCapture('api_update_task', updateInput, updateResult, !updateResult.success);
   if (!updateResult.success) {
     writeReply(routing, `Não consegui registrar a nota em ${action.taskId}: ${updateResult.error ?? 'erro desconhecido'}`);
     return true;
@@ -2252,7 +2332,7 @@ function handleTaskflowReadyForReviewUpdate(
     confirmed_task_id: action.taskId,
   };
   const moveResult = engine.move({ ...moveInput, board_id: boardId });
-  appendSyntheticToolCall('api_move', moveInput, moveResult, !moveResult.success);
+  appendMcpEquivalentToolCapture('api_move', moveInput, moveResult, !moveResult.success);
   if (!moveResult.success) {
     writeReply(routing, `Nota registrada em ${action.taskId}, mas não consegui mover para revisão: ${moveResult.error ?? 'erro desconhecido'}`);
     return true;
@@ -2292,12 +2372,12 @@ function handleTaskflowBareTaskDetails(
     }
   }
 
-  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
 
   if (!queryResult.success) {
     const orgQueryInput = { query: 'find_task_in_organization', task_id: action.taskId, sender_name: sender };
     const orgQueryResult = engine.query(orgQueryInput);
-    appendSyntheticToolCall('api_query', orgQueryInput, orgQueryResult, !orgQueryResult.success);
+    appendMcpEquivalentToolCapture('api_query', orgQueryInput, orgQueryResult, !orgQueryResult.success);
     if (orgQueryResult.success && Array.isArray(orgQueryResult.data) && orgQueryResult.data.length > 0) {
       writeReply(routing, formatOrgTaskLookupReply(orgQueryResult.data[0] as TaskflowOrgTaskLookupRow));
       return true;
@@ -2330,7 +2410,7 @@ function handleTaskflowPersonTasks(
     ? { query: 'my_tasks', sender_name: sender }
     : { query: 'person_tasks', person_name: action.personName, sender_name: sender };
   const queryResult = engine.query(queryInput);
-  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
   const formattedPersonTasks = formatPersonTasksReply(action.personName, queryResult.data);
   const text = typeof queryResult.formatted === 'string' && queryResult.formatted.trim()
     ? queryResult.formatted
@@ -2355,7 +2435,7 @@ function handleTaskflowPersonReview(
   const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
   const queryInput = { query: 'person_review', person_name: action.personName, sender_name: sender };
   const queryResult = engine.query(queryInput);
-  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
   const formattedReview = formatPersonReviewReply(action.personName, queryResult.data);
   const text = formattedReview
     ? formattedReview
@@ -2378,7 +2458,7 @@ function handleTaskflowBulkApproval(
   const engine = new TaskflowEngine(getTaskflowDb(), boardId);
   const queryInput = { query: 'person_review', person_name: action.personName, sender_name: sender };
   const queryResult = engine.query(queryInput);
-  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
   if (!queryResult.success) {
     writeReply(
       routing,
@@ -2419,7 +2499,7 @@ function handleTaskflowBulkApproval(
       results,
     },
   };
-  appendSyntheticToolCall('api_move', moveInput, moveOutput, failures.length > 0);
+  appendMcpEquivalentToolCapture('api_move', moveInput, moveOutput, failures.length > 0);
 
   if (successes.length === 0) {
     writeReply(
@@ -2494,7 +2574,7 @@ function handleTaskflowMissingTaskFollowup(
   for (const term of searchTermsForMissingTaskFollowup(action.text)) {
     const input = { query: 'search', search_text: term, sender_name: sender };
     const result = engine.query(input);
-    appendSyntheticToolCall('api_query', input, result, !result.success);
+    appendMcpEquivalentToolCapture('api_query', input, result, !result.success);
     const rows = Array.isArray(result.data) ? result.data : [];
     for (const row of rows) {
       const key = `${row.board_id ?? boardId}:${row.id}`;
@@ -2551,7 +2631,7 @@ function handleTaskflowForwardDetails(
   for (const taskId of action.taskIds) {
     const queryInput = { query: 'task_details', task_id: taskId, sender_name: sender };
     const queryResult = engine.query(queryInput);
-    appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+    appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
     if (!queryResult.success) {
       details.push(`*${taskId}* — não consegui consultar: ${queryResult.error ?? 'erro desconhecido'}`);
       continue;
@@ -2565,7 +2645,7 @@ function handleTaskflowForwardDetails(
 
   const forwardText = `Olá, ${action.destinationName}! ${sender} pediu para encaminhar os detalhes abaixo:\n\n${details.join('\n\n---\n\n')}`;
   sendToDestination(dest, forwardText, routing);
-  appendSyntheticToolCall('send_message', { to: dest.name, text: forwardText }, { success: true });
+  appendMcpEquivalentToolCapture('send_message', { to: dest.name, text: forwardText }, { success: true });
   writeReply(routing, `Detalhes de ${action.taskIds.join(' e ')} encaminhados para ${action.destinationName}.`);
   return true;
 }
@@ -2591,7 +2671,7 @@ function handleTaskflowNotifyTaskPriority(
   const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
   const queryInput = { query: 'task_details', task_id: action.taskId, sender_name: sender };
   const queryResult = engine.query(queryInput);
-  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
   if (!queryResult.success) {
     writeReply(routing, `Não consegui consultar ${action.taskId}: ${queryResult.error ?? 'erro desconhecido'}`);
     return true;
@@ -2609,7 +2689,7 @@ function handleTaskflowNotifyTaskPriority(
   const forwardText = `${action.destinationName}, ${sender} pede para você priorizar a tarefa *${action.taskId}* — ${title}.${status}`;
 
   sendToDestination(dest, forwardText, routing);
-  appendSyntheticToolCall('send_message', { to: dest.name, text: forwardText }, { success: true });
+  appendMcpEquivalentToolCapture('send_message', { to: dest.name, text: forwardText }, { success: true });
   writeReply(routing, `Mensagem sobre ${action.taskId} encaminhada para ${action.destinationName}.`);
   return true;
 }
@@ -2634,7 +2714,7 @@ function handleTaskflowProjectReport(
   const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
   const queryInput = { query: action.query, sender_name: sender };
   const queryResult = engine.query(queryInput);
-  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
   let text = typeof queryResult.formatted === 'string' && queryResult.formatted.trim()
     ? queryResult.formatted
     : queryResult.success
@@ -2644,6 +2724,238 @@ function handleTaskflowProjectReport(
     text = `${text}\n\nDeseja ver as etapas de algum projeto específico?`;
   }
   writeReply(routing, text);
+  return true;
+}
+
+function formatBoardDirectoryPersonReply(personName: string, rows: unknown): string {
+  const matches = Array.isArray(rows) ? rows as Array<Record<string, unknown>> : [];
+  if (matches.length === 0) return `Não encontrei ${personName} na árvore de quadros TaskFlow.`;
+  const lines = [`*${personName}* aparece em:`];
+  for (const row of matches.slice(0, 12)) {
+    const board = String(row.board_group_folder ?? row.board_id ?? 'quadro');
+    const owner = row.is_owner ? ' — quadro próprio' : '';
+    const phone = typeof row.phone_masked === 'string' && row.phone_masked ? ` (${row.phone_masked})` : '';
+    lines.push(`• ${String(row.name ?? personName)} — ${board}${owner}${phone}`);
+  }
+  if (matches.length > 12) lines.push(`• ... e mais ${matches.length - 12} ocorrência(s).`);
+  return lines.join('\n');
+}
+
+function formatBoardRolesReply(boardId: string, boards: Array<Record<string, unknown>>): string {
+  const boardIds = boards.map((board) => String(board.id ?? '')).filter(Boolean);
+  if (boardIds.length === 0) return 'Não encontrei quadros TaskFlow na organização.';
+  const placeholders = boardIds.map(() => '?').join(',');
+  const rows = getTaskflowDb().prepare(
+    `SELECT bp.board_id, bp.name, bp.role, b.short_code, b.group_folder
+       FROM board_people bp
+       JOIN boards b ON b.id = bp.board_id
+      WHERE bp.board_id IN (${placeholders})
+      ORDER BY COALESCE(NULLIF(b.short_code, ''), b.group_folder), bp.role, bp.name`,
+  ).all(...boardIds) as Array<{ board_id: string; name: string; role: string | null; short_code: string | null; group_folder: string }>;
+  if (rows.length === 0) return 'Não há pessoas/cargos cadastrados nos quadros da organização.';
+
+  const currentBoardRows = rows.filter((row) => row.board_id === boardId);
+  const source = currentBoardRows.length > 0 ? currentBoardRows : rows;
+  const lines = [currentBoardRows.length > 0 ? '*Cargos/papéis cadastrados neste quadro:*' : '*Cargos/papéis cadastrados na organização:*'];
+  for (const row of source.slice(0, 30)) {
+    const board = row.short_code || row.group_folder.replace(/-?taskflow$/u, '');
+    lines.push(`• ${row.role || 'membro'} — ${row.name} (${board})`);
+  }
+  if (source.length > 30) lines.push(`• ... e mais ${source.length - 30} cadastro(s).`);
+  return lines.join('\n');
+}
+
+function handleTaskflowOrgDirectoryQuestion(
+  action: TaskflowOrgDirectoryQuestion,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = currentTaskflowBoardId(messages);
+  if (!boardId) return false;
+
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
+  if (action.kind === 'person' && action.personName) {
+    const queryInput = { query: 'find_person_in_organization', search_text: action.personName, sender_name: sender };
+    const queryResult = engine.query(queryInput);
+    appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
+    writeReply(
+      routing,
+      queryResult.success
+        ? formatBoardDirectoryPersonReply(action.personName, queryResult.data)
+        : `Não consegui consultar ${action.personName}: ${queryResult.error ?? 'erro desconhecido'}`,
+    );
+    return true;
+  }
+
+  const queryInput = { query: 'board_directory', sender_name: sender };
+  const queryResult = engine.query(queryInput);
+  appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
+  if (!queryResult.success) {
+    writeReply(routing, `Não consegui consultar a organização: ${queryResult.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+  const boards = Array.isArray(queryResult.data) ? queryResult.data as Array<Record<string, unknown>> : [];
+  const text = action.kind === 'roles'
+    ? formatBoardRolesReply(boardId, boards)
+    : typeof queryResult.formatted === 'string' && queryResult.formatted.trim()
+      ? queryResult.formatted
+      : JSON.stringify(queryResult.data ?? queryResult);
+  writeReply(routing, text);
+  return true;
+}
+
+function handleTaskflowExactTaskNextActionUpdate(
+  action: TaskflowExactTaskNextActionUpdate,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = currentTaskflowBoardId(messages);
+  if (!boardId) return false;
+
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+  const updateInput = {
+    task_id: action.taskId,
+    sender_name: sender,
+    updates: { next_action: action.nextAction },
+  };
+  const updateResult = engine.update({ ...updateInput, board_id: boardId });
+  appendMcpEquivalentToolCapture('api_update_task', updateInput, updateResult, !updateResult.success);
+  if (!updateResult.success) {
+    writeReply(routing, `Não consegui atualizar ${action.taskId}: ${updateResult.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+  const title = typeof updateResult.title === 'string' ? ` — ${updateResult.title}` : '';
+  writeReply(routing, `✅ *${action.taskId}*${title}\n━━━━━━━━━━━━━━\n\n• Próxima ação: ${action.nextAction}`);
+  return true;
+}
+
+function normalizeBoardHint(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function boardIdForHint(boardId: string, hint: string): string | null {
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
+  const result = engine.query({ query: 'board_directory' });
+  if (!result.success || !Array.isArray(result.data)) return null;
+  const target = normalizeBoardHint(hint);
+  const directoryBoards = result.data as Array<Record<string, unknown>>;
+  const dbBoards = getTaskflowDb().prepare(
+    `SELECT id, short_code, group_folder FROM boards
+      WHERE id = ? OR parent_board_id = (
+        SELECT COALESCE(parent_board_id, id) FROM boards WHERE id = ?
+      ) OR parent_board_id = ?`,
+  ).all(boardId, boardId, boardId) as Array<Record<string, unknown>>;
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const board of [...directoryBoards, ...dbBoards]) {
+    const id = String(board.id ?? '');
+    if (id) byId.set(id, board);
+  }
+  const boards = [...byId.values()];
+  const labelsFor = (board: Record<string, unknown>): string[] => [
+      board.id,
+      board.short_code,
+      board.group_folder,
+      String(board.group_folder ?? '').replace(/-?taskflow$/u, ''),
+    ].map((item) => normalizeBoardHint(String(item ?? ''))).filter(Boolean);
+  const exact = boards.filter((board) => labelsFor(board).some((candidate) => candidate === target));
+  if (exact.length === 1) return String(exact[0].id);
+  const matches = boards.filter((board) =>
+    labelsFor(board).some((candidate) => candidate.includes(target) || target.includes(candidate))
+  );
+  return matches.length === 1 ? String(matches[0].id) : null;
+}
+
+function findExistingOrgPerson(boardId: string, personName: string): { person_id: string; name: string; phone: string | null } | null {
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
+  const result = engine.query({ query: 'find_person_in_organization', search_text: personName });
+  if (!result.success || !Array.isArray(result.data)) return null;
+  const target = normalizeBoardHint(personName);
+  const matches = (result.data as Array<Record<string, unknown>>).filter((row) =>
+    normalizeBoardHint(String(row.name ?? '')) === target
+  );
+  if (matches.length === 0) return null;
+  const preferred = matches.find((row) => row.board_id === boardId) ?? matches.find((row) => row.is_owner) ?? matches[0];
+  const personId = String(preferred.person_id ?? '').trim();
+  const name = String(preferred.name ?? personName).trim();
+  if (!personId || !name) return null;
+  const phone = getTaskflowDb().prepare(
+    `SELECT phone FROM board_people WHERE person_id = ? AND phone IS NOT NULL AND phone != '' LIMIT 1`,
+  ).get(personId) as { phone: string } | undefined;
+  return { person_id: personId, name, phone: phone?.phone ?? null };
+}
+
+function roleForBoardHint(hint: string): string {
+  const normalized = normalizeBoardHint(hint);
+  if (normalized.includes('sm')) return 'Scrum Master';
+  if (normalized.includes('po')) return 'PO';
+  if (normalized.includes('ux')) return 'UX Designer';
+  if (normalized.includes('infra')) return 'Devops';
+  return hint.trim();
+}
+
+function handleTaskflowBoardPersonPlacement(
+  action: TaskflowBoardPersonPlacement,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const sourceBoardId = currentTaskflowBoardId(messages);
+  if (!sourceBoardId) return false;
+
+  const successes: string[] = [];
+  const failures: string[] = [];
+  for (const placement of action.placements) {
+    const targetBoardId = boardIdForHint(sourceBoardId, placement.boardHint);
+    if (!targetBoardId) {
+      failures.push(`${placement.personName}: não encontrei um quadro único para ${placement.boardHint}`);
+      continue;
+    }
+    const person = findExistingOrgPerson(sourceBoardId, placement.personName);
+    if (!person) {
+      failures.push(`${placement.personName}: não encontrei cadastro existente para reutilizar`);
+      continue;
+    }
+    const personId = person.phone ? person.phone.replace(/[^0-9]/g, '') : person.person_id;
+    const targetEngine = new TaskflowEngine(getTaskflowDb(), targetBoardId);
+    const input = {
+      board_id: targetBoardId,
+      person_id: personId,
+      name: person.name,
+      phone: person.phone,
+      role: roleForBoardHint(placement.boardHint),
+    };
+    const existing = getTaskflowDb().prepare(
+      `SELECT person_id FROM board_people WHERE board_id = ? AND lower(name) = lower(?) AND person_id != ?`,
+    ).get(targetBoardId, person.name, personId) as { person_id: string } | undefined;
+    if (existing) {
+      const removeResult = targetEngine.removeBoardPerson(targetBoardId, existing.person_id, false);
+      appendMcpEquivalentToolCapture('api_remove_board_person', { board_id: targetBoardId, person_id: existing.person_id }, removeResult, !removeResult.success);
+    }
+    const result = targetEngine.addBoardPerson(targetBoardId, input);
+    const alreadyExists = !result.success && result.error_code === 'conflict';
+    appendMcpEquivalentToolCapture('api_add_board_person', input, result, !result.success && !alreadyExists);
+    if (result.success || alreadyExists) {
+      successes.push(`${person.name} em ${placement.boardHint} (${input.role})`);
+    } else {
+      failures.push(`${person.name}: ${result.error ?? 'erro desconhecido'}`);
+    }
+  }
+
+  const lines: string[] = [];
+  if (successes.length > 0) {
+    lines.push('✅ Setores atualizados:', '', ...successes.map((line) => `• ${line}`));
+  }
+  if (failures.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push('Pendências:', ...failures.map((line) => `• ${line}`));
+  }
+  writeReply(routing, lines.join('\n') || 'Não encontrei alterações de setor para aplicar.');
   return true;
 }
 
@@ -2665,7 +2977,7 @@ function handleTaskflowProjectTitleLookup(
   const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
   const queryInput = { query: 'task_details', task_id: projectId, sender_name: sender };
   const queryResult = engine.query(queryInput);
-  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
   const data = queryResult.data as { formatted_task_details?: unknown } | undefined;
   const text = typeof queryResult.formatted === 'string' && queryResult.formatted.trim()
     ? queryResult.formatted
@@ -2731,7 +3043,7 @@ function handleTaskflowProjectExistenceLookup(
   const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
   const queryInput = { query: 'search', search_text: action.searchText, sender_name: sender };
   const queryResult = engine.query(queryInput);
-  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
   const rows = Array.isArray(queryResult.data) ? queryResult.data as Array<Record<string, unknown>> : [];
   const text = queryResult.success
     ? formatTaskflowProjectExistenceReply(action.searchText, rows)
@@ -2755,14 +3067,14 @@ function handleTaskflowCrossBoardNoteConfirmation(
   const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
   const queryInput = { query: 'find_task_in_organization', task_id: action.taskId, sender_name: sender };
   const queryResult = engine.query(queryInput);
-  appendSyntheticToolCall('api_query', queryInput, queryResult, !queryResult.success);
+  appendMcpEquivalentToolCapture('api_query', queryInput, queryResult, !queryResult.success);
 
   const rows = Array.isArray(queryResult.data) ? queryResult.data as Array<Record<string, unknown>> : [];
   const title = typeof rows[0]?.title === 'string' ? rows[0].title : action.taskId;
   const forwardText = `📝 Nota do ${senderLabel} para ${action.taskId} — ${title}:\n\n"${action.noteText}"`;
 
   sendToDestination(dest, forwardText, routing);
-  appendSyntheticToolCall('send_message', { to: action.destinationName, text: forwardText }, { success: true });
+  appendMcpEquivalentToolCapture('send_message', { to: action.destinationName, text: forwardText }, { success: true });
   writeReply(routing, `Mensagem encaminhada para o quadro da ${action.destinationName}.`);
   return true;
 }
@@ -3106,6 +3418,27 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (dueDateNeedsTask && handleTaskflowDueDateNeedsTaskPrompt(dueDateNeedsTask, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow due-date clarification without provider query');
+      continue;
+    }
+
+    const exactTaskNextAction = taskflowExactTaskNextActionUpdateCommand(keep);
+    if (exactTaskNextAction && handleTaskflowExactTaskNextActionUpdate(exactTaskNextAction, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow exact task next-action update without provider query');
+      continue;
+    }
+
+    const boardPersonPlacement = taskflowBoardPersonPlacementCommand(keep);
+    if (boardPersonPlacement && handleTaskflowBoardPersonPlacement(boardPersonPlacement, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow board-person placement without provider query');
+      continue;
+    }
+
+    const orgDirectoryQuestion = taskflowOrgDirectoryQuestionCommand(keep);
+    if (orgDirectoryQuestion && handleTaskflowOrgDirectoryQuestion(orgDirectoryQuestion, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow org-directory question without provider query');
       continue;
     }
 

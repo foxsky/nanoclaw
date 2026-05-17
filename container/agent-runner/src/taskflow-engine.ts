@@ -2119,6 +2119,8 @@ export class TaskflowEngine {
         task.title,
         task.description,
         task.next_action,
+        task.waiting_for,
+        task.notes,
         task.parent_title,
         task.labels,
       ].filter(Boolean).join(' '));
@@ -6768,6 +6770,80 @@ export class TaskflowEngine {
     return { projects, formatted: lines.join('\n') };
   }
 
+  private buildBoardDirectory(): {
+    boards: Array<Record<string, unknown>>;
+    formatted: string;
+  } {
+    const scope = this.orgScopeOrNull();
+    if (!scope) return { boards: [], formatted: 'Nenhum quadro TaskFlow encontrado.' };
+
+    const boards = this.db.prepare(
+      `SELECT
+         b.id,
+         b.short_code,
+         b.group_folder,
+         b.hierarchy_level,
+         b.parent_board_id,
+         b.owner_person_id,
+         COALESCE(
+           owner.name,
+           (
+             SELECT bp.name
+             FROM board_people bp
+             WHERE bp.board_id = b.id
+             ORDER BY
+               CASE
+                 WHEN lower(bp.role) LIKE '%gestor%' THEN 0
+                 WHEN lower(bp.role) LIKE '%subsecret%' THEN 1
+                 WHEN lower(bp.role) LIKE '%secret%' THEN 2
+                 WHEN lower(bp.role) LIKE '%gerente%' THEN 3
+                 WHEN lower(bp.role) LIKE '%coordenador%' THEN 4
+                 WHEN lower(bp.role) LIKE '%po%' THEN 5
+                 WHEN lower(bp.role) LIKE '%scrum%' THEN 6
+                 ELSE 20
+               END,
+               bp.name
+             LIMIT 1
+           )
+         ) AS responsible_name
+       FROM boards b
+       LEFT JOIN board_people owner
+         ON owner.board_id = b.id
+        AND owner.person_id = b.owner_person_id
+       WHERE b.id IN (${scope.placeholders})
+       ORDER BY COALESCE(b.hierarchy_level, 99), COALESCE(NULLIF(b.short_code, ''), b.group_folder), b.group_folder`,
+    ).all(...scope.boardIds) as Array<Record<string, unknown>>;
+
+    const levelLabel = (level: unknown): string => {
+      if (level === 1) return 'Nível 1 — Secretaria';
+      if (level === 2) return 'Nível 2 — Setores';
+      if (level === 3) return 'Nível 3 — Equipes/Analistas';
+      return `Nível ${level ?? '?'}`;
+    };
+    const boardLabel = (row: Record<string, unknown>): string => {
+      const shortCode = typeof row.short_code === 'string' && row.short_code.trim() ? row.short_code.trim() : '';
+      if (shortCode) return shortCode;
+      const folder = typeof row.group_folder === 'string' ? row.group_folder.trim() : '';
+      return folder.replace(/-?taskflow$/u, '') || String(row.id ?? 'quadro');
+    };
+
+    const lines = ['*Quadros por nível:*'];
+    let currentLevel = '';
+    for (const board of boards) {
+      const label = levelLabel(board.hierarchy_level);
+      if (label !== currentLevel) {
+        lines.push('', `*${label}*`);
+        currentLevel = label;
+      }
+      const responsible = typeof board.responsible_name === 'string' && board.responsible_name.trim()
+        ? board.responsible_name.trim()
+        : 'sem responsável cadastrado';
+      lines.push(`• ${boardLabel(board)} — ${responsible}`);
+    }
+
+    return { boards, formatted: lines.join('\n') };
+  }
+
   /* ---------------------------------------------------------------- */
   /*  Compact board header (for digest/weekly reports)                  */
   /* ---------------------------------------------------------------- */
@@ -7420,6 +7496,15 @@ export class TaskflowEngine {
           return {
             success: true,
             data: result.projects,
+            formatted: result.formatted,
+          };
+        }
+
+        case 'board_directory': {
+          const result = this.buildBoardDirectory();
+          return {
+            success: true,
+            data: result.boards,
             formatted: result.formatted,
           };
         }

@@ -21,6 +21,7 @@ import {
   taskflowCrossBoardNotePrompt,
   taskflowDueDateNeedsTaskPrompt,
   taskflowExactIdNoteCandidate,
+  taskflowExactTaskNextActionUpdateCommand,
   taskflowExplicitCompletionCommand,
   taskflowExplicitReassignCommand,
   formatTaskflowReassignFailureReply,
@@ -32,6 +33,8 @@ import {
   taskflowPendingChildBoardRegistrationCommand,
   taskflowPersonReviewCommand,
   taskflowPersonTasksCommand,
+  taskflowBoardPersonPlacementCommand,
+  taskflowOrgDirectoryQuestionCommand,
   taskflowProjectExistenceLookupCommand,
   taskflowProjectReportCommand,
   taskflowProjectTitleLookupCommand,
@@ -316,6 +319,50 @@ describe('TaskFlow deterministic confirmation guards', () => {
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'existe algum prazo do ELITHE?' }) }],
       true,
     )).toBeNull();
+  });
+
+  it('detects org directory questions without provider exploration', () => {
+    expect(taskflowOrgDirectoryQuestionCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Thiago Carvalho', text: 'Quais cargos existem na SETD?' }) }],
+      true,
+    )).toEqual({ kind: 'roles' });
+
+    expect(taskflowOrgDirectoryQuestionCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Thiago Carvalho', text: 'Quais setores existem?' }) }],
+      true,
+    )).toEqual({ kind: 'sectors' });
+
+    expect(taskflowOrgDirectoryQuestionCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Thiago Carvalho', text: 'E Laizys?' }) }],
+      true,
+    )).toEqual({ kind: 'person', personName: 'Laizys' });
+  });
+
+  it('detects exact-ID next action updates without treating them as outbound messages', () => {
+    expect(taskflowExactTaskNextActionUpdateCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Thiago Carvalho', text: 'T56 enviar mensagem pra Alyne para aprovar a visualização dos recursos de multa no SEI.' }) }],
+      true,
+    )).toEqual({
+      taskId: 'T56',
+      nextAction: 'enviar mensagem pra Alyne para aprovar a visualização dos recursos de multa no SEI',
+    });
+
+    expect(taskflowExactTaskNextActionUpdateCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Thiago Carvalho', text: 'P26 aguardando tokens para migrar' }) }],
+      true,
+    )).toBeNull();
+  });
+
+  it('detects board-person sector placement commands', () => {
+    expect(taskflowBoardPersonPlacementCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Thiago Carvalho', text: 'Coloca o Edilson no setor SM-SETD-SECTI e o Hudson no setor PO-SETD-SECTI.' }) }],
+      true,
+    )).toEqual({
+      placements: [
+        { personName: 'Edilson', boardHint: 'SM-SETD-SECTI' },
+        { personName: 'Hudson', boardHint: 'PO-SETD-SECTI' },
+      ],
+    });
   });
 
   it('detects meeting participant plus reschedule batches using prompt context date', () => {
