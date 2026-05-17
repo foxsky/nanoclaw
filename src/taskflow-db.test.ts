@@ -48,16 +48,14 @@ describe('initTaskflowDb', () => {
     // key). Partial UNIQUE WHERE source_outbound_id IS NOT NULL — only
     // agent rows populate it; user rows stay NULL and don't collide.
     const db = initTaskflowDb(':memory:');
-    const cols = (db.prepare(`PRAGMA table_info(board_chat)`).all() as Array<{ name: string }>).map(
-      (c) => c.name,
-    );
-    expect(cols).toEqual(
-      expect.arrayContaining(['delivered_at', 'read_at', 'source_outbound_id']),
-    );
-    const idx = (db.prepare(`PRAGMA index_list(board_chat)`).all() as Array<{
-      name: string;
-      unique: number;
-    }>).find((i) => i.name === 'idx_board_chat_source_outbound_id');
+    const cols = (db.prepare(`PRAGMA table_info(board_chat)`).all() as Array<{ name: string }>).map((c) => c.name);
+    expect(cols).toEqual(expect.arrayContaining(['delivered_at', 'read_at', 'source_outbound_id']));
+    const idx = (
+      db.prepare(`PRAGMA index_list(board_chat)`).all() as Array<{
+        name: string;
+        unique: number;
+      }>
+    ).find((i) => i.name === 'idx_board_chat_source_outbound_id');
     expect(idx, 'idx_board_chat_source_outbound_id must exist').toBeTruthy();
     expect(idx!.unique).toBe(1);
     // partial (WHERE source_outbound_id IS NOT NULL): two NULL rows
@@ -99,15 +97,9 @@ describe('initTaskflowDb', () => {
     legacy.close();
 
     const db = initTaskflowDb(dbPath);
-    const cols = (db.prepare(`PRAGMA table_info(board_chat)`).all() as Array<{ name: string }>).map(
-      (c) => c.name,
-    );
-    expect(cols).toEqual(
-      expect.arrayContaining(['delivered_at', 'read_at', 'source_outbound_id']),
-    );
-    const idxNames = (
-      db.prepare(`PRAGMA index_list(board_chat)`).all() as Array<{ name: string }>
-    ).map((i) => i.name);
+    const cols = (db.prepare(`PRAGMA table_info(board_chat)`).all() as Array<{ name: string }>).map((c) => c.name);
+    expect(cols).toEqual(expect.arrayContaining(['delivered_at', 'read_at', 'source_outbound_id']));
+    const idxNames = (db.prepare(`PRAGMA index_list(board_chat)`).all() as Array<{ name: string }>).map((i) => i.name);
     expect(idxNames).toContain('idx_board_chat_source_outbound_id');
     // legacy row preserved, new cols NULL.
     const row = db
