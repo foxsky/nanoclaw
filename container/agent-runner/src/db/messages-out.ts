@@ -4,6 +4,7 @@
  * Writes to outbound.db (container-owned).
  * The host polls this DB (read-only) for undelivered messages.
  */
+import { getCurrentWebOrigin } from '../current-batch.js';
 import { getInboundDb, getOutboundDb } from './connection.js';
 
 export interface MessageOutRow {
@@ -42,7 +43,68 @@ export interface WriteMessageOut {
  * by seq across BOTH tables. If inbound and outbound could share a seq,
  * the agent's "edit message #5" could resolve to the wrong row.
  */
+/**
+ * True only for a plain agent text reply: JSON content with a string
+ * `text`, NO `operation` (edit_message/add_reaction — core.ts:208/249)
+ * and NO `files` (send_file — core.ts:166). The 0h-v2 web-chat gate
+ * transforms ONLY these; operation/file rows pass through untouched
+ * (Codex review — they must not be corrupted into board_chat text).
+ */
+function isPlainTextReply(content: string): boolean {
+  try {
+    const c = JSON.parse(content) as {
+      text?: unknown;
+      operation?: unknown;
+      files?: unknown;
+    };
+    return (
+      typeof c.text === 'string' && c.operation === undefined && c.files === undefined
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function writeMessageOut(msg: WriteMessageOut): number {
+  // 0h-v2 web-chat reply gate (memo §0.3 step 4). If the batch is
+  // web-origin and this is the reply to the TRIGGERING conversation
+  // (kind:'chat' + routing == the batch's triggering routing — NOT an
+  // explicit `send_message(to:…)`/a2a, which carry different routing),
+  // rewrite it into a `taskflow_web_chat_reply` system row so the host
+  // writes board_chat instead of delivering to the WhatsApp adapter
+  // (V1 `appendAgentOutputToBoardChat` replaced exactly
+  // `enqueueAgentOutput(chatJid,…)`). System/a2a/other-destination
+  // rows pass through untouched.
+  const web = getCurrentWebOrigin();
+  if (
+    web &&
+    msg.kind === 'chat' &&
+    (msg.platform_id ?? null) === web.platformId &&
+    (msg.channel_type ?? null) === web.channelType &&
+    (msg.thread_id ?? null) === web.threadId &&
+    isPlainTextReply(msg.content)
+  ) {
+    // isPlainTextReply guaranteed a string `.text` with no
+    // `operation` (edit/reaction — core.ts:208/249) and no `files`
+    // (send_file — core.ts:166): those pass through UNCHANGED. V1's
+    // `appendAgentOutputToBoardChat` only ever routed the agent's
+    // text; edits/reactions/files are out of web-chat scope.
+    const text = (JSON.parse(msg.content) as { text: string }).text;
+    msg = {
+      ...msg,
+      kind: 'system',
+      platform_id: null,
+      channel_type: null,
+      thread_id: null,
+      content: JSON.stringify({
+        action: 'taskflow_web_chat_reply',
+        board_id: web.board_id,
+        board_chat_id: web.board_chat_id,
+        text,
+      }),
+    };
+  }
+
   const outbound = getOutboundDb();
   const inbound = getInboundDb();
 

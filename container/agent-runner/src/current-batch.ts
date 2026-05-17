@@ -27,3 +27,36 @@ export function getCurrentInReplyTo(): string | null {
   return currentInReplyTo;
 }
 
+/**
+ * 0h-v2 web-chat (memo §0.3 step 4). Set by the poll loop (next to
+ * `setCurrentInReplyTo`) when the batch contains ≥1
+ * `origin:'taskflow_web'` message — V1's batch-level
+ * `some(isWebOriginMessage)`. `writeMessageOut` reads it: a
+ * `kind:'chat'` row whose routing matches the batch's TRIGGERING
+ * routing (the reply to THIS conversation, not an explicit
+ * destination / a2a) is rewritten into a `taskflow_web_chat_reply`
+ * system row → host writes board_chat, never the WhatsApp adapter.
+ * Carries the triggering routing so the writer can do that match.
+ */
+export interface WebOriginCtx {
+  board_id: string;
+  board_chat_id: number;
+  platformId: string | null;
+  channelType: string | null;
+  threadId: string | null;
+}
+
+let currentWebOrigin: WebOriginCtx | null = null;
+
+export function setCurrentWebOrigin(ctx: WebOriginCtx | null): void {
+  currentWebOrigin = ctx;
+}
+
+export function clearCurrentWebOrigin(): void {
+  currentWebOrigin = null;
+}
+
+export function getCurrentWebOrigin(): WebOriginCtx | null {
+  return currentWebOrigin;
+}
+
