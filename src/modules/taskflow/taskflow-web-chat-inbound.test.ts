@@ -27,6 +27,11 @@ vi.mock('../../session-manager.js', () => ({
   writeSessionMessage: (...a: unknown[]) => writeSessionMessage(...a),
 }));
 
+const postTaskflowInternal = vi.fn();
+vi.mock('./internal-api.js', () => ({
+  postTaskflowInternal: (...a: unknown[]) => postTaskflowInternal(...a),
+}));
+
 import {
   closeDb,
   createAgentGroup,
@@ -100,6 +105,8 @@ beforeEach(() => {
   const db = initTestDb();
   runMigrations(db);
   writeSessionMessage.mockReset();
+  postTaskflowInternal.mockReset();
+  postTaskflowInternal.mockResolvedValue({ kind: 'ok', data: { marked: true } });
   errSpy = vi.spyOn(log, 'error').mockImplementation(() => {});
   infoSpy = vi.spyOn(log, 'info').mockImplementation(() => {});
 });
@@ -183,5 +190,75 @@ describe('handleTaskflowWebChatInbound', () => {
     // and the handler does not rethrow.
     expect(errSpy).not.toHaveBeenCalled();
     expect(infoSpy).toHaveBeenCalled();
+  });
+
+  // ── step 4: mark-delivered wire ───────────────────────────────────
+
+  it('POSTs mark-delivered after a fresh ingest (board_id + board_chat_id)', async () => {
+    seedRoute();
+    await ingest(payload());
+    expect(postTaskflowInternal).toHaveBeenCalledOnce();
+    expect(postTaskflowInternal).toHaveBeenCalledWith('/internal/board-chat/mark-delivered', {
+      board_id: 'board-1',
+      board_chat_id: 42,
+    });
+  });
+
+  it('STILL POSTs mark-delivered on the UNIQUE dup-skip path (Codex C2)', async () => {
+    // WHY: the first attempt may have crashed AFTER the messages_in
+    // write but BEFORE the mark-delivered POST; a redrain hitting the
+    // idempotent skip must still stamp delivered_at (tf is idempotent
+    // via `delivered_at IS NULL`).
+    seedRoute();
+    writeSessionMessage.mockImplementationOnce(() => {
+      throw new Error('UNIQUE constraint failed: messages_in.id');
+    });
+    await ingest(payload());
+    expect(postTaskflowInternal).toHaveBeenCalledWith('/internal/board-chat/mark-delivered', {
+      board_id: 'board-1',
+      board_chat_id: 42,
+    });
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+
+  it('does NOT POST mark-delivered when ingest fails-closed (early returns)', async () => {
+    seedRoute();
+    await ingest(payload({ group_jid: '' }));
+    await ingest(payload({ content: '  ' }));
+    await ingest(payload({ group_jid: 'unknown@g.us' }));
+    expect(postTaskflowInternal).not.toHaveBeenCalled();
+  });
+
+  it('FAIL-CLOSED on missing board_id — no write, no mark-delivered', async () => {
+    seedRoute();
+    await ingest(payload({ board_id: '' }));
+    expect(writeSessionMessage).not.toHaveBeenCalled();
+    expect(postTaskflowInternal).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalled();
+  });
+
+  it('FAIL-CLOSED on a non-integer board_chat_id (float) — no write', async () => {
+    // tf requires int>0; a float id would self-consistently pass the
+    // old `typeof === number` but is a malformed payload.
+    seedRoute();
+    await ingest(payload({ board_chat_id: 42.5 }));
+    expect(writeSessionMessage).not.toHaveBeenCalled();
+    expect(postTaskflowInternal).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalled();
+  });
+
+  it('propagates a retry-outcome throw from mark-delivered (delivery.ts retries)', async () => {
+    seedRoute();
+    postTaskflowInternal.mockRejectedValueOnce(new Error('taskflow internal-api: http_503'));
+    await expect(ingest(payload())).rejects.toThrow('http_503');
+  });
+
+  it('does NOT throw on a terminal (4xx) mark-delivered outcome — stays ingested', async () => {
+    // 4xx is permanent; postTaskflowInternal already logged it. The
+    // handler must return normally so delivery.ts does NOT retry.
+    seedRoute();
+    postTaskflowInternal.mockResolvedValueOnce({ kind: 'terminal', errorCode: 'missing_board_id' });
+    await expect(ingest(payload())).resolves.toBeUndefined();
+    expect(writeSessionMessage).toHaveBeenCalledOnce();
   });
 });
