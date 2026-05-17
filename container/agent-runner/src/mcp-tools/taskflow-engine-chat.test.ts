@@ -65,6 +65,45 @@ describe('engine.apiSendChat', () => {
     });
   });
 
+  it('resolves the board group_jid IN-SUBPROCESS into the result (Codex#3: host must NOT read taskflow.db on ingress)', () => {
+    // setupEngineDb's boards.group_jid defaults to '' (NOT NULL
+    // DEFAULT ''); set a real JID so we assert the engine reads the
+    // board's actual group_jid (the host ingress delivery-action then
+    // maps group_jid→messaging_group→session with ZERO host
+    // taskflow.db reads — same Codex#3 fix as taskflow_notify).
+    db.prepare(`UPDATE boards SET group_jid = ? WHERE id = ?`).run(
+      '120363111111111111@g.us',
+      BOARD,
+    );
+    const r = sendChat({ sender_name: 'web:Z', content: 'route me' }) as {
+      data: { group_jid: string | null };
+    };
+    expect(r.data.group_jid).toBe('120363111111111111@g.us');
+  });
+
+  it('returns group_jid:null when boards.group_jid is the empty-string default (un-routable → fail-mode b)', () => {
+    // The fixture board exists but its group_jid is '' — an empty
+    // string is NOT a routable destination; the engine normalizes to
+    // null so the tool's `!group_jid` fail-mode (b) triggers.
+    const r = sendChat({ sender_name: 'web:E', content: 'empty jid' }) as {
+      success: boolean;
+      data: { group_jid: string | null };
+    };
+    expect(r.success).toBe(true);
+    expect(r.data.group_jid).toBeNull();
+  });
+
+  it('returns group_jid:null when the board row is absent (recorded, but un-routable → tool fail-mode b)', () => {
+    const r = new TaskflowEngine(db, 'no-such-board').apiSendChat({
+      board_id: 'no-such-board',
+      sender_name: 'web:Q',
+      content: 'orphan board',
+    }) as { success: boolean; data: { id: number; group_jid: string | null } };
+    expect(r.success).toBe(true); // board_chat row still recorded
+    expect(typeof r.data.id).toBe('number');
+    expect(r.data.group_jid).toBeNull();
+  });
+
   it('returns a monotonic AUTOINCREMENT id usable as the ingress dedup key', () => {
     const a = sendChat({ sender_name: 'web:Bob', content: 'first' }) as {
       data: { id: number };

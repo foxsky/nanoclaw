@@ -2979,6 +2979,22 @@ export class TaskflowEngine {
            VALUES (?, ?, 'user', ?, ?)`,
         )
         .run(params.board_id, params.sender_name, params.content, now);
+      // Resolve the board's group_jid HERE (in-subprocess, correct
+      // --db) so the host ingress delivery-action maps
+      // group_jid→messaging_group→session with ZERO host taskflow.db
+      // reads — same Codex#3 substrate fix as taskflow_notify. null
+      // when the board row is absent: the message is still recorded
+      // (board_chat has no FK), but un-routable → tool fail-mode (b).
+      const boardRow = this.db
+        .prepare(`SELECT group_jid FROM boards WHERE id = ?`)
+        .get(params.board_id) as { group_jid?: string } | undefined;
+      // boards.group_jid is `NOT NULL DEFAULT ''`; an empty/whitespace
+      // value is NOT a routable destination — normalize to null so the
+      // contract is honest (null ⇒ un-routable, fail-mode (b)).
+      const groupJid =
+        boardRow && typeof boardRow.group_jid === 'string' && boardRow.group_jid.trim() !== ''
+          ? boardRow.group_jid
+          : null;
       return {
         success: true,
         data: {
@@ -2988,6 +3004,7 @@ export class TaskflowEngine {
           sender_type: 'user',
           content: params.content,
           created_at: now,
+          group_jid: groupJid,
         },
       } as any;
     })();

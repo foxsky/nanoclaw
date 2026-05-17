@@ -78,7 +78,11 @@ export const apiSendChatTool: McpToolDefinition = {
           error: result.error,
         });
       }
-      const row = result.data as { id: number; created_at: string };
+      const row = result.data as {
+        id: number;
+        created_at: string;
+        group_jid: string | null;
+      };
 
       // Best-effort agent wake — fail-mode (b): never throw the tool,
       // never silently drop; the board_chat row is already recorded.
@@ -87,6 +91,11 @@ export const apiSendChatTool: McpToolDefinition = {
       const svc = getServiceOutboundDbPath();
       if (!svc) {
         notifyError = 'service-outbound-db not configured (agent not woken; message recorded)';
+      } else if (!row.group_jid) {
+        // Engine couldn't resolve board→group_jid (board row absent in
+        // the subprocess's taskflow.db): un-routable. Recorded, not woken
+        // — the host must NOT guess a destination (Codex#2 fail-closed).
+        notifyError = 'board has no group_jid (agent not woken; message recorded)';
       } else {
         try {
           enqueueWebChatInbound(svc, {
@@ -96,6 +105,7 @@ export const apiSendChatTool: McpToolDefinition = {
             sender_name: senderName,
             content,
             created_at: row.created_at,
+            group_jid: row.group_jid,
           });
           agentNotified = true;
         } catch (e: unknown) {

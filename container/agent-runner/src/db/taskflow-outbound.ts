@@ -103,6 +103,12 @@ export interface EnqueueWebChatInboundParams {
   content: string;
   /** ISO-Z timestamp of the board_chat row. */
   created_at: string;
+  /**
+   * Engine-resolved board group JID (Codex#3): the host ingress
+   * delivery-action maps this → messaging_group → session with ZERO
+   * host taskflow.db reads, exactly like `taskflow_notify`.
+   */
+  group_jid: string;
 }
 
 /**
@@ -123,5 +129,6 @@ export function enqueueWebChatInbound(
     sender_name: params.sender_name,
     content: params.content,
     created_at: params.created_at,
+    group_jid: params.group_jid,
   });
 }

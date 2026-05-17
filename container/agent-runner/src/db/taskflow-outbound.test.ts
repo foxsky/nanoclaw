@@ -152,6 +152,7 @@ describe('enqueueWebChatInbound', () => {
       sender_name: 'web:Alice',
       content: 'hello from the dashboard',
       created_at: '2026-05-17T12:00:00.000Z',
+      group_jid: '120363000000000099@g.us',
     });
     expect(typeof seq).toBe('number');
     expect(seq).toBeGreaterThan(0);
@@ -171,6 +172,9 @@ describe('enqueueWebChatInbound', () => {
       sender_name: 'web:Alice',
       content: 'hello from the dashboard',
       created_at: '2026-05-17T12:00:00.000Z',
+      // engine-resolved (Codex#3): host maps this → messaging_group →
+      // session with ZERO host taskflow.db reads.
+      group_jid: '120363000000000099@g.us',
     });
   });
 
@@ -183,6 +187,7 @@ describe('enqueueWebChatInbound', () => {
       sender_name: 'web:Bob',
       content: 'hi',
       created_at: '2026-05-17T00:00:00.000Z',
+      group_jid: 'g7@g.us',
     };
     enqueueWebChatInbound(dbPath, p);
     enqueueWebChatInbound(dbPath, p);
