@@ -238,7 +238,10 @@ CREATE TABLE IF NOT EXISTS board_chat (
   sender_name TEXT,
   sender_type TEXT,
   content TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  delivered_at TEXT,
+  read_at TEXT,
+  source_outbound_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_board_chat_created_at ON board_chat(created_at);
 
@@ -520,6 +523,24 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   } catch {
     // Existing DBs may already have the column.
   }
+  // 0h-v2 ticks (tf 94dda49 contract): delivered_at/read_at tick
+  // stamps + source_outbound_id agent-reply idempotency key. ALTER
+  // for existing prod board_chat tables (CREATE TABLE IF NOT EXISTS
+  // is a no-op there). The partial unique index is created AFTER
+  // these ALTERs (not in TASKFLOW_SCHEMA) so the existing-table path
+  // doesn't reference source_outbound_id before it exists.
+  for (const col of ['delivered_at', 'read_at', 'source_outbound_id']) {
+    try {
+      db.exec(`ALTER TABLE board_chat ADD COLUMN ${col} TEXT`);
+    } catch {
+      // Fresh DBs already have it from TASKFLOW_SCHEMA; existing DBs
+      // that already migrated also throw — both safe to ignore.
+    }
+  }
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_board_chat_source_outbound_id
+       ON board_chat(source_outbound_id) WHERE source_outbound_id IS NOT NULL`,
+  );
   if (!hasRequiresCloseApproval) {
     try {
       db.exec('ALTER TABLE tasks ADD COLUMN requires_close_approval INTEGER NOT NULL DEFAULT 1');

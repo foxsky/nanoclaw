@@ -593,11 +593,11 @@ describe('engine.deleteBoard — FK-enforced schema (no FK-constraint throw)', (
     db.exec(
       `CREATE TABLE attachment_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL REFERENCES boards(id), source TEXT NOT NULL, filename TEXT NOT NULL, at TEXT NOT NULL)`,
     );
-    db.exec(
-      `CREATE TABLE board_chat (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT NOT NULL, body TEXT)`,
-    );
-    // meeting_external_participants + board_id_counters are created (FK-free)
-    // by the engine's ensureTaskSchema — seed into those, don't re-create.
+    // board_chat + meeting_external_participants + board_id_counters are
+    // created (FK-free) by the engine's ensureTaskSchema — seed into
+    // those, don't re-create. (board_chat became engine-owned in
+    // 071cd87b; the prior local `(id,board_id,body)` stub is stale —
+    // the real schema is content/created_at NOT NULL + ticks columns.)
     db.prepare(`INSERT INTO boards (id, short_code, name) VALUES (?, 'P0', 'Parent')`).run(PARENT);
     db.prepare(
       `INSERT INTO board_groups (board_id, group_jid, group_folder) VALUES (?, 'g@x', 'f')`,
@@ -605,7 +605,9 @@ describe('engine.deleteBoard — FK-enforced schema (no FK-constraint throw)', (
     db.prepare(
       `INSERT INTO attachment_audit_log (board_id, source, filename, at) VALUES (?, 'whatsapp', 'a.pdf', '2026-01-01')`,
     ).run(BOARD);
-    db.prepare(`INSERT INTO board_chat (board_id, body) VALUES (?, 'hi')`).run(BOARD);
+    db.prepare(
+      `INSERT INTO board_chat (board_id, content, created_at) VALUES (?, 'hi', '2026-01-01')`,
+    ).run(BOARD);
     db.prepare(
       `INSERT INTO meeting_external_participants (board_id, meeting_task_id, occurrence_scheduled_at, external_id, created_by, created_at, updated_at) VALUES (?, 'M1', '2026-01-01', 'x', 'p1', '2026-01-01', '2026-01-01')`,
     ).run(BOARD);

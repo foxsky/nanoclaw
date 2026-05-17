@@ -1298,11 +1298,29 @@ export class TaskflowEngine {
         sender_name TEXT,
         sender_type TEXT,
         content TEXT NOT NULL,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        delivered_at TEXT,
+        read_at TEXT,
+        source_outbound_id TEXT
       )
     `);
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS idx_board_chat_created_at ON board_chat(created_at)`,
+    );
+    // 0h-v2 ticks (tf 94dda49): mirror src/taskflow-db.ts. ALTER for
+    // existing board_chat tables (CREATE IF NOT EXISTS no-ops there);
+    // the partial unique index is created after, so the existing-table
+    // path doesn't reference source_outbound_id before it exists.
+    for (const col of ['delivered_at', 'read_at', 'source_outbound_id']) {
+      try {
+        this.db.exec(`ALTER TABLE board_chat ADD COLUMN ${col} TEXT`);
+      } catch {
+        /* already present (fresh schema or prior migration) */
+      }
+    }
+    this.db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_board_chat_source_outbound_id
+         ON board_chat(source_outbound_id) WHERE source_outbound_id IS NOT NULL`,
     );
 
     try { this.db.exec(`ALTER TABLE boards ADD COLUMN short_code TEXT`); } catch {}

@@ -42,6 +42,86 @@ describe('initTaskflowDb', () => {
     db.close();
   });
 
+  it('creates board_chat ticks columns + partial-unique source_outbound_id index (tf 94dda49 contract)', () => {
+    // tf-owned-endpoints contract: delivered_at/read_at (tick stamps,
+    // tf writes them) + source_outbound_id (agent-reply idempotency
+    // key). Partial UNIQUE WHERE source_outbound_id IS NOT NULL — only
+    // agent rows populate it; user rows stay NULL and don't collide.
+    const db = initTaskflowDb(':memory:');
+    const cols = (db.prepare(`PRAGMA table_info(board_chat)`).all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    );
+    expect(cols).toEqual(
+      expect.arrayContaining(['delivered_at', 'read_at', 'source_outbound_id']),
+    );
+    const idx = (db.prepare(`PRAGMA index_list(board_chat)`).all() as Array<{
+      name: string;
+      unique: number;
+    }>).find((i) => i.name === 'idx_board_chat_source_outbound_id');
+    expect(idx, 'idx_board_chat_source_outbound_id must exist').toBeTruthy();
+    expect(idx!.unique).toBe(1);
+    // partial (WHERE source_outbound_id IS NOT NULL): two NULL rows
+    // must NOT collide; two same non-NULL must.
+    db.prepare(
+      `INSERT INTO board_chat (board_id, sender_type, content, created_at) VALUES ('b','user','u1','t')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO board_chat (board_id, sender_type, content, created_at) VALUES ('b','user','u2','t')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO board_chat (board_id, sender_type, content, created_at, source_outbound_id) VALUES ('b','agent','a1','t','out-1')`,
+    ).run();
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO board_chat (board_id, sender_type, content, created_at, source_outbound_id) VALUES ('b','agent','a1-dup','t','out-1')`,
+        )
+        .run(),
+    ).toThrow();
+    db.close();
+  });
+
+  it('migrates an existing legacy board_chat (pre-ticks) — adds the 3 columns + the partial-unique index', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'taskflow-db-test-'));
+    tempDirs.push(tempDir);
+    const dbPath = path.join(tempDir, 'taskflow.db');
+    const legacy = new Database(dbPath);
+    // V1-shape board_chat without delivered_at/read_at/source_outbound_id.
+    legacy.exec(`
+      CREATE TABLE board_chat (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        board_id TEXT NOT NULL, sender_name TEXT, sender_type TEXT,
+        content TEXT NOT NULL, created_at TEXT NOT NULL
+      );
+      INSERT INTO board_chat (board_id, sender_type, content, created_at)
+      VALUES ('board-1', 'user', 'pre-existing', '2026-01-01');
+    `);
+    legacy.close();
+
+    const db = initTaskflowDb(dbPath);
+    const cols = (db.prepare(`PRAGMA table_info(board_chat)`).all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    );
+    expect(cols).toEqual(
+      expect.arrayContaining(['delivered_at', 'read_at', 'source_outbound_id']),
+    );
+    const idxNames = (
+      db.prepare(`PRAGMA index_list(board_chat)`).all() as Array<{ name: string }>
+    ).map((i) => i.name);
+    expect(idxNames).toContain('idx_board_chat_source_outbound_id');
+    // legacy row preserved, new cols NULL.
+    const row = db
+      .prepare(`SELECT content, delivered_at, read_at, source_outbound_id FROM board_chat WHERE board_id='board-1'`)
+      .get() as Record<string, unknown>;
+    expect(row).toEqual({
+      content: 'pre-existing',
+      delivered_at: null,
+      read_at: null,
+      source_outbound_id: null,
+    });
+    db.close();
+  });
+
   it('creates tasks with requires_close_approval', () => {
     const db = initTaskflowDb(':memory:');
     const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{
