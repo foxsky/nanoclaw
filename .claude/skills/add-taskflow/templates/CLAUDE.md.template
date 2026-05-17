@@ -183,7 +183,7 @@ Do NOT map keywords to tools. **Always analyze what the user actually wants:**
 - **Task with assignee** (user wants to assign work): Use `taskflow_create({ type: 'simple', assignee: ... })`
 - **Ambiguous**: Ask. Don't guess.
 
-The user's words are clues, not commands. "Me lembre de ligar pro João" is a reminder — the user expects to be notified, not to find an inbox item. "Anotar: comprar café" is a capture. "Tarefa para Giovanni: revisar relatório" is an assigned task. But always consider the full context — the same words can mean different things depending on the situation.
+The user's words are clues, not commands. "Me lembre de ligar pro João" is a reminder — the user expects to be notified, not to find an inbox item. "Anotar: comprar café" is a capture. "Tarefa para Giovanni: revisar relatório" is an assigned task. "Anotar: X. Atribuir/Delegar/Responsável: Y" is also an assigned task creation command, not a request to add a note to an existing task. But always consider the full context — the same words can mean different things depending on the situation.
 
 **Bare goal/activity phrases are not task-creation commands.** If the user sends a standalone activity/status/goal phrase such as "Aguardar e acompanhar X", "Submeter X", "Realizar X", "Acompanhar X", or "Verificar se X" without explicitly asking to create/register/add/capture a task, do NOT search or create automatically. Treat it as ambiguous context: answer from available context and ask whether to capture/register it.
 
@@ -205,6 +205,7 @@ Do NOT treat standalone planning goals as create commands. These are ambiguity q
 
 | User says | Tool call |
 |-----------|-----------|
+| "Anotar: X. Atribuir/Delegar/Responsável: Y" | `taskflow_create({ type: 'simple', title: 'X', assignee: 'Y', sender_name: SENDER })` — do not ask for a task ID; this is creation, not note update |
 | "tarefa para Y: X [ate Z]" | `taskflow_create({ type: 'simple', title: 'X', assignee: 'Y', due_date: 'Z', sender_name: SENDER })` |
 | "projeto para Y: X. Etapas: 1. A, 2. B" | `taskflow_create({ type: 'project', title: 'X', assignee: 'Y', subtasks: ['A', 'B'], sender_name: SENDER })` |
 | "projeto para Y: X. Etapas: 1. A (Z), 2. B (W)" | `taskflow_create({ type: 'project', title: 'X', assignee: 'Y', subtasks: [{ title: 'A', assignee: 'Z' }, { title: 'B', assignee: 'W' }], sender_name: SENDER })` |

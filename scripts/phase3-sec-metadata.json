@@ -1,0 +1,120 @@
+[
+  {
+    "turn_index": 1,
+    "context_mode": "chain",
+    "source_jsonl": "messages.db#agent_turns/83dcbd24-f6c5-4151-9bc0-89be31be0033",
+    "prior_turn_depth": 1,
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": ["T97"],
+      "allow_extra_task_ids": true,
+      "mutation_types": ["update"],
+      "outbound_intent": "mutation_confirmation"
+    },
+    "state_drift": {
+      "description": "The target text is a context-dependent follow-up ('usar o mesmo') and cannot be judged from a fresh turn. It needs chain replay from the immediately prior SEC conversation turn; exact task IDs may still drift without a historical pre-turn DB snapshot.",
+      "expected_with_historical_snapshot": "With the prior turn and historical DB state, v2 should update the same task v1 had just discussed/created and set the due date to the next Wednesday."
+    }
+  },
+  {
+    "turn_index": 2,
+    "context_mode": "fresh",
+    "source_jsonl": "messages.db#agent_turns/eff268da-7664-4b41-ad05-f1d1b7744257",
+    "state_drift": {
+      "description": "v1 recorded adding a note to T110 before the synced validation snapshot; the synced DB already contains that exact note.",
+      "evidence": "task_history has T110 updated with 'Nota: Ocorrendo na rede interna da PMT' at 2026-05-04T12:26:59.719Z.",
+      "expected_with_historical_snapshot": "With a pre-note snapshot, v2 should add the note to T110."
+    }
+  },
+  {
+    "turn_index": 5,
+    "context_mode": "fresh",
+    "source_jsonl": "messages.db#agent_turns/500130d8-0fe7-449d-a3ed-d2d4cd57047d",
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": ["P28"],
+      "allow_extra_task_ids": true,
+      "mutation_types": ["create"],
+      "outbound_intent": "informational"
+    },
+    "state_drift": {
+      "description": "v1 created project P28 historically; the synced DB already contains P28, so fresh replay can allocate a later project ID or no-op depending on model grounding.",
+      "evidence": "Current board-sec-taskflow has P28 'SDU/Sudeste' assigned to giovanni.",
+      "expected_with_historical_snapshot": "With the historical pre-create snapshot, v2 should create the SDU/Sudeste project for Giovanni."
+    }
+  },
+  {
+    "turn_index": 6,
+    "context_mode": "fresh",
+    "source_jsonl": "messages.db#agent_turns/1d078c54-1244-493d-87a1-39cb3a376aa9",
+    "state_drift": {
+      "description": "v1 recorded creating T100 before the synced validation snapshot; the synced DB already contains the task after its later title correction.",
+      "evidence": "Current board-sec-taskflow has T100 'Eturb/Relatório semanal de solicitações de coleta de lixo' assigned to thiago.",
+      "expected_with_historical_snapshot": "With the historical pre-create snapshot, v2 should create T100 with the original title and assignee."
+    }
+  },
+  {
+    "turn_index": 8,
+    "context_mode": "fresh",
+    "source_jsonl": "messages.db#agent_turns/f1cc88dd-bb83-4a29-a7e6-aa130175b8ee",
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": ["M7"],
+      "allow_extra_task_ids": true,
+      "mutation_types": ["create"],
+      "outbound_intent": "asks_user"
+    },
+    "state_drift": {
+      "description": "v1 created meeting M7 historically; the synced DB already contains M7, so fresh replay may allocate a later meeting ID.",
+      "evidence": "Current board-sec-taskflow has M7 'Apresentação GTIM/Sistema Tributário'.",
+      "expected_with_historical_snapshot": "With the historical pre-create snapshot, v2 should create the meeting and ask for Edgar's external participant details."
+    }
+  },
+  {
+    "turn_index": 9,
+    "context_mode": "chain",
+    "source_jsonl": "messages.db#agent_turns/e32bea11-e957-4a01-a2fd-be1d942fded4",
+    "prior_turn_depth": 1,
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": ["M7"],
+      "allow_extra_task_ids": true,
+      "mutation_types": ["update"],
+      "outbound_intent": "mutation_confirmation"
+    },
+    "state_drift": {
+      "description": "The target text supplies the missing external participant data for the immediately prior meeting turn. It cannot be judged from a fresh turn with no session context; exact meeting ID may also drift without a historical pre-turn DB snapshot.",
+      "expected_with_historical_snapshot": "With the prior meeting-creation turn and historical DB state, v2 should add Edgar as an external participant to the just-created meeting."
+    }
+  },
+  {
+    "turn_index": 11,
+    "context_mode": "fresh",
+    "source_jsonl": "messages.db#agent_turns/84ccf97c-bc93-492f-8d46-3f88e106e4e9",
+    "state_drift": {
+      "description": "v1 answered Thiago's active tasks as of 2026-05-05; the synced validation snapshot is from 2026-05-16 and includes later Thiago tasks.",
+      "evidence": "v2 includes later tasks T113 and T114 that did not exist in v1's May 5 answer.",
+      "expected_with_historical_snapshot": "With a May 5 pre-turn snapshot, v2 should list the same active Thiago task set as v1."
+    }
+  },
+  {
+    "turn_index": 13,
+    "context_mode": "fresh",
+    "source_jsonl": "messages.db#agent_turns/f51b3125-b285-4dda-96cc-3ce7c8f573eb",
+    "state_drift": {
+      "description": "v1 recorded creating T101 before the synced validation snapshot; the synced DB already contains that exact task. Separately, v2 should still understand 'Anotar: X. Atribuir: Y' as task creation rather than asking for a task ID.",
+      "evidence": "Current board-sec-taskflow has T101 'DSF/Código Fonte/Versionamento' assigned to giovanni.",
+      "expected_with_historical_snapshot": "With the historical pre-create snapshot, v2 should create T101. With the synced snapshot, v2 should at least recognize the create intent and avoid asking for an unrelated task ID."
+    }
+  },
+  {
+    "turn_index": 16,
+    "context_mode": "fresh",
+    "source_jsonl": "messages.db#agent_turns/9f98ee2e-efdd-443b-9dd8-50d223bfbcf5",
+    "state_drift": {
+      "description": "v1 recorded adding a note to T111 before the synced validation snapshot; the synced DB already contains that exact note.",
+      "evidence": "task_history has T111 updated with 'Nota: Fornecedores receberam retorno como domínio desconhecido' at 2026-05-04T13:04:49.715Z.",
+      "expected_with_historical_snapshot": "With a pre-note snapshot, v2 should add the note to T111."
+    }
+  }
+]

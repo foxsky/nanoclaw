@@ -98,5 +98,133 @@
       "mutation_types": [],
       "outbound_intent": "asks_user"
     }
+  },
+  {
+    "turn_index": 6,
+    "context_mode": "chain",
+    "source_jsonl": "messages.db#agent_turns/9edd15b6-3efc-4c6b-8615-ec16b8b4dfb7",
+    "prior_turn_depth": 1,
+    "state_drift": {
+      "description": "The target text is a bare confirmation ('Sim') whose v1 mutation depended on the immediately prior in-session question. Fresh replay correctly lacks that context.",
+      "evidence": "v1 updated T51 with assignee Mário and note 'Co-responsável: Flávia'; the target prompt only says 'Sim'.",
+      "expected_with_historical_snapshot": "With the prior bot/user context, v2 should confirm the pending T51 update."
+    }
+  },
+  {
+    "turn_index": 7,
+    "context_mode": "chain",
+    "source_jsonl": "messages.db#agent_turns/100e4955-c885-427c-8efe-80931010a2f9",
+    "prior_turn_depth": 1,
+    "expected_behavior": {
+      "action": "no-op",
+      "outbound_intent": "informational"
+    },
+    "state_drift": {
+      "description": "The target text is a bare rejection ('Não') whose meaning depends on the immediately prior in-session question. Fresh replay can only answer generically.",
+      "expected_with_historical_snapshot": "With the prior confirmation question, v2 should acknowledge that no action was taken."
+    }
+  },
+  {
+    "turn_index": 12,
+    "context_mode": "chain",
+    "source_jsonl": "messages.db#agent_turns/8bd7aaf6-0307-4782-b7a7-960c739d55d7",
+    "prior_turn_depth": 1,
+    "state_drift": {
+      "description": "v1 added the apólice note to T47 using recent context; fresh replay searched by the noun 'apólice' and found the later T58 instead. The synced DB already contains the T47 note.",
+      "evidence": "task_history has board-laizys-taskflow T47 updated with 'Nota: Solicito atualização da apólice' at 2026-05-12T14:44:01.428Z.",
+      "expected_with_historical_snapshot": "With the prior context and pre-note snapshot, v2 should add the note to T47."
+    }
+  },
+  {
+    "turn_index": 14,
+    "context_mode": "fresh",
+    "source_jsonl": "messages.db#agent_turns/ed88cf20-b2ac-49f3-b87a-719530083567",
+    "state_drift": {
+      "description": "v1 recorded a wait/update while T44 and SEC-T41 were still in the relevant historical states; the synced validation DB already has T44 done and SEC-T41 done with the CMG note present.",
+      "evidence": "Current board-laizys-taskflow T44 column=done; board-sec-taskflow T41 column=done and already has the CMG note.",
+      "expected_with_historical_snapshot": "With the historical pre-turn snapshot, v2 should preserve the SEC-T41 note/update and T44 waiting transition."
+    }
+  },
+  {
+    "turn_index": 16,
+    "context_mode": "chain",
+    "source_jsonl": "messages.db#agent_turns/1d13dee3-f736-45e9-884b-1a53d685e62a",
+    "prior_turn_depth": 1,
+    "state_drift": {
+      "description": "The target text is a one-word confirmation ('Confirmada') whose v1 behavior depended on the immediately prior meeting/notification context.",
+      "expected_with_historical_snapshot": "With the prior context, v2 should register/forward the meeting confirmation rather than asking what was confirmed."
+    }
+  },
+  {
+    "turn_index": 17,
+    "context_mode": "fresh",
+    "source_jsonl": "messages.db#agent_turns/d4d60a7f-fffd-4654-b368-804ce404f50c",
+    "expected_behavior": {
+      "action": "no-op",
+      "outbound_intent": "none"
+    },
+    "state_drift": {
+      "description": "The production extractor has no v1 outbound for this user turn; v1's visible SEC-T41 confirmation appears on the following related turn. Treat this as an extraction/batching gap, not an independent parity failure.",
+      "expected_with_historical_snapshot": "A richer conversation-level replay should validate the whole SEC-T41/T44/T96 batch together."
+    }
+  },
+  {
+    "turn_index": 19,
+    "context_mode": "fresh",
+    "source_jsonl": "messages.db#agent_turns/57b876a7-64c0-40ac-ab40-359e4b207800",
+    "expected_behavior": {
+      "action": "no-op",
+      "outbound_intent": "none"
+    },
+    "state_drift": {
+      "description": "The extractor has no v1 outbound for this completion turn, and the synced DB already has T11 done.",
+      "evidence": "Current board-laizys-taskflow T11 column=done; task_history has T11 conclude at 2026-04-29T22:43:15.769Z.",
+      "expected_with_historical_snapshot": "With a pre-completion snapshot, v2 should conclude T11 or confirm it is already done."
+    }
+  },
+  {
+    "turn_index": 21,
+    "context_mode": "fresh",
+    "source_jsonl": "messages.db#agent_turns/75e444d3-b64b-47cd-a389-8a7ab0aba7c9",
+    "expected_behavior": {
+      "action": "mutate",
+      "mutation_types": ["schedule"],
+      "outbound_intent": "mutation_confirmation"
+    }
+  },
+  {
+    "turn_index": 25,
+    "context_mode": "fresh",
+    "source_jsonl": "messages.db#agent_turns/bfc38360-f550-428a-b1e1-c4280ec1b9a7",
+    "state_drift": {
+      "description": "v1's visible response included a historical multi-action batch touching SEC-T41, T44, and T96. The synced DB already contains the SEC-T41 note, T44 waiting/done transition, and T96 note/reassignment.",
+      "evidence": "task_history shows SEC-T41 note at 2026-04-30T11:40:54Z, T44 wait at 2026-04-30T11:40:41Z, and T96 note/reassign at 2026-04-30T11:41Z.",
+      "expected_with_historical_snapshot": "With the historical pre-batch snapshot, v2 should apply the whole SEC-T41/T44/T96 batch. With synced state, updating only the still-relevant T96 part is not a standalone product bug."
+    }
+  },
+  {
+    "turn_index": 28,
+    "context_mode": "chain",
+    "source_jsonl": "messages.db#agent_turns/05f4e73b-93e7-4188-92f9-75091d2842f5",
+    "prior_turn_depth": 1,
+    "state_drift": {
+      "description": "v1's response includes the previous 'atualizar planilhas...' command plus this turn's data-center task. Fresh replay of only this turn correctly creates only the data-center task.",
+      "evidence": "The previous source turn at 2026-05-12T14:00:47 created T56; this target at 14:01:26 created T57.",
+      "expected_with_historical_snapshot": "A chain replay should validate the paired T56/T57 creation and dependency behavior together."
+    }
+  },
+  {
+    "turn_index": 33,
+    "context_mode": "fresh",
+    "source_jsonl": "messages.db#agent_turns/403c4970-ce4e-42aa-b434-56bed7213701",
+    "expected_behavior": {
+      "action": "no-op",
+      "outbound_intent": "none"
+    },
+    "state_drift": {
+      "description": "The extractor has no v1 outbound for this command because the visible v1 confirmation was batched into the next related turn. The synced DB already contains T56 with dependency on T54.",
+      "evidence": "task_history shows T56 created and dep_added target T54 on 2026-05-12T14:01Z.",
+      "expected_with_historical_snapshot": "A richer conversation-level replay should validate the T56 creation together with the following T57 turn."
+    }
   }
 ]
