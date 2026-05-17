@@ -225,6 +225,23 @@ CREATE TABLE IF NOT EXISTS meeting_external_participants (
   PRIMARY KEY (board_id, meeting_task_id, occurrence_scheduled_at, external_id)
 );
 
+-- Dashboard web-chat transcript (0h-v2). NOT WhatsApp. Columns match
+-- every real writer/reader verbatim: V1 host src/index.ts:136, V1
+-- container ipc-mcp-stdio.ts:1385, tf-mcontrol app/main.py:3436
+-- (INSERT) / :3392 (SELECT). IF NOT EXISTS leaves any pre-existing
+-- prod V1 table untouched. tf-mcontrol creates only the created_at
+-- index when the table already exists; we own creation now, so we
+-- create both here.
+CREATE TABLE IF NOT EXISTS board_chat (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  board_id TEXT NOT NULL,
+  sender_name TEXT,
+  sender_type TEXT,
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_board_chat_created_at ON board_chat(created_at);
+
 -- TaskFlow's standup/digest/review/onboarding crons live here.
 -- v2's per-session scheduling does NOT cover TaskFlow board runners.
 `;

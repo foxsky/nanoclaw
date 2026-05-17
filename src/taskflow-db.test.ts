@@ -25,6 +25,27 @@ describe('initTaskflowDb', () => {
     db.close();
   });
 
+  it('creates board_chat with the V1/tf-mcontrol-compatible columns + created_at index (0h-v2 web chat)', () => {
+    // Every real writer/reader uses exactly these columns: V1 host
+    // src/index.ts:136, V1 container ipc-mcp-stdio.ts:1385, tf-mcontrol
+    // app/main.py:3436 (INSERT) + :3392 (SELECT). The canonical v2
+    // schema must create it (it didn't) so v2 agents can write the
+    // dashboard chat transcript; IF NOT EXISTS keeps prod V1 tables
+    // untouched.
+    const db = initTaskflowDb(':memory:');
+    const cols = (db.prepare(`PRAGMA table_info(board_chat)`).all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    );
+    expect(cols).toEqual(
+      expect.arrayContaining(['id', 'board_id', 'sender_name', 'sender_type', 'content', 'created_at']),
+    );
+    const idx = (
+      db.prepare(`PRAGMA index_list(board_chat)`).all() as Array<{ name: string }>
+    ).map((i) => i.name);
+    expect(idx).toContain('idx_board_chat_created_at');
+    db.close();
+  });
+
   it('creates tasks with requires_close_approval', () => {
     const db = initTaskflowDb(':memory:');
     const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{
