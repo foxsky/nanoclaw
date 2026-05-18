@@ -62,6 +62,100 @@ interface CreateLikeResult {
   notifications?: Array<{ target_person_id?: string; message: string }>;
 }
 
+const DUPLICATE_TITLE_STOPWORDS = new Set([
+  'a', 'as', 'com', 'da', 'das', 'de', 'do', 'dos', 'e', 'em', 'na', 'no', 'o', 'os', 'para', 'por',
+]);
+
+function titleTokens(value: string): Set<string> {
+  return new Set(
+    value
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/g)
+      .filter((token) => token.length > 1 && !DUPLICATE_TITLE_STOPWORDS.has(token)),
+  );
+}
+
+function titleSimilarity(a: string, b: string): number {
+  const left = titleTokens(a);
+  const right = titleTokens(b);
+  if (left.size < 3 || right.size < 3) return 0;
+  let overlap = 0;
+  for (const token of left) {
+    if (right.has(token)) overlap++;
+  }
+  return overlap / Math.max(left.size, right.size);
+}
+
+function columnLabel(column: string | null | undefined): string {
+  switch (column) {
+    case 'inbox': return 'Inbox';
+    case 'next_action': return 'Próximas Ações';
+    case 'in_progress': return 'Em Progresso';
+    case 'waiting': return 'Aguardando';
+    case 'review': return 'Revisão';
+    case 'done': return 'Concluída';
+    default: return column || 'sem coluna';
+  }
+}
+
+function findDuplicateCreateCandidate(
+  db: Database,
+  engine: TaskflowEngine,
+  boardId: string,
+  taskType: CreateTaskType,
+  title: string,
+  assignee?: string,
+): Record<string, unknown> | null {
+  if (taskType !== 'simple' && taskType !== 'project') return null;
+  const resolvedAssignee = assignee ? engine.resolvePerson(assignee) : null;
+  const rows = db
+    .prepare(
+      `SELECT t.*, b.short_code AS board_code, bp.name AS assignee_name
+       FROM tasks t
+       JOIN boards b ON b.id = t.board_id
+       LEFT JOIN board_people bp ON bp.board_id = t.board_id AND bp.person_id = t.assignee
+       WHERE t.board_id = ?
+         AND t.type = ?
+         AND t.column != 'done'
+       ORDER BY t.updated_at DESC`,
+    )
+    .all(boardId, taskType) as Array<Record<string, unknown>>;
+
+  let best: { row: Record<string, unknown>; score: number } | null = null;
+  for (const row of rows) {
+    if (resolvedAssignee && row.assignee !== resolvedAssignee.person_id) continue;
+    const score = titleSimilarity(title, String(row.title ?? ''));
+    if (score < 0.75) continue;
+    if (!best || score > best.score) best = { row, score };
+  }
+  return best?.row ?? null;
+}
+
+function duplicateCreateResponse(engine: TaskflowEngine, row: Record<string, unknown>) {
+  const data = engine.serializeApiTask(row);
+  const taskId = String(row.id ?? data.id ?? 'tarefa');
+  const title = String(row.title ?? data.title ?? taskId);
+  const assignee = typeof row.assignee_name === 'string' && row.assignee_name.trim()
+    ? row.assignee_name
+    : typeof row.assignee === 'string' && row.assignee.trim()
+      ? row.assignee
+      : 'sem responsável';
+  const formatted =
+    `Já existe a **${taskId} — ${title}** atribuída ao ${assignee} (${columnLabel(String(row.column ?? ''))}). Parece ser o mesmo assunto.\n\n` +
+    `Deseja usar a ${taskId} existente ou criar uma tarefa separada mesmo assim?`;
+  return jsonResponse({
+    success: true,
+    data: {
+      duplicate_candidate: true,
+      task: data,
+      formatted,
+    },
+    notification_events: [],
+  });
+}
+
 /**
  * Post-create result shaping shared by `api_create_simple_task` and
  * `api_create_meeting_task`: turn an engine `CreateResult` into the
@@ -1033,6 +1127,8 @@ export const apiCreateTaskTool: McpToolDefinition = {
     try {
       const db = getTaskflowDb();
       const engine = new TaskflowEngine(db, boardId);
+      const duplicate = findDuplicateCreateCandidate(db, engine, boardId, taskType, title, assignee);
+      if (duplicate) return duplicateCreateResponse(engine, duplicate);
       const result = engine.create({
         board_id: boardId,
         type: taskType,

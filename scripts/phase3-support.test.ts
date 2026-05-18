@@ -1038,6 +1038,26 @@ describe('Phase 3 state-drift classifications', () => {
     expect(comparison.classification.kind).toBe('ask_context_hint_gap');
   });
 
+  it('treats duplicate-create warnings as ask behavior, not successful mutations', () => {
+    const summary = summarizeSemanticBehavior(
+      [
+        {
+          name: 'mcp__nanoclaw__api_create_task',
+          input: { title: 'Redundância internet SEMA/Licitação', type: 'simple', assignee: 'Rafael' },
+        },
+      ],
+      [{
+        kind: 'chat',
+        content: '{"text":"Já existe a **T97 — Redundância de Internet/Licitação/SEMA** atribuída ao Rafael (Próximas Ações), que parece cobrir o mesmo assunto.\\n\\nDeseja usar a T97 existente ou criar uma tarefa separada mesmo assim?"}',
+      }],
+    );
+
+    expect(summary.action).toBe('ask');
+    expect(summary.mutation_types).toEqual([]);
+    expect(summary.task_ids).toEqual(['T97']);
+    expect(summary.outbound_intent).toBe('asks_user');
+  });
+
   it('treats a no-op note removal where the note was not found as non-mutating behavior', () => {
     const summary = summarizeSemanticBehavior(
       [

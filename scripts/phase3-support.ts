@@ -713,11 +713,14 @@ export function summarizeSemanticBehavior(
     (outboundIntent === 'asks_user' || outboundIntent === 'not_found_or_unclear') &&
     /\b(n[aã]o (?:foi )?encontr\w*|n[aã]o localizada|n[aã]o existe|n[aã]o pode ser reatribu[ií]d[ao]?|preciso que voc[eê] confirme|confirme o ID|me confirma)\b/i.test(text) &&
     !/\b(j[aá]|foi|foram)\b[\s\S]{0,80}\b(atualizad[ao]?|adicionad[ao]?|registrad[ao]?)\b/i.test(text);
+  const duplicateAskIntent = hasMutation &&
+    outboundIntent === 'asks_user' &&
+    /\b(j[aá]\s+existe|parece\s+(?:ser|cobrir)\s+o\s+mesmo\s+assunto|criar\s+uma\s+tarefa\s+separada)\b/i.test(text);
   const blockedMutationIntent = hasMutation &&
     outboundIntent === 'informational' &&
     /(pertence ao quadro pai|apenas vinculad[ao]|precisa ser feita|faca a reatribuicao|faça a reatribuiç[aã]o|n[aã]o pode|already assigned|already configured|task .* is in "done"|j[aá]\s+est[aá])/i.test(text) &&
     !/\b(j[aá]|foi|foram)\b[\s\S]{0,80}\b(atualizad[ao]?|adicionad[ao]?|registrad[ao]?|reatribu[ií]d[ao]?)\b/i.test(text);
-  const effectiveHasMutation = hasMutation && !failedMutationIntent && !blockedMutationIntent;
+  const effectiveHasMutation = hasMutation && !failedMutationIntent && !duplicateAskIntent && !blockedMutationIntent;
   const textTaskIds = extractTaskIdsFromText(text);
 
   // Action priority: substantive tool work beats a trailing "Deseja...?" CTA.
@@ -734,6 +737,7 @@ export function summarizeSemanticBehavior(
   else if (asks && outboundIntent === 'asks_user') action = 'ask';
   else action = 'no-op';
   if (failedMutationIntent && outboundIntent === 'asks_user') action = 'ask';
+  if (duplicateAskIntent) action = 'ask';
 
   const toolTaskIds = extractTaskIdsFromTools(tools);
   const includeReplyTaskIds = outboundIntent === 'informational' || outboundIntent === 'mutation_confirmation';

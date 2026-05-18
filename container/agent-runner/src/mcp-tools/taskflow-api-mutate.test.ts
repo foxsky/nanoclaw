@@ -1526,6 +1526,34 @@ describe('api_create_task MCP tool (A5.2.1 — multi-type create)', () => {
     expect(result.data.id).toMatch(/^T\d+$/);
   });
 
+  it('asks before creating a near-duplicate active assigned task', async () => {
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'rafael', 'Rafael', 'member')`,
+    ).run(BOARD);
+    db.prepare(
+      `INSERT INTO tasks (board_id, id, type, title, assignee, column, created_at, updated_at, created_by)
+       VALUES (?, 'T97', 'simple', 'Redundância de Internet/Licitação/SEMA', 'rafael', 'next_action', '2026-04-01', '2026-04-01', 'alice')`,
+    ).run(BOARD);
+
+    const response = await apiCreateTaskTool.handler({
+      board_id: BOARD,
+      type: 'simple',
+      title: 'Redundância internet SEMA/Licitação',
+      sender_name: 'alice',
+      assignee: 'Rafael',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data.duplicate_candidate).toBe(true);
+    expect(result.data.task.id).toBe('T97');
+    expect(result.data.formatted).toContain('Deseja usar a T97 existente');
+    const created = db
+      .prepare(`SELECT COUNT(*) AS count FROM tasks WHERE board_id = ? AND title = ?`)
+      .get(BOARD, 'Redundância internet SEMA/Licitação') as { count: number };
+    expect(created.count).toBe(0);
+  });
+
   it('type=inbox → task created in inbox column', async () => {
     const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
     const response = await apiCreateTaskTool.handler({

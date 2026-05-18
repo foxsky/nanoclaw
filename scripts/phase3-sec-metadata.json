@@ -27,6 +27,28 @@
     }
   },
   {
+    "turn_index": 3,
+    "context_mode": "fresh",
+    "source_jsonl": "messages.db#agent_turns/381937a8-c4c5-4b04-b8df-7ce187e12185",
+    "expected_behavior": {
+      "action": "read",
+      "task_ids": ["T83", "T84", "T95"],
+      "allow_extra_task_ids": false,
+      "outbound_intent": "informational"
+    }
+  },
+  {
+    "turn_index": 4,
+    "context_mode": "fresh",
+    "source_jsonl": "messages.db#agent_turns/29a3a572-5fa3-4b16-af45-86fda47f2a0d",
+    "expected_behavior": {
+      "action": "ask",
+      "task_ids": ["T97"],
+      "allow_extra_task_ids": false,
+      "outbound_intent": "asks_user"
+    }
+  },
+  {
     "turn_index": 5,
     "context_mode": "fresh",
     "source_jsonl": "messages.db#agent_turns/500130d8-0fe7-449d-a3ed-d2d4cd57047d",
@@ -115,6 +137,22 @@
       "description": "v1 recorded adding a note to T111 before the synced validation snapshot; the synced DB already contains that exact note.",
       "evidence": "task_history has T111 updated with 'Nota: Fornecedores receberam retorno como domínio desconhecido' at 2026-05-04T13:04:49.715Z.",
       "expected_with_historical_snapshot": "With a pre-note snapshot, v2 should add the note to T111."
+    }
+  },
+  {
+    "turn_index": 17,
+    "context_mode": "chain",
+    "source_jsonl": "messages.db#agent_turns/c56a3316-3836-4ef7-ba2c-9dca906e40b4",
+    "prior_turn_depth": 2,
+    "expected_behavior": {
+      "action": "read",
+      "task_ids": ["M7"],
+      "allow_extra_task_ids": true,
+      "outbound_intent": "informational"
+    },
+    "state_drift": {
+      "description": "The target text asks whether the invite was sent and depends on the immediately preceding meeting creation plus external-participant registration turns.",
+      "expected_with_historical_snapshot": "With the two prior meeting turns in session, v2 should report that Edgar's invite was already sent when he was added as an external participant."
     }
   }
 ]
