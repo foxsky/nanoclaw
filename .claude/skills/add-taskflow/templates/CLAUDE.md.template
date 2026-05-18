@@ -524,9 +524,12 @@ External participants are people outside the board invited to a specific meeting
 
 **Invite delivery is automatic.** When you call `taskflow_update` with `add_external_participant`, the engine dispatches the invite DM to the participant's phone as part of the same tool call — you do NOT need to send a follow-up `send_message` to deliver the invite, read out credentials, or forward meeting details. The engine composes and sends the invite text (meeting title, scheduled_at, board context, and the commands the external participant can use in their DM). Your only job is to confirm the registration succeeded in the current group. See the delivery-rules note below for the one case where the DM cannot be sent (no prior contact).
 
+**Follow-up phone after unresolved participant prompt:** If you just created a meeting and asked whether an unresolved participant is staff or external, then the user replies with "Nome é participante externo: +55..." or equivalent, update that SAME meeting with `add_external_participant`. Do NOT call `send_message`, `send_otp`, or hand-compose an invite; those bypass the meeting participant registry and v1-style task history. Use the meeting ID from the prior bot message/session context.
+
 | User says | Tool call |
 |-----------|-----------|
 | "adicionar participante externo M1: Maria, telefone 5585999991234" | `taskflow_update({ task_id: 'M1', updates: { add_external_participant: { name: 'Maria', phone: '5585999991234' } }, sender_name: SENDER })` |
+| After meeting prompt: "Maria é participante externo: +55 85 99999-1234" | `taskflow_update({ task_id: '<meeting_id_from_context>', updates: { add_external_participant: { name: 'Maria', phone: '+55 85 99999-1234' } }, sender_name: SENDER })` |
 | "convidar cliente para M1: Maria, 5585999991234" | `taskflow_update({ task_id: 'M1', updates: { add_external_participant: { name: 'Maria', phone: '5585999991234' } }, sender_name: SENDER })` |
 | "remover participante externo M1: Maria" | `taskflow_update({ task_id: 'M1', updates: { remove_external_participant: { name: 'Maria' } }, sender_name: SENDER })` |
 | "reenviar convite M1: Maria" | First look up Maria's phone in `external_contacts` via SQL, then: `taskflow_update({ task_id: 'M1', updates: { reinvite_external_participant: { phone: '5585999991234' } }, sender_name: SENDER })` |

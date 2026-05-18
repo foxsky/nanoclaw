@@ -14,6 +14,7 @@ import {
   hasWakeTrigger,
   taskflowBareTaskDetailsCommand,
   taskflowBulkApprovalCommand,
+  taskflowAddExternalParticipantToLatestMeetingCommand,
   taskflowAddParticipantsToLatestMeetingCommand,
   taskflowAutoForwardMeetingConfirmation,
   taskflowChildBoardCreationPrompt,
@@ -418,6 +419,18 @@ describe('TaskFlow deterministic confirmation guards', () => {
     )).toEqual({
       taskId: 'M4',
       participantNames: ['Ana Beatriz', 'Rodrigo Lima'],
+    });
+  });
+
+  it('detects adding an external participant to the latest meeting from follow-up context', () => {
+    expect(taskflowAddExternalParticipantToLatestMeetingCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'Edgar é participante externo: +55 86 99988-8414' }) }],
+      [JSON.stringify({ text: '✅ *Reunião criada*\n*M3* — Reunião com SEC\n\nEdgar não está cadastrado. Ele é membro da equipe ou participante externo?' })],
+      true,
+    )).toEqual({
+      taskId: 'M3',
+      participantName: 'Edgar',
+      phone: '+55 86 99988-8414',
     });
   });
 

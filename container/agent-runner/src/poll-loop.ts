@@ -170,6 +170,12 @@ interface TaskflowAddParticipantsToLatestMeeting {
   participantNames: string[];
 }
 
+interface TaskflowAddExternalParticipantToLatestMeeting {
+  taskId: string;
+  participantName: string;
+  phone: string;
+}
+
 interface TaskflowNotifyMeetingAbove {
   taskId: string;
   recipientNames?: string[];
@@ -271,6 +277,7 @@ const NEXT_ACTION_START_RE = /^(?:pr[oó]xima\s+a[cç][aã]o\s*:\s*)?(?:enviar|m
 const BOARD_PERSON_PLACEMENT_RE = /\b(?:coloca|colocar|adicione|adicionar)?\s*(?:o\s+|a\s+)?([\p{L}\p{M}' -]{2,60}?)\s+no\s+setor\s+([A-Z0-9ÁÉÍÓÚÇÃÕÂÊÔ -]{2,80}?)(?=\s+e\s+(?:o\s+|a\s+)?[\p{L}\p{M}]|\s*[.!,]|$)/giu;
 const ADD_PARTICIPANT_RE = /\badicionar\s+([\p{L}\p{M}' -]{2,60})\s+em\s+(M\d+)\b/iu;
 const ADD_PARTICIPANTS_ONLY_RE = /^\s*adicionar\s+([\p{L}\p{M}', -]+?)\s*[.!]?\s*$/iu;
+const EXTERNAL_PARTICIPANT_FOLLOWUP_RE = /^\s*([\p{L}\p{M}' -]{2,60}?)\s+(?:é|eh|e)\s+participante\s+extern[ao]\s*:?\s*([+\d][\d\s().-]{7,})\s*[.!]?\s*$/iu;
 const CREATE_MEETING_DATE_RE = /^\s*(?:agendar|marcar)\s+(.+?)\s+no\s+dia\s+(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(?:às|as)\s+(\d{1,2})(?:(?:h|:)(\d{2})?)?\s*[.!]?\s*$/iu;
 const CREATE_PROJECT_MEETING_WEEKDAY_RE = /^\s*adicionar\s+uma\s+tarefa\s+no\s+projeto\s+d[ao]\s+(.+?):\s*(.+?)\s+para\s+(segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado|domingo)(?:-feira)?\s+(?:às|as)\s+(\d{1,2})(?:(?:h|:)(\d{2})?)?\s*[.!]?\s*$/iu;
 const NOTIFY_MEETING_ABOVE_RE = /^\s*avisar\s+(?:o\s+|a\s+|os\s+|as\s+)?([\p{L}\p{M}', -]+?)\s+sobre\s+a\s+reuni[aã]o\s+acima\s*[.!]?\s*$/iu;
@@ -778,6 +785,28 @@ export function taskflowAddParticipantsToLatestMeetingCommand(
   if (!taskId) return null;
   const participantNames = splitPersonNames(match[1]);
   return participantNames.length > 0 ? { taskId, participantNames } : null;
+}
+
+export function taskflowAddExternalParticipantToLatestMeetingCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  recentContents: string[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowAddExternalParticipantToLatestMeeting | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  if (extractTaskId(message.text)) return null;
+  const match = message.text.match(EXTERNAL_PARTICIPANT_FOLLOWUP_RE);
+  if (!match?.[1] || !match[2]) return null;
+  const taskId = latestMeetingTaskIdFromContents(recentContents);
+  if (!taskId) return null;
+  const participantName = cleanupDestinationName(match[1]).trim();
+  if (!participantName) return null;
+  return {
+    taskId,
+    participantName,
+    phone: match[2].trim(),
+  };
 }
 
 export function taskflowNotifyMeetingAboveCommand(
@@ -2002,6 +2031,42 @@ function handleTaskflowAddParticipantsToLatestMeeting(
   } else {
     writeReply(routing, `Não consegui adicionar participantes em ${action.taskId}:\n${failures.join('\n')}`);
   }
+  return true;
+}
+
+function handleTaskflowAddExternalParticipantToLatestMeeting(
+  action: TaskflowAddExternalParticipantToLatestMeeting,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+  const phone = normalizePhone(action.phone) || action.phone;
+  const input = {
+    task_id: action.taskId,
+    sender_name: sender,
+    updates: {
+      add_external_participant: {
+        name: action.participantName,
+        phone,
+      },
+    },
+  };
+  const result = engine.update({ ...input, board_id: boardId });
+  appendMcpEquivalentToolCapture('api_update_task', input, result, !result.success);
+  if (!result.success) {
+    writeReply(
+      routing,
+      `Não consegui adicionar ${action.participantName} em ${action.taskId}: ${result.error ?? 'erro desconhecido'}`,
+    );
+    return true;
+  }
+  writeReply(
+    routing,
+    `✅ *${action.taskId}* atualizada\n\n• ${action.participantName} adicionado(a) como participante externo (${phone})`,
+  );
   return true;
 }
 
@@ -3457,6 +3522,16 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (addParticipantsToLatestMeeting && handleTaskflowAddParticipantsToLatestMeeting(addParticipantsToLatestMeeting, keep, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow participant add to latest meeting without provider query');
+      continue;
+    }
+
+    const addExternalParticipantToLatestMeeting = taskflowAddExternalParticipantToLatestMeetingCommand(keep, recentContext);
+    if (
+      addExternalParticipantToLatestMeeting &&
+      handleTaskflowAddExternalParticipantToLatestMeeting(addExternalParticipantToLatestMeeting, keep, routing)
+    ) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow external participant add to latest meeting without provider query');
       continue;
     }
 
