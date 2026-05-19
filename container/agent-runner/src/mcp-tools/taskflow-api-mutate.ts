@@ -961,7 +961,11 @@ export const apiReassignTool: McpToolDefinition = {
         source_person: sourcePerson,
       };
       const result = engine.reassign(reassignParams);
-      return finalizeMutationResult(addReassignFormattedResult(result, targetPerson));
+      // Mirror v1 (poll-loop.ts:2320,2339): canonicalize raw target_person
+      // to the board_people display name before formatting the v1 card.
+      // Codex hot-path gate P1: raw input drift (e.g. 'lucas' → 'Lucas').
+      const canonicalTarget = engine.resolvePerson(targetPerson)?.name ?? targetPerson;
+      return finalizeMutationResult(addReassignFormattedResult(result, canonicalTarget));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });

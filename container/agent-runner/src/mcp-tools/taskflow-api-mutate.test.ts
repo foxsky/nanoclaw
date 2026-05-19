@@ -993,6 +993,34 @@ describe('api_reassign MCP tool (A11.3)', () => {
     expect(row.assignee).toBe('bob');
   });
 
+  it('canonicalizes target display name to board_people.name in the v1 card (Codex P1 fix)', async () => {
+    const { apiCreateSimpleTaskTool, apiReassignTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'lucas', 'Lucas', 'member')`,
+    ).run(BOARD);
+    const created = await apiCreateSimpleTaskTool.handler({
+      board_id: BOARD,
+      title: 'Solicitar acesso',
+      sender_name: 'alice',
+    });
+    const taskId = JSON.parse(created.content[0].text).data.id;
+    // Input is the LOWERCASE alias 'lucas'; v1 canonicalizes via
+    // engine.resolvePerson(...)?.name → 'Lucas' (poll-loop.ts:2320 then
+    // formatReassignReply at 2339). The card must mirror that.
+    const response = await apiReassignTool.handler({
+      board_id: BOARD,
+      task_id: taskId,
+      target_person: 'lucas',
+      sender_name: 'alice',
+      confirmed: true,
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data.formatted).toBe(
+      `✅ *${taskId}* — Solicitar acesso\n\nReatribuída para Lucas.`,
+    );
+  });
+
   it('dry run (confirmed=false): returns requires_confirmation in data, no DB change', async () => {
     const { apiCreateSimpleTaskTool, apiReassignTool } = await import('./taskflow-api-mutate.ts');
     db.prepare(
