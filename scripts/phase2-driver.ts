@@ -52,7 +52,7 @@ const OUT_FILE = '/tmp/phase2-v2-results.json';
 
 const SETTLE_QUIET_MS = 12_000; // outbound stable for this long → agent done
 const SETTLE_INITIAL_MS = 20_000; // grace before first stability check (container startup)
-const CONTAINER_TIMEOUT_MS = 6 * 60_000; // hard cap per turn
+const CONTAINER_TIMEOUT_MS = Number(process.env.NANOCLAW_PHASE2_CONTAINER_TIMEOUT_MS) || 6 * 60_000; // hard cap per turn (env-overridable for settle disambiguation)
 const POLL_INTERVAL_MS = 2_000;
 
 interface ParsedMessage { sender: string; time: string; text: string }
