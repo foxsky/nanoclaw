@@ -1,6 +1,14 @@
-import { describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 
 import { emitMutationConfirmation } from './mutation-confirmation.ts';
+import {
+  __resetDedupForTesting,
+  consumeDeterministicMutationFlag,
+} from './mutation-dedup.ts';
+
+beforeEach(() => {
+  __resetDedupForTesting();
+});
 
 // Restores the deterministic post-mutation confirmation that v1's
 // poll-loop handlers emitted via writeReply and the v1→v2 MCP-tool port
@@ -110,5 +118,51 @@ describe('emitMutationConfirmation', () => {
       { getRouting: () => NO_ROUTING, emit: () => {}, onError: (msg) => errs.push(msg) },
     );
     expect(errs).toHaveLength(0);
+  });
+
+  it('marks the dedup flag on successful emission (Codex P4 — drives bare-text suppression)', () => {
+    emitMutationConfirmation(
+      { success: true, formatted: '✅ done' },
+      { getRouting: () => ROUTING, emit: () => {} },
+    );
+    expect(consumeDeterministicMutationFlag()).toBe(true);
+  });
+
+  it('does NOT mark when the guard suppresses emission (FastAPI/no-session)', () => {
+    emitMutationConfirmation(
+      { success: true, formatted: '✅ done' },
+      { getRouting: () => NO_ROUTING, emit: () => {} },
+    );
+    expect(consumeDeterministicMutationFlag()).toBe(false);
+  });
+
+  it('does NOT mark on a failed mutation', () => {
+    emitMutationConfirmation(
+      { success: false, formatted: 'x' },
+      { getRouting: () => ROUTING, emit: () => {} },
+    );
+    expect(consumeDeterministicMutationFlag()).toBe(false);
+  });
+
+  it('does NOT mark when there is no formatted text to emit', () => {
+    emitMutationConfirmation(
+      { success: true },
+      { getRouting: () => ROUTING, emit: () => {} },
+    );
+    expect(consumeDeterministicMutationFlag()).toBe(false);
+  });
+
+  it('does NOT mark when emission throws (best-effort caught, no mark — false positive guard)', () => {
+    emitMutationConfirmation(
+      { success: true, formatted: '✅ done' },
+      {
+        getRouting: () => ROUTING,
+        emit: () => {
+          throw new Error('outbound write failed');
+        },
+        onError: () => {},
+      },
+    );
+    expect(consumeDeterministicMutationFlag()).toBe(false);
   });
 });

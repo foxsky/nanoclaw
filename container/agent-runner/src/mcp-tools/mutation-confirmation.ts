@@ -22,6 +22,7 @@ import { randomUUID } from 'node:crypto';
 
 import { writeMessageOut } from '../db/messages-out.js';
 import { getSessionRouting, type SessionRouting } from '../db/session-routing.js';
+import { markDeterministicMutationEmitted } from './mutation-dedup.js';
 import { log } from './util.js';
 
 interface MutationResultShape {
@@ -66,6 +67,11 @@ export function emitMutationConfirmation(
       thread_id: routing.thread_id,
       content: JSON.stringify({ text }),
     });
+    // Mark only after a successful emit (no throw above). Drives
+    // dispatchResultText's bare-text fallback suppression so the model's
+    // same-turn redundant reply doesn't double-message the user (v1
+    // sent only the deterministic card). Codex hot-path gate P4.
+    markDeterministicMutationEmitted();
   } catch (err) {
     // Swallowed by design (see above) — but NOT silently: a silent
     // swallow previously hid an emission failure and blocked diagnosing

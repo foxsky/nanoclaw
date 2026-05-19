@@ -22,6 +22,7 @@ import {
   stripInternalTags,
   type RoutingContext,
 } from './formatter.js';
+import { consumeDeterministicMutationFlag } from './mcp-tools/mutation-dedup.js';
 import { appendToolEvents, type ToolEvent } from './providers/claude-tool-capture.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 import { TaskflowEngine, normalizePhone, type ReassignResult } from './taskflow-engine.js';
@@ -3880,9 +3881,11 @@ async function processQuery(
         // (send_message) mid-turn, or the message may not need a response
         // at all — either way the turn is finished.
         markCompleted(initialBatchIds);
-        if (event.text) {
-          dispatchResultText(event.text, routing);
-        }
+        // Always call dispatchResultText so it can consume the
+        // deterministic-mutation dedup flag (Codex P4) every turn,
+        // preventing leak across turns when the model emits no final
+        // text. dispatchResultText is a no-op on empty input.
+        dispatchResultText(event.text ?? '', routing);
       } else if (event.type === 'compacted') {
         // The SDK auto-compacted the conversation. After compaction the
         // model often drops the learned `<message to="…">` wrapping
@@ -3943,6 +3946,15 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
  * text remains scratchpad because routing would be ambiguous.
  */
 function dispatchResultText(text: string, routing: RoutingContext): void {
+  // Consume the deterministic-mutation dedup flag at turn end (Codex
+  // P4). If a TaskFlow mutation card was already emitted this turn, the
+  // model's same-turn bare-text final reply is redundant (v1 sent only
+  // the card). Consume regardless of whether bare-text would fire, so
+  // the flag never leaks across turns. Explicit `<message to=…>` blocks
+  // are out of scope here — they address other destinations, not the
+  // current conversation.
+  const suppressBareFallback = consumeDeterministicMutationFlag();
+
   const MESSAGE_RE = /<message\s+to="([^"]+)"\s*>([\s\S]*?)<\/message>/g;
 
   let match: RegExpExecArray | null;
@@ -3978,6 +3990,10 @@ function dispatchResultText(text: string, routing: RoutingContext): void {
   if (sent === 0 && !sawMessageBlock && scratchpad) {
     const destinations = getAllDestinations();
     if (destinations.length === 1) {
+      if (suppressBareFallback) {
+        log('Bare final text suppressed (Codex P4 dedup): deterministic mutation card already emitted this turn');
+        return;
+      }
       sendToDestination(destinations[0], scratchpad, routing);
       log('Sent bare final text to sole configured destination');
       return;
