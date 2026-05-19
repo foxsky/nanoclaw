@@ -231,16 +231,22 @@ function addMoveFormattedResult(result: MoveResult, action: MoveAction): MoveRes
   };
 }
 
-function addReassignFormattedResult(result: ReassignResult, targetPerson: string): ReassignResult {
+export function addReassignFormattedResult(result: ReassignResult, targetPerson: string): ReassignResult {
   if (!result.success || result.formatted || result.requires_confirmation) return result;
   const tasks = result.tasks_affected ?? [];
   if (tasks.length === 0) return result;
-  const taskLines = tasks.map((task) => `- ${task.task_id} — ${task.title}`);
+  // BYTE-FAITHFUL mirror of v1 `formatReassignReply` (poll-loop.ts:2281)
+  // reachable branches — KEEP IN SYNC. emitMutationConfirmation emits
+  // this `formatted`, so it is the user-facing card and must match v1.
   return {
     ...result,
     formatted: tasks.length === 1
-      ? `${tasks[0].task_id} — ${tasks[0].title}: reatribuída para ${targetPerson}.`
-      : `${tasks.length} tarefas reatribuídas para ${targetPerson}:\n${taskLines.join('\n')}`,
+      ? `✅ *${tasks[0].task_id}* — ${tasks[0].title}\n\nReatribuída para ${targetPerson}.`
+      : [
+          `✅ ${tasks.length} tarefas reatribuídas para ${targetPerson}:`,
+          '',
+          ...tasks.map((task) => `• *${task.task_id}* — ${task.title}`),
+        ].join('\n'),
   };
 }
 
