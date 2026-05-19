@@ -1,0 +1,62 @@
+[
+  {
+    "source_turn_id": "44df5fd1-1484-4d00-a5bb-4f3c05e6939f",
+    "context_mode": "fresh",
+    "v1_bug": {
+      "description": "Thiago P6/T56 deadline correction candidate: v1 applied the 24/04 deadline to P6, then the user clarified that the deadline belonged to T56.",
+      "detected_by": "auditor_self_correction",
+      "corrected_at": "2026-04-22T11:21:59.377Z",
+      "expected_correction": "Deadline 2026-04-24 should apply to T56, not P6."
+    }
+  },
+  {
+    "source_turn_id": "e61dc319-a23f-49d1-b3ec-d314ab26ef7c",
+    "context_mode": "chain",
+    "prior_turn_depth": 3
+  },
+  {
+    "source_turn_id": "bc254b1f-38dd-4d33-8bac-01026c64732e",
+    "context_mode": "chain",
+    "prior_turn_depth": 2
+  },
+  {
+    "source_turn_id": "bfbee4ae-6ab5-4504-a6c7-72ae4fd2c6d2",
+    "context_mode": "chain",
+    "prior_turn_depth": 2
+  },
+  {
+    "source_turn_id": "2474184e-59d1-4bc8-af38-4ca5356cc517",
+    "context_mode": "chain",
+    "prior_turn_depth": 4
+  },
+  {
+    "source_turn_id": "6bc6b6a5-dca3-44bf-8c94-8580ec7fab54",
+    "context_mode": "chain",
+    "prior_turn_depth": 3
+  },
+  {
+    "source_turn_id": "f1bda84a-da7a-45c3-a64b-6e0ac412cc3b",
+    "context_mode": "chain",
+    "prior_turn_depth": 1
+  },
+  {
+    "source_turn_id": "2b1d3098-0a6a-4d54-86e2-8647c505587b",
+    "context_mode": "chain",
+    "prior_turn_depth": 1
+  },
+  {
+    "source_turn_id": "587eeea7-bc55-474d-b0aa-93bccfc7ae7f",
+    "context_mode": "chain",
+    "prior_turn_depth": 2
+  },
+  {
+    "source_turn_id": "9f50866a-3ca3-46e4-b7a6-1561ed08eb56",
+    "context_mode": "chain",
+    "prior_turn_depth": 3
+  },
+  {
+    "source_turn_id": "b2276223-98eb-41fd-b62d-a1e1a418b488",
+    "context_mode": "chain",
+    "prior_turn_depth": 1
+  }
+]

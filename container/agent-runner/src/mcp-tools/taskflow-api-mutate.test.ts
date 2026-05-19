@@ -1889,6 +1889,13 @@ describe('api_query MCP tool (A5.2.3 — composite read-side wrapper)', () => {
     expect(apiQueryTool.tool.description).toContain('not parent P6');
   });
 
+  it('documents org-scoped person lookup for cross-board contact reuse', async () => {
+    const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    expect(apiQueryTool.tool.description).toContain('find_person_in_organization');
+    expect(apiQueryTool.tool.description).toContain('routing_jid');
+    expect(apiQueryTool.tool.description).toContain('instead of asking for phone numbers');
+  });
+
   it('query=board → returns column-grouped tasks', async () => {
     const { apiCreateSimpleTaskTool, apiQueryTool } = await import('./taskflow-api-mutate.ts');
     await apiCreateSimpleTaskTool.handler({ board_id: BOARD, title: 'X', sender_name: 'alice' });
