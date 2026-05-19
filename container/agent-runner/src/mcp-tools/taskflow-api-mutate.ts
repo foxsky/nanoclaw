@@ -250,6 +250,33 @@ export function addReassignFormattedResult(result: ReassignResult, targetPerson:
   };
 }
 
+// BYTE-FAITHFUL mirror of v1's generic "task created under a project"
+// card. No reusable v1 formatter exists; ground truth is the corpus
+// v1.final_response (seci Turn 0). KEEP IN SYNC. Only the with-parent
+// shape has a ground-truth exemplar — no-parent and the ID-conflict
+// "atualizada/↳" variants are intentionally NOT built here (return
+// null; follow-up increments + the Codex hot-path gate).
+export function buildCreateCard(data: {
+  id?: unknown;
+  title?: unknown;
+  parent_task_id?: unknown;
+  parent_task_title?: unknown;
+}): string | null {
+  const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+  const id = str(data.id);
+  const title = str(data.title);
+  const parentId = str(data.parent_task_id);
+  const parentTitle = str(data.parent_task_title);
+  if (!id || !title || !parentId || !parentTitle) return null;
+  return [
+    `✅ *${id} adicionada*`,
+    '━━━━━━━━━━━━━━',
+    '',
+    `📁 *${parentId}* — ${parentTitle}`,
+    `   📋 *${id}* — ${title}`,
+  ].join('\n');
+}
+
 function pickTaskSummary(task: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
   if (!task) return null;
   const summary: Record<string, unknown> = {};
