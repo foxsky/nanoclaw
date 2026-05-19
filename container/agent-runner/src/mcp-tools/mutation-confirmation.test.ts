@@ -1,13 +1,21 @@
-import { beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
+import { closeSessionDb, initTestSessionDb } from '../db/connection.ts';
 import { emitMutationConfirmation } from './mutation-confirmation.ts';
 import {
   __resetDedupForTesting,
   consumeDeterministicMutationFlag,
 } from './mutation-dedup.ts';
 
+// Dedup state moved to SQLite (Codex P-Audit-2 cross-process fix) — the
+// wiring tests now exercise the real session_state path via the in-mem
+// outbound DB.
 beforeEach(() => {
+  initTestSessionDb();
   __resetDedupForTesting();
+});
+afterEach(() => {
+  closeSessionDb();
 });
 
 // Restores the deterministic post-mutation confirmation that v1's

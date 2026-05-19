@@ -1,29 +1,61 @@
 /**
- * Phase-3 unit-2-core / Codex gate P4 — double-emit dedup primitive.
+ * Phase-3 unit-2-core / Codex gate P4 — cross-process dedup primitive.
  *
- * v1 only ever sent the deterministic mutation confirmation card. v2's
- * MCP path now emits that card AND the model still produces a bare-text
- * final reply for the same conversation, doubling the user-facing
- * message on every mutation turn (SECI prompt explicitly asks the model
- * to always reply after a write). This primitive lets the deterministic
- * path mark the turn and the bare-text dispatch consume-and-suppress.
+ * The agent-runner runs MCP tools as a SEPARATE `bun` subprocess
+ * (src/index.ts wires `command:'bun', args:['run',mcp-tools/index.ts]`
+ * + StdioServerTransport). emitMutationConfirmation marks from the MCP
+ * subprocess; dispatchResultText consumes from the poll-loop main
+ * process. A module-level boolean would NOT propagate across processes
+ * (Codex gate finding 2026-05-19: prior in-memory impl was a prod no-op).
  *
- * Read-and-clear: each turn's single `dispatchResultText` consumes the
- * flag, so no explicit per-turn reset is needed at the call sites. A
- * test-only reset is exposed for unit-test isolation.
+ * State is held in the outbound DB's `session_state` table — both
+ * processes open the same `/workspace/outbound.db` via `getOutboundDb`,
+ * so a committed INSERT in the MCP child is visible to a SELECT in the
+ * main process. Read-and-clear semantics so each turn's single
+ * `dispatchResultText` consumes the flag (no explicit per-turn reset
+ * needed at the call sites). Best-effort try/catch matches the
+ * surrounding emit-path philosophy — a dedup-storage failure must
+ * NEVER fail the mutation that already succeeded.
  */
-let flagged = false;
+import { getOutboundDb } from '../db/connection.js';
+
+const KEY = 'mutation_dedup_flag';
 
 export function markDeterministicMutationEmitted(): void {
-  flagged = true;
+  try {
+    const db = getOutboundDb();
+    db.prepare(
+      `INSERT INTO session_state (key, value, updated_at)
+       VALUES (?, '1', ?)
+       ON CONFLICT (key) DO UPDATE SET value = '1', updated_at = excluded.updated_at`,
+    ).run(KEY, new Date().toISOString());
+  } catch {
+    // Best-effort: the mutation already succeeded; a flag write
+    // failure must not fail it. dispatchResultText falls back to
+    // emitting the model's bare-text reply (no suppression).
+  }
 }
 
 export function consumeDeterministicMutationFlag(): boolean {
-  const was = flagged;
-  flagged = false;
-  return was;
+  try {
+    const db = getOutboundDb();
+    const row = db
+      .prepare(`SELECT value FROM session_state WHERE key = ?`)
+      .get(KEY) as { value: string } | undefined;
+    if (row) {
+      db.prepare(`DELETE FROM session_state WHERE key = ?`).run(KEY);
+      return true;
+    }
+  } catch {
+    // see markDeterministicMutationEmitted — best-effort.
+  }
+  return false;
 }
 
 export function __resetDedupForTesting(): void {
-  flagged = false;
+  try {
+    getOutboundDb().prepare(`DELETE FROM session_state WHERE key = ?`).run(KEY);
+  } catch {
+    // Outbound DB may not be initialized in some unit tests; ignore.
+  }
 }
