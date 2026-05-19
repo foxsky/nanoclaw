@@ -766,6 +766,39 @@ describe('api_admin MCP tool (A11.2)', () => {
     expect(result.error).toMatch(/target_parent_id/);
   });
 
+  it('reparent_task success returns parent_title AND task_title (feeds the v1 create card)', async () => {
+    const { apiCreateTaskTool, apiCreateSimpleTaskTool, apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+    const proj = JSON.parse(
+      (await apiCreateTaskTool.handler({
+        board_id: BOARD, type: 'project', title: 'Operação da SECTI', sender_name: 'alice', assignee: 'bob',
+      })).content[0].text,
+    );
+    const child = JSON.parse(
+      (await apiCreateSimpleTaskTool.handler({
+        board_id: BOARD, title: 'Treinamento E-governe', sender_name: 'alice',
+      })).content[0].text,
+    );
+    const result = JSON.parse(
+      (await apiAdminTool.handler({
+        board_id: BOARD, action: 'reparent_task', sender_name: 'alice',
+        task_id: child.data.id, target_parent_id: proj.data.id,
+      })).content[0].text,
+    );
+    expect(result.success).toBe(true);
+    // finalizeMutationResult nests the engine result under data:rest, so
+    // the engine's own data + the wrapper-set `formatted` land here. The
+    // intent: api_admin(reparent_task) now carries the byte-faithful v1
+    // "adicionada" create card (this is the seci create-divergence fix).
+    expect(result.data.data.parent_title).toBe('Operação da SECTI');
+    expect(result.data.data.task_title).toBe('Treinamento E-governe');
+    expect(result.data.formatted).toBe(
+      `✅ *${child.data.id} adicionada*\n━━━━━━━━━━━━━━\n\n📁 *${proj.data.id}* — Operação da SECTI\n   📋 *${child.data.id}* — Treinamento E-governe`,
+    );
+  });
+
   it('rejects unknown action via schema enum', async () => {
     const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
     const response = await apiAdminTool.handler({

@@ -277,6 +277,30 @@ export function buildCreateCard(data: {
   ].join('\n');
 }
 
+// Wire the v1-faithful create card onto the api_admin(reparent_task)
+// completion: seci "add task X to project P11" is api_create_task →
+// api_admin(reparent_task), and v1's "✅ *id* adicionada … 📁 parent"
+// confirmation reflects the POST-reparent state. Routes through
+// finalizeMutationResult (unit-1 emit). Mirrors addReassignFormattedResult.
+export function addReparentFormattedResult<
+  T extends { success?: boolean; formatted?: unknown; task_id?: unknown; data?: unknown },
+>(result: T, action: string): T {
+  if (action !== 'reparent_task' || !result.success || result.formatted) return result;
+  const d = (result.data ?? {}) as {
+    parent_task_id?: unknown;
+    parent_title?: unknown;
+    task_title?: unknown;
+  };
+  const card = buildCreateCard({
+    id: result.task_id,
+    title: d.task_title,
+    parent_task_id: d.parent_task_id,
+    parent_task_title: d.parent_title,
+  });
+  if (!card) return result;
+  return { ...result, formatted: card };
+}
+
 function pickTaskSummary(task: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
   if (!task) return null;
   const summary: Record<string, unknown> = {};
@@ -879,7 +903,7 @@ export const apiAdminTool: McpToolDefinition = {
     try {
       const engine = new TaskflowEngine(getTaskflowDb(), boardId);
       const result = engine.admin(adminParams);
-      return finalizeMutationResult(result);
+      return finalizeMutationResult(addReparentFormattedResult(result, adminParams.action));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });

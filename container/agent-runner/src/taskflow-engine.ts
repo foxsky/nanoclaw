@@ -9743,6 +9743,7 @@ export class TaskflowEngine {
             data: {
               parent_task_id: parent.id,
               parent_title: parent.title,
+              task_title: task.title,
             },
           };
         }
