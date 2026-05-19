@@ -86,4 +86,29 @@ describe('emitMutationConfirmation', () => {
       ),
     ).not.toThrow();
   });
+
+  it('LOGS (fail-loud) when a swallowed emission failure occurs — silent swallow blocked diagnosis of the reassign anomaly', () => {
+    const errs: string[] = [];
+    emitMutationConfirmation(
+      { success: true, formatted: '✅ done' },
+      {
+        getRouting: () => ROUTING,
+        emit: () => {
+          throw new Error('outbound write failed');
+        },
+        onError: (msg) => errs.push(msg),
+      },
+    );
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toContain('outbound write failed');
+  });
+
+  it('does NOT log on the legitimate FastAPI/no-session guard path (not an error)', () => {
+    const errs: string[] = [];
+    emitMutationConfirmation(
+      { success: true, formatted: '✅ done' },
+      { getRouting: () => NO_ROUTING, emit: () => {}, onError: (msg) => errs.push(msg) },
+    );
+    expect(errs).toHaveLength(0);
+  });
 });

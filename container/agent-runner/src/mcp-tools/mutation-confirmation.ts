@@ -22,6 +22,7 @@ import { randomUUID } from 'node:crypto';
 
 import { writeMessageOut } from '../db/messages-out.js';
 import { getSessionRouting, type SessionRouting } from '../db/session-routing.js';
+import { log } from './util.js';
 
 interface MutationResultShape {
   success?: boolean;
@@ -37,6 +38,7 @@ interface EmitDeps {
     thread_id: string | null;
     content: string;
   }) => void;
+  onError?: (msg: string) => void;
 }
 
 export function emitMutationConfirmation(
@@ -64,7 +66,11 @@ export function emitMutationConfirmation(
       thread_id: routing.thread_id,
       content: JSON.stringify({ text }),
     });
-  } catch {
-    // swallowed by design — see comment above
+  } catch (err) {
+    // Swallowed by design (see above) — but NOT silently: a silent
+    // swallow previously hid an emission failure and blocked diagnosing
+    // why a reassign turn produced no confirmation. Fail loud here while
+    // still never failing the mutation.
+    (deps.onError ?? log)(`mutation confirmation emission failed: ${String(err)}`);
   }
 }
