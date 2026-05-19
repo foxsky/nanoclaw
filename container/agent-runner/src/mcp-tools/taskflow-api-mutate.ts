@@ -10,6 +10,7 @@ import type { Database } from 'bun:sqlite';
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import type { AdminParams, DependencyParams, HierarchyParams, MoveResult, QueryParams, ReassignParams, ReassignResult, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
+import { emitMutationConfirmation } from './mutation-confirmation.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
@@ -214,6 +215,7 @@ function finalizeMutationResult(result: { success: boolean; notifications?: unkn
   const { notifications: _notifications, success, ...rest } = result;
   const notification_events = normalizeEngineNotificationEvents(result);
   if (!success) return jsonResponse({ success: false, ...rest, notification_events });
+  emitMutationConfirmation(result);
   return jsonResponse({ success: true, data: rest, notification_events });
 }
 
