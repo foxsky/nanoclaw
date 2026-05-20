@@ -277,6 +277,58 @@ export function buildCreateCard(data: {
   ].join('\n');
 }
 
+// BYTE-FAITHFUL mirror of v1's `✅ *id* atualizada` update card.
+// Engine's `changes` strings drifted from v1 (engine line 5515 emits
+// double-quoted titles; line 5574 emits raw ISO dates) so we derive
+// lines from the `updates` input directly, not from `result.changes`.
+// Scope: title + due_date only. Any other key (priority, description,
+// labels, notes, subtasks, recurrence, participants, …) → null;
+// covered by future scoped follow-ups. v1 corpus exemplars: seci
+// Turn 2 (title) + Turn 38 (due_date).
+const UPDATE_CARD_KEYS = new Set(['title', 'due_date']);
+const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+export function buildUpdateCard(
+  taskId: string,
+  updates: Record<string, unknown>,
+): string | null {
+  if (typeof taskId !== 'string' || taskId.length === 0) return null;
+  const keys = Object.keys(updates);
+  if (keys.length === 0) return null;
+  for (const k of keys) if (!UPDATE_CARD_KEYS.has(k)) return null;
+
+  const lines: string[] = [];
+  if ('title' in updates) {
+    const title = updates.title;
+    if (typeof title !== 'string') return null;
+    lines.push(`• Título alterado para *${title}*`);
+  }
+  if ('due_date' in updates) {
+    const dd = updates.due_date;
+    if (typeof dd !== 'string') return null;
+    const m = ISO_DATE_RE.exec(dd);
+    if (!m) return null;
+    lines.push(`• ⏰ Prazo definido: ${m[3]}/${m[2]}/${m[1]}`);
+  }
+  return [
+    `✅ *${taskId}* atualizada`,
+    '━━━━━━━━━━━━━━',
+    '',
+    ...lines,
+  ].join('\n');
+}
+
+export function addUpdateFormattedResult<
+  T extends { success?: boolean; formatted?: unknown; task_id?: unknown },
+>(result: T, updates: Record<string, unknown>): T {
+  if (!result.success || result.formatted) return result;
+  const taskId = typeof result.task_id === 'string' ? result.task_id : '';
+  if (!taskId) return result;
+  const card = buildUpdateCard(taskId, updates);
+  if (!card) return result;
+  return { ...result, formatted: card };
+}
+
 // Wire the v1-faithful create card onto the api_admin(reparent_task)
 // completion: seci "add task X to project P11" is api_create_task →
 // api_admin(reparent_task), and v1's "✅ *id* adicionada … 📁 parent"
@@ -1262,16 +1314,17 @@ export const apiUpdateTaskTool: McpToolDefinition = {
 
     try {
       const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      const updates = args.updates as Record<string, unknown>;
       const updateParams: UpdateParams = {
         board_id: boardId,
         task_id: taskId,
         sender_name: senderName,
-        updates: args.updates as UpdateParams['updates'],
+        updates: updates as UpdateParams['updates'],
         sender_external_id: senderExternalId,
         confirmed_task_id: confirmedTaskId,
       };
       const result = engine.update(updateParams);
-      return finalizeMutationResult(result);
+      return finalizeMutationResult(addUpdateFormattedResult(result, updates));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });
