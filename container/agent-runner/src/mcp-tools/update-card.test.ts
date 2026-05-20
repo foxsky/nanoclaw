@@ -75,6 +75,36 @@ describe('buildUpdateCard — v1-faithful update card (title + due_date scope)',
     expect(buildUpdateCard('P20.6', { due_date: '04/05/2026' })).toBeNull();
   });
 
+  // Codex gate G4 IMPORTANT: shape-only ISO validation accepted impossible
+  // calendar dates like '2026-13-32'. Engine `new Date(s + 'T12:00:00Z')`
+  // yields NaN, weekend/holiday classifies NaN as neither, no-reminder
+  // updates can succeed → would have emitted "32/13/2026" on the wire.
+  it('invalid month (13) → null', () => {
+    expect(buildUpdateCard('P20.6', { due_date: '2026-13-04' })).toBeNull();
+  });
+
+  it('invalid day (32) → null', () => {
+    expect(buildUpdateCard('P20.6', { due_date: '2026-05-32' })).toBeNull();
+  });
+
+  it('zero month → null', () => {
+    expect(buildUpdateCard('P20.6', { due_date: '2026-00-10' })).toBeNull();
+  });
+
+  it('zero day → null', () => {
+    expect(buildUpdateCard('P20.6', { due_date: '2026-05-00' })).toBeNull();
+  });
+
+  it('Feb 29 on non-leap year (2026) → null', () => {
+    expect(buildUpdateCard('P20.6', { due_date: '2026-02-29' })).toBeNull();
+  });
+
+  it('Feb 29 on leap year (2024) → emits card (real date)', () => {
+    expect(buildUpdateCard('P20.6', { due_date: '2024-02-29' })).toBe(
+      '✅ *P20.6* atualizada\n━━━━━━━━━━━━━━\n\n• ⏰ Prazo definido: 29/02/2024',
+    );
+  });
+
   it('empty updates → null', () => {
     expect(buildUpdateCard('P11.15', {})).toBeNull();
   });

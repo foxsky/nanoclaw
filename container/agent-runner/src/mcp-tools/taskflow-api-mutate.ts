@@ -308,6 +308,22 @@ export function buildUpdateCard(
     if (typeof dd !== 'string') return null;
     const m = ISO_DATE_RE.exec(dd);
     if (!m) return null;
+    // Shape match is not enough: '2026-13-32' passes the regex but isn't
+    // a real calendar date. engine.update on a no-reminder task can
+    // accept NaN dates (new Date('2026-13-32T12:00:00Z') is NaN; weekend
+    // /holiday check classifies NaN as neither), so without round-trip
+    // validation the card would emit "32/13/2026". Codex gate G4.
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    const d = Number(m[3]);
+    const date = new Date(Date.UTC(y, mo - 1, d));
+    if (
+      date.getUTCFullYear() !== y ||
+      date.getUTCMonth() !== mo - 1 ||
+      date.getUTCDate() !== d
+    ) {
+      return null;
+    }
     lines.push(`• ⏰ Prazo definido: ${m[3]}/${m[2]}/${m[1]}`);
   }
   return [
