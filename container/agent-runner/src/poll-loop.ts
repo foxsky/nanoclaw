@@ -22,7 +22,10 @@ import {
   stripInternalTags,
   type RoutingContext,
 } from './formatter.js';
-import { consumeDeterministicMutationFlag } from './mcp-tools/mutation-dedup.js';
+import {
+  consumeDeterministicMutationFlag,
+  drainDeterministicMutationFlag,
+} from './mcp-tools/mutation-dedup.js';
 import { appendToolEvents, type ToolEvent } from './providers/claude-tool-capture.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 import { TaskflowEngine, normalizePhone, type ReassignResult } from './taskflow-engine.js';
@@ -3704,6 +3707,12 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // Ensure completed even if processQuery ended without a result event
     // (e.g. stream closed unexpectedly).
     markCompleted(processingIds);
+    // Codex P-Audit-3: drain any stale mutation-dedup flag at the
+    // unconditional turn boundary. dispatchResultText only fires on a
+    // `result` event; without this, a mark set by an MCP mutation
+    // followed by a stream error / no-result close would leak into the
+    // next turn and silently suppress its bare-text fallback.
+    drainDeterministicMutationFlag();
     log(`Completed ${ids.length} message(s)`);
   }
 }

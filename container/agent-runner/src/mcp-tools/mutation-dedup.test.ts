@@ -7,10 +7,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 import { closeSessionDb, getInboundDb, initTestSessionDb } from '../db/connection.ts';
 import { getUndeliveredMessages } from '../db/messages-out.ts';
-import { sendMessage } from './core.ts';
+import { sendFile, sendMessage } from './core.ts';
 import {
   __resetDedupForTesting,
   consumeDeterministicMutationFlag,
+  drainDeterministicMutationFlag,
   markDeterministicMutationEmitted,
 } from './mutation-dedup.ts';
 
@@ -158,5 +159,51 @@ describe('mutation-dedup — scope carve-out for explicit agent messaging paths'
     // Flag must still be set — only dispatchResultText (the bare-text
     // fallback site) is allowed to consume it.
     expect(consumeDeterministicMutationFlag()).toBe(true);
+  });
+
+  it('send_file MCP tool also bypasses the flag (mirrors send_message)', async () => {
+    // Seed a real file under /workspace/agent so sendFile's existsSync gate passes.
+    const wsAgent = '/workspace/agent';
+    fs.mkdirSync(wsAgent, { recursive: true });
+    const filePath = path.join(wsAgent, 'dedup-bypass-fixture.txt');
+    fs.writeFileSync(filePath, 'hi');
+    markDeterministicMutationEmitted();
+    try {
+      await sendFile.handler({ to: 'peer', path: filePath, filename: 'fixture.txt' });
+    } finally {
+      fs.rmSync(filePath, { force: true });
+    }
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(consumeDeterministicMutationFlag()).toBe(true);
+  });
+});
+
+describe('mutation-dedup — turn-boundary drain (Codex P-Audit-3 leak prevention)', () => {
+  // If a mutation marks the flag inside an MCP tool and the provider stream
+  // then errors / closes without ever emitting a `result` event,
+  // dispatchResultText (the ONLY consume site) never runs and the flag
+  // leaks into the next turn — silently suppressing that turn's bare-text
+  // fallback. Codex P-Audit-3 (2026-05-21) source-verified the two paths
+  // that miss the consume: poll-loop.ts:3677-3698 (catch → writes error
+  // row) and poll-loop.ts:3704-3706 (no-result branch). `drainDeterministic
+  // MutationFlag` is the unconditional turn-end cleanup wired at line 3706.
+  beforeEach(() => {
+    initTestSessionDb();
+    __resetDedupForTesting();
+  });
+  afterEach(() => {
+    closeSessionDb();
+  });
+
+  it('drain clears a set flag — turn-boundary leak prevention', () => {
+    markDeterministicMutationEmitted();
+    drainDeterministicMutationFlag();
+    expect(consumeDeterministicMutationFlag()).toBe(false);
+  });
+
+  it('drain on an unmarked flag is a no-op', () => {
+    drainDeterministicMutationFlag();
+    expect(consumeDeterministicMutationFlag()).toBe(false);
   });
 });
