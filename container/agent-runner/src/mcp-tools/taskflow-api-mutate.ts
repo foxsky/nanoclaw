@@ -8,7 +8,8 @@
  */
 import type { Database } from 'bun:sqlite';
 import { getTaskflowDb } from '../db/connection.js';
-import { TaskflowEngine } from '../taskflow-engine.js';
+import { parseIsoCalendarDate } from '../iso-date.js';
+import { getBoardTimezone, TaskflowEngine } from '../taskflow-engine.js';
 import type { AdminParams, DependencyParams, HierarchyParams, MoveResult, QueryParams, ReassignParams, ReassignResult, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
 import { emitMutationConfirmation } from './mutation-confirmation.js';
 import { registerTools } from './server.js';
@@ -285,11 +286,8 @@ function buildAtualizadaHeader(taskId: string): string[] {
 }
 
 // BYTE-FAITHFUL mirror of v1's `✅ *id* atualizada` update card.
-// Engine's `changes` strings drift from v1 (double-quoted titles, raw
-// ISO dates) so lines are derived from the `updates` input. Scope:
-// title + due_date only; other keys → null (no fabrication).
+// Scope: title + due_date only; other keys → null (no fabrication).
 const UPDATE_CARD_KEYS = new Set(['title', 'due_date']);
-const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 export function buildUpdateCard(
   taskId: string,
@@ -307,28 +305,14 @@ export function buildUpdateCard(
     lines.push(`• Título alterado para *${title}*`);
   }
   if ('due_date' in updates) {
-    const dd = updates.due_date;
-    if (typeof dd !== 'string') return null;
-    const m = ISO_DATE_RE.exec(dd);
-    if (!m) return null;
-    // Shape match is not enough: '2026-13-32' passes the regex but isn't
-    // a real calendar date. engine.update on a no-reminder task accepts
-    // NaN dates silently, so the card would otherwise emit "32/13/2026".
-    const y = Number(m[1]);
-    const mo = Number(m[2]);
-    const d = Number(m[3]);
-    const date = new Date(Date.UTC(y, mo - 1, d));
-    if (
-      date.getUTCFullYear() !== y ||
-      date.getUTCMonth() !== mo - 1 ||
-      date.getUTCDate() !== d
-    ) {
-      return null;
-    }
-    lines.push(`• ⏰ Prazo definido: ${m[3]}/${m[2]}/${m[1]}`);
+    const parsed = parseIsoCalendarDate(updates.due_date);
+    if (!parsed) return null;
+    lines.push(`• ⏰ Prazo definido: ${pad2(parsed.d)}/${pad2(parsed.mo)}/${parsed.y}`);
   }
   return [...buildAtualizadaHeader(taskId), ...lines].join('\n');
 }
+
+function pad2(n: number): string { return n < 10 ? `0${n}` : `${n}`; }
 
 export function addUpdateFormattedResult<
   T extends { success?: boolean; formatted?: unknown; task_id?: unknown },
@@ -359,12 +343,10 @@ export function addUpdateFormattedResult<
   return result;
 }
 
-// v2-coherent SUBSET of v1's add_subtask card. v1 had multiple templates
-// (Turn 9: whole-line bold + 📋 + (hoje); Turn 39: `↳` + ID-conflict
-// footer). v2 ships the Turn-9 header style + 📁 parent + 📋 sub
-// adicionada + optional `⏰ Prazo: dd/mm/yyyy` line. Relative "(hoje)"
-// tag appended only when caller passes `today` (board-tz YYYY-MM-DD)
-// matching sub.due_date. Other v1 variants intentionally deferred.
+// v2-coherent SUBSET of v1's add_subtask card. Header uses whole-line
+// bold (NOT buildAtualizadaHeader's `*id* atualizada`). The (hoje) tag
+// is appended only when `today` matches `sub.due_date`. v1 template
+// variants and corpus references live in `add-subtask-card.test.ts`.
 export function buildAddSubtaskCard(
   parent: { id: string; title: string },
   sub: { id: string; title: string; due_date?: string },
@@ -375,25 +357,17 @@ export function buildAddSubtaskCard(
   if (typeof sub.id !== 'string' || sub.id.length === 0) return null;
   if (typeof sub.title !== 'string' || sub.title.length === 0) return null;
   const lines = [
-    `✅ *${parent.id} atualizada*`,
+    `✅ *${parent.id} atualizada*`, // whole-line bold — NOT buildAtualizadaHeader
     '━━━━━━━━━━━━━━',
     '',
     `📁 *${parent.id}* — ${parent.title}`,
     `   📋 *${sub.id}* — ${sub.title} adicionada`,
   ];
-  if (typeof sub.due_date === 'string') {
-    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(sub.due_date);
-    if (m) {
-      const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
-      const date = new Date(Date.UTC(y, mo - 1, d));
-      if (
-        date.getUTCFullYear() === y &&
-        date.getUTCMonth() === mo - 1 &&
-        date.getUTCDate() === d
-      ) {
-        const relativeTag = today === sub.due_date ? ' (hoje)' : '';
-        lines.push(`   ⏰ Prazo: ${m[3]}/${m[2]}/${m[1]}${relativeTag}`);
-      }
+  if (sub.due_date !== undefined) {
+    const parsed = parseIsoCalendarDate(sub.due_date);
+    if (parsed) {
+      const relativeTag = today === sub.due_date ? ' (hoje)' : '';
+      lines.push(`   ⏰ Prazo: ${pad2(parsed.d)}/${pad2(parsed.mo)}/${parsed.y}${relativeTag}`);
     }
   }
   return lines.join('\n');
@@ -1422,14 +1396,10 @@ export const apiUpdateTaskTool: McpToolDefinition = {
         confirmed_task_id: confirmedTaskId,
       };
       const result = engine.update(updateParams);
-      // For add_subtask card: compute "today" in the board's local timezone
-      // so the (hoje) relative-date tag matches the user's calendar.
+      // (hoje) tag needs today in board-local tz; only computed when relevant.
       let today: string | undefined;
       if (updates.add_subtask !== undefined) {
-        const tzRow = getTaskflowDb()
-          .prepare(`SELECT timezone FROM board_runtime_config WHERE board_id = ?`)
-          .get(boardId) as { timezone?: string } | undefined;
-        const tz = tzRow?.timezone ?? 'America/Fortaleza';
+        const tz = getBoardTimezone(getTaskflowDb(), boardId);
         today = new Date().toLocaleDateString('en-CA', { timeZone: tz });
       }
       return finalizeMutationResult(addUpdateFormattedResult(result, updates, today));

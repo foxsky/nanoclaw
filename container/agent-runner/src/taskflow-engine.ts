@@ -7,6 +7,7 @@
  * for creating, updating, and managing tasks.
  */
 import { Database } from 'bun:sqlite';
+import { parseIsoCalendarDate } from './iso-date.js';
 import { resolveTimezoneOrUtc } from './tz-util.js';
 
 /* ------------------------------------------------------------------ */
@@ -716,7 +717,7 @@ function utcToLocal(utcIso: string, tz: string): string {
 }
 
 /** Read the board timezone from board_runtime_config. Queried per-call (no stale cache). */
-function getBoardTimezone(db: Database, boardId: string): string {
+export function getBoardTimezone(db: Database, boardId: string): string {
   const row = db.prepare(
     `SELECT timezone FROM board_runtime_config WHERE board_id = ?`,
   ).get(boardId) as { timezone: string } | null;
@@ -6043,16 +6044,8 @@ export class TaskflowEngine {
         if (typeof subInput.title !== 'string' || subInput.title.length === 0) {
           return { success: false, error: 'add_subtask.title: required non-empty string.' };
         }
-        if (subInput.due_date !== undefined) {
-          const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(subInput.due_date);
-          if (!m) {
-            return { success: false, error: `add_subtask.due_date: expected ISO YYYY-MM-DD, got "${subInput.due_date}".` };
-          }
-          const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
-          const date = new Date(Date.UTC(y, mo - 1, d));
-          if (date.getUTCFullYear() !== y || date.getUTCMonth() !== mo - 1 || date.getUTCDate() !== d) {
-            return { success: false, error: `add_subtask.due_date: not a valid calendar date "${subInput.due_date}".` };
-          }
+        if (subInput.due_date !== undefined && parseIsoCalendarDate(subInput.due_date) === null) {
+          return { success: false, error: `add_subtask.due_date: expected valid ISO YYYY-MM-DD, got "${subInput.due_date}".` };
         }
 
         // Cross-board subtask mode gate: when a child board tries to add a subtask
@@ -10023,6 +10016,20 @@ export class TaskflowEngine {
 
           const hsaNow = new Date().toISOString();
           const subtasksToCreate: Array<{ title: string; assignee?: string | null; due_date?: string | null }> = JSON.parse(req.subtasks_json);
+
+          // Re-validate due_date at approval time. The child board engine
+          // validates before INSERTing into subtask_requests, but any other
+          // writer (admin tool, migration) could land garbage; trust is
+          // boundary-shaped here. Mirrors the assignee re-validation pattern
+          // below (Codex review 2026-04-12 finding C).
+          for (const s of subtasksToCreate) {
+            if (s.due_date != null && parseIsoCalendarDate(s.due_date) === null) {
+              return {
+                success: false,
+                error: `subtask request ${req.request_id}: invalid due_date "${s.due_date}" — must be ISO YYYY-MM-DD calendar date.`,
+              };
+            }
+          }
 
           // Look up the source board's group_folder to build the symbolic
           // destination_name 'source-<group_folder>'. group_folder is
