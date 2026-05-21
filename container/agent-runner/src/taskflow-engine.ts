@@ -218,7 +218,7 @@ export interface UpdateParams {
     remove_external_participant?: { external_id?: string; phone?: string; name?: string };
     reinvite_external_participant?: { external_id?: string; phone?: string };
     set_note_status?: { id: number; status: 'open' | 'checked' | 'task_created' | 'inbox_created' | 'dismissed' };
-    add_subtask?: string;         // project only
+    add_subtask?: string | { title: string; due_date?: string };  // project only; object form sets sub.due_date
     rename_subtask?: { id: string; title: string };
     reopen_subtask?: string;      // subtask ID
     assign_subtask?: { id: string; assignee: string };   // assign person to subtask
@@ -244,6 +244,7 @@ export interface UpdateResult extends TaskflowResult {
   };
   notifications?: NotificationEntry[];
   parent_notification?: ParentNotification;
+  subtask?: { id: string; title: string; due_date?: string };
 }
 
 export interface DependencyParams {
@@ -3713,6 +3714,7 @@ export class TaskflowEngine {
     boardId?: string;
     subtaskId: string; title: string; assignee: string | null;
     column: string; parentTaskId: string; priority: string | null;
+    dueDate?: string | null;
     senderName: string; now: string;
   }): void {
     const boardId = opts.boardId ?? this.boardId;
@@ -3724,13 +3726,13 @@ export class TaskflowEngine {
       .prepare(
         `INSERT INTO tasks (
           id, board_id, type, title, assignee, column, requires_close_approval,
-          parent_task_id, priority, labels,
+          parent_task_id, priority, due_date, labels,
           child_exec_enabled, child_exec_board_id, child_exec_person_id,
           _last_mutation, created_at, updated_at
-        ) VALUES (?, ?, 'simple', ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, 'simple', ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?)`,
       )
       .run(opts.subtaskId, boardId, opts.title, opts.assignee, opts.column, requiresCloseApproval,
-        opts.parentTaskId, opts.priority,
+        opts.parentTaskId, opts.priority, opts.dueDate ?? null,
         childLink.child_exec_enabled, childLink.child_exec_board_id, childLink.child_exec_person_id,
         subMutation, opts.now, opts.now);
     this.recordHistory(opts.subtaskId, 'created', opts.senderName,
@@ -6026,9 +6028,28 @@ export class TaskflowEngine {
       }
 
       /* Add subtask (project only) — creates a real task row */
+      let createdSubtask: { id: string; title: string; due_date?: string } | undefined;
       if (updates.add_subtask !== undefined) {
         if (task.type !== 'project') {
           return { success: false, error: 'Subtasks can only be added to project tasks.' };
+        }
+        // Normalize string/object input. Object form sets sub.due_date on the new row.
+        const rawSub = updates.add_subtask;
+        const subInput: { title: string; due_date?: string } =
+          typeof rawSub === 'string' ? { title: rawSub } : { title: rawSub.title, due_date: rawSub.due_date };
+        if (typeof subInput.title !== 'string' || subInput.title.length === 0) {
+          return { success: false, error: 'add_subtask.title: required non-empty string.' };
+        }
+        if (subInput.due_date !== undefined) {
+          const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(subInput.due_date);
+          if (!m) {
+            return { success: false, error: `add_subtask.due_date: expected ISO YYYY-MM-DD, got "${subInput.due_date}".` };
+          }
+          const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+          const date = new Date(Date.UTC(y, mo - 1, d));
+          if (date.getUTCFullYear() !== y || date.getUTCMonth() !== mo - 1 || date.getUTCDate() !== d) {
+            return { success: false, error: `add_subtask.due_date: not a valid calendar date "${subInput.due_date}".` };
+          }
         }
 
         // Cross-board subtask mode gate: when a child board tries to add a subtask
@@ -6075,7 +6096,7 @@ export class TaskflowEngine {
               ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
             `).run(
               requestId, this.boardId, owningBoardId, task.id,
-              JSON.stringify([{ title: updates.add_subtask, assignee: task.assignee ?? null }]),
+              JSON.stringify([{ title: subInput.title, assignee: task.assignee ?? null }]),
               params.sender_name, senderPerson?.person_id ?? null,
               now,
             );
@@ -6090,7 +6111,7 @@ export class TaskflowEngine {
               '',
               `Quadro solicitante: ${sourceLabel}`,
               `Projeto pai: *${task.id}* — ${task.title}`,
-              `Subtarefa proposta: "${updates.add_subtask}"`,
+              `Subtarefa proposta: "${subInput.title}"`,
               `Responsável proposto: ${task.assignee ?? 'não definido'}`,
               `Solicitado por: ${params.sender_name}`,
               `ID: \`${requestId}\``,
@@ -6117,15 +6138,19 @@ export class TaskflowEngine {
         const subColumn = task.assignee ? 'next_action' : 'inbox';
         this.insertSubtaskRow({
           boardId: taskBoardId,
-          subtaskId, title: updates.add_subtask, assignee: task.assignee, column: subColumn,
-          parentTaskId: task.id, priority: task.priority ?? null, senderName: params.sender_name, now,
+          subtaskId, title: subInput.title, assignee: task.assignee, column: subColumn,
+          parentTaskId: task.id, priority: task.priority ?? null,
+          dueDate: subInput.due_date, senderName: params.sender_name, now,
         });
-        changes.push(`Subtarefa ${subtaskId} "${updates.add_subtask}" adicionada`);
+        changes.push(`Subtarefa ${subtaskId} "${subInput.title}" adicionada`);
+        createdSubtask = subInput.due_date !== undefined
+          ? { id: subtaskId, title: subInput.title, due_date: subInput.due_date }
+          : { id: subtaskId, title: subInput.title };
 
         // Notify subtask assignee (inherited from project)
         if (task.assignee && senderPersonId && task.assignee !== senderPersonId) {
           const notif = this.buildSubtaskAssignNotification(
-            { id: subtaskId, title: updates.add_subtask },
+            { id: subtaskId, title: subInput.title },
             { id: task.id, title: task.title },
             task.assignee, senderPersonId, taskBoardId,
           );
@@ -6312,6 +6337,7 @@ export class TaskflowEngine {
       };
       if (notifications.length > 0) result.notifications = notifications;
       if (parentNotification) result.parent_notification = parentNotification;
+      if (createdSubtask) result.subtask = createdSubtask;
 
       return result;
       })(); // end transaction

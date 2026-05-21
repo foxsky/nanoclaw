@@ -332,13 +332,71 @@ export function buildUpdateCard(
 
 export function addUpdateFormattedResult<
   T extends { success?: boolean; formatted?: unknown; task_id?: unknown },
->(result: T, updates: Record<string, unknown>): T {
+>(result: T, updates: Record<string, unknown>, today?: string): T {
   if (!result.success || result.formatted) return result;
   const taskId = typeof result.task_id === 'string' ? result.task_id : '';
   if (!taskId) return result;
-  const card = buildUpdateCard(taskId, updates);
-  if (!card) return result;
-  return { ...result, formatted: card };
+  // Title/due_date update card.
+  const updateCard = buildUpdateCard(taskId, updates);
+  if (updateCard) return { ...result, formatted: updateCard };
+  // add_subtask card. Scope: updates = {add_subtask only}; multi-key
+  // {add_subtask, due_date} returns null because the date applies to the
+  // PARENT under engine.update semantics, not the sub (no fabrication).
+  const keys = Object.keys(updates);
+  if (keys.length === 1 && keys[0] === 'add_subtask') {
+    const rawTitle = (result as { title?: unknown }).title;
+    const parentTitle = typeof rawTitle === 'string' ? rawTitle : '';
+    const sub = (result as { subtask?: unknown }).subtask as
+      | { id: unknown; title: unknown; due_date?: unknown }
+      | undefined;
+    if (parentTitle && sub && typeof sub.id === 'string' && typeof sub.title === 'string') {
+      const subArg: { id: string; title: string; due_date?: string } = { id: sub.id, title: sub.title };
+      if (typeof sub.due_date === 'string') subArg.due_date = sub.due_date;
+      const card = buildAddSubtaskCard({ id: taskId, title: parentTitle }, subArg, today);
+      if (card) return { ...result, formatted: card };
+    }
+  }
+  return result;
+}
+
+// v2-coherent SUBSET of v1's add_subtask card. v1 had multiple templates
+// (Turn 9: whole-line bold + 📋 + (hoje); Turn 39: `↳` + ID-conflict
+// footer). v2 ships the Turn-9 header style + 📁 parent + 📋 sub
+// adicionada + optional `⏰ Prazo: dd/mm/yyyy` line. Relative "(hoje)"
+// tag appended only when caller passes `today` (board-tz YYYY-MM-DD)
+// matching sub.due_date. Other v1 variants intentionally deferred.
+export function buildAddSubtaskCard(
+  parent: { id: string; title: string },
+  sub: { id: string; title: string; due_date?: string },
+  today?: string,
+): string | null {
+  if (typeof parent.id !== 'string' || parent.id.length === 0) return null;
+  if (typeof parent.title !== 'string' || parent.title.length === 0) return null;
+  if (typeof sub.id !== 'string' || sub.id.length === 0) return null;
+  if (typeof sub.title !== 'string' || sub.title.length === 0) return null;
+  const lines = [
+    `✅ *${parent.id} atualizada*`,
+    '━━━━━━━━━━━━━━',
+    '',
+    `📁 *${parent.id}* — ${parent.title}`,
+    `   📋 *${sub.id}* — ${sub.title} adicionada`,
+  ];
+  if (typeof sub.due_date === 'string') {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(sub.due_date);
+    if (m) {
+      const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+      const date = new Date(Date.UTC(y, mo - 1, d));
+      if (
+        date.getUTCFullYear() === y &&
+        date.getUTCMonth() === mo - 1 &&
+        date.getUTCDate() === d
+      ) {
+        const relativeTag = today === sub.due_date ? ' (hoje)' : '';
+        lines.push(`   ⏰ Prazo: ${m[3]}/${m[2]}/${m[1]}${relativeTag}`);
+      }
+    }
+  }
+  return lines.join('\n');
 }
 
 // BYTE-FAITHFUL mirror of v1's add_note "atualizada" card. Scope: simple
@@ -1314,7 +1372,7 @@ export const apiUpdateTaskTool: McpToolDefinition = {
   tool: {
     name: 'api_update_task',
     description:
-      "Apply a v1-shape composite update to a task. The `updates` object accepts any field engine.update's UpdateParams.updates supports: title, priority, requires_close_approval, due_date, description, next_action, add_label, remove_label, add_note, edit_note ({id, text}), remove_note, parent_note_id, scheduled_at, participant ops, set_note_status, subtask ops (add/rename/reopen/assign/unassign), recurrence ops. Engine validates per-sub-key. Use updates.add_subtask for explicit subtask/step wording like \"adicionar etapa P3: X\" and for named-project requests like \"Projeto de Operação da SECTI adicionar tarefa X\". Do not use this for explicit project-ID task-add commands like \"adicionar em P3 a tarefa X\"; those mirror v1 as api_create_task(type=simple) followed by api_admin(reparent_task).",
+      "Apply a v1-shape composite update to a task. The `updates` object accepts any field engine.update's UpdateParams.updates supports: title, priority, requires_close_approval, due_date, description, next_action, add_label, remove_label, add_note, edit_note ({id, text}), remove_note, parent_note_id, scheduled_at, participant ops, set_note_status, subtask ops (add/rename/reopen/assign/unassign), recurrence ops. Engine validates per-sub-key. Use updates.add_subtask for explicit subtask/step wording like \"adicionar etapa P3: X\" and for named-project requests like \"Projeto de Operação da SECTI adicionar tarefa X\". updates.add_subtask accepts either a string title or an object `{title, due_date?}` where due_date is ISO YYYY-MM-DD applied to the new subtask. Do not use this for explicit project-ID task-add commands like \"adicionar em P3 a tarefa X\"; those mirror v1 as api_create_task(type=simple) followed by api_admin(reparent_task).",
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -1364,7 +1422,17 @@ export const apiUpdateTaskTool: McpToolDefinition = {
         confirmed_task_id: confirmedTaskId,
       };
       const result = engine.update(updateParams);
-      return finalizeMutationResult(addUpdateFormattedResult(result, updates));
+      // For add_subtask card: compute "today" in the board's local timezone
+      // so the (hoje) relative-date tag matches the user's calendar.
+      let today: string | undefined;
+      if (updates.add_subtask !== undefined) {
+        const tzRow = getTaskflowDb()
+          .prepare(`SELECT timezone FROM board_runtime_config WHERE board_id = ?`)
+          .get(boardId) as { timezone?: string } | undefined;
+        const tz = tzRow?.timezone ?? 'America/Fortaleza';
+        today = new Date().toLocaleDateString('en-CA', { timeZone: tz });
+      }
+      return finalizeMutationResult(addUpdateFormattedResult(result, updates, today));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });
