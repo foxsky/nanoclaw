@@ -6035,6 +6035,9 @@ export class TaskflowEngine {
         }
         // Normalize string/object input. Object form sets sub.due_date on the new row.
         const rawSub = updates.add_subtask;
+        if (rawSub === null || (typeof rawSub !== 'string' && typeof rawSub !== 'object')) {
+          return { success: false, error: 'add_subtask: expected string or {title, due_date?} object.' };
+        }
         const subInput: { title: string; due_date?: string } =
           typeof rawSub === 'string' ? { title: rawSub } : { title: rawSub.title, due_date: rawSub.due_date };
         if (typeof subInput.title !== 'string' || subInput.title.length === 0) {
@@ -6096,7 +6099,7 @@ export class TaskflowEngine {
               ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
             `).run(
               requestId, this.boardId, owningBoardId, task.id,
-              JSON.stringify([{ title: subInput.title, assignee: task.assignee ?? null }]),
+              JSON.stringify([{ title: subInput.title, assignee: task.assignee ?? null, due_date: subInput.due_date ?? null }]),
               params.sender_name, senderPerson?.person_id ?? null,
               now,
             );
@@ -10019,7 +10022,7 @@ export class TaskflowEngine {
           }
 
           const hsaNow = new Date().toISOString();
-          const subtasksToCreate: Array<{ title: string; assignee?: string | null }> = JSON.parse(req.subtasks_json);
+          const subtasksToCreate: Array<{ title: string; assignee?: string | null; due_date?: string | null }> = JSON.parse(req.subtasks_json);
 
           // Look up the source board's group_folder to build the symbolic
           // destination_name 'source-<group_folder>'. group_folder is
@@ -10095,6 +10098,7 @@ export class TaskflowEngine {
               column: subColumn,
               parentTaskId: parentTask.id,
               priority: parentTask.priority ?? null,
+              dueDate: s.due_date ?? null,
               senderName: params.sender_name,
               now: hsaNow,
             });
