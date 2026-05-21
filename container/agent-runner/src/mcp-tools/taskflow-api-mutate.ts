@@ -305,14 +305,12 @@ export function buildUpdateCard(
     lines.push(`• Título alterado para *${title}*`);
   }
   if ('due_date' in updates) {
-    const parsed = parseIsoCalendarDate(updates.due_date);
-    if (!parsed) return null;
-    lines.push(`• ⏰ Prazo definido: ${pad2(parsed.d)}/${pad2(parsed.mo)}/${parsed.y}`);
+    const iso = parseIsoCalendarDate(updates.due_date);
+    if (!iso) return null;
+    lines.push(`• ⏰ Prazo definido: ${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`);
   }
   return [...buildAtualizadaHeader(taskId), ...lines].join('\n');
 }
-
-function pad2(n: number): string { return n < 10 ? `0${n}` : `${n}`; }
 
 export function addUpdateFormattedResult<
   T extends { success?: boolean; formatted?: unknown; task_id?: unknown },
@@ -364,10 +362,10 @@ export function buildAddSubtaskCard(
     `   📋 *${sub.id}* — ${sub.title} adicionada`,
   ];
   if (sub.due_date !== undefined) {
-    const parsed = parseIsoCalendarDate(sub.due_date);
-    if (parsed) {
-      const relativeTag = today === sub.due_date ? ' (hoje)' : '';
-      lines.push(`   ⏰ Prazo: ${pad2(parsed.d)}/${pad2(parsed.mo)}/${parsed.y}${relativeTag}`);
+    const iso = parseIsoCalendarDate(sub.due_date);
+    if (iso) {
+      const relativeTag = today === iso ? ' (hoje)' : '';
+      lines.push(`   ⏰ Prazo: ${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}${relativeTag}`);
     }
   }
   return lines.join('\n');

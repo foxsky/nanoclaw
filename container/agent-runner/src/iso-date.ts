@@ -7,9 +7,7 @@
  */
 const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
-export function parseIsoCalendarDate(
-  s: unknown,
-): { y: number; mo: number; d: number } | null {
+export function parseIsoCalendarDate(s: unknown): string | null {
   if (typeof s !== 'string') return null;
   const m = ISO_DATE_RE.exec(s);
   if (!m) return null;
@@ -24,5 +22,5 @@ export function parseIsoCalendarDate(
   ) {
     return null;
   }
-  return { y, mo, d };
+  return s;
 }
