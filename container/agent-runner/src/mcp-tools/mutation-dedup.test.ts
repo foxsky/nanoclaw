@@ -5,7 +5,12 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
-import { closeSessionDb, getInboundDb, initTestSessionDb } from '../db/connection.ts';
+import {
+  __setOutboundDbUnavailableForTesting,
+  closeSessionDb,
+  getInboundDb,
+  initTestSessionDb,
+} from '../db/connection.ts';
 import { getUndeliveredMessages } from '../db/messages-out.ts';
 import { sendFile, sendMessage } from './core.ts';
 import {
@@ -54,7 +59,9 @@ describe('mutation-dedup — same-process SQLite contract', () => {
   });
 
   it('best-effort: mark/consume do NOT throw when the outbound DB is unavailable', () => {
-    closeSessionDb(); // teardown outbound singleton — simulates "no /workspace/outbound.db"
+    // closeSessionDb() alone would not work — getOutboundDb() lazily
+    // re-creates a file-backed DB on any host with a writable /workspace.
+    __setOutboundDbUnavailableForTesting();
     expect(() => markDeterministicMutationEmitted()).not.toThrow();
     expect(consumeDeterministicMutationFlag()).toBe(false);
     initTestSessionDb(); // restore for afterEach

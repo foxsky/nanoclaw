@@ -309,6 +309,25 @@ export function closeSessionDb(): void {
 }
 
 /**
+ * Test-only: force getOutboundDb() to return an unusable handle so callers
+ * exercise their best-effort error paths deterministically.
+ *
+ * closeSessionDb() alone CANNOT simulate "outbound DB unavailable":
+ * getOutboundDb() lazily re-creates a file-backed DB at
+ * DEFAULT_OUTBOUND_PATH, which succeeds on any host with a writable
+ * /workspace. This installs a CLOSED Database as the singleton — it is
+ * still truthy, so getOutboundDb()'s `if (!_outbound)` re-create guard is
+ * skipped and the closed handle is returned; any prepare()/exec() on it
+ * throws. Pair with initTestSessionDb() afterward to restore.
+ */
+export function __setOutboundDbUnavailableForTesting(): void {
+  _outbound?.close();
+  const closed = new Database(':memory:');
+  closed.close();
+  _outbound = closed;
+}
+
+/**
  * @deprecated Use getInboundDb() / getOutboundDb() instead.
  * Kept for backward compatibility during migration.
  */
