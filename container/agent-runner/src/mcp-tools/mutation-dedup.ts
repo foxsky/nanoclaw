@@ -16,6 +16,17 @@
  * needed at the call sites). Best-effort try/catch matches the
  * surrounding emit-path philosophy — a dedup-storage failure must
  * NEVER fail the mutation that already succeeded.
+ *
+ * SCOPE — which emission paths the flag suppresses (Codex P-Audit-2 closure):
+ *   - SUPPRESSED: poll-loop `dispatchResultText` bare-text fallback (the
+ *     auto-route of unwrapped final text to a sole destination — redundant
+ *     model narrative after the deterministic v1 card).
+ *   - BYPASS (intentional): `<message to="…">` blocks in the model's final
+ *     text, `send_message` / `send_file` MCP tools, and any other direct
+ *     `writeMessageOut` caller. These represent the agent's STATED intent
+ *     and never consult the flag. Codex P-Audit-2: extending suppression
+ *     to these paths would silently swallow explicit agent messages —
+ *     out of scope, and locked down by mutation-dedup.test.ts.
  */
 import { getOutboundDb } from '../db/connection.js';
 

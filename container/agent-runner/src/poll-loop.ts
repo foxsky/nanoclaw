@@ -3950,9 +3950,9 @@ function dispatchResultText(text: string, routing: RoutingContext): void {
   // P4). If a TaskFlow mutation card was already emitted this turn, the
   // model's same-turn bare-text final reply is redundant (v1 sent only
   // the card). Consume regardless of whether bare-text would fire, so
-  // the flag never leaks across turns. Explicit `<message to=…>` blocks
-  // are out of scope here — they address other destinations, not the
-  // current conversation.
+  // the flag never leaks across turns. Scope is bare-text only: explicit
+  // `<message to=…>` blocks below represent the agent's stated intent
+  // and dispatch unconditionally. See mutation-dedup.ts SCOPE section.
   const suppressBareFallback = consumeDeterministicMutationFlag();
 
   const MESSAGE_RE = /<message\s+to="([^"]+)"\s*>([\s\S]*?)<\/message>/g;

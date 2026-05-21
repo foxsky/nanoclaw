@@ -5,7 +5,9 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
-import { closeSessionDb, initTestSessionDb } from '../db/connection.ts';
+import { closeSessionDb, getInboundDb, initTestSessionDb } from '../db/connection.ts';
+import { getUndeliveredMessages } from '../db/messages-out.ts';
+import { sendMessage } from './core.ts';
 import {
   __resetDedupForTesting,
   consumeDeterministicMutationFlag,
@@ -111,5 +113,50 @@ describe('mutation-dedup — CROSS-INSTANCE (cross-process analog)', () => {
       connA.close();
       connB.close();
     }
+  });
+});
+
+describe('mutation-dedup — scope carve-out for explicit agent messaging paths', () => {
+  // The Codex P4 dedup primitive intentionally targets ONLY the bare-text
+  // fallback in poll-loop's `dispatchResultText` — the case where the model
+  // emits no <message to=…> block and no send_message tool call, and the
+  // single configured destination would otherwise auto-receive the bare
+  // narrative reply (redundant with the deterministic v1-card already
+  // emitted). Other emission paths represent the agent's STATED intent and
+  // must NOT be suppressed:
+  //   - `send_message` / `send_file` MCP tools → direct writeMessageOut,
+  //     never call consumeDeterministicMutationFlag.
+  //   - `<message to="name">…</message>` blocks in final text →
+  //     dispatchResultText processes them BEFORE the bare-text branch and
+  //     never gates them on the flag.
+  // Codex P-Audit-2 (2026-05-19) acknowledged these as out-of-scope; this
+  // test locks the structural carve-out so a future "extend dedup to all
+  // emissions" refactor cannot silently swallow agent-explicit messages.
+  beforeEach(() => {
+    initTestSessionDb();
+    __resetDedupForTesting();
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES ('peer', 'Peer', 'agent', NULL, NULL, 'ag-peer')`,
+      )
+      .run();
+  });
+  afterEach(() => {
+    closeSessionDb();
+  });
+
+  it('send_message MCP tool emits even when the dedup flag is set, and does NOT consume the flag', async () => {
+    markDeterministicMutationEmitted();
+
+    await sendMessage.handler({ to: 'peer', text: 'explicit reply' });
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0].content)).toEqual({ text: 'explicit reply' });
+
+    // Flag must still be set — only dispatchResultText (the bare-text
+    // fallback site) is allowed to consume it.
+    expect(consumeDeterministicMutationFlag()).toBe(true);
   });
 });
