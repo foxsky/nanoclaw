@@ -277,14 +277,17 @@ export function buildCreateCard(data: {
   ].join('\n');
 }
 
+// Shared header for v1's "atualizada" card variants (update, add_note).
+// Extracted because byte-faithfulness keeps these three lines identical
+// across builders; each variant appends its own bullet lines.
+function buildAtualizadaHeader(taskId: string): string[] {
+  return [`✅ *${taskId}* atualizada`, '━━━━━━━━━━━━━━', ''];
+}
+
 // BYTE-FAITHFUL mirror of v1's `✅ *id* atualizada` update card.
-// Engine's `changes` strings drifted from v1 (engine line 5515 emits
-// double-quoted titles; line 5574 emits raw ISO dates) so we derive
-// lines from the `updates` input directly, not from `result.changes`.
-// Scope: title + due_date only. Any other key (priority, description,
-// labels, notes, subtasks, recurrence, participants, …) → null;
-// covered by future scoped follow-ups. v1 corpus exemplars: seci
-// Turn 2 (title) + Turn 38 (due_date).
+// Engine's `changes` strings drift from v1 (double-quoted titles, raw
+// ISO dates) so lines are derived from the `updates` input. Scope:
+// title + due_date only; other keys → null (no fabrication).
 const UPDATE_CARD_KEYS = new Set(['title', 'due_date']);
 const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
@@ -309,10 +312,8 @@ export function buildUpdateCard(
     const m = ISO_DATE_RE.exec(dd);
     if (!m) return null;
     // Shape match is not enough: '2026-13-32' passes the regex but isn't
-    // a real calendar date. engine.update on a no-reminder task can
-    // accept NaN dates (new Date('2026-13-32T12:00:00Z') is NaN; weekend
-    // /holiday check classifies NaN as neither), so without round-trip
-    // validation the card would emit "32/13/2026". Codex gate G4.
+    // a real calendar date. engine.update on a no-reminder task accepts
+    // NaN dates silently, so the card would otherwise emit "32/13/2026".
     const y = Number(m[1]);
     const mo = Number(m[2]);
     const d = Number(m[3]);
@@ -326,12 +327,7 @@ export function buildUpdateCard(
     }
     lines.push(`• ⏰ Prazo definido: ${m[3]}/${m[2]}/${m[1]}`);
   }
-  return [
-    `✅ *${taskId}* atualizada`,
-    '━━━━━━━━━━━━━━',
-    '',
-    ...lines,
-  ].join('\n');
+  return [...buildAtualizadaHeader(taskId), ...lines].join('\n');
 }
 
 export function addUpdateFormattedResult<
@@ -341,6 +337,34 @@ export function addUpdateFormattedResult<
   const taskId = typeof result.task_id === 'string' ? result.task_id : '';
   if (!taskId) return result;
   const card = buildUpdateCard(taskId, updates);
+  if (!card) return result;
+  return { ...result, formatted: card };
+}
+
+// BYTE-FAITHFUL mirror of v1's add_note "atualizada" card. Scope: simple
+// add_note only (parent_note_id reply has no corpus exemplar; no fabrication).
+export function buildNoteCard(taskId: string, noteText: string): string | null {
+  if (typeof taskId !== 'string' || taskId.length === 0) return null;
+  if (typeof noteText !== 'string' || noteText.length === 0) return null;
+  return [...buildAtualizadaHeader(taskId), `• Nota: ${noteText}`].join('\n');
+}
+
+export function addNoteFormattedResult<
+  T extends { success?: boolean; formatted?: unknown; changes?: unknown },
+>(
+  result: T,
+  args: { task_id: string; text: string; parent_note_id?: number },
+): T {
+  if (!result.success || result.formatted) return result;
+  if (args.parent_note_id !== undefined) return result;
+  // Engine signals dedup via changes: ['Nota já existente: <text>'] with
+  // success:true; emitting a fresh-registration card here would tell the
+  // user the note was added when it was actually dropped.
+  const changes = Array.isArray(result.changes) ? result.changes : [];
+  if (typeof changes[0] === 'string' && changes[0].startsWith('Nota já existente:')) {
+    return result;
+  }
+  const card = buildNoteCard(args.task_id, args.text);
   if (!card) return result;
   return { ...result, formatted: card };
 }

@@ -1,7 +1,9 @@
 /** Three note-mutation MCP tools — trivial delegates to engine methods. */
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
+import { emitMutationConfirmation } from './mutation-confirmation.js';
 import { registerTools } from './server.js';
+import { addNoteFormattedResult } from './taskflow-api-mutate.js';
 import { normalizeAgentIds } from './taskflow-helpers.js';
 import type { McpToolDefinition } from './types.js';
 import { err, jsonResponse, parseTaskActorArgs } from './util.js';
@@ -45,7 +47,15 @@ export const apiTaskAddNoteTool: McpToolDefinition = {
       text: args.text,
       parent_note_id: parentNoteId,
     });
-    return jsonResponse(result);
+    // engine.apiAddNote returns {success, data: serializedTask, changes}, so
+    // emission bypasses finalizeMutationResult to avoid double-nesting `data`.
+    const finalResult = addNoteFormattedResult(result, {
+      task_id: parsed.taskId,
+      text: args.text,
+      parent_note_id: parentNoteId,
+    });
+    emitMutationConfirmation(finalResult);
+    return jsonResponse(finalResult);
   },
 };
 

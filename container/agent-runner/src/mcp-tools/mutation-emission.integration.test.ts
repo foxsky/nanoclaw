@@ -98,6 +98,39 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     );
   });
 
+  it('api_task_add_note emits EXACTLY ONE row with the byte-exact v1 "atualizada • Nota: <text>" card', async () => {
+    setupEngineDb(BOARD, { withBoardAdmins: true });
+    const { apiCreateSimpleTaskTool } = await import('./taskflow-api-mutate.ts');
+    const { apiTaskAddNoteTool } = await import('./taskflow-api-notes.ts');
+    const taskId = JSON.parse(
+      (
+        await apiCreateSimpleTaskTool.handler({
+          board_id: BOARD, title: 'Solicitar acesso', sender_name: 'alice',
+        })
+      ).content[0].text,
+    ).data.id;
+
+    expect((getOutboundDb().prepare('SELECT count(*) AS n FROM messages_out').get() as { n: number }).n).toBe(0);
+
+    const result = JSON.parse(
+      (
+        await apiTaskAddNoteTool.handler({
+          board_id: BOARD, task_id: taskId, sender_name: 'alice', text: 'Demanda no chamado CAST 38876',
+        })
+      ).content[0].text,
+    );
+    expect(result.success).toBe(true);
+
+    const rows = getOutboundDb()
+      .prepare('SELECT kind, content FROM messages_out')
+      .all() as Array<{ kind: string; content: string }>;
+    expect(rows.length).toBe(1);
+    expect(rows[0].kind).toBe('chat');
+    expect(JSON.parse(rows[0].content).text).toBe(
+      `✅ *${taskId}* atualizada\n━━━━━━━━━━━━━━\n\n• Nota: Demanda no chamado CAST 38876`,
+    );
+  });
+
   it('api_reassign emits EXACTLY ONE row with the v1-canonicalized "Reatribuída" card (P1 + P5 combined)', async () => {
     const db = setupEngineDb(BOARD, { withBoardAdmins: true });
     const { apiCreateSimpleTaskTool, apiReassignTool } = await import('./taskflow-api-mutate.ts');
