@@ -73,44 +73,61 @@ export function getInboundDb(): Database {
   return _inbound;
 }
 
+/** Open + schema-prepare an outbound DB at the given path. Shared by
+ *  getOutboundDb() (fixed mount) and initOutboundDb() (caller path). */
+function openOutboundDb(path: string): Database {
+  const db = new Database(path);
+  db.exec('PRAGMA journal_mode = DELETE');
+  db.exec('PRAGMA busy_timeout = 5000');
+  db.exec('PRAGMA foreign_keys = ON');
+  // Lightweight forward-compat: session_state was added after the initial
+  // v2 schema, so older session DBs don't have it. Create it on demand
+  // instead of requiring a formal migration pass. Also handle the case
+  // where an earlier revision of this table existed without updated_at —
+  // ALTER TABLE to add any missing columns.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_state (
+      key        TEXT PRIMARY KEY,
+      value      TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+  const cols = new Set(
+    (db.prepare("PRAGMA table_info('session_state')").all() as Array<{ name: string }>).map((c) => c.name),
+  );
+  if (!cols.has('updated_at')) {
+    db.exec(`ALTER TABLE session_state ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`);
+  }
+  // container_state: tracks the current tool in flight (if any) so the host
+  // sweep can widen its stuck tolerance when Bash is running with a user-
+  // declared long timeout. Forward-compat for older outbound.db files.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS container_state (
+      id                       INTEGER PRIMARY KEY CHECK (id = 1),
+      current_tool             TEXT,
+      tool_declared_timeout_ms INTEGER,
+      tool_started_at          TEXT,
+      updated_at               TEXT NOT NULL
+    );
+  `);
+  return db;
+}
+
 /** Outbound DB — container owns this file (sole writer). */
 export function getOutboundDb(): Database {
   if (!_outbound) {
-    _outbound = new Database(DEFAULT_OUTBOUND_PATH);
-    _outbound.exec('PRAGMA journal_mode = DELETE');
-    _outbound.exec('PRAGMA busy_timeout = 5000');
-    _outbound.exec('PRAGMA foreign_keys = ON');
-    // Lightweight forward-compat: session_state was added after the initial
-    // v2 schema, so older session DBs don't have it. Create it on demand
-    // instead of requiring a formal migration pass. Also handle the case
-    // where an earlier revision of this table existed without updated_at —
-    // ALTER TABLE to add any missing columns.
-    _outbound.exec(`
-      CREATE TABLE IF NOT EXISTS session_state (
-        key        TEXT PRIMARY KEY,
-        value      TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-    `);
-    const cols = new Set(
-      (_outbound.prepare("PRAGMA table_info('session_state')").all() as Array<{ name: string }>).map((c) => c.name),
-    );
-    if (!cols.has('updated_at')) {
-      _outbound.exec(`ALTER TABLE session_state ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`);
-    }
-    // container_state: tracks the current tool in flight (if any) so the host
-    // sweep can widen its stuck tolerance when Bash is running with a user-
-    // declared long timeout. Forward-compat for older outbound.db files.
-    _outbound.exec(`
-      CREATE TABLE IF NOT EXISTS container_state (
-        id                       INTEGER PRIMARY KEY CHECK (id = 1),
-        current_tool             TEXT,
-        tool_declared_timeout_ms INTEGER,
-        tool_started_at          TEXT,
-        updated_at               TEXT NOT NULL
-      );
-    `);
+    _outbound = openOutboundDb(DEFAULT_OUTBOUND_PATH);
   }
+  return _outbound;
+}
+
+/** Open the outbound DB at a caller-supplied path. Mirrors initTaskflowDb —
+ *  used by cross-process tests that need a real file-backed outbound.db
+ *  outside the fixed /workspace mount. Call once before the first
+ *  getOutboundDb(). */
+export function initOutboundDb(path: string): Database {
+  _outbound?.close();
+  _outbound = openOutboundDb(path);
   return _outbound;
 }
 

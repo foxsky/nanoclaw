@@ -1,4 +1,3 @@
-import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +8,7 @@ import {
   __setOutboundDbUnavailableForTesting,
   closeSessionDb,
   getInboundDb,
+  initOutboundDb,
   initTestSessionDb,
 } from '../db/connection.ts';
 import { getUndeliveredMessages } from '../db/messages-out.ts';
@@ -68,59 +68,42 @@ describe('mutation-dedup — same-process SQLite contract', () => {
   });
 });
 
-describe('mutation-dedup — CROSS-INSTANCE (cross-process analog)', () => {
-  // Codex gate P-Audit-2: prior in-memory module flag was a prod no-op
-  // because the MCP subprocess and the main process don't share JS
-  // memory. The fix moves state to SQLite session_state. This test
-  // opens TWO separate `Database` instances to the same file (closest
-  // in-test analog to two separate processes opening
-  // /workspace/outbound.db) and verifies the mark in one instance is
-  // observed by the consume in the other.
+describe('mutation-dedup — CROSS-PROCESS (real Bun.spawn child)', () => {
+  // Codex gate P-Audit-2: the prior in-memory module flag was a prod
+  // no-op because the MCP server runs as a SEPARATE `bun` subprocess
+  // with its own JS heap — module memory does not propagate. The fix
+  // moved state to outbound.db `session_state`. This spawns a genuinely
+  // separate process that calls the REAL markDeterministicMutationEmitted();
+  // the parent then calls the REAL consumeDeterministicMutationFlag() —
+  // proving the SQLite-file primitive works across true process
+  // boundaries, where the module boolean failed. (Supersedes the earlier
+  // two-Database-objects-in-one-process analog.)
   let tmpDir: string;
   let dbPath: string;
+  const CHILD = path.join(import.meta.dir, 'mutation-dedup-mark-child.ts');
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mutation-dedup-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mutation-dedup-xproc-'));
     dbPath = path.join(tmpDir, 'outbound.db');
-    // Bootstrap session_state in the file-backed DB.
-    const seed = new Database(dbPath);
-    seed.exec(
-      `CREATE TABLE session_state (
-         key TEXT PRIMARY KEY,
-         value TEXT NOT NULL,
-         updated_at TEXT NOT NULL
-       )`,
-    );
-    seed.close();
   });
   afterEach(() => {
+    closeSessionDb();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('mark in connection A is observed (read-and-clear) by connection B', () => {
-    const connA = new Database(dbPath); // simulates MCP subprocess
-    const connB = new Database(dbPath); // simulates poll-loop main
-    try {
-      connA
-        .prepare(
-          `INSERT INTO session_state (key, value, updated_at) VALUES (?, '1', ?)
-           ON CONFLICT (key) DO UPDATE SET value='1', updated_at=excluded.updated_at`,
-        )
-        .run('mutation_dedup_flag', new Date().toISOString());
-      const row = connB
-        .prepare(`SELECT value FROM session_state WHERE key = ?`)
-        .get('mutation_dedup_flag') as { value: string } | undefined;
-      expect(row?.value).toBe('1');
-      connB.prepare(`DELETE FROM session_state WHERE key = ?`).run('mutation_dedup_flag');
-      const after = connA
-        .prepare(`SELECT value FROM session_state WHERE key = ?`)
-        .get('mutation_dedup_flag') as { value: string } | null;
-      // bun:sqlite .get() returns null (not undefined) when no row matches.
-      expect(after).toBeNull();
-    } finally {
-      connA.close();
-      connB.close();
-    }
+  it('flag marked by a spawned child process is consumed by the parent', async () => {
+    const proc = Bun.spawn(['bun', CHILD, dbPath], { stdout: 'pipe', stderr: 'pipe' });
+    const exitCode = await proc.exited;
+    const stderr = await new Response(proc.stderr).text();
+    expect(stderr).toBe('');
+    expect(exitCode).toBe(0);
+
+    // Parent process opens the SAME file the child wrote — separate
+    // process, separate connection, separate JS heap.
+    initOutboundDb(dbPath);
+    expect(consumeDeterministicMutationFlag()).toBe(true);
+    // Read-and-clear holds across the process boundary too.
+    expect(consumeDeterministicMutationFlag()).toBe(false);
   });
 });
 
