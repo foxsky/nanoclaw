@@ -173,6 +173,94 @@ describe('TaskflowEngine', () => {
   });
 
   /* ---------------------------------------------------------------- */
+  /*  person ambiguity → "Qual delas?" (P-Audit-1)                     */
+  /* ---------------------------------------------------------------- */
+
+  describe('person ambiguity → "Qual delas?" (P-Audit-1)', () => {
+    // v1's poll-loop reassign/create handlers checked
+    // resolvePersonCandidates(name).length > 1 and emitted the
+    // personAmbiguityReply disambiguation ("Encontrei mais de uma
+    // pessoa … Qual delas?"). The v1→v2 MCP-tool port dropped that
+    // branch: the engine only called resolvePerson() — which returns
+    // null for BOTH 0-match and >1-match — then unconditionally
+    // buildOfferRegisterError(). So an ambiguous name was treated as an
+    // unknown name: v2 offered to register a duplicate where v1 asked
+    // which one. These tests pin the restored v1 behavior: ambiguous →
+    // error disambiguation; unknown (0-match) → offer_register still.
+    beforeEach(() => {
+      // Two people sharing the "Silva" token → "Silva" is ambiguous.
+      db.exec(
+        `INSERT INTO board_people VALUES ('${BOARD_ID}', 'carlos-silva', 'Carlos Silva', '5585999990003', 'Dev', 3, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO board_people VALUES ('${BOARD_ID}', 'mariana-silva', 'Mariana Silva', '5585999990004', 'Dev', 3, NULL)`,
+      );
+    });
+
+    it('create with an ambiguous assignee → ambiguity error, NOT offer_register', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Some task',
+        assignee: 'Silva',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.offer_register).toBeUndefined();
+      expect(r.error).toContain('Encontrei mais de uma pessoa para "Silva"');
+      expect(r.error).toContain('- Carlos Silva');
+      expect(r.error).toContain('- Mariana Silva');
+      expect(r.error).toContain('Qual delas?');
+    });
+
+    it('reassign to an ambiguous target_person → ambiguity error, NOT offer_register', () => {
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: 'T-001',
+        target_person: 'Silva',
+        sender_name: 'Alexandre',
+        confirmed: true,
+      });
+      expect(r.success).toBe(false);
+      expect(r.offer_register).toBeUndefined();
+      expect(r.error).toContain('Encontrei mais de uma pessoa para "Silva"');
+      expect(r.error).toContain('Qual delas?');
+    });
+
+    it('update add_participant with an ambiguous name → ambiguity error', () => {
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, column, participants, created_at, updated_at)
+         VALUES ('M-amb', '${BOARD_ID}', 'meeting', 'Sync', 'next_action', '[]', '${now}', '${now}')`,
+      );
+      const r = engine.update({
+        board_id: BOARD_ID,
+        task_id: 'M-amb',
+        sender_name: 'Alexandre',
+        updates: { add_participant: 'Silva' },
+      });
+      expect(r.success).toBe(false);
+      expect(r.offer_register).toBeUndefined();
+      expect(r.error).toContain('Encontrei mais de uma pessoa para "Silva"');
+      expect(r.error).toContain('Qual delas?');
+    });
+
+    it('genuinely unknown name (0 matches) still → offer_register', () => {
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'simple',
+        title: 'Some task',
+        assignee: 'Nobody',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.offer_register).toBeTruthy();
+      expect(r.offer_register!.name).toBe('Nobody');
+      expect(r.error).toBeUndefined();
+    });
+  });
+
+  /* ---------------------------------------------------------------- */
   /*  getTask                                                          */
   /* ---------------------------------------------------------------- */
 

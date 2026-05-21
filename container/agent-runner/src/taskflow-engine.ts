@@ -3703,6 +3703,37 @@ export class TaskflowEngine {
     };
   }
 
+  /** v1-faithful person-ambiguity error. Mirrors poll-loop.ts
+   *  `personAmbiguityReply` (the "Qual delas?" disambiguation). Carried on
+   *  `error`, NOT `offer_register` — an ambiguous name must never trigger a
+   *  register-a-new-person offer. */
+  private buildAmbiguityError(
+    name: string,
+    candidates: Array<{ name: string }>,
+  ): { success: false; error: string } {
+    const options = candidates.map((c) => `- ${c.name}`).join('\n');
+    return {
+      success: false,
+      error: `Encontrei mais de uma pessoa para "${name}":\n${options}\n\nQual delas?`,
+    };
+  }
+
+  /** Build the correct failure when `resolvePerson()` returned null: >1
+   *  candidate → ambiguity disambiguation; 0 → offer_register. The v1→v2
+   *  MCP-tool port collapsed both into offer_register (P-Audit-1); v1's
+   *  poll-loop checked `resolvePersonCandidates().length` before offering
+   *  registration. */
+  private buildUnresolvedPersonError(
+    name: string,
+    boardId = this.boardId,
+  ):
+    | { success: false; error: string }
+    | { success: false; offer_register: { name: string; message: string } } {
+    const candidates = this.resolvePersonCandidates(name, boardId);
+    if (candidates.length > 1) return this.buildAmbiguityError(name, candidates);
+    return this.buildOfferRegisterError(name);
+  }
+
   private buildUnresolvedMeetingParticipantPrompt(name: string): { name: string; message: string } {
     return {
       name,
@@ -3843,7 +3874,7 @@ export class TaskflowEngine {
       let assigneePersonId: string | null = null;
       if (params.assignee) {
         const person = this.resolvePerson(params.assignee);
-        if (!person) return this.buildOfferRegisterError(params.assignee);
+        if (!person) return this.buildUnresolvedPersonError(params.assignee);
         assigneePersonId = person.person_id;
       }
 
@@ -3878,7 +3909,7 @@ export class TaskflowEngine {
           let subAssigneePersonId: string | null = null;
           if (typeof sub !== 'string' && sub.assignee) {
             const subPerson = this.resolvePerson(sub.assignee);
-            if (!subPerson) return this.buildOfferRegisterError(sub.assignee);
+            if (!subPerson) return this.buildUnresolvedPersonError(sub.assignee);
             subAssigneePersonId = subPerson.person_id;
           }
           subtaskDefs.push({ title, assigneePersonId: subAssigneePersonId });
@@ -4829,7 +4860,7 @@ export class TaskflowEngine {
           targetPersonBoardId = this.boardId;
         }
       }
-      if (!targetPerson) return this.buildOfferRegisterError(params.target_person);
+      if (!targetPerson) return this.buildUnresolvedPersonError(params.target_person, targetBoardId);
 
       /* --- Collect tasks to reassign --- */
       let tasksToReassign: any[];
@@ -5683,7 +5714,7 @@ export class TaskflowEngine {
           return { success: false, error: 'Participants can only be added to meeting tasks.' };
         }
         const person = this.resolvePerson(updates.add_participant);
-        if (!person) return this.buildOfferRegisterError(updates.add_participant);
+        if (!person) return this.buildUnresolvedPersonError(updates.add_participant);
         const participants: string[] = JSON.parse(task.participants ?? '[]');
         if (!participants.includes(person.person_id)) {
           participants.push(person.person_id);
@@ -5713,7 +5744,7 @@ export class TaskflowEngine {
           return { success: false, error: 'Participants can only be removed from meeting tasks.' };
         }
         const person = this.resolvePerson(updates.remove_participant);
-        if (!person) return this.buildOfferRegisterError(updates.remove_participant);
+        if (!person) return this.buildUnresolvedPersonError(updates.remove_participant);
         // Re-read from DB to pick up any preceding add_participant in the same update call
         const freshTask = this.requireTask(task.id);
         const participants: string[] = JSON.parse(freshTask.participants ?? '[]');
@@ -6183,7 +6214,7 @@ export class TaskflowEngine {
         const check = this.requireProjectSubtask(task, updates.assign_subtask.id);
         if (!check.success) return check;
         const subPerson = this.resolvePerson(updates.assign_subtask.assignee);
-        if (!subPerson) return this.buildOfferRegisterError(updates.assign_subtask.assignee);
+        if (!subPerson) return this.buildUnresolvedPersonError(updates.assign_subtask.assignee);
         const childLink = this.linkedChildBoardFor(taskBoardId, subPerson.person_id);
         const subChildBoardChanged = (check.subTask.child_exec_board_id ?? null) !== childLink.child_exec_board_id;
         const subClearRollup = check.subTask.child_exec_rollup_status && (childLink.child_exec_enabled === 0 || subChildBoardChanged);
@@ -10850,7 +10881,7 @@ export class TaskflowEngine {
           /* Resolve target person */
           const targetPerson = this.resolvePerson(params.person_name);
           if (!targetPerson) {
-            return this.buildOfferRegisterError(params.person_name);
+            return this.buildUnresolvedPersonError(params.person_name);
           }
 
           /* Check child board registration */
