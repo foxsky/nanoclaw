@@ -278,6 +278,41 @@ export function buildCreateCard(data: {
   ].join('\n');
 }
 
+// BYTE-FAITHFUL mirror of v1's standalone (no-reparent) create card.
+// Ground truth: sec-secti GATE v1 final_responses — simple →
+// "✅ *Tarefa criada*", project → "✅ *Projeto criado*" (Phase-3 #7).
+// Scope: next_action column only — inbox creates use the separate
+// "📥 Capturada no Inbox" variant (no in-scope exemplar); recurring/
+// meeting have none → null. Conditional Prazo/Prioridade/Nota lines
+// (seen on other boards) are NOT emitted: no in-scope ground truth for
+// their exact format → no fabrication.
+export function buildCreatedTaskCard(data: {
+  id?: unknown;
+  title?: unknown;
+  type?: unknown;
+  assignee?: unknown;
+  column?: unknown;
+}): string | null {
+  const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+  const id = str(data.id);
+  const title = str(data.title);
+  const assignee = str(data.assignee);
+  const type = str(data.type);
+  const column = str(data.column);
+  if (!id || !title || !assignee) return null;
+  if (column !== 'next_action') return null;
+  if (type !== 'simple' && type !== 'project') return null;
+  const isProject = type === 'project';
+  return [
+    isProject ? '✅ *Projeto criado*' : '✅ *Tarefa criada*',
+    '━━━━━━━━━━━━━━',
+    '',
+    `*${id}* — ${title}`,
+    `👤 *${isProject ? 'Atribuído' : 'Atribuída'} a:* ${assignee}`,
+    '⏭️ *Coluna:* Próximas Ações',
+  ].join('\n');
+}
+
 // Shared header for v1's "atualizada" card variants (update, add_note).
 // Extracted because byte-faithfulness keeps these three lines identical
 // across builders; each variant appends its own bullet lines.
