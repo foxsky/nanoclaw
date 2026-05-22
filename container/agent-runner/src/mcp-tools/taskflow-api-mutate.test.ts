@@ -1549,12 +1549,20 @@ describe('api_create_task MCP tool (A5.2.1 — multi-type create)', () => {
     expect(apiCreateTaskTool.tool.name).toBe('api_create_task');
   });
 
-  it('description preserves v1 create+reparent for explicit project-ID task-add commands', async () => {
+  it('description: activity/step wording → add_subtask (single call); only literal-"tarefa" project-ID add → create+reparent', async () => {
     const { apiCreateTaskTool, apiUpdateTaskTool } = await import('./taskflow-api-mutate.ts');
+    // create+reparent preserved for the literal-"tarefa" project-ID command
     expect(apiCreateTaskTool.tool.description).toContain('adicionar em P3 a tarefa X');
     expect(apiCreateTaskTool.tool.description).toContain('api_admin action=reparent_task');
-    expect(apiUpdateTaskTool.tool.description).toContain('Do not use this for explicit project-ID task-add commands');
+    expect(apiUpdateTaskTool.tool.description).toContain('Only the literal-"tarefa" project-ID add command');
     expect(apiUpdateTaskTool.tool.description).toContain('adicionar em P3 a tarefa X');
+    // activity/step wording routes to add_subtask as a SINGLE update call —
+    // the Turn-9 fix: v2 had split "incluir na P22 uma atividade" into
+    // api_update_task + api_create_task where v1 did one add_subtask.
+    expect(apiUpdateTaskTool.tool.description).toContain('incluir na P22 uma atividade X');
+    expect(apiUpdateTaskTool.tool.description).toContain(
+      'never split it into api_update_task + api_create_task',
+    );
   });
 
   it('declares required board_id/title/sender_name/type; type enum simple|project|recurring|inbox', async () => {
