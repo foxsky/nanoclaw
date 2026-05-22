@@ -26,6 +26,7 @@ import {
   consumeDeterministicMutationFlag,
   drainDeterministicMutationFlag,
 } from './mcp-tools/mutation-dedup.js';
+import { shouldSuppressSameConvMessage } from './mcp-tools/message-block-dedup.js';
 import { flushPendingCreateCard } from './mcp-tools/mutation-confirmation.js';
 import { appendToolEvents, type ToolEvent } from './providers/claude-tool-capture.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
@@ -4001,6 +4002,17 @@ function dispatchResultText(text: string, routing: RoutingContext): void {
     if (!dest) {
       log(`Unknown destination in <message to="${toName}">, dropping block`);
       scratchpadParts.push(`[dropped: unknown destination "${toName}"] ${body}`);
+      continue;
+    }
+    // Phase-3 #7 follow-up: refinement of the P4 dedup scope. A
+    // `<message to="<same-conversation>">` immediately after a
+    // deterministic mutation card is the redundant model narration v1
+    // never sent — same class as the bare-text fallback already
+    // suppressed. Cross-conversation `<message>` blocks (relay to other
+    // destinations) still emit by design. See message-block-dedup.ts
+    // and the SCOPE section in mutation-dedup.ts.
+    if (shouldSuppressSameConvMessage(suppressBareFallback, dest, routing)) {
+      log(`<message to="${toName}"> suppressed (P4 same-conv dedup): deterministic mutation card already emitted this turn`);
       continue;
     }
     sendToDestination(dest, body, routing);

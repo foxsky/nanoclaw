@@ -23,11 +23,14 @@
  *     to a sole destination (redundant model narrative after the
  *     deterministic v1 card).
  *   - BYPASS (intentional): explicit agent-stated emission paths —
- *     `<message to="…">` blocks dispatched at `poll-loop.ts:3966-3983`,
- *     and the `send_message` / `send_file` MCP tools in `core.ts`. These
- *     never consult the flag. Extending suppression to them would
- *     silently swallow explicit agent messages. Locked down by
- *     mutation-dedup.test.ts.
+ *     the `send_message` / `send_file` MCP tools in `core.ts` never
+ *     consult the flag; `<message to=…>` blocks bypass when they target
+ *     a DIFFERENT conversation (legitimate cross-board relay).
+ *   - SUPPRESSED (refined #7 follow-up): a `<message to="<same-conv>">`
+ *     block right after a deterministic mutation card is the same
+ *     redundant model narration the bare-text fallback already kills —
+ *     `<message>`-wrapped. Gated by `shouldSuppressSameConvMessage`
+ *     (mcp-tools/message-block-dedup.ts) and locked by its tests.
  *   - PRODUCER (not "bypass"): `emitMutationConfirmation` is the sole
  *     caller of `mark`. Other internal `writeMessageOut` callers
  *     (sendToDestination for both the bare-text branch and the
