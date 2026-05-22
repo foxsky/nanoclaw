@@ -197,7 +197,7 @@ describe('TaskflowEngine', () => {
       );
     });
 
-    it('create with an ambiguous assignee → ambiguity error, NOT offer_register', () => {
+    it('create with an ambiguous assignee → byte-exact v1 ambiguity error, NOT offer_register', () => {
       const r = engine.create({
         board_id: BOARD_ID,
         type: 'simple',
@@ -207,10 +207,11 @@ describe('TaskflowEngine', () => {
       });
       expect(r.success).toBe(false);
       expect(r.offer_register).toBeUndefined();
-      expect(r.error).toContain('Encontrei mais de uma pessoa para "Silva"');
-      expect(r.error).toContain('- Carlos Silva');
-      expect(r.error).toContain('- Mariana Silva');
-      expect(r.error).toContain('Qual delas?');
+      // Byte-exact mirror of v1's poll-loop personAmbiguityReply
+      // (candidate order = board_people insertion order).
+      expect(r.error).toBe(
+        'Encontrei mais de uma pessoa para "Silva":\n- Carlos Silva\n- Mariana Silva\n\nQual delas?',
+      );
     });
 
     it('reassign to an ambiguous target_person → ambiguity error, NOT offer_register', () => {
@@ -257,6 +258,60 @@ describe('TaskflowEngine', () => {
       expect(r.offer_register).toBeTruthy();
       expect(r.offer_register!.name).toBe('Nobody');
       expect(r.error).toBeUndefined();
+    });
+
+    it('create meeting with an ambiguous participant → ambiguity error, NOT offer_register', () => {
+      // v1's poll-loop preflighted meeting participants through
+      // personAmbiguityReply (poll-loop.ts:2012). The v2 engine
+      // accumulated unresolved participants and returned success +
+      // offer_register — collapsing ambiguity into a register offer.
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'meeting',
+        title: 'Sync',
+        participants: ['Silva'],
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(false);
+      expect(r.offer_register).toBeUndefined();
+      expect(r.unresolved_participants).toBeUndefined();
+      expect(r.error).toContain('Encontrei mais de uma pessoa para "Silva"');
+      expect(r.error).toContain('Qual delas?');
+    });
+
+    it('cross-board reassign: target ambiguous on the LOCAL board → ambiguity error', () => {
+      // The reassign target resolves on the parent board first, then
+      // falls back to the local board. An ambiguous name on the local
+      // board (0-match on parent) must still disambiguate, not collapse
+      // into a parent-board offer_register.
+      const parentBoardId = 'board-parent-amb';
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO boards VALUES ('${parentBoardId}', 'parent@g.us', 'parent-tf', 'standard', 0, 2, NULL, 'SECI', NULL)`,
+      );
+      db.exec(`UPDATE boards SET parent_board_id = '${parentBoardId}' WHERE id = '${BOARD_ID}'`);
+      db.exec(
+        `INSERT INTO board_people VALUES ('${parentBoardId}', 'person-1', 'Alexandre', '5585999990001', 'Dev', 3, NULL)`,
+      );
+      db.exec(
+        `INSERT INTO board_admins VALUES ('${parentBoardId}', 'person-1', '5585999990001', 'manager', 1)`,
+      );
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at, parent_task_id)
+         VALUES ('P9.1', '${parentBoardId}', 'simple', 'Parent-only task', 'person-1', 'waiting', 0, '${now}', '${now}', 'P9')`,
+      );
+
+      const r = engine.reassign({
+        board_id: BOARD_ID,
+        task_id: 'P9.1',
+        target_person: 'Silva', // 0-match on parent, ambiguous on BOARD_ID
+        sender_name: 'Alexandre',
+        confirmed: true,
+      });
+      expect(r.success).toBe(false);
+      expect(r.offer_register).toBeUndefined();
+      expect(r.error).toContain('Encontrei mais de uma pessoa para "Silva"');
+      expect(r.error).toContain('Qual delas?');
     });
   });
 

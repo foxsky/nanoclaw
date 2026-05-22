@@ -3722,15 +3722,19 @@ export class TaskflowEngine {
    *  candidate → ambiguity disambiguation; 0 → offer_register. The v1→v2
    *  MCP-tool port collapsed both into offer_register (P-Audit-1); v1's
    *  poll-loop checked `resolvePersonCandidates().length` before offering
-   *  registration. */
+   *  registration. `boardIds` is checked in order so callers that resolve
+   *  across a board lineage (reassign: target board then local) surface
+   *  an ambiguity wherever it occurs, not only on the first board. */
   private buildUnresolvedPersonError(
     name: string,
-    boardId = this.boardId,
+    boardIds: string[] = [this.boardId],
   ):
     | { success: false; error: string }
     | { success: false; offer_register: { name: string; message: string } } {
-    const candidates = this.resolvePersonCandidates(name, boardId);
-    if (candidates.length > 1) return this.buildAmbiguityError(name, candidates);
+    for (const boardId of boardIds) {
+      const candidates = this.resolvePersonCandidates(name, boardId);
+      if (candidates.length > 1) return this.buildAmbiguityError(name, candidates);
+    }
     return this.buildOfferRegisterError(name);
   }
 
@@ -3924,6 +3928,10 @@ export class TaskflowEngine {
         for (const pName of params.participants) {
           const person = this.resolvePerson(pName);
           if (!person) {
+            // Ambiguous (>1 candidate) participant → disambiguate, do not
+            // collapse into the soft register-offer (P-Audit-1).
+            const candidates = this.resolvePersonCandidates(pName);
+            if (candidates.length > 1) return this.buildAmbiguityError(pName, candidates);
             unresolvedParticipants.push(pName);
             continue;
           }
@@ -4860,7 +4868,12 @@ export class TaskflowEngine {
           targetPersonBoardId = this.boardId;
         }
       }
-      if (!targetPerson) return this.buildUnresolvedPersonError(params.target_person, targetBoardId);
+      if (!targetPerson) {
+        return this.buildUnresolvedPersonError(
+          params.target_person,
+          ancestorTask ? [targetBoardId, this.boardId] : [targetBoardId],
+        );
+      }
 
       /* --- Collect tasks to reassign --- */
       let tasksToReassign: any[];
