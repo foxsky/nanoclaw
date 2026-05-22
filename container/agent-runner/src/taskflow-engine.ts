@@ -3703,14 +3703,17 @@ export class TaskflowEngine {
     };
   }
 
-  /** v1-faithful person-ambiguity error. Mirrors poll-loop.ts
-   *  `personAmbiguityReply` (the "Qual delas?" disambiguation). Carried on
-   *  `error`, NOT `offer_register` — an ambiguous name must never trigger a
+  /** v1-faithful person-ambiguity check: the "Qual delas?" disambiguation
+   *  error (mirrors poll-loop.ts `personAmbiguityReply`) when `name`
+   *  matches >1 board person, else null. Carried on `error`, NOT
+   *  `offer_register` — an ambiguous name must never trigger a
    *  register-a-new-person offer. */
-  private buildAmbiguityError(
+  private personAmbiguityError(
     name: string,
-    candidates: Array<{ name: string }>,
-  ): { success: false; error: string } {
+    boardId = this.boardId,
+  ): { success: false; error: string } | null {
+    const candidates = this.resolvePersonCandidates(name, boardId);
+    if (candidates.length <= 1) return null;
     const options = candidates.map((c) => `- ${c.name}`).join('\n');
     return {
       success: false,
@@ -3718,13 +3721,10 @@ export class TaskflowEngine {
     };
   }
 
-  /** Build the correct failure when `resolvePerson()` returned null: >1
-   *  candidate → ambiguity disambiguation; 0 → offer_register. The v1→v2
-   *  MCP-tool port collapsed both into offer_register (P-Audit-1); v1's
-   *  poll-loop checked `resolvePersonCandidates().length` before offering
-   *  registration. `boardIds` is checked in order so callers that resolve
-   *  across a board lineage (reassign: target board then local) surface
-   *  an ambiguity wherever it occurs, not only on the first board. */
+  /** Failure for an unresolved person: >1 candidate (on any listed board)
+   *  → "Qual delas?" disambiguation; 0 → offer_register. `boardIds` is
+   *  checked in order for callers that resolve across a board lineage
+   *  (reassign: target board, then local). */
   private buildUnresolvedPersonError(
     name: string,
     boardIds: string[] = [this.boardId],
@@ -3732,8 +3732,8 @@ export class TaskflowEngine {
     | { success: false; error: string }
     | { success: false; offer_register: { name: string; message: string } } {
     for (const boardId of boardIds) {
-      const candidates = this.resolvePersonCandidates(name, boardId);
-      if (candidates.length > 1) return this.buildAmbiguityError(name, candidates);
+      const ambiguity = this.personAmbiguityError(name, boardId);
+      if (ambiguity) return ambiguity;
     }
     return this.buildOfferRegisterError(name);
   }
@@ -3928,10 +3928,10 @@ export class TaskflowEngine {
         for (const pName of params.participants) {
           const person = this.resolvePerson(pName);
           if (!person) {
-            // Ambiguous (>1 candidate) participant → disambiguate, do not
-            // collapse into the soft register-offer (P-Audit-1).
-            const candidates = this.resolvePersonCandidates(pName);
-            if (candidates.length > 1) return this.buildAmbiguityError(pName, candidates);
+            // Ambiguous participant → disambiguate, do not collapse into
+            // the soft register-offer (P-Audit-1).
+            const ambiguity = this.personAmbiguityError(pName);
+            if (ambiguity) return ambiguity;
             unresolvedParticipants.push(pName);
             continue;
           }
