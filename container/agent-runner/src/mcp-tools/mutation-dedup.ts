@@ -82,9 +82,70 @@ export function drainDeterministicMutationFlag(): void {
   consumeDeterministicMutationFlag();
 }
 
+/**
+ * Pending-create-card slot (Phase-3 #7 emit-deferral). A no-reparent
+ * create cannot emit its "Tarefa criada"/"Projeto criado" card eagerly:
+ * `api_create_task` has no parent param, so "add task to project" is
+ * always create THEN `api_admin(reparent_task)`, and an eager emit would
+ * double-emit (create card + the reparent's "adicionada" card). Instead
+ * the create STORES its card here; a following reparent CLEARS it (the
+ * reparent emits the superseding card); the poll-loop turn-end FLUSHES
+ * whatever remains. Same cross-process `session_state` mechanism as the
+ * dedup flag — MCP subprocess stores/clears, poll-loop main flushes.
+ */
+const PENDING_CREATE_CARD_KEY = 'pending_create_card';
+
+/** Store a no-reparent create card for end-of-turn flush. Also marks the
+ *  dedup flag so the model's redundant bare-text reply is suppressed. A
+ *  second call overwrites (last create this turn wins). */
+export function setPendingCreateCard(card: string): void {
+  try {
+    getOutboundDb()
+      .prepare(
+        `INSERT INTO session_state (key, value, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      )
+      .run(PENDING_CREATE_CARD_KEY, card, new Date().toISOString());
+  } catch {
+    // Best-effort — see markDeterministicMutationEmitted.
+  }
+  markDeterministicMutationEmitted();
+}
+
+/** Drop the pending create card without flushing — called by a reparent,
+ *  which emits the superseding "adicionada" card itself. */
+export function clearPendingCreateCard(): void {
+  try {
+    getOutboundDb().prepare(`DELETE FROM session_state WHERE key = ?`).run(PENDING_CREATE_CARD_KEY);
+  } catch {
+    // Best-effort — see markDeterministicMutationEmitted.
+  }
+}
+
+/** Read-and-clear the pending create card. Called once at the poll-loop
+ *  turn boundary; returns null when no no-reparent create occurred. */
+export function takePendingCreateCard(): string | null {
+  try {
+    const db = getOutboundDb();
+    const row = db
+      .prepare(`SELECT value FROM session_state WHERE key = ?`)
+      .get(PENDING_CREATE_CARD_KEY) as { value: string } | undefined;
+    if (row) {
+      db.prepare(`DELETE FROM session_state WHERE key = ?`).run(PENDING_CREATE_CARD_KEY);
+      return row.value;
+    }
+  } catch {
+    // Best-effort — see markDeterministicMutationEmitted.
+  }
+  return null;
+}
+
 export function __resetDedupForTesting(): void {
   try {
-    getOutboundDb().prepare(`DELETE FROM session_state WHERE key = ?`).run(KEY);
+    const db = getOutboundDb();
+    db.prepare(`DELETE FROM session_state WHERE key = ?`).run(KEY);
+    db.prepare(`DELETE FROM session_state WHERE key = ?`).run(PENDING_CREATE_CARD_KEY);
   } catch {
     // Outbound DB may not be initialized in some unit tests; ignore.
   }

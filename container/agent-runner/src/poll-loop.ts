@@ -25,6 +25,7 @@ import {
 import {
   consumeDeterministicMutationFlag,
   drainDeterministicMutationFlag,
+  takePendingCreateCard,
 } from './mcp-tools/mutation-dedup.js';
 import { appendToolEvents, type ToolEvent } from './providers/claude-tool-capture.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
@@ -3713,6 +3714,24 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // followed by a stream error / no-result close would leak into the
     // next turn and silently suppress its bare-text fallback.
     drainDeterministicMutationFlag();
+    // Phase-3 #7: flush the deferred no-reparent create card. A standalone
+    // create stores its "Tarefa criada"/"Projeto criado" card instead of
+    // emitting eagerly (a following api_admin(reparent_task) would
+    // otherwise double-emit); the reparent clears it. Flushed once here
+    // at the unconditional turn boundary so an errored/no-result turn
+    // still confirms the create that succeeded.
+    const pendingCreateCard = takePendingCreateCard();
+    if (pendingCreateCard) {
+      writeMessageOut({
+        id: generateId(),
+        in_reply_to: routing.inReplyTo,
+        kind: 'chat',
+        platform_id: routing.platformId,
+        channel_type: routing.channelType,
+        thread_id: routing.threadId,
+        content: JSON.stringify({ text: pendingCreateCard }),
+      });
+    }
     log(`Completed ${ids.length} message(s)`);
   }
 }

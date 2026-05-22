@@ -12,6 +12,7 @@ import { parseIsoCalendarDate } from '../iso-date.js';
 import { getBoardTimezone, TaskflowEngine } from '../taskflow-engine.js';
 import type { AdminParams, DependencyParams, HierarchyParams, MoveResult, QueryParams, ReassignParams, ReassignResult, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
 import { emitMutationConfirmation } from './mutation-confirmation.js';
+import { clearPendingCreateCard, setPendingCreateCard } from './mutation-dedup.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
@@ -182,6 +183,15 @@ function finalizeCreatedTaskResult(
     )
     .get(result.task_id, boardId) as Record<string, unknown>;
   const data = engine.serializeApiTask(row);
+  // v1 emits a standalone "Tarefa criada"/"Projeto criado" card for a
+  // no-reparent create (Phase-3 #7). Deferred, not emitted now: "add to
+  // project" is create THEN api_admin(reparent_task), and an eager emit
+  // would double-emit. The card is STORED — the poll-loop turn-end
+  // flushes it, or a following reparent clears it (emitting its own
+  // superseding "adicionada" card). buildCreatedTaskCard → null outside
+  // the v1-faithful scope (non-next_action, recurring/meeting).
+  const createdCard = buildCreatedTaskCard(data);
+  if (createdCard) setPendingCreateCard(createdCard);
   const notification_events = (result.notifications ?? [])
     .filter((n) => n.target_person_id)
     .map((n) => ({
@@ -1060,6 +1070,12 @@ export const apiAdminTool: McpToolDefinition = {
     try {
       const engine = new TaskflowEngine(getTaskflowDb(), boardId);
       const result = engine.admin(adminParams);
+      // A successful reparent supersedes any pending standalone create
+      // card for the just-created task — create-then-reparent nets ONE
+      // card (the reparent's "adicionada"). See mutation-dedup.ts #7.
+      if (adminParams.action === 'reparent_task' && result.success) {
+        clearPendingCreateCard();
+      }
       return finalizeMutationResult(addReparentFormattedResult(result, adminParams.action));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

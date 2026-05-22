@@ -15,9 +15,12 @@ import { getUndeliveredMessages } from '../db/messages-out.ts';
 import { sendFile, sendMessage } from './core.ts';
 import {
   __resetDedupForTesting,
+  clearPendingCreateCard,
   consumeDeterministicMutationFlag,
   drainDeterministicMutationFlag,
   markDeterministicMutationEmitted,
+  setPendingCreateCard,
+  takePendingCreateCard,
 } from './mutation-dedup.ts';
 
 // Phase-3 unit-2-core / Codex gate P4 (cross-process). State lives in
@@ -195,5 +198,55 @@ describe('mutation-dedup — turn-boundary drain (Codex P-Audit-3 leak preventio
   it('drain on an unmarked flag is a no-op', () => {
     drainDeterministicMutationFlag();
     expect(consumeDeterministicMutationFlag()).toBe(false);
+  });
+});
+
+describe('mutation-dedup — pending create card (emit-deferral, #7 wiring)', () => {
+  // A no-reparent create stores its card here instead of emitting now;
+  // the poll-loop turn-end flushes it. A following api_admin(reparent_task)
+  // clears it (the reparent emits the superseding "adicionada" card) —
+  // so create-then-reparent nets ONE card. Cross-process via session_state
+  // (MCP subprocess stores, poll-loop main flushes).
+  beforeEach(() => {
+    initTestSessionDb();
+    __resetDedupForTesting();
+  });
+  afterEach(() => {
+    closeSessionDb();
+  });
+
+  it('set then take returns the card; take is read-and-clear', () => {
+    setPendingCreateCard('✅ *Tarefa criada*\n…');
+    expect(takePendingCreateCard()).toBe('✅ *Tarefa criada*\n…');
+    expect(takePendingCreateCard()).toBeNull();
+  });
+
+  it('take with nothing pending → null', () => {
+    expect(takePendingCreateCard()).toBeNull();
+  });
+
+  it('a second set overwrites (last create this turn wins)', () => {
+    setPendingCreateCard('first');
+    setPendingCreateCard('second');
+    expect(takePendingCreateCard()).toBe('second');
+  });
+
+  it('clear removes the pending card (the reparent-supersede path)', () => {
+    setPendingCreateCard('✅ *Tarefa criada*\n…');
+    clearPendingCreateCard();
+    expect(takePendingCreateCard()).toBeNull();
+  });
+
+  it('set also marks the dedup flag — the model bare-text reply is suppressed', () => {
+    setPendingCreateCard('✅ *Tarefa criada*\n…');
+    expect(consumeDeterministicMutationFlag()).toBe(true);
+  });
+
+  it('best-effort: set/take/clear do NOT throw when the outbound DB is unavailable', () => {
+    __setOutboundDbUnavailableForTesting();
+    expect(() => setPendingCreateCard('x')).not.toThrow();
+    expect(takePendingCreateCard()).toBeNull();
+    expect(() => clearPendingCreateCard()).not.toThrow();
+    initTestSessionDb();
   });
 });

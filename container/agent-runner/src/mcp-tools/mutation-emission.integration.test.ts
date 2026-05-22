@@ -7,7 +7,7 @@ import {
   getOutboundDb,
   initTestSessionDb,
 } from '../db/connection.ts';
-import { __resetDedupForTesting } from './mutation-dedup.ts';
+import { __resetDedupForTesting, takePendingCreateCard } from './mutation-dedup.ts';
 import { setupEngineDb } from './taskflow-test-fixtures.ts';
 
 // Phase-3 unit-2-core / Codex gate P5: session-DB-backed end-to-end
@@ -96,6 +96,32 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     expect(JSON.parse(rows[0].content).text).toBe(
       `✅ *${child.data.id} adicionada*\n━━━━━━━━━━━━━━\n\n📁 *${proj.data.id}* — Operação da SECTI\n   📋 *${child.data.id}* — Treinamento E-governe`,
     );
+  });
+
+  it('a no-reparent create DEFERS its card — stored as pending, NOT emitted to messages_out (Phase-3 #7)', async () => {
+    const db = setupEngineDb(BOARD, { withBoardAdmins: true });
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+
+    const result = JSON.parse(
+      (
+        await apiCreateTaskTool.handler({
+          board_id: BOARD, type: 'simple', title: 'Treinamento E-governe', sender_name: 'alice', assignee: 'bob',
+        })
+      ).content[0].text,
+    );
+    expect(result.success).toBe(true);
+
+    // Deferred: the create card is NOT in messages_out — emitting eagerly
+    // would double-emit on a following api_admin(reparent_task).
+    expect((getOutboundDb().prepare('SELECT count(*) AS n FROM messages_out').get() as { n: number }).n).toBe(0);
+    // It is stored as the pending create card, byte-exact v1 "Tarefa criada".
+    expect(takePendingCreateCard()).toBe(
+      `✅ *Tarefa criada*\n━━━━━━━━━━━━━━\n\n*${result.data.id}* — Treinamento E-governe\n👤 *Atribuída a:* bob\n⏭️ *Coluna:* Próximas Ações`,
+    );
+    expect(takePendingCreateCard()).toBeNull(); // read-and-clear
   });
 
   it('api_task_add_note emits EXACTLY ONE row with the byte-exact v1 "atualizada • Nota: <text>" card', async () => {
