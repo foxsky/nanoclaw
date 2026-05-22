@@ -216,7 +216,7 @@ describe('mutation-dedup — pending create card (emit-deferral, #7 wiring)', ()
   });
 
   it('set then take returns the card; take is read-and-clear', () => {
-    setPendingCreateCard('✅ *Tarefa criada*\n…');
+    setPendingCreateCard('T1', '✅ *Tarefa criada*\n…');
     expect(takePendingCreateCard()).toBe('✅ *Tarefa criada*\n…');
     expect(takePendingCreateCard()).toBeNull();
   });
@@ -226,27 +226,33 @@ describe('mutation-dedup — pending create card (emit-deferral, #7 wiring)', ()
   });
 
   it('a second set overwrites (last create this turn wins)', () => {
-    setPendingCreateCard('first');
-    setPendingCreateCard('second');
+    setPendingCreateCard('T1', 'first');
+    setPendingCreateCard('T2', 'second');
     expect(takePendingCreateCard()).toBe('second');
   });
 
-  it('clear removes the pending card (the reparent-supersede path)', () => {
-    setPendingCreateCard('✅ *Tarefa criada*\n…');
-    clearPendingCreateCard();
+  it('clear removes the pending card when the task id matches (reparent-supersede)', () => {
+    setPendingCreateCard('T9', '✅ *Tarefa criada*\n…');
+    clearPendingCreateCard('T9');
     expect(takePendingCreateCard()).toBeNull();
   });
 
+  it('clear with a NON-matching task id leaves the card — a reparent of an unrelated task must not drop a sibling create', () => {
+    setPendingCreateCard('T9', '✅ *Tarefa criada*\n…');
+    clearPendingCreateCard('T-other');
+    expect(takePendingCreateCard()).toBe('✅ *Tarefa criada*\n…');
+  });
+
   it('set also marks the dedup flag — the model bare-text reply is suppressed', () => {
-    setPendingCreateCard('✅ *Tarefa criada*\n…');
+    setPendingCreateCard('T1', '✅ *Tarefa criada*\n…');
     expect(consumeDeterministicMutationFlag()).toBe(true);
   });
 
   it('best-effort: set/take/clear do NOT throw when the outbound DB is unavailable', () => {
     __setOutboundDbUnavailableForTesting();
-    expect(() => setPendingCreateCard('x')).not.toThrow();
+    expect(() => setPendingCreateCard('T1', 'x')).not.toThrow();
     expect(takePendingCreateCard()).toBeNull();
-    expect(() => clearPendingCreateCard()).not.toThrow();
+    expect(() => clearPendingCreateCard('T1')).not.toThrow();
     initTestSessionDb();
   });
 });

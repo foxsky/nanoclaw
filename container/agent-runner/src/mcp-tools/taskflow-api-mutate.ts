@@ -191,7 +191,7 @@ function finalizeCreatedTaskResult(
   // superseding "adicionada" card). buildCreatedTaskCard → null outside
   // the v1-faithful scope (non-next_action, recurring/meeting).
   const createdCard = buildCreatedTaskCard(data);
-  if (createdCard) setPendingCreateCard(createdCard);
+  if (createdCard) setPendingCreateCard(result.task_id, createdCard);
   const notification_events = (result.notifications ?? [])
     .filter((n) => n.target_person_id)
     .map((n) => ({
@@ -1070,11 +1070,12 @@ export const apiAdminTool: McpToolDefinition = {
     try {
       const engine = new TaskflowEngine(getTaskflowDb(), boardId);
       const result = engine.admin(adminParams);
-      // A successful reparent supersedes any pending standalone create
-      // card for the just-created task — create-then-reparent nets ONE
-      // card (the reparent's "adicionada"). See mutation-dedup.ts #7.
-      if (adminParams.action === 'reparent_task' && result.success) {
-        clearPendingCreateCard();
+      // A successful reparent supersedes the pending standalone create
+      // card for THE REPARENTED task — create-then-reparent nets ONE
+      // card (the reparent's "adicionada"). Task-id-matched so a reparent
+      // of an unrelated task can't drop a sibling create. See mutation-dedup.ts #7.
+      if (adminParams.action === 'reparent_task' && result.success && adminParams.task_id) {
+        clearPendingCreateCard(adminParams.task_id);
       }
       return finalizeMutationResult(addReparentFormattedResult(result, adminParams.action));
     } catch (e: unknown) {

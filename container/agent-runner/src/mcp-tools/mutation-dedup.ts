@@ -95,10 +95,12 @@ export function drainDeterministicMutationFlag(): void {
  */
 const PENDING_CREATE_CARD_KEY = 'pending_create_card';
 
-/** Store a no-reparent create card for end-of-turn flush. Also marks the
- *  dedup flag so the model's redundant bare-text reply is suppressed. A
- *  second call overwrites (last create this turn wins). */
-export function setPendingCreateCard(card: string): void {
+/** Store a no-reparent create card for end-of-turn flush, keyed by the
+ *  created task id. Also marks the dedup flag so the model's redundant
+ *  bare-text reply is suppressed. A second call overwrites (last create
+ *  this turn wins; v1's combined "N tarefas criadas" multi-create card
+ *  is a separate builder, out of scope). */
+export function setPendingCreateCard(taskId: string, card: string): void {
   try {
     getOutboundDb()
       .prepare(
@@ -106,25 +108,36 @@ export function setPendingCreateCard(card: string): void {
          VALUES (?, ?, ?)
          ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
       )
-      .run(PENDING_CREATE_CARD_KEY, card, new Date().toISOString());
+      .run(PENDING_CREATE_CARD_KEY, JSON.stringify({ taskId, card }), new Date().toISOString());
   } catch {
     // Best-effort — see markDeterministicMutationEmitted.
   }
   markDeterministicMutationEmitted();
 }
 
-/** Drop the pending create card without flushing — called by a reparent,
- *  which emits the superseding "adicionada" card itself. */
-export function clearPendingCreateCard(): void {
+/** Drop the pending create card ONLY when it belongs to `taskId` — called
+ *  by a reparent, which emits the superseding "adicionada" card itself.
+ *  Task-id-matched so a same-turn reparent of an UNRELATED task does not
+ *  silently drop a sibling standalone create's confirmation. */
+export function clearPendingCreateCard(taskId: string): void {
   try {
-    getOutboundDb().prepare(`DELETE FROM session_state WHERE key = ?`).run(PENDING_CREATE_CARD_KEY);
+    const db = getOutboundDb();
+    const row = db
+      .prepare(`SELECT value FROM session_state WHERE key = ?`)
+      .get(PENDING_CREATE_CARD_KEY) as { value: string } | undefined;
+    if (!row) return;
+    const parsed = JSON.parse(row.value) as { taskId?: string };
+    if (parsed.taskId === taskId) {
+      db.prepare(`DELETE FROM session_state WHERE key = ?`).run(PENDING_CREATE_CARD_KEY);
+    }
   } catch {
     // Best-effort — see markDeterministicMutationEmitted.
   }
 }
 
-/** Read-and-clear the pending create card. Called once at the poll-loop
- *  turn boundary; returns null when no no-reparent create occurred. */
+/** Read-and-clear the pending create card. Called once per turn from
+ *  `dispatchResultText`; returns the card text, or null when no
+ *  no-reparent create occurred. */
 export function takePendingCreateCard(): string | null {
   try {
     const db = getOutboundDb();
@@ -133,7 +146,8 @@ export function takePendingCreateCard(): string | null {
       .get(PENDING_CREATE_CARD_KEY) as { value: string } | undefined;
     if (row) {
       db.prepare(`DELETE FROM session_state WHERE key = ?`).run(PENDING_CREATE_CARD_KEY);
-      return row.value;
+      const parsed = JSON.parse(row.value) as { card?: string };
+      return typeof parsed.card === 'string' ? parsed.card : null;
     }
   } catch {
     // Best-effort — see markDeterministicMutationEmitted.
