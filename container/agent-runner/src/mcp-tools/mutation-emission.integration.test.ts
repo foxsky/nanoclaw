@@ -7,7 +7,8 @@ import {
   getOutboundDb,
   initTestSessionDb,
 } from '../db/connection.ts';
-import { __resetDedupForTesting, takePendingCreateCard } from './mutation-dedup.ts';
+import { flushPendingCreateCard } from './mutation-confirmation.ts';
+import { __resetDedupForTesting } from './mutation-dedup.ts';
 import { setupEngineDb } from './taskflow-test-fixtures.ts';
 
 // Phase-3 unit-2-core / Codex gate P5: session-DB-backed end-to-end
@@ -98,7 +99,7 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     );
   });
 
-  it('a no-reparent create DEFERS its card — stored as pending, NOT emitted to messages_out (Phase-3 #7)', async () => {
+  it('a no-reparent create DEFERS its card, then flushPendingCreateCard emits EXACTLY ONE byte-exact row (Phase-3 #7)', async () => {
     const db = setupEngineDb(BOARD, { withBoardAdmins: true });
     const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
     db.prepare(
@@ -114,14 +115,25 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     );
     expect(result.success).toBe(true);
 
-    // Deferred: the create card is NOT in messages_out — emitting eagerly
-    // would double-emit on a following api_admin(reparent_task).
+    // Deferred: the create card is NOT emitted at api_create_task time —
+    // an eager emit would double-emit on a following api_admin(reparent_task).
     expect((getOutboundDb().prepare('SELECT count(*) AS n FROM messages_out').get() as { n: number }).n).toBe(0);
-    // It is stored as the pending create card, byte-exact v1 "Tarefa criada".
-    expect(takePendingCreateCard()).toBe(
+
+    // The poll-loop turn-boundary flush emits exactly ONE byte-exact
+    // v1 "Tarefa criada" row.
+    flushPendingCreateCard();
+    const rows = getOutboundDb()
+      .prepare('SELECT kind, content FROM messages_out')
+      .all() as Array<{ kind: string; content: string }>;
+    expect(rows.length).toBe(1);
+    expect(rows[0].kind).toBe('chat');
+    expect(JSON.parse(rows[0].content).text).toBe(
       `✅ *Tarefa criada*\n━━━━━━━━━━━━━━\n\n*${result.data.id}* — Treinamento E-governe\n👤 *Atribuída a:* bob\n⏭️ *Coluna:* Próximas Ações`,
     );
-    expect(takePendingCreateCard()).toBeNull(); // read-and-clear
+
+    // Read-and-clear: a second flush (the turn-boundary safety net) is a no-op.
+    flushPendingCreateCard();
+    expect((getOutboundDb().prepare('SELECT count(*) AS n FROM messages_out').get() as { n: number }).n).toBe(1);
   });
 
   it('api_task_add_note emits EXACTLY ONE row with the byte-exact v1 "atualizada • Nota: <text>" card', async () => {

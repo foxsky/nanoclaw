@@ -22,7 +22,7 @@ import { randomUUID } from 'node:crypto';
 
 import { writeMessageOut } from '../db/messages-out.js';
 import { getSessionRouting, type SessionRouting } from '../db/session-routing.js';
-import { markDeterministicMutationEmitted } from './mutation-dedup.js';
+import { markDeterministicMutationEmitted, takePendingCreateCard } from './mutation-dedup.js';
 import { log } from './util.js';
 
 interface MutationResultShape {
@@ -79,4 +79,17 @@ export function emitMutationConfirmation(
     // still never failing the mutation.
     (deps.onError ?? log)(`mutation confirmation emission failed: ${String(err)}`);
   }
+}
+
+/**
+ * Flush the deferred no-reparent create card (Phase-3 #7) through the
+ * shared emit path. Called from poll-loop: once per turn in
+ * `dispatchResultText`, plus at the unconditional turn boundary as a
+ * safety net for a stream-error / no-result turn (symmetric with
+ * `drainDeterministicMutationFlag`). `takePendingCreateCard` is
+ * read-and-clear, so across the two call sites it emits at most once.
+ */
+export function flushPendingCreateCard(): void {
+  const card = takePendingCreateCard();
+  if (card) emitMutationConfirmation({ success: true, formatted: card });
 }

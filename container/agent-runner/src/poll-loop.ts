@@ -25,8 +25,8 @@ import {
 import {
   consumeDeterministicMutationFlag,
   drainDeterministicMutationFlag,
-  takePendingCreateCard,
 } from './mcp-tools/mutation-dedup.js';
+import { flushPendingCreateCard } from './mcp-tools/mutation-confirmation.js';
 import { appendToolEvents, type ToolEvent } from './providers/claude-tool-capture.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 import { TaskflowEngine, normalizePhone, type ReassignResult } from './taskflow-engine.js';
@@ -3714,6 +3714,10 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // followed by a stream error / no-result close would leak into the
     // next turn and silently suppress its bare-text fallback.
     drainDeterministicMutationFlag();
+    // Phase-3 #7 safety net: a stream-error / no-result turn skips
+    // dispatchResultText, so flush any deferred create card here at the
+    // unconditional boundary (read-and-clear → no double-emit).
+    flushPendingCreateCard();
     log(`Completed ${ids.length} message(s)`);
   }
 }
@@ -3969,22 +3973,12 @@ function dispatchResultText(text: string, routing: RoutingContext): void {
   // create stores its "Tarefa criada"/"Projeto criado" card instead of
   // emitting eagerly (api_create_task can't take a parent, so an eager
   // emit would double-emit on a following api_admin(reparent_task); the
-  // reparent clears it). Flushed here — once per `result` event, and
-  // BEFORE processQuery's finally clears the web-origin context, so
-  // writeMessageOut's web-chat-reply rewrite still applies. Above the
-  // early returns below so it runs on every path.
-  const pendingCreateCard = takePendingCreateCard();
-  if (pendingCreateCard) {
-    writeMessageOut({
-      id: generateId(),
-      in_reply_to: routing.inReplyTo,
-      kind: 'chat',
-      platform_id: routing.platformId,
-      channel_type: routing.channelType,
-      thread_id: routing.threadId,
-      content: JSON.stringify({ text: pendingCreateCard }),
-    });
-  }
+  // reparent clears it). Flushed once per `result` event, BEFORE
+  // processQuery's finally clears the web-origin context so the
+  // web-chat-reply rewrite still applies. A stream-error / no-result
+  // turn skips this — the turn-boundary call (next to
+  // drainDeterministicMutationFlag) is the safety net.
+  flushPendingCreateCard();
 
   const MESSAGE_RE = /<message\s+to="([^"]+)"\s*>([\s\S]*?)<\/message>/g;
 
