@@ -27,17 +27,10 @@ const ROUTING = { channel_type: 'whatsapp', platform_id: '120363400000000000@g.u
 beforeEach(() => {
   __resetDedupForTesting();
   initTestSessionDb();
-  // session_routing is host-written on container wake (initTestSessionDb
-  // doesn't seed it); without it the emitMutationConfirmation guard
-  // suppresses all emission. Create + seed for end-to-end coverage.
-  getInboundDb().exec(`
-    CREATE TABLE session_routing (
-      id INTEGER PRIMARY KEY,
-      channel_type TEXT,
-      platform_id TEXT,
-      thread_id TEXT
-    );
-  `);
+  // session_routing is host-written on container wake. Seed it here so
+  // emitMutationConfirmation's routing guard passes. The table itself
+  // is created by initTestSessionDb (2026-05-23, send_message same-conv
+  // dedup follow-up needed it for the carve-out test too).
   getInboundDb()
     .prepare('INSERT INTO session_routing (id, channel_type, platform_id, thread_id) VALUES (1, ?, ?, ?)')
     .run(ROUTING.channel_type, ROUTING.platform_id, ROUTING.thread_id);

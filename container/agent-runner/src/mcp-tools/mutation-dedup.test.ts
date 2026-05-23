@@ -173,6 +173,78 @@ describe('mutation-dedup — scope carve-out for explicit agent messaging paths'
   });
 });
 
+describe('mutation-dedup — send_message / send_file mark on same-conv emit (Codex Turn-25 followup)', () => {
+  // Codex review on thiago Turn 25 (2026-05-23) found a residual dedup gap:
+  // when the model calls send_message MCP AND ALSO emits the same text as
+  // bare-text-final, both go through — the dedup flag bypass on send_message
+  // (the `ba24ef23` scope decision) holds when the destination is genuinely
+  // a DIFFERENT conversation (cross-board relay) but fails when send_message
+  // targets the SAME chat the user wrote in (the bare-text-final is then a
+  // redundant narration). Fix: send_message/send_file MARK the dedup flag
+  // ONLY when the target destination matches the session_routing (same-conv).
+  // Cross-conv send keeps the bypass — bare-text in the source conv is a
+  // legitimate separate reply.
+  const SAME_JID = '120363423211033081@g.us';
+  const OTHER_JID = '120363406395935726@g.us';
+
+  beforeEach(() => {
+    initTestSessionDb();
+    __resetDedupForTesting();
+    const db = getInboundDb();
+    db.prepare(
+      `INSERT INTO session_routing (id, channel_type, platform_id, thread_id)
+       VALUES (1, 'whatsapp', ?, NULL)`,
+    ).run(SAME_JID);
+    db.prepare(
+      `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+       VALUES ('self', 'Self', 'channel', 'whatsapp', ?, NULL)`,
+    ).run(SAME_JID);
+    db.prepare(
+      `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+       VALUES ('other', 'Other', 'channel', 'whatsapp', ?, NULL)`,
+    ).run(OTHER_JID);
+  });
+  afterEach(() => {
+    closeSessionDb();
+  });
+
+  it('send_message to SAME-CONV dest MARKS the dedup flag (suppresses subsequent bare-text)', async () => {
+    await sendMessage.handler({ to: 'self', text: 'apology' });
+    expect(consumeDeterministicMutationFlag()).toBe(true);
+  });
+
+  it('send_message to CROSS-CONV dest does NOT mark the dedup flag (cross-board relay preserves bare-text)', async () => {
+    await sendMessage.handler({ to: 'other', text: 'relay to other board' });
+    expect(consumeDeterministicMutationFlag()).toBe(false);
+  });
+
+  it('send_file to SAME-CONV dest MARKS the dedup flag', async () => {
+    const wsAgent = '/workspace/agent';
+    fs.mkdirSync(wsAgent, { recursive: true });
+    const filePath = path.join(wsAgent, 'dedup-mark-fixture.txt');
+    fs.writeFileSync(filePath, 'hi');
+    try {
+      await sendFile.handler({ to: 'self', path: filePath, filename: 'fixture.txt' });
+    } finally {
+      fs.rmSync(filePath, { force: true });
+    }
+    expect(consumeDeterministicMutationFlag()).toBe(true);
+  });
+
+  it('send_file to CROSS-CONV dest does NOT mark the dedup flag', async () => {
+    const wsAgent = '/workspace/agent';
+    fs.mkdirSync(wsAgent, { recursive: true });
+    const filePath = path.join(wsAgent, 'dedup-nomark-fixture.txt');
+    fs.writeFileSync(filePath, 'hi');
+    try {
+      await sendFile.handler({ to: 'other', path: filePath, filename: 'fixture.txt' });
+    } finally {
+      fs.rmSync(filePath, { force: true });
+    }
+    expect(consumeDeterministicMutationFlag()).toBe(false);
+  });
+});
+
 describe('mutation-dedup — turn-boundary drain (Codex P-Audit-3 leak prevention)', () => {
   // If a mutation marks the flag inside an MCP tool and the provider stream
   // then errors / closes without ever emitting a `result` event,

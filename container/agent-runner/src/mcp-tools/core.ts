@@ -13,8 +13,34 @@ import { getCurrentInReplyTo } from '../current-batch.js';
 import { findByName, getAllDestinations } from '../destinations.js';
 import { getMessageIdBySeq, getRoutingBySeq, writeMessageOut } from '../db/messages-out.js';
 import { getSessionRouting } from '../db/session-routing.js';
+import { markDeterministicMutationEmitted } from './mutation-dedup.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
+
+/**
+ * Mark the dedup flag when an explicit emission lands in the SAME
+ * conversation the user wrote in. Codex Turn-25 follow-up (2026-05-23):
+ * when the model calls send_message/send_file AND ALSO emits the same text
+ * as bare-text-final (or wraps it in a same-conv `<message>` block), both
+ * went through unconditionally — the `ba24ef23` scope decision kept
+ * explicit-emission paths as a blanket BYPASS. That bypass holds when the
+ * destination is genuinely a DIFFERENT conversation (cross-board relay);
+ * it fails when send_message targets the same chat the user wrote in,
+ * because the bare-text-final is then a redundant narration. Cross-conv
+ * send_message keeps the bypass (bare-text in the source conv is a
+ * legitimate separate reply).
+ */
+function markIfSameConv(routing: { channel_type: string; platform_id: string }): void {
+  const session = getSessionRouting();
+  if (
+    session.channel_type &&
+    session.platform_id &&
+    session.channel_type === routing.channel_type &&
+    session.platform_id === routing.platform_id
+  ) {
+    markDeterministicMutationEmitted();
+  }
+}
 
 function log(msg: string): void {
   console.error(`[mcp-tools] ${msg}`);
@@ -126,6 +152,7 @@ export const sendMessage: McpToolDefinition = {
       content: JSON.stringify({ text }),
     });
 
+    markIfSameConv(routing);
     log(`send_message: #${seq} → ${routing.resolvedName}`);
     return ok(`Message sent to ${routing.resolvedName} (id: ${seq})`);
   },
@@ -173,6 +200,7 @@ export const sendFile: McpToolDefinition = {
       content: JSON.stringify({ text: (args.text as string) || '', files: [filename] }),
     });
 
+    markIfSameConv(routing);
     log(`send_file: ${id} → ${routing.resolvedName} (${filename})`);
     return ok(`File sent to ${routing.resolvedName} (id: ${id}, filename: ${filename})`);
   },
