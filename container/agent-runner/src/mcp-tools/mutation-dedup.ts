@@ -22,20 +22,40 @@
  *     `poll-loop.ts:3990-4000` — the auto-route of unwrapped final text
  *     to a sole destination (redundant model narrative after the
  *     deterministic v1 card).
- *   - BYPASS (intentional): explicit agent-stated emission paths —
- *     the `send_message` / `send_file` MCP tools in `core.ts` never
- *     consult the flag; `<message to=…>` blocks bypass when they target
- *     a DIFFERENT conversation (legitimate cross-board relay).
+ *   - BYPASS (intentional): cross-conversation explicit emission paths —
+ *     `send_message`/`send_file` to a DIFFERENT chat than the inbound's
+ *     session_routing, and `<message to=…>` blocks targeting a different
+ *     conversation (legitimate cross-board relay). Bare-text in the
+ *     source conv is then a separate legitimate reply.
  *   - SUPPRESSED (refined #7 follow-up): a `<message to="<same-conv>">`
  *     block right after a deterministic mutation card is the same
  *     redundant model narration the bare-text fallback already kills —
  *     `<message>`-wrapped. Gated by `shouldSuppressSameConvMessage`
  *     (mcp-tools/message-block-dedup.ts) and locked by its tests.
- *   - PRODUCER (not "bypass"): `emitMutationConfirmation` is the sole
- *     caller of `mark`. Other internal `writeMessageOut` callers
- *     (sendToDestination for both the bare-text branch and the
- *     `<message>`-block branch share that primitive) inherit the
- *     suppression behavior of their dispatch site, not the writer.
+ *   - PRODUCERS of the flag: `emitMutationConfirmation` (TaskFlow
+ *     mutation cards) AND — as of `7914f979` Codex Turn-25 follow-up —
+ *     `send_message`/`send_file` when their target matches the inbound's
+ *     `session_routing` (same-conv). The Turn-25 finding: model called
+ *     send_message + emitted same text as bare-text-final, both went
+ *     through. The cross-conv bypass is preserved (cross-board relay
+ *     still works). KNOWN LIMITATIONS (Codex 2026-05-23):
+ *     (a) A2A under-match — `markIfSameConv` checks session_routing
+ *     which is null for agent-shared sessions; an A2A reply that should
+ *     be "same-conv" (channel='agent', dest=source-agent-group) won't
+ *     mark. `shouldSuppressSameConvMessage` handles this case via the
+ *     per-turn routing param; markIfSameConv doesn't have that param.
+ *     Acceptable: A2A send_message+bare-text duplication is not observed
+ *     in any current corpus; revisit when an A2A regression surfaces.
+ *     (b) Content-blind — any same-conv send_message suppresses ANY
+ *     later bare-text, not just duplicates. A legitimate "ack via tool,
+ *     then bare follow-up question" would lose the follow-up. Trade-off
+ *     accepted: the model rarely does ack+followup; if a regression
+ *     surfaces, the fix is content-equality (store send_message text,
+ *     compare to bare-text before suppressing).
+ *   - Other internal `writeMessageOut` callers (sendToDestination for
+ *     both the bare-text branch and the `<message>`-block branch share
+ *     that primitive) inherit the suppression behavior of their dispatch
+ *     site, not the writer.
  */
 import { getOutboundDb } from '../db/connection.js';
 
