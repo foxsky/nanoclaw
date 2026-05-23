@@ -111,21 +111,22 @@ describe('mutation-dedup — CROSS-PROCESS (real Bun.spawn child)', () => {
 });
 
 describe('mutation-dedup — scope carve-out for explicit agent messaging paths', () => {
-  // The Codex P4 dedup primitive intentionally targets ONLY the bare-text
-  // fallback in poll-loop's `dispatchResultText` — the case where the model
-  // emits no <message to=…> block and no send_message tool call, and the
-  // single configured destination would otherwise auto-receive the bare
-  // narrative reply (redundant with the deterministic v1-card already
-  // emitted). Other emission paths represent the agent's STATED intent and
-  // must NOT be suppressed:
-  //   - `send_message` / `send_file` MCP tools → direct writeMessageOut,
-  //     never call consumeDeterministicMutationFlag.
-  //   - `<message to="name">…</message>` blocks in final text →
-  //     dispatchResultText processes them BEFORE the bare-text branch and
-  //     never gates them on the flag.
-  // Codex P-Audit-2 (2026-05-19) acknowledged these as out-of-scope; this
-  // test locks the structural carve-out so a future "extend dedup to all
-  // emissions" refactor cannot silently swallow agent-explicit messages.
+  // The P4 dedup primitive suppresses redundant model narration. Scope
+  // (refined `7dc44f21`):
+  //   - bare-text fallback in `dispatchResultText` → SUPPRESS.
+  //   - `<message to="<same-conversation>">` blocks after a card →
+  //     SUPPRESS via `shouldSuppressSameConvMessage` (mcp-tools/
+  //     message-block-dedup.ts).
+  //   - `<message to="<other-conversation>">` blocks → BYPASS (legitimate
+  //     cross-board relay).
+  //   - `send_message` / `send_file` MCP tools → BYPASS (a distinct
+  //     agent intent — explicit tool call, not redundant NL). These call
+  //     `writeMessageOut` directly and never consult the flag; this test
+  //     locks that bypass.
+  // Codex P-Audit-2 (2026-05-19) originally acknowledged the broader
+  // `<message>` bypass as out-of-scope; the 7dc44f21 refinement narrows
+  // it to same-conversation only without breaking the explicit-tool path
+  // tested here.
   beforeEach(() => {
     initTestSessionDb();
     __resetDedupForTesting();

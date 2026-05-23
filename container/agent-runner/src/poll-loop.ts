@@ -3711,14 +3711,18 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     markCompleted(processingIds);
     // Codex P-Audit-3: drain any stale mutation-dedup flag at the
     // unconditional turn boundary. dispatchResultText only fires on a
-    // `result` event; without this, a mark set by an MCP mutation
+    // `result` event; without these, a mark set by an MCP mutation
     // followed by a stream error / no-result close would leak into the
-    // next turn and silently suppress its bare-text fallback.
-    drainDeterministicMutationFlag();
-    // Phase-3 #7 safety net: a stream-error / no-result turn skips
-    // dispatchResultText, so flush any deferred create card here at the
-    // unconditional boundary (read-and-clear → no double-emit).
+    // next turn — now suppressing both its bare-text fallback AND its
+    // same-conv `<message>` blocks (`7dc44f21` refinement).
+    //
+    // Order matters: FLUSH first, DRAIN after. flushPendingCreateCard →
+    // emitMutationConfirmation re-marks the dedup flag on emit (Codex
+    // gate 2026-05-22); doing it before the drain ensures that re-mark
+    // is also cleared. The normal `result`-event path already flushed
+    // (read-and-clear), so the boundary flush is a no-op there.
     flushPendingCreateCard();
+    drainDeterministicMutationFlag();
     log(`Completed ${ids.length} message(s)`);
   }
 }
@@ -3963,11 +3967,15 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
 function dispatchResultText(text: string, routing: RoutingContext): void {
   // Consume the deterministic-mutation dedup flag at turn end (Codex
   // P4). If a TaskFlow mutation card was already emitted this turn, the
-  // model's same-turn bare-text final reply is redundant (v1 sent only
-  // the card). Consume regardless of whether bare-text would fire, so
-  // the flag never leaks across turns. Scope is bare-text only: explicit
-  // `<message to=…>` blocks below represent the agent's stated intent
-  // and dispatch unconditionally. See mutation-dedup.ts SCOPE section.
+  // model's same-turn redundant reply is — v1 sent only the card.
+  // Consume regardless of whether the bare-text branch fires, so the
+  // flag never leaks across turns. Scope (refined `7dc44f21`):
+  //   - bare-text fallback → SUPPRESS when set.
+  //   - `<message to="<same-conv>">` blocks → SUPPRESS via
+  //     `shouldSuppressSameConvMessage` below (same-conv =
+  //     `<message>`-wrapped redundant NL).
+  //   - `<message to="<other-conv>">` blocks → BYPASS (cross-board relay).
+  // See mutation-dedup.ts SCOPE + mcp-tools/message-block-dedup.ts.
   const suppressBareFallback = consumeDeterministicMutationFlag();
 
   // Phase-3 #7: flush the deferred no-reparent create card. A standalone
