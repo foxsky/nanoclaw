@@ -170,6 +170,19 @@ export function writeSessionRouting(agentGroupId: string, sessionId: string): vo
     }
   }
 
+  // Phase-3 harness override: when the corpus turn knows which chat it
+  // came from (NANOCLAW_PHASE_REPLAY_GROUP_JID set by phase3-driver per
+  // turn), use that as the session_routing platform_id so deterministic
+  // mutation cards emit to the SAME conversation the user wrote in —
+  // not the messaging_group's default (which the harness pins to seci).
+  // See project_v2_phase3_replay_status.md "HARNESS LIMITATION" 2026-05-23.
+  // No-op in production (env var unset).
+  const phaseReplayJid = process.env.NANOCLAW_PHASE_REPLAY_GROUP_JID;
+  if (phaseReplayJid) {
+    platformId = phaseReplayJid;
+    if (!channelType) channelType = 'whatsapp';
+  }
+
   const db = openInboundDb(agentGroupId, sessionId);
   try {
     upsertSessionRouting(db, {

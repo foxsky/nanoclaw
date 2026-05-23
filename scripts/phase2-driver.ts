@@ -84,7 +84,7 @@ interface TurnResult {
   v2: {
     tools: { name: string; input: unknown }[];
     results: { id: string; is_error: boolean }[];
-    outbound: { kind: string; content: string }[];
+    outbound: { kind: string; content: string; platform_id: string | null; channel_type: string | null; thread_id: string | null }[];
     elapsed_ms: number;
     settle_reason: string;
   };
@@ -158,12 +158,12 @@ function readToolEvents(captureFile: string): V2ToolEvent[] {
     .map((l) => JSON.parse(l) as V2ToolEvent);
 }
 
-function readOutboundMessages(agentGroupId: string, sessionId: string, afterSeq = 0): { kind: string; content: string }[] {
+function readOutboundMessages(agentGroupId: string, sessionId: string, afterSeq = 0): { kind: string; content: string; platform_id: string | null; channel_type: string | null; thread_id: string | null }[] {
   const dbPath = outboundDbPath(agentGroupId, sessionId);
   if (!fs.existsSync(dbPath)) return [];
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
   try {
-    return db.prepare('SELECT kind, content FROM messages_out WHERE seq > ? ORDER BY seq').all(afterSeq) as { kind: string; content: string }[];
+    return db.prepare('SELECT kind, content, platform_id, channel_type, thread_id FROM messages_out WHERE seq > ? ORDER BY seq').all(afterSeq) as { kind: string; content: string; platform_id: string | null; channel_type: string | null; thread_id: string | null }[];
   } finally {
     db.close();
   }

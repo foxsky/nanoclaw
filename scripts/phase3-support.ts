@@ -33,6 +33,12 @@ export interface ToolCall {
 export interface OutboundRow {
   kind: string;
   content: string;
+  // Per-row routing — captured 2026-05-23 to verify card vs chatter
+  // destinations (Codex BLOCKER on session_routing/messages_in split).
+  // Optional for backward compat with prior result files.
+  platform_id?: string | null;
+  channel_type?: string | null;
+  thread_id?: string | null;
 }
 
 export interface Phase3ExpectedBehavior {
