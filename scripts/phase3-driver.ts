@@ -137,6 +137,17 @@ function runPhase2Driver(metadata: Phase3TurnMetadata, args: Args): void {
   if (metadata.taskflow_board_id) {
     env.NANOCLAW_PHASE_REPLAY_TASKFLOW_BOARD_ID = metadata.taskflow_board_id;
   }
+  // Per-turn routing: when the corpus turn carries an actual chat_jid,
+  // plumb it as the inbound platform_id so routing.platformId reflects the
+  // real source conversation (not the hard-coded seci default). Required
+  // for the same-conv `<message>` dedup helper to fire correctly during
+  // non-seci board replays — see project_v2_phase3_replay_status.md
+  // "HARNESS LIMITATION" 2026-05-23 and feedback_diagnose_state_drift_before_bug.
+  if (metadata.source_chat_jid) {
+    env.NANOCLAW_PHASE_REPLAY_GROUP_JID = metadata.source_chat_jid;
+  } else {
+    delete env.NANOCLAW_PHASE_REPLAY_GROUP_JID;
+  }
   if (metadata.prior_bot_message_depth !== undefined) {
     env.NANOCLAW_PHASE3_PRIOR_BOT_MESSAGE_DEPTH = String(metadata.prior_bot_message_depth);
   } else {

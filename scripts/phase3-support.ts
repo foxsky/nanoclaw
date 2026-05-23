@@ -88,6 +88,13 @@ export interface Phase3TurnMetadata {
   expected_behavior?: Phase3ExpectedBehavior;
   v1_bug?: Phase3V1BugAnnotation;
   state_drift?: Phase3StateDriftAnnotation;
+  // The corpus turn's actual WhatsApp chat JID. Plumbed to phase2-driver
+  // via NANOCLAW_PHASE_REPLAY_GROUP_JID so each turn's routing.platformId
+  // matches the source conversation (rather than the hard-coded seci JID).
+  // Required for same-conv dedup checks to fire correctly during non-seci
+  // board replays — see project_v2_phase3_replay_status.md "HARNESS
+  // LIMITATION" 2026-05-23.
+  source_chat_jid?: string;
 }
 
 export interface Phase3CorpusTurn {
@@ -110,6 +117,7 @@ export interface Phase3CorpusTurn {
   state_drift?: Phase3StateDriftAnnotation;
   parsed_messages?: Array<{ sender?: string; time?: string; text?: string }>;
   user_message?: string;
+  source_chat_jid?: string;
 }
 
 export interface Phase3TurnResult {
@@ -354,6 +362,7 @@ export function inferPhase3Metadata(
     expected_behavior: turn.expected_behavior,
     v1_bug: turn.v1_bug,
     state_drift: turn.state_drift,
+    source_chat_jid: turn.source_chat_jid,
   };
   if (!override) return inferred;
   return {
