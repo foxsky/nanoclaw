@@ -129,6 +129,48 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     expect((getOutboundDb().prepare('SELECT count(*) AS n FROM messages_out').get() as { n: number }).n).toBe(1);
   });
 
+  it('api_create_task + api_delete_simple_task in the same turn → flush emits NOTHING (no orphan card)', async () => {
+    // Invariant: when v2 creates and then immediately deletes a task (e.g.,
+    // the cross-board forward flow: create locally → reparent failed → delete →
+    // forward via send_message), the deferred "Tarefa criada" card MUST NOT
+    // flush. Otherwise the user sees a confirmation for a task that no
+    // longer exists. Mirrors how api_admin(reparent_task) already clears
+    // the pending card to avoid double-emit.
+    const db = setupEngineDb(BOARD, { withBoardAdmins: true });
+    const { apiCreateTaskTool, apiDeleteSimpleTaskTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+
+    const created = JSON.parse(
+      (
+        await apiCreateTaskTool.handler({
+          board_id: BOARD,
+          type: 'simple',
+          title: 'Forward this elsewhere',
+          sender_name: 'alice',
+          assignee: 'bob',
+        })
+      ).content[0].text,
+    );
+    expect(created.success).toBe(true);
+
+    const deleted = JSON.parse(
+      (
+        await apiDeleteSimpleTaskTool.handler({
+          board_id: BOARD,
+          task_id: created.data.id,
+          sender_name: 'alice',
+          sender_is_service: true,
+        })
+      ).content[0].text,
+    );
+    expect(deleted.success).toBe(true);
+
+    flushPendingCreateCard();
+    expect((getOutboundDb().prepare('SELECT count(*) AS n FROM messages_out').get() as { n: number }).n).toBe(0);
+  });
+
   it('api_task_add_note emits EXACTLY ONE row with the byte-exact v1 "atualizada • Nota: <text>" card', async () => {
     setupEngineDb(BOARD, { withBoardAdmins: true });
     const { apiCreateSimpleTaskTool } = await import('./taskflow-api-mutate.ts');

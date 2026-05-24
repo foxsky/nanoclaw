@@ -801,6 +801,10 @@ export const apiDeleteSimpleTaskTool: McpToolDefinition = {
       sender_name: parsed.senderName,
       sender_is_service: parsed.senderIsService,
     });
+    // Mirror api_admin(reparent_task): a same-turn create-then-delete must
+    // not leave its pending "Tarefa criada" card behind. Task-id-matched
+    // so an unrelated sibling create's card is preserved.
+    if (result.success) clearPendingCreateCard(parsed.taskId);
     return jsonResponse(result);
   },
 };
