@@ -438,11 +438,16 @@ export function addNoteFormattedResult<
   if (!result.success || result.formatted) return result;
   if (args.parent_note_id !== undefined) return result;
   // Engine signals dedup via changes: ['Nota já existente: <text>'] with
-  // success:true; emitting a fresh-registration card here would tell the
-  // user the note was added when it was actually dropped.
+  // success:true. v1 ground truth (seci Turn 35): emit a deterministic
+  // "Nota já existente na <id> — '<text>' já estava registrada
+  // anteriormente. Nenhuma duplicata foi adicionada." card so the user
+  // sees the truth without depending on model echo.
   const changes = Array.isArray(result.changes) ? result.changes : [];
   if (typeof changes[0] === 'string' && changes[0].startsWith('Nota já existente:')) {
-    return result;
+    return {
+      ...result,
+      formatted: `Nota já existente na ${args.task_id} — "${args.text}" já estava registrada anteriormente. Nenhuma duplicata foi adicionada.`,
+    };
   }
   const card = buildNoteCard(args.task_id, args.text);
   if (!card) return result;

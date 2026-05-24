@@ -91,14 +91,16 @@ describe('addNoteFormattedResult — wires buildNoteCard onto api_task_add_note'
     expect((out as { formatted?: string }).formatted).toBeUndefined();
   });
 
-  it('engine dedup branch (changes startsWith "Nota já existente:") → unchanged (do not falsely claim registration)', () => {
+  it('engine dedup branch (changes startsWith "Nota já existente:") → byte-exact "Nota já existente na <id>" card (deterministic emit, Codex seci Turn 35)', () => {
     const out = addNoteFormattedResult(
       addNoteResult({
         changes: ['Nota já existente: Demanda no chamado CAST 38876'],
       }) as never,
       { task_id: 'P11.23', text: 'Demanda no chamado CAST 38876' },
     );
-    expect((out as { formatted?: string }).formatted).toBeUndefined();
+    expect((out as { formatted?: string }).formatted).toBe(
+      `Nota já existente na P11.23 — "Demanda no chamado CAST 38876" já estava registrada anteriormente. Nenhuma duplicata foi adicionada.`,
+    );
   });
 
   it('empty taskId arg → unchanged (defensive; engine would have errored upstream anyway)', () => {

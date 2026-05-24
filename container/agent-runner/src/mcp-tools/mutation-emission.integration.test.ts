@@ -129,6 +129,58 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     expect((getOutboundDb().prepare('SELECT count(*) AS n FROM messages_out').get() as { n: number }).n).toBe(1);
   });
 
+  it('api_task_add_note on a duplicate note emits EXACTLY ONE byte-exact "Nota já existente..." row deterministically', async () => {
+    // Invariant: when the engine detects a duplicate note (success:true,
+    // changes: ['Nota já existente: <text>'], changed:false), v2 emits a
+    // v1-faithful card via emitMutationConfirmation — does NOT depend on
+    // model echo (seci Turn 35: same tool path, baseline emitted, rerun
+    // went silent for 360s. Codex follow-up to 90f2ddf7 dup-create-emit).
+    setupEngineDb(BOARD, { withBoardAdmins: true });
+    const { apiCreateSimpleTaskTool } = await import('./taskflow-api-mutate.ts');
+    const { apiTaskAddNoteTool } = await import('./taskflow-api-notes.ts');
+
+    const created = JSON.parse(
+      (
+        await apiCreateSimpleTaskTool.handler({
+          board_id: BOARD, title: 'Solicitar acesso', sender_name: 'alice',
+        })
+      ).content[0].text,
+    );
+    const taskId = created.data.id;
+
+    const noteText = 'Verificar se a melhor opção é usar Tailscale ou AnyDesk';
+    const first = JSON.parse(
+      (
+        await apiTaskAddNoteTool.handler({
+          board_id: BOARD, task_id: taskId, sender_name: 'alice', text: noteText,
+        })
+      ).content[0].text,
+    );
+    expect(first.success).toBe(true);
+    // First add emits the fresh "atualizada · Nota: ..." card.
+    expect((getOutboundDb().prepare('SELECT count(*) AS n FROM messages_out').get() as { n: number }).n).toBe(1);
+
+    // Second add of the SAME text → engine returns dedup signal. v2 must
+    // emit a deterministic "Nota já existente" card so the user sees the
+    // truth regardless of model echo.
+    const second = JSON.parse(
+      (
+        await apiTaskAddNoteTool.handler({
+          board_id: BOARD, task_id: taskId, sender_name: 'alice', text: noteText,
+        })
+      ).content[0].text,
+    );
+    expect(second.success).toBe(true);
+
+    const rows = getOutboundDb()
+      .prepare('SELECT kind, content FROM messages_out ORDER BY seq')
+      .all() as Array<{ kind: string; content: string }>;
+    expect(rows.length).toBe(2);
+    expect(JSON.parse(rows[1].content).text).toBe(
+      `Nota já existente na ${taskId} — "${noteText}" já estava registrada anteriormente. Nenhuma duplicata foi adicionada.`,
+    );
+  });
+
   it('api_create_task + api_delete_simple_task in the same turn → flush emits NOTHING (no orphan card)', async () => {
     // Invariant: when v2 creates and then immediately deletes a task (e.g.,
     // the cross-board forward flow: create locally → reparent failed → delete →
