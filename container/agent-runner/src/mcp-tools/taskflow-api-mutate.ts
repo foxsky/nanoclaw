@@ -148,6 +148,14 @@ function duplicateCreateResponse(engine: TaskflowEngine, row: Record<string, unk
   const formatted =
     `Já existe a **${taskId} — ${title}** atribuída ao ${assignee} (${columnLabel(String(row.column ?? ''))}). Parece ser o mesmo assunto.\n\n` +
     `Deseja usar a ${taskId} existente ou criar uma tarefa separada mesmo assim?`;
+  // Codex gpt-5.5/high sec-diag follow-up (2026-05-24): emit
+  // deterministically — successful mutations already emit via
+  // emitMutationConfirmation (finalizeMutationResult, pending create
+  // card flush); dup-detect was the one create-path branch that
+  // depended on the model echoing the formatted text. On sec the model
+  // went silent for 360s → harness timeout → user saw nothing. Mirror
+  // the existing pattern so the user always sees the prompt.
+  emitMutationConfirmation({ success: true, formatted });
   return jsonResponse({
     success: true,
     data: {

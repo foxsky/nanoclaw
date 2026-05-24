@@ -162,6 +162,67 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     );
   });
 
+  it('api_create_task on duplicate-detect emits EXACTLY ONE row with the "Já existe..." formatted text (Codex sec-diag follow-up)', async () => {
+    // Codex gpt-5.5/high adversarial review of sec Turn 0 diagnostic
+    // (2026-05-24) found that duplicateCreateResponse returns only tool
+    // JSON without deterministically emitting the formatted text. On sec
+    // the model received the dup-resp JSON and sat silent for 360s →
+    // harness timeout. Mirror the emitMutationConfirmation pattern so
+    // the user sees the prompt without depending on the model echoing.
+    const db = setupEngineDb(BOARD, { withBoardAdmins: true });
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+
+    // Seed an existing T_X to trigger dup-detect on the second call.
+    const first = JSON.parse(
+      (
+        await apiCreateTaskTool.handler({
+          board_id: BOARD,
+          type: 'simple',
+          title: 'SEMEC/MEI/Prestação de Contas',
+          sender_name: 'alice',
+          assignee: 'bob',
+        })
+      ).content[0].text,
+    );
+    expect(first.success).toBe(true);
+    // First create is deferred (no emit yet).
+    expect((getOutboundDb().prepare('SELECT count(*) AS n FROM messages_out').get() as { n: number }).n).toBe(0);
+
+    // Second create with same title+assignee → dup-detect path.
+    const second = JSON.parse(
+      (
+        await apiCreateTaskTool.handler({
+          board_id: BOARD,
+          type: 'simple',
+          title: 'SEMEC/MEI/Prestação de Contas',
+          sender_name: 'alice',
+          assignee: 'bob',
+        })
+      ).content[0].text,
+    );
+    expect(second.success).toBe(true);
+    expect(second.data.duplicate_candidate).toBe(true);
+
+    // The fix: deterministic emit of the formatted "Já existe..." text.
+    const rows = getOutboundDb()
+      .prepare('SELECT kind, platform_id, channel_type, content FROM messages_out')
+      .all() as Array<{ kind: string; platform_id: string | null; channel_type: string | null; content: string }>;
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'chat',
+      platform_id: ROUTING.platform_id,
+      channel_type: ROUTING.channel_type,
+    });
+    const text = JSON.parse(rows[0].content).text;
+    expect(text).toContain('Já existe a **');
+    expect(text).toContain('SEMEC/MEI/Prestação de Contas');
+    expect(text).toContain('atribuída ao bob');
+    expect(text).toContain('Deseja usar');
+  });
+
   it('api_reassign emits EXACTLY ONE row with the v1-canonicalized "Reatribuída" card (P1 + P5 combined)', async () => {
     const db = setupEngineDb(BOARD, { withBoardAdmins: true });
     const { apiCreateSimpleTaskTool, apiReassignTool } = await import('./taskflow-api-mutate.ts');
