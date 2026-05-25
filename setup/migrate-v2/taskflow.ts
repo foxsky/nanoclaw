@@ -40,10 +40,40 @@
  *
  * Usage: pnpm exec tsx setup/migrate-v2/taskflow.ts <v1-path>
  */
+import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
 import Database from 'better-sqlite3';
+
+/**
+ * Detect whether a v1 nanoclaw service unit is currently active. This is
+ * the load-bearing check that prevents the WAL race Codex flagged: WAL
+ * size is a snapshot, but a live v1 can have an empty WAL at stat time
+ * and then write again before/during our copy.
+ *
+ * Covers user-level systemd (the standard production layout per
+ * CLAUDE.md / memory), system-level systemd (sudo-installed unit), and
+ * launchd on macOS. Best-effort: if the command is missing or errors
+ * unexpectedly, returns `{active:false}` and the caller falls through
+ * to the WAL-size backup check.
+ */
+function isV1ServiceActive(): { active: boolean; how: string } {
+  if (process.platform === 'linux') {
+    for (const args of [['--user', 'is-active', 'nanoclaw'], ['is-active', 'nanoclaw']]) {
+      const r = spawnSync('systemctl', args, { encoding: 'utf8' });
+      if (r.status === 0 && r.stdout.trim() === 'active') {
+        return { active: true, how: `systemctl ${args.join(' ')}` };
+      }
+    }
+  } else if (process.platform === 'darwin') {
+    const r = spawnSync('launchctl', ['list', 'com.nanoclaw'], { encoding: 'utf8' });
+    if (r.status === 0) {
+      return { active: true, how: 'launchctl list com.nanoclaw' };
+    }
+  }
+  return { active: false, how: '' };
+}
 
 function fixOwnership(target: string, projectRoot: string): void {
   const getuid = process.getuid;
@@ -72,23 +102,41 @@ function main(): void {
     process.exit(1);
   }
 
-  // WAL safety gate — refuse if v1 still has uncheckpointed frames.
+  // Service-running gate — load-bearing against the WAL race. Must come
+  // BEFORE the WAL-size snapshot check (a live v1 can have an empty WAL
+  // at stat time, then write more after we copy).
+  const svc = isV1ServiceActive();
+  if (svc.active) {
+    console.error('ERROR: v1 nanoclaw service is currently running');
+    console.error(`       (detected via: ${svc.how})`);
+    console.error('       Copying taskflow.db while v1 is live would lose any');
+    console.error('       writes that land between the copy and the cutover.');
+    console.error('');
+    console.error('       Stop v1 first:');
+    console.error('         systemctl --user stop nanoclaw       # Linux (user unit)');
+    console.error('         sudo systemctl stop nanoclaw         # Linux (system unit)');
+    console.error('         launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist   # macOS');
+    console.error('');
+    console.error('       Then re-run migrate-v2.sh.');
+    process.exit(1);
+  }
+
+  // WAL-size backup gate — catches v1 that was killed uncleanly (service
+  // probe says "not active" but uncheckpointed frames remain in -wal).
   const v1Wal = v1Db + '-wal';
   if (fs.existsSync(v1Wal) && fs.statSync(v1Wal).size > 0) {
     const walSize = fs.statSync(v1Wal).size;
     console.error('ERROR: v1 taskflow.db has uncheckpointed WAL frames');
     console.error(`       ${v1Wal} (${walSize} bytes)`);
-    console.error('       v1 service is running OR was stopped uncleanly.');
+    console.error('       v1 was stopped uncleanly (or is running outside the standard');
+    console.error('       service unit — service probe did not detect it).');
     console.error('       Copying just taskflow.db would silently drop those frames.');
     console.error('');
-    console.error('       Fix:');
-    console.error('         systemctl --user stop nanoclaw       # Linux');
-    console.error('         launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist   # macOS');
-    console.error('');
-    console.error('       Then checkpoint the WAL into the main file:');
+    console.error('       Checkpoint the WAL into the main file:');
     console.error(`         sqlite3 "${v1Db}" 'PRAGMA wal_checkpoint(TRUNCATE); .quit'`);
+    console.error('       (sqlite3 CLI may need install: apt install sqlite3)');
     console.error('');
-    console.error('       Re-run migrate-v2.sh after.');
+    console.error('       Then re-run migrate-v2.sh.');
     process.exit(1);
   }
 
