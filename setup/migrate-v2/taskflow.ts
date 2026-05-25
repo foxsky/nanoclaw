@@ -47,23 +47,33 @@ import path from 'path';
 import Database from 'better-sqlite3';
 
 /**
- * Detect whether a v1 nanoclaw service unit is currently active. This is
- * the load-bearing check that prevents the WAL race Codex flagged: WAL
- * size is a snapshot, but a live v1 can have an empty WAL at stat time
- * and then write again before/during our copy.
+ * Detect whether a v1 nanoclaw is currently running. Load-bearing
+ * against the WAL race Codex flagged: WAL size is a snapshot, but a
+ * live v1 can have an empty WAL at stat time and then write again
+ * before/during our copy.
  *
- * Covers user-level systemd (the standard production layout per
- * CLAUDE.md / memory), system-level systemd (sudo-installed unit), and
- * launchd on macOS. Best-effort: if the command is missing or errors
- * unexpectedly, returns `{active:false}` and the caller falls through
- * to the WAL-size backup check.
+ * Coverage:
+ * - systemd user unit (standard production layout per CLAUDE.md / memory)
+ * - systemd system unit (sudo-installed)
+ * - launchd on macOS
+ * - PID file in v1 path (catches nohup / start-script launches)
+ *
+ * For systemctl, refuses on any transitional state (active, reloading,
+ * activating, deactivating) — not just `active` — because a unit in
+ * restart backoff from `Restart=always` can become live between the
+ * probe and our copy.
+ *
+ * Best-effort: if a probe errors, falls through (the WAL-size backup
+ * still catches uncheckpointed state).
  */
-function isV1ServiceActive(): { active: boolean; how: string } {
+function isV1ServiceActive(v1Path: string): { active: boolean; how: string } {
   if (process.platform === 'linux') {
+    const DANGEROUS_STATES = new Set(['active', 'reloading', 'activating', 'deactivating']);
     for (const args of [['--user', 'is-active', 'nanoclaw'], ['is-active', 'nanoclaw']]) {
       const r = spawnSync('systemctl', args, { encoding: 'utf8' });
-      if (r.status === 0 && r.stdout.trim() === 'active') {
-        return { active: true, how: `systemctl ${args.join(' ')}` };
+      const state = (r.stdout ?? '').trim();
+      if (DANGEROUS_STATES.has(state)) {
+        return { active: true, how: `systemctl ${args.join(' ')} → ${state}` };
       }
     }
   } else if (process.platform === 'darwin') {
@@ -72,6 +82,24 @@ function isV1ServiceActive(): { active: boolean; how: string } {
       return { active: true, how: 'launchctl list com.nanoclaw' };
     }
   }
+
+  // PID file probe — covers nohup-style / hand-rolled launchers that
+  // don't go through systemd or launchd. We're best-effort here: many
+  // v1 installs won't have this file at all (that's fine).
+  for (const candidate of ['nanoclaw.pid', 'data/nanoclaw.pid', 'run/nanoclaw.pid']) {
+    const pidFile = path.join(v1Path, candidate);
+    if (!fs.existsSync(pidFile)) continue;
+    const raw = fs.readFileSync(pidFile, 'utf8').trim();
+    const pid = Number.parseInt(raw, 10);
+    if (!Number.isFinite(pid) || pid <= 1) continue;
+    try {
+      process.kill(pid, 0);
+      return { active: true, how: `${candidate} → pid ${pid} alive` };
+    } catch {
+      // Stale PID file — process not running. Continue to next candidate.
+    }
+  }
+
   return { active: false, how: '' };
 }
 
@@ -94,18 +122,12 @@ function main(): void {
     process.exit(1);
   }
 
-  const v1Db = path.join(v1Path, 'data', 'taskflow', 'taskflow.db');
-  if (!fs.existsSync(v1Db) || fs.statSync(v1Db).size === 0) {
-    // v1 install has no TaskFlow surface — legitimate skip. Non-zero
-    // exit so run_step routes to the skipped branch (not silent success).
-    console.log('SKIPPED:no v1 taskflow.db');
-    process.exit(1);
-  }
-
-  // Service-running gate — load-bearing against the WAL race. Must come
-  // BEFORE the WAL-size snapshot check (a live v1 can have an empty WAL
-  // at stat time, then write more after we copy).
-  const svc = isV1ServiceActive();
+  // Service-running gate FIRST. Codex flagged: if we skipped on "no
+  // v1 taskflow.db" while v1 was live with a 0-byte / absent file,
+  // v1 could create + write TaskFlow state during the rest of the
+  // migration → silent data loss. The service gate must come before
+  // both the existence skip and the WAL-size backup check.
+  const svc = isV1ServiceActive(v1Path);
   if (svc.active) {
     console.error('ERROR: v1 nanoclaw service is currently running');
     console.error(`       (detected via: ${svc.how})`);
@@ -118,6 +140,14 @@ function main(): void {
     console.error('         launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist   # macOS');
     console.error('');
     console.error('       Then re-run migrate-v2.sh.');
+    process.exit(1);
+  }
+
+  const v1Db = path.join(v1Path, 'data', 'taskflow', 'taskflow.db');
+  if (!fs.existsSync(v1Db) || fs.statSync(v1Db).size === 0) {
+    // v1 install has no TaskFlow surface — legitimate skip. Non-zero
+    // exit so run_step routes to the skipped branch (not silent success).
+    console.log('SKIPPED:no v1 taskflow.db');
     process.exit(1);
   }
 
