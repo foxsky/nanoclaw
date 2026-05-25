@@ -350,6 +350,19 @@ run_step "1f-taskflow" \
   "Copy v1 taskflow.db (global boards/tasks state)" \
   "setup/migrate-v2/taskflow.ts" "$V1_PATH"
 
+# TaskFlow state powers boards/tasks for every group. A failure here
+# (uncheckpointed WAL, integrity violation, partial copy) means v2 would
+# start with empty or corrupt TaskFlow data → silent data loss across
+# all groups. Abort before any later phase commits us further.
+if [ "${STEP_STATUSES[${#STEP_STATUSES[@]}-1]}" = "failed" ]; then
+  echo
+  step_fail "1f-taskflow is required for cutover — aborting migration"
+  echo
+  echo "  $(dim 'See:') $STEPS_DIR/1f-taskflow.log"
+  echo
+  abort "1f-taskflow"
+fi
+
 echo
 step_ok "Phase 1 complete"
 echo
