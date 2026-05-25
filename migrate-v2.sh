@@ -346,6 +346,10 @@ run_step "1e-tasks" \
   "Port scheduled tasks" \
   "setup/migrate-v2/tasks.ts" "$V1_PATH"
 
+run_step "1f-taskflow" \
+  "Copy v1 taskflow.db (global boards/tasks state)" \
+  "setup/migrate-v2/taskflow.ts" "$V1_PATH"
+
 echo
 step_ok "Phase 1 complete"
 echo
