@@ -95,8 +95,13 @@ function isV1ServiceActive(v1Path: string): { active: boolean; how: string } {
     try {
       process.kill(pid, 0);
       return { active: true, how: `${candidate} → pid ${pid} alive` };
-    } catch {
-      // Stale PID file — process not running. Continue to next candidate.
+    } catch (e) {
+      // EPERM means the pid EXISTS but we can't signal it (different
+      // user). That's still a live writer — refuse. ESRCH (and anything
+      // else) means the pid is gone; continue.
+      if ((e as NodeJS.ErrnoException).code === 'EPERM') {
+        return { active: true, how: `${candidate} → pid ${pid} alive (other user)` };
+      }
     }
   }
 
