@@ -292,19 +292,25 @@ For each bucket:
 
 - **Overlapping** (e.g., `add-discord`, `add-slack`, `add-taskflow`, `add-whatsapp`, `customize`, `setup`) — DO NOT copy v1's version. v2 has reimplemented these against the channel-adapter / container contracts; v1's version would clobber a working install. If the user customized v1's version, surface the v1-vs-v2 SKILL.md diff and walk the user through reapplying their customizations on top of v2's version — don't lift-and-drop.
 
-- **V1-only** — open each one's `SKILL.md` and apply `scanForV1Patterns` from `setup/migrate-v2/shared.ts`. Bucket the results:
+- **V1-only** — read each one's `SKILL.md` and classify in this precedence order (each skill lands in exactly one bucket):
 
-  - **Architecture-incompatible** — scan matches v1-specific primitives (`/workspace/group/`, IPC plugin contracts, `registered_groups` direct queries, etc.). Examples from a typical v1 install: `add-compact` (v1 IPC compaction), `add-long-term-context` (v1 memory layer), `add-agent-swarm` / `add-telegram-swarm` (v1 swarm patterns). Stash to `docs/v1-fork-reference/skills-incompatible/` with a one-line "why" per skill. Don't port.
+  1. **Already in v2 under a different name** — first-pass mapping. Examples: `add-gmail` → `add-gmail-tool`, `add-long-term-context` → `add-mnemon` (or `add-karpathy-llm-wiki`). Skip with a note pointing the user at the v2 equivalent.
 
-  - **Portable** — scan finds no v1 architecture markers; the skill is purely about agent behavior or installs an external integration. Examples: `add-pdf-reader`, `add-image-vision`, `add-voice-transcription`, `add-reactions`, `add-travel-assistant`, `add-gmail` (if v2's `add-gmail-tool` doesn't cover the same surface). Copy to `.claude/skills/` and verify it loads.
+  2. **Architecture-incompatible** — the skill's `SKILL.md` describes patches to `src/`, `container/agent-runner/src/`, or `container/Dockerfile`, OR references v1-only primitives. Concrete markers to grep for (no helper function exists; check inline):
+     - paths: `/workspace/group/`, `/workspace/ipc/`, `/workspace/global/`
+     - tables: `registered_groups`, mentions of `is_main` on a registered_groups row (v2 uses `is_main_control` on messaging_groups)
+     - file refs: `src/channels/whatsapp.ts`, `src/index.ts`, `src/container-runner.ts`, `container/agent-runner/src/index.ts`, `container/agent-runner/src/ipc-mcp-stdio.ts`, `container/Dockerfile`
+     - module names: `ipc-plugins/`, mentions of v1 IPC compaction or v1 swarm modules
 
-  - **Already in v2 under a different name** — surface the rename and skip. Examples: `add-gmail` → `add-gmail-tool`, `add-long-term-context` → `add-mnemon` / `add-karpathy-llm-wiki`. Tell the user the v2 equivalent exists.
+     Examples from a typical v1 install: `add-compact` (v1 IPC compaction), `add-agent-swarm` / `add-telegram-swarm` (v1 swarm patterns), `add-image-vision` / `add-pdf-reader` / `add-reactions` / `add-voice-transcription` (all patch v1 channel + container source). Stash to `docs/v1-fork-reference/skills-incompatible/` with a one-line "why" per skill. Don't port — they'd reapply v1 source patches to v2 code that's been rewritten.
 
-Show the user the three sub-buckets as a single confirmation list. Don't ask per skill unless the scan is ambiguous.
+  3. **Portable** — none of the above markers; the skill is purely about agent behavior (prompts, CLAUDE.md additions, MCP tool configs) or installs an external integration without patching the codebase. Copy to `.claude/skills/` and verify it loads by checking the SKILL.md's frontmatter is valid.
+
+Show the user the three sub-buckets as a single confirmation list. Don't ask per skill unless the classification is ambiguous (e.g., the SKILL.md mixes pure-behavior guidance with a small patch hint).
 
 ### Step 2 — Other fork content
 
-For `container/skills/*`, `docs/*`, and other top-level fork files: same approach. Open each file, scan with `scanForV1Patterns`, bucket as portable / incompatible / superseded. Show the user; batch-confirm.
+For `container/skills/*`, `docs/*`, and other top-level fork files: same approach. Open each file, apply the same inline marker scan from Step 1's incompatible-bucket criteria, bucket as portable / incompatible / superseded. Show the user; batch-confirm.
 
 For `src/*` and `container/agent-runner/src/*`: NOT portable — v2's architecture is fundamentally different. Stash to `docs/v1-fork-reference/src/` with a README explaining what each file did. Don't translate.
 
