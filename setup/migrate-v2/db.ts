@@ -87,6 +87,13 @@ async function main(): Promise<void> {
   let reused = 0;
   let skipped = 0;
   const errors: string[] = [];
+  // Track v1 is_main=1 rows that were excluded from mainCandidates by a
+  // mid-loop skip (Discord resolver failure, JID parse failure, mid-loop
+  // exception). Without this, an excluded main row would silently fall
+  // into the "no v1 is_main=1 row" WARN branch and point the operator at
+  // the wrong remediation (designate manually) instead of fixing the
+  // underlying cause (e.g., refresh DISCORD_BOT_TOKEN, then re-run).
+  const skippedMainRows: string[] = [];
 
   // Track v1's is_main=1 row(s) so we can carry over to v2's
   // `messaging_groups.is_main_control` after the loop. v1 didn't enforce a
@@ -130,6 +137,7 @@ async function main(): Promise<void> {
     if (!parsed) {
       skipped++;
       errors.push(`Could not parse JID: ${g.jid}`);
+      if (g.is_main === 1) skippedMainRows.push(`${g.folder} (${g.jid}): JID parse failure`);
       continue;
     }
 
@@ -144,6 +152,7 @@ async function main(): Promise<void> {
           : 'not found in any guild the bot can see — re-add the bot to that server and re-run, or rewire after migration';
         skipped++;
         errors.push(`Discord channel ${parsed.id} (${g.folder}): ${why}`);
+        if (g.is_main === 1) skippedMainRows.push(`${g.folder} (${g.jid}): ${why}`);
         continue;
       }
       platformId = resolved;
@@ -230,7 +239,9 @@ async function main(): Promise<void> {
       }
     } catch (err) {
       skipped++;
-      errors.push(`${g.folder}: ${err instanceof Error ? err.message : String(err)}`);
+      const reason = err instanceof Error ? err.message : String(err);
+      errors.push(`${g.folder}: ${reason}`);
+      if (g.is_main === 1) skippedMainRows.push(`${g.folder} (${g.jid}): ${reason}`);
     }
   }
 
@@ -261,6 +272,15 @@ async function main(): Promise<void> {
           .join(', ')}`,
       );
     }
+  } else if (skippedMainRows.length > 0) {
+    // v1 HAD an is_main=1 row but it was excluded mid-loop (Discord
+    // resolver failure, JID parse failure, exception during seed). Point
+    // the operator at the underlying cause instead of generic "designate
+    // manually" remediation — fixing the skip is usually cheaper than
+    // re-picking the main from scratch.
+    console.log(
+      `WARN:v1 had ${skippedMainRows.length} is_main=1 row(s) but all were excluded during seed: ${skippedMainRows.join('; ')}. Fix the underlying cause (e.g. refresh DISCORD_BOT_TOKEN) and re-run, or designate manually via /migrate-from-v1.`,
+    );
   } else {
     console.log('WARN:no v1 registered_groups.is_main=1 — main-control privileged tools (provision_root_board, add_destination, send_otp) will be unauthorized until /migrate-from-v1 designates a main control group');
   }

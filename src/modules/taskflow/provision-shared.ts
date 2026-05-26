@@ -86,9 +86,16 @@ export function findBoardByFolder(tfDb: Database.Database, folder: string): Boar
     | BoardRow
     | undefined;
   if (direct) return direct;
-  const mapping = tfDb.prepare('SELECT board_id FROM board_groups WHERE group_folder = ? LIMIT 1').get(folder) as
-    | { board_id: string }
-    | undefined;
+  // ORDER BY board_id for determinism — board_groups has PRIMARY KEY
+  // (board_id, group_jid), so the SAME group_folder can legally appear in
+  // multiple rows pointing to different boards (e.g., an operator-side
+  // misconfiguration). Without ORDER BY, SQLite's row order is undefined
+  // and the same call could resolve to different boards across reruns or
+  // after a VACUUM — causing nondeterministic provision_child_board /
+  // create_group authorization.
+  const mapping = tfDb
+    .prepare('SELECT board_id FROM board_groups WHERE group_folder = ? ORDER BY board_id LIMIT 1')
+    .get(folder) as { board_id: string } | undefined;
   if (!mapping) return undefined;
   return tfDb.prepare('SELECT * FROM boards WHERE id = ? LIMIT 1').get(mapping.board_id) as BoardRow | undefined;
 }

@@ -57,6 +57,36 @@ describe('findBoardByFolder', () => {
     const board = findBoardByFolder(tfDb, 'never-existed-taskflow');
     expect(board).toBeUndefined();
   });
+
+  it('resolves to the lowest board_id (deterministic) when multiple board_groups rows map the same folder', () => {
+    // board_groups PRIMARY KEY is (board_id, group_jid), so the same
+    // group_folder can legally appear in multiple rows. Regression guard:
+    // without ORDER BY in findBoardByFolder, SQLite's row order is
+    // unspecified — same input could resolve to different boards across
+    // reruns or after a VACUUM.
+    tfDb
+      .prepare(
+        `INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run('board-aaa', '120363aaa@g.us', 'board-aaa-actual', 'hierarchy', 0, 3, null, 'AAA');
+    tfDb
+      .prepare(
+        `INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run('board-zzz', '120363zzz@g.us', 'board-zzz-actual', 'hierarchy', 0, 3, null, 'ZZZ');
+    // Map the SAME folder to BOTH boards via board_groups (legal per PK).
+    tfDb
+      .prepare(`INSERT INTO board_groups (board_id, group_jid, group_folder, group_role) VALUES (?, ?, ?, ?)`)
+      .run('board-zzz', '120363zzz@g.us', 'ambiguous-folder', 'team');
+    tfDb
+      .prepare(`INSERT INTO board_groups (board_id, group_jid, group_folder, group_role) VALUES (?, ?, ?, ?)`)
+      .run('board-aaa', '120363aaa@g.us', 'ambiguous-folder', 'team');
+    // ORDER BY board_id → 'board-aaa' wins regardless of insert order.
+    const board = findBoardByFolder(tfDb, 'ambiguous-folder');
+    expect(board?.id).toBe('board-aaa');
+  });
 });
 
 describe('sanitizeFolder', () => {

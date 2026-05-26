@@ -312,6 +312,12 @@ Show the user the three sub-buckets as a single confirmation list. Don't ask per
 
 For `<handoff.v1_path>/container/skills/*`, `<handoff.v1_path>/docs/*`, and other top-level fork files in the v1 path (NOT v2's own `container/skills/*`): same approach. Open each file, apply the same inline marker scan from Step 1's incompatible-bucket criteria, bucket as portable / incompatible / superseded. Show the user; batch-confirm. In a typical v1 install, `container/skills/pdf-reader` is incompatible (needs `pdftotext` binary not in v2's Dockerfile); `status` and `capabilities` reference `/workspace/project` (not mounted in v2) and are also incompatible.
 
+**Destinations for portable items:**
+- v1 `container/skills/<name>/` → v2 `container/skills/<name>/` (NOT `.claude/skills/`; agent-runner mounts container skills from this exact path at session spawn)
+- v1 `docs/<file>` → v2 `docs/<file>` (verify path references in the file are still valid in v2's docs/ layout)
+
+For incompatible items, stash to `docs/v1-fork-reference/skills-incompatible/<name>/` (mirroring Step 1's stash convention) with a one-line "why" per skill.
+
 For `src/*` and `container/agent-runner/src/*`: NOT portable — v2's architecture is fundamentally different. Stash to `docs/v1-fork-reference/src/` with a README explaining what each file did. Don't translate.
 
 Skip stray non-skill files (e.g., `.claude/skills/vitest.config.ts` if present) — those aren't skills and shouldn't be moved as if they were.
