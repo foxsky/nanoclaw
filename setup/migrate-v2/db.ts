@@ -24,6 +24,7 @@ import {
   getMessagingGroupAgentByPair,
   getMessagingGroupAgents,
   getMessagingGroupByPlatform,
+  setMainControlMessagingGroup,
   updateMessagingGroup,
 } from '../../src/db/messaging-groups.js';
 import { runMigrations } from '../../src/db/migrations/index.js';
@@ -83,6 +84,16 @@ async function main(): Promise<void> {
   let reused = 0;
   let skipped = 0;
   const errors: string[] = [];
+
+  // Track v1's is_main=1 row(s) so we can carry over to v2's
+  // `messaging_groups.is_main_control` after the loop. v1 didn't enforce a
+  // singleton — multiple rows could legally have is_main=1 — but v2's
+  // partial unique index allows exactly one. Pick the first one
+  // deterministically (input order from registered_groups) and warn on
+  // anything extra. Without this carry-over, every taskflow MCP tool fails
+  // authorization (src/modules/taskflow/permission.ts:57) and the user's
+  // main DM has zero control authority after cutover.
+  const mainCandidates: { folder: string; mgId: string }[] = [];
 
   // v1 stored Discord groups as `dc:<channelId>` with no guild/DM signal.
   // v2 needs either `discord:<guildId>:<channelId>` (guild) or
@@ -178,6 +189,10 @@ async function main(): Promise<void> {
         mg = getMessagingGroupByPlatform(channelType, platformId)!;
       }
 
+      if (g.is_main === 1) {
+        mainCandidates.push({ folder: g.folder, mgId: mg.id });
+      }
+
       // messaging_group_agents — wire them
       const existing = getMessagingGroupAgentByPair(mg.id, ag.id);
       if (!existing) {
@@ -207,6 +222,26 @@ async function main(): Promise<void> {
     }
   }
 
+  // Carry over v1's is_main=1 → v2's is_main_control=1. Done after the
+  // create/reuse loop so any "main" row that errored mid-create is excluded
+  // automatically (mgId wouldn't have been recorded).
+  let mainPromoted = 0;
+  if (mainCandidates.length > 0) {
+    const pick = mainCandidates[0];
+    setMainControlMessagingGroup(pick.mgId);
+    mainPromoted = 1;
+    if (mainCandidates.length > 1) {
+      console.log(
+        `WARN:multiple v1 is_main=1 rows (${mainCandidates.length}); promoted "${pick.folder}", ignored ${mainCandidates
+          .slice(1)
+          .map((c) => c.folder)
+          .join(', ')}`,
+      );
+    }
+  } else {
+    console.log('WARN:no v1 registered_groups.is_main=1 — taskflow MCP tools will be unauthorized until /migrate-from-v1 designates a main control group');
+  }
+
   v2Db.close();
 
   // If every group was skipped, the migration didn't actually do anything.
@@ -219,7 +254,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  console.log(`OK:groups=${v1Groups.length},created=${created},reused=${reused},skipped=${skipped}`);
+  console.log(
+    `OK:groups=${v1Groups.length},created=${created},reused=${reused},skipped=${skipped},main_promoted=${mainPromoted}`,
+  );
   if (errors.length > 0) {
     for (const e of errors) console.log(`ERROR:${e}`);
   }
