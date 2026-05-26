@@ -270,16 +270,45 @@ git remote -v
 git log --oneline <upstream>/main..HEAD 2>/dev/null
 ```
 
-If no commits ahead of upstream: stock v1, skip this phase.
+If v1 is not a git checkout (e.g., tarball, snapshot directory) — `git -C <v1_path> remote -v` hard-fails. Don't treat that as "no customizations." Skip the commit-list step and proceed to the skill-by-skill walk in step 2 below; use file content (not git history) as the source of truth.
 
-If there are commits:
+If git is available and there are no commits ahead of upstream: still walk the skill inventory below, because `.claude/skills/` may have unstaged or never-committed local additions.
 
-1. Show the commit list to the user.
-2. `AskUserQuestion`: "How do you want to handle your v1 customizations?"
-   - **Copy portable items** (recommended) — copy `container/skills/*`, `.claude/skills/*`, `docs/*`. Scan each with `scanForV1Patterns` from `setup/migrate-v2/shared.ts`.
-   - **Full walkthrough** — go commit by commit, decide together.
-   - **Reference only** — stash to `docs/v1-fork-reference/` for later.
-3. Source code (`src/*`, `container/agent-runner/src/*`) is NOT portable — v2's architecture is fundamentally different. Stash to `docs/v1-fork-reference/` with a README explaining what each file did. Don't translate.
+### Step 1 — Categorize v1's `.claude/skills/`
+
+A v1 install accumulates skills. Don't blindly copy them — some are upstream-known with reimplemented v2 versions, some are obsolete (reference v1 IPC, removed primitives), and some are genuinely portable. Categorize first:
+
+```ts
+const v1Skills = fs.readdirSync(path.join(handoff.v1_path, '.claude/skills'), { withFileTypes: true })
+  .filter(d => d.isDirectory()).map(d => d.name);
+const v2Skills = new Set(fs.readdirSync('.claude/skills', { withFileTypes: true })
+  .filter(d => d.isDirectory()).map(d => d.name));
+
+const overlapping = v1Skills.filter(s => v2Skills.has(s));   // exists in BOTH — danger zone
+const v1Only = v1Skills.filter(s => !v2Skills.has(s));        // only in v1 — review needed
+```
+
+For each bucket:
+
+- **Overlapping** (e.g., `add-discord`, `add-slack`, `add-taskflow`, `add-whatsapp`, `customize`, `setup`) — DO NOT copy v1's version. v2 has reimplemented these against the channel-adapter / container contracts; v1's version would clobber a working install. If the user customized v1's version, surface the v1-vs-v2 SKILL.md diff and walk the user through reapplying their customizations on top of v2's version — don't lift-and-drop.
+
+- **V1-only** — open each one's `SKILL.md` and apply `scanForV1Patterns` from `setup/migrate-v2/shared.ts`. Bucket the results:
+
+  - **Architecture-incompatible** — scan matches v1-specific primitives (`/workspace/group/`, IPC plugin contracts, `registered_groups` direct queries, etc.). Examples from a typical v1 install: `add-compact` (v1 IPC compaction), `add-long-term-context` (v1 memory layer), `add-agent-swarm` / `add-telegram-swarm` (v1 swarm patterns). Stash to `docs/v1-fork-reference/skills-incompatible/` with a one-line "why" per skill. Don't port.
+
+  - **Portable** — scan finds no v1 architecture markers; the skill is purely about agent behavior or installs an external integration. Examples: `add-pdf-reader`, `add-image-vision`, `add-voice-transcription`, `add-reactions`, `add-travel-assistant`, `add-gmail` (if v2's `add-gmail-tool` doesn't cover the same surface). Copy to `.claude/skills/` and verify it loads.
+
+  - **Already in v2 under a different name** — surface the rename and skip. Examples: `add-gmail` → `add-gmail-tool`, `add-long-term-context` → `add-mnemon` / `add-karpathy-llm-wiki`. Tell the user the v2 equivalent exists.
+
+Show the user the three sub-buckets as a single confirmation list. Don't ask per skill unless the scan is ambiguous.
+
+### Step 2 — Other fork content
+
+For `container/skills/*`, `docs/*`, and other top-level fork files: same approach. Open each file, scan with `scanForV1Patterns`, bucket as portable / incompatible / superseded. Show the user; batch-confirm.
+
+For `src/*` and `container/agent-runner/src/*`: NOT portable — v2's architecture is fundamentally different. Stash to `docs/v1-fork-reference/src/` with a README explaining what each file did. Don't translate.
+
+Skip stray non-skill files (e.g., `.claude/skills/vitest.config.ts` if present) — those aren't skills and shouldn't be moved as if they were.
 
 ## Principles
 
