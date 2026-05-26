@@ -148,6 +148,42 @@ describe('handleProvisionChildBoard', () => {
     expect(mockWhatsAppAdapter!.createGroup).not.toHaveBeenCalled();
   });
 
+  it('resolves parent board via board_groups fallback when agent_groups.folder drifted from boards.group_folder', async () => {
+    // Mirrors the post-migration case: v2 agent_groups.folder = 'eng-taskflow'
+    // (the parent agent's folder, set up in beforeEach), but the parent
+    // boards row has group_folder = 'actual-board-folder'. board_groups
+    // bridges them. Regression guard: a direct boards.group_folder lookup
+    // would miss the drifted folder → loadParent returns null → handler
+    // drops without ever calling createGroup.
+    const tf = initTaskflowDb(sharedState.tfDbPath);
+    tf.prepare(
+      `INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('board-drifted', '120363111@g.us', 'actual-board-folder', 'hierarchy', 0, 3, null, 'ENG');
+    tf.prepare('INSERT INTO board_config (board_id, wip_limit) VALUES (?, ?)').run('board-drifted', 7);
+    tf.prepare(
+      `INSERT INTO board_runtime_config (
+         board_id, language, timezone,
+         standup_cron_local, digest_cron_local, review_cron_local,
+         standup_cron_utc, digest_cron_utc, review_cron_utc,
+         attachment_enabled, attachment_disabled_reason, dst_sync_enabled
+       ) VALUES (?, 'pt-BR', 'America/Fortaleza',
+         '0 8 * * 1-5', '0 18 * * 1-5', '0 11 * * 5',
+         '0 11 * * 1-5', '0 21 * * 1-5', '0 14 * * 5',
+         1, '', 1)`,
+    ).run('board-drifted');
+    tf.prepare(`INSERT INTO board_groups (board_id, group_jid, group_folder, group_role) VALUES (?, ?, ?, ?)`).run(
+      'board-drifted',
+      '120363111@g.us',
+      'eng-taskflow',
+      'team',
+    );
+    tf.close();
+    const { handleProvisionChildBoard } = await import('./provision-child-board.js');
+    await handleProvisionChildBoard(validInput, parentSession, {} as never);
+    expect(mockWhatsAppAdapter!.createGroup).toHaveBeenCalled();
+  });
+
   it('drops when parent board is at max depth (leaf cannot create children)', async () => {
     seedParentBoard({ hierarchyLevel: 3, maxDepth: 3 });
     const { handleProvisionChildBoard } = await import('./provision-child-board.js');

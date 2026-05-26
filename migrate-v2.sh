@@ -321,6 +321,36 @@ run_step() {
   fi
 }
 
+# ─── v1 service state (detected once, reused by 1f gate + switchover) ──
+#
+# Detect v1 service state ONCE at script start. The pre-1f-taskflow gate
+# below needs v1 stopped (taskflow.ts refuses to copy against a live v1 to
+# avoid WAL race + silent data loss), so we ask up front and keep that
+# state through the rest of the migration. The late "Service switchover"
+# block reads V1_WAS_RUNNING (not a re-detection) so it still knows to
+# offer the v2 start prompt even though v1 is already down by then.
+
+V1_SERVICE=""
+V2_SERVICE=""
+PLATFORM_SERVICE=""
+
+if [ "$(uname -s)" = "Darwin" ]; then
+  PLATFORM_SERVICE="launchd"
+  V1_SERVICE="com.nanoclaw"
+  V2_SERVICE=$(pnpm exec tsx -e "import{getLaunchdLabel}from'./src/install-slug.js';console.log(getLaunchdLabel())" 2>/dev/null || echo "")
+elif [ "$(uname -s)" = "Linux" ]; then
+  PLATFORM_SERVICE="systemd"
+  V1_SERVICE="nanoclaw"
+  V2_SERVICE=$(pnpm exec tsx -e "import{getSystemdUnit}from'./src/install-slug.js';console.log(getSystemdUnit())" 2>/dev/null || echo "")
+fi
+
+V1_WAS_RUNNING=false
+if [ "$PLATFORM_SERVICE" = "systemd" ]; then
+  systemctl --user is-active "$V1_SERVICE" >/dev/null 2>&1 && V1_WAS_RUNNING=true
+elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
+  launchctl list "$V1_SERVICE" >/dev/null 2>&1 && V1_WAS_RUNNING=true
+fi
+
 # ─── phase 1: core state ────────────────────────────────────────────────
 
 echo "$(bold 'Phase 1: Core state')"
@@ -345,6 +375,39 @@ run_step "1d-sessions" \
 run_step "1e-tasks" \
   "Port scheduled tasks" \
   "setup/migrate-v2/tasks.ts" "$V1_PATH"
+
+# Pre-1f-taskflow gate — taskflow.ts refuses to copy v1's taskflow.db
+# while v1 is live (isV1ServiceActive() probe blocks the copy to prevent
+# silent WAL race + data loss across all groups). If v1 is running, ask
+# the user to stop now; we keep v1 stopped through Phase 2/3 so the late
+# Service switchover block can do an orderly v2 start.
+if [ "$V1_WAS_RUNNING" = "true" ]; then
+  STOP_ANSWER_FILE=$(mktemp)
+  pnpm exec tsx setup/migrate-v2/switchover-prompt.ts --stop-for-taskflow "$STOP_ANSWER_FILE" || true
+  STOP_ANSWER=$(cat "$STOP_ANSWER_FILE" 2>/dev/null || echo "cancel")
+  rm -f "$STOP_ANSWER_FILE"
+
+  if [ "$STOP_ANSWER" != "stop" ]; then
+    step_fail "v1 stop declined — TaskFlow copy cannot proceed safely without it"
+    abort "1f-taskflow-prereq"
+  fi
+
+  if [ "$PLATFORM_SERVICE" = "systemd" ]; then
+    if systemctl --user stop "$V1_SERVICE" 2>/dev/null; then
+      step_ok "Stopped $V1_SERVICE"
+    else
+      step_fail "Could not stop $V1_SERVICE"
+      abort "1f-taskflow-prereq"
+    fi
+  elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
+    if launchctl unload "$HOME/Library/LaunchAgents/${V1_SERVICE}.plist" 2>/dev/null; then
+      step_ok "Stopped $V1_SERVICE"
+    else
+      step_fail "Could not stop $V1_SERVICE"
+      abort "1f-taskflow-prereq"
+    fi
+  fi
+fi
 
 run_step "1f-taskflow" \
   "Copy v1 taskflow.db (global boards/tasks state)" \
@@ -517,29 +580,23 @@ else
   log "Anthropic credential: skipped (no OneCLI)"
 fi
 
-# 3d. Copy container skills from v1 that v2 doesn't have
+# 3d. Container skills — DEFERRED to /migrate-from-v1 Phase 4.
+#
+# Earlier versions of this script blindly copied every v1 container skill
+# that wasn't already present in v2. That was actively harmful: v1 skills
+# like `pdf-reader` require binaries (`pdftotext` / poppler-utils) that
+# v2's Dockerfile doesn't install, and `status` / `capabilities` reference
+# `/workspace/project` which v2 doesn't mount. The skills would mount into
+# every agent and break the moment the agent tried to use them.
+#
+# The categorization is human-judgement work (compatible vs incompatible
+# vs superseded), so it lives in /migrate-from-v1 Phase 4 / Step 2. Just
+# report what's there for the operator's awareness.
 V1_SKILLS_DIR="$V1_PATH/container/skills"
-V2_SKILLS_DIR="$PROJECT_ROOT/container/skills"
-
 if [ -d "$V1_SKILLS_DIR" ]; then
-  SKILLS_COPIED=0
-  SKILLS_SKIPPED=0
-  for skill_dir in "$V1_SKILLS_DIR"/*/; do
-    [ -d "$skill_dir" ] || continue
-    skill_name=$(basename "$skill_dir")
-    if [ -d "$V2_SKILLS_DIR/$skill_name" ]; then
-      SKILLS_SKIPPED=$((SKILLS_SKIPPED + 1))
-    else
-      cp -r "$skill_dir" "$V2_SKILLS_DIR/$skill_name"
-      SKILLS_COPIED=$((SKILLS_COPIED + 1))
-    fi
-  done
-  if [ $SKILLS_COPIED -gt 0 ]; then
-    step_ok "Copied $SKILLS_COPIED container skills $(dim "(skipped $SKILLS_SKIPPED already in v2)")"
-  else
-    step_skip "All v1 container skills already in v2 $(dim "($SKILLS_SKIPPED)")"
-  fi
-  log "Container skills: copied=$SKILLS_COPIED skipped=$SKILLS_SKIPPED"
+  V1_SKILL_COUNT=$(find "$V1_SKILLS_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+  step_skip "v1 has $V1_SKILL_COUNT container skill(s) — /migrate-from-v1 Phase 4 will review and copy compatible ones"
+  log "Container skills: deferred (v1=$V1_SKILL_COUNT, copied=0 — /migrate-from-v1 handles)"
 else
   step_skip "No v1 container skills"
 fi
@@ -595,33 +652,14 @@ disable_v1_service() {
   fi
 }
 
-# Detect platform and service names
-V1_SERVICE=""
-V2_SERVICE=""
-PLATFORM_SERVICE=""
-
-if [ "$(uname -s)" = "Darwin" ]; then
-  PLATFORM_SERVICE="launchd"
-  V1_SERVICE="com.nanoclaw"
-  # v2 uses install-slug for unique service names
-  V2_SERVICE=$(pnpm exec tsx -e "import{getLaunchdLabel}from'./src/install-slug.js';console.log(getLaunchdLabel())" 2>/dev/null || echo "")
-elif [ "$(uname -s)" = "Linux" ]; then
-  PLATFORM_SERVICE="systemd"
-  V1_SERVICE="nanoclaw"
-  V2_SERVICE=$(pnpm exec tsx -e "import{getSystemdUnit}from'./src/install-slug.js';console.log(getSystemdUnit())" 2>/dev/null || echo "")
-fi
-
-# Check if v1 service is running
-V1_RUNNING=false
-if [ "$PLATFORM_SERVICE" = "systemd" ]; then
-  systemctl --user is-active "$V1_SERVICE" >/dev/null 2>&1 && V1_RUNNING=true
-elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
-  launchctl list "$V1_SERVICE" >/dev/null 2>&1 && V1_RUNNING=true
-fi
+# Platform + service names were detected once before Phase 1. V1_WAS_RUNNING
+# reflects v1's state at script start; if 1f-taskflow's pre-stop gate fired,
+# v1 is already stopped here but V1_WAS_RUNNING stays true so the switchover
+# block still offers the v2 start prompt.
 
 SERVICE_SWITCHED=false
-if [ "$V1_RUNNING" = "true" ]; then
-  step_info "v1 service is running $(dim "($V1_SERVICE)")"
+if [ "$V1_WAS_RUNNING" = "true" ]; then
+  step_info "v1 service was running at script start $(dim "($V1_SERVICE)")"
 
   # Ask user if they want to switch
   SWITCH_ANSWER_FILE=$(mktemp)
@@ -630,10 +668,12 @@ if [ "$V1_RUNNING" = "true" ]; then
   rm -f "$SWITCH_ANSWER_FILE"
 
   if [ "$SWITCH_ANSWER" = "switch" ]; then
-    # Stop v1
-    if [ "$PLATFORM_SERVICE" = "systemd" ]; then
+    # v1 was already stopped by the 1f-taskflow pre-stop gate. Verify and
+    # log; only stop again if somehow still running (shouldn't happen, but
+    # idempotent + defensive).
+    if [ "$PLATFORM_SERVICE" = "systemd" ] && systemctl --user is-active "$V1_SERVICE" >/dev/null 2>&1; then
       systemctl --user stop "$V1_SERVICE" 2>/dev/null && step_ok "Stopped v1 service" || step_fail "Could not stop v1"
-    elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
+    elif [ "$PLATFORM_SERVICE" = "launchd" ] && launchctl list "$V1_SERVICE" >/dev/null 2>&1; then
       launchctl unload ~/Library/LaunchAgents/${V1_SERVICE}.plist 2>/dev/null && step_ok "Stopped v1 service" || step_fail "Could not stop v1"
     fi
 

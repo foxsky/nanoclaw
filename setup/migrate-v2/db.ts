@@ -93,9 +93,12 @@ async function main(): Promise<void> {
   // singleton — multiple rows could legally have is_main=1 — but v2's
   // partial unique index allows exactly one. Pick the first one
   // deterministically (input order from registered_groups) and warn on
-  // anything extra. Without this carry-over, every taskflow MCP tool fails
-  // authorization (src/modules/taskflow/permission.ts:57) and the user's
-  // main DM has zero control authority after cutover.
+  // anything extra. Without this carry-over, the main-control privileged
+  // tools (provision_root_board, add_destination, send_otp) fail-closed
+  // at src/modules/taskflow/permission.ts:57 from every session.
+  // create_group and provision_child_board still work from TaskFlow-board
+  // agents (they have a board-based auth path) but the operator can't
+  // provision the first root board — a blocker for post-cutover bootstrap.
   const mainCandidates: { folder: string; mgId: string }[] = [];
 
   // v1 stored Discord groups as `dc:<channelId>` with no guild/DM signal.
@@ -259,7 +262,7 @@ async function main(): Promise<void> {
       );
     }
   } else {
-    console.log('WARN:no v1 registered_groups.is_main=1 — taskflow MCP tools will be unauthorized until /migrate-from-v1 designates a main control group');
+    console.log('WARN:no v1 registered_groups.is_main=1 — main-control privileged tools (provision_root_board, add_destination, send_otp) will be unauthorized until /migrate-from-v1 designates a main control group');
   }
 
   v2Db.close();

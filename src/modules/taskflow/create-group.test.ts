@@ -144,6 +144,30 @@ describe('handleCreateGroup', () => {
     expect(call[0]).toBe('Project Atlas - TaskFlow');
   });
 
+  it('resolves caller via board_groups fallback when agent_groups.folder drifted from boards.group_folder', async () => {
+    // Mirrors the post-migration case: v2 agent_groups.folder = 'drifted-folder'
+    // (from v1's registered_groups.folder), but the boards row has
+    // group_folder = 'actual-board-folder'. board_groups bridges them.
+    // Regression guard: a direct boards.group_folder lookup would miss the
+    // drifted folder; only the board_groups fallback restores auth.
+    seedAgentAndMessagingGroup({ agentId: 'ag-drift', folder: 'drifted-folder', messagingId: '444', isMain: 0 });
+    const tf = initTaskflowDb(sharedState.tfDbPath);
+    tf.prepare(
+      `INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run('board-real', '120363555@g.us', 'actual-board-folder', 'hierarchy', 0, 3, null, 'TST');
+    tf.prepare(`INSERT INTO board_groups (board_id, group_jid, group_folder, group_role) VALUES (?, ?, ?, ?)`).run(
+      'board-real',
+      '120363555@g.us',
+      'drifted-folder',
+      'team',
+    );
+    tf.close();
+    const { handleCreateGroup } = await import('./create-group.js');
+    await handleCreateGroup(validInput, sessionFor('ag-drift', '444'), {} as never);
+    expect(mockWhatsAppAdapter!.createGroup).toHaveBeenCalledOnce();
+  });
+
   it('drops when TaskFlow board is at max depth (leaf)', async () => {
     seedAgentAndMessagingGroup({ agentId: 'ag-leaf', folder: 'leaf-taskflow', messagingId: '333', isMain: 0 });
     seedTaskflowBoard('leaf-taskflow', { hierarchyLevel: 3, maxDepth: 3 });
