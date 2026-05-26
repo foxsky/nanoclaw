@@ -176,7 +176,37 @@ This phase is purely additive — no v1 data is modified, no boards renamed. The
 
 The migration copied v1's entire CLAUDE.md into CLAUDE.local.md for each group. This file now contains v1 boilerplate that v2 handles through its own composed fragments (`container/CLAUDE.md` + `.claude-fragments/module-*.md`). The user's customizations are buried inside.
 
-For each group that has a `CLAUDE.local.md`:
+A real v1 install has 30-50 of these files. Per-file review for each one does not scale and burns an entire session on what is mostly mechanical work. Instead, classify first, then act in batches:
+
+### Step 0 — Classify all CLAUDE.local.md files in one pass
+
+Read the v1 templates **once** at the start:
+
+```ts
+const handoff = JSON.parse(fs.readFileSync('logs/setup-migration/handoff.json', 'utf8'));
+const mainTpl = fs.readFileSync(path.join(handoff.v1_path, 'groups', 'main', 'CLAUDE.md'), 'utf8');
+const globalTpl = fs.readFileSync(path.join(handoff.v1_path, 'groups', 'global', 'CLAUDE.md'), 'utf8');
+```
+
+For each `groups/<folder>/CLAUDE.local.md`, determine which template applied (main if v1's `registered_groups.is_main=1` for that folder, else global) and bucket the file:
+
+- **identity-only** — file matches the template except for the leading `# Name` heading + first paragraph (the agent's personality). Detect by stripping both files' leading identity block, normalizing whitespace, and comparing the rest. Most files fall here.
+- **trivial-drift** — the diff is small (e.g. a few extra bullet points, a renamed section header, but no whole new sections). The "structure" of the v1 template is intact.
+- **substantively-customized** — entirely new sections, large blocks of bespoke instructions, or the file is clearly not derived from either template (line count far outside the clusters, e.g. < 500 or > 1600).
+
+Report the bucket counts to the user before doing any work, naming the substantive files: "I found 42 files — 1 identity-only, 38 trivial-drift, 3 substantively-customized (`main`, `eurotrip`, `whatsapp_main`). I'll batch-process the first two buckets and walk the substantive 3 with you individually." Get a single confirmation to proceed.
+
+### Step 1 — Batch-process identity-only files
+
+For each identity-only file, write a minimal replacement: the original `# Name` heading + identity paragraph (this is the agent's personality and MUST be preserved), nothing else. v2's composed fragments cover all the boilerplate. No `AskUserQuestion` per file — they all get the same treatment.
+
+### Step 2 — Batch-process trivial-drift files
+
+Apply the section-removal list and the path-rewrites from Step 3 (sub-steps 4 and 5 below) to each trivial-drift file — both are purely mechanical. Show the user the resulting file list with line-count deltas as a SINGLE confirmation ("Here are the 7 files I cleaned — any objections?"), not one prompt per file.
+
+### Step 3 — Per-file review (substantively-customized only)
+
+For each file in this bucket:
 
 1. Read the file.
 2. Read the v1 template it was based on. Determine which template by checking the v1 install:
