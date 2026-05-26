@@ -43,7 +43,18 @@ Before any deeper migration work, prove v2 actually answers messages on the user
 
 ### 0a — Fix blockers only
 
-Walk `handoff.steps`. Fix only the failures that would stop the bot from routing one message; defer the rest to its later phase.
+Walk `handoff.steps` for any `status: failed` entries. Fix only the failures that would stop the bot from routing one message; defer the rest to its later phase.
+
+**Absent ≠ success.** Several `migrate-v2.sh` steps only fire on certain branches (`2b-channel-auth`, `3a-docker`, `3b-onecli`, `3c-auth`, `3e-build`). When a step skips its `record_step` call, it's missing from `handoff.steps` entirely — silently. Don't assume "no entry = healthy." Run these explicit probes before Phase 0b:
+
+- **Channels installed.** Read `handoff.channels_installed`. A literal `[""]` means headless re-run with no channel selection — `2b-channel-auth` and `2c-install-*` did not run. Confirm with the user which channels they expected, then run `setup/index.ts --step channels` (or the relevant `/add-*` skill) before continuing.
+- **WhatsApp auth keystore.** If WhatsApp is in the installed channels (or `src/channels/whatsapp.ts` exists), check `store/auth/creds.json` is present. If it is not, copy `<handoff.v1_path>/store/auth/` to `./store/auth/` — without it the Baileys adapter never connects. Mention this to the user before doing the copy.
+- **Docker daemon.** `docker info >/dev/null 2>&1` — required for container spawn even if `3a-docker` wasn't recorded.
+- **OneCLI health.** `onecli health 2>/dev/null || onecli agents list 2>/dev/null` — confirms the gateway is running. Required if any channel uses OneCLI-injected secrets.
+- **Anthropic credential.** `onecli secrets list 2>/dev/null | grep -i anthropic` — at least one credential must exist or the container can't call the model.
+- **Container image.** `docker images nanoclaw-agent:latest --format '{{.ID}}'` returns non-empty.
+
+For each probe that fails, run the matching `setup/index.ts --step <name>` (table at bottom of this skill) or guide the user to install/start the missing component. Only then proceed to Phase 0b.
 
 ### 0b — Smoke test, then continue
 
@@ -71,7 +82,17 @@ v2 auto-creates a `users` row for every sender it sees (via `extractAndUpsertUse
 1. Query `users` table: `SELECT id, kind, display_name FROM users`.
 2. If exactly one user exists, confirm: `AskUserQuestion`: "Is `<display_name>` (`<id>`) you?" — Yes / No, let me type it.
 3. If multiple users exist, present them as options in `AskUserQuestion`.
-4. If no users exist yet (service hasn't received a message), ask the user to send a test message first, then re-query.
+4. If no users exist yet (v2 hasn't received traffic — e.g., the service was not switched during Phase 0b), **pre-seed from v1's message history instead of blocking on a test message**. v1's `registered_groups.is_main=1` is the user's primary DM/channel; the sender(s) there are owner candidates. Read `<handoff.v1_path>/store/messages.db`:
+   ```sql
+   -- v1: find the main group's jid
+   SELECT jid FROM registered_groups WHERE is_main = 1;
+   -- v1: top non-bot senders in that chat
+   SELECT sender, sender_name, COUNT(*) AS n
+   FROM messages
+   WHERE chat_jid = '<main_jid>' AND is_from_me = 0 AND sender IS NOT NULL
+   GROUP BY sender ORDER BY n DESC LIMIT 5;
+   ```
+   Use `parseJid` + `v2PlatformId` from `setup/migrate-v2/shared.ts` to convert each `sender` to a v2 user ID (`<channel_type>:<platform_id>`). Present the top 5 via `AskUserQuestion`: "Which of these is you?" with a "let me type it" escape. Once confirmed, upsert into `users(id, kind, display_name)` and proceed to step 5 to grant the owner role. If v1's `messages` table is also empty (fresh v1 install with zero traffic), only then fall back to "ask the user to send a test message first."
 5. Once confirmed, check `user_roles` — if the owner role already exists, skip. Otherwise insert:
    ```sql
    INSERT INTO user_roles (user_id, role, agent_group_id, granted_by, granted_at)
