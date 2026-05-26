@@ -21,6 +21,7 @@ import { initDb } from '../../src/db/connection.js';
 import {
   createMessagingGroup,
   createMessagingGroupAgent,
+  getMainControlMessagingGroup,
   getMessagingGroupAgentByPair,
   getMessagingGroupAgents,
   getMessagingGroupByPlatform,
@@ -64,9 +65,11 @@ async function main(): Promise<void> {
   const v1Db = new Database(v1DbPath, { readonly: true, fileMustExist: true });
 
   // v1 schema varies — channel_name was a late addition. Query only the
-  // columns we know exist in all v1 installs.
+  // columns we know exist in all v1 installs. ORDER BY rowid gives a
+  // stable iteration order so the "first" v1 is_main=1 row picked below
+  // is deterministic across reruns.
   const v1Groups = v1Db
-    .prepare('SELECT jid, name, folder, trigger_pattern, requires_trigger, is_main FROM registered_groups')
+    .prepare('SELECT jid, name, folder, trigger_pattern, requires_trigger, is_main FROM registered_groups ORDER BY rowid')
     .all() as V1Group[];
   v1Db.close();
 
@@ -189,10 +192,6 @@ async function main(): Promise<void> {
         mg = getMessagingGroupByPlatform(channelType, platformId)!;
       }
 
-      if (g.is_main === 1) {
-        mainCandidates.push({ folder: g.folder, mgId: mg.id });
-      }
-
       // messaging_group_agents — wire them
       const existing = getMessagingGroupAgentByPair(mg.id, ag.id);
       if (!existing) {
@@ -216,6 +215,16 @@ async function main(): Promise<void> {
       } else {
         reused++;
       }
+
+      // Record main candidate only AFTER wiring is confirmed (created or
+      // reused). The is_main_control gate (permission.ts:lookupGateRow)
+      // JOINs through messaging_group_agents, so promoting a messaging
+      // group with no wiring row yields main_promoted=1 but zero
+      // effective authorization — internally inconsistent migration
+      // output. Pushing post-wiring keeps the count honest.
+      if (g.is_main === 1) {
+        mainCandidates.push({ folder: g.folder, mgId: mg.id });
+      }
     } catch (err) {
       skipped++;
       errors.push(`${g.folder}: ${err instanceof Error ? err.message : String(err)}`);
@@ -224,9 +233,20 @@ async function main(): Promise<void> {
 
   // Carry over v1's is_main=1 → v2's is_main_control=1. Done after the
   // create/reuse loop so any "main" row that errored mid-create is excluded
-  // automatically (mgId wouldn't have been recorded).
+  // automatically (mgId wouldn't have been recorded — see post-wiring push).
+  //
+  // Rerun policy: if a v2 main already exists (operator-set via ncl or
+  // a prior migration), preserve it. The migration is "first-write-wins"
+  // for is_main_control; the operator's choice always beats v1's mapping
+  // on a re-execution. This matches migrate-v2.sh's "safe to re-run"
+  // contract — re-running shouldn't clobber post-migration admin work.
   let mainPromoted = 0;
-  if (mainCandidates.length > 0) {
+  const existingMain = getMainControlMessagingGroup();
+  if (existingMain) {
+    console.log(
+      `SKIPPED:is_main_control already set on "${existingMain.name ?? existingMain.id}" (preserving operator/prior choice)`,
+    );
+  } else if (mainCandidates.length > 0) {
     const pick = mainCandidates[0];
     setMainControlMessagingGroup(pick.mgId);
     mainPromoted = 1;
