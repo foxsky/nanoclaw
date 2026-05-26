@@ -43,6 +43,10 @@ ONECLI_OK=false
 SERVICE_SWITCHED=false
 SELECTED_CHANNELS=()
 ABORTED_AT=""
+# Set to true by any rollback / sudo-failure / mv-failure path so the
+# final summary can surface a degraded outcome instead of green-✓ everywhere.
+MIGRATION_DEGRADED=false
+MIGRATION_DEGRADED_REASONS=()
 
 # Per-step status tracking. Parallel indexed arrays so this works on
 # bash 3.2 (macOS default) which has no associative arrays.
@@ -361,6 +365,90 @@ elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
   launchctl list "$V1_SERVICE" >/dev/null 2>&1 && V1_WAS_RUNNING=true
 fi
 
+# Mark the migration as degraded with a one-line reason. Reasons appear
+# verbatim in the final summary so the operator can grep for them.
+mark_degraded() {
+  MIGRATION_DEGRADED=true
+  MIGRATION_DEGRADED_REASONS+=("$1")
+}
+
+# Restart v1 and move v2's copied taskflow.db aside. Used when:
+#  - operator picks 'skip' at the late switchover prompt AFTER pre-1f stopped v1
+#  - v2 service install fails after pre-1f stopped v1
+#  - operator picks 'revert' after v2 was up briefly
+# Sets MIGRATION_DEGRADED on any sub-step failure (sudo cache expired,
+# mv failed) so the summary shows the operator needs to act manually.
+rollback_to_v1_no_v2() {
+  if [ "$PLATFORM_SERVICE" = "systemd" ]; then
+    if [ "$V1_SYSTEMD_SCOPE" = "system" ]; then
+      if sudo -n systemctl start "$V1_SERVICE" 2>/dev/null; then
+        step_ok "Restarted $V1_SERVICE"
+      else
+        step_fail "Could not restart $V1_SERVICE — run 'sudo systemctl start $V1_SERVICE' manually"
+        mark_degraded "v1 service ($V1_SERVICE, system) not restarted — sudo cache expired; run 'sudo systemctl start $V1_SERVICE'"
+      fi
+    else
+      if systemctl --user start "$V1_SERVICE" 2>/dev/null; then
+        step_ok "Restarted $V1_SERVICE"
+      else
+        step_fail "Could not restart $V1_SERVICE"
+        mark_degraded "v1 service ($V1_SERVICE, user) not restarted — run 'systemctl --user start $V1_SERVICE'"
+      fi
+    fi
+  elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
+    if launchctl load ~/Library/LaunchAgents/${V1_SERVICE}.plist 2>/dev/null; then
+      step_ok "Restarted $V1_SERVICE"
+    else
+      step_fail "Could not restart $V1_SERVICE"
+      mark_degraded "v1 service ($V1_SERVICE, launchd) not restarted — run 'launchctl load ~/Library/LaunchAgents/${V1_SERVICE}.plist'"
+    fi
+  fi
+  if [ -f "$PROJECT_ROOT/data/taskflow/taskflow.db" ]; then
+    local aside_path="$PROJECT_ROOT/data/taskflow/taskflow.db.reverted-$(date +%s)"
+    if mv "$PROJECT_ROOT/data/taskflow/taskflow.db" "$aside_path" 2>/dev/null; then
+      step_ok "Moved v2 taskflow.db aside so a future rerun re-copies from v1"
+    else
+      step_fail "Could not move v2 taskflow.db aside — future migrate-v2.sh reruns will skip the TaskFlow copy"
+      mark_degraded "stale v2 taskflow.db remains at data/taskflow/taskflow.db — remove manually before re-running migrate-v2.sh"
+    fi
+  fi
+}
+
+# Disable the v1 service so it doesn't auto-start, but leave the unit file
+# on disk so the user can rollback. Honors V1_SYSTEMD_SCOPE so sudo-installed
+# system units are disabled too — otherwise a sudo v1 install reboots back
+# into existence and races v2. Returns 0 on success, 1 on failure so the
+# caller can mark the migration degraded.
+disable_v1_service() {
+  if [ "$PLATFORM_SERVICE" = "systemd" ]; then
+    if [ "$V1_SYSTEMD_SCOPE" = "system" ]; then
+      if sudo -n systemctl stop "$V1_SERVICE" 2>/dev/null; then
+        sudo -n systemctl disable "$V1_SERVICE" 2>/dev/null || true
+        step_ok "Disabled $V1_SERVICE (system unit; file kept for rollback)"
+        return 0
+      else
+        step_fail "Could not disable $V1_SERVICE — run 'sudo systemctl disable $V1_SERVICE' manually so v1 doesn't auto-start on reboot"
+        return 1
+      fi
+    fi
+    local v1_file="$HOME/.config/systemd/user/${V1_SERVICE}.service"
+    if [ -f "$v1_file" ] || [ -L "$v1_file" ]; then
+      systemctl --user stop "$V1_SERVICE" 2>/dev/null || true
+      systemctl --user disable "$V1_SERVICE" 2>/dev/null || true
+      step_ok "Disabled $V1_SERVICE (unit file kept for rollback)"
+    fi
+    return 0
+  elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
+    local v1_plist="$HOME/Library/LaunchAgents/${V1_SERVICE}.plist"
+    if [ -f "$v1_plist" ] || [ -L "$v1_plist" ]; then
+      launchctl unload "$v1_plist" 2>/dev/null || true
+      step_ok "Unloaded $V1_SERVICE (plist kept for rollback)"
+    fi
+    return 0
+  fi
+  return 0
+}
+
 # ─── phase 1: core state ────────────────────────────────────────────────
 
 echo "$(bold 'Phase 1: Core state')"
@@ -443,6 +531,13 @@ if [ "${STEP_STATUSES[${#STEP_STATUSES[@]}-1]}" = "failed" ]; then
   echo
   echo "  $(dim 'See:') $STEPS_DIR/1f-taskflow.log"
   echo
+  # If pre-1f stopped v1, restore it before aborting — otherwise the
+  # operator is stranded with both v1 down and v2 not installed.
+  # rollback_to_v1_no_v2 marks MIGRATION_DEGRADED on any sub-failure
+  # (sudo cache expired, mv failed); the EXIT trap still runs.
+  if [ "$V1_WAS_RUNNING" = "true" ]; then
+    rollback_to_v1_no_v2
+  fi
   abort "1f-taskflow"
 fi
 
@@ -652,61 +747,10 @@ echo
 echo "$(bold 'Service switchover')"
 echo
 
-# Restart v1 and move v2's copied taskflow.db aside. Used when the
-# operator declines the switchover ("skip") AFTER pre-1f stopped v1, OR
-# when v2 service install failed and v1 needs to be the running install
-# again. Symmetric to the revert path's cleanup but without the v2-stop
-# (since v2 isn't running yet in these paths).
-rollback_to_v1_no_v2() {
-  if [ "$PLATFORM_SERVICE" = "systemd" ]; then
-    if [ "$V1_SYSTEMD_SCOPE" = "system" ]; then
-      if sudo -n systemctl start "$V1_SERVICE" 2>/dev/null; then
-        step_ok "Restarted $V1_SERVICE"
-      else
-        step_fail "Could not restart $V1_SERVICE — run 'sudo systemctl start $V1_SERVICE' manually"
-      fi
-    else
-      systemctl --user start "$V1_SERVICE" 2>/dev/null && step_ok "Restarted $V1_SERVICE" || step_fail "Could not restart $V1_SERVICE"
-    fi
-  elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
-    launchctl load ~/Library/LaunchAgents/${V1_SERVICE}.plist 2>/dev/null && step_ok "Restarted $V1_SERVICE" || step_fail "Could not restart $V1_SERVICE"
-  fi
-  if [ -f "$PROJECT_ROOT/data/taskflow/taskflow.db" ]; then
-    mv "$PROJECT_ROOT/data/taskflow/taskflow.db" \
-       "$PROJECT_ROOT/data/taskflow/taskflow.db.reverted-$(date +%s)" 2>/dev/null || true
-    step_ok "Moved v2 taskflow.db aside so a future rerun re-copies from v1"
-  fi
-}
-
-# Disable the v1 service so it doesn't auto-start, but leave the unit file
-# on disk so the user can rollback. Honors V1_SYSTEMD_SCOPE so sudo-installed
-# system units are disabled too — otherwise a sudo v1 install reboots back
-# into existence and races v2. Idempotent — safe to call multiple times.
-disable_v1_service() {
-  if [ "$PLATFORM_SERVICE" = "systemd" ]; then
-    if [ "$V1_SYSTEMD_SCOPE" = "system" ]; then
-      if sudo -n systemctl stop "$V1_SERVICE" 2>/dev/null; then
-        sudo -n systemctl disable "$V1_SERVICE" 2>/dev/null || true
-        step_ok "Disabled $V1_SERVICE (system unit; file kept for rollback)"
-      else
-        step_fail "Could not disable $V1_SERVICE — run 'sudo systemctl disable $V1_SERVICE' manually so v1 doesn't auto-start on reboot"
-      fi
-      return
-    fi
-    local v1_file="$HOME/.config/systemd/user/${V1_SERVICE}.service"
-    if [ -f "$v1_file" ] || [ -L "$v1_file" ]; then
-      systemctl --user stop "$V1_SERVICE" 2>/dev/null || true
-      systemctl --user disable "$V1_SERVICE" 2>/dev/null || true
-      step_ok "Disabled $V1_SERVICE (unit file kept for rollback)"
-    fi
-  elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
-    local v1_plist="$HOME/Library/LaunchAgents/${V1_SERVICE}.plist"
-    if [ -f "$v1_plist" ] || [ -L "$v1_plist" ]; then
-      launchctl unload "$v1_plist" 2>/dev/null || true
-      step_ok "Unloaded $V1_SERVICE (plist kept for rollback)"
-    fi
-  fi
-}
+# Helpers rollback_to_v1_no_v2 + disable_v1_service are defined earlier
+# (right after V1_WAS_RUNNING detection) so the 1f-taskflow failure path
+# can also call rollback_to_v1_no_v2 — otherwise the abort at line 528
+# would strand the operator with v1 down.
 
 # Platform + service names were detected once before Phase 1. V1_WAS_RUNNING
 # reflects v1's state at script start; if 1f-taskflow's pre-stop gate fired,
@@ -753,6 +797,7 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
       step_fail "Could not start v2 service $(dim "(see $V2_SERVICE_LOG)") — rolling back to v1"
       rollback_to_v1_no_v2
       record_step "service-install" "failed"
+      mark_degraded "v2 service install failed — diagnose with 'pnpm exec tsx setup/index.ts --step service', then re-run migrate-v2.sh"
       step_info "Diagnose v2 install with: $(dim 'pnpm exec tsx setup/index.ts --step service'), then re-run migrate-v2.sh"
     fi
 
@@ -781,7 +826,9 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
         SERVICE_SWITCHED=false
       else
         step_ok "Keeping v2 service"
-        disable_v1_service
+        if ! disable_v1_service; then
+          mark_degraded "v1 ($V1_SERVICE) was not disabled — sudo cache expired; v1 will auto-restart on reboot and race v2"
+        fi
       fi
     fi
   else
@@ -794,7 +841,9 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
   fi
 else
   step_skip "v1 service not running — nothing to switch"
-  disable_v1_service
+  if ! disable_v1_service; then
+    mark_degraded "v1 ($V1_SERVICE) was not disabled — sudo cache expired; v1 will auto-restart on reboot and race v2"
+  fi
 fi
 
 echo
@@ -810,7 +859,11 @@ step_ok "Wrote handoff summary"
 
 # Summary
 echo
-echo "$(bold '── Migration complete ──')"
+if [ "$MIGRATION_DEGRADED" = "true" ]; then
+  echo "$(bold '── Migration completed with issues — see below ──')"
+else
+  echo "$(bold '── Migration complete ──')"
+fi
 echo
 echo "  $(dim 'v1:')  $V1_PATH"
 echo "  $(dim 'v2:')  $PROJECT_ROOT"
@@ -839,6 +892,13 @@ echo "    $(dim '$') systemctl --user stop $V2_SERVICE && systemctl --user start
 elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
 echo "    $(dim '$') launchctl unload ~/Library/LaunchAgents/${V2_SERVICE}.plist && launchctl load ~/Library/LaunchAgents/${V1_SERVICE}.plist"
 fi
+fi
+if [ "$MIGRATION_DEGRADED" = "true" ]; then
+echo
+echo "  $(bold 'Issues to resolve before re-running:')"
+for reason in "${MIGRATION_DEGRADED_REASONS[@]}"; do
+echo "    $(dim '!')  $reason"
+done
 fi
 echo
 echo "  $(bold 'What still needs a human:')"
