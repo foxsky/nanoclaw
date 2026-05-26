@@ -180,21 +180,31 @@ A real v1 install has 30-50 of these files. Per-file review for each one does no
 
 ### Step 0 — Classify all CLAUDE.local.md files in one pass
 
-Read the v1 templates **once** at the start:
+Read all **three** v1 templates **once** at the start — most files in a TaskFlow-heavy install derive from `add-taskflow`'s template, not main/global:
 
 ```ts
 const handoff = JSON.parse(fs.readFileSync('logs/setup-migration/handoff.json', 'utf8'));
 const mainTpl = fs.readFileSync(path.join(handoff.v1_path, 'groups', 'main', 'CLAUDE.md'), 'utf8');
 const globalTpl = fs.readFileSync(path.join(handoff.v1_path, 'groups', 'global', 'CLAUDE.md'), 'utf8');
+const taskflowTpl = fs.readFileSync(
+  path.join(handoff.v1_path, '.claude/skills/add-taskflow/templates/CLAUDE.md.template'),
+  'utf8',
+); // may not exist if add-taskflow wasn't installed in v1; guard with existsSync
 ```
 
-For each `groups/<folder>/CLAUDE.local.md`, determine which template applied (main if v1's `registered_groups.is_main=1` for that folder, else global) and bucket the file:
+For each `groups/<folder>/CLAUDE.local.md`:
 
-- **identity-only** — file matches the template except for the leading `# Name` heading + first paragraph (the agent's personality). Detect by stripping both files' leading identity block, normalizing whitespace, and comparing the rest. Most files fall here.
-- **trivial-drift** — the diff is small (e.g. a few extra bullet points, a renamed section header, but no whole new sections). The "structure" of the v1 template is intact.
-- **substantively-customized** — entirely new sections, large blocks of bespoke instructions, or the file is clearly not derived from either template (line count far outside the clusters, e.g. < 500 or > 1600).
+1. Strip the leading identity block (`# Name` heading + first paragraph) and normalize whitespace + template tokens (`{{ASSISTANT_NAME}}` etc.).
+2. Pick the closest-matching template by content (not by line count alone — TaskFlow templates can balloon to 1300+ lines after population). Folders ending in `-taskflow` almost always derive from the taskflow template; `is_main=1` in v1's `registered_groups` indicates main; everything else is usually global.
+3. Bucket against that template:
 
-Report the bucket counts to the user before doing any work, naming the substantive files: "I found 42 files — 1 identity-only, 38 trivial-drift, 3 substantively-customized (`main`, `eurotrip`, `whatsapp_main`). I'll batch-process the first two buckets and walk the substantive 3 with you individually." Get a single confirmation to proceed.
+- **identity-only** — stripped-and-normalized file equals the stripped-and-normalized template.
+- **trivial-drift** — file shares the template's section structure but adds small content (extra bullet points, a customized prompt, board-specific names). Use judgement; a "small" diff might still be ~200 lines for a TaskFlow-derived file because the template itself is large.
+- **substantively-customized** — entirely new sections, the file is clearly not derived from any of the three templates (e.g. line counts far outside the known template families), or the customization is large enough that mechanical batch processing would destroy meaning.
+
+Compute the actual counts on THIS corpus and report them to the user, naming the substantive files: "I found N files — X identity-only, Y trivial-drift, Z substantively-customized: \[list]. I'll batch-process the first two buckets and walk the substantive ones with you individually." Get a single confirmation to proceed.
+
+> **Historical reference** — on the 2026-05 dry-run corpus (42 files, 38 of them TaskFlow-derived), the bucket distribution settled around 2 / 21 / 19, with the substantives concentrated in files that had been hand-edited post-template-instantiation. Use this only as a rough sanity check — every corpus is different.
 
 ### Step 1 — Batch-process identity-only files
 
@@ -202,7 +212,7 @@ For each identity-only file, write a minimal replacement: the original `# Name` 
 
 ### Step 2 — Batch-process trivial-drift files
 
-Apply the section-removal list and the path-rewrites from Step 3 (sub-steps 4 and 5 below) to each trivial-drift file — both are purely mechanical. Show the user the resulting file list with line-count deltas as a SINGLE confirmation ("Here are the 7 files I cleaned — any objections?"), not one prompt per file.
+Compute the proposed output for each trivial-drift file IN MEMORY (don't write yet): apply the section-removal list and path-rewrites from Step 3 (sub-steps 4 and 5 below) — both are purely mechanical. Then show the user the proposed file list with line-count deltas as a SINGLE confirmation ("Here are the N files I'd clean, line counts L1→L2 — any objections?"). On approval, write them all. Never write before the batch confirmation.
 
 ### Step 3 — Per-file review (substantively-customized only)
 
@@ -232,9 +242,11 @@ For each file in this bucket:
    - "Sender Allowlist" → v2 uses `unknown_sender_policy` + `user_roles`
 5. Fix path references in kept sections:
    - `/workspace/group/` → `/workspace/agent/`
+   - `/workspace/global/` → gone; v1's global memory is replaced by `.claude-shared.md` symlink. Remove references.
    - `/workspace/project/` → these paths don't exist in v2; discuss with the user
    - `/workspace/ipc/` → gone; remove references
    - `/workspace/extra/` → v2 uses `container.json` `additionalMounts`; keep but note the path may change
+   - `/workspace/taskflow/taskflow.db` → **preserve as-is**; this path is valid in v2 (host mounts taskflow.db at this exact location, see `src/container-runner.ts` taskflow mount). TaskFlow-derived CLAUDE.local.md files reference it heavily.
 6. Keep the `# Name` heading and first paragraph (identity) — this is the user's agent personality.
 7. Show the user the proposed new CLAUDE.local.md before writing it. Use `AskUserQuestion`: "Here's what I'd keep — look right?" with options to approve, edit, or keep the original.
 
