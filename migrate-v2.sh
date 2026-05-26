@@ -72,6 +72,11 @@ write_handoff() {
   local overall="success"
   $has_failures && overall="partial"
   [ -n "$ABORTED_AT" ] && overall="failed"
+  # MIGRATION_DEGRADED is set by rollback / sudo / mv failure paths that
+  # don't necessarily fail a recorded step. Surface it so the skill can
+  # always recover the reasons (the final summary may not have printed
+  # if the script aborted mid-stream).
+  [ "$MIGRATION_DEGRADED" = "true" ] && [ "$overall" = "success" ] && overall="degraded"
 
   local steps_json="{"
   for ((i=0; i<${#STEP_NAMES[@]}; i++)); do
@@ -80,6 +85,18 @@ write_handoff() {
     steps_json="${steps_json}\"${n}\": {\"status\": \"${s}\", \"log\": \"logs/migrate-steps/${n}.log\"},"
   done
   steps_json="${steps_json%,}}"
+
+  local reasons_json="["
+  for ((i=0; i<${#MIGRATION_DEGRADED_REASONS[@]}; i++)); do
+    # JSON-escape: backslash first, then double-quote. Reasons are operator-
+    # facing strings authored by mark_degraded call sites — no control chars
+    # expected in practice, so we stop at those two.
+    local r="${MIGRATION_DEGRADED_REASONS[$i]}"
+    r="${r//\\/\\\\}"
+    r="${r//\"/\\\"}"
+    reasons_json="${reasons_json}\"${r}\","
+  done
+  reasons_json="${reasons_json%,}]"
 
   cat > "$handoff_dir/handoff.json" <<HANDOFF_EOF
 {
@@ -93,6 +110,8 @@ write_handoff() {
   "channels_installed": [$(printf '"%s",' "${SELECTED_CHANNELS[@]}" 2>/dev/null | sed 's/,$//')],
   "onecli_healthy": $ONECLI_OK,
   "service_switched": $SERVICE_SWITCHED,
+  "degraded": $MIGRATION_DEGRADED,
+  "degraded_reasons": $reasons_json,
   "steps": $steps_json,
   "step_logs_dir": "logs/migrate-steps",
   "followups": [
@@ -439,27 +458,41 @@ rollback_to_v1_no_v2() {
 disable_v1_service() {
   if [ "$PLATFORM_SERVICE" = "systemd" ]; then
     if [ "$V1_SYSTEMD_SCOPE" = "system" ]; then
-      if sudo -n systemctl stop "$V1_SERVICE" 2>/dev/null; then
-        sudo -n systemctl disable "$V1_SERVICE" 2>/dev/null || true
+      local stop_ok=true disable_ok=true
+      sudo -n systemctl stop "$V1_SERVICE" 2>/dev/null || stop_ok=false
+      sudo -n systemctl disable "$V1_SERVICE" 2>/dev/null || disable_ok=false
+      if [ "$stop_ok" = "true" ] && [ "$disable_ok" = "true" ]; then
         step_ok "Disabled $V1_SERVICE (system unit; file kept for rollback)"
         return 0
-      else
-        step_fail "Could not disable $V1_SERVICE — run 'sudo systemctl disable $V1_SERVICE' manually so v1 doesn't auto-start on reboot"
-        return 1
       fi
+      # Disable failure is as serious as stop failure — without disable,
+      # v1 auto-restarts on reboot and races v2. Surface both so the
+      # caller (and mark_degraded) sees the full picture.
+      step_fail "Could not fully disable $V1_SERVICE (stop=$stop_ok, disable=$disable_ok) — run 'sudo systemctl stop $V1_SERVICE && sudo systemctl disable $V1_SERVICE' manually so v1 doesn't auto-start on reboot"
+      return 1
     fi
     local v1_file="$HOME/.config/systemd/user/${V1_SERVICE}.service"
     if [ -f "$v1_file" ] || [ -L "$v1_file" ]; then
-      systemctl --user stop "$V1_SERVICE" 2>/dev/null || true
-      systemctl --user disable "$V1_SERVICE" 2>/dev/null || true
-      step_ok "Disabled $V1_SERVICE (unit file kept for rollback)"
+      local stop_ok=true disable_ok=true
+      systemctl --user stop "$V1_SERVICE" 2>/dev/null || stop_ok=false
+      systemctl --user disable "$V1_SERVICE" 2>/dev/null || disable_ok=false
+      if [ "$stop_ok" = "true" ] && [ "$disable_ok" = "true" ]; then
+        step_ok "Disabled $V1_SERVICE (unit file kept for rollback)"
+        return 0
+      fi
+      step_fail "Could not fully disable $V1_SERVICE (stop=$stop_ok, disable=$disable_ok) — run 'systemctl --user stop $V1_SERVICE && systemctl --user disable $V1_SERVICE' manually"
+      return 1
     fi
     return 0
   elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
     local v1_plist="$HOME/Library/LaunchAgents/${V1_SERVICE}.plist"
     if [ -f "$v1_plist" ] || [ -L "$v1_plist" ]; then
-      launchctl unload "$v1_plist" 2>/dev/null || true
-      step_ok "Unloaded $V1_SERVICE (plist kept for rollback)"
+      if launchctl unload "$v1_plist" 2>/dev/null; then
+        step_ok "Unloaded $V1_SERVICE (plist kept for rollback)"
+        return 0
+      fi
+      step_fail "Could not unload $V1_SERVICE — run 'launchctl unload $v1_plist' manually so v1 doesn't auto-restart on next login"
+      return 1
     fi
     return 0
   fi

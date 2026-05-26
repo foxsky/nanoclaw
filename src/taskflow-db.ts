@@ -758,9 +758,14 @@ export function resolveTaskflowBoardId(
       return direct.id;
     }
 
-    const mapped = db.prepare(`SELECT board_id FROM board_groups WHERE group_folder = ? LIMIT 1`).get(groupFolder) as
-      | { board_id: string }
-      | undefined;
+    // ORDER BY board_id for determinism — board_groups PK is
+    // (board_id, group_jid), so the same group_folder can legally appear
+    // in multiple rows pointing to different boards. Without ORDER BY,
+    // SQLite's row order is undefined → live routing could flip across
+    // restarts or VACUUM. Mirrors provision-shared.ts:findBoardByFolder.
+    const mapped = db
+      .prepare(`SELECT board_id FROM board_groups WHERE group_folder = ? ORDER BY board_id LIMIT 1`)
+      .get(groupFolder) as { board_id: string } | undefined;
     return mapped?.board_id;
   } catch {
     return undefined;
