@@ -19,7 +19,9 @@ async function main(): Promise<void> {
   const outFile = process.argv[3];
 
   if (!outFile) {
-    console.error('Usage: tsx setup/migrate-v2/switchover-prompt.ts <--offer-switch|--keep-or-revert> <output-file>');
+    console.error(
+      'Usage: tsx setup/migrate-v2/switchover-prompt.ts <--offer-switch|--keep-or-revert|--stop-for-taskflow> <output-file>',
+    );
     process.exit(1);
   }
 
@@ -60,7 +62,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.error('Usage: --offer-switch | --keep-or-revert');
+  console.error('Usage: --offer-switch | --keep-or-revert | --stop-for-taskflow');
   process.exit(1);
 }
 

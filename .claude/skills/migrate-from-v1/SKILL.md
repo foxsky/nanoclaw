@@ -14,7 +14,7 @@ description: Finish migrating a NanoClaw v1 install into v2. Run after `bash mig
 - Scheduled tasks ported
 - Channel code installed and auth state copied (incl. WhatsApp Baileys keystore)
 - WhatsApp LIDs resolved from `store/auth` and aliased into `messaging_groups`
-- Container skills copied
+- Container skills review deferred to Phase 4 (script no longer auto-copies; v1 skills with binary or path dependencies would have broken in v2)
 - Container image built
 
 Your job is the parts that need human judgment: triage any failed steps, seed the owner, clean up CLAUDE.local.md files, reconcile configs, and port any fork customizations.
@@ -310,7 +310,7 @@ Show the user the three sub-buckets as a single confirmation list. Don't ask per
 
 ### Step 2 — Other fork content
 
-For `container/skills/*`, `docs/*`, and other top-level fork files: same approach. Open each file, apply the same inline marker scan from Step 1's incompatible-bucket criteria, bucket as portable / incompatible / superseded. Show the user; batch-confirm.
+For `<handoff.v1_path>/container/skills/*`, `<handoff.v1_path>/docs/*`, and other top-level fork files in the v1 path (NOT v2's own `container/skills/*`): same approach. Open each file, apply the same inline marker scan from Step 1's incompatible-bucket criteria, bucket as portable / incompatible / superseded. Show the user; batch-confirm. In a typical v1 install, `container/skills/pdf-reader` is incompatible (needs `pdftotext` binary not in v2's Dockerfile); `status` and `capabilities` reference `/workspace/project` (not mounted in v2) and are also incompatible.
 
 For `src/*` and `container/agent-runner/src/*`: NOT portable — v2's architecture is fundamentally different. Stash to `docs/v1-fork-reference/src/` with a README explaining what each file did. Don't translate.
 
