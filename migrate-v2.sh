@@ -351,13 +351,30 @@ fi
 V1_WAS_RUNNING=false
 V1_SYSTEMD_SCOPE=""
 if [ "$PLATFORM_SERVICE" = "systemd" ]; then
-  if systemctl --user is-active "$V1_SERVICE" >/dev/null 2>&1; then
+  # Probe BOTH scopes — refusing to guess between them is safer than
+  # short-circuiting on the first match. A misconfigured host with v1
+  # installed under both scopes would otherwise have the system unit
+  # silently kept writing during the 1f-taskflow copy (the bash gate
+  # would say "stopped" but taskflow.ts's broader probe would detect
+  # the still-running system unit).
+  V1_USER_ACTIVE=false
+  V1_SYSTEM_ACTIVE=false
+  systemctl --user is-active "$V1_SERVICE" >/dev/null 2>&1 && V1_USER_ACTIVE=true
+  systemctl is-active "$V1_SERVICE" >/dev/null 2>&1 && V1_SYSTEM_ACTIVE=true
+  if [ "$V1_USER_ACTIVE" = "true" ] && [ "$V1_SYSTEM_ACTIVE" = "true" ]; then
+    step_fail "v1 ($V1_SERVICE) is active under BOTH --user and system systemd scopes."
+    echo "  $(dim 'Both scopes writing to v1 state simultaneously is misconfiguration')"
+    echo "  $(dim 'and unsafe to migrate. Stop one before re-running migrate-v2.sh:')"
+    echo
+    echo "  $(dim '$') systemctl --user stop $V1_SERVICE   $(dim '# disable user unit')"
+    echo "  $(dim '$') sudo systemctl stop $V1_SERVICE     $(dim '# disable system unit')"
+    echo
+    abort "v1-dual-scope-active"
+  fi
+  if [ "$V1_USER_ACTIVE" = "true" ]; then
     V1_WAS_RUNNING=true
     V1_SYSTEMD_SCOPE="--user"
-  elif systemctl is-active "$V1_SERVICE" >/dev/null 2>&1; then
-    # sudo-installed system unit — broader detection to match taskflow.ts's
-    # isV1ServiceActive() probe so we offer the pre-1f stop prompt in that
-    # case too (otherwise taskflow.ts fails-closed with no user prompt).
+  elif [ "$V1_SYSTEM_ACTIVE" = "true" ]; then
     V1_WAS_RUNNING=true
     V1_SYSTEMD_SCOPE="system"
   fi
@@ -769,10 +786,15 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
 
   if [ "$SWITCH_ANSWER" = "switch" ]; then
     # v1 was already stopped by the 1f-taskflow pre-stop gate. Verify and
-    # log; only stop again if somehow still running (shouldn't happen, but
-    # idempotent + defensive).
-    if [ "$PLATFORM_SERVICE" = "systemd" ] && systemctl --user is-active "$V1_SERVICE" >/dev/null 2>&1; then
-      systemctl --user stop "$V1_SERVICE" 2>/dev/null && step_ok "Stopped v1 service" || step_fail "Could not stop v1"
+    # log; only stop again if somehow still running (Restart=on-failure on
+    # a system unit can resurrect v1 between phases). Honors V1_SYSTEMD_SCOPE
+    # so a sudo-installed v1 that re-activated isn't missed by a --user probe.
+    if [ "$PLATFORM_SERVICE" = "systemd" ]; then
+      if [ "$V1_SYSTEMD_SCOPE" = "system" ] && systemctl is-active "$V1_SERVICE" >/dev/null 2>&1; then
+        sudo -n systemctl stop "$V1_SERVICE" 2>/dev/null && step_ok "Stopped v1 service" || step_fail "Could not re-stop v1 — run 'sudo systemctl stop $V1_SERVICE' manually"
+      elif [ "$V1_SYSTEMD_SCOPE" = "--user" ] && systemctl --user is-active "$V1_SERVICE" >/dev/null 2>&1; then
+        systemctl --user stop "$V1_SERVICE" 2>/dev/null && step_ok "Stopped v1 service" || step_fail "Could not stop v1"
+      fi
     elif [ "$PLATFORM_SERVICE" = "launchd" ] && launchctl list "$V1_SERVICE" >/dev/null 2>&1; then
       launchctl unload ~/Library/LaunchAgents/${V1_SERVICE}.plist 2>/dev/null && step_ok "Stopped v1 service" || step_fail "Could not stop v1"
     fi
