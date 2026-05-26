@@ -403,15 +403,20 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
   fi
 
   if [ "$PLATFORM_SERVICE" = "systemd" ]; then
+    # sudo -n (non-interactive) so a missing sudo cache fails fast with a
+    # visible "try this manually" hint instead of silently hanging on a
+    # password prompt redirected to /dev/null.
     if [ "$V1_SYSTEMD_SCOPE" = "--user" ]; then
       stop_cmd=(systemctl --user stop "$V1_SERVICE")
+      hint="systemctl --user stop $V1_SERVICE"
     else
-      stop_cmd=(sudo systemctl stop "$V1_SERVICE")
+      stop_cmd=(sudo -n systemctl stop "$V1_SERVICE")
+      hint="sudo systemctl stop $V1_SERVICE"
     fi
     if "${stop_cmd[@]}" 2>/dev/null; then
       step_ok "Stopped $V1_SERVICE"
     else
-      step_fail "Could not stop $V1_SERVICE (try '${stop_cmd[*]}' manually then re-run)"
+      step_fail "Could not stop $V1_SERVICE (run '$hint' manually then re-run)"
       abort "1f-taskflow-prereq"
     fi
   elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
@@ -647,11 +652,47 @@ echo
 echo "$(bold 'Service switchover')"
 echo
 
+# Restart v1 and move v2's copied taskflow.db aside. Used when the
+# operator declines the switchover ("skip") AFTER pre-1f stopped v1, OR
+# when v2 service install failed and v1 needs to be the running install
+# again. Symmetric to the revert path's cleanup but without the v2-stop
+# (since v2 isn't running yet in these paths).
+rollback_to_v1_no_v2() {
+  if [ "$PLATFORM_SERVICE" = "systemd" ]; then
+    if [ "$V1_SYSTEMD_SCOPE" = "system" ]; then
+      if sudo -n systemctl start "$V1_SERVICE" 2>/dev/null; then
+        step_ok "Restarted $V1_SERVICE"
+      else
+        step_fail "Could not restart $V1_SERVICE — run 'sudo systemctl start $V1_SERVICE' manually"
+      fi
+    else
+      systemctl --user start "$V1_SERVICE" 2>/dev/null && step_ok "Restarted $V1_SERVICE" || step_fail "Could not restart $V1_SERVICE"
+    fi
+  elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
+    launchctl load ~/Library/LaunchAgents/${V1_SERVICE}.plist 2>/dev/null && step_ok "Restarted $V1_SERVICE" || step_fail "Could not restart $V1_SERVICE"
+  fi
+  if [ -f "$PROJECT_ROOT/data/taskflow/taskflow.db" ]; then
+    mv "$PROJECT_ROOT/data/taskflow/taskflow.db" \
+       "$PROJECT_ROOT/data/taskflow/taskflow.db.reverted-$(date +%s)" 2>/dev/null || true
+    step_ok "Moved v2 taskflow.db aside so a future rerun re-copies from v1"
+  fi
+}
+
 # Disable the v1 service so it doesn't auto-start, but leave the unit file
-# on disk so the user can rollback with: systemctl --user start nanoclaw
-# Idempotent — safe to call multiple times.
+# on disk so the user can rollback. Honors V1_SYSTEMD_SCOPE so sudo-installed
+# system units are disabled too — otherwise a sudo v1 install reboots back
+# into existence and races v2. Idempotent — safe to call multiple times.
 disable_v1_service() {
   if [ "$PLATFORM_SERVICE" = "systemd" ]; then
+    if [ "$V1_SYSTEMD_SCOPE" = "system" ]; then
+      if sudo -n systemctl stop "$V1_SERVICE" 2>/dev/null; then
+        sudo -n systemctl disable "$V1_SERVICE" 2>/dev/null || true
+        step_ok "Disabled $V1_SERVICE (system unit; file kept for rollback)"
+      else
+        step_fail "Could not disable $V1_SERVICE — run 'sudo systemctl disable $V1_SERVICE' manually so v1 doesn't auto-start on reboot"
+      fi
+      return
+    fi
     local v1_file="$HOME/.config/systemd/user/${V1_SERVICE}.service"
     if [ -f "$v1_file" ] || [ -L "$v1_file" ]; then
       systemctl --user stop "$V1_SERVICE" 2>/dev/null || true
@@ -705,11 +746,14 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
       step_ok "v2 service installed and started $(dim "($V2_SERVICE)")"
       SERVICE_SWITCHED=true
     else
-      # Don't lie about v2 being up — leave SERVICE_SWITCHED=false so the
-      # later keep/revert prompt is skipped and the user sees the failure
-      # in the summary. v1 was already stopped pre-1f; warn the user.
-      step_fail "Could not start v2 service $(dim "(see $V2_SERVICE_LOG)") — v1 remains stopped"
-      step_info "Start v2 manually after diagnosing: $(dim 'pnpm exec tsx setup/index.ts --step service')"
+      # v2 install failed and v1 is still down from pre-1f. Don't strand
+      # the operator: restart v1, move v2 taskflow.db aside, leave a clear
+      # failure trail. SERVICE_SWITCHED stays false so the keep/revert
+      # prompt is skipped.
+      step_fail "Could not start v2 service $(dim "(see $V2_SERVICE_LOG)") — rolling back to v1"
+      rollback_to_v1_no_v2
+      record_step "service-install" "failed"
+      step_info "Diagnose v2 install with: $(dim 'pnpm exec tsx setup/index.ts --step service'), then re-run migrate-v2.sh"
     fi
 
     if [ "$SERVICE_SWITCHED" = "true" ]; then
@@ -724,36 +768,15 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
       rm -f "$KEEP_ANSWER_FILE"
 
       if [ "$KEEP_ANSWER" = "revert" ]; then
-        # Stop v2
+        # Stop v2 first, then use the shared rollback helper for v1 restart
+        # + taskflow.db move-aside.
         if [ "$PLATFORM_SERVICE" = "systemd" ] && [ -n "$V2_SERVICE" ]; then
           systemctl --user stop "$V2_SERVICE" 2>/dev/null || true
           systemctl --user disable "$V2_SERVICE" 2>/dev/null || true
         elif [ "$PLATFORM_SERVICE" = "launchd" ] && [ -n "$V2_SERVICE" ]; then
           launchctl unload ~/Library/LaunchAgents/${V2_SERVICE}.plist 2>/dev/null || true
         fi
-
-        # Restart v1
-        if [ "$PLATFORM_SERVICE" = "systemd" ]; then
-          if [ "$V1_SYSTEMD_SCOPE" = "system" ]; then
-            sudo systemctl start "$V1_SERVICE" 2>/dev/null || true
-          else
-            systemctl --user start "$V1_SERVICE" 2>/dev/null || true
-          fi
-        elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
-          launchctl load ~/Library/LaunchAgents/${V1_SERVICE}.plist 2>/dev/null || true
-        fi
-
-        # Invalidate v2's copied taskflow.db — taskflow.ts's idempotency
-        # check would otherwise skip a future re-migration, leaving v2
-        # frozen at first-copy time even though v1 has been collecting
-        # writes since. Move aside instead of deleting so the user can
-        # forensically inspect if needed.
-        if [ -f "$PROJECT_ROOT/data/taskflow/taskflow.db" ]; then
-          mv "$PROJECT_ROOT/data/taskflow/taskflow.db" \
-             "$PROJECT_ROOT/data/taskflow/taskflow.db.reverted-$(date +%s)" 2>/dev/null || true
-          step_ok "Moved v2 taskflow.db aside so future rerun re-copies from v1"
-        fi
-
+        rollback_to_v1_no_v2
         step_ok "Reverted to v1 service"
         SERVICE_SWITCHED=false
       else
@@ -763,21 +786,11 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
     fi
   else
     # User picked 'skip' at the offer-switch prompt AFTER pre-1f stopped v1.
-    # We can't leave both v1 and v2 down. Restart v1 to honor the 'skip'
-    # contract ("defer migration") and warn that v2's copied taskflow.db is
-    # frozen at this point — a future rerun will skip the copy unless the
-    # user removes data/taskflow/taskflow.db first.
-    step_info "v1 was stopped to copy TaskFlow data; restarting since you opted not to switch"
-    if [ "$PLATFORM_SERVICE" = "systemd" ]; then
-      if [ "$V1_SYSTEMD_SCOPE" = "system" ]; then
-        sudo systemctl start "$V1_SERVICE" 2>/dev/null && step_ok "Restarted $V1_SERVICE" || step_fail "Could not restart $V1_SERVICE"
-      else
-        systemctl --user start "$V1_SERVICE" 2>/dev/null && step_ok "Restarted $V1_SERVICE" || step_fail "Could not restart $V1_SERVICE"
-      fi
-    elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
-      launchctl load ~/Library/LaunchAgents/${V1_SERVICE}.plist 2>/dev/null && step_ok "Restarted $V1_SERVICE" || step_fail "Could not restart $V1_SERVICE"
-    fi
-    step_info "v2 install is staged but not running — re-run migrate-v2.sh later, or rm data/taskflow/taskflow.db first to force a fresh TaskFlow copy"
+    # We can't leave both v1 and v2 down. Restore v1 + invalidate the copied
+    # taskflow.db so a future rerun re-copies fresh.
+    step_info "v1 was stopped to copy TaskFlow data; restoring since you opted not to switch"
+    rollback_to_v1_no_v2
+    step_info "v2 install is staged but not running — re-run migrate-v2.sh later"
   fi
 else
   step_skip "v1 service not running — nothing to switch"
@@ -818,7 +831,11 @@ echo "    $(green '✓')  Service switched to v2 $(dim "($V2_SERVICE)")"
 echo
 echo "  $(bold 'Rollback to v1:')"
 if [ "$PLATFORM_SERVICE" = "systemd" ]; then
+  if [ "$V1_SYSTEMD_SCOPE" = "system" ]; then
+echo "    $(dim '$') systemctl --user stop $V2_SERVICE && sudo systemctl start $V1_SERVICE"
+  else
 echo "    $(dim '$') systemctl --user stop $V2_SERVICE && systemctl --user start $V1_SERVICE"
+  fi
 elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
 echo "    $(dim '$') launchctl unload ~/Library/LaunchAgents/${V2_SERVICE}.plist && launchctl load ~/Library/LaunchAgents/${V1_SERVICE}.plist"
 fi
