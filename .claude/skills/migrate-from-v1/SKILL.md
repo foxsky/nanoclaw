@@ -186,10 +186,8 @@ Read all **three** v1 templates **once** at the start — most files in a TaskFl
 const handoff = JSON.parse(fs.readFileSync('logs/setup-migration/handoff.json', 'utf8'));
 const mainTpl = fs.readFileSync(path.join(handoff.v1_path, 'groups', 'main', 'CLAUDE.md'), 'utf8');
 const globalTpl = fs.readFileSync(path.join(handoff.v1_path, 'groups', 'global', 'CLAUDE.md'), 'utf8');
-const taskflowTpl = fs.readFileSync(
-  path.join(handoff.v1_path, '.claude/skills/add-taskflow/templates/CLAUDE.md.template'),
-  'utf8',
-); // may not exist if add-taskflow wasn't installed in v1; guard with existsSync
+const taskflowTplPath = path.join(handoff.v1_path, '.claude/skills/add-taskflow/templates/CLAUDE.md.template');
+const taskflowTpl = fs.existsSync(taskflowTplPath) ? fs.readFileSync(taskflowTplPath, 'utf8') : null;
 ```
 
 For each `groups/<folder>/CLAUDE.local.md`:
@@ -219,10 +217,10 @@ Compute the proposed output for each trivial-drift file IN MEMORY (don't write y
 For each file in this bucket:
 
 1. Read the file.
-2. Read the v1 template it was based on. Determine which template by checking the v1 install:
-   - If the group had `is_main=1` in v1's `registered_groups`, the template was `groups/main/CLAUDE.md`
-   - Otherwise, the template was `groups/global/CLAUDE.md`
-   - The v1 path is in `handoff.json` → `v1_path`
+2. Use the closest-matching template you already selected for this file in Step 0 — including the `add-taskflow` template if that's what the file derives from. Don't re-derive: a TaskFlow-derived file diffed against `groups/main/CLAUDE.md` will look entirely custom because the templates have nothing in common. The valid sources are:
+   - `<v1_path>/.claude/skills/add-taskflow/templates/CLAUDE.md.template` (most likely for `-taskflow` folders)
+   - `<v1_path>/groups/main/CLAUDE.md` (if `is_main=1` in v1's `registered_groups`)
+   - `<v1_path>/groups/global/CLAUDE.md` (otherwise)
 3. Diff the file against the template. Identify sections that are:
    - **Stock boilerplate** (identical to template) — remove. v2's fragments cover this.
    - **User customizations** (added sections, modified sections) — keep.
