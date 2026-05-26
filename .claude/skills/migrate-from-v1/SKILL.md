@@ -166,7 +166,7 @@ const unresolved = folders.map(f => f.folder).filter(f => !direct.has(f) && !map
 
 - **No board needed** — main control DM, or a non-taskflow group. No action; the agent will operate without TaskFlow MCP tools. (Recommended default for the messaging group that has `is_main_control=1`.)
 - **Map to an existing v1 board** — v1-level folder drift. Show the user a candidate list: `SELECT id, name, group_folder FROM boards`. Filter to plausible matches (substring of folder, similar tokens). On selection, insert into `board_groups(board_id, group_jid, group_folder, group_role)` — the `group_jid` is from `messaging_groups.platform_id` for the agent's wired messaging_group, `group_folder` is the agent_group's folder, `group_role` is typically `team` (or `control` for the main control DM).
-- **Provision a new board** — defer. Tell the user to send `provision_root_board` from inside the agent's chat after cutover; v2's MCP tool handles it.
+- **Provision a new board** — defer. Tell the user to send `provision_root_board` from the **operator-designated main control chat** (the one with `is_main_control=1`) after cutover, naming the target group as a parameter. `provision_root_board` is gated to main-control sessions (`src/modules/taskflow/provision-root-board.ts:214` → `checkMainControlSession`); it CANNOT be invoked from inside the unresolved agent's own chat.
 
 **Step 3 — verify post-reconciliation.** Re-run the Phase 0a probe; the only legitimately-unresolved folder should be the main-control group (if the user chose "no board needed" for it).
 

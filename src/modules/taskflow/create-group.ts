@@ -6,7 +6,7 @@ import { getAgentGroup } from '../../db/agent-groups.js';
 import { getMessagingGroup } from '../../db/messaging-groups.js';
 import { log } from '../../log.js';
 import type { Session } from '../../types.js';
-import { PARTICIPANT_JID_PATTERN, TASKFLOW_DB_PATH, TASKFLOW_SUFFIX } from './provision-shared.js';
+import { findBoardByFolder, PARTICIPANT_JID_PATTERN, TASKFLOW_DB_PATH, TASKFLOW_SUFFIX } from './provision-shared.js';
 import { nonEmptyString } from './util.js';
 
 const MAX_GROUP_SUBJECT_LENGTH = 100;
@@ -50,9 +50,7 @@ function checkAuth(tfDb: DatabaseType.Database, session: Session): AuthResult {
   // TaskFlow board with depth headroom: allowed; suffix IS auto-appended.
   const callerAgent = getAgentGroup(session.agent_group_id);
   if (!callerAgent) return { ok: false, isTaskflowSource: false };
-  const board = tfDb
-    .prepare('SELECT hierarchy_level, max_depth FROM boards WHERE group_folder = ?')
-    .get(callerAgent.folder) as { hierarchy_level: number; max_depth: number } | undefined;
+  const board = findBoardByFolder(tfDb, callerAgent.folder);
   if (!board) return { ok: false, isTaskflowSource: false };
   if (board.hierarchy_level + 1 > board.max_depth) return { ok: false, isTaskflowSource: false };
   return { ok: true, isTaskflowSource: true };

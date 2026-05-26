@@ -7,6 +7,7 @@ import { INBOUND_SCHEMA } from '../../db/schema.js';
 import { initTaskflowDb } from '../../taskflow-db.js';
 import {
   createBoardFilesystem,
+  findBoardByFolder,
   generateClaudeMd,
   MCP_JSON_CONTENT,
   nextCronRun,
@@ -18,6 +19,45 @@ import {
 } from './provision-shared.js';
 
 const TMPROOT = path.join(os.tmpdir(), `nanoclaw-provision-shared-test-${process.pid}`);
+
+describe('findBoardByFolder', () => {
+  // v1-level folder drift (registered_groups.folder ≠ boards.group_folder) is
+  // resolved via the board_groups many-to-many fallback. Without that fallback,
+  // post-migration agents with drifted folders silently lose access to
+  // provision_child_board and create_group (they query boards directly).
+  // See /migrate-from-v1 Phase 1b.
+  let tfDb: Database.Database;
+  beforeEach(() => {
+    tfDb = initTaskflowDb(':memory:');
+    tfDb
+      .prepare(
+        `INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run('board-eng', '120363111@g.us', 'eng-taskflow', 'hierarchy', 0, 3, null, 'ENG');
+  });
+  afterEach(() => {
+    tfDb.close();
+  });
+
+  it('resolves direct match via boards.group_folder', () => {
+    const board = findBoardByFolder(tfDb, 'eng-taskflow');
+    expect(board?.id).toBe('board-eng');
+  });
+
+  it('resolves drift match via board_groups.group_folder', () => {
+    tfDb
+      .prepare(`INSERT INTO board_groups (board_id, group_jid, group_folder, group_role) VALUES (?, ?, ?, ?)`)
+      .run('board-eng', '120363222@g.us', 'asse-eng-secti-taskflow', 'team');
+    const board = findBoardByFolder(tfDb, 'asse-eng-secti-taskflow');
+    expect(board?.id).toBe('board-eng');
+  });
+
+  it('returns undefined when neither boards nor board_groups matches', () => {
+    const board = findBoardByFolder(tfDb, 'never-existed-taskflow');
+    expect(board).toBeUndefined();
+  });
+});
 
 describe('sanitizeFolder', () => {
   it('lowercases', () => {

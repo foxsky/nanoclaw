@@ -65,6 +65,34 @@ export interface BoardRow {
   short_code: string | null;
 }
 
+/**
+ * Resolve a v2 agent folder to a taskflow board, falling back to the
+ * board_groups many-to-many table when boards.group_folder doesn't match
+ * directly. Mirrors src/taskflow-db.ts:resolveTaskflowBoardId but returns
+ * the full BoardRow (callers need hierarchy_level/max_depth/etc.).
+ *
+ * Used by provision_child_board and create_group, where v1-level folder
+ * drift between registered_groups.folder (carried into agent_groups by
+ * migrate-v2/db.ts) and boards.group_folder (preserved verbatim in v1's
+ * taskflow.db) means a direct boards lookup would miss the parent for
+ * groups whose folder was renamed in v2 but not in the board. The
+ * board_groups insert performed in /migrate-from-v1 Phase 1b is the
+ * only thing that gets resolution back to working — but only if both
+ * code paths consult it. Without this helper, those two MCP tools
+ * would silently no-op for drifted folders.
+ */
+export function findBoardByFolder(tfDb: Database.Database, folder: string): BoardRow | undefined {
+  const direct = tfDb.prepare('SELECT * FROM boards WHERE group_folder = ? LIMIT 1').get(folder) as
+    | BoardRow
+    | undefined;
+  if (direct) return direct;
+  const mapping = tfDb.prepare('SELECT board_id FROM board_groups WHERE group_folder = ? LIMIT 1').get(folder) as
+    | { board_id: string }
+    | undefined;
+  if (!mapping) return undefined;
+  return tfDb.prepare('SELECT * FROM boards WHERE id = ? LIMIT 1').get(mapping.board_id) as BoardRow | undefined;
+}
+
 export interface BoardConfigRow {
   board_id: string;
   wip_limit: number;

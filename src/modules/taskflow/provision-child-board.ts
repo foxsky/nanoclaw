@@ -23,6 +23,7 @@ import {
   pickUniqueAgentFolder,
   sanitizeFolder,
   ensureSessionInbound,
+  findBoardByFolder,
   scheduleOnboarding,
   scheduleRunners,
   TASKFLOW_DB_PATH,
@@ -78,9 +79,7 @@ function loadParent(tfDb: DatabaseType.Database, session: Session): ParentLookup
     log.warn('provision_child_board: caller agent_group not found', { sessionId: session.id });
     return null;
   }
-  const parentBoard = tfDb.prepare('SELECT * FROM boards WHERE group_folder = ?').get(callerAgent.folder) as
-    | BoardRow
-    | undefined;
+  const parentBoard = findBoardByFolder(tfDb, callerAgent.folder);
   if (!parentBoard) {
     log.warn("provision_child_board: caller's session is not a TaskFlow board", {
       sessionId: session.id,
