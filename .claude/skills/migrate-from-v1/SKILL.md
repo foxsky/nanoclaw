@@ -54,6 +54,7 @@ Walk `handoff.steps` for any `status: failed` entries. Fix only the failures tha
 - **Anthropic credential.** `onecli secrets list 2>/dev/null | grep -i anthropic` — at least one credential must exist or the container can't call the model.
 - **Container image.** `docker images nanoclaw-agent:latest --format '{{.ID}}'` returns non-empty.
 - **TaskFlow main-control row.** `pnpm exec tsx scripts/q.ts data/v2.db "SELECT COUNT(*) FROM messaging_groups WHERE is_main_control=1;"` must return `1`. If it returns `0`, every taskflow MCP tool (`provision_root_board`, `provision_child_board`, `create_group`, `add_destination`, `send_otp`) will silently fail authorization at `src/modules/taskflow/permission.ts:57`. Cause: v1 had no `registered_groups.is_main=1` row, OR `1b-db` errored on the main row mid-create. Remediation: list candidates with `pnpm exec tsx scripts/set-main-control.ts`, confirm with the user which messaging group is their primary control DM, then designate it: `pnpm exec tsx scripts/set-main-control.ts <mg-id>` (or `--by-platform <channel> <platform_id>`). Phase 0b's smoke test will fail every taskflow command until this is set.
+- **TaskFlow board reachability.** For each v2 agent_group, the folder must resolve to a board via `resolveTaskflowBoardId` (direct `boards.group_folder` match OR `board_groups.group_folder` fallback). Count unresolved folders: open both DBs (`data/v2.db` + `data/taskflow/taskflow.db`) and compute `agent_groups.folder \ (boards.group_folder ∪ board_groups.group_folder)`. Any non-zero result means those agent containers can't operate on a board (all `api_*`/`taskflow_*` MCP tools return "no board for this group"). Two legitimate causes: (a) the agent is the main control DM and intentionally has no board (e.g., `whatsapp_main`), (b) v1-level folder drift between `registered_groups.folder` (carried into agent_groups) and `boards.group_folder` (preserved in taskflow.db). Reconcile in Phase 1b below.
 
 For each probe that fails, run the matching `setup/index.ts --step <name>` (table at bottom of this skill) or guide the user to install/start the missing component. Only then proceed to Phase 0b.
 
@@ -143,6 +144,33 @@ Then update the messaging groups:
 UPDATE messaging_groups SET unknown_sender_policy = '<chosen_policy>'
 WHERE id IN (SELECT id FROM messaging_groups WHERE channel_type IN (<migrated_channels>))
 ```
+
+## Phase 1b: TaskFlow board reconciliation
+
+If the Phase 0a "TaskFlow board reachability" probe surfaced unresolved folders, walk them with the user. Each represents an agent_group with no TaskFlow board attached.
+
+**Step 1 — enumerate unresolved folders.** Open both DBs:
+
+```ts
+import Database from 'better-sqlite3';
+const v2 = new Database('data/v2.db', { readonly: true });
+const tf = new Database('data/taskflow/taskflow.db', { readonly: true });
+
+const folders = v2.prepare('SELECT folder FROM agent_groups ORDER BY folder').all() as { folder: string }[];
+const direct = new Set(tf.prepare('SELECT DISTINCT group_folder FROM boards').all().map((r: any) => r.group_folder));
+const mapped = new Set(tf.prepare('SELECT DISTINCT group_folder FROM board_groups').all().map((r: any) => r.group_folder));
+const unresolved = folders.map(f => f.folder).filter(f => !direct.has(f) && !mapped.has(f));
+```
+
+**Step 2 — categorize each unresolved folder.** For each one, ask via `AskUserQuestion`:
+
+- **No board needed** — main control DM, or a non-taskflow group. No action; the agent will operate without TaskFlow MCP tools. (Recommended default for the messaging group that has `is_main_control=1`.)
+- **Map to an existing v1 board** — v1-level folder drift. Show the user a candidate list: `SELECT id, name, group_folder FROM boards`. Filter to plausible matches (substring of folder, similar tokens). On selection, insert into `board_groups(board_id, group_jid, group_folder, group_role)` — the `group_jid` is from `messaging_groups.platform_id` for the agent's wired messaging_group, `group_folder` is the agent_group's folder, `group_role` is typically `team` (or `control` for the main control DM).
+- **Provision a new board** — defer. Tell the user to send `provision_root_board` from inside the agent's chat after cutover; v2's MCP tool handles it.
+
+**Step 3 — verify post-reconciliation.** Re-run the Phase 0a probe; the only legitimately-unresolved folder should be the main-control group (if the user chose "no board needed" for it).
+
+This phase is purely additive — no v1 data is modified, no boards renamed. The reconciliation goes through `board_groups`, which is the canonical many-to-many table for "this folder belongs to this board". Boards' own `group_folder` field is left alone (preserves v1 history).
 
 ## Phase 2: Clean up CLAUDE.local.md
 
