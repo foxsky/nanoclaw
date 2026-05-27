@@ -41,9 +41,23 @@ Once `handoff.json` exists, proceed to Phase 0.
 
 Before any deeper migration work, prove v2 actually answers messages on the user's real channels. v1 is paused, not touched — flipping back is a service restart.
 
-### 0a — Fix blockers only
+### 0a — Triage migration honesty before any other work
 
-Walk `handoff.steps` for any `status: failed` entries. Fix only the failures that would stop the bot from routing one message; defer the rest to its later phase.
+Before walking step status, check `overall_status` and `degraded`:
+
+- **`overall_status: "failed"`** — migration aborted. `aborted_at` names the abort reason. Do not proceed with smoke test or owner seeding. Read `logs/migrate-v2.log` and the matching step log under `logs/migrate-steps/`, fix the underlying cause with the user, then ask them to re-run `bash migrate-v2.sh`.
+- **`overall_status: "degraded"`** OR **`degraded: true`** — migration ran to completion but a rollback / sudo-failure / non-fatal-error path fired. Walk `degraded_reasons` with the user verbatim. Each line names a manual remediation. Resolve every reason before Phase 0b — the typical cases:
+  - `"v1 service (… , system/user) not restarted — sudo cache expired"` → user needs to run the suggested `systemctl` command, then confirm v1 is up before deciding whether to switch.
+  - `"v1 ($V1_SERVICE) was not disabled"` → run the suggested disable command so v1 doesn't auto-restart on reboot and race v2.
+  - `"<step> reported N non-fatal error(s)"` → open `logs/migrate-steps/<step>.log`, grep for `^ERROR:`, decide per-row whether the skipped data needs hand-migration.
+  - `"v2 service install failed"` → diagnose with `pnpm exec tsx setup/index.ts --step service`, then ask user to re-run `bash migrate-v2.sh`.
+  - `"migration interrupted after v1 was stopped"` → v1 was auto-restored; ask user to re-run when they're ready.
+  - `"stale v2 taskflow.db remains at data/taskflow/taskflow.db"` → remove the file (or move aside) before re-running migrate-v2.sh.
+- **`overall_status: "partial"`** — at least one step failed without aborting. Continue to step-status triage below to determine whether the failure blocks the smoke test.
+
+### 0a.1 — Fix step blockers
+
+Walk `handoff.steps` for any `status: "failed"` or `status: "partial"` entries. Failed = step exited non-zero; partial = step exited 0 but emitted `ERROR:` lines for individual rows. Fix only the failures that would stop the bot from routing one message; defer the rest to its later phase.
 
 **Absent ≠ success.** Several `migrate-v2.sh` steps only fire on certain branches (`2b-channel-auth`, `3a-docker`, `3b-onecli`, `3c-auth`, `3e-build`). When a step skips its `record_step` call, it's missing from `handoff.steps` entirely — silently. Don't assume "no entry = healthy." Run these explicit probes before Phase 0b:
 

@@ -47,6 +47,13 @@ ABORTED_AT=""
 # final summary can surface a degraded outcome instead of green-✓ everywhere.
 MIGRATION_DEGRADED=false
 MIGRATION_DEGRADED_REASONS=()
+# Flip to true only after migrate-v2.sh has stopped v1 itself (pre-1f gate,
+# or the late switchover re-stop). Any unexpected exit while this is true
+# means v1 is down with no replacement — the EXIT trap must restore it.
+V1_STOPPED_BY_MIGRATION=false
+# Set to true by rollback_to_v1_no_v2 so the EXIT trap doesn't double-run
+# a rollback that an explicit abort path already performed.
+ROLLBACK_DONE=false
 
 # Per-step status tracking. Parallel indexed arrays so this works on
 # bash 3.2 (macOS default) which has no associative arrays.
@@ -123,7 +130,23 @@ write_handoff() {
 HANDOFF_EOF
 }
 
-trap write_handoff EXIT
+cleanup_on_exit() {
+  # If v1 was stopped by us and we never landed in a clean "v2 kept" or
+  # "explicit rollback" state, restore v1 now. Catches signal-driven exits
+  # (Ctrl-C, SIGTERM), set -u failures, or any code path that exits without
+  # going through one of the rollback call sites — otherwise the operator is
+  # stranded with v1 down and v2 not switched.
+  if [ "$V1_STOPPED_BY_MIGRATION" = "true" ] \
+     && [ "$SERVICE_SWITCHED" = "false" ] \
+     && [ "$ROLLBACK_DONE" = "false" ]; then
+    step_fail "Migration interrupted with v1 stopped — restoring v1"
+    rollback_to_v1_no_v2
+    mark_degraded "migration interrupted after v1 was stopped — v1 restored automatically; review logs/migrate-v2.log"
+  fi
+  write_handoff
+}
+
+trap cleanup_on_exit EXIT
 
 abort() {
   ABORTED_AT="$1"
@@ -316,7 +339,9 @@ run_step() {
     record_step "$name" "success"
     # Surface partial errors (rows skipped due to parse/lookup failures)
     # even when the step exited successfully — they're easy to miss in the
-    # raw log and have caused silent migrations before.
+    # raw log and have caused silent migrations before. Promote the recorded
+    # status from "success" to "partial" and mark the run degraded so the
+    # final summary + handoff.json reflect the non-fatal errors.
     if grep -q '^ERROR:' "$raw" 2>/dev/null; then
       local err_count
       err_count=$(grep -c '^ERROR:' "$raw")
@@ -325,6 +350,8 @@ run_step() {
         echo "  $(dim "$line")"
       done
       log "$name: ${err_count} non-fatal errors"
+      STEP_STATUSES[${#STEP_STATUSES[@]}-1]="partial"
+      mark_degraded "$name reported ${err_count} non-fatal error(s) — see logs/migrate-steps/${name}.log"
     fi
   elif grep -q '^SKIPPED:' "$raw" 2>/dev/null; then
     local reason
@@ -380,6 +407,20 @@ if [ "$PLATFORM_SERVICE" = "systemd" ]; then
   V1_SYSTEM_ACTIVE=false
   systemctl --user is-active "$V1_SERVICE" >/dev/null 2>&1 && V1_USER_ACTIVE=true
   systemctl is-active "$V1_SERVICE" >/dev/null 2>&1 && V1_SYSTEM_ACTIVE=true
+  # Also probe INSTALLED scope (unit file present) — an inactive-but-enabled
+  # system unit otherwise leaves V1_SYSTEMD_SCOPE empty, and disable_v1_service
+  # silently falls through without disabling, letting v1 auto-start on reboot
+  # and race v2.
+  V1_USER_INSTALLED=false
+  V1_SYSTEM_INSTALLED=false
+  if [ -e "$HOME/.config/systemd/user/${V1_SERVICE}.service" ]; then
+    V1_USER_INSTALLED=true
+  fi
+  if [ -e "/etc/systemd/system/${V1_SERVICE}.service" ] \
+     || [ -e "/usr/lib/systemd/system/${V1_SERVICE}.service" ] \
+     || [ -e "/lib/systemd/system/${V1_SERVICE}.service" ]; then
+    V1_SYSTEM_INSTALLED=true
+  fi
   if [ "$V1_USER_ACTIVE" = "true" ] && [ "$V1_SYSTEM_ACTIVE" = "true" ]; then
     step_fail "v1 ($V1_SERVICE) is active under BOTH --user and system systemd scopes."
     echo "  $(dim 'Both scopes writing to v1 state simultaneously is misconfiguration')"
@@ -390,11 +431,28 @@ if [ "$PLATFORM_SERVICE" = "systemd" ]; then
     echo
     abort "v1-dual-scope-active"
   fi
+  if [ "$V1_USER_INSTALLED" = "true" ] && [ "$V1_SYSTEM_INSTALLED" = "true" ]; then
+    step_fail "v1 ($V1_SERVICE) is installed under BOTH --user and system systemd scopes."
+    echo "  $(dim 'Even with one inactive, leaving both unit files in place means v1')"
+    echo "  $(dim 'can auto-restart from the other scope on reboot and race v2. Remove')"
+    echo "  $(dim 'or disable one before re-running migrate-v2.sh:')"
+    echo
+    echo "  $(dim '$') systemctl --user disable --now $V1_SERVICE"
+    echo "  $(dim '$') sudo systemctl disable --now $V1_SERVICE"
+    echo
+    abort "v1-dual-scope-installed"
+  fi
+  # Determine scope: active wins, otherwise installed (so an inactive-but-
+  # enabled unit is still routed through disable_v1_service correctly).
   if [ "$V1_USER_ACTIVE" = "true" ]; then
     V1_WAS_RUNNING=true
     V1_SYSTEMD_SCOPE="--user"
   elif [ "$V1_SYSTEM_ACTIVE" = "true" ]; then
     V1_WAS_RUNNING=true
+    V1_SYSTEMD_SCOPE="system"
+  elif [ "$V1_USER_INSTALLED" = "true" ]; then
+    V1_SYSTEMD_SCOPE="--user"
+  elif [ "$V1_SYSTEM_INSTALLED" = "true" ]; then
     V1_SYSTEMD_SCOPE="system"
   fi
 elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
@@ -415,6 +473,7 @@ mark_degraded() {
 # Sets MIGRATION_DEGRADED on any sub-step failure (sudo cache expired,
 # mv failed) so the summary shows the operator needs to act manually.
 rollback_to_v1_no_v2() {
+  ROLLBACK_DONE=true
   if [ "$PLATFORM_SERVICE" = "systemd" ]; then
     if [ "$V1_SYSTEMD_SCOPE" = "system" ]; then
       if sudo -n systemctl start "$V1_SERVICE" 2>/dev/null; then
@@ -552,6 +611,7 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
       hint="sudo systemctl stop $V1_SERVICE"
     fi
     if "${stop_cmd[@]}" 2>/dev/null; then
+      V1_STOPPED_BY_MIGRATION=true
       step_ok "Stopped $V1_SERVICE"
     else
       step_fail "Could not stop $V1_SERVICE (run '$hint' manually then re-run)"
@@ -559,6 +619,7 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
     fi
   elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
     if launchctl unload "$HOME/Library/LaunchAgents/${V1_SERVICE}.plist" 2>/dev/null; then
+      V1_STOPPED_BY_MIGRATION=true
       step_ok "Stopped $V1_SERVICE"
     else
       step_fail "Could not stop $V1_SERVICE"
@@ -822,14 +883,48 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
     # log; only stop again if somehow still running (Restart=on-failure on
     # a system unit can resurrect v1 between phases). Honors V1_SYSTEMD_SCOPE
     # so a sudo-installed v1 that re-activated isn't missed by a --user probe.
+    #
+    # If a re-stop fails (sudo cache expired, launchctl errored), bailing
+    # out and proceeding to v2 install is unsafe — v1 would race v2 against
+    # the same DBs. Abort the switchover, roll back, and let the operator
+    # re-run after fixing privileges.
+    V1_RESTOP_FAILED=false
     if [ "$PLATFORM_SERVICE" = "systemd" ]; then
       if [ "$V1_SYSTEMD_SCOPE" = "system" ] && systemctl is-active "$V1_SERVICE" >/dev/null 2>&1; then
-        sudo -n systemctl stop "$V1_SERVICE" 2>/dev/null && step_ok "Stopped v1 service" || step_fail "Could not re-stop v1 — run 'sudo systemctl stop $V1_SERVICE' manually"
+        if sudo -n systemctl stop "$V1_SERVICE" 2>/dev/null; then
+          V1_STOPPED_BY_MIGRATION=true
+          step_ok "Stopped v1 service"
+        else
+          V1_RESTOP_FAILED=true
+          step_fail "Could not re-stop v1 — run 'sudo systemctl stop $V1_SERVICE' manually"
+        fi
       elif [ "$V1_SYSTEMD_SCOPE" = "--user" ] && systemctl --user is-active "$V1_SERVICE" >/dev/null 2>&1; then
-        systemctl --user stop "$V1_SERVICE" 2>/dev/null && step_ok "Stopped v1 service" || step_fail "Could not stop v1"
+        if systemctl --user stop "$V1_SERVICE" 2>/dev/null; then
+          V1_STOPPED_BY_MIGRATION=true
+          step_ok "Stopped v1 service"
+        else
+          V1_RESTOP_FAILED=true
+          step_fail "Could not stop v1"
+        fi
       fi
     elif [ "$PLATFORM_SERVICE" = "launchd" ] && launchctl list "$V1_SERVICE" >/dev/null 2>&1; then
-      launchctl unload ~/Library/LaunchAgents/${V1_SERVICE}.plist 2>/dev/null && step_ok "Stopped v1 service" || step_fail "Could not stop v1"
+      if launchctl unload ~/Library/LaunchAgents/${V1_SERVICE}.plist 2>/dev/null; then
+        V1_STOPPED_BY_MIGRATION=true
+        step_ok "Stopped v1 service"
+      else
+        V1_RESTOP_FAILED=true
+        step_fail "Could not stop v1"
+      fi
+    fi
+
+    if [ "$V1_RESTOP_FAILED" = "true" ]; then
+      # v1 is still running with stale TaskFlow state already copied to v2.
+      # Starting v2 here would be a split-brain. Roll back and abort cleanly.
+      step_fail "v1 resurrected between phases and could not be re-stopped — aborting switchover to prevent split-brain"
+      rollback_to_v1_no_v2
+      record_step "service-install" "failed"
+      mark_degraded "v1 ($V1_SERVICE) could not be re-stopped at switchover — re-run migrate-v2.sh after restoring sudo cache or stopping v1 manually"
+      abort "v1-restop-failed"
     fi
 
     # Install and start v2 service
@@ -881,6 +976,9 @@ if [ "$V1_WAS_RUNNING" = "true" ]; then
         SERVICE_SWITCHED=false
       else
         step_ok "Keeping v2 service"
+        # Operator chose v2 — v1 staying off is intentional. Clear the
+        # "stranded" flag so the EXIT trap doesn't undo the switch.
+        V1_STOPPED_BY_MIGRATION=false
         if ! disable_v1_service; then
           mark_degraded "v1 ($V1_SERVICE) was not disabled — sudo cache expired; v1 will auto-restart on reboot and race v2"
         fi
@@ -913,9 +1011,46 @@ echo
 step_ok "Wrote handoff summary"
 
 # Summary
+# Derive header from BOTH degraded-flag AND per-step results — a failed
+# step doesn't auto-flip MIGRATION_DEGRADED, so the header would otherwise
+# claim "Migration complete" even when 1d-sessions or 3e-build is failed.
+SUMMARY_HAS_FAILURES=false
+SUMMARY_HAS_PARTIALS=false
+for ((i=0; i<${#STEP_NAMES[@]}; i++)); do
+  case "${STEP_STATUSES[$i]}" in
+    failed)  SUMMARY_HAS_FAILURES=true ;;
+    partial) SUMMARY_HAS_PARTIALS=true ;;
+  esac
+done
+
+# Render a single "What was done" line by step name. Pulls the recorded
+# status so failed/partial steps don't display green-✓. Falls back to
+# success-✓ for steps that never recorded (most of these are 100%-
+# completion gates that abort on failure, so an absent record means the
+# script reached this summary block with the step done).
+render_step_line() {
+  local name="$1" label="$2"
+  local i
+  for ((i=0; i<${#STEP_NAMES[@]}; i++)); do
+    if [ "${STEP_NAMES[$i]}" = "$name" ]; then
+      case "${STEP_STATUSES[$i]}" in
+        success) echo "    $(green '✓')  $label" ;;
+        partial) echo "    $(red '!')  $label $(dim '(with errors — see logs/migrate-steps/')${name}$(dim '.log)')" ;;
+        failed)  echo "    $(red '✗')  $label $(dim '(failed — see logs/migrate-steps/')${name}$(dim '.log)')" ;;
+        skipped) echo "    $(dim '–')  $label $(dim '(skipped)')" ;;
+        *)       echo "    $(dim '·')  $label" ;;
+      esac
+      return
+    fi
+  done
+  echo "    $(green '✓')  $label"
+}
+
 echo
-if [ "$MIGRATION_DEGRADED" = "true" ]; then
+if [ "$SUMMARY_HAS_FAILURES" = "true" ] || [ "$MIGRATION_DEGRADED" = "true" ]; then
   echo "$(bold '── Migration completed with issues — see below ──')"
+elif [ "$SUMMARY_HAS_PARTIALS" = "true" ]; then
+  echo "$(bold '── Migration completed with non-fatal errors — see below ──')"
 else
   echo "$(bold '── Migration complete ──')"
 fi
@@ -924,16 +1059,17 @@ echo "  $(dim 'v1:')  $V1_PATH"
 echo "  $(dim 'v2:')  $PROJECT_ROOT"
 echo
 echo "  $(bold 'What was done:')"
-echo "    $(green '✓')  .env keys merged"
-echo "    $(green '✓')  Database seeded (agent groups, messaging groups, wiring)"
-echo "    $(green '✓')  Group folders copied (CLAUDE.md → CLAUDE.local.md)"
-echo "    $(green '✓')  Session data copied"
-echo "    $(green '✓')  Scheduled tasks ported"
+render_step_line "1a-env"      ".env keys merged"
+render_step_line "1b-db"       "Database seeded (agent groups, messaging groups, wiring)"
+render_step_line "1c-groups"   "Group folders copied (CLAUDE.md → CLAUDE.local.md)"
+render_step_line "1d-sessions" "Session data copied"
+render_step_line "1e-tasks"    "Scheduled tasks ported"
+render_step_line "1f-taskflow" "TaskFlow state copied (boards, tasks)"
 if [ ${#SELECTED_CHANNELS[@]} -gt 0 ]; then
 echo "    $(green '✓')  Channels installed: ${SELECTED_CHANNELS[*]}"
 fi
 echo "    $(green '✓')  Container skills review deferred to /migrate-from-v1 Phase 4"
-echo "    $(green '✓')  Container image built"
+render_step_line "3e-build"    "Container image built"
 if [ "$SERVICE_SWITCHED" = "true" ] && [ -n "$V2_SERVICE" ]; then
 echo "    $(green '✓')  Service switched to v2 $(dim "($V2_SERVICE)")"
 echo

@@ -2369,9 +2369,22 @@ function handleTaskflowPendingChildBoardRegistration(
   appendMcpEquivalentToolCapture('api_admin', input, result, !result.success);
 
   const childBoardId = `board-${action.groupFolder}`;
-  const childBoard = getTaskflowDb().prepare(
+  // Direct boards lookup OR board_groups bridge — drifted folders (v1
+  // registered_groups.folder mismatched with boards.group_folder, reconciled
+  // post-migration via board_groups rows) would otherwise miss here and the
+  // handler would either claim "registration failed" when the board exists
+  // or display a synthetic board ID in the success message. Same pattern as
+  // src/modules/taskflow/provision-shared.ts:findBoardByFolder + the runtime
+  // resolver in src/taskflow-db.ts:resolveTaskflowBoardId.
+  const tfDb = getTaskflowDb();
+  let childBoard = tfDb.prepare(
     `SELECT id FROM boards WHERE id = ? OR group_folder = ? LIMIT 1`,
   ).get(childBoardId, action.groupFolder) as { id: string } | undefined;
+  if (!childBoard) {
+    childBoard = tfDb.prepare(
+      `SELECT board_id AS id FROM board_groups WHERE group_folder = ? ORDER BY board_id LIMIT 1`,
+    ).get(action.groupFolder) as { id: string } | undefined;
+  }
 
   const autoProvision = result.success ? result.auto_provision_request : undefined;
   if (autoProvision) {
