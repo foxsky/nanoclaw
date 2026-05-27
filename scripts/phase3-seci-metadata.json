@@ -53,7 +53,13 @@
     "source_turn_index": 2,
     "prior_turn_depth": 1,
     "state_snapshot": "/tmp/phase3-state/seci-reconstructed-20260512/pre-turn21/taskflow.db",
-    "requires_state_snapshot": true
+    "requires_state_snapshot": true,
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": ["P6.7"],
+      "mutation_types": ["move", "update"],
+      "outbound_intent": "mutation_confirmation"
+    }
   },
   {
     "turn_index": 23,
@@ -84,7 +90,13 @@
     "source_turn_index": 7,
     "prior_turn_depth": 1,
     "state_snapshot": "/tmp/phase3-state/seci-reconstructed-20260512/pre-turn24/taskflow.db",
-    "requires_state_snapshot": true
+    "requires_state_snapshot": true,
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": ["T84"],
+      "mutation_types": ["reassign", "update"],
+      "outbound_intent": "mutation_confirmation"
+    }
   },
   {
     "turn_index": 26,
@@ -99,7 +111,13 @@
     "source_turn_index": 10,
     "prior_turn_depth": 1,
     "state_snapshot": "/tmp/phase3-state/seci-reconstructed-20260512/pre-turn26/taskflow.db",
-    "requires_state_snapshot": true
+    "requires_state_snapshot": true,
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": ["T85"],
+      "mutation_types": ["reassign", "update"],
+      "outbound_intent": "mutation_confirmation"
+    }
   },
   {
     "turn_index": 28,

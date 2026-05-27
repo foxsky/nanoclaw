@@ -462,6 +462,73 @@ export function addUpdateFormattedResult<
   return result;
 }
 
+const ROLLUP_STATUS_LABELS: Record<string, string> = {
+  no_work_yet: 'sem atividade',
+  active: 'em andamento',
+  at_risk: 'em risco',
+  blocked: 'bloqueado',
+  ready_for_review: 'pronto para revisão',
+  cancelled_needs_decision: 'cancelamento pendente',
+};
+
+const ROLLUP_COLUMN_LABELS: Record<string, string> = {
+  inbox: '📥 Inbox',
+  next_action: '⏭️ Próximas Ações',
+  in_progress: '🔄 Em Andamento',
+  waiting: '⏳ Aguardando',
+  review: '🔍 Revisão',
+  done: '✅ Concluída',
+  cancelled: '🚫 Cancelada',
+};
+
+function rollupStatusLabel(value: unknown): string | null {
+  if (typeof value !== 'string' || value.trim().length === 0) return null;
+  return ROLLUP_STATUS_LABELS[value] ?? value.replace(/_/g, ' ');
+}
+
+function rollupColumnLabel(value: unknown): string | null {
+  if (typeof value !== 'string' || value.trim().length === 0) return null;
+  return ROLLUP_COLUMN_LABELS[value] ?? value;
+}
+
+// BYTE-FAITHFUL mirror of v1's refresh-rollup confirmation card for
+// linked parent tasks. Ground truth: seci Phase-3 Turn 18. The engine
+// returns structured rollup data but no formatted user-facing card, so
+// build it at the MCP compatibility boundary before deterministic
+// confirmation emission.
+export function addHierarchyFormattedResult<
+  T extends {
+    success?: boolean;
+    formatted?: unknown;
+    task_id?: unknown;
+    rollup_status?: unknown;
+    rollup_summary?: unknown;
+    new_column?: unknown;
+  },
+>(result: T, action: string): T {
+  if (action !== 'refresh_rollup' || !result.success || result.formatted) return result;
+  const taskId = typeof result.task_id === 'string' && result.task_id.trim().length > 0
+    ? result.task_id.trim()
+    : '';
+  const status = rollupStatusLabel(result.rollup_status);
+  const column = rollupColumnLabel(result.new_column);
+  if (!taskId || !status || !column) return result;
+  const summary = typeof result.rollup_summary === 'string' ? result.rollup_summary.trim() : '';
+  const statusLine = summary
+    ? `• Status: _${status}_ — ${summary}`
+    : `• Status: _${status}_`;
+  return {
+    ...result,
+    formatted: [
+      `🔗 *${taskId}* — Rollup atualizado`,
+      '━━━━━━━━━━━━━━',
+      '',
+      statusLine,
+      `• Coluna mantida: ${column}`,
+    ].join('\n'),
+  };
+}
+
 // v2-coherent SUBSET of v1's add_subtask card. Header uses whole-line
 // bold (NOT buildAtualizadaHeader's `*id* atualizada`). The (hoje) tag
 // is appended only when `today` matches `sub.due_date`. v1 template
@@ -1728,7 +1795,7 @@ export const apiHierarchyTool: McpToolDefinition = {
         parent_task_id: parentTaskId,
       };
       const result = engine.hierarchy(params);
-      return finalizeMutationResult(result);
+      return finalizeMutationResult(addHierarchyFormattedResult(result, action));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });

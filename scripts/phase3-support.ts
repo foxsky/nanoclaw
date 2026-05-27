@@ -819,7 +819,7 @@ export function classifyOutboundIntent(text: string): string {
     return 'informational';
   }
   if (/\?|\b(deseja|qual|confirma|confirme|confirmar|como deseja|quer que|pode me informar|preciso saber|me informe)\b/i.test(text)) return 'asks_user';
-  if (/\b(conclu[ií]d|movid[ao]?|atualizad[ao]?|adicionad[ao]?|criad[ao]?|registrad[ao]?)\b/i.test(text)) return 'mutation_confirmation';
+  if (/\b(conclu[ií]d|movid[ao]?|atualizad[ao]?|adicionad[ao]?|criad[ao]?|registrad[ao]?|reabert[ao]?|reabri|ativei|ativad[ao]?)\b/i.test(text)) return 'mutation_confirmation';
   return 'informational';
 }
 

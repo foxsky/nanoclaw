@@ -2,7 +2,10 @@ import { describe, expect, it } from 'bun:test';
 
 import type { DestinationEntry } from '../destinations.ts';
 import type { RoutingContext } from '../formatter.ts';
-import { shouldSuppressSameConvMessage } from './message-block-dedup.ts';
+import {
+  shouldSuppressDuplicateMutationMessage,
+  shouldSuppressSameConvMessage,
+} from './message-block-dedup.ts';
 
 // Phase-3 #7 follow-up: locks the refined dedup scope. The
 // `<message>`-block carve-out from ba24ef23 is preserved for
@@ -80,5 +83,21 @@ describe('shouldSuppressSameConvMessage — refined #7 dedup scope', () => {
   it('flag set but routing has no current conversation (null platformId) → never suppress', () => {
     const noConvRouting: RoutingContext = { platformId: null, channelType: null, threadId: null, inReplyTo: null };
     expect(shouldSuppressSameConvMessage(true, SAME_WA_DEST, noConvRouting)).toBe(false);
+  });
+});
+
+describe('shouldSuppressDuplicateMutationMessage — exact-card cross-conv dedup', () => {
+  const card = '🔗 *P11.19* — Rollup atualizado\n━━━━━━━━━━━━━━\n\n• Status: _sem atividade_';
+
+  it('flag set + exact body already emitted → suppress even for cross-conv relays', () => {
+    expect(shouldSuppressDuplicateMutationMessage(true, `\n${card}\n`, [card])).toBe(true);
+  });
+
+  it('flag set + different body → bypass so legitimate relays still deliver', () => {
+    expect(shouldSuppressDuplicateMutationMessage(true, `${card}\n\ncc João`, [card])).toBe(false);
+  });
+
+  it('flag unset → never suppress', () => {
+    expect(shouldSuppressDuplicateMutationMessage(false, card, [card])).toBe(false);
   });
 });

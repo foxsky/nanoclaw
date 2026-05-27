@@ -925,6 +925,22 @@ describe('Phase 3 semantic comparison', () => {
     expect(summary.action).toBe('read');
   });
 
+  it('classifies reopen plus approval replies as mutation confirmations', () => {
+    const summary = summarizeSemanticBehavior(
+      [
+        { name: 'mcp__nanoclaw__api_move', input: { task_id: 'P6.7', action: 'reopen' } },
+        {
+          name: 'mcp__nanoclaw__api_update_task',
+          input: { task_id: 'P6.7', updates: { requires_close_approval: true } },
+        },
+      ],
+      [{ kind: 'chat', content: '{"text":"✅ *P6.7* — Título\\n\\nReabri a tarefa e ativei a aprovação obrigatória."}' }],
+    );
+
+    expect(summary.action).toBe('mutate');
+    expect(summary.outbound_intent).toBe('mutation_confirmation');
+  });
+
   it('keeps read-grounded missing-task-note replies classified as ask', () => {
     const summary = summarizeSemanticBehavior(
       [{ name: 'mcp__nanoclaw__api_query', input: { query: 'person_tasks', person_name: 'Lucas' } }],

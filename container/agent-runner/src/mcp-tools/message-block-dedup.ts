@@ -38,3 +38,25 @@ export function shouldSuppressSameConvMessage(
   // exact agent group.
   return routing.channelType === 'agent' && dest.agentGroupId === routing.platformId;
 }
+
+function comparableText(value: string): string {
+  return value.replace(/\r\n/g, '\n').trim();
+}
+
+/**
+ * Cross-conversation `<message>` blocks still bypass the mutation dedup
+ * flag unless they are an exact echo of a deterministic card already
+ * written this turn. That preserves real relays while suppressing the
+ * Phase-3 turn-18 shape: card emitted to the source conversation, then
+ * the model wrapped the same card for a child-board destination.
+ */
+export function shouldSuppressDuplicateMutationMessage(
+  suppressBareFallback: boolean,
+  body: string,
+  alreadyEmittedTexts: string[],
+): boolean {
+  if (!suppressBareFallback) return false;
+  const wanted = comparableText(body);
+  if (!wanted) return false;
+  return alreadyEmittedTexts.some((text) => comparableText(text) === wanted);
+}

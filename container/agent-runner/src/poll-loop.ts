@@ -26,7 +26,10 @@ import {
   consumeDeterministicMutationFlag,
   drainDeterministicMutationFlag,
 } from './mcp-tools/mutation-dedup.js';
-import { shouldSuppressSameConvMessage } from './mcp-tools/message-block-dedup.js';
+import {
+  shouldSuppressDuplicateMutationMessage,
+  shouldSuppressSameConvMessage,
+} from './mcp-tools/message-block-dedup.js';
 import { flushPendingCreateCard } from './mcp-tools/mutation-confirmation.js';
 import { appendToolEvents, type ToolEvent } from './providers/claude-tool-capture.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
@@ -3978,6 +3981,27 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
   }
 }
 
+function contentText(content: string): string | null {
+  try {
+    const parsed = JSON.parse(content) as { text?: unknown };
+    return typeof parsed.text === 'string' ? parsed.text : null;
+  } catch {
+    return null;
+  }
+}
+
+function existingOutboundChatTexts(): string[] {
+  try {
+    return getOutboundDb()
+      .prepare(`SELECT content FROM messages_out WHERE kind = 'chat' ORDER BY seq`)
+      .all()
+      .map((row) => contentText((row as { content: string }).content))
+      .filter((value): value is string => value !== null);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Parse the agent's final text for <message to="name">...</message> blocks
  * and dispatch each one to its resolved destination. Text outside of blocks
@@ -4001,6 +4025,7 @@ function dispatchResultText(text: string, routing: RoutingContext): void {
   //   - `<message to="<other-conv>">` blocks → BYPASS (cross-board relay).
   // See mutation-dedup.ts SCOPE + mcp-tools/message-block-dedup.ts.
   const suppressBareFallback = consumeDeterministicMutationFlag();
+  const deterministicTexts = suppressBareFallback ? existingOutboundChatTexts() : [];
 
   // Phase-3 #7: flush the deferred no-reparent create card. A standalone
   // create stores its "Tarefa criada"/"Projeto criado" card instead of
@@ -4045,6 +4070,10 @@ function dispatchResultText(text: string, routing: RoutingContext): void {
     // and the SCOPE section in mutation-dedup.ts.
     if (shouldSuppressSameConvMessage(suppressBareFallback, dest, routing)) {
       log(`<message to="${toName}"> suppressed (P4 same-conv dedup): deterministic mutation card already emitted this turn`);
+      continue;
+    }
+    if (shouldSuppressDuplicateMutationMessage(suppressBareFallback, body, deterministicTexts)) {
+      log(`<message to="${toName}"> suppressed (P4 duplicate-card dedup): exact deterministic mutation card already emitted this turn`);
       continue;
     }
     sendToDestination(dest, body, routing);
