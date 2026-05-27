@@ -1094,8 +1094,18 @@ if [ ${#SELECTED_CHANNELS[@]} -gt 0 ]; then
     done
     case "$ch_status" in
       success)  echo "    $(green '✓')  Channel installed: ${ch}" ;;
-      skipped)  echo "    $(dim '–')  Channel already installed: ${ch}" ;;
-      failed)   echo "    $(red '✗')  Channel install failed: ${ch} $(dim '(see logs/migrate-steps/2c-install-')${ch}$(dim '.log)')" ;;
+      skipped)
+        # Two skip paths: install script reported STATUS=already-installed
+        # (real bot — channel is live) vs no setup/install-<ch>.sh exists
+        # (operator picked a channel not yet ported into trunk — channel
+        # is NOT live). Don't collapse both into "already installed".
+        if [ -f "setup/install-${ch}.sh" ]; then
+          echo "    $(dim '–')  Channel already installed: ${ch}"
+        else
+          echo "    $(dim '–')  Channel install skipped: ${ch} $(dim '(no install script in trunk)')"
+        fi
+        ;;
+      failed)   echo "    $(red '✗')  Channel install failed: ${ch} $(dim "(see logs/migrate-steps/2c-install-${ch}.log)")" ;;
       *)        echo "    $(dim '·')  Channel install not recorded: ${ch}" ;;
     esac
   done
