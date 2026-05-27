@@ -2012,6 +2012,25 @@ describe('api_query MCP tool (A5.2.3 — composite read-side wrapper)', () => {
     const result = JSON.parse(response.content[0].text);
     expect(result.success).toBe(true);
     expect(result.data[0].title).toBe('Extrato de contas da PMT nos bancos pelo Banco Central');
+    expect(result.result_count).toBe(1);
+    expect(result.primary_match.title).toBe('Extrato de contas da PMT nos bancos pelo Banco Central');
+    expect(result.formatted_search_results).toContain('1 tarefa encontrada');
+    expect(result.formatted_search_results).toContain('Extrato de contas da PMT nos bancos pelo Banco Central');
+  });
+
+  it('query=search returns a compact no-match summary', async () => {
+    const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiQueryTool.handler({
+      board_id: BOARD,
+      query: 'search',
+      search_text: 'termo inexistente no quadro',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.result_count).toBe(0);
+    expect(result.primary_match).toBeNull();
+    expect(result.data).toEqual([]);
+    expect(result.formatted_search_results).toBe('Nenhuma tarefa encontrada para "termo inexistente no quadro".');
   });
 
   it('query=task_details returns a compact formatted project summary with subtasks', async () => {

@@ -11,7 +11,7 @@ import { getTaskflowDb } from '../db/connection.js';
 import { parseIsoCalendarDate } from '../iso-date.js';
 import { getBoardTimezone, TaskflowEngine } from '../taskflow-engine.js';
 import type { AdminParams, DependencyParams, HierarchyParams, MoveResult, QueryParams, ReassignParams, ReassignResult, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
-import { emitMutationConfirmation } from './mutation-confirmation.js';
+import { emitDeterministicToolMessage, emitMutationConfirmation } from './mutation-confirmation.js';
 import { clearPendingCreateCard, setPendingCreateCard } from './mutation-dedup.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
@@ -362,15 +362,86 @@ export function buildUpdateCard(
   return [...buildAtualizadaHeader(taskId), ...lines].join('\n');
 }
 
+function resultChanges(result: { changes?: unknown }): string[] {
+  return Array.isArray(result.changes)
+    ? result.changes.filter((change): change is string => typeof change === 'string')
+    : [];
+}
+
+function buildParticipantAddedCard(
+  taskId: string,
+  updates: Record<string, unknown>,
+  result: { changes?: unknown },
+): string | null {
+  if (typeof taskId !== 'string' || taskId.length === 0) return null;
+  const keys = Object.keys(updates);
+  if (keys.length !== 1 || keys[0] !== 'add_participant') return null;
+  if (typeof updates.add_participant !== 'string' || updates.add_participant.trim().length === 0) return null;
+  const requestedName = updates.add_participant.trim();
+  const changes = resultChanges(result);
+  const added = changes
+    .map((change) => change.match(/^Participante (.+) adicionado$/)?.[1])
+    .find((name): name is string => typeof name === 'string' && name.length > 0);
+  if (added) return `✅ *${taskId}* — ${added} adicionada como participante.`;
+  if (changes.length === 0) {
+    return `ℹ️ *${taskId}* — ${requestedName} já estava registrada como participante (sem alteração necessária).`;
+  }
+  return null;
+}
+
+function formatLocalScheduledAt(value: unknown, timeZone: string): string | null {
+  if (typeof value !== 'string' || value.trim().length === 0) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat('pt-BR', {
+    timeZone,
+    weekday: 'long',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+  const part = (type: string) => parts.find((p) => p.type === type)?.value;
+  const weekday = part('weekday');
+  const day = part('day');
+  const month = part('month');
+  const year = part('year');
+  const hour = part('hour');
+  const minute = part('minute');
+  if (!weekday || !day || !month || !year || !hour || !minute) return null;
+  return `${weekday}, ${day}/${month}/${year} às ${hour}:${minute}`;
+}
+
+function buildScheduledAtCard(
+  taskId: string,
+  updates: Record<string, unknown>,
+  result: { changes?: unknown },
+  timeZone: string,
+): string | null {
+  if (typeof taskId !== 'string' || taskId.length === 0) return null;
+  const keys = Object.keys(updates);
+  if (keys.length !== 1 || keys[0] !== 'scheduled_at') return null;
+  if (!resultChanges(result).some((change) => change.startsWith('Reunião reagendada para '))) return null;
+  const formatted = formatLocalScheduledAt(updates.scheduled_at, timeZone);
+  if (!formatted) return null;
+  return `✅ *${taskId}* reagendada para ${formatted}.`;
+}
+
 export function addUpdateFormattedResult<
-  T extends { success?: boolean; formatted?: unknown; task_id?: unknown },
->(result: T, updates: Record<string, unknown>, today?: string): T {
+  T extends { success?: boolean; formatted?: unknown; task_id?: unknown; changes?: unknown },
+>(result: T, updates: Record<string, unknown>, today?: string, timeZone = 'America/Fortaleza'): T {
   if (!result.success || result.formatted) return result;
   const taskId = typeof result.task_id === 'string' ? result.task_id : '';
   if (!taskId) return result;
   // Title/due_date update card.
   const updateCard = buildUpdateCard(taskId, updates);
   if (updateCard) return { ...result, formatted: updateCard };
+  const participantCard = buildParticipantAddedCard(taskId, updates, result);
+  if (participantCard) return { ...result, formatted: participantCard };
+  const scheduledAtCard = buildScheduledAtCard(taskId, updates, result, timeZone);
+  if (scheduledAtCard) return { ...result, formatted: scheduledAtCard };
   // add_subtask card. Scope: updates = {add_subtask only}; multi-key
   // {add_subtask, due_date} returns null because the date applies to the
   // PARENT under engine.update semantics, not the sub (no fabrication).
@@ -493,6 +564,7 @@ function pickTaskSummary(task: Record<string, unknown> | null | undefined): Reco
     'due_date',
     'scheduled_at',
     'parent_task_id',
+    'parent_title',
   ]) {
     if (task[key] !== undefined && task[key] !== null && task[key] !== '') summary[key] = task[key];
   }
@@ -565,6 +637,62 @@ function compactFindTaskInOrganizationQueryResult(result: unknown): unknown {
   });
 
   return { success: true, primary_match: compactRows[0] ?? null, data: compactRows };
+}
+
+function formatSearchDate(value: unknown): string | null {
+  const iso = parseIsoCalendarDate(value);
+  if (!iso) return null;
+  return `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
+}
+
+function formatSearchResults(rows: Array<Record<string, unknown>>, searchText: string | undefined): string {
+  if (rows.length === 0) {
+    return searchText
+      ? `Nenhuma tarefa encontrada para "${searchText}".`
+      : 'Nenhuma tarefa encontrada.';
+  }
+
+  const header = rows.length === 1 ? '1 tarefa encontrada:' : `${rows.length} tarefas encontradas:`;
+  const lines = rows.slice(0, 10).map((row) => {
+    const id = typeof row.id === 'string' ? row.id : 'sem-id';
+    const title = typeof row.title === 'string' ? row.title : 'Sem título';
+    const parts: string[] = [];
+    if (typeof row.column === 'string' && row.column.length > 0) parts.push(row.column);
+    const dueDate = formatSearchDate(row.due_date);
+    if (dueDate) parts.push(`prazo ${dueDate}`);
+    if (typeof row.parent_task_id === 'string' && row.parent_task_id.length > 0) {
+      const parentTitle = typeof row.parent_title === 'string' && row.parent_title.length > 0
+        ? ` — ${row.parent_title}`
+        : '';
+      parts.push(`projeto ${row.parent_task_id}${parentTitle}`);
+    }
+    return `• ${id} — ${title}${parts.length ? ` (${parts.join('; ')})` : ''}`;
+  });
+  return [header, ...lines].join('\n');
+}
+
+function compactSearchQueryResult(result: unknown, searchText: string | undefined): unknown {
+  if (
+    !result ||
+    typeof result !== 'object' ||
+    (result as { success?: unknown }).success !== true
+  ) {
+    return result;
+  }
+  const data = (result as { data?: unknown }).data;
+  if (!Array.isArray(data)) return result;
+
+  const rows = data
+    .map((row) => pickTaskSummary(row as Record<string, unknown> | null | undefined))
+    .filter((row): row is Record<string, unknown> => row !== null);
+
+  return {
+    success: true,
+    result_count: rows.length,
+    primary_match: rows[0] ?? null,
+    formatted_search_results: formatSearchResults(rows, searchText),
+    data: rows,
+  };
 }
 
 export const apiCreateSimpleTaskTool: McpToolDefinition = {
@@ -1462,11 +1590,14 @@ export const apiUpdateTaskTool: McpToolDefinition = {
       const result = engine.update(updateParams);
       // (hoje) tag needs today in board-local tz; only computed when relevant.
       let today: string | undefined;
-      if (updates.add_subtask !== undefined) {
-        const tz = getBoardTimezone(getTaskflowDb(), boardId);
-        today = new Date().toLocaleDateString('en-CA', { timeZone: tz });
+      let timeZone = 'America/Fortaleza';
+      if (updates.add_subtask !== undefined || updates.scheduled_at !== undefined) {
+        timeZone = getBoardTimezone(getTaskflowDb(), boardId);
+        if (updates.add_subtask !== undefined) {
+          today = new Date().toLocaleDateString('en-CA', { timeZone });
+        }
       }
-      return finalizeMutationResult(addUpdateFormattedResult(result, updates, today));
+      return finalizeMutationResult(addUpdateFormattedResult(result, updates, today, timeZone));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });
@@ -1526,6 +1657,19 @@ export const apiQueryTool: McpToolDefinition = {
       }
       if (query === 'find_task_in_organization') {
         return jsonResponse(compactFindTaskInOrganizationQueryResult(result));
+      }
+      if (query === 'search') {
+        const compact = compactSearchQueryResult(result, queryParams.search_text);
+        if (
+          compact &&
+          typeof compact === 'object' &&
+          typeof (compact as { formatted_search_results?: unknown }).formatted_search_results === 'string'
+        ) {
+          emitDeterministicToolMessage(
+            (compact as { formatted_search_results: string }).formatted_search_results,
+          );
+        }
+        return jsonResponse(compact);
       }
       return jsonResponse(result);
     } catch (e: unknown) {

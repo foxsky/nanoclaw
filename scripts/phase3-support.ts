@@ -169,6 +169,10 @@ export interface SemanticComparison {
   };
 }
 
+function hasExpectedBehavior(expected: Phase3ExpectedBehavior | undefined): expected is Phase3ExpectedBehavior {
+  return !!expected && Object.keys(expected).length > 0;
+}
+
 export interface RawSqliteDecision {
   turn_index: number;
   sqlite_tools: string[];
@@ -258,7 +262,6 @@ function metadataStableKeys(row: Phase3TurnMetadata): string[] {
   if (row.source_jsonl && row.source_turn_index !== undefined) {
     keys.push(`source:${row.source_jsonl}#${row.source_turn_index}`);
   }
-  if (row.source_jsonl) keys.push(`source_jsonl:${row.source_jsonl}`);
   if (row.user_timestamp && row.text) {
     keys.push(`timestamp_text:${row.user_timestamp}:${normalizedTurnText(row.text)}`);
   }
@@ -267,13 +270,13 @@ function metadataStableKeys(row: Phase3TurnMetadata): string[] {
 
 function corpusStableKeys(turn: Phase3CorpusTurn): string[] {
   const sourceJsonl = turn.source_jsonl ?? turn.jsonl;
+  const sourceTurnIndex = turn.source_turn_index ?? turn.turn_index;
   const keys: string[] = [];
   const sourceTurnId = turn.source_turn_id ?? sourceTurnIdFromSourceJsonl(sourceJsonl);
   if (sourceTurnId) keys.push(`source_turn_id:${sourceTurnId}`);
-  if (sourceJsonl && turn.source_turn_index !== undefined) {
-    keys.push(`source:${sourceJsonl}#${turn.source_turn_index}`);
+  if (sourceJsonl && sourceTurnIndex !== undefined) {
+    keys.push(`source:${sourceJsonl}#${sourceTurnIndex}`);
   }
-  if (sourceJsonl) keys.push(`source_jsonl:${sourceJsonl}`);
   if (turn.user_timestamp) {
     keys.push(`timestamp_text:${turn.user_timestamp}:${normalizedTurnText(corpusTurnText(turn))}`);
   }
@@ -288,7 +291,6 @@ function resultStableKeys(turn: Phase3TurnResult): string[] {
   if (md?.source_jsonl && md.source_turn_index !== undefined) {
     keys.push(`source:${md.source_jsonl}#${md.source_turn_index}`);
   }
-  if (md?.source_jsonl) keys.push(`source_jsonl:${md.source_jsonl}`);
   if (md?.user_timestamp) {
     keys.push(`timestamp_text:${md.user_timestamp}:${normalizedTurnText(resultTurnText(turn))}`);
   }
@@ -869,12 +871,13 @@ function outboundIntentMatches(expected: string, actual: string): boolean {
 }
 
 export function compareSemanticTurn(turn: Phase3TurnResult): SemanticComparison {
-  const expected = turn.phase3?.metadata?.expected_behavior
-    ? expectedToSummary(turn.phase3.metadata.expected_behavior)
+  const metadataExpected = turn.phase3?.metadata?.expected_behavior;
+  const expected = hasExpectedBehavior(metadataExpected)
+    ? expectedToSummary(metadataExpected)
     : summarizeSemanticBehavior(turn.v1.tools, [], turn.v1.final_response);
   const actual = summarizeSemanticBehavior(turn.v2.tools, turn.v2.outbound);
-  const recipientAliases = turn.phase3?.metadata?.expected_behavior?.recipient_aliases ?? [];
-  const allowExtraTaskIds = turn.phase3?.metadata?.expected_behavior?.allow_extra_task_ids === true;
+  const recipientAliases = metadataExpected?.recipient_aliases ?? [];
+  const allowExtraTaskIds = metadataExpected?.allow_extra_task_ids === true;
   const matches = {
     action: expected.action === actual.action,
     task_ids: expected.task_ids.length === 0 || sameStringSet(expected.task_ids, actual.task_ids) || (allowExtraTaskIds && stringSetContains(actual.task_ids, expected.task_ids)),

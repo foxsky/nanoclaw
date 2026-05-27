@@ -10,15 +10,17 @@ import {
 // emitted (poll-loop.ts:~2068 area) and the v1→v2 MCP-tool port dropped.
 // Card is BYTE-FAITHFUL to corpus ground truth (seci Turn 2 + Turn 38).
 //
-// Scope (this increment): title + due_date updates only. v1's `changes`
+// Scope (this increment): title + due_date updates, plus scoped
+// participant-add / meeting-reschedule confirmations from the v1
+// poll-loop live handler. v1's `changes`
 // strings drifted from the engine's (engine line 5515 emits
 // `Título alterado para "X"` double-quoted; v1 emits `*X*`; engine
 // line 5574 emits raw ISO `due_date`, v1 emits `⏰ Prazo definido:
 // dd/mm/yyyy`). The card BUILDER therefore derives lines from the
 // `updates` input directly, not from the engine's `changes` array.
-// All other update flavors (priority, description, labels, notes,
-// subtasks, recurrence, participants, …) intentionally return null
-// here — no fabrication; covered by future scoped follow-ups.
+// Other update flavors (priority, description, labels, notes, recurrence,
+// bulk participants, …) intentionally return null here — no fabrication;
+// covered by future scoped follow-ups.
 
 const TURN2_TITLE =
   'Solicitar liberação de acesso remoto por AnyDesk para o desktop da SECI, inclusive em todos os horários';
@@ -150,6 +152,57 @@ describe('addUpdateFormattedResult — wires buildUpdateCard onto api_update_tas
     const out = addUpdateFormattedResult(
       updateResult() as never,
       { priority: 'high' },
+    );
+    expect((out as { formatted?: string }).formatted).toBeUndefined();
+  });
+
+  it('add_participant change → v1 participant confirmation card', () => {
+    const out = addUpdateFormattedResult(
+      updateResult({
+        task_id: 'M2',
+        changes: ['Participante Ana Beatriz adicionado'],
+      }) as never,
+      { add_participant: 'Ana Beatriz' },
+    );
+    expect((out as { formatted?: string }).formatted)
+      .toBe('✅ *M2* — Ana Beatriz adicionada como participante.');
+  });
+
+  it('add_participant no-op → v1 no-change participant card', () => {
+    const out = addUpdateFormattedResult(
+      updateResult({
+        task_id: 'M2',
+        changes: [],
+      }) as never,
+      { add_participant: 'Ana Beatriz' },
+    );
+    expect((out as { formatted?: string }).formatted)
+      .toBe('ℹ️ *M2* — Ana Beatriz já estava registrada como participante (sem alteração necessária).');
+  });
+
+  it('scheduled_at change → v1 meeting reschedule card using board-local time', () => {
+    const out = addUpdateFormattedResult(
+      updateResult({
+        task_id: 'M1',
+        changes: ['Reunião reagendada para 16/04/2026 às 11:00'],
+      }) as never,
+      { scheduled_at: '2026-04-16T14:00:00.000Z' },
+      undefined,
+      'America/Fortaleza',
+    );
+    expect((out as { formatted?: string }).formatted)
+      .toBe('✅ *M1* reagendada para quinta-feira, 16/04/2026 às 11:00.');
+  });
+
+  it('scheduled_at without engine reschedule change → unchanged', () => {
+    const out = addUpdateFormattedResult(
+      updateResult({
+        task_id: 'M1',
+        changes: [],
+      }) as never,
+      { scheduled_at: '2026-04-16T14:00:00.000Z' },
+      undefined,
+      'America/Fortaleza',
     );
     expect((out as { formatted?: string }).formatted).toBeUndefined();
   });

@@ -132,6 +132,76 @@ describe('Phase 3 metadata inference', () => {
     expect(stableMatch?.state_drift?.description).toBe('person task state drift');
   });
 
+  it('does not match metadata by source_jsonl alone', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'phase3-md-'));
+    const metadataPath = path.join(tmp, 'metadata.json');
+    fs.writeFileSync(metadataPath, JSON.stringify([
+      {
+        turn_index: 16,
+        source_jsonl: 'shared-session.jsonl',
+        source_turn_index: 17,
+        context_mode: 'chain',
+        expected_behavior: {
+          action: 'forward',
+          task_ids: ['T43'],
+        },
+      },
+    ]));
+    const overrides = loadPhase3Metadata(metadataPath);
+
+    const unrelatedSameFile = phase3MetadataOverrideForCorpusTurn(
+      overrides,
+      {
+        jsonl: 'shared-session.jsonl',
+        turn_index: 9,
+        user_message: 'p11.20',
+      },
+      4,
+    );
+    const exactSourceTurn = phase3MetadataOverrideForCorpusTurn(
+      overrides,
+      {
+        jsonl: 'shared-session.jsonl',
+        turn_index: 17,
+        user_message: 'sim',
+      },
+      16,
+    );
+
+    expect(unrelatedSameFile).toBeUndefined();
+    expect(exactSourceTurn?.expected_behavior?.task_ids).toEqual(['T43']);
+  });
+
+  it('treats empty expected_behavior as absent', () => {
+    const comparison = compareSemanticTurn({
+      turn_index: 24,
+      text: 'adicionar tarefa',
+      v1: {
+        tools: [
+          { name: 'taskflow_create', input: { title: 'Extrato', task_id: 'T84' } },
+          { name: 'taskflow_admin', input: { action: 'reparent_task', task_id: 'T84', target_parent_id: 'P11' } },
+        ],
+        final_response: '✅ *Etapa adicionada*\n📁 *P11*\n📋 *T84*',
+      },
+      v2: {
+        tools: [
+          { name: 'mcp__nanoclaw__api_create_task', input: { title: 'Extrato' } },
+          { name: 'mcp__nanoclaw__api_admin', input: { action: 'reparent_task', task_id: 'T84', target_parent_id: 'P11' } },
+        ],
+        outbound: [{ kind: 'chat', content: '{"text":"✅ *T84 adicionada*\\n📁 *P11*"}' }],
+      },
+      phase3: {
+        metadata: {
+          context_mode: 'fresh',
+          expected_behavior: {},
+        },
+      },
+    });
+
+    expect(comparison.expected.action).toBe('mutate');
+    expect(comparison.classification.kind).toBe('match');
+  });
+
   it('infers source_turn_id from messages.db pseudo-source paths', () => {
     const meta = inferPhase3Metadata({
       jsonl: 'messages.db#agent_turns/7e64b9d6-5d15-4fb0-be92-419f6bd5ee98',

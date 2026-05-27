@@ -42,19 +42,21 @@ interface EmitDeps {
   onError?: (msg: string) => void;
 }
 
-export function emitMutationConfirmation(
-  result: MutationResultShape,
-  deps: EmitDeps = {},
-): void {
-  if (result.success !== true) return;
-  const text = typeof result.formatted === 'string' ? result.formatted.trim() : '';
-  if (!text) return;
+/**
+ * Emit a deterministic same-conversation TaskFlow message and mark the
+ * turn-level suppression flag. Mutation confirmations are the primary
+ * producer, but a few v1 read-side TaskFlow wrappers also had a
+ * user-visible formatted result. Reusing the same primitive keeps
+ * same-conversation dedup semantics identical.
+ */
+export function emitDeterministicToolMessage(text: string, deps: EmitDeps = {}): void {
+  const trimmed = text.trim();
+  if (!trimmed) return;
 
-  // Best-effort: the mutation already succeeded. Reading session routing
+  // Best-effort: the tool already succeeded. Reading session routing
   // throws when there is no inbound session DB (tf-mcontrol's standalone
   // FastAPI MCP entrypoint, or an engine-only test context), and the
-  // outbound write can fail too. Neither may ever fail the mutation —
-  // a missing confirmation is a UX degradation, not a mutation failure.
+  // outbound write can fail too. Neither may ever fail the tool result.
   try {
     const routing = (deps.getRouting ?? getSessionRouting)();
     if (!routing.channel_type || !routing.platform_id) return;
@@ -65,20 +67,22 @@ export function emitMutationConfirmation(
       platform_id: routing.platform_id,
       channel_type: routing.channel_type,
       thread_id: routing.thread_id,
-      content: JSON.stringify({ text }),
+      content: JSON.stringify({ text: trimmed }),
     });
-    // Mark only after a successful emit (no throw above). Drives
-    // dispatchResultText's bare-text fallback suppression so the model's
-    // same-turn redundant reply doesn't double-message the user (v1
-    // sent only the deterministic card). Codex hot-path gate P4.
     markDeterministicMutationEmitted();
   } catch (err) {
-    // Swallowed by design (see above) — but NOT silently: a silent
-    // swallow previously hid an emission failure and blocked diagnosing
-    // why a reassign turn produced no confirmation. Fail loud here while
-    // still never failing the mutation.
-    (deps.onError ?? log)(`mutation confirmation emission failed: ${String(err)}`);
+    (deps.onError ?? log)(`deterministic tool message emission failed: ${String(err)}`);
   }
+}
+
+export function emitMutationConfirmation(
+  result: MutationResultShape,
+  deps: EmitDeps = {},
+): void {
+  if (result.success !== true) return;
+  const text = typeof result.formatted === 'string' ? result.formatted.trim() : '';
+  if (!text) return;
+  emitDeterministicToolMessage(text, deps);
 }
 
 /**

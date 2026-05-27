@@ -11,8 +11,11 @@ import fs from 'node:fs';
 import {
   classifyRawSqliteTurn,
   compareSemanticTurn,
+  inferPhase3Metadata,
   loadPhase3Metadata,
+  phase3MetadataOverrideForCorpusTurn,
   phase3MetadataOverrideForResultTurn,
+  type Phase3CorpusTurn,
   type Phase3TurnResult,
   type RawSqliteDecision,
   type SemanticComparison,
@@ -23,6 +26,7 @@ interface Args {
   outJson: string;
   outText: string;
   metadata?: string;
+  corpus?: string;
 }
 
 function parseArgs(): Args {
@@ -37,6 +41,7 @@ function parseArgs(): Args {
     else if (key === '--out') args.outJson = process.argv[++i];
     else if (key === '--out-text') args.outText = process.argv[++i];
     else if (key === '--metadata') args.metadata = process.argv[++i];
+    else if (key === '--corpus') args.corpus = process.argv[++i];
     else throw new Error(`Unknown arg: ${key}`);
   }
   return args;
@@ -95,7 +100,25 @@ function main(): void {
   const raw = JSON.parse(fs.readFileSync(args.inPath, 'utf8'));
   const loadedTurns: Phase3TurnResult[] = Array.isArray(raw) ? raw : [raw];
   const metadata = loadPhase3Metadata(args.metadata);
+  const corpus = args.corpus
+    ? (JSON.parse(fs.readFileSync(args.corpus, 'utf8')).turns as Phase3CorpusTurn[])
+    : undefined;
   const turns = loadedTurns.map((turn) => {
+    if (corpus?.[turn.turn_index]) {
+      const corpusTurn = corpus[turn.turn_index];
+      const override = phase3MetadataOverrideForCorpusTurn(metadata, corpusTurn, turn.turn_index, {
+        allowIndexOnly: true,
+      });
+      return {
+        ...turn,
+        phase3: {
+          ...(turn.phase3 ?? {}),
+          metadata: inferPhase3Metadata(corpusTurn, turn.turn_index, override, {
+            useDefaultChainDepths: true,
+          }),
+        },
+      };
+    }
     const override = phase3MetadataOverrideForResultTurn(metadata, turn);
     if (!override) return turn;
     return {
