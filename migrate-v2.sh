@@ -712,9 +712,12 @@ else
         record_step "$STEP_NAME" "failed"
       fi
     else
+      # "No install script" is a skip, not a failure — the channel just
+      # isn't carried in trunk yet. Marking failed flips the summary header
+      # and handoff.overall_status for a benign no-op.
       step_skip "Install $ch $(dim "(no install script)")"
       log "install-$ch: no install script"
-      record_step "$STEP_NAME" "failed"
+      record_step "$STEP_NAME" "skipped"
     fi
   done
 
@@ -1024,10 +1027,10 @@ for ((i=0; i<${#STEP_NAMES[@]}; i++)); do
 done
 
 # Render a single "What was done" line by step name. Pulls the recorded
-# status so failed/partial steps don't display green-✓. Falls back to
-# success-✓ for steps that never recorded (most of these are 100%-
-# completion gates that abort on failure, so an absent record means the
-# script reached this summary block with the step done).
+# status so failed/partial steps don't display green-✓. Falls back to a
+# neutral "·" marker — NOT green-✓ — when a step never recorded, so a
+# future refactor that renames a step (or skips its record_step call)
+# can't silently regress to claiming success for an unverified step.
 render_step_line() {
   local name="$1" label="$2"
   local i
@@ -1035,21 +1038,34 @@ render_step_line() {
     if [ "${STEP_NAMES[$i]}" = "$name" ]; then
       case "${STEP_STATUSES[$i]}" in
         success) echo "    $(green '✓')  $label" ;;
-        partial) echo "    $(red '!')  $label $(dim '(with errors — see logs/migrate-steps/')${name}$(dim '.log)')" ;;
-        failed)  echo "    $(red '✗')  $label $(dim '(failed — see logs/migrate-steps/')${name}$(dim '.log)')" ;;
+        partial) echo "    $(red '!')  $label $(dim "(with errors — see logs/migrate-steps/${name}.log)")" ;;
+        failed)  echo "    $(red '✗')  $label $(dim "(failed — see logs/migrate-steps/${name}.log)")" ;;
         skipped) echo "    $(dim '–')  $label $(dim '(skipped)')" ;;
         *)       echo "    $(dim '·')  $label" ;;
       esac
       return
     fi
   done
-  echo "    $(green '✓')  $label"
+  echo "    $(dim '·')  $label $(dim '(not recorded)')"
 }
 
+# Hard degraded = any mark_degraded reason that isn't the soft per-row
+# "<step> reported N non-fatal error(s)" message produced by run_step.
+# Without this split, the partial-step path always promotes the header
+# to "issues" because run_step's mark_degraded sets MIGRATION_DEGRADED=true
+# — the softer "non-fatal errors" header would never fire.
+SUMMARY_HARD_DEGRADED=false
+for ((i=0; i<${#MIGRATION_DEGRADED_REASONS[@]}; i++)); do
+  case "${MIGRATION_DEGRADED_REASONS[$i]}" in
+    *" reported "*" non-fatal error(s) "*) ;;
+    *) SUMMARY_HARD_DEGRADED=true ;;
+  esac
+done
+
 echo
-if [ "$SUMMARY_HAS_FAILURES" = "true" ] || [ "$MIGRATION_DEGRADED" = "true" ]; then
+if [ "$SUMMARY_HAS_FAILURES" = "true" ] || [ "$SUMMARY_HARD_DEGRADED" = "true" ]; then
   echo "$(bold '── Migration completed with issues — see below ──')"
-elif [ "$SUMMARY_HAS_PARTIALS" = "true" ]; then
+elif [ "$SUMMARY_HAS_PARTIALS" = "true" ] || [ "$MIGRATION_DEGRADED" = "true" ]; then
   echo "$(bold '── Migration completed with non-fatal errors — see below ──')"
 else
   echo "$(bold '── Migration complete ──')"
@@ -1067,7 +1083,21 @@ render_step_line "1e-tasks"    "Scheduled tasks ported"
 render_step_line "1f-taskflow" "TaskFlow state copied (boards, tasks)"
 if [ ${#SELECTED_CHANNELS[@]} -gt 0 ]; then
   for ch in "${SELECTED_CHANNELS[@]}"; do
-    render_step_line "2c-install-${ch}" "Channel installed: ${ch}"
+    # Use a status-aware label so "(skipped)" doesn't read as "not installed"
+    # for the already-installed and no-install-script cases.
+    ch_status=""
+    for ((i=0; i<${#STEP_NAMES[@]}; i++)); do
+      if [ "${STEP_NAMES[$i]}" = "2c-install-${ch}" ]; then
+        ch_status="${STEP_STATUSES[$i]}"
+        break
+      fi
+    done
+    case "$ch_status" in
+      success)  echo "    $(green '✓')  Channel installed: ${ch}" ;;
+      skipped)  echo "    $(dim '–')  Channel already installed: ${ch}" ;;
+      failed)   echo "    $(red '✗')  Channel install failed: ${ch} $(dim '(see logs/migrate-steps/2c-install-')${ch}$(dim '.log)')" ;;
+      *)        echo "    $(dim '·')  Channel install not recorded: ${ch}" ;;
+    esac
   done
 fi
 echo "    $(green '✓')  Container skills review deferred to /migrate-from-v1 Phase 4"

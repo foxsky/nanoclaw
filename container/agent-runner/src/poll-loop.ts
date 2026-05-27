@@ -2405,7 +2405,11 @@ function handleTaskflowPendingChildBoardRegistration(
       content: JSON.stringify({ action: 'provision_child_board', ...autoProvision }),
     });
     appendMcpEquivalentToolCapture('provision_child_board', autoProvision, { success: true });
-  } else if (!result.success && !childBoard) {
+  } else if (!result.success) {
+    // Surface the api_admin failure verbatim regardless of whether the
+    // bridge fallback resolved a board — a board existing for the folder
+    // doesn't mean THIS registration succeeded; the engine call's error
+    // message is what the operator needs to see.
     writeReply(routing, `Não consegui cadastrar ${action.personName}: ${result.error ?? 'erro desconhecido'}`);
     return true;
   }

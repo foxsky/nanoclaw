@@ -45,7 +45,7 @@ Before any deeper migration work, prove v2 actually answers messages on the user
 
 Before walking step status, check `overall_status` and `degraded`:
 
-- **`overall_status: "failed"`** — migration aborted. `aborted_at` names the abort reason. Do not proceed with smoke test or owner seeding. Read `logs/migrate-v2.log` and the matching step log under `logs/migrate-steps/`, fix the underlying cause with the user, then ask them to re-run `bash migrate-v2.sh`.
+- **`overall_status: "failed"`** — migration aborted. `aborted_at` names the abort reason. Do not proceed with smoke test or owner seeding. If `degraded_reasons` is non-empty, walk those first (the abort path often appended a specific remediation string before exiting — e.g. `aborted_at: "v1-restop-failed"` has a `degraded_reasons` entry like "v1 (…) could not be re-stopped at switchover — re-run after restoring sudo cache" which is more actionable than the generic logs walk). Use the remediation table below to match. Then read `logs/migrate-v2.log` and the matching step log under `logs/migrate-steps/` for context, fix the underlying cause with the user, and ask them to re-run `bash migrate-v2.sh`.
 - **`overall_status: "degraded"`** OR **`degraded: true`** — migration ran to completion but a rollback / sudo-failure / non-fatal-error path fired. Walk `degraded_reasons` with the user verbatim. Each line names a manual remediation. Resolve every reason before Phase 0b — the typical cases:
   - `"v1 service (… , system/user) not restarted — sudo cache expired"` → user needs to run the suggested `systemctl` command, then confirm v1 is up before deciding whether to switch.
   - `"v1 service (… , launchd) not restarted"` → run the suggested `launchctl load` command (the reason quotes the exact plist path).
@@ -163,7 +163,7 @@ WHERE id IN (SELECT id FROM messaging_groups WHERE channel_type IN (<migrated_ch
 
 ## Phase 1b: TaskFlow board reconciliation
 
-If the Phase 0a "TaskFlow board reachability" probe surfaced unresolved folders, walk them with the user. Each represents an agent_group with no TaskFlow board attached.
+If the Phase 0a.1 "TaskFlow board reachability" probe surfaced unresolved folders, walk them with the user. Each represents an agent_group with no TaskFlow board attached.
 
 **Step 1 — enumerate unresolved folders.** Open both DBs:
 
@@ -184,7 +184,7 @@ const unresolved = folders.map(f => f.folder).filter(f => !direct.has(f) && !map
 - **Map to an existing v1 board** — v1-level folder drift. Show the user a candidate list: `SELECT id, name, group_folder FROM boards`. Filter to plausible matches (substring of folder, similar tokens). On selection, insert into `board_groups(board_id, group_jid, group_folder, group_role)` — the `group_jid` is from `messaging_groups.platform_id` for the agent's wired messaging_group, `group_folder` is the agent_group's folder, `group_role` is typically `team` (or `control` for the main control DM).
 - **Provision a new board** — defer. Tell the user to send `provision_root_board` from the **operator-designated main control chat** (the one with `is_main_control=1`) after cutover, naming the target group as a parameter. `provision_root_board` is gated to main-control sessions (`src/modules/taskflow/provision-root-board.ts:214` → `checkMainControlSession`); it CANNOT be invoked from inside the unresolved agent's own chat.
 
-**Step 3 — verify post-reconciliation.** Re-run the Phase 0a probe; the only legitimately-unresolved folder should be the main-control group (if the user chose "no board needed" for it).
+**Step 3 — verify post-reconciliation.** Re-run the Phase 0a.1 probe; the only legitimately-unresolved folder should be the main-control group (if the user chose "no board needed" for it).
 
 This phase is purely additive — no v1 data is modified, no boards renamed. The reconciliation goes through `board_groups`, which is the canonical many-to-many table for "this folder belongs to this board". Boards' own `group_folder` field is left alone (preserves v1 history).
 
