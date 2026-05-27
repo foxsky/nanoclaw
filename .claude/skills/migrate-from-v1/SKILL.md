@@ -48,7 +48,9 @@ Before walking step status, check `overall_status` and `degraded`:
 - **`overall_status: "failed"`** — migration aborted. `aborted_at` names the abort reason. Do not proceed with smoke test or owner seeding. Read `logs/migrate-v2.log` and the matching step log under `logs/migrate-steps/`, fix the underlying cause with the user, then ask them to re-run `bash migrate-v2.sh`.
 - **`overall_status: "degraded"`** OR **`degraded: true`** — migration ran to completion but a rollback / sudo-failure / non-fatal-error path fired. Walk `degraded_reasons` with the user verbatim. Each line names a manual remediation. Resolve every reason before Phase 0b — the typical cases:
   - `"v1 service (… , system/user) not restarted — sudo cache expired"` → user needs to run the suggested `systemctl` command, then confirm v1 is up before deciding whether to switch.
-  - `"v1 ($V1_SERVICE) was not disabled"` → run the suggested disable command so v1 doesn't auto-restart on reboot and race v2.
+  - `"v1 service (… , launchd) not restarted"` → run the suggested `launchctl load` command (the reason quotes the exact plist path).
+  - `"v1 (…) was not disabled"` → run the suggested disable command so v1 doesn't auto-restart on reboot and race v2.
+  - `"v1 (…) could not be re-stopped at switchover"` → v1 came back between phases and the script's defensive re-stop failed; sudo cache likely expired. Restore sudo (`sudo -v`) or stop v1 manually with the command in the reason, then re-run `bash migrate-v2.sh`.
   - `"<step> reported N non-fatal error(s)"` → open `logs/migrate-steps/<step>.log`, grep for `^ERROR:`, decide per-row whether the skipped data needs hand-migration.
   - `"v2 service install failed"` → diagnose with `pnpm exec tsx setup/index.ts --step service`, then ask user to re-run `bash migrate-v2.sh`.
   - `"migration interrupted after v1 was stopped"` → v1 was auto-restored; ask user to re-run when they're ready.

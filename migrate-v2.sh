@@ -1066,7 +1066,9 @@ render_step_line "1d-sessions" "Session data copied"
 render_step_line "1e-tasks"    "Scheduled tasks ported"
 render_step_line "1f-taskflow" "TaskFlow state copied (boards, tasks)"
 if [ ${#SELECTED_CHANNELS[@]} -gt 0 ]; then
-echo "    $(green '✓')  Channels installed: ${SELECTED_CHANNELS[*]}"
+  for ch in "${SELECTED_CHANNELS[@]}"; do
+    render_step_line "2c-install-${ch}" "Channel installed: ${ch}"
+  done
 fi
 echo "    $(green '✓')  Container skills review deferred to /migrate-from-v1 Phase 4"
 render_step_line "3e-build"    "Container image built"

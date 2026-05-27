@@ -2376,13 +2376,20 @@ function handleTaskflowPendingChildBoardRegistration(
   // or display a synthetic board ID in the success message. Same pattern as
   // src/modules/taskflow/provision-shared.ts:findBoardByFolder + the runtime
   // resolver in src/taskflow-db.ts:resolveTaskflowBoardId.
+  //
+  // The board_groups fallback JOINs to boards so a stale mapping row (board
+  // deleted but bridge left behind) doesn't make a non-existent board appear
+  // in the success message — only live boards count.
   const tfDb = getTaskflowDb();
   let childBoard = tfDb.prepare(
     `SELECT id FROM boards WHERE id = ? OR group_folder = ? LIMIT 1`,
   ).get(childBoardId, action.groupFolder) as { id: string } | undefined;
   if (!childBoard) {
     childBoard = tfDb.prepare(
-      `SELECT board_id AS id FROM board_groups WHERE group_folder = ? ORDER BY board_id LIMIT 1`,
+      `SELECT b.id FROM board_groups bg
+       JOIN boards b ON b.id = bg.board_id
+       WHERE bg.group_folder = ?
+       ORDER BY bg.board_id LIMIT 1`,
     ).get(action.groupFolder) as { id: string } | undefined;
   }
 
