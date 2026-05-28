@@ -65,6 +65,8 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     const input =
       '**Command synonyms:** "consolidado" / "consolidar" = "quadro" (board view). "atividades" = "minhas tarefas" (my tasks). "finalizar" / "concluir" / "fechar" = conclude. "cancelar" (bare, no task ID) = ask which task to cancel or what to cancel. When a user says "concluir tarefa" without specifying an ID and has only one active task, apply it to that task. If multiple are active, list them and ask.';
     const result = migrateBoardClaudeMd(input);
+    expect(result.output).toContain('"resolvido" / "concluído" / "feito" / "finalizado"');
+    expect(result.output).toContain('ask which task or subject was resolved');
     expect(result.output).toContain('**Hierarchy status sync synonym:**');
     expect(result.output).toContain("api_hierarchy({ action: 'refresh_rollup'");
     expect(result.output).not.toContain('taskflow_hierarchy');

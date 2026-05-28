@@ -16,6 +16,8 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import Database from 'better-sqlite3';
+
 import { DATA_DIR } from '../src/config.js';
 import {
   inferPhase3Metadata,
@@ -137,6 +139,13 @@ function runPhase2Driver(metadata: Phase3TurnMetadata, args: Args): void {
   if (metadata.taskflow_board_id) {
     env.NANOCLAW_PHASE_REPLAY_TASKFLOW_BOARD_ID = metadata.taskflow_board_id;
   }
+  if (!env.NANOCLAW_PHASE_REPLAY_CONTAINER_NAME_FILTER) {
+    const agentGroupId = env.NANOCLAW_PHASE_REPLAY_AGENT_GROUP_ID;
+    const folder = agentGroupId ? replayAgentGroupFolder(agentGroupId) : null;
+    if (folder) {
+      env.NANOCLAW_PHASE_REPLAY_CONTAINER_NAME_FILTER = `nanoclaw-v2-${folder}-`;
+    }
+  }
   // Per-turn routing: when the corpus turn carries an actual chat_jid,
   // plumb it as the inbound platform_id so routing.platformId reflects the
   // real source conversation (not the hard-coded seci default). Required
@@ -174,6 +183,18 @@ function runPhase2Driver(metadata: Phase3TurnMetadata, args: Args): void {
   }
   if (args.phase2Out !== PHASE2_DRIVER_OUT) {
     fs.copyFileSync(PHASE2_DRIVER_OUT, args.phase2Out);
+  }
+}
+
+function replayAgentGroupFolder(agentGroupId: string): string | null {
+  const dbPath = path.join(DATA_DIR, 'v2.db');
+  if (!fs.existsSync(dbPath)) return null;
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    const row = db.prepare('SELECT folder FROM agent_groups WHERE id = ?').get(agentGroupId) as { folder?: string } | undefined;
+    return row?.folder?.trim() || null;
+  } finally {
+    db.close();
   }
 }
 

@@ -17,6 +17,7 @@ import {
   taskflowAddExternalParticipantToLatestMeetingCommand,
   taskflowAddParticipantsToLatestMeetingCommand,
   taskflowAutoForwardMeetingConfirmation,
+  taskflowBareResolvedPrompt,
   taskflowChildBoardCreationPrompt,
   taskflowCreateMeetingCommand,
   taskflowCrossBoardNoteConfirmation,
@@ -37,11 +38,16 @@ import {
   taskflowPersonReviewCommand,
   taskflowPersonTasksCommand,
   taskflowBoardPersonPlacementCommand,
+  taskflowProjectNoteUpdateCommand,
   taskflowOrgDirectoryQuestionCommand,
+  taskflowOrgMeetingDraftPrompt,
+  taskflowOrgMeetingCreateForwardConfirmation,
+  taskflowProcessMinutesCommand,
   taskflowProjectExistenceLookupCommand,
   taskflowProjectReportCommand,
   taskflowProjectTitleLookupCommand,
   taskflowPureGreetingReply,
+  taskflowRecentInboxCommand,
   taskflowReadyForReviewUpdateCommand,
   taskflowReviewBypassConfirmation,
   taskflowReviewBypassDiagnosticPrompt,
@@ -341,6 +347,23 @@ describe('TaskFlow deterministic confirmation guards', () => {
     )).toEqual({ kind: 'person', personName: 'Laizys' });
   });
 
+  it('detects meeting minutes processing requests without provider exploration', () => {
+    expect(taskflowProcessMinutesCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Thiago Carvalho', text: 'Processar ata m20' }) }],
+      true,
+    )).toEqual({ taskId: 'M20' });
+
+    expect(taskflowProcessMinutesCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Thiago Carvalho', text: 'processar a ata da M7' }) }],
+      true,
+    )).toEqual({ taskId: 'M7' });
+
+    expect(taskflowProcessMinutesCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Thiago Carvalho', text: 'Processar ata P7' }) }],
+      true,
+    )).toBeNull();
+  });
+
   it('detects exact-ID next action updates without treating them as outbound messages', () => {
     expect(taskflowExactTaskNextActionUpdateCommand(
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Thiago Carvalho', text: 'T56 enviar mensagem pra Alyne para aprovar a visualização dos recursos de multa no SEI.' }) }],
@@ -365,6 +388,15 @@ describe('TaskFlow deterministic confirmation guards', () => {
         { personName: 'Edilson', boardHint: 'SM-SETD-SECTI' },
         { personName: 'Hudson', boardHint: 'PO-SETD-SECTI' },
       ],
+    });
+  });
+
+  it('detects project note updates without an explicit task id', () => {
+    expect(taskflowProjectNoteUpdateCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Thiago Carvalho', text: 'Na sexta, faremos a migração dos Novos Sites' }) }],
+      true,
+    )).toEqual({
+      text: 'Na sexta, faremos a migração dos Novos Sites',
     });
   });
 
@@ -466,6 +498,82 @@ describe('TaskFlow deterministic confirmation guards', () => {
     });
   });
 
+  it('detects confirmation to create a meeting and forward to an org-owned board', () => {
+    const recent = JSON.stringify({
+      text: `Laizys está na organização (mesmo person_id, dois quadros). Posso adicioná-la como participante da reunião agora — só preciso criar a reunião primeiro.
+
+A reunião ainda não foi criada (a mensagem das 10:03 foi interrompida). Confirmo os dados:
+
+📅 *Reunião na FMS — Ponto Eletrônico*
+• *Quando:* quarta-feira, 06/05 às 09:00
+• *Participantes:* Laizys
+• *Local/contexto:* FMS
+
+Crio assim?`,
+    });
+
+    expect(taskflowOrgMeetingCreateForwardConfirmation(
+      [{ kind: 'chat', content: JSON.stringify({
+        sender: 'Thiago Carvalho',
+        text: 'Sim',
+        phase2RawPrompt: '<message sender="Thiago Carvalho" time="2026-05-04T13:08:20.000Z">Sim</message>',
+      }) }],
+      [recent],
+      true,
+    )).toEqual({
+      title: 'Reunião FMS — Ponto Eletrônico',
+      scheduledAt: '2026-05-06T09:00:00',
+      participantName: 'Laizys',
+    });
+  });
+
+  it('detects org-owned participant meeting drafts before mutating', () => {
+    const message = {
+      kind: 'chat',
+      content: JSON.stringify({
+        sender: 'Thiago Carvalho',
+        text: 'Reunião na quarta na FMS às 9 horas, projeto Ponto Eletrônico, com a Laisys.',
+        phase2RawPrompt: '<message sender="Thiago Carvalho" time="2026-05-04T13:03:22.000Z">Reunião na quarta na FMS às 9 horas, projeto Ponto Eletrônico, com a Laisys.</message>',
+      }),
+    };
+
+    expect(taskflowOrgMeetingDraftPrompt([message], [], true)).toEqual({
+      title: 'Reunião FMS — Ponto Eletrônico',
+      scheduledAt: '2026-05-06T09:00:00',
+      participantName: 'Laisys',
+      location: 'FMS',
+    });
+  });
+
+  it('repeats the org-owned participant meeting draft on a same-person follow-up', () => {
+    const recent = JSON.stringify({
+      text: `Laizys está na organização e tem quadro próprio.
+
+A reunião ainda não foi criada. Confirmo os dados:
+
+📅 *Reunião FMS — Ponto Eletrônico*
+• *Quando:* quarta-feira, 06/05 às 09:00
+• *Participantes:* Laizys
+
+Crio assim?`,
+    });
+
+    expect(taskflowOrgMeetingDraftPrompt(
+      [{ kind: 'chat', content: JSON.stringify({
+        sender: 'Thiago Carvalho',
+        text: 'E Laizys?',
+        phase2RawPrompt: '<message sender="Thiago Carvalho" time="2026-05-04T13:04:06.000Z">E Laizys?</message>',
+      }) }],
+      [recent],
+      true,
+    )).toEqual({
+      title: 'Reunião FMS — Ponto Eletrônico',
+      scheduledAt: '2026-05-06T09:00:00',
+      participantName: 'Laizys',
+      location: '',
+    });
+  });
+
   it('detects meeting batches stored only in the raw phase prompt', () => {
     const raw = '<context timezone="America/Fortaleza" today="2026-04-14" weekday="terça-feira" />\n<messages>\n<message sender="Carlos Giovanni">adicionar Ana Beatriz em M2</message>\n<message sender="Carlos Giovanni">alterar M1 para quinta-feira 11h</message>\n<message sender="Carlos Giovanni">m1</message>\n</messages>';
     expect(taskflowMeetingBatchUpdateCommand([
@@ -511,6 +619,23 @@ describe('TaskFlow deterministic confirmation guards', () => {
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Mariany Borges', text: 'Elaborar 3 projetos-gaveta (P03, P05, P07) para editais e emendas' }) }],
       true,
     )).toEqual({ text: 'Elaborar 3 projetos-gaveta (P03, P05, P07) para editais e emendas', contextHints: [] });
+  });
+
+  it('detects bare resolved/completed replies as context prompts, not casual acknowledgements', () => {
+    expect(taskflowBareResolvedPrompt(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Thiago Carvalho', text: 'Resolvido' }) }],
+      true,
+    )).toEqual({ senderName: 'Thiago Carvalho' });
+
+    expect(taskflowBareResolvedPrompt(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Thiago Carvalho', text: 'concluída' }) }],
+      true,
+    )).toEqual({ senderName: 'Thiago Carvalho' });
+
+    expect(taskflowBareResolvedPrompt(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Thiago Carvalho', text: 'P11.16 concluída' }) }],
+      true,
+    )).toBeNull();
   });
 
   it('detects short follow-ups after a missing task lookup', () => {
@@ -674,6 +799,25 @@ Other tasks: P2 Agência INOVATHE, P13 Ecossistema de Inovação]
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'p11' }) }],
       true,
     )).toEqual({ taskId: 'P11' });
+  });
+
+  it('detects recent inbox read requests', () => {
+    expect(taskflowRecentInboxCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'Show the last three inboxes' }) }],
+      true,
+    )).toEqual({ count: 3 });
+
+    expect(taskflowRecentInboxCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'mostrar os últimos 2 itens do inbox' }) }],
+      true,
+    )).toEqual({ count: 2 });
+  });
+
+  it('does not treat bare inbox as a recent inbox request', () => {
+    expect(taskflowRecentInboxCommand(
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text: 'inbox' }) }],
+      true,
+    )).toBeNull();
   });
 
   it('does not treat task-id commands with other words as bare details requests', () => {

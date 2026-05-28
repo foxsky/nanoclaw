@@ -133,6 +133,10 @@ interface TaskflowTaskDetails {
   taskId: string;
 }
 
+interface TaskflowRecentInbox {
+  count: number;
+}
+
 interface TaskflowPersonTasks {
   personName: string;
   self?: boolean;
@@ -149,6 +153,14 @@ interface TaskflowBulkApproval {
 interface TaskflowStandaloneActivity {
   text: string;
   contextHints: string[];
+}
+
+interface TaskflowProjectNoteUpdate {
+  text: string;
+}
+
+interface TaskflowBareResolved {
+  senderName: string;
 }
 
 interface TaskflowMissingTaskFollowup {
@@ -174,6 +186,17 @@ interface TaskflowCreateMeeting {
   parentProjectTitle?: string;
 }
 
+interface TaskflowProcessMinutes {
+  taskId: string;
+}
+
+interface TaskflowOrgMeetingDraftPrompt {
+  title: string;
+  scheduledAt: string;
+  participantName: string;
+  location: string;
+}
+
 interface TaskflowAddParticipantsToLatestMeeting {
   taskId: string;
   participantNames: string[];
@@ -194,6 +217,12 @@ interface TaskflowNotifyMeetingAbove {
 interface TaskflowAutoForwardMeetingConfirmation {
   taskId: string;
   destinationName: string;
+}
+
+interface TaskflowOrgMeetingCreateForwardConfirmation {
+  title: string;
+  scheduledAt: string;
+  participantName: string;
 }
 
 interface TaskflowDueDateNeedsTask {
@@ -258,6 +287,8 @@ const BARE_TASK_ID_RE = /^\s*((?:P|T|M|R)\d+(?:\.\d+)?)\s*[.!]?\s*$/i;
 const EXACT_TASK_NOTE_RE = /^\s*((?:[A-Z]{2,}-)?(?:P|T|M|R)\d+(?:\.\d+)?)\s*[-–—:]\s*(.+?)\s*$/iu;
 const TASK_NOTE_REVIEW_RE = /^\s*((?:P|T|M|R)\d+(?:\.\d+)?)\s*[-–—:]\s*(.+?)\s*$/iu;
 const COMPLETE_VERB_RE = /\b(concluir|conclu[ií]d[ao]?|finalizar|finalizad[ao]?)\b/i;
+const BARE_RESOLVED_RE = /^\s*(?:resolvido|resolvida|conclu[ií]do|conclu[ií]da|feito|feita|finalizado|finalizada)\s*[.!]?\s*$/iu;
+const RECENT_INBOX_RE = /^\s*(?:(?:show|list|display)\s+(?:the\s+)?last|(?:mostrar|listar|liste|exibir)\s+(?:os\s+|as\s+)?(?:últim[oa]s?|ultim[oa]s?))\s+(\d+|one|two|three|four|five|um|uma|dois|duas|tr[eê]s|quatro|cinco)\s+(?:itens?\s+(?:do\s+)?)?(?:inbox|inboxes)\s*[.!?]?\s*$/iu;
 const PERSON_TASKS_RE = /^\s*(?:atividades|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s*[.!]?\s*$/iu;
 const MY_TASKS_RE = /^\s*(?:quais\s+s[aã]o\s+)?minhas\s+(?:tarefas|atividades)\s*[?!.]?\s*$/iu;
 const PERSON_REVIEW_RE = /^\s*(?:alguma\s+)?(?:atividade|atividades|tarefa|tarefas)\s+(?:de\s+|do\s+|da\s+)?([\p{L}\p{M}' -]{2,60})\s+para\s+revis[aã]o\s*[?!.]?\s*$/iu;
@@ -287,6 +318,8 @@ const BOARD_PERSON_PLACEMENT_RE = /\b(?:coloca|colocar|adicione|adicionar)?\s*(?
 const ADD_PARTICIPANT_RE = /\badicionar\s+([\p{L}\p{M}' -]{2,60})\s+em\s+(M\d+)\b/iu;
 const ADD_PARTICIPANTS_ONLY_RE = /^\s*adicionar\s+([\p{L}\p{M}', -]+?)\s*[.!]?\s*$/iu;
 const EXTERNAL_PARTICIPANT_FOLLOWUP_RE = /^\s*([\p{L}\p{M}' -]{2,60}?)\s+(?:é|eh|e)\s+participante\s+extern[ao]\s*:?\s*([+\d][\d\s().-]{7,})\s*[.!]?\s*$/iu;
+const ORG_MEETING_WEEKDAY_RE = /^\s*reuni[aã]o\s+(?:na\s+)?(segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado|domingo)(?:-feira)?\s+n[ao]\s+(.+?)\s+(?:às|as)\s+(\d{1,2})(?:(?:h|:)(\d{2})?|\s+horas?)?,\s*projeto\s+(.+?),\s*com\s+(?:a\s+|o\s+)?([\p{L}\p{M}' -]{2,60})\.?\s*$/iu;
+const ORG_MEETING_PERSON_FOLLOWUP_RE = /^\s*e\s+([\p{L}\p{M}' -]{2,60})\s*[?!.]?\s*$/iu;
 const CREATE_MEETING_DATE_RE = /^\s*(?:agendar|marcar)\s+(.+?)\s+no\s+dia\s+(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(?:às|as)\s+(\d{1,2})(?:(?:h|:)(\d{2})?)?\s*[.!]?\s*$/iu;
 const CREATE_PROJECT_MEETING_WEEKDAY_RE = /^\s*adicionar\s+uma\s+tarefa\s+no\s+projeto\s+d[ao]\s+(.+?):\s*(.+?)\s+para\s+(segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado|domingo)(?:-feira)?\s+(?:às|as)\s+(\d{1,2})(?:(?:h|:)(\d{2})?)?\s*[.!]?\s*$/iu;
 const NOTIFY_MEETING_ABOVE_RE = /^\s*avisar\s+(?:o\s+|a\s+|os\s+|as\s+)?([\p{L}\p{M}', -]+?)\s+sobre\s+a\s+reuni[aã]o\s+acima\s*[.!]?\s*$/iu;
@@ -491,6 +524,55 @@ export function taskflowBareTaskDetailsCommand(
   return match?.[1] ? { taskId: match[1].toUpperCase() } : null;
 }
 
+export function taskflowProcessMinutesCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(currentTaskflowBoardId(messages)),
+): TaskflowProcessMinutes | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  if (!/\bprocessar\s+(?:a\s+)?ata\b/iu.test(message.text)) return null;
+  const taskId = extractTaskId(message.text);
+  return taskId?.startsWith('M') ? { taskId } : null;
+}
+
+function parseSmallCount(value: string): number | null {
+  const normalized = value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  const words: Record<string, number> = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    um: 1,
+    uma: 1,
+    dois: 2,
+    duas: 2,
+    tres: 3,
+    quatro: 4,
+    cinco: 5,
+  };
+  const parsed = /^\d+$/.test(normalized) ? Number(normalized) : words[normalized];
+  if (!Number.isInteger(parsed) || parsed < 1) return null;
+  return Math.min(parsed, 10);
+}
+
+export function taskflowRecentInboxCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowRecentInbox | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  const match = message.text.match(RECENT_INBOX_RE);
+  if (!match?.[1]) return null;
+  const count = parseSmallCount(match[1]);
+  return count ? { count } : null;
+}
+
 export function taskflowPersonTasksCommand(
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
   taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
@@ -545,6 +627,17 @@ export function taskflowStandaloneActivityPrompt(
   if (!STANDALONE_ACTIVITY_RE.test(message.text)) return null;
   if (extractTaskId(message.text) && !ZERO_PADDED_PROJECT_CODE_RE.test(message.text)) return null;
   return { text: message.text, contextHints: taskflowStandaloneActivityContextHints(message.text, messages) };
+}
+
+export function taskflowBareResolvedPrompt(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowBareResolved | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  if (!BARE_RESOLVED_RE.test(message.text)) return null;
+  return { senderName: message.sender };
 }
 
 function storedMessageText(rawContent: string): string {
@@ -704,6 +797,8 @@ function baseDateFromMessage(message: Pick<MessageInRow, 'content'>): string | n
   const rawPrompt = typeof content.phase2RawPrompt === 'string' ? content.phase2RawPrompt : '';
   const today = rawPrompt.match(/\btoday="(\d{4}-\d{2}-\d{2})"/)?.[1];
   if (today) return today;
+  const isoTime = rawPrompt.match(/\btime="(\d{4}-\d{2}-\d{2})T/)?.[1];
+  if (isoTime) return isoTime;
   const time = rawPrompt.match(/\btime="([A-Z][a-z]{2})\s+(\d{1,2}),\s+(\d{4}),/);
   if (!time?.[1] || !time[2] || !time[3]) return null;
   const months: Record<string, string> = {
@@ -770,6 +865,59 @@ export function taskflowCreateMeetingCommand(
     intendedWeekday: weekdayNameForLocalIso(scheduledAt),
     parentProjectTitle: projectMatch[1].trim(),
   };
+}
+
+function orgMeetingDraftFromText(
+  text: string,
+  contextDate: string | null,
+): TaskflowOrgMeetingDraftPrompt | null {
+  const match = text.match(ORG_MEETING_WEEKDAY_RE);
+  if (!match?.[1] || !match[2] || !match[3] || !match[5] || !match[6] || !contextDate) return null;
+  const scheduledAt = nextWeekdayLocalIso(contextDate, match[1], match[3], match[4]);
+  if (!scheduledAt) return null;
+  const location = match[2].trim();
+  const project = match[5].trim();
+  const participantName = cleanupDestinationName(match[6]);
+  if (!participantName) return null;
+  return {
+    title: `Reunião ${location} — ${project}`,
+    scheduledAt,
+    participantName,
+    location,
+  };
+}
+
+export function taskflowOrgMeetingDraftPrompt(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  recentContents: string[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowOrgMeetingDraftPrompt | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+
+  const contextDate = baseDateFromMessage(messages[0]);
+  const direct = orgMeetingDraftFromText(message.text, contextDate);
+  if (direct) return direct;
+
+  const followup = message.text.match(ORG_MEETING_PERSON_FOLLOWUP_RE);
+  if (!followup?.[1]) return null;
+  const followupName = cleanupDestinationName(followup[1]);
+  if (!followupName) return null;
+  for (const content of recentContents) {
+    const previous = meetingConfirmationFromText(outboundText(content), contextDate);
+    const previousName = normalizeBoardHint(previous?.participantName ?? '').replace(/z/g, 's');
+    const requestedName = normalizeBoardHint(followupName).replace(/z/g, 's');
+    if (previous && previousName.includes(requestedName)) {
+      return {
+        title: previous.title,
+        scheduledAt: previous.scheduledAt,
+        participantName: previous.participantName,
+        location: '',
+      };
+    }
+  }
+  return null;
 }
 
 function splitPersonNames(raw: string): string[] {
@@ -847,6 +995,49 @@ export function taskflowAutoForwardMeetingConfirmation(
   const taskId = latestMeetingTaskIdFromContents(recentContents);
   const destinationName = latestMeetingVisibilityDestination(recentContents);
   return taskId && destinationName ? { taskId, destinationName } : null;
+}
+
+function normalizeMeetingTitleFromConfirmation(rawTitle: string): string {
+  return normalizeMeetingTitle(rawTitle).replace(/^Reuni[aã]o\s+n[ao]\s+/iu, 'Reunião ');
+}
+
+function meetingConfirmationFromText(
+  text: string,
+  contextDate: string | null,
+): TaskflowOrgMeetingCreateForwardConfirmation | null {
+  if (!/\bCrio\s+assim\?/iu.test(text)) return null;
+  if (!/\b(?:est[aá]\s+na\s+organiza[cç][aã]o|quadro\s+pr[oó]prio)\b/iu.test(text)) return null;
+  const titleMatch = text.match(/\*\s*(Reuni[aã]o[^\n*]+?)\s*\*/iu);
+  const participantMatch = text.match(/Participantes?:\*\s*([^\n]+)/iu);
+  const whenMatch = text.match(/Quando:\*\s*(?:[\p{L}\p{M}-]+,\s*)?(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\s*(?:às|as)\s*(\d{1,2})(?::|h)?(\d{2})?/iu);
+  if (!titleMatch?.[1] || !participantMatch?.[1] || !whenMatch?.[1] || !whenMatch[2] || !whenMatch[4]) {
+    return null;
+  }
+
+  const year = whenMatch[3] ?? contextDate?.slice(0, 4);
+  if (!year) return null;
+  const participantName = cleanupDestinationName(participantMatch[1].replace(/\s*\(.+?\)\s*$/u, '').trim());
+  if (!participantName) return null;
+  return {
+    title: normalizeMeetingTitleFromConfirmation(titleMatch[1]),
+    scheduledAt: scheduledAtLocalIso(whenMatch[1], whenMatch[2], year, whenMatch[4], whenMatch[5]),
+    participantName,
+  };
+}
+
+export function taskflowOrgMeetingCreateForwardConfirmation(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  recentContents: string[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowOrgMeetingCreateForwardConfirmation | null {
+  const confirmationMessage = latestBareConfirmationMessage(messages);
+  if (!taskflowEnabled || !confirmationMessage) return null;
+  const contextDate = baseDateFromMessage(confirmationMessage);
+  for (const content of recentContents) {
+    const action = meetingConfirmationFromText(outboundText(content), contextDate);
+    if (action) return action;
+  }
+  return null;
 }
 
 export function taskflowDueDateNeedsTaskPrompt(
@@ -936,6 +1127,20 @@ export function taskflowExactTaskNextActionUpdateCommand(
     return null;
   }
   return { taskId, nextAction };
+}
+
+export function taskflowProjectNoteUpdateCommand(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
+): TaskflowProjectNoteUpdate | null {
+  if (!taskflowEnabled || messages.length !== 1) return null;
+  const message = parseSingleChat(messages[0]);
+  if (!message) return null;
+  if (/[?？]/.test(message.text) || extractTaskId(message.text)) return null;
+  if (!/\b(?:faremos|vamos|previst[ao]s?|marcad[ao]s?|agendad[ao]s?|migra[cç][aã]o|lan[cç]amento)\b/iu.test(message.text)) {
+    return null;
+  }
+  return { text: message.text.trim() };
 }
 
 export function taskflowBoardPersonPlacementCommand(
@@ -1260,6 +1465,16 @@ function isSingleBareConfirmation(messages: Pick<MessageInRow, 'kind' | 'content
   if (messages.length !== 1) return false;
   const message = parseSingleChat(messages[0]);
   return !!message && BARE_CONFIRMATION_RE.test(message.text);
+}
+
+function latestBareConfirmationMessage(
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+): Pick<MessageInRow, 'kind' | 'content'> | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = parseSingleChat(messages[i]);
+    if (message && BARE_CONFIRMATION_RE.test(message.text)) return messages[i];
+  }
+  return null;
 }
 
 function cleanupDestinationName(raw: string): string {
@@ -2005,6 +2220,108 @@ function handleTaskflowCreateMeeting(
   return true;
 }
 
+function openMinuteText(item: Record<string, unknown>): string {
+  return typeof item.text === 'string' ? item.text.trim() : '';
+}
+
+function openMinuteAuthor(item: Record<string, unknown>): string | null {
+  const author = typeof item.author_display_name === 'string' ? item.author_display_name
+    : typeof item.by === 'string' ? item.by
+      : null;
+  return author?.trim() || null;
+}
+
+function formatOpenMinutesPrompt(taskId: string, result: { data?: unknown }): string {
+  const data = result.data && typeof result.data === 'object'
+    ? result.data as { grouped?: unknown; open_items?: unknown }
+    : {};
+  const grouped = Array.isArray(data.grouped)
+    ? data.grouped as Array<{ item?: Record<string, unknown>; replies?: Array<Record<string, unknown>> }>
+    : [];
+  const openItems = Array.isArray(data.open_items) ? data.open_items as Array<Record<string, unknown>> : [];
+  const rows = grouped.length > 0
+    ? grouped
+    : openItems.map((item) => ({ item, replies: [] as Array<Record<string, unknown>> }));
+  if (rows.length === 0) return `Não há itens em aberto na ata de ${taskId}.`;
+
+  const lines = [
+    rows.length === 1
+      ? `Há 1 item em aberto na ata da ${taskId}:`
+      : `Há ${rows.length} itens em aberto na ata da ${taskId}:`,
+    '',
+  ];
+  for (const row of rows) {
+    if (!row.item) continue;
+    const noteId = typeof row.item.id === 'number' || typeof row.item.id === 'string' ? row.item.id : '?';
+    const text = openMinuteText(row.item);
+    const phase = row.item.phase === 'pre' ? 'pré-reunião' : row.item.phase === 'post' ? 'pós-reunião' : null;
+    const author = openMinuteAuthor(row.item);
+    lines.push(`*#${noteId}* — "${text}"`);
+    if (phase || author) lines.push(`_(${[phase, author ? `por ${author}` : null].filter(Boolean).join(', ')})_`);
+    for (const reply of row.replies ?? []) {
+      const replyText = openMinuteText(reply);
+      if (replyText) lines.push(`   → ${replyText}`);
+    }
+    lines.push('');
+  }
+  lines.push(
+    'O que fazer com esse item?',
+    '• *tarefa* — criar tarefa para acompanhar',
+    '• *inbox* — capturar no inbox para decidir depois',
+    '• *resolvido* — marcar como concluído',
+    '• *descartar* — ignorar',
+  );
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function handleTaskflowProcessMinutes(
+  action: TaskflowProcessMinutes,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = currentTaskflowBoardId(messages);
+  if (!boardId) return false;
+  const sender = senderName(messages);
+  const input = {
+    action: 'process_minutes' as const,
+    task_id: action.taskId,
+    sender_name: sender,
+  };
+  const result = new TaskflowEngine(getTaskflowDb(), boardId).admin({ ...input, board_id: boardId });
+  appendMcpEquivalentToolCapture('api_admin', input, result, !result.success);
+  if (!result.success) {
+    writeReply(routing, `Não consegui processar a ata de ${action.taskId}: ${result.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+  writeReply(routing, formatOpenMinutesPrompt(action.taskId, result));
+  return true;
+}
+
+function formatTaskflowOrgMeetingDraftPrompt(action: TaskflowOrgMeetingDraftPrompt): string {
+  const when = formatFortalezaMeetingWhen(action.scheduledAt).replace(/(\d{2})h$/, '$1:00');
+  const location = action.location ? `\n• *Local/contexto:* ${action.location}` : '';
+  return [
+    `${action.participantName} está na organização e tem quadro próprio. Posso criar a reunião sem adicioná-la diretamente neste quadro e encaminhar os detalhes para o quadro dela?`,
+    '',
+    'A reunião ainda não foi criada. Confirmo os dados:',
+    '',
+    `📅 *${action.title}*`,
+    `• *Quando:* ${when}`,
+    `• *Participantes:* ${action.participantName}`,
+    `${location}`,
+    '',
+    'Crio assim?',
+  ].join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+function handleTaskflowOrgMeetingDraftPrompt(
+  action: TaskflowOrgMeetingDraftPrompt,
+  routing: RoutingContext,
+): boolean {
+  writeReply(routing, formatTaskflowOrgMeetingDraftPrompt(action));
+  return true;
+}
+
 function handleTaskflowAddParticipantsToLatestMeeting(
   action: TaskflowAddParticipantsToLatestMeeting,
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
@@ -2182,6 +2499,100 @@ function handleTaskflowAutoForwardMeetingConfirmation(
   writeScheduleTaskAction(routing, prompt, processAfter, recurrence);
   appendMcpEquivalentToolCapture('schedule_task', { prompt, processAfter, recurrence }, { success: true });
   writeReply(routing, `Combinado. Encaminhei ${action.taskId} para ${action.destinationName} e agendei o acompanhamento das novas reuniões.`);
+  return true;
+}
+
+function findOrgPersonDestination(
+  boardId: string,
+  personName: string,
+): { dest: DestinationEntry; phoneMasked: string | null } | null {
+  const existing = findDestinationByDisplayName(personName);
+  if (existing) return { dest: existing, phoneMasked: null };
+
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
+  const result = engine.query({ query: 'find_person_in_organization', search_text: personName });
+  if (!result.success || !Array.isArray(result.data)) return null;
+  const target = normalizeBoardHint(personName);
+  const rows = result.data as Array<Record<string, unknown>>;
+  const exactMatches = rows.filter((row) => {
+    const name = normalizeBoardHint(String(row.name ?? ''));
+    const personId = normalizeBoardHint(String(row.person_id ?? ''));
+    return name.includes(target) || personId.includes(target);
+  });
+  const matches = exactMatches.length > 0 ? exactMatches : rows;
+  if (matches.length === 0) return null;
+  const preferred = matches.find((row) => row.is_owner === true) ?? matches[0];
+  const routingJid = String(preferred.routing_jid ?? '').trim();
+  if (!routingJid) return null;
+  const folder = String(preferred.board_group_folder ?? personName).trim() || personName;
+  return {
+    dest: {
+      name: folder,
+      displayName: String(preferred.name ?? personName),
+      type: 'channel',
+      channelType: 'whatsapp',
+      platformId: routingJid,
+    },
+    phoneMasked: typeof preferred.phone_masked === 'string' && preferred.phone_masked ? preferred.phone_masked : null,
+  };
+}
+
+function handleTaskflowOrgMeetingCreateForwardConfirmation(
+  action: TaskflowOrgMeetingCreateForwardConfirmation,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+  const destination = findOrgPersonDestination(boardId, action.participantName);
+  if (!destination) {
+    writeReply(
+      routing,
+      `Confirmei a reunião, mas não encontrei um quadro/destino ativo para ${action.participantName}. A reunião ainda não foi criada; preciso do destino correto para encaminhar os detalhes.`,
+    );
+    return true;
+  }
+
+  const sender = senderName(messages);
+  const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+  const createInput = {
+    type: 'meeting' as const,
+    title: action.title,
+    scheduled_at: action.scheduledAt,
+    sender_name: sender,
+  };
+  const createResult = engine.create({ ...createInput, board_id: boardId });
+  appendMcpEquivalentToolCapture('api_create_meeting_task', createInput, createResult, !createResult.success);
+  if (!createResult.success) {
+    writeReply(routing, `Não consegui criar a reunião: ${createResult.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+
+  const taskId = typeof createResult.task_id === 'string'
+    ? createResult.task_id
+    : typeof createResult.id === 'string'
+      ? createResult.id
+      : 'reunião';
+  const participantName = destination.dest.displayName || action.participantName;
+  const when = formatFortalezaMeetingWhen(action.scheduledAt);
+  const forwardText = `Olá, ${participantName}! ${sender} pediu para encaminhar os detalhes desta reunião:\n\n📅 *${action.title}*\n${when}`;
+  sendToDestination(destination.dest, forwardText, routing);
+  appendMcpEquivalentToolCapture('send_message', { to: destination.dest.name, text: forwardText }, { success: true });
+
+  const noteText = `Convite encaminhado para ${participantName} no quadro ${destination.dest.name}.`;
+  const noteInput = {
+    task_id: taskId,
+    sender_name: sender,
+    updates: { add_note: noteText },
+  };
+  const noteResult = engine.update({ ...noteInput, board_id: boardId });
+  appendMcpEquivalentToolCapture('api_update_task', noteInput, noteResult, !noteResult.success);
+
+  const phone = destination.phoneMasked ? ` (${destination.phoneMasked})` : '';
+  writeReply(
+    routing,
+    `✅ *Reunião criada*\n━━━━━━━━━━━━━━\n\n*${taskId}* — ${action.title}\n📅 ${formatFortalezaDateTimePt(action.scheduledAt)}\n\n${participantName} tem quadro próprio na organização, então não pude adicioná-la diretamente como participante aqui — enviei o convite para o quadro dela${phone}. Uma nota foi registrada na reunião.`,
+  );
   return true;
 }
 
@@ -2546,6 +2957,62 @@ function handleTaskflowBareTaskDetails(
   return true;
 }
 
+function formatShortDate(value: unknown): string {
+  if (typeof value !== 'string' || !value) return '';
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return match ? `${match[3]}/${match[2]}` : '';
+}
+
+function handleTaskflowRecentInbox(
+  action: TaskflowRecentInbox,
+  routing: RoutingContext,
+): boolean {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return false;
+
+  const db = getTaskflowDb();
+  const rows = db
+    .prepare(
+      `SELECT id, title, assignee, created_at
+       FROM tasks
+       WHERE board_id = ? AND column = 'inbox'
+       ORDER BY datetime(created_at) DESC, id DESC
+       LIMIT ?`,
+    )
+    .all(boardId, action.count) as Array<{
+      id: string;
+      title: string | null;
+      assignee: string | null;
+      created_at: string | null;
+    }>;
+
+  const output = { success: true, data: rows };
+  appendMcpEquivalentToolCapture(
+    'api_query',
+    { query: 'filter_board_tasks', column: 'inbox', limit: action.count, order_by: 'created_at_desc' },
+    output,
+    false,
+  );
+
+  if (rows.length === 0) {
+    writeReply(routing, 'Não encontrei itens no inbox deste quadro.');
+    return true;
+  }
+
+  const headerCount = rows.length === action.count ? action.count : rows.length;
+  const itemLabel = headerCount === 1 ? 'item' : 'itens';
+  const lines = [`📥 *${headerCount} último${headerCount === 1 ? '' : 's'} ${itemLabel} do inbox*`];
+  for (const row of rows) {
+    const title = row.title?.trim() || row.id;
+    const assignee = row.assignee?.trim() ? ` — ${row.assignee.trim()}` : '';
+    const created = formatShortDate(row.created_at);
+    const date = created ? ` · data ${created}` : '';
+    lines.push(`• *${row.id}* — ${title}${assignee}${date}`);
+  }
+  writeReply(routing, lines.join('\n'));
+  return true;
+}
+
 function handleTaskflowIncompleteNoteRequest(
   action: TaskflowIncompleteNoteRequest,
   routing: RoutingContext,
@@ -2690,6 +3157,15 @@ function handleTaskflowStandaloneActivityPrompt(
     routing,
     `Essa atividade — *${action.text}* — não está cadastrada diretamente.${related}\n\nDeseja:\n1. Criar tarefa simples\n2. Adicionar como etapa de um projeto existente\n3. Capturar no inbox para triagem`,
   );
+  return true;
+}
+
+function handleTaskflowBareResolvedPrompt(
+  action: TaskflowBareResolved,
+  routing: RoutingContext,
+): boolean {
+  const firstName = action.senderName.trim().split(/\s+/)[0] || action.senderName;
+  writeReply(routing, `Qual tarefa ou assunto foi resolvido, ${firstName}? Assim registro no lugar certo.`);
   return true;
 }
 
@@ -2989,6 +3465,66 @@ function handleTaskflowExactTaskNextActionUpdate(
   return true;
 }
 
+function projectNoteDateText(text: string, messages: Pick<MessageInRow, 'content'>[]): string | null {
+  const weekday = text.match(/\b(?:na|no)\s+(segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado|domingo)(?:-feira)?\b/iu)?.[1];
+  const contextDate = messages[0] ? baseDateFromMessage(messages[0]) : null;
+  if (!weekday || !contextDate) return null;
+  const localIso = nextWeekdayLocalIso(contextDate, weekday, '0');
+  if (!localIso) return null;
+  return `${localIso.slice(8, 10)}/${localIso.slice(5, 7)}/${localIso.slice(0, 4)}`;
+}
+
+function projectNoteTextForMessage(text: string, projectTitle: string, messages: Pick<MessageInRow, 'content'>[]): string {
+  const dateText = projectNoteDateText(text, messages);
+  const weekday = text.match(/\b(?:na|no)\s+(segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado|domingo)(?:-feira)?\b/iu)?.[1];
+  if (/\bmigra[cç][aã]o\b/iu.test(text)) {
+    const when = weekday ? `${normalizeWeekdayName(weekday)}-feira${dateText ? `, ${dateText}` : ''}` : 'informada';
+    return `Migração dos ${projectTitle} prevista para ${when}.`;
+  }
+  return text.trim().replace(/[.!?]*$/u, '.');
+}
+
+function handleTaskflowProjectNoteUpdate(
+  action: TaskflowProjectNoteUpdate,
+  messages: Pick<MessageInRow, 'kind' | 'content'>[],
+  routing: RoutingContext,
+): boolean {
+  const boardId = currentTaskflowBoardId(messages);
+  if (!boardId) return false;
+
+  const sender = senderName(messages);
+  const db = getTaskflowDb();
+  const normalizedText = normalizeBoardHint(action.text);
+  const projects = db.prepare(
+    `SELECT id, title FROM tasks
+     WHERE board_id = ? AND type = 'project' AND column != 'done'
+     ORDER BY length(title) DESC, id`,
+  ).all(boardId) as Array<{ id: string; title: string }>;
+  const matches = projects.filter((project) => {
+    const title = normalizeBoardHint(project.title);
+    return title.length >= 4 && normalizedText.includes(title);
+  });
+  if (matches.length !== 1) return false;
+
+  const project = matches[0];
+  const noteText = projectNoteTextForMessage(action.text, project.title, messages);
+  const engine = new TaskflowEngine(db, boardId);
+  const noteInput = {
+    task_id: project.id,
+    sender_name: sender,
+    text: noteText,
+  };
+  const noteResult = engine.apiAddNote({ ...noteInput, board_id: boardId });
+  appendMcpEquivalentToolCapture('api_task_add_note', noteInput, noteResult, !noteResult.success);
+  if (!noteResult.success) {
+    writeReply(routing, `Não consegui registrar a nota em ${project.id}: ${noteResult.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+
+  writeReply(routing, `✅ *${project.id}* atualizado\n━━━━━━━━━━━━━━\n\n• Nota: ${noteText}`);
+  return true;
+}
+
 function normalizeBoardHint(value: string): string {
   return value
     .normalize('NFD')
@@ -2999,10 +3535,16 @@ function normalizeBoardHint(value: string): string {
 }
 
 function boardIdForHint(boardId: string, hint: string): string | null {
+  const target = normalizeBoardHint(hint);
+  const slug = target.replace(/\s+/g, '-');
+  for (const candidateId of [`board-${slug}-taskflow`, `board-${slug}`]) {
+    const row = getTaskflowDb().prepare(`SELECT id FROM boards WHERE id = ? LIMIT 1`).get(candidateId) as { id: string } | undefined;
+    if (row?.id) return row.id;
+  }
+
   const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
   const result = engine.query({ query: 'board_directory' });
   if (!result.success || !Array.isArray(result.data)) return null;
-  const target = normalizeBoardHint(hint);
   const directoryBoards = result.data as Array<Record<string, unknown>>;
   const dbBoards = getTaskflowDb().prepare(
     `SELECT id, short_code, group_folder FROM boards
@@ -3033,12 +3575,21 @@ function boardIdForHint(boardId: string, hint: string): string | null {
 function findExistingOrgPerson(boardId: string, personName: string): { person_id: string; name: string; phone: string | null } | null {
   const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
   const result = engine.query({ query: 'find_person_in_organization', search_text: personName });
-  if (!result.success || !Array.isArray(result.data)) return null;
   const target = normalizeBoardHint(personName);
-  const matches = (result.data as Array<Record<string, unknown>>).filter((row) =>
-    normalizeBoardHint(String(row.name ?? '')) === target
-  );
-  if (matches.length === 0) return null;
+  const matches = result.success && Array.isArray(result.data)
+    ? (result.data as Array<Record<string, unknown>>).filter((row) =>
+        normalizeBoardHint(String(row.name ?? '')) === target
+      )
+    : [];
+  if (matches.length === 0) {
+    const direct = getTaskflowDb().prepare(
+      `SELECT person_id, name, phone FROM board_people
+       WHERE lower(name) = lower(?)
+       ORDER BY board_id = ? DESC, person_id
+       LIMIT 1`,
+    ).get(personName.trim(), boardId) as { person_id: string; name: string; phone: string | null } | undefined;
+    return direct ?? null;
+  }
   const preferred = matches.find((row) => row.board_id === boardId) ?? matches.find((row) => row.is_owner) ?? matches[0];
   const personId = String(preferred.person_id ?? '').trim();
   const name = String(preferred.name ?? personName).trim();
@@ -3058,6 +3609,15 @@ function roleForBoardHint(hint: string): string {
   return hint.trim();
 }
 
+function placementAllowsSharedRole(messages: Pick<MessageInRow, 'kind' | 'content'>[]): boolean {
+  const text = messages
+    .map(parseSingleChat)
+    .filter((message): message is { sender: string; text: string } => !!message)
+    .map((message) => message.text)
+    .join('\n');
+  return /\b(?:tamb[eé]m|junto(?:s|as)?|continuam?|os\s+dois|ambos|ambas)\b/iu.test(text);
+}
+
 function handleTaskflowBoardPersonPlacement(
   action: TaskflowBoardPersonPlacement,
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
@@ -3066,8 +3626,18 @@ function handleTaskflowBoardPersonPlacement(
   const sourceBoardId = currentTaskflowBoardId(messages);
   if (!sourceBoardId) return false;
 
+  const db = getTaskflowDb();
+  const allowSharedRole = placementAllowsSharedRole(messages);
+  const planned: Array<{
+    placement: TaskflowBoardPersonPlacement['placements'][number];
+    targetBoardId: string;
+    personId: string;
+    input: { board_id: string; person_id: string; name: string; phone: string | null; role: string };
+  }> = [];
+  const blockers: string[] = [];
   const successes: string[] = [];
   const failures: string[] = [];
+
   for (const placement of action.placements) {
     const targetBoardId = boardIdForHint(sourceBoardId, placement.boardHint);
     if (!targetBoardId) {
@@ -3080,7 +3650,6 @@ function handleTaskflowBoardPersonPlacement(
       continue;
     }
     const personId = person.phone ? person.phone.replace(/[^0-9]/g, '') : person.person_id;
-    const targetEngine = new TaskflowEngine(getTaskflowDb(), targetBoardId);
     const input = {
       board_id: targetBoardId,
       person_id: personId,
@@ -3088,9 +3657,39 @@ function handleTaskflowBoardPersonPlacement(
       phone: person.phone,
       role: roleForBoardHint(placement.boardHint),
     };
-    const existing = getTaskflowDb().prepare(
+
+    const roleOccupants = db.prepare(
+      `SELECT name FROM board_people
+       WHERE board_id = ? AND lower(role) = lower(?) AND person_id != ?
+       ORDER BY name`,
+    ).all(targetBoardId, input.role, personId) as Array<{ name: string }>;
+    if (roleOccupants.length > 0 && !allowSharedRole) {
+      blockers.push(
+        `${placement.boardHint}: já consta ${roleOccupants.map((row) => row.name).join(', ')} como ${input.role}. Confirma adicionar ${person.name} também, ou é para substituir?`,
+      );
+    }
+
+    planned.push({ placement, targetBoardId, personId, input });
+  }
+
+  if (blockers.length > 0) {
+    const lines = [
+      'Antes de alterar os setores, preciso confirmar:',
+      '',
+      ...blockers.map((line) => `• ${line}`),
+    ];
+    if (failures.length > 0) {
+      lines.push('', 'Também encontrei estas pendências:', ...failures.map((line) => `• ${line}`));
+    }
+    writeReply(routing, lines.join('\n'));
+    return true;
+  }
+
+  for (const { placement, targetBoardId, personId, input } of planned) {
+    const targetEngine = new TaskflowEngine(db, targetBoardId);
+    const existing = db.prepare(
       `SELECT person_id FROM board_people WHERE board_id = ? AND lower(name) = lower(?) AND person_id != ?`,
-    ).get(targetBoardId, person.name, personId) as { person_id: string } | undefined;
+    ).get(targetBoardId, input.name, personId) as { person_id: string } | undefined;
     if (existing) {
       const removeResult = targetEngine.removeBoardPerson(targetBoardId, existing.person_id, false);
       appendMcpEquivalentToolCapture('api_remove_board_person', { board_id: targetBoardId, person_id: existing.person_id }, removeResult, !removeResult.success);
@@ -3099,9 +3698,9 @@ function handleTaskflowBoardPersonPlacement(
     const alreadyExists = !result.success && result.error_code === 'conflict';
     appendMcpEquivalentToolCapture('api_add_board_person', input, result, !result.success && !alreadyExists);
     if (result.success || alreadyExists) {
-      successes.push(`${person.name} em ${placement.boardHint} (${input.role})`);
+      successes.push(`${input.name} em ${placement.boardHint} (${input.role})`);
     } else {
-      failures.push(`${person.name}: ${result.error ?? 'erro desconhecido'}`);
+      failures.push(`${input.name}: ${result.error ?? 'erro desconhecido'}`);
     }
   }
 
@@ -3481,6 +4080,13 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       continue;
     }
 
+    const orgMeetingDraft = taskflowOrgMeetingDraftPrompt(keep, recentContext);
+    if (orgMeetingDraft && handleTaskflowOrgMeetingDraftPrompt(orgMeetingDraft, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow org meeting draft prompt without provider query');
+      continue;
+    }
+
     const createMeeting = taskflowCreateMeetingCommand(keep);
     if (createMeeting && handleTaskflowCreateMeeting(createMeeting, keep, routing)) {
       markCompleted(keep.map((m) => m.id));
@@ -3488,10 +4094,24 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       continue;
     }
 
+    const processMinutes = taskflowProcessMinutesCommand(keep);
+    if (processMinutes && handleTaskflowProcessMinutes(processMinutes, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow process-minutes request without provider query');
+      continue;
+    }
+
     const bareTaskDetails = taskflowBareTaskDetailsCommand(keep);
     if (bareTaskDetails && handleTaskflowBareTaskDetails(bareTaskDetails, keep, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled bare TaskFlow task-details request without provider query');
+      continue;
+    }
+
+    const recentInbox = taskflowRecentInboxCommand(keep);
+    if (recentInbox && handleTaskflowRecentInbox(recentInbox, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled recent TaskFlow inbox request without provider query');
       continue;
     }
 
@@ -3534,6 +4154,13 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (exactIdNote && handleTaskflowMissingExactIdNote(exactIdNote, keep, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled missing exact-ID TaskFlow note without provider query');
+      continue;
+    }
+
+    const bareResolved = taskflowBareResolvedPrompt(keep);
+    if (bareResolved && handleTaskflowBareResolvedPrompt(bareResolved, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled bare TaskFlow resolved/completed prompt without provider query');
       continue;
     }
 
@@ -3582,6 +4209,13 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       continue;
     }
 
+    const orgMeetingCreateForward = taskflowOrgMeetingCreateForwardConfirmation(keep, recentContext);
+    if (orgMeetingCreateForward && handleTaskflowOrgMeetingCreateForwardConfirmation(orgMeetingCreateForward, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow org meeting create/forward confirmation without provider query');
+      continue;
+    }
+
     const forwardDetails = taskflowForwardDetailsCommand(keep);
     if (forwardDetails && handleTaskflowForwardDetails(forwardDetails, keep, routing)) {
       markCompleted(keep.map((m) => m.id));
@@ -3607,6 +4241,13 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (exactTaskNextAction && handleTaskflowExactTaskNextActionUpdate(exactTaskNextAction, keep, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow exact task next-action update without provider query');
+      continue;
+    }
+
+    const projectNoteUpdate = taskflowProjectNoteUpdateCommand(keep);
+    if (projectNoteUpdate && handleTaskflowProjectNoteUpdate(projectNoteUpdate, keep, routing)) {
+      markCompleted(keep.map((m) => m.id));
+      log('Handled TaskFlow project note update without provider query');
       continue;
     }
 
@@ -3888,6 +4529,21 @@ async function processQuery(
         if (done) return;
 
         const keptIds = keep.map((m) => m.id);
+        const recentContext = [...recentOutboundContents(), ...recentInboundContents()];
+        const orgMeetingCreateForward = taskflowOrgMeetingCreateForwardConfirmation(keep, recentContext);
+        if (orgMeetingCreateForward && handleTaskflowOrgMeetingCreateForwardConfirmation(orgMeetingCreateForward, keep, routing)) {
+          markCompleted(keptIds);
+          log('Handled TaskFlow org meeting create/forward follow-up without provider push');
+          return;
+        }
+
+        const processMinutes = taskflowProcessMinutesCommand(keep);
+        if (processMinutes && handleTaskflowProcessMinutes(processMinutes, keep, routing)) {
+          markCompleted(keptIds);
+          log('Handled TaskFlow process-minutes follow-up without provider push');
+          return;
+        }
+
         const prompt = formatMessages(keep);
         log(`Pushing ${keep.length} follow-up message(s) into active query`);
         query.push(prompt);

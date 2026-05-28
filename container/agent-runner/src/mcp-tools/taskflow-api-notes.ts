@@ -3,7 +3,7 @@ import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { emitMutationConfirmation } from './mutation-confirmation.js';
 import { registerTools } from './server.js';
-import { addNoteFormattedResult } from './taskflow-api-mutate.js';
+import { addEditNoteFormattedResult, addNoteFormattedResult } from './taskflow-api-mutate.js';
 import { normalizeAgentIds } from './taskflow-helpers.js';
 import type { McpToolDefinition } from './types.js';
 import { err, jsonResponse, parseTaskActorArgs } from './util.js';
@@ -94,7 +94,13 @@ export const apiTaskEditNoteTool: McpToolDefinition = {
       note_id: args.note_id,
       text: args.text,
     });
-    return jsonResponse(result);
+    const finalResult = addEditNoteFormattedResult(result, {
+      task_id: parsed.taskId,
+      note_id: args.note_id,
+      text: args.text,
+    });
+    emitMutationConfirmation(finalResult);
+    return jsonResponse(finalResult);
   },
 };
 

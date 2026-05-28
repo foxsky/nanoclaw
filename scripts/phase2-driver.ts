@@ -294,6 +294,8 @@ async function driveContextTurn(
   tag: string,
 ): Promise<void> {
   const captureFile = path.join(sessionDir(AGENT_GROUP_ID, session.id), '.tool-uses.jsonl');
+  const outboundBaselineSeq = maxOutboundSeq(AGENT_GROUP_ID, session.id);
+  const captureBytesBefore = fs.existsSync(captureFile) ? fs.statSync(captureFile).size : 0;
   const messageId = `phase2-ctx-${tag}-${Date.now()}`;
   const content = JSON.stringify({
     sender,
@@ -315,8 +317,6 @@ async function driveContextTurn(
   });
   prepareReplayContainerWritablePaths(session.id);
 
-  const outboundBaselineSeq = maxOutboundSeq(AGENT_GROUP_ID, session.id);
-  const captureBytesBefore = fs.existsSync(captureFile) ? fs.statSync(captureFile).size : 0;
   const woke = await wakeContainer(session as never);
   if (!woke) throw new Error(`wakeContainer returned false for context turn ${tag}`);
 
@@ -592,6 +592,7 @@ async function processChain(corpus: Corpus, corpusPath: string, targetCorpusIdx:
     // Now drive the target turn, capturing tool_use + outbound just for it.
     const captureFile = path.join(sessionDir(AGENT_GROUP_ID, session.id), '.tool-uses.jsonl');
     const captureBytesBefore = fs.existsSync(captureFile) ? fs.statSync(captureFile).size : 0;
+    const outboundBaselineSeq = maxOutboundSeq(AGENT_GROUP_ID, session.id);
     for (let i = 0; i < botContext.length; i++) {
       const bot = botContext[i];
       const botContent = JSON.stringify({
@@ -636,7 +637,6 @@ async function processChain(corpus: Corpus, corpusPath: string, targetCorpusIdx:
     });
     prepareReplayContainerWritablePaths(session.id);
 
-    const outboundBaselineSeq = maxOutboundSeq(AGENT_GROUP_ID, session.id);
     const woke = await wakeContainer(session);
     if (!woke) throw new Error(`wakeContainer returned false for target turn ${targetCorpusIdx}`);
     const settled = await waitForSettled(AGENT_GROUP_ID, session.id, outboundBaselineSeq);
@@ -700,6 +700,7 @@ async function processTurn(turn: CuratedTurn, idx: number): Promise<TurnResult> 
 
   const captureFile = path.join(sessionDir(AGENT_GROUP_ID, session.id), '.tool-uses.jsonl');
   fs.rmSync(captureFile, { force: true });
+  const outboundBaselineSeq = maxOutboundSeq(AGENT_GROUP_ID, session.id);
   const messageId = `phase2-msg-${idx}-${Date.now()}`;
   const content = JSON.stringify({
     sender: parsed.sender,
@@ -721,7 +722,6 @@ async function processTurn(turn: CuratedTurn, idx: number): Promise<TurnResult> 
   });
   prepareReplayContainerWritablePaths(session.id);
 
-  const outboundBaselineSeq = maxOutboundSeq(AGENT_GROUP_ID, session.id);
   const woke = await wakeContainer(session);
   if (!woke) throw new Error(`wakeContainer returned false for turn ${idx}`);
 

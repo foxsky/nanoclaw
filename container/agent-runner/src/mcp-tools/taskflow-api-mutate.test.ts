@@ -439,6 +439,34 @@ describe('api_create_meeting_task MCP tool (A10)', () => {
     const targets = result.notification_events.map((n: { target_person_id: string }) => n.target_person_id).sort();
     expect(targets).toEqual(['bob', 'carol']);
   });
+
+  it('unresolved meeting participant already in org prompts reuse instead of phone registration', async () => {
+    const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
+    db.exec(`ALTER TABLE boards ADD COLUMN parent_board_id TEXT`);
+    db.exec(`ALTER TABLE boards ADD COLUMN owner_person_id TEXT`);
+    db.exec(`ALTER TABLE board_people ADD COLUMN phone TEXT`);
+    db.exec(
+      `INSERT INTO boards (id, short_code, name, board_role, group_folder, group_jid, parent_board_id, owner_person_id)
+       VALUES ('board-root', NULL, 'Root', 'standard', 'root-folder', 'root@g.us', NULL, NULL);
+       INSERT INTO boards (id, short_code, name, board_role, group_folder, group_jid, parent_board_id, owner_person_id)
+       VALUES ('board-laizys', NULL, 'Laizys', 'standard', 'laizys-taskflow', 'laizys@g.us', 'board-root', 'laizys');
+       UPDATE boards SET parent_board_id = 'board-root' WHERE id = '${BOARD}';
+       INSERT INTO board_people (board_id, person_id, name, role, phone)
+       VALUES ('board-laizys', 'laizys', 'Laizys', 'owner', '5586999993003')`,
+    );
+
+    const response = await apiCreateMeetingTaskTool.handler({
+      board_id: BOARD,
+      title: 'Reunião FMS — Ponto Eletrônico',
+      sender_name: 'alice',
+      participants: ['Laizys'],
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.offer_register.message).toContain('Laizys está na organização em laizys-taskflow');
+    expect(result.offer_register.message).toContain('encaminhar os detalhes para o quadro dela');
+    expect(result.offer_register.message).not.toContain('informe o telefone');
+  });
 });
 
 describe('api_move MCP tool (A11.1)', () => {
@@ -2107,6 +2135,54 @@ describe('api_query MCP tool (A5.2.3 — composite read-side wrapper)', () => {
     expect(result.data).toHaveLength(1);
     expect(result.data[0].task_id).toBe('T43');
     expect(result.data[0].board_id).toBe('board-sibling');
+  });
+
+  it('query=find_person_in_organization falls back to one-edit name matching only when exact normalized matching misses', async () => {
+    const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
+    db.exec(`ALTER TABLE boards ADD COLUMN parent_board_id TEXT`);
+    db.exec(`ALTER TABLE boards ADD COLUMN owner_person_id TEXT`);
+    db.exec(`ALTER TABLE board_people ADD COLUMN phone TEXT`);
+    db.exec(
+      `INSERT INTO boards (id, short_code, name, board_role, group_folder, group_jid, parent_board_id, owner_person_id)
+       VALUES ('board-root', NULL, 'Root', 'standard', 'root-folder', 'root@g.us', NULL, NULL);
+       INSERT INTO boards (id, short_code, name, board_role, group_folder, group_jid, parent_board_id, owner_person_id)
+       VALUES ('board-laizys', NULL, 'Laizys', 'standard', 'laizys-taskflow', 'laizys@g.us', 'board-root', 'laizys');
+       UPDATE boards SET parent_board_id = 'board-root' WHERE id = '${BOARD}';
+       INSERT INTO board_people (board_id, person_id, name, role)
+       VALUES ('board-laizys', 'laizys', 'Laizys', 'owner'),
+              ('${BOARD}', 'ana-beatriz', 'Ana Beatriz', 'member'),
+              ('${BOARD}', 'maria-silva', 'Maria Silva', 'member'),
+              ('${BOARD}', 'ana-silva', 'Ana Silva', 'member'),
+              ('${BOARD}', 'silvia', 'Silvia', 'member')`,
+    );
+
+    const typoResponse = await apiQueryTool.handler({
+      board_id: BOARD,
+      query: 'find_person_in_organization',
+      search_text: 'Laisys',
+    });
+    const typoResult = JSON.parse(typoResponse.content[0].text);
+    expect(typoResult.success).toBe(true);
+    expect(typoResult.data.map((row: { person_id: string }) => row.person_id)).toEqual(['laizys']);
+
+    const tokenResponse = await apiQueryTool.handler({
+      board_id: BOARD,
+      query: 'find_person_in_organization',
+      search_text: 'Beatriz',
+    });
+    const tokenResult = JSON.parse(tokenResponse.content[0].text);
+    expect(tokenResult.data.map((row: { person_id: string }) => row.person_id)).toEqual(['ana-beatriz']);
+
+    const ambiguousResponse = await apiQueryTool.handler({
+      board_id: BOARD,
+      query: 'find_person_in_organization',
+      search_text: 'Silva',
+    });
+    const ambiguousResult = JSON.parse(ambiguousResponse.content[0].text);
+    expect(ambiguousResult.data.map((row: { person_id: string }) => row.person_id).sort()).toEqual([
+      'ana-silva',
+      'maria-silva',
+    ]);
   });
 
   it('query=find_task_in_organization promotes parent project current-board summary', async () => {

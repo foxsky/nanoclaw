@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 
 import {
+  addEditNoteFormattedResult,
   addNoteFormattedResult,
+  buildEditNoteCard,
   buildNoteCard,
 } from './taskflow-api-mutate.ts';
 
@@ -115,6 +117,34 @@ describe('addNoteFormattedResult — wires buildNoteCard onto api_task_add_note'
     const out = addNoteFormattedResult(addNoteResult() as never, {
       task_id: 'P11.23',
       text: '',
+    });
+    expect((out as { formatted?: string }).formatted).toBeUndefined();
+  });
+});
+
+describe('addEditNoteFormattedResult — wires api_task_edit_note onto deterministic emission', () => {
+  it('success + edit note → result.formatted uses the edited note id and text', () => {
+    const out = addEditNoteFormattedResult(addNoteResult() as never, {
+      task_id: 'P8',
+      note_id: 2,
+      text: 'Reunião 06/05: lançamento definido para 15/05/2026.',
+    });
+    expect((out as { formatted?: string }).formatted).toBe(
+      '✅ *P8* atualizada\n━━━━━━━━━━━━━━\n\n• Nota #2 editada: Reunião 06/05: lançamento definido para 15/05/2026.',
+    );
+  });
+
+  it('buildEditNoteCard rejects invalid inputs instead of fabricating', () => {
+    expect(buildEditNoteCard('', 1, 'x')).toBeNull();
+    expect(buildEditNoteCard('P8', 0, 'x')).toBeNull();
+    expect(buildEditNoteCard('P8', 1, '')).toBeNull();
+  });
+
+  it('failure → unchanged', () => {
+    const out = addEditNoteFormattedResult(addNoteResult({ success: false }) as never, {
+      task_id: 'P8',
+      note_id: 2,
+      text: 'x',
     });
     expect((out as { formatted?: string }).formatted).toBeUndefined();
   });

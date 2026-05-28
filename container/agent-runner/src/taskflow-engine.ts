@@ -79,6 +79,34 @@ function normalizeSearchText(value: unknown): string {
     .toLowerCase();
 }
 
+function normalizePersonLookupText(value: unknown): string {
+  return normalizeSearchText(value)
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  const previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  const current = new Array<number>(b.length + 1);
+  for (let i = 1; i <= a.length; i += 1) {
+    current[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const substitutionCost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + substitutionCost,
+      );
+    }
+    previous.splice(0, previous.length, ...current);
+  }
+  return previous[b.length];
+}
+
 function extractSearchTokens(value: string): string[] {
   const seen = new Set<string>();
   const tokens = normalizeSearchText(value)
@@ -3738,7 +3766,85 @@ export class TaskflowEngine {
     return this.buildOfferRegisterError(name);
   }
 
+  private tableHasColumn(tableName: string, columnName: string): boolean {
+    const columns = this.db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+    return columns.some((column) => column.name === columnName);
+  }
+
+  private boardPeopleHasPhoneColumn(): boolean {
+    const columns = this.db.prepare(`PRAGMA table_info(board_people)`).all() as Array<{ name: string }>;
+    return columns.some((column) => column.name === 'phone');
+  }
+
+  private findExactOrgPeople(name: string): Array<{
+    board_id: string;
+    person_id: string;
+    name: string;
+    phone: string | null;
+    notification_group_jid: string | null;
+    group_jid: string;
+    group_folder: string;
+    owner_person_id: string | null;
+  }> {
+    if (!this.tableHasColumn('boards', 'parent_board_id')) return [];
+    const scope = this.orgScopeOrNull();
+    if (!scope) return [];
+    const normalized = normalizePersonLookupText(name);
+    if (!normalized) return [];
+    const phoneSelect = this.boardPeopleHasPhoneColumn() ? 'bp.phone' : 'NULL AS phone';
+    const ownerSelect = this.tableHasColumn('boards', 'owner_person_id') ? 'b.owner_person_id' : 'NULL AS owner_person_id';
+    const rows = this.db
+      .prepare(
+        `SELECT bp.board_id, bp.person_id, bp.name, ${phoneSelect},
+                bp.notification_group_jid, b.group_jid, b.group_folder,
+                ${ownerSelect}
+           FROM board_people bp
+           JOIN boards b ON b.id = bp.board_id
+          WHERE bp.board_id IN (${scope.placeholders})
+          ORDER BY b.group_folder, bp.name`,
+      )
+      .all(...scope.boardIds) as Array<{
+        board_id: string;
+        person_id: string;
+        name: string;
+        phone: string | null;
+        notification_group_jid: string | null;
+        group_jid: string;
+        group_folder: string;
+        owner_person_id: string | null;
+      }>;
+    return rows.filter((row) => {
+      const normalizedName = normalizePersonLookupText(row.name);
+      const normalizedPersonId = normalizePersonLookupText(row.person_id);
+      return normalizedName.includes(normalized) || normalizedPersonId.includes(normalized);
+    });
+  }
+
   private buildUnresolvedMeetingParticipantPrompt(name: string): { name: string; message: string } {
+    const orgMatches = this.findExactOrgPeople(name);
+    const distinctPersonIds = [...new Set(orgMatches.map((row) => row.person_id))];
+    if (distinctPersonIds.length === 1) {
+      const ownerRow =
+        orgMatches.find((row) => row.owner_person_id === row.person_id) ??
+        orgMatches.find((row) => row.notification_group_jid || row.group_jid) ??
+        orgMatches[0];
+      return {
+        name: ownerRow.name,
+        message:
+          `${ownerRow.name} está na organização em ${ownerRow.group_folder} (${maskPhoneForDisplay(ownerRow.phone)}), ` +
+          'mas não está cadastrada neste quadro. Posso criar a reunião sem adicioná-la diretamente e encaminhar os detalhes para o quadro dela?',
+      };
+    }
+    if (distinctPersonIds.length > 1) {
+      const options = orgMatches
+        .filter((row) => row.owner_person_id === row.person_id || !orgMatches.some((other) => other.person_id === row.person_id && other.owner_person_id === other.person_id))
+        .map((row) => `- ${row.name} em ${row.group_folder} (${maskPhoneForDisplay(row.phone)})`)
+        .join('\n');
+      return {
+        name,
+        message: `Encontrei mais de uma pessoa para "${name}" na organização:\n${options}\n\nQual delas?`,
+      };
+    }
     return {
       name,
       message: `${name} não está cadastrado(a) neste quadro. Ele(a) é membro da equipe ou participante externo? Se for externo, informe o telefone para enviar o convite.`,
@@ -8297,16 +8403,6 @@ export class TaskflowEngine {
 
           const scope = this.orgScopeOrNull();
           if (!scope) return { success: true, data: [] };
-          // Escape LIKE metacharacters in each term so a user typing "%" or
-          // "_" as a name cannot enumerate the directory. `\` is the ESCAPE
-          // char — note the triple-escape for the backslash in the replace.
-          const escapeLike = (s: string): string =>
-            s.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
-          const likeClauses = terms
-            .map(() => `LOWER(bp.name) LIKE ? ESCAPE '\\'`)
-            .join(' OR ');
-          const likeBinds = terms.map((t) => `%${escapeLike(t.toLowerCase())}%`);
-
           const rows = this.db
             .prepare(
               `SELECT bp.board_id, bp.person_id, bp.name, bp.phone,
@@ -8314,10 +8410,10 @@ export class TaskflowEngine {
                       b.owner_person_id
                  FROM board_people bp
                  JOIN boards b ON b.id = bp.board_id
-                WHERE bp.board_id IN (${scope.placeholders}) AND (${likeClauses})
+                WHERE bp.board_id IN (${scope.placeholders})
                 ORDER BY b.group_folder, bp.name`,
             )
-            .all(...scope.boardIds, ...likeBinds) as Array<{
+            .all(...scope.boardIds) as Array<{
               board_id: string;
               person_id: string;
               name: string;
@@ -8328,7 +8424,23 @@ export class TaskflowEngine {
               owner_person_id: string | null;
             }>;
 
-          const matches = rows.map((r) => ({
+          const normalizedTerms = terms.map(normalizePersonLookupText).filter(Boolean);
+          const exactRows = rows.filter((row) => {
+            const normalizedName = normalizePersonLookupText(row.name);
+            const normalizedPersonId = normalizePersonLookupText(row.person_id);
+            return normalizedTerms.some((term) => normalizedName.includes(term) || normalizedPersonId.includes(term));
+          });
+          const matchedRows = exactRows.length > 0
+            ? exactRows
+            : rows.filter((row) => {
+              const normalizedName = normalizePersonLookupText(row.name);
+              const normalizedPersonId = normalizePersonLookupText(row.person_id);
+              const nameParts = [normalizedName, normalizedPersonId, ...normalizedName.split(' ').filter(Boolean)];
+              return normalizedTerms.some((term) =>
+                term.length >= 5 && nameParts.some((part) => levenshteinDistance(term, part) <= 1));
+            });
+
+          const matches = matchedRows.map((r) => ({
             person_id: r.person_id,
             name: r.name,
             // Masked: only the last 4 digits are visible, so the agent can

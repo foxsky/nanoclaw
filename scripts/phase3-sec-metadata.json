@@ -1,5 +1,49 @@
 [
   {
+    "turn_index": 0,
+    "context_mode": "fresh",
+    "source_turn_id": "d1b3f345-8672-4f42-8df8-931b3d36d192",
+    "source_jsonl": "messages.db#agent_turns/c5ca78a5-9792-4e6c-937f-49fc3d7dc356",
+    "state_drift": {
+      "description": "v1 recorded creating T99 before the synced validation snapshot; the synced DB already contains that exact task, so v2's duplicate-detection question is expected under current state.",
+      "evidence": "Current board-sec-taskflow has T99 'SEMEC/MEI/Prestação de Contas' assigned to thiago.",
+      "expected_with_historical_snapshot": "With the historical pre-create snapshot, v2 should create T99 for Thiago."
+    }
+  },
+  {
+    "turn_index": 10,
+    "context_mode": "fresh",
+    "source_turn_id": "fa96e05e-18e5-4b7f-8b2d-fe525f8f10ee",
+    "source_jsonl": "messages.db#agent_turns/80775fec-70d8-44d3-90ff-9bb136d0594e",
+    "state_drift": {
+      "description": "v1 recorded creating T98 before the synced validation snapshot; the synced DB already contains that exact task, so v2's duplicate-detection question is expected under current state.",
+      "evidence": "Current board-sec-taskflow has T98 'Driver/SDU SUL/Treinamento' assigned to rafael.",
+      "expected_with_historical_snapshot": "With the historical pre-create snapshot, v2 should create T98 for Rafael."
+    }
+  },
+  {
+    "turn_index": 14,
+    "context_mode": "fresh",
+    "source_turn_id": "a4a38541-7533-4c06-b52c-fe3325609b05",
+    "source_jsonl": "messages.db#agent_turns/e2a9d1e2-6464-4659-8757-eaf0882830b5",
+    "state_drift": {
+      "description": "v1 recorded creating T102 before the synced validation snapshot; the synced DB already contains that exact task, so v2's duplicate-detection question is expected under current state.",
+      "evidence": "Current board-sec-taskflow has T102 'Integração/QGIS/STM SDU Sul' assigned to thiago.",
+      "expected_with_historical_snapshot": "With the historical pre-create snapshot, v2 should create T102 for Thiago. The extra v1 T-260BC98B notification observed in the corpus is unrelated noise, not a target behavior to reproduce."
+    }
+  },
+  {
+    "turn_index": 18,
+    "context_mode": "fresh",
+    "source_turn_id": "60e6ae26-9ad8-48e9-94fd-c791d7e01682",
+    "source_jsonl": "messages.db#agent_turns/7ee46c06-b9ee-4284-a138-8894e772c811",
+    "state_drift": {
+      "description": "v1 recorded rescheduling M7 before the synced validation snapshot; the synced DB already has M7 scheduled for the requested 10h slot, so v2 reports current state instead of applying the historical mutation.",
+      "evidence": "Current M7 scheduled_at is 2026-05-14T13:00:00.000Z, which is 10h in America/Fortaleza.",
+      "expected_with_historical_snapshot": "With the historical pre-reschedule snapshot, v2 should update M7 to the requested 10h time."
+    }
+  },
+  {
     "turn_index": 1,
     "context_mode": "chain",
     "source_jsonl": "messages.db#agent_turns/83dcbd24-f6c5-4151-9bc0-89be31be0033",

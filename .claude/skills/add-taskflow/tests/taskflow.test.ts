@@ -2229,6 +2229,16 @@ describe('taskflow skill package', () => {
     expect(content).toContain("action: 'conclude'");
   });
 
+  it('CLAUDE.md.template asks for context on bare resolved/completed acknowledgements', () => {
+    const content = fs.readFileSync(
+      path.join(skillDir, 'templates', 'CLAUDE.md.template'),
+      'utf-8',
+    );
+    expect(content).toContain('"resolvido" / "concluído" / "feito" / "finalizado"');
+    expect(content).toContain('bare message with no task ID and no clear in-session task context');
+    expect(content).toContain('ask which task or subject was resolved');
+  });
+
   it('CLAUDE.md.template archival section uses archive table with archive_reason', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),

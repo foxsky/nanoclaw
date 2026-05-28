@@ -114,6 +114,7 @@ describe('api_task_edit_note MCP tool', () => {
     });
     const result = JSON.parse(resp.content[0].text);
     expect(result.success).toBe(true);
+    expect(result.formatted).toBe('✅ *T1* atualizada\n━━━━━━━━━━━━━━\n\n• Nota #1 editada: Edited');
   });
 
   it('rejects non-integer note_id', async () => {

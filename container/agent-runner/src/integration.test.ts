@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
 import { initTestSessionDb, closeSessionDb, closeTaskflowDb, getInboundDb, getOutboundDb } from './db/connection.js';
-import { getUndeliveredMessages } from './db/messages-out.js';
+import { getUndeliveredMessages, writeMessageOut } from './db/messages-out.js';
 import { getPendingMessages } from './db/messages-in.js';
 import { getContinuation, setContinuation } from './db/session-state.js';
 import { setupEngineDb } from './mcp-tools/taskflow-test-fixtures.js';
@@ -35,6 +35,163 @@ function insertMessage(id: string, content: object, opts?: { platformId?: string
 }
 
 describe('poll loop integration', () => {
+  it('processes open meeting minutes without querying the provider', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-test';
+    const taskflow = setupEngineDb('board-test', { withBoardAdmins: true });
+    const now = new Date().toISOString();
+    taskflow
+      .prepare(`INSERT INTO board_people (board_id, person_id, name, role) VALUES ('board-test', 'thiago', 'Thiago Carvalho', 'manager')`)
+      .run();
+    taskflow
+      .prepare(`INSERT INTO board_admins (board_id, person_id, admin_role) VALUES ('board-test', 'thiago', 'manager')`)
+      .run();
+    taskflow
+      .prepare(
+        `INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, notes, created_at, updated_at)
+         VALUES ('M20', 'board-test', 'meeting', 'Apresentação final estágio probatório', 'alice', 'done', 0, ?, ?, ?)`,
+      )
+      .run(JSON.stringify([
+        {
+          id: 1,
+          text: 'Sala de reunião 3° andar. Participantes: chefe de gabinete e secretário.',
+          by: 'Thiago',
+          phase: 'pre',
+          status: 'open',
+        },
+      ]), now, now);
+
+    insertMessage(
+      'm-process-minutes',
+      { sender: 'Thiago Carvalho', text: 'Processar ata m20' },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-1' },
+    );
+
+    const provider = new CountingProvider({}, () => '<message to="discord-test">should not run</message>');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+
+    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
+    controller.abort();
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    const text = JSON.parse(out[0].content).text;
+    expect(text).toContain('Há 1 item em aberto na ata da M20');
+    expect(text).toContain('*#1*');
+    expect(text).toContain('Sala de reunião 3° andar');
+    expect(text).toContain('O que fazer com esse item?');
+    expect(text).toContain('*tarefa*');
+    expect(provider.queryCalls).toBe(0);
+    expect(getPendingMessages()).toHaveLength(0);
+
+    await loopPromise.catch(() => {});
+  });
+
+  it('asks before placing someone into a sector role that is already occupied', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-thiago-taskflow';
+    const taskflow = setupEngineDb('board-thiago-taskflow');
+    try {
+      taskflow.exec(`ALTER TABLE boards ADD COLUMN parent_board_id TEXT`);
+    } catch {
+      // Column is present in prod and in some fixture paths.
+    }
+    try {
+      taskflow.exec(`ALTER TABLE board_people ADD COLUMN phone TEXT`);
+    } catch {
+      // Column is present in prod and in some fixture paths.
+    }
+    taskflow.exec(`
+      INSERT INTO boards (id, short_code, name, group_folder, group_jid, parent_board_id)
+      VALUES
+        ('board-sm-setd-secti-taskflow', 'SM', 'SM-SETD-SECTI', 'sm-setd-secti-taskflow', 'sm@g.us', 'board-thiago-taskflow'),
+        ('board-po-setd-secti-taskflow', 'PO', 'PO-SETD-SECTI', 'po-setd-secti-taskflow', 'po@g.us', 'board-thiago-taskflow');
+      INSERT INTO board_people (board_id, person_id, name, role, phone)
+      VALUES
+        ('board-thiago-taskflow', 'edilson', 'Edilson', 'Scrum Master', '5586999306408'),
+        ('board-thiago-taskflow', 'hudson', 'Hudson', 'PO', '5586999866094'),
+        ('board-sm-setd-secti-taskflow', 'guilherme', 'Guilherme', 'Scrum Master', NULL),
+        ('board-po-setd-secti-taskflow', 'hudson', 'Hudson', 'PO', '5586999866094');
+    `);
+
+    insertMessage(
+      'm-sector-placement',
+      {
+        sender: 'Thiago Carvalho',
+        text: 'Coloca o Edilson no setor SM-SETD-SECTI e o Hudson no setor PO-SETD-SECTI. O telefone do Edilson já está correto',
+      },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-1' },
+    );
+
+    const provider = new CountingProvider({}, () => '<message to="discord-test">should not run</message>');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+
+    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
+    controller.abort();
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    const text = JSON.parse(out[0].content).text;
+    expect(text).toContain('Antes de alterar os setores');
+    expect(text).toContain('Guilherme');
+    expect(text).toContain('Confirma adicionar Edilson também');
+    expect(provider.queryCalls).toBe(0);
+    const edilsonInSm = taskflow
+      .prepare(`SELECT 1 FROM board_people WHERE board_id='board-sm-setd-secti-taskflow' AND name='Edilson'`)
+      .get();
+    expect(edilsonInSm).toBeNull();
+    expect(getPendingMessages()).toHaveLength(0);
+
+    await loopPromise.catch(() => {});
+  });
+
+  it('adds project notes to the project title mentioned in the message', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-test';
+    const taskflow = setupEngineDb('board-test', { withBoardAdmins: true });
+    const now = new Date().toISOString();
+    taskflow.exec(`
+      INSERT INTO board_people (board_id, person_id, name, role)
+      VALUES ('board-test', 'thiago', 'Thiago Carvalho', 'manager');
+      INSERT INTO board_admins (board_id, person_id, admin_role)
+      VALUES ('board-test', 'thiago', 'manager');
+      INSERT INTO tasks (id, board_id, type, title, assignee, column, requires_close_approval, created_at, updated_at)
+      VALUES
+        ('P1', 'board-test', 'project', 'Migração SEI', 'thiago', 'next_action', 0, '${now}', '${now}'),
+        ('P8', 'board-test', 'project', 'Novos Sites', 'thiago', 'next_action', 0, '${now}', '${now}');
+    `);
+
+    insertMessage(
+      'm-project-note',
+      {
+        sender: 'Thiago Carvalho',
+        text: 'Na sexta, faremos a migração dos Novos Sites',
+        phase2RawPrompt: '<context timezone="America/Fortaleza" today="2026-05-13" />',
+      },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-1' },
+    );
+
+    const provider = new CountingProvider({}, () => '<message to="discord-test">should not run</message>');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+
+    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
+    controller.abort();
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    const text = JSON.parse(out[0].content).text;
+    expect(text).toContain('*P8* atualizado');
+    expect(text).toContain('Migração dos Novos Sites prevista para sexta-feira, 15/05/2026.');
+    expect(provider.queryCalls).toBe(0);
+    const p8 = taskflow.prepare(`SELECT notes FROM tasks WHERE board_id='board-test' AND id='P8'`).get() as { notes: string };
+    const p1 = taskflow.prepare(`SELECT notes FROM tasks WHERE board_id='board-test' AND id='P1'`).get() as { notes: string };
+    expect(p8.notes).toContain('Migração dos Novos Sites prevista para sexta-feira, 15/05/2026.');
+    expect(p1.notes).toBe('[]');
+    expect(getPendingMessages()).toHaveLength(0);
+
+    await loopPromise.catch(() => {});
+  });
+
   it('asks which task for due-date commands that omit a task id', async () => {
     process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-test';
     setupEngineDb('board-test');
@@ -214,6 +371,81 @@ describe('poll loop integration', () => {
     expect(m1.scheduled_at).toBe('2026-04-16T14:00:00.000Z');
     expect(provider.queryCalls).toBe(0);
     expect(getPendingMessages()).toHaveLength(0);
+
+    await loopPromise.catch(() => {});
+  });
+
+  it('creates a meeting and forwards details to an org-owned board on confirmation', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-test';
+    const taskflow = setupEngineDb('board-test', { withBoardAdmins: true });
+    taskflow.exec(`ALTER TABLE boards ADD COLUMN parent_board_id TEXT`);
+    taskflow.exec(`ALTER TABLE boards ADD COLUMN owner_person_id TEXT`);
+    taskflow.exec(`ALTER TABLE board_people ADD COLUMN phone TEXT`);
+    taskflow.exec(`
+      INSERT INTO boards (id, short_code, name, group_folder, group_jid, parent_board_id, owner_person_id)
+      VALUES ('board-root', 'ROOT', 'Root', 'root', 'root@g.us', NULL, NULL);
+      INSERT INTO boards (id, short_code, name, group_folder, group_jid, parent_board_id, owner_person_id)
+      VALUES ('board-laizys', 'LAIZYS', 'Laizys', 'laizys-taskflow', 'laizys@g.us', 'board-root', 'laizys');
+      UPDATE boards SET parent_board_id = 'board-root' WHERE id = 'board-test';
+      INSERT INTO board_people (board_id, person_id, name, role, phone)
+      VALUES ('board-test', 'thiago', 'Thiago Carvalho', 'manager', '5586999991111');
+      INSERT INTO board_admins (board_id, person_id, admin_role) VALUES ('board-test', 'thiago', 'manager');
+      INSERT INTO board_people (board_id, person_id, name, role, phone)
+      VALUES ('board-laizys', 'laizys', 'Laizys', 'owner', '5586999993003');
+    `);
+    writeMessageOut({
+      id: 'prior-meeting-prompt',
+      kind: 'chat',
+      platform_id: 'chan-1',
+      channel_type: 'discord',
+      thread_id: 'thread-1',
+      deliver_after: '2999-01-01 00:00:00',
+      content: JSON.stringify({
+        text: `Laisys está na organização (mesmo person_id, dois quadros). Posso adicioná-la como participante da reunião agora — só preciso criar a reunião primeiro.
+
+A reunião ainda não foi criada (a mensagem das 10:03 foi interrompida). Confirmo os dados:
+
+📅 *Reunião na FMS — Ponto Eletrônico*
+• *Quando:* quarta-feira, 06/05 às 09:00
+• *Participantes:* Laisys
+• *Local/contexto:* FMS
+
+Crio assim?`,
+      }),
+    });
+
+    insertMessage(
+      'm-confirm-org-meeting',
+      {
+        sender: 'Thiago Carvalho',
+        text: 'Sim',
+        phase2RawPrompt: '<message sender="Thiago Carvalho" time="2026-05-04T13:08:20.000Z">Sim</message>',
+      },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-1' },
+    );
+
+    const provider = new CountingProvider({}, () => '<message to="discord-test">should not run</message>');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+
+    await waitFor(() => getUndeliveredMessages().length >= 2, 2000);
+    controller.abort();
+
+    const out = getUndeliveredMessages();
+    const texts = out.map((row) => JSON.parse(row.content).text as string);
+    expect(texts.some((text) => text.includes('*M1*') && text.includes('Reunião FMS — Ponto Eletrônico'))).toBe(true);
+    expect(texts.some((text) => text.includes('enviei o convite para o quadro dela'))).toBe(true);
+    expect(out.some((row) => row.platform_id === 'laizys@g.us')).toBe(true);
+    expect(provider.queryCalls).toBe(0);
+    const meeting = taskflow.prepare(`SELECT id, title, scheduled_at, notes FROM tasks WHERE board_id='board-test' AND id='M1'`).get() as {
+      id: string;
+      title: string;
+      scheduled_at: string;
+      notes: string;
+    };
+    expect(meeting.title).toBe('Reunião FMS — Ponto Eletrônico');
+    expect(meeting.scheduled_at).toBe('2026-05-06T12:00:00.000Z');
+    expect(meeting.notes).toContain('Convite encaminhado para Laizys');
 
     await loopPromise.catch(() => {});
   });

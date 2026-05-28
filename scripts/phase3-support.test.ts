@@ -476,6 +476,58 @@ describe('Phase 3 semantic comparison', () => {
     expect(summary.mutation_types).toEqual(['schedule']);
   });
 
+  it('classifies reminder scheduled replies as mutation confirmations', () => {
+    const summary = summarizeSemanticBehavior(
+      [{ name: 'mcp__nanoclaw__schedule_task', input: { prompt: 'Enviar lembrete', schedule_type: 'once' } }],
+      [{ kind: 'chat', content: JSON.stringify({ text: '✅ Lembrete agendado para amanhã às 08:00.' }) }],
+    );
+
+    expect(summary.action).toBe('mutate');
+    expect(summary.mutation_types).toEqual(['schedule']);
+    expect(summary.outbound_intent).toBe('mutation_confirmation');
+  });
+
+  it('classifies terse agendado replies as mutation confirmations', () => {
+    const summary = summarizeSemanticBehavior(
+      [{ name: 'mcp__nanoclaw__schedule_task', input: { prompt: 'Enviar lembrete', schedule_type: 'once' } }],
+      [{ kind: 'chat', content: JSON.stringify({ text: 'Agendado! ✅ Amanhã às 08:30.' }) }],
+    );
+
+    expect(summary.action).toBe('mutate');
+    expect(summary.mutation_types).toEqual(['schedule']);
+    expect(summary.outbound_intent).toBe('mutation_confirmation');
+  });
+
+  it('classifies meeting reschedule replies as mutation confirmations', () => {
+    const summary = summarizeSemanticBehavior(
+      [{
+        name: 'mcp__nanoclaw__api_update_task',
+        input: { task_id: 'M22', updates: { scheduled_at: '2026-05-05T12:00:00.000Z' } },
+      }],
+      [{ kind: 'chat', content: JSON.stringify({ text: '✅ *M22* reagendada para terça-feira, 05/05/2026 às 09:00.' }) }],
+    );
+
+    expect(summary.action).toBe('mutate');
+    expect(summary.mutation_types).toEqual(['update']);
+    expect(summary.outbound_intent).toBe('mutation_confirmation');
+  });
+
+  it('does not count process-minutes triage prompts as mutations', () => {
+    const summary = summarizeSemanticBehavior(
+      [{ name: 'mcp__nanoclaw__api_admin', input: { action: 'process_minutes', task_id: 'M20' } }],
+      [{
+        kind: 'chat',
+        content: JSON.stringify({
+          text: 'A reunião M20 tem 1 item em aberto. O que deseja fazer? 1. Arquivar 2. Criar tarefa 3. Mover para inbox',
+        }),
+      }],
+    );
+
+    expect(summary.action).toBe('ask');
+    expect(summary.mutation_types).toEqual([]);
+    expect(summary.outbound_intent).toBe('asks_user');
+  });
+
   it('does not count failed completed-task reassignment prompts as mutations', () => {
     const summary = summarizeSemanticBehavior(
       [{ name: 'api_reassign', input: { task_id: 'T2', target_person: 'João Henrique' } }],
@@ -1230,6 +1282,75 @@ describe('Phase 3 state-drift classifications', () => {
     expect(comparison.classification.note).toContain('SEC-T41 column=done');
   });
 
+  it('lets explicit state-drift evidence explain no-outbound target turns', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 38,
+      text: 'Thiago',
+      v1: {
+        tools: [],
+        final_response: '✅ *Projeto criado e tarefa movida*\nP7 — Estágio Probatório\nP7.1 (T19) — Despachar SEI',
+      },
+      v2: {
+        tools: [],
+        outbound: [],
+        settle_reason: 'timeout',
+      },
+      phase3: {
+        db_snapshot_status: 'restored',
+        metadata: {
+          turn_index: 38,
+          context_mode: 'chain',
+          expected_behavior: {
+            action: 'mutate',
+            task_ids: ['P7', 'P7.1', 'T19'],
+            outbound_intent: 'mutation_confirmation',
+          },
+          state_drift: {
+            description: 'Synced DB already has P7 and T19 under it.',
+            evidence: 'P7 exists; T19 parent_task_id=P7.',
+          },
+        },
+      },
+    };
+
+    const comparison = compareSemanticTurn(turn);
+    expect(comparison.classification.kind).toBe('state_drift');
+    expect(comparison.classification.note).toContain('T19 parent_task_id=P7');
+  });
+
+  it('classifies annotated prior-dialogue gaps as missing context', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 21,
+      text: 'E Laizys?',
+      v1: {
+        tools: [],
+        final_response: 'Laizys está na organização. Crio a reunião assim?',
+      },
+      v2: {
+        tools: [
+          { name: 'api_query', input: { query: 'find_person_in_organization', search_text: 'Laizys' } },
+        ],
+        outbound: [{ kind: 'chat', content: '{"text":"Laizys aparece em dois quadros."}' }],
+      },
+      phase3: {
+        db_snapshot_status: 'restored',
+        metadata: {
+          turn_index: 21,
+          context_mode: 'chain',
+          prior_turn_depth: 1,
+          missing_context: {
+            description: 'The reply depends on the previous bot prompt about an uncreated meeting.',
+            evidence: 'Prior turn asked whether to create the meeting without Laisys.',
+          },
+        },
+      },
+    };
+
+    const comparison = compareSemanticTurn(turn);
+    expect(comparison.classification.kind).toBe('missing_context');
+    expect(comparison.classification.note).toContain('Prior turn asked');
+  });
+
   it('classifies current-state no-op replies as state drift when the synced DB already has the requested change', () => {
     const turn: Phase3TurnResult = {
       turn_index: 5,
@@ -1626,6 +1747,34 @@ describe('Phase 3 production extraction gaps', () => {
           turn_index: 29,
           context_mode: 'fresh',
           source_turn_id: '7e64b9d6-5d15-4fb0-be92-419f6bd5ee98',
+        },
+      },
+    };
+
+    expect(compareSemanticTurn(turn).classification.kind).toBe('no_v1_observable');
+  });
+
+  it('keeps extracted task ids from making no-v1-observable turns comparable', () => {
+    const turn: Phase3TurnResult = {
+      turn_index: 32,
+      text: 'T12 finalizado',
+      v1: {
+        tools: [],
+        final_response: null,
+      },
+      v2: {
+        tools: [{ name: 'mcp__nanoclaw__api_move', input: { task_id: 'T12', action: 'conclude' } }],
+        outbound: [{ kind: 'chat', content: '{"text":"Não consegui concluir T12: Task not found: T12"}' }],
+      },
+      phase3: {
+        metadata: {
+          turn_index: 32,
+          context_mode: 'fresh',
+          expected_behavior: {
+            action: 'no-op',
+            task_ids: ['T12'],
+            outbound_intent: 'none',
+          },
         },
       },
     };

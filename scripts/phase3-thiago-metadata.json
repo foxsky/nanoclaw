@@ -1,5 +1,14 @@
 [
   {
+    "source_turn_id": "8a73c197-5e94-42ac-923b-ad33dbb6c1a3",
+    "context_mode": "fresh",
+    "state_drift": {
+      "description": "The synced May 16 DB already has the corrected T56 deadline, while v1 recorded the intermediate April 22 clarification before the correction was applied.",
+      "evidence": "taskflow.db snapshot has board-sec-taskflow T56 due_date=2026-04-24.",
+      "expected_with_historical_snapshot": "Ask for the missing T56 deadline because the historical April 22 state had not applied the correction yet."
+    }
+  },
+  {
     "source_turn_id": "44df5fd1-1484-4d00-a5bb-4f3c05e6939f",
     "context_mode": "fresh",
     "v1_bug": {
@@ -12,12 +21,26 @@
   {
     "source_turn_id": "e61dc319-a23f-49d1-b3ec-d314ab26ef7c",
     "context_mode": "chain",
-    "prior_turn_depth": 3
+    "prior_turn_depth": 3,
+    "v1_bug": {
+      "description": "Part of the P6/T56 deadline correction sequence where v1 had applied the 24/04 deadline to P6 and then repaired P6. The message content is the next action for T56, so v2 should not be forced to reproduce v1's P6 repair side effect.",
+      "detected_by": "manual_review",
+      "corrected_at": "2026-04-22T11:21:59.377Z",
+      "expected_correction": "Keep the T56 context from the user's correction sequence and do not validate v2 against the P6 repair card as a normal migration target."
+    }
   },
   {
     "source_turn_id": "bc254b1f-38dd-4d33-8bac-01026c64732e",
     "context_mode": "chain",
-    "prior_turn_depth": 2
+    "prior_turn_depth": 2,
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": [],
+      "allow_extra_task_ids": true,
+      "mutation_types": ["schedule"],
+      "board_refs": [],
+      "outbound_intent": "mutation_confirmation"
+    }
   },
   {
     "source_turn_id": "bfbee4ae-6ab5-4504-a6c7-72ae4fd2c6d2",
@@ -27,7 +50,12 @@
   {
     "source_turn_id": "2474184e-59d1-4bc8-af38-4ca5356cc517",
     "context_mode": "chain",
-    "prior_turn_depth": 4
+    "prior_turn_depth": 4,
+    "state_drift": {
+      "description": "The synced May 16 DB already contains the Novos Sites project and the T21 reparenting that v1 created in this historical confirmation turn.",
+      "evidence": "taskflow.db snapshot has P8 'Novos Sites' and T21 parent_task_id=P8, due_date=2026-05-15.",
+      "expected_with_historical_snapshot": "Confirm creation of P8 and reparent T21 as P8.1."
+    }
   },
   {
     "source_turn_id": "6bc6b6a5-dca3-44bf-8c94-8580ec7fab54",
@@ -35,28 +63,172 @@
     "prior_turn_depth": 3
   },
   {
+    "source_turn_id": "4f909753-eb56-416e-9145-23621ae407e8",
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": ["M22"],
+      "allow_extra_task_ids": true,
+      "mutation_types": ["update"],
+      "board_refs": [],
+      "outbound_intent": "mutation_confirmation"
+    }
+  },
+  {
+    "source_turn_id": "9e621a79-5b52-44a4-82b5-95cd6ba77689",
+    "context_mode": "fresh",
+    "v1_bug": {
+      "description": "v1 targeted the correct Novos Sites project, but wrote the Friday date as 16/05/2026. From the 2026-05-13 message context, the next Friday was 2026-05-15.",
+      "detected_by": "manual_review",
+      "corrected_at": "2026-05-13T21:09:48.000Z",
+      "expected_correction": "Register the migration note on P8/Novos Sites using Friday 15/05/2026, not P1/Migração SEI and not v1's wrong 16/05 date."
+    }
+  },
+  {
+    "source_turn_id": "3c27a4da-b8dc-4165-b9d2-f932b32e5c83",
+    "context_mode": "fresh",
+    "v1_bug": {
+      "description": "Part of the P6/T56 deadline correction sequence. The user explicitly said P6 should remain on 30/04; v1 instead replied with a stale 24/04 clarification prompt from the earlier mistake.",
+      "detected_by": "manual_review",
+      "corrected_at": "2026-04-22T11:21:20.000Z",
+      "expected_correction": "Treat maintaining/restoring P6 at 2026-04-30 as the corrected behavior, not v1's stale clarification prompt."
+    }
+  },
+  {
+    "source_turn_id": "5fd3c077-8adb-453b-976c-d0a33c26e464",
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "read",
+      "task_ids": [],
+      "allow_extra_task_ids": true,
+      "board_refs": [],
+      "outbound_intent": "informational"
+    }
+  },
+  {
+    "source_turn_id": "3ca27ec7-7053-4a9a-bd2f-deb8b23a7d1d",
+    "context_mode": "chain",
+    "prior_turn_depth": 1,
+    "missing_context": {
+      "description": "The terse 'E Laizys?' turn depends on the immediately previous bot prompt about a meeting draft with an unrecognized participant.",
+      "evidence": "Production WhatsApp history has the prior bot message: 'Laisys não está cadastrada... posso criar a reunião sem ela agora...' followed by this target turn.",
+      "expected_with_context": "Resolve Laizys from the organization and continue the pending meeting-creation confirmation."
+    }
+  },
+  {
+    "source_turn_id": "dee7bd75-be84-4c6e-bc6d-bc934cfe9ed5",
+    "context_mode": "fresh",
+    "state_drift": {
+      "description": "The synced May 16 DB is after the Novos Sites project was created, while v1's historical turn was immediately before that creation and still described T21 as a simple task.",
+      "evidence": "taskflow.db snapshot has P8 'Novos Sites' and T21 parent_task_id=P8, plus later project state that did not exist at 2026-05-06T21:21Z.",
+      "expected_with_historical_snapshot": "List only P6 and P7 as active projects and ask whether to create a Novos Sites project for T21."
+    }
+  },
+  {
+    "source_turn_id": "bfa60c15-7d43-4d73-83c0-f02ee2cfe3c5",
+    "context_mode": "fresh",
+    "state_drift": {
+      "description": "The synced May 16 DB already includes the later meeting reschedule that resolved the conflict v1 was acknowledging in this historical turn.",
+      "evidence": "Production history shows the feedback at 2026-05-06T11:51Z, then M25 was rescheduled at 2026-05-06T11:54Z; the synced DB has M25 at 10:30 local while M26 remains 09:00 local.",
+      "expected_with_historical_snapshot": "Confirm the M25/M26 09:00 conflict, commit to checking future meetings, and ask which meeting to reschedule."
+    }
+  },
+  {
+    "source_turn_id": "f3dfc123-fbf2-4263-9e06-00162ded3c78",
+    "context_mode": "fresh",
+    "state_drift": {
+      "description": "The synced May 16 DB already has T76 and T77 waiting on Samuel da SEMEC with the requested reason.",
+      "evidence": "taskflow.db snapshot has T76 and T77 in column=waiting with waiting_for='Samuel da SEMEC entregar mapeamento dos principais chamados'.",
+      "expected_with_historical_snapshot": "Move T76 and T77 to waiting and emit the v1 waiting confirmation."
+    }
+  },
+  {
+    "source_turn_id": "f7ddda22-518a-4e20-afc8-25293c3bb6e9",
+    "context_mode": "fresh",
+    "state_drift": {
+      "description": "The synced May 16 DB already contains the task that v1 created in the historical turn.",
+      "evidence": "taskflow.db snapshot has T19 'Despachar SEI informando em produção e treinamento', later moved under P7.",
+      "expected_with_historical_snapshot": "Create T19 as a new task assigned to Thiago."
+    }
+  },
+  {
+    "source_turn_id": "d9b4c407-f746-47bb-876d-3e2b57f41551",
+    "context_mode": "fresh",
+    "state_drift": {
+      "description": "The synced May 16 DB already contains the STRANS/Gov.BR/Truetec note that v1 created in the historical turn.",
+      "evidence": "taskflow.db snapshot has note id 2 on board-sec-taskflow T56 with text 'Aguardando implementação de ambiente de homologação do Gov.BR por parte da Truetec.'",
+      "expected_with_historical_snapshot": "Register the note on T56 and emit the note confirmation."
+    }
+  },
+  {
     "source_turn_id": "f1bda84a-da7a-45c3-a64b-6e0ac412cc3b",
     "context_mode": "chain",
-    "prior_turn_depth": 1
+    "prior_turn_depth": 1,
+    "state_drift": {
+      "description": "The synced May 16 DB already contains the Estágio Probatório project and T19 membership that v1 was still asking about in this historical context.",
+      "evidence": "taskflow.db snapshot has P7 Estágio Probatório and T19 parent_task_id=P7, assignee=guilherme.",
+      "expected_with_historical_snapshot": "Report that no project exists yet and ask whether to create Estágio Probatório and move T19."
+    }
+  },
+  {
+    "source_turn_id": "ccda3ad0-0dac-4efc-862a-13c301e8ae1c",
+    "context_mode": "fresh",
+    "state_drift": {
+      "description": "The synced May 16 DB already contains the meeting that v1 created in the historical turn.",
+      "evidence": "taskflow.db snapshot has M21 'Reunião Prestação de Contas — SECTI' created on 2026-04-24T11:22:48Z.",
+      "expected_with_historical_snapshot": "Create M21 and ask for external participant phone numbers."
+    }
   },
   {
     "source_turn_id": "2b1d3098-0a6a-4d54-86e2-8647c505587b",
     "context_mode": "chain",
-    "prior_turn_depth": 1
+    "prior_turn_depth": 1,
+    "state_drift": {
+      "description": "The synced May 16 DB already contains the Estágio Probatório project context that the historical chain lacked at this point.",
+      "evidence": "taskflow.db snapshot has P7 Estágio Probatório and T19 parent_task_id=P7.",
+      "expected_with_historical_snapshot": "Ask for clarification because the historical visible context did not yet establish the project answer."
+    }
   },
   {
     "source_turn_id": "587eeea7-bc55-474d-b0aa-93bccfc7ae7f",
     "context_mode": "chain",
-    "prior_turn_depth": 2
+    "prior_turn_depth": 2,
+    "state_drift": {
+      "description": "The synced May 16 DB already contains the project that v1 was preparing to create in this confirmation chain.",
+      "evidence": "taskflow.db snapshot has P7 Estágio Probatório and T19 parent_task_id=P7.",
+      "expected_with_historical_snapshot": "Ask who should own the new Estágio Probatório project."
+    }
+  },
+  {
+    "source_turn_id": "65fc944a-183f-4b58-bf06-6dbe0e6a766a",
+    "context_mode": "fresh",
+    "expected_behavior": {
+      "action": "mutate",
+      "task_ids": ["M26"],
+      "allow_extra_task_ids": true,
+      "mutation_types": ["schedule"],
+      "board_refs": [],
+      "outbound_intent": "mutation_confirmation"
+    }
   },
   {
     "source_turn_id": "9f50866a-3ca3-46e4-b7a6-1561ed08eb56",
     "context_mode": "chain",
-    "prior_turn_depth": 3
+    "prior_turn_depth": 3,
+    "state_drift": {
+      "description": "The synced May 16 DB already contains the v1 historical mutation for the April 23 Estágio Probatório flow, so the target reply cannot recreate the project/move sequence against current state.",
+      "evidence": "taskflow.db snapshot has P7 Estágio Probatório and T19 parent_task_id=P7, assignee=guilherme, updated_at 2026-04-23T22:35Z.",
+      "expected_with_historical_snapshot": "Create project P7 Estágio Probatório assigned to Thiago and move T19 under it as P7.1."
+    }
   },
   {
     "source_turn_id": "b2276223-98eb-41fd-b62d-a1e1a418b488",
     "context_mode": "chain",
-    "prior_turn_depth": 1
+    "prior_turn_depth": 1,
+    "state_drift": {
+      "description": "The synced May 16 DB already has the Novos Sites launch task at the requested 15/05 deadline and completed, while v1 recorded the original May 6 deadline correction.",
+      "evidence": "taskflow.db snapshot has T21 due_date=2026-05-15, column=done, parent_task_id=P8.",
+      "expected_with_historical_snapshot": "Update T21 due_date to 2026-05-15 and emit the v1 deadline-corrected confirmation."
+    }
   }
 ]

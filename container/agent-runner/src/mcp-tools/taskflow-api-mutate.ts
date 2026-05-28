@@ -592,6 +592,25 @@ export function addNoteFormattedResult<
   return { ...result, formatted: card };
 }
 
+export function buildEditNoteCard(taskId: string, noteId: number, noteText: string): string | null {
+  if (typeof taskId !== 'string' || taskId.length === 0) return null;
+  if (!Number.isInteger(noteId) || noteId < 1) return null;
+  if (typeof noteText !== 'string' || noteText.length === 0) return null;
+  return [...buildAtualizadaHeader(taskId), `• Nota #${noteId} editada: ${noteText}`].join('\n');
+}
+
+export function addEditNoteFormattedResult<
+  T extends { success?: boolean; formatted?: unknown },
+>(
+  result: T,
+  args: { task_id: string; note_id: number; text: string },
+): T {
+  if (!result.success || result.formatted) return result;
+  const card = buildEditNoteCard(args.task_id, args.note_id, args.text);
+  if (!card) return result;
+  return { ...result, formatted: card };
+}
+
 // Wire the v1-faithful create card onto the api_admin(reparent_task)
 // completion: seci "add task X to project P11" is api_create_task →
 // api_admin(reparent_task), and v1's "✅ *id* adicionada … 📁 parent"

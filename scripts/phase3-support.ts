@@ -77,6 +77,12 @@ export interface Phase3StateDriftAnnotation {
   expected_with_historical_snapshot?: string;
 }
 
+export interface Phase3MissingContextAnnotation {
+  description: string;
+  evidence?: string;
+  expected_with_context?: string;
+}
+
 export interface Phase3TurnMetadata {
   turn_index?: number;
   context_mode: Phase3ContextMode;
@@ -94,6 +100,7 @@ export interface Phase3TurnMetadata {
   expected_behavior?: Phase3ExpectedBehavior;
   v1_bug?: Phase3V1BugAnnotation;
   state_drift?: Phase3StateDriftAnnotation;
+  missing_context?: Phase3MissingContextAnnotation;
   // The corpus turn's actual WhatsApp chat JID. Plumbed to phase2-driver
   // via NANOCLAW_PHASE_REPLAY_GROUP_JID so each turn's routing.platformId
   // matches the source conversation (rather than the hard-coded seci JID).
@@ -121,6 +128,7 @@ export interface Phase3CorpusTurn {
   expected_behavior?: Phase3ExpectedBehavior;
   v1_bug?: Phase3V1BugAnnotation;
   state_drift?: Phase3StateDriftAnnotation;
+  missing_context?: Phase3MissingContextAnnotation;
   parsed_messages?: Array<{ sender?: string; time?: string; text?: string }>;
   user_message?: string;
   source_chat_jid?: string;
@@ -370,6 +378,7 @@ export function inferPhase3Metadata(
     expected_behavior: turn.expected_behavior,
     v1_bug: turn.v1_bug,
     state_drift: turn.state_drift,
+    missing_context: turn.missing_context,
     source_chat_jid: turn.source_chat_jid,
   };
   if (!override) return inferred;
@@ -730,6 +739,14 @@ export function summarizeSemanticBehavior(
     (outboundIntent === 'asks_user' || outboundIntent === 'not_found_or_unclear') &&
     /\b(n[aã]o (?:foi )?encontr\w*|n[aã]o localizada|n[aã]o existe|n[aã]o pode ser reatribu[ií]d[ao]?|preciso que voc[eê] confirme|confirme o ID|me confirma)\b/i.test(text) &&
     !/\b(j[aá]|foi|foram)\b[\s\S]{0,80}\b(atualizad[ao]?|adicionad[ao]?|registrad[ao]?)\b/i.test(text);
+  const processMinutesAskIntent = hasMutation &&
+    tools.some((tool) => {
+      const name = normalizedToolName(tool.name);
+      const input = toolInputRecord(tool);
+      return /^(?:taskflow|api)_admin$/.test(name) && input.action === 'process_minutes';
+    }) &&
+    asks &&
+    !/\b(j[aá]|foi|foram|pronto|conclu[ií]d[ao]?)\b[\s\S]{0,80}\b(atualizad[ao]?|adicionad[ao]?|registrad[ao]?|criad[ao]?|processad[ao]?)\b/i.test(text);
   const duplicateAskIntent = hasMutation &&
     outboundIntent === 'asks_user' &&
     /\b(j[aá]\s+existe|parece\s+(?:ser|cobrir)\s+o\s+mesmo\s+assunto|criar\s+uma\s+tarefa\s+separada)\b/i.test(text);
@@ -737,7 +754,7 @@ export function summarizeSemanticBehavior(
     outboundIntent === 'informational' &&
     /(pertence ao quadro pai|apenas vinculad[ao]|precisa ser feita|faca a reatribuicao|faça a reatribuiç[aã]o|n[aã]o pode|already assigned|already configured|task .* is in "done"|j[aá]\s+est[aá])/i.test(text) &&
     !/\b(j[aá]|foi|foram)\b[\s\S]{0,80}\b(atualizad[ao]?|adicionad[ao]?|registrad[ao]?|reatribu[ií]d[ao]?)\b/i.test(text);
-  const effectiveHasMutation = hasMutation && !failedMutationIntent && !duplicateAskIntent && !blockedMutationIntent;
+  const effectiveHasMutation = hasMutation && !failedMutationIntent && !processMinutesAskIntent && !duplicateAskIntent && !blockedMutationIntent;
   const textTaskIds = extractTaskIdsFromText(text);
 
   // Action priority: substantive tool work beats a trailing "Deseja...?" CTA.
@@ -754,6 +771,7 @@ export function summarizeSemanticBehavior(
   else if (asks && outboundIntent === 'asks_user') action = 'ask';
   else action = 'no-op';
   if (failedMutationIntent && outboundIntent === 'asks_user') action = 'ask';
+  if (processMinutesAskIntent) action = 'ask';
   if (duplicateAskIntent) action = 'ask';
 
   const toolTaskIds = extractTaskIdsFromTools(tools);
@@ -805,6 +823,8 @@ export function classifyOutboundIntent(text: string): string {
   }
   if (/\b(n[aã]o (?:foi )?encontr\w*|n[aã]o localizada|n[aã]o existe)\b/i.test(text)) return 'not_found_or_unclear';
   if (/\b(encaminh|enviei|detalhes.*encaminhados)\b/i.test(text)) return 'forward_confirmation';
+  if (/\b(?:lembrete\s+)?agendad[ao]\b/i.test(text)) return 'mutation_confirmation';
+  if (/\b(o que deseja fazer|o que fazer com|me informe|qual(?:\s+\w+){0,4}\s+(?:quer|deseja)|deseja que eu)\b/i.test(text)) return 'asks_user';
   if (
     /\b(?:Em atraso|Vence hoje|Pr[oó]ximas A[cç][oõ]es|Inbox|Aguardando|Conclu[ií]das)\s*:/i.test(text) &&
     extractTaskIdsFromText(text).length >= 2
@@ -819,7 +839,7 @@ export function classifyOutboundIntent(text: string): string {
     return 'informational';
   }
   if (/\?|\b(deseja|qual|confirma|confirme|confirmar|como deseja|quer que|pode me informar|preciso saber|me informe)\b/i.test(text)) return 'asks_user';
-  if (/\b(conclu[ií]d|movid[ao]?|atualizad[ao]?|adicionad[ao]?|criad[ao]?|registrad[ao]?|reabert[ao]?|reabri|ativei|ativad[ao]?)\b/i.test(text)) return 'mutation_confirmation';
+  if (/\b(conclu[ií]d|movid[ao]?|atualizad[ao]?|adicionad[ao]?|criad[ao]?|registrad[ao]?|reagendad[ao]?|reabert[ao]?|reabri|ativei|ativad[ao]?)\b/i.test(text)) return 'mutation_confirmation';
   return 'informational';
 }
 
@@ -985,6 +1005,10 @@ function stateDriftAnnotation(turn: Phase3TurnResult): Phase3StateDriftAnnotatio
   return turn.phase3?.metadata?.state_drift;
 }
 
+function missingContextAnnotation(turn: Phase3TurnResult): Phase3MissingContextAnnotation | undefined {
+  return turn.phase3?.metadata?.missing_context;
+}
+
 function isNoOutboundTimeout(
   turn: Phase3TurnResult,
   expected: SemanticSummary,
@@ -1002,7 +1026,6 @@ function hasNoV1Observable(turn: Phase3TurnResult): boolean {
     !(
       (expected.action === undefined || expected.action === 'no-op') &&
       (expected.outbound_intent === undefined || expected.outbound_intent === 'none') &&
-      (expected.task_ids?.length ?? 0) === 0 &&
       (expected.mutation_types?.length ?? 0) === 0
     )
   ) {
@@ -1280,6 +1303,22 @@ function classifySemanticComparison(
       note: 'Turn requires context-chain replay but no source JSONL is available.',
     };
   }
+  const drift = stateDriftAnnotation(turn);
+  if (drift && !allDimensionsMatch(matches)) {
+    const suffix = drift.evidence ? ` Evidence: ${drift.evidence}` : '';
+    return {
+      kind: 'state_drift',
+      note: `Annotated DB state drift: ${drift.description}${suffix}`,
+    };
+  }
+  const context = missingContextAnnotation(turn);
+  if (context && !allDimensionsMatch(matches)) {
+    const suffix = context.evidence ? ` Evidence: ${context.evidence}` : '';
+    return {
+      kind: 'missing_context',
+      note: `Annotated missing context: ${context.description}${suffix}`,
+    };
+  }
   if (isNoOutboundTimeout(turn, expected, actual)) {
     return {
       kind: 'no_outbound_timeout',
@@ -1290,14 +1329,6 @@ function classifySemanticComparison(
     return {
       kind: 'v1_bug_flagged',
       note: 'Corpus turn annotated as a v1 bug (auditor self-correction or manual review). Manual verification required — v2 may correctly diverge from v1 here, or may reproduce the same mistake.',
-    };
-  }
-  const drift = stateDriftAnnotation(turn);
-  if (drift && !allDimensionsMatch(matches)) {
-    const suffix = drift.evidence ? ` Evidence: ${drift.evidence}` : '';
-    return {
-      kind: 'state_drift',
-      note: `Annotated DB state drift: ${drift.description}${suffix}`,
     };
   }
   for (const rule of CLASSIFICATION_RULES) {
