@@ -400,6 +400,20 @@ describe('TaskFlow deterministic confirmation guards', () => {
     });
   });
 
+  it('does not capture questions, task-id messages, or trigger-word-free text as project notes', () => {
+    const note = (text: string) =>
+      taskflowProjectNoteUpdateCommand(
+        [{ kind: 'chat', content: JSON.stringify({ sender: 'Carlos Giovanni', text }) }],
+        true,
+      );
+    // Questions stay with the provider even with a trigger word.
+    expect(note('Vamos fazer a migração na sexta?')).toBeNull();
+    // An explicit task id routes to the task-scoped handlers, not the project-note path.
+    expect(note('P8 faremos a migração na sexta')).toBeNull();
+    // No trigger word → not a note (keeps the gate from intercepting ordinary chat).
+    expect(note('adicionar um novo projeto Cidades Mais Inteligentes')).toBeNull();
+  });
+
   it('detects meeting participant plus reschedule batches using prompt context date', () => {
     const raw = '<context timezone="America/Fortaleza" today="2026-04-14" weekday="terça-feira" />';
     expect(taskflowMeetingBatchUpdateCommand([

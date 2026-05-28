@@ -4,7 +4,7 @@ import { initTestSessionDb, closeSessionDb, closeTaskflowDb, getInboundDb, getOu
 import { getUndeliveredMessages, writeMessageOut } from './db/messages-out.js';
 import { getPendingMessages } from './db/messages-in.js';
 import { getContinuation, setContinuation } from './db/session-state.js';
-import { setupEngineDb } from './mcp-tools/taskflow-test-fixtures.js';
+import { setupEngineDb, applyBoardConfigColumns } from './mcp-tools/taskflow-test-fixtures.js';
 import { MockProvider } from './providers/mock.js';
 import { runPollLoop } from './poll-loop.js';
 
@@ -141,6 +141,99 @@ describe('poll loop integration', () => {
       .get();
     expect(edilsonInSm).toBeNull();
     expect(getPendingMessages()).toHaveLength(0);
+
+    await loopPromise.catch(() => {});
+  });
+
+  it('places someone into an empty sector role without asking', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-thiago-taskflow';
+    const taskflow = setupEngineDb('board-thiago-taskflow');
+    applyBoardConfigColumns(taskflow);
+    try {
+      taskflow.exec(`ALTER TABLE boards ADD COLUMN parent_board_id TEXT`);
+    } catch {
+      // Column is present in prod and in some fixture paths.
+    }
+    // SM board has no Scrum Master, so the role is unoccupied and placement must proceed.
+    taskflow.exec(`
+      INSERT INTO boards (id, short_code, name, group_folder, group_jid, parent_board_id)
+      VALUES ('board-sm-setd-secti-taskflow', 'SM', 'SM-SETD-SECTI', 'sm-setd-secti-taskflow', 'sm@g.us', 'board-thiago-taskflow');
+      INSERT INTO board_people (board_id, person_id, name, role, phone)
+      VALUES ('board-thiago-taskflow', 'edilson', 'Edilson', 'Scrum Master', '5586999306408');
+    `);
+
+    insertMessage(
+      'm-sector-placement-empty',
+      { sender: 'Thiago Carvalho', text: 'Coloca o Edilson no setor SM-SETD-SECTI.' },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-1' },
+    );
+
+    const provider = new CountingProvider({}, () => '<message to="discord-test">should not run</message>');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+
+    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
+    controller.abort();
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    const text = JSON.parse(out[0].content).text;
+    expect(text).toContain('✅ Setores atualizados');
+    expect(text).toContain('Edilson');
+    expect(text).not.toContain('Antes de alterar os setores');
+    expect(provider.queryCalls).toBe(0);
+    const edilsonInSm = taskflow
+      .prepare(`SELECT 1 FROM board_people WHERE board_id='board-sm-setd-secti-taskflow' AND name='Edilson'`)
+      .get();
+    expect(edilsonInSm).not.toBeNull();
+
+    await loopPromise.catch(() => {});
+  });
+
+  it('places into an occupied role without asking when the message signals a shared role', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-thiago-taskflow';
+    const taskflow = setupEngineDb('board-thiago-taskflow');
+    applyBoardConfigColumns(taskflow);
+    try {
+      taskflow.exec(`ALTER TABLE boards ADD COLUMN parent_board_id TEXT`);
+    } catch {
+      // Column is present in prod and in some fixture paths.
+    }
+    // SM board already has Guilherme as Scrum Master; the shared-role signal must bypass the confirm gate.
+    taskflow.exec(`
+      INSERT INTO boards (id, short_code, name, group_folder, group_jid, parent_board_id)
+      VALUES ('board-sm-setd-secti-taskflow', 'SM', 'SM-SETD-SECTI', 'sm-setd-secti-taskflow', 'sm@g.us', 'board-thiago-taskflow');
+      INSERT INTO board_people (board_id, person_id, name, role, phone)
+      VALUES
+        ('board-thiago-taskflow', 'edilson', 'Edilson', 'Scrum Master', '5586999306408'),
+        ('board-sm-setd-secti-taskflow', 'guilherme', 'Guilherme', 'Scrum Master', NULL);
+    `);
+
+    // Shared-role word after a comma so it is not swallowed into the sector hint.
+    insertMessage(
+      'm-sector-placement-shared',
+      { sender: 'Thiago Carvalho', text: 'Coloca o Edilson no setor SM-SETD-SECTI, ambos continuam.' },
+      { platformId: 'chan-1', channelType: 'discord', threadId: 'thread-1' },
+    );
+
+    const provider = new CountingProvider({}, () => '<message to="discord-test">should not run</message>');
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+
+    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
+    controller.abort();
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    const text = JSON.parse(out[0].content).text;
+    expect(text).toContain('✅ Setores atualizados');
+    expect(text).not.toContain('Antes de alterar os setores');
+    expect(provider.queryCalls).toBe(0);
+    // Both occupy the role — the shared-role signal added Edilson without removing Guilherme.
+    const occupants = taskflow
+      .prepare(`SELECT name FROM board_people WHERE board_id='board-sm-setd-secti-taskflow' AND lower(role)='scrum master' ORDER BY name`)
+      .all() as Array<{ name: string }>;
+    expect(occupants.map((row) => row.name)).toEqual(['Edilson', 'Guilherme']);
 
     await loopPromise.catch(() => {});
   });
