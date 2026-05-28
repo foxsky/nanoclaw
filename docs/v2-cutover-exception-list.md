@@ -17,8 +17,8 @@ Track each item before flipping the service. Update as passes complete.
 | Board | Phase 3 corpus | Match-rate threshold | Last run | Pass? |
 |-------|----------------|----------------------|----------|-------|
 | seci-secti | 30 turns | ≥ 80% semantic match (24/30) | 2026-05-27: 23/30, 0 real divergences. Re-validated against `0dec5540` matchers via static gate sweep 2026-05-28: 0/30 SECI turns pass the new deterministic gates → no interception, 23/30 stands | ☐ |
-| thiago-taskflow (cross-board) | 40 turns | ≥ 75% semantic match | 2026-05-28: 14/40, **0 real divergences** (16 state-drift, 4 v1-bug-flagged, 4 no-v1-observable, 1 missing-context, 1 alloc-drift). Per-turn detail in `scripts/phase3-thiago-metadata.json`; see EX-011 | ☐ |
-| setd-secti | TBD turns | ≥ 75% (lower bar — compound-name routing complexity) | — (NOT YET RUN — distinct board from thiago-taskflow; corpus `whatsapp-curated-setd-secti-v1.json`) | ☐ |
+| **SETD Secti** (= `thiago-taskflow`; Thiago runs this board) | 40 turns (`thiago-taskflow.json`) | ≥ 75% semantic match | 2026-05-28 (Codex): 14/40, **0 real divergences** (16 state-drift, 4 v1-bug-flagged, 4 no-v1-observable, 1 missing-context, 1 alloc-drift) against full prod `taskflow.db` snapshot. Independent Claude re-run in progress; see EX-011. **NOTE: `thiago-taskflow` IS the SETD Secti board — not two boards.** | ☐ |
+| ~~setd-secti (11-turn `whatsapp-curated-setd-secti-v1.json`)~~ | — | — | **INVALID — discard.** Replayed against a reconstructed snapshot with no SETD board (board defaulted to seci, T18/tasks absent) → 3/11 + bogus "not found"/timeouts are wrong-board artifacts, NOT a v2 assessment. The real SETD board is the `thiago-taskflow` row above. | n/a |
 | sec-secti | TBD turns | ≥ 75% (cross-board complexity) | — | ☐ |
 | (Laizys/SEAF re-pass) | — | clean re-run after latest fixes | — | ☐ |
 
@@ -231,10 +231,11 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 - **Status:** proposed
 - **Signoff:**
 
-### EX-011: thiago-taskflow cross-board pass — 26 non-direct-match turns, 0 real divergences
+### EX-011: SETD Secti board (`thiago-taskflow`) pass — 26 non-direct-match turns, 0 real divergences
 
 - **Category:** state-drift (rollup; see sub-buckets)
-- **Source:** thiago-taskflow / 40-turn Phase 3 pass — comparator `phase3-compare-thiago-setd-20260528-projected-after-turn15-27`, per-turn classifications committed in `scripts/phase3-thiago-metadata.json` (`0dec5540`)
+- **Note:** `thiago-taskflow` IS the SETD Secti board (Thiago runs it) — this is the SETD parity pass, not a separate board.
+- **Source:** thiago-taskflow / 40-turn Phase 3 pass (the real SETD Secti corpus) — comparator `phase3-compare-thiago-setd-20260528-projected-after-turn15-27`, per-turn classifications committed in `scripts/phase3-thiago-metadata.json` (`0dec5540`)
 - **Surfaced:** 2026-05-28
 - **v1 behavior:** 40 historical production turns on Thiago's cross-board scope.
 - **v2 behavior:** 14/40 direct semantic matches; the remaining 26 classified as: 16 `state-drift` (synced May-16 DB already reflects later corrections, or different intermediate IDs), 4 `v1-bug-flagged` (see below — require signoff), 4 `no-v1-observable` (turns 28/29/31/32 — v1 produced no comparable observable), 1 `missing-context` (turn 21 "E Laizys?" depends on a prior bot prompt absent from the replay window), 1 `state-allocation-drift` (turn 9). **0 `real_divergence`.**
