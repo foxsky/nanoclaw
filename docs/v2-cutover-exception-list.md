@@ -240,11 +240,11 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 - **v2 behavior:** 14/40 direct semantic matches; the remaining 26 classified as: 16 `state-drift` (synced May-16 DB already reflects later corrections, or different intermediate IDs), 4 `v1-bug-flagged` (see below — require signoff), 4 `no-v1-observable` (turns 28/29/31/32 — v1 produced no comparable observable), 1 `missing-context` (turn 21 "E Laizys?" depends on a prior bot prompt absent from the replay window), 1 `state-allocation-drift` (turn 9). **0 `real_divergence`.**
 - **Operator-visible impact:** None for the state-drift / no-v1-observable / missing-context buckets — these are replay-snapshot artifacts, not behavior changes. The 4 v1-bug turns DO change behavior vs v1 and need signoff.
 - **Rationale for acceptance:** Same falsification standard as the SECI pass: each non-match turn carries a category with evidence in the metadata file, and none is a v2 regression. The 14/40 direct-match rate is low because the May-16 synced DB has drifted far from the historical per-turn states (most turns are reads against a moved-on board), not because v2 misbehaves.
-- **v1-bug turns requiring signoff (per `v1-bug-corrected` rule):**
-  - **Turn 2** — v1 updated `P6`; v2 updates `T56` (mutate→mutate). Verify which task the message actually targets.
-  - **Turn 7** — v1 mutated `P6`; v2 **asks** instead of mutating (mutate→ask). v2 declining to act on ambiguous input is likely the correction.
-  - **Turn 15** — v1 touched `[P8, T21]`; v2 updates `P8` only with corrected Friday date (the fix in `0dec5540`). v1's `T21` touch + wrong date `16/05` was the bug.
-  - **Turn 19** — v1 asked; v2 mutates `P6` (ask→mutate). Verify v2's mutation is the intended outcome, not an over-eager action.
+- **v1-bug turns requiring signoff (per `v1-bug-corrected` rule) — verified 2026-05-28 against the thiago corpus messages + v1 replies:**
+  - **Turn 2** (`"Próxima ação: Enviar mensagem para Alyne aprovar a visualização dos recursos de multa no SEI"`) — v1 applied it to `P6` and restored a deadline (unrelated); v2 targets `T56`, whose title *is* that next-action. **v2 appears correct (right task); v1 mis-targeted.** Operator confirm which task owns this next-action.
+  - **Turn 7** (`"Prazo até 24/04."` — bare date, no task id) — v1 guessed `P6` ("Prazo alterado de 30/04 para 24/04"); v2 **asks** which task instead of guessing. **Behavior change, not clearly a bug-fix:** v2 is safer (no guess) but loses v1's conversational context-resolution. Judgment call — note the interplay with turn 19 below.
+  - **Turn 15** (`"Na sexta, faremos a migração dos Novos Sites"`) — v1 wrote the note dated Friday `16/05/2026` (**wrong — 16/05 was a Saturday; the Friday was 15/05**); v2 writes `15/05/2026` (the `0dec5540` fix). **Clear v1-bug-corrected.** Confirm v1's secondary `T21` 15/05 reminder isn't silently dropped by v2.
+  - **Turn 19** (`"P6 é pra manter dia 30/04"`) — v1 replied `"Não entendi a referência"` (failed to parse an explicit task-id + date); v2 correctly updates `P6` to keep 30/04. **Clear v1-bug-corrected.**
 - **Status:** proposed (state-drift/no-v1/missing-context buckets); 4 v1-bug turns `blocked-on-fix` pending operator signoff
 - **Signoff:** ☐ turn 2 · ☐ turn 7 · ☐ turn 15 · ☐ turn 19
 
