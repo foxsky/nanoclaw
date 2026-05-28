@@ -16,8 +16,9 @@ Track each item before flipping the service. Update as passes complete.
 
 | Board | Phase 3 corpus | Match-rate threshold | Last run | Pass? |
 |-------|----------------|----------------------|----------|-------|
-| seci-secti | 30 turns | ≥ 80% semantic match (24/30) | 2026-05-27: 23/30, 0 real divergences | ☐ |
-| setd-secti | TBD turns | ≥ 75% (lower bar — compound-name routing complexity) | — | ☐ |
+| seci-secti | 30 turns | ≥ 80% semantic match (24/30) | 2026-05-27: 23/30, 0 real divergences. Re-validated against `0dec5540` matchers via static gate sweep 2026-05-28: 0/30 SECI turns pass the new deterministic gates → no interception, 23/30 stands | ☐ |
+| thiago-taskflow (cross-board) | 40 turns | ≥ 75% semantic match | 2026-05-28: 14/40, **0 real divergences** (16 state-drift, 4 v1-bug-flagged, 4 no-v1-observable, 1 missing-context, 1 alloc-drift). Per-turn detail in `scripts/phase3-thiago-metadata.json`; see EX-011 | ☐ |
+| setd-secti | TBD turns | ≥ 75% (lower bar — compound-name routing complexity) | — (NOT YET RUN — distinct board from thiago-taskflow; corpus `whatsapp-curated-setd-secti-v1.json`) | ☐ |
 | sec-secti | TBD turns | ≥ 75% (cross-board complexity) | — | ☐ |
 | (Laizys/SEAF re-pass) | — | clean re-run after latest fixes | — | ☐ |
 
@@ -230,18 +231,32 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 - **Status:** proposed
 - **Signoff:**
 
-### EX-011: <fill in>
+### EX-011: thiago-taskflow cross-board pass — 26 non-direct-match turns, 0 real divergences
 
-- **Category:**
-- **Source:**
-- **Surfaced:**
-- **v1 behavior:**
-- **v2 behavior:**
-- **Operator-visible impact:**
-- **Rationale for acceptance:**
-- **Mitigation / followup:**
-- **Status:** proposed
-- **Signoff:**
+- **Category:** state-drift (rollup; see sub-buckets)
+- **Source:** thiago-taskflow / 40-turn Phase 3 pass — comparator `phase3-compare-thiago-setd-20260528-projected-after-turn15-27`, per-turn classifications committed in `scripts/phase3-thiago-metadata.json` (`0dec5540`)
+- **Surfaced:** 2026-05-28
+- **v1 behavior:** 40 historical production turns on Thiago's cross-board scope.
+- **v2 behavior:** 14/40 direct semantic matches; the remaining 26 classified as: 16 `state-drift` (synced May-16 DB already reflects later corrections, or different intermediate IDs), 4 `v1-bug-flagged` (see below — require signoff), 4 `no-v1-observable` (turns 28/29/31/32 — v1 produced no comparable observable), 1 `missing-context` (turn 21 "E Laizys?" depends on a prior bot prompt absent from the replay window), 1 `state-allocation-drift` (turn 9). **0 `real_divergence`.**
+- **Operator-visible impact:** None for the state-drift / no-v1-observable / missing-context buckets — these are replay-snapshot artifacts, not behavior changes. The 4 v1-bug turns DO change behavior vs v1 and need signoff.
+- **Rationale for acceptance:** Same falsification standard as the SECI pass: each non-match turn carries a category with evidence in the metadata file, and none is a v2 regression. The 14/40 direct-match rate is low because the May-16 synced DB has drifted far from the historical per-turn states (most turns are reads against a moved-on board), not because v2 misbehaves.
+- **v1-bug turns requiring signoff (per `v1-bug-corrected` rule):**
+  - **Turn 2** — v1 updated `P6`; v2 updates `T56` (mutate→mutate). Verify which task the message actually targets.
+  - **Turn 7** — v1 mutated `P6`; v2 **asks** instead of mutating (mutate→ask). v2 declining to act on ambiguous input is likely the correction.
+  - **Turn 15** — v1 touched `[P8, T21]`; v2 updates `P8` only with corrected Friday date (the fix in `0dec5540`). v1's `T21` touch + wrong date `16/05` was the bug.
+  - **Turn 19** — v1 asked; v2 mutates `P6` (ask→mutate). Verify v2's mutation is the intended outcome, not an over-eager action.
+- **Status:** proposed (state-drift/no-v1/missing-context buckets); 4 v1-bug turns `blocked-on-fix` pending operator signoff
+- **Signoff:** ☐ turn 2 · ☐ turn 7 · ☐ turn 15 · ☐ turn 19
+
+---
+
+## v2 code-quality findings (not v1 divergences — post-cutover follow-ups)
+
+Surfaced by the 2026-05-28 independent review of `0dec5540` (three reviewers + Codex authorship). These are NOT v1→v2 behavioral divergences — they don't fit the five categories — but recording them here keeps the signoff artifact honest. None blocks cutover on the current Fortaleza-TZ host; each needs a tracked follow-up.
+
+- **FU-1 — org-meeting display TZ bug.** `formatTaskflowOrgMeetingDraftPrompt` / `handleTaskflowOrgMeetingCreateForwardConfirmation` format the user-facing meeting time from the un-normalized naive-local `scheduledAt` through hard-coded GMT-3 formatters. The engine stores the correct UTC value, but the displayed/forwarded hour is off by 3h under `TZ=UTC`. **Masked on this host (America/Fortaleza)** → no cutover impact for `.63`, but wrong for any other-zone deployment and unguarded by tests. Follow-up: format from the UTC-normalized value via the tz-aware helper; add a `TZ=UTC` display assertion.
+- **FU-2 — sector-placement hint swallows a trailing shared-role word.** `BOARD_PERSON_PLACEMENT_RE` (with the `i` flag) captures a trailing "também" into the board hint ("SM-SETD-SECTI também"), so a trailing shared-role signal breaks board resolution. The shared-role bypass works only when the signal is separated (e.g. after a comma — covered by the new test). Follow-up: anchor the hint capture to stop before shared-role tokens.
+- **FU-3 — `find_person_in_organization` dropped its SQL LIKE prefilter.** Now loads the full org `board_people` set per call and filters in JS. Fine at current (~31-board) scale; revisit if the org tree grows. Also removed a load-bearing LIKE-escaping comment (moot under literal `.includes`, but the row-count bound is gone).
 
 ---
 
