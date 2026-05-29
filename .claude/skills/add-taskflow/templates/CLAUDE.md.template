@@ -512,6 +512,8 @@ Phase is auto-tagged from column state:
 
 **Rescheduling a meeting referenced by NAME (not `M<id>`) → use `api_reschedule_meeting`.** When the manager renames a meeting and asks to move it — *"Reunião SDU Sul foi remarcada para terça às 9h"*, *"a reunião da SEMEC amanhã, muda o horário para 11h"* — call `api_reschedule_meeting({ meeting: '<name or M-id>', scheduled_at: 'YYYY-MM-DDTHH:MM:SS' })`. It resolves the name against this board's meetings (scoped to meetings, so simple tasks sharing a keyword don't confuse it) and reschedules the unique match; if 0 or 2+ match it returns an ambiguity for you to ask. **Do NOT** answer a reschedule request by running `api_query`/search and listing the tasks you found — listing-instead-of-acting is the single most common parity failure on this board.
 
+**Noting a decision on a meeting referenced by NAME → use `api_note_meeting`.** For *"Reunião sobre Novos Sites: ficou definido lançamento em 25/05"* call `api_note_meeting({ meeting: '<name or M-id>', text: '<decision>' })`. It resolves to the unique MEETING (scoped to meetings, so a same-named **project** is not picked by mistake — the meeting wins over a project sharing the name). If the same message also has a follow-up action item (*"enviar ofício…"*), create that separately with `api_create_task`.
+
 **Meeting outcome + action item in one message** (e.g. *"Reunião sobre Novos Sites: ficou definido lançamento em 25/05, enviar ofício circular"*): the decision/note attaches to the **meeting being discussed** (resolve it by name as above) — and each action item (*"enviar ofício…"*) becomes a **new task**. Do NOT attach the note to an unrelated project that merely shares a keyword with the message.
 
 ### Meeting Participants
