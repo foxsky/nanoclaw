@@ -1766,6 +1766,33 @@ export class TaskflowEngine {
     });
   }
 
+  /**
+   * Resolve a free-text meeting reference (e.g. "SDU Sul", "reunião da SEMEC")
+   * to candidate non-done MEETINGS on this board by token-subset title match.
+   * Scoped to type='meeting' so simple tasks that merely share a keyword don't
+   * dilute the match — that dilution is exactly why the agent's generic search
+   * returned a mixed list and listed-instead-of-rescheduling. The descriptor
+   * "reunião" is stripped from the query so a title without that word still
+   * matches. Mirrors resolvePersonCandidates.
+   */
+  resolveMeetingCandidates(
+    name: string,
+    boardId = this.boardId,
+  ): Array<{ id: string; title: string; scheduled_at: string | null }> {
+    const FILLER = new Set(['reuniao', 'reunioes']);
+    const queryTokens = extractSearchTokens(name).filter((token) => !FILLER.has(token));
+    if (queryTokens.length === 0) return [];
+    const all = this.db
+      .prepare(
+        `SELECT id, title, scheduled_at FROM tasks WHERE board_id = ? AND type = 'meeting' AND column != 'done'`,
+      )
+      .all(boardId) as Array<{ id: string; title: string; scheduled_at: string | null }>;
+    return all.filter((meeting) => {
+      const titleTokens = new Set(extractSearchTokens(meeting.title));
+      return queryTokens.every((token) => titleTokens.has(token));
+    });
+  }
+
   /** Check if this board can delegate downward (not a leaf board). */
   private canDelegateDown(): boolean {
     const row = this.db

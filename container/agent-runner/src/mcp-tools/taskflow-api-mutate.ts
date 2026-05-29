@@ -1884,9 +1884,91 @@ export const apiDependencyTool: McpToolDefinition = {
   },
 };
 
+export const apiRescheduleMeetingTool: McpToolDefinition = {
+  tool: {
+    name: 'api_reschedule_meeting',
+    description:
+      'Reschedule a meeting that the user referenced by NAME rather than by M-id. Use this — NOT api_query + api_update_task — for "reagendar/remarcar a reunião X para ...", "a reunião da SEMEC amanhã, muda o horário para 11h", "Reunião SDU Sul foi remarcada para terça às 9h". Pass `meeting` as the M-id OR a free-text name/description; the engine resolves it against THIS board\'s non-done meetings (scoped to meetings only, so simple tasks that share a keyword do not cause ambiguity) and reschedules the unique match. If zero or 2+ meetings match it returns an error/ambiguity so you can ask which one — do NOT fall back to listing tasks. `scheduled_at` is the new time as YYYY-MM-DDTHH:MM:SS in board-local time.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        meeting: { type: 'string' },
+        scheduled_at: { type: 'string' },
+        sender_name: { type: 'string' },
+        sender_external_id: { type: 'string' },
+        confirmed_task_id: { type: 'string' },
+      },
+      required: ['meeting', 'scheduled_at', 'sender_name'],
+    },
+  },
+  async handler(args) {
+    args = normalizeAgentIds(args);
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) return err('board_id: required string');
+    const meeting = requireString(args, 'meeting');
+    if (meeting === null) return err('meeting: required string');
+    const scheduledAt = requireString(args, 'scheduled_at');
+    if (scheduledAt === null) return err('scheduled_at: required string');
+    const senderName = requireString(args, 'sender_name');
+    if (senderName === null) return err('sender_name: required string');
+
+    let senderExternalId: string | undefined;
+    if (args.sender_external_id !== undefined) {
+      if (typeof args.sender_external_id !== 'string') return err('sender_external_id: expected string');
+      senderExternalId = args.sender_external_id;
+    }
+    let confirmedTaskId: string | undefined;
+    if (args.confirmed_task_id !== undefined) {
+      if (typeof args.confirmed_task_id !== 'string') return err('confirmed_task_id: expected string');
+      confirmedTaskId = args.confirmed_task_id;
+    }
+
+    try {
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+
+      // Accept an explicit M-id; otherwise resolve by name among this board's
+      // meetings and require a UNIQUE match. 0 or 2+ → return for the agent to
+      // ask, never silently mutate the wrong meeting.
+      let taskId: string;
+      if (/^M\d+(?:\.\d+)?$/i.test(meeting.trim())) {
+        taskId = meeting.trim().toUpperCase();
+      } else {
+        const candidates = engine.resolveMeetingCandidates(meeting);
+        if (candidates.length === 0) {
+          return jsonResponse({ success: false, error: `Não encontrei nenhuma reunião que corresponda a "${meeting}".` });
+        }
+        if (candidates.length > 1) {
+          const list = candidates.map((m) => `${m.id} — ${m.title}`).join('; ');
+          return jsonResponse({
+            success: false,
+            error: `Encontrei ${candidates.length} reuniões que correspondem a "${meeting}". Qual delas? ${list}`,
+            data: { candidates },
+          });
+        }
+        taskId = candidates[0].id;
+      }
+
+      const updateParams: UpdateParams = {
+        board_id: boardId,
+        task_id: taskId,
+        sender_name: senderName,
+        updates: { scheduled_at: scheduledAt } as UpdateParams['updates'],
+        sender_external_id: senderExternalId,
+        confirmed_task_id: confirmedTaskId,
+      };
+      const result = engine.update(updateParams);
+      const timeZone = getBoardTimezone(getTaskflowDb(), boardId);
+      return finalizeMutationResult(addUpdateFormattedResult(result, { scheduled_at: scheduledAt }, undefined, timeZone));
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error: msg });
+    }
+  },
+};
+
 registerTools([
   apiCreateSimpleTaskTool, apiCreateMeetingTaskTool, apiCreateTaskTool,
   apiMoveTool, apiAdminTool, apiReassignTool, apiUndoTool, apiReportTool,
   apiUpdateTaskTool, apiQueryTool, apiHierarchyTool, apiDependencyTool,
-  apiDeleteSimpleTaskTool,
+  apiDeleteSimpleTaskTool, apiRescheduleMeetingTool,
 ]);

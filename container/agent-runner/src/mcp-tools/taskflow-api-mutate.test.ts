@@ -2434,3 +2434,75 @@ describe('api_dependency MCP tool (A5.2.4)', () => {
     expect(JSON.stringify(response.content)).toMatch(/reminder_days/);
   });
 });
+
+describe('api_reschedule_meeting MCP tool', () => {
+  async function makeMeeting(title: string, scheduledAt?: string) {
+    const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
+    const r = await apiCreateMeetingTaskTool.handler({
+      board_id: BOARD, title, sender_name: 'alice',
+      ...(scheduledAt ? { scheduled_at: scheduledAt } : {}),
+    });
+    return JSON.parse(r.content[0].text).data.id as string;
+  }
+  async function makeSimple(title: string) {
+    const { apiCreateSimpleTaskTool } = await import('./taskflow-api-mutate.ts');
+    const r = await apiCreateSimpleTaskTool.handler({ board_id: BOARD, title, sender_name: 'alice' });
+    return JSON.parse(r.content[0].text).data.id as string;
+  }
+
+  it('resolves a uniquely-named meeting and reschedules it, ignoring same-keyword non-meeting tasks', async () => {
+    const { apiRescheduleMeetingTool } = await import('./taskflow-api-mutate.ts');
+    const mId = await makeMeeting('Reunião SDU Sul — Integração/QGIS/STM', '2026-04-29T12:00:00Z');
+    // Same keyword on a SIMPLE task — must NOT dilute the match (scope=meeting).
+    const sId = await makeSimple('Integração/QGIS/STM SDU Sul');
+    await makeSimple('Carta de Serviço SDU Leste');
+
+    const resp = await apiRescheduleMeetingTool.handler({
+      board_id: BOARD, meeting: 'SDU Sul', scheduled_at: '2026-05-05T12:00:00Z', sender_name: 'alice',
+    });
+    const out = JSON.parse(resp.content[0].text);
+    expect(out.success).toBe(true);
+    const meeting = db.prepare('SELECT scheduled_at FROM tasks WHERE id = ?').get(mId) as { scheduled_at: string };
+    expect(meeting.scheduled_at).toContain('2026-05-05');
+    // the same-keyword simple task was untouched
+    const simple = db.prepare('SELECT scheduled_at FROM tasks WHERE id = ?').get(sId) as { scheduled_at: string | null };
+    expect(simple.scheduled_at).toBeNull();
+  });
+
+  it('returns ambiguity (no mutation) when 2+ meetings match the name', async () => {
+    const { apiRescheduleMeetingTool } = await import('./taskflow-api-mutate.ts');
+    const a = await makeMeeting('Reunião SDU Norte', '2026-04-29T12:00:00Z');
+    const b = await makeMeeting('Reunião SDU Centro', '2026-04-30T12:00:00Z');
+    const resp = await apiRescheduleMeetingTool.handler({
+      board_id: BOARD, meeting: 'SDU', scheduled_at: '2026-05-05T12:00:00Z', sender_name: 'alice',
+    });
+    const out = JSON.parse(resp.content[0].text);
+    expect(out.success).toBe(false);
+    expect(out.error).toMatch(/Qual delas|2 reuni/i);
+    // neither meeting moved
+    expect((db.prepare('SELECT scheduled_at FROM tasks WHERE id = ?').get(a) as { scheduled_at: string }).scheduled_at).toContain('2026-04-29');
+    expect((db.prepare('SELECT scheduled_at FROM tasks WHERE id = ?').get(b) as { scheduled_at: string }).scheduled_at).toContain('2026-04-30');
+  });
+
+  it('returns not-found when no meeting matches', async () => {
+    const { apiRescheduleMeetingTool } = await import('./taskflow-api-mutate.ts');
+    await makeMeeting('Reunião SDU Sul', '2026-04-29T12:00:00Z');
+    const resp = await apiRescheduleMeetingTool.handler({
+      board_id: BOARD, meeting: 'Inexistente XYZ', scheduled_at: '2026-05-05T12:00:00Z', sender_name: 'alice',
+    });
+    const out = JSON.parse(resp.content[0].text);
+    expect(out.success).toBe(false);
+    expect(out.error).toMatch(/não encontrei|nenhuma reuni/i);
+  });
+
+  it('accepts an explicit M-id and reschedules it directly', async () => {
+    const { apiRescheduleMeetingTool } = await import('./taskflow-api-mutate.ts');
+    const mId = await makeMeeting('Reunião Qualquer', '2026-04-29T12:00:00Z');
+    const resp = await apiRescheduleMeetingTool.handler({
+      board_id: BOARD, meeting: mId, scheduled_at: '2026-05-06T09:00:00Z', sender_name: 'alice',
+    });
+    const out = JSON.parse(resp.content[0].text);
+    expect(out.success).toBe(true);
+    expect((db.prepare('SELECT scheduled_at FROM tasks WHERE id = ?').get(mId) as { scheduled_at: string }).scheduled_at).toContain('2026-05-06');
+  });
+});
