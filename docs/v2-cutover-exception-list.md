@@ -255,7 +255,13 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 > - **Turn 14** ("Reunião SDU Sul remarcada terça 9h"): v1 rescheduled M22; v2 listed 3 tasks — no reschedule.
 > - **Turn 26** ("Mande mensagem aos participantes 30min antes"): v1 scheduled the reminder; v2 asked which meeting.
 >
-> Codex's run matched all four. Same code → different outcome ⇒ the agent's natural-language-mutation behavior on meeting/reschedule turns is **sampling-dependent**. "0 divergences" is one favorable sample, not a stable property. **SETD parity does not meet the 0-real-divergence bar.** Next steps before it can pass: (1) run N replays to measure the divergence rate, (2) address the under-mutation pattern (likely deterministic intercepts for reschedule/note phrasings, or a prompt fix). Artifacts: `/tmp/phase3-v2-results-thiago-INDEP-20260528.json`, `/tmp/phase3-compare-thiago-INDEP-20260528.txt`.
+> Codex's run matched all four. **Flip-rate measured across 3 independent runs (2026-05-28):**
+> - **Turn 13: 0/3 match** — stable divergence (v2 notes wrong task P8 instead of M26+T21).
+> - **Turn 14: 0/3 match** — stable divergence (v2 *finds* M22 in its list but reports instead of rescheduling — a report-vs-mutate behavior choice, not a lookup failure).
+> - **Turn 26: 0/3 match** — stable, but **defensible** (v2 asks which of 2 candidate meetings; v1 picked M26).
+> - **Turn 3: 1/3 match** — genuinely flaky (true non-determinism).
+>
+> Conclusion: turns 13/14 are **systematic** real divergences, not sampling noise — v2 reliably chooses to report/list a name-referenced meeting rather than mutate it. Codex's "0" was an outlier sample or lenient classification. **SETD does not meet the 0-real-divergence bar.** A clean deterministic fix is NOT available (the turns reference meetings by free-text name, not `M<id>`; a regex+fuzzy-title intercept would be the same turn-shaped NLU anti-pattern the `0dec5540` review flagged). The realistic lever is **prompt-strengthening** (bias toward performing an identifiable reschedule/note vs listing) — a design trade-off vs over-mutating genuinely ambiguous turns like 26. **Decision pending operator.** Artifacts: `/tmp/phase3-v2-results-thiago-INDEP-20260528.json`, `/tmp/phase3-thiago-flaky-{A,B}-20260528.json`.
 
 ---
 
