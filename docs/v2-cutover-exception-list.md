@@ -24,6 +24,10 @@ Track each item before flipping the service. Update as passes complete.
 
 Thresholds are set *before* the run, not negotiated *after*. If a run misses threshold, treat it as a blocker — land fixes, re-run, do not slip the threshold to make the run pass.
 
+> **⚠ Methodology caveat (Codex gpt-5.5/high review, 2026-05-28) — applies to EVERY number in this table.** Two validity problems were found in the parity-measurement itself:
+> 1. **The comparator (`scripts/phase3-compare.ts`) does not enforce exact parity.** It marked a turn `match` with `task_ids: [M20] -> [M13,M18,M20,P6,T76,T99] [ok]` (6-task actual vs 1-task expected) and accepted a turn where v1's intermediate value was wrong. So both "pass" and "divergence" counts are softer than they read. **Tighten the comparator (exact task-set + value parity for mutations) before any "0 real divergences" is used as a cutover gate.**
+> 2. **Single-run numbers aren't stable** (SETD: independent re-run of identical code flipped 4 turns vs a projected baseline). Treat every single-run row as provisional; **re-run ≥2–3× and report the range, not one number.** This applies to SECI's 23/30 (one run) too — reduced confidence, needs reruns; NOT disproven.
+
 ### Operational readiness
 
 | Item | Pass criteria | Done? |
@@ -261,7 +265,12 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 > - **Turn 26: 0/3 match** — stable, but **defensible** (v2 asks which of 2 candidate meetings; v1 picked M26).
 > - **Turn 3: 1/3 match** — genuinely flaky (true non-determinism).
 >
-> Conclusion: turns 13/14 are **systematic** real divergences, not sampling noise — v2 reliably chooses to report/list a name-referenced meeting rather than mutate it. Codex's "0" was an outlier sample or lenient classification. **SETD does not meet the 0-real-divergence bar.** A clean deterministic fix is NOT available (the turns reference meetings by free-text name, not `M<id>`; a regex+fuzzy-title intercept would be the same turn-shaped NLU anti-pattern the `0dec5540` review flagged). The realistic lever is **prompt-strengthening** (bias toward performing an identifiable reschedule/note vs listing) — a design trade-off vs over-mutating genuinely ambiguous turns like 26. **Decision pending operator.** Artifacts: `/tmp/phase3-v2-results-thiago-INDEP-20260528.json`, `/tmp/phase3-thiago-flaky-{A,B}-20260528.json`.
+> Conclusion (revised after Codex gpt-5.5/high review, 2026-05-28): turns 13/14 show **repeated** report-instead-of-mutate divergence across all 3 of my runs — call it **observed instability, not "proven systematic"** (N=3 is small). The board scope was correct (INDEP turn 0 resolved M20 minutes → it ran on `board-thiago-taskflow` via the corpus per-turn `taskflow_board_id`, not the seci default), so these are **real-board** divergences, not wrong-board artifacts. **Three caveats Codex raised that I accept:**
+> 1. **Codex's "0" was a PROJECTED baseline** (`…projected-after-turn15-27`), not a clean independent replay — so "Codex 0 vs Claude 4" is partly apples-to-oranges.
+> 2. **The comparator is coarse** (see Methodology caveat in Cutover Gate Status). It marked the projected turn 3 `match` with `task_ids: [M20] -> [M13,M18,M20,P6,T76,T99] [ok]` — accepting a 6-task actual against a 1-task expected. Both my divergence counts and the projected "0" rest on a comparator that does NOT enforce exact task-set parity.
+> 3. **Fix options (not "only one"):** prompt-strengthening in the add-taskflow template **OR** a narrow engine helper that resolves a *uniquely* visible meeting by title tokens + explicit weekday/time then calls the normal update. Both carry turn-shaped-NLU / over-mutation risk; choosing prompt-only is a **conscious risk acceptance**, not a lack of alternatives.
+>
+> **SETD does not meet the 0-real-divergence bar**, but the precise count is unreliable until the comparator is tightened. **Decision pending operator.** Artifacts: `/tmp/phase3-v2-results-thiago-INDEP-20260528.json`, `/tmp/phase3-thiago-flaky-{A,B}-20260528.json`.
 
 ---
 
