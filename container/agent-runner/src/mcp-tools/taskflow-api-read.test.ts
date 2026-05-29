@@ -43,6 +43,7 @@ function seedReadFixtures(d: Database): void {
       assignee TEXT, priority TEXT, due_date TEXT, labels TEXT,
       description TEXT, notes TEXT, parent_task_id TEXT, scheduled_at TEXT,
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      child_exec_enabled INTEGER DEFAULT 0,
       child_exec_board_id TEXT, child_exec_person_id TEXT,
       child_exec_rollup_status TEXT
     );
@@ -184,6 +185,21 @@ describe('api_filter_board_tasks MCP tool', () => {
     expect(await ids('due_this_week')).toEqual(['t5', 't6']);
     expect(await ids('high_priority')).toEqual(['t7']);
     expect(await ids('by_label', { label: 'backend' })).toEqual(['t6']);
+  });
+
+  it('includes tasks delegated INTO the board (visible scope, not just board-local)', async () => {
+    // A task on a parent board, delegated to board-b1, must appear in board-b1's
+    // filtered views — matching the main board view's visibleTaskScope.
+    db.exec(`
+      INSERT INTO boards VALUES ('board-parent-d', 'PD', 'Parent Board', '2024-01-01T00:00:00Z');
+      INSERT INTO tasks (id, board_id, title, "column", type, due_date, child_exec_enabled, child_exec_board_id, created_at, updated_at)
+        VALUES ('dz1','board-parent-d','Delegated overdue','todo','simple','2020-01-01',1,'board-b1','2024-01-01T00:00:00Z','2024-01-01T00:00:00Z');
+    `);
+    const { apiFilterBoardTasksTool } = await import('./taskflow-api-read.ts');
+    const result = await apiFilterBoardTasksTool.handler({ board_id: 'board-b1', filter: 'overdue' });
+    const ids = rowsFromResult(result).map((x) => x.id);
+    expect(ids).toContain('dz1'); // delegated-in overdue task surfaces in the filter
+    expect(ids).toContain('t2');  // board-local overdue task still present
   });
 });
 

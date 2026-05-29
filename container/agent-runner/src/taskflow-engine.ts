@@ -2499,22 +2499,25 @@ export class TaskflowEngine {
     };
   }
 
-  private apiBoardLocalTasks(includeParentTitle: boolean): Record<string, unknown>[] {
+  private apiBoardVisibleTasks(includeParentTitle: boolean): Record<string, unknown>[] {
     const parentTitleSelect = includeParentTitle
       ? `, pt.title AS parent_task_title`
       : '';
     const parentJoin = includeParentTitle
       ? `LEFT JOIN tasks pt ON pt.board_id = t.board_id AND pt.id = t.parent_task_id`
       : '';
+    // Visible scope (visibleTaskScope): the board's own tasks PLUS tasks delegated
+    // to it. Matches the main board view so filtered views don't drop delegated-in
+    // tasks (board_code still resolves to each task's owning board for display ids).
     return this.db
       .prepare(
         `SELECT t.*, b.short_code AS board_code${parentTitleSelect}
          FROM tasks t
          JOIN boards b ON b.id = t.board_id
          ${parentJoin}
-         WHERE t.board_id = ?`,
+         WHERE ${this.visibleTaskScope('t')}`,
       )
-      .all(this.boardId) as Record<string, unknown>[];
+      .all(...this.visibleTaskParams()) as Record<string, unknown>[];
   }
 
   apiBoardActivity(params: { mode?: 'changes_today' | 'changes_since'; since?: string }): TaskflowResult {
@@ -2548,7 +2551,7 @@ export class TaskflowEngine {
       return { success: false, error: 'label is required for by_label filter' };
     }
 
-    const tasks = this.apiBoardLocalTasks(false).map((row) => this.serializeApiTask(row));
+    const tasks = this.apiBoardVisibleTasks(false).map((row) => this.serializeApiTask(row));
     const todayStr = localDateString(new Date());
     const weekEnd = new Date();
     weekEnd.setDate(weekEnd.getDate() + 6);
