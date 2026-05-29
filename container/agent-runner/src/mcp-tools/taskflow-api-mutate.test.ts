@@ -2506,6 +2506,21 @@ describe('api_reschedule_meeting MCP tool', () => {
     expect((db.prepare('SELECT scheduled_at FROM tasks WHERE id = ?').get(mId) as { scheduled_at: string }).scheduled_at).toContain('2026-05-06');
   });
 
+  it('rejects an M-id that is not a meeting (type guard on the explicit-id path)', async () => {
+    const { apiRescheduleMeetingTool } = await import('./taskflow-api-mutate.ts');
+    // A non-meeting task whose id happens to be M-shaped — the guard must reject it.
+    db.exec(`INSERT INTO tasks (id, board_id, type, title, column, requires_close_approval, created_at, updated_at)
+             VALUES ('M99', '${BOARD}', 'simple', 'Not a meeting', 'next_action', 0, '2026-01-01', '2026-01-01')`);
+    const resp = await apiRescheduleMeetingTool.handler({
+      board_id: BOARD, meeting: 'M99', scheduled_at: '2026-05-05T09:00:00Z', sender_name: 'alice',
+    });
+    const out = JSON.parse(resp.content[0].text);
+    expect(out.success).toBe(false);
+    expect(out.error).toMatch(/não é uma reunião/i);
+    // unchanged: still type simple, no scheduled_at applied
+    expect((db.prepare('SELECT scheduled_at FROM tasks WHERE id = ?').get('M99') as { scheduled_at: string | null }).scheduled_at).toBeNull();
+  });
+
   it('api_note_meeting notes the MEETING by name, not a same-named project', async () => {
     const { apiNoteMeetingTool, apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
     // A project and a meeting sharing "Novos Sites" — the note must go to the meeting (M-id).

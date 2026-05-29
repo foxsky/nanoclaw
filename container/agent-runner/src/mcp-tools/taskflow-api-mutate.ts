@@ -1932,6 +1932,14 @@ export const apiRescheduleMeetingTool: McpToolDefinition = {
       let taskId: string;
       if (/^M\d+(?:\.\d+)?$/i.test(meeting.trim())) {
         taskId = meeting.trim().toUpperCase();
+        // Explicit M-id may target a done meeting, but it MUST be a meeting —
+        // don't let an M-shaped id bypass the type guard the resolver enforces.
+        const row = getTaskflowDb()
+          .prepare(`SELECT type FROM tasks WHERE board_id = ? AND id = ?`)
+          .get(boardId, taskId) as { type?: string } | undefined;
+        if (row?.type !== 'meeting') {
+          return jsonResponse({ success: false, error: `${taskId} não é uma reunião neste quadro.` });
+        }
       } else {
         const candidates = engine.resolveMeetingCandidates(meeting);
         if (candidates.length === 0) {
@@ -2011,6 +2019,14 @@ export const apiNoteMeetingTool: McpToolDefinition = {
       let taskId: string;
       if (/^M\d+(?:\.\d+)?$/i.test(meeting.trim())) {
         taskId = meeting.trim().toUpperCase();
+        // Explicit M-id may target a done meeting, but it MUST be a meeting —
+        // don't let an M-shaped id bypass the type guard the resolver enforces.
+        const row = getTaskflowDb()
+          .prepare(`SELECT type FROM tasks WHERE board_id = ? AND id = ?`)
+          .get(boardId, taskId) as { type?: string } | undefined;
+        if (row?.type !== 'meeting') {
+          return jsonResponse({ success: false, error: `${taskId} não é uma reunião neste quadro.` });
+        }
       } else {
         const candidates = engine.resolveMeetingCandidates(meeting);
         if (candidates.length === 0) {
