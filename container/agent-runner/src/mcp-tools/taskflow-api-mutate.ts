@@ -1966,9 +1966,87 @@ export const apiRescheduleMeetingTool: McpToolDefinition = {
   },
 };
 
+export const apiNoteMeetingTool: McpToolDefinition = {
+  tool: {
+    name: 'api_note_meeting',
+    description:
+      'Add a note/decision to a MEETING the user referenced by NAME (not M-id). Use for "Reunião sobre X: ficou definido ...", "anota na reunião Y que ...". Resolves the name against THIS board\'s meetings (scoped to meetings, so a same-named PROJECT is NOT picked by mistake — a meeting "Projeto Novos Sites — Reunião Interna" wins over a project "Novos Sites") and adds the note to the unique match; 0/2+ → ask. Pass `meeting` (name or M-id) and `text` (the note). Do NOT attach a meeting decision to a project that merely shares the name. If the same message also contains a follow-up action item ("enviar ofício…"), create that as a separate task with api_create_task.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        meeting: { type: 'string' },
+        text: { type: 'string' },
+        sender_name: { type: 'string' },
+        sender_external_id: { type: 'string' },
+        confirmed_task_id: { type: 'string' },
+      },
+      required: ['meeting', 'text', 'sender_name'],
+    },
+  },
+  async handler(args) {
+    args = normalizeAgentIds(args);
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) return err('board_id: required string');
+    const meeting = requireString(args, 'meeting');
+    if (meeting === null) return err('meeting: required string');
+    const text = requireString(args, 'text');
+    if (text === null) return err('text: required string');
+    const senderName = requireString(args, 'sender_name');
+    if (senderName === null) return err('sender_name: required string');
+
+    let senderExternalId: string | undefined;
+    if (args.sender_external_id !== undefined) {
+      if (typeof args.sender_external_id !== 'string') return err('sender_external_id: expected string');
+      senderExternalId = args.sender_external_id;
+    }
+    let confirmedTaskId: string | undefined;
+    if (args.confirmed_task_id !== undefined) {
+      if (typeof args.confirmed_task_id !== 'string') return err('confirmed_task_id: expected string');
+      confirmedTaskId = args.confirmed_task_id;
+    }
+
+    try {
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+
+      let taskId: string;
+      if (/^M\d+(?:\.\d+)?$/i.test(meeting.trim())) {
+        taskId = meeting.trim().toUpperCase();
+      } else {
+        const candidates = engine.resolveMeetingCandidates(meeting);
+        if (candidates.length === 0) {
+          return jsonResponse({ success: false, error: `Não encontrei nenhuma reunião que corresponda a "${meeting}".` });
+        }
+        if (candidates.length > 1) {
+          const list = candidates.map((m) => `${m.id} — ${m.title}`).join('; ');
+          return jsonResponse({
+            success: false,
+            error: `Encontrei ${candidates.length} reuniões que correspondem a "${meeting}". Qual delas? ${list}`,
+            data: { candidates },
+          });
+        }
+        taskId = candidates[0].id;
+      }
+
+      const updateParams: UpdateParams = {
+        board_id: boardId,
+        task_id: taskId,
+        sender_name: senderName,
+        updates: { add_note: text } as UpdateParams['updates'],
+        sender_external_id: senderExternalId,
+        confirmed_task_id: confirmedTaskId,
+      };
+      const result = engine.update(updateParams);
+      return finalizeMutationResult(addUpdateFormattedResult(result, { add_note: text }));
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error: msg });
+    }
+  },
+};
+
 registerTools([
   apiCreateSimpleTaskTool, apiCreateMeetingTaskTool, apiCreateTaskTool,
   apiMoveTool, apiAdminTool, apiReassignTool, apiUndoTool, apiReportTool,
   apiUpdateTaskTool, apiQueryTool, apiHierarchyTool, apiDependencyTool,
-  apiDeleteSimpleTaskTool, apiRescheduleMeetingTool,
+  apiDeleteSimpleTaskTool, apiRescheduleMeetingTool, apiNoteMeetingTool,
 ]);

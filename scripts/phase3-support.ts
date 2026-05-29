@@ -204,6 +204,7 @@ const DEFAULT_CHAIN_DEPTHS: Record<number, number> = {
 const MUTATION_TOOL_PATTERNS = [
   /taskflow_(create|update|delete|move|admin|reassign|undo|hierarchy|dependency)/,
   /api_(create|update|delete|move|admin|reassign|undo|hierarchy|dependency)/,
+  /api_(reschedule|note)_meeting/,
   /api_task_(add_note|edit_note|remove_note)/,
   /api_(add|remove|update)_board_person/,
   /provision_(?:child|root)_board/,
@@ -230,6 +231,8 @@ function canonicalMutationType(tool: ToolCall): string | null {
   if (normalized === 'schedule_task') return 'schedule';
   if (/^api_(add|remove|update)_board_person$/.test(normalized)) return 'admin';
   if (/^api_task_(add_note|edit_note|remove_note)$/.test(normalized)) return 'update';
+  // Name-resolving meeting mutators: reschedule = a scheduled_at update; note = a note update.
+  if (normalized === 'api_reschedule_meeting' || normalized === 'api_note_meeting') return 'update';
   if (/^(?:taskflow|api)_(?:update|update_task|update_simple_task)$/.test(normalized)) {
     const input = tool.input as { updates?: Record<string, unknown> } | null;
     if (input?.updates && Object.prototype.hasOwnProperty.call(input.updates, 'add_subtask')) {

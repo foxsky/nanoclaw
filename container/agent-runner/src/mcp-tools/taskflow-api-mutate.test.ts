@@ -2505,4 +2505,18 @@ describe('api_reschedule_meeting MCP tool', () => {
     expect(out.success).toBe(true);
     expect((db.prepare('SELECT scheduled_at FROM tasks WHERE id = ?').get(mId) as { scheduled_at: string }).scheduled_at).toContain('2026-05-06');
   });
+
+  it('api_note_meeting notes the MEETING by name, not a same-named project', async () => {
+    const { apiNoteMeetingTool, apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    // A project and a meeting sharing "Novos Sites" — the note must go to the meeting (M-id).
+    await apiCreateTaskTool.handler({ board_id: BOARD, type: 'project', title: 'Novos Sites', sender_name: 'alice' });
+    const mId = await makeMeeting('Projeto Novos Sites — Reunião Interna', '2026-05-06T12:00:00Z');
+    const resp = await apiNoteMeetingTool.handler({
+      board_id: BOARD, meeting: 'Novos Sites', text: 'Lançamento definido para 25/05.', sender_name: 'alice',
+    });
+    const out = JSON.parse(resp.content[0].text);
+    expect(out.success).toBe(true);
+    const notes = (db.prepare('SELECT notes FROM tasks WHERE id = ?').get(mId) as { notes: string }).notes;
+    expect(notes).toContain('Lançamento definido para 25/05');
+  });
 });
