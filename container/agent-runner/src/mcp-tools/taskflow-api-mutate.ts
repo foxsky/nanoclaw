@@ -1884,6 +1884,37 @@ export const apiDependencyTool: McpToolDefinition = {
   },
 };
 
+type MeetingResolution =
+  | { ok: true; taskId: string }
+  | { ok: false; response: ReturnType<typeof jsonResponse> };
+
+// Resolve a `meeting` arg (explicit M-id or free-text name) to a unique task id.
+// Shared by api_reschedule_meeting and api_note_meeting so the M-id type guard,
+// name resolution, and 0/2+ ambiguity messages live in exactly one place.
+function resolveMeetingTaskId(engine: TaskflowEngine, meeting: string): MeetingResolution {
+  if (/^M\d+(?:\.\d+)?$/i.test(meeting.trim())) {
+    // Explicit M-id may target a done meeting, but it MUST be a meeting.
+    const taskId = meeting.trim().toUpperCase();
+    if (engine.getTask(taskId)?.type !== 'meeting') {
+      return { ok: false, response: jsonResponse({ success: false, error: `${taskId} não é uma reunião neste quadro.` }) };
+    }
+    return { ok: true, taskId };
+  }
+  // Name → unique meeting among this board's non-done meetings; 0 or 2+ → ask.
+  const candidates = engine.resolveMeetingCandidates(meeting);
+  if (candidates.length === 0) {
+    return { ok: false, response: jsonResponse({ success: false, error: `Não encontrei nenhuma reunião que corresponda a "${meeting}".` }) };
+  }
+  if (candidates.length > 1) {
+    const list = candidates.map((m) => `${m.id} — ${m.title}`).join('; ');
+    return {
+      ok: false,
+      response: jsonResponse({ success: false, error: `Encontrei ${candidates.length} reuniões que correspondem a "${meeting}". Qual delas? ${list}`, data: { candidates } }),
+    };
+  }
+  return { ok: true, taskId: candidates[0].id };
+}
+
 export const apiRescheduleMeetingTool: McpToolDefinition = {
   tool: {
     name: 'api_reschedule_meeting',
@@ -1925,36 +1956,9 @@ export const apiRescheduleMeetingTool: McpToolDefinition = {
 
     try {
       const engine = new TaskflowEngine(getTaskflowDb(), boardId);
-
-      // Accept an explicit M-id; otherwise resolve by name among this board's
-      // meetings and require a UNIQUE match. 0 or 2+ → return for the agent to
-      // ask, never silently mutate the wrong meeting.
-      let taskId: string;
-      if (/^M\d+(?:\.\d+)?$/i.test(meeting.trim())) {
-        taskId = meeting.trim().toUpperCase();
-        // Explicit M-id may target a done meeting, but it MUST be a meeting —
-        // don't let an M-shaped id bypass the type guard the resolver enforces.
-        const row = getTaskflowDb()
-          .prepare(`SELECT type FROM tasks WHERE board_id = ? AND id = ?`)
-          .get(boardId, taskId) as { type?: string } | undefined;
-        if (row?.type !== 'meeting') {
-          return jsonResponse({ success: false, error: `${taskId} não é uma reunião neste quadro.` });
-        }
-      } else {
-        const candidates = engine.resolveMeetingCandidates(meeting);
-        if (candidates.length === 0) {
-          return jsonResponse({ success: false, error: `Não encontrei nenhuma reunião que corresponda a "${meeting}".` });
-        }
-        if (candidates.length > 1) {
-          const list = candidates.map((m) => `${m.id} — ${m.title}`).join('; ');
-          return jsonResponse({
-            success: false,
-            error: `Encontrei ${candidates.length} reuniões que correspondem a "${meeting}". Qual delas? ${list}`,
-            data: { candidates },
-          });
-        }
-        taskId = candidates[0].id;
-      }
+      const resolved = resolveMeetingTaskId(engine, meeting);
+      if (!resolved.ok) return resolved.response;
+      const taskId = resolved.taskId;
 
       const updateParams: UpdateParams = {
         board_id: boardId,
@@ -2015,33 +2019,9 @@ export const apiNoteMeetingTool: McpToolDefinition = {
 
     try {
       const engine = new TaskflowEngine(getTaskflowDb(), boardId);
-
-      let taskId: string;
-      if (/^M\d+(?:\.\d+)?$/i.test(meeting.trim())) {
-        taskId = meeting.trim().toUpperCase();
-        // Explicit M-id may target a done meeting, but it MUST be a meeting —
-        // don't let an M-shaped id bypass the type guard the resolver enforces.
-        const row = getTaskflowDb()
-          .prepare(`SELECT type FROM tasks WHERE board_id = ? AND id = ?`)
-          .get(boardId, taskId) as { type?: string } | undefined;
-        if (row?.type !== 'meeting') {
-          return jsonResponse({ success: false, error: `${taskId} não é uma reunião neste quadro.` });
-        }
-      } else {
-        const candidates = engine.resolveMeetingCandidates(meeting);
-        if (candidates.length === 0) {
-          return jsonResponse({ success: false, error: `Não encontrei nenhuma reunião que corresponda a "${meeting}".` });
-        }
-        if (candidates.length > 1) {
-          const list = candidates.map((m) => `${m.id} — ${m.title}`).join('; ');
-          return jsonResponse({
-            success: false,
-            error: `Encontrei ${candidates.length} reuniões que correspondem a "${meeting}". Qual delas? ${list}`,
-            data: { candidates },
-          });
-        }
-        taskId = candidates[0].id;
-      }
+      const resolved = resolveMeetingTaskId(engine, meeting);
+      if (!resolved.ok) return resolved.response;
+      const taskId = resolved.taskId;
 
       const updateParams: UpdateParams = {
         board_id: boardId,

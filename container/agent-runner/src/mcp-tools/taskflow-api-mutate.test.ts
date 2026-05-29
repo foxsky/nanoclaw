@@ -2449,6 +2449,8 @@ describe('api_reschedule_meeting MCP tool', () => {
     const r = await apiCreateSimpleTaskTool.handler({ board_id: BOARD, title, sender_name: 'alice' });
     return JSON.parse(r.content[0].text).data.id as string;
   }
+  const scheduledAt = (id: string): string | null =>
+    (db.prepare('SELECT scheduled_at FROM tasks WHERE id = ?').get(id) as { scheduled_at: string | null }).scheduled_at;
 
   it('resolves a uniquely-named meeting and reschedules it, ignoring same-keyword non-meeting tasks', async () => {
     const { apiRescheduleMeetingTool } = await import('./taskflow-api-mutate.ts');
@@ -2480,8 +2482,8 @@ describe('api_reschedule_meeting MCP tool', () => {
     expect(out.success).toBe(false);
     expect(out.error).toMatch(/Qual delas|2 reuni/i);
     // neither meeting moved
-    expect((db.prepare('SELECT scheduled_at FROM tasks WHERE id = ?').get(a) as { scheduled_at: string }).scheduled_at).toContain('2026-04-29');
-    expect((db.prepare('SELECT scheduled_at FROM tasks WHERE id = ?').get(b) as { scheduled_at: string }).scheduled_at).toContain('2026-04-30');
+    expect(scheduledAt(a)).toContain('2026-04-29');
+    expect(scheduledAt(b)).toContain('2026-04-30');
   });
 
   it('returns not-found when no meeting matches', async () => {
@@ -2503,7 +2505,7 @@ describe('api_reschedule_meeting MCP tool', () => {
     });
     const out = JSON.parse(resp.content[0].text);
     expect(out.success).toBe(true);
-    expect((db.prepare('SELECT scheduled_at FROM tasks WHERE id = ?').get(mId) as { scheduled_at: string }).scheduled_at).toContain('2026-05-06');
+    expect(scheduledAt(mId)).toContain('2026-05-06');
   });
 
   it('rejects an M-id that is not a meeting (type guard on the explicit-id path)', async () => {
@@ -2518,7 +2520,7 @@ describe('api_reschedule_meeting MCP tool', () => {
     expect(out.success).toBe(false);
     expect(out.error).toMatch(/não é uma reunião/i);
     // unchanged: still type simple, no scheduled_at applied
-    expect((db.prepare('SELECT scheduled_at FROM tasks WHERE id = ?').get('M99') as { scheduled_at: string | null }).scheduled_at).toBeNull();
+    expect(scheduledAt('M99')).toBeNull();
   });
 
   it('api_note_meeting notes the MEETING by name, not a same-named project', async () => {
