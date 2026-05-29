@@ -17,7 +17,7 @@ Track each item before flipping the service. Update as passes complete.
 | Board | Phase 3 corpus | Match-rate threshold | Last run | Pass? |
 |-------|----------------|----------------------|----------|-------|
 | seci-secti | 30 turns | ≥ 80% semantic match (24/30) | 2026-05-27: 23/30, 0 real divergences. Re-validated against `0dec5540` matchers via static gate sweep 2026-05-28: 0/30 SECI turns pass the new deterministic gates → no interception, 23/30 stands | ☐ |
-| **SETD Secti** (= `thiago-taskflow`; Thiago runs this board) | 40 turns (`thiago-taskflow.json`) | ≥ 75% semantic match | 2026-05-28 (Codex): 14/40, **0 real divergences** (16 state-drift, 4 v1-bug-flagged, 4 no-v1-observable, 1 missing-context, 1 alloc-drift) against full prod `taskflow.db` snapshot. Independent Claude re-run in progress; see EX-011. **NOTE: `thiago-taskflow` IS the SETD Secti board — not two boards.** | ☐ |
+| **SETD Secti** (= `thiago-taskflow`; Thiago runs this board) | 40 turns (`thiago-taskflow.json`) | ≥ 75% semantic match, 0 real divergences | **NOT A CLEAN PASS — parity is non-deterministic.** Codex run 2026-05-28: 14/40, 0 real div. **Independent Claude re-run (identical code `0dec5540`, same corpus+snapshot) 2026-05-28: 14/40 but 4 real divergences** (turns 3,13,14,26 — v2 reads/asks instead of mutating; Codex matched all 4). The "0" is one favorable sample, not stable. See EX-011. **NOTE: `thiago-taskflow` IS the SETD Secti board.** | ✗ |
 | ~~setd-secti (11-turn `whatsapp-curated-setd-secti-v1.json`)~~ | — | — | **INVALID — discard.** Replayed against a reconstructed snapshot with no SETD board (board defaulted to seci, T18/tasks absent) → 3/11 + bogus "not found"/timeouts are wrong-board artifacts, NOT a v2 assessment. The real SETD board is the `thiago-taskflow` row above. | n/a |
 | sec-secti | TBD turns | ≥ 75% (cross-board complexity) | — | ☐ |
 | (Laizys/SEAF re-pass) | — | clean re-run after latest fixes | — | ☐ |
@@ -246,8 +246,16 @@ Each exception is a section. Stable IDs (don't renumber on insert).
   - **Turn 7** (`"Prazo até 24/04."` — bare date, no task id) — v1 guessed `P6` ("Prazo alterado de 30/04 para 24/04"); v2 **asks** which task instead of guessing. **Behavior change, not clearly a bug-fix:** v2 is safer (no guess) but loses v1's conversational context-resolution. Judgment call — note the interplay with turn 19 below.
   - **Turn 15** (`"Na sexta, faremos a migração dos Novos Sites"`) — v1 wrote the note dated Friday `16/05/2026` (**wrong — 16/05 was a Saturday; the Friday was 15/05**); v2 writes `15/05/2026` (the `0dec5540` fix). **Clear v1-bug-corrected.** Confirm v1's secondary `T21` 15/05 reminder isn't silently dropped by v2.
   - **Turn 19** (`"P6 é pra manter dia 30/04"`) — v1 replied `"Não entendi a referência"` (failed to parse an explicit task-id + date); v2 correctly updates `P6` to keep 30/04. **Clear v1-bug-corrected.**
-- **Status:** proposed (state-drift/no-v1/missing-context buckets); 4 v1-bug turns `blocked-on-fix` pending operator signoff
+- **Status:** BLOCKED (see non-determinism warning below); 4 v1-bug turns also `blocked-on-fix` pending operator signoff
 - **Signoff:** ☐ turn 2 · ☐ turn 7 · ☐ turn 15 · ☐ turn 19
+
+> **⚠ BLOCKER — non-deterministic parity (independent re-run, 2026-05-28).** An independent Claude replay of the *identical* code (`0dec5540`), same corpus + prod snapshot, did NOT reproduce Codex's 0 real divergences. It surfaced **4 real divergences** where v2 read/listed/asked instead of performing v1's mutation:
+> - **Turn 3** ("alterar o horário para as 11 horas", SEMEC mtg): v1 rescheduled M20; v2 ran 3 `api_query` and listed 5 tasks — no reschedule.
+> - **Turn 13** ("lançamento 25/05, enviar ofício circular e notícia"): v1 noted M26 + created T21; v2 added the note to **P8** (wrong task) and created nothing.
+> - **Turn 14** ("Reunião SDU Sul remarcada terça 9h"): v1 rescheduled M22; v2 listed 3 tasks — no reschedule.
+> - **Turn 26** ("Mande mensagem aos participantes 30min antes"): v1 scheduled the reminder; v2 asked which meeting.
+>
+> Codex's run matched all four. Same code → different outcome ⇒ the agent's natural-language-mutation behavior on meeting/reschedule turns is **sampling-dependent**. "0 divergences" is one favorable sample, not a stable property. **SETD parity does not meet the 0-real-divergence bar.** Next steps before it can pass: (1) run N replays to measure the divergence rate, (2) address the under-mutation pattern (likely deterministic intercepts for reschedule/note phrasings, or a prompt fix). Artifacts: `/tmp/phase3-v2-results-thiago-INDEP-20260528.json`, `/tmp/phase3-compare-thiago-INDEP-20260528.txt`.
 
 ---
 
