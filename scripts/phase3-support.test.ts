@@ -512,6 +512,66 @@ describe('Phase 3 semantic comparison', () => {
     expect(summary.outbound_intent).toBe('mutation_confirmation');
   });
 
+  it('matches a mutate turn whose reply prose lists extra (un-mutated) task ids', () => {
+    // v2 mutated exactly M20; the extra ids are an api_query search listing in
+    // the reply text, NOT mutated objects. Must be a match, not a divergence.
+    const turn = {
+      turn_index: 0,
+      v1: {
+        tools: [{ name: 'mcp__nanoclaw__api_update_task', input: { task_id: 'M20', updates: { scheduled_at: '2026-04-23T14:00:00.000Z' } } }],
+        final_response: '✅ *M20* reagendada para 23/04 às 11:00',
+      },
+      v2: {
+        tools: [
+          { name: 'mcp__nanoclaw__api_query', input: { query: 'search', term: 'Reunião SEMEC' } },
+          { name: 'mcp__nanoclaw__api_update_task', input: { task_id: 'M20', updates: { scheduled_at: '2026-04-23T14:00:00.000Z' } } },
+        ],
+        outbound: [{ kind: 'chat', content: JSON.stringify({ text: '5 tarefas encontradas: M13, M18, M20, P6, T76, T99.\n✅ *M20* reagendada para 23/04 às 11:00.' }) }],
+      },
+    } as Parameters<typeof compareSemanticTurn>[0];
+    expect(compareSemanticTurn(turn).classification.kind).toBe('match');
+  });
+
+  it('matches a metadata-expected mutate turn despite prose-listed extra ids', () => {
+    const turn = {
+      turn_index: 0,
+      v1: { tools: [], final_response: '' },
+      v2: {
+        tools: [{ name: 'mcp__nanoclaw__api_update_task', input: { task_id: 'M20', updates: { scheduled_at: '2026-04-23T14:00:00.000Z' } } }],
+        outbound: [{ kind: 'chat', content: JSON.stringify({ text: '5 tarefas: M13, M18, M20, P6, T76, T99.\n✅ *M20* reagendada.' }) }],
+      },
+      phase3: { metadata: { expected_behavior: { action: 'mutate', task_ids: ['M20'], mutation_types: ['update'], outbound_intent: 'mutation_confirmation' } } },
+    } as Parameters<typeof compareSemanticTurn>[0];
+    expect(compareSemanticTurn(turn).classification.kind).toBe('match');
+  });
+
+  it('flags a mutate turn that actually mutated an extra task (not just prose)', () => {
+    const turn = {
+      turn_index: 0,
+      v1: { tools: [{ name: 'mcp__nanoclaw__api_update_task', input: { task_id: 'M20', updates: { scheduled_at: '2026-04-23T14:00:00.000Z' } } }], final_response: '✅ *M20* reagendada.' },
+      v2: {
+        tools: [
+          { name: 'mcp__nanoclaw__api_update_task', input: { task_id: 'M20', updates: { scheduled_at: '2026-04-23T14:00:00.000Z' } } },
+          { name: 'mcp__nanoclaw__api_update_task', input: { task_id: 'M21', updates: { scheduled_at: '2026-04-23T14:00:00.000Z' } } },
+        ],
+        outbound: [{ kind: 'chat', content: JSON.stringify({ text: '✅ *M20* e *M21* reagendadas.' }) }],
+      },
+    } as Parameters<typeof compareSemanticTurn>[0];
+    expect(compareSemanticTurn(turn).classification.kind).toBe('real_divergence');
+  });
+
+  it('flags a mutate-expected turn where v2 only read instead of mutating', () => {
+    const turn = {
+      turn_index: 0,
+      v1: { tools: [{ name: 'mcp__nanoclaw__api_update_task', input: { task_id: 'M22', updates: { scheduled_at: '2026-05-05T12:00:00.000Z' } } }], final_response: '✅ *M22* reagendada.' },
+      v2: {
+        tools: [{ name: 'mcp__nanoclaw__api_query', input: { query: 'search', term: 'SDU Sul' } }],
+        outbound: [{ kind: 'chat', content: JSON.stringify({ text: '3 tarefas encontradas: M22, T102, T114.' }) }],
+      },
+    } as Parameters<typeof compareSemanticTurn>[0];
+    expect(compareSemanticTurn(turn).classification.kind).toBe('real_divergence');
+  });
+
   it('does not count process-minutes triage prompts as mutations', () => {
     const summary = summarizeSemanticBehavior(
       [{ name: 'mcp__nanoclaw__api_admin', input: { action: 'process_minutes', task_id: 'M20' } }],

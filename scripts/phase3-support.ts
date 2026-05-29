@@ -148,6 +148,8 @@ export interface Phase3TurnResult {
 export interface SemanticSummary {
   action: Phase3SemanticAction;
   task_ids: string[];
+  /** Task ids carried in MUTATION tool-call args only — excludes prose/query ids. Used for exact mutate-turn parity. */
+  mutation_task_ids: string[];
   mutation_types: string[];
   board_refs: string[];
   recipient: string | null;
@@ -598,6 +600,11 @@ export function extractTaskIdsFromTools(tools: ToolCall[]): string[] {
   return [...ids].sort();
 }
 
+function isMutationToolCall(tool: ToolCall): boolean {
+  const name = normalizedToolName(tool.name);
+  return MUTATION_TOOL_PATTERNS.some((pattern) => pattern.test(name));
+}
+
 export function extractTaskIdsFromText(text: string): string[] {
   const ids = new Set<string>();
   for (const match of text.toUpperCase().matchAll(/\b(?:P|T|M|R)\d+(?:\.\d+)?\b/g)) {
@@ -782,6 +789,7 @@ export function summarizeSemanticBehavior(
   return {
     action,
     task_ids: taskIds,
+    mutation_task_ids: extractTaskIdsFromTools(tools.filter(isMutationToolCall)),
     mutation_types: effectiveHasMutation
       ? [...new Set(tools.map(canonicalMutationType).filter((value): value is string => value !== null))].sort()
       : [],
@@ -900,7 +908,12 @@ export function compareSemanticTurn(turn: Phase3TurnResult): SemanticComparison 
   const allowExtraTaskIds = metadataExpected?.allow_extra_task_ids === true;
   const matches = {
     action: expected.action === actual.action,
-    task_ids: expected.task_ids.length === 0 || sameStringSet(expected.task_ids, actual.task_ids) || (allowExtraTaskIds && stringSetContains(actual.task_ids, expected.task_ids)),
+    // Mutate turns: compare the set of ids actually carried in MUTATION tool
+    // args (exact), not the prose-merged task_ids — v1 cards and v2 search
+    // listings pollute task_ids with un-mutated breadcrumb/query ids.
+    task_ids: expected.action === 'mutate'
+      ? (expected.mutation_task_ids.length === 0 || sameStringSet(expected.mutation_task_ids, actual.mutation_task_ids))
+      : (expected.task_ids.length === 0 || sameStringSet(expected.task_ids, actual.task_ids) || (allowExtraTaskIds && stringSetContains(actual.task_ids, expected.task_ids))),
     mutation_types: expected.mutation_types.length === 0 || sameStringSet(expected.mutation_types, actual.mutation_types),
     board_refs: boardRefsMatch(expected.board_refs, actual.board_refs),
     recipient: expected.recipient === null || recipientMatches(expected.recipient, recipientAliases, actual.recipient),
@@ -919,6 +932,8 @@ function expectedToSummary(expected: Phase3ExpectedBehavior): SemanticSummary {
   return {
     action: expected.action ?? 'no-op',
     task_ids: [...new Set(expected.task_ids ?? [])].map((id) => id.toUpperCase()).sort(),
+    // Hand-authored expected task_ids are the intended mutation target (no prose pollution).
+    mutation_task_ids: [...new Set(expected.task_ids ?? [])].map((id) => id.toUpperCase()).sort(),
     mutation_types: [...new Set(expected.mutation_types ?? [])].sort(),
     board_refs: [...new Set(expected.board_refs ?? [])]
       .map((ref) => normalizeBoardRef(ref))
