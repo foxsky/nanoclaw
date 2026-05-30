@@ -307,6 +307,22 @@ describe('handleProvisionChildBoard', () => {
     expect(parentSourceDest!.target_id).toBe(childMg.id);
   });
 
+  it('EX-014 fail-loud: alerts the origin chat when group creation fails (person already registered, no silent orphan)', async () => {
+    seedParentBoard();
+    (mockWhatsAppAdapter!.createGroup as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('whatsapp down'));
+
+    const { handleProvisionChildBoard } = await import('./provision-child-board.js');
+    await handleProvisionChildBoard(validInput, parentSession, {} as never);
+
+    // no child board got created
+    expect(readChildBoard('board-ux-setd-secti-taskflow')).toBeUndefined();
+    // and the failure was surfaced to the origin chat, not silently swallowed
+    const delivered = (mockWhatsAppAdapter!.deliver as ReturnType<typeof vi.fn>).mock.calls.map((c) =>
+      JSON.stringify(c),
+    );
+    expect(delivered.some((s) => /NÃO pôde ser provisionado/.test(s))).toBe(true);
+  });
+
   it('drops when person already registered on this parent board', async () => {
     seedParentBoard();
     const db = initTaskflowDb(sharedState.tfDbPath);

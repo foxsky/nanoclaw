@@ -334,6 +334,31 @@ function buildInviteLinkMessage(
   return `📎 Link de convite para o grupo *${childGroupName}* (${personName}):\n${inviteLink}${dropped}`;
 }
 
+/**
+ * EX-014 fail-loud: the person is already registered (the container's
+ * register_person committed before this host action runs), so a silent provision
+ * failure leaves an orphaned person with no board. Surface it to the origin chat
+ * instead of just logging — the operator needs to know to re-provision.
+ */
+async function alertProvisionFailed(
+  adapter: Parameters<typeof deliverPlainText>[0],
+  originPlatformId: string | null | undefined,
+  personName: string,
+  reason: string,
+): Promise<void> {
+  if (!originPlatformId) return;
+  try {
+    await deliverPlainText(
+      adapter,
+      originPlatformId,
+      `⚠️ *${personName}* foi cadastrado(a), mas o quadro NÃO pôde ser provisionado (${reason}).\n\n` +
+        `O cadastro da pessoa está salvo; o quadro precisa ser criado manualmente — tente novamente ou avise o suporte.`,
+    );
+  } catch (err) {
+    log.error('provision_child_board: failed to deliver provision-failure alert', { err });
+  }
+}
+
 export async function handleProvisionChildBoard(
   content: Record<string, unknown>,
   session: Session,
@@ -426,7 +451,15 @@ export async function handleProvisionChildBoard(
     }
 
     const folderAndName = computeChildFolderAndName(parsed);
-    if (!folderAndName) return;
+    if (!folderAndName) {
+      await alertProvisionFailed(
+        adapter,
+        parent.sourceMessagingGroupPlatformId,
+        parsed.personName,
+        'não foi possível resolver o nome/sigla da divisão',
+      );
+      return;
+    }
     const { folder, name: childGroupName } = folderAndName;
     const childBoardId = `board-${folder}`;
 
@@ -445,6 +478,12 @@ export async function handleProvisionChildBoard(
       });
     } catch (err) {
       log.error('provision_child_board: failed to create WhatsApp group', { err, childGroupName });
+      await alertProvisionFailed(
+        adapter,
+        parent.sourceMessagingGroupPlatformId,
+        parsed.personName,
+        'falha ao criar o grupo no WhatsApp',
+      );
       return;
     }
     const childGroupJid = createResult.jid;
@@ -477,6 +516,12 @@ export async function handleProvisionChildBoard(
       });
     } catch (err) {
       log.error('provision_child_board: failed to seed taskflow DB', { err, childBoardId });
+      await alertProvisionFailed(
+        adapter,
+        parent.sourceMessagingGroupPlatformId,
+        parsed.personName,
+        'falha ao gravar os dados do quadro',
+      );
       return;
     }
 
@@ -538,6 +583,12 @@ export async function handleProvisionChildBoard(
       }
     } catch (err) {
       log.error('provision_child_board: failed to wire v2', { err, childAgentGroupId });
+      await alertProvisionFailed(
+        adapter,
+        parent.sourceMessagingGroupPlatformId,
+        parsed.personName,
+        'falha ao conectar o agente do quadro',
+      );
       return;
     }
 
