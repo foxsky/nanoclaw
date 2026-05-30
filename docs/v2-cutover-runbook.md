@@ -112,7 +112,7 @@ TaskFlow DB reconciliation:
 1. Stop v2 before copying any DB back.
 2. Compare v2 `data/taskflow/taskflow.db` to the pre-cutover v1 backup.
 3. If rollback happens inside 24 hours and no accepted v2-only production mutations exist, move the v2 DB aside and restart v1 on its original DB.
-4. If v2 accepted production mutations, export the changed `tasks`, `task_history`, `board_chat`, `task_notes`, and `archive` rows for operator review before restarting v1.
+4. If v2 accepted production mutations, export the changed `tasks` (notes live in the `tasks.notes` column — there is no `task_notes` table), `task_history`, `board_chat`, and `archive` rows for operator review before restarting v1.
 
 Message/channel/session reconciliation:
 
