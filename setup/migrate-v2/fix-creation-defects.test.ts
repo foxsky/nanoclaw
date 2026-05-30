@@ -10,7 +10,7 @@ function schema(d: Database.Database) {
     CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT, owner_person_id TEXT, parent_board_id TEXT);
     CREATE TABLE board_people (board_id TEXT, person_id TEXT, name TEXT, role TEXT, phone TEXT, wip_limit INTEGER, PRIMARY KEY(board_id, person_id));
     CREATE TABLE board_admins (board_id TEXT, person_id TEXT, phone TEXT, admin_role TEXT, is_primary_manager INTEGER DEFAULT 0, PRIMARY KEY(board_id, person_id, admin_role));
-    CREATE TABLE tasks (id TEXT PRIMARY KEY, board_id TEXT, assignee TEXT, _last_mutation TEXT);
+    CREATE TABLE tasks (id TEXT PRIMARY KEY, board_id TEXT, assignee TEXT, _last_mutation TEXT, notes TEXT);
     CREATE TABLE archive (id TEXT PRIMARY KEY, board_id TEXT, assignee TEXT, task_snapshot TEXT, history TEXT);
     CREATE TABLE task_history (id TEXT PRIMARY KEY, task_id TEXT, "by" TEXT, details TEXT);
   `);
@@ -34,8 +34,8 @@ function seedMariany(d: Database.Database) {
       ('board-seci-taskflow','mariany','','manager',0),
       ('board-semcaspi','mariany-borges','5586981352365','manager',1);
     INSERT INTO tasks VALUES
-      ('T1','board-seci-taskflow','mariany','{"action":"approve","by":"mariany","at":"x"}'),
-      ('T2','board-seci-taskflow','mariany-borges','{"by":"mariany-borges"}');
+      ('T1','board-seci-taskflow','mariany','{"action":"approve","by":"mariany","at":"x"}','[{"by":"mariany","author_actor_id":"mariany","text":"oi"},{"by":"mariany-borges","author_actor_id":"mariany-borges"}]'),
+      ('T2','board-seci-taskflow','mariany-borges','{"by":"mariany-borges"}','[]');
     INSERT INTO archive VALUES
       ('A1','board-seci-taskflow','mariany','{"assignee":"mariany"}','[{"by":"mariany"}]');
     INSERT INTO task_history VALUES
@@ -78,6 +78,11 @@ describe('mergeDuplicatePerson (Mariany)', () => {
     expect(db.prepare(`SELECT _last_mutation m FROM tasks WHERE id='T2'`).get()).toEqual({ m: '{"by":"mariany-borges"}' });
     expect(db.prepare(`SELECT details d FROM task_history WHERE id='H2'`).get()).toEqual({ d: '{"actor":"mariany-borges"}' });
     expect(db.prepare(`SELECT details d FROM task_history WHERE id='H3'`).get()).toEqual({ d: '{"actor":"mariany-borges"}' });
+
+    // tasks.notes (the column Codex caught) rewritten, pre-existing "mariany-borges" untouched
+    expect(db.prepare(`SELECT notes n FROM tasks WHERE id='T1'`).get()).toEqual({
+      n: '[{"by":"mariany-borges","author_actor_id":"mariany-borges","text":"oi"},{"by":"mariany-borges","author_actor_id":"mariany-borges"}]',
+    });
 
     expect(summary.boardPeopleDeleted).toBe(1);
     expect(summary.adminsTransferred).toBe(2);

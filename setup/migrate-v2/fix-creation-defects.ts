@@ -10,9 +10,40 @@
  *   - Hudson duplicate board cluster  -> real, populated boards with their own
  *                                        groups; an operator decision, flagged not fixed.
  *
- * Default is DRY-RUN. Pass --apply to mutate. Idempotent + transactional.
+ * Default is DRY-RUN. Pass --apply to mutate. Idempotent + transactional, with a
+ * post-merge residual scan that rolls back and fails loud if any reference to the
+ * stub id survives.
  */
+import fs from 'fs';
+
 import Database from 'better-sqlite3';
+
+// Every column that can hold a person_id — either as the bare value or embedded as
+// a quoted `"<id>"` token in a JSON blob. board_people / board_admins are handled
+// separately (composite PKs). Each column gets BOTH an exact rewrite and a JSON
+// token rewrite: on a pure-value column the token pass no-ops (no quotes match),
+// on a pure-JSON column the exact pass no-ops — so the union is correct everywhere
+// and we never have to classify a column by kind.
+const PERSON_REF_COLUMNS: Array<[table: string, column: string]> = [
+  ['boards', 'owner_person_id'],
+  ['tasks', 'assignee'],
+  ['tasks', 'created_by'],
+  ['tasks', 'child_exec_person_id'],
+  ['tasks', '_last_mutation'],
+  ['tasks', 'notes'],
+  ['tasks', 'participants'],
+  ['tasks', 'subtasks'],
+  ['task_history', 'by'],
+  ['task_history', 'details'],
+  ['archive', 'assignee'],
+  ['archive', 'task_snapshot'],
+  ['archive', 'history'],
+  ['child_board_registrations', 'person_id'],
+  ['attachment_audit_log', 'actor_person_id'],
+  ['meeting_external_participants', 'created_by'],
+  ['subtask_requests', 'requested_by_person_id'],
+  ['subtask_requests', 'subtasks_json'],
+];
 
 export interface MergeSummary {
   applied: boolean;
@@ -20,11 +51,27 @@ export interface MergeSummary {
   boardPeopleRekeyed: number;
   adminsTransferred: number;
   adminsDropped: number;
-  boardsReowned: number;
   tasksReassigned: number;
-  archiveReassigned: number;
-  historyReassigned: number;
+  exactUpdates: number;
   jsonRewrites: number;
+}
+
+function columnExists(db: Database.Database, table: string, column: string): boolean {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return cols.some((c) => c.name === column);
+}
+
+/** Columns that still contain the stub id (exact value OR quoted JSON token). */
+function residualColumns(db: Database.Database, stubId: string): string[] {
+  const token = `%"${stubId}"%`;
+  const out: string[] = [];
+  const checks: Array<[string, string]> = [['board_people', 'person_id'], ['board_admins', 'person_id'], ...PERSON_REF_COLUMNS];
+  for (const [table, col] of checks) {
+    if (!columnExists(db, table, col)) continue;
+    const n = (db.prepare(`SELECT count(*) AS c FROM ${table} WHERE "${col}" = ? OR "${col}" LIKE ?`).get(stubId, token) as { c: number }).c;
+    if (n > 0) out.push(`${table}.${col} (${n})`);
+  }
+  return out;
 }
 
 /**
@@ -32,12 +79,17 @@ export interface MergeSummary {
  * rewriting every reference. SCOPED to a known, human-confirmed pair — this is
  * NOT a general name-based auto-merge (that would risk merging two real people).
  * The JSON rewrite is token-safe: `"stub"` never matches inside `"stub-suffix"`.
+ * After rewriting, a residual scan throws (rolling back) if any stub ref survives.
  */
 export function mergeDuplicatePerson(db: Database.Database, stubId: string, keeperId: string): MergeSummary {
   const keeperExists = db.prepare(`SELECT 1 FROM board_people WHERE person_id = ? LIMIT 1`).get(keeperId);
   if (!keeperExists) {
     throw new Error(`merge aborted: keeper person_id '${keeperId}' not found in board_people`);
   }
+
+  const token = `"${stubId}"`;
+  const replacement = `"${keeperId}"`;
+  const like = `%${token}%`;
 
   const run = db.transaction((): MergeSummary => {
     const s: MergeSummary = {
@@ -46,15 +98,13 @@ export function mergeDuplicatePerson(db: Database.Database, stubId: string, keep
       boardPeopleRekeyed: 0,
       adminsTransferred: 0,
       adminsDropped: 0,
-      boardsReowned: 0,
       tasksReassigned: 0,
-      archiveReassigned: 0,
-      historyReassigned: 0,
+      exactUpdates: 0,
       jsonRewrites: 0,
     };
 
-    // board_people: where the keeper already shares the board, the stub row PK-collides
-    // (board_id, person_id) -> delete it; otherwise rekey it onto the keeper.
+    // board_people PK (board_id, person_id): where the keeper already shares the
+    // board the stub row collides -> delete it; otherwise rekey it onto the keeper.
     for (const { board_id } of db.prepare(`SELECT board_id FROM board_people WHERE person_id = ?`).all(stubId) as Array<{ board_id: string }>) {
       const keeperHere = db.prepare(`SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?`).get(board_id, keeperId);
       if (keeperHere) {
@@ -66,8 +116,8 @@ export function mergeDuplicatePerson(db: Database.Database, stubId: string, keep
       }
     }
 
-    // board_admins PK is (board_id, person_id, admin_role): transfer each grant unless
-    // the keeper already holds that exact role on that board (then drop the duplicate).
+    // board_admins PK (board_id, person_id, admin_role): transfer each grant unless
+    // the keeper already holds that exact role on that board (then drop the dup).
     for (const { board_id, admin_role } of db.prepare(`SELECT board_id, admin_role FROM board_admins WHERE person_id = ?`).all(stubId) as Array<{ board_id: string; admin_role: string }>) {
       const collides = db.prepare(`SELECT 1 FROM board_admins WHERE board_id = ? AND person_id = ? AND admin_role = ?`).get(board_id, keeperId, admin_role);
       if (collides) {
@@ -79,28 +129,22 @@ export function mergeDuplicatePerson(db: Database.Database, stubId: string, keep
       }
     }
 
-    s.boardsReowned = db.prepare(`UPDATE boards SET owner_person_id = ? WHERE owner_person_id = ?`).run(keeperId, stubId).changes;
-    s.tasksReassigned = db.prepare(`UPDATE tasks SET assignee = ? WHERE assignee = ?`).run(keeperId, stubId).changes;
-    s.archiveReassigned = db.prepare(`UPDATE archive SET assignee = ? WHERE assignee = ?`).run(keeperId, stubId).changes;
-    s.historyReassigned = db.prepare(`UPDATE task_history SET "by" = ? WHERE "by" = ?`).run(keeperId, stubId).changes;
-
-    // JSON-embedded actor refs. Replace the quoted token only: `"stub"` cannot occur
-    // inside `"stub-borges"` (the char after the stub is `-`, not `"`), so existing
-    // keeper refs are untouched.
-    const token = `"${stubId}"`;
-    const replacement = `"${keeperId}"`;
-    const like = `%${token}%`;
-    for (const [table, col] of [
-      ['tasks', '_last_mutation'],
-      ['task_history', 'details'],
-      ['archive', 'task_snapshot'],
-      ['archive', 'history'],
-    ] as Array<[string, string]>) {
-      s.jsonRewrites += db.prepare(`UPDATE ${table} SET ${col} = REPLACE(${col}, ?, ?) WHERE ${col} LIKE ?`).run(token, replacement, like).changes;
+    for (const [table, col] of PERSON_REF_COLUMNS) {
+      if (!columnExists(db, table, col)) continue;
+      const exact = db.prepare(`UPDATE ${table} SET "${col}" = ? WHERE "${col}" = ?`).run(keeperId, stubId).changes;
+      const json = db.prepare(`UPDATE ${table} SET "${col}" = REPLACE("${col}", ?, ?) WHERE "${col}" LIKE ?`).run(token, replacement, like).changes;
+      s.exactUpdates += exact;
+      s.jsonRewrites += json;
+      if (table === 'tasks' && col === 'assignee') s.tasksReassigned = exact;
     }
 
-    s.applied =
-      s.boardPeopleDeleted + s.boardPeopleRekeyed + s.adminsTransferred + s.adminsDropped + s.boardsReowned + s.tasksReassigned + s.archiveReassigned + s.historyReassigned + s.jsonRewrites > 0;
+    // Fail loud: nothing referencing the stub may survive. Throwing rolls back the txn.
+    const residual = residualColumns(db, stubId);
+    if (residual.length > 0) {
+      throw new Error(`merge aborted (rolled back): stub '${stubId}' still referenced by ${residual.join(', ')} — add these columns to PERSON_REF_COLUMNS`);
+    }
+
+    s.applied = s.boardPeopleDeleted + s.boardPeopleRekeyed + s.adminsTransferred + s.adminsDropped + s.exactUpdates + s.jsonRewrites > 0;
     return s;
   });
 
@@ -165,9 +209,15 @@ function main(): void {
     console.error('usage: tsx setup/migrate-v2/fix-creation-defects.ts <taskflow.db> [--apply]   (default: dry-run)');
     process.exit(2);
   }
-  const db = new Database(dbPath);
+  if (apply && (fs.existsSync(`${dbPath}-wal`) || fs.existsSync(`${dbPath}-shm`))) {
+    console.error(`refusing --apply: ${dbPath} has a WAL/SHM sidecar (db is open elsewhere). Stop the service / checkpoint first.`);
+    process.exit(2);
+  }
+  const db = new Database(dbPath, apply ? undefined : { readonly: true });
   try {
-    console.log(`\n=== V1 creation-defect remediation (${apply ? 'APPLY' : 'DRY-RUN'}) on ${dbPath} ===\n`);
+    console.log(`\n=== V1 creation-defect remediation (${apply ? 'APPLY' : 'DRY-RUN'}) on ${dbPath} ===`);
+    if (apply) console.log(`(back up ${dbPath} first — this mutates in place)`);
+    console.log('');
 
     // 1. Mariany (EX-015) — the one safe auto-fix.
     const stubs = detectStubDuplicateIdentities(db);
