@@ -1,0 +1,208 @@
+/**
+ * One-shot remediation for the V1 board/user CREATION defects that survive the
+ * v2 cutover (see docs/v1-creation-empirical-map.md). Run AFTER the verbatim
+ * taskflow.db copy (setup/migrate-v2/taskflow.ts), against the migrated v2 db.
+ *
+ * Of the 3 carried-forward data populations, only ONE is a safe SQL fix:
+ *   - Mariany (dual person_id)        -> auto-merged here (EX-015).
+ *   - Sanunciel (orphaned person)     -> NOT fixable by SQL (a board needs a real
+ *                                        WhatsApp group); flagged for live re-provision.
+ *   - Hudson duplicate board cluster  -> real, populated boards with their own
+ *                                        groups; an operator decision, flagged not fixed.
+ *
+ * Default is DRY-RUN. Pass --apply to mutate. Idempotent + transactional.
+ */
+import Database from 'better-sqlite3';
+
+export interface MergeSummary {
+  applied: boolean;
+  boardPeopleDeleted: number;
+  boardPeopleRekeyed: number;
+  adminsTransferred: number;
+  adminsDropped: number;
+  boardsReowned: number;
+  tasksReassigned: number;
+  archiveReassigned: number;
+  historyReassigned: number;
+  jsonRewrites: number;
+}
+
+/**
+ * Merge a role/phone-less duplicate `stubId` into the canonical `keeperId`,
+ * rewriting every reference. SCOPED to a known, human-confirmed pair — this is
+ * NOT a general name-based auto-merge (that would risk merging two real people).
+ * The JSON rewrite is token-safe: `"stub"` never matches inside `"stub-suffix"`.
+ */
+export function mergeDuplicatePerson(db: Database.Database, stubId: string, keeperId: string): MergeSummary {
+  const keeperExists = db.prepare(`SELECT 1 FROM board_people WHERE person_id = ? LIMIT 1`).get(keeperId);
+  if (!keeperExists) {
+    throw new Error(`merge aborted: keeper person_id '${keeperId}' not found in board_people`);
+  }
+
+  const run = db.transaction((): MergeSummary => {
+    const s: MergeSummary = {
+      applied: false,
+      boardPeopleDeleted: 0,
+      boardPeopleRekeyed: 0,
+      adminsTransferred: 0,
+      adminsDropped: 0,
+      boardsReowned: 0,
+      tasksReassigned: 0,
+      archiveReassigned: 0,
+      historyReassigned: 0,
+      jsonRewrites: 0,
+    };
+
+    // board_people: where the keeper already shares the board, the stub row PK-collides
+    // (board_id, person_id) -> delete it; otherwise rekey it onto the keeper.
+    for (const { board_id } of db.prepare(`SELECT board_id FROM board_people WHERE person_id = ?`).all(stubId) as Array<{ board_id: string }>) {
+      const keeperHere = db.prepare(`SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?`).get(board_id, keeperId);
+      if (keeperHere) {
+        db.prepare(`DELETE FROM board_people WHERE board_id = ? AND person_id = ?`).run(board_id, stubId);
+        s.boardPeopleDeleted++;
+      } else {
+        db.prepare(`UPDATE board_people SET person_id = ? WHERE board_id = ? AND person_id = ?`).run(keeperId, board_id, stubId);
+        s.boardPeopleRekeyed++;
+      }
+    }
+
+    // board_admins PK is (board_id, person_id, admin_role): transfer each grant unless
+    // the keeper already holds that exact role on that board (then drop the duplicate).
+    for (const { board_id, admin_role } of db.prepare(`SELECT board_id, admin_role FROM board_admins WHERE person_id = ?`).all(stubId) as Array<{ board_id: string; admin_role: string }>) {
+      const collides = db.prepare(`SELECT 1 FROM board_admins WHERE board_id = ? AND person_id = ? AND admin_role = ?`).get(board_id, keeperId, admin_role);
+      if (collides) {
+        db.prepare(`DELETE FROM board_admins WHERE board_id = ? AND person_id = ? AND admin_role = ?`).run(board_id, stubId, admin_role);
+        s.adminsDropped++;
+      } else {
+        db.prepare(`UPDATE board_admins SET person_id = ? WHERE board_id = ? AND person_id = ? AND admin_role = ?`).run(keeperId, board_id, stubId, admin_role);
+        s.adminsTransferred++;
+      }
+    }
+
+    s.boardsReowned = db.prepare(`UPDATE boards SET owner_person_id = ? WHERE owner_person_id = ?`).run(keeperId, stubId).changes;
+    s.tasksReassigned = db.prepare(`UPDATE tasks SET assignee = ? WHERE assignee = ?`).run(keeperId, stubId).changes;
+    s.archiveReassigned = db.prepare(`UPDATE archive SET assignee = ? WHERE assignee = ?`).run(keeperId, stubId).changes;
+    s.historyReassigned = db.prepare(`UPDATE task_history SET "by" = ? WHERE "by" = ?`).run(keeperId, stubId).changes;
+
+    // JSON-embedded actor refs. Replace the quoted token only: `"stub"` cannot occur
+    // inside `"stub-borges"` (the char after the stub is `-`, not `"`), so existing
+    // keeper refs are untouched.
+    const token = `"${stubId}"`;
+    const replacement = `"${keeperId}"`;
+    const like = `%${token}%`;
+    for (const [table, col] of [
+      ['tasks', '_last_mutation'],
+      ['task_history', 'details'],
+      ['archive', 'task_snapshot'],
+      ['archive', 'history'],
+    ] as Array<[string, string]>) {
+      s.jsonRewrites += db.prepare(`UPDATE ${table} SET ${col} = REPLACE(${col}, ?, ?) WHERE ${col} LIKE ?`).run(token, replacement, like).changes;
+    }
+
+    s.applied =
+      s.boardPeopleDeleted + s.boardPeopleRekeyed + s.adminsTransferred + s.adminsDropped + s.boardsReowned + s.tasksReassigned + s.archiveReassigned + s.historyReassigned + s.jsonRewrites > 0;
+    return s;
+  });
+
+  return run();
+}
+
+export interface DuplicateBoardCluster {
+  owner: string;
+  parent: string;
+  ids: string[];
+}
+
+/** Boards sharing the same (owner_person_id, parent_board_id) — the double-fire signature. */
+export function detectDuplicateBoards(db: Database.Database): DuplicateBoardCluster[] {
+  return (
+    db
+      .prepare(
+        `SELECT owner_person_id AS owner, parent_board_id AS parent, group_concat(id) AS ids, count(*) AS n
+         FROM boards
+         WHERE owner_person_id IS NOT NULL AND owner_person_id != '' AND parent_board_id IS NOT NULL
+         GROUP BY owner_person_id, parent_board_id
+         HAVING n > 1`,
+      )
+      .all() as Array<{ owner: string; parent: string; ids: string }>
+  ).map((r) => ({ owner: r.owner, parent: r.parent, ids: String(r.ids).split(',') }));
+}
+
+export interface StubDuplicate {
+  boardId: string;
+  stubId: string;
+  keeperId: string;
+  name: string;
+}
+
+/** Read-only: a role/phone-less board_people row whose name also appears under a
+ *  DIFFERENT, fully-populated person_id on the same board (the Mariany signature).
+ *  Surfaces candidates for human review — does NOT auto-merge. */
+export function detectStubDuplicateIdentities(db: Database.Database): StubDuplicate[] {
+  return db
+    .prepare(
+      `SELECT a.board_id AS boardId, a.person_id AS stubId, b.person_id AS keeperId, a.name AS name
+       FROM board_people a JOIN board_people b
+         ON a.board_id = b.board_id AND a.name = b.name AND a.person_id <> b.person_id
+       WHERE (a.role IS NULL OR a.role = '') AND (a.phone IS NULL OR a.phone = '')
+         AND b.role IS NOT NULL AND b.role != ''`,
+    )
+    .all() as StubDuplicate[];
+}
+
+/** Targeted check for a known orphaned person (registered, owns no board). */
+export function checkOrphanPerson(db: Database.Database, personId: string): { present: boolean; ownsBoard: boolean; taskCount: number } {
+  const present = !!db.prepare(`SELECT 1 FROM board_people WHERE person_id = ? LIMIT 1`).get(personId);
+  const ownsBoard = !!db.prepare(`SELECT 1 FROM boards WHERE owner_person_id = ? LIMIT 1`).get(personId);
+  const taskCount = (db.prepare(`SELECT count(*) AS c FROM tasks WHERE assignee = ?`).get(personId) as { c: number }).c;
+  return { present, ownsBoard, taskCount };
+}
+
+function main(): void {
+  const dbPath = process.argv[2];
+  const apply = process.argv.includes('--apply');
+  if (!dbPath || dbPath.startsWith('--')) {
+    console.error('usage: tsx setup/migrate-v2/fix-creation-defects.ts <taskflow.db> [--apply]   (default: dry-run)');
+    process.exit(2);
+  }
+  const db = new Database(dbPath);
+  try {
+    console.log(`\n=== V1 creation-defect remediation (${apply ? 'APPLY' : 'DRY-RUN'}) on ${dbPath} ===\n`);
+
+    // 1. Mariany (EX-015) — the one safe auto-fix.
+    const stubs = detectStubDuplicateIdentities(db);
+    console.log(`[1] dual-identity stubs detected: ${stubs.length}`);
+    for (const s of stubs) console.log(`    - "${s.name}" on ${s.boardId}: ${s.stubId} -> ${s.keeperId}`);
+    if (stubs.some((s) => s.stubId === 'mariany' && s.keeperId === 'mariany-borges')) {
+      if (apply) {
+        const sum = mergeDuplicatePerson(db, 'mariany', 'mariany-borges');
+        console.log(`    APPLIED mariany->mariany-borges:`, JSON.stringify(sum));
+      } else {
+        console.log(`    WOULD merge mariany->mariany-borges (re-run with --apply)`);
+      }
+    }
+    if (stubs.some((s) => !(s.stubId === 'mariany' && s.keeperId === 'mariany-borges'))) {
+      console.log(`    ⚠ OTHER stub-dup candidates found above — NOT auto-merged; confirm each by hand.`);
+    }
+
+    // 2. Sanunciel (EX-014) — cannot be SQL-fixed (board needs a real WhatsApp group).
+    const orphan = checkOrphanPerson(db, 'sanunciel');
+    console.log(`\n[2] Sanunciel orphan: present=${orphan.present} ownsBoard=${orphan.ownsBoard} tasks=${orphan.taskCount}`);
+    if (orphan.present && !orphan.ownsBoard) {
+      console.log(`    ⚠ MANUAL: re-provision Sanunciel's child board via the live agent post-cutover (SQL cannot create the WhatsApp group). His ${orphan.taskCount} task(s) stay on the parent until then.`);
+    }
+
+    // 3. Hudson duplicate-board cluster — real groups; operator decision.
+    const dups = detectDuplicateBoards(db);
+    console.log(`\n[3] duplicate-board clusters (same owner+parent): ${dups.length}`);
+    for (const d of dups) console.log(`    ⚠ MANUAL: owner=${d.owner} parent=${d.parent} -> ${d.ids.join(', ')} (each is a real WhatsApp group; operator picks the canonical one + migrates content).`);
+
+    console.log(`\n=== done (${apply ? 'changes committed' : 'no changes — dry-run'}) ===\n`);
+  } finally {
+    db.close();
+  }
+}
+
+if (process.argv[1] && process.argv[1].endsWith('fix-creation-defects.ts')) {
+  main();
+}
