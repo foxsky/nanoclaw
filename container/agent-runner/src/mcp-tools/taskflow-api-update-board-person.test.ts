@@ -144,3 +144,41 @@ describe('api_update_board_person — plain-UUID board ids', () => {
     ).toBeNull();
   });
 });
+
+describe("api_rename_board_person — name is per-person identity, applied to ALL the person's boards", () => {
+  const BOARD2 = 'board-b2';
+  beforeEach(() => {
+    // PID is already on BOARD (outer beforeEach). Put the SAME person on a 2nd board.
+    db.prepare(`INSERT INTO boards (id) VALUES (?)`).run(BOARD2);
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role, wip_limit) VALUES (?, ?, 'Ann', 'member', 2)`,
+    ).run(BOARD2, PID);
+  });
+
+  async function rename(args: Record<string, unknown>) {
+    const { apiRenameBoardPersonTool } = await import('./taskflow-api-board.ts');
+    return JSON.parse((await apiRenameBoardPersonTool.handler(args)).content[0].text);
+  }
+
+  it('renames the person on EVERY board they belong to (so the init name-heal cannot revert it)', async () => {
+    const r = await rename({ board_id: BOARD, person_id: PID, name: '  Annabelle Souza Completo  ' });
+    expect(r.success).toBe(true);
+    const rows = db
+      .prepare('SELECT board_id, name FROM board_people WHERE person_id=? ORDER BY board_id')
+      .all(PID) as Array<{ board_id: string; name: string }>;
+    expect(rows).toEqual([
+      { board_id: BOARD, name: 'Annabelle Souza Completo' },
+      { board_id: BOARD2, name: 'Annabelle Souza Completo' },
+    ]);
+  });
+
+  it('rejects an empty/whitespace name', async () => {
+    expect((await rename({ board_id: BOARD, person_id: PID, name: '   ' })).error_code).toBe('validation_error');
+  });
+
+  it('returns not_found when the person is not on the calling board', async () => {
+    const r = await rename({ board_id: BOARD, person_id: 'ghost', name: 'X' });
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('not_found');
+  });
+});
