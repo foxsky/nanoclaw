@@ -47,6 +47,11 @@ const FASTAPI_ALLOWLIST: ReadonlySet<string> = new Set([
   'api_create_simple_task',
   'api_update_simple_task',
   'api_delete_simple_task',
+  // Task moves go through the state machine (start/wait/review/approve/reject/
+  // conclude/reopen) instead of a raw column-set, so transition rules, role
+  // gates and the approval/review workflow are enforced. Dashboard POST
+  // /boards/{id}/tasks/{id}/move → this tool.
+  'api_move',
   'api_task_add_note',
   'api_task_edit_note',
   'api_task_remove_note',
