@@ -101,4 +101,35 @@ describe('handleRenameBoardPerson', () => {
       { board_id: 'b-2', name: 'Jeff' },
     ]);
   });
+
+  it('drops when the named board_id does not contain that person (membership mismatch)', async () => {
+    // 'jeff' exists globally (b-1/b-2) but NOT on b-3 — naming a board the person
+    // isn't on must NOT rename them (catches typos/mismatched ids). The rename
+    // is still per-person, but board_id is a membership precondition.
+    const setup = new Database(sharedState.tfDbPath);
+    setup.exec(`
+      INSERT INTO boards (id, group_jid, group_folder) VALUES ('b-3','j3','f3');
+      INSERT INTO board_people (board_id, person_id, name) VALUES ('b-3','someoneelse','Other');
+    `);
+    setup.close();
+    const { handleRenameBoardPerson } = await import('./rename-board-person.js');
+    await handleRenameBoardPerson({ ...content, board_id: 'b-3' }, fakeSession, {} as Database.Database);
+    expect(names()).toEqual([
+      { board_id: 'b-1', name: 'Jefferson Full' },
+      { board_id: 'b-2', name: 'Jeff' },
+    ]);
+  });
+
+  it('drops on missing board_id', async () => {
+    const { handleRenameBoardPerson } = await import('./rename-board-person.js');
+    await handleRenameBoardPerson(
+      { action: 'rename_board_person', person_id: 'jeff', name: 'X' },
+      fakeSession,
+      {} as Database.Database,
+    );
+    expect(names()).toEqual([
+      { board_id: 'b-1', name: 'Jefferson Full' },
+      { board_id: 'b-2', name: 'Jeff' },
+    ]);
+  });
 });

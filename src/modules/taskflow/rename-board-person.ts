@@ -25,11 +25,13 @@ export async function handleRenameBoardPerson(
 ): Promise<void> {
   if (!checkMainControlSession(session, 'rename_board_person')) return;
 
+  const boardId = nonEmptyString(content.board_id);
   const personId = nonEmptyString(content.person_id);
   const name = nonEmptyString(content.name);
-  if (!personId || !name) {
+  if (!boardId || !personId || !name) {
     log.warn('rename_board_person: invalid payload', {
       sessionId: session.id,
+      hasBoard: !!boardId,
       hasPerson: !!personId,
       hasName: !!name,
     });
@@ -38,9 +40,15 @@ export async function handleRenameBoardPerson(
 
   const db = new Database(TASKFLOW_DB_PATH);
   try {
-    const exists = db.prepare('SELECT 1 FROM board_people WHERE person_id = ? LIMIT 1').get(personId);
-    if (!exists) {
-      log.warn('rename_board_person: person not found', { sessionId: session.id, personId });
+    // Membership precondition: the person must be on the board the caller named
+    // (catches a typo'd/mismatched id from renaming the wrong person). The rename
+    // itself stays per-PERSON (WHERE person_id) so all the person's boards stay
+    // consistent and the init name-heal (which reconciles by person_id) is a no-op.
+    const onBoard = db
+      .prepare('SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?')
+      .get(boardId, personId);
+    if (!onBoard) {
+      log.warn('rename_board_person: person not on the named board', { sessionId: session.id, boardId, personId });
       return;
     }
     const res = db.prepare('UPDATE board_people SET name = ? WHERE person_id = ?').run(name.trim(), personId);
