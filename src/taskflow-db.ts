@@ -659,6 +659,7 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   db.exec(`DROP TABLE IF EXISTS task_comments`);
 
   canonicalizePhoneColumns(db);
+  canonicalizeBoardPersonNames(db);
 
   return db;
 }
@@ -721,6 +722,52 @@ function canonicalizePhoneColumns(db: Database.Database): void {
     });
     tx();
   }
+}
+
+/**
+ * One-time idempotent migration: reconcile divergent person NAMES across
+ * boards. The auto-provisioning path copies a person's name onto each board
+ * at create time; a truncated copy (e.g. "Marcilio Daniel" alongside the full
+ * "Jefferson Marcílio Daniel Correia" for the same `person_id`) left one board
+ * disagreeing with the others. Names live per-board in `board_people` (there
+ * is no canonical `people` table), so this picks the most-complete (longest,
+ * trimmed) name per `person_id` and rewrites the shorter copies, so every
+ * board agrees. Runs at init, before any container reads the DB.
+ *
+ * The pick is deterministic (tie → lexicographically smallest), so a second
+ * run on an already-reconciled DB is a fixed point. Heuristic limit: this
+ * assumes divergence is TRUNCATION (the observed bug class) — the longest form
+ * is the most complete. It does NOT adjudicate two genuinely different names
+ * typed for one `person_id`; that needs an operator rename.
+ */
+function canonicalizeBoardPersonNames(db: Database.Database): void {
+  const hasTable = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='board_people'`).get();
+  if (!hasTable) return;
+  const cols = (db.prepare(`PRAGMA table_info(board_people)`).all() as Array<{ name: string }>).map((c) => c.name);
+  if (!cols.includes('name') || !cols.includes('person_id')) return;
+
+  const rows = db
+    .prepare(`SELECT person_id, name FROM board_people WHERE name IS NOT NULL AND name != ''`)
+    .all() as Array<{ person_id: string; name: string }>;
+
+  const namesByPerson = new Map<string, Set<string>>();
+  for (const { person_id, name } of rows) {
+    let set = namesByPerson.get(person_id);
+    if (!set) namesByPerson.set(person_id, (set = new Set()));
+    set.add(name);
+  }
+
+  const update = db.prepare(`UPDATE board_people SET name = ? WHERE person_id = ? AND name != ?`);
+  const tx = db.transaction(() => {
+    for (const [personId, names] of namesByPerson) {
+      if (names.size < 2) continue; // already consistent across this person's boards
+      const canonical = [...names].sort(
+        (a, b) => b.trim().length - a.trim().length || (a < b ? -1 : a > b ? 1 : 0),
+      )[0];
+      update.run(canonical, personId, canonical);
+    }
+  });
+  tx();
 }
 
 // CLI entry point: node dist/taskflow-db.js [dbPath]

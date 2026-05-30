@@ -864,4 +864,50 @@ describe('initTaskflowDb', () => {
     expect(bob.phone).toBe('85999991234'); // SKIPPED — would have collided
     db.close();
   });
+
+  it('canonicalizes divergent per-person names across boards to the most-complete form', () => {
+    // The auto-provisioning bug copied a TRUNCATED person name onto a child
+    // board (Jefferson: full name on the parent, "Marcilio Daniel" on the
+    // auto-provisioned child — same person_id). The init heal picks the
+    // most-complete (longest) name per person_id and rewrites the short copies
+    // so every board agrees on one name — no canonical `people` table needed.
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'taskflow-db-test-'));
+    tempDirs.push(tempDir);
+    const dbPath = path.join(tempDir, 'taskflow.db');
+    const legacyDb = new Database(dbPath);
+    legacyDb.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY);
+      CREATE TABLE board_people (
+        board_id TEXT, person_id TEXT NOT NULL, name TEXT NOT NULL, phone TEXT,
+        role TEXT DEFAULT 'member', wip_limit INTEGER,
+        PRIMARY KEY (board_id, person_id)
+      );
+      INSERT INTO boards (id) VALUES ('b-parent'), ('b-child'), ('b-other');
+      INSERT INTO board_people VALUES ('b-parent', 'jeff', 'Jefferson Marcílio Daniel Correia', '5586988304190', 'member', NULL);
+      INSERT INTO board_people VALUES ('b-child',  'jeff', 'Marcilio Daniel',                   '5586988304190', 'manager', NULL);
+      INSERT INTO board_people VALUES ('b-other',  'ana',  'Ana',                               '5511999990000', 'member', NULL);
+    `);
+    legacyDb.close();
+
+    const db = initTaskflowDb(dbPath);
+
+    // Both of Jeff's rows now carry the most-complete name.
+    const jeff = db.prepare('SELECT name FROM board_people WHERE person_id = ?').all('jeff') as Array<{ name: string }>;
+    expect(jeff.map((r) => r.name)).toEqual([
+      'Jefferson Marcílio Daniel Correia',
+      'Jefferson Marcílio Daniel Correia',
+    ]);
+    // A different person is untouched — names are reconciled per person_id, not merged across people.
+    const ana = db.prepare('SELECT name FROM board_people WHERE person_id = ?').get('ana') as { name: string };
+    expect(ana.name).toBe('Ana');
+
+    // Idempotent: a second init is a fixed point.
+    db.close();
+    const db2 = initTaskflowDb(dbPath);
+    const jeff2 = db2.prepare('SELECT DISTINCT name FROM board_people WHERE person_id = ?').all('jeff') as Array<{
+      name: string;
+    }>;
+    expect(jeff2).toEqual([{ name: 'Jefferson Marcílio Daniel Correia' }]);
+    db2.close();
+  });
 });
