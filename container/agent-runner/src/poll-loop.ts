@@ -2760,6 +2760,23 @@ function handleTaskflowExplicitReassign(
   return true;
 }
 
+/**
+ * Ack for a successful person registration whose child board is being provisioned
+ * asynchronously by the host. Intentionally confirms only the PERSON (which did
+ * succeed) and says the board is in progress — it must NOT claim board completion
+ * or print a board id, because the board may not exist yet and its final id can
+ * differ on a folder collision. The host emits the authoritative confirmation
+ * (real id, on success) or a fail-loud alert (on failure).
+ */
+export function buildPersonRegisteredAck(personName: string, role: string, groupName: string): string {
+  const firstName = personName.split(/\s+/)[0] || personName;
+  return (
+    `✅ *${personName} cadastrado(a)*\n━━━━━━━━━━━━━━\n\n` +
+    `👤 *${personName}*\n💼 ${role}\n\n` +
+    `O quadro da divisão *${groupName}* está sendo provisionado. ${firstName} receberá o convite pelo WhatsApp, e a confirmação com o quadro chega aqui assim que estiver pronto.`
+  );
+}
+
 function handleTaskflowPendingChildBoardRegistration(
   action: TaskflowPendingChildBoardRegistration,
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
@@ -2782,31 +2799,6 @@ function handleTaskflowPendingChildBoardRegistration(
   const result = engine.admin({ ...input, board_id: boardId });
   appendMcpEquivalentToolCapture('api_admin', input, result, !result.success);
 
-  const childBoardId = `board-${action.groupFolder}`;
-  // Direct boards lookup OR board_groups bridge — drifted folders (v1
-  // registered_groups.folder mismatched with boards.group_folder, reconciled
-  // post-migration via board_groups rows) would otherwise miss here and the
-  // handler would either claim "registration failed" when the board exists
-  // or display a synthetic board ID in the success message. Same pattern as
-  // src/modules/taskflow/provision-shared.ts:findBoardByFolder + the runtime
-  // resolver in src/taskflow-db.ts:resolveTaskflowBoardId.
-  //
-  // The board_groups fallback JOINs to boards so a stale mapping row (board
-  // deleted but bridge left behind) doesn't make a non-existent board appear
-  // in the success message — only live boards count.
-  const tfDb = getTaskflowDb();
-  let childBoard = tfDb.prepare(
-    `SELECT id FROM boards WHERE id = ? OR group_folder = ? LIMIT 1`,
-  ).get(childBoardId, action.groupFolder) as { id: string } | undefined;
-  if (!childBoard) {
-    childBoard = tfDb.prepare(
-      `SELECT b.id FROM board_groups bg
-       JOIN boards b ON b.id = bg.board_id
-       WHERE bg.group_folder = ?
-       ORDER BY bg.board_id LIMIT 1`,
-    ).get(action.groupFolder) as { id: string } | undefined;
-  }
-
   const autoProvision = result.success ? result.auto_provision_request : undefined;
   if (autoProvision) {
     writeMessageOut({
@@ -2828,16 +2820,13 @@ function handleTaskflowPendingChildBoardRegistration(
     return true;
   }
 
-  const firstName = action.personName.split(/\s+/)[0] || action.personName;
-  writeReply(
-    routing,
-    `✅ *${action.personName} cadastrado com sucesso*\n━━━━━━━━━━━━━━\n\n` +
-    `👤 *${action.personName}*\n💼 ${action.role}\n\n` +
-    `O quadro *${action.groupName}* está sendo criado automaticamente. Em breve ${firstName} receberá o convite de acesso pelo WhatsApp.\n\n` +
-    `✅ Quadro de ${action.personName} provisionado automaticamente.\n\n` +
-    `Grupo: ${action.groupName}\nQuadro: ${childBoard?.id ?? childBoardId}\n\n` +
-    `O quadro estará disponível na próxima interação.`,
-  );
+  // The person registration succeeded; the child board is provisioned
+  // ASYNCHRONOUSLY by the host. Do NOT claim board completion or print a board id
+  // here — the host sends the authoritative confirmation (with the real id) on
+  // success, or a fail-loud alert on failure (provision-child-board.ts). An
+  // optimistic ack here was the Reginaldo announce≠persist + Sanunciel
+  // silent-success defect.
+  writeReply(routing, buildPersonRegisteredAck(action.personName, action.role, action.groupName));
   return true;
 }
 

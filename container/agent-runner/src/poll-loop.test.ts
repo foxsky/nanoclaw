@@ -12,6 +12,7 @@ import { formatMessages, extractRouting } from './formatter.js';
 import { MockProvider } from './providers/mock.js';
 import {
   hasWakeTrigger,
+  buildPersonRegisteredAck,
   taskflowBareTaskDetailsCommand,
   taskflowBulkApprovalCommand,
   taskflowAddExternalParticipantToLatestMeetingCommand,
@@ -1316,5 +1317,19 @@ describe('end-to-end with mock provider', () => {
     expect(outMessages).toHaveLength(1);
     expect(JSON.parse(outMessages[0].content).text).toBe('The answer is 4');
     expect(outMessages[0].in_reply_to).toBe('m1');
+  });
+});
+
+describe('buildPersonRegisteredAck (EX-014/FU-4: no optimistic board success, no synthetic id)', () => {
+  it('confirms the person but reports the board as in-progress, with no board id and no false success', () => {
+    const ack = buildPersonRegisteredAck('Sanunciel Estagiário', 'Estagiário', 'EST - TaskFlow');
+    expect(ack).toContain('Sanunciel');
+    expect(ack).toContain('Estagiário');
+    // says the board is being provisioned, not done
+    expect(ack).toContain('sendo provisionado');
+    // must NOT claim the board completed, nor print any board id, nor promise availability
+    expect(ack).not.toMatch(/provisionado automaticamente|com sucesso/);
+    expect(ack).not.toMatch(/board-/);
+    expect(ack).not.toContain('disponível na próxima');
   });
 });
