@@ -15,6 +15,7 @@ import {
   sanitizeFolder,
   scheduleOnboarding,
   scheduleRunners,
+  seedBoardCore,
   uniqueFolder,
 } from './provision-shared.js';
 
@@ -383,5 +384,101 @@ describe('createBoardFilesystem (integration via tmp groups dir)', () => {
       const groupDir = path.join(realGroupsDir, folder);
       fs.rmSync(groupDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('seedBoardCore', () => {
+  // Both provision_root_board and provision_child_board depend on this helper
+  // to persist the caller-RESOLVED values verbatim across the five
+  // board-defining tables. The test pins that contract: whatever the caller
+  // decided (root from input, child inherited from the parent) lands exactly,
+  // including the nullable owner_person_id that distinguishes a child board.
+  let tfDb: Database.Database;
+  beforeEach(() => {
+    tfDb = initTaskflowDb(':memory:');
+  });
+  afterEach(() => {
+    tfDb.close();
+  });
+
+  const RUNTIME = {
+    language: 'pt-BR',
+    timezone: 'America/Fortaleza',
+    standup_cron_local: '0 8 * * 1-5',
+    digest_cron_local: '0 18 * * 1-5',
+    review_cron_local: '0 9 * * 1',
+    standup_cron_utc: '0 11 * * 1-5',
+    digest_cron_utc: '0 21 * * 1-5',
+    review_cron_utc: '0 12 * * 1',
+    attachment_enabled: 1,
+    attachment_disabled_reason: '',
+    dst_sync_enabled: 1,
+  };
+
+  it('writes all five board-defining rows with the resolved values (child board, owner set)', () => {
+    // boards.parent_board_id is a FK to boards.id — the parent must exist.
+    tfDb
+      .prepare(
+        `INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code)
+         VALUES ('board-parent', '120363parent@g.us', 'parent-taskflow', 'hierarchy', 1, 3, NULL, 'PAR')`,
+      )
+      .run();
+    seedBoardCore(tfDb, {
+      boardId: 'board-x',
+      groupJid: '120363999@g.us',
+      folder: 'x-taskflow',
+      hierarchyLevel: 2,
+      maxDepth: 3,
+      parentBoardId: 'board-parent',
+      shortCode: 'X',
+      ownerPersonId: 'ana',
+      wipLimit: 5,
+      runtime: RUNTIME,
+      person: { personId: 'ana', name: 'Ana Souza', phone: '5511999999999', role: 'manager' },
+    });
+
+    const board = tfDb.prepare('SELECT * FROM boards WHERE id = ?').get('board-x') as any;
+    expect(board.hierarchy_level).toBe(2);
+    expect(board.parent_board_id).toBe('board-parent');
+    expect(board.owner_person_id).toBe('ana');
+    expect(board.board_role).toBe('hierarchy');
+    expect(board.short_code).toBe('X');
+
+    expect(
+      (tfDb.prepare('SELECT wip_limit FROM board_config WHERE board_id = ?').get('board-x') as any).wip_limit,
+    ).toBe(5);
+
+    const rt = tfDb.prepare('SELECT * FROM board_runtime_config WHERE board_id = ?').get('board-x') as any;
+    expect(rt.timezone).toBe('America/Fortaleza');
+    expect(rt.standup_cron_utc).toBe('0 11 * * 1-5');
+
+    const admin = tfDb.prepare('SELECT * FROM board_admins WHERE board_id = ?').get('board-x') as any;
+    expect(admin.person_id).toBe('ana');
+    expect(admin.is_primary_manager).toBe(1);
+
+    const person = tfDb.prepare('SELECT * FROM board_people WHERE board_id = ?').get('board-x') as any;
+    expect(person.name).toBe('Ana Souza');
+    expect(person.wip_limit).toBe(5);
+    expect(person.notification_group_jid).toBeNull();
+  });
+
+  it('persists a root board with null parent and null owner_person_id', () => {
+    seedBoardCore(tfDb, {
+      boardId: 'board-root',
+      groupJid: '120363000@g.us',
+      folder: 'root-taskflow',
+      hierarchyLevel: 0,
+      maxDepth: 3,
+      parentBoardId: null,
+      shortCode: 'ROOT',
+      ownerPersonId: null,
+      wipLimit: 8,
+      runtime: RUNTIME,
+      person: { personId: 'bob', name: 'Bob', phone: '5511888888888', role: 'manager' },
+    });
+    const board = tfDb.prepare('SELECT * FROM boards WHERE id = ?').get('board-root') as any;
+    expect(board.hierarchy_level).toBe(0);
+    expect(board.parent_board_id).toBeNull();
+    expect(board.owner_person_id).toBeNull();
   });
 });

@@ -26,6 +26,7 @@ import {
   findBoardByFolder,
   scheduleOnboarding,
   scheduleRunners,
+  seedBoardCore,
   TASKFLOW_DB_PATH,
   wireV2,
   type BoardConfigRow,
@@ -263,66 +264,24 @@ function seedChildTaskflow(
   let linkedTasks = 0;
 
   tfDb.transaction(() => {
-    tfDb
-      .prepare(
-        'INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code, owner_person_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      )
-      .run(
-        childBoardId,
-        childGroupJid,
-        childFolder,
-        'hierarchy',
-        parentBoard.hierarchy_level + 1,
-        parentBoard.max_depth,
-        parentBoard.id,
-        parsed.shortCode,
-        parsed.personId,
-      );
+    seedBoardCore(tfDb, {
+      boardId: childBoardId,
+      groupJid: childGroupJid,
+      folder: childFolder,
+      hierarchyLevel: parentBoard.hierarchy_level + 1,
+      maxDepth: parentBoard.max_depth,
+      parentBoardId: parentBoard.id,
+      shortCode: parsed.shortCode,
+      ownerPersonId: parsed.personId,
+      // Child inherits the parent's WIP + runtime config (crons, language, tz).
+      wipLimit: parentConfig.wip_limit,
+      runtime: parentRuntime,
+      person: { personId: parsed.personId, name: parsed.personName, phone, role: parsed.personRole },
+    });
 
     tfDb
       .prepare('INSERT INTO child_board_registrations (parent_board_id, person_id, child_board_id) VALUES (?, ?, ?)')
       .run(parentBoard.id, parsed.personId, childBoardId);
-
-    tfDb
-      .prepare('INSERT INTO board_config (board_id, wip_limit) VALUES (?, ?)')
-      .run(childBoardId, parentConfig.wip_limit);
-
-    tfDb
-      .prepare(
-        `INSERT INTO board_runtime_config (
-           board_id, language, timezone,
-           standup_cron_local, digest_cron_local, review_cron_local,
-           standup_cron_utc, digest_cron_utc, review_cron_utc,
-           attachment_enabled, attachment_disabled_reason,
-           dst_sync_enabled
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        childBoardId,
-        parentRuntime.language,
-        parentRuntime.timezone,
-        parentRuntime.standup_cron_local,
-        parentRuntime.digest_cron_local,
-        parentRuntime.review_cron_local,
-        parentRuntime.standup_cron_utc,
-        parentRuntime.digest_cron_utc,
-        parentRuntime.review_cron_utc,
-        parentRuntime.attachment_enabled,
-        parentRuntime.attachment_disabled_reason,
-        parentRuntime.dst_sync_enabled,
-      );
-
-    tfDb
-      .prepare(
-        'INSERT INTO board_admins (board_id, person_id, phone, admin_role, is_primary_manager) VALUES (?, ?, ?, ?, ?)',
-      )
-      .run(childBoardId, parsed.personId, phone, 'manager', 1);
-
-    tfDb
-      .prepare(
-        'INSERT INTO board_people (board_id, person_id, name, phone, role, wip_limit, notification_group_jid) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      )
-      .run(childBoardId, parsed.personId, parsed.personName, phone, parsed.personRole, parentConfig.wip_limit, null);
 
     tfDb
       .prepare('UPDATE board_people SET notification_group_jid = ? WHERE board_id = ? AND person_id = ?')

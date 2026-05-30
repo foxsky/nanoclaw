@@ -120,6 +120,91 @@ export interface BoardRuntimeConfigRow {
   dst_sync_enabled: number;
 }
 
+export interface SeedBoardCoreParams {
+  boardId: string;
+  groupJid: string;
+  folder: string;
+  hierarchyLevel: number;
+  maxDepth: number;
+  parentBoardId: string | null;
+  shortCode: string | null;
+  /** null for root boards; the provisioned person for child boards. */
+  ownerPersonId: string | null;
+  wipLimit: number;
+  /** All runtime values pre-resolved by the caller (root from input, child
+   *  inherited from the parent's `board_runtime_config`). */
+  runtime: Omit<BoardRuntimeConfigRow, 'board_id'>;
+  /** The provisioned person, who is also the board's primary manager. */
+  person: { personId: string; name: string; phone: string; role: string };
+}
+
+/**
+ * Seeds the five board-defining rows shared by root and child provisioning:
+ * `boards`, `board_config`, `board_runtime_config`, `board_admins` (primary
+ * manager = the provisioned person), and `board_people`. Every value is
+ * resolved by the caller (root from operator input, child inherited from the
+ * parent), so this stays a pure write of already-decided state. The caller
+ * owns the surrounding transaction and any handler-specific writes
+ * (`task_history`, `child_board_registrations`, parent-task re-linking); call
+ * this INSIDE that `tfDb.transaction` so the board seed is atomic with them.
+ */
+export function seedBoardCore(tfDb: Database.Database, p: SeedBoardCoreParams): void {
+  tfDb
+    .prepare(
+      'INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code, owner_person_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    )
+    .run(
+      p.boardId,
+      p.groupJid,
+      p.folder,
+      'hierarchy',
+      p.hierarchyLevel,
+      p.maxDepth,
+      p.parentBoardId,
+      p.shortCode,
+      p.ownerPersonId,
+    );
+
+  tfDb.prepare('INSERT INTO board_config (board_id, wip_limit) VALUES (?, ?)').run(p.boardId, p.wipLimit);
+
+  tfDb
+    .prepare(
+      `INSERT INTO board_runtime_config (
+        board_id, language, timezone,
+        standup_cron_local, digest_cron_local, review_cron_local,
+        standup_cron_utc, digest_cron_utc, review_cron_utc,
+        attachment_enabled, attachment_disabled_reason,
+        dst_sync_enabled
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      p.boardId,
+      p.runtime.language,
+      p.runtime.timezone,
+      p.runtime.standup_cron_local,
+      p.runtime.digest_cron_local,
+      p.runtime.review_cron_local,
+      p.runtime.standup_cron_utc,
+      p.runtime.digest_cron_utc,
+      p.runtime.review_cron_utc,
+      p.runtime.attachment_enabled,
+      p.runtime.attachment_disabled_reason,
+      p.runtime.dst_sync_enabled,
+    );
+
+  tfDb
+    .prepare(
+      'INSERT INTO board_admins (board_id, person_id, phone, admin_role, is_primary_manager) VALUES (?, ?, ?, ?, ?)',
+    )
+    .run(p.boardId, p.person.personId, p.person.phone, 'manager', 1);
+
+  tfDb
+    .prepare(
+      'INSERT INTO board_people (board_id, person_id, name, phone, role, wip_limit, notification_group_jid) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    )
+    .run(p.boardId, p.person.personId, p.person.name, p.person.phone, p.person.role, p.wipLimit, null);
+}
+
 /** v2 task envelope shape expected by the agent runner: it does
  *  `JSON.parse(content)` and reads `.prompt` and `.script`. Raw strings
  *  silently corrupt — use this helper at every insertTask call site. */

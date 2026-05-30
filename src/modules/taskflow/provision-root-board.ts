@@ -23,6 +23,7 @@ import {
   sanitizeFolder,
   scheduleOnboarding,
   scheduleRunners,
+  seedBoardCore,
   TASKFLOW_DB_PATH,
   TASKFLOW_SUFFIX,
   ensureSessionInbound,
@@ -127,50 +128,31 @@ function seedTaskflow(
   const ts = new Date().toISOString();
 
   tfDb.transaction(() => {
-    tfDb
-      .prepare(
-        'INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      )
-      .run(boardId, groupJid, folder, 'hierarchy', 0, parsed.maxDepth, null, parsed.shortCode);
-
-    tfDb.prepare('INSERT INTO board_config (board_id, wip_limit) VALUES (?, ?)').run(boardId, parsed.wipLimit);
-
-    tfDb
-      .prepare(
-        `INSERT INTO board_runtime_config (
-          board_id, language, timezone,
-          standup_cron_local, digest_cron_local, review_cron_local,
-          standup_cron_utc, digest_cron_utc, review_cron_utc,
-          attachment_enabled, attachment_disabled_reason,
-          dst_sync_enabled
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        boardId,
-        parsed.language,
-        parsed.timezone,
-        parsed.cron.standupLocal,
-        parsed.cron.digestLocal,
-        parsed.cron.reviewLocal,
-        parsed.cron.standupUtc,
-        parsed.cron.digestUtc,
-        parsed.cron.reviewUtc,
-        1,
-        '',
-        1,
-      );
-
-    tfDb
-      .prepare(
-        'INSERT INTO board_admins (board_id, person_id, phone, admin_role, is_primary_manager) VALUES (?, ?, ?, ?, ?)',
-      )
-      .run(boardId, parsed.personId, canonicalPhone, 'manager', 1);
-
-    tfDb
-      .prepare(
-        'INSERT INTO board_people (board_id, person_id, name, phone, role, wip_limit, notification_group_jid) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      )
-      .run(boardId, parsed.personId, parsed.personName, canonicalPhone, parsed.personRole, parsed.wipLimit, null);
+    seedBoardCore(tfDb, {
+      boardId,
+      groupJid,
+      folder,
+      hierarchyLevel: 0,
+      maxDepth: parsed.maxDepth,
+      parentBoardId: null,
+      shortCode: parsed.shortCode,
+      ownerPersonId: null,
+      wipLimit: parsed.wipLimit,
+      runtime: {
+        language: parsed.language,
+        timezone: parsed.timezone,
+        standup_cron_local: parsed.cron.standupLocal,
+        digest_cron_local: parsed.cron.digestLocal,
+        review_cron_local: parsed.cron.reviewLocal,
+        standup_cron_utc: parsed.cron.standupUtc,
+        digest_cron_utc: parsed.cron.digestUtc,
+        review_cron_utc: parsed.cron.reviewUtc,
+        attachment_enabled: 1,
+        attachment_disabled_reason: '',
+        dst_sync_enabled: 1,
+      },
+      person: { personId: parsed.personId, name: parsed.personName, phone: canonicalPhone, role: parsed.personRole },
+    });
 
     tfDb
       .prepare(
