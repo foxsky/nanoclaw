@@ -27,6 +27,64 @@ throws the request away and nothing happens. (See [Troubleshooting](#troubleshoo
 
 ---
 
+## Mental model: boards, groups, and who is in them
+
+**A board *is* a WhatsApp group — 1:1.** Creating a board creates a group
+(`boards.group_jid` ↔ `messaging_groups.platform_id`, `provision-shared.ts:154,557`).
+"Giving someone their own board" and "giving them their own group" are the same
+act. A person without their own board has no group of their own — they exist only
+as a member inside someone else's board group.
+
+**TaskFlow is an org tree, so groups come in two shapes:**
+
+- **Coordination boards** (root / division) — a *shared* group: a manager plus the
+  people whose work rolls up to them. Multiple humans, one agent. These exist for
+  team rituals (standup / digest / review run here) and for rollup — a parent
+  board sees its children's task totals.
+- **Personal boards** (child boards) — *one person* each: a private group between
+  that person and the agent, where they manage their own queue. This is the clean
+  "1 person = 1 board = 1 group" unit. Delegating down (child boards) is how you
+  reach it.
+
+So multi-person groups are not the unit of individual work — they are the layer
+*above* it. Individual work is meant to flow down into personal child boards.
+
+**Who is just a member vs. who gets their own board:**
+
+| Role on a board | Own board/group? | Why |
+|---|---|---|
+| Owner / manager | The board they manage | Seeded at provisioning |
+| Team member / assignee | No — a member of the team board | Tasks are assigned to them; tracked at team level |
+| Manager / delegate (`add_manager` / `add_delegate`) | No — oversees, no personal queue | Deliberately board-less of their own |
+| Delegated individual contributor | Yes — a child board | Needs their own space; `register_person` on a hierarchy board auto-provisions it |
+
+A "member without their own board" is not a half-user — it is someone whose work
+is tracked at the team level. When they need their own space, you delegate down
+and they get a personal board.
+
+### The noise problem in a shared group — and how to control it
+
+A multi-person WhatsApp group with an AI agent in it *can* be noisy — and by
+default it is: **a newly provisioned board replies to every message**
+(`engagePattern = '.'`), for **both** root and child boards
+(`provision-root-board.ts:257-258`, `provision-child-board.ts:492-493`).
+
+- For a **one-person child board** that is correct — it is your private assistant.
+- For a **multi-person coordination board** it is usually wrong — you do not want
+  the agent reacting to every human-to-human message.
+
+The control is **`requires_trigger`**, which defaults to **`false`**
+(`provision-root-board.ts:91`). Set it **`true`** when you create a multi-person
+board: the agent then acts only when it sees the **`trigger`** pattern (defaults
+to **`@Case`**), so people chat freely and call `@Case` only when they want the
+agent. (This is opt-in — it is *not* automatic from board size.)
+
+> **Rule of thumb:** multi-person board → create it with `requires_trigger: true`
+> (mention-only `@Case`); one-person board → leave it replying to everything. This
+> is the single most important setting for keeping a team WhatsApp group usable.
+
+---
+
 ## A. Create a brand-new top-level (root) board
 
 **Do this from:** the **main-control chat** only. From anywhere else the call is
@@ -57,7 +115,8 @@ silently dropped at the host gate (`checkMainControlSession`,
    | `timezone` | America/Fortaleza |
    | `wip_limit` | 5 |
    | `max_depth` | 3 (how deep child boards may nest) |
-   | `trigger` | @Case, mention-only (`requires_trigger`) |
+   | `trigger` | @Case (the mention pattern) |
+   | `requires_trigger` | **false** — the agent replies to *every* message unless you set this `true`; see [Mental model](#mental-model-boards-groups-and-who-is-in-them) |
    | `model` | claude-sonnet-4-6 |
    | standup / digest / review crons | `*_cron_local` or `*_cron_utc` |
    | `participants` | initial WhatsApp members (`<digits>@s.whatsapp.net`) |
