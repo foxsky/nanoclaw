@@ -44,6 +44,17 @@
     }
   },
   {
+    "turn_index": 19,
+    "context_mode": "fresh",
+    "source_turn_id": "b48ea38f-c239-4277-b770-0c15dfe1a2e2",
+    "source_jsonl": "messages.db#agent_turns/b48ea38f-c239-4277-b770-0c15dfe1a2e2",
+    "state_drift": {
+      "description": "Same M7-already-at-10h drift as turn 18. The corpus expected_behavior=read is a MISLABEL: v1 actually rescheduled M7 (v1 final_response: '✅ M7 — Reagendada para amanhã, 14/05 às 10:00'). The synced snapshot already has M7 at that exact slot, so v2 re-applying the (idempotent) reschedule mirrors v1's real behavior; whether v2 reads-and-confirms or re-mutates is a drift artifact, not a divergence. Observed non-determinism: the 2026-05-28 sample read (matched the wrong read label); the 2026-05-29 sample mutated (correctly mirrors v1) but tripped the mislabel.",
+      "evidence": "M7 scheduled_at in snapshot is 2026-05-14T13:00:00.000Z = 14/05 10:00 America/Fortaleza, exactly the requested 'amanhã, 10h' (turn ts 2026-05-13). v1 final_response confirms a reschedule, contradicting expected_behavior=read.",
+      "expected_with_historical_snapshot": "With the historical pre-reschedule snapshot, v2 should update M7 to the requested 10h time — which is what the 2026-05-29 v2 did (api_reschedule_meeting)."
+    }
+  },
+  {
     "turn_index": 1,
     "context_mode": "chain",
     "source_jsonl": "messages.db#agent_turns/83dcbd24-f6c5-4151-9bc0-89be31be0033",
