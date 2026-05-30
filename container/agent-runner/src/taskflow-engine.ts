@@ -305,12 +305,13 @@ export interface UndoResult extends TaskflowResult {
 
 export interface AdminParams {
   board_id: string;
-  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision' | 'accept_external_invite' | 'reparent_task' | 'detach_task' | 'merge_project' | 'handle_subtask_approval';
+  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'set_cross_board_subtask_mode' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision' | 'accept_external_invite' | 'reparent_task' | 'detach_task' | 'merge_project' | 'handle_subtask_approval';
   sender_name: string;
   person_name?: string;
   phone?: string;
   role?: string;
   wip_limit?: number;
+  cross_board_subtask_mode?: 'open' | 'approval' | 'blocked';
   task_id?: string;
   confirmed?: boolean;
   force?: boolean;
@@ -9546,6 +9547,36 @@ export class TaskflowEngine {
           return {
             success: true,
             data: { person: person.name, wip_limit: params.wip_limit },
+          };
+        }
+
+        /* ---- set_cross_board_subtask_mode ---- */
+        case 'set_cross_board_subtask_mode': {
+          const mode = params.cross_board_subtask_mode;
+          if (mode !== 'open' && mode !== 'approval' && mode !== 'blocked') {
+            return {
+              success: false,
+              error: 'Missing or invalid parameter: cross_board_subtask_mode (expected open, approval, or blocked).',
+            };
+          }
+
+          this.db
+            .prepare(
+              `INSERT INTO board_runtime_config (board_id, cross_board_subtask_mode)
+               VALUES (?, ?)
+               ON CONFLICT(board_id) DO UPDATE SET
+                 cross_board_subtask_mode = excluded.cross_board_subtask_mode`,
+            )
+            .run(this.boardId, mode);
+
+          this.recordHistory('BOARD', 'config_changed', params.sender_name, JSON.stringify({
+            key: 'cross_board_subtask_mode',
+            value: mode,
+          }));
+
+          return {
+            success: true,
+            data: { key: 'cross_board_subtask_mode', value: mode },
           };
         }
 

@@ -2,7 +2,7 @@
  * migrate-v2 step: groups
  *
  * Copy v1 group folders into v2.
- *   - v1 CLAUDE.md → v2 CLAUDE.local.md (v2 composes CLAUDE.md at spawn)
+ *   - v1 CLAUDE.md → migrated v2 CLAUDE.local.md (v2 composes CLAUDE.md at spawn)
  *   - v1 container_config → .v1-container-config.json sidecar
  *   - All other files copied (no overwrite)
  *   - Also copies global/ if it exists
@@ -16,7 +16,11 @@ import path from 'path';
 
 import Database from 'better-sqlite3';
 
+import { migrateBoardClaudeMd } from '../../scripts/migrate-board-claudemd.js';
+
 const SKIP_NAMES = new Set(['CLAUDE.md', 'logs', '.git', '.DS_Store', 'node_modules']);
+const LEGACY_PROMPT_PATTERN =
+  /\btaskflow_(query|report|move|reassign|update|admin|create|dependency|hierarchy|undo)\b|mcp__sqlite__|target_chat_jid|target_group_jid|schedule_type|schedule_value/;
 
 /**
  * Copy a directory tree, skipping SKIP_NAMES. Never overwrites existing files.
@@ -114,12 +118,19 @@ function main(): void {
 
     fs.mkdirSync(v2Folder, { recursive: true });
 
-    // CLAUDE.md → CLAUDE.local.md
+    // CLAUDE.md → migrated CLAUDE.local.md. If a previous partial run copied
+    // raw v1 instructions, replace them; otherwise preserve an existing local
+    // file so reruns do not wipe operator edits.
     const v1Claude = path.join(v1Folder, 'CLAUDE.md');
     const v2Local = path.join(v2Folder, 'CLAUDE.local.md');
-    if (fs.existsSync(v1Claude) && !fs.existsSync(v2Local)) {
-      fs.copyFileSync(v1Claude, v2Local);
-      claudesMigrated++;
+    if (fs.existsSync(v1Claude)) {
+      const migrated = migrateBoardClaudeMd(fs.readFileSync(v1Claude, 'utf8')).output;
+      const shouldWrite =
+        !fs.existsSync(v2Local) || LEGACY_PROMPT_PATTERN.test(fs.readFileSync(v2Local, 'utf8'));
+      if (shouldWrite) {
+        fs.writeFileSync(v2Local, migrated);
+        claudesMigrated++;
+      }
     }
 
     // Copy everything else

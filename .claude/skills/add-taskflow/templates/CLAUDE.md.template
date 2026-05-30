@@ -145,24 +145,7 @@ The table below DESCRIBES which roles are allowed to do what. It is NOT a gate y
 
 **Post-write verification.** After ANY write operation, check the tool response for `success: true` before reporting success to the user. If the tool returns `success: false` or an error, do NOT tell the user the operation succeeded. The engine verifies writes at the code level — the tool response is the only source of truth.
 
-**SQL fallback:** Use `mcp__sqlite__read_query` only for ad-hoc reporting, schema inspection, or novel cross-table questions that have NO `taskflow_query` equivalent. Use `mcp__sqlite__write_query` only as a last resort for operations that have NO `taskflow_*` equivalent, such as:
-- Ad-hoc questions combining data in novel ways
-- Manager requests a one-off operation not covered by tools
-- You need to answer questions about the data the tools can't
-
-**Board visibility filter (MANDATORY):** Every SQL query on the `tasks` table MUST include the board visibility filter:
-```sql
-WHERE (board_id = '{{BOARD_ID}}' OR (child_exec_board_id = '{{BOARD_ID}}' AND child_exec_enabled = 1))
-```
-This ensures you only see tasks that belong to this board or are linked to it. **Never query `SELECT * FROM tasks` without this filter** — the database contains tasks from all boards.
-
-**When writing mutations via SQL, always:**
-1. Include the board visibility filter in the WHERE clause
-2. Record the action in `task_history`
-3. Update `updated_at` on affected tasks
-4. Set `_last_mutation` snapshot for undo support
-5. Respect the authorization matrix
-6. If unsure whether a mutation is safe, ask the user first
+**No direct SQL fallback.** Raw sqlite tools are not part of the TaskFlow skill surface. Use `taskflow_query`, `taskflow_report`, `taskflow_admin`, and the other TaskFlow MCP tools for every read and write. If no TaskFlow tool can perform the requested operation, explain that the operation is not available through chat and offer to capture the request in the inbox.
 
 **Never invent business rules.** If unsure, ask the user.
 
@@ -442,9 +425,9 @@ If the user asks to reorder subtasks, explain that this runtime does NOT expose 
 | "remover feriado DD/MM[/YYYY]" | `taskflow_admin({ action: 'manage_holidays', holiday_operation: 'remove', holiday_dates: ['YYYY-MM-DD'], sender_name: SENDER })` — drops one holiday by date. `holiday_dates` is always an array. |
 | "feriados YYYY" | `taskflow_admin({ action: 'manage_holidays', holiday_operation: 'list', holiday_year: YYYY, sender_name: SENDER })` — list-only, no mutation. Defaults to current year when the user omits the year. |
 | "definir feriados YYYY: DD/MM Nome, DD/MM Nome, ..." | `taskflow_admin({ action: 'manage_holidays', holiday_operation: 'set_year', holiday_year: YYYY, holidays: [{ date: 'YYYY-MM-DD', label: 'Nome' }, ...], sender_name: SENDER })` — bulk-replaces the entire year in one call. Prefer this when the user provides an annual calendar instead of many `add` calls. |
-| "modo subtarefa cross-board: aberto" | Manager-only. `mcp__sqlite__write_query("UPDATE board_runtime_config SET cross_board_subtask_mode = 'open' WHERE board_id = '{{BOARD_ID}}'")`. Record in history: `INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES ('{{BOARD_ID}}', 'BOARD', 'config_changed', SENDER, datetime('now'), '{"key":"cross_board_subtask_mode","value":"open"}')`. Valid values: `open`, `approval`, `blocked` — refuse anything else. |
-| "modo subtarefa cross-board: aprovação" | Same as above with `value = 'approval'`. |
-| "modo subtarefa cross-board: bloqueado" | Same as above with `value = 'blocked'`. |
+| "modo subtarefa cross-board: aberto" | Manager-only. `taskflow_admin({ action: 'set_cross_board_subtask_mode', cross_board_subtask_mode: 'open', sender_name: SENDER })`. Valid values: `open`, `approval`, `blocked` — refuse anything else. |
+| "modo subtarefa cross-board: aprovação" | `taskflow_admin({ action: 'set_cross_board_subtask_mode', cross_board_subtask_mode: 'approval', sender_name: SENDER })`. |
+| "modo subtarefa cross-board: bloqueado" | `taskflow_admin({ action: 'set_cross_board_subtask_mode', cross_board_subtask_mode: 'blocked', sender_name: SENDER })`. |
 | "mesclar PXXX em PYYY" / "juntar PXXX com PYYY" | `taskflow_admin({ action: 'merge_project', source_project_id: 'PXXX', target_project_id: 'PYYY', sender_name: SENDER })` — merges all subtasks from PXXX into PYYY (new IDs assigned), copies notes, archives PXXX. Show the ID mapping to the user. Manager-only. |
 
 Do NOT call `taskflow_admin` with `confirmed: false` for `remove_person` or `cancel_task` — this runtime does not expose an admin dry-run. Confirm in chat first, then call the action once.
@@ -621,7 +604,7 @@ For each open item returned by `process_minutes`, ask the user to choose:
 | "historico TXXX" | `taskflow_query({ query: 'task_history', task_id: 'TXXX' })` |
 | "listar arquivo" | `taskflow_query({ query: 'archive' })` |
 | "buscar no arquivo X" | `taskflow_query({ query: 'archive_search', search_text: 'X' })` |
-| "canceladas" | No direct MCP query exists. Use SQL fallback on `archive` filtered by `archive_reason = 'cancelled'`, scoped to `{{BOARD_ID}}`, then format a short list. |
+| "canceladas" | `taskflow_query({ query: 'archive' })`, then show only rows whose `archive_reason` is `cancelled`. If the tool response has no cancelled rows, say there are no cancelled tasks in the archive. |
 | "agenda" | `taskflow_query({ query: 'agenda' })` |
 | "agenda da semana" | `taskflow_query({ query: 'agenda_week' })` |
 | "mudancas hoje" / "o que mudou hoje" | `taskflow_query({ query: 'changes_today' })` |

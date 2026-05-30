@@ -130,6 +130,69 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     expect(result.output).toContain('**Cross-board note-forward confirmation.**');
     expect(result.output).toContain('confirmation is for the forward action');
     expect(result.output).not.toContain('taskflow_query');
+    expect(result.output).not.toContain('mcp__sqlite__read_query');
+  });
+
+  it('strips raw sqlite fallback prose and ports the remaining command shapes to api tools', () => {
+    const input = [
+      '**CRITICAL: ALWAYS use `taskflow_create`, `taskflow_update`, `taskflow_move`, `taskflow_reassign` for ALL write operations.** NEVER use `mcp__sqlite__write_query` for creating, assigning, moving, or updating tasks — doing so bypasses notifications, WIP limits, history tracking, and child-board linking. If you use raw SQL to assign a task, the assignee will NOT be notified.',
+      '',
+      '**Read-path default:** For normal task and board inspection, use `taskflow_query` first (`task_details`, `task_history`, `my_tasks`, board lists, due-date queries, meeting queries). Do NOT start with `mcp__sqlite__read_query` when a `taskflow_query` variant can answer the question.',
+      '',
+      '**SQL fallback:** Use `mcp__sqlite__read_query` only for ad-hoc reporting, schema inspection, or novel cross-table questions that have NO `taskflow_query` equivalent. Use `mcp__sqlite__write_query` only as a last resort for operations that have NO `taskflow_*` equivalent, such as:',
+      '- Ad-hoc questions combining data in novel ways',
+      '- Manager requests a one-off operation not covered by tools',
+      '',
+      '**Never invent business rules.** If unsure, ask the user.',
+      '',
+      '| "canceladas" | No direct MCP query exists. Use SQL fallback on `archive` filtered by `archive_reason = \'cancelled\'`, scoped to `board-seci-taskflow`, then format a short list. |',
+      '| "modo subtarefa cross-board: aberto" | Manager-only. `mcp__sqlite__write_query("UPDATE board_runtime_config SET cross_board_subtask_mode = \'open\' WHERE board_id = \'board-seci-taskflow\'")`. Record in history: `INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES (\'board-seci-taskflow\', \'BOARD\', \'config_changed\', SENDER, datetime(\'now\'), \'{"key":"cross_board_subtask_mode","value":"open"}\')`. Valid values: `open`, `approval`, `blocked` — refuse anything else. |',
+      '| "modo subtarefa cross-board: aprovação" | Same as above with `value = \'approval\'`. |',
+      '| "modo subtarefa cross-board: bloqueado" | Same as above with `value = \'blocked\'`. |',
+    ].join('\n');
+
+    const result = migrateBoardClaudeMd(input);
+
+    expect(result.output).toContain('**No direct SQL fallback.**');
+    expect(result.output).toContain("api_query({ query: 'archive' })");
+    expect(result.output).toContain("api_admin({ action: 'set_cross_board_subtask_mode'");
+    expect(result.output).toContain("cross_board_subtask_mode: 'approval'");
+    expect(result.output).not.toContain('mcp__sqlite__');
+    expect(result.output).not.toContain('**SQL fallback:**');
+  });
+
+  it('removes stale v1 schedule_task target_group_jid examples from main prompts', () => {
+    const input = [
+      '## Scheduling for Other Groups',
+      '',
+      "When scheduling tasks for other groups, use the `target_group_jid` parameter with the group's JID from `registered_groups.json`:",
+      '- `schedule_task(prompt: "...", schedule_type: "cron", schedule_value: "0 9 * * 1", target_group_jid: "120363336345536173@g.us")`',
+      '',
+      "The task will run in that group's context with access to their files and memory.",
+    ].join('\n');
+
+    const result = migrateBoardClaudeMd(input);
+
+    expect(result.output).toContain('`schedule_task` runs in the current group context only.');
+    expect(result.output).not.toContain('target_group_jid');
+    expect(result.output).not.toContain('schedule_type');
+    expect(result.output).not.toContain('schedule_value');
+  });
+
+  it('keeps recurring schedule_task docs aligned with v2 processAfter plus recurrence', () => {
+    const input = [
+      'schedule_task(prompt: "[PROMPT]", schedule_type: "[cron|interval|once]", schedule_value: "[CRON_OR_TIMESTAMP]", context_mode: "group")',
+      '- `cron`: recurring. `schedule_value` is a standard 5-field cron expression (e.g., `"0 11 * * 1-5"` for weekdays at 11h). The cron parser evaluates it in the board\'s local timezone (America/Fortaleza) — there is no `Z`/UTC concept for cron schedules, so do NOT add one.',
+    ].join('\n');
+
+    const result = migrateBoardClaudeMd(input);
+
+    expect(result.output).toContain('schedule_task({ prompt: "[PROMPT]", processAfter: "[ISO_TIMESTAMP_OR_NULL]", recurrence: "[OPTIONAL_CRON]" })');
+    expect(result.output).toContain('set `processAfter` to the first run timestamp');
+    expect(result.output).toContain('set `recurrence` to the 5-field cron expression');
+    expect(result.output).not.toContain('`schedule_type`');
+    expect(result.output).not.toContain('`schedule_value`');
+    expect(result.output).not.toContain('`processAfter` is a standard 5-field cron expression');
   });
 
   it('adds bare activity phrase guidance near intent analysis', () => {

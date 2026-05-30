@@ -44,11 +44,14 @@ type Recurrence = (typeof RECURRENCES)[number];
 
 const ADMIN_ACTIONS = [
   'register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin',
-  'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays',
+  'set_wip_limit', 'set_cross_board_subtask_mode', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays',
   'process_minutes', 'process_minutes_decision', 'accept_external_invite',
   'reparent_task', 'detach_task', 'merge_project', 'handle_subtask_approval',
 ] as const;
 type AdminAction = (typeof ADMIN_ACTIONS)[number];
+
+const CROSS_BOARD_SUBTASK_MODES = ['open', 'approval', 'blocked'] as const;
+type CrossBoardSubtaskMode = (typeof CROSS_BOARD_SUBTASK_MODES)[number];
 
 const HOLIDAY_OPS = ['add', 'remove', 'set_year', 'list'] as const;
 type HolidayOp = (typeof HOLIDAY_OPS)[number];
@@ -1150,7 +1153,7 @@ export const apiAdminTool: McpToolDefinition = {
   tool: {
     name: 'api_admin',
     description:
-      'Board/team administration actions. Engine validates per-action required params (e.g. cancel_task needs task_id; set_wip_limit needs person_name + wip_limit; reparent_task needs task_id + target_parent_id; manage_holidays needs holiday_operation).',
+      'Board/team administration actions. Engine validates per-action required params (e.g. cancel_task needs task_id; set_wip_limit needs person_name + wip_limit; set_cross_board_subtask_mode needs cross_board_subtask_mode=open|approval|blocked; reparent_task needs task_id + target_parent_id; manage_holidays needs holiday_operation).',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -1160,6 +1163,7 @@ export const apiAdminTool: McpToolDefinition = {
         phone: { type: 'string' },
         role: { type: 'string' },
         wip_limit: { type: 'number' },
+        cross_board_subtask_mode: { type: 'string', enum: [...CROSS_BOARD_SUBTASK_MODES] },
         task_id: { type: 'string' },
         confirmed: { type: 'boolean' },
         force: { type: 'boolean' },
@@ -1214,6 +1218,13 @@ export const apiAdminTool: McpToolDefinition = {
     if (args.wip_limit !== undefined) {
       if (typeof args.wip_limit !== 'number') return err('wip_limit: expected number');
       adminParams.wip_limit = args.wip_limit;
+    }
+    if (args.cross_board_subtask_mode !== undefined) {
+      if (typeof args.cross_board_subtask_mode !== 'string' ||
+          !CROSS_BOARD_SUBTASK_MODES.includes(args.cross_board_subtask_mode as CrossBoardSubtaskMode)) {
+        return err(`cross_board_subtask_mode: expected one of ${CROSS_BOARD_SUBTASK_MODES.join(' | ')}`);
+      }
+      adminParams.cross_board_subtask_mode = args.cross_board_subtask_mode as CrossBoardSubtaskMode;
     }
     for (const key of ['holiday_year', 'note_id'] as const) {
       if (args[key] !== undefined) {

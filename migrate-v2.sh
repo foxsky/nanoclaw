@@ -1077,7 +1077,7 @@ echo
 echo "  $(bold 'What was done:')"
 render_step_line "1a-env"      ".env keys merged"
 render_step_line "1b-db"       "Database seeded (agent groups, messaging groups, wiring)"
-render_step_line "1c-groups"   "Group folders copied (CLAUDE.md → CLAUDE.local.md)"
+render_step_line "1c-groups"   "Group folders copied (CLAUDE.md → migrated CLAUDE.local.md)"
 render_step_line "1d-sessions" "Session data copied"
 render_step_line "1e-tasks"    "Scheduled tasks ported"
 render_step_line "1f-taskflow" "TaskFlow state copied (boards, tasks)"

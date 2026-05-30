@@ -120,6 +120,39 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
   // which would otherwise tell the agent to call tools that no longer exist.
   output = output.replace(/\btaskflow_\*/g, 'api_*');
 
+  // v2 intentionally blocks raw sqlite from the SDK tool surface. Existing
+  // v1 board prompts often contain read/write SQL fallback prose; strip it
+  // during regeneration so agents are not instructed to call unavailable
+  // tools. Capabilities that mattered for parity must exist as api_* tools.
+  output = output.replace(
+    /\*\*SQL fallback:\*\*[\s\S]*?\n(?=\*\*Never invent business rules\.\*\*)/g,
+    '**No direct SQL fallback.** Raw sqlite tools are not part of the TaskFlow skill surface. Use `api_query`, `api_report`, `api_admin`, and the other TaskFlow MCP tools for every read and write. If no TaskFlow tool can perform the requested operation, explain that the operation is not available through chat and offer to capture the request in the inbox.\n\n',
+  );
+  output = output.replace(
+    /NEVER use `mcp__sqlite__write_query` for creating, assigning, moving, or updating tasks — doing so bypasses notifications, WIP limits, history tracking, and child-board linking\. If you use raw SQL to assign a task, the assignee will NOT be notified\./g,
+    'Raw sqlite write tools are unavailable; always use the TaskFlow API tools so notifications, WIP limits, history tracking, and child-board linking run.',
+  );
+  output = output.replace(
+    /Do NOT start with `mcp__sqlite__read_query` when an? `api_query` variant can answer the question\./g,
+    'Raw sqlite read tools are unavailable; use `api_query` for task and board inspection.',
+  );
+  output = output.replace(
+    /Do NOT fall back to `mcp__sqlite__read_query` for cross-board task lookups\./g,
+    'Use only `api_query` for cross-board task lookups.',
+  );
+  output = output.replace(
+    /\| "canceladas" \| No direct MCP query exists\. Use SQL fallback on `archive` filtered by `archive_reason = 'cancelled'`, scoped to `[^`]+`, then format a short list\. \|/g,
+    '| "canceladas" | `api_query({ query: \'archive\' })`, then show only rows whose `archive_reason` is `cancelled`. If the tool response has no cancelled rows, say there are no cancelled tasks in the archive. |',
+  );
+  output = output.replace(
+    /\| "modo subtarefa cross-board: aberto" \| Manager-only\. `mcp__sqlite__write_query\("UPDATE board_runtime_config SET cross_board_subtask_mode = 'open' WHERE board_id = '[^']+'"\)`\. Record in history: `INSERT INTO task_history \(board_id, task_id, action, by, at, details\) VALUES \('[^']+', 'BOARD', 'config_changed', SENDER, datetime\('now'\), '\{"key":"cross_board_subtask_mode","value":"open"\}'\)`\. Valid values: `open`, `approval`, `blocked` — refuse anything else\. \|\n\| "modo subtarefa cross-board: aprovação" \| Same as above with `value = 'approval'`\. \|\n\| "modo subtarefa cross-board: bloqueado" \| Same as above with `value = 'blocked'`\. \|/g,
+    [
+      '| "modo subtarefa cross-board: aberto" | Manager-only. `api_admin({ action: \'set_cross_board_subtask_mode\', cross_board_subtask_mode: \'open\', sender_name: SENDER })`. Valid values: `open`, `approval`, `blocked` — refuse anything else. |',
+      '| "modo subtarefa cross-board: aprovação" | `api_admin({ action: \'set_cross_board_subtask_mode\', cross_board_subtask_mode: \'approval\', sender_name: SENDER })`. |',
+      '| "modo subtarefa cross-board: bloqueado" | `api_admin({ action: \'set_cross_board_subtask_mode\', cross_board_subtask_mode: \'blocked\', sender_name: SENDER })`. |',
+    ].join('\n'),
+  );
+
   if (!output.includes('Pure greetings with no task intent')) {
     output = output.replace(
       /You are a task management assistant ONLY\. If the message is NOT about tasks, board, capture, status, scheduling, people, deadlines, or any topic covered in this document, reply with a single short sentence in ([^.]+?) explaining you only handle task management, and suggest `ajuda`, `comandos`, or `help`\. Do NOT query the database for off-topic requests\./,
@@ -353,6 +386,10 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
     /schedule_task\(prompt:\s*"\[PROMPT\]",\s*schedule_type:\s*"\[cron\|interval\|once\]",\s*schedule_value:\s*"\[CRON_OR_TIMESTAMP\]",\s*context_mode:\s*"group"\)/g,
     'schedule_task({ prompt: "[PROMPT]", processAfter: "[ISO_TIMESTAMP_OR_NULL]", recurrence: "[OPTIONAL_CRON]" })',
   );
+  output = output.replace(
+    /## Scheduling for Other Groups\n\nWhen scheduling tasks for other groups, use the `target_group_jid` parameter with the group's JID from `registered_groups\.json`:\n- `schedule_task\(prompt: "\.\.\.", schedule_type: "cron", schedule_value: "0 9 \* \* 1", target_group_jid: "[^"]+"\)`\n\nThe task will run in that group's context with access to their files and memory\./g,
+    '## Scheduling for Other Groups\n\n`schedule_task` runs in the current group context only. To schedule work for another group, switch to that group and schedule it there; do not pass raw JIDs or legacy cross-group scheduling arguments.',
+  );
 
   // 5. Prose "schedule_task with schedule_type: 'X'" — drop the obsolete
   //    field reference. Match common phrasings.
@@ -376,12 +413,17 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
   //     `target_chat_jid`" — the named code/call references have already
   //     been rewritten by patches 1-5; what remains is documentation
   //     prose that needs the new identifier to stay coherent.
-  output = output.replace(/`target_chat_jid`/g, '`to`');
-  output = output.replace(/`schedule_value`/g, '`processAfter`');
-  output = output.replace(/`schedule_type`/g, '`processAfter`');
   // Backticked example values like `schedule_value: "2026-03-18T07:30:00"`
   // — preserve the literal value, just rename the field.
   output = output.replace(/`schedule_value:\s*"([^"]*)"`/g, '`processAfter: "$1"`');
+  output = output.replace(/`target_chat_jid`/g, '`to`');
+  output = output.replace(/`target_group_jid`/g, '`current group context`');
+  output = output.replace(/`schedule_value`/g, '`processAfter`');
+  output = output.replace(/`schedule_type`/g, '`processAfter`');
+  output = output.replace(
+    /- `cron`: recurring\. `processAfter` is a standard 5-field cron expression \(e\.g\., `"0 11 \* \* 1-5"` for weekdays at 11h\)\. The cron parser evaluates it in the board's local timezone \(([^)]+)\) — there is no `Z`\/UTC concept for cron schedules, so do NOT add one\./g,
+    '- Recurring tasks: set `processAfter` to the first run timestamp in local time ($1), and set `recurrence` to the 5-field cron expression (e.g., `"0 11 * * 1-5"` for weekdays at 11h). Do NOT put the cron expression in `processAfter`.',
+  );
 
   // 7. Notification Dispatch section — v1's multi-paragraph rule told
   //    the agent to relay notifications[*].target_chat_jid via

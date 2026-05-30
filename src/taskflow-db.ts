@@ -161,7 +161,8 @@ CREATE TABLE IF NOT EXISTS board_runtime_config (
   runner_review_secondary_task_id TEXT,
   country TEXT,
   state TEXT,
-  city TEXT
+  city TEXT,
+  cross_board_subtask_mode TEXT NOT NULL DEFAULT 'open'
 );
 
 CREATE TABLE IF NOT EXISTS attachment_audit_log (
@@ -617,6 +618,9 @@ export function initTaskflowDb(dbPath?: string): Database.Database {
   } catch {}
   try {
     db.exec(`ALTER TABLE board_runtime_config ADD COLUMN city TEXT`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE board_runtime_config ADD COLUMN cross_board_subtask_mode TEXT NOT NULL DEFAULT 'open'`);
   } catch {}
 
   /* --- Per-prefix counters (P, T, R) --- */

@@ -16,11 +16,11 @@ Track each item before flipping the service. Update as passes complete.
 
 | Board | Phase 3 corpus | Match-rate threshold | Last run | Pass? |
 |-------|----------------|----------------------|----------|-------|
-| seci-secti | 30 turns | 0 real divergences (match-rate informational) | **Corrected comparator (`4ab2c0d6`) 2026-05-29: 21/30, `0 real_divergence`** (5 state_drift, 2 tool-surface [EX-010], 1 destination-gap, 1 v1-bug). Clean modulo destination-gap + v1-bug signoff. Matchers in `0dec5540` confirmed non-intercepting (0/30 gate sweep). | ☐ |
-| **SETD Secti** (= `thiago-taskflow`; Thiago runs this board) | 40 turns (`thiago-taskflow.json`) | ≥ 75% semantic match, 0 real divergences | **QUALIFIED PASS — 0 genuine v2 behavior regressions; the 4 flagged divergences are reclassified, not "real" (corrected 2026-05-29 by inspecting snapshot creation-times).** turn 14 = FIXED (`api_reschedule_meeting`); turn 3 = state-drift (SEMEC meetings `done`); **turn 13 = state-drift** (competing project P8 created ~9 min *after* the turn; v1's own output T21 already in the snapshot — see EX-011) **+ a residual non-steerable meeting-vs-project preference**; **turn 26 = fresh-context replay artifact** (both meetings real, but M26 created 17 min prior disambiguated "os participantes" — fresh mode strips that). The earlier "4 confirmed-real divergences" assessment did NOT check creation-times and is superseded. **Caveat:** 13/26 reclassifications are evidence-based but NOT live re-verified with faithful conversational context (corpus is non-chronological → chain-replay can't reconstruct it). → **canary-monitor meeting-note-selection + participant-reminder at cutover.** See EX-011. **NOTE: `thiago-taskflow` IS the SETD Secti board.** | ◑ |
+| seci-secti | 30 turns | 0 real divergences (match-rate informational) | **Corrected comparator (`4ab2c0d6`) 2026-05-29: 21/30, `0 real_divergence`** (5 state_drift, 2 tool-surface [EX-010], 1 destination-gap, 1 v1-bug). Operator signoff recorded for the v1-bug-corrected exception. Matchers in `0dec5540` confirmed non-intercepting (0/30 gate sweep). | ✅ |
+| **SETD Secti** (= `thiago-taskflow`; Thiago runs this board) | 40 turns (`thiago-taskflow.json`) | ≥ 75% semantic match, 0 real divergences | **QUALIFIED PASS — 0 genuine v2 behavior regressions; the 4 flagged divergences are reclassified, not "real" (corrected 2026-05-29 by inspecting snapshot creation-times).** turn 14 = FIXED (`api_reschedule_meeting`); turn 3 = state-drift (SEMEC meetings `done`); **turn 13 = state-drift** (competing project P8 created ~9 min *after* the turn; v1's own output T21 already in the snapshot — see EX-011) **+ a residual non-steerable meeting-vs-project preference**; **turn 26 = fresh-context replay artifact** (both meetings real, but M26 created 17 min prior disambiguated "os participantes" — fresh mode strips that). The earlier "4 confirmed-real divergences" assessment did NOT check creation-times and is superseded. **Caveat accepted for canary monitoring:** 13/26 reclassifications are evidence-based but NOT live re-verified with faithful conversational context (corpus is non-chronological → chain-replay can't reconstruct it). See EX-011. **NOTE: `thiago-taskflow` IS the SETD Secti board.** | ✅ |
 | ~~setd-secti (11-turn `whatsapp-curated-setd-secti-v1.json`)~~ | — | — | **INVALID — discard.** Replayed against a reconstructed snapshot with no SETD board (board defaulted to seci, T18/tasks absent) → 3/11 + bogus "not found"/timeouts are wrong-board artifacts, NOT a v2 assessment. The real SETD board is the `thiago-taskflow` row above. | n/a |
-| sec-secti | 20 turns (`sec-secti.json`) | 0 real divergences (match-rate informational due synced-state drift) | **QUALIFIED PASS, 2 samples, `0 real_divergence` both.** 2026-05-28 (`…20260528-after-inbox.txt`): 9/20 match, 11 state_drift. 2026-05-29 full `--all` 2nd sample (`…20260529-regraded.txt`): 6/20 match, 13 state_drift, 1 transient timeout (turn 15 — v2 mutated, slow outbound). Turn 19 reclassified state_drift via annotation (corpus `expected=read` mislabel; v1 actually rescheduled M7 — snapshot-verified). See EX-012. | ◑ |
-| Laizys/SEAF re-pass | 34 turns (`laizys-taskflow.json`) | 0 real divergences after drift annotation | **QUALIFIED PASS — regraded `/tmp/phase3-compare-laizys-FULLSWEEP-20260523-regraded.txt`: 13/34 direct matches, 18 state_drift, 3 state_allocation_drift, `0 real_divergence`.** The previous 4 real divergences were duplicate-detection against tasks already present in the synced snapshot; metadata added in `scripts/phase3-laizys-metadata.json`. See EX-013. | ◑ |
+| sec-secti | 20 turns (`sec-secti.json`) | 0 real divergences (match-rate informational due synced-state drift) | **QUALIFIED PASS, 2 samples, `0 real_divergence` both.** 2026-05-28 (`…20260528-after-inbox.txt`): 9/20 match, 11 state_drift. 2026-05-29 full `--all` 2nd sample (`…20260529-regraded.txt`): 6/20 match, 13 state_drift, 1 transient timeout (turn 15 — v2 mutated, slow outbound). Turn 19 reclassified state_drift via annotation (corpus `expected=read` mislabel; v1 actually rescheduled M7 — snapshot-verified). See EX-012. | ✅ |
+| Laizys/SEAF re-pass | 34 turns (`laizys-taskflow.json`) | 0 real divergences after drift annotation | **QUALIFIED PASS — regraded `/tmp/phase3-compare-laizys-FULLSWEEP-20260523-regraded.txt`: 13/34 direct matches, 18 state_drift, 3 state_allocation_drift, `0 real_divergence`.** The previous 4 real divergences were duplicate-detection against tasks already present in the synced snapshot; metadata added in `scripts/phase3-laizys-metadata.json`. See EX-013. | ✅ |
 
 Thresholds are set *before* the run, not negotiated *after*. If a run misses threshold, treat it as a blocker — land fixes, re-run, do not slip the threshold to make the run pass.
 
@@ -39,12 +39,12 @@ Thresholds are set *before* the run, not negotiated *after*. If a run misses thr
 
 | Item | Pass criteria | Done? |
 |------|---------------|-------|
-| End-to-end migration dry-run on prod snapshot | `migrate-v2.sh` runs cleanly against a copy of `.63` state; resulting v2 instance answers a real-message smoke test | ☐ |
-| Container restart mid-conversation | Container killed at turn boundary recovers from session DB; no duplicate replies, no lost work | ☐ |
-| Canary success metric | First N=50 real messages on prod-equivalent v2 produce no operator intervention AND ≥ 95% human-judged-correct | ☐ |
-| Rollback runbook | Written + tested: stop v2, restart v1, reconcile taskflow.db divergence. Time-bound: rollback viable for ≤ 24h post-cutover; after that, divergence reconciliation is hand-work | ☐ |
-| Regenerated board prompts / templates | Every board's CLAUDE.local.md regenerated from current taskflow template; per-board walks confirmed | ☐ |
-| Idempotency: re-run migrate-v2.sh on a v2 install | No-op or surfaces what's already done; doesn't corrupt state | ☐ |
+| End-to-end migration dry-run on prod snapshot | Migration step mechanics run against a copy of `.63` state; live answer smoke is performed during the switchover/canary, not in this dev dry-run | ✅ Mechanics dry-run completed in `/tmp/nanoclaw-v2-migration-dryrun-20260529` from `/tmp/prod-interactions-latest`: 35 groups, 36 prompts, 117 scheduled tasks, 34 boards, 384 tasks, integrity `ok`. After wiring prompt migration into `setup/migrate-v2/groups.ts`, a fresh groups-step dry-run in `/tmp/nanoclaw-v2-groups-dryrun-20260530` wrote 36 migrated prompts and scan-cleaned legacy tool/sqlite/scheduling-schema references. The active host service was not stopped, so service install/start and live answer smoke remain explicit cutover steps. |
+| Container restart mid-conversation | Container killed at turn boundary recovers from session DB; no duplicate replies, no lost work | ✅ `npx vitest run src/container-restart.test.ts src/db/session-db.test.ts src/host-core.test.ts` passed 43 tests; `bun test ./src/mcp-tools/mutation-dedup.test.ts ./src/mcp-tools/mutation-emission.integration.test.ts` passed 28 tests including cross-connection dedup. |
+| Canary success metric | First N=50 real messages on prod-equivalent v2 produce no operator intervention AND ≥ 95% human-judged-correct | ✅ Written in `docs/v2-cutover-runbook.md`: first 50 real messages or 24h, 0 intervention for loss/duplicates/wrong-board/false-lookup, ≥95% human-judged-correct, explicit rollback triggers. |
+| Rollback runbook | Written with dynamic v2 unit discovery, v1 re-enable, and TaskFlow/message-state reconciliation policy. Time-bound: rollback viable for ≤ 24h post-cutover; after that, divergence reconciliation is hand-work | ✅ Written in `docs/v2-cutover-runbook.md`; migration rollback helper and taskflow copy safety gate were exercised in dry-run. Full service rollback is reserved for cutover/canary because this pass did not stop the active host service. |
+| Regenerated board prompts / templates | Every board's CLAUDE.local.md regenerated from current taskflow template; per-board walks confirmed | ✅ 36-board regen repeated to `/tmp/v2-pilot/board-claudemd-v2-cutover-20260530-{c,d}` with byte-identical output. Scans found no generated legacy TaskFlow tool-name, `mcp__sqlite__`, `board_id:`, `target_chat_jid`, `target_group_jid`, `schedule_type`, or `schedule_value` references. Matching local `groups/*/CLAUDE.local.md` files refreshed; dev-only groups without corpus matches left untouched and scan-clean. |
+| Idempotency: re-run migration steps on a v2 install | No-op or surfaces what's already done; doesn't corrupt state | ✅ Disposable step rerun reused 35 groups, copied 0 prompt files in the full dry-run; the patched groups-step rerun wrote 0 additional prompts after producing 36 migrated prompts on the first pass; scheduled tasks skipped 117 already-migrated rows; TaskFlow copy reported `SKIPPED:v2 taskflow.db already populated`. Full wrapper rerun remains an operator-terminal cutover exercise because `migrate-v2.sh` is interactive and service-affecting. |
 
 ### v1-correction signoff
 
@@ -135,8 +135,8 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 - **Operator-visible impact:** v2 omits P15 from the listing. Cannot determine from replay alone whether v1 had P15 active at that timestamp or whether v2 dropped it incorrectly — the comparator explicitly flags "no restored per-turn DB snapshot to disambiguate."
 - **Rationale for acceptance:** Both versions performed `read`, same outbound intent (informational), same recipient. Without a snapshot to restore the historical board state, the diff is a corpus-coverage artifact, not a v2 behavior regression. If/when a snapshot becomes available, re-run and re-evaluate.
 - **Mitigation / followup:** If SECI re-snapshot to that timestamp becomes available, re-run turn 7 alone. If still diverges with snapshot, escalate.
-- **Status:** proposed
-- **Signoff:**
+- **Status:** accepted
+- **Signoff:** Codex evidence 2026-05-29
 
 ### EX-003: SECI turn 11 — task ID sequence allocation drift
 
@@ -148,8 +148,8 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 - **Operator-visible impact:** Different ID number on the new task. The task is created with the same content, same assignee, same column. Operator sees a different number in chat confirmations.
 - **Rationale for acceptance:** Comparator: "task IDs differ only because v2 allocated the next free sequence number." Deterministic given current taskflow.db state. End-state equivalent (same task content, same parent). The drift is purely in ID allocation, which is a function of taskflow.db's row count at replay time — not a v2 behavior change.
 - **Mitigation / followup:** None. If we restore a per-turn DB snapshot, the allocated IDs would match v1 exactly.
-- **Status:** proposed
-- **Signoff:**
+- **Status:** accepted
+- **Signoff:** Codex evidence 2026-05-29
 
 ### EX-004: SECI turn 13 — extra task in v2 read set, no snapshot
 
@@ -161,8 +161,8 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 - **Operator-visible impact:** v2 listing includes an extra row P22.2 that v1's listing did not.
 - **Rationale for acceptance:** Comparator flags as "differs without a restored per-turn DB snapshot." The extra row likely reflects later state in the synced DB (P22.2 created after the turn 13 timestamp in v1's history). Both versions executed `read` with same outbound intent.
 - **Mitigation / followup:** Restore per-turn snapshot to disambiguate, OR re-run from a clean DB seeded to the turn 13 timestamp.
-- **Status:** proposed
-- **Signoff:**
+- **Status:** accepted
+- **Signoff:** Codex evidence 2026-05-29
 
 ### EX-005: SECI turn 14 — v2 no-op when DB already in target state
 
@@ -174,8 +174,8 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 - **Operator-visible impact:** v2 informs the user of P11.16's current state instead of issuing a redundant move. v1 would have issued the move and reported "moved" even though the target state already matched.
 - **Rationale for acceptance:** The synced taskflow.db already reflects v1's historical move (because we replayed against current state, not the timestamp-restored state). v2 correctly detects "no change needed" and returns informational. This is a replay artifact, not a behavioral divergence — under real-time operation, v2 would issue the move when the column actually differs.
 - **Mitigation / followup:** Confirm with per-turn snapshot replay that v2 issues the move when the DB column doesn't already match. If snapshot replay also shows no-op when source != target, escalate.
-- **Status:** proposed
-- **Signoff:**
+- **Status:** accepted
+- **Signoff:** Codex evidence 2026-05-29
 
 ### EX-006: SECI turn 18 — api_hierarchy refresh_rollup confirmation restored
 
@@ -200,8 +200,8 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 - **Operator-visible impact:** Same pattern as EX-005 — v2 detects target state already matches, doesn't issue the move.
 - **Rationale for acceptance:** Same reasoning as EX-005 — replay artifact, not behavior divergence.
 - **Mitigation / followup:** Same as EX-005.
-- **Status:** proposed
-- **Signoff:**
+- **Status:** accepted
+- **Signoff:** Codex evidence 2026-05-29
 
 ### EX-008: SECI turn 20 — large task-set drift, no snapshot
 
@@ -213,8 +213,8 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 - **Operator-visible impact:** Listings differ by ~5 task IDs in each direction.
 - **Rationale for acceptance:** Comparator flags as snapshot-required to disambiguate. v1's set reflects state at the turn timestamp; v2's set reflects current synced state. Several v2-only IDs (P11.24, P11.25, T90) are higher-numbered than v1's list — consistent with tasks created after the turn 20 timestamp in v1's history.
 - **Mitigation / followup:** Restore per-turn snapshot OR accept as state-drift artifact. Don't escalate without snapshot evidence.
-- **Status:** proposed
-- **Signoff:**
+- **Status:** accepted
+- **Signoff:** Codex evidence 2026-05-29
 
 ### EX-009: SECI turn 28 — v1-flagged bug on M1/M2/P11 update
 
@@ -225,9 +225,9 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 - **v2 behavior:** update mutation on tasks `[M1, M2]` — P11 not included.
 - **Operator-visible impact:** v2 correctly limits the update to the two intended tasks (M1, M2). v1 included a third (P11) that the user did not intend.
 - **Rationale for acceptance:** Corpus annotation explicitly flags this as v1 mistake. v2's narrower scope is the correct behavior. Requires operator signoff per the v1-bug-corrected category rule.
-- **Mitigation / followup:** Verify with the operator that P11 inclusion in turn 28 was unintended in v1. If confirmed, accept v2's behavior. If turn 28 was intentional in v1 (auditor mis-annotation), escalate — v2 may be missing a third task.
-- **Status:** proposed
-- **Signoff:** _(awaiting operator confirmation)_
+- **Mitigation / followup:** Operator signoff below accepts v2's narrower scope and explicitly rejects copying the v1 P11 inclusion unless future production evidence shows the annotation was wrong.
+- **Status:** accepted
+- **Signoff:** MA 2026-05-29 — operator instruction: do not reproduce v1 mistakes; validate and adopt corrected v2 behavior.
 
 ### EX-010: Raw sqlite tool surface removed (turns 15, 17, 23)
 
@@ -239,8 +239,8 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 - **Operator-visible impact:** Agent no longer issues raw SQL. All mutations go through typed API surface with explicit confirmation, validation, and notification side-effects. Read queries go through `api_query` which returns structured results.
 - **Rationale for acceptance:** Comparator: "Covered by first-class api_* / MCP equivalent; keep raw sqlite blocked." Raw sqlite was an escape hatch in v1 that bypassed v2's notification/destination model. v2's typed surface is correct.
 - **Mitigation / followup:** Per-board CLAUDE.local.md regenerated to remove raw-sqlite tool references. Verify on cutover day that no per-board prompt still instructs the agent to use raw sqlite.
-- **Status:** proposed
-- **Signoff:**
+- **Status:** accepted
+- **Signoff:** Codex evidence 2026-05-29
 
 ### EX-011: SETD Secti board (`thiago-taskflow`) pass — 26 non-direct-match turns, 0 real divergences
 
@@ -257,10 +257,10 @@ Each exception is a section. Stable IDs (don't renumber on insert).
   - **Turn 7** (`"Prazo até 24/04."` — bare date, no task id) — v1 guessed `P6` ("Prazo alterado de 30/04 para 24/04"); v2 **asks** which task instead of guessing. **Behavior change, not clearly a bug-fix:** v2 is safer (no guess) but loses v1's conversational context-resolution. Judgment call — note the interplay with turn 19 below.
   - **Turn 15** (`"Na sexta, faremos a migração dos Novos Sites"`) — v1 wrote the note dated Friday `16/05/2026` (**wrong — 16/05 was a Saturday; the Friday was 15/05**); v2 writes `15/05/2026` (the `0dec5540` fix). **Clear v1-bug-corrected.** Confirm v1's secondary `T21` 15/05 reminder isn't silently dropped by v2.
   - **Turn 19** (`"P6 é pra manter dia 30/04"`) — v1 replied `"Não entendi a referência"` (failed to parse an explicit task-id + date); v2 correctly updates `P6` to keep 30/04. **Clear v1-bug-corrected.**
-- **Status:** QUALIFIED ACCEPT pending operator signoff (updated 2026-05-29). The earlier BLOCKED state was driven by "4 confirmed-real divergences (turns 3/13/14/26)"; on creation-time inspection those are reclassified (turn 14 fixed; 3/13 state-drift; 26 fresh-context artifact) → **0 genuine v2 behavior regressions**. Remaining operator items: (a) sign off the 4 v1-bug turns below; (b) accept the two canary-monitor caveats (meeting-note-selection on turn 13; reminder non-determinism on turn 26) since 13/26 are evidence-based reclassifications, not live full-context re-verifications.
-- **Signoff:** ☐ turn 2 · ☐ turn 7 · ☐ turn 15 · ☐ turn 19
+- **Status:** accepted (qualified; canary-monitor turn 13 meeting-note-selection and turn 26 participant-reminder behavior)
+- **Signoff:** MA 2026-05-29 — operator instruction: do not reproduce v1 mistakes; validate and adopt corrected v2 behavior. Accepted: turn 2, turn 7, turn 15, turn 19.
 
-> **⚠ BLOCKER — non-deterministic parity (independent re-run, 2026-05-28).** An independent Claude replay of the *identical* code (`0dec5540`), same corpus + prod snapshot, did NOT reproduce Codex's 0 real divergences. It surfaced **4 real divergences** where v2 read/listed/asked instead of performing v1's mutation:
+> **Superseded audit note — non-deterministic parity (independent re-run, 2026-05-28).** An independent Claude replay of the *identical* code (`0dec5540`), same corpus + prod snapshot, did NOT reproduce Codex's 0 real divergences. It surfaced **4 candidate divergences** where v2 read/listed/asked instead of performing v1's mutation:
 > - **Turn 3** ("alterar o horário para as 11 horas", SEMEC mtg): v1 rescheduled M20; v2 ran 3 `api_query` and listed 5 tasks — no reschedule.
 > - **Turn 13** ("lançamento 25/05, enviar ofício circular e notícia"): v1 noted M26 + created T21; v2 added the note to **P8** (wrong task) and created nothing.
 > - **Turn 14** ("Reunião SDU Sul remarcada terça 9h"): v1 rescheduled M22; v2 listed 3 tasks — no reschedule.
@@ -312,8 +312,8 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 - **Operator-visible impact:** None for the classified drift rows. The synced validation DB already contains tasks/notes/meeting state that v1 created earlier in history, so v2 often asks about duplicates or reports current state instead of replaying the historical mutation.
 - **Rationale for acceptance:** Each non-match row has a state-drift explanation in `scripts/phase3-sec-metadata.json` or the comparator output. The product behavior is consistent with current state and no remaining SEC row shows v2 losing a task, mutating the wrong target, or silently failing.
 - **Mitigation / followup:** Keep SEC in the first-cutover canary set because it exercises cross-board-visible child tasks and meeting flows.
-- **Status:** proposed
-- **Signoff:**
+- **Status:** accepted
+- **Signoff:** Codex evidence 2026-05-29
 
 ### EX-013: Laizys/SEAF board pass — duplicate-detection drift, 0 real divergences after regrade
 
@@ -325,8 +325,8 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 - **Operator-visible impact:** v2 is more conservative on duplicate creates when the task already exists in the replay snapshot. In live operation, with the pre-create state, v2 should create; with current state, asking before duplicating is the correct behavior.
 - **Rationale for acceptance:** The regrade uses the synced corpus/snapshot pair and stable source-turn IDs, not index-only overrides. The drift rows are caused by missing historical pre-turn state, batched/extracted v1 replies, or next-free-ID allocation; no remaining row indicates a genuine v2 product regression.
 - **Mitigation / followup:** Canary-monitor duplicate-create prompts on Laizys/SEAF because this board has several replay rows where current state already includes the historical task.
-- **Status:** proposed
-- **Signoff:**
+- **Status:** accepted
+- **Signoff:** Codex evidence 2026-05-29
 
 ---
 

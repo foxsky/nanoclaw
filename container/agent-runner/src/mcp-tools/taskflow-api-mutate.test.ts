@@ -695,7 +695,7 @@ describe('api_admin MCP tool (A11.2)', () => {
     expect(apiAdminTool.tool.name).toBe('api_admin');
   });
 
-  it('declares required board_id/action/sender_name; action enum covers all 17 admin actions', async () => {
+  it('declares required board_id/action/sender_name; action enum covers all admin actions', async () => {
     const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
     const schema = apiAdminTool.tool.inputSchema as {
       required: string[];
@@ -705,11 +705,12 @@ describe('api_admin MCP tool (A11.2)', () => {
     expect(schema.properties.action.enum).toEqual(
       expect.arrayContaining([
         'register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin',
-        'set_wip_limit', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays',
+        'set_wip_limit', 'set_cross_board_subtask_mode', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays',
         'process_minutes', 'process_minutes_decision', 'accept_external_invite',
         'reparent_task', 'detach_task', 'merge_project', 'handle_subtask_approval',
       ]),
     );
+    expect(schema.properties.cross_board_subtask_mode.enum).toEqual(['open', 'approval', 'blocked']);
   });
 
   it('cancel_task happy path: archives task, success', async () => {
@@ -755,6 +756,33 @@ describe('api_admin MCP tool (A11.2)', () => {
       .prepare('SELECT wip_limit FROM board_people WHERE board_id = ? AND person_id = ?')
       .get(BOARD, 'bob') as { wip_limit: number };
     expect(row.wip_limit).toBe(3);
+  });
+
+  it('set_cross_board_subtask_mode persists runtime config and records history', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'set_cross_board_subtask_mode',
+      sender_name: 'alice',
+      cross_board_subtask_mode: 'approval',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(true);
+    expect(result.data.data).toEqual({ key: 'cross_board_subtask_mode', value: 'approval' });
+
+    const row = db
+      .prepare('SELECT cross_board_subtask_mode FROM board_runtime_config WHERE board_id = ?')
+      .get(BOARD) as { cross_board_subtask_mode: string };
+    expect(row.cross_board_subtask_mode).toBe('approval');
+
+    const history = db
+      .prepare('SELECT action, details FROM task_history WHERE board_id = ? AND task_id = ? ORDER BY id DESC LIMIT 1')
+      .get(BOARD, 'BOARD') as { action: string; details: string };
+    expect(history.action).toBe('config_changed');
+    expect(JSON.parse(history.details)).toEqual({
+      key: 'cross_board_subtask_mode',
+      value: 'approval',
+    });
   });
 
   it('engine rejects set_wip_limit with negative value', async () => {
