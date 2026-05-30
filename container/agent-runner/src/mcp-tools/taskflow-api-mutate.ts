@@ -1149,6 +1149,57 @@ export const apiMoveTool: McpToolDefinition = {
   },
 };
 
+/**
+ * Drag-to-column move for UI clients (the dashboard Kanban). Accepts a target
+ * column and resolves the state-machine action engine-side via
+ * resolveColumnMoveAction, so the transition table has a single source of truth
+ * (no FastAPI/engine drift). Permission + transition rules and structured
+ * error_codes come from move(). FastAPI maps error_code → HTTP status.
+ */
+export const apiMoveToColumnTool: McpToolDefinition = {
+  tool: {
+    name: 'api_move_to_column',
+    description:
+      'Move a single task to a target column (UI drag/drop). The engine resolves the right state-machine action from (current column → to_column) and enforces transition + role rules. to_column one of: inbox, next_action, in_progress, waiting, review, done. Cancelling a task is NOT a move — use api_admin cancel_task.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        task_id: { type: 'string' },
+        to_column: { type: 'string' },
+        sender_name: { type: 'string' },
+        reason: { type: 'string' },
+      },
+      required: ['task_id', 'to_column', 'sender_name'],
+    },
+  },
+  async handler(args) {
+    args = normalizeAgentIds(args);
+    const boardId = requireString(args, 'board_id');
+    if (boardId === null) return err('board_id: required string');
+    const taskId = requireString(args, 'task_id');
+    if (taskId === null) return err('task_id: required string');
+    const toColumn = requireString(args, 'to_column');
+    if (toColumn === null) return err('to_column: required string');
+    const senderName = requireString(args, 'sender_name');
+    if (senderName === null) return err('sender_name: required string');
+    let reason: string | undefined;
+    if (args.reason !== undefined) {
+      if (typeof args.reason !== 'string') return err('reason: expected string');
+      reason = args.reason;
+    }
+    try {
+      const db = getTaskflowDb();
+      const engine = new TaskflowEngine(db, boardId);
+      const result = engine.moveToColumn({ board_id: boardId, task_id: taskId, to_column: toColumn, sender_name: senderName, reason });
+      // Reuse the move formatter when an action actually ran (success path).
+      return finalizeMutationResult(result);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return jsonResponse({ success: false, error: msg });
+    }
+  },
+};
+
 export const apiAdminTool: McpToolDefinition = {
   tool: {
     name: 'api_admin',
@@ -2053,7 +2104,7 @@ export const apiNoteMeetingTool: McpToolDefinition = {
 
 registerTools([
   apiCreateSimpleTaskTool, apiCreateMeetingTaskTool, apiCreateTaskTool,
-  apiMoveTool, apiAdminTool, apiReassignTool, apiUndoTool, apiReportTool,
+  apiMoveTool, apiMoveToColumnTool, apiAdminTool, apiReassignTool, apiUndoTool, apiReportTool,
   apiUpdateTaskTool, apiQueryTool, apiHierarchyTool, apiDependencyTool,
   apiDeleteSimpleTaskTool, apiRescheduleMeetingTool, apiNoteMeetingTool,
 ]);

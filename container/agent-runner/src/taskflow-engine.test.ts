@@ -8128,3 +8128,47 @@ describe('normalizePhone parity with host src/phone.ts', () => {
     });
   }
 });
+
+describe('resolveColumnMoveAction (drag-to-column → state-machine action)', () => {
+  const r = TaskflowEngine.resolveColumnMoveAction;
+  it('start: inbox/next_action → in_progress', () => {
+    expect(r('inbox', 'in_progress')).toBe('start');
+    expect(r('next_action', 'in_progress')).toBe('start');
+  });
+  it('resume: waiting → in_progress', () => {
+    expect(r('waiting', 'in_progress')).toBe('resume');
+  });
+  it('reject: review → in_progress', () => {
+    expect(r('review', 'in_progress')).toBe('reject');
+  });
+  it('wait: inbox/next_action/in_progress → waiting', () => {
+    expect(r('inbox', 'waiting')).toBe('wait');
+    expect(r('next_action', 'waiting')).toBe('wait');
+    expect(r('in_progress', 'waiting')).toBe('wait');
+  });
+  it('review: inbox/next_action/in_progress/waiting → review', () => {
+    expect(r('next_action', 'review')).toBe('review');
+    expect(r('in_progress', 'review')).toBe('review');
+    expect(r('waiting', 'review')).toBe('review');
+  });
+  it('approve vs conclude → done', () => {
+    expect(r('review', 'done')).toBe('approve');      // review-gate respected
+    expect(r('in_progress', 'done')).toBe('conclude');
+    expect(r('next_action', 'done')).toBe('conclude');
+    expect(r('inbox', 'done')).toBe('conclude');
+  });
+  it('return vs reopen → next_action', () => {
+    expect(r('in_progress', 'next_action')).toBe('return');
+    expect(r('waiting', 'next_action')).toBe('return');
+    expect(r('review', 'next_action')).toBe('return');
+    expect(r('done', 'next_action')).toBe('reopen');
+  });
+  it('no valid transition → null', () => {
+    expect(r('inbox', 'next_action')).toBeNull();      // no move() action lands in next_action from inbox
+    expect(r('cancelled', 'next_action')).toBeNull();  // reopen.from = done only (cancel/restore = api_admin)
+    expect(r('done', 'in_progress')).toBeNull();
+    expect(r('in_progress', 'in_progress')).toBeNull(); // same column
+    expect(r('in_progress', 'inbox')).toBeNull();       // inbox is not a move target
+    expect(r('in_progress', 'cancelled')).toBeNull();   // cancel is not a move
+  });
+});

@@ -4533,6 +4533,82 @@ export class TaskflowEngine {
   /*  move — taskflow_move                                             */
   /* ---------------------------------------------------------------- */
 
+  /**
+   * Resolve a target-column drag (e.g. dashboard Kanban) to the state-machine
+   * action, using the SAME transition table as move() so there is one source of
+   * truth (no Python/TS drift). Where a (from,to) pair maps to multiple actions,
+   * pick the safest review-respecting default:
+   *   review → done        ⇒ approve   (NOT conclude — honours the review gate)
+   *   review → in_progress ⇒ reject
+   *   * → in_progress      ⇒ start | resume  (resume only from waiting)
+   * cancel/restore are NOT moves (they live in api_admin) and resolve to null.
+   * Returns null when no single valid action exists (caller should reject).
+   */
+  static resolveColumnMoveAction(fromColumn: string, toColumn: string): MoveParams['action'] | null {
+    if (fromColumn === toColumn) return null;
+    switch (toColumn) {
+      case 'in_progress':
+        if (fromColumn === 'waiting') return 'resume';
+        if (fromColumn === 'review') return 'reject';
+        if (fromColumn === 'inbox' || fromColumn === 'next_action') return 'start';
+        return null;
+      case 'waiting':
+        // wait.from = inbox | next_action | in_progress
+        if (fromColumn === 'inbox' || fromColumn === 'next_action' || fromColumn === 'in_progress') return 'wait';
+        return null;
+      case 'review':
+        // review.from = inbox | next_action | in_progress | waiting
+        if (fromColumn === 'inbox' || fromColumn === 'next_action' || fromColumn === 'in_progress' || fromColumn === 'waiting') return 'review';
+        return null;
+      case 'done':
+        if (fromColumn === 'review') return 'approve';
+        // conclude.from = inbox | next_action | in_progress | waiting
+        if (fromColumn === 'inbox' || fromColumn === 'next_action' || fromColumn === 'in_progress' || fromColumn === 'waiting') return 'conclude';
+        return null;
+      case 'next_action':
+        // return.from = in_progress | waiting | review ; reopen.from = done
+        if (fromColumn === 'in_progress' || fromColumn === 'waiting' || fromColumn === 'review') return 'return';
+        if (fromColumn === 'done') return 'reopen';
+        return null;
+      default:
+        // inbox / cancelled are not move() targets (cancel = api_admin).
+        return null;
+    }
+  }
+
+  /**
+   * Drag-to-column entry point: resolve the action from (current column, target
+   * column) and delegate to move(). Keeps all transition + permission logic in
+   * one place. Returns a structured error_code for invalid transitions so HTTP
+   * callers can map to 409.
+   */
+  moveToColumn(params: { board_id: string; task_id: string; to_column: string; sender_name: string; reason?: string }): MoveResult {
+    const task = this.getTask(params.task_id);
+    if (!task) {
+      return { success: false, error: `Task not found: ${params.task_id}`, error_code: 'not_found' };
+    }
+    const fromColumn: string = task.column;
+    if (fromColumn === params.to_column) {
+      // No-op: nothing to do, report success with the current task.
+      return { success: true, task_id: task.id, title: task.title, from_column: fromColumn, to_column: fromColumn };
+    }
+    const action = TaskflowEngine.resolveColumnMoveAction(fromColumn, params.to_column);
+    if (action === null) {
+      return {
+        success: false,
+        error: `No valid transition from "${fromColumn}" to "${params.to_column}".`,
+        error_code: 'invalid_transition',
+      };
+    }
+    return this.move({
+      board_id: params.board_id,
+      task_id: params.task_id,
+      action,
+      sender_name: params.sender_name,
+      reason: params.reason,
+    });
+  }
+
   move(params: MoveParams): MoveResult {
     try {
       return this.db.transaction(() => {
@@ -4599,35 +4675,35 @@ export class TaskflowEngine {
         case 'return':
         case 'review':
           if (!isAssignee && !isMgr && !canClaimUnassigned) {
-            return { success: false, error: `Permission denied: "${params.sender_name}" is neither the assignee nor a manager.` };
+            return { success: false, error: `Permission denied: "${params.sender_name}" is neither the assignee nor a manager.`, error_code: 'permission_denied' };
           }
           break;
         case 'approve':
           if (!isMgrOrDelegate) {
-            return { success: false, error: `Permission denied: "${params.sender_name}" is not a manager or delegate.` };
+            return { success: false, error: `Permission denied: "${params.sender_name}" is not a manager or delegate.`, error_code: 'permission_denied' };
           }
           if (isAssignee) {
-            return { success: false, error: `Self-approval is not allowed: "${params.sender_name}" is the assignee.` };
+            return { success: false, error: `Self-approval is not allowed: "${params.sender_name}" is the assignee.`, error_code: 'permission_denied' };
           }
           break;
         case 'reject':
           if (!isMgrOrDelegate) {
-            return { success: false, error: `Permission denied: "${params.sender_name}" is not a manager or delegate.` };
+            return { success: false, error: `Permission denied: "${params.sender_name}" is not a manager or delegate.`, error_code: 'permission_denied' };
           }
           break;
         case 'conclude':
           if (!isAssignee && !isMgr) {
-            return { success: false, error: `Permission denied: "${params.sender_name}" is neither the assignee nor a manager.` };
+            return { success: false, error: `Permission denied: "${params.sender_name}" is neither the assignee nor a manager.`, error_code: 'permission_denied' };
           }
           break;
         case 'reopen':
           if (!isMgr) {
-            return { success: false, error: `Permission denied: only managers can reopen tasks.` };
+            return { success: false, error: `Permission denied: only managers can reopen tasks.`, error_code: 'permission_denied' };
           }
           break;
         case 'force_start':
           if (!isMgr) {
-            return { success: false, error: `Permission denied: only managers can force_start tasks.` };
+            return { success: false, error: `Permission denied: only managers can force_start tasks.`, error_code: 'permission_denied' };
           }
           break;
       }
@@ -4640,6 +4716,7 @@ export class TaskflowEngine {
           return {
             success: false,
             error: `Task ${params.task_id} already awaits approval in "review". A manager or delegate must approve it.`,
+            error_code: 'conflict',
           };
         }
         approvalGateApplied = true;

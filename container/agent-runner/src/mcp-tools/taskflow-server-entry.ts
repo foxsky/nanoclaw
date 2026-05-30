@@ -49,9 +49,12 @@ const FASTAPI_ALLOWLIST: ReadonlySet<string> = new Set([
   'api_delete_simple_task',
   // Task moves go through the state machine (start/wait/review/approve/reject/
   // conclude/reopen) instead of a raw column-set, so transition rules, role
-  // gates and the approval/review workflow are enforced. Dashboard POST
-  // /boards/{id}/tasks/{id}/move → this tool.
+  // gates and the approval/review workflow are enforced. The dashboard POST
+  // /boards/{id}/tasks/{id}/move uses api_move_to_column (engine resolves the
+  // action from the target column — one source of truth); api_move stays for
+  // explicit-action callers / future batch approvals.
   'api_move',
+  'api_move_to_column',
   'api_task_add_note',
   'api_task_edit_note',
   'api_task_remove_note',
