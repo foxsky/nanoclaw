@@ -9206,6 +9206,37 @@ export class TaskflowEngine {
   }
 
   /**
+   * EX-015: find a single INCOMPLETE stub (role+phone-less) on this board whose
+   * name exactly matches (case-insensitive, trimmed) and whose id differs from the
+   * candidate slug. If found, FILL it in place and return its id so a full register
+   * reuses the stub's id rather than minting a second one. Returns null when there
+   * is no such stub or the match is ambiguous (>1) — the caller then inserts
+   * normally. Guards are deliberately strict: only a role+phone-less placeholder is
+   * ever reconciled, never another complete person.
+   */
+  private _reconcileIncompleteStub(
+    personName: string,
+    candidateId: string,
+    phone: string | null,
+    role: string | undefined,
+  ): string | null {
+    const stubs = this.db
+      .prepare(
+        `SELECT person_id FROM board_people
+          WHERE board_id = ? AND lower(trim(name)) = lower(trim(?))
+            AND (role IS NULL OR role = '') AND (phone IS NULL OR phone = '')
+            AND person_id != ?`,
+      )
+      .all(this.boardId, personName, candidateId) as Array<{ person_id: string }>;
+    if (stubs.length !== 1) return null;
+    const stubId = stubs[0].person_id;
+    this.db
+      .prepare(`UPDATE board_people SET name = ?, phone = ?, role = ? WHERE board_id = ? AND person_id = ?`)
+      .run(personName, phone, role ?? 'member', this.boardId, stubId);
+    return stubId;
+  }
+
+  /**
    * Public FastAPI wrapper for add-person (design Revision 2.1
    * R2.1.a/R2.2/R2.3). ZERO engine owner auth (R2.3 — FastAPI-side).
    * The handler derives `person_id` (phone-digits / uuid4) and owns
@@ -9429,8 +9460,8 @@ export class TaskflowEngine {
             }
           }
 
-          /* Slugify name to create person_id */
-          const personId = params.person_name
+          /* Slugify name to create a candidate person_id */
+          const slugId = params.person_name
             .toLowerCase()
             .normalize('NFD')
             .replace(/[\u0300-\u036f]/g, '')
@@ -9444,15 +9475,27 @@ export class TaskflowEngine {
             ? normalizePhone(params.phone) || params.phone
             : null;
 
-          // Shared single-engine core: dup-check + insert (R2.9 Q1 slice).
-          // person_name is guaranteed non-empty by the guard above.
-          const result = this._addBoardPersonCore(
-            personId,
-            params.person_name,
-            normalizedPhone,
-            params,
-          );
-          if (!result.success) return result;
+          // EX-015: a delegate/grant can leave a role+phone-less STUB whose id was
+          // derived from a shorter name; a later full register slugs to a DIFFERENT
+          // id, splitting one human across two person_ids ('mariany' vs
+          // 'mariany-borges'). If exactly ONE incomplete stub has an EXACT name
+          // match, fill it in place and reuse its id instead of inserting a second
+          // row. The tight guards (exact name + incomplete + single match) ensure we
+          // never merge two complete/distinct people; ambiguity falls through to a
+          // normal insert.
+          const reconciledId = this._reconcileIncompleteStub(params.person_name, slugId, normalizedPhone, params.role);
+          let personId: string;
+          let result: AdminResult;
+          if (reconciledId) {
+            personId = reconciledId;
+            result = { success: true, person_id: reconciledId, data: { name: params.person_name, person_id: reconciledId } };
+          } else {
+            // Shared single-engine core: dup-check + insert (R2.9 Q1 slice).
+            // person_name is guaranteed non-empty by the guard above.
+            personId = slugId;
+            result = this._addBoardPersonCore(personId, params.person_name, normalizedPhone, params);
+            if (!result.success) return result;
+          }
 
           // auto_provision_request is WhatsApp-only (hierarchy boards);
           // built here, never in the shared core (R2.2 / R2.9 Q3).
