@@ -765,7 +765,9 @@ function canonicalizeBoardPersonNames(db: Database.Database): void {
       // Most-complete name wins. Trim the chosen value so the canonical form
       // never carries stray leading/trailing whitespace (the longest raw
       // string might be padded). Tie → lexicographically smallest.
-      const canonical = [...names].sort((a, b) => b.trim().length - a.trim().length || (a < b ? -1 : a > b ? 1 : 0))[0].trim();
+      const canonical = [...names]
+        .sort((a, b) => b.trim().length - a.trim().length || (a < b ? -1 : a > b ? 1 : 0))[0]
+        .trim();
       const res = update.run(canonical, personId, canonical);
       if (res.changes > 0) reconciled += res.changes;
     }
@@ -774,7 +776,9 @@ function canonicalizeBoardPersonNames(db: Database.Database): void {
   // Fail loud: this rewrites historical data, so surface what it touched (the
   // longest-wins heuristic can pick a wrong longer string — see the doc above).
   if (reconciled > 0) {
-    console.warn(`[taskflow-db] canonicalizeBoardPersonNames: reconciled ${reconciled} divergent board_people name row(s)`);
+    console.warn(
+      `[taskflow-db] canonicalizeBoardPersonNames: reconciled ${reconciled} divergent board_people name row(s)`,
+    );
   }
 }
 

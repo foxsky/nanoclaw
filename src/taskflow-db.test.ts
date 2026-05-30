@@ -893,10 +893,7 @@ describe('initTaskflowDb', () => {
 
     // Both of Jeff's rows now carry the most-complete name.
     const jeff = db.prepare('SELECT name FROM board_people WHERE person_id = ?').all('jeff') as Array<{ name: string }>;
-    expect(jeff.map((r) => r.name)).toEqual([
-      'Jefferson Marcílio Daniel Correia',
-      'Jefferson Marcílio Daniel Correia',
-    ]);
+    expect(jeff.map((r) => r.name)).toEqual(['Jefferson Marcílio Daniel Correia', 'Jefferson Marcílio Daniel Correia']);
     // A different person is untouched — names are reconciled per person_id, not merged across people.
     const ana = db.prepare('SELECT name FROM board_people WHERE person_id = ?').get('ana') as { name: string };
     expect(ana.name).toBe('Ana');

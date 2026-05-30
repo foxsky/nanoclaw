@@ -614,47 +614,6 @@ export const apiUpdateBoardPersonTool: McpToolDefinition = {
   },
 };
 
-export const apiRenameBoardPersonTool: McpToolDefinition = {
-  tool: {
-    name: 'api_rename_board_person',
-    description:
-      "Correct a board member's display NAME. The name is the person's identity, so it is applied across ALL boards this person belongs to — not just this one — keeping every board's record consistent. Pass board_id + person_id (to locate/authorize the person) and a non-empty `name`. For board-scoped wip_limit/role use api_update_board_person instead.",
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        board_id: { type: 'string' },
-        person_id: { type: 'string' },
-        name: { type: 'string' },
-      },
-      required: ['board_id', 'person_id', 'name'],
-    },
-  },
-  async handler(args) {
-    // board_id is passed to the engine VERBATIM (R2.7) — never prefixed.
-    const boardId = requireString(args, 'board_id');
-    if (boardId === null) {
-      return jsonResponse({ success: false, error_code: 'validation_error', error: 'board_id: required string' });
-    }
-    const personId = requireString(args, 'person_id');
-    if (personId === null) {
-      return jsonResponse({ success: false, error_code: 'validation_error', error: 'person_id: required string' });
-    }
-    const name = args.name;
-    if (typeof name !== 'string' || name.trim() === '') {
-      return jsonResponse({ success: false, error_code: 'validation_error', error: 'name must be a non-empty string' });
-    }
-    try {
-      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
-      const r = engine.updateBoardPerson(boardId, personId, { name: name.trim() });
-      if (!r.success) return jsonResponse(r);
-      return jsonResponse({ success: true, data: { ok: true, person_id: personId, name: name.trim() } });
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return jsonResponse({ success: false, error_code: 'internal_error', error: msg });
-    }
-  },
-};
-
 registerTools([
   apiCreateBoardTool,
   apiDeleteBoardTool,
@@ -664,5 +623,4 @@ registerTools([
   apiAddBoardPersonTool,
   apiRemoveBoardPersonTool,
   apiUpdateBoardPersonTool,
-  apiRenameBoardPersonTool,
 ]);

@@ -9324,7 +9324,7 @@ export class TaskflowEngine {
   updateBoardPerson(
     boardId: string,
     personId: string,
-    fields: { wip_limit?: number | null; role?: string; name?: string },
+    fields: { wip_limit?: number | null; role?: string },
   ): { success: true } | { success: false; error_code: 'not_found'; error: string } {
     return this.db.transaction(() => {
       const board = this.db.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId);
@@ -9346,14 +9346,6 @@ export class TaskflowEngine {
         this.db
           .prepare('UPDATE board_people SET role = ? WHERE board_id = ? AND person_id = ?')
           .run(fields.role as string, boardId, personId);
-      }
-      if ('name' in fields) {
-        // Name is per-PERSON identity, not board-scoped: rewrite it on EVERY
-        // board this person belongs to so all boards agree. board_people.name
-        // is denormalized per board, and the init name-heal reconciles by
-        // person_id — a single-board rename would be reverted by longest-wins
-        // at the next boot, so apply it everywhere.
-        this.db.prepare('UPDATE board_people SET name = ? WHERE person_id = ?').run(fields.name as string, personId);
       }
       return { success: true } as const;
     })();

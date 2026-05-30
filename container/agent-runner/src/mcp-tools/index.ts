@@ -20,6 +20,7 @@ import './taskflow-api-mutate.js';
 import './taskflow-api-update.js';
 import './taskflow-api-notes.js';
 import './taskflow-api-board.js';
+import './rename-board-person.js';
 import './taskflow-api-comment.js';
 import { startMcpServer } from './server.js';
 
