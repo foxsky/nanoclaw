@@ -446,6 +446,12 @@ export async function handleProvisionChildBoard(
           parentBoardId: parent.parentBoard.id,
           personId: parsed.personId,
         });
+        await alertProvisionFailed(
+          adapter,
+          parent.sourceMessagingGroupPlatformId,
+          parsed.personName,
+          'falha ao vincular o quadro existente',
+        );
       }
       return;
     }

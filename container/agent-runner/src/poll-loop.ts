@@ -2799,7 +2799,16 @@ function handleTaskflowPendingChildBoardRegistration(
   const result = engine.admin({ ...input, board_id: boardId });
   appendMcpEquivalentToolCapture('api_admin', input, result, !result.success);
 
-  const autoProvision = result.success ? result.auto_provision_request : undefined;
+  if (!result.success) {
+    // Surface the api_admin failure verbatim regardless of whether the
+    // bridge fallback resolved a board — a board existing for the folder
+    // doesn't mean THIS registration succeeded; the engine call's error
+    // message is what the operator needs to see.
+    writeReply(routing, `Não consegui cadastrar ${action.personName}: ${result.error ?? 'erro desconhecido'}`);
+    return true;
+  }
+
+  const autoProvision = result.auto_provision_request;
   if (autoProvision) {
     writeMessageOut({
       id: generateId(),
@@ -2811,22 +2820,17 @@ function handleTaskflowPendingChildBoardRegistration(
       content: JSON.stringify({ action: 'provision_child_board', ...autoProvision }),
     });
     appendMcpEquivalentToolCapture('provision_child_board', autoProvision, { success: true });
-  } else if (!result.success) {
-    // Surface the api_admin failure verbatim regardless of whether the
-    // bridge fallback resolved a board — a board existing for the folder
-    // doesn't mean THIS registration succeeded; the engine call's error
-    // message is what the operator needs to see.
-    writeReply(routing, `Não consegui cadastrar ${action.personName}: ${result.error ?? 'erro desconhecido'}`);
-    return true;
+    // The child board is provisioned ASYNCHRONOUSLY by the host. Do NOT claim
+    // completion or print a board id here — the host sends the authoritative
+    // confirmation (real id) on success, or a fail-loud alert on failure
+    // (provision-child-board.ts). An optimistic ack was the Reginaldo
+    // announce≠persist + Sanunciel silent-success defect.
+    writeReply(routing, buildPersonRegisteredAck(action.personName, action.role, action.groupName));
+  } else {
+    // Registered, but no child board is being provisioned (e.g. a non-delegating
+    // board) — so do NOT promise a board that isn't coming.
+    writeReply(routing, `✅ *${action.personName} cadastrado(a)*\n👤 ${action.personName}\n💼 ${action.role}`);
   }
-
-  // The person registration succeeded; the child board is provisioned
-  // ASYNCHRONOUSLY by the host. Do NOT claim board completion or print a board id
-  // here — the host sends the authoritative confirmation (with the real id) on
-  // success, or a fail-loud alert on failure (provision-child-board.ts). An
-  // optimistic ack here was the Reginaldo announce≠persist + Sanunciel
-  // silent-success defect.
-  writeReply(routing, buildPersonRegisteredAck(action.personName, action.role, action.groupName));
   return true;
 }
 

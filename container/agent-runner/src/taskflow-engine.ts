@@ -9483,7 +9483,17 @@ export class TaskflowEngine {
           // row. The tight guards (exact name + incomplete + single match) ensure we
           // never merge two complete/distinct people; ambiguity falls through to a
           // normal insert.
-          const reconciledId = this._reconcileIncompleteStub(params.person_name, slugId, normalizedPhone, params.role);
+          // Only reconcile a stub when the candidate id is NOT already a row —
+          // otherwise (candidate complete AND a same-name stub present) we would
+          // fill the stub and leave TWO completed same-name rows. When the
+          // candidate already exists, fall through so _addBoardPersonCore returns
+          // its normal "already exists" error.
+          const candidateExists = this.db
+            .prepare(`SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?`)
+            .get(this.boardId, slugId);
+          const reconciledId = candidateExists
+            ? null
+            : this._reconcileIncompleteStub(params.person_name, slugId, normalizedPhone, params.role);
           let personId: string;
           let result: AdminResult;
           if (reconciledId) {

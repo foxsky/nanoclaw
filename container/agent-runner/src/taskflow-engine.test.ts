@@ -5311,6 +5311,33 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
       expect(other.phone).toBe('5586000000000');
     });
 
+    it('EX-015: does NOT reconcile when the candidate id already exists (no double completed rows)', () => {
+      // complete candidate already present (slug of "Mariany Borges")...
+      db.prepare(`INSERT INTO board_people (board_id, person_id, name, phone, role) VALUES (?, 'mariany-borges', 'Mariany Borges', '5586999990000', 'Gerente')`).run(BOARD_ID);
+      // ...plus an incomplete same-name stub
+      db.prepare(`INSERT INTO board_people (board_id, person_id, name, phone, role) VALUES (?, 'mariany', 'Mariany Borges', NULL, NULL)`).run(BOARD_ID);
+
+      const r = engine.admin({
+        board_id: BOARD_ID,
+        action: 'register_person',
+        sender_name: 'Alexandre',
+        person_name: 'Mariany Borges',
+        phone: '5586981352365',
+        role: 'Analista',
+        group_name: 'X - TaskFlow',
+        group_folder: 'x-taskflow',
+      });
+
+      // candidate already exists -> normal "already exists" error, NOT a stub fill
+      expect(r.success).toBe(false);
+      const stub = db.prepare(`SELECT phone, role FROM board_people WHERE board_id=? AND person_id='mariany'`).get(BOARD_ID) as {
+        phone: string | null;
+        role: string | null;
+      };
+      expect(stub.phone).toBeNull();
+      expect(stub.role).toBeNull();
+    });
+
     it('EX-015: does NOT reconcile when the same-name stub is ambiguous (>1)', () => {
       db.prepare(`INSERT INTO board_people (board_id, person_id, name, phone, role) VALUES (?, 'stub-a', 'Ana Lima', NULL, NULL)`).run(BOARD_ID);
       db.prepare(`INSERT INTO board_people (board_id, person_id, name, phone, role) VALUES (?, 'stub-b', 'Ana Lima', NULL, NULL)`).run(BOARD_ID);
