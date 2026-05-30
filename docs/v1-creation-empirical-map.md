@@ -1,7 +1,7 @@
 # V1 TaskFlow board/user creation — empirical map (success + failure)
 
-**Snapshot:** `/tmp/nanoclaw-v1-snapshot-cutover-20260529/` (`store/messages.db` 12,737 msgs;
-`data/taskflow/taskflow.db` 34 boards / 70 `board_people` rows / 35 `registered_groups`).
+**Snapshot:** `/tmp/nanoclaw-v1-snapshot-cutover-20260529/` (`store/messages.db` 12,737 msgs +
+35 `registered_groups`; `data/taskflow/taskflow.db` 34 boards / 70 `board_people` rows).
 **Method:** 8 per-chat classifiers over the creation-active chats, cross-referenced to the
 taskflow.db end-state, reconciled against the 34-board ground truth. **Surfaced:** 2026-05-30.
 
@@ -16,24 +16,30 @@ taskflow.db end-state, reconciled against the 34-board ground truth. **Surfaced:
 ## Headline verdict
 
 The earlier loose claim **"v1 creation always worked" is FALSE and is retired.** Every board/person
-a human *affirmed* wanting ended up as a row — **zero hard failures, zero stalls of an affirmed
-request** — but the **async child-board provisioning path carried ~6 genuine defects** (≈13% of
-actual creations).
+a human *affirmed* wanting ended up as **at least a person row** — **zero total registration
+omissions, zero stalls of an affirmed request** — but **Sanunciel is a partial creation failure**
+(person created, child board silently absent), and the **async child-board path carried 6 defects in
+all**.
 
-Honest framing: **"V1 creation completed every affirmed human request as a person/board row, but
-the hierarchy-provisioning step had a ~13% defect rate (silently-skipped, wrong-name, duplicate, or
-dual-identity child board)."**
+Honest framing: **"V1 creation never lost an affirmed person, but the hierarchy child-board step had
+6 defects (1 silently-skipped board, 2 wrong-name, 1 duplicate, 1 announce≠persist, 1 dual-identity)."**
 
-De-duplicated **creation/registration episodes: 38.**
+**Creation/registration episodes (per-episode table below): 49** table rows. (Excludes the 6 level-1
+boards bulk-provisioned in the 2026-03-07 bootstrap batch — no chat episode — and the MAIN-CONTROL
+no-op placeholder row.)
 
 | Outcome | Count | Notes |
 |---|---|---|
-| success | 24 | 6 silently-provisioned level-1 boards (03-07 bootstrap) + 18 chat-traced |
-| success_with_defect | 5 | genuine product bugs (see taxonomy) |
+| success | 29 | 27 single-pass + 2 retry-then-success |
+| success_with_defect | 6 | genuine product bugs (see taxonomy) |
 | duplicate_or_linked | 6 | pre-existing person surfaced by per-board identity; correctly NOT duplicated |
-| declined_by_user | 5 | operator chose the external-participant path; correct UX |
+| declined_by_user | 6 | operator chose the external-participant path; correct UX |
 | stalled_incomplete | 2 | operator never supplied data; NOT product bugs |
-| **Total** | **38** | |
+| **Total** | **49** | + 6 bootstrap-batch level-1 boards (no chat episode) accounted for separately |
+
+**Defect rate:** 6 defective episodes / 49 traced (~12%). Of the 33 child boards, **4 carry a
+board-level defect** (Sanunciel missing, Hudson duplicate, Edilson + Jefferson wrong-name); Mariany
+(dual `person_id`) and Reginaldo (announce ≠ persist) are person-level.
 
 `offer_register` (50×) and ambiguity (3×) prompts are **normal UX, not failures** — they are counted
 by whether the operator's intent was ultimately fulfilled, not by prompt volume.

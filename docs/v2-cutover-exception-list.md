@@ -48,13 +48,13 @@ Thresholds are set *before* the run, not negotiated *after*. If a run misses thr
 
 ### v1-correction signoff
 
-Every entry categorized `v1-bug-corrected` below must have an explicit operator initial in the Signoff column. Cutover blocks until all are signed.
+Every entry categorized `v1-bug-corrected` below must have an explicit operator initial in the Signoff column. Cutover blocks until all are signed. The same applies to every `carried-forward-v1-defect` entry: it must be either signed off as accept-and-monitor, or resolved by a migration data-fix, before cutover.
 
 ### Creation-path integrity
 
 | Item | Finding | Done? |
 |------|---------|-------|
-| V1 board/user creation audit | Empirical sweep of the cutover corpus (12,737 msgs → 38 de-duplicated creation episodes), cross-referenced to `taskflow.db`. **The earlier "v1 creation always worked" claim is RETIRED:** every *affirmed* request landed as a row (0 hard failures), but the async child-board path had **6 defects (~13%)** — 4 v2-mitigated (Hudson dup, Edilson/Jefferson name, Reginaldo id-drift), **2 that persist in v2** → **EX-014 (Sanunciel, non-atomic skip)** + **EX-015 (Mariany, dual person_id)**. Full map: `docs/v1-creation-empirical-map.md`. | ◑ 2 `proposed` exceptions open — must resolve before cutover (Checklist #2) |
+| V1 board/user creation audit | Empirical sweep of the cutover corpus (12,737 msgs → 49 traced creation/registration episodes), cross-referenced to `taskflow.db`. **The earlier "v1 creation always worked" claim is RETIRED:** every *affirmed* request landed as at least a person row (0 omissions), but Sanunciel is a partial creation failure and the async child-board path had **6 defects** — 4 v2-mitigated (Hudson dup, Edilson/Jefferson name, Reginaldo id-drift), **2 that persist in v2** → **EX-014 (Sanunciel, non-atomic skip)** + **EX-015 (Mariany, dual person_id)**. Full map: `docs/v1-creation-empirical-map.md`. | ◑ 2 `proposed` exceptions open — must resolve before cutover (Checklist #2) |
 
 ---
 
@@ -101,7 +101,7 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 ```markdown
 ### EX-NNN: <short title>
 
-- **Category:** <one of the 5>
+- **Category:** <one of the 6>
 - **Source:** <board>/<turn> | <ad-hoc test name> | <static review>
 - **Surfaced:** YYYY-MM-DD
 - **v1 behavior:** <what v1 did>
@@ -110,7 +110,7 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 - **Rationale for acceptance:** <one paragraph>
 - **Mitigation / followup:** <if any — e.g., "documented in skill X", "logged for v2.1">
 - **Status:** proposed | accepted | blocked-on-fix | rejected
-- **Signoff:** <initials + date when accepted; required for `v1-bug-corrected`>
+- **Signoff:** <initials + date when accepted; required for `v1-bug-corrected` and `carried-forward-v1-defect`>
 ```
 
 ---
@@ -345,10 +345,10 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 - **Source:** V1 creation audit — `docs/v1-creation-empirical-map.md` (SECI chat, 2026-05-15) — DB-verified against `/tmp/nanoclaw-v1-snapshot-cutover-20260529/data/taskflow/taskflow.db`.
 - **Surfaced:** 2026-05-30
 - **v1 behavior:** Sanunciel was registered as a SECI person (`board_people` row `sanunciel | Estagiário Computação | 5586999212092`), but the requested child board was **never provisioned** — `SELECT … FROM boards WHERE owner_person_id='sanunciel'` returns empty. He is the only registered SECI person without a child board. No error surfaced in chat (caught only because the "…provisionado" confirmation was absent). Likely trigger: EST/SECTI sigla collision with David Freire's `-2` and João Antonio's `-3` boards provisioned minutes later.
-- **v2 behavior:** **Unchanged for new creations.** `register_person` (person write) and the `auto_provision_request` → `provision_child_board` (board write) are NOT one atomic transaction (`taskflow-engine.ts` person-add vs the async provision delivery action). The host rewrite's fail-loud + durable `outbound.db` make a *dropped* provision more likely to surface as an error than silence, but a person can still be created without their board. The existing defective row also migrates verbatim (`setup/migrate-v2/taskflow.ts` copies `taskflow.db` unchanged).
-- **Operator-visible impact:** A person appears on the parent board / in rolls but has no personal board/group. Tasks delegated to them have nowhere to land. One known instance (Sanunciel) in the migrated data.
+- **v2 behavior:** **Unchanged for new creations — and NOT more fail-loud than v1 here (corrected per Codex gpt-5.5/xhigh review).** `register_person` commits the parent `board_people` insert inside the engine transaction, then merely returns an `auto_provision_request` (`taskflow-engine.ts:9358,9187,9457`); the host writes a *separate* `provision_child_board` system row (`poll-loop.ts:2810`). There is no atomicity across person-insert + board-provision. Worse, the success reply is **optimistic** — it can say "provisionado automaticamente" before the board exists (`poll-loop.ts:2831`) — and delivery only retries *thrown* failures while `provision_child_board` frequently logs-and-returns on failure (`delivery.ts:190,252`; `provision-child-board.ts:342,447,478`), so a silently-skipped board is still marked delivered. One guard v2 DOES add: hierarchy boards reject a `register_person` missing `phone`/`group_name`/`group_folder` before the insert (`taskflow-engine.ts:9416`) — but that closes a *different* (half-register) vector, not the Sanunciel host-provisioning skip. The existing defective row migrates verbatim (`setup/migrate-v2/taskflow.ts` copies `taskflow.db` unchanged).
+- **Operator-visible impact:** A person appears on the parent board / in rolls but has no personal board/group. Tasks delegated to them have nowhere to land — Sanunciel has 2 such tasks with `child_exec_enabled=0`. One known instance in the migrated data.
 - **Rationale for acceptance:** *(pending operator decision)* — accept-and-monitor vs fix. Low frequency (1/33 child boards historically) but operator-visible.
-- **Mitigation / followup:** (a) **Data:** hand-create Sanunciel's child board at migration time (the deferred "fix during migration" — pulled back 2026-05-30, available on request). (b) **Code (v2.1):** wrap person-create + child-board-provision so a failed provision either rolls back the person or is retried; at minimum emit a fail-loud "person registered but board NOT provisioned" alert. Add a pre-cutover integrity check: every `register_person` on a delegating board has a matching `owner_person_id` board.
+- **Mitigation / followup:** (a) **Data:** hand-create Sanunciel's child board at migration time AND wire his 2 existing tasks' child-exec linkage (`child_exec_enabled=0` today — a bare board row is not enough). Deferred "fix during migration" — pulled back 2026-05-30, available on request. (b) **Code (v2.1):** make the success reply contingent on the board actually existing (not optimistic), and either retry on a caught provision failure or emit a fail-loud "person registered but board NOT provisioned" alert; wrap person-create + provision so a failure rolls back or retries. Add a pre-cutover integrity check: every `register_person` on a delegating board has a matching `owner_person_id` board.
 - **Status:** proposed
 - **Signoff:** —
 
@@ -358,10 +358,10 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 - **Source:** V1 creation audit — `docs/v1-creation-empirical-map.md` (SECI chat, 2026-03-30 + 2026-05-15) — DB-verified.
 - **Surfaced:** 2026-05-30
 - **v1 behavior:** A 2026-03-30 delegate grant created a stub `mariany | Mariany Borges | (null role) | (null phone)`; the 2026-05-15 full register created a *distinct* `mariany-borges | Mariany Borges | Analista de Inovação | 5586981352365`. The stub was never cleaned up → **two `person_id`s for the same human on `board-seci-taskflow`** (both rows DB-confirmed; `mariany-borges` also owns `board-seci-analista-inova-semcaspi-taskflow`).
-- **v2 behavior:** **Not fixed.** The init name-heal (`canonicalizeBoardPersonNames`) reconciles divergent *names within one `person_id`* — it cannot merge two different `person_id`s. A canonical people table (which would dedupe identities across boards) is **deferred to v2.1** (see `project_taskflow_person_identity_model`). The duplicate rows migrate verbatim; v2's delegate-stub → full-register path can reproduce the split.
+- **v2 behavior:** **Not fixed.** The init name-heal `canonicalizeBoardPersonNames` groups by `person_id` and updates `WHERE person_id = ?` (`src/taskflow-db.ts:753,760`), so it reconciles divergent *names within one `person_id`* and **cannot merge two different `person_id`s**. A canonical people table (which would dedupe identities across boards) is **deferred to v2.1**. The duplicate rows migrate verbatim; v2's delegate-stub → full-register path can reproduce the split.
 - **Operator-visible impact:** The same person can be addressed/assigned under two ids; rollups and "qual delas?" disambiguation may surface both. One known instance in the migrated data.
 - **Rationale for acceptance:** *(pending operator decision)* — per-board identity is intentional design; the defect is the *uncleaned stub*, not the model. Canonical-people is the real fix and is post-cutover.
-- **Mitigation / followup:** (a) **Data:** at migration, merge `mariany` → `mariany-borges` (reassign any references, drop the stub) — the deferred "fix during migration" (pulled back 2026-05-30, available on request). (b) **Code (v2.1):** when a full `register_person` matches an existing role/phone-less stub by name, rekey/merge instead of inserting a second id; fold into the canonical-people work.
+- **Mitigation / followup:** (a) **Data:** at migration, merge `mariany` → `mariany-borges` and drop the stub — but this is NOT a single UPDATE (corrected per Codex review). `person_id='mariany'` is referenced by `board_people` (1 row — and `mariany-borges` ALREADY exists on `board-seci-taskflow`, so a blind update PK-collides → the stub row must be DELETED, not updated), `board_admins` (2), `tasks.assignee` (5), `task_history.by` (78), plus JSON-embedded refs in `task_history.details`, `tasks._last_mutation`, and `archive.*`. None are FK-enforced, so the risk is semantic stale references + the PK collision, not a DB error — the merge must rewrite all of them. Deferred "fix during migration" (pulled back 2026-05-30, available on request). (b) **Code (v2.1):** when a full `register_person` matches an existing role/phone-less stub by name, rekey/merge instead of inserting a second id; fold into the canonical-people work.
 - **Status:** proposed
 - **Signoff:** —
 
