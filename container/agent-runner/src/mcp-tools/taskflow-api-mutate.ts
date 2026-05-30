@@ -1953,11 +1953,15 @@ type MeetingResolution =
 // Resolve a `meeting` arg (explicit M-id or free-text name) to a unique task id.
 // Shared by api_reschedule_meeting and api_note_meeting so the M-id type guard,
 // name resolution, and 0/2+ ambiguity messages live in exactly one place.
-function resolveMeetingTaskId(engine: TaskflowEngine, meeting: string): MeetingResolution {
+function resolveMeetingTaskId(engine: TaskflowEngine, meeting: string, boardId: string): MeetingResolution {
   if (/^M\d+(?:\.\d+)?$/i.test(meeting.trim())) {
-    // Explicit M-id may target a done meeting, but it MUST be a meeting.
+    // Explicit M-id may target a done meeting, but it MUST be a meeting ON THIS
+    // board. getTask() also resolves meetings merely delegated here (child_exec) —
+    // broader than this tool's contract and inconsistent with the board-local
+    // name-resolution path below, so reject anything not owned by this board.
     const taskId = meeting.trim().toUpperCase();
-    if (engine.getTask(taskId)?.type !== 'meeting') {
+    const task = engine.getTask(taskId);
+    if (task?.type !== 'meeting' || task.board_id !== boardId) {
       return { ok: false, response: jsonResponse({ success: false, error: `${taskId} não é uma reunião neste quadro.` }) };
     }
     return { ok: true, taskId };
@@ -2018,7 +2022,7 @@ export const apiRescheduleMeetingTool: McpToolDefinition = {
 
     try {
       const engine = new TaskflowEngine(getTaskflowDb(), boardId);
-      const resolved = resolveMeetingTaskId(engine, meeting);
+      const resolved = resolveMeetingTaskId(engine, meeting, boardId);
       if (!resolved.ok) return resolved.response;
       const taskId = resolved.taskId;
 
@@ -2081,7 +2085,7 @@ export const apiNoteMeetingTool: McpToolDefinition = {
 
     try {
       const engine = new TaskflowEngine(getTaskflowDb(), boardId);
-      const resolved = resolveMeetingTaskId(engine, meeting);
+      const resolved = resolveMeetingTaskId(engine, meeting, boardId);
       if (!resolved.ok) return resolved.response;
       const taskId = resolved.taskId;
 

@@ -2551,6 +2551,26 @@ describe('api_reschedule_meeting MCP tool', () => {
     expect(scheduledAt('M99')).toBeNull();
   });
 
+  it('rejects an explicit M-id of a meeting only DELEGATED to this board (resolution stays board-local)', async () => {
+    const { apiRescheduleMeetingTool } = await import('./taskflow-api-mutate.ts');
+    // M88 is OWNED by another board but child-exec delegated to BOARD. engine.getTask()
+    // would resolve it (delegated-here fallback), but the meeting tools' contract is
+    // board-local — matching the name-resolution path (resolveMeetingCandidates is
+    // WHERE board_id = ?). A /simplify refactor accidentally broadened this; guard it.
+    db.exec(`INSERT INTO tasks (id, board_id, type, title, column, requires_close_approval,
+               child_exec_enabled, child_exec_board_id, created_at, updated_at)
+             VALUES ('M88', 'board-other', 'meeting', 'Delegated Meeting', 'next_action', 0,
+               1, '${BOARD}', '2026-04-29T12:00:00Z', '2026-01-01')`);
+    const resp = await apiRescheduleMeetingTool.handler({
+      board_id: BOARD, meeting: 'M88', scheduled_at: '2026-05-05T09:00:00Z', sender_name: 'alice',
+    });
+    const out = JSON.parse(resp.content[0].text);
+    expect(out.success).toBe(false);
+    expect(out.error).toMatch(/não é uma reunião/i);
+    // the delegated meeting on the other board is untouched
+    expect(scheduledAt('M88')).toBeNull();
+  });
+
   it('api_note_meeting notes the MEETING by name, not a same-named project', async () => {
     const { apiNoteMeetingTool, apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
     // A project and a meeting sharing "Novos Sites" — the note must go to the meeting (M-id).
