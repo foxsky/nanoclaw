@@ -72,6 +72,13 @@ const FASTAPI_ALLOWLIST: ReadonlySet<string> = new Set([
   'api_add_board_person',
   'api_remove_board_person',
   'api_update_board_person',
+  // NOTE: `api_rename_board_person` is INTENTIONALLY excluded here. Unlike the
+  // board-scoped tools above, it writes a person's name on EVERY board they
+  // belong to (name is per-person identity). The FastAPI surface carries only
+  // per-board owner auth, so exposing a cross-board write here would let a
+  // board-A owner rewrite names on board B. It stays agent/operator-only (the
+  // ungated index.ts MCP server). If a dashboard rename is ever needed, add a
+  // person-level auth check first.
   // task comment (engine-backed; FastAPI-path push delivery is the
   // tracked 0h-v2 / Phase-3 item — the DB write + WhatsApp-path
   // notify land now).
