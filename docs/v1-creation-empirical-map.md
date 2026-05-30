@@ -165,18 +165,24 @@ Jefferson 13:54:07; `po-setd-secti-2` reg 05-11T13:41:41 = the duplicate).
 4. Meeting (`M`-prefixed) rows aren't retained under queryable titles — meeting successes confirmed
    via transcript only.
 
-## v2 relevance
+## v2 relevance — verified against v2 source (per-defect sweep 2026-05-30)
 
-| Failure class | v2 status |
-|---|---|
-| Wrong-name child board (Edilson, Jefferson) | **Fixed/mitigated** by init name-heal (repairs same-`person_id` divergence). Caveat: heal is a follow-up, not prevention. |
-| Announce ≠ persist (Reginaldo) | **Reduced** — v2 confirmations derive from the persisted row (canonicalize-at-write + single-writer outbound). |
-| Duplicate child board (Hudson) | Race **likely fixed** (durable outbound + single-writer + `on_wake`/`onExit`). **But** tool-level idempotency isn't guaranteed, and the existing dup rows migrate verbatim. |
-| **Silently-skipped board (Sanunciel)** | **⚠️ Persists** — non-atomic person+board provision is an engine concern, not fixed by the host rewrite. → EX-014. |
-| **Orphan/dual-person_id (Mariany)** | **⚠️ Persists** — name-heal keys on `person_id`, so it cannot merge two ids; needs the canonical-people table (deferred to v2.1). → EX-015. |
-| Per-board identity prompts / externals / abandonment | Unchanged (by design / correct UX). |
+Two axes: does v2 **prevent** a new occurrence, and does v2/migration **repair** the existing
+migrated rows. (This supersedes the earlier "mitigated/likely fixed" labels — which were
+unverified inferences; the sweep corrected them in both directions.)
 
-**Bottom line:** the race-driven defects (duplicate, name-too-late) are what v2's architecture most
-directly attacks. The **two engine-level defects — Sanunciel's non-atomic skip and Mariany's
-dual-identity — would still happen in v2** and the existing bad rows migrate verbatim. Tracked as
-**EX-014 / EX-015** in [v2-cutover-exception-list.md](v2-cutover-exception-list.md).
+| Failure class | Prevents new? | Repairs existing? | Verdict + evidence |
+|---|:---:|:---:|---|
+| Person-named board too early (Edilson) | **Yes** | n/a | **FIXED** — hierarchy `register_person` rejects a missing `group_name`/`group_folder`/`phone` before slug + before `auto_provision_request` (`taskflow-engine.ts:9416-9430`); MCP tool has no person-name fallback (`mcp-tools/provision-child-board.ts:56-59`). |
+| Name truncation, same `person_id` (Jefferson) | No (write-time) | **Yes** (boot heal) | **PARTIAL → effectively closed** — `canonicalizeBoardPersonNames` longest-name-wins UPDATE at `initTaskflowDb` (`taskflow-db.ts:743-783`); inserts still copy the name verbatim, but each boot re-heals. |
+| Duplicate child board (Hudson) | **Yes** | **No** | **FIXED (creation path)** — `alreadyOnThisParent` guard before createGroup/seed (`provision-child-board.ts:361-370`) + serialized delivery + `(parent_board_id, person_id)` PK backstop. BUT the existing `board-po-setd-secti-taskflow-2` row migrates verbatim → needs a one-time data cleanup. |
+| Announce ≠ persist (Reginaldo) | **Partial** | n/a | **PARTIAL** — the HOST confirmation reuses the persisted/deduped `childBoardId` (`provision-child-board.ts:431,617`), but the CONTAINER optimistic ack announces un-deduped `board-${groupFolder}` (`poll-loop.ts:2838`) → still diverges on a folder collision. Cheap fix: drop the concrete id from the container ack. |
+| **Silently-skipped board (Sanunciel)** | **No** | **No** | **NOT-FIXED** — non-atomic person+board; optimistic reply + log-and-return is marked delivered with no retry (`poll-loop.ts:2832`; `delivery.ts:190-227`). → EX-014. |
+| **Dual `person_id` (Mariany)** | **No** | **No** | **NOT-FIXED** — name-heal keys on `person_id`, can't merge two ids; canonical-people deferred to v2.1. → EX-015. |
+| Per-board identity prompts / externals / abandonment | — | — | Unchanged (by design / correct UX). |
+
+**Net (of the 6 defects):** **2 fully prevented going forward** (Edilson, Hudson) · **1 auto-repaired
+on boot** (Jefferson) · **1 host-fixed / container-residual** (Reginaldo) · **2 not fixed** (Sanunciel,
+Mariany). **Migration repairs NOTHING** — it is a verbatim `copyFileSync` (`setup/migrate-v2/taskflow.ts`)
+— so **3 existing-data populations need a one-time repair:** orphaned persons (Sanunciel-class, EX-014),
+the `mariany`/`mariany-borges` dup-id (EX-015), and the `…-2` duplicate board (Hudson residual).
