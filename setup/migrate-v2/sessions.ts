@@ -68,8 +68,9 @@ function main(): void {
 
   const v1SessionsDir = path.join(v1Path, 'data', 'sessions');
   if (!fs.existsSync(v1SessionsDir)) {
+    // Non-zero so run_step routes to the skipped branch, not silent "success".
     console.log('SKIPPED:no v1 data/sessions/ directory');
-    process.exit(0);
+    process.exit(1);
   }
 
   // Init v2 central DB

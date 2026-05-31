@@ -95,6 +95,22 @@ export function mergeDuplicatePerson(db: Database.Database, stubId: string, keep
     throw new Error(`merge aborted: keeper person_id '${keeperId}' not found in board_people`);
   }
 
+  // The depth-agnostic residual scan (residualColumns) strips keeper refs then treats
+  // any leftover `stubId` substring as a live ref. That is only sound if no OTHER id
+  // contains the stub token; a third `<stub>-*` identity would make the scan ambiguous
+  // (false-positive rollback, or a missed distinct person). Assert it fail-loud.
+  const ambiguous = (
+    db
+      .prepare(
+        `SELECT DISTINCT person_id FROM (SELECT person_id FROM board_people UNION SELECT person_id FROM board_admins)
+         WHERE person_id LIKE ? AND person_id NOT IN (?, ?)`,
+      )
+      .all(`%${stubId}%`, stubId, keeperId) as Array<{ person_id: string }>
+  ).map((r) => r.person_id);
+  if (ambiguous.length > 0) {
+    throw new Error(`merge aborted: ambiguous id space — ${ambiguous.join(', ')} also contain '${stubId}', so the residual scan can't safely distinguish refs. Resolve manually.`);
+  }
+
   // Token forms a person-id ref takes inside these columns. Each closing quote makes
   // the token boundary-safe ("mariany" never matches inside "mariany-borges").
   //  - plain JSON token     "mariany"     (e.g. assignee/history JSON)

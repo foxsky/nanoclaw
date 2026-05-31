@@ -78,8 +78,9 @@ async function main(): Promise<void> {
 
   const v1DbPath = path.join(v1Path, 'store', 'messages.db');
   if (!fs.existsSync(v1DbPath)) {
+    // Non-zero so run_step routes to the skipped branch, not silent "success".
     console.log('SKIPPED:no v1 DB');
-    process.exit(0);
+    process.exit(1);
   }
 
   // Read v1 tasks

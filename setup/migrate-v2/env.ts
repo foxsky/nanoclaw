@@ -32,8 +32,9 @@ function main(): void {
 
   const v1EnvPath = path.join(v1Path, '.env');
   if (!fs.existsSync(v1EnvPath)) {
+    // Non-zero so run_step routes to the skipped branch, not silent "success".
     console.log('SKIPPED:no v1 .env');
-    process.exit(0);
+    process.exit(1);
   }
 
   const v2EnvPath = path.join(process.cwd(), '.env');

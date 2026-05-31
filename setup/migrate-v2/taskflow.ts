@@ -265,18 +265,19 @@ function main(): void {
     process.exit(1);
   }
 
-  // DELETE-mode mirror of the WAL gate: a non-empty rollback journal means v1 was
-  // mid-transaction (uncleanly stopped). Copying just taskflow.db could capture a
-  // partially-written, un-rolled-back page state. Production v1 is WAL, but this step
-  // is general — a journal_mode=DELETE v1 leaves -journal, not -wal.
+  // DELETE-mode mirror of the WAL gate: a non-empty rollback journal MAY be hot (v1
+  // stopped mid-transaction), in which case copying just taskflow.db could capture a
+  // partially-written, un-rolled-back page state. We refuse conservatively without
+  // distinguishing a hot journal from a benign journal_mode=PERSIST leftover — opening
+  // the db cleanly resolves either (a hot journal rolls back; verify, then re-run).
+  // Production v1 is WAL, but this step is general — a DELETE-mode v1 leaves -journal.
   const v1Journal = v1Db + '-journal';
   if (fs.existsSync(v1Journal) && fs.statSync(v1Journal).size > 0) {
     console.error('ERROR: v1 taskflow.db has a non-empty rollback journal');
     console.error(`       ${v1Journal} (${fs.statSync(v1Journal).size} bytes)`);
-    console.error('       v1 was stopped mid-transaction (or is running outside the standard');
-    console.error('       service unit). Copying just taskflow.db could capture an un-rolled-back state.');
-    console.error('');
-    console.error('       Let sqlite roll the journal back by opening the db cleanly:');
+    console.error('       It may be hot (v1 stopped mid-transaction) — copying just taskflow.db');
+    console.error('       could then capture an un-rolled-back state. Resolve it first by opening');
+    console.error('       the db cleanly (a hot journal rolls back; a benign one is harmless):');
     console.error(`         sqlite3 "${v1Db}" 'PRAGMA integrity_check; .quit'`);
     console.error('');
     console.error('       Then re-run migrate-v2.sh.');

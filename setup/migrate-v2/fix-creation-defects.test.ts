@@ -108,6 +108,18 @@ describe('mergeDuplicatePerson (Mariany)', () => {
     expect(() => mergeDuplicatePerson(db, 'mariany', 'mariany-borges')).toThrow(/keeper/i);
   });
 
+  // The depth-agnostic residual scan strips the keeper then treats any leftover `stub`
+  // substring as a live ref — only safe if no OTHER id contains the stub token. Assert
+  // that precondition fail-loud rather than risk a false-positive rollback (or, worse,
+  // a wrong-merge) when a third `mariany-*` identity exists.
+  it('refuses to merge if another id also contains the stub token (ambiguous id space)', () => {
+    db.exec(`INSERT INTO board_people VALUES
+      ('b','mariany','Mariany Borges','','',NULL),
+      ('b2','mariany-borges','Mariany Borges','Analista','5586',NULL),
+      ('b3','mariany-costa','Mariany Costa','Estagiária','5599',NULL);`);
+    expect(() => mergeDuplicatePerson(db, 'mariany', 'mariany-borges')).toThrow(/ambiguous|mariany-costa/i);
+  });
+
   // Production data embeds JSON columns AS STRINGS inside other JSON (update snapshots,
   // archive payloads), so a ref is stored doubly-serialized as \"mariany\" — which the
   // plain "mariany" token never matches. The old merge left these behind AND the
