@@ -259,7 +259,7 @@ async function main(): Promise<void> {
   const existingMain = getMainControlMessagingGroup();
   if (existingMain) {
     console.log(
-      `SKIPPED:is_main_control already set on "${existingMain.name ?? existingMain.id}" (preserving operator/prior choice)`,
+      `INFO:is_main_control already set on "${existingMain.name ?? existingMain.id}" (preserving operator/prior choice)`,
     );
   } else if (mainCandidates.length > 0) {
     const pick = mainCandidates[0];
