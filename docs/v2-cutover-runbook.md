@@ -150,17 +150,17 @@ Run AFTER the TaskFlow DB copy step and BEFORE the canary, against the **migrate
 
 ### 6a. Mariany dual-identity merge — REQUIRED, automated (EX-015)
 
-This is EX-015's **sole** prevention (the engine reconcile was removed), so it must run.
+This is EX-015's **sole** prevention (the engine reconcile was removed), so it **must run and must be verified** — there is no orchestration step that runs it for you. Treat the two commands below as a gate: do not start the canary until the `--apply` log shows the `APPLIED` line with no rollback error.
 
 ```bash
 cp data/taskflow/taskflow.db data/taskflow/taskflow.db.pre-creation-fix      # backup
-pnpm exec tsx setup/migrate-v2/fix-creation-defects.ts data/taskflow/taskflow.db            # dry-run (review)
-pnpm exec tsx setup/migrate-v2/fix-creation-defects.ts data/taskflow/taskflow.db --apply    # apply
-# verify zero residue:
-pnpm exec tsx scripts/q.ts data/taskflow/taskflow.db "SELECT count(*) FROM board_people WHERE person_id='mariany'"   # expect 0
+pnpm exec tsx setup/migrate-v2/fix-creation-defects.ts data/taskflow/taskflow.db        2>&1 | tee -a "$CUTOVER_LOG"   # dry-run (review)
+pnpm exec tsx setup/migrate-v2/fix-creation-defects.ts data/taskflow/taskflow.db --apply 2>&1 | tee -a "$CUTOVER_LOG"   # apply
+# independent post-check (depth-agnostic: strips the keeper, then any remaining 'mariany' is an unconverted ref):
+pnpm exec tsx scripts/q.ts data/taskflow/taskflow.db "SELECT (SELECT count(*) FROM board_people WHERE instr(REPLACE(person_id,'mariany-borges',''),'mariany')>0) + (SELECT count(*) FROM tasks WHERE instr(REPLACE(COALESCE(_last_mutation,'')||COALESCE(notes,'')||COALESCE(assignee,''),'mariany-borges',''),'mariany')>0) + (SELECT count(*) FROM archive WHERE instr(REPLACE(COALESCE(task_snapshot,'')||COALESCE(history,'')||COALESCE(assignee,''),'mariany-borges',''),'mariany')>0) + (SELECT count(*) FROM task_history WHERE instr(REPLACE(COALESCE(details,'')||COALESCE(\"by\",''),'mariany-borges',''),'mariany')>0) AS residual_mariany_refs"   # expect 0
 ```
 
-Expect an `APPLIED mariany->mariany-borges: {...}` line; the script's fail-loud residual scan throws (and rolls back) if any `mariany` ref survives. The same run also DETECTS and flags 6b + 6c (it does not auto-fix them).
+**Pass criteria (all three):** the `--apply` run prints `APPLIED mariany->mariany-borges: {...}`, it does **not** throw `merge aborted (rolled back)`, and the post-check returns `0`. The merge rewrites both plain (`"mariany"`) and escaped (`\"mariany\"`, JSON-serialized-as-string inside snapshots/archive — the live snapshot has 4) refs; its fail-loud residual scan is **depth-agnostic** (strips the keeper, then fails on any surviving `mariany` substring at any escaping depth) and rolls back rather than reporting a false success. The same run also DETECTS and flags 6b + 6c (it does not auto-fix them).
 
 ### 6b. Sanunciel orphan re-provision — manual, live agent (EX-014)
 

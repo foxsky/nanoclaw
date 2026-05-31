@@ -63,14 +63,20 @@ function columnExists(db: Database.Database, table: string, column: string): boo
   return cols.some((c) => c.name === column);
 }
 
-/** Columns that still contain the stub id (exact value OR quoted JSON token). */
-function residualColumns(db: Database.Database, stubId: string): string[] {
-  const token = `%"${stubId}"%`;
+/**
+ * Columns that still reference the stub after the merge — depth/escaping-agnostic:
+ * strip every keeper ref, then any remaining stub substring is an unconverted ref.
+ * Catches a surviving ref of ANY escaping depth (plain "mariany", escaped \"mariany\",
+ * deeper), where an exact-token scan would silently miss the escaped forms. Safe
+ * because the merge is SCOPED to a confirmed pair and no other `<stub>-*` id exists,
+ * so a bare `stub` substring in an id-bearing column is always an unconverted ref.
+ */
+function residualColumns(db: Database.Database, stubId: string, keeperId: string): string[] {
   const out: string[] = [];
   const checks: Array<[string, string]> = [['board_people', 'person_id'], ['board_admins', 'person_id'], ...PERSON_REF_COLUMNS];
   for (const [table, col] of checks) {
     if (!columnExists(db, table, col)) continue;
-    const n = (db.prepare(`SELECT count(*) AS c FROM ${table} WHERE "${col}" = ? OR "${col}" LIKE ?`).get(stubId, token) as { c: number }).c;
+    const n = (db.prepare(`SELECT count(*) AS c FROM ${table} WHERE instr(REPLACE(CAST("${col}" AS TEXT), ?, ''), ?) > 0`).get(keeperId, stubId) as { c: number }).c;
     if (n > 0) out.push(`${table}.${col} (${n})`);
   }
   return out;
@@ -89,9 +95,17 @@ export function mergeDuplicatePerson(db: Database.Database, stubId: string, keep
     throw new Error(`merge aborted: keeper person_id '${keeperId}' not found in board_people`);
   }
 
-  const token = `"${stubId}"`;
-  const replacement = `"${keeperId}"`;
-  const like = `%${token}%`;
+  // Token forms a person-id ref takes inside these columns. Each closing quote makes
+  // the token boundary-safe ("mariany" never matches inside "mariany-borges").
+  //  - plain JSON token     "mariany"     (e.g. assignee/history JSON)
+  //  - escaped JSON token   \"mariany\"   (a JSON column serialized AS A STRING inside
+  //                                        another JSON column — update snapshots,
+  //                                        archive payloads; the plain token misses it)
+  // The residual scan is the depth-agnostic backstop for any form not listed here.
+  const tokenRewrites: Array<[string, string]> = [
+    [`"${stubId}"`, `"${keeperId}"`],
+    [`\\"${stubId}\\"`, `\\"${keeperId}\\"`],
+  ];
 
   const run = db.transaction((): MergeSummary => {
     const s: MergeSummary = {
@@ -134,14 +148,15 @@ export function mergeDuplicatePerson(db: Database.Database, stubId: string, keep
     for (const [table, col] of PERSON_REF_COLUMNS) {
       if (!columnExists(db, table, col)) continue;
       const exact = db.prepare(`UPDATE ${table} SET "${col}" = ? WHERE "${col}" = ?`).run(keeperId, stubId).changes;
-      const json = db.prepare(`UPDATE ${table} SET "${col}" = REPLACE("${col}", ?, ?) WHERE "${col}" LIKE ?`).run(token, replacement, like).changes;
       s.exactUpdates += exact;
-      s.jsonRewrites += json;
+      for (const [token, replacement] of tokenRewrites) {
+        s.jsonRewrites += db.prepare(`UPDATE ${table} SET "${col}" = REPLACE("${col}", ?, ?) WHERE instr("${col}", ?) > 0`).run(token, replacement, token).changes;
+      }
       if (table === 'tasks' && col === 'assignee') s.tasksReassigned = exact;
     }
 
     // Fail loud: nothing referencing the stub may survive. Throwing rolls back the txn.
-    const residual = residualColumns(db, stubId);
+    const residual = residualColumns(db, stubId, keeperId);
     if (residual.length > 0) {
       throw new Error(`merge aborted (rolled back): stub '${stubId}' still referenced by ${residual.join(', ')} — add these columns to PERSON_REF_COLUMNS`);
     }

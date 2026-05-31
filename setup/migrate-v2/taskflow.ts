@@ -265,6 +265,24 @@ function main(): void {
     process.exit(1);
   }
 
+  // DELETE-mode mirror of the WAL gate: a non-empty rollback journal means v1 was
+  // mid-transaction (uncleanly stopped). Copying just taskflow.db could capture a
+  // partially-written, un-rolled-back page state. Production v1 is WAL, but this step
+  // is general — a journal_mode=DELETE v1 leaves -journal, not -wal.
+  const v1Journal = v1Db + '-journal';
+  if (fs.existsSync(v1Journal) && fs.statSync(v1Journal).size > 0) {
+    console.error('ERROR: v1 taskflow.db has a non-empty rollback journal');
+    console.error(`       ${v1Journal} (${fs.statSync(v1Journal).size} bytes)`);
+    console.error('       v1 was stopped mid-transaction (or is running outside the standard');
+    console.error('       service unit). Copying just taskflow.db could capture an un-rolled-back state.');
+    console.error('');
+    console.error('       Let sqlite roll the journal back by opening the db cleanly:');
+    console.error(`         sqlite3 "${v1Db}" 'PRAGMA integrity_check; .quit'`);
+    console.error('');
+    console.error('       Then re-run migrate-v2.sh.');
+    process.exit(1);
+  }
+
   const projectRoot = process.cwd();
   const v2DbDir = path.join(projectRoot, 'data', 'taskflow');
   const v2Db = path.join(v2DbDir, 'taskflow.db');

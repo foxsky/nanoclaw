@@ -107,6 +107,35 @@ describe('mergeDuplicatePerson (Mariany)', () => {
     db.exec(`INSERT INTO board_people VALUES ('b','mariany','Mariany','','',NULL);`);
     expect(() => mergeDuplicatePerson(db, 'mariany', 'mariany-borges')).toThrow(/keeper/i);
   });
+
+  // Production data embeds JSON columns AS STRINGS inside other JSON (update snapshots,
+  // archive payloads), so a ref is stored doubly-serialized as \"mariany\" — which the
+  // plain "mariany" token never matches. The old merge left these behind AND the
+  // residual scan reported success (verified on the live snapshot: 4 escaped survivors).
+  it('rewrites escaped JSON refs (\\"mariany\\") embedded in serialized snapshots', () => {
+    db.exec(`INSERT INTO board_people VALUES ('b','mariany-borges','Mariany Borges','Analista','555',NULL);`);
+    const embedded = JSON.stringify({ snapshot: JSON.stringify({ by: 'mariany' }) }); // contains \"mariany\"
+    db.prepare(`INSERT INTO tasks VALUES ('T9','b','mariany-borges', ?, '[]')`).run(embedded);
+
+    mergeDuplicatePerson(db, 'mariany', 'mariany-borges');
+
+    const m = (db.prepare(`SELECT _last_mutation AS m FROM tasks WHERE id='T9'`).get() as { m: string }).m;
+    expect(m.includes('\\"mariany\\"')).toBe(false); // escaped stub ref converted
+    expect(m.includes('\\"mariany-borges\\"')).toBe(true);
+  });
+
+  // The residual scan must FAIL LOUD (roll back) on any surviving stub ref the rewrite
+  // didn't convert — e.g. a deeper-escaped form — rather than report a false success.
+  it('rolls back if any stub ref survives the rewrite (deeper-escaped form)', () => {
+    db.exec(`INSERT INTO board_people VALUES ('b','mariany-borges','Mariany Borges','Analista','555',NULL);`);
+    const doubleEscaped = JSON.stringify({ a: JSON.stringify({ b: JSON.stringify({ by: 'mariany' }) }) });
+    db.prepare(`INSERT INTO tasks VALUES ('T10','b','mariany-borges', ?, '[]')`).run(doubleEscaped);
+
+    expect(() => mergeDuplicatePerson(db, 'mariany', 'mariany-borges')).toThrow(/still referenced|rolled back/);
+    // rolled back: the deeper-escaped ref is untouched (no partial mutation)
+    const m = (db.prepare(`SELECT _last_mutation AS m FROM tasks WHERE id='T10'`).get() as { m: string }).m;
+    expect(m.includes('mariany')).toBe(true);
+  });
 });
 
 describe('checkpointReportsBusyWriter (--apply live-writer guard)', () => {
