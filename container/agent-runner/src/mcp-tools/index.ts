@@ -11,6 +11,7 @@ import './interactive.js';
 import './agents.js';
 import './self-mod.js';
 import './send-otp.js';
+import './transcribe-audio.js';
 import './provision-root-board.js';
 import './provision-child-board.js';
 import './create-group.js';
