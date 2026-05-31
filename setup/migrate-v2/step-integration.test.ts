@@ -139,6 +139,14 @@ describe('Guard B: taskflow.ts main() gates + exit-code contract', () => {
     fs.writeFileSync(path.join(bin, 'systemctl'), `#!/usr/bin/env bash\nprintf 'ActiveState=active\\nWorkingDirectory=${workingDir}\\n'\n`, { mode: 0o755 });
     return { ...process.env, PATH: `${bin}:${process.env.PATH}` };
   }
+  // Reports an inactive unit so the gate falls through to the WAL/journal/SKIPPED/copy
+  // branch deterministically — without this the tests would depend on the host's real
+  // `nanoclaw` unit serving a confirmable non-/tmp path (fragile on CI).
+  function fakeSystemctlInactive(): NodeJS.ProcessEnv {
+    const bin = tmp();
+    fs.writeFileSync(path.join(bin, 'systemctl'), `#!/usr/bin/env bash\nprintf 'ActiveState=inactive\\n'\n`, { mode: 0o755 });
+    return { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+  }
 
   it('refuses (exit 1) when an active nanoclaw unit SERVES v1Path — probe→parse→decision (A-HIGH)', () => {
     const v1 = v1WithDb((d) => d.exec(`INSERT INTO boards VALUES ('b','j','o',NULL)`));
@@ -156,7 +164,7 @@ describe('Guard B: taskflow.ts main() gates + exit-code contract', () => {
   });
 
   it('SKIPPED:no v1 taskflow.db exits NON-ZERO (so migrate-v2.sh never reports a green empty migration)', () => {
-    const r = runStep('taskflow.ts', [tmp()], { cwd: tmp() });
+    const r = runStep('taskflow.ts', [tmp()], { cwd: tmp(), env: fakeSystemctlInactive() });
     expect(r.stdout).toMatch(/SKIPPED:no v1 taskflow\.db/);
     expect(r.status).not.toBe(0);
   });
@@ -164,7 +172,7 @@ describe('Guard B: taskflow.ts main() gates + exit-code contract', () => {
   it('refuses (exit 1) on a non-empty -wal sidecar', () => {
     const v1 = v1WithDb((d) => d.exec(`INSERT INTO boards VALUES ('b','j','o',NULL)`));
     fs.writeFileSync(path.join(v1, 'data', 'taskflow', 'taskflow.db-wal'), 'x'.repeat(64));
-    const r = runStep('taskflow.ts', [v1], { cwd: tmp() });
+    const r = runStep('taskflow.ts', [v1], { cwd: tmp(), env: fakeSystemctlInactive() });
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/uncheckpointed WAL/);
   });
@@ -172,7 +180,7 @@ describe('Guard B: taskflow.ts main() gates + exit-code contract', () => {
   it('refuses (exit 1) on a non-empty rollback -journal (DELETE-mode v1)', () => {
     const v1 = v1WithDb((d) => d.exec(`INSERT INTO boards VALUES ('b','j','o',NULL)`));
     fs.writeFileSync(path.join(v1, 'data', 'taskflow', 'taskflow.db-journal'), 'x'.repeat(64));
-    const r = runStep('taskflow.ts', [v1], { cwd: tmp() });
+    const r = runStep('taskflow.ts', [v1], { cwd: tmp(), env: fakeSystemctlInactive() });
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/rollback journal/);
   });
@@ -180,7 +188,7 @@ describe('Guard B: taskflow.ts main() gates + exit-code contract', () => {
   it('copies a clean v1 taskflow.db (OK + exit 0) into the cwd target', () => {
     const v1 = v1WithDb((d) => d.exec(`INSERT INTO boards VALUES ('b','j','o',NULL)`));
     const target = tmp();
-    const r = runStep('taskflow.ts', [v1], { cwd: target });
+    const r = runStep('taskflow.ts', [v1], { cwd: target, env: fakeSystemctlInactive() });
     expect(r.status).toBe(0);
     expect(r.stdout).toMatch(/OK:taskflow=copied,boards=1/);
     expect(fs.existsSync(path.join(target, 'data', 'taskflow', 'taskflow.db'))).toBe(true);

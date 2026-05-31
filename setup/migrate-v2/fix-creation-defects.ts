@@ -64,20 +64,33 @@ function columnExists(db: Database.Database, table: string, column: string): boo
 }
 
 /**
- * Columns that still reference the stub after the merge — depth/escaping-agnostic:
- * strip every keeper ref, then any remaining stub substring is an unconverted ref.
- * Catches a surviving ref of ANY escaping depth (plain "mariany", escaped \"mariany\",
- * deeper), where an exact-token scan would silently miss the escaped forms. Safe
- * because the merge is SCOPED to a confirmed pair and no other `<stub>-*` id exists,
- * so a bare `stub` substring in an id-bearing column is always an unconverted ref.
+ * Columns that still reference the stub after the merge. The check is BOUNDARY-AWARE
+ * (it matches only the id-token forms the rewrite targets) and runs over EVERY column
+ * of EVERY table, so it is both:
+ *  - precise: a free-text or display-name occurrence (`mariany.borges@x`, capital-M
+ *    `Mariany`, or another `"mariany-costa"` id) is NOT a token match → no false rollback;
+ *  - complete: a surviving token in a column the rewrite did NOT handle (unlisted in
+ *    PERSON_REF_COLUMNS, or a deeper escaping the rewrite skipped) still fails loud,
+ *    rather than passing silently because the column wasn't enumerated.
+ * Token forms matched, at any escaping depth:
+ *  - bare exact value `mariany`
+ *  - plain quoted token `"mariany"`
+ *  - escaped quoted token `"mariany\` (the closing delimiter of `\"mariany\"` and deeper)
  */
-function residualColumns(db: Database.Database, stubId: string, keeperId: string): string[] {
+function residualColumns(db: Database.Database, stubId: string): string[] {
+  const plain = `"${stubId}"`;
+  const escaped = `"${stubId}\\`;
   const out: string[] = [];
-  const checks: Array<[string, string]> = [['board_people', 'person_id'], ['board_admins', 'person_id'], ...PERSON_REF_COLUMNS];
-  for (const [table, col] of checks) {
-    if (!columnExists(db, table, col)) continue;
-    const n = (db.prepare(`SELECT count(*) AS c FROM ${table} WHERE instr(REPLACE(CAST("${col}" AS TEXT), ?, ''), ?) > 0`).get(keeperId, stubId) as { c: number }).c;
-    if (n > 0) out.push(`${table}.${col} (${n})`);
+  const tables = (db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all() as Array<{ name: string }>).map((t) => t.name);
+  for (const table of tables) {
+    for (const { name: col } of db.prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string }>) {
+      const n = (
+        db
+          .prepare(`SELECT count(*) AS c FROM "${table}" WHERE "${col}" = ? OR instr(CAST("${col}" AS TEXT), ?) > 0 OR instr(CAST("${col}" AS TEXT), ?) > 0`)
+          .get(stubId, plain, escaped) as { c: number }
+      ).c;
+      if (n > 0) out.push(`${table}.${col} (${n})`);
+    }
   }
   return out;
 }
@@ -93,22 +106,6 @@ export function mergeDuplicatePerson(db: Database.Database, stubId: string, keep
   const keeperExists = db.prepare(`SELECT 1 FROM board_people WHERE person_id = ? LIMIT 1`).get(keeperId);
   if (!keeperExists) {
     throw new Error(`merge aborted: keeper person_id '${keeperId}' not found in board_people`);
-  }
-
-  // The depth-agnostic residual scan (residualColumns) strips keeper refs then treats
-  // any leftover `stubId` substring as a live ref. That is only sound if no OTHER id
-  // contains the stub token; a third `<stub>-*` identity would make the scan ambiguous
-  // (false-positive rollback, or a missed distinct person). Assert it fail-loud.
-  const ambiguous = (
-    db
-      .prepare(
-        `SELECT DISTINCT person_id FROM (SELECT person_id FROM board_people UNION SELECT person_id FROM board_admins)
-         WHERE person_id LIKE ? AND person_id NOT IN (?, ?)`,
-      )
-      .all(`%${stubId}%`, stubId, keeperId) as Array<{ person_id: string }>
-  ).map((r) => r.person_id);
-  if (ambiguous.length > 0) {
-    throw new Error(`merge aborted: ambiguous id space — ${ambiguous.join(', ')} also contain '${stubId}', so the residual scan can't safely distinguish refs. Resolve manually.`);
   }
 
   // Token forms a person-id ref takes inside these columns. Each closing quote makes
@@ -172,9 +169,13 @@ export function mergeDuplicatePerson(db: Database.Database, stubId: string, keep
     }
 
     // Fail loud: nothing referencing the stub may survive. Throwing rolls back the txn.
-    const residual = residualColumns(db, stubId, keeperId);
+    const residual = residualColumns(db, stubId);
     if (residual.length > 0) {
-      throw new Error(`merge aborted (rolled back): stub '${stubId}' still referenced by ${residual.join(', ')} — add these columns to PERSON_REF_COLUMNS`);
+      throw new Error(
+        `merge aborted (rolled back): stub '${stubId}' still referenced by ${residual.join(', ')} — ` +
+          `either a person-ref column is missing from PERSON_REF_COLUMNS, a deeper escaping was not rewritten, ` +
+          `or a distinct '${stubId}-*' identity / free-text token needs manual review`,
+      );
     }
 
     s.applied = s.boardPeopleDeleted + s.boardPeopleRekeyed + s.adminsTransferred + s.adminsDropped + s.exactUpdates + s.jsonRewrites > 0;
@@ -237,12 +238,16 @@ export function checkOrphanPerson(db: Database.Database, personId: string): { pr
 
 /**
  * `PRAGMA wal_checkpoint(TRUNCATE)` does NOT throw on contention — it returns a row
- * whose `busy` column is 1 when a live writer blocks the checkpoint (0 otherwise; -1
- * log/checkpointed on a non-WAL no-op). So the --apply live-writer guard must inspect
- * the row, not catch a thrown SQLITE_BUSY (which never comes). Note this only detects
- * an ACTIVE lock holder, not an idle-but-open connection — the real "v1 stopped"
- * guarantee is out-of-band (Checklist #6 runs on the migrated copy, after the taskflow
- * copy step's service gate, before the canary).
+ * whose `busy` column is 1 when the checkpoint could not fully truncate because some
+ * open connection still pins WAL frames (0 otherwise; -1 log/checkpointed on a non-WAL
+ * no-op). busy!=0 is a FAIL-FAST heuristic, NOT a complete live-writer detector: it can
+ * fire on an idle reader, and it is inert in DELETE/rollback mode (always busy:0).
+ * In THIS deployment taskflow.db is DELETE-mode (src/taskflow-db.ts sets journal_mode=
+ * DELETE), so this preflight is a no-op on the real db — the actual live-writer
+ * guarantee is out-of-band (Checklist #6 runs on the migrated copy, after taskflow.ts's
+ * service gate, before the canary), and the merge transaction is the real backstop.
+ * Kept because it correctly handles a WAL-mode copy (truncating a stale dry-run WAL)
+ * should the db ever be WAL.
  */
 export function checkpointReportsBusyWriter(rows: Array<{ busy?: number }>): boolean {
   return (rows[0]?.busy ?? 0) !== 0;
@@ -258,13 +263,12 @@ function main(): void {
   const db = new Database(dbPath, apply ? undefined : { readonly: true });
   db.pragma('busy_timeout = 5000');
   if (apply) {
-    // The migrated taskflow.db is WAL-mode, so even a readonly dry-run on the same
-    // file leaves a -wal/-shm sidecar — a stale sidecar is NOT proof the db is open
-    // elsewhere (the documented flow is dry-run then --apply on the same file).
-    // Distinguish stale from live by checkpointing: TRUNCATE clears a stale WAL and
-    // reports busy=1 if a live writer holds the db (it does NOT throw — see
-    // checkpointReportsBusyWriter). The merge itself is transactional, so this is a
-    // fail-fast pre-flight, not the sole safeguard.
+    // taskflow.db is DELETE-mode in this deployment (see checkpointReportsBusyWriter),
+    // so this checkpoint is a no-op (busy:0) — but if the db were WAL-mode, a prior
+    // readonly dry-run on the same file would leave a stale -wal/-shm sidecar, and
+    // TRUNCATE clears it while reporting busy=1 if a connection still pins frames (it
+    // does NOT throw). The merge itself is transactional, so this is a fail-fast
+    // pre-flight, not the sole safeguard.
     const checkpoint = db.pragma('wal_checkpoint(TRUNCATE)') as Array<{ busy?: number }>;
     if (checkpointReportsBusyWriter(checkpoint)) {
       console.error(`refusing --apply: ${dbPath} is held by a live writer (checkpoint busy). Stop the service first.`);

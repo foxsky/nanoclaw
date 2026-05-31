@@ -108,16 +108,79 @@ describe('mergeDuplicatePerson (Mariany)', () => {
     expect(() => mergeDuplicatePerson(db, 'mariany', 'mariany-borges')).toThrow(/keeper/i);
   });
 
-  // The depth-agnostic residual scan strips the keeper then treats any leftover `stub`
-  // substring as a live ref — only safe if no OTHER id contains the stub token. Assert
-  // that precondition fail-loud rather than risk a false-positive rollback (or, worse,
-  // a wrong-merge) when a third `mariany-*` identity exists.
-  it('refuses to merge if another id also contains the stub token (ambiguous id space)', () => {
+  // A third `mariany-*` identity must NOT cause a false rollback: the boundary-aware
+  // rewrite/scan only matches the `"mariany"` / `\"mariany\"` token, never `"mariany-costa"`,
+  // so the unrelated person is left untouched and the required merge still completes.
+  it('leaves a third <stub>-* identity untouched and still merges', () => {
     db.exec(`INSERT INTO board_people VALUES
       ('b','mariany','Mariany Borges','','',NULL),
       ('b2','mariany-borges','Mariany Borges','Analista','5586',NULL),
       ('b3','mariany-costa','Mariany Costa','Estagiária','5599',NULL);`);
-    expect(() => mergeDuplicatePerson(db, 'mariany', 'mariany-borges')).toThrow(/ambiguous|mariany-costa/i);
+    db.prepare(`INSERT INTO tasks VALUES ('TC','b3','mariany-costa','{"by":"mariany-costa"}','[]')`).run();
+
+    const summary = mergeDuplicatePerson(db, 'mariany', 'mariany-borges');
+    expect(summary.applied).toBe(true);
+    expect(db.prepare(`SELECT count(*) c FROM board_people WHERE person_id='mariany'`).get()).toEqual({ c: 0 });
+    expect(db.prepare(`SELECT count(*) c FROM board_people WHERE person_id='mariany-costa'`).get()).toEqual({ c: 1 });
+    expect(db.prepare(`SELECT _last_mutation m FROM tasks WHERE id='TC'`).get()).toEqual({ m: '{"by":"mariany-costa"}' });
+  });
+
+  // Free-text containing a lowercase `mariany` substring that is NOT an id token (handle,
+  // email, slug) must NOT trip the residual scan — only quoted id tokens count.
+  it('does not false-rollback on free-text lowercase "mariany" (handle/email)', () => {
+    db.exec(`INSERT INTO board_people VALUES
+      ('b','mariany','Mariany Borges','','',NULL),
+      ('b','mariany-borges','Mariany Borges','Analista','5586',NULL);`);
+    db.prepare(`INSERT INTO tasks VALUES ('TF','b','mariany-borges','{}', ?)`).run('[{"text":"contact mariany.borges@sec.gov"}]');
+
+    const summary = mergeDuplicatePerson(db, 'mariany', 'mariany-borges');
+    expect(summary.applied).toBe(true);
+    // the free-text email is preserved verbatim (not rewritten, not flagged)
+    expect((db.prepare(`SELECT notes n FROM tasks WHERE id='TF'`).get() as { n: string }).n).toContain('mariany.borges@sec.gov');
+  });
+
+  // The residual scan is a completeness check over ALL columns: a surviving id token in a
+  // column the rewrite does NOT handle must fail loud (rolled back), not pass silently.
+  it('fails loud if a stub token survives in a column outside the rewrite set', () => {
+    // group_jid is not a person-ref column, so the rewrite never touches it; the
+    // all-columns residual scan must still catch the surviving token.
+    db.exec(`INSERT INTO boards VALUES ('b','{"actor":"mariany"}','mariany-borges',NULL);`);
+    db.exec(`INSERT INTO board_people VALUES
+      ('b','mariany','Mariany Borges','','',NULL),
+      ('b','mariany-borges','Mariany Borges','Analista','5586',NULL);`);
+    expect(() => mergeDuplicatePerson(db, 'mariany', 'mariany-borges')).toThrow(/still referenced|rolled back/);
+  });
+
+  // The Mariany pair always hits the DELETE path (keeper shares the stub's board); the
+  // REKEY branch (stub on a board the keeper is NOT a member of) is otherwise untested.
+  it('rekeys the stub + its admin grant onto the keeper on a board the keeper does not belong to', () => {
+    db.exec(`INSERT INTO board_people VALUES
+      ('bA','mariany','Mariany Borges','','',NULL),
+      ('bB','mariany-borges','Mariany Borges','Analista','5586',NULL);`);
+    db.exec(`INSERT INTO board_admins VALUES ('bA','mariany','','delegate',0);`);
+
+    const s = mergeDuplicatePerson(db, 'mariany', 'mariany-borges');
+    expect(s.boardPeopleRekeyed).toBe(1);
+    expect(s.boardPeopleDeleted).toBe(0);
+    expect(s.adminsTransferred).toBe(1);
+    expect(db.prepare(`SELECT count(*) c FROM board_people WHERE board_id='bA' AND person_id='mariany-borges'`).get()).toEqual({ c: 1 });
+    expect(db.prepare(`SELECT count(*) c FROM board_people WHERE person_id='mariany'`).get()).toEqual({ c: 0 });
+    expect(db.prepare(`SELECT count(*) c FROM board_admins WHERE board_id='bA' AND person_id='mariany-borges' AND admin_role='delegate'`).get()).toEqual({ c: 1 });
+  });
+
+  it('drops a duplicate admin grant when the keeper already holds that role on the board', () => {
+    db.exec(`INSERT INTO board_people VALUES
+      ('b','mariany','Mariany Borges','','',NULL),
+      ('b','mariany-borges','Mariany Borges','Analista','5586',NULL);`);
+    db.exec(`INSERT INTO board_admins VALUES
+      ('b','mariany','','manager',0),
+      ('b','mariany-borges','5586','manager',1);`);
+
+    const s = mergeDuplicatePerson(db, 'mariany', 'mariany-borges');
+    expect(s.adminsDropped).toBe(1);
+    expect(s.adminsTransferred).toBe(0);
+    expect(db.prepare(`SELECT count(*) c FROM board_admins WHERE board_id='b' AND person_id='mariany-borges' AND admin_role='manager'`).get()).toEqual({ c: 1 });
+    expect(db.prepare(`SELECT count(*) c FROM board_admins WHERE person_id='mariany'`).get()).toEqual({ c: 0 });
   });
 
   // Production data embeds JSON columns AS STRINGS inside other JSON (update snapshots,
