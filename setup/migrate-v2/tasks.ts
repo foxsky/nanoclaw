@@ -90,8 +90,9 @@ async function main(): Promise<void> {
 
   const activeTasks = allTasks.filter((t) => t.status === 'active');
   if (activeTasks.length === 0) {
+    // Non-zero so run_step routes to the skipped branch, not silent "success".
     console.log('SKIPPED:no active tasks');
-    process.exit(0);
+    process.exit(1);
   }
 
   // Init v2 central DB

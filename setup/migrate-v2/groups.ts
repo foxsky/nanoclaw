@@ -68,8 +68,9 @@ function main(): void {
   const v2GroupsDir = path.join(process.cwd(), 'groups');
 
   if (!fs.existsSync(v1GroupsDir)) {
+    // Non-zero so run_step routes to the skipped branch, not silent "success".
     console.log('SKIPPED:no v1 groups/ directory');
-    process.exit(0);
+    process.exit(1);
   }
 
   // Get all folders from v1 DB to know which groups are registered

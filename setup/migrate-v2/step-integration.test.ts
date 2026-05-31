@@ -26,7 +26,20 @@ afterEach(() => {
 });
 
 function runStep(name: string, args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {}) {
-  return spawnSync(process.execPath, ['--import', TSX_LOADER, STEP(name), ...args], { encoding: 'utf8', ...opts });
+  const r = spawnSync(process.execPath, ['--import', TSX_LOADER, STEP(name), ...args], { encoding: 'utf8', ...opts });
+  // Fail loud (not via a confusing assertion mismatch) if the environment can't spawn
+  // the child at all — e.g. a sandbox that blocks subprocesses.
+  if (r.error) throw new Error(`cannot spawn step '${name}': ${(r.error as Error).message}`);
+  return r;
+}
+
+function v1WithMessagesDb(seed: (d: Database.Database) => void): string {
+  const v1 = tmp();
+  fs.mkdirSync(path.join(v1, 'store'), { recursive: true });
+  const d = new Database(path.join(v1, 'store', 'messages.db'));
+  seed(d);
+  d.close();
+  return v1;
 }
 
 function schema(d: Database.Database) {
@@ -190,6 +203,28 @@ describe('migration steps: SKIPPED on missing input exits non-zero (run_step con
   it('tasks.ts (no v1 messages.db)', () => {
     const r = runStep('tasks.ts', [tmp()], { cwd: tmp() });
     expect(r.stdout).toMatch(/SKIPPED:no v1 DB/);
+    expect(r.status).not.toBe(0);
+  });
+
+  it('db.ts (v1 has no registered groups)', () => {
+    const v1 = v1WithMessagesDb((d) =>
+      d.exec(`CREATE TABLE registered_groups (jid TEXT, name TEXT, folder TEXT, trigger_pattern TEXT, requires_trigger INTEGER, is_main INTEGER)`),
+    );
+    const r = runStep('db.ts', [v1], { cwd: tmp() });
+    expect(r.stdout).toMatch(/SKIPPED:no registered groups in v1/);
+    expect(r.status).not.toBe(0);
+  });
+
+  it('groups.ts (no v1 groups/ directory)', () => {
+    const r = runStep('groups.ts', [tmp()], { cwd: tmp() });
+    expect(r.stdout).toMatch(/SKIPPED:no v1 groups\/ directory/);
+    expect(r.status).not.toBe(0);
+  });
+
+  it('tasks.ts (v1 DB present but no active scheduled tasks)', () => {
+    const v1 = v1WithMessagesDb((d) => d.exec(`CREATE TABLE scheduled_tasks (id TEXT, status TEXT)`));
+    const r = runStep('tasks.ts', [v1], { cwd: tmp() });
+    expect(r.stdout).toMatch(/SKIPPED:no active tasks/);
     expect(r.status).not.toBe(0);
   });
 });
