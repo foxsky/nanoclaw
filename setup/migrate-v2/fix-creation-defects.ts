@@ -43,6 +43,9 @@ const PERSON_REF_COLUMNS: Array<[table: string, column: string]> = [
   ['meeting_external_participants', 'created_by'],
   ['subtask_requests', 'requested_by_person_id'],
   ['subtask_requests', 'subtasks_json'],
+  // Dead v1 stub table (empty in v2), but keep the merge + residual scan
+  // schema-complete in case it is ever populated before --apply runs.
+  ['people', 'person_id'],
 ];
 
 export interface MergeSummary {
