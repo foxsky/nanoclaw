@@ -46,6 +46,95 @@ import path from 'path';
 
 import Database from 'better-sqlite3';
 
+export type SystemdUnitFacts = { scope: 'user' | 'system'; state: string; installPath: string | null };
+
+// A unit in any of these states may write the db between our probe and the copy.
+// `failed` is excluded — a failed unit is not running. Matches the v1 contract.
+const DANGEROUS_STATES = new Set(['active', 'reloading', 'activating', 'deactivating']);
+
+/** Parse `systemctl show` key=value output. ExecStart values contain '=', so split on the FIRST '='. */
+export function parseSystemctlShow(out: string): Record<string, string> {
+  const props: Record<string, string> = {};
+  for (const line of out.split('\n')) {
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    props[line.slice(0, eq)] = line.slice(eq + 1);
+  }
+  return props;
+}
+
+/**
+ * Install path a unit serves, taken from WorkingDirectory — the nanoclaw service
+ * template always sets it (setup/service.ts). null when absent or the systemd
+ * default `/`: the caller treats null as "cannot confirm which install" and refuses
+ * (safe default). We deliberately do NOT parse ExecStart's argv: its space-joined
+ * format cannot unambiguously recover an install path containing spaces, and a
+ * truncated path would silently defeat the containment guard — a false-negative that
+ * allows copying a live-written db, the one thing this guard must never do.
+ */
+export function pickInstallPath(props: Record<string, string>): string | null {
+  const wd = (props.WorkingDirectory ?? '').trim();
+  return wd && wd !== '/' ? wd : null;
+}
+
+function realpathOrSelf(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+function isSameOrWithin(child: string, parent: string): boolean {
+  if (child === parent) return true;
+  const rel = path.relative(parent, child);
+  return rel.length > 0 && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/**
+ * Whether a unit's install path corresponds to the v1 install we're copying.
+ * Containment in EITHER direction counts (ExecStart script sits under the root;
+ * an odd parent WorkingDirectory still relates). A null install path returns true:
+ * we cannot prove it serves a DIFFERENT install, so we keep the safe default (refuse).
+ */
+export function unitServesInstall(unitPath: string | null, v1Path: string): boolean {
+  if (!unitPath) return true;
+  const u = realpathOrSelf(unitPath);
+  const v = realpathOrSelf(v1Path);
+  return isSameOrWithin(u, v) || isSameOrWithin(v, u);
+}
+
+/**
+ * Decide whether an active v1 systemd unit guards `v1Path`. The v2 unit is always
+ * slugged (`nanoclaw-v2-<hash>`), so a literal `nanoclaw` unit is always a v1-STYLE
+ * install — but not necessarily THE install we're migrating from. Only suppress the
+ * refusal when an active unit PROVABLY serves a different tree; an unconfirmable
+ * install path refuses (preserves the pre-existing safe default).
+ */
+export function activeV1Unit(units: SystemdUnitFacts[], v1Path: string): { active: boolean; how: string } {
+  for (const u of units) {
+    if (!DANGEROUS_STATES.has(u.state)) continue;
+    if (u.installPath && !unitServesInstall(u.installPath, v1Path)) continue;
+    const why = u.installPath ? `serves ${u.installPath}` : 'install path unconfirmed';
+    return { active: true, how: `systemctl ${u.scope} nanoclaw → ${u.state} (${why})` };
+  }
+  return { active: false, how: '' };
+}
+
+function probeSystemdUnit(scope: 'user' | 'system'): SystemdUnitFacts | null {
+  const scopeArgs = scope === 'user' ? ['--user'] : [];
+  const r = spawnSync(
+    'systemctl',
+    [...scopeArgs, 'show', 'nanoclaw', '--property=ActiveState', '--property=WorkingDirectory'],
+    { encoding: 'utf8' },
+  );
+  if (r.error) return null;
+  const props = parseSystemctlShow(r.stdout ?? '');
+  const state = (props.ActiveState ?? '').trim();
+  if (!state) return null;
+  return { scope, state, installPath: pickInstallPath(props) };
+}
+
 /**
  * Detect whether a v1 nanoclaw is currently running. Load-bearing
  * against the WAL race Codex flagged: WAL size is a snapshot, but a
@@ -61,21 +150,22 @@ import Database from 'better-sqlite3';
  * For systemctl, refuses on any transitional state (active, reloading,
  * activating, deactivating) — not just `active` — because a unit in
  * restart backoff from `Restart=always` can become live between the
- * probe and our copy.
+ * probe and our copy. The active `nanoclaw` unit is only treated as v1
+ * if it actually serves `v1Path` (via its WorkingDirectory):
+ * a co-resident `nanoclaw` install pointing elsewhere (e.g. migrating from
+ * a snapshot copy) must not block — that case is what the WAL-size + PID
+ * backups guard. An unconfirmable install path still refuses.
  *
  * Best-effort: if a probe errors, falls through (the WAL-size backup
  * still catches uncheckpointed state).
  */
 function isV1ServiceActive(v1Path: string): { active: boolean; how: string } {
   if (process.platform === 'linux') {
-    const DANGEROUS_STATES = new Set(['active', 'reloading', 'activating', 'deactivating']);
-    for (const args of [['--user', 'is-active', 'nanoclaw'], ['is-active', 'nanoclaw']]) {
-      const r = spawnSync('systemctl', args, { encoding: 'utf8' });
-      const state = (r.stdout ?? '').trim();
-      if (DANGEROUS_STATES.has(state)) {
-        return { active: true, how: `systemctl ${args.join(' ')} → ${state}` };
-      }
-    }
+    const units = (['user', 'system'] as const)
+      .map((scope) => probeSystemdUnit(scope))
+      .filter((u): u is SystemdUnitFacts => u !== null);
+    const decision = activeV1Unit(units, v1Path);
+    if (decision.active) return decision;
   } else if (process.platform === 'darwin') {
     const r = spawnSync('launchctl', ['list', 'com.nanoclaw'], { encoding: 'utf8' });
     if (r.status === 0) {
@@ -245,4 +335,6 @@ function main(): void {
   console.log(`OK:taskflow=copied,boards=${boards},tasks=${tasks}`);
 }
 
-main();
+if (process.argv[1] && process.argv[1].endsWith('taskflow.ts')) {
+  main();
+}
