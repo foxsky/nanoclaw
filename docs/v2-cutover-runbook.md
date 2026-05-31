@@ -143,4 +143,42 @@ Then send one operator-owned smoke message to the main control channel and one T
 - TaskFlow copy path: `OK:taskflow=copied,boards=34,tasks=384`
 - Idempotency rerun: DB reused 35 groups, groups copied 0 files, scheduled tasks skipped 117 existing rows, TaskFlow copy returned `SKIPPED:v2 taskflow.db already populated`.
 - Integrity: copied TaskFlow DB has 34 boards, 384 tasks, and `PRAGMA integrity_check` returns `ok`.
+
+## Creation-Defect Remediation (Cutover-Day Checklist #6)
+
+Run AFTER the TaskFlow DB copy step and BEFORE the canary, against the **migrated v2** `data/taskflow/taskflow.db` (never the live v1 DB). Capture all output in the cutover log. Background: `docs/v1-creation-empirical-map.md`; exceptions EX-014 / EX-015.
+
+### 6a. Mariany dual-identity merge — REQUIRED, automated (EX-015)
+
+This is EX-015's **sole** prevention (the engine reconcile was removed), so it must run.
+
+```bash
+cp data/taskflow/taskflow.db data/taskflow/taskflow.db.pre-creation-fix      # backup
+pnpm exec tsx setup/migrate-v2/fix-creation-defects.ts data/taskflow/taskflow.db            # dry-run (review)
+pnpm exec tsx setup/migrate-v2/fix-creation-defects.ts data/taskflow/taskflow.db --apply    # apply
+# verify zero residue:
+pnpm exec tsx scripts/q.ts data/taskflow/taskflow.db "SELECT count(*) FROM board_people WHERE person_id='mariany'"   # expect 0
+```
+
+Expect an `APPLIED mariany->mariany-borges: {...}` line; the script's fail-loud residual scan throws (and rolls back) if any `mariany` ref survives. The same run also DETECTS and flags 6b + 6c (it does not auto-fix them).
+
+### 6b. Sanunciel orphan re-provision — manual, live agent (EX-014)
+
+`person_id=sanunciel` ("Estagiário Computação") is registered on `board-seci-taskflow` but owns no child board; his 2 tasks (`P16.1`, `P16.2`) sit on the parent with `child_exec_enabled=0`. **SQL cannot create his board** (it needs a real WhatsApp group). Post-cutover, from the **SECI board chat**, ask the agent to provision his child board — you must supply his **division/sigla** (the board is named after the division, never the person). Once it exists, delegate `P16.1`/`P16.2` to it via the agent's reassign / child-exec flow. Verify:
+
+```bash
+pnpm exec tsx scripts/q.ts data/taskflow/taskflow.db "SELECT id FROM boards WHERE owner_person_id='sanunciel'"   # expect 1 row
+```
+
+### 6c. Hudson duplicate-board cluster — operator decision
+
+Hudson owns THREE boards under `board-thiago-taskflow`:
+
+| board | group_jid | tasks | registered? |
+|---|---|---|---|
+| `board-po-setd-secti-taskflow-2` | …888254 | **1** | **YES** (canonical per `child_board_registrations`) |
+| `board-po-setd-secti-taskflow` | …448705 | 0 | no |
+| `board-hudson-taskflow` | …541463 | 0 | no (orphan from a claimed v1 teardown) |
+
+The registered + populated board is the `…-2`. **Recommended:** keep `…-2`; archive/remove the two empty boards and abandon their WhatsApp groups. If you want the clean name, after removing the empty `po-setd-secti-taskflow` you can rename `…-2`'s folder/group (a separate per-board rename). Three real WhatsApp groups exist, so do this **via the agent / `ncl`, not raw SQL**, so the groups are handled — this is a judgment call, not a scripted fix.
 - Scope: this was a step-level dry run against disposable paths. It did not stop the active host service, install/start the v2 service, or execute a live answer smoke; those checks happen during the cutover switchover and canary.
