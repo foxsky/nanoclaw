@@ -14,7 +14,6 @@
  * post-merge residual scan that rolls back and fails loud if any reference to the
  * stub id survives.
  */
-import fs from 'fs';
 
 import Database from 'better-sqlite3';
 
@@ -212,11 +211,22 @@ function main(): void {
     console.error('usage: tsx setup/migrate-v2/fix-creation-defects.ts <taskflow.db> [--apply]   (default: dry-run)');
     process.exit(2);
   }
-  if (apply && (fs.existsSync(`${dbPath}-wal`) || fs.existsSync(`${dbPath}-shm`))) {
-    console.error(`refusing --apply: ${dbPath} has a WAL/SHM sidecar (db is open elsewhere). Stop the service / checkpoint first.`);
-    process.exit(2);
-  }
   const db = new Database(dbPath, apply ? undefined : { readonly: true });
+  db.pragma('busy_timeout = 5000');
+  if (apply) {
+    // The migrated taskflow.db is WAL-mode, so even a readonly dry-run on the same
+    // file leaves a -wal/-shm sidecar — a stale sidecar is NOT proof the db is open
+    // elsewhere (the documented flow is dry-run then --apply on the same file).
+    // Distinguish stale from live by checkpointing: TRUNCATE clears a stale WAL, but
+    // throws SQLITE_BUSY if a live writer holds the db.
+    try {
+      db.pragma('wal_checkpoint(TRUNCATE)');
+    } catch (err) {
+      console.error(`refusing --apply: ${dbPath} appears open by another process (${(err as Error).message}). Stop the service first.`);
+      db.close();
+      process.exit(2);
+    }
+  }
   try {
     console.log(`\n=== V1 creation-defect remediation (${apply ? 'APPLY' : 'DRY-RUN'}) on ${dbPath} ===`);
     if (apply) console.log(`(back up ${dbPath} first — this mutates in place)`);
