@@ -204,6 +204,19 @@ export function checkOrphanPerson(db: Database.Database, personId: string): { pr
   return { present, ownsBoard, taskCount };
 }
 
+/**
+ * `PRAGMA wal_checkpoint(TRUNCATE)` does NOT throw on contention — it returns a row
+ * whose `busy` column is 1 when a live writer blocks the checkpoint (0 otherwise; -1
+ * log/checkpointed on a non-WAL no-op). So the --apply live-writer guard must inspect
+ * the row, not catch a thrown SQLITE_BUSY (which never comes). Note this only detects
+ * an ACTIVE lock holder, not an idle-but-open connection — the real "v1 stopped"
+ * guarantee is out-of-band (Checklist #6 runs on the migrated copy, after the taskflow
+ * copy step's service gate, before the canary).
+ */
+export function checkpointReportsBusyWriter(rows: Array<{ busy?: number }>): boolean {
+  return (rows[0]?.busy ?? 0) !== 0;
+}
+
 function main(): void {
   const dbPath = process.argv[2];
   const apply = process.argv.includes('--apply');
@@ -217,12 +230,13 @@ function main(): void {
     // The migrated taskflow.db is WAL-mode, so even a readonly dry-run on the same
     // file leaves a -wal/-shm sidecar — a stale sidecar is NOT proof the db is open
     // elsewhere (the documented flow is dry-run then --apply on the same file).
-    // Distinguish stale from live by checkpointing: TRUNCATE clears a stale WAL, but
-    // throws SQLITE_BUSY if a live writer holds the db.
-    try {
-      db.pragma('wal_checkpoint(TRUNCATE)');
-    } catch (err) {
-      console.error(`refusing --apply: ${dbPath} appears open by another process (${(err as Error).message}). Stop the service first.`);
+    // Distinguish stale from live by checkpointing: TRUNCATE clears a stale WAL and
+    // reports busy=1 if a live writer holds the db (it does NOT throw — see
+    // checkpointReportsBusyWriter). The merge itself is transactional, so this is a
+    // fail-fast pre-flight, not the sole safeguard.
+    const checkpoint = db.pragma('wal_checkpoint(TRUNCATE)') as Array<{ busy?: number }>;
+    if (checkpointReportsBusyWriter(checkpoint)) {
+      console.error(`refusing --apply: ${dbPath} is held by a live writer (checkpoint busy). Stop the service first.`);
       db.close();
       process.exit(2);
     }

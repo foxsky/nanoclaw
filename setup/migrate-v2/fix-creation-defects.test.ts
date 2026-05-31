@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { detectDuplicateBoards, mergeDuplicatePerson } from './fix-creation-defects.js';
+import { checkpointReportsBusyWriter, detectDuplicateBoards, mergeDuplicatePerson } from './fix-creation-defects.js';
 
 let db: Database.Database;
 
@@ -106,6 +106,27 @@ describe('mergeDuplicatePerson (Mariany)', () => {
   it('refuses to merge if the keeper does not exist (guards against a bad pair)', () => {
     db.exec(`INSERT INTO board_people VALUES ('b','mariany','Mariany','','',NULL);`);
     expect(() => mergeDuplicatePerson(db, 'mariany', 'mariany-borges')).toThrow(/keeper/i);
+  });
+});
+
+describe('checkpointReportsBusyWriter (--apply live-writer guard)', () => {
+  // PRAGMA wal_checkpoint(TRUNCATE) does NOT throw on contention — it returns a row
+  // whose `busy` field is 1 when a live writer blocks the checkpoint. The guard must
+  // inspect that field, not rely on a thrown SQLITE_BUSY (which never comes).
+  it('refuses when busy=1 (a live writer holds the db)', () => {
+    expect(checkpointReportsBusyWriter([{ busy: 1, log: 5, checkpointed: 0 }])).toBe(true);
+  });
+
+  it('proceeds when busy=0 (stale WAL fully checkpointed)', () => {
+    expect(checkpointReportsBusyWriter([{ busy: 0, log: 0, checkpointed: 0 }])).toBe(false);
+  });
+
+  it('proceeds on a non-WAL no-op checkpoint (busy=0, log/checkpointed=-1)', () => {
+    expect(checkpointReportsBusyWriter([{ busy: 0, log: -1, checkpointed: -1 }])).toBe(false);
+  });
+
+  it('proceeds (does not refuse) on an empty/absent result row', () => {
+    expect(checkpointReportsBusyWriter([])).toBe(false);
   });
 });
 
