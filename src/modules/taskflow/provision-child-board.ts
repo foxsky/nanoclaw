@@ -382,6 +382,8 @@ export async function handleProvisionChildBoard(
   try {
     const parent = loadParent(tfDb, session);
     if (!parent) return;
+    const alertFailed = (reason: string) =>
+      alertProvisionFailed(adapter, parent.sourceMessagingGroupPlatformId, parsed.personName, reason);
 
     const alreadyOnThisParent = tfDb
       .prepare('SELECT 1 FROM child_board_registrations WHERE parent_board_id = ? AND person_id = ?')
@@ -446,24 +448,14 @@ export async function handleProvisionChildBoard(
           parentBoardId: parent.parentBoard.id,
           personId: parsed.personId,
         });
-        await alertProvisionFailed(
-          adapter,
-          parent.sourceMessagingGroupPlatformId,
-          parsed.personName,
-          'falha ao vincular o quadro existente',
-        );
+        await alertFailed('falha ao vincular o quadro existente');
       }
       return;
     }
 
     const folderAndName = computeChildFolderAndName(parsed);
     if (!folderAndName) {
-      await alertProvisionFailed(
-        adapter,
-        parent.sourceMessagingGroupPlatformId,
-        parsed.personName,
-        'não foi possível resolver o nome/sigla da divisão',
-      );
+      await alertFailed('não foi possível resolver o nome/sigla da divisão');
       return;
     }
     const { folder, name: childGroupName } = folderAndName;
@@ -484,12 +476,7 @@ export async function handleProvisionChildBoard(
       });
     } catch (err) {
       log.error('provision_child_board: failed to create WhatsApp group', { err, childGroupName });
-      await alertProvisionFailed(
-        adapter,
-        parent.sourceMessagingGroupPlatformId,
-        parsed.personName,
-        'falha ao criar o grupo no WhatsApp',
-      );
+      await alertFailed('falha ao criar o grupo no WhatsApp');
       return;
     }
     const childGroupJid = createResult.jid;
@@ -522,12 +509,7 @@ export async function handleProvisionChildBoard(
       });
     } catch (err) {
       log.error('provision_child_board: failed to seed taskflow DB', { err, childBoardId });
-      await alertProvisionFailed(
-        adapter,
-        parent.sourceMessagingGroupPlatformId,
-        parsed.personName,
-        'falha ao gravar os dados do quadro',
-      );
+      await alertFailed('falha ao gravar os dados do quadro');
       return;
     }
 
@@ -589,12 +571,7 @@ export async function handleProvisionChildBoard(
       }
     } catch (err) {
       log.error('provision_child_board: failed to wire v2', { err, childAgentGroupId });
-      await alertProvisionFailed(
-        adapter,
-        parent.sourceMessagingGroupPlatformId,
-        parsed.personName,
-        'falha ao conectar o agente do quadro',
-      );
+      await alertFailed('falha ao conectar o agente do quadro');
       return;
     }
 

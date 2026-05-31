@@ -226,7 +226,8 @@ function main(): void {
     const stubs = detectStubDuplicateIdentities(db);
     console.log(`[1] dual-identity stubs detected: ${stubs.length}`);
     for (const s of stubs) console.log(`    - "${s.name}" on ${s.boardId}: ${s.stubId} -> ${s.keeperId}`);
-    if (stubs.some((s) => s.stubId === 'mariany' && s.keeperId === 'mariany-borges')) {
+    const isMarianyPair = (s: StubDuplicate) => s.stubId === 'mariany' && s.keeperId === 'mariany-borges';
+    if (stubs.some(isMarianyPair)) {
       if (apply) {
         const sum = mergeDuplicatePerson(db, 'mariany', 'mariany-borges');
         console.log(`    APPLIED mariany->mariany-borges:`, JSON.stringify(sum));
@@ -234,7 +235,7 @@ function main(): void {
         console.log(`    WOULD merge mariany->mariany-borges (re-run with --apply)`);
       }
     }
-    if (stubs.some((s) => !(s.stubId === 'mariany' && s.keeperId === 'mariany-borges'))) {
+    if (stubs.some((s) => !isMarianyPair(s))) {
       console.log(`    ⚠ OTHER stub-dup candidates found above — NOT auto-merged; confirm each by hand.`);
     }
 
