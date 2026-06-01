@@ -52,11 +52,11 @@ describe('memoryEnvArgs', () => {
         NANOCLAW_MEMORY_EMBED_MODEL: 'bge-m3',
         NANOCLAW_MEMORY_EXTRACT_BACKEND: 'ollama',
       }),
-    ).toEqual(['-e', 'NANOCLAW_MEMORY_EMBED_MODEL=bge-m3', '-e', 'NANOCLAW_MEMORY_EXTRACT_BACKEND=ollama']);
+    ).toEqual(['-e', 'NANOCLAW_MEMORY_EXTRACT_BACKEND=ollama', '-e', 'NANOCLAW_MEMORY_EMBED_MODEL=bge-m3']);
   });
 
   it('never forwards board scope, proxy, or auth even alongside memory vars', () => {
-    // The prefix allowlist is the isolation guarantee: a forwarded var can never override
+    // The allowlist is the isolation guarantee: a forwarded var can never override
     // NANOCLAW_TASKFLOW_BOARD_ID (cross-board leak) nor the gateway proxy/auth.
     expect(
       memoryEnvArgs({
@@ -64,6 +64,17 @@ describe('memoryEnvArgs', () => {
         NANOCLAW_TASKFLOW_BOARD_ID: 'board-someone-else',
         HTTPS_PROXY: 'http://gateway:8080',
         ANTHROPIC_AUTH_TOKEN: 'secret',
+      }),
+    ).toEqual(['-e', 'NANOCLAW_MEMORY_EMBED_MODEL=bge-m3']);
+  });
+
+  it('forwards only the known knobs, not arbitrary NANOCLAW_MEMORY_* names', () => {
+    // Exact allowlist (not a prefix): an operator who names a secret in the namespace must
+    // not have it forwarded into every container.
+    expect(
+      memoryEnvArgs({
+        NANOCLAW_MEMORY_EMBED_MODEL: 'bge-m3',
+        NANOCLAW_MEMORY_SECRET: 'should-not-leak',
       }),
     ).toEqual(['-e', 'NANOCLAW_MEMORY_EMBED_MODEL=bge-m3']);
   });

@@ -244,8 +244,8 @@ export interface PruneOptions {
  * No VACUUM: rowid is a load-bearing FTS join alias and must not be renumbered. Returns the count
  * deleted. Within a container two processes write this DB — the main runner (boot prune +
  * PreCompact auto-capture) and the MCP-tool subprocess (memory_note) — but they serialize via
- * SQLite's file lock + busy_timeout (connection.ts), so the transaction stays consistent. A
- * truly-concurrent second CONTAINER for the same board is the separate known P-later gap.
+ * SQLite's file lock + busy_timeout (set in openMemoryDb, this file), so the transaction stays
+ * consistent. A truly-concurrent second CONTAINER for the same board is the separate known P-later gap.
  */
 export function pruneMemories(db: Database, boardId: string, opts: PruneOptions): number {
   const hasAge = typeof opts.maxAgeDays === 'number' && opts.maxAgeDays > 0;

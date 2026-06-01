@@ -238,20 +238,30 @@ export function replayContainerEnvArgs(env: NodeJS.ProcessEnv = process.env): st
   return args;
 }
 
-/**
- * Forward operator-set native-memory knobs (`NANOCLAW_MEMORY_*`) from the host into every
- * container, so per-board memory features — hybrid recall (`*_EMBED_MODEL`/`_URL`), the
- * auto-capture backend (`*_EXTRACT_BACKEND`/`_MODEL`/`_URL`), and forgetting
- * (`*_MAX_AGE_DAYS`/`_KEEP_TOP_N`) — can be turned on without a per-group env path. The
- * prefix is the isolation guarantee: it cannot match `NANOCLAW_TASKFLOW_BOARD_ID` (board
- * scope), `HTTPS_PROXY`, or the gateway auth vars, so a forwarded value can never override
- * those. Keys are emitted sorted for stable, reproducible container args.
- */
+// The native-memory feature knobs forwarded from the host into every container so per-board
+// memory can be turned on without a per-group env path: hybrid recall (EMBED_*), the
+// auto-capture backend (EXTRACT_*), and forgetting (MAX_AGE_DAYS / KEEP_TOP_N). An EXACT
+// allowlist (not a prefix) — mirroring replayContainerEnvArgs above — so none of these can be
+// NANOCLAW_TASKFLOW_BOARD_ID (board scope), the proxy, or auth, AND an operator who happens to
+// name a secret in the namespace doesn't get it forwarded. Add a new knob here when one is read
+// by container/agent-runner/src (grep NANOCLAW_MEMORY_).
+const MEMORY_ENV_KEYS = [
+  'NANOCLAW_MEMORY_EXTRACT_BACKEND',
+  'NANOCLAW_MEMORY_EXTRACT_MODEL',
+  'NANOCLAW_MEMORY_EXTRACT_URL',
+  'NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS',
+  'NANOCLAW_MEMORY_EMBED_MODEL',
+  'NANOCLAW_MEMORY_EMBED_URL',
+  'NANOCLAW_MEMORY_EMBED_TIMEOUT_MS',
+  'NANOCLAW_MEMORY_MAX_AGE_DAYS',
+  'NANOCLAW_MEMORY_KEEP_TOP_N',
+] as const;
+
 export function memoryEnvArgs(env: NodeJS.ProcessEnv = process.env): string[] {
   const args: string[] = [];
-  for (const key of Object.keys(env).sort()) {
+  for (const key of MEMORY_ENV_KEYS) {
     const value = env[key];
-    if (key.startsWith('NANOCLAW_MEMORY_') && value !== undefined) {
+    if (value !== undefined) {
       args.push('-e', `${key}=${value}`);
     }
   }

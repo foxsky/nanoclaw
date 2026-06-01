@@ -7,8 +7,9 @@
  * the SDK uses; the gateway injects the Anthropic credential, so no key in code). It is
  * best-effort: any failure returns [] and must never break compaction.
  *
- * The PreCompact hook runs inside the container, so this writes from the same process class
- * as memory_note — no new cross-process writer is introduced.
+ * The PreCompact hook runs in the main runner process (not the memory_note MCP subprocess), so
+ * within a container two processes write the memory DB; they serialize via SQLite's file lock +
+ * busy_timeout (see memory-store.ts). No HOST-side writer is introduced.
  */
 import type { Database } from 'bun:sqlite';
 
