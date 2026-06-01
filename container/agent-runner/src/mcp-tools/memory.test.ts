@@ -92,8 +92,9 @@ describe('recallMemory (core)', () => {
     db = openMemoryDb(':memory:');
     noteMemory(db, 'a', { text: 'secret alpha' });
     noteMemory(db, 'b', { text: 'secret beta' });
-    expect(recallMemory(db, 'a', { query: 'secret' }).content[0].text).toContain('alpha');
-    expect(recallMemory(db, 'a', { query: 'secret' }).content[0].text).not.toContain('beta');
+    const text = recallMemory(db, 'a', { query: 'secret' }).content[0].text;
+    expect(text).toContain('alpha');
+    expect(text).not.toContain('beta');
   });
 });
 

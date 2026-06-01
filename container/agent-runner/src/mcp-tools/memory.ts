@@ -15,12 +15,11 @@ import path from 'node:path';
 
 import type { Database } from 'bun:sqlite';
 
-import { insertMemory, type MemoryRow, openMemoryDb, searchMemory } from '../memory-store.js';
+import { insertMemory, MEMORY_DB_PATH, type MemoryRow, openMemoryDb, searchMemory } from '../memory-store.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { err, log, nonEmptyString, ok, requireString } from './util.js';
 
-const MEMORY_DB_PATH = '/workspace/agent/memory/memory.db';
 const NOT_A_BOARD = 'Memory is only available on TaskFlow boards (no board is bound to this group).';
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;

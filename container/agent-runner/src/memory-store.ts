@@ -13,6 +13,9 @@
  */
 import { Database } from 'bun:sqlite';
 
+/** Production location on the durable per-group mount. Tests pass ':memory:'. */
+export const MEMORY_DB_PATH = '/workspace/agent/memory/memory.db';
+
 export interface MemoryInput {
   board_id: string;
   text: string;
@@ -59,19 +62,21 @@ function genId(): string {
 export function insertMemory(db: Database, m: MemoryInput): string {
   const id = m.id ?? genId();
   const createdAt = new Date().toISOString();
-  db.query(
-    `INSERT INTO memories (id, board_id, kind, text, source_session, source_ts, created_at)
-     VALUES ($id, $board, $kind, $text, $ss, $sts, $ca)`,
-  ).run({
-    $id: id,
-    $board: m.board_id,
-    $kind: m.kind ?? 'note',
-    $text: m.text,
-    $ss: m.source_session ?? null,
-    $sts: m.source_ts ?? null,
-    $ca: createdAt,
-  });
-  const { rowid } = db.query(`SELECT rowid FROM memories WHERE id = $id`).get({ $id: id }) as { rowid: number };
+  const { rowid } = db
+    .query(
+      `INSERT INTO memories (id, board_id, kind, text, source_session, source_ts, created_at)
+       VALUES ($id, $board, $kind, $text, $ss, $sts, $ca)
+       RETURNING rowid`,
+    )
+    .get({
+      $id: id,
+      $board: m.board_id,
+      $kind: m.kind ?? 'note',
+      $text: m.text,
+      $ss: m.source_session ?? null,
+      $sts: m.source_ts ?? null,
+      $ca: createdAt,
+    }) as { rowid: number };
   db.query(`INSERT INTO memories_fts (rowid, text) VALUES ($r, $t)`).run({ $r: rowid, $t: m.text });
   return id;
 }
