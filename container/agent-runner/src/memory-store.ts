@@ -210,6 +210,17 @@ export function searchMemory(db: Database, boardId: string, query: string, limit
     .all({ $q: match, $b: boardId, $lim: limit }) as MemoryRow[];
 }
 
+/** The N most-recent memories for a board (newest first). Used by once-per-session auto-recall
+ *  to surface durable + auto-captured facts without the agent having to search for them. */
+export function recentMemories(db: Database, boardId: string, limit = 10): MemoryRow[] {
+  return db
+    .query(
+      `SELECT id, board_id, kind, text, source_session, source_ts, created_at
+       FROM memories WHERE board_id = $b ORDER BY created_at DESC, rowid DESC LIMIT $lim`,
+    )
+    .all({ $b: boardId, $lim: limit }) as MemoryRow[];
+}
+
 // Per-modality candidate pool feeding the fusion; RRF does the final top-N ranking.
 const HYBRID_CANDIDATES = 50;
 

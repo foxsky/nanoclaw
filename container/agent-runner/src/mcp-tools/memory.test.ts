@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 import { openMemoryDb, searchMemory } from '../memory-store.js';
-import { formatMemories, memoryNoteTool, memorySearchTool, noteMemory, recallMemory } from './memory.js';
+import {
+  buildMemoryRecallAddendum,
+  formatMemories,
+  memoryNoteTool,
+  memorySearchTool,
+  noteMemory,
+  recallAddendumText,
+  recallMemory,
+} from './memory.js';
 
 const ENV_KEY = 'NANOCLAW_TASKFLOW_BOARD_ID';
 let savedEnv: string | undefined;
@@ -116,3 +124,25 @@ describe('formatMemories', () => {
     expect(out).toContain('2026-05-31');
   });
 });
+
+describe('recallAddendumText (once-per-session auto-recall)', () => {
+  it('renders a recent-memories section with the board facts (newest first)', async () => {
+    db = openMemoryDb(':memory:');
+    await noteMemory(db, 'b1', { text: 'deploys move to Tuesday', kind: 'decision' });
+    await noteMemory(db, 'b1', { text: 'Bruno owns the mobile board' });
+    const out = recallAddendumText(db, 'b1');
+    expect(out).toContain('## Remembered for this board');
+    expect(out).toContain('Bruno owns the mobile board'); // newest first
+    expect(out).toContain('deploys move to Tuesday');
+  });
+
+  it('is empty for a board with no memories (prompt untouched on a fresh board)', () => {
+    db = openMemoryDb(':memory:');
+    expect(recallAddendumText(db, 'b1')).toBe('');
+  });
+
+  it('buildMemoryRecallAddendum returns empty with no board env (opens no DB)', () => {
+    delete process.env[ENV_KEY];
+    expect(buildMemoryRecallAddendum()).toBe('');
+  });
+})

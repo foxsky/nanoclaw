@@ -16,7 +16,7 @@
 import type { Database } from 'bun:sqlite';
 
 import { embedAndInsert, embedText } from '../memory-embed.js';
-import { hybridSearchMemory, type MemoryRow, openMemoryDbEnsuringDir } from '../memory-store.js';
+import { hybridSearchMemory, type MemoryRow, openMemoryDbEnsuringDir, recentMemories } from '../memory-store.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { err, log, nonEmptyString, ok, requireString } from './util.js';
@@ -24,6 +24,8 @@ import { err, log, nonEmptyString, ok, requireString } from './util.js';
 const NOT_A_BOARD = 'Memory is only available on TaskFlow boards (no board is bound to this group).';
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;
+// How many recent memories to prime the session system prompt with (once-per-session auto-recall).
+const RECALL_ADDENDUM_LIMIT = 10;
 
 /** The host-injected board id, or null when this group is not a TaskFlow board. */
 function memoryBoardId(): string | null {
@@ -42,6 +44,46 @@ export function formatMemories(rows: MemoryRow[]): string {
     return `${i + 1}. [${m.kind}] ${m.text}  (saved ${date}${from})`;
   });
   return `Found ${head}:\n${lines.join('\n')}`;
+}
+
+/**
+ * The recent-memory section appended to the session system prompt (once-per-session auto-recall).
+ * Returns '' when the board has no memories yet, so the prompt is untouched on a fresh board.
+ */
+export function recallAddendumText(db: Database, boardId: string, limit = RECALL_ADDENDUM_LIMIT): string {
+  const recent = recentMemories(db, boardId, limit);
+  if (recent.length === 0) return '';
+  return (
+    `\n\n## Remembered for this board\n` +
+    `Durable facts saved in past sessions (most recent first) — treat as established context. ` +
+    `Use the memory_search tool to look up anything else.\n${formatMemories(recent)}`
+  );
+}
+
+/**
+ * Build the once-per-session memory auto-recall addendum from the host-injected board env.
+ * Returns '' when this group is not a TaskFlow board (no DB opened) or has no memories. Called
+ * at container start, so the addendum is stable for the session (prompt-cache safe).
+ */
+export function buildMemoryRecallAddendum(): string {
+  const boardId = memoryBoardId();
+  if (!boardId) return '';
+  // Best-effort: this runs at container startup, so a DB open/query failure must degrade to an
+  // empty addendum, never throw and abort the agent's boot.
+  let db: Database | null = null;
+  try {
+    db = openBoardMemoryDb();
+    return recallAddendumText(db, boardId);
+  } catch (e) {
+    log(`recall addendum skipped: ${e instanceof Error ? e.message : String(e)}`);
+    return '';
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* already failing — nothing useful to do */
+    }
+  }
 }
 
 export async function noteMemory(db: Database, boardId: string, args: Record<string, unknown>) {

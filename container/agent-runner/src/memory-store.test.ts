@@ -13,6 +13,7 @@ import {
   hybridSearchMemory,
   insertMemory,
   openMemoryDb,
+  recentMemories,
   sanitizeFtsQuery,
   searchMemory,
   vectorToBlob,
@@ -248,3 +249,21 @@ describe('hybridSearchMemory (FTS5 + vector fusion)', () => {
     expect(hits.map((h) => h.text)).toEqual(['alpha secret']);
   });
 });
+
+describe('recentMemories (once-per-session auto-recall source)', () => {
+  it('returns the newest memories first, board-scoped, capped at limit', () => {
+    db = openMemoryDb(':memory:');
+    insertMemory(db, { board_id: 'b1', text: 'oldest fact' });
+    insertMemory(db, { board_id: 'b1', text: 'middle fact' });
+    insertMemory(db, { board_id: 'b1', text: 'newest fact' });
+    insertMemory(db, { board_id: 'other', text: 'other board fact' });
+    const recent = recentMemories(db, 'b1', 2).map((m) => m.text);
+    expect(recent).toEqual(['newest fact', 'middle fact']); // rowid-desc tiebreak on equal created_at
+    expect(recentMemories(db, 'b1', 10).map((m) => m.text)).not.toContain('other board fact');
+  });
+
+  it('returns [] for a board with no memories', () => {
+    db = openMemoryDb(':memory:');
+    expect(recentMemories(db, 'empty', 10)).toEqual([]);
+  });
+})

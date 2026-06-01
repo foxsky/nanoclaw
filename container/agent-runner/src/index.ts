@@ -27,6 +27,7 @@ import { fileURLToPath } from 'url';
 
 import { loadConfig } from './config.js';
 import { buildSystemPromptAddendum } from './destinations.js';
+import { buildMemoryRecallAddendum } from './mcp-tools/memory.js';
 // Providers barrel — each enabled provider self-registers on import.
 // Provider skills append imports to providers/index.ts.
 import './providers/index.js';
@@ -51,7 +52,10 @@ async function main(): Promise<void> {
   // /workspace/agent/CLAUDE.md — the composed entry imports the shared
   // base (/app/CLAUDE.md) and each enabled module's fragment. Per-group
   // memory lives in /workspace/agent/CLAUDE.local.md (auto-loaded).
-  const instructions = buildSystemPromptAddendum(config.assistantName || undefined);
+  // Identity + destinations, plus a once-per-session auto-recall of this board's recent
+  // memories (empty for non-board groups / fresh boards). Built once here so it stays stable
+  // for the container's life — prompt-cache safe, unlike a per-turn preamble.
+  const instructions = buildSystemPromptAddendum(config.assistantName || undefined) + buildMemoryRecallAddendum();
 
   // Discover additional directories mounted at /workspace/extra/*
   const additionalDirectories: string[] = [];
