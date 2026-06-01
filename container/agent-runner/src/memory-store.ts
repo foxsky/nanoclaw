@@ -242,7 +242,10 @@ export interface PruneOptions {
  * `memories` and `memories_fts` by rowid in one transaction — `memories_fts` is a standalone FTS5
  * table kept in sync manually (no triggers), so a base-only delete would orphan/desync the index.
  * No VACUUM: rowid is a load-bearing FTS join alias and must not be renumbered. Returns the count
- * deleted. The single writer (this container) owns the DB, so no cross-process lock concern here.
+ * deleted. Within a container two processes write this DB — the main runner (boot prune +
+ * PreCompact auto-capture) and the MCP-tool subprocess (memory_note) — but they serialize via
+ * SQLite's file lock + busy_timeout (connection.ts), so the transaction stays consistent. A
+ * truly-concurrent second CONTAINER for the same board is the separate known P-later gap.
  */
 export function pruneMemories(db: Database, boardId: string, opts: PruneOptions): number {
   const hasAge = typeof opts.maxAgeDays === 'number' && opts.maxAgeDays > 0;
