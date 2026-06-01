@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { replayContainerEnvArgs, resolveProviderName } from './container-runner.js';
+import { memoryEnvArgs, replayContainerEnvArgs, resolveProviderName } from './container-runner.js';
 
 describe('resolveProviderName', () => {
   it('prefers session over container config', () => {
@@ -42,5 +42,33 @@ describe('replayContainerEnvArgs', () => {
       '-e',
       'NANOCLAW_PHASE_REPLAY_NOW=2026-05-12T13:59:45.000Z',
     ]);
+  });
+});
+
+describe('memoryEnvArgs', () => {
+  it('forwards operator-set NANOCLAW_MEMORY_* host env into the container', () => {
+    expect(
+      memoryEnvArgs({
+        NANOCLAW_MEMORY_EMBED_MODEL: 'bge-m3',
+        NANOCLAW_MEMORY_EXTRACT_BACKEND: 'ollama',
+      }),
+    ).toEqual(['-e', 'NANOCLAW_MEMORY_EMBED_MODEL=bge-m3', '-e', 'NANOCLAW_MEMORY_EXTRACT_BACKEND=ollama']);
+  });
+
+  it('never forwards board scope, proxy, or auth even alongside memory vars', () => {
+    // The prefix allowlist is the isolation guarantee: a forwarded var can never override
+    // NANOCLAW_TASKFLOW_BOARD_ID (cross-board leak) nor the gateway proxy/auth.
+    expect(
+      memoryEnvArgs({
+        NANOCLAW_MEMORY_EMBED_MODEL: 'bge-m3',
+        NANOCLAW_TASKFLOW_BOARD_ID: 'board-someone-else',
+        HTTPS_PROXY: 'http://gateway:8080',
+        ANTHROPIC_AUTH_TOKEN: 'secret',
+      }),
+    ).toEqual(['-e', 'NANOCLAW_MEMORY_EMBED_MODEL=bge-m3']);
+  });
+
+  it('returns nothing when no memory vars are set', () => {
+    expect(memoryEnvArgs({ TZ: 'UTC' })).toEqual([]);
   });
 });

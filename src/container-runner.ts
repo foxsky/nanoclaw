@@ -238,6 +238,26 @@ export function replayContainerEnvArgs(env: NodeJS.ProcessEnv = process.env): st
   return args;
 }
 
+/**
+ * Forward operator-set native-memory knobs (`NANOCLAW_MEMORY_*`) from the host into every
+ * container, so per-board memory features — hybrid recall (`*_EMBED_MODEL`/`_URL`), the
+ * auto-capture backend (`*_EXTRACT_BACKEND`/`_MODEL`/`_URL`), and forgetting
+ * (`*_MAX_AGE_DAYS`/`_KEEP_TOP_N`) — can be turned on without a per-group env path. The
+ * prefix is the isolation guarantee: it cannot match `NANOCLAW_TASKFLOW_BOARD_ID` (board
+ * scope), `HTTPS_PROXY`, or the gateway auth vars, so a forwarded value can never override
+ * those. Keys are emitted sorted for stable, reproducible container args.
+ */
+export function memoryEnvArgs(env: NodeJS.ProcessEnv = process.env): string[] {
+  const args: string[] = [];
+  for (const key of Object.keys(env).sort()) {
+    const value = env[key];
+    if (key.startsWith('NANOCLAW_MEMORY_') && value !== undefined) {
+      args.push('-e', `${key}=${value}`);
+    }
+  }
+  return args;
+}
+
 function resolveProviderContribution(
   session: Session,
   agentGroup: AgentGroup,
@@ -439,6 +459,11 @@ async function buildContainerArgs(
 
   // Opt-in tool_use capture for the v1↔v2 comparator harness. Off in prod.
   args.push(...replayContainerEnvArgs());
+
+  // Operator-set native-memory knobs (NANOCLAW_MEMORY_*). Injected before the host-critical
+  // vars below (board id, provider, gateway) so those always win on any conflict — though the
+  // prefix can't collide with them anyway.
+  args.push(...memoryEnvArgs());
 
   // v1 parity: MCP handlers host-inject board_id from this env so the agent
   // never has to construct it. Resolve via the boards table — folder→id is
