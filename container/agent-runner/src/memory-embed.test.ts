@@ -100,4 +100,24 @@ describe('embedAndInsert (embed-on-write)', () => {
     expect(row.vector).toBeNull();
     db.close();
   });
+
+  it('respects an explicit vector:null (stores unembedded, makes no embed call)', async () => {
+    const db = openMemoryDb(':memory:');
+    let called = false;
+    const f = (async () => {
+      called = true;
+      return { ok: true, json: async () => ({ embeddings: [[1, 2, 3]] }) };
+    }) as unknown as typeof fetch;
+    const id = await embedAndInsert(
+      db,
+      { board_id: 'b1', text: 'x', vector: null },
+      { model: 'bge-m3', url: 'http://x:1', fetchImpl: f },
+    );
+    const row = db.query('SELECT vector FROM memories WHERE id = $id').get({ $id: id }) as {
+      vector: Uint8Array | null;
+    };
+    expect(row.vector).toBeNull();
+    expect(called).toBe(false);
+    db.close();
+  });
 });

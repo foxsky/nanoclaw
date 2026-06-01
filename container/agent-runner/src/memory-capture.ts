@@ -12,8 +12,8 @@
  */
 import type { Database } from 'bun:sqlite';
 
-import { embedAndInsert } from './memory-embed.js';
-import { memoryExists } from './memory-store.js';
+import { embedModel, embedText, embedTimeoutMs } from './memory-embed.js';
+import { insertMemory, memoryExists } from './memory-store.js';
 import { ensureHostBypassesProxy } from './ollama-util.js';
 
 export interface CaptureMessage {
@@ -113,7 +113,13 @@ function extractTimeoutMs(): number {
  * 20s extraction + 10s buffer = 30s.
  */
 export function precompactHookTimeoutSec(): number {
-  return Math.ceil(extractTimeoutMs() / 1000) + 10;
+  // The hook awaits extraction (1 model call) and — when embeddings are on — capture's fact
+  // embeds, which run concurrently so their wall-time is ~one embed budget, not N. The hook
+  // timeout must exceed that sum plus a write/archive buffer so capture's own AbortSignals fire
+  // first and it writes cleanly before the SDK could kill the hook.
+  const extractSec = Math.ceil(extractTimeoutMs() / 1000);
+  const embedSec = embedModel() ? Math.ceil(embedTimeoutMs() / 1000) : 0;
+  return extractSec + embedSec + 10;
 }
 
 /** Resolve the extraction backend (deps over env); an unrecognized value fails loud then defaults. */
@@ -256,23 +262,25 @@ export async function captureSessionMemories(args: CaptureArgs): Promise<number>
   let db: Database | null = null;
   try {
     db = args.openDb();
-    let stored = 0;
-    for (const fact of facts) {
-      // Skip facts already captured for this board — overlapping context across compactions
-      // would otherwise accumulate near-duplicates and degrade top-N recall.
-      if (memoryExists(db, args.boardId, fact)) continue;
-      // embed-on-write so auto-captured facts are reachable by hybrid (vector) recall too.
-      await embedAndInsert(db, {
+    // Skip facts already captured for this board — overlapping context across compactions would
+    // otherwise accumulate near-duplicates and degrade top-N recall.
+    const fresh = facts.filter((fact) => !memoryExists(db as Database, args.boardId as string, fact));
+    // Embed-on-write so auto-captured facts are reachable by hybrid (vector) recall too. Embed
+    // CONCURRENTLY: wall-time ≈ one embed budget regardless of fact count, keeping the PreCompact
+    // hook within precompactHookTimeoutSec. embedText is best-effort (null on disable/failure).
+    const vectors = await Promise.all(fresh.map((fact) => embedText(fact)));
+    for (let i = 0; i < fresh.length; i++) {
+      insertMemory(db, {
         board_id: args.boardId,
-        text: fact,
+        text: fresh[i],
         kind: 'auto',
         source_session: args.sessionId,
         source_ts: sourceTs,
+        vector: vectors[i],
       });
-      stored++;
     }
-    log(`captured ${stored}/${facts.length} memories for ${args.boardId} (session ${args.sessionId})`);
-    return stored;
+    log(`captured ${fresh.length}/${facts.length} memories for ${args.boardId} (session ${args.sessionId})`);
+    return fresh.length;
   } catch (e) {
     log(`store failed: ${e instanceof Error ? e.message : String(e)}`);
     return 0;

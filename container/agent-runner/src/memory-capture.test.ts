@@ -300,19 +300,30 @@ describe('extractMemories backend selection (operator-selectable)', () => {
 
 describe('precompactHookTimeoutSec (derived from the extraction budget)', () => {
   const saved = process.env.NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS;
+  const savedEmbed = process.env.NANOCLAW_MEMORY_EMBED_MODEL;
   afterEach(() => {
     if (saved === undefined) delete process.env.NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS;
     else process.env.NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS = saved;
+    if (savedEmbed === undefined) delete process.env.NANOCLAW_MEMORY_EMBED_MODEL;
+    else process.env.NANOCLAW_MEMORY_EMBED_MODEL = savedEmbed;
   });
 
   it('defaults to 30s (20s extraction + 10s buffer) so existing behavior is preserved', () => {
     delete process.env.NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS;
+    delete process.env.NANOCLAW_MEMORY_EMBED_MODEL;
     expect(precompactHookTimeoutSec()).toBe(30);
   });
 
   it('auto-tracks a raised extraction timeout so a slow local model is not killed mid-extraction', () => {
+    delete process.env.NANOCLAW_MEMORY_EMBED_MODEL;
     process.env.NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS = '120000';
     expect(precompactHookTimeoutSec()).toBe(130); // 120s + 10s buffer
+  });
+
+  it('budgets the (concurrent) embed pass when embeddings are enabled, so capture is not killed mid-write', () => {
+    delete process.env.NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS;
+    process.env.NANOCLAW_MEMORY_EMBED_MODEL = 'bge-m3';
+    expect(precompactHookTimeoutSec()).toBe(45); // 20s extract + 15s embed + 10s buffer
   });
 });
 

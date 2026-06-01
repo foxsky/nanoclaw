@@ -24,6 +24,12 @@ function log(msg: string): void {
   console.error(`[memory-embed] ${msg}`);
 }
 
+/** Per-embed timeout (ms), env-overridable. The PreCompact hook budget derives from this. */
+export function embedTimeoutMs(): number {
+  const n = Number(process.env.NANOCLAW_MEMORY_EMBED_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : EMBED_TIMEOUT_MS;
+}
+
 /** The configured embedding model, or null when hybrid embeddings are disabled. */
 export function embedModel(deps: EmbedDeps = {}): string | null {
   return deps.model ?? process.env.NANOCLAW_MEMORY_EMBED_MODEL ?? null;
@@ -65,6 +71,8 @@ export async function embedText(text: string, deps: EmbedDeps = {}): Promise<Flo
  * a write. A pre-supplied m.vector is respected (used by tests / future backfill).
  */
 export async function embedAndInsert(db: Database, m: MemoryInput, deps: EmbedDeps = {}): Promise<string> {
-  const vector = m.vector ?? (await embedText(m.text, deps));
+  // Respect an explicitly-supplied vector (including null = "store unembedded"); only embed
+  // when the caller left it undefined.
+  const vector = m.vector !== undefined ? m.vector : await embedText(m.text, deps);
   return insertMemory(db, { ...m, vector });
 }
