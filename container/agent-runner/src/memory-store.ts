@@ -107,6 +107,15 @@ export function insertMemory(db: Database, m: MemoryInput): string {
   return id;
 }
 
+/** True if the board already has a memory with this exact text (case/space-insensitive).
+ *  Used by auto-capture to avoid re-storing the same fact every compaction. */
+export function memoryExists(db: Database, boardId: string, text: string): boolean {
+  const row = db
+    .query(`SELECT 1 AS x FROM memories WHERE board_id = $b AND lower(trim(text)) = lower(trim($t)) LIMIT 1`)
+    .get({ $b: boardId, $t: text });
+  return row !== null;
+}
+
 /**
  * Tokenise to word chars only and quote each term so arbitrary agent/user text is a
  * safe FTS5 MATCH (no FTS5 operators injected, no syntax errors). Terms are space-joined

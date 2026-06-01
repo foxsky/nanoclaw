@@ -401,7 +401,9 @@ export class ClaudeProvider implements AgentProvider {
           PreToolUse: [{ hooks: [preToolUseHook] }],
           PostToolUse: [{ hooks: [postToolUseHook] }],
           PostToolUseFailure: [{ hooks: [postToolUseHook] }],
-          PreCompact: [{ hooks: [createPreCompactHook(this.assistantName)] }],
+          // timeout (s) > the 20s extraction fetch budget, so capture's own AbortSignal
+          // fires first and writes cleanly before the SDK could kill the hook.
+          PreCompact: [{ timeout: 30, hooks: [createPreCompactHook(this.assistantName)] }],
         },
       },
     });

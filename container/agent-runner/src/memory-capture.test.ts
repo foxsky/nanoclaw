@@ -112,6 +112,41 @@ describe('extractMemories (Haiku via injected fetch)', () => {
     const badFetch = (async () => ({ ok: false, status: 500, text: async () => 'boom' })) as unknown as typeof fetch;
     expect(await extractMemories(msgs(8), { fetchImpl: badFetch })).toEqual([]);
   });
+
+  it('mirrors the SDK auth shape so the gateway can inject the credential', async () => {
+    const saved = {
+      base: process.env.ANTHROPIC_BASE_URL,
+      key: process.env.ANTHROPIC_API_KEY,
+      tok: process.env.ANTHROPIC_AUTH_TOKEN,
+    };
+    const cap: { url?: string; headers?: Record<string, string> } = {};
+    const capFetch = (async (url: string, init: { headers: Record<string, string> }) => {
+      cap.url = url;
+      cap.headers = init.headers;
+      return { ok: true, json: async () => ({ content: [{ type: 'text', text: '[]' }] }) };
+    }) as unknown as typeof fetch;
+    const restore = (k: 'ANTHROPIC_BASE_URL' | 'ANTHROPIC_API_KEY' | 'ANTHROPIC_AUTH_TOKEN', v?: string) =>
+      v === undefined ? delete process.env[k] : (process.env[k] = v);
+    try {
+      // Default endpoint → Anthropic-native x-api-key (the typed `anthropic` OneCLI secret rewrites it).
+      delete process.env.ANTHROPIC_BASE_URL;
+      process.env.ANTHROPIC_API_KEY = 'placeholder';
+      await extractMemories(msgs(8), { fetchImpl: capFetch });
+      expect(cap.url).toBe('https://api.anthropic.com/v1/messages');
+      expect(cap.headers!['x-api-key']).toBe('placeholder');
+
+      // Custom endpoint → Authorization: Bearer (mirrors the custom-endpoint provider config).
+      process.env.ANTHROPIC_BASE_URL = 'https://llm.example.com';
+      process.env.ANTHROPIC_AUTH_TOKEN = 'placeholder';
+      await extractMemories(msgs(8), { fetchImpl: capFetch });
+      expect(cap.url).toBe('https://llm.example.com/v1/messages');
+      expect(cap.headers!['authorization']).toBe('Bearer placeholder');
+    } finally {
+      restore('ANTHROPIC_BASE_URL', saved.base);
+      restore('ANTHROPIC_API_KEY', saved.key);
+      restore('ANTHROPIC_AUTH_TOKEN', saved.tok);
+    }
+  });
 });
 
 describe('captureSessionMemories (end-to-end into the store, injected fetch+db)', () => {
@@ -163,5 +198,38 @@ describe('captureSessionMemories (end-to-end into the store, injected fetch+db)'
     });
     expect(n).toBe(0);
     expect(called).toBe(false);
+  });
+
+  it('does not re-store a fact already captured for the board (cross-session dedup)', async () => {
+    const file = path.join(os.tmpdir(), `mem-dedup-${process.pid}-${Math.random().toString(36).slice(2)}.db`);
+    const okFetch = (async () => ({
+      ok: true,
+      json: async () => ({ content: [{ type: 'text', text: '["the deploy window is Tuesday 9am"]' }] }),
+    })) as unknown as typeof fetch;
+    try {
+      const first = await captureSessionMemories({
+        messages: msgs(8),
+        boardId: 'b1',
+        sessionId: 's1',
+        openDb: () => openMemoryDb(file),
+        deps: { fetchImpl: okFetch },
+      });
+      const second = await captureSessionMemories({
+        messages: msgs(8),
+        boardId: 'b1',
+        sessionId: 's2',
+        openDb: () => openMemoryDb(file),
+        deps: { fetchImpl: okFetch },
+      });
+      expect(first).toBe(1);
+      expect(second).toBe(0); // identical fact already stored → not duplicated across sessions
+
+      const verify = openMemoryDb(file);
+      expect(searchMemory(verify, 'b1', 'deploy window', 5)).toHaveLength(1);
+      verify.close();
+    } finally {
+      fs.rmSync(file, { force: true });
+      fs.rmSync(`${file}-journal`, { force: true });
+    }
   });
 });
