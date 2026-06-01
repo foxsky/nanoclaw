@@ -43,6 +43,18 @@ function isPathInside(parent: string, child: string): boolean {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+/**
+ * Resolve a host attachment `localPath` to an absolute path, but only if it stays
+ * inside `<dataDir>/attachments` (rejects `..` traversal and any other location).
+ * Native channel attachments (e.g. WhatsApp media) are downloaded there by the
+ * adapter and referenced by a `localPath` the host must not trust blindly.
+ */
+export function safeAttachmentSource(dataDir: string, localPath: string): string | null {
+  const attachmentsRoot = path.resolve(dataDir, 'attachments');
+  const src = path.resolve(dataDir, localPath);
+  return isPathInside(attachmentsRoot, src) ? src : null;
+}
+
 /** Root directory for all session data. */
 export function sessionsBaseDir(): string {
   return path.join(DATA_DIR, 'v2-sessions');
@@ -280,7 +292,7 @@ export function writeSessionMessage(
  *   4. `wx` flag on writeFileSync to refuse following a pre-existing symlink
  *      at the target file path or overwriting any existing file.
  */
-function extractAttachmentFiles(
+export function extractAttachmentFiles(
   agentGroupId: string,
   sessionId: string,
   messageId: string,
@@ -303,7 +315,13 @@ function extractAttachmentFiles(
 
   let changed = false;
   for (const att of attachments) {
-    if (typeof att.data !== 'string') continue;
+    // Stage either an inline base64 `data` payload OR a host-downloaded `localPath`
+    // (native channel media, e.g. WhatsApp voice notes) into the session inbox so the
+    // container can read it. An out-of-bounds/already-staged localPath yields no source
+    // and is left untouched.
+    const hasData = typeof att.data === 'string';
+    const hostSrc = hasData ? null : typeof att.localPath === 'string' ? safeAttachmentSource(DATA_DIR, att.localPath) : null;
+    if (!hasData && !hostSrc) continue;
 
     const rawName = deriveAttachmentName(att);
     const filename = isSafeAttachmentName(rawName) ? rawName : `attachment-${Date.now()}`;
@@ -344,10 +362,14 @@ function extractAttachmentFiles(
 
     const filePath = path.join(inboxDir, filename);
     try {
-      // wx = exclusive create. Refuses to follow a pre existing symlink or
-      // overwrite any existing file. The host expects to be the sole writer
-      // of these attachments.
-      fs.writeFileSync(filePath, Buffer.from(att.data as string, 'base64'), { flag: 'wx' });
+      // wx / COPYFILE_EXCL = exclusive create. Refuses to follow a pre existing
+      // symlink or overwrite any existing file. The host expects to be the sole
+      // writer of these attachments.
+      if (hasData) {
+        fs.writeFileSync(filePath, Buffer.from(att.data as string, 'base64'), { flag: 'wx' });
+      } else {
+        fs.copyFileSync(hostSrc as string, filePath, fs.constants.COPYFILE_EXCL);
+      }
     } catch (err: unknown) {
       const e = err as NodeJS.ErrnoException;
       if (e.code === 'EEXIST') {
