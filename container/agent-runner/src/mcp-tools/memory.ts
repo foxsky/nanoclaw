@@ -13,12 +13,9 @@
  * P1 stores only what memory_note is given; source_session/source_ts provenance is
  * populated later by P2 auto-capture (which has the session transcript).
  */
-import fs from 'node:fs';
-import path from 'node:path';
-
 import type { Database } from 'bun:sqlite';
 
-import { insertMemory, MEMORY_DB_PATH, type MemoryRow, openMemoryDb, searchMemory } from '../memory-store.js';
+import { insertMemory, type MemoryRow, openMemoryDbEnsuringDir, searchMemory } from '../memory-store.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { err, log, nonEmptyString, ok, requireString } from './util.js';
@@ -33,8 +30,7 @@ function memoryBoardId(): string | null {
 }
 
 function openBoardMemoryDb(): Database {
-  fs.mkdirSync(path.dirname(MEMORY_DB_PATH), { recursive: true });
-  return openMemoryDb(MEMORY_DB_PATH);
+  return openMemoryDbEnsuringDir();
 }
 
 export function formatMemories(rows: MemoryRow[]): string {

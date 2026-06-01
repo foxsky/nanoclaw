@@ -21,6 +21,9 @@
  * This module is the storage primitive only — capture wiring (PreCompact extraction, which
  * is what will populate source_session/source_ts) and the MCP tools live in later phases.
  */
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { Database } from 'bun:sqlite';
 
 /** Production location on the durable per-group mount. Tests pass ':memory:'. */
@@ -64,6 +67,13 @@ export function openMemoryDb(dbPath: string): Database {
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(text);
   `);
   return db;
+}
+
+/** Open the production memory DB, creating its parent dir first. The per-group mount
+ *  exists but the memory/ subdir may not. Shared by the MCP tools and PreCompact capture. */
+export function openMemoryDbEnsuringDir(dbPath: string = MEMORY_DB_PATH): Database {
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  return openMemoryDb(dbPath);
 }
 
 function genId(): string {
