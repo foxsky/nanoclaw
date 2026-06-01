@@ -10,6 +10,7 @@ import {
   blobToVector,
   cosineSimilarity,
   fuseByRrf,
+  hybridSearchMemory,
   insertMemory,
   openMemoryDb,
   sanitizeFtsQuery,
@@ -208,5 +209,42 @@ describe('vector storage (hybrid embeddings)', () => {
       fs.rmSync(file, { force: true });
       fs.rmSync(`${file}-journal`, { force: true });
     }
+  });
+});
+
+describe('hybridSearchMemory (FTS5 + vector fusion)', () => {
+  it('with no queryVector, is exactly FTS5 searchMemory (safe drop-in fallback)', () => {
+    db = openMemoryDb(':memory:');
+    insertMemory(db, { board_id: 'b1', text: 'the deploy window is Tuesday', vector: Float32Array.from([1, 0, 0]) });
+    insertMemory(db, { board_id: 'b1', text: 'unrelated grocery list', vector: Float32Array.from([0, 1, 0]) });
+    const hy = hybridSearchMemory(db, 'b1', 'deploy', null, 5).map((r) => r.text);
+    const fts = searchMemory(db, 'b1', 'deploy', 5).map((r) => r.text);
+    expect(hy).toEqual(fts);
+  });
+
+  it('recalls a paraphrase that shares NO keywords (vector-only hit FTS5 misses)', () => {
+    db = openMemoryDb(':memory:');
+    insertMemory(db, { board_id: 'b1', text: 'Bruno leads the mobile app team', vector: Float32Array.from([1, 0, 0]) });
+    insertMemory(db, { board_id: 'b1', text: 'grocery list for the weekend', vector: Float32Array.from([0, 1, 0]) });
+    // Zero token overlap → FTS5 finds nothing; the query vector is near Bruno's, so hybrid recalls it.
+    expect(searchMemory(db, 'b1', 'handset division lead', 5)).toHaveLength(0);
+    const hits = hybridSearchMemory(db, 'b1', 'handset division lead', Float32Array.from([0.98, 0.02, 0]), 5);
+    expect(hits.map((h) => h.text)).toContain('Bruno leads the mobile app team');
+  });
+
+  it('ranks a both-keyword-AND-vector match above a keyword-only match', () => {
+    db = openMemoryDb(':memory:');
+    insertMemory(db, { board_id: 'b1', text: 'deploy schedule alpha', vector: Float32Array.from([1, 0, 0]) });
+    insertMemory(db, { board_id: 'b1', text: 'deploy schedule beta', vector: Float32Array.from([0, 1, 0]) });
+    const hits = hybridSearchMemory(db, 'b1', 'deploy schedule', Float32Array.from([1, 0, 0]), 5);
+    expect(hits[0].text).toBe('deploy schedule alpha'); // also matches the vector → fused to the top
+  });
+
+  it('stays board-scoped under hybrid recall', () => {
+    db = openMemoryDb(':memory:');
+    insertMemory(db, { board_id: 'a', text: 'alpha secret', vector: Float32Array.from([1, 0, 0]) });
+    insertMemory(db, { board_id: 'b', text: 'beta secret', vector: Float32Array.from([1, 0, 0]) });
+    const hits = hybridSearchMemory(db, 'a', 'secret', Float32Array.from([1, 0, 0]), 5);
+    expect(hits.map((h) => h.text)).toEqual(['alpha secret']);
   });
 });

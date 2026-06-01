@@ -15,8 +15,8 @@
  */
 import type { Database } from 'bun:sqlite';
 
-import { embedAndInsert } from '../memory-embed.js';
-import { type MemoryRow, openMemoryDbEnsuringDir, searchMemory } from '../memory-store.js';
+import { embedAndInsert, embedText } from '../memory-embed.js';
+import { hybridSearchMemory, type MemoryRow, openMemoryDbEnsuringDir } from '../memory-store.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { err, log, nonEmptyString, ok, requireString } from './util.js';
@@ -55,14 +55,16 @@ export async function noteMemory(db: Database, boardId: string, args: Record<str
   return ok(`Saved memory ${id} for this board.`);
 }
 
-export function recallMemory(db: Database, boardId: string, args: Record<string, unknown>) {
+export async function recallMemory(db: Database, boardId: string, args: Record<string, unknown>) {
   const query = nonEmptyString(args.query);
   if (!query) return err("query is required — what to search this board's memories for.");
   let limit = DEFAULT_LIMIT;
   if (typeof args.limit === 'number' && Number.isFinite(args.limit)) {
     limit = Math.min(MAX_LIMIT, Math.max(1, Math.floor(args.limit)));
   }
-  const hits = searchMemory(db, boardId, query, limit);
+  // Embed the query for hybrid recall; null (embeddings disabled / embed failed) → FTS5-only.
+  const queryVector = await embedText(query);
+  const hits = hybridSearchMemory(db, boardId, query, queryVector, limit);
   if (hits.length === 0) return ok('No stored memories match that query.');
   return ok(formatMemories(hits));
 }
@@ -115,7 +117,7 @@ export const memorySearchTool: McpToolDefinition = {
     if (!boardId) return err(NOT_A_BOARD);
     const db = openBoardMemoryDb();
     try {
-      return recallMemory(db, boardId, args);
+      return await recallMemory(db, boardId, args);
     } finally {
       db.close();
     }

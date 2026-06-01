@@ -209,3 +209,68 @@ export function searchMemory(db: Database, boardId: string, query: string, limit
     )
     .all({ $q: match, $b: boardId, $lim: limit }) as MemoryRow[];
 }
+
+// Per-modality candidate pool feeding the fusion; RRF does the final top-N ranking.
+const HYBRID_CANDIDATES = 50;
+
+/** Board-scoped FTS5 keyword match → ranked memory ids (best-first). */
+function ftsRankedIds(db: Database, boardId: string, query: string, limit: number): string[] {
+  const match = sanitizeFtsQuery(query);
+  if (!match) return [];
+  return (
+    db
+      .query(
+        `SELECT m.id FROM memories_fts f JOIN memories m ON m.rowid = f.rowid
+         WHERE memories_fts MATCH $q AND m.board_id = $b ORDER BY rank LIMIT $lim`,
+      )
+      .all({ $q: match, $b: boardId, $lim: limit }) as Array<{ id: string }>
+  ).map((r) => r.id);
+}
+
+/** Board-scoped cosine ranking of stored vectors against queryVector → ranked memory ids. */
+function vectorRankedIds(db: Database, boardId: string, queryVector: Float32Array, limit: number): string[] {
+  const rows = db
+    .query(`SELECT id, vector FROM memories WHERE board_id = $b AND vector IS NOT NULL`)
+    .all({ $b: boardId }) as Array<{ id: string; vector: Uint8Array }>;
+  return rows
+    .map((r) => ({ id: r.id, score: cosineSimilarity(queryVector, blobToVector(r.vector)) }))
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((s) => s.id);
+}
+
+/** Fetch full rows for ids, board-scoped, preserving the given id order. */
+function rowsByIds(db: Database, boardId: string, ids: string[]): MemoryRow[] {
+  if (ids.length === 0) return [];
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = db
+    .query(
+      `SELECT id, board_id, kind, text, source_session, source_ts, created_at
+       FROM memories WHERE board_id = ? AND id IN (${placeholders})`,
+    )
+    .all(boardId, ...ids) as MemoryRow[];
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return ids.map((id) => byId.get(id)).filter((r): r is MemoryRow => r !== undefined);
+}
+
+/**
+ * Hybrid recall: fuse FTS5 keyword ranking with vector (cosine) ranking via RRF, board-scoped.
+ * With no queryVector (embeddings disabled / embed failed) it is EXACTLY FTS5 searchMemory, so
+ * hybrid is a strict, safe enhancement — keyword recall never regresses. With a vector, a
+ * paraphrase sharing no keywords can still be recalled, and matches agreeing across both
+ * modalities rank highest.
+ */
+export function hybridSearchMemory(
+  db: Database,
+  boardId: string,
+  query: string,
+  queryVector: Float32Array | null,
+  limit = 5,
+): MemoryRow[] {
+  if (!queryVector) return searchMemory(db, boardId, query, limit);
+  const fts = ftsRankedIds(db, boardId, query, HYBRID_CANDIDATES);
+  const vec = vectorRankedIds(db, boardId, queryVector, HYBRID_CANDIDATES);
+  const fusedIds = fuseByRrf([fts, vec], { limit }).map((r) => r.id);
+  return rowsByIds(db, boardId, fusedIds);
+}
