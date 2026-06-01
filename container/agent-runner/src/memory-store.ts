@@ -5,13 +5,15 @@
  *
  * Durable path (production): /workspace/agent/memory/memory.db (the per-group mount,
  * NOT /workspace which is per-session). Memory's isolation boundary is therefore the
- * agent-group mount — identical to CLAUDE.local.md beside it. The injected board id is
- * deterministic per group folder (resolveTaskflowBoardId → one board), so the board_id
- * column is consistent belt-and-suspenders, not a second isolation tier; a separate-agent
- * board gets its own group/file, an agent-shared group shares memory like the rest of its
- * workspace. journal_mode=DELETE matches the cross-mount session-DB invariant; a
- * truly-concurrent second writer for the same group is a known P2 concern (host-side
- * writer / board lock).
+ * agent-group mount — identical to CLAUDE.local.md beside it. A separate-agent board gets
+ * its own group/file; an agent-shared group shares memory like the rest of its workspace.
+ * In practice the host resolves a group folder to a single board id at spawn time (current
+ * policy: ORDER BY board_id LIMIT 1 — NOT a schema-enforced 1:1, since boards.group_folder
+ * is not unique), so a file normally holds one board id. The board_id column scopes every
+ * query regardless, so recall stays correct for the active board even if a file ever
+ * accumulates more than one id (folder→board remap between spawns, replay override).
+ * journal_mode=DELETE matches the cross-mount session-DB invariant; a truly-concurrent
+ * second writer for the same group is a known P2 concern (host-side writer / board lock).
  *
  * Schema note: `id` is the public TEXT key but `rowid` is an explicit INTEGER PRIMARY KEY
  * so it is a stable rowid alias (not renumbered by VACUUM) — the FTS index joins on it.
