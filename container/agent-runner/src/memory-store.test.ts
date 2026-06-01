@@ -4,7 +4,18 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'bun:test';
 
-import { fuseByRrf, insertMemory, openMemoryDb, sanitizeFtsQuery, searchMemory } from './memory-store.js';
+import { Database } from 'bun:sqlite';
+
+import {
+  blobToVector,
+  cosineSimilarity,
+  fuseByRrf,
+  insertMemory,
+  openMemoryDb,
+  sanitizeFtsQuery,
+  searchMemory,
+  vectorToBlob,
+} from './memory-store.js';
 
 let db: ReturnType<typeof openMemoryDb> | null = null;
 afterEach(() => {
@@ -130,5 +141,72 @@ describe('fuseByRrf (hybrid FTS5 + vector rank fusion)', () => {
 
   it('degrades to the single provided list order (FTS5-only fallback when no vectors)', () => {
     expect(fuseByRrf([['a', 'b', 'c']]).map((r) => r.id)).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('vector storage (hybrid embeddings)', () => {
+  it('cosineSimilarity: identical=1, orthogonal=0, dim-mismatch guarded to 0', () => {
+    const a = Float32Array.from([1, 0, 0]);
+    expect(cosineSimilarity(a, Float32Array.from([1, 0, 0]))).toBeCloseTo(1, 6);
+    expect(cosineSimilarity(a, Float32Array.from([0, 1, 0]))).toBeCloseTo(0, 6);
+    // A stored vector from a different model (wrong dim) must score 0, not silently truncate.
+    expect(cosineSimilarity(a, Float32Array.from([1, 0]))).toBe(0);
+  });
+
+  it('vectorToBlob/blobToVector round-trips a vector through the BLOB column', () => {
+    const v = Float32Array.from([0.5, -0.25, 0.125, 1]);
+    expect(Array.from(blobToVector(vectorToBlob(v)))).toEqual(Array.from(v));
+  });
+
+  it('insertMemory persists a provided vector (read back via blobToVector)', () => {
+    db = openMemoryDb(':memory:');
+    const id = insertMemory(db, { board_id: 'b1', text: 'deploy tuesday', vector: Float32Array.from([0.1, 0.2, 0.3]) });
+    const row = db.query('SELECT vector FROM memories WHERE id = $id').get({ $id: id }) as { vector: Uint8Array };
+    const v = blobToVector(row.vector);
+    expect(v.length).toBe(3);
+    expect(v[0]).toBeCloseTo(0.1, 5);
+  });
+
+  it('insertMemory stores NULL vector when none is provided (FTS5-only memory stays valid)', () => {
+    db = openMemoryDb(':memory:');
+    const id = insertMemory(db, { board_id: 'b1', text: 'no vector here' });
+    const row = db.query('SELECT vector FROM memories WHERE id = $id').get({ $id: id }) as {
+      vector: Uint8Array | null;
+    };
+    expect(row.vector).toBeNull();
+    // and it is still searchable via FTS5
+    expect(searchMemory(db, 'b1', 'vector', 5)).toHaveLength(1);
+  });
+
+  it('openMemoryDb migrates a legacy (vector-less) memories table by adding the column', () => {
+    const file = path.join(os.tmpdir(), `mem-mig-${process.pid}-${Math.random().toString(36).slice(2)}.db`);
+    try {
+      const legacy = new Database(file);
+      legacy.exec(`
+        CREATE TABLE memories (
+          rowid INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, board_id TEXT NOT NULL,
+          kind TEXT NOT NULL DEFAULT 'note', text TEXT NOT NULL, source_session TEXT,
+          source_ts TEXT, created_at TEXT NOT NULL
+        );
+        CREATE VIRTUAL TABLE memories_fts USING fts5(text);
+      `);
+      legacy
+        .query(
+          `INSERT INTO memories (id, board_id, kind, text, created_at) VALUES ('m1','b1','note','legacy row','2026-01-01')`,
+        )
+        .run();
+      legacy.query(`INSERT INTO memories_fts (rowid, text) VALUES (1, 'legacy row')`).run();
+      legacy.close();
+
+      const migrated = openMemoryDb(file);
+      const cols = (migrated.query('PRAGMA table_info(memories)').all() as Array<{ name: string }>).map((c) => c.name);
+      expect(cols).toContain('vector');
+      // the pre-existing row survives the migration and stays searchable
+      expect(searchMemory(migrated, 'b1', 'legacy', 5)).toHaveLength(1);
+      migrated.close();
+    } finally {
+      fs.rmSync(file, { force: true });
+      fs.rmSync(`${file}-journal`, { force: true });
+    }
   });
 });

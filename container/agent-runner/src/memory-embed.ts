@@ -5,6 +5,9 @@
  * memory layer stays pure-FTS5. Best-effort — any failure returns null and the caller stores /
  * searches without a vector, so embeddings never break note-taking or recall.
  */
+import type { Database } from 'bun:sqlite';
+
+import { insertMemory, type MemoryInput } from './memory-store.js';
 import { ensureHostBypassesProxy } from './ollama-util.js';
 
 export interface EmbedDeps {
@@ -54,4 +57,14 @@ export async function embedText(text: string, deps: EmbedDeps = {}): Promise<Flo
     log(`embed error: ${e instanceof Error ? e.message : String(e)}`);
     return null;
   }
+}
+
+/**
+ * Embed-on-write: compute m.text's embedding (best-effort) and store it with the memory. A null
+ * embedding (model disabled / call failed) stores the memory FTS5-only — embeddings never block
+ * a write. A pre-supplied m.vector is respected (used by tests / future backfill).
+ */
+export async function embedAndInsert(db: Database, m: MemoryInput, deps: EmbedDeps = {}): Promise<string> {
+  const vector = m.vector ?? (await embedText(m.text, deps));
+  return insertMemory(db, { ...m, vector });
 }

@@ -40,9 +40,9 @@ describe('memory tools — board gate (no cross-board leak, opt-in)', () => {
 });
 
 describe('noteMemory (core)', () => {
-  it('stores text for the board and returns the new id', () => {
+  it('stores text for the board and returns the new id', async () => {
     db = openMemoryDb(':memory:');
-    const res = noteMemory(db, 'b1', { text: 'the deploy window is Tuesday 9am', kind: 'fact' });
+    const res = await noteMemory(db, 'b1', { text: 'the deploy window is Tuesday 9am', kind: 'fact' });
     expect(res.isError).toBeUndefined();
     expect(res.content[0].text).toMatch(/mem-/);
 
@@ -51,32 +51,32 @@ describe('noteMemory (core)', () => {
     expect(hits[0].kind).toBe('fact');
   });
 
-  it('rejects empty/whitespace text', () => {
+  it('rejects empty/whitespace text', async () => {
     db = openMemoryDb(':memory:');
-    expect(noteMemory(db, 'b1', { text: '   ' }).isError).toBe(true);
-    expect(noteMemory(db, 'b1', {}).isError).toBe(true);
+    expect((await noteMemory(db, 'b1', { text: '   ' })).isError).toBe(true);
+    expect((await noteMemory(db, 'b1', {})).isError).toBe(true);
   });
 
-  it('defaults kind to "note" when omitted', () => {
+  it('defaults kind to "note" when omitted', async () => {
     db = openMemoryDb(':memory:');
-    noteMemory(db, 'b1', { text: 'a plain note' });
+    await noteMemory(db, 'b1', { text: 'a plain note' });
     expect(searchMemory(db, 'b1', 'plain', 5)[0].kind).toBe('note');
   });
 });
 
 describe('recallMemory (core)', () => {
-  it('returns cited memories for a hit', () => {
+  it('returns cited memories for a hit', async () => {
     db = openMemoryDb(':memory:');
-    noteMemory(db, 'b1', { text: 'the deploy window is Tuesday 9am', kind: 'fact' });
+    await noteMemory(db, 'b1', { text: 'the deploy window is Tuesday 9am', kind: 'fact' });
     const res = recallMemory(db, 'b1', { query: 'deploy window' });
     expect(res.isError).toBeUndefined();
     expect(res.content[0].text).toContain('deploy window is Tuesday 9am');
     expect(res.content[0].text).toContain('fact');
   });
 
-  it('a recall miss is a normal (non-error) empty result, not an error', () => {
+  it('a recall miss is a normal (non-error) empty result, not an error', async () => {
     db = openMemoryDb(':memory:');
-    noteMemory(db, 'b1', { text: 'unrelated' });
+    await noteMemory(db, 'b1', { text: 'unrelated' });
     const res = recallMemory(db, 'b1', { query: 'nonexistent topic' });
     expect(res.isError).toBeUndefined();
     expect(res.content[0].text.toLowerCase()).toContain('no stored memories');
@@ -88,10 +88,10 @@ describe('recallMemory (core)', () => {
     expect(recallMemory(db, 'b1', {}).isError).toBe(true);
   });
 
-  it('does not leak memories from another board', () => {
+  it('does not leak memories from another board', async () => {
     db = openMemoryDb(':memory:');
-    noteMemory(db, 'a', { text: 'secret alpha' });
-    noteMemory(db, 'b', { text: 'secret beta' });
+    await noteMemory(db, 'a', { text: 'secret alpha' });
+    await noteMemory(db, 'b', { text: 'secret beta' });
     const text = recallMemory(db, 'a', { query: 'secret' }).content[0].text;
     expect(text).toContain('alpha');
     expect(text).not.toContain('beta');

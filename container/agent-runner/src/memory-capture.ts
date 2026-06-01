@@ -12,7 +12,8 @@
  */
 import type { Database } from 'bun:sqlite';
 
-import { insertMemory, memoryExists } from './memory-store.js';
+import { embedAndInsert } from './memory-embed.js';
+import { memoryExists } from './memory-store.js';
 import { ensureHostBypassesProxy } from './ollama-util.js';
 
 export interface CaptureMessage {
@@ -260,7 +261,8 @@ export async function captureSessionMemories(args: CaptureArgs): Promise<number>
       // Skip facts already captured for this board — overlapping context across compactions
       // would otherwise accumulate near-duplicates and degrade top-N recall.
       if (memoryExists(db, args.boardId, fact)) continue;
-      insertMemory(db, {
+      // embed-on-write so auto-captured facts are reachable by hybrid (vector) recall too.
+      await embedAndInsert(db, {
         board_id: args.boardId,
         text: fact,
         kind: 'auto',

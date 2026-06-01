@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 
-import { embedModel, embedText } from './memory-embed.js';
+import { embedAndInsert, embedModel, embedText } from './memory-embed.js';
+import { blobToVector, openMemoryDb } from './memory-store.js';
 
 describe('embedModel (hybrid gate)', () => {
   it('returns the deps model when provided', () => {
@@ -70,5 +71,33 @@ describe('embedText (Ollama /api/embed via injected fetch)', () => {
       saved.n === undefined ? delete process.env.NO_PROXY : (process.env.NO_PROXY = saved.n);
       saved.l === undefined ? delete process.env.no_proxy : (process.env.no_proxy = saved.l);
     }
+  });
+});
+
+describe('embedAndInsert (embed-on-write)', () => {
+  it('embeds the text and stores the vector alongside the memory', async () => {
+    const db = openMemoryDb(':memory:');
+    const f = (async () => ({
+      ok: true,
+      json: async () => ({ embeddings: [[0.1, 0.2, 0.3]] }),
+    })) as unknown as typeof fetch;
+    const id = await embedAndInsert(
+      db,
+      { board_id: 'b1', text: 'deploy tuesday' },
+      { model: 'bge-m3', url: 'http://x:1', fetchImpl: f },
+    );
+    const row = db.query('SELECT vector FROM memories WHERE id = $id').get({ $id: id }) as { vector: Uint8Array };
+    expect(blobToVector(row.vector).length).toBe(3);
+    db.close();
+  });
+
+  it('stores the memory with a NULL vector when embeddings are disabled (no model)', async () => {
+    const db = openMemoryDb(':memory:');
+    const id = await embedAndInsert(db, { board_id: 'b1', text: 'no embed configured' });
+    const row = db.query('SELECT vector FROM memories WHERE id = $id').get({ $id: id }) as {
+      vector: Uint8Array | null;
+    };
+    expect(row.vector).toBeNull();
+    db.close();
   });
 });

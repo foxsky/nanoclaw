@@ -15,7 +15,8 @@
  */
 import type { Database } from 'bun:sqlite';
 
-import { insertMemory, type MemoryRow, openMemoryDbEnsuringDir, searchMemory } from '../memory-store.js';
+import { embedAndInsert } from '../memory-embed.js';
+import { type MemoryRow, openMemoryDbEnsuringDir, searchMemory } from '../memory-store.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { err, log, nonEmptyString, ok, requireString } from './util.js';
@@ -43,11 +44,13 @@ export function formatMemories(rows: MemoryRow[]): string {
   return `Found ${head}:\n${lines.join('\n')}`;
 }
 
-export function noteMemory(db: Database, boardId: string, args: Record<string, unknown>) {
+export async function noteMemory(db: Database, boardId: string, args: Record<string, unknown>) {
   const text = nonEmptyString(args.text);
   if (!text) return err('text is required — the fact to remember for this board.');
   const kind = requireString(args, 'kind') ?? 'note';
-  const id = insertMemory(db, { board_id: boardId, text, kind });
+  // embed-on-write: stores the memory with an embedding for hybrid recall, or FTS5-only
+  // (NULL vector) when embeddings are disabled/unavailable — never blocks the save.
+  const id = await embedAndInsert(db, { board_id: boardId, text, kind });
   log(`memory_note: ${boardId} ${id} (${text.length}ch)`);
   return ok(`Saved memory ${id} for this board.`);
 }
@@ -86,7 +89,7 @@ export const memoryNoteTool: McpToolDefinition = {
     if (!boardId) return err(NOT_A_BOARD);
     const db = openBoardMemoryDb();
     try {
-      return noteMemory(db, boardId, args);
+      return await noteMemory(db, boardId, args);
     } finally {
       db.close();
     }

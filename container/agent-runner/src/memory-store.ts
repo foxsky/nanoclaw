@@ -36,6 +36,9 @@ export interface MemoryInput {
   source_session?: string | null;
   source_ts?: string | null;
   id?: string;
+  /** Optional embedding for hybrid recall. NULL when embeddings are disabled/unavailable —
+   *  the memory is still stored and findable via FTS5. */
+  vector?: Float32Array | null;
 }
 
 export interface MemoryRow {
@@ -61,12 +64,52 @@ export function openMemoryDb(dbPath: string): Database {
       text TEXT NOT NULL,
       source_session TEXT,
       source_ts TEXT,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      vector BLOB
     );
     CREATE INDEX IF NOT EXISTS idx_memories_board ON memories(board_id);
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(text);
   `);
+  ensureVectorColumn(db);
   return db;
+}
+
+/** Add the `vector` column to a pre-embeddings memories table. CREATE...IF NOT EXISTS never
+ *  alters an existing table, so a DB created before hybrid search needs this one-time ALTER. */
+function ensureVectorColumn(db: Database): void {
+  const cols = db.query('PRAGMA table_info(memories)').all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === 'vector')) {
+    db.exec('ALTER TABLE memories ADD COLUMN vector BLOB');
+  }
+}
+
+/** Cosine similarity with a dim guard: a stored vector from a different model (wrong length)
+ *  scores 0 rather than silently truncating to a false-high match. */
+export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
+  if (a.length !== b.length) return 0;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  return denom === 0 ? 0 : dot / denom;
+}
+
+/** Float32 vector → BLOB bytes for the SQLite column (a self-owned copy, decoupled from `v`). */
+export function vectorToBlob(v: Float32Array): Uint8Array {
+  return new Uint8Array(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength));
+}
+
+/** BLOB bytes → Float32 vector. Copies into a fresh aligned buffer so an unaligned SQLite
+ *  blob can't make the Float32Array constructor throw. */
+export function blobToVector(blob: Uint8Array): Float32Array {
+  const out = new Float32Array(Math.floor(blob.byteLength / 4));
+  new Uint8Array(out.buffer).set(blob.subarray(0, out.length * 4));
+  return out;
 }
 
 /** Open the production memory DB, creating its parent dir first. The per-group mount
@@ -88,8 +131,8 @@ export function insertMemory(db: Database, m: MemoryInput): string {
   const insert = db.transaction(() => {
     const { rowid } = db
       .query(
-        `INSERT INTO memories (id, board_id, kind, text, source_session, source_ts, created_at)
-         VALUES ($id, $board, $kind, $text, $ss, $sts, $ca)
+        `INSERT INTO memories (id, board_id, kind, text, source_session, source_ts, created_at, vector)
+         VALUES ($id, $board, $kind, $text, $ss, $sts, $ca, $vec)
          RETURNING rowid`,
       )
       .get({
@@ -100,6 +143,7 @@ export function insertMemory(db: Database, m: MemoryInput): string {
         $ss: m.source_session ?? null,
         $sts: m.source_ts ?? null,
         $ca: createdAt,
+        $vec: m.vector ? vectorToBlob(m.vector) : null,
       }) as { rowid: number };
     db.query(`INSERT INTO memories_fts (rowid, text) VALUES ($r, $t)`).run({ $r: rowid, $t: m.text });
   });
