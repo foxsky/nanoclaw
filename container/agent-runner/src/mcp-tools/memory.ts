@@ -1,14 +1,17 @@
 /**
  * memory_note / memory_search MCP tools — the agent-facing surface over the native
- * local memory store (memory-store.ts). Per-board, FTS5, with provenance.
+ * local memory store (memory-store.ts). Per-board, FTS5.
  *
- * Board scoping is load-bearing: the board id comes from NANOCLAW_TASKFLOW_BOARD_ID,
- * host-injected at spawn (container-runner.ts), NEVER from the model — so a board can
- * never read or write another board's memories. The env's presence is also the per-board
+ * Board scoping: the board id comes from NANOCLAW_TASKFLOW_BOARD_ID, host-injected at
+ * spawn (container-runner.ts), NEVER from the model. The env's presence is also the
  * opt-in gate (same signal poll-loop uses for `taskflowEnabled`): absent → not a TaskFlow
- * board → the tools refuse without opening any DB.
+ * board → the tools refuse without opening any DB. Isolation is the agent-group mount
+ * boundary (the DB lives at /workspace/agent/memory/, beside CLAUDE.local.md), not a
+ * per-board tier — a separate-agent board has its own group/file; an agent-shared group
+ * shares its memory like the rest of its workspace.
  *
- * The DB lives on the durable per-group mount at /workspace/agent/memory/memory.db.
+ * P1 stores only what memory_note is given; source_session/source_ts provenance is
+ * populated later by P2 auto-capture (which has the session transcript).
  */
 import fs from 'node:fs';
 import path from 'node:path';

@@ -1,15 +1,23 @@
 /**
  * Native local memory store (v2) — a per-agent-group SQLite + FTS5 file, no external
  * service. Replaces the v1 agent-memory-server (external Redis) layer. Adopts Lossless
- * Claw's FTS5-over-local-store + provenance model.
+ * Claw's FTS5-over-local-store model.
  *
  * Durable path (production): /workspace/agent/memory/memory.db (the per-group mount,
- * NOT /workspace which is per-session). journal_mode=DELETE matches the cross-mount
- * session-DB invariant; a truly-concurrent second writer for the same group is a known
- * P2 concern (host-side writer / board lock).
+ * NOT /workspace which is per-session). Memory's isolation boundary is therefore the
+ * agent-group mount — identical to CLAUDE.local.md beside it. The injected board id is
+ * deterministic per group folder (resolveTaskflowBoardId → one board), so the board_id
+ * column is consistent belt-and-suspenders, not a second isolation tier; a separate-agent
+ * board gets its own group/file, an agent-shared group shares memory like the rest of its
+ * workspace. journal_mode=DELETE matches the cross-mount session-DB invariant; a
+ * truly-concurrent second writer for the same group is a known P2 concern (host-side
+ * writer / board lock).
  *
- * This module is the storage primitive only — capture wiring (PreCompact extraction)
- * and the MCP tools live in later phases.
+ * Schema note: `id` is the public TEXT key but `rowid` is an explicit INTEGER PRIMARY KEY
+ * so it is a stable rowid alias (not renumbered by VACUUM) — the FTS index joins on it.
+ *
+ * This module is the storage primitive only — capture wiring (PreCompact extraction, which
+ * is what will populate source_session/source_ts) and the MCP tools live in later phases.
  */
 import { Database } from 'bun:sqlite';
 
@@ -41,7 +49,8 @@ export function openMemoryDb(dbPath: string): Database {
   db.exec('PRAGMA busy_timeout = 5000');
   db.exec(`
     CREATE TABLE IF NOT EXISTS memories (
-      id TEXT PRIMARY KEY,
+      rowid INTEGER PRIMARY KEY,
+      id TEXT NOT NULL UNIQUE,
       board_id TEXT NOT NULL,
       kind TEXT NOT NULL DEFAULT 'note',
       text TEXT NOT NULL,
@@ -62,22 +71,27 @@ function genId(): string {
 export function insertMemory(db: Database, m: MemoryInput): string {
   const id = m.id ?? genId();
   const createdAt = new Date().toISOString();
-  const { rowid } = db
-    .query(
-      `INSERT INTO memories (id, board_id, kind, text, source_session, source_ts, created_at)
-       VALUES ($id, $board, $kind, $text, $ss, $sts, $ca)
-       RETURNING rowid`,
-    )
-    .get({
-      $id: id,
-      $board: m.board_id,
-      $kind: m.kind ?? 'note',
-      $text: m.text,
-      $ss: m.source_session ?? null,
-      $sts: m.source_ts ?? null,
-      $ca: createdAt,
-    }) as { rowid: number };
-  db.query(`INSERT INTO memories_fts (rowid, text) VALUES ($r, $t)`).run({ $r: rowid, $t: m.text });
+  // Base row + FTS row in one transaction so a failure mid-insert can never leave a
+  // stored-but-unsearchable memory (or an orphaned FTS row).
+  const insert = db.transaction(() => {
+    const { rowid } = db
+      .query(
+        `INSERT INTO memories (id, board_id, kind, text, source_session, source_ts, created_at)
+         VALUES ($id, $board, $kind, $text, $ss, $sts, $ca)
+         RETURNING rowid`,
+      )
+      .get({
+        $id: id,
+        $board: m.board_id,
+        $kind: m.kind ?? 'note',
+        $text: m.text,
+        $ss: m.source_session ?? null,
+        $sts: m.source_ts ?? null,
+        $ca: createdAt,
+      }) as { rowid: number };
+    db.query(`INSERT INTO memories_fts (rowid, text) VALUES ($r, $t)`).run({ $r: rowid, $t: m.text });
+  });
+  insert();
   return id;
 }
 
