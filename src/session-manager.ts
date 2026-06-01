@@ -320,7 +320,11 @@ export function extractAttachmentFiles(
     // container can read it. An out-of-bounds/already-staged localPath yields no source
     // and is left untouched.
     const hasData = typeof att.data === 'string';
-    const hostSrc = hasData ? null : typeof att.localPath === 'string' ? safeAttachmentSource(DATA_DIR, att.localPath) : null;
+    const hostSrc = hasData
+      ? null
+      : typeof att.localPath === 'string'
+        ? safeAttachmentSource(DATA_DIR, att.localPath)
+        : null;
     if (!hasData && !hostSrc) continue;
 
     const rawName = deriveAttachmentName(att);

@@ -32,7 +32,10 @@ describe('safeAttachmentSource (traversal guard)', () => {
 describe('extractAttachmentFiles — native (localPath) attachment staging', () => {
   it('copies a host-downloaded attachment into the session inbox and rewrites localPath', () => {
     fs.writeFileSync(path.join(TMP, 'attachments', 'voice.ogg'), 'OGG-BYTES');
-    const content = JSON.stringify({ text: 'voice', attachments: [{ type: 'audio', name: 'voice.ogg', localPath: 'attachments/voice.ogg' }] });
+    const content = JSON.stringify({
+      text: 'voice',
+      attachments: [{ type: 'audio', name: 'voice.ogg', localPath: 'attachments/voice.ogg' }],
+    });
 
     const out = JSON.parse(extractAttachmentFiles('grp', 'sess', 'msg1', content));
 
@@ -43,7 +46,9 @@ describe('extractAttachmentFiles — native (localPath) attachment staging', () 
   });
 
   it('skips (does not copy or rewrite) an attachment whose localPath escapes the attachments dir', () => {
-    const content = JSON.stringify({ attachments: [{ type: 'audio', name: 'x', localPath: 'attachments/../../evil' }] });
+    const content = JSON.stringify({
+      attachments: [{ type: 'audio', name: 'x', localPath: 'attachments/../../evil' }],
+    });
     const out = JSON.parse(extractAttachmentFiles('grp', 'sess', 'msg2', content));
     expect(out.attachments[0].localPath).toBe('attachments/../../evil'); // untouched
     expect(fs.existsSync(path.join(TMP, 'v2-sessions', 'grp', 'sess', 'inbox', 'msg2'))).toBe(false);
