@@ -5,8 +5,10 @@ import {
   buildMemoryRecallAddendum,
   formatMemories,
   memoryNoteTool,
+  memoryPruneOptions,
   memorySearchTool,
   noteMemory,
+  pruneBoardMemory,
   recallAddendumText,
   recallMemory,
 } from './memory.js';
@@ -152,5 +154,45 @@ describe('recallAddendumText (once-per-session auto-recall)', () => {
   it('buildMemoryRecallAddendum returns empty with no board env (opens no DB)', () => {
     delete process.env[ENV_KEY];
     expect(buildMemoryRecallAddendum()).toBe('');
+  });
+});
+
+describe('forgetting policy gate (P4)', () => {
+  const KEYS = ['NANOCLAW_MEMORY_MAX_AGE_DAYS', 'NANOCLAW_MEMORY_KEEP_TOP_N'] as const;
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => KEYS.forEach((k) => (saved[k] = process.env[k])));
+  afterEach(() => KEYS.forEach((k) => (saved[k] === undefined ? delete process.env[k] : (process.env[k] = saved[k]!))));
+
+  it('is OFF (empty options) when no env is set — default never-forget', () => {
+    KEYS.forEach((k) => delete process.env[k]);
+    expect(memoryPruneOptions()).toEqual({});
+  });
+
+  it('parses positive age + budget caps from env', () => {
+    process.env.NANOCLAW_MEMORY_MAX_AGE_DAYS = '90';
+    process.env.NANOCLAW_MEMORY_KEEP_TOP_N = '500';
+    expect(memoryPruneOptions()).toEqual({ maxAgeDays: 90, keepTopN: 500 });
+  });
+
+  it('floors a float keepTopN so it works instead of silently disabling forgetting', () => {
+    process.env.NANOCLAW_MEMORY_KEEP_TOP_N = '500.9';
+    delete process.env.NANOCLAW_MEMORY_MAX_AGE_DAYS;
+    expect(memoryPruneOptions()).toEqual({ keepTopN: 500 });
+  });
+
+  it('ignores non-positive / garbage values rather than wiping the board', () => {
+    process.env.NANOCLAW_MEMORY_MAX_AGE_DAYS = '0';
+    process.env.NANOCLAW_MEMORY_KEEP_TOP_N = 'abc';
+    expect(memoryPruneOptions()).toEqual({});
+  });
+
+  it('pruneBoardMemory is a no-op (0) with no board env, opening no DB', () => {
+    const savedBoard = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    try {
+      expect(pruneBoardMemory()).toBe(0);
+    } finally {
+      if (savedBoard !== undefined) process.env.NANOCLAW_TASKFLOW_BOARD_ID = savedBoard;
+    }
   });
 });

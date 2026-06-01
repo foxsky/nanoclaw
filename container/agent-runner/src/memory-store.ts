@@ -68,6 +68,11 @@ export function openMemoryDb(dbPath: string): Database {
       vector BLOB
     );
     CREATE INDEX IF NOT EXISTS idx_memories_board ON memories(board_id);
+    -- Recency index: SQLite walks it in reverse for the ORDER BY created_at DESC used by
+    -- recentMemories (auto-recall) and the keepTopN prune subquery, so a large board's prune
+    -- transaction holds its write lock for ms not seconds (avoids busy-timeout on a concurrent
+    -- same-group boot). Supersedes idx_memories_board for board-scoped lookups (prefix).
+    CREATE INDEX IF NOT EXISTS idx_memories_board_created ON memories(board_id, created_at);
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(text);
   `);
   ensureVectorColumn(db);
@@ -219,6 +224,57 @@ export function recentMemories(db: Database, boardId: string, limit = 10): Memor
        FROM memories WHERE board_id = $b ORDER BY created_at DESC, rowid DESC LIMIT $lim`,
     )
     .all({ $b: boardId, $lim: limit }) as MemoryRow[];
+}
+
+export interface PruneOptions {
+  /** Delete memories older than this many days (by created_at). Omit/≤0 = no age cap. */
+  maxAgeDays?: number;
+  /** Keep only the N most-recent per board; delete the older excess. Omit/≤0 = no budget cap. */
+  keepTopN?: number;
+  /** Injected for deterministic tests; defaults to Date.now(). */
+  nowMs?: number;
+}
+
+/**
+ * P4 forgetting: bounded growth via opt-in age + budget caps, board-scoped. A memory is deleted
+ * if it is older than maxAgeDays OR beyond the keepTopN most-recent (OR-union of the two caps).
+ * With neither cap set this is a no-op (default = never forget). Victims are deleted from BOTH
+ * `memories` and `memories_fts` by rowid in one transaction — `memories_fts` is a standalone FTS5
+ * table kept in sync manually (no triggers), so a base-only delete would orphan/desync the index.
+ * No VACUUM: rowid is a load-bearing FTS join alias and must not be renumbered. Returns the count
+ * deleted. The single writer (this container) owns the DB, so no cross-process lock concern here.
+ */
+export function pruneMemories(db: Database, boardId: string, opts: PruneOptions): number {
+  const hasAge = typeof opts.maxAgeDays === 'number' && opts.maxAgeDays > 0;
+  const hasBudget = typeof opts.keepTopN === 'number' && opts.keepTopN > 0;
+  if (!hasAge && !hasBudget) return 0;
+
+  // Build the victim predicate as one SQL clause (board-scoped, age OR budget) so the DELETEs
+  // need NO bound rowid list — a JS `IN (?,?,…)` list would hit SQLite's max-variable limit on a
+  // large first-time prune and throw, which (being fail-soft) would silently prune nothing on
+  // exactly the bloated boards that need it most.
+  const params: Record<string, string | number> = { $b: boardId };
+  const conds: string[] = [];
+  if (hasAge) {
+    params.$c = new Date((opts.nowMs ?? Date.now()) - opts.maxAgeDays! * 86_400_000).toISOString();
+    conds.push('created_at < $c');
+  }
+  if (hasBudget) {
+    params.$k = opts.keepTopN!;
+    conds.push(
+      'rowid NOT IN (SELECT rowid FROM memories WHERE board_id = $b ORDER BY created_at DESC, rowid DESC LIMIT $k)',
+    );
+  }
+  const victimWhere = `board_id = $b AND (${conds.join(' OR ')})`;
+
+  // memories_fts is a manual standalone FTS5 table (no triggers) — delete it FIRST, keyed off the
+  // still-intact `memories` victim set, then delete the base rows. One transaction = all-or-nothing,
+  // so the FTS index can never end up orphaned/desynced from the base table.
+  const prune = db.transaction(() => {
+    db.query(`DELETE FROM memories_fts WHERE rowid IN (SELECT rowid FROM memories WHERE ${victimWhere})`).run(params);
+    return db.query(`DELETE FROM memories WHERE ${victimWhere}`).run(params).changes;
+  });
+  return Number(prune());
 }
 
 // Per-modality candidate pool feeding the fusion; RRF does the final top-N ranking.

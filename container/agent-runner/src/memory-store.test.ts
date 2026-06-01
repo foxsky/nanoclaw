@@ -13,6 +13,7 @@ import {
   hybridSearchMemory,
   insertMemory,
   openMemoryDb,
+  pruneMemories,
   recentMemories,
   sanitizeFtsQuery,
   searchMemory,
@@ -266,4 +267,69 @@ describe('recentMemories (once-per-session auto-recall source)', () => {
     db = openMemoryDb(':memory:');
     expect(recentMemories(db, 'empty', 10)).toEqual([]);
   });
-})
+});
+
+describe('pruneMemories (P4 forgetting — opt-in, board-scoped, FTS-consistent)', () => {
+  it('no policy → no-op (returns 0, deletes nothing)', () => {
+    db = openMemoryDb(':memory:');
+    insertMemory(db, { board_id: 'b1', text: 'keep me' });
+    expect(pruneMemories(db, 'b1', {})).toBe(0);
+    expect(searchMemory(db, 'b1', 'keep', 5)).toHaveLength(1);
+  });
+
+  it('age cap deletes rows older than maxAgeDays, keeps recent ones, and keeps FTS in sync', () => {
+    db = openMemoryDb(':memory:');
+    const oldId = insertMemory(db, { board_id: 'b1', text: 'ancient decision' });
+    insertMemory(db, { board_id: 'b1', text: 'fresh decision' });
+    const old = new Date(Date.now() - 100 * 86_400_000).toISOString();
+    db.query('UPDATE memories SET created_at = $c WHERE id = $id').run({ $c: old, $id: oldId });
+    expect(pruneMemories(db, 'b1', { maxAgeDays: 90, nowMs: Date.now() })).toBe(1);
+    // gone from BOTH base and FTS — no orphan row, no error
+    expect(searchMemory(db, 'b1', 'ancient', 5)).toHaveLength(0);
+    expect(searchMemory(db, 'b1', 'fresh', 5)).toHaveLength(1);
+  });
+
+  it('budget cap keeps only the N most-recent and deletes the older excess', () => {
+    db = openMemoryDb(':memory:');
+    for (let i = 0; i < 5; i++) insertMemory(db, { board_id: 'b1', text: `memory number ${i}` });
+    expect(pruneMemories(db, 'b1', { keepTopN: 3 })).toBe(2);
+    const remaining = recentMemories(db, 'b1', 10).map((m) => m.text);
+    expect(remaining).toHaveLength(3);
+    expect(remaining).toContain('memory number 4'); // newest kept
+    expect(remaining).not.toContain('memory number 0'); // oldest pruned
+  });
+
+  it('is board-scoped — pruning one board never touches another', () => {
+    db = openMemoryDb(':memory:');
+    for (let i = 0; i < 5; i++) insertMemory(db, { board_id: 'a', text: `a fact ${i}` });
+    insertMemory(db, { board_id: 'b', text: 'b fact' });
+    pruneMemories(db, 'a', { keepTopN: 2 });
+    expect(searchMemory(db, 'b', 'fact', 10)).toHaveLength(1);
+    expect(recentMemories(db, 'a', 10)).toHaveLength(2);
+  });
+
+  it('creates the (board_id, created_at) recency index for indexed prune/recall sorts', () => {
+    db = openMemoryDb(':memory:');
+    const idx = (db.query('PRAGMA index_list(memories)').all() as Array<{ name: string }>).map((r) => r.name);
+    expect(idx).toContain('idx_memories_board_created');
+  });
+
+  it('leaves no orphan FTS rows — a later insert + search stays consistent', () => {
+    db = openMemoryDb(':memory:');
+    for (let i = 0; i < 4; i++) insertMemory(db, { board_id: 'b1', text: `report ${i}` });
+    pruneMemories(db, 'b1', { keepTopN: 1 });
+    insertMemory(db, { board_id: 'b1', text: 'report new' });
+    expect(searchMemory(db, 'b1', 'report', 10).map((m) => m.text)).toContain('report new');
+  });
+
+  it('rolls back atomically when the base delete fails — no partial FTS loss', () => {
+    db = openMemoryDb(':memory:');
+    for (let i = 0; i < 4; i++) insertMemory(db, { board_id: 'b1', text: `report ${i}` });
+    // FTS delete runs first; force the *base* delete to abort mid-transaction. The whole
+    // transaction must roll back, restoring the already-deleted FTS rows (no orphan/half-loss).
+    db.exec(`CREATE TRIGGER block_del BEFORE DELETE ON memories BEGIN SELECT RAISE(ABORT, 'blocked'); END`);
+    expect(() => pruneMemories(db, 'b1', { keepTopN: 1 })).toThrow();
+    db.exec('DROP TRIGGER block_del');
+    expect(searchMemory(db, 'b1', 'report', 10)).toHaveLength(4);
+  });
+});

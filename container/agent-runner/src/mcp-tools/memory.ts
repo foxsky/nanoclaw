@@ -16,7 +16,13 @@
 import type { Database } from 'bun:sqlite';
 
 import { embedAndInsert, embedText } from '../memory-embed.js';
-import { hybridSearchMemory, type MemoryRow, openMemoryDbEnsuringDir, recentMemories } from '../memory-store.js';
+import {
+  hybridSearchMemory,
+  type MemoryRow,
+  openMemoryDbEnsuringDir,
+  pruneMemories,
+  recentMemories,
+} from '../memory-store.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { err, log, nonEmptyString, ok, requireString } from './util.js';
@@ -66,10 +72,51 @@ export function recallAddendumText(db: Database, boardId: string, limit = RECALL
 }
 
 /**
- * Build the once-per-session memory auto-recall addendum from the host-injected board env.
- * Returns '' when this group is not a TaskFlow board (no DB opened) or has no memories. Called
- * at container start, so the addendum is stable for the session (prompt-cache safe).
+ * Forgetting policy from env (opt-in; both unset = forgetting OFF, current behavior). Positive
+ * values only — a non-positive/garbage value disables that cap rather than wiping the board.
  */
+export function memoryPruneOptions(): { maxAgeDays?: number; keepTopN?: number } {
+  const out: { maxAgeDays?: number; keepTopN?: number } = {};
+  // Floor to integers so a float config (e.g. "500.9") works rather than silently disabling
+  // forgetting at the SQL layer (LIMIT rejects a float → caught fail-soft → no prune).
+  const age = Number(process.env.NANOCLAW_MEMORY_MAX_AGE_DAYS);
+  if (Number.isFinite(age) && age > 0) out.maxAgeDays = Math.floor(age);
+  const keep = Number(process.env.NANOCLAW_MEMORY_KEEP_TOP_N);
+  if (Number.isFinite(keep) && keep > 0) out.keepTopN = Math.floor(keep);
+  return out;
+}
+
+/**
+ * Apply the board's forgetting policy at container start. No-op when this group is not a board,
+ * or when no policy is configured. Best-effort + fail-soft (a DB error degrades to 0, never
+ * aborts boot). Returns the count pruned.
+ */
+export function pruneBoardMemory(): number {
+  const boardId = memoryBoardId();
+  if (!boardId) return 0;
+  const opts = memoryPruneOptions();
+  if (opts.maxAgeDays === undefined && opts.keepTopN === undefined) return 0;
+  let db: Database | null = null;
+  try {
+    db = openBoardMemoryDb();
+    const n = pruneMemories(db, boardId, opts);
+    if (n)
+      log(
+        `pruned ${n} memories for ${boardId} (maxAgeDays=${opts.maxAgeDays ?? '-'}, keepTopN=${opts.keepTopN ?? '-'})`,
+      );
+    return n;
+  } catch (e) {
+    log(`prune skipped: ${e instanceof Error ? e.message : String(e)}`);
+    return 0;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* already failing — nothing useful to do */
+    }
+  }
+}
+
 export function buildMemoryRecallAddendum(): string {
   const boardId = memoryBoardId();
   if (!boardId) return '';
