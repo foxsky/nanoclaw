@@ -11,6 +11,7 @@ import {
   type CaptureMessage,
   extractMemories,
   parseExtractedFacts,
+  precompactHookTimeoutSec,
   shouldCapture,
 } from './memory-capture.js';
 
@@ -149,6 +150,172 @@ describe('extractMemories (Haiku via injected fetch)', () => {
   });
 });
 
+describe('extractMemories backend selection (operator-selectable)', () => {
+  it('defaults to the anthropic backend (existing gateway path) and posts to /v1/messages', async () => {
+    const cap: { url?: string } = {};
+    const f = (async (url: string) => {
+      cap.url = url;
+      return { ok: true, json: async () => ({ content: [{ type: 'text', text: '[]' }] }) };
+    }) as unknown as typeof fetch;
+    await extractMemories(msgs(8), { fetchImpl: f });
+    expect(cap.url).toBe('https://api.anthropic.com/v1/messages');
+  });
+
+  it('ollama backend posts an OpenAI-free /api/chat request (system+user, stream:false, temperature 0) and parses message.content', async () => {
+    const cap: { url?: string; body?: Record<string, unknown> } = {};
+    const f = (async (url: string, init: { body: string }) => {
+      cap.url = url;
+      cap.body = JSON.parse(init.body);
+      return { ok: true, json: async () => ({ message: { content: '["the deploy window is Tuesday"]' } }) };
+    }) as unknown as typeof fetch;
+    const facts = await extractMemories(msgs(8), {
+      backend: 'ollama',
+      ollamaUrl: 'http://ollama.local:11434',
+      model: 'qwen3.6:27b',
+      fetchImpl: f,
+    });
+    expect(cap.url).toBe('http://ollama.local:11434/api/chat');
+    expect(cap.body!.model).toBe('qwen3.6:27b');
+    expect(cap.body!.stream).toBe(false);
+    const messages = cap.body!.messages as Array<{ role: string; content: string }>;
+    expect(messages[0].role).toBe('system');
+    expect(messages[1].role).toBe('user');
+    expect(messages[1].content).toContain('Transcript:');
+    expect((cap.body!.options as { temperature?: number }).temperature).toBe(0);
+    expect(facts).toEqual(['the deploy window is Tuesday']);
+  });
+
+  it('ollama backend strips a <think> reasoning block before parsing (qwen emits one)', async () => {
+    const f = (async () => ({
+      ok: true,
+      json: async () => ({
+        message: { content: '<think>let me find durable facts...</think>\n["ana owns the api board"]' },
+      }),
+    })) as unknown as typeof fetch;
+    const facts = await extractMemories(msgs(8), {
+      backend: 'ollama',
+      ollamaUrl: 'http://x:1',
+      model: 'q',
+      fetchImpl: f,
+    });
+    expect(facts).toEqual(['ana owns the api board']);
+  });
+
+  it('ollama backend fails soft (returns []) on a non-OK response — capture must never break compaction', async () => {
+    const f = (async () => ({ ok: false, status: 500, text: async () => 'boom' })) as unknown as typeof fetch;
+    expect(
+      await extractMemories(msgs(8), { backend: 'ollama', ollamaUrl: 'http://x:1', model: 'q', fetchImpl: f }),
+    ).toEqual([]);
+  });
+
+  it('ollama backend returns [] and makes no call when no model is configured (cannot guess a local model)', async () => {
+    let called = false;
+    const f = (async () => {
+      called = true;
+      return { ok: true, json: async () => ({ message: { content: '["x"]' } }) };
+    }) as unknown as typeof fetch;
+    expect(await extractMemories(msgs(8), { backend: 'ollama', ollamaUrl: 'http://x:1', fetchImpl: f })).toEqual([]);
+    expect(called).toBe(false);
+  });
+
+  it('falls back to anthropic for an invalid deps.backend (JS callers bypass the TS type)', async () => {
+    const cap: { url?: string } = {};
+    const f = (async (url: string) => {
+      cap.url = url;
+      return { ok: true, json: async () => ({ content: [{ type: 'text', text: '[]' }] }) };
+    }) as unknown as typeof fetch;
+    await extractMemories(msgs(8), { backend: 'openai' as unknown as 'anthropic', fetchImpl: f });
+    expect(cap.url).toBe('https://api.anthropic.com/v1/messages');
+  });
+
+  it('adds the ollama host to NO_PROXY so the call is direct, not routed through the gateway proxy', async () => {
+    const saved = { n: process.env.NO_PROXY, l: process.env.no_proxy };
+    const f = (async () => ({
+      ok: true,
+      json: async () => ({ message: { content: '[]' } }),
+    })) as unknown as typeof fetch;
+    try {
+      delete process.env.NO_PROXY;
+      delete process.env.no_proxy;
+      await extractMemories(msgs(8), {
+        backend: 'ollama',
+        ollamaUrl: 'http://my-ollama.lan:11434',
+        model: 'q',
+        fetchImpl: f,
+      });
+      expect(process.env.NO_PROXY).toContain('my-ollama.lan');
+      expect(process.env.no_proxy).toContain('my-ollama.lan');
+    } finally {
+      saved.n === undefined ? delete process.env.NO_PROXY : (process.env.NO_PROXY = saved.n);
+      saved.l === undefined ? delete process.env.no_proxy : (process.env.no_proxy = saved.l);
+    }
+  });
+
+  it('falls back to the anthropic backend (not silently to ollama) for an unrecognized env value', async () => {
+    const saved = process.env.NANOCLAW_MEMORY_EXTRACT_BACKEND;
+    const cap: { url?: string } = {};
+    const f = (async (url: string) => {
+      cap.url = url;
+      return { ok: true, json: async () => ({ content: [{ type: 'text', text: '[]' }] }) };
+    }) as unknown as typeof fetch;
+    try {
+      process.env.NANOCLAW_MEMORY_EXTRACT_BACKEND = 'openai'; // unknown → must not silently route anywhere odd
+      await extractMemories(msgs(8), { fetchImpl: f });
+      expect(cap.url).toBe('https://api.anthropic.com/v1/messages');
+    } finally {
+      if (saved === undefined) delete process.env.NANOCLAW_MEMORY_EXTRACT_BACKEND;
+      else process.env.NANOCLAW_MEMORY_EXTRACT_BACKEND = saved;
+    }
+  });
+
+  it('selects the ollama backend from NANOCLAW_MEMORY_EXTRACT_BACKEND env when deps omit it', async () => {
+    const saved = {
+      b: process.env.NANOCLAW_MEMORY_EXTRACT_BACKEND,
+      u: process.env.NANOCLAW_MEMORY_EXTRACT_URL,
+      m: process.env.NANOCLAW_MEMORY_EXTRACT_MODEL,
+    };
+    const cap: { url?: string } = {};
+    const f = (async (url: string) => {
+      cap.url = url;
+      return { ok: true, json: async () => ({ message: { content: '[]' } }) };
+    }) as unknown as typeof fetch;
+    try {
+      process.env.NANOCLAW_MEMORY_EXTRACT_BACKEND = 'ollama';
+      process.env.NANOCLAW_MEMORY_EXTRACT_URL = 'http://env-host:11434';
+      process.env.NANOCLAW_MEMORY_EXTRACT_MODEL = 'env-model';
+      await extractMemories(msgs(8), { fetchImpl: f });
+      expect(cap.url).toBe('http://env-host:11434/api/chat');
+    } finally {
+      for (const [k, v] of [
+        ['NANOCLAW_MEMORY_EXTRACT_BACKEND', saved.b],
+        ['NANOCLAW_MEMORY_EXTRACT_URL', saved.u],
+        ['NANOCLAW_MEMORY_EXTRACT_MODEL', saved.m],
+      ] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+});
+
+describe('precompactHookTimeoutSec (derived from the extraction budget)', () => {
+  const saved = process.env.NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS;
+    else process.env.NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS = saved;
+  });
+
+  it('defaults to 30s (20s extraction + 10s buffer) so existing behavior is preserved', () => {
+    delete process.env.NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS;
+    expect(precompactHookTimeoutSec()).toBe(30);
+  });
+
+  it('auto-tracks a raised extraction timeout so a slow local model is not killed mid-extraction', () => {
+    process.env.NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS = '120000';
+    expect(precompactHookTimeoutSec()).toBe(130); // 120s + 10s buffer
+  });
+});
+
 describe('captureSessionMemories (end-to-end into the store, injected fetch+db)', () => {
   it('stores extracted facts with auto-capture provenance (capture owns its db handle)', async () => {
     // File-backed: captureSessionMemories opens + closes its own handle, so verify via a
@@ -179,6 +346,23 @@ describe('captureSessionMemories (end-to-end into the store, injected fetch+db)'
       fs.rmSync(file, { force: true });
       fs.rmSync(`${file}-journal`, { force: true });
     }
+  });
+
+  it('returns 0 (never throws) when openDb fails — best-effort must not break compaction', async () => {
+    const okFetch = (async () => ({
+      ok: true,
+      json: async () => ({ content: [{ type: 'text', text: '["a durable fact"]' }] }),
+    })) as unknown as typeof fetch;
+    const n = await captureSessionMemories({
+      messages: msgs(8),
+      boardId: 'b1',
+      sessionId: 's',
+      openDb: () => {
+        throw new Error('disk full');
+      },
+      deps: { fetchImpl: okFetch },
+    });
+    expect(n).toBe(0);
   });
 
   it('is a no-op (0), opening no DB and calling no model, when no board is bound', async () => {

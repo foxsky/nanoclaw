@@ -19,22 +19,30 @@ export interface CaptureMessage {
   content: string;
 }
 
+export type ExtractBackend = 'anthropic' | 'ollama';
+
 export interface ExtractDeps {
   fetchImpl?: typeof fetch;
   proxy?: string;
   model?: string;
   maxFacts?: number;
+  backend?: ExtractBackend;
+  ollamaUrl?: string;
 }
 
 const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
 // Documented Haiku 4.5 id; overridable so an operator can retarget without a code change.
-const DEFAULT_MODEL = process.env.NANOCLAW_MEMORY_EXTRACT_MODEL || 'claude-haiku-4-5-20251001';
+const DEFAULT_HAIKU_MODEL = 'claude-haiku-4-5-20251001';
+const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
 const MAX_FACTS = 5;
 const MAX_FACT_CHARS = 500;
 const MAX_EXCERPT_CHARS = 12000;
 const MIN_MESSAGES = 4;
 const MIN_TOTAL_CHARS = 400;
-// Bound the call so a slow/hung gateway can never stall compaction (the hook awaits this).
+// Bound the extraction call so a slow/hung backend can never stall compaction (the hook awaits
+// this). Operators pointing at a slower local model can raise it via
+// NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS; the PreCompact hook timeout is DERIVED from it
+// (precompactHookTimeoutSec), so it auto-tracks — no second knob to keep in sync.
 const EXTRACT_TIMEOUT_MS = 20000;
 
 function log(msg: string): void {
@@ -89,18 +97,79 @@ export function parseExtractedFacts(text: string, maxFacts = MAX_FACTS): string[
   return out;
 }
 
-/** Extract durable facts from a transcript via a bounded Haiku call. Best-effort → []. */
-export async function extractMemories(messages: CaptureMessage[], deps: ExtractDeps = {}): Promise<string[]> {
-  if (!shouldCapture(messages)) return [];
+function extractTimeoutMs(): number {
+  const n = Number(process.env.NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : EXTRACT_TIMEOUT_MS;
+}
+
+/**
+ * PreCompact hook timeout (seconds) the SDK must give the hook that calls this. It has to
+ * exceed the extraction budget plus room for the transcript archive + the store write, so
+ * capture's own AbortSignal fires first and writes cleanly before the SDK kills the hook.
+ * Derived from the same env (extractTimeoutMs) so raising the extraction timeout for a slow
+ * local model auto-raises the hook budget — the operator never edits two places. Default:
+ * 20s extraction + 10s buffer = 30s.
+ */
+export function precompactHookTimeoutSec(): number {
+  return Math.ceil(extractTimeoutMs() / 1000) + 10;
+}
+
+/** Resolve the extraction backend (deps over env); an unrecognized value fails loud then defaults. */
+function resolveBackend(deps: ExtractDeps): ExtractBackend {
+  const candidate = deps.backend ?? process.env.NANOCLAW_MEMORY_EXTRACT_BACKEND;
+  if (!candidate || candidate === 'anthropic') return 'anthropic';
+  if (candidate === 'ollama') return 'ollama';
+  log(`unknown memory-extract backend "${candidate}" — falling back to anthropic`);
+  return 'anthropic';
+}
+
+/**
+ * The ollama backend is a direct LAN/localhost call. Bun's fetch honors HTTP(S)_PROXY from the
+ * env — and the OneCLI gateway sets those in the container — which would route the call through
+ * the credential gateway (wrong, and fragile if that gateway blocks unknown hosts). Adding the
+ * host to NO_PROXY is the per-host opt-out Bun respects, keeping the call genuinely direct.
+ */
+function ensureHostBypassesProxy(targetUrl: string): void {
+  let host: string;
+  try {
+    host = new URL(targetUrl).hostname;
+  } catch {
+    return;
+  }
+  for (const key of ['NO_PROXY', 'no_proxy'] as const) {
+    const entries = (process.env[key] ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (!entries.includes(host)) {
+      entries.push(host);
+      process.env[key] = entries.join(',');
+    }
+  }
+}
+
+function transcriptUserContent(excerpt: string): string {
+  return `Transcript:\n\n${excerpt}`;
+}
+
+/** Strip a leading `<think>…</think>` reasoning block (qwen-class models emit one). */
+function stripThink(text: string): string {
+  return text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+}
+
+/**
+ * Anthropic / Claude backend via a raw fetch through the OneCLI gateway. Mirrors the SDK's
+ * per-install auth shape so the gateway has a header to REWRITE (it does NOT inject into a
+ * header-less request). Custom endpoint → ANTHROPIC_BASE_URL + Authorization: Bearer (matches
+ * src/providers/claude.ts); default → Anthropic-native x-api-key for api.anthropic.com (the
+ * typed `anthropic` secret rewrites it). The real credential never enters the container.
+ * NOTE: does NOT cover OAuth-subscription installs (CLAUDE_CODE_OAUTH_TOKEN) — use the `ollama`
+ * backend there. Returns raw model text, or '' on any failure (best-effort).
+ */
+async function callAnthropic(excerpt: string, deps: ExtractDeps): Promise<string> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const proxy = deps.proxy ?? process.env.HTTPS_PROXY ?? process.env.https_proxy;
-  const excerpt = buildTranscriptExcerpt(messages);
-
-  // Mirror the SDK's per-install auth shape so the OneCLI gateway has a header to rewrite
-  // (it does NOT inject into a header-less request). Custom endpoint → ANTHROPIC_BASE_URL +
-  // Authorization: Bearer (matches src/providers/claude.ts); default → Anthropic-native
-  // x-api-key for api.anthropic.com (the typed `anthropic` secret rewrites it). The real
-  // credential never enters the container; 'placeholder' is overwritten on the wire.
+  const model = deps.model ?? process.env.NANOCLAW_MEMORY_EXTRACT_MODEL ?? DEFAULT_HAIKU_MODEL;
   const baseUrl = (process.env.ANTHROPIC_BASE_URL || DEFAULT_ANTHROPIC_BASE_URL).replace(/\/+$/, '');
   const headers: Record<string, string> = { 'content-type': 'application/json', 'anthropic-version': '2023-06-01' };
   if (process.env.ANTHROPIC_BASE_URL) {
@@ -108,29 +177,79 @@ export async function extractMemories(messages: CaptureMessage[], deps: ExtractD
   } else {
     headers['x-api-key'] = process.env.ANTHROPIC_API_KEY || 'placeholder';
   }
-
   const init: RequestInit & { proxy?: string } = {
     method: 'POST',
     headers,
     body: JSON.stringify({
-      model: deps.model ?? DEFAULT_MODEL,
+      model,
       max_tokens: 1024,
       system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: `Transcript:\n\n${excerpt}` }],
+      messages: [{ role: 'user', content: transcriptUserContent(excerpt) }],
     }),
-    signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
+    signal: AbortSignal.timeout(extractTimeoutMs()),
   };
   if (proxy) init.proxy = proxy;
 
+  const res = await fetchImpl(`${baseUrl}/v1/messages`, init);
+  if (!res.ok) {
+    log(`anthropic extraction failed (${res.status})`);
+    return '';
+  }
+  const data = (await res.json()) as { content?: Array<{ type?: string; text?: string }> };
+  return data.content?.find((c) => c.type === 'text')?.text ?? data.content?.[0]?.text ?? '';
+}
+
+/**
+ * Ollama backend: a direct (no-gateway, no-auth) /api/chat call to an operator-configured
+ * Ollama host. Suits OAuth-subscription installs and privacy/cost-conscious deployments — no
+ * Anthropic credential is involved. Requires a model (NANOCLAW_MEMORY_EXTRACT_MODEL or
+ * deps.model); there is no sensible default local model to guess. Returns raw model text
+ * (with any <think> block stripped), or '' on any failure (best-effort).
+ */
+async function callOllama(excerpt: string, deps: ExtractDeps): Promise<string> {
+  const model = deps.model ?? process.env.NANOCLAW_MEMORY_EXTRACT_MODEL;
+  if (!model) {
+    log('ollama backend selected but no NANOCLAW_MEMORY_EXTRACT_MODEL set — skipping');
+    return '';
+  }
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const url = (deps.ollamaUrl ?? process.env.NANOCLAW_MEMORY_EXTRACT_URL ?? DEFAULT_OLLAMA_URL).replace(/\/+$/, '');
+  ensureHostBypassesProxy(url);
+  const init: RequestInit = {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      stream: false,
+      think: false,
+      options: { temperature: 0 },
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: transcriptUserContent(excerpt) },
+      ],
+    }),
+    signal: AbortSignal.timeout(extractTimeoutMs()),
+  };
+  const res = await fetchImpl(`${url}/api/chat`, init);
+  if (!res.ok) {
+    log(`ollama extraction failed (${res.status})`);
+    return '';
+  }
+  const data = (await res.json()) as { message?: { content?: string } };
+  return stripThink(data.message?.content ?? '');
+}
+
+/**
+ * Extract durable facts from a transcript via the operator-selected backend. Best-effort → [].
+ * Backend: deps.backend ?? NANOCLAW_MEMORY_EXTRACT_BACKEND (`ollama`) ?? `anthropic` (default).
+ */
+export async function extractMemories(messages: CaptureMessage[], deps: ExtractDeps = {}): Promise<string[]> {
+  if (!shouldCapture(messages)) return [];
+  const excerpt = buildTranscriptExcerpt(messages);
+  const backend = resolveBackend(deps);
   try {
-    const res = await fetchImpl(`${baseUrl}/v1/messages`, init);
-    if (!res.ok) {
-      log(`extraction call failed (${res.status})`);
-      return [];
-    }
-    const data = (await res.json()) as { content?: Array<{ type?: string; text?: string }> };
-    const text = data.content?.find((c) => c.type === 'text')?.text ?? data.content?.[0]?.text ?? '';
-    return parseExtractedFacts(text, deps.maxFacts);
+    const raw = backend === 'ollama' ? await callOllama(excerpt, deps) : await callAnthropic(excerpt, deps);
+    return parseExtractedFacts(raw, deps.maxFacts);
   } catch (e) {
     log(`extraction error: ${e instanceof Error ? e.message : String(e)}`);
     return [];
@@ -155,8 +274,11 @@ export async function captureSessionMemories(args: CaptureArgs): Promise<number>
   if (facts.length === 0) return 0;
 
   const sourceTs = new Date().toISOString();
-  const db = args.openDb();
+  // openDb() inside the try: a failure to open the board DB must return 0, not throw — capture
+  // is best-effort and must never break compaction.
+  let db: Database | null = null;
   try {
+    db = args.openDb();
     let stored = 0;
     for (const fact of facts) {
       // Skip facts already captured for this board — overlapping context across compactions
@@ -177,6 +299,10 @@ export async function captureSessionMemories(args: CaptureArgs): Promise<number>
     log(`store failed: ${e instanceof Error ? e.message : String(e)}`);
     return 0;
   } finally {
-    db.close();
+    try {
+      db?.close();
+    } catch (e) {
+      log(`db close failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 }

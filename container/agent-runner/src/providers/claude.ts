@@ -4,7 +4,7 @@ import path from 'path';
 import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 
 import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
-import { captureSessionMemories } from '../memory-capture.js';
+import { captureSessionMemories, precompactHookTimeoutSec } from '../memory-capture.js';
 import { openMemoryDbEnsuringDir } from '../memory-store.js';
 import { appendToolEvents, extractToolEvents } from './claude-tool-capture.js';
 import { registerProvider } from './provider-registry.js';
@@ -401,9 +401,10 @@ export class ClaudeProvider implements AgentProvider {
           PreToolUse: [{ hooks: [preToolUseHook] }],
           PostToolUse: [{ hooks: [postToolUseHook] }],
           PostToolUseFailure: [{ hooks: [postToolUseHook] }],
-          // timeout (s) > the 20s extraction fetch budget, so capture's own AbortSignal
-          // fires first and writes cleanly before the SDK could kill the hook.
-          PreCompact: [{ timeout: 30, hooks: [createPreCompactHook(this.assistantName)] }],
+          // Timeout (s) is DERIVED from the extraction budget (+ buffer) so capture's own
+          // AbortSignal fires first and writes cleanly before the SDK could kill the hook —
+          // raising NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS for a slow local model lifts this too.
+          PreCompact: [{ timeout: precompactHookTimeoutSec(), hooks: [createPreCompactHook(this.assistantName)] }],
         },
       },
     });
