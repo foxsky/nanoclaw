@@ -13,6 +13,7 @@
 import type { Database } from 'bun:sqlite';
 
 import { insertMemory, memoryExists } from './memory-store.js';
+import { ensureHostBypassesProxy } from './ollama-util.js';
 
 export interface CaptureMessage {
   role: string;
@@ -121,31 +122,6 @@ function resolveBackend(deps: ExtractDeps): ExtractBackend {
   if (candidate === 'ollama') return 'ollama';
   log(`unknown memory-extract backend "${candidate}" — falling back to anthropic`);
   return 'anthropic';
-}
-
-/**
- * The ollama backend is a direct LAN/localhost call. Bun's fetch honors HTTP(S)_PROXY from the
- * env — and the OneCLI gateway sets those in the container — which would route the call through
- * the credential gateway (wrong, and fragile if that gateway blocks unknown hosts). Adding the
- * host to NO_PROXY is the per-host opt-out Bun respects, keeping the call genuinely direct.
- */
-function ensureHostBypassesProxy(targetUrl: string): void {
-  let host: string;
-  try {
-    host = new URL(targetUrl).hostname;
-  } catch {
-    return;
-  }
-  for (const key of ['NO_PROXY', 'no_proxy'] as const) {
-    const entries = (process.env[key] ?? '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (!entries.includes(host)) {
-      entries.push(host);
-      process.env[key] = entries.join(',');
-    }
-  }
 }
 
 function transcriptUserContent(excerpt: string): string {
