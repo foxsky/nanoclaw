@@ -23,6 +23,7 @@ import './taskflow-api-notes.js';
 import './taskflow-api-board.js';
 import './rename-board-person.js';
 import './taskflow-api-comment.js';
+import './memory.js';
 import { startMcpServer } from './server.js';
 
 function log(msg: string): void {
