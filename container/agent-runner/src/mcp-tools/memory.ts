@@ -26,6 +26,9 @@ const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;
 // How many recent memories to prime the session system prompt with (once-per-session auto-recall).
 const RECALL_ADDENDUM_LIMIT = 10;
+// Per-memory preview cap in the addendum so one large memory can't bloat every session prompt;
+// the full text is always available via memory_search. Bounds the section to ~10×this.
+const RECALL_ADDENDUM_CHARS = 300;
 
 /** The host-injected board id, or null when this group is not a TaskFlow board. */
 function memoryBoardId(): string | null {
@@ -51,7 +54,9 @@ export function formatMemories(rows: MemoryRow[]): string {
  * Returns '' when the board has no memories yet, so the prompt is untouched on a fresh board.
  */
 export function recallAddendumText(db: Database, boardId: string, limit = RECALL_ADDENDUM_LIMIT): string {
-  const recent = recentMemories(db, boardId, limit);
+  const recent = recentMemories(db, boardId, limit).map((m) =>
+    m.text.length > RECALL_ADDENDUM_CHARS ? { ...m, text: `${m.text.slice(0, RECALL_ADDENDUM_CHARS)}…` } : m,
+  );
   if (recent.length === 0) return '';
   return (
     `\n\n## Remembered for this board\n` +

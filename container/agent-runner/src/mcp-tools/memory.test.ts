@@ -141,8 +141,16 @@ describe('recallAddendumText (once-per-session auto-recall)', () => {
     expect(recallAddendumText(db, 'b1')).toBe('');
   });
 
+  it('truncates an oversized memory so one entry cannot bloat every session prompt', async () => {
+    db = openMemoryDb(':memory:');
+    await noteMemory(db, 'b1', { text: 'X'.repeat(1000) });
+    const out = recallAddendumText(db, 'b1');
+    expect(out).toContain('…');
+    expect(out).not.toContain('X'.repeat(400)); // capped well under the original 1000
+  });
+
   it('buildMemoryRecallAddendum returns empty with no board env (opens no DB)', () => {
     delete process.env[ENV_KEY];
     expect(buildMemoryRecallAddendum()).toBe('');
   });
-})
+});
