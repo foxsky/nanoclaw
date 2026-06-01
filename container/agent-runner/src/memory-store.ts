@@ -126,6 +126,32 @@ export function sanitizeFtsQuery(query: string): string {
   return terms.map((t) => `"${t}"`).join(' ');
 }
 
+/**
+ * Reciprocal Rank Fusion of N ranked id-lists (each ordered best-first). Fuses on RANK, so
+ * lists produced by different scorers — FTS5 bm25 vs cosine similarity — combine without any
+ * score normalization: score(id) = Σ 1/(k + rank) over the lists containing it (rank 1-based),
+ * higher = more relevant. `k` (default 60, the standard) damps the contribution of deep ranks.
+ * A single list degrades to its own order; a missing list simply contributes nothing. Ties keep
+ * first-seen order (Array.sort is stable), so the keyword list wins coin-flips by appearing first.
+ */
+export function fuseByRrf(
+  rankedLists: string[][],
+  opts: { k?: number; limit?: number } = {},
+): Array<{ id: string; score: number }> {
+  const k = opts.k ?? 60;
+  const scores = new Map<string, number>();
+  const seen: string[] = [];
+  for (const list of rankedLists) {
+    list.forEach((id, i) => {
+      if (!scores.has(id)) seen.push(id);
+      scores.set(id, (scores.get(id) ?? 0) + 1 / (k + i + 1));
+    });
+  }
+  const fused = seen.map((id) => ({ id, score: scores.get(id) as number }));
+  fused.sort((a, b) => b.score - a.score);
+  return opts.limit === undefined ? fused : fused.slice(0, opts.limit);
+}
+
 export function searchMemory(db: Database, boardId: string, query: string, limit = 5): MemoryRow[] {
   const match = sanitizeFtsQuery(query);
   if (!match) return [];

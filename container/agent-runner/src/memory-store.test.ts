@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'bun:test';
 
-import { insertMemory, openMemoryDb, sanitizeFtsQuery, searchMemory } from './memory-store.js';
+import { fuseByRrf, insertMemory, openMemoryDb, sanitizeFtsQuery, searchMemory } from './memory-store.js';
 
 let db: ReturnType<typeof openMemoryDb> | null = null;
 afterEach(() => {
@@ -94,5 +94,41 @@ describe('durability + integrity (file-backed)', () => {
     // The failed insert must not have written a half-row into the FTS index.
     expect(searchMemory(db, 'b1', 'second', 5)).toHaveLength(0);
     expect(searchMemory(db, 'b1', 'first', 5)).toHaveLength(1);
+  });
+});
+
+describe('fuseByRrf (hybrid FTS5 + vector rank fusion)', () => {
+  // RRF fuses on RANK, not raw score, so FTS5 bm25 and cosine never need to be on the
+  // same scale — that scale-independence is the whole reason to use it here.
+  it('ranks an item present in BOTH lists above one that tops a single list', () => {
+    // x is rank-1 in the keyword list only; y is rank-2 keyword AND rank-1 vector.
+    // Cross-list agreement must win — that is the point of hybrid fusion.
+    const fused = fuseByRrf([['x', 'y'], ['y']]);
+    expect(fused[0].id).toBe('y');
+    expect(fused.map((r) => r.id)).toContain('x');
+  });
+
+  it('orders by summed reciprocal rank across lists', () => {
+    const fused = fuseByRrf([
+      ['a', 'b', 'c'],
+      ['a', 'b', 'd'],
+    ]);
+    const ids = fused.map((r) => r.id);
+    expect(ids[0]).toBe('a'); // rank-1 in both
+    expect(ids[1]).toBe('b'); // rank-2 in both
+    expect(ids.slice(2).sort()).toEqual(['c', 'd']); // each in one list only
+  });
+
+  it('caps results to limit', () => {
+    expect(fuseByRrf([['a', 'b', 'c', 'd']], { limit: 2 })).toHaveLength(2);
+  });
+
+  it('returns [] for no lists / all-empty lists', () => {
+    expect(fuseByRrf([])).toEqual([]);
+    expect(fuseByRrf([[], []])).toEqual([]);
+  });
+
+  it('degrades to the single provided list order (FTS5-only fallback when no vectors)', () => {
+    expect(fuseByRrf([['a', 'b', 'c']]).map((r) => r.id)).toEqual(['a', 'b', 'c']);
   });
 });
