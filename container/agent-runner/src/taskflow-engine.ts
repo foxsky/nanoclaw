@@ -7164,7 +7164,9 @@ export class TaskflowEngine {
   /* ---------------------------------------------------------------- */
 
   private formatCompactBoard(completedCount: number, type: 'digest' | 'weekly'): string {
-    const todayStr = today();
+    // Board-local so the digest/weekly header date stays coherent with the report's board-local
+    // data.date and its overdue/due buckets (Codex gpt-5.5: a UTC header recreated the rollover mismatch).
+    const todayStr = this.boardToday();
     const [y, m, d] = todayStr.split('-');
     const { topLevel, taskCount, projectCount, subtaskCount } = this.fetchActiveTasks();
 
@@ -10636,10 +10638,13 @@ export class TaskflowEngine {
       /* --- Completion streak: consecutive days with at least one completion --- */
       let completionStreak = 0;
       if (isDigestOrWeekly) {
-        const checkDate = new Date();
+        // UTC-day buckets (task_history.at is a UTC timestamp), anchored on the same replay-aware
+        // todayUtc as completed_today and stepped in UTC days — so the streak stays consistent with
+        // the completed_today bucket and honors NANOCLAW_PHASE_REPLAY_NOW (Codex gpt-5.5).
+        const checkDate = new Date(todayUtc + 'T00:00:00Z');
         // If no completions today yet, start from yesterday
         if (completedToday.length === 0) {
-          checkDate.setDate(checkDate.getDate() - 1);
+          checkDate.setUTCDate(checkDate.getUTCDate() - 1);
         }
         for (let i = 0; i < 30; i++) {
           const dayStr = checkDate.toISOString().slice(0, 10);
@@ -10652,7 +10657,7 @@ export class TaskflowEngine {
             .get(this.boardId, `${dayStr}%`) as { cnt: number };
           if (dayRow.cnt > 0) {
             completionStreak++;
-            checkDate.setDate(checkDate.getDate() - 1);
+            checkDate.setUTCDate(checkDate.getUTCDate() - 1);
           } else {
             break;
           }
@@ -10662,8 +10667,8 @@ export class TaskflowEngine {
       /* --- Yesterday's completions (for daily comparison) --- */
       let completedYesterdayCount = 0;
       if (isDigestOrWeekly) {
-        const yesterday = new Date();
-        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterday = new Date(todayUtc + 'T00:00:00Z');
+        yesterday.setUTCDate(yesterday.getUTCDate() - 1);
         const yesterdayStr = yesterday.toISOString().slice(0, 10);
         const ydRow = this.db
           .prepare(

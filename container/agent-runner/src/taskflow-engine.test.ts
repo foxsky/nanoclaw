@@ -8253,6 +8253,9 @@ describe('TaskflowEngine — board-local today (#387 Item 1)', () => {
       // matches. If board-local todayStr (2026-06-01) were wrongly reused, both would be 0.
       expect(r.data!.changes_today_count).toBeGreaterThan(0);
       expect(r.data!.completed_today.map((t) => t.id)).toContain('T-LOCAL-TODAY');
+      // The rendered header date is board-local (01/06), coherent with the body — not the UTC 02/06.
+      expect(r.data!.formatted_report).toContain('01/06/2026');
+      expect(r.data!.formatted_report).not.toContain('02/06/2026');
     });
   });
 
