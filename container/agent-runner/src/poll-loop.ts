@@ -3,7 +3,7 @@ import fs from 'fs';
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
 import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
-import { getInboundDb, getOutboundDb, getTaskflowDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
+import { getInboundDb, openInboundDb, getOutboundDb, getTaskflowDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
 import {
   clearCurrentInReplyTo,
@@ -34,6 +34,8 @@ import { flushPendingCreateCard } from './mcp-tools/mutation-confirmation.js';
 import { appendToolEvents, type ToolEvent } from './providers/claude-tool-capture.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 import { TaskflowEngine, normalizePhone, type ReassignResult } from './taskflow-engine.js';
+import { applyRunnerGate, isTfRunnerRow } from './runner-gate-apply.js';
+import { TIMEZONE } from './timezone.js';
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
@@ -3851,6 +3853,37 @@ export interface PollLoopConfig {
 }
 
 /**
+ * Container-side scheduled-runner gate — the warm-container half of the host sweep gate
+ * (src/modules/taskflow/runner-gate-apply.ts). For a TaskFlow session, suppress any due [TF-*]
+ * runner whose board state says it should stay silent: mark it completed (so the host syncs the ack
+ * and handleRecurrence advances it) and drop it from the batch before this warm container can post
+ * it. Without this, a container that polls every second claims the runner before the 60s host sweep
+ * gets to gate it. Cheap no-op when no runner is due (one `.some` scan, no DB). Fail-open: a gating
+ * error must never silence a board — the runner just fires as it would have without the gate.
+ */
+export function gateScheduledRunners(messages: MessageInRow[]): MessageInRow[] {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId || !messages.some(isTfRunnerRow)) return messages;
+  // Fresh inbound connection (NOT the cached getInboundDb singleton): the gate reads the host's
+  // continuously-written messages_in for the `interactions` signal, and the cached view goes stale
+  // across the mount (connection.ts) — a stale read would miss a recent chat and false-suppress an
+  // Active board. openInboundDb() is exactly how getPendingMessages reads the same table.
+  const inbound = openInboundDb();
+  try {
+    return applyRunnerGate(
+      messages,
+      { taskflowDb: getTaskflowDb(), inboundDb: inbound, boardId, now: new Date(), timeZone: TIMEZONE },
+      markCompleted,
+    );
+  } catch (err) {
+    log(`Runner gating skipped (fail-open): ${err instanceof Error ? err.message : String(err)}`);
+    return messages;
+  } finally {
+    inbound.close();
+  }
+}
+
+/**
  * Main poll loop. Runs indefinitely until the process is killed.
  *
  * 1. Poll messages_in for pending rows
@@ -3885,8 +3918,11 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // batch's `writeMessageOut` (Codex#4 stale-cross-batch finding).
     clearCurrentWebOrigin();
     // Skip system messages — they're responses for MCP tools (e.g., ask_user_question)
-    const messages = getPendingMessages(isFirstPoll).filter((m) => m.kind !== 'system');
+    let messages = getPendingMessages(isFirstPoll).filter((m) => m.kind !== 'system');
     isFirstPoll = false;
+    // Warm-container mirror of the host runner gate: drop due [TF-*] runners the board's state says
+    // should stay silent before we can post them (see gateScheduledRunners above / runner-gate.ts).
+    messages = gateScheduledRunners(messages);
     pollCount++;
 
     // Periodic heartbeat so we know the loop is alive
@@ -4491,7 +4527,11 @@ async function processQuery(
         // everything. Filtering on thread_id here caused deadlocks when the
         // initial batch and follow-ups had mismatched thread_ids (e.g. a
         // host-generated welcome trigger with null thread vs a Discord DM reply).
-        const newMessages = pending.filter((m) => m.kind !== 'system');
+        // Gate scheduled runners here too: a due [TF-*] runner can land mid-query (the host inserts
+        // recurring rows on their own cron, independent of this active query), and without the gate
+        // it would be pushed into the stream — the warm-container race, just shifted to the follow-up
+        // poll. Mirror of the outer-loop gate above.
+        const newMessages = gateScheduledRunners(pending.filter((m) => m.kind !== 'system'));
         if (newMessages.length === 0) return;
         if (!hasWakeTrigger(newMessages)) return;
 

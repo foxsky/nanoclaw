@@ -1,6 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
-import { initTestSessionDb, closeSessionDb, closeTaskflowDb, getInboundDb, getOutboundDb } from './db/connection.js';
+import {
+  initTestSessionDb,
+  initTestTaskflowDb,
+  closeSessionDb,
+  closeTaskflowDb,
+  getInboundDb,
+  getOutboundDb,
+  getTaskflowDb,
+} from './db/connection.js';
 import {
   clearCurrentWebOrigin,
   crossesWebChatBoundary,
@@ -12,6 +20,7 @@ import { formatMessages, extractRouting } from './formatter.js';
 import { MockProvider } from './providers/mock.js';
 import {
   hasWakeTrigger,
+  gateScheduledRunners,
   buildPersonRegisteredAck,
   taskflowBareTaskDetailsCommand,
   taskflowBulkApprovalCommand,
@@ -233,6 +242,71 @@ describe('accumulate gate (trigger column)', () => {
       .run();
     const [msg] = getPendingMessages();
     expect(msg.trigger).toBe(1);
+  });
+});
+
+describe('gateScheduledRunners (warm-container runner gate)', () => {
+  // The warm container must drop a due [TF-*] runner whose board state says stay-silent BEFORE
+  // posting it, mirroring the host sweep gate (closing the warm-container race). Both poll paths
+  // (outer loop + active-query follow-up) apply this to the same filtered batch, so this exercises
+  // the exported wrapper end-to-end: env guard → openInboundDb/getTaskflowDb → markCompleted.
+  const STANDUP = '0 8 * * 1-5';
+  function insertRunner(id: string, tag: string, cron: string) {
+    getInboundDb()
+      .prepare(
+        `INSERT INTO messages_in (id, kind, timestamp, status, trigger, recurrence, content)
+         VALUES (?, 'task', datetime('now'), 'pending', 1, ?, ?)`,
+      )
+      .run(id, cron, JSON.stringify({ prompt: `[${tag}] do the thing`, script: null }));
+  }
+  function ackStatus(id: string): string | undefined {
+    return (
+      getOutboundDb().prepare('SELECT status FROM processing_ack WHERE message_id = ?').get(id) as
+        | { status: string }
+        | null
+    )?.status;
+  }
+  const batch = () => gateScheduledRunners(getPendingMessages().filter((m) => m.kind !== 'system'));
+
+  beforeEach(() => {
+    initTestTaskflowDb();
+    getTaskflowDb().exec(
+      `CREATE TABLE tasks (id TEXT, board_id TEXT, column TEXT, due_date TEXT, assignee TEXT);
+       CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT, at TEXT);
+       CREATE TABLE boards (id TEXT, parent_board_id TEXT);
+       CREATE TABLE board_people (board_id TEXT, person_id TEXT);`,
+    );
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'b1';
+  });
+
+  it('Idle board: drops the due standup runner and marks it completed (host then advances recurrence)', () => {
+    insertRunner('s', 'TF-STANDUP', STANDUP);
+    const kept = batch();
+    expect(kept.find((m) => m.id === 's')).toBeUndefined(); // suppressed → never posted
+    expect(ackStatus('s')).toBe('completed'); // ack written so the sweep advances the recurrence
+  });
+
+  it('Active board: keeps the runner when a member chatted since the last run', () => {
+    insertRunner('s', 'TF-STANDUP', STANDUP);
+    insertMessage('chat-1', 'chat', { sender: 'A', text: 'morning' }, { trigger: 1 }); // interaction → Active
+    const kept = batch();
+    expect(kept.find((m) => m.id === 's')).toBeDefined(); // fires → stays in batch
+    expect(ackStatus('s')).toBeUndefined(); // gate never completed it
+  });
+
+  it('no board id: passes the runner through untouched (non-TaskFlow session)', () => {
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    insertRunner('s', 'TF-STANDUP', STANDUP);
+    const kept = batch();
+    expect(kept.find((m) => m.id === 's')).toBeDefined();
+    expect(ackStatus('s')).toBeUndefined();
+  });
+
+  it('never touches a non-runner chat message', () => {
+    insertMessage('chat-1', 'chat', { sender: 'A', text: 'hi' }, { trigger: 1 });
+    const kept = batch();
+    expect(kept.find((m) => m.id === 'chat-1')).toBeDefined();
+    expect(ackStatus('chat-1')).toBeUndefined();
   });
 });
 
