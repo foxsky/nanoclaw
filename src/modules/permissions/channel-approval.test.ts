@@ -113,13 +113,14 @@ function groupMention(platformId: string, text = '@bot hello') {
   return {
     channelType: 'telegram',
     platformId,
-    threadId: 'thread-1', // non-null → is_group=true per channel-approval default-picker logic
+    threadId: 'thread-1',
     message: {
       id: `msg-${Math.random().toString(36).slice(2, 8)}`,
       kind: 'chat' as const,
       content: JSON.stringify({ senderId: 'caller', senderName: 'Caller', text }),
       timestamp: now(),
       isMention: true,
+      isGroup: true, // real adapters set this on group messages; router persists is_group from it
     },
   };
 }
