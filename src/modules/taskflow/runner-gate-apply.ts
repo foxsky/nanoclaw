@@ -31,6 +31,13 @@ function jobFromContent(content: string): RunnerJob | null {
   return null;
 }
 
+/** True iff the envelope carries an EXACT TaskFlow runner tag ([TF-STANDUP|DIGEST|REVIEW]).
+ *  Used by the sweep's recurrence resolver to scope per-board TZ to runner rows only — generic
+ *  user schedule_task rows must keep the global zone. Single-sources the tag list via jobFromContent. */
+export function isTfRunnerContent(content: string): boolean {
+  return jobFromContent(content) !== null;
+}
+
 export interface GateRunnersOpts {
   boardId: string;
   now: Date;

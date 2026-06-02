@@ -13,6 +13,7 @@ import path from 'path';
 
 import { DATA_DIR } from './config.js';
 import { normalizePhone } from './phone.js';
+import { isValidTimezone } from './timezone.js';
 
 const TASKFLOW_SCHEMA = `
 CREATE TABLE IF NOT EXISTS boards (
@@ -800,6 +801,42 @@ if (isMain) {
  * The group folder (e.g. "sec-secti") is not the board ID — we need to look up
  * the actual board ID (e.g. "board-sec-taskflow") from the boards table.
  */
+/**
+ * The board's IANA timezone for an agent-group folder, or undefined if it can't be determined (no
+ * board / missing or invalid timezone). ONE read-only open of taskflow.db that mirrors
+ * resolveTaskflowBoardId's board lookup (direct group_folder, then board_groups fallback) so the
+ * sweep doesn't open twice per row. Invalid zone → undefined so the caller falls back to the global
+ * TIMEZONE instead of feeding cron-parser a bad tz (which would throw and wedge the recurrence row).
+ */
+export function resolveBoardTimezone(groupFolder: string): string | undefined {
+  const dbPath = path.join(DATA_DIR, 'taskflow', 'taskflow.db');
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    db.pragma('busy_timeout = 5000');
+    const direct = db.prepare(`SELECT id FROM boards WHERE group_folder = ? LIMIT 1`).get(groupFolder) as
+      | { id: string }
+      | undefined;
+    const boardId =
+      direct?.id ??
+      (
+        db
+          .prepare(`SELECT board_id FROM board_groups WHERE group_folder = ? ORDER BY board_id LIMIT 1`)
+          .get(groupFolder) as { board_id: string } | undefined
+      )?.board_id;
+    if (!boardId) return undefined;
+    const row = db.prepare(`SELECT timezone FROM board_runtime_config WHERE board_id = ?`).get(boardId) as
+      | { timezone: string | null }
+      | undefined;
+    const tz = row?.timezone ?? undefined;
+    return tz && isValidTimezone(tz) ? tz : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    db?.close();
+  }
+}
+
 export function resolveTaskflowBoardId(
   groupFolder: string,
   taskflowManaged: boolean,

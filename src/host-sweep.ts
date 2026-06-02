@@ -44,6 +44,7 @@ import {
 } from './db/session-db.js';
 import { log } from './log.js';
 import { openInboundDb, openOutboundDb, openOutboundDbRw, inboundDbPath, heartbeatPath } from './session-manager.js';
+import { resolveBoardTimezone } from './taskflow-db.js';
 import { isContainerRunning, killContainer, wakeContainer } from './container-runner.js';
 import type { Session } from './types.js';
 
@@ -206,10 +207,23 @@ async function sweepSession(session: Session): Promise<void> {
       resetStuckProcessingRows(inDb, outDb, session, 'container not running');
     }
 
-    // 5. Recurrence fanout for completed recurring tasks.
+    // 5. Recurrence fanout for completed recurring tasks. TaskFlow runner rows advance in the
+    // board's OWN timezone (Option A per-board TZ) so fire-time tracks the same zone the gate judges
+    // in; generic user schedule_task rows keep the global TIMEZONE. The board TZ is resolved at most
+    // once per tick — and only if a TF runner actually recurs (memoized; most ticks advance nothing).
     // MODULE-HOOK:scheduling-recurrence:start
     const { handleRecurrence } = await import('./modules/scheduling/recurrence.js');
-    await handleRecurrence(inDb, session);
+    const { isTfRunnerContent } = await import('./modules/taskflow/runner-gate-apply.js');
+    let boardTz: string | undefined;
+    let boardTzResolved = false;
+    await handleRecurrence(inDb, session, (msg) => {
+      if (msg.kind !== 'task' || !isTfRunnerContent(msg.content)) return undefined;
+      if (!boardTzResolved) {
+        boardTz = resolveBoardTimezone(agentGroup.folder);
+        boardTzResolved = true;
+      }
+      return boardTz;
+    });
     // MODULE-HOOK:scheduling-recurrence:end
   } finally {
     inDb.close();
