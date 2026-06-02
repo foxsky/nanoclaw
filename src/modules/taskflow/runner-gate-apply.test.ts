@@ -113,16 +113,16 @@ describe('gateScheduledRunners', () => {
     expect(status(ib, 's')).toBe('pending');
   });
 
-  it('per-board-TZ guard: a board in a different timezone than the gate is not gated (all runners fire)', () => {
+  it('gates a foreign-timezone board in its OWN timezone (no guard skip)', () => {
     const { ib, tf } = dbs();
-    addRunner(ib, 's', 'TF-STANDUP', STANDUP); // idle board → would normally be suppressed
-    // ...but the board is configured in a foreign timezone. The runner FIRE time is scheduled in the
-    // deploy TZ (scheduleRunners + handleRecurrence), so a board in another zone can only be gated
-    // once full per-board TZ ships; until then it must fire as pre-gate, never judged in the wrong day.
     tf.exec('CREATE TABLE board_runtime_config (board_id TEXT, timezone TEXT)');
     tf.prepare("INSERT INTO board_runtime_config (board_id, timezone) VALUES ('b1','America/New_York')").run();
-    const out = gateScheduledRunners(ib, tf, opts); // opts.timeZone = America/Fortaleza
-    expect(out).toEqual([]); // guard short-circuits before any gating decision
-    expect(status(ib, 's')).toBe('pending'); // runner left to fire
+    tf.prepare("INSERT INTO tasks (id, board_id, column) VALUES ('T1','b1','waiting')").run(); // stale: pending, no interactions
+    addRunner(ib, 's', 'TF-STANDUP', STANDUP);
+    // 2026-06-01T03:30Z = Mon 00:30 in Fortaleza but Sun 23:30 in New York. Gated in the board's own
+    // zone (NY) the stale standup must NOT fire (Sunday); gated in the global tz it wrongly would
+    // (Monday). Proves the gate judges in board-local time and the guard is gone.
+    gateScheduledRunners(ib, tf, { boardId: 'b1', now: new Date('2026-06-01T03:30:00Z'), timeZone: TZ });
+    expect(status(ib, 's')).toBe('completed'); // suppressed in NY (Sunday) → marked completed
   });
 });

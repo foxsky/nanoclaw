@@ -16,6 +16,7 @@ import path from 'path';
 
 import { DATA_DIR, TIMEZONE } from '../../config.js';
 import { log } from '../../log.js';
+import { isValidTimezone } from '../../timezone.js';
 import { resolveTaskflowBoardId } from '../../taskflow-db.js';
 import { computeRunnerState } from './runner-state.js';
 import { decideRunnerGate, type RunnerJob } from './runner-gate.js';
@@ -58,15 +59,17 @@ interface DueRunnerRow {
 
 /**
  * The board's configured timezone, or undefined if it can't be determined (missing table/row).
- * Undefined → assume the board shares the gate's zone (the case for every board today) and gate
- * normally; a defined value that differs trips the per-board-TZ guard below.
+ * Undefined → gate falls back to the global zone (the case for every board today).
  */
 function boardTimezone(taskflowDb: Database.Database, boardId: string): string | undefined {
   try {
     const row = taskflowDb.prepare('SELECT timezone FROM board_runtime_config WHERE board_id = ?').get(boardId) as
       | { timezone: string | null }
       | undefined;
-    return row?.timezone ?? undefined;
+    const tz = row?.timezone ?? undefined;
+    // Validate so a corrupt board_runtime_config.timezone falls back to the gate's zone (consistent
+    // with provision/recurrence) instead of throwing into cron-parser and fail-opening the runner.
+    return tz && isValidTimezone(tz) ? tz : undefined;
   } catch {
     return undefined;
   }
@@ -77,26 +80,15 @@ export function gateScheduledRunners(
   taskflowDb: Database.Database,
   opts: GateRunnersOpts,
 ): GateOutcome[] {
-  // Per-board-TZ guard. The runner's FIRE time is scheduled in the deploy TZ (scheduleRunners +
-  // handleRecurrence both parse the local cron in the global TIMEZONE), so the gate can only judge
-  // Monday/due-today/since-last-run correctly for boards in that same zone. For a board configured
-  // in a different timezone, skip gating entirely — let every runner fire as it would pre-gate —
-  // rather than suppress it against the wrong calendar day. (Full per-board gating is deferred: it
-  // needs the cron itself to move to the board's zone; see the per-board-TZ handoff.)
-  const boardTz = boardTimezone(taskflowDb, opts.boardId);
-  if (boardTz && boardTz !== opts.timeZone) {
-    log.warn('Runner gating skipped — board timezone differs from gate timezone (runners fire ungated)', {
-      boardId: opts.boardId,
-      boardTz,
-      gateTz: opts.timeZone,
-    });
-    return [];
-  }
+  // Judge each runner in the board's OWN timezone (Option A per-board TZ), falling back to the gate's
+  // zone when the board has none (every board today). Fire time is scheduled in the same board zone
+  // (provision + handleRecurrence), so the gate window and the actual fire instant agree.
+  const tz = boardTimezone(taskflowDb, opts.boardId) ?? opts.timeZone;
 
   const due = inDb
     .prepare(
       `SELECT id, content, recurrence FROM messages_in
-       WHERE status = 'pending' AND trigger = 1 AND recurrence IS NOT NULL
+       WHERE status = 'pending' AND trigger = 1 AND kind = 'task' AND recurrence IS NOT NULL
          AND (process_after IS NULL OR datetime(process_after) <= datetime('now'))
          AND content LIKE '%[TF-%'`,
     )
@@ -114,7 +106,7 @@ export function gateScheduledRunners(
       boardId: opts.boardId,
       cron: row.recurrence,
       now: opts.now,
-      timeZone: opts.timeZone,
+      timeZone: tz,
     });
     const { fire } = decideRunnerGate(job, state);
     if (!fire) complete.run(row.id);
@@ -124,7 +116,7 @@ export function gateScheduledRunners(
 }
 
 const DUE_TF_RUNNER_COUNT = `SELECT COUNT(*) n FROM messages_in
-   WHERE status = 'pending' AND trigger = 1 AND recurrence IS NOT NULL
+   WHERE status = 'pending' AND trigger = 1 AND kind = 'task' AND recurrence IS NOT NULL
      AND (process_after IS NULL OR datetime(process_after) <= datetime('now'))
      AND content LIKE '%[TF-%'`;
 

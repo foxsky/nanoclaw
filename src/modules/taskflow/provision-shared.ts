@@ -355,8 +355,8 @@ export function scheduleRunners(params: ScheduleRunnersParams): void {
   // Interpret the local crons in the board's own zone (Option A per-board TZ). An invalid/garbage
   // board timezone falls back to the global TIMEZONE so a corrupt board_runtime_config never leaves
   // a board with NO runners (nextCronRun would otherwise throw on a bad zone); a Fortaleza board is
-  // the no-op default. (Gate + handleRecurrence adopt the same board zone in the remaining per-board
-  // -TZ phases; until then the fanout still uses the global zone — fine while every board is Fortaleza.)
+  // the no-op default. handleRecurrence (the fanout) and the runner gate now parse the same local
+  // cron in this same zone, so a runner's fire time and the gate's window stay aligned.
   const tz = params.boardTimezone && isValidTimezone(params.boardTimezone) ? params.boardTimezone : TIMEZONE;
   const runners = [
     { prompt: STANDUP_PROMPT, cron: standupCronLocal },

@@ -18,16 +18,13 @@ import type { Database } from 'bun:sqlite';
 import type { MessageInRow } from './db/messages-in.js';
 import { computeRunnerState } from './runner-state.js';
 import { decideRunnerGate, type RunnerJob } from './runner-gate.js';
+import { isValidTimezone } from './timezone.js';
 
 const JOB_TAGS: ReadonlyArray<[string, RunnerJob]> = [
   ['[TF-STANDUP]', 'standup'],
   ['[TF-DIGEST]', 'digest'],
   ['[TF-REVIEW]', 'review'],
 ];
-
-function log(msg: string): void {
-  console.error(`[runner-gate] ${msg}`);
-}
 
 function jobFromContent(content: string): RunnerJob | null {
   for (const [tag, job] of JOB_TAGS) if (content.includes(tag)) return job;
@@ -43,7 +40,10 @@ function boardTimezone(taskflowDb: Database, boardId: string): string | undefine
     const row = taskflowDb.prepare('SELECT timezone FROM board_runtime_config WHERE board_id = ?').get(boardId) as
       | { timezone: string | null }
       | null;
-    return row?.timezone ?? undefined;
+    const tz = row?.timezone ?? undefined;
+    // Validate so a corrupt board_runtime_config.timezone falls back to the gate's zone (consistent
+    // with provision/recurrence) instead of throwing into cron-parser and fail-opening the runner.
+    return tz && isValidTimezone(tz) ? tz : undefined;
   } catch {
     return undefined;
   }
@@ -70,15 +70,10 @@ export interface GateOutcome {
 
 /** Per-runner gate decisions for the [TF-*] runners in `messages` (non-runner rows are ignored). */
 export function gateRunnerMessages(messages: MessageInRow[], opts: ContainerGateOpts): GateOutcome[] {
-  // Per-board-TZ guard (mirror of the host gate). The runner's FIRE time is scheduled in the deploy
-  // TZ, so the gate can only judge Monday/due-today correctly for boards in that same zone. A board
-  // in a different timezone is left ungated (every runner fires) rather than suppressed against the
-  // wrong calendar day. Full per-board gating is deferred (the cron must move to the board's zone).
-  const boardTz = boardTimezone(opts.taskflowDb, opts.boardId);
-  if (boardTz && boardTz !== opts.timeZone) {
-    log(`gating skipped — board ${opts.boardId} timezone ${boardTz} != gate timezone ${opts.timeZone} (runners fire ungated)`);
-    return [];
-  }
+  // Judge each runner in the board's OWN timezone (Option A per-board TZ), falling back to the gate's
+  // zone when the board has none (every board today). The fire time is scheduled in the same board
+  // zone (provision + handleRecurrence), so the gate window and the actual fire instant agree.
+  const tz = boardTimezone(opts.taskflowDb, opts.boardId) ?? opts.timeZone;
 
   const outcomes: GateOutcome[] = [];
   for (const msg of messages) {
@@ -92,7 +87,7 @@ export function gateRunnerMessages(messages: MessageInRow[], opts: ContainerGate
       boardId: opts.boardId,
       cron,
       now: opts.now,
-      timeZone: opts.timeZone,
+      timeZone: tz,
     });
     outcomes.push({ id: msg.id, job, fired: decideRunnerGate(job, state).fire });
   }

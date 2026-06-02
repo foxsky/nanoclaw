@@ -113,14 +113,22 @@ describe('gateRunnerMessages', () => {
     expect(gateRunnerMessages([chat('c'), plainTask], opts(tf, ib))).toEqual([]);
   });
 
-  it('per-board-TZ guard: a board in a different timezone than the gate is not gated (returns no outcomes)', () => {
+  it('gates a foreign-timezone board in its OWN timezone (no guard skip)', () => {
     const { tf, ib } = dbs();
     tf.exec('CREATE TABLE board_runtime_config (board_id TEXT, timezone TEXT)');
     tf.prepare("INSERT INTO board_runtime_config (board_id, timezone) VALUES ('b1','America/New_York')").run();
-    // Idle board → would normally suppress the standup; the foreign-zone guard skips gating instead,
-    // mirroring the host (the runner FIRE time is scheduled in the deploy TZ, not the board's).
-    const out = gateRunnerMessages([runner('s', 'TF-STANDUP', STANDUP)], opts(tf, ib)); // opts.timeZone = America/Fortaleza
-    expect(out).toEqual([]);
+    tf.prepare("INSERT INTO tasks (id, board_id, column) VALUES ('T1','b1','waiting')").run(); // stale (pending, no interactions)
+    // 2026-06-01T03:30Z = Mon 00:30 in Fortaleza but Sun 23:30 in New York. Gated in the board's own
+    // zone (NY) the stale standup must NOT fire (Sunday); gated in the global tz it wrongly would
+    // (Monday). Proves the gate judges in board-local time and the guard is gone.
+    const out = gateRunnerMessages([runner('s', 'TF-STANDUP', STANDUP)], {
+      taskflowDb: tf,
+      inboundDb: ib,
+      boardId: 'b1',
+      now: new Date('2026-06-01T03:30:00Z'),
+      timeZone: TZ,
+    });
+    expect(out).toEqual([{ id: 's', job: 'standup', fired: false }]);
   });
 });
 
