@@ -9,6 +9,7 @@ import {
   createBoardFilesystem,
   findBoardByFolder,
   generateClaudeMd,
+  renderBoardClaudeMd,
   MCP_JSON_CONTENT,
   nextCronRun,
   ONBOARDING_FILES,
@@ -145,6 +146,18 @@ describe('generateClaudeMd', () => {
 
   it('leaves unknown tokens in place', () => {
     expect(generateClaudeMd('{{KNOWN}} {{UNKNOWN}}', { '{{KNOWN}}': 'a' })).toBe('a {{UNKNOWN}}');
+  });
+});
+
+describe('renderBoardClaudeMd', () => {
+  it('fills placeholders AND rewrites the template v1 tool vocabulary to registered v2 api_* names', () => {
+    // The template ships in v1 (taskflow_*) vocabulary, but only api_* tools are registered.
+    // A newly-provisioned board must call the real tools, so the render step must substitute.
+    const tmpl = "# {{ASSISTANT_NAME}}\n\nUse taskflow_move({ task_id: 'T1', action: 'start' }) to start.";
+    const out = renderBoardClaudeMd(tmpl, { '{{ASSISTANT_NAME}}': 'Tars' });
+    expect(out).toContain('# Tars');
+    expect(out).toContain('api_move(');
+    expect(out).not.toContain('taskflow_move');
   });
 });
 

@@ -89,27 +89,24 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
   // [^()]* in the body is safe for CLAUDE.md call signatures which never
   // contain inner parens — Codex caught the first-field-only regex as a
   // BLOCKER, this is the broader form.
-  output = output.replace(
-    /\btaskflow_create\(\{([^()]*)\}\)/g,
-    (_match, body: string) => {
-      substituted++;
-      const typeMatch = /\btype:\s*['"]([a-z_]+)['"]/.exec(body);
-      const taskType = typeMatch?.[1] ?? null;
-      const v2Tool = taskType === 'meeting' ? 'api_create_meeting_task' : 'api_create_task';
-      // For api_create_meeting_task the tool name implies type='meeting',
-      // so strip the `type: 'meeting'` field from the body. For
-      // api_create_task the type is the discriminator and must remain.
-      let normalizedBody = body;
-      if (v2Tool === 'api_create_meeting_task') {
-        normalizedBody = normalizedBody.replace(/\btype:\s*['"][a-z_]+['"]\s*,?\s*/g, '');
-      }
-      // Clean up leading/trailing commas + whitespace introduced by the
-      // strip-and-rebuild. No board_id injection — see pattern 1 above.
-      const trimmed = normalizedBody.trim().replace(/^,\s*/, '').replace(/,\s*$/, '');
-      if (trimmed.length === 0) return `${v2Tool}({})`;
-      return `${v2Tool}({ ${trimmed} })`;
-    },
-  );
+  output = output.replace(/\btaskflow_create\(\{([^()]*)\}\)/g, (_match, body: string) => {
+    substituted++;
+    const typeMatch = /\btype:\s*['"]([a-z_]+)['"]/.exec(body);
+    const taskType = typeMatch?.[1] ?? null;
+    const v2Tool = taskType === 'meeting' ? 'api_create_meeting_task' : 'api_create_task';
+    // For api_create_meeting_task the tool name implies type='meeting',
+    // so strip the `type: 'meeting'` field from the body. For
+    // api_create_task the type is the discriminator and must remain.
+    let normalizedBody = body;
+    if (v2Tool === 'api_create_meeting_task') {
+      normalizedBody = normalizedBody.replace(/\btype:\s*['"][a-z_]+['"]\s*,?\s*/g, '');
+    }
+    // Clean up leading/trailing commas + whitespace introduced by the
+    // strip-and-rebuild. No board_id injection — see pattern 1 above.
+    const trimmed = normalizedBody.trim().replace(/^,\s*/, '').replace(/,\s*$/, '');
+    if (trimmed.length === 0) return `${v2Tool}({})`;
+    return `${v2Tool}({ ${trimmed} })`;
+  });
   // Bare `taskflow_create` mentions (prose) → api_create_task.
   output = output.replace(/\btaskflow_create\b/g, 'api_create_task');
 
@@ -147,9 +144,9 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
   output = output.replace(
     /\| "modo subtarefa cross-board: aberto" \| Manager-only\. `mcp__sqlite__write_query\("UPDATE board_runtime_config SET cross_board_subtask_mode = 'open' WHERE board_id = '[^']+'"\)`\. Record in history: `INSERT INTO task_history \(board_id, task_id, action, by, at, details\) VALUES \('[^']+', 'BOARD', 'config_changed', SENDER, datetime\('now'\), '\{"key":"cross_board_subtask_mode","value":"open"\}'\)`\. Valid values: `open`, `approval`, `blocked` — refuse anything else\. \|\n\| "modo subtarefa cross-board: aprovação" \| Same as above with `value = 'approval'`\. \|\n\| "modo subtarefa cross-board: bloqueado" \| Same as above with `value = 'blocked'`\. \|/g,
     [
-      '| "modo subtarefa cross-board: aberto" | Manager-only. `api_admin({ action: \'set_cross_board_subtask_mode\', cross_board_subtask_mode: \'open\', sender_name: SENDER })`. Valid values: `open`, `approval`, `blocked` — refuse anything else. |',
-      '| "modo subtarefa cross-board: aprovação" | `api_admin({ action: \'set_cross_board_subtask_mode\', cross_board_subtask_mode: \'approval\', sender_name: SENDER })`. |',
-      '| "modo subtarefa cross-board: bloqueado" | `api_admin({ action: \'set_cross_board_subtask_mode\', cross_board_subtask_mode: \'blocked\', sender_name: SENDER })`. |',
+      "| \"modo subtarefa cross-board: aberto\" | Manager-only. `api_admin({ action: 'set_cross_board_subtask_mode', cross_board_subtask_mode: 'open', sender_name: SENDER })`. Valid values: `open`, `approval`, `blocked` — refuse anything else. |",
+      "| \"modo subtarefa cross-board: aprovação\" | `api_admin({ action: 'set_cross_board_subtask_mode', cross_board_subtask_mode: 'approval', sender_name: SENDER })`. |",
+      "| \"modo subtarefa cross-board: bloqueado\" | `api_admin({ action: 'set_cross_board_subtask_mode', cross_board_subtask_mode: 'blocked', sender_name: SENDER })`. |",
     ].join('\n'),
   );
 
@@ -166,14 +163,12 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
   }
 
   if (!output.includes('**Delivery format is mandatory.**')) {
-    output = output.replace(
-      /All output in [^.]+?\./,
-      (match) =>
-        [
-          match,
-          '',
-          '**Delivery format is mandatory.** Every user-visible reply must be wrapped in a `<message to="...">...</message>` block using the incoming message\'s `from` destination. Text outside `<message>` blocks is scratchpad only and will not be sent. This applies even to short greetings, ambiguity questions, and no-tool replies.',
-        ].join('\n'),
+    output = output.replace(/All output in [^.]+?\./, (match) =>
+      [
+        match,
+        '',
+        '**Delivery format is mandatory.** Every user-visible reply must be wrapped in a `<message to="...">...</message>` block using the incoming message\'s `from` destination. Text outside `<message>` blocks is scratchpad only and will not be sent. This applies even to short greetings, ambiguity questions, and no-tool replies.',
+      ].join('\n'),
     );
   }
 
@@ -184,7 +179,7 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
         [
           match,
           '',
-          '**Exact task-ID scope lock.** When the user names an exact task/subtask ID, keep that exact ID through the whole read/confirm/mutate flow. `P6.7` means `P6.7`, not parent project `P6` and not sibling subtasks under `P6`. Board-prefixed IDs are exact IDs too: `SEC-T41` means `SEC-T41`, not local `T41`; preserve the prefix in every `task_id` tool argument for reads, notes, moves, reassignment, and updates. If an exact ID does not resolve, you may search and show candidates, but do NOT mutate a searched candidate as a substitute until the user confirms that candidate ID. For review-bypass diagnostics like _"por que P6.7 não passou pela revisão?"_, read `api_query({ query: \'task_history\', task_id: \'P6.7\' })` and `api_query({ query: \'task_details\', task_id: \'P6.7\' })`. If you ask _"Deseja reabrir e exigir aprovação para P6.7?"_ and the user answers _"sim"_, execute exactly: `api_move({ task_id: \'P6.7\', action: \'reopen\', sender_name: SENDER })` then `api_update_task({ task_id: \'P6.7\', updates: { requires_close_approval: true }, sender_name: SENDER })`. Do NOT apply approval-policy changes to other active `P6.*` tasks unless the user explicitly says "todas", "as atividades", or names those IDs.',
+          "**Exact task-ID scope lock.** When the user names an exact task/subtask ID, keep that exact ID through the whole read/confirm/mutate flow. `P6.7` means `P6.7`, not parent project `P6` and not sibling subtasks under `P6`. Board-prefixed IDs are exact IDs too: `SEC-T41` means `SEC-T41`, not local `T41`; preserve the prefix in every `task_id` tool argument for reads, notes, moves, reassignment, and updates. If an exact ID does not resolve, you may search and show candidates, but do NOT mutate a searched candidate as a substitute until the user confirms that candidate ID. For review-bypass diagnostics like _\"por que P6.7 não passou pela revisão?\"_, read `api_query({ query: 'task_history', task_id: 'P6.7' })` and `api_query({ query: 'task_details', task_id: 'P6.7' })`. If you ask _\"Deseja reabrir e exigir aprovação para P6.7?\"_ and the user answers _\"sim\"_, execute exactly: `api_move({ task_id: 'P6.7', action: 'reopen', sender_name: SENDER })` then `api_update_task({ task_id: 'P6.7', updates: { requires_close_approval: true }, sender_name: SENDER })`. Do NOT apply approval-policy changes to other active `P6.*` tasks unless the user explicitly says \"todas\", \"as atividades\", or names those IDs.",
         ].join('\n'),
     );
   }
@@ -223,7 +218,7 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
       [
         '**Command synonyms:** "consolidado" / "consolidar" = "quadro" (board view). "atividades" = "minhas tarefas" (my tasks). "finalizar" / "concluir" / "fechar" = conclude. "resolvido" / "concluído" / "feito" / "finalizado" as a bare message with no task ID and no clear in-session task context = ask which task or subject was resolved. "cancelar" (bare, no task ID) = ask which task to cancel or what to cancel. When a user says "concluir tarefa" without specifying an ID and has only one active task, apply it to that task. If multiple are active, list them and ask.',
         '',
-        "**Hierarchy status sync synonym:** \"atualizar status TXXX/PXXX.N\" or \"sincronizar TXXX/PXXX.N\" means pull the linked child-board rollup: `api_hierarchy({ action: 'refresh_rollup', task_id: 'TXXX/PXXX.N', sender_name: SENDER })`. It is NOT a request to choose a new status or ask what status to set.",
+        '**Hierarchy status sync synonym:** "atualizar status TXXX/PXXX.N" or "sincronizar TXXX/PXXX.N" means pull the linked child-board rollup: `api_hierarchy({ action: \'refresh_rollup\', task_id: \'TXXX/PXXX.N\', sender_name: SENDER })`. It is NOT a request to choose a new status or ask what status to set.',
       ].join('\n'),
     );
   }
@@ -300,10 +295,10 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
     output = output.replace(
       /\| "diario\/semanal\/mensal\/anual para Y: X" \| `api_create_task\(\{ type: 'recurring', title: 'X', assignee: 'Y', recurrence: FREQ, sender_name: SENDER \}\)` \|/,
       [
-        '| "diario/semanal/mensal/anual para Y: X" | `api_create_task({ type: \'recurring\', title: \'X\', assignee: \'Y\', recurrence: FREQ, sender_name: SENDER })` |',
-        '| "PXXX acrescentar/adicionar tarefa X" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'X\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
-        '| "adicionar em PXXX a tarefa X" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'X\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
-        '| "[nome do projeto] adicionar/acrescentar tarefa X" | Do NOT use `api_create_task`. Use `api_update_task({ task_id: \'<matched_project_id>\', updates: { add_subtask: \'X\' }, sender_name: SENDER })` when the project is identifiable from board context; if multiple projects match, ask which one |',
+        "| \"diario/semanal/mensal/anual para Y: X\" | `api_create_task({ type: 'recurring', title: 'X', assignee: 'Y', recurrence: FREQ, sender_name: SENDER })` |",
+        "| \"PXXX acrescentar/adicionar tarefa X\" | Two calls in sequence: (1) `api_create_task({ type: 'simple', title: 'X', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER })` |",
+        "| \"adicionar em PXXX a tarefa X\" | Two calls in sequence: (1) `api_create_task({ type: 'simple', title: 'X', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER })` |",
+        "| \"[nome do projeto] adicionar/acrescentar tarefa X\" | Do NOT use `api_create_task`. Use `api_update_task({ task_id: '<matched_project_id>', updates: { add_subtask: 'X' }, sender_name: SENDER })` when the project is identifiable from board context; if multiple projects match, ask which one |",
       ].join('\n'),
     );
   }
@@ -311,9 +306,9 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
     output = output.replace(
       /\| "PXXX acrescentar\/adicionar tarefa X" \| Two calls in sequence: \(1\) `api_create_task\(\{ type: 'simple', title: 'X', assignee: SENDER, sender_name: SENDER \}\)`; \(2\) `api_admin\(\{ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER \}\)` \|/,
       [
-        '| "PXXX acrescentar/adicionar tarefa X" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'X\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
-        '| "adicionar em PXXX a tarefa X" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'X\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
-        '| "[nome do projeto] adicionar/acrescentar tarefa X" | Do NOT use `api_create_task`. Use `api_update_task({ task_id: \'<matched_project_id>\', updates: { add_subtask: \'X\' }, sender_name: SENDER })` when the project is identifiable from board context; if multiple projects match, ask which one |',
+        "| \"PXXX acrescentar/adicionar tarefa X\" | Two calls in sequence: (1) `api_create_task({ type: 'simple', title: 'X', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER })` |",
+        "| \"adicionar em PXXX a tarefa X\" | Two calls in sequence: (1) `api_create_task({ type: 'simple', title: 'X', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER })` |",
+        "| \"[nome do projeto] adicionar/acrescentar tarefa X\" | Do NOT use `api_create_task`. Use `api_update_task({ task_id: '<matched_project_id>', updates: { add_subtask: 'X' }, sender_name: SENDER })` when the project is identifiable from board context; if multiple projects match, ask which one |",
       ].join('\n'),
     );
   }
@@ -321,8 +316,8 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
     output = output.replace(
       /\| "PXXX acrescentar\/adicionar tarefa X" \| Two calls in sequence: \(1\) `api_create_task\(\{ type: 'simple', title: 'X', assignee: SENDER, sender_name: SENDER \}\)`; \(2\) `api_admin\(\{ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER \}\)` \|/,
       [
-        '| "PXXX acrescentar/adicionar tarefa X" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'X\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
-        '| "adicionar em PXXX a tarefa X" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'X\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
+        "| \"PXXX acrescentar/adicionar tarefa X\" | Two calls in sequence: (1) `api_create_task({ type: 'simple', title: 'X', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER })` |",
+        "| \"adicionar em PXXX a tarefa X\" | Two calls in sequence: (1) `api_create_task({ type: 'simple', title: 'X', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER })` |",
       ].join('\n'),
     );
   }
@@ -330,10 +325,10 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
     output = output.replace(
       /\| "adicionar etapa PXXX: titulo" \| `api_update_task\(\{ task_id: 'PXXX', updates: \{ add_subtask: 'titulo' \}, sender_name: SENDER \}\)` \|/,
       [
-        '| "adicionar etapa PXXX: titulo" | `api_update_task({ task_id: \'PXXX\', updates: { add_subtask: \'titulo\' }, sender_name: SENDER })` |',
-        '| "PXXX acrescentar/adicionar tarefa titulo" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'titulo\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
-        '| "adicionar em PXXX a tarefa titulo" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'titulo\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
-        '| "[nome do projeto] adicionar/acrescentar tarefa titulo" | Do NOT use `api_create_task`. Use `api_update_task({ task_id: \'<matched_project_id>\', updates: { add_subtask: \'titulo\' }, sender_name: SENDER })` when the project is identifiable from board context; if multiple projects match, ask which one |',
+        "| \"adicionar etapa PXXX: titulo\" | `api_update_task({ task_id: 'PXXX', updates: { add_subtask: 'titulo' }, sender_name: SENDER })` |",
+        "| \"PXXX acrescentar/adicionar tarefa titulo\" | Two calls in sequence: (1) `api_create_task({ type: 'simple', title: 'titulo', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER })` |",
+        "| \"adicionar em PXXX a tarefa titulo\" | Two calls in sequence: (1) `api_create_task({ type: 'simple', title: 'titulo', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER })` |",
+        "| \"[nome do projeto] adicionar/acrescentar tarefa titulo\" | Do NOT use `api_create_task`. Use `api_update_task({ task_id: '<matched_project_id>', updates: { add_subtask: 'titulo' }, sender_name: SENDER })` when the project is identifiable from board context; if multiple projects match, ask which one |",
       ].join('\n'),
     );
   }
@@ -341,8 +336,8 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
     output = output.replace(
       /\| "PXXX acrescentar\/adicionar tarefa titulo" \| Two calls in sequence: \(1\) `api_create_task\(\{ type: 'simple', title: 'titulo', assignee: SENDER, sender_name: SENDER \}\)`; \(2\) `api_admin\(\{ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER \}\)` \|/,
       [
-        '| "PXXX acrescentar/adicionar tarefa titulo" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'titulo\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
-        '| "adicionar em PXXX a tarefa titulo" | Two calls in sequence: (1) `api_create_task({ type: \'simple\', title: \'titulo\', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: \'reparent_task\', task_id: \'<created_task_id>\', target_parent_id: \'PXXX\', sender_name: SENDER })` |',
+        "| \"PXXX acrescentar/adicionar tarefa titulo\" | Two calls in sequence: (1) `api_create_task({ type: 'simple', title: 'titulo', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER })` |",
+        "| \"adicionar em PXXX a tarefa titulo\" | Two calls in sequence: (1) `api_create_task({ type: 'simple', title: 'titulo', assignee: SENDER, sender_name: SENDER })`; (2) `api_admin({ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER })` |",
       ].join('\n'),
     );
   }
@@ -370,7 +365,7 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
   //    Literal-args variant (target_chat_jid: '<parent_group_jid>', text:'<forward message>').
   output = output.replace(
     /\bsend_message\(\{\s*target_chat_jid:\s*'<parent_group_jid>',\s*text:\s*'<forward message>'\s*\}\)/g,
-    "send_message({ to: pending_approval.destination_name, text: pending_approval.message })",
+    'send_message({ to: pending_approval.destination_name, text: pending_approval.message })',
   );
 
   // 3. send_message tool-signature documentation line — v2 dropped

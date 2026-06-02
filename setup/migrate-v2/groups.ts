@@ -16,7 +16,7 @@ import path from 'path';
 
 import Database from 'better-sqlite3';
 
-import { migrateBoardClaudeMd } from '../../scripts/migrate-board-claudemd.js';
+import { migrateBoardClaudeMd } from '../../src/modules/taskflow/migrate-board-claudemd.js';
 
 const SKIP_NAMES = new Set(['CLAUDE.md', 'logs', '.git', '.DS_Store', 'node_modules']);
 const LEGACY_PROMPT_PATTERN =

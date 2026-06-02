@@ -16,7 +16,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { migrateBoardClaudeMd } from './migrate-board-claudemd.js';
+import { migrateBoardClaudeMd } from '../src/modules/taskflow/migrate-board-claudemd.js';
 
 interface Args {
   in: string;

@@ -40,8 +40,7 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
   });
 
   it('taskflow_hierarchy → api_hierarchy with action body preserved', () => {
-    const input =
-      "`taskflow_hierarchy({ task_id: 'P1', action: 'link', person_name: 'bob', sender_name: SENDER })`";
+    const input = "`taskflow_hierarchy({ task_id: 'P1', action: 'link', person_name: 'bob', sender_name: SENDER })`";
     const result = migrateBoardClaudeMd(input);
     expect(result.output).toContain("api_hierarchy({ task_id: 'P1',");
     expect(result.output).toContain("action: 'link'");
@@ -117,7 +116,7 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
 
   it('injects exact-ID and cross-board note-forward parity rules into migrated board prompts', () => {
     const input = [
-      "**CRITICAL — NEVER display task details from memory.** When a user mentions a task ID (e.g. \"P1.9\", \"T41\", \"detalhes T3\"), you MUST call `taskflow_query({ query: 'task_details', task_id: '...' })` BEFORE showing any task information (title, assignee, column, dates, notes). NEVER generate task titles, descriptions, or status from memory or conversation history — always read from the database first. Hallucinated task details propagate through session resume and context summaries, causing persistent wrong information. This rule has NO exceptions.",
+      '**CRITICAL — NEVER display task details from memory.** When a user mentions a task ID (e.g. "P1.9", "T41", "detalhes T3"), you MUST call `taskflow_query({ query: \'task_details\', task_id: \'...\' })` BEFORE showing any task information (title, assignee, column, dates, notes). NEVER generate task titles, descriptions, or status from memory or conversation history — always read from the database first. Hallucinated task details propagate through session resume and context summaries, causing persistent wrong information. This rule has NO exceptions.',
       "**Cross-board task lookup (fallback).** When `task_details` returns `Task not found` for a task ID that may live on a sibling/parent board (e.g. the user mentions a `T###` you don't recognise on this board), call `taskflow_query({ query: 'find_task_in_organization', task_id: 'TXXX' })`. It scopes to this board's org tree (root + descendants, same scope as `find_person_in_organization`) and returns `[{ task_id, board_id, board_group_folder, type, title, column, assignee, assignee_name, due_date, parent_task_id, requires_close_approval, group_jid }]`. Use the result to show the task with a clear \"Quadro: <board_group_folder>\" label so the user knows it's a cross-board read. This is **read-only** — to mutate the task, the user must act from its owning board. Do NOT fall back to `mcp__sqlite__read_query` for cross-board task lookups.",
     ].join('\n\n');
     const result = migrateBoardClaudeMd(input);
@@ -146,7 +145,7 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
       '**Never invent business rules.** If unsure, ask the user.',
       '',
       '| "canceladas" | No direct MCP query exists. Use SQL fallback on `archive` filtered by `archive_reason = \'cancelled\'`, scoped to `board-seci-taskflow`, then format a short list. |',
-      '| "modo subtarefa cross-board: aberto" | Manager-only. `mcp__sqlite__write_query("UPDATE board_runtime_config SET cross_board_subtask_mode = \'open\' WHERE board_id = \'board-seci-taskflow\'")`. Record in history: `INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES (\'board-seci-taskflow\', \'BOARD\', \'config_changed\', SENDER, datetime(\'now\'), \'{"key":"cross_board_subtask_mode","value":"open"}\')`. Valid values: `open`, `approval`, `blocked` — refuse anything else. |',
+      "| \"modo subtarefa cross-board: aberto\" | Manager-only. `mcp__sqlite__write_query(\"UPDATE board_runtime_config SET cross_board_subtask_mode = 'open' WHERE board_id = 'board-seci-taskflow'\")`. Record in history: `INSERT INTO task_history (board_id, task_id, action, by, at, details) VALUES ('board-seci-taskflow', 'BOARD', 'config_changed', SENDER, datetime('now'), '{\"key\":\"cross_board_subtask_mode\",\"value\":\"open\"}')`. Valid values: `open`, `approval`, `blocked` — refuse anything else. |",
       '| "modo subtarefa cross-board: aprovação" | Same as above with `value = \'approval\'`. |',
       '| "modo subtarefa cross-board: bloqueado" | Same as above with `value = \'blocked\'`. |',
     ].join('\n');
@@ -187,7 +186,9 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
 
     const result = migrateBoardClaudeMd(input);
 
-    expect(result.output).toContain('schedule_task({ prompt: "[PROMPT]", processAfter: "[ISO_TIMESTAMP_OR_NULL]", recurrence: "[OPTIONAL_CRON]" })');
+    expect(result.output).toContain(
+      'schedule_task({ prompt: "[PROMPT]", processAfter: "[ISO_TIMESTAMP_OR_NULL]", recurrence: "[OPTIONAL_CRON]" })',
+    );
     expect(result.output).toContain('set `processAfter` to the first run timestamp');
     expect(result.output).toContain('set `recurrence` to the 5-field cron expression');
     expect(result.output).not.toContain('`schedule_type`');
@@ -228,9 +229,7 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
   it('taskflow_query → api_query with discriminator body preserved', () => {
     const input = "`taskflow_query({ query: 'task_details', task_id: 'T1' })`";
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toContain(
-      "api_query({ query: 'task_details', task_id: 'T1' })",
-    );
+    expect(result.output).toContain("api_query({ query: 'task_details', task_id: 'T1' })");
     expect(result.output).not.toMatch(/taskflow_query/);
   });
 
@@ -265,8 +264,8 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
 
   it('adds project create+reparent synonym rows for acrescentar/adicionar tarefa wording', () => {
     const input = [
-      '| "diario/semanal/mensal/anual para Y: X" | `taskflow_create({ type: \'recurring\', title: \'X\', assignee: \'Y\', recurrence: FREQ, sender_name: SENDER })` |',
-      '| "adicionar etapa PXXX: titulo" | `taskflow_update({ task_id: \'PXXX\', updates: { add_subtask: \'titulo\' }, sender_name: SENDER })` |',
+      "| \"diario/semanal/mensal/anual para Y: X\" | `taskflow_create({ type: 'recurring', title: 'X', assignee: 'Y', recurrence: FREQ, sender_name: SENDER })` |",
+      "| \"adicionar etapa PXXX: titulo\" | `taskflow_update({ task_id: 'PXXX', updates: { add_subtask: 'titulo' }, sender_name: SENDER })` |",
     ].join('\n');
     const result = migrateBoardClaudeMd(input);
     expect(result.output).toContain('"PXXX acrescentar/adicionar tarefa X"');
@@ -275,9 +274,15 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     expect(result.output).toContain('"adicionar em PXXX a tarefa titulo"');
     expect(result.output).toContain('"[nome do projeto] adicionar/acrescentar tarefa X"');
     expect(result.output).toContain('"[nome do projeto] adicionar/acrescentar tarefa titulo"');
-    expect(result.output).toContain("api_create_task({ type: 'simple', title: 'X', assignee: SENDER, sender_name: SENDER })");
-    expect(result.output).toContain("api_create_task({ type: 'simple', title: 'titulo', assignee: SENDER, sender_name: SENDER })");
-    expect(result.output).toContain("api_admin({ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER })");
+    expect(result.output).toContain(
+      "api_create_task({ type: 'simple', title: 'X', assignee: SENDER, sender_name: SENDER })",
+    );
+    expect(result.output).toContain(
+      "api_create_task({ type: 'simple', title: 'titulo', assignee: SENDER, sender_name: SENDER })",
+    );
+    expect(result.output).toContain(
+      "api_admin({ action: 'reparent_task', task_id: '<created_task_id>', target_parent_id: 'PXXX', sender_name: SENDER })",
+    );
     expect(result.output).toContain('Do NOT use `api_create_task`');
     expect(result.output).toContain(
       "api_update_task({ task_id: '<matched_project_id>', updates: { add_subtask: 'X' }, sender_name: SENDER })",
@@ -289,7 +294,8 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
   });
 
   it('adds negative examples for standalone planning goals before task creation mappings', () => {
-    const input = '"tarefa" with "para Y" creates an assigned task. Without "para Y", it goes to inbox (see Quick Capture above).';
+    const input =
+      '"tarefa" with "para Y" creates an assigned task. Without "para Y", it goes to inbox (see Quick Capture above).';
     const result = migrateBoardClaudeMd(input);
     expect(result.output).toContain('Do NOT treat standalone planning goals as create commands.');
     expect(result.output).toContain('"Submeter ao menos 1 proposta a financiador externo"');
@@ -320,8 +326,7 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
   });
 
   it('taskflow_create with type:project preserved → api_create_task with type:project', () => {
-    const input =
-      "`taskflow_create({ type: 'project', title: 'Big', subtasks: ['A', 'B'], sender_name: 'alice' })`";
+    const input = "`taskflow_create({ type: 'project', title: 'Big', subtasks: ['A', 'B'], sender_name: 'alice' })`";
     const result = migrateBoardClaudeMd(input);
     expect(result.output).toContain("api_create_task({ type: 'project',");
   });
@@ -442,14 +447,18 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
   it('A5 follow-up — send_message object-shorthand call: target_chat_jid → to + destination_name', () => {
     const input = '`send_message({ target_chat_jid, text: message })`';
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toContain('send_message({ to: pending_approval.destination_name, text: pending_approval.message })');
+    expect(result.output).toContain(
+      'send_message({ to: pending_approval.destination_name, text: pending_approval.message })',
+    );
     expect(result.output).not.toContain('target_chat_jid');
   });
 
   it('A5 follow-up — send_message literal-args call (parent_group_jid example) rewrites to named destination', () => {
     const input = "send_message({ target_chat_jid: '<parent_group_jid>', text: '<forward message>' })";
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toContain("send_message({ to: pending_approval.destination_name, text: pending_approval.message })");
+    expect(result.output).toContain(
+      'send_message({ to: pending_approval.destination_name, text: pending_approval.message })',
+    );
     expect(result.output).not.toContain('target_chat_jid');
   });
 
@@ -462,9 +471,12 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
   });
 
   it('A5 follow-up — schedule_task tool signature: v1 schedule_type/value → v2 processAfter/recurrence', () => {
-    const input = 'schedule_task(prompt: "[PROMPT]", schedule_type: "[cron|interval|once]", schedule_value: "[CRON_OR_TIMESTAMP]", context_mode: "group")';
+    const input =
+      'schedule_task(prompt: "[PROMPT]", schedule_type: "[cron|interval|once]", schedule_value: "[CRON_OR_TIMESTAMP]", context_mode: "group")';
     const result = migrateBoardClaudeMd(input);
-    expect(result.output).toContain('schedule_task({ prompt: "[PROMPT]", processAfter: "[ISO_TIMESTAMP_OR_NULL]", recurrence: "[OPTIONAL_CRON]" })');
+    expect(result.output).toContain(
+      'schedule_task({ prompt: "[PROMPT]", processAfter: "[ISO_TIMESTAMP_OR_NULL]", recurrence: "[OPTIONAL_CRON]" })',
+    );
     expect(result.output).not.toContain('schedule_type');
     expect(result.output).not.toContain('schedule_value');
   });
@@ -507,11 +519,11 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
       '',
       'For each notification:',
       '',
-      '1. If `notification_group_jid` is set and it differs from the current group, call `send_message` with the notification\'s `message` text and pass that JID as `target_chat_jid`',
+      "1. If `notification_group_jid` is set and it differs from the current group, call `send_message` with the notification's `message` text and pass that JID as `target_chat_jid`",
       '2. If `notification_group_jid` is null, missing, or the current group, do NOT call `send_message` — the normal assistant reply already covers the current chat',
       '3. Do NOT modify the notification text',
       '',
-      'Notifications are **bidirectional**: when a manager updates an assignee\'s task, the assignee is notified.',
+      "Notifications are **bidirectional**: when a manager updates an assignee's task, the assignee is notified.",
       '',
       'Also check for `parent_notification` in the result. If present and `parent_notification.parent_group_jid` differs from the current group, call `send_message` with `target_chat_jid` set to `parent_notification.parent_group_jid`.',
       '',
@@ -553,10 +565,10 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
 
   it('handles a real-world block from v1 CLAUDE.md', () => {
     const input =
-      "| \"comecando TXXX\" / \"iniciando TXXX\" | `taskflow_move({ task_id: 'TXXX', action: 'start', sender_name: SENDER })` |";
+      '| "comecando TXXX" / "iniciando TXXX" | `taskflow_move({ task_id: \'TXXX\', action: \'start\', sender_name: SENDER })` |';
     const result = migrateBoardClaudeMd(input);
     expect(result.output).toBe(
-      "| \"comecando TXXX\" / \"iniciando TXXX\" | `api_move({ task_id: 'TXXX', action: 'start', sender_name: SENDER })` |",
+      '| "comecando TXXX" / "iniciando TXXX" | `api_move({ task_id: \'TXXX\', action: \'start\', sender_name: SENDER })` |',
     );
   });
 
@@ -572,7 +584,7 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
       "taskflow_create({ type: 'simple', title: 'X', sender_name: SENDER })",
       "taskflow_create({ type: 'meeting', title: 'M', scheduled_at: '...' })",
       "taskflow_admin({ action: 'register_person', name: 'X', phone: '...', sender_name: SENDER })",
-      "taskflow_create({})",
+      'taskflow_create({})',
       "taskflow_move({task_id:'T1',action:'start'})", // zero whitespace
     ];
     for (const input of inputs) {
@@ -603,7 +615,7 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
   it('preserves exact task-ID and cross-board note-forward rules after substitution', () => {
     const input = [
       "**Exact task-ID scope lock.** When the user names an exact task/subtask ID, keep that exact ID through the whole read/confirm/mutate flow. If you ask _\"Deseja reabrir e exigir aprovação para P6.7?\"_ and the user answers _\"sim\"_, execute exactly: `taskflow_move({ task_id: 'P6.7', action: 'reopen', sender_name: SENDER })` then `taskflow_update({ task_id: 'P6.7', updates: { requires_close_approval: true }, sender_name: SENDER })`.",
-      "**Cross-board note-forward confirmation.** If the user tried to add a note/update to an exact task ID and the user identifies the destination board/person, keep the pending note text and ask a concrete forwarding confirmation. If the next user message is a bare confirmation, call `send_message` to the registered destination name.",
+      '**Cross-board note-forward confirmation.** If the user tried to add a note/update to an exact task ID and the user identifies the destination board/person, keep the pending note text and ask a concrete forwarding confirmation. If the next user message is a bare confirmation, call `send_message` to the registered destination name.',
     ].join('\n\n');
     const result = migrateBoardClaudeMd(input);
     expect(result.output).toContain('Exact task-ID scope lock');

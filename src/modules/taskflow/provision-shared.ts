@@ -10,6 +10,7 @@ import { getDb } from '../../db/connection.js';
 import { createAgentGroup } from '../../db/agent-groups.js';
 import { createMessagingGroup, createMessagingGroupAgent } from '../../db/messaging-groups.js';
 import { isValidGroupFolder } from '../../group-folder.js';
+import { migrateBoardClaudeMd } from './migrate-board-claudemd.js';
 import { insertTask } from '../scheduling/db.js';
 import { log } from '../../log.js';
 import { openInboundDb, resolveSession } from '../../session-manager.js';
@@ -247,6 +248,17 @@ export function generateClaudeMd(templateContent: string, replacements: Record<s
   return content;
 }
 
+/**
+ * Render a board's CLAUDE.md for provisioning: fill `{{placeholders}}`, then normalize the
+ * template's v1 `taskflow_*` tool vocabulary to the registered v2 `api_*` names. The template
+ * ships in v1 vocabulary (it is also the source the migration path rewrites for existing
+ * boards); without this step a freshly-provisioned board would instruct the agent to call
+ * tools that are not registered. Same substitution as the migration path — one source of truth.
+ */
+export function renderBoardClaudeMd(templateContent: string, replacements: Record<string, string>): string {
+  return migrateBoardClaudeMd(generateClaudeMd(templateContent, replacements)).output;
+}
+
 export const ONBOARDING_FILES = [
   'gtd-01-inbox-whatsapp.md',
   'gtd-02-esclarecer-whatsapp.md',
@@ -463,7 +475,7 @@ export function createBoardFilesystem(params: CreateBoardFilesystemParams): void
       '{{ATTACHMENT_IMPORT_REASON}}': params.attachmentReason || '',
       '{{DST_GUARD_ENABLED}}': params.dstGuardEnabled !== false ? 'true' : 'false',
     };
-    const claudeMd = generateClaudeMd(template, replacements);
+    const claudeMd = renderBoardClaudeMd(template, replacements);
     fs.writeFileSync(path.join(groupDir, 'CLAUDE.local.md'), claudeMd);
     log.info('CLAUDE.local.md generated', { path: path.join(groupDir, 'CLAUDE.local.md') });
   } catch (err) {
