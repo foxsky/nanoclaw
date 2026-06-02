@@ -324,6 +324,7 @@ export async function handleProvisionRootBoard(
           standupCronLocal: parsed.cron.standupLocal,
           digestCronLocal: parsed.cron.digestLocal,
           reviewCronLocal: parsed.cron.reviewLocal,
+          boardTimezone: parsed.timezone,
         });
       } catch (err) {
         log.error('provision_root_board: failed to schedule runners (non-fatal)', { err });

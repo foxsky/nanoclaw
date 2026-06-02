@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INBOUND_SCHEMA } from '../../db/schema.js';
 import { initTaskflowDb } from '../../taskflow-db.js';
 import {
@@ -201,6 +201,48 @@ describe('scheduleRunners (writes to session messages_in)', () => {
       inboundDb.close();
     } catch {}
     fs.rmSync(dbFile, { force: true });
+  });
+
+  it('computes first-run in the BOARD timezone when boardTimezone is given (not the global TZ)', () => {
+    // Freeze time so scheduleRunners' nextCronRun and the test's expected share one "now" (no flake
+    // if an 08:00 cron boundary fell between the two calls).
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T12:00:00Z'));
+    try {
+      scheduleRunners({
+        tfDb: db,
+        inboundDb,
+        boardId: 'board-test-1',
+        standupCronLocal: '0 8 * * 1-5',
+        digestCronLocal: '0 18 * * 1-5',
+        reviewCronLocal: '0 11 * * 5',
+        boardTimezone: 'America/New_York',
+      });
+      const standup = inboundDb
+        .prepare("SELECT process_after FROM messages_in WHERE content LIKE '%STANDUP%'")
+        .get() as { process_after: string };
+      // First run must be the next 08:00 in New York, not 08:00 in the deploy/global zone.
+      expect(standup.process_after).toBe(nextCronRun('0 8 * * 1-5', 'America/New_York'));
+      expect(standup.process_after).not.toBe(nextCronRun('0 8 * * 1-5', 'America/Fortaleza'));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('falls back to the global TIMEZONE when boardTimezone is garbage (board still gets its runners)', () => {
+    // A corrupt board_runtime_config.timezone must NOT throw out of scheduleRunners (which would
+    // leave the board with zero runners); it degrades to the global zone. (Codex review hardening.)
+    scheduleRunners({
+      tfDb: db,
+      inboundDb,
+      boardId: 'board-test-1',
+      standupCronLocal: '0 8 * * 1-5',
+      digestCronLocal: '0 18 * * 1-5',
+      reviewCronLocal: '0 11 * * 5',
+      boardTimezone: 'Not/ARealZone',
+    });
+    const { n } = inboundDb.prepare('SELECT COUNT(*) n FROM messages_in').get() as { n: number };
+    expect(n).toBe(3);
   });
 
   it('writes 3 kind=task rows to messages_in (NOT scheduled_tasks) and UPDATEs runner ids', () => {

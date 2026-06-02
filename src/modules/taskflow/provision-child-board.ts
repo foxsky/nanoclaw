@@ -631,6 +631,7 @@ export async function handleProvisionChildBoard(
           standupCronLocal: parent.parentRuntime.standup_cron_local,
           digestCronLocal: parent.parentRuntime.digest_cron_local,
           reviewCronLocal: parent.parentRuntime.review_cron_local,
+          boardTimezone: parent.parentRuntime.timezone,
         });
       } catch (err) {
         log.error('provision_child_board: failed to schedule runners (non-fatal)', { err });

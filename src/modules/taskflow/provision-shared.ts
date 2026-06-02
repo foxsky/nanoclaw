@@ -6,6 +6,7 @@ import path from 'path';
 
 import type { ChannelAdapter } from '../../channels/adapter.js';
 import { DATA_DIR, GROUPS_DIR, PROJECT_ROOT, TIMEZONE } from '../../config.js';
+import { isValidTimezone } from '../../timezone.js';
 import { getDb } from '../../db/connection.js';
 import { createAgentGroup } from '../../db/agent-groups.js';
 import { createMessagingGroup, createMessagingGroupAgent } from '../../db/messaging-groups.js';
@@ -327,13 +328,16 @@ export interface ScheduleRunnersParams {
   /** Session inbound.db — where the host poll loop reads tasks. */
   inboundDb: Database.Database;
   boardId: string;
-  /** Cron expressions interpreted in the host TIMEZONE. v2's recurrence
-   *  handler uses tz=TIMEZONE for the next-occurrence computation, so the
-   *  first run and every subsequent run must share the same TZ. The
-   *  board_runtime_config column to use is `*_cron_local`, NOT `*_cron_utc`. */
+  /** Local cron expressions (the board_runtime_config `*_cron_local` columns, NOT `*_cron_utc`),
+   *  interpreted in `boardTimezone`. The recurrence fanout (handleRecurrence) re-parses the same
+   *  local cron in the same board zone, so the first run and every subsequent run share one zone. */
   standupCronLocal: string;
   digestCronLocal: string;
   reviewCronLocal: string;
+  /** The board's IANA timezone (board_runtime_config.timezone); the local crons above are
+   *  interpreted in it. Omitted → global TIMEZONE (every board today is the deploy zone, so the
+   *  default is a no-op). */
+  boardTimezone?: string;
 }
 
 /**
@@ -348,6 +352,12 @@ export interface ScheduleRunnersParams {
  */
 export function scheduleRunners(params: ScheduleRunnersParams): void {
   const { tfDb, inboundDb, boardId, standupCronLocal, digestCronLocal, reviewCronLocal } = params;
+  // Interpret the local crons in the board's own zone (Option A per-board TZ). An invalid/garbage
+  // board timezone falls back to the global TIMEZONE so a corrupt board_runtime_config never leaves
+  // a board with NO runners (nextCronRun would otherwise throw on a bad zone); a Fortaleza board is
+  // the no-op default. (Gate + handleRecurrence adopt the same board zone in the remaining per-board
+  // -TZ phases; until then the fanout still uses the global zone — fine while every board is Fortaleza.)
+  const tz = params.boardTimezone && isValidTimezone(params.boardTimezone) ? params.boardTimezone : TIMEZONE;
   const runners = [
     { prompt: STANDUP_PROMPT, cron: standupCronLocal },
     { prompt: DIGEST_PROMPT, cron: digestCronLocal },
@@ -355,7 +365,7 @@ export function scheduleRunners(params: ScheduleRunnersParams): void {
   ] as const;
 
   const planned = runners.map(({ prompt, cron }) => {
-    const processAfter = nextCronRun(cron, TIMEZONE);
+    const processAfter = nextCronRun(cron, tz);
     if (processAfter === null) {
       throw new Error(`scheduleRunners: nextCronRun returned null for cron='${cron}'`);
     }
