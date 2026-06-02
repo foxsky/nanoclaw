@@ -108,6 +108,23 @@ function seedLinkedTask(
   return { ownerBoardId, taskId };
 }
 
+/**
+ * Board-local (America/Fortaleza — the seedTestDb default) calendar date, offset by whole days.
+ * Mirrors the engine's boardToday()/boardDateOffset so date-relative due_date fixtures track the
+ * engine's board-local "today" and don't drift against it near the UTC rollover (#387 Item 1).
+ */
+function boardLocalDate(offsetDays = 0): string {
+  const ymd = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Fortaleza',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+  const d = new Date(ymd + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + offsetDays);
+  return d.toISOString().slice(0, 10);
+}
+
 describe('TaskflowEngine', () => {
   let db: Database;
   let engine: TaskflowEngine;
@@ -670,9 +687,7 @@ describe('TaskflowEngine', () => {
 
   describe('query: overdue', () => {
     it('returns tasks with past due_date', () => {
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      const yStr = yesterday.toISOString().slice(0, 10);
+      const yStr = boardLocalDate(-1);
       db.exec(
         `UPDATE tasks SET due_date = '${yStr}' WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
       );
@@ -684,9 +699,7 @@ describe('TaskflowEngine', () => {
     });
 
     it('excludes tasks in done column', () => {
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      const yStr = yesterday.toISOString().slice(0, 10);
+      const yStr = boardLocalDate(-1);
       db.exec(
         `UPDATE tasks SET due_date = '${yStr}', column = 'done'
          WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
@@ -708,7 +721,7 @@ describe('TaskflowEngine', () => {
 
   describe('query: due_today', () => {
     it('finds tasks due today', () => {
-      const t = new Date().toISOString().slice(0, 10);
+      const t = boardLocalDate(0);
       db.exec(
         `UPDATE tasks SET due_date = '${t}' WHERE board_id = '${BOARD_ID}' AND id = 'T-002'`,
       );
@@ -720,9 +733,7 @@ describe('TaskflowEngine', () => {
 
   describe('query: due_tomorrow', () => {
     it('finds tasks due tomorrow', () => {
-      const d = new Date();
-      d.setDate(d.getDate() + 1);
-      const tStr = d.toISOString().slice(0, 10);
+      const tStr = boardLocalDate(1);
       db.exec(
         `UPDATE tasks SET due_date = '${tStr}' WHERE board_id = '${BOARD_ID}' AND id = 'T-003'`,
       );
@@ -872,9 +883,7 @@ describe('TaskflowEngine', () => {
     });
 
     it('counts overdue correctly in statistics', () => {
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      const yStr = yesterday.toISOString().slice(0, 10);
+      const yStr = boardLocalDate(-1);
       db.exec(
         `UPDATE tasks SET due_date = '${yStr}'
          WHERE board_id = '${BOARD_ID}' AND id = 'T-001'`,
@@ -1491,7 +1500,7 @@ describe('TaskflowEngine', () => {
 
   describe('query: agenda', () => {
     it('returns overdue + due_today + in_progress', () => {
-      const t = new Date().toISOString().slice(0, 10);
+      const t = boardLocalDate(0);
       db.exec(
         `UPDATE tasks SET due_date = '${t}'
          WHERE board_id = '${BOARD_ID}' AND id = 'T-003'`,
@@ -5976,10 +5985,8 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
 
   describe('report', () => {
     it('standup returns correct sections', () => {
-      const todayStr = new Date().toISOString().slice(0, 10);
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      const yStr = yesterday.toISOString().slice(0, 10);
+      const todayStr = boardLocalDate(0);
+      const yStr = boardLocalDate(-1);
 
       // Make T-001 overdue (in_progress with past due_date)
       db.exec(
@@ -8170,5 +8177,92 @@ describe('resolveColumnMoveAction (drag-to-column → state-machine action)', ()
     expect(r('in_progress', 'in_progress')).toBeNull(); // same column
     expect(r('in_progress', 'inbox')).toBeNull();       // inbox is not a move target
     expect(r('in_progress', 'cancelled')).toBeNull();   // cancel is not a move
+  });
+});
+
+/*
+ * #387 Item 1 — board-local "today". The engine must decide overdue / due_today / due_this_week in
+ * the OWNING BOARD's timezone, not UTC. due_date is a board-local calendar date, so near a UTC
+ * rollover (2026-06-02T02:00Z = 2026-06-01 23:00 in America/Fortaleza GMT-3) a task due 2026-06-01
+ * must NOT read overdue — the team still has hours. The clock is pinned via NANOCLAW_PHASE_REPLAY_NOW.
+ */
+describe('TaskflowEngine — board-local today (#387 Item 1)', () => {
+  let db: Database;
+  let engine: TaskflowEngine;
+  const savedReplay = process.env.NANOCLAW_PHASE_REPLAY_NOW;
+
+  // 2026-06-02T02:00Z = 2026-06-01 23:00 in Fortaleza: board-local today 2026-06-01, UTC today 2026-06-02.
+  const ROLLOVER = '2026-06-02T02:00:00Z';
+  // 2026-06-02T12:00Z = 2026-06-02 09:00 in Fortaleza: same calendar day in both zones (no-op case).
+  const SAME_DAY = '2026-06-02T12:00:00Z';
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    seedTestDb(db, BOARD_ID); // board_runtime_config defaults timezone = America/Fortaleza
+    engine = new TaskflowEngine(db, BOARD_ID);
+  });
+  afterEach(() => {
+    db.close();
+    if (savedReplay === undefined) delete process.env.NANOCLAW_PHASE_REPLAY_NOW;
+    else process.env.NANOCLAW_PHASE_REPLAY_NOW = savedReplay;
+  });
+
+  function addDatedTask(id: string, dueDate: string, column = 'next_action') {
+    db.exec(
+      `INSERT INTO tasks (id, board_id, type, title, column, requires_close_approval, due_date, created_at, updated_at)
+       VALUES ('${id}', '${BOARD_ID}', 'simple', 'Dated ${id}', '${column}', 0, '${dueDate}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+    );
+  }
+
+  describe('at the UTC rollover (board still on the previous calendar day)', () => {
+    it('overdue: a task due the board-local today is NOT overdue (UTC wrongly flagged it)', () => {
+      process.env.NANOCLAW_PHASE_REPLAY_NOW = ROLLOVER;
+      addDatedTask('T-LOCAL-TODAY', '2026-06-01');
+      const r = engine.query({ query: 'overdue' });
+      expect(r.success).toBe(true);
+      expect(r.data).toHaveLength(0); // board-local today 2026-06-01 is not < 2026-06-01
+    });
+
+    it('due_today: a task due the board-local today IS in the hoje bucket (UTC put it on tomorrow)', () => {
+      process.env.NANOCLAW_PHASE_REPLAY_NOW = ROLLOVER;
+      addDatedTask('T-LOCAL-TODAY', '2026-06-01');
+      const r = engine.query({ query: 'due_today' });
+      expect(r.data.map((t: any) => t.id)).toEqual(['T-LOCAL-TODAY']);
+    });
+
+    it('due_tomorrow: tomorrow is the board-local calendar +1 (2026-06-02), not the UTC +1', () => {
+      process.env.NANOCLAW_PHASE_REPLAY_NOW = ROLLOVER;
+      addDatedTask('T-LOCAL-TOMORROW', '2026-06-02');
+      const r = engine.query({ query: 'due_tomorrow' });
+      expect(r.data.map((t: any) => t.id)).toEqual(['T-LOCAL-TOMORROW']);
+    });
+
+    it('report(digest): due_date buckets are board-local while the history bucket stays UTC', () => {
+      process.env.NANOCLAW_PHASE_REPLAY_NOW = ROLLOVER;
+      addDatedTask('T-LOCAL-TODAY', '2026-06-01');
+      // A completion logged 2026-06-02T01:30Z — UTC day 2026-06-02, but board-local day still 2026-06-01.
+      db.exec(
+        `INSERT INTO task_history (board_id, task_id, action, by, at, details)
+         VALUES ('${BOARD_ID}', 'T-LOCAL-TODAY', 'moved', 'person-1', '2026-06-02T01:30:00Z', '{"to_column":"done"}')`,
+      );
+      const r = engine.report({ board_id: BOARD_ID, type: 'digest' });
+      expect(r.success).toBe(true);
+      expect(r.data!.overdue).toHaveLength(0); // board-local: due 2026-06-01 is not overdue
+      expect(r.data!.due_today.map((t) => t.id)).toContain('T-LOCAL-TODAY'); // board-local hoje
+      // The `at LIKE` history bucket MUST stay on the UTC day (2026-06-02) — the 01:30Z completion
+      // matches. If board-local todayStr (2026-06-01) were wrongly reused, both would be 0.
+      expect(r.data!.changes_today_count).toBeGreaterThan(0);
+      expect(r.data!.completed_today.map((t) => t.id)).toContain('T-LOCAL-TODAY');
+    });
+  });
+
+  describe('away from the rollover (board tz and UTC agree on the date)', () => {
+    it('no-op: overdue/due_today match the UTC result when local and UTC share the day', () => {
+      process.env.NANOCLAW_PHASE_REPLAY_NOW = SAME_DAY; // 09:00 Fortaleza, same date as UTC
+      addDatedTask('T-YDAY', '2026-05-31'); // strictly before today in both zones
+      addDatedTask('T-TODAY', '2026-06-02'); // today in both zones
+      expect(engine.query({ query: 'overdue' }).data.map((t: any) => t.id)).toEqual(['T-YDAY']);
+      expect(engine.query({ query: 'due_today' }).data.map((t: any) => t.id)).toEqual(['T-TODAY']);
+    });
   });
 });

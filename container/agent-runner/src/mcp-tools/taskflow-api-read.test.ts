@@ -14,24 +14,15 @@ let db: Database;
 function seedReadFixtures(d: Database): void {
   // Two engine code paths use DIFFERENT "today" sources:
   //   - apiBoardActivity changes_today uses SQLite `date('now', 'localtime')`.
-  //   - apiFilterBoardTasks due_today uses JS `localDateString(new Date())`.
-  // Under bun:test these can disagree because the JS runtime reports
-  // `Intl.tz: UTC` while SQLite's C++ layer honors the OS-level TZ. So we
-  // seed each fixture with the source its own filter consults. The history
-  // row uses SQLite-now; the task due_date fields use JS-now. Within each
-  // filter the comparison is self-consistent regardless of timezone drift.
+  //   - apiFilterBoardTasks due_today/due_this_week now use the engine's board-local
+  //     boardToday(); with no board_runtime_config in this fixture it degrades to UTC
+  //     today(). So seed the due_date fixtures on the UTC basis — both filter and seed
+  //     are UTC, so they agree regardless of the process TZ. The history row keeps
+  //     SQLite-now for the activity filter (which consults SQLite localtime).
   const localTodaySql = (d.prepare(`SELECT date('now', 'localtime') AS d`).get() as { d: string }).d;
-  const now = new Date();
-  const localTodayJs =
-    `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  // "due this week" filter spans today..today+6 (JS local). Anchor on JS.
-  const threeDaysJs = new Date(Date.now() + 3 * 86400 * 1000);
-  const threeDaysStr =
-    `${threeDaysJs.getFullYear()}-${String(threeDaysJs.getMonth() + 1).padStart(2, '0')}-${String(threeDaysJs.getDate()).padStart(2, '0')}`;
-  // `todayStr` is the variable used by the existing seed SQL below — point
-  // it at the JS-side value so the due_date fixtures stay aligned with
-  // apiFilterBoardTasks. The history row uses `localTodaySql` directly.
-  const todayStr = localTodayJs;
+  // "due this week" filter spans today..today+6. Anchor today + today+3 on UTC.
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const threeDaysStr = new Date(Date.now() + 3 * 86400 * 1000).toISOString().slice(0, 10);
   d.exec(`
     CREATE TABLE boards (
       id TEXT PRIMARY KEY, short_code TEXT, name TEXT, created_at TEXT NOT NULL

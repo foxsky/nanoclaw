@@ -423,20 +423,19 @@ export interface HierarchyResult extends TaskflowResult {
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-function today(): string {
+/** The current instant, replay-aware (NANOCLAW_PHASE_REPLAY_NOW). Single source of "now" so the
+ *  UTC today() and the board-local helpers (boardToday/boardDateOffset/boardWeek*) all honor replay. */
+function nowInstant(): Date {
   const replayNow = process.env.NANOCLAW_PHASE_REPLAY_NOW?.trim();
   if (replayNow) {
     const date = new Date(replayNow);
-    if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10);
+    if (!Number.isNaN(date.getTime())) return date;
   }
-  return new Date().toISOString().slice(0, 10);
+  return new Date();
 }
 
-function localDateString(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+function today(): string {
+  return nowInstant().toISOString().slice(0, 10);
 }
 
 function safeParseJsonArray(value: unknown): unknown[] {
@@ -468,12 +467,6 @@ function safeParseJsonNotes(value: unknown): Record<string, unknown>[] {
   });
 }
 
-function tomorrow(): string {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() + 1);
-  return d.toISOString().slice(0, 10);
-}
-
 /** Monday of the current ISO week (Mon-Sun). */
 function weekStart(): string {
   const d = new Date();
@@ -489,12 +482,6 @@ function weekEnd(): string {
   const day = d.getUTCDay();
   const diff = day === 0 ? 0 : 7 - day;
   d.setUTCDate(d.getUTCDate() + diff);
-  return d.toISOString().slice(0, 10);
-}
-
-function sevenDaysFromNow(): string {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() + 7);
   return d.toISOString().slice(0, 10);
 }
 
@@ -874,6 +861,56 @@ export class TaskflowEngine {
     return this._boardTz;
   }
 
+  /**
+   * The board-local calendar date 'YYYY-MM-DD' for the current (replay-aware) instant. due_date is a
+   * board-local date, so overdue/due_today/this-week must be judged against THIS, not UTC today() —
+   * near a UTC rollover the two differ by a day. Falls back to UTC today() on an invalid IANA zone
+   * (mirrors extractLocalDate's degrade-gracefully posture). The default Fortaleza zone makes every
+   * caller a no-op for the current all-Fortaleza deploy. Uses the same en-CA Intl idiom as
+   * extractLocalDate.
+   */
+  private boardToday(): string {
+    try {
+      const fmt = new Intl.DateTimeFormat('en-CA', {
+        timeZone: this.boardTz,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      });
+      const p = Object.fromEntries(fmt.formatToParts(nowInstant()).map((x) => [x.type, x.value]));
+      return `${p.year}-${p.month}-${p.day}`;
+    } catch {
+      return today();
+    }
+  }
+
+  /** board-local today shifted by `days` whole calendar days. UTC-anchored date-only arithmetic on
+   *  the YYYY-MM-DD (midnight-UTC + setUTCDate) — a whole-day calendar step, DST-safe, NOT a tz-offset
+   *  shift. Mirrors reminderDateFromDue's pattern. Used for the tomorrow / next-N-day window bounds. */
+  private boardDateOffset(days: number): string {
+    const d = new Date(this.boardToday() + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
+  }
+
+  /** Monday (start) of the board-local ISO week containing board-local today. Mirrors weekStart(). */
+  private boardWeekStart(): string {
+    const d = new Date(this.boardToday() + 'T00:00:00Z');
+    const day = d.getUTCDay(); // 0=Sun … 6=Sat
+    const diff = day === 0 ? 6 : day - 1;
+    d.setUTCDate(d.getUTCDate() - diff);
+    return d.toISOString().slice(0, 10);
+  }
+
+  /** Sunday (end) of the board-local ISO week containing board-local today. Mirrors weekEnd(). */
+  private boardWeekEnd(): string {
+    const d = new Date(this.boardToday() + 'T00:00:00Z');
+    const day = d.getUTCDay();
+    const diff = day === 0 ? 0 : 7 - day;
+    d.setUTCDate(d.getUTCDate() + diff);
+    return d.toISOString().slice(0, 10);
+  }
+
   private static readonly moveActionLabels: Record<MoveParams['action'], string> = {
     start: 'Movida para 🔄 Em Andamento',
     wait: 'Movida para ⏳ Aguardando',
@@ -1132,7 +1169,7 @@ export class TaskflowEngine {
 
   private formatPersonTasksSummary(personName: string, tasks: any[]): string {
     const active = tasks.filter((task) => task.column !== 'done');
-    const todayStr = today();
+    const todayStr = this.boardToday();
     const seen = new Set<string>();
     const pick = (predicate: (task: any) => boolean) => active.filter((task) => {
       const key = `${task.board_id ?? this.boardId}:${task.id}`;
@@ -2553,10 +2590,8 @@ export class TaskflowEngine {
     }
 
     const tasks = this.apiBoardVisibleTasks(false).map((row) => this.serializeApiTask(row));
-    const todayStr = localDateString(new Date());
-    const weekEnd = new Date();
-    weekEnd.setDate(weekEnd.getDate() + 6);
-    const weekEndStr = localDateString(weekEnd);
+    const todayStr = this.boardToday();
+    const weekEndStr = this.boardDateOffset(6);
     const labelQuery = (params.label ?? '').trim().toLowerCase();
 
     let filtered: Record<string, unknown>[];
@@ -6956,7 +6991,7 @@ export class TaskflowEngine {
     const { topLevel, subtaskMap } = this.fetchActiveTasks();
     const nameOf = this.boardPersonNameMap();
     const personName = (id: string | null | undefined) => id ? nameOf.get(id) ?? id : null;
-    const todayStr = today();
+    const todayStr = this.boardToday();
     const projects = topLevel
       .filter((task: any) => task.type === 'project')
       .sort((a: any, b: any) => naturalTaskIdCompare(String(a.id), String(b.id)))
@@ -7167,7 +7202,7 @@ export class TaskflowEngine {
   /* ---------------------------------------------------------------- */
 
   private formatBoardView(mode: 'board' | 'standup' = 'board'): string {
-    const todayStr = today();
+    const todayStr = this.boardToday();
     const todayMs = new Date(todayStr).getTime();
     const tz = this.boardTz;
 
@@ -7324,7 +7359,7 @@ export class TaskflowEngine {
         'S\u00e1bado',
       ];
       lines.push(
-        `\ud83d\udcca *Board \u2014 ${dayNames[new Date().getDay()]}, ${d}/${m}/${y}*`,
+        `\ud83d\udcca *Board \u2014 ${dayNames[new Date(todayStr + 'T00:00:00Z').getUTCDay()]}, ${d}/${m}/${y}*`,
       );
     }
     lines.push(
@@ -7848,31 +7883,31 @@ export class TaskflowEngine {
         case 'overdue':
           return { success: true, data: this.queryVisibleTasks(
             "AND t.due_date < ? AND t.column != 'done'",
-            [today()],
+            [this.boardToday()],
             'ORDER BY t.due_date, t.id',
           ) };
 
         case 'due_today':
           return { success: true, data: this.queryVisibleTasks(
-            'AND t.due_date = ?', [today()],
+            'AND t.due_date = ?', [this.boardToday()],
           ) };
 
         case 'due_tomorrow':
           return { success: true, data: this.queryVisibleTasks(
-            'AND t.due_date = ?', [tomorrow()],
+            'AND t.due_date = ?', [this.boardDateOffset(1)],
           ) };
 
         case 'due_this_week':
           return { success: true, data: this.queryVisibleTasks(
             'AND t.due_date >= ? AND t.due_date <= ?',
-            [weekStart(), weekEnd()],
+            [this.boardWeekStart(), this.boardWeekEnd()],
             'ORDER BY t.due_date, t.id',
           ) };
 
         case 'next_7_days':
           return { success: true, data: this.queryVisibleTasks(
             'AND t.due_date >= ? AND t.due_date <= ?',
-            [today(), sevenDaysFromNow()],
+            [this.boardToday(), this.boardDateOffset(7)],
             'ORDER BY t.due_date, t.id',
           ) };
 
@@ -8113,7 +8148,7 @@ export class TaskflowEngine {
         /* ---------- Agenda ---------- */
 
         case 'agenda': {
-          const t = today();
+          const t = this.boardToday();
           return {
             success: true,
             data: {
@@ -8129,7 +8164,7 @@ export class TaskflowEngine {
         case 'agenda_week':
           return { success: true, data: this.queryVisibleTasks(
             'AND t.due_date >= ? AND t.due_date <= ?',
-            [weekStart(), weekEnd()],
+            [this.boardWeekStart(), this.boardWeekEnd()],
             'ORDER BY t.due_date, t.id',
           ) };
 
@@ -8241,7 +8276,7 @@ export class TaskflowEngine {
           const columnCounts: Record<string, number> = {};
           let overdueCount = 0;
           const assignees = new Set<string>();
-          const t = today();
+          const t = this.boardToday();
 
           for (const task of tasks) {
             const col = task.column ?? 'inbox';
@@ -8270,7 +8305,7 @@ export class TaskflowEngine {
             'person_name or sender_name',
           );
           const tasks = this.getTasksByAssignee(person.person_id);
-          const t = today();
+          const t = this.boardToday();
           const columnCounts: Record<string, number> = {};
           let overdueCount = 0;
 
@@ -8337,7 +8372,7 @@ export class TaskflowEngine {
 
         case 'summary': {
           const tasks = this.getAllActiveTasks();
-          const t = today();
+          const t = this.boardToday();
           let overdueCount = 0;
           let inProgressCount = 0;
           let blockingCount = 0;
@@ -10445,7 +10480,10 @@ export class TaskflowEngine {
 
   report(params: ReportParams): ReportResult {
     try {
-      const todayStr = today();
+      const todayStr = this.boardToday();
+      // UTC calendar day for the task_history `at LIKE` buckets below — they match the UTC-timestamp
+      // `at` column, so they must NOT shift to the board-local day (the report() coupling, Item 1).
+      const todayUtc = today();
       const isDigestOrWeekly = params.type === 'digest' || params.type === 'weekly';
       const isWeekly = params.type === 'weekly';
 
@@ -10506,13 +10544,10 @@ export class TaskflowEngine {
         )
         .all(...this.visibleTaskParams(), todayStr) as Array<{ id: string; title: string; assignee: string | null }>;
 
-      /* --- Due in next 48h (digest) / next week (weekly) --- */
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const tomorrowStr = tomorrow.toISOString().slice(0, 10);
-      const nextWeek = new Date();
-      nextWeek.setDate(nextWeek.getDate() + 7);
-      const nextWeekStr = nextWeek.toISOString().slice(0, 10);
+      /* --- Due in next 48h (digest) / next week (weekly) --- board-local upper bounds so the window
+       *     matches todayStr's basis (these are due_date comparisons). --- */
+      const tomorrowStr = this.boardDateOffset(1);
+      const nextWeekStr = this.boardDateOffset(7);
 
       let next48h: Array<{ id: string; title: string; assignee: string | null; due_date: string }> = [];
       let nextWeekDeadlines: Array<{ id: string; title: string; assignee: string | null; due_date: string }> = [];
@@ -10583,7 +10618,7 @@ export class TaskflowEngine {
                AND at LIKE ?
              ORDER BY task_id`,
           )
-          .all(this.boardId, `${todayStr}%`) as Array<{ task_id: string }>;
+          .all(this.boardId, `${todayUtc}%`) as Array<{ task_id: string }>;
       }
 
       /* --- Changes today count (digest + weekly) --- */
@@ -10594,7 +10629,7 @@ export class TaskflowEngine {
             `SELECT COUNT(*) AS cnt FROM task_history
              WHERE board_id = ? AND at LIKE ?`,
           )
-          .get(this.boardId, `${todayStr}%`) as { cnt: number };
+          .get(this.boardId, `${todayUtc}%`) as { cnt: number };
         changesTodayCount = row.cnt;
       }
 
@@ -11331,7 +11366,7 @@ export class TaskflowEngine {
       const overdue = this.db.prepare(
         `SELECT COUNT(*) as cnt FROM tasks
          WHERE ${this.visibleTaskScope()} AND due_date < ? AND column != 'done'`
-      ).get(...this.visibleTaskParams(), today()) as { cnt: number };
+      ).get(...this.visibleTaskParams(), this.boardToday()) as { cnt: number };
 
       const parts = ['inbox', 'next_action', 'in_progress', 'waiting', 'review']
         .filter(c => (countMap.get(c) ?? 0) > 0)
@@ -11423,7 +11458,10 @@ export class TaskflowEngine {
              )
            )`,
       )
-      .get(now.slice(0, 10), childBoardId, parentBoardId, parentTaskId, childBoardId, parentBoardId, parentTaskId) as any;
+      // boardToday() = the parent engine's board-local today (also fixes the prior now.slice UTC +
+      // replay-blindness). The counted tasks are CHILD-board; for the all-Fortaleza deploy this is a
+      // no-op. If child boards ever diverge in timezone, anchor on the child board's tz instead.
+      .get(this.boardToday(), childBoardId, parentBoardId, parentTaskId, childBoardId, parentBoardId, parentTaskId) as any;
 
     /* 2. Count cancelled work since last rollup */
     const cancelRow = this.db
