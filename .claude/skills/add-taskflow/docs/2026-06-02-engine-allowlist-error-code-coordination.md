@@ -174,3 +174,26 @@ Do the cross-cutting envelope work FIRST — it is shared by every area and is t
 - **Q5 — `api_query` blast radius.** Exposing `api_query` (needed for stats AND archive AND meeting reads) opens the entire read sub-mode surface in one allowlist entry. Acceptable? Confirm no sub-mode leaks cross-board data under `setVerbatimIds(true)` board scoping.
 - **Q6 — Meeting ambiguity signal.** How should `resolveMeetingTaskId`'s 2+-match case be signaled — a PROPOSED-NEW `error_code:'ambiguous'` (needs a tf-mcontrol map entry), or a `success:true` envelope carrying `candidates` (so the dashboard renders a picker)? It is a disambiguation prompt, not an error.
 - **Q7 — Rich-route shape.** Should tf-mcontrol branch the existing `POST/PATCH …/tasks` routes (rich fields → rich tool, else simple) or add separate rich endpoints? (tf-mcontrol decision; affects how the engine documents the flat-field schema.)
+
+---
+
+## 6. DECISIONS — resolved 2026-06-02 (owner)
+
+All 7 resolved. Net effect: the engine pass needs **neither `api_admin` nor `api_report`** exposed — a clean least-privilege outcome.
+
+- **Q1 → engine renames, dashboard map untouched.** Rename `invalid_confirmed_task_id` (engine `1068`) and the magnetism-ambiguity constant (engine `1080`) to `validation_error` (a malformed/unresolvable caller-supplied id). The error_code contract stays one-directional. NOTE: the dashboard selects by **exact id** (UI click), so the fuzzy magnetism guard likely rarely fires from this path — renaming is cheap insurance, low priority.
+- **Q2 → yes.** Roadmap mutate tools' `catch` blocks emit `internal_error` (→500), matching the `api_update_simple_task` reference.
+- **Q3 → link/unlink only.** Expose `api_hierarchy` alone (link/unlink/refresh_rollup/tag_parent). **No reparent/detach/merge** → **no `api_admin`**, no new hierarchy tools. Revisit only on a concrete UI need (then narrow dedicated tools, not broad `api_admin`).
+- **Q4 → read-only completed view.** "Archive" = see done/archived work via `api_query` read sub-modes (`archive`, `archive_search`, `completed_*`). **No engine write tool, no `api_report`, no `api_admin`.** The `api_query` exposure (Q5) covers it entirely.
+- **Q5 → accept + verify.** Expose the single `api_query` tool (read-only, board-scoped via flat `board_id` under `setVerbatimIds(true)`). Engine-agent MUST add an explicit verification that every read sub-mode honors the flat `board_id` scope and cannot leak cross-board rows.
+- **Q6 → success + candidates.** `resolveMeetingTaskId`'s 2+-match returns a `success:true` envelope carrying `candidates` (a "did you mean?" picker), NOT a new error_code. 0-match → `not_found` (404); malformed M-id → `validation_error` (422). (Same exact-id caveat as Q1.)
+- **Q7 → branch existing routes (tf-mcontrol).** Recommended: branch `POST/PATCH …/tasks` (rich fields → `api_create_task`/`api_update_task`, else the simple tools); no new endpoints. The engine exposes the same two tools either way — does not block the engine pass.
+
+### Resulting one-pass engine scope (decisions applied)
+
+1. **Cross-cutting envelope hardening** (highest leverage) on the FastAPI-facing tools in `taskflow-api-mutate.ts`: `err()` arg-rejections → structured `validation_error`; `catch` → `internal_error`; add structured codes to the codeless dispatcher failures (`reassign`, `hierarchy`, `update`, `query`-validation, meeting-resolution branches).
+2. **Rename** the two unmapped engine codes → `validation_error` (Q1).
+3. **Meeting ambiguity** → `success:true` + `candidates` (Q6).
+4. **Allowlist additions** (8 names, NEITHER `api_admin` NOR `api_report`): `api_reassign`, `api_hierarchy`, `api_query`, `api_create_meeting_task`, `api_reschedule_meeting`, `api_note_meeting`, `api_create_task`, `api_update_task` — each added in the same commit that hardens its envelope.
+5. **`api_query` board-scope verification** (Q5).
+6. **Publish flat-arg contracts** for `api_query` stats/archive/completed sub-modes + `api_create_task`/`api_update_task`/`api_create_meeting_task` `inputSchema`.
