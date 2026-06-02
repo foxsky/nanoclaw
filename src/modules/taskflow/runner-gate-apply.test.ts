@@ -31,11 +31,17 @@ function taskflowDb() {
   );
   return db;
 }
-function addRunner(db: Database.Database, id: string, tag: string, cron: string) {
+function addRunner(
+  db: Database.Database,
+  id: string,
+  tag: string,
+  cron: string,
+  processAfter = '2000-01-01T00:00:00Z', // past = due; sentinel keeps the window wide for non-A4 tests
+) {
   db.prepare(
     `INSERT INTO messages_in (id, kind, content, recurrence, status, trigger, process_after)
-     VALUES (?, 'task', ?, ?, 'pending', 1, '2000-01-01T00:00:00Z')`, // process_after in the past = due
-  ).run(id, envelope(`[${tag}] do the thing`), cron);
+     VALUES (?, 'task', ?, ?, 'pending', 1, ?)`,
+  ).run(id, envelope(`[${tag}] do the thing`), cron, processAfter);
 }
 function status(db: Database.Database, id: string): string {
   return (db.prepare('SELECT status FROM messages_in WHERE id = ?').get(id) as { status: string }).status;
@@ -111,6 +117,18 @@ describe('gateScheduledRunners', () => {
     // WITHOUT having marked the runner completed first — i.e. an error must never silence a board.
     expect(() => gateScheduledRunners(ib, tf, opts)).toThrow();
     expect(status(ib, 's')).toBe('pending');
+  });
+
+  it('A4: a late sweep anchors the window on the firing occurrence (process_after), so missed-window activity still fires', () => {
+    const { ib, tf } = dbs();
+    // The Monday standup (08:00 local = 11:00Z) was missed — the sweep is down until Wed noon.
+    // A member chatted Monday 11:30Z: inside the Monday standup's window, but BEFORE the window a
+    // now-anchored gate would use (which starts Tue 11:00Z). No pending task, so the ONLY thing that
+    // can keep the standup alive is that interaction being counted. With process_after threaded, it is.
+    tf.prepare("INSERT INTO task_history (board_id, at) VALUES ('b1','2026-06-01T11:30:00Z')").run();
+    addRunner(ib, 's', 'TF-STANDUP', STANDUP, '2026-06-01T11:00:00Z');
+    gateScheduledRunners(ib, tf, { boardId: 'b1', now: new Date('2026-06-03T12:00:00Z'), timeZone: TZ });
+    expect(status(ib, 's')).toBe('pending'); // Active via the missed-window interaction → fires
   });
 
   it('gates a foreign-timezone board in its OWN timezone (no guard skip)', () => {

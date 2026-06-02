@@ -113,6 +113,24 @@ describe('gateRunnerMessages', () => {
     expect(gateRunnerMessages([chat('c'), plainTask], opts(tf, ib))).toEqual([]);
   });
 
+  it('A4: a late sweep anchors the window on the firing occurrence (process_after), so missed-window activity still fires', () => {
+    const { tf, ib } = dbs();
+    // The Monday standup (08:00 local = 11:00Z) was missed — the container only wakes Wed noon. A
+    // member chatted Monday 11:30Z: inside the Monday standup's window, but BEFORE a now-anchored
+    // window (which starts Tue 11:00Z). No pending task, so the interaction being counted is the only
+    // thing that can keep the standup alive. With process_after threaded into the gate, it is.
+    tf.prepare("INSERT INTO task_history (board_id, at) VALUES ('b1','2026-06-01T11:30:00Z')").run();
+    const s = { ...runner('s', 'TF-STANDUP', STANDUP), process_after: '2026-06-01T11:00:00Z' };
+    const out = gateRunnerMessages([s], {
+      taskflowDb: tf,
+      inboundDb: ib,
+      boardId: 'b1',
+      now: new Date('2026-06-03T12:00:00Z'),
+      timeZone: TZ,
+    });
+    expect(out).toEqual([{ id: 's', job: 'standup', fired: true }]); // Active via missed-window interaction
+  });
+
   it('gates a foreign-timezone board in its OWN timezone (no guard skip)', () => {
     const { tf, ib } = dbs();
     tf.exec('CREATE TABLE board_runtime_config (board_id TEXT, timezone TEXT)');

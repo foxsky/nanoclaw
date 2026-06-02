@@ -88,6 +88,7 @@ export function gateRunnerMessages(messages: MessageInRow[], opts: ContainerGate
       cron,
       now: opts.now,
       timeZone: tz,
+      firingInstant: msg.process_after,
     });
     outcomes.push({ id: msg.id, job, fired: decideRunnerGate(job, state).fire });
   }

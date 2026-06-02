@@ -1,7 +1,13 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, describe, expect, it } from 'bun:test';
 
-import { computeRunnerState, isMondayLocal, localDateString, previousRunIso } from './runner-state.js';
+import {
+  computeRunnerState,
+  isMondayLocal,
+  localDateString,
+  previousRunBefore,
+  previousRunIso,
+} from './runner-state.js';
 
 // Container mirror of the host runner-state tests (src/modules/taskflow/runner-state.test.ts).
 // Same intent, bun:sqlite driver — the warm container must compute the board's RunnerState
@@ -58,6 +64,13 @@ describe('local date helpers', () => {
     // is the prior weekday's 08:00 = Fri 2026-05-29 08:00 local (11:00Z). A single prev() would
     // wrongly return today's 08:00 and collapse the interactions window.
     expect(previousRunIso(STANDUP_CRON, MON_NOON_Z, TZ)).toBe('2026-05-29T11:00:00.000Z');
+  });
+  it('previousRunBefore steps back ONCE from a firing occurrence (the occurrence IS a scheduled run)', () => {
+    // Anchored on the firing instant itself (Mon 08:00 = 11:00Z) the previous run is Fri 11:00Z —
+    // the same answer previousRunIso gives from `now` slightly past it, but computed from the
+    // occurrence so it can't drift when the sweep is late.
+    const monStandup = new Date('2026-06-01T11:00:00.000Z');
+    expect(previousRunBefore(STANDUP_CRON, monStandup, TZ)).toBe('2026-05-29T11:00:00.000Z');
   });
 });
 
@@ -151,5 +164,31 @@ describe('computeRunnerState', () => {
       "INSERT INTO tasks (id, board_id, column, assignee, due_date) VALUES ('PT1','p-board','in_progress','alice','2026-06-01')",
     ).run();
     expect(computeRunnerState(deps(tf, ib)).dueToday).toBe(true);
+  });
+
+  // A4: anchor the interactions window on the firing occurrence (process_after), not on `now`.
+  // Scenario: a Monday standup (08:00 local = 2026-06-01T11:00Z) is missed because the host sweep
+  // is down, and only runs Wed noon. A member chatted Monday 11:30Z — AFTER the Monday standup it
+  // belongs to, but BEFORE the now-anchored window (which starts Tue 11:00Z). Without anchoring on
+  // the firing instant the late sweep would read the board Idle and silently drop a standup that
+  // had real activity to report.
+  describe('A4 — firingInstant anchors the window to the missed occurrence, not the late `now`', () => {
+    const MON_STANDUP_Z = '2026-06-01T11:00:00.000Z'; // the occurrence the row fires for
+    const WED_NOON_Z = new Date('2026-06-03T12:00:00.000Z'); // sweep ran 2 days late
+    const MON_ACTIVITY_Z = '2026-06-01T11:30:00.000Z'; // chat right after the Monday standup
+
+    it('counts a member chat that lands in the missed occurrence window', () => {
+      const { tf, ib } = dbs();
+      ib.prepare("INSERT INTO messages_in (id, kind, timestamp) VALUES ('m1','chat',?)").run(MON_ACTIVITY_Z);
+      const state = computeRunnerState({ ...deps(tf, ib, WED_NOON_Z), firingInstant: MON_STANDUP_Z });
+      expect(state.interactions).toBe(true);
+    });
+
+    it('without firingInstant the same late sweep wrongly reads Idle (the bug A4 fixes)', () => {
+      const { tf, ib } = dbs();
+      ib.prepare("INSERT INTO messages_in (id, kind, timestamp) VALUES ('m1','chat',?)").run(MON_ACTIVITY_Z);
+      const state = computeRunnerState(deps(tf, ib, WED_NOON_Z)); // now-anchored: window starts Tue 11:00Z
+      expect(state.interactions).toBe(false);
+    });
   });
 });

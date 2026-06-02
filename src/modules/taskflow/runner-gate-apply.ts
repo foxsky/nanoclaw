@@ -55,6 +55,7 @@ interface DueRunnerRow {
   id: string;
   content: string;
   recurrence: string;
+  process_after: string | null;
 }
 
 /**
@@ -87,7 +88,7 @@ export function gateScheduledRunners(
 
   const due = inDb
     .prepare(
-      `SELECT id, content, recurrence FROM messages_in
+      `SELECT id, content, recurrence, process_after FROM messages_in
        WHERE status = 'pending' AND trigger = 1 AND kind = 'task' AND recurrence IS NOT NULL
          AND (process_after IS NULL OR datetime(process_after) <= datetime('now'))
          AND content LIKE '%[TF-%'`,
@@ -107,6 +108,7 @@ export function gateScheduledRunners(
       cron: row.recurrence,
       now: opts.now,
       timeZone: tz,
+      firingInstant: row.process_after,
     });
     const { fire } = decideRunnerGate(job, state);
     if (!fire) complete.run(row.id);

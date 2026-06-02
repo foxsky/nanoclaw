@@ -41,6 +41,15 @@ export function previousRunIso(cron: string, now: Date, tz: string): string {
   return it.prev().toDate().toISOString(); // the run before it
 }
 
+/**
+ * ISO of the run STRICTLY before `occurrence` — where `occurrence` IS a scheduled cron run (the
+ * firing row's process_after). Anchoring the window on the occurrence instead of `now` keeps the
+ * interactions window correct even when the sweep is delayed and `now` has drifted past it (A4).
+ */
+export function previousRunBefore(cron: string, occurrence: Date, tz: string): string {
+  return CronExpressionParser.parse(cron, { tz, currentDate: occurrence }).prev().toDate().toISOString();
+}
+
 function count(db: Database.Database, sql: string, ...params: unknown[]): number {
   const row = db.prepare(sql).get(...params) as { n: number } | undefined;
   return row?.n ?? 0;
@@ -53,11 +62,16 @@ export interface RunnerStateDeps {
   cron: string;
   now: Date;
   timeZone: string;
+  /** The firing row's `process_after` (ISO) — when set, the interactions window is anchored on this
+   *  scheduled occurrence rather than `now`, so a delayed/overdue sweep can't shift it (A4). */
+  firingInstant?: string | null;
 }
 
 export function computeRunnerState(deps: RunnerStateDeps): RunnerState {
-  const { taskflowDb, inboundDb, boardId, cron, now, timeZone } = deps;
-  const since = previousRunIso(cron, now, timeZone);
+  const { taskflowDb, inboundDb, boardId, cron, now, timeZone, firingInstant } = deps;
+  const since = firingInstant
+    ? previousRunBefore(cron, new Date(firingInstant), timeZone)
+    : previousRunIso(cron, now, timeZone);
   const localDate = localDateString(now, timeZone);
   const weekday = localWeekday(now, timeZone);
 
