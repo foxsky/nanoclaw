@@ -12,8 +12,10 @@
  *   - Idle:   nothing pending and no interactions → everything silent.
  *
  * This module is pure policy. The caller computes `RunnerState` (pending / interactions / dueToday /
- * isMonday) from taskflow.db + inbound messages in the board's local timezone, and acts on `fire` /
- * `summaryMode`. `dueToday` already folds in "today is a weekday" (weekend due dates → false).
+ * isMonday) from taskflow.db + inbound messages in the board's local timezone, and acts on `fire`.
+ * (`summaryMode` is advisory and currently unconsumed — the digest's resumo form is baked into
+ * `DIGEST_PROMPT` at provision, not applied from this flag.) `dueToday` already folds in "today is a
+ * weekday" (weekend due dates → false).
  */
 export type RunnerJob = 'standup' | 'digest' | 'review';
 
