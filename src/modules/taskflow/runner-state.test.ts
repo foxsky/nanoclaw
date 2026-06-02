@@ -48,8 +48,11 @@ describe('local date helpers', () => {
     // 2026-06-01T02:00Z is still 2026-05-31 23:00 in GMT-3.
     expect(localDateString(new Date('2026-06-01T02:00:00Z'), TZ)).toBe('2026-05-31');
   });
-  it('previousRunIso gives the cron occurrence before now', () => {
-    expect(previousRunIso(STANDUP_CRON, MON_NOON_Z, TZ)).toBe('2026-06-01T11:00:00.000Z');
+  it('previousRunIso gives the run BEFORE the one firing now (not the current occurrence)', () => {
+    // Now = Mon 09:00 local; the standup firing now is Mon 08:00 (11:00Z). The *previous* run
+    // is the prior weekday's 08:00 = Fri 2026-05-29 08:00 local (11:00Z). A single prev() would
+    // wrongly return today's 08:00 and collapse the interactions window.
+    expect(previousRunIso(STANDUP_CRON, MON_NOON_Z, TZ)).toBe('2026-05-29T11:00:00.000Z');
   });
 });
 
@@ -100,7 +103,8 @@ describe('computeRunnerState', () => {
 
   it('interactions: activity BEFORE the previous run does not count', () => {
     const { tf, ib } = dbs();
-    tf.prepare("INSERT INTO task_history (board_id, at) VALUES ('b1','2026-06-01T10:00:00Z')").run(); // before 11:00Z
+    // Previous standup run is Fri 2026-05-29 11:00Z; seed activity before it (Thu) → not in window.
+    tf.prepare("INSERT INTO task_history (board_id, at) VALUES ('b1','2026-05-28T10:00:00Z')").run();
     expect(computeRunnerState(deps(tf, ib)).interactions).toBe(false);
   });
 

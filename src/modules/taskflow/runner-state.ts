@@ -28,9 +28,17 @@ export function localDateString(now: Date, tz: string): string {
   );
 }
 
-/** ISO of the runner cron's occurrence strictly before `now` — i.e. its last scheduled run. */
+/**
+ * ISO of the runner's PREVIOUS scheduled run — the occurrence before the one firing now.
+ * The gate only runs on already-due rows, so `now >= the firing occurrence`; a single prev()
+ * from now returns that firing occurrence (window ≈ a few seconds → active boards wrongly look
+ * idle). Step back twice: first prev() = the occurrence being fired, second = the prior run.
+ * For a daily runner that's ~24h ago; for the weekly review, ~1 week ago.
+ */
 export function previousRunIso(cron: string, now: Date, tz: string): string {
-  return CronExpressionParser.parse(cron, { tz, currentDate: now }).prev().toDate().toISOString();
+  const it = CronExpressionParser.parse(cron, { tz, currentDate: now });
+  it.prev(); // the occurrence currently firing (<= now)
+  return it.prev().toDate().toISOString(); // the run before it
 }
 
 function count(db: Database.Database, sql: string, ...params: unknown[]): number {
