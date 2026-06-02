@@ -177,6 +177,12 @@ async function sweepSession(session: Session): Promise<void> {
     // container/agent-runner/src/db/connection.ts). Otherwise the reset path
     // would keep bumping process_after into the future, dueCount would stay 0,
     // and the wake would never fire.
+    // Gate scheduled TaskFlow runners on board state before the wake: idle/stale boards have
+    // their due [TF-*] runners marked completed here (so they drop out of the due count and the
+    // recurrence fanout below still advances them) rather than waking the agent to post. Fail-open.
+    const { gateDueRunnersForSession } = await import('./modules/taskflow/runner-gate-apply.js');
+    gateDueRunnersForSession(inDb, agentGroup.folder);
+
     const dueCount = countDueMessages(inDb);
     if (dueCount > 0 && !isContainerRunning(session.id)) {
       log.info('Waking container for due messages', { sessionId: session.id, count: dueCount });
