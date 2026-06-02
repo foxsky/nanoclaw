@@ -102,4 +102,14 @@ describe('gateScheduledRunners', () => {
     const out = gateScheduledRunners(ib, tf, opts);
     expect(out).toEqual([{ id: 's', job: 'standup', fired: false }]); // idle → suppressed
   });
+
+  it('a compute error never suppresses the runner — it propagates to the fail-open wrapper, row stays pending', () => {
+    const { ib, tf } = dbs();
+    addRunner(ib, 's', 'TF-STANDUP', STANDUP);
+    tf.exec('DROP TABLE tasks'); // computeRunnerState's first query throws
+    // The throw must reach gateDueRunnersForSession's fail-open try/catch (FS-coupled, Codex-verified)
+    // WITHOUT having marked the runner completed first — i.e. an error must never silence a board.
+    expect(() => gateScheduledRunners(ib, tf, opts)).toThrow();
+    expect(status(ib, 's')).toBe('pending');
+  });
 });

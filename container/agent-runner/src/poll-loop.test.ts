@@ -308,6 +308,14 @@ describe('gateScheduledRunners (warm-container runner gate)', () => {
     expect(kept.find((m) => m.id === 'chat-1')).toBeDefined();
     expect(ackStatus('chat-1')).toBeUndefined();
   });
+
+  it('fails OPEN: a gating error leaves the runner in the batch, never silenced', () => {
+    insertRunner('s', 'TF-STANDUP', STANDUP);
+    getTaskflowDb().exec('DROP TABLE tasks'); // make computeRunnerState throw mid-gate
+    const kept = batch();
+    expect(kept.find((m) => m.id === 's')).toBeDefined(); // still fires (not dropped)
+    expect(ackStatus('s')).toBeUndefined(); // never marked completed → host won't advance/suppress it
+  });
 });
 
 describe('TaskFlow pure greeting guard', () => {
