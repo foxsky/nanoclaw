@@ -112,6 +112,16 @@ describe('gateRunnerMessages', () => {
     const plainTask = { ...runner('x', 'NOT-A-RUNNER', STANDUP), content: JSON.stringify({ prompt: 'just a task' }) };
     expect(gateRunnerMessages([chat('c'), plainTask], opts(tf, ib))).toEqual([]);
   });
+
+  it('per-board-TZ guard: a board in a different timezone than the gate is not gated (returns no outcomes)', () => {
+    const { tf, ib } = dbs();
+    tf.exec('CREATE TABLE board_runtime_config (board_id TEXT, timezone TEXT)');
+    tf.prepare("INSERT INTO board_runtime_config (board_id, timezone) VALUES ('b1','America/New_York')").run();
+    // Idle board → would normally suppress the standup; the foreign-zone guard skips gating instead,
+    // mirroring the host (the runner FIRE time is scheduled in the deploy TZ, not the board's).
+    const out = gateRunnerMessages([runner('s', 'TF-STANDUP', STANDUP)], opts(tf, ib)); // opts.timeZone = America/Fortaleza
+    expect(out).toEqual([]);
+  });
 });
 
 describe('applyRunnerGate', () => {

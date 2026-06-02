@@ -25,9 +25,28 @@ const JOB_TAGS: ReadonlyArray<[string, RunnerJob]> = [
   ['[TF-REVIEW]', 'review'],
 ];
 
+function log(msg: string): void {
+  console.error(`[runner-gate] ${msg}`);
+}
+
 function jobFromContent(content: string): RunnerJob | null {
   for (const [tag, job] of JOB_TAGS) if (content.includes(tag)) return job;
   return null;
+}
+
+/**
+ * The board's configured timezone, or undefined if it can't be determined (missing table/row).
+ * Undefined → assume the board shares the gate's zone (every board today) and gate normally.
+ */
+function boardTimezone(taskflowDb: Database, boardId: string): string | undefined {
+  try {
+    const row = taskflowDb.prepare('SELECT timezone FROM board_runtime_config WHERE board_id = ?').get(boardId) as
+      | { timezone: string | null }
+      | null;
+    return row?.timezone ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** A due TaskFlow runner: a wake-eligible recurring task whose envelope carries a [TF-*] tag. */
@@ -51,6 +70,16 @@ export interface GateOutcome {
 
 /** Per-runner gate decisions for the [TF-*] runners in `messages` (non-runner rows are ignored). */
 export function gateRunnerMessages(messages: MessageInRow[], opts: ContainerGateOpts): GateOutcome[] {
+  // Per-board-TZ guard (mirror of the host gate). The runner's FIRE time is scheduled in the deploy
+  // TZ, so the gate can only judge Monday/due-today correctly for boards in that same zone. A board
+  // in a different timezone is left ungated (every runner fires) rather than suppressed against the
+  // wrong calendar day. Full per-board gating is deferred (the cron must move to the board's zone).
+  const boardTz = boardTimezone(opts.taskflowDb, opts.boardId);
+  if (boardTz && boardTz !== opts.timeZone) {
+    log(`gating skipped — board ${opts.boardId} timezone ${boardTz} != gate timezone ${opts.timeZone} (runners fire ungated)`);
+    return [];
+  }
+
   const outcomes: GateOutcome[] = [];
   for (const msg of messages) {
     const cron = msg.recurrence;

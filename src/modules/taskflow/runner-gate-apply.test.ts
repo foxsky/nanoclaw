@@ -112,4 +112,17 @@ describe('gateScheduledRunners', () => {
     expect(() => gateScheduledRunners(ib, tf, opts)).toThrow();
     expect(status(ib, 's')).toBe('pending');
   });
+
+  it('per-board-TZ guard: a board in a different timezone than the gate is not gated (all runners fire)', () => {
+    const { ib, tf } = dbs();
+    addRunner(ib, 's', 'TF-STANDUP', STANDUP); // idle board → would normally be suppressed
+    // ...but the board is configured in a foreign timezone. The runner FIRE time is scheduled in the
+    // deploy TZ (scheduleRunners + handleRecurrence), so a board in another zone can only be gated
+    // once full per-board TZ ships; until then it must fire as pre-gate, never judged in the wrong day.
+    tf.exec('CREATE TABLE board_runtime_config (board_id TEXT, timezone TEXT)');
+    tf.prepare("INSERT INTO board_runtime_config (board_id, timezone) VALUES ('b1','America/New_York')").run();
+    const out = gateScheduledRunners(ib, tf, opts); // opts.timeZone = America/Fortaleza
+    expect(out).toEqual([]); // guard short-circuits before any gating decision
+    expect(status(ib, 's')).toBe('pending'); // runner left to fire
+  });
 });
