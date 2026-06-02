@@ -1,5 +1,15 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-06-01 — Document the native memory layer + voice transcription
+
+Documented tools that had shipped to the container surface but were absent from SKILL.md and the CLAUDE.md template (board agents had no instruction to use them):
+
+- **Long-term memory** (`memory_note` / `memory_search`) — per-board SQLite+FTS5 store at `/workspace/agent/memory/`, gated on the board id; once-per-session recency auto-recall (cache-safe); PreCompact auto-capture distils durable facts via a small model. Replaces the v1 Redis agent-memory-server.
+- **Hybrid recall + forgetting** (opt-in via `NANOCLAW_MEMORY_*` host env) — FTS5+vector RRF fusion (Ollama `bge-m3` embed-on-write), operator-selectable auto-capture backend (`anthropic`|`ollama`), and age/budget-based pruning. Host activation forwarder `memoryEnvArgs()` in `container-runner.ts` is an exact 9-knob allowlist (cannot touch board scope / proxy / auth).
+- **Voice transcription** (`transcribe_audio`) — OpenAI Whisper via the OneCLI gateway, for audio attachments that arrive with a saved path rather than pre-transcribed text.
+
+Docs only — no behavior change. SKILL.md: new **Memory & Transcription** section + Capabilities bullets + `NANOCLAW_MEMORY_*` env table. Template: `transcribe_audio` added to **Voice Messages** + new **Memory** usage section (`memory_note`/`memory_search` pass through the v1→v2 substitution unchanged, so migrated and new boards both get them).
+
 ## 2026-05-16 — Phase 1 MCP tools: board-config (4 tools) — ⚠ SUPERSEDED, rework pending
 
 > **⚠ Correction (same day): these 4 tools are architecturally superseded and NOT done.** The user clarified the hard requirement: the MCP server is the single gateway so tf-mcontrol (UI) drives the **same engine path the WhatsApp agent uses** — identical behavior + side effects. These tools were built as pure-SQL replicas of the *current FastAPI* handlers, which for board/people ops already diverge from the engine/WhatsApp path (engine `api_admin`: phone-normalization, hierarchy child-board auto-provision, task-reassignment-on-remove, notifications/history). They give UI==current-API + 0d-golden parity but **UI≠WhatsApp** — the opposite of the principle. Rework: extract `register_person`/`remove_person`/`set_wip_limit`(+role) from the `api_admin` dispatcher into named engine methods that both `api_admin` and these `api_*` tools call; re-baseline the 0d goldens (behavior intentionally changes). The implementation below stands only as the SQL/contract reference for the rework. **Phase 1 is not complete.**

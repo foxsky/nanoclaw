@@ -54,6 +54,13 @@ Beyond the core Kanban board and quick capture, the TaskFlow agent exposes the f
 **Semantic search & embeddings:**
 - semantic search, duplicate detection on task create (0.85 similarity threshold), and automatic context-preamble injection ranked by embeddings
 
+**Long-term memory:**
+- remember durable facts across sessions (`memory_note`) and recall them (`memory_search`), per-board, with once-per-session auto-recall of recent memories and auto-capture at context compaction
+- optional hybrid keyword+semantic recall and age/size-based forgetting (operator-enabled via `NANOCLAW_MEMORY_*` host env)
+
+**Voice & audio:**
+- transcribe inbound voice/audio attachments to text (`transcribe_audio`, OpenAI Whisper via the OneCLI gateway)
+
 **Admin:**
 - manage board holidays (add, remove, or bulk-set per year) — the non-business-day engine reads these entries
 
@@ -68,6 +75,28 @@ npm run build
 ```
 
 This brings in the TaskFlow engine, board provisioning, container runtime wiring, and all supporting code. No manual patches needed — the branch contains everything.
+
+## Memory & Transcription
+
+Two container-side MCP tool groups beyond the TaskFlow surface, available on every board (gated only on the board id, so no extra setup):
+
+**Long-term memory** (`memory_note`, `memory_search`) — a per-board SQLite+FTS5 store at `/workspace/agent/memory/`, replacing the v1 Redis agent-memory-server:
+- `memory_note({ text, kind? })` — save a durable fact (decision, preference, recurring context).
+- `memory_search({ query, limit? })` — recall stored facts; returns cited memories with their saved date.
+- The most recent memories are auto-recalled into the system prompt once per session (cache-safe); at context compaction a small model distils the session into durable facts (auto-capture).
+
+**Voice transcription** (`transcribe_audio`) — `transcribe_audio({ path })` transcribes a voice/audio attachment (OpenAI Whisper) when an inbound message includes one (`[audio: … saved to /workspace/media/…]`). Auth is handled by the OneCLI gateway; on a credential error an admin assigns an OpenAI secret to the agent (`onecli agents set-secret-mode`).
+
+### Optional: hybrid recall, capture backend, and forgetting
+
+Core memory (note/search + recency auto-recall) needs **no configuration**. The richer features are opt-in via **host** environment variables (set in `.env`/systemd; the host forwards the `NANOCLAW_MEMORY_*` set into every container):
+
+| Env var | Effect |
+|---|---|
+| `NANOCLAW_MEMORY_EMBED_MODEL` / `NANOCLAW_MEMORY_EMBED_URL` | Enable hybrid FTS5+vector recall (e.g. `bge-m3` on an Ollama host). Unset → keyword-only. |
+| `NANOCLAW_MEMORY_EXTRACT_BACKEND` (`anthropic`\|`ollama`) / `_EXTRACT_MODEL` / `_EXTRACT_URL` | Auto-capture extraction backend. Default `anthropic`; set `ollama` on OAuth-only installs (where the default would 401). |
+| `NANOCLAW_MEMORY_MAX_AGE_DAYS` / `NANOCLAW_MEMORY_KEEP_TOP_N` | Forgetting: prune memories older than N days / keep only the newest N per board. Unset → never forget. |
+| `NANOCLAW_MEMORY_EMBED_TIMEOUT_MS` / `NANOCLAW_MEMORY_EXTRACT_TIMEOUT_MS` | Per-call timeouts (optional). |
 
 ## Phase 1: Configuration
 
