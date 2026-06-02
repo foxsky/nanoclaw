@@ -131,6 +131,20 @@ describe('gateScheduledRunners', () => {
     expect(status(ib, 's')).toBe('pending'); // Active via the missed-window interaction → fires
   });
 
+  it('A4 retry path: a backoff-rewritten process_after still anchors on the real occurrence, so the runner fires', () => {
+    const { ib, tf } = dbs();
+    // The Monday standup (08:00 local = 11:00Z) fired, a container claimed it and crashed;
+    // resetStuckProcessingRows rewrote process_after to now+backoff = 11:05Z, a NON-occurrence. A
+    // member changed a task at Mon 06:00 local (09:00Z) — BEFORE the standup but inside its real
+    // window (Fri 11:00Z, Mon 11:00Z]. No pending task, so only that interaction can keep the standup
+    // alive. Snapping the backoff anchor to the Monday occurrence keeps it; anchoring naively on
+    // 11:05Z collapses the window to (Mon 11:00Z, now] and would wrongly suppress the retry.
+    tf.prepare("INSERT INTO task_history (board_id, at) VALUES ('b1','2026-06-01T09:00:00Z')").run(); // Mon 06:00 local
+    addRunner(ib, 's', 'TF-STANDUP', STANDUP, '2026-06-01T11:05:00Z'); // retry-backoff instant
+    gateScheduledRunners(ib, tf, { boardId: 'b1', now: new Date('2026-06-01T13:00:00Z'), timeZone: TZ });
+    expect(status(ib, 's')).toBe('pending'); // Active via the real-window interaction → fires
+  });
+
   it('gates a foreign-timezone board in its OWN timezone (no guard skip)', () => {
     const { ib, tf } = dbs();
     tf.exec('CREATE TABLE board_runtime_config (board_id TEXT, timezone TEXT)');

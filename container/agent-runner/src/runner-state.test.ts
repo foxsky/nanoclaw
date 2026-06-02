@@ -72,6 +72,14 @@ describe('local date helpers', () => {
     const monStandup = new Date('2026-06-01T11:00:00.000Z');
     expect(previousRunBefore(STANDUP_CRON, monStandup, TZ)).toBe('2026-05-29T11:00:00.000Z');
   });
+  it('previousRunBefore snaps a retry-backoff anchor to the occurrence at-or-before it (not the anchor)', () => {
+    // After a crash mid-processing, resetStuckProcessingRows rewrites process_after to now+backoff —
+    // a NON-occurrence instant (e.g. Mon 08:05 local = 11:05Z). The window must still anchor on the
+    // Monday standup occurrence (08:00 = 11:00Z) so `since` = the prior run, Fri 11:00Z. Anchoring
+    // naively on 11:05Z would step back only to Mon 11:00Z and collapse the window. (Codex gpt-5.5.)
+    const retryAnchor = new Date('2026-06-01T11:05:00.000Z');
+    expect(previousRunBefore(STANDUP_CRON, retryAnchor, TZ)).toBe('2026-05-29T11:00:00.000Z');
+  });
 });
 
 describe('computeRunnerState', () => {

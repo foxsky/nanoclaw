@@ -45,11 +45,20 @@ export function previousRunIso(cron: string, now: Date, tz: string): string {
 }
 
 /**
- * ISO of the run STRICTLY before `occurrence` — where `occurrence` IS a scheduled cron run (the
- * firing row's process_after). Anchoring the window on the occurrence instead of `now` keeps the
- * interactions window correct even when the sweep is delayed and `now` has drifted past it (A4).
+ * ISO of the scheduled run before the occurrence the firing row belongs to, given the row's
+ * `process_after` as `anchor`. Anchoring on the occurrence instead of `now` keeps the interactions
+ * window correct when the sweep is delayed and `now` has drifted past it (A4).
+ *
+ * `anchor` is usually an exact cron occurrence, but the retry path rewrites process_after to
+ * now+backoff (resetStuckProcessingRows → retryWithBackoff), a NON-occurrence instant slightly
+ * after the real tick. So first snap to the occurrence AT-OR-BEFORE the anchor (the +1ms makes an
+ * exact-occurrence anchor count as "at"), then step back once. Without the snap a backoff anchor
+ * would step back only to its own firing occurrence and collapse the window (Codex gpt-5.5).
  */
-export function previousRunBefore(cron: string, occurrence: Date, tz: string): string {
+export function previousRunBefore(cron: string, anchor: Date, tz: string): string {
+  const occurrence = CronExpressionParser.parse(cron, { tz, currentDate: new Date(anchor.getTime() + 1) })
+    .prev()
+    .toDate();
   return CronExpressionParser.parse(cron, { tz, currentDate: occurrence }).prev().toDate().toISOString();
 }
 
