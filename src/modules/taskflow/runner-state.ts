@@ -61,15 +61,41 @@ export function computeRunnerState(deps: RunnerStateDeps): RunnerState {
   const localDate = localDateString(now, timeZone);
   const weekday = localWeekday(now, timeZone);
 
+  // Reportable work = local pending OR parent-board tasks assigned to THIS board's people — the
+  // PARENT_BOARD_HINT scope the runners themselves report (provision-shared.ts). Without the parent
+  // clause a child/delegated board with only delegated work would read Idle and be wrongly silenced.
   const pending =
-    count(taskflowDb, "SELECT COUNT(*) n FROM tasks WHERE board_id = ? AND column != 'done'", boardId) > 0;
+    count(
+      taskflowDb,
+      `SELECT (
+         EXISTS(SELECT 1 FROM tasks WHERE board_id = ? AND column != 'done')
+         OR EXISTS(SELECT 1 FROM tasks
+              WHERE board_id = (SELECT parent_board_id FROM boards WHERE id = ?)
+                AND column != 'done'
+                AND assignee IN (SELECT person_id FROM board_people WHERE board_id = ?))
+       ) AS n`,
+      boardId,
+      boardId,
+      boardId,
+    ) > 0;
 
   // due_date is stored either date-only or as an ISO instant; match the date prefix. (Near-midnight
-  // ISO dues use their UTC date — a minor edge; date-only values, the common case, are exact.)
+  // ISO dues use their UTC date — a minor edge; date-only values, the common case, are exact.) Same
+  // local-or-parent-assigned scope as pending.
   const dueTaskToday =
     count(
       taskflowDb,
-      "SELECT COUNT(*) n FROM tasks WHERE board_id = ? AND column != 'done' AND substr(due_date, 1, 10) = ?",
+      `SELECT (
+         EXISTS(SELECT 1 FROM tasks WHERE board_id = ? AND column != 'done' AND substr(due_date, 1, 10) = ?)
+         OR EXISTS(SELECT 1 FROM tasks
+              WHERE board_id = (SELECT parent_board_id FROM boards WHERE id = ?)
+                AND column != 'done'
+                AND assignee IN (SELECT person_id FROM board_people WHERE board_id = ?)
+                AND substr(due_date, 1, 10) = ?)
+       ) AS n`,
+      boardId,
+      localDate,
+      boardId,
       boardId,
       localDate,
     ) > 0;

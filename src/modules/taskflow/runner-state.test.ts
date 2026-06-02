@@ -12,8 +12,10 @@ const SAT_NOON_Z = new Date('2026-06-06T12:00:00Z');
 function seedDbs() {
   const tf = new Database(':memory:');
   tf.exec(
-    `CREATE TABLE tasks (id TEXT, board_id TEXT, column TEXT, due_date TEXT);
-     CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT, at TEXT);`,
+    `CREATE TABLE tasks (id TEXT, board_id TEXT, column TEXT, due_date TEXT, assignee TEXT);
+     CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT, at TEXT);
+     CREATE TABLE boards (id TEXT, parent_board_id TEXT);
+     CREATE TABLE board_people (board_id TEXT, person_id TEXT);`,
   );
   const ib = new Database(':memory:');
   ib.exec(`CREATE TABLE messages_in (id TEXT, kind TEXT, timestamp TEXT);`);
@@ -114,5 +116,37 @@ describe('computeRunnerState', () => {
     expect(computeRunnerState(deps(tf, ib)).interactions).toBe(false); // runner row, not a member message
     ib.prepare("INSERT INTO messages_in (id, kind, timestamp) VALUES ('m2','chat','2026-06-01T11:30:00Z')").run();
     expect(computeRunnerState(deps(tf, ib)).interactions).toBe(true);
+  });
+
+  // Child/delegated boards: a board's reportable work includes parent-board tasks assigned to its
+  // own people (the PARENT_BOARD_HINT scope the runners report). Without this the gate would
+  // silence a hierarchy board that has only delegated work. (Codex gpt-5.5/xhigh finding.)
+  it("child board: a parent-board task assigned to THIS board's person counts as pending", () => {
+    const { tf, ib } = dbs();
+    tf.prepare("INSERT INTO boards (id, parent_board_id) VALUES ('b1','p-board')").run();
+    tf.prepare("INSERT INTO board_people (board_id, person_id) VALUES ('b1','alice')").run();
+    // No local task on b1; one pending parent task assigned to alice (a b1 person).
+    tf.prepare(
+      "INSERT INTO tasks (id, board_id, column, assignee) VALUES ('PT1','p-board','in_progress','alice')",
+    ).run();
+    expect(computeRunnerState(deps(tf, ib)).pending).toBe(true);
+  });
+
+  it('child board: a parent task assigned to someone NOT on this board does not count', () => {
+    const { tf, ib } = dbs();
+    tf.prepare("INSERT INTO boards (id, parent_board_id) VALUES ('b1','p-board')").run();
+    tf.prepare("INSERT INTO board_people (board_id, person_id) VALUES ('b1','alice')").run();
+    tf.prepare("INSERT INTO tasks (id, board_id, column, assignee) VALUES ('PT1','p-board','in_progress','bob')").run();
+    expect(computeRunnerState(deps(tf, ib)).pending).toBe(false);
+  });
+
+  it("child board: a parent task assigned to this board's person due today drives dueToday", () => {
+    const { tf, ib } = dbs();
+    tf.prepare("INSERT INTO boards (id, parent_board_id) VALUES ('b1','p-board')").run();
+    tf.prepare("INSERT INTO board_people (board_id, person_id) VALUES ('b1','alice')").run();
+    tf.prepare(
+      "INSERT INTO tasks (id, board_id, column, assignee, due_date) VALUES ('PT1','p-board','in_progress','alice','2026-06-01')",
+    ).run();
+    expect(computeRunnerState(deps(tf, ib)).dueToday).toBe(true);
   });
 });

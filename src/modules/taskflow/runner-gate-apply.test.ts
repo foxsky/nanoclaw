@@ -24,8 +24,10 @@ function inboundDb() {
 function taskflowDb() {
   const db = new Database(':memory:');
   db.exec(
-    `CREATE TABLE tasks (id TEXT, board_id TEXT, column TEXT, due_date TEXT);
-     CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT, at TEXT);`,
+    `CREATE TABLE tasks (id TEXT, board_id TEXT, column TEXT, due_date TEXT, assignee TEXT);
+     CREATE TABLE task_history (id INTEGER PRIMARY KEY AUTOINCREMENT, board_id TEXT, at TEXT);
+     CREATE TABLE boards (id TEXT, parent_board_id TEXT);
+     CREATE TABLE board_people (board_id TEXT, person_id TEXT);`,
   );
   return db;
 }
