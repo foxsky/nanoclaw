@@ -4159,7 +4159,9 @@ export class TaskflowEngine {
       if ((params.type === 'recurring' || params.type === 'project' || params.type === 'meeting') && params.recurrence) {
         recurrence = params.recurrence;
         if (params.type !== 'meeting' && !dueDate) {
-          dueDate = advanceDateByRecurrence(new Date(), params.recurrence);
+          // Seed the first occurrence from BOARD-LOCAL today (replay-aware), not UTC wall-clock —
+          // near the rollover a UTC `new Date()` lands the due_date a calendar day late (#387 Item 1).
+          dueDate = advanceDateByRecurrence(new Date(this.boardToday() + 'T00:00:00Z'), params.recurrence);
         }
       }
 

@@ -8257,6 +8257,24 @@ describe('TaskflowEngine — board-local today (#387 Item 1)', () => {
       expect(r.data!.formatted_report).toContain('01/06/2026');
       expect(r.data!.formatted_report).not.toContain('02/06/2026');
     });
+
+    it('recurring task seeds its first due_date from board-local today, not UTC wall-clock', () => {
+      process.env.NANOCLAW_PHASE_REPLAY_NOW = ROLLOVER; // board-local 2026-06-01, UTC 2026-06-02
+      const r = engine.create({
+        board_id: BOARD_ID,
+        type: 'recurring',
+        title: 'Daily check',
+        recurrence: 'daily',
+        sender_name: 'Alexandre',
+      });
+      expect(r.success).toBe(true);
+      const row = db
+        .prepare('SELECT due_date FROM tasks WHERE board_id = ? AND id = ?')
+        .get(BOARD_ID, r.task_id) as { due_date: string };
+      // board-local today 2026-06-01 + 1 day = 2026-06-02 (Tue, a business day). Seeding from UTC
+      // wall-clock would advance from 2026-06-02 → 2026-06-03, a day late for the team.
+      expect(row.due_date).toBe('2026-06-02');
+    });
   });
 
   describe('away from the rollover (board tz and UTC agree on the date)', () => {
