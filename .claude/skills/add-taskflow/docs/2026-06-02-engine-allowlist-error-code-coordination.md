@@ -256,3 +256,11 @@ All also require `board_id` (the handler injects it). The discriminator field is
 | `archive_search` | `search_text` |
 
 `api_create_task` / `api_update_task` / `api_create_meeting_task` `inputSchema` flat fields: read directly from their `tool.inputSchema` in `taskflow-api-mutate.ts` (kept as the single source of truth rather than duplicated here).
+
+### Closure review (workflow `wh452jbvu` + Codex gpt-5.5/xhigh)
+
+Both passes confirmed: the guard is FastAPI-only (no bypass), the subtree-scan denylist is complete, the Q6 *mutation* safety holds (candidates branch keeps `ok:false` → callers never reach `engine.update`), the `validationError()` conversion stayed within the hardened-handler boundary, and the lineage open-item is NOT a build blocker. Fixes applied from the reviews:
+
+- **Cross-consumer reporting (Codex HIGH):** the Q6 `success:true`-on-ambiguity contract collided with the in-container agent's "Post-write verification" rule (`CLAUDE.md.template:157`: treat `success:true` as write-success). Closed by adding a template exception — a `success:true` response carrying `data.candidates` is a disambiguation prompt, not a completed write; the agent asks which meeting and does not report done. (Owner-confirmed: keep Q6, add the template line.) The dashboard contract is unchanged.
+- **Cleanup (review NIT):** the ~62 inline `validation_error` envelopes → a local `validationError()` helper (matches `taskflow-api-chat.ts`/`taskflow-api-comment.ts`).
+- **Stale comment (Codex LOW):** the `FASTAPI_ALLOWLIST` header now lists the actually-excluded set (`api_admin`/`api_move`/`api_undo`/`api_report`/`api_dependency`).
