@@ -83,6 +83,12 @@ const FASTAPI_ALLOWLIST: ReadonlySet<string> = new Set([
   // reads). Sub-mode-gated below: api_query also exposes org-wide
   // cross-board read modes that the board-local dashboard must NOT reach.
   'api_query',
+  // meeting tools (#385 §6): create + name/M-id-resolved reschedule/note.
+  // Reschedule/note resolve the meeting by name; a 2+-match returns a
+  // success:true + data.candidates disambiguation (no mutation).
+  'api_create_meeting_task',
+  'api_reschedule_meeting',
+  'api_note_meeting',
 ]);
 
 /**

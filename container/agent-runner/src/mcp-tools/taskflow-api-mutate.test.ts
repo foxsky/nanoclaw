@@ -346,18 +346,22 @@ describe('api_create_meeting_task MCP tool (A10)', () => {
     expect(result.error).toMatch(/scheduled_at/);
   });
 
-  it('rejects non-string board_id', async () => {
+  // Arg-shape rejections return {success:false,error_code:'validation_error'}
+  // (HTTP 422 on the FastAPI surface), not raw err() text (→503).
+  it('rejects non-string board_id with validation_error', async () => {
     const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
     const response = await apiCreateMeetingTaskTool.handler({
       board_id: 42 as unknown as string,
       title: 'X',
       sender_name: 'alice',
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/board_id/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/board_id/);
   });
 
-  it('rejects non-array participants', async () => {
+  it('rejects non-array participants with validation_error', async () => {
     const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
     const response = await apiCreateMeetingTaskTool.handler({
       board_id: BOARD,
@@ -365,11 +369,13 @@ describe('api_create_meeting_task MCP tool (A10)', () => {
       sender_name: 'alice',
       participants: 'bob' as unknown as string[],
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/participants/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/participants/);
   });
 
-  it('rejects non-integer max_cycles', async () => {
+  it('rejects non-integer max_cycles with validation_error', async () => {
     const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
     const response = await apiCreateMeetingTaskTool.handler({
       board_id: BOARD,
@@ -377,11 +383,13 @@ describe('api_create_meeting_task MCP tool (A10)', () => {
       sender_name: 'alice',
       max_cycles: 1.5 as unknown as number,
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/max_cycles/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/max_cycles/);
   });
 
-  it('rejects non-string recurrence_anchor', async () => {
+  it('rejects non-string recurrence_anchor with validation_error', async () => {
     const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
     const response = await apiCreateMeetingTaskTool.handler({
       board_id: BOARD,
@@ -389,8 +397,10 @@ describe('api_create_meeting_task MCP tool (A10)', () => {
       sender_name: 'alice',
       recurrence_anchor: 42 as unknown as string,
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/recurrence_anchor/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/recurrence_anchor/);
   });
 
   it('requires_close_approval=true is forwarded for meetings (/simplify parallel fix)', async () => {
@@ -409,7 +419,7 @@ describe('api_create_meeting_task MCP tool (A10)', () => {
     expect(row.requires_close_approval).toBe(1);
   });
 
-  it('rejects non-boolean requires_close_approval on meeting tool', async () => {
+  it('rejects non-boolean requires_close_approval on meeting tool with validation_error', async () => {
     const { apiCreateMeetingTaskTool } = await import('./taskflow-api-mutate.ts');
     const response = await apiCreateMeetingTaskTool.handler({
       board_id: BOARD,
@@ -417,8 +427,10 @@ describe('api_create_meeting_task MCP tool (A10)', () => {
       sender_name: 'alice',
       requires_close_approval: 'yes' as unknown as boolean,
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/requires_close_approval/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/requires_close_approval/);
   });
 
   it('multiple non-self non-assignee participants → one notification_event each', async () => {
@@ -2512,7 +2524,12 @@ describe('api_reschedule_meeting MCP tool', () => {
     expect(simple.scheduled_at).toBeNull();
   });
 
-  it('returns ambiguity (no mutation) when 2+ meetings match the name', async () => {
+  it('returns ambiguity as success:true + data.candidates (no mutation) when 2+ meetings match the name', async () => {
+    // Q6: a 2+-match is a "did you mean?" disambiguation, NOT an error. It
+    // returns success:true with the candidates under `data` (the dashboard
+    // parser keeps only result.data on success → renders a picker). The
+    // discriminated-union `ok` stays false so BOTH callers short-circuit
+    // BEFORE engine.update — proving no wrong reschedule on an ambiguous match.
     const { apiRescheduleMeetingTool } = await import('./taskflow-api-mutate.ts');
     const a = await makeMeeting('Reunião SDU Norte', '2026-04-29T12:00:00Z');
     const b = await makeMeeting('Reunião SDU Centro', '2026-04-30T12:00:00Z');
@@ -2520,14 +2537,15 @@ describe('api_reschedule_meeting MCP tool', () => {
       board_id: BOARD, meeting: 'SDU', scheduled_at: '2026-05-05T12:00:00Z', sender_name: 'alice',
     });
     const out = JSON.parse(resp.content[0].text);
-    expect(out.success).toBe(false);
+    expect(out.success).toBe(true);
+    expect(out.data.candidates).toHaveLength(2);
     expect(out.error).toMatch(/Qual delas|2 reuni/i);
-    // neither meeting moved
+    // neither meeting moved — the candidates outcome must NOT mutate
     expect(scheduledAt(a)).toContain('2026-04-29');
     expect(scheduledAt(b)).toContain('2026-04-30');
   });
 
-  it('returns not-found when no meeting matches', async () => {
+  it('returns not_found when no meeting matches', async () => {
     const { apiRescheduleMeetingTool } = await import('./taskflow-api-mutate.ts');
     await makeMeeting('Reunião SDU Sul', '2026-04-29T12:00:00Z');
     const resp = await apiRescheduleMeetingTool.handler({
@@ -2535,6 +2553,7 @@ describe('api_reschedule_meeting MCP tool', () => {
     });
     const out = JSON.parse(resp.content[0].text);
     expect(out.success).toBe(false);
+    expect(out.error_code).toBe('not_found');
     expect(out.error).toMatch(/não encontrei|nenhuma reuni/i);
   });
 
@@ -2559,6 +2578,7 @@ describe('api_reschedule_meeting MCP tool', () => {
     });
     const out = JSON.parse(resp.content[0].text);
     expect(out.success).toBe(false);
+    expect(out.error_code).toBe('not_found');
     expect(out.error).toMatch(/não é uma reunião/i);
     // unchanged: still type simple, no scheduled_at applied
     expect(scheduledAt('M99')).toBeNull();
@@ -2579,6 +2599,7 @@ describe('api_reschedule_meeting MCP tool', () => {
     });
     const out = JSON.parse(resp.content[0].text);
     expect(out.success).toBe(false);
+    expect(out.error_code).toBe('not_found');
     expect(out.error).toMatch(/não é uma reunião/i);
     // the delegated meeting on the other board is untouched
     expect(scheduledAt('M88')).toBeNull();
@@ -2596,5 +2617,48 @@ describe('api_reschedule_meeting MCP tool', () => {
     expect(out.success).toBe(true);
     const notes = (db.prepare('SELECT notes FROM tasks WHERE id = ?').get(mId) as { notes: string }).notes;
     expect(notes).toContain('Lançamento definido para 25/05');
+  });
+
+  // Q6 irreversible-mutation guard: a 2+-match on the NOTE path must return
+  // the success:true + data.candidates disambiguation WITHOUT writing a note
+  // to any candidate. A note append is irreversible, so this is the load-
+  // bearing regression test for the ambiguity flip (callers branch on the
+  // internal `ok:false` and never reach engine.update).
+  it('note: ambiguity returns success:true + data.candidates and writes NO note to any candidate', async () => {
+    const { apiNoteMeetingTool } = await import('./taskflow-api-mutate.ts');
+    const a = await makeMeeting('Reunião SDU Norte', '2026-04-29T12:00:00Z');
+    const b = await makeMeeting('Reunião SDU Centro', '2026-04-30T12:00:00Z');
+    const resp = await apiNoteMeetingTool.handler({
+      board_id: BOARD, meeting: 'SDU', text: 'Decisão X', sender_name: 'alice',
+    });
+    const out = JSON.parse(resp.content[0].text);
+    expect(out.success).toBe(true);
+    expect(out.data.candidates).toHaveLength(2);
+    const notesA = (db.prepare('SELECT notes FROM tasks WHERE id = ?').get(a) as { notes: string | null }).notes;
+    const notesB = (db.prepare('SELECT notes FROM tasks WHERE id = ?').get(b) as { notes: string | null }).notes;
+    expect(notesA ?? '').not.toContain('Decisão X');
+    expect(notesB ?? '').not.toContain('Decisão X');
+  });
+
+  it('reschedule: missing meeting → validation_error', async () => {
+    const { apiRescheduleMeetingTool } = await import('./taskflow-api-mutate.ts');
+    const resp = await apiRescheduleMeetingTool.handler({
+      board_id: BOARD, scheduled_at: '2026-05-05T12:00:00Z', sender_name: 'alice',
+    });
+    expect(resp.isError).toBeUndefined();
+    const out = JSON.parse(resp.content[0].text);
+    expect(out.error_code).toBe('validation_error');
+    expect(out.error).toMatch(/meeting/);
+  });
+
+  it('note: missing text → validation_error', async () => {
+    const { apiNoteMeetingTool } = await import('./taskflow-api-mutate.ts');
+    const resp = await apiNoteMeetingTool.handler({
+      board_id: BOARD, meeting: 'Whatever', sender_name: 'alice',
+    });
+    expect(resp.isError).toBeUndefined();
+    const out = JSON.parse(resp.content[0].text);
+    expect(out.error_code).toBe('validation_error');
+    expect(out.error).toMatch(/text/);
   });
 });

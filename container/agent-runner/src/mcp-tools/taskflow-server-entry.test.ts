@@ -112,6 +112,13 @@ describe('taskflow-server-entry (tf-mcontrol runtime contract)', () => {
       expect(names).toContain('api_task_add_comment');
       expect(names).toContain('api_send_chat');
 
+      // §6 U1/U2: api_query (sub-mode-guarded) + the 3 meeting tools are now
+      // on the FastAPI surface.
+      expect(names).toContain('api_query');
+      expect(names).toContain('api_create_meeting_task');
+      expect(names).toContain('api_reschedule_meeting');
+      expect(names).toContain('api_note_meeting');
+
       // ...AND uncallable (server.ts resolves tools/call from toolMap
       // directly — the allowlist must gate the call path too).
       proc.stdin.write(

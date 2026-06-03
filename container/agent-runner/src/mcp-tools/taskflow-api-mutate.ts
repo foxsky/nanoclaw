@@ -884,33 +884,33 @@ export const apiCreateMeetingTaskTool: McpToolDefinition = {
   async handler(args) {
     args = normalizeAgentIds(args);
     const boardId = requireString(args, 'board_id');
-    if (boardId === null) return err('board_id: required string');
+    if (boardId === null) return jsonResponse({ success: false, error_code: 'validation_error', error: 'board_id: required string' });
     const title = requireString(args, 'title');
-    if (title === null) return err('title: required string');
+    if (title === null) return jsonResponse({ success: false, error_code: 'validation_error', error: 'title: required string' });
     const senderName = requireString(args, 'sender_name');
-    if (senderName === null) return err('sender_name: required string');
+    if (senderName === null) return jsonResponse({ success: false, error_code: 'validation_error', error: 'sender_name: required string' });
 
     let scheduledAt: string | undefined;
     if (args.scheduled_at !== undefined && args.scheduled_at !== null) {
-      if (typeof args.scheduled_at !== 'string') return err('scheduled_at: expected string or null');
+      if (typeof args.scheduled_at !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'scheduled_at: expected string or null' });
       scheduledAt = args.scheduled_at;
     }
     let participants: string[] | undefined;
     if (args.participants !== undefined) {
       if (!Array.isArray(args.participants) || args.participants.some((p) => typeof p !== 'string')) {
-        return err('participants: expected array of strings');
+        return jsonResponse({ success: false, error_code: 'validation_error', error: 'participants: expected array of strings' });
       }
       participants = args.participants as string[];
     }
     let assignee: string | undefined;
     if (args.assignee !== undefined) {
-      if (typeof args.assignee !== 'string') return err('assignee: expected string');
+      if (typeof args.assignee !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'assignee: expected string' });
       assignee = args.assignee;
     }
     let priority: Priority | undefined;
     if (args.priority !== undefined) {
       if (!PRIORITIES.includes(args.priority as Priority)) {
-        return err(`priority: expected one of ${PRIORITIES.join(' | ')}`);
+        return jsonResponse({ success: false, error_code: 'validation_error', error: `priority: expected one of ${PRIORITIES.join(' | ')}` });
       }
       priority = args.priority as Priority;
     }
@@ -922,48 +922,48 @@ export const apiCreateMeetingTaskTool: McpToolDefinition = {
         args.recurrence !== 'monthly' &&
         args.recurrence !== 'yearly'
       ) {
-        return err('recurrence: expected one of daily | weekly | monthly | yearly');
+        return jsonResponse({ success: false, error_code: 'validation_error', error: 'recurrence: expected one of daily | weekly | monthly | yearly' });
       }
       recurrence = args.recurrence;
     }
     let recurrenceAnchor: string | undefined;
     if (args.recurrence_anchor !== undefined) {
-      if (typeof args.recurrence_anchor !== 'string') return err('recurrence_anchor: expected string');
+      if (typeof args.recurrence_anchor !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'recurrence_anchor: expected string' });
       recurrenceAnchor = args.recurrence_anchor;
     }
     let recurrenceEndDate: string | undefined;
     if (args.recurrence_end_date !== undefined) {
-      if (typeof args.recurrence_end_date !== 'string') return err('recurrence_end_date: expected string');
+      if (typeof args.recurrence_end_date !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'recurrence_end_date: expected string' });
       recurrenceEndDate = args.recurrence_end_date;
     }
     let maxCycles: number | undefined;
     if (args.max_cycles !== undefined) {
       if (typeof args.max_cycles !== 'number' || !Number.isInteger(args.max_cycles)) {
-        return err('max_cycles: expected integer');
+        return jsonResponse({ success: false, error_code: 'validation_error', error: 'max_cycles: expected integer' });
       }
       maxCycles = args.max_cycles;
     }
     let intendedWeekday: string | undefined;
     if (args.intended_weekday !== undefined) {
-      if (typeof args.intended_weekday !== 'string') return err('intended_weekday: expected string');
+      if (typeof args.intended_weekday !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'intended_weekday: expected string' });
       intendedWeekday = args.intended_weekday;
     }
     let allowNonBusinessDay: boolean | undefined;
     if (args.allow_non_business_day !== undefined) {
       if (typeof args.allow_non_business_day !== 'boolean') {
-        return err('allow_non_business_day: expected boolean');
+        return jsonResponse({ success: false, error_code: 'validation_error', error: 'allow_non_business_day: expected boolean' });
       }
       allowNonBusinessDay = args.allow_non_business_day;
     }
     let dueDate: string | undefined;
     if (args.due_date !== undefined && args.due_date !== null) {
-      if (typeof args.due_date !== 'string') return err('due_date: expected string or null');
+      if (typeof args.due_date !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'due_date: expected string or null' });
       dueDate = args.due_date;
     }
     let requiresCloseApproval: boolean | undefined;
     if (args.requires_close_approval !== undefined) {
       if (typeof args.requires_close_approval !== 'boolean') {
-        return err('requires_close_approval: expected boolean');
+        return jsonResponse({ success: false, error_code: 'validation_error', error: 'requires_close_approval: expected boolean' });
       }
       requiresCloseApproval = args.requires_close_approval;
     }
@@ -1968,20 +1968,32 @@ function resolveMeetingTaskId(engine: TaskflowEngine, meeting: string, boardId: 
     const taskId = meeting.trim().toUpperCase();
     const task = engine.getTask(taskId);
     if (task?.type !== 'meeting' || task.board_id !== boardId) {
-      return { ok: false, response: jsonResponse({ success: false, error: `${taskId} não é uma reunião neste quadro.` }) };
+      return {
+        ok: false,
+        response: jsonResponse({ success: false, error_code: 'not_found', error: `${taskId} não é uma reunião neste quadro.` }),
+      };
     }
     return { ok: true, taskId };
   }
   // Name → unique meeting among this board's non-done meetings; 0 or 2+ → ask.
   const candidates = engine.resolveMeetingCandidates(meeting);
   if (candidates.length === 0) {
-    return { ok: false, response: jsonResponse({ success: false, error: `Não encontrei nenhuma reunião que corresponda a "${meeting}".` }) };
+    return {
+      ok: false,
+      response: jsonResponse({ success: false, error_code: 'not_found', error: `Não encontrei nenhuma reunião que corresponda a "${meeting}".` }),
+    };
   }
   if (candidates.length > 1) {
     const list = candidates.map((m) => `${m.id} — ${m.title}`).join('; ');
+    // 2+-match is a "did you mean?" disambiguation, NOT an error (Q6): the
+    // payload is success:true with the candidates under `data` so the FastAPI
+    // dashboard parser (keeps only result.data on success) renders a picker
+    // instead of a 502. The discriminated-union `ok` stays FALSE, so both
+    // callers short-circuit BEFORE engine.update — no mutation on an ambiguous
+    // match. `error` carries the human prompt the WhatsApp agent relays.
     return {
       ok: false,
-      response: jsonResponse({ success: false, error: `Encontrei ${candidates.length} reuniões que correspondem a "${meeting}". Qual delas? ${list}`, data: { candidates } }),
+      response: jsonResponse({ success: true, error: `Encontrei ${candidates.length} reuniões que correspondem a "${meeting}". Qual delas? ${list}`, data: { candidates } }),
     };
   }
   return { ok: true, taskId: candidates[0].id };
@@ -2007,22 +2019,22 @@ export const apiRescheduleMeetingTool: McpToolDefinition = {
   async handler(args) {
     args = normalizeAgentIds(args);
     const boardId = requireString(args, 'board_id');
-    if (boardId === null) return err('board_id: required string');
+    if (boardId === null) return jsonResponse({ success: false, error_code: 'validation_error', error: 'board_id: required string' });
     const meeting = requireString(args, 'meeting');
-    if (meeting === null) return err('meeting: required string');
+    if (meeting === null) return jsonResponse({ success: false, error_code: 'validation_error', error: 'meeting: required string' });
     const scheduledAt = requireString(args, 'scheduled_at');
-    if (scheduledAt === null) return err('scheduled_at: required string');
+    if (scheduledAt === null) return jsonResponse({ success: false, error_code: 'validation_error', error: 'scheduled_at: required string' });
     const senderName = requireString(args, 'sender_name');
-    if (senderName === null) return err('sender_name: required string');
+    if (senderName === null) return jsonResponse({ success: false, error_code: 'validation_error', error: 'sender_name: required string' });
 
     let senderExternalId: string | undefined;
     if (args.sender_external_id !== undefined) {
-      if (typeof args.sender_external_id !== 'string') return err('sender_external_id: expected string');
+      if (typeof args.sender_external_id !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'sender_external_id: expected string' });
       senderExternalId = args.sender_external_id;
     }
     let confirmedTaskId: string | undefined;
     if (args.confirmed_task_id !== undefined) {
-      if (typeof args.confirmed_task_id !== 'string') return err('confirmed_task_id: expected string');
+      if (typeof args.confirmed_task_id !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'confirmed_task_id: expected string' });
       confirmedTaskId = args.confirmed_task_id;
     }
 
@@ -2070,22 +2082,22 @@ export const apiNoteMeetingTool: McpToolDefinition = {
   async handler(args) {
     args = normalizeAgentIds(args);
     const boardId = requireString(args, 'board_id');
-    if (boardId === null) return err('board_id: required string');
+    if (boardId === null) return jsonResponse({ success: false, error_code: 'validation_error', error: 'board_id: required string' });
     const meeting = requireString(args, 'meeting');
-    if (meeting === null) return err('meeting: required string');
+    if (meeting === null) return jsonResponse({ success: false, error_code: 'validation_error', error: 'meeting: required string' });
     const text = requireString(args, 'text');
-    if (text === null) return err('text: required string');
+    if (text === null) return jsonResponse({ success: false, error_code: 'validation_error', error: 'text: required string' });
     const senderName = requireString(args, 'sender_name');
-    if (senderName === null) return err('sender_name: required string');
+    if (senderName === null) return jsonResponse({ success: false, error_code: 'validation_error', error: 'sender_name: required string' });
 
     let senderExternalId: string | undefined;
     if (args.sender_external_id !== undefined) {
-      if (typeof args.sender_external_id !== 'string') return err('sender_external_id: expected string');
+      if (typeof args.sender_external_id !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'sender_external_id: expected string' });
       senderExternalId = args.sender_external_id;
     }
     let confirmedTaskId: string | undefined;
     if (args.confirmed_task_id !== undefined) {
-      if (typeof args.confirmed_task_id !== 'string') return err('confirmed_task_id: expected string');
+      if (typeof args.confirmed_task_id !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'confirmed_task_id: expected string' });
       confirmedTaskId = args.confirmed_task_id;
     }
 
