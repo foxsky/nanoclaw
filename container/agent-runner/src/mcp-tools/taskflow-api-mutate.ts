@@ -1395,22 +1395,22 @@ export const apiReassignTool: McpToolDefinition = {
   async handler(args) {
     args = normalizeAgentIds(args);
     const boardId = requireString(args, 'board_id');
-    if (boardId === null) return err('board_id: required string');
+    if (boardId === null) return jsonResponse({ success: false, error_code: 'validation_error', error: 'board_id: required string' });
     const targetPerson = requireString(args, 'target_person');
-    if (targetPerson === null) return err('target_person: required string');
+    if (targetPerson === null) return jsonResponse({ success: false, error_code: 'validation_error', error: 'target_person: required string' });
     const senderName = requireString(args, 'sender_name');
-    if (senderName === null) return err('sender_name: required string');
-    if (typeof args.confirmed !== 'boolean') return err('confirmed: required boolean');
+    if (senderName === null) return jsonResponse({ success: false, error_code: 'validation_error', error: 'sender_name: required string' });
+    if (typeof args.confirmed !== 'boolean') return jsonResponse({ success: false, error_code: 'validation_error', error: 'confirmed: required boolean' });
     const confirmed = args.confirmed;
 
     let taskId: string | undefined;
     if (args.task_id !== undefined) {
-      if (typeof args.task_id !== 'string') return err('task_id: expected string');
+      if (typeof args.task_id !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'task_id: expected string' });
       taskId = args.task_id;
     }
     let sourcePerson: string | undefined;
     if (args.source_person !== undefined) {
-      if (typeof args.source_person !== 'string') return err('source_person: expected string');
+      if (typeof args.source_person !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'source_person: expected string' });
       sourcePerson = args.source_person;
     }
 
@@ -1544,40 +1544,40 @@ export const apiCreateTaskTool: McpToolDefinition = {
   async handler(args) {
     args = normalizeAgentIds(args);
     const boardId = requireString(args, 'board_id');
-    if (boardId === null) return err('board_id: required string');
+    if (boardId === null) return jsonResponse({ success: false, error_code: 'validation_error', error: 'board_id: required string' });
     const title = requireString(args, 'title');
-    if (title === null) return err('title: required string');
+    if (title === null) return jsonResponse({ success: false, error_code: 'validation_error', error: 'title: required string' });
     const senderName = requireString(args, 'sender_name');
-    if (senderName === null) return err('sender_name: required string');
+    if (senderName === null) return jsonResponse({ success: false, error_code: 'validation_error', error: 'sender_name: required string' });
     if (
       typeof args.type !== 'string' ||
       !CREATE_TASK_TYPES.includes(args.type as CreateTaskType)
     ) {
-      return err(`type: expected one of ${CREATE_TASK_TYPES.join(' | ')}`);
+      return jsonResponse({ success: false, error_code: 'validation_error', error: `type: expected one of ${CREATE_TASK_TYPES.join(' | ')}` });
     }
     const taskType = args.type as CreateTaskType;
 
     let assignee: string | undefined;
     if (args.assignee !== undefined) {
-      if (typeof args.assignee !== 'string') return err('assignee: expected string');
+      if (typeof args.assignee !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'assignee: expected string' });
       assignee = args.assignee;
     }
     let priority: Priority | undefined;
     if (args.priority !== undefined) {
       if (!PRIORITIES.includes(args.priority as Priority)) {
-        return err(`priority: expected one of ${PRIORITIES.join(' | ')}`);
+        return jsonResponse({ success: false, error_code: 'validation_error', error: `priority: expected one of ${PRIORITIES.join(' | ')}` });
       }
       priority = args.priority as Priority;
     }
     let dueDate: string | undefined;
     if (args.due_date !== undefined && args.due_date !== null) {
-      if (typeof args.due_date !== 'string') return err('due_date: expected string or null');
+      if (typeof args.due_date !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'due_date: expected string or null' });
       dueDate = args.due_date;
     }
     let labels: string[] | undefined;
     if (args.labels !== undefined) {
       if (!Array.isArray(args.labels) || args.labels.some((l) => typeof l !== 'string')) {
-        return err('labels: expected array of strings');
+        return jsonResponse({ success: false, error_code: 'validation_error', error: 'labels: expected array of strings' });
       }
       labels = args.labels as string[];
     }
@@ -1585,7 +1585,7 @@ export const apiCreateTaskTool: McpToolDefinition = {
     // We validate shape but defer assignee-resolution to the engine.
     let subtasks: Array<string | { title: string; assignee?: string }> | undefined;
     if (args.subtasks !== undefined) {
-      if (!Array.isArray(args.subtasks)) return err('subtasks: expected array');
+      if (!Array.isArray(args.subtasks)) return jsonResponse({ success: false, error_code: 'validation_error', error: 'subtasks: expected array' });
       const validated: Array<string | { title: string; assignee?: string }> = [];
       for (let i = 0; i < args.subtasks.length; i++) {
         const sub = args.subtasks[i];
@@ -1593,13 +1593,13 @@ export const apiCreateTaskTool: McpToolDefinition = {
           validated.push(sub);
         } else if (sub && typeof sub === 'object' && !Array.isArray(sub)) {
           const s = sub as Record<string, unknown>;
-          if (typeof s.title !== 'string') return err(`subtasks[${i}].title: expected string`);
+          if (typeof s.title !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: `subtasks[${i}].title: expected string` });
           if (s.assignee !== undefined && typeof s.assignee !== 'string') {
-            return err(`subtasks[${i}].assignee: expected string`);
+            return jsonResponse({ success: false, error_code: 'validation_error', error: `subtasks[${i}].assignee: expected string` });
           }
           validated.push({ title: s.title, assignee: s.assignee as string | undefined });
         } else {
-          return err(`subtasks[${i}]: expected string or object`);
+          return jsonResponse({ success: false, error_code: 'validation_error', error: `subtasks[${i}]: expected string or object` });
         }
       }
       subtasks = validated;
@@ -1610,43 +1610,43 @@ export const apiCreateTaskTool: McpToolDefinition = {
         typeof args.recurrence !== 'string' ||
         !RECURRENCES.includes(args.recurrence as Recurrence)
       ) {
-        return err(`recurrence: expected one of ${RECURRENCES.join(' | ')}`);
+        return jsonResponse({ success: false, error_code: 'validation_error', error: `recurrence: expected one of ${RECURRENCES.join(' | ')}` });
       }
       recurrence = args.recurrence as Recurrence;
     }
     let recurrenceAnchor: string | undefined;
     if (args.recurrence_anchor !== undefined) {
-      if (typeof args.recurrence_anchor !== 'string') return err('recurrence_anchor: expected string');
+      if (typeof args.recurrence_anchor !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'recurrence_anchor: expected string' });
       recurrenceAnchor = args.recurrence_anchor;
     }
     let recurrenceEndDate: string | undefined;
     if (args.recurrence_end_date !== undefined) {
-      if (typeof args.recurrence_end_date !== 'string') return err('recurrence_end_date: expected string');
+      if (typeof args.recurrence_end_date !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'recurrence_end_date: expected string' });
       recurrenceEndDate = args.recurrence_end_date;
     }
     let maxCycles: number | undefined;
     if (args.max_cycles !== undefined) {
       if (typeof args.max_cycles !== 'number' || !Number.isInteger(args.max_cycles)) {
-        return err('max_cycles: expected integer');
+        return jsonResponse({ success: false, error_code: 'validation_error', error: 'max_cycles: expected integer' });
       }
       maxCycles = args.max_cycles;
     }
     let intendedWeekday: string | undefined;
     if (args.intended_weekday !== undefined) {
-      if (typeof args.intended_weekday !== 'string') return err('intended_weekday: expected string');
+      if (typeof args.intended_weekday !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'intended_weekday: expected string' });
       intendedWeekday = args.intended_weekday;
     }
     let allowNonBusinessDay: boolean | undefined;
     if (args.allow_non_business_day !== undefined) {
       if (typeof args.allow_non_business_day !== 'boolean') {
-        return err('allow_non_business_day: expected boolean');
+        return jsonResponse({ success: false, error_code: 'validation_error', error: 'allow_non_business_day: expected boolean' });
       }
       allowNonBusinessDay = args.allow_non_business_day;
     }
     let requiresCloseApproval: boolean | undefined;
     if (args.requires_close_approval !== undefined) {
       if (typeof args.requires_close_approval !== 'boolean') {
-        return err('requires_close_approval: expected boolean');
+        return jsonResponse({ success: false, error_code: 'validation_error', error: 'requires_close_approval: expected boolean' });
       }
       requiresCloseApproval = args.requires_close_approval;
     }
@@ -1705,22 +1705,22 @@ export const apiUpdateTaskTool: McpToolDefinition = {
     if (!parsed.ok) return parsed.error;
     const { boardId, taskId, senderName } = parsed;
 
-    if (args.updates === undefined) return err('updates: required object');
+    if (args.updates === undefined) return jsonResponse({ success: false, error_code: 'validation_error', error: 'updates: required object' });
     if (
       args.updates === null ||
       typeof args.updates !== 'object' ||
       Array.isArray(args.updates)
     ) {
-      return err('updates: expected object');
+      return jsonResponse({ success: false, error_code: 'validation_error', error: 'updates: expected object' });
     }
     let senderExternalId: string | undefined;
     if (args.sender_external_id !== undefined) {
-      if (typeof args.sender_external_id !== 'string') return err('sender_external_id: expected string');
+      if (typeof args.sender_external_id !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'sender_external_id: expected string' });
       senderExternalId = args.sender_external_id;
     }
     let confirmedTaskId: string | undefined;
     if (args.confirmed_task_id !== undefined) {
-      if (typeof args.confirmed_task_id !== 'string') return err('confirmed_task_id: expected string');
+      if (typeof args.confirmed_task_id !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'confirmed_task_id: expected string' });
       confirmedTaskId = args.confirmed_task_id;
     }
 
@@ -1856,18 +1856,18 @@ export const apiHierarchyTool: McpToolDefinition = {
     if (!parsed.ok) return parsed.error;
     const { boardId, taskId, senderName } = parsed;
     if (typeof args.action !== 'string' || !HIERARCHY_ACTIONS.includes(args.action as HierarchyAction)) {
-      return err(`action: expected one of ${HIERARCHY_ACTIONS.join(' | ')}`);
+      return jsonResponse({ success: false, error_code: 'validation_error', error: `action: expected one of ${HIERARCHY_ACTIONS.join(' | ')}` });
     }
     const action = args.action as HierarchyAction;
 
     let personName: string | undefined;
     if (args.person_name !== undefined) {
-      if (typeof args.person_name !== 'string') return err('person_name: expected string');
+      if (typeof args.person_name !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'person_name: expected string' });
       personName = args.person_name;
     }
     let parentTaskId: string | undefined;
     if (args.parent_task_id !== undefined) {
-      if (typeof args.parent_task_id !== 'string') return err('parent_task_id: expected string');
+      if (typeof args.parent_task_id !== 'string') return jsonResponse({ success: false, error_code: 'validation_error', error: 'parent_task_id: expected string' });
       parentTaskId = args.parent_task_id;
     }
 

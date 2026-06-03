@@ -1175,8 +1175,10 @@ describe('api_reassign MCP tool (A11.3)', () => {
       sender_name: 'alice',
       confirmed: true,
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/board_id/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/board_id/);
   });
 
   it('rejects non-string target_person', async () => {
@@ -1187,8 +1189,10 @@ describe('api_reassign MCP tool (A11.3)', () => {
       sender_name: 'alice',
       confirmed: true,
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/target_person/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/target_person/);
   });
 
   it('rejects non-boolean confirmed', async () => {
@@ -1199,8 +1203,10 @@ describe('api_reassign MCP tool (A11.3)', () => {
       sender_name: 'alice',
       confirmed: 'yes' as unknown as boolean,
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/confirmed/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/confirmed/);
   });
 
   it('bulk transfer (source_person): reassigns all active tasks; dry-run preserves them', async () => {
@@ -1755,8 +1761,10 @@ describe('api_create_task MCP tool (A5.2.1 — multi-type create)', () => {
       title: 'Meeting',
       sender_name: 'alice',
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/type/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/type/);
   });
 
   it('rejects unknown type value', async () => {
@@ -1767,8 +1775,10 @@ describe('api_create_task MCP tool (A5.2.1 — multi-type create)', () => {
       title: 'X',
       sender_name: 'alice',
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/type/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/type/);
   });
 
   it('rejects non-string board_id', async () => {
@@ -1779,8 +1789,10 @@ describe('api_create_task MCP tool (A5.2.1 — multi-type create)', () => {
       title: 'X',
       sender_name: 'alice',
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/board_id/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/board_id/);
   });
 
   it('rejects non-array subtasks', async () => {
@@ -1792,8 +1804,10 @@ describe('api_create_task MCP tool (A5.2.1 — multi-type create)', () => {
       sender_name: 'alice',
       subtasks: 'oops' as unknown as string[],
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/subtasks/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/subtasks/);
   });
 
   it('rejects invalid recurrence enum value', async () => {
@@ -1805,8 +1819,10 @@ describe('api_create_task MCP tool (A5.2.1 — multi-type create)', () => {
       sender_name: 'alice',
       recurrence: 'biweekly' as unknown as 'weekly',
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/recurrence/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/recurrence/);
   });
 
   it('requires_close_approval=true is forwarded to the engine (Codex IMPORTANT fix)', async () => {
@@ -1835,8 +1851,10 @@ describe('api_create_task MCP tool (A5.2.1 — multi-type create)', () => {
       sender_name: 'alice',
       requires_close_approval: 'yes' as unknown as boolean,
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/requires_close_approval/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/requires_close_approval/);
   });
 });
 
@@ -1946,8 +1964,10 @@ describe('api_update_task MCP tool (A5.2.2 — composite updates wrapper)', () =
       task_id: 'T1',
       sender_name: 'alice',
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/updates/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/updates/);
   });
 
   it('rejects non-object updates (e.g. string)', async () => {
@@ -1958,8 +1978,10 @@ describe('api_update_task MCP tool (A5.2.2 — composite updates wrapper)', () =
       sender_name: 'alice',
       updates: 'add_note' as unknown as Record<string, unknown>,
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/updates/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/updates/);
   });
 
   it('forwards through to engine.update — confirmed_task_id magnetism param accepted', async () => {
@@ -2357,8 +2379,10 @@ describe('api_hierarchy MCP tool (A5.2.4)', () => {
       task_id: 'T1',
       sender_name: 'alice',
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/action/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/action/);
   });
 
   it('engine rejects unlink on missing task → propagated as error', async () => {
@@ -2395,8 +2419,10 @@ describe('api_hierarchy MCP tool (A5.2.4)', () => {
       sender_name: 'alice',
       parent_task_id: 42 as unknown as string,
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/parent_task_id/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/parent_task_id/);
   });
 });
 

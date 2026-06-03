@@ -89,6 +89,16 @@ const FASTAPI_ALLOWLIST: ReadonlySet<string> = new Set([
   'api_create_meeting_task',
   'api_reschedule_meeting',
   'api_note_meeting',
+  // reassign (single + dry-run bulk transfer), hierarchy link/unlink/
+  // refresh_rollup/tag_parent (NOT reparent/detach — those stay api_admin,
+  // unexposed), and the rich create/update tools (#385 §6). NOTE: their
+  // shared-helper failure paths (parseTaskActorArgs arg-shape, codeless
+  // create/dispatcher results) are NOT yet structured — see the coordination
+  // doc residuals; the per-handler arg-shape rejections map cleanly here.
+  'api_reassign',
+  'api_hierarchy',
+  'api_create_task',
+  'api_update_task',
 ]);
 
 /**

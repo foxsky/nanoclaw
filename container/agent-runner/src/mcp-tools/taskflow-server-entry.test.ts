@@ -103,7 +103,6 @@ describe('taskflow-server-entry (tf-mcontrol runtime contract)', () => {
       // imported transitively (via taskflow-api-mutate) but MUST be
       // allowlisted OUT of the FastAPI subprocess — unlisted...
       expect(names).not.toContain('api_admin');
-      expect(names).not.toContain('api_hierarchy');
       expect(names).toContain('api_update_board');
       expect(names).toContain('api_create_board');
       expect(names).toContain('api_delete_board');
@@ -118,6 +117,11 @@ describe('taskflow-server-entry (tf-mcontrol runtime contract)', () => {
       expect(names).toContain('api_create_meeting_task');
       expect(names).toContain('api_reschedule_meeting');
       expect(names).toContain('api_note_meeting');
+      // §6 U3: reassign / hierarchy (link/unlink) / rich create+update.
+      expect(names).toContain('api_reassign');
+      expect(names).toContain('api_hierarchy');
+      expect(names).toContain('api_create_task');
+      expect(names).toContain('api_update_task');
 
       // ...AND uncallable (server.ts resolves tools/call from toolMap
       // directly — the allowlist must gate the call path too).
