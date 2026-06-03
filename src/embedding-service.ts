@@ -33,22 +33,25 @@ export class EmbeddingService {
   private readonly stmtUpsert: Database.Statement;
   private readonly stmtDelete: Database.Statement;
 
-  constructor(
-    dbPath: string,
-    ollamaHost: string,
-    model: string,
-    fallbackOllamaHost?: string,
-  ) {
+  constructor(dbPath: string, ollamaHost: string, model: string, fallbackOllamaHost?: string) {
     this.ollamaHost = ollamaHost;
-    this.fallbackOllamaHost =
-      fallbackOllamaHost && fallbackOllamaHost !== ollamaHost
-        ? fallbackOllamaHost
-        : null;
+    this.fallbackOllamaHost = fallbackOllamaHost && fallbackOllamaHost !== ollamaHost ? fallbackOllamaHost : null;
     this.model = model;
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
     this.db.pragma('busy_timeout = 5000');
+    // DELETE (not WAL) — embeddings.db is mounted read-only into agent
+    // containers, and WAL's `-shm` mmap is not coherent across the host/
+    // container VirtioFS boundary: a WAL-mode DB freezes the container reader
+    // on an early snapshot, so it never sees newly-indexed task vectors and
+    // semantic search silently degrades to lexical. Matches the taskflow.db /
+    // inbound.db cross-mount invariant. The host is the sole writer.
+    const journalMode = this.db.pragma('journal_mode = DELETE', { simple: true });
+    if (journalMode !== 'delete' && journalMode !== 'memory') {
+      log.warn('EmbeddingService: journal_mode=DELETE rejected — container readers may go stale', {
+        journalMode,
+      });
+    }
     this.db.exec(SCHEMA);
 
     this.stmtSelectExisting = this.db.prepare(
@@ -61,41 +64,23 @@ export class EmbeddingService {
          vector = NULL, source_text = excluded.source_text, model = excluded.model,
          metadata = excluded.metadata, updated_at = excluded.updated_at`,
     );
-    this.stmtDelete = this.db.prepare(
-      'DELETE FROM embeddings WHERE collection = ? AND item_id = ?',
-    );
+    this.stmtDelete = this.db.prepare('DELETE FROM embeddings WHERE collection = ? AND item_id = ?');
   }
 
   /* ---------------------------------------------------------------- */
   /*  index / remove / query helpers                                   */
   /* ---------------------------------------------------------------- */
 
-  index(
-    collection: string,
-    itemId: string,
-    text: string,
-    metadata?: Record<string, any>,
-  ): void {
+  index(collection: string, itemId: string, text: string, metadata?: Record<string, any>): void {
     const existing = this.stmtSelectExisting.get(collection, itemId) as
       | { source_text: string; model: string }
       | undefined;
 
-    if (
-      existing &&
-      existing.source_text === text &&
-      existing.model === this.model
-    ) {
+    if (existing && existing.source_text === text && existing.model === this.model) {
       return; // unchanged — preserve existing vector
     }
 
-    this.stmtUpsert.run(
-      collection,
-      itemId,
-      text,
-      this.model,
-      JSON.stringify(metadata ?? {}),
-      new Date().toISOString(),
-    );
+    this.stmtUpsert.run(collection, itemId, text, this.model, JSON.stringify(metadata ?? {}), new Date().toISOString());
   }
 
   remove(collection: string, itemId: string): void {
@@ -103,41 +88,30 @@ export class EmbeddingService {
   }
 
   removeCollection(collection: string): void {
-    this.db
-      .prepare('DELETE FROM embeddings WHERE collection = ?')
-      .run(collection);
+    this.db.prepare('DELETE FROM embeddings WHERE collection = ?').run(collection);
   }
 
   getCollections(prefix?: string): string[] {
     if (prefix) {
-      const escaped = prefix
-        .replace(/\\/g, '\\\\')
-        .replace(/%/g, '\\%')
-        .replace(/_/g, '\\_');
+      const escaped = prefix.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
       return (
         this.db
-          .prepare(
-            "SELECT DISTINCT collection FROM embeddings WHERE collection LIKE ? ESCAPE '\\' ORDER BY collection",
-          )
+          .prepare("SELECT DISTINCT collection FROM embeddings WHERE collection LIKE ? ESCAPE '\\' ORDER BY collection")
           .all(escaped + '%') as Array<{ collection: string }>
       ).map((r) => r.collection);
     }
     return (
-      this.db
-        .prepare(
-          'SELECT DISTINCT collection FROM embeddings ORDER BY collection',
-        )
-        .all() as Array<{ collection: string }>
+      this.db.prepare('SELECT DISTINCT collection FROM embeddings ORDER BY collection').all() as Array<{
+        collection: string;
+      }>
     ).map((r) => r.collection);
   }
 
   getItemIds(collection: string): string[] {
     return (
-      this.db
-        .prepare(
-          'SELECT item_id FROM embeddings WHERE collection = ? ORDER BY item_id',
-        )
-        .all(collection) as Array<{ item_id: string }>
+      this.db.prepare('SELECT item_id FROM embeddings WHERE collection = ? ORDER BY item_id').all(collection) as Array<{
+        item_id: string;
+      }>
     ).map((r) => r.item_id);
   }
 
@@ -151,14 +125,10 @@ export class EmbeddingService {
     try {
       // Step 1: Model change detection — only update if mismatched rows exist
       const mismatch = this.db
-        .prepare(
-          'SELECT COUNT(*) as cnt FROM embeddings WHERE model != ? AND vector IS NOT NULL',
-        )
+        .prepare('SELECT COUNT(*) as cnt FROM embeddings WHERE model != ? AND vector IS NOT NULL')
         .get(this.model) as { cnt: number };
       if (mismatch.cnt > 0) {
-        this.db
-          .prepare('UPDATE embeddings SET vector = NULL WHERE model != ?')
-          .run(this.model);
+        this.db.prepare('UPDATE embeddings SET vector = NULL WHERE model != ?').run(this.model);
         log.info('Embedding indexer: model change detected, re-embedding', {
           count: mismatch.cnt,
           model: this.model,
@@ -218,17 +188,8 @@ export class EmbeddingService {
       );
       this.db.transaction(() => {
         for (let i = 0; i < pending.length; i++) {
-          const vector = Buffer.from(
-            new Float32Array(data.embeddings[i]).buffer,
-          );
-          update.run(
-            vector,
-            this.model,
-            now,
-            pending[i].collection,
-            pending[i].item_id,
-            pending[i].source_text,
-          );
+          const vector = Buffer.from(new Float32Array(data.embeddings[i]).buffer);
+          update.run(vector, this.model, now, pending[i].collection, pending[i].item_id, pending[i].source_text);
         }
       })();
 
@@ -245,9 +206,7 @@ export class EmbeddingService {
   startIndexer(intervalMs = 10_000): void {
     if (this.indexerTimer) return;
     this.indexerTimer = setInterval(() => {
-      this.runIndexerCycle().catch((err) =>
-        log.warn('Embedding indexer unhandled error', { err }),
-      );
+      this.runIndexerCycle().catch((err) => log.warn('Embedding indexer unhandled error', { err }));
     }, intervalMs);
     // Run first cycle immediately
     this.runIndexerCycle().catch(() => {});
@@ -269,10 +228,7 @@ export class EmbeddingService {
     }
   }
 
-  private async fetchEmbed(
-    host: string,
-    body: string,
-  ): Promise<Response | null> {
+  private async fetchEmbed(host: string, body: string): Promise<Response | null> {
     try {
       return await fetch(`${host}/api/embed`, {
         method: 'POST',

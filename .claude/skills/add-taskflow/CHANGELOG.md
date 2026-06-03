@@ -11,6 +11,10 @@
 
 TDD throughout (host vitest + container bun:test). **Deferred** (not in this pass): duplicate-detection-on-create (0.85) and the embedding-ranked context preamble.
 
+**Verified + reviewed:** end-to-end integration smoke on real Ollama (`.13`/bge-m3) — a "mobile app development" query semantically ranked a "smartphone application" task #1 with zero keyword overlap; Codex gpt-5.5/xhigh closure review. Review fixes: `embeddings.db` switched **WAL → `journal_mode=DELETE`** (WAL's `-shm` mmap isn't coherent across the host/container VirtioFS mount — a WAL DB would freeze the container reader on an early snapshot, the same invariant taskflow.db/inbound.db follow); the `EmbeddingReader` made fully graceful (`search()` returns `[]` on a malformed/transient read; the open handle is closed if the post-open pragma throws).
+
+**Operator caveats (Codex):** (1) `OLLAMA_HOST` is forwarded into the container — it must be reachable from BOTH the host and the container (use the host's LAN IP, **not** `localhost`, or the container's query-embed silently falls back to lexical while the host still indexes). (2) Delegated (`child_exec`) tasks are indexed under their **owning** board, so a child board's *semantic* ranking covers only its own tasks — delegated tasks still appear via the merged lexical hits, just without the semantic boost (faithful to v1). (3) Changing `EMBEDDING_MODEL` needs a host restart + a re-index (the feeder captures the model at startup; the cosine dim-guard fails safe only on dimension mismatch, not a same-dimension model swap).
+
 
 ## 2026-06-02 — Expand the FastAPI (tf-mcontrol) surface: api_query guard + meetings + rich tools
 

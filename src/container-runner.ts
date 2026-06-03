@@ -345,9 +345,10 @@ function buildMounts(
   mounts.push({ hostPath: taskflowDir(DATA_DIR), containerPath: '/workspace/taskflow', readonly: false });
 
   // Embeddings DB (#385) — read-only mount of the embeddings DIRECTORY (not the
-  // file) so the WAL `-wal`/`-shm` sidecars are visible to the container's
-  // EmbeddingReader for api_query 'search'. Always mounted: empty when the host
-  // feeder is off (OLLAMA_HOST unset) → reader finds no DB → lexical fallback.
+  // file) so SQLite's `-journal` sidecar can live beside the DB. embeddings.db
+  // is journal_mode=DELETE (host writes, container reads — WAL's -shm isn't
+  // VirtioFS-coherent). Always mounted: empty when the host feeder is off
+  // (OLLAMA_HOST unset) → reader finds no DB → lexical fallback.
   const embeddingsDir = path.join(DATA_DIR, 'embeddings');
   fs.mkdirSync(embeddingsDir, { recursive: true });
   mounts.push({ hostPath: embeddingsDir, containerPath: '/workspace/embeddings', readonly: true });

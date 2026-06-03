@@ -51,6 +51,17 @@ describe('EmbeddingReader', () => {
     r.close();
   });
 
+  it('returns [] (no throw) when the DB opens but lacks the embeddings table', () => {
+    dir = mkdtempSync(join(tmpdir(), 'emb-reader-'));
+    const path = join(dir, 'embeddings.db');
+    const db = new Database(path);
+    db.exec('CREATE TABLE other (x TEXT)'); // valid SQLite file, wrong schema
+    db.close();
+    const r = new EmbeddingReader(path);
+    expect(r.search('tasks:b1', new Float32Array([1, 0, 0]))).toEqual([]);
+    r.close();
+  });
+
   it('ranks by cosine, filters by threshold, skips null vectors + other collections', () => {
     const path = seedDb([
       { collection: 'tasks:b1', itemId: 'T1', vector: [1, 0, 0], meta: { title: 'A' } },

@@ -38,6 +38,9 @@ export class EmbeddingReader {
       this.db = new Database(dbPath, { readonly: true });
       this.db.exec('PRAGMA busy_timeout = 5000');
     } catch {
+      try {
+        this.db?.close(); // close the handle if open succeeded but pragma threw
+      } catch {}
       this.db = null; // corrupted or locked — graceful fallback
     }
   }
@@ -54,35 +57,39 @@ export class EmbeddingReader {
     if (!this.db) return [];
     const { limit = 20, threshold = 0.3 } = opts;
 
-    const rows = this.db
-      .prepare(
-        'SELECT item_id, vector, metadata FROM embeddings WHERE collection = ? AND vector IS NOT NULL',
-      )
-      .all(collection) as Array<{
-      item_id: string;
-      vector: Uint8Array;
-      metadata: string;
-    }>;
+    try {
+      const rows = this.db
+        .prepare(
+          'SELECT item_id, vector, metadata FROM embeddings WHERE collection = ? AND vector IS NOT NULL',
+        )
+        .all(collection) as Array<{
+        item_id: string;
+        vector: Uint8Array;
+        metadata: string;
+      }>;
 
-    const results: Array<{
-      itemId: string;
-      score: number;
-      metadata: Record<string, any>;
-    }> = [];
-    for (const row of rows) {
-      const stored = blobToFloat32(row.vector);
-      const score = cosineSimilarity(queryVector, stored);
-      if (score >= threshold) {
-        let metadata: Record<string, any> = {};
-        try {
-          metadata = JSON.parse(row.metadata);
-        } catch {}
-        results.push({ itemId: row.item_id, score, metadata });
+      const results: Array<{
+        itemId: string;
+        score: number;
+        metadata: Record<string, any>;
+      }> = [];
+      for (const row of rows) {
+        const stored = blobToFloat32(row.vector);
+        const score = cosineSimilarity(queryVector, stored);
+        if (score >= threshold) {
+          let metadata: Record<string, any> = {};
+          try {
+            metadata = JSON.parse(row.metadata);
+          } catch {}
+          results.push({ itemId: row.item_id, score, metadata });
+        }
       }
-    }
 
-    results.sort((a, b) => b.score - a.score);
-    return results.slice(0, limit);
+      results.sort((a, b) => b.score - a.score);
+      return results.slice(0, limit);
+    } catch {
+      return []; // malformed schema / transient read error — graceful fallback
+    }
   }
 
   /**

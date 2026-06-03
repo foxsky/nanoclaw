@@ -15,28 +15,24 @@ describe('EmbeddingService', () => {
   /* --- Schema --- */
 
   it('creates schema on instantiation', () => {
-    const svc = new EmbeddingService(
-      TEST_DB_PATH,
-      'http://localhost:11434',
-      'test-model',
-    );
-    const tables = svc.db
-      .prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='embeddings'",
-      )
-      .all();
+    const svc = new EmbeddingService(TEST_DB_PATH, 'http://localhost:11434', 'test-model');
+    const tables = svc.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='embeddings'").all();
     expect(tables).toHaveLength(1);
+    svc.close();
+  });
+
+  it('uses journal_mode=DELETE (cross-mount coherence — the container reads embeddings.db over VirtioFS)', () => {
+    // WAL's -shm mmap is not coherent host->container; a WAL DB would freeze the
+    // container reader on an early snapshot. Matches the taskflow.db invariant.
+    const svc = new EmbeddingService(TEST_DB_PATH, 'http://localhost:11434', 'test-model');
+    expect(svc.db.pragma('journal_mode', { simple: true })).toBe('delete');
     svc.close();
   });
 
   /* --- index() --- */
 
   it('index() inserts new item with vector = NULL', () => {
-    const svc = new EmbeddingService(
-      TEST_DB_PATH,
-      'http://localhost:11434',
-      'test-model',
-    );
+    const svc = new EmbeddingService(TEST_DB_PATH, 'http://localhost:11434', 'test-model');
     svc.index('docs:project-a', 'T1', 'Introduction to machine learning');
     const row = svc.db
       .prepare('SELECT * FROM embeddings WHERE collection = ? AND item_id = ?')
@@ -49,55 +45,31 @@ describe('EmbeddingService', () => {
   });
 
   it('index() skips write when source_text and model unchanged', () => {
-    const svc = new EmbeddingService(
-      TEST_DB_PATH,
-      'http://localhost:11434',
-      'test-model',
-    );
+    const svc = new EmbeddingService(TEST_DB_PATH, 'http://localhost:11434', 'test-model');
     svc.index('docs:project-a', 'T1', 'Introduction to machine learning');
     // Simulate indexer setting the vector
     svc.db
-      .prepare(
-        'UPDATE embeddings SET vector = ? WHERE collection = ? AND item_id = ?',
-      )
-      .run(
-        Buffer.from(new Float32Array([1, 2, 3]).buffer),
-        'docs:project-a',
-        'T1',
-      );
+      .prepare('UPDATE embeddings SET vector = ? WHERE collection = ? AND item_id = ?')
+      .run(Buffer.from(new Float32Array([1, 2, 3]).buffer), 'docs:project-a', 'T1');
     // Re-index with same text — should NOT null the vector
     svc.index('docs:project-a', 'T1', 'Introduction to machine learning');
     const row = svc.db
-      .prepare(
-        'SELECT vector FROM embeddings WHERE collection = ? AND item_id = ?',
-      )
+      .prepare('SELECT vector FROM embeddings WHERE collection = ? AND item_id = ?')
       .get('docs:project-a', 'T1') as any;
     expect(row.vector).not.toBeNull();
     svc.close();
   });
 
   it('index() nulls vector when source_text changes', () => {
-    const svc = new EmbeddingService(
-      TEST_DB_PATH,
-      'http://localhost:11434',
-      'test-model',
-    );
+    const svc = new EmbeddingService(TEST_DB_PATH, 'http://localhost:11434', 'test-model');
     svc.index('docs:project-a', 'T1', 'Introduction to machine learning');
     svc.db
-      .prepare(
-        'UPDATE embeddings SET vector = ? WHERE collection = ? AND item_id = ?',
-      )
-      .run(
-        Buffer.from(new Float32Array([1, 2, 3]).buffer),
-        'docs:project-a',
-        'T1',
-      );
+      .prepare('UPDATE embeddings SET vector = ? WHERE collection = ? AND item_id = ?')
+      .run(Buffer.from(new Float32Array([1, 2, 3]).buffer), 'docs:project-a', 'T1');
     // Re-index with DIFFERENT text
     svc.index('docs:project-a', 'T1', 'Advanced neural networks');
     const row = svc.db
-      .prepare(
-        'SELECT vector, source_text FROM embeddings WHERE collection = ? AND item_id = ?',
-      )
+      .prepare('SELECT vector, source_text FROM embeddings WHERE collection = ? AND item_id = ?')
       .get('docs:project-a', 'T1') as any;
     expect(row.vector).toBeNull();
     expect(row.source_text).toBe('Advanced neural networks');
@@ -107,11 +79,7 @@ describe('EmbeddingService', () => {
   /* --- remove / getCollections / getItemIds --- */
 
   it('remove() deletes an embedding', () => {
-    const svc = new EmbeddingService(
-      TEST_DB_PATH,
-      'http://localhost:11434',
-      'test-model',
-    );
+    const svc = new EmbeddingService(TEST_DB_PATH, 'http://localhost:11434', 'test-model');
     svc.index('docs:project-a', 'T1', 'Data preprocessing');
     svc.remove('docs:project-a', 'T1');
     const row = svc.db
@@ -122,32 +90,17 @@ describe('EmbeddingService', () => {
   });
 
   it('getCollections() returns distinct collection names', () => {
-    const svc = new EmbeddingService(
-      TEST_DB_PATH,
-      'http://localhost:11434',
-      'test-model',
-    );
+    const svc = new EmbeddingService(TEST_DB_PATH, 'http://localhost:11434', 'test-model');
     svc.index('docs:project-a', 'T1', 'A');
     svc.index('docs:project-b', 'T1', 'B');
     svc.index('messages:group-1', 'M1', 'C');
-    expect(svc.getCollections()).toEqual([
-      'docs:project-a',
-      'docs:project-b',
-      'messages:group-1',
-    ]);
-    expect(svc.getCollections('docs:')).toEqual([
-      'docs:project-a',
-      'docs:project-b',
-    ]);
+    expect(svc.getCollections()).toEqual(['docs:project-a', 'docs:project-b', 'messages:group-1']);
+    expect(svc.getCollections('docs:')).toEqual(['docs:project-a', 'docs:project-b']);
     svc.close();
   });
 
   it('getItemIds() returns item IDs in a collection', () => {
-    const svc = new EmbeddingService(
-      TEST_DB_PATH,
-      'http://localhost:11434',
-      'test-model',
-    );
+    const svc = new EmbeddingService(TEST_DB_PATH, 'http://localhost:11434', 'test-model');
     svc.index('docs:project-a', 'T1', 'A');
     svc.index('docs:project-a', 'T2', 'B');
     expect(svc.getItemIds('docs:project-a')).toEqual(['T1', 'T2']);
@@ -163,19 +116,13 @@ describe('EmbeddingService', () => {
     });
     global.fetch = mockFetch as any;
 
-    const svc = new EmbeddingService(
-      TEST_DB_PATH,
-      'http://localhost:11434',
-      'test-model',
-    );
+    const svc = new EmbeddingService(TEST_DB_PATH, 'http://localhost:11434', 'test-model');
     svc.index('docs:project-a', 'T1', 'Introduction to machine learning');
 
     await svc.runIndexerCycle();
 
     const row = svc.db
-      .prepare(
-        'SELECT vector, model FROM embeddings WHERE collection = ? AND item_id = ?',
-      )
+      .prepare('SELECT vector, model FROM embeddings WHERE collection = ? AND item_id = ?')
       .get('docs:project-a', 'T1') as any;
     expect(row.vector).not.toBeNull();
     expect(row.model).toBe('test-model');
@@ -199,53 +146,35 @@ describe('EmbeddingService', () => {
     global.fetch = mockFetch as any;
 
     // Index with model-A
-    const svc1 = new EmbeddingService(
-      TEST_DB_PATH,
-      'http://localhost:11434',
-      'model-A',
-    );
+    const svc1 = new EmbeddingService(TEST_DB_PATH, 'http://localhost:11434', 'model-A');
     svc1.index('c', 'T1', 'text');
     await svc1.runIndexerCycle();
     svc1.close();
 
     // Re-open with model-B
-    const svc2 = new EmbeddingService(
-      TEST_DB_PATH,
-      'http://localhost:11434',
-      'model-B',
-    );
+    const svc2 = new EmbeddingService(TEST_DB_PATH, 'http://localhost:11434', 'model-B');
     await svc2.runIndexerCycle();
 
-    const row = svc2.db
-      .prepare('SELECT model FROM embeddings WHERE item_id = ?')
-      .get('T1') as any;
+    const row = svc2.db.prepare('SELECT model FROM embeddings WHERE item_id = ?').get('T1') as any;
     expect(row.model).toBe('model-B');
     svc2.close();
   });
 
   it('indexer processes all items without starvation', async () => {
     let batchSize = 0;
-    const mockFetch = vi
-      .fn()
-      .mockImplementation(async (_url: string, opts: any) => {
-        const body = JSON.parse(opts.body);
-        batchSize = body.input.length;
-        return {
-          ok: true,
-          json: async () => ({
-            embeddings: Array.from({ length: batchSize }, () => [
-              0.1, 0.2, 0.3,
-            ]),
-          }),
-        };
-      });
+    const mockFetch = vi.fn().mockImplementation(async (_url: string, opts: any) => {
+      const body = JSON.parse(opts.body);
+      batchSize = body.input.length;
+      return {
+        ok: true,
+        json: async () => ({
+          embeddings: Array.from({ length: batchSize }, () => [0.1, 0.2, 0.3]),
+        }),
+      };
+    });
     global.fetch = mockFetch as any;
 
-    const svc = new EmbeddingService(
-      TEST_DB_PATH,
-      'http://localhost:11434',
-      'test-model',
-    );
+    const svc = new EmbeddingService(TEST_DB_PATH, 'http://localhost:11434', 'test-model');
     for (let i = 0; i < 50; i++) {
       svc.index('c', `T${i}`, `text ${i}`);
     }
@@ -255,9 +184,9 @@ describe('EmbeddingService', () => {
       await svc.runIndexerCycle();
     }
 
-    const remaining = svc.db
-      .prepare('SELECT COUNT(*) as cnt FROM embeddings WHERE vector IS NULL')
-      .get() as { cnt: number };
+    const remaining = svc.db.prepare('SELECT COUNT(*) as cnt FROM embeddings WHERE vector IS NULL').get() as {
+      cnt: number;
+    };
     expect(remaining.cnt).toBe(0);
     svc.close();
   });
@@ -265,11 +194,7 @@ describe('EmbeddingService', () => {
   /* --- close() safety --- */
 
   it('close() is safe to call multiple times', () => {
-    const svc = new EmbeddingService(
-      TEST_DB_PATH,
-      'http://localhost:11434',
-      'test-model',
-    );
+    const svc = new EmbeddingService(TEST_DB_PATH, 'http://localhost:11434', 'test-model');
     svc.close();
     expect(() => svc.close()).not.toThrow();
   });
