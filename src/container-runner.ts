@@ -20,6 +20,7 @@ import {
   TIMEZONE,
 } from './config.js';
 import { materializeContainerJson } from './container-config.js';
+import { readEnvFile } from './env.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars, updateContainerConfigJson } from './db/container-configs.js';
 import { CONTAINER_RUNTIME_BIN, hostGatewayArgs, readonlyMountArgs, stopContainer } from './container-runtime.js';
@@ -268,6 +269,26 @@ export function memoryEnvArgs(env: NodeJS.ProcessEnv = process.env): string[] {
   return args;
 }
 
+// TaskFlow semantic-search embed config (#385). The in-container api_query
+// 'search' handler embeds the search text itself, and MUST use the same model
+// the host EmbeddingService indexed tasks with (else query/task vectors are
+// incomparable). Forward OLLAMA_HOST/EMBEDDING_MODEL from .env, renamed into
+// the NANOCLAW_TASKFLOW_EMBED_* allowlist namespace (an explicit allowlist —
+// can't be board scope, the proxy, or auth). Gated on OLLAMA_HOST: unset =>
+// [] => no embed env => search falls back to lexical (matches the feeder-off
+// host side). Reads .env, so `env` is injectable for tests.
+export function taskflowEmbedEnvArgs(
+  env: Record<string, string> = readEnvFile(['OLLAMA_HOST', 'EMBEDDING_MODEL']),
+): string[] {
+  if (!env.OLLAMA_HOST) return [];
+  return [
+    '-e',
+    `NANOCLAW_TASKFLOW_EMBED_URL=${env.OLLAMA_HOST}`,
+    '-e',
+    `NANOCLAW_TASKFLOW_EMBED_MODEL=${env.EMBEDDING_MODEL || 'bge-m3'}`,
+  ];
+}
+
 function resolveProviderContribution(
   session: Session,
   agentGroup: AgentGroup,
@@ -322,6 +343,14 @@ function buildMounts(
   // file exists (and falls back to bootstrap if a test/CLI bypassed init).
   ensureTaskflowDb(DATA_DIR);
   mounts.push({ hostPath: taskflowDir(DATA_DIR), containerPath: '/workspace/taskflow', readonly: false });
+
+  // Embeddings DB (#385) — read-only mount of the embeddings DIRECTORY (not the
+  // file) so the WAL `-wal`/`-shm` sidecars are visible to the container's
+  // EmbeddingReader for api_query 'search'. Always mounted: empty when the host
+  // feeder is off (OLLAMA_HOST unset) → reader finds no DB → lexical fallback.
+  const embeddingsDir = path.join(DATA_DIR, 'embeddings');
+  fs.mkdirSync(embeddingsDir, { recursive: true });
+  mounts.push({ hostPath: embeddingsDir, containerPath: '/workspace/embeddings', readonly: true });
 
   // Agent group folder at /workspace/agent (RW for working files + CLAUDE.local.md)
   mounts.push({ hostPath: groupDir, containerPath: '/workspace/agent', readonly: false });
@@ -474,6 +503,11 @@ async function buildContainerArgs(
   // vars below (board id, provider, gateway) so those always win on any conflict — though the
   // prefix can't collide with them anyway.
   args.push(...memoryEnvArgs());
+
+  // TaskFlow semantic-search embed config (#385) — forwards OLLAMA_HOST/
+  // EMBEDDING_MODEL so the in-container api_query 'search' embeds the query with
+  // the host feeder's model. [] when OLLAMA_HOST unset (search stays lexical).
+  args.push(...taskflowEmbedEnvArgs());
 
   // v1 parity: MCP handlers host-inject board_id from this env so the agent
   // never has to construct it. Resolve via the boards table — folder→id is

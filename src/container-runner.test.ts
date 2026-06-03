@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { memoryEnvArgs, replayContainerEnvArgs, resolveProviderName } from './container-runner.js';
+import { memoryEnvArgs, replayContainerEnvArgs, resolveProviderName, taskflowEmbedEnvArgs } from './container-runner.js';
 
 describe('resolveProviderName', () => {
   it('prefers session over container config', () => {
@@ -81,5 +81,35 @@ describe('memoryEnvArgs', () => {
 
   it('returns nothing when no memory vars are set', () => {
     expect(memoryEnvArgs({ TZ: 'UTC' })).toEqual([]);
+  });
+});
+
+describe('taskflowEmbedEnvArgs', () => {
+  it('returns [] when OLLAMA_HOST is unset (feature off — no semantic search)', () => {
+    expect(taskflowEmbedEnvArgs({})).toEqual([]);
+    // model alone is not enough — the host feeder is what gates the feature
+    expect(taskflowEmbedEnvArgs({ EMBEDDING_MODEL: 'bge-m3' })).toEqual([]);
+  });
+
+  it('forwards OLLAMA_HOST + EMBEDDING_MODEL under the NANOCLAW_TASKFLOW_EMBED_* namespace', () => {
+    // The container must embed the search query with the SAME model the host
+    // feeder indexed tasks with, else query/task vectors are incomparable.
+    expect(
+      taskflowEmbedEnvArgs({ OLLAMA_HOST: 'http://192.168.2.13:11434', EMBEDDING_MODEL: 'bge-m3' }),
+    ).toEqual([
+      '-e',
+      'NANOCLAW_TASKFLOW_EMBED_URL=http://192.168.2.13:11434',
+      '-e',
+      'NANOCLAW_TASKFLOW_EMBED_MODEL=bge-m3',
+    ]);
+  });
+
+  it('defaults the model to bge-m3 (the feeder default) when EMBEDDING_MODEL is unset', () => {
+    expect(taskflowEmbedEnvArgs({ OLLAMA_HOST: 'http://h:11434' })).toEqual([
+      '-e',
+      'NANOCLAW_TASKFLOW_EMBED_URL=http://h:11434',
+      '-e',
+      'NANOCLAW_TASKFLOW_EMBED_MODEL=bge-m3',
+    ]);
   });
 });
