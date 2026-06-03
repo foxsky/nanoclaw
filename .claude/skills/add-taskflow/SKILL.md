@@ -52,7 +52,8 @@ Beyond the core Kanban board and quick capture, the TaskFlow agent exposes the f
 - stale-task summaries: 3+ idle tasks collapse to per-person counts to keep digests short
 
 **Semantic search & embeddings:**
-- semantic search, duplicate detection on task create (0.85 similarity threshold), and automatic context-preamble injection ranked by embeddings
+- `taskflow_query({ query: 'search' })` ranks tasks semantically (Ollama bge-m3 over a host-built `embeddings.db`, merged with lexical hits), operator-enabled via `OLLAMA_HOST`/`EMBEDDING_MODEL` host env; falls back to pure lexical when unconfigured
+- not yet ported from v1: duplicate-detection-on-create (0.85 threshold) and the embedding-ranked context preamble — see the `add-taskflow` embeddings coordination notes
 
 **Long-term memory:**
 - remember durable facts across sessions (`memory_note`) and recall them (`memory_search`), per-board, with once-per-session auto-recall of recent memories and auto-capture at context compaction

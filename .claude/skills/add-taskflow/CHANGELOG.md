@@ -1,5 +1,17 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-06-03 — Enable TaskFlow semantic search in v2 (port the embedding feeder + wire the MCP query path)
+
+`taskflow_query({ query: 'search' })` now ranks tasks **semantically** instead of falling back to lexical — #385, ported from v1 to the v2 host+container split. Operator-enabled via `OLLAMA_HOST` (+ optional `EMBEDDING_MODEL`, default `bge-m3`) host env; **unset = pure lexical, zero behaviour change**.
+
+- **Host feeder** (`src/embedding-service.ts` + `src/taskflow-embedding-sync.ts`, wired in `index.ts`): builds/maintains `data/embeddings/embeddings.db` — a 15s `taskflow.db` poll indexes active tasks (`title + description + next_action`) into `tasks:<board>` collections; a background indexer batch-embeds pending rows via Ollama `/api/embed` (model-change detection, stale-source-text race guard). Gated on `OLLAMA_HOST`; graceful shutdown via the `onShutdown` registry.
+- **Container** (`container-runner.ts`): read-only `data/embeddings -> /workspace/embeddings` mount + the embed config forwarded as `NANOCLAW_TASKFLOW_EMBED_*` (the container embeds the query with the **same** model the feeder indexed with).
+- **Container reader** (`embedding-reader.ts`): **ported to `bun:sqlite`** — it had imported `better-sqlite3` (not a container dep) and had never run; under Bun it couldn't read BLOB vectors. Now reads through an aligned `Float32Array` copy.
+- **MCP wiring** (`api_query` `'search'`): `maybeSemanticSearch` embeds the query (reusing `memory-embed`) + injects a read-only `EmbeddingReader`; `engine.query` ranks the `tasks:<board>` collection and merges it with lexical hits. No-op → lexical when the config/db/Ollama is unavailable.
+
+TDD throughout (host vitest + container bun:test). **Deferred** (not in this pass): duplicate-detection-on-create (0.85) and the embedding-ranked context preamble.
+
+
 ## 2026-06-02 — Expand the FastAPI (tf-mcontrol) surface: api_query guard + meetings + rich tools
 
 Eight tools added to `FASTAPI_ALLOWLIST` (`taskflow-server-entry.ts`) so the tf-mcontrol dashboard can drive the same engine path the WhatsApp agent uses — the **clean subset** of the §6 coordination-doc roadmap (`docs/2026-06-02-engine-allowlist-error-code-coordination.md` §8). Grounded against live source (6-reader workflow), so envelope changes that bottom out in machinery SHARED with already-shipped tools were deliberately deferred (see §8 residuals).
