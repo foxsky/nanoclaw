@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import fs from 'fs';
 
 export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
@@ -18,8 +18,17 @@ export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
+/** BLOB bytes → Float32 vector. Copies into a fresh aligned buffer so an
+ *  unaligned bun:sqlite blob can't make the Float32Array constructor throw or
+ *  misread (mirrors memory-store.ts blobToVector). */
+function blobToFloat32(blob: Uint8Array): Float32Array {
+  const out = new Float32Array(Math.floor(blob.byteLength / 4));
+  new Uint8Array(out.buffer).set(blob.subarray(0, out.length * 4));
+  return out;
+}
+
 export class EmbeddingReader {
-  private db: Database.Database | null = null;
+  private db: Database | null = null;
 
   constructor(dbPath: string) {
     try {
@@ -27,7 +36,7 @@ export class EmbeddingReader {
         return; // DB not created yet — graceful no-op
       }
       this.db = new Database(dbPath, { readonly: true });
-      this.db.pragma('busy_timeout = 5000');
+      this.db.exec('PRAGMA busy_timeout = 5000');
     } catch {
       this.db = null; // corrupted or locked — graceful fallback
     }
@@ -51,7 +60,7 @@ export class EmbeddingReader {
       )
       .all(collection) as Array<{
       item_id: string;
-      vector: Buffer;
+      vector: Uint8Array;
       metadata: string;
     }>;
 
@@ -61,11 +70,7 @@ export class EmbeddingReader {
       metadata: Record<string, any>;
     }> = [];
     for (const row of rows) {
-      const stored = new Float32Array(
-        row.vector.buffer,
-        row.vector.byteOffset,
-        row.vector.byteLength / 4,
-      );
+      const stored = blobToFloat32(row.vector);
       const score = cosineSimilarity(queryVector, stored);
       if (score >= threshold) {
         let metadata: Record<string, any> = {};
