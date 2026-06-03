@@ -1,5 +1,16 @@
 # TaskFlow Skill Package Changelog
 
+## 2026-06-02 — Expand the FastAPI (tf-mcontrol) surface: api_query guard + meetings + rich tools
+
+Eight tools added to `FASTAPI_ALLOWLIST` (`taskflow-server-entry.ts`) so the tf-mcontrol dashboard can drive the same engine path the WhatsApp agent uses — the **clean subset** of the §6 coordination-doc roadmap (`docs/2026-06-02-engine-allowlist-error-code-coordination.md` §8). Grounded against live source (6-reader workflow), so envelope changes that bottom out in machinery SHARED with already-shipped tools were deliberately deferred (see §8 residuals).
+
+- **`api_query` + a sub-mode guard.** `startMcpServer()` gains an optional `argGuards` map (server.ts), consulted ONLY when an allowlist is set → FastAPI subprocess only; the in-container barrel passes no allowlist so the WhatsApp agent is byte-unchanged and keeps full cross-board `api_query`. The guard rejects the three ORG-WIDE read modes — `find_person_in_organization`, `find_task_in_organization`, and **`board_directory`** (the org-tree board/responsible-people read the original Q5 denylist missed) — with `{success:false,error_code:'permission_denied'}` (403), so the board-local dashboard can't read cross-board people (incl. `routing_jid`) or sibling-board structure.
+- **Meeting tools** (`api_create_meeting_task`, `api_reschedule_meeting`, `api_note_meeting`). `resolveMeetingTaskId`: 0-match / wrong-board M-id → `not_found` (404); **2+-match → `success:true` + `data.candidates`** ("did you mean?" picker, not a 502). The discriminated-union `ok` stays false on the candidates branch, so callers short-circuit before `engine.update` — no mutation (regression-tested on the irreversible note path).
+- **Rich tools** (`api_reassign`, `api_hierarchy` link/unlink only, `api_create_task`, `api_update_task`). `api_admin`/`api_report` stay UNexposed (Q3/Q4 least-privilege).
+- **Arg-shape hardening.** Each handler's own arg-shape rejections now return `{success:false,error_code:'validation_error'}` (422) instead of raw `err()` text (which the dashboard parser can't decode → 503).
+
+**Deferred (documented in §8 residuals, NOT shipped):** the shared `parseTaskActorArgs` raw-`err()` (update_task/hierarchy `board_id` still 503), `finalizeCreatedTaskResult` codeless create-failure (502), engine dispatcher codeless returns + the `requireTask`-throws not-found path, and the two unmapped-code renames (they also need an in-container `CLAUDE.md.template` ask-flow re-key). Full container suite green (1352 pass); container `tsc` clean; no deploy.
+
 ## 2026-06-01 — Document the native memory layer + voice transcription
 
 Documented tools that had shipped to the container surface but were absent from SKILL.md and the CLAUDE.md template (board agents had no instruction to use them):

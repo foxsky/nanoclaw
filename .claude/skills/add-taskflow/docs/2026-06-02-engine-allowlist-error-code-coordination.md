@@ -195,7 +195,7 @@ All 7 resolved. Net effect: the engine pass needs **neither `api_admin` nor `api
 2. **Rename** the two unmapped engine codes → `validation_error` (Q1).
 3. **Meeting ambiguity** → `success:true` + `candidates` (Q6).
 4. **Allowlist additions** (8 names, NEITHER `api_admin` NOR `api_report`): `api_reassign`, `api_hierarchy`, `api_query`, `api_create_meeting_task`, `api_reschedule_meeting`, `api_note_meeting`, `api_create_task`, `api_update_task` — each added in the same commit that hardens its envelope.
-5. **`api_query` sub-mode guard** (Q5, corrected): reject the org-wide modes `find_person_in_organization`/`find_task_in_organization` on the FastAPI path (sub-mode allowlist on the entry, OR a narrow board-scoped read tool) — NOT just a verification. They return cross-board people (incl. `routing_jid`) and sibling-board tasks.
+5. **`api_query` sub-mode guard** (Q5, corrected — and corrected AGAIN at build time): reject the **three** org-wide modes `find_person_in_organization` / `find_task_in_organization` / **`board_directory`** on the FastAPI path. The first two return cross-board people (incl. `routing_jid`) and sibling-board tasks; `board_directory` (engine `buildBoardDirectory()`, `orgScopeOrNull()` SELECT across the subtree) returns org-tree board structure + responsible people — it was missed by the original Q5 denylist (which named only the first two). **See §8 for the shipped guard.**
 6. **Publish flat-arg contracts** for `api_query` stats/archive/completed sub-modes + `api_create_task`/`api_update_task`/`api_create_meeting_task` `inputSchema`.
 
 ---
@@ -206,9 +206,52 @@ The doc's facts and decisions were re-verified against current source. Correctio
 
 - **Q5 / §3.3 (BLOCKER):** `api_query` is NOT uniformly board-local — `find_person_in_organization` (engine `8534`) and `find_task_in_organization` (engine `8616`) return cross-board org-tree data. The §6 Q5 decision now requires a **sub-mode guard** (allowlist on the entry, or a narrow board-scoped read tool), not just "verify." Without it, adding `api_query` to the allowlist leaks cross-board people (incl. `routing_jid`) and sibling-board tasks.
 - **Stats wiring (§3.3):** `GET /stats` is **direct-SQL `fetch_stats`** (`main.py:2851/2249`), **not** MCP-wired. The roadmap must wire it to `api_query statistics`.
-- **Archive scope (§3.4):** "read-only completed view" (Q4) is served by the `completed_today/week/month` sub-modes (read `task_history.at` → **recent** completed work). The `archive`/`archive_search` sub-modes read the `archive` table, which holds only tasks auto-archived after 30 days done (engine `11623`). If "archive" means *recent* completed work, use `completed_*`; the `archive` table is the long-tail. Both are read-only `api_query` modes (still behind the Q5 guard).
+- **Archive scope (§3.4) — CORRECTED at build time (see §8):** "read-only completed view" (Q4). Live source shows `completed_today/week/month` read the **`archive` table** (filtered by `archived_at`), NOT `task_history.at`. `archive`/`archive_search` read the same table without the date filter (last ~20). Both are read-only `api_query` modes behind the Q5 guard.
 - **Q6 (§6):** `candidates` must be under `data` (`data.candidates`) — the dashboard parser keeps only `result.data` on success (`main.py:1661/1748`).
 - **§2 count:** `ADMIN_ACTIONS` has **18** actions, not 17 (`taskflow-api-mutate.ts:45`).
 - **§1 mechanism (NICE):** the "raw `err()` → 503" outcome is right; precise path is `engine/client.py:265` catches the JSON-decode failure and returns `{text: …}`, then `parse_mcp_mutation_result` raises "missing boolean success" → 503 (`main.py:1695`). No `isError` handling either way.
 
 Unit A (A4 runner gate) and the rest of the board-local-today engine work were re-reviewed at xhigh; A4 is clean, and the one engine gap found (recurring task's first `due_date` seeded from UTC wall-clock) was fixed in `e23b5718`. A known replay-fidelity gap remains in the **history-timestamp** windows (weekly-completion `weekStart()`, stale-24h, upcoming-meetings, digest-meeting `Date.now()`) — correct in production (no replay), deferred with the history-timestamp domain (TZ-coherence Items 2/3), not part of this due_date work.
+
+---
+
+## 8. IMPLEMENTATION STATUS — CLEAN SUBSET shipped 2026-06-02
+
+The one-pass scope was grounded against live source (6-reader workflow `w4kir9ku3`), which revealed that **every roadmap tool's envelope hardening bottoms out in SHARED machinery consumed by already-shipped tools**, and that the Q1 renames change a documented in-container agent contract. The owner chose the **clean subset**: ship the determined, self-contained, cross-consumer-safe work now; defer the shared-machinery + rename work as documented residuals.
+
+### Shipped (branch `skill/taskflow-v2`)
+
+- **U1 `443527c3`** — `api_query` on the FastAPI surface + the sub-mode guard. The guard lives at the `server.ts` `tools/call` gate via a new optional `argGuards` map on `startMcpServer(allow, argGuards)`, consulted ONLY when `allow` is set (FastAPI subprocess). The in-container barrel calls `startMcpServer()` with no allowlist → guard never fires → the WhatsApp agent keeps full cross-board `api_query` access. Org-wide modes (`find_person_in_organization`, `find_task_in_organization`, **`board_directory`**) → `{success:false, error_code:'permission_denied'}` (403). `api_query`'s own arg-shape rejections → `validation_error` (422).
+- **U2 `896a140b`** — the 3 meeting tools allowlisted. `resolveMeetingTaskId`: 0-match + M-id-not-a-meeting-on-this-board → `not_found` (404); **2+-match → `success:true` + `data.candidates`** (Q6). Safety property (regression-tested on BOTH reschedule and the irreversible note path): the discriminated-union `ok` stays FALSE on the candidates branch, so both callers short-circuit before `engine.update` — no mutation on an ambiguous match. Meeting tools' own arg-shape rejections → `validation_error`.
+- **U3 `a765f83a`** — `api_reassign` / `api_hierarchy` (link/unlink only) / `api_create_task` / `api_update_task` allowlisted; each handler's OWN local arg-shape rejections → `validation_error`.
+
+Net: **all 8 allowlist additions + the security guard + the meeting contract + the high-frequency arg-shape fixes** landed. Neither `api_admin` nor `api_report` exposed (Q3/Q4 least-privilege held).
+
+### Residuals — DEFERRED to a coordinated cross-consumer pass (NOT shipped)
+
+These bottom out in machinery SHARED with already-shipped tools (`api_create_simple_task`, `api_update_simple_task`, the note tools) or change a documented contract; touching them needs their own regression coverage:
+
+1. **`parseTaskActorArgs` (`util.ts`) raw `err()`** → `api_update_task` + `api_hierarchy` `board_id`/`task_id`/`sender_name` arg-shape failures still map to **503**, not 422. Shared with the shipped simple/note tools.
+2. **`finalizeCreatedTaskResult` codeless** → `api_create_task` / `api_create_meeting_task` engine-RETURNED create failures still **502**. Shared with `api_create_simple_task`.
+3. **Engine dispatcher codeless returns** (`reassign` / `hierarchy` / `update` rich path / `query` unknown-mode) → engine-returned failures **502** (e.g. `query` unknown discriminator returns codeless `{success:false}`).
+4. **`requireTask()` throws** on the update/hierarchy not-found path → a pre-check refactor is needed to map **404** instead of the catch's 500/502.
+5. **Person-resolution helpers** (`buildUnresolvedPersonError` / `personAmbiguityError` / `buildOfferRegisterError`) are codeless BY DESIGN — the in-container agent relies on their verbatim Portuguese text + `offer_register`. Adding codes is a cross-method change.
+6. **Q1 renames** (`invalid_confirmed_task_id` + `ambiguous_task_context` → `validation_error`) — DEFERRED. Grounding found these also require re-keying the in-container ask-flow in `add-taskflow/templates/CLAUDE.md.template:131/1228` + CHANGELOG (the agent branches on `error_code:"ambiguous_task_context"`); the doc itself rates the rename low-priority/rarely-fires. Until done, those two codes stay **502** on the rare dashboard path.
+
+### Corrections to this doc (live-source-verified at build time)
+
+- **`board_directory` is a THIRD org-wide `api_query` mode** the Q5 denylist missed (now in the shipped guard).
+- **`completed_today`/`completed_this_week`/`completed_this_month` read the `archive` table** (filtered by `archived_at`), NOT `task_history` as §3.4/§7 stated. `archive`/`archive_search` read the same table (no date filter, last ~20). The dashboard's "recent completed work" and "long-tail archive" both come from `archive`.
+
+### Flat-arg contracts for the exposed `api_query` read sub-modes (dashboard owner)
+
+All also require `board_id` (the handler injects it). The discriminator field is **`query`** (not `mode`):
+
+| sub-mode | extra args |
+|---|---|
+| `statistics`, `summary`, `month_statistics` | (none) |
+| `person_statistics`, `person_completed` | `person_name` |
+| `archive`, `completed_today`, `completed_this_week`, `completed_this_month` | (none) |
+| `archive_search` | `search_text` |
+
+`api_create_task` / `api_update_task` / `api_create_meeting_task` `inputSchema` flat fields: read directly from their `tool.inputSchema` in `taskflow-api-mutate.ts` (kept as the single source of truth rather than duplicated here).
