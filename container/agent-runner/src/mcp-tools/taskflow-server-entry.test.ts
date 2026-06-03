@@ -166,4 +166,76 @@ describe('taskflow-server-entry (tf-mcontrol runtime contract)', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 40000);
+
+  it('FastAPI api_query: org-wide sub-modes are denied (403), board-local modes reach the handler', async () => {
+    // Q5 sub-mode guard: api_query is one tool gating ALL its read sub-modes;
+    // three are org-wide (cross-board) — find_person_in_organization /
+    // find_task_in_organization (people incl. routing_jid across the org
+    // subtree) and board_directory (org-tree board structure + responsible
+    // people). The dashboard is a board-local product, so the FastAPI surface
+    // must reject those while still reaching the board-local modes. The
+    // in-container WhatsApp agent (no allowlist) keeps full access — covered
+    // structurally by the barrel calling startMcpServer() with no `allow`.
+    const dir = mkdtempSync(join(tmpdir(), 'tf-entry-guard-'));
+    const dbPath = join(dir, 'taskflow.db');
+    const proc = Bun.spawn(['bun', ENTRY, '--db', dbPath], {
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe',
+      cwd: AGENT_RUNNER_ROOT,
+    });
+    async function callQuery(id: number, args: Record<string, unknown>): Promise<string> {
+      proc.stdin.write(
+        rpc({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'api_query', arguments: args } }),
+      );
+      await proc.stdin.flush();
+      const out = await readUntil(proc.stdout, (a) => a.includes(`"id":${id}`), 10000);
+      const line = out.split('\n').find((l) => l.includes(`"id":${id}`));
+      expect(line, `tools/call id=${id} response not received`).toBeTruthy();
+      return JSON.parse(line as string).result?.content?.[0]?.text ?? '';
+    }
+    try {
+      await readUntil(proc.stderr, (a) => a.includes('MCP server ready'), 20000);
+      proc.stdin.write(
+        rpc({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0' } },
+        }),
+      );
+      await proc.stdin.flush();
+      await readUntil(proc.stdout, (a) => a.includes('"id":1'), 10000);
+      proc.stdin.write(rpc({ jsonrpc: '2.0', method: 'notifications/initialized' }));
+      await proc.stdin.flush();
+
+      // Org-wide modes → permission_denied (403). NOT "Unknown tool" (that
+      // would mean the allowlist blocked it, not the sub-mode guard) and NOT
+      // a data result (no cross-board leak).
+      const orgWide: Array<[number, string]> = [
+        [10, 'find_person_in_organization'],
+        [11, 'find_task_in_organization'],
+        [12, 'board_directory'],
+      ];
+      for (const [id, mode] of orgWide) {
+        const txt = await callQuery(id, { board_id: 'b1', query: mode, search_text: 'x' });
+        expect(txt, `${mode} must reach the sub-mode guard, not "Unknown tool"`).not.toContain('Unknown tool');
+        const env = JSON.parse(txt);
+        expect(env.success, `${mode} must be denied`).toBe(false);
+        expect(env.error_code, `${mode} must map to 403`).toBe('permission_denied');
+        expect(env.data, `${mode} must not leak cross-board rows`).toBeUndefined();
+      }
+
+      // A board-local mode REACHES the handler: not "Unknown tool" (proves
+      // api_query is allowlisted) and not the guard's permission_denied
+      // (proves the guard is mode-scoped, not a blanket api_query block).
+      const okTxt = await callQuery(13, { board_id: 'b1', query: 'statistics' });
+      expect(okTxt).not.toContain('Unknown tool');
+      const okEnv = JSON.parse(okTxt);
+      expect(okEnv.error_code).not.toBe('permission_denied');
+    } finally {
+      proc.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 40000);
 });

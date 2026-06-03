@@ -29,7 +29,7 @@ import './taskflow-api-notes.js';
 import './taskflow-api-board.js';
 import './taskflow-api-comment.js';
 import './taskflow-api-chat.js';
-import { startMcpServer } from './server.js';
+import { startMcpServer, type ToolArgGuard } from './server.js';
 
 /**
  * The exact tool surface the tf-mcontrol FastAPI MCP client may use.
@@ -79,6 +79,45 @@ const FASTAPI_ALLOWLIST: ReadonlySet<string> = new Set([
   // web-chat ingress (0h-v2 §0.3): board_chat round-trip, dashboard-
   // only, NOT WhatsApp. tf-mcontrol POST /chat → this tool.
   'api_send_chat',
+  // composite read-side wrapper (stats / archive / completed / meeting
+  // reads). Sub-mode-gated below: api_query also exposes org-wide
+  // cross-board read modes that the board-local dashboard must NOT reach.
+  'api_query',
+]);
+
+/**
+ * `api_query` is ONE tool gating ALL its read sub-modes (the `query`
+ * discriminator). Most are board-local (scoped to the constructor
+ * board_id), but three deliberately read ACROSS the board's org tree via
+ * `orgScopeOrNull()` and leak cross-board data:
+ *   - find_person_in_organization → people incl. `routing_jid` across the
+ *     whole subtree (taskflow-engine.ts findPersonInOrganization)
+ *   - find_task_in_organization   → sibling/parent/child board task rows
+ *   - board_directory             → org-tree board structure + responsible
+ *     people (buildBoardDirectory)
+ * The dashboard is a board-local product, so the FastAPI surface rejects
+ * these. The in-container WhatsApp agent keeps full access (it calls
+ * `startMcpServer()` with no allowlist, so `argGuards` is never consulted)
+ * — it uses them for cross-board sends/provisioning per the tool
+ * description. KEEP IN SYNC with engine `query()` modes that call
+ * `orgScopeOrNull()` / `getBoardLineage()`.
+ */
+const ORG_WIDE_QUERY_MODES: ReadonlySet<string> = new Set([
+  'find_person_in_organization',
+  'find_task_in_organization',
+  'board_directory',
+]);
+
+const FASTAPI_ARG_GUARDS: ReadonlyMap<string, ToolArgGuard> = new Map([
+  [
+    'api_query',
+    (args) => {
+      const mode = typeof args.query === 'string' ? args.query : '';
+      return ORG_WIDE_QUERY_MODES.has(mode)
+        ? `query mode '${mode}' is org-wide (cross-board) and not permitted on the dashboard surface`
+        : null;
+    },
+  ],
 ]);
 
 const dbIdx = process.argv.indexOf('--db');
@@ -103,5 +142,5 @@ setServiceOutboundDbPath(svcOutboundDb);
 // barrel never calls this, so the WhatsApp agent is unaffected.
 setVerbatimIds(true);
 initTaskflowDb(dbPath);
-await startMcpServer(FASTAPI_ALLOWLIST);
+await startMcpServer(FASTAPI_ALLOWLIST, FASTAPI_ARG_GUARDS);
 process.stderr.write('MCP server ready\n');

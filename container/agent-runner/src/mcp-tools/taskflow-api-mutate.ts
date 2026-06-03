@@ -1776,16 +1776,22 @@ export const apiQueryTool: McpToolDefinition = {
   async handler(args) {
     args = normalizeAgentIds(args);
     const boardId = requireString(args, 'board_id');
-    if (boardId === null) return err('board_id: required string');
+    if (boardId === null) {
+      return jsonResponse({ success: false, error_code: 'validation_error', error: 'board_id: required string' });
+    }
     const query = requireString(args, 'query');
-    if (query === null) return err('query: required string');
+    if (query === null) {
+      return jsonResponse({ success: false, error_code: 'validation_error', error: 'query: required string' });
+    }
 
     const queryParams: QueryParams = { query };
     for (const key of [
       'sender_name', 'person_name', 'task_id', 'search_text', 'label', 'since', 'at',
     ] as const) {
       if (args[key] !== undefined) {
-        if (typeof args[key] !== 'string') return err(`${key}: expected string`);
+        if (typeof args[key] !== 'string') {
+          return jsonResponse({ success: false, error_code: 'validation_error', error: `${key}: expected string` });
+        }
         (queryParams as unknown as Record<string, unknown>)[key] = args[key];
       }
     }

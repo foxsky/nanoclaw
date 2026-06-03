@@ -2273,34 +2273,47 @@ describe('api_query MCP tool (A5.2.3 — composite read-side wrapper)', () => {
     expect(result.data[0].task_id).toBe('M1');
   });
 
-  it('rejects non-string board_id', async () => {
+  // Arg-shape rejections return a structured {success:false,
+  // error_code:'validation_error'} envelope (maps to HTTP 422 on the
+  // FastAPI surface), NOT raw err() text (which the dashboard parser
+  // cannot decode → 503 transport error).
+  it('rejects non-string board_id with validation_error', async () => {
     const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
     const response = await apiQueryTool.handler({
       board_id: 42 as unknown as string,
       query: 'board',
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/board_id/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/board_id/);
   });
 
-  it('rejects missing query', async () => {
+  it('rejects missing query with validation_error', async () => {
     const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
     const response = await apiQueryTool.handler({
       board_id: BOARD,
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/query/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/query/);
   });
 
-  it('rejects non-string task_id', async () => {
+  it('rejects non-string task_id with validation_error', async () => {
     const { apiQueryTool } = await import('./taskflow-api-mutate.ts');
     const response = await apiQueryTool.handler({
       board_id: BOARD,
       query: 'task_details',
       task_id: 42 as unknown as string,
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/task_id/);
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error_code).toBe('validation_error');
+    expect(result.error).toMatch(/task_id/);
   });
 });
 
