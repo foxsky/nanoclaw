@@ -120,20 +120,33 @@ const FASTAPI_ALLOWLIST: ReadonlySet<string> = new Set([
  * description. KEEP IN SYNC with engine `query()` modes that call
  * `orgScopeOrNull()` / `getBoardLineage()`.
  *
- * SCOPE LIMIT (known gap, flagged in coordination doc §8): this arg-level
- * guard only covers the SUBTREE-SCAN modes above — they are cross-board by
- * mode NAME, decidable from the args alone. It does NOT cover the
- * LINEAGE-based reads: `task_details`, `task_history`, and the meeting reads
- * (`meeting_agenda`/`meeting_minutes`/`meeting_participants`/
- * `meeting_open_items`/`meeting_history`/`meeting_minutes_at`) resolve their
- * task via `getVisibleTask()` (engine ~1891), which can return a PARENT/
- * ancestor-board meeting when this board is a participant (read-only,
- * participant-gated, ancestor-only — pre-existing engine behaviour, newly
- * exposed here). Whether that participant-gated ancestor visibility is
- * acceptable on the dashboard is an OPEN product decision; sealing it to
- * strict board-locality needs a board-strict engine flag (getTask vs
- * getVisibleTask on the FastAPI path), a deeper cross-consumer change NOT
- * made in this clean-subset build.
+ * SCOPE LIMIT (flagged in coordination doc §8): this arg-level guard blocks
+ * the 3 ORG-ENUMERATION modes above — they scan BEYOND this board's own view
+ * (the whole org subtree) and are decidable from the args alone. It does NOT
+ * (and by design need not) block the modes that surface this board's OWN
+ * legitimate view, which the engine intentionally extends past `board_id =
+ * this.boardId` by TWO further mechanisms — the same data the in-container
+ * WhatsApp agent for this board already sees:
+ *   - child_exec DELEGATION: `visibleTaskScope()` (engine ~1116) adds
+ *     `OR (child_exec_board_id = this.boardId AND child_exec_enabled = 1)`,
+ *     and `getLinkedTasks()` (~2422) returns delegated parent-board task rows.
+ *     ~25 list modes (board/inbox/overdue/due_today/due_this_week/search/
+ *     urgent/by_label/statistics/summary/meetings/agenda/my_tasks/
+ *     person_tasks/…) surface
+ *     tasks a parent board DELEGATED to this board for execution.
+ *   - lineage PARTICIPANT reads: `getVisibleTask()` (~1891) can return a
+ *     PARENT/ancestor-board MEETING when this board is a participant. 8 modes
+ *     (task_details/task_history/meeting_agenda/meeting_minutes/
+ *     meeting_participants/meeting_open_items/meeting_history/
+ *     meeting_minutes_at).
+ * Both return ANCESTOR data this board legitimately executes/participates in
+ * (not org-wide enumeration), so they are NOT in the denylist. Whether the
+ * dashboard should present an even STRICTER board-only view (excluding
+ * delegated-in + participant data the WhatsApp agent shows) is an OPEN product
+ * decision; sealing it needs a board-strict engine flag (collapse
+ * visibleTaskScope to `board_id = ?` and use getTask not getVisibleTask on the
+ * FastAPI path) — a deeper cross-consumer change NOT made in this clean-subset
+ * build. Found by the falsification review (workflow w3t40tjo1).
  */
 const ORG_WIDE_QUERY_MODES: ReadonlySet<string> = new Set([
   'find_person_in_organization',
