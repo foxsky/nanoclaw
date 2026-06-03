@@ -20,6 +20,7 @@ import {
 import { ensureTaskflowServiceSession } from './modules/taskflow/service-session.js';
 import { initTaskflowDb } from './taskflow-db.js';
 import { bootstrapTaskflowDb, taskflowDbPath } from './taskflow-mount.js';
+import { startEmbeddingFeeder } from './embedding-feeder.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
@@ -213,6 +214,13 @@ async function main(): Promise<void> {
   // 6. Start host sweep
   startHostSweep();
   log.info('Host sweep started');
+
+  // 6a. Start the host-side TaskFlow embedding feeder (#385). No-op unless
+  // OLLAMA_HOST is configured; otherwise builds/maintains
+  // data/embeddings/embeddings.db (Ollama bge-m3) so the in-container
+  // api_query 'search' ranks semantically instead of falling back to lexical.
+  const embeddingFeeder = startEmbeddingFeeder(DATA_DIR);
+  if (embeddingFeeder) onShutdown(() => embeddingFeeder.stop());
 
   // 7. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();
