@@ -117,6 +117,21 @@ const FASTAPI_ALLOWLIST: ReadonlySet<string> = new Set([
  * — it uses them for cross-board sends/provisioning per the tool
  * description. KEEP IN SYNC with engine `query()` modes that call
  * `orgScopeOrNull()` / `getBoardLineage()`.
+ *
+ * SCOPE LIMIT (known gap, flagged in coordination doc §8): this arg-level
+ * guard only covers the SUBTREE-SCAN modes above — they are cross-board by
+ * mode NAME, decidable from the args alone. It does NOT cover the
+ * LINEAGE-based reads: `task_details`, `task_history`, and the meeting reads
+ * (`meeting_agenda`/`meeting_minutes`/`meeting_participants`/
+ * `meeting_open_items`/`meeting_history`/`meeting_minutes_at`) resolve their
+ * task via `getVisibleTask()` (engine ~1891), which can return a PARENT/
+ * ancestor-board meeting when this board is a participant (read-only,
+ * participant-gated, ancestor-only — pre-existing engine behaviour, newly
+ * exposed here). Whether that participant-gated ancestor visibility is
+ * acceptable on the dashboard is an OPEN product decision; sealing it to
+ * strict board-locality needs a board-strict engine flag (getTask vs
+ * getVisibleTask on the FastAPI path), a deeper cross-consumer change NOT
+ * made in this clean-subset build.
  */
 const ORG_WIDE_QUERY_MODES: ReadonlySet<string> = new Set([
   'find_person_in_organization',
