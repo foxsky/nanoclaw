@@ -2688,3 +2688,54 @@ describe('api_reschedule_meeting MCP tool', () => {
     expect(out.error).toMatch(/text/);
   });
 });
+
+describe('maybeSemanticSearch (#385 — query embed + reader injection)', () => {
+  const cfg = {
+    NANOCLAW_TASKFLOW_EMBED_MODEL: 'bge-m3',
+    NANOCLAW_TASKFLOW_EMBED_URL: 'http://h:11434',
+  } as NodeJS.ProcessEnv;
+  const fakeEmbed = async () => new Float32Array([1, 2, 3]);
+
+  it('no-op for non-search queries', async () => {
+    const { maybeSemanticSearch } = await import('./taskflow-api-mutate.ts');
+    const qp = { query: 'board' } as any;
+    expect(await maybeSemanticSearch(qp, { env: cfg, embed: fakeEmbed })).toBeNull();
+    expect(qp.query_vector).toBeUndefined();
+    expect(qp.embedding_reader).toBeUndefined();
+  });
+
+  it('no-op when search_text is missing', async () => {
+    const { maybeSemanticSearch } = await import('./taskflow-api-mutate.ts');
+    const qp = { query: 'search' } as any;
+    expect(await maybeSemanticSearch(qp, { env: cfg, embed: fakeEmbed })).toBeNull();
+    expect(qp.query_vector).toBeUndefined();
+  });
+
+  it('no-op when the embed config is absent (feeder off → lexical)', async () => {
+    const { maybeSemanticSearch } = await import('./taskflow-api-mutate.ts');
+    const qp = { query: 'search', search_text: 'mobile app' } as any;
+    expect(await maybeSemanticSearch(qp, { env: {} as NodeJS.ProcessEnv, embed: fakeEmbed })).toBeNull();
+    expect(qp.query_vector).toBeUndefined();
+  });
+
+  it('injects query_vector + a reader when configured and embed returns a vector', async () => {
+    const { maybeSemanticSearch } = await import('./taskflow-api-mutate.ts');
+    const qp = { query: 'search', search_text: 'mobile app' } as any;
+    const reader = await maybeSemanticSearch(qp, {
+      env: cfg,
+      embed: fakeEmbed,
+      readerPath: '/nonexistent/embeddings.db', // EmbeddingReader is graceful when absent
+    });
+    expect(reader).not.toBeNull();
+    expect(Array.from(qp.query_vector as Float32Array)).toEqual([1, 2, 3]);
+    expect(qp.embedding_reader).toBe(reader);
+    reader?.close();
+  });
+
+  it('no-op when embed returns null (Ollama unavailable → lexical)', async () => {
+    const { maybeSemanticSearch } = await import('./taskflow-api-mutate.ts');
+    const qp = { query: 'search', search_text: 'mobile app' } as any;
+    expect(await maybeSemanticSearch(qp, { env: cfg, embed: async () => null })).toBeNull();
+    expect(qp.query_vector).toBeUndefined();
+  });
+});

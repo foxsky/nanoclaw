@@ -17,12 +17,48 @@ import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
 import { err, jsonResponse, parseTaskActorArgs, requireString } from './util.js';
+import { EmbeddingReader } from '../embedding-reader.js';
+import { embedText } from '../memory-embed.js';
 
 // Structured arg-shape rejection for the FastAPI surface (HTTP 422), as
 // opposed to raw `err()` text (which the dashboard parser can't decode → 503).
 // Mirrors the helper in taskflow-api-chat.ts / taskflow-api-comment.ts.
 function validationError(error: string) {
   return jsonResponse({ success: false, error_code: 'validation_error', error });
+}
+
+const EMBEDDINGS_DB_PATH = '/workspace/embeddings/embeddings.db';
+
+/**
+ * #385 semantic search. For `query: 'search'`, embed the search text via Ollama
+ * (the same NANOCLAW_TASKFLOW_EMBED_* config container-runner forwards — i.e.
+ * the host feeder's model, so query/task vectors are comparable) and inject a
+ * read-only EmbeddingReader so `engine.query` ranks semantically (collection
+ * `tasks:<board>`, merged with lexical hits). No-op (→ pure lexical) when the
+ * query isn't 'search', there's no search_text, the embed config is absent
+ * (feeder off), or the embed call returns null. Returns the reader for the
+ * caller to `close()`. `deps` is an injectable seam for tests.
+ */
+export async function maybeSemanticSearch(
+  queryParams: QueryParams,
+  deps: {
+    embed?: (text: string, o: { url?: string; model?: string }) => Promise<Float32Array | null>;
+    readerPath?: string;
+    env?: NodeJS.ProcessEnv;
+  } = {},
+): Promise<EmbeddingReader | null> {
+  if (queryParams.query !== 'search' || !queryParams.search_text) return null;
+  const env = deps.env ?? process.env;
+  const model = env.NANOCLAW_TASKFLOW_EMBED_MODEL;
+  const url = env.NANOCLAW_TASKFLOW_EMBED_URL;
+  if (!model || !url) return null;
+  const embed = deps.embed ?? embedText;
+  const vector = await embed(queryParams.search_text, { url, model });
+  if (!vector) return null;
+  const reader = new EmbeddingReader(deps.readerPath ?? EMBEDDINGS_DB_PATH);
+  queryParams.query_vector = vector;
+  queryParams.embedding_reader = reader;
+  return reader;
 }
 
 const PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
@@ -1808,31 +1844,36 @@ export const apiQueryTool: McpToolDefinition = {
       // api_filter_board_tasks, api_linked_tasks). Without it the constructor
       // runs migrations + delegation-link reconciliation that mutates rows on
       // a supposedly read-only path. Codex flagged 2026-05-10.
-      // Note: query: 'search' falls back to lexical because query_vector /
-      // embedding_reader aren't exposed through this MCP schema (engine still
-      // supports semantic ranking via those fields).
       const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
-      const result = engine.query(queryParams);
-      if (query === 'task_details') {
-        return jsonResponse(compactTaskDetailsQueryResult(result));
-      }
-      if (query === 'find_task_in_organization') {
-        return jsonResponse(compactFindTaskInOrganizationQueryResult(result));
-      }
-      if (query === 'search') {
-        const compact = compactSearchQueryResult(result, queryParams.search_text);
-        if (
-          compact &&
-          typeof compact === 'object' &&
-          typeof (compact as { formatted_search_results?: unknown }).formatted_search_results === 'string'
-        ) {
-          emitDeterministicToolMessage(
-            (compact as { formatted_search_results: string }).formatted_search_results,
-          );
+      // #385: query='search' now embeds the query + injects an EmbeddingReader
+      // so the engine ranks semantically (collection tasks:<board>, merged with
+      // lexical). No-op → lexical when the embed config / db is absent.
+      const semanticReader = await maybeSemanticSearch(queryParams);
+      try {
+        const result = engine.query(queryParams);
+        if (query === 'task_details') {
+          return jsonResponse(compactTaskDetailsQueryResult(result));
         }
-        return jsonResponse(compact);
+        if (query === 'find_task_in_organization') {
+          return jsonResponse(compactFindTaskInOrganizationQueryResult(result));
+        }
+        if (query === 'search') {
+          const compact = compactSearchQueryResult(result, queryParams.search_text);
+          if (
+            compact &&
+            typeof compact === 'object' &&
+            typeof (compact as { formatted_search_results?: unknown }).formatted_search_results === 'string'
+          ) {
+            emitDeterministicToolMessage(
+              (compact as { formatted_search_results: string }).formatted_search_results,
+            );
+          }
+          return jsonResponse(compact);
+        }
+        return jsonResponse(result);
+      } finally {
+        semanticReader?.close();
       }
-      return jsonResponse(result);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });
