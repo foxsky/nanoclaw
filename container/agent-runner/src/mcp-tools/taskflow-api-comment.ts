@@ -22,6 +22,7 @@ import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import { normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
+import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import type { McpToolDefinition } from './types.js';
 import { jsonResponse } from './util.js';
 
@@ -101,10 +102,12 @@ export const apiTaskAddCommentTool: McpToolDefinition = {
           error: result.error,
         });
       }
+      const notification_events = normalizeEngineNotificationEvents(result);
+      dispatchNotificationEvents(notification_events);
       return jsonResponse({
         success: true,
         data: result.data,
-        notification_events: normalizeEngineNotificationEvents(result),
+        notification_events,
       });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

@@ -30,6 +30,46 @@ import { log } from '../../log.js';
 import type { Session } from '../../types.js';
 import { nonEmptyString } from './util.js';
 
+/**
+ * Shared fail-closed deliver primitive: map an engine-resolved WhatsApp
+ * JID → `messaging_groups` (central v2.db) → channel adapter and deliver a
+ * text. ZERO taskflow.db reads (Codex#3): the caller must already hold a
+ * resolved `@g.us`/`@s.whatsapp.net` JID. Returns true on delivery, false
+ * on any fail-closed condition (logged here, never a guessed destination).
+ * Used by both `taskflow_notify` (comment push) and
+ * `taskflow_dispatch_notifications` (engine cross-chat notifications).
+ */
+export async function deliverTextToWhatsAppJid(
+  jid: string,
+  text: string,
+  ctx: Record<string, unknown>,
+): Promise<boolean> {
+  const mg = getMessagingGroupByPlatform('whatsapp', jid);
+  if (!mg) {
+    log.error('taskflow notify: no messaging_group for JID — not delivering', { ...ctx, jid });
+    return false;
+  }
+  const adapter = getChannelAdapter('whatsapp');
+  if (!adapter || !adapter.deliver) {
+    log.error('taskflow notify: WhatsApp adapter unavailable — not delivering', { ...ctx, jid });
+    return false;
+  }
+  // Fail-soft, NO retry: a thrown adapter.deliver must not bubble. The host
+  // marks the outbound row delivered only after the handler returns, so a
+  // throw mid-batch would re-run the whole handler and re-send already-sent
+  // events (duplicate notifications). Swallow + log instead.
+  try {
+    await adapter.deliver(mg.platform_id, null, {
+      kind: 'chat',
+      content: { type: 'text', text },
+    });
+    return true;
+  } catch (err) {
+    log.error('taskflow notify: adapter.deliver threw — dropping (no retry)', { ...ctx, jid, err: String(err) });
+    return false;
+  }
+}
+
 export async function handleTaskflowNotify(
   content: Record<string, unknown>,
   session: Session,
@@ -65,21 +105,7 @@ export async function handleTaskflowNotify(
     return;
   }
 
-  const mg = getMessagingGroupByPlatform('whatsapp', jid);
-  if (!mg) {
-    log.error('taskflow_notify: no messaging_group for JID — not delivering', { ...ctx, jid });
-    return;
+  if (await deliverTextToWhatsAppJid(jid, text, ctx)) {
+    log.info('taskflow_notify delivered', { ...ctx, jid });
   }
-
-  const adapter = getChannelAdapter('whatsapp');
-  if (!adapter || !adapter.deliver) {
-    log.error('taskflow_notify: WhatsApp adapter unavailable — not delivering', { ...ctx, jid });
-    return;
-  }
-
-  await adapter.deliver(mg.platform_id, null, {
-    kind: 'chat',
-    content: { type: 'text', text },
-  });
-  log.info('taskflow_notify delivered', { ...ctx, jid });
 }

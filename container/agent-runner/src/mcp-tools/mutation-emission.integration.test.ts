@@ -42,6 +42,18 @@ afterEach(() => {
 });
 
 describe('mutation emission integration (Codex gate P5 — exactly-one messages_out per mutation)', () => {
+  // #389: mutations that produce engine notifications (reassign / move /
+  // reparent via finalizeMutationResult) now ALSO emit a deterministic
+  // notification dispatch row (kind:'system'). These tests guard the
+  // user-visible CARD (no double-emit, correct deferral), so they count
+  // `chat` rows specifically; notification dispatch has its own coverage
+  // (taskflow-dispatch.test.ts + the api_reassign case below).
+  const cardCount = () =>
+    (
+      getOutboundDb()
+        .prepare("SELECT count(*) AS n FROM messages_out WHERE kind = 'chat'")
+        .get() as { n: number }
+    ).n;
   it('api_admin(reparent_task) emits EXACTLY ONE row with the byte-exact v1 "adicionada" card', async () => {
     const db = setupEngineDb(BOARD, { withBoardAdmins: true });
     const { apiCreateTaskTool, apiCreateSimpleTaskTool, apiAdminTool } = await import('./taskflow-api-mutate.ts');
@@ -63,9 +75,9 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
       ).content[0].text,
     );
 
-    // Sanity: pre-mutation outbound is empty (the create path is NOT
-    // wired to emit; only reparent/reassign are in unit-2-core).
-    expect((getOutboundDb().prepare('SELECT count(*) AS n FROM messages_out').get() as { n: number }).n).toBe(0);
+    // Sanity: no CARD has been emitted pre-reparent — both creates defer
+    // their cards (the project's assignee notification is a system row).
+    expect(cardCount()).toBe(0);
 
     const result = JSON.parse(
       (
@@ -77,17 +89,19 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     );
     expect(result.success).toBe(true);
 
-    const rows = getOutboundDb()
-      .prepare('SELECT kind, platform_id, channel_type, thread_id, content FROM messages_out')
-      .all() as Array<{ kind: string; platform_id: string | null; channel_type: string | null; thread_id: string | null; content: string }>;
-    expect(rows.length).toBe(1); // P5 + P4 dedup regression guard
-    expect(rows[0]).toMatchObject({
+    const cards = (
+      getOutboundDb()
+        .prepare('SELECT kind, platform_id, channel_type, thread_id, content FROM messages_out')
+        .all() as Array<{ kind: string; platform_id: string | null; channel_type: string | null; thread_id: string | null; content: string }>
+    ).filter((r) => r.kind === 'chat');
+    expect(cards.length).toBe(1); // P5 + P4 dedup regression guard (one CARD)
+    expect(cards[0]).toMatchObject({
       kind: 'chat',
       platform_id: ROUTING.platform_id,
       channel_type: ROUTING.channel_type,
       thread_id: null,
     });
-    expect(JSON.parse(rows[0].content).text).toBe(
+    expect(JSON.parse(cards[0].content).text).toBe(
       `✅ *${child.data.id} adicionada*\n━━━━━━━━━━━━━━\n\n📁 *${proj.data.id}* — Operação da SECTI\n   📋 *${child.data.id}* — Treinamento E-governe`,
     );
   });
@@ -108,25 +122,26 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     );
     expect(result.success).toBe(true);
 
-    // Deferred: the create card is NOT emitted at api_create_task time —
+    // Deferred: the create CARD is NOT emitted at api_create_task time —
     // an eager emit would double-emit on a following api_admin(reparent_task).
-    expect((getOutboundDb().prepare('SELECT count(*) AS n FROM messages_out').get() as { n: number }).n).toBe(0);
+    // (The assignee notification IS dispatched now as a system row.)
+    expect(cardCount()).toBe(0);
 
     // The poll-loop turn-boundary flush emits exactly ONE byte-exact
-    // v1 "Tarefa criada" row.
+    // v1 "Tarefa criada" card.
     flushPendingCreateCard();
-    const rows = getOutboundDb()
-      .prepare('SELECT kind, content FROM messages_out')
-      .all() as Array<{ kind: string; content: string }>;
-    expect(rows.length).toBe(1);
-    expect(rows[0].kind).toBe('chat');
-    expect(JSON.parse(rows[0].content).text).toBe(
+    const cards = (
+      getOutboundDb().prepare('SELECT kind, content FROM messages_out').all() as Array<{ kind: string; content: string }>
+    ).filter((r) => r.kind === 'chat');
+    expect(cards.length).toBe(1);
+    expect(cards[0].kind).toBe('chat');
+    expect(JSON.parse(cards[0].content).text).toBe(
       `✅ *Tarefa criada*\n━━━━━━━━━━━━━━\n\n*${result.data.id}* — Treinamento E-governe\n👤 *Atribuída a:* bob\n⏭️ *Coluna:* Próximas Ações`,
     );
 
     // Read-and-clear: a second flush (the turn-boundary safety net) is a no-op.
     flushPendingCreateCard();
-    expect((getOutboundDb().prepare('SELECT count(*) AS n FROM messages_out').get() as { n: number }).n).toBe(1);
+    expect(cardCount()).toBe(1);
   });
 
   it('api_task_add_note on a duplicate note emits EXACTLY ONE byte-exact "Nota já existente..." row deterministically', async () => {
@@ -334,12 +349,26 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     expect(result.success).toBe(true);
 
     const rows = getOutboundDb()
-      .prepare('SELECT kind, content FROM messages_out')
+      .prepare('SELECT kind, content FROM messages_out ORDER BY seq')
       .all() as Array<{ kind: string; content: string }>;
-    expect(rows.length).toBe(1);
-    expect(rows[0].kind).toBe('chat');
-    expect(JSON.parse(rows[0].content).text).toBe(
+
+    // P5: EXACTLY ONE confirmation CARD (no double-emit of the card).
+    const chatRows = rows.filter((r) => r.kind === 'chat');
+    expect(chatRows.length).toBe(1);
+    expect(JSON.parse(chatRows[0].content).text).toBe(
       `✅ *${taskId}* — Solicitar acesso\n\nReatribuída para Lucas.`,
     );
+
+    // #389: the reassign notification is also dispatched deterministically
+    // as a single taskflow_dispatch_notifications system row (the host
+    // delivers it — the agent does not relay). Lucas has no routing JID, so
+    // the engine emits a deferred_notification (host-skipped until #396);
+    // the cross-board WITH-jid case becomes a delivered direct_message.
+    const systemRows = rows.filter((r) => r.kind === 'system');
+    expect(systemRows.length).toBe(1);
+    const dispatch = JSON.parse(systemRows[0].content);
+    expect(dispatch.action).toBe('taskflow_dispatch_notifications');
+    expect(Array.isArray(dispatch.events)).toBe(true);
+    expect(dispatch.events.length).toBeGreaterThanOrEqual(1);
   });
 });

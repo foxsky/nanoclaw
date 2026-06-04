@@ -16,6 +16,7 @@ import { clearPendingCreateCard, setPendingCreateCard } from './mutation-dedup.j
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
+import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import { err, jsonResponse, parseTaskActorArgs, requireString } from './util.js';
 import { EmbeddingReader } from '../embedding-reader.js';
 import { embedText } from '../memory-embed.js';
@@ -243,6 +244,11 @@ function finalizeCreatedTaskResult(
   // the v1-faithful scope (non-next_action, recurring/meeting).
   const createdCard = buildCreatedTaskCard(data);
   if (createdCard) setPendingCreateCard(result.task_id, createdCard);
+  // NOT dispatched deterministically here (#397): the create CARD is
+  // deferred + cleared-on-delete (create→delete in one turn shows nothing),
+  // so the assignee notification must be deferred/cleared the same way
+  // rather than fired eagerly. Until that mechanism exists, keep the v2
+  // shape (returned for inspection, undelivered) — same as today.
   const notification_events = (result.notifications ?? [])
     .filter((n) => n.target_person_id)
     .map((n) => ({
@@ -278,6 +284,10 @@ function finalizeMutationResult(result: { success: boolean; notifications?: unkn
   const notification_events = normalizeEngineNotificationEvents(result);
   if (!success) return jsonResponse({ success: false, ...rest, notification_events });
   emitMutationConfirmation(result);
+  // Deterministic cross-chat dispatch (#389): the engine's reassign /
+  // parent-rollup / invite notifications are delivered by the host, not
+  // relayed by the agent. In-session only — the FastAPI subprocess no-ops.
+  dispatchNotificationEvents(notification_events);
   return jsonResponse({ success: true, data: rest, notification_events });
 }
 
@@ -1151,7 +1161,6 @@ export const apiMoveTool: McpToolDefinition = {
       }
 
       const results: MoveResult[] = [];
-      const notifications: unknown[] = [];
       for (const taskId of taskIds) {
         const result = engine.move({
           board_id: boardId,
@@ -1163,7 +1172,6 @@ export const apiMoveTool: McpToolDefinition = {
           confirmed_task_id: confirmedTaskId,
         });
         results.push(result);
-        if (Array.isArray(result.notifications)) notifications.push(...result.notifications);
       }
       const successes = results.filter((r) => r.success);
       const failures = results.filter((r) => !r.success);
@@ -1172,6 +1180,13 @@ export const apiMoveTool: McpToolDefinition = {
         ...successes.map((r) => `- ${r.task_id} — ${r.title ?? ''}`.trim()),
         ...failures.map((r) => `- ${r.task_id ?? 'unknown'} falhou: ${r.error ?? 'erro desconhecido'}`),
       ].join('\n');
+      // Normalize each SUCCESSFUL result individually so per-task
+      // parent_notification rollups (returned separately from notifications,
+      // engine move:5070) survive — and so one task's notification can't
+      // suppress another's via the normalizer's per-result jid-dedup.
+      // (#389; Codex High-2)
+      const notification_events = successes.flatMap((r) => normalizeEngineNotificationEvents(r));
+      dispatchNotificationEvents(notification_events);
       return jsonResponse({
         success: failures.length === 0,
         data: {
@@ -1183,7 +1198,7 @@ export const apiMoveTool: McpToolDefinition = {
           results: results.map(({ notifications: _notifications, ...result }) => result),
           formatted,
         },
-        notification_events: normalizeEngineNotificationEvents({ success: failures.length === 0, notifications }),
+        notification_events,
       });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
