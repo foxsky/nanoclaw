@@ -123,7 +123,7 @@ export function migrateBoardClaudeMd(input: string): MigrationResult {
   // tools. Capabilities that mattered for parity must exist as api_* tools.
   output = output.replace(
     /\*\*SQL fallback:\*\*[\s\S]*?\n(?=\*\*Never invent business rules\.\*\*)/g,
-    '**No direct SQL fallback.** Raw sqlite tools are not part of the TaskFlow skill surface. Use `api_query`, `api_report`, `api_admin`, and the other TaskFlow MCP tools for every read and write. If no TaskFlow tool can perform the requested operation, explain that the operation is not available through chat and offer to capture the request in the inbox.\n\n',
+    '**Direct SQL policy (read-only vs mutation).** Prefer the TaskFlow MCP tools (`api_query`, `api_report`, `api_admin`, …). Read-only ad-hoc SQL (`SELECT`) is acceptable for the lookups this guide relies on — sender-identity resolution, cross-board person/manager checks, division-folder uniqueness, and policy flags — when no tool exposes the same read. Mutating SQL (`INSERT`/`UPDATE`/`DELETE`) is permitted ONLY where no MCP tool exists for the operation (today: child-board removal). **Never** use direct SQL to create, move, reassign, or update tasks — use `api_create_task`/`api_move`/`api_reassign`/`api_update_task` instead. If an operation has no tool and is not a documented SQL exception, explain that it is not available through chat and offer to capture the request in the inbox.\n\n',
   );
   output = output.replace(
     /NEVER use `mcp__sqlite__write_query` for creating, assigning, moving, or updating tasks — doing so bypasses notifications, WIP limits, history tracking, and child-board linking\. If you use raw SQL to assign a task, the assignee will NOT be notified\./g,

@@ -152,7 +152,7 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
 
     const result = migrateBoardClaudeMd(input);
 
-    expect(result.output).toContain('**No direct SQL fallback.**');
+    expect(result.output).toContain('**Direct SQL policy (read-only vs mutation).**');
     expect(result.output).toContain("api_query({ query: 'archive' })");
     expect(result.output).toContain("api_admin({ action: 'set_cross_board_subtask_mode'");
     expect(result.output).toContain("cross_board_subtask_mode: 'approval'");
