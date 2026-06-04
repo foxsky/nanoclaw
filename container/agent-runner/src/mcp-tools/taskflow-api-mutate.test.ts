@@ -2778,3 +2778,72 @@ describe('#399 — add_external_participant for a never-contacted invitee', () =
     expect(notice!.message).toContain('Convite pendente');
   });
 });
+
+describe('emitAutoProvisionIfRequested (#390 — restore V1 auto-provision-on-register)', () => {
+  const REQ = {
+    person_id: 'p-katia',
+    person_name: 'Katia',
+    person_phone: '5585999990000',
+    person_role: 'member',
+    group_name: 'Divisão X',
+    group_folder: 'div-x',
+    message: 'Quadro filho para Katia será provisionado automaticamente.',
+  };
+
+  it('emits a provision_child_board system row carrying the auto_provision_request fields', async () => {
+    const { emitAutoProvisionIfRequested } = await import('./taskflow-api-mutate.ts');
+    const calls: Array<{ id: string; kind: string; content: string }> = [];
+    const emitted = emitAutoProvisionIfRequested({ success: true, auto_provision_request: REQ } as any, {
+      id: 'fixed',
+      emit: (m) => {
+        calls.push(m);
+        return 1;
+      },
+    });
+    expect(emitted).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].kind).toBe('system');
+    const payload = JSON.parse(calls[0].content);
+    expect(payload.action).toBe('provision_child_board');
+    expect(payload.person_id).toBe('p-katia');
+    expect(payload.person_phone).toBe('5585999990000');
+    expect(payload.group_folder).toBe('div-x');
+  });
+
+  it('no-ops when there is no auto_provision_request (non-delegating board / no phone)', async () => {
+    const { emitAutoProvisionIfRequested } = await import('./taskflow-api-mutate.ts');
+    let called = false;
+    expect(
+      emitAutoProvisionIfRequested({ success: true } as any, {
+        emit: () => {
+          called = true;
+          return 1;
+        },
+      }),
+    ).toBe(false);
+    expect(called).toBe(false);
+  });
+
+  it('no-ops on a failed admin result (do not provision for a registration that did not happen)', async () => {
+    const { emitAutoProvisionIfRequested } = await import('./taskflow-api-mutate.ts');
+    let called = false;
+    emitAutoProvisionIfRequested({ success: false, auto_provision_request: REQ } as any, {
+      emit: () => {
+        called = true;
+        return 1;
+      },
+    });
+    expect(called).toBe(false);
+  });
+
+  it('never throws if the emit fails — a committed registration must not report failure', async () => {
+    const { emitAutoProvisionIfRequested } = await import('./taskflow-api-mutate.ts');
+    expect(() =>
+      emitAutoProvisionIfRequested({ success: true, auto_provision_request: REQ } as any, {
+        emit: () => {
+          throw new Error('unable to open database file');
+        },
+      }),
+    ).not.toThrow();
+  });
+});

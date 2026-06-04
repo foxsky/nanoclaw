@@ -10,14 +10,15 @@ import type { Database } from 'bun:sqlite';
 import { getTaskflowDb } from '../db/connection.js';
 import { parseIsoCalendarDate } from '../iso-date.js';
 import { getBoardTimezone, TaskflowEngine } from '../taskflow-engine.js';
-import type { AdminParams, DependencyParams, HierarchyParams, MoveResult, QueryParams, ReassignParams, ReassignResult, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
+import type { AdminParams, AdminResult, DependencyParams, HierarchyParams, MoveResult, QueryParams, ReassignParams, ReassignResult, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
+import { writeMessageOut } from '../db/messages-out.js';
 import { emitDeterministicToolMessage, emitMutationConfirmation } from './mutation-confirmation.js';
 import { clearPendingCreateCard, setPendingCreateCard } from './mutation-dedup.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
 import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
-import { err, jsonResponse, parseTaskActorArgs, requireString } from './util.js';
+import { err, generateId, jsonResponse, log, parseTaskActorArgs, requireString } from './util.js';
 import { EmbeddingReader } from '../embedding-reader.js';
 import { embedText } from '../memory-embed.js';
 
@@ -289,6 +290,35 @@ function finalizeMutationResult(result: { success: boolean; notifications?: unkn
   // relayed by the agent. In-session only — the FastAPI subprocess no-ops.
   dispatchNotificationEvents(notification_events);
   return jsonResponse({ success: true, data: rest, notification_events });
+}
+
+/**
+ * V1 parity (#390): `register_person` on a hierarchy board that can delegate
+ * down returns an `auto_provision_request` (the engine builds it only when a
+ * phone is given AND `canDelegateDown()` — the leaf gate). V1's
+ * `taskflow_admin` auto-emitted the `provision_child_board` IPC row; emit it
+ * here so the child board is provisioned deterministically rather than
+ * depending on the agent relaying it (the template says no agent action
+ * needed). Mirrors the CONTACT_CARD_RE fast-path emit (poll-loop.ts:2813).
+ * Fail-soft: the registration already committed, so a failed emit must NOT
+ * turn into success:false. Returns whether a row was emitted.
+ */
+export function emitAutoProvisionIfRequested(
+  result: AdminResult,
+  deps: { emit?: (msg: { id: string; kind: string; content: string }) => unknown; id?: string } = {},
+): boolean {
+  if (!result.success || !result.auto_provision_request) return false;
+  try {
+    (deps.emit ?? writeMessageOut)({
+      id: deps.id ?? generateId(),
+      kind: 'system',
+      content: JSON.stringify({ action: 'provision_child_board', ...result.auto_provision_request }),
+    });
+    return true;
+  } catch (e) {
+    log(`provision_child_board auto-emit failed: ${String(e)}`);
+    return false;
+  }
 }
 
 function addMoveFormattedResult(result: MoveResult, action: MoveAction): MoveResult {
@@ -1418,6 +1448,10 @@ export const apiAdminTool: McpToolDefinition = {
     try {
       const engine = new TaskflowEngine(getTaskflowDb(), boardId);
       const result = engine.admin(adminParams);
+      // #390: register_person on a delegating hierarchy board returns an
+      // auto_provision_request — emit provision_child_board deterministically
+      // (V1 parity) so the child board is created without the agent relaying.
+      emitAutoProvisionIfRequested(result);
       // A successful reparent supersedes the pending standalone create
       // card for THE REPARENTED task — create-then-reparent nets ONE
       // card (the reparent's "adicionada"). Task-id-matched so a reparent

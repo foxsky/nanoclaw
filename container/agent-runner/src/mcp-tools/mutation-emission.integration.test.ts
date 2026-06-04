@@ -9,7 +9,7 @@ import {
 } from '../db/connection.ts';
 import { flushPendingCreateCard } from './mutation-confirmation.ts';
 import { __resetDedupForTesting } from './mutation-dedup.ts';
-import { setupEngineDb } from './taskflow-test-fixtures.ts';
+import { applyBoardConfigColumns, setupEngineDb } from './taskflow-test-fixtures.ts';
 
 // Phase-3 unit-2-core / Codex gate P5: session-DB-backed end-to-end
 // integration asserting that a mutation tool writes EXACTLY ONE
@@ -370,5 +370,45 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     expect(dispatch.action).toBe('taskflow_dispatch_notifications');
     expect(Array.isArray(dispatch.events)).toBe(true);
     expect(dispatch.events.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('#390 — api_admin register_person auto-provisions the child board (V1 parity)', () => {
+  it('emits a provision_child_board system row for a delegating board, and returns success:true', async () => {
+    const db = setupEngineDb(BOARD, { withBoardAdmins: true });
+    applyBoardConfigColumns(db);
+    // Make BOARD a non-leaf hierarchy board so canDelegateDown() is true and
+    // the engine builds the auto_provision_request on register_person.
+    db.prepare('UPDATE boards SET hierarchy_level = 0, max_depth = 2 WHERE id = ?').run(BOARD);
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+
+    const res = JSON.parse(
+      (
+        await apiAdminTool.handler({
+          board_id: BOARD,
+          action: 'register_person',
+          sender_name: 'alice',
+          person_name: 'Katia',
+          phone: '5585999990000',
+          group_name: 'Divisão de Inovação',
+          group_folder: 'div-inovacao',
+        })
+      ).content[0].text,
+    );
+    expect(res.success).toBe(true);
+
+    const provision = (
+      getOutboundDb().prepare('SELECT kind, content FROM messages_out').all() as Array<{ kind: string; content: string }>
+    )
+      .filter((r) => r.kind === 'system')
+      .map((r) => JSON.parse(r.content))
+      .find((c) => c.action === 'provision_child_board');
+    // Pre-#390 nothing was emitted (api_admin only returned auto_provision_request
+    // in JSON; the template said "no agent action needed") → silent boardless
+    // registration.
+    expect(provision).toBeDefined();
+    expect(provision.person_name).toBe('Katia');
+    expect(provision.group_folder).toBe('div-inovacao');
+    expect(provision.person_phone).toBe('5585999990000');
   });
 });
