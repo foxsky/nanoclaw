@@ -14,6 +14,10 @@ export interface EmbedDeps {
   fetchImpl?: typeof fetch;
   url?: string;
   model?: string;
+  /** Per-call abort timeout (ms). Overrides the env/default. Interactive callers
+   *  (memory_search) pass a shorter value so a slow/down Ollama can't stall the
+   *  reply; background capture keeps the longer default. */
+  timeoutMs?: number;
 }
 
 const DEFAULT_EMBED_URL = 'http://localhost:11434';
@@ -28,6 +32,15 @@ function log(msg: string): void {
 export function embedTimeoutMs(): number {
   const n = Number(process.env.NANOCLAW_MEMORY_EMBED_TIMEOUT_MS);
   return Number.isFinite(n) && n > 0 ? n : EMBED_TIMEOUT_MS;
+}
+
+/** The effective embed timeout for a call: an explicit per-call `timeoutMs` (if a
+ *  positive number) wins, else the env-overridable default. Extracted so the
+ *  resolution order is unit-tested without poking AbortSignal internals. */
+export function resolveEmbedTimeout(deps: EmbedDeps = {}): number {
+  return typeof deps.timeoutMs === 'number' && Number.isFinite(deps.timeoutMs) && deps.timeoutMs > 0
+    ? deps.timeoutMs
+    : embedTimeoutMs();
 }
 
 /** The configured embedding model, or null when hybrid embeddings are disabled. */
@@ -50,7 +63,7 @@ export async function embedText(text: string, deps: EmbedDeps = {}): Promise<Flo
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model, input: text }),
-      signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+      signal: AbortSignal.timeout(resolveEmbedTimeout(deps)),
     });
     if (!res.ok) {
       log(`embed failed (${res.status})`);

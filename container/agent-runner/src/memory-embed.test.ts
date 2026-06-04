@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 
-import { embedAndInsert, embedModel, embedText } from './memory-embed.js';
+import { embedAndInsert, embedModel, embedText, resolveEmbedTimeout } from './memory-embed.js';
 import { blobToVector, openMemoryDb } from './memory-store.js';
 
 describe('embedModel (hybrid gate)', () => {
@@ -119,5 +119,31 @@ describe('embedAndInsert (embed-on-write)', () => {
     expect(row.vector).toBeNull();
     expect(called).toBe(false);
     db.close();
+  });
+});
+
+describe('resolveEmbedTimeout (#394 — per-call override > env > default)', () => {
+  const KEY = 'NANOCLAW_MEMORY_EMBED_TIMEOUT_MS';
+  const saved = process.env[KEY];
+  afterEach(() => {
+    if (saved === undefined) delete process.env[KEY];
+    else process.env[KEY] = saved;
+  });
+
+  it('a positive per-call timeoutMs wins over the env and the default', () => {
+    process.env[KEY] = '15000';
+    expect(resolveEmbedTimeout({ timeoutMs: 4000 })).toBe(4000);
+  });
+
+  it('falls back to the env override when no per-call value is given', () => {
+    process.env[KEY] = '9000';
+    expect(resolveEmbedTimeout({})).toBe(9000);
+  });
+
+  it('ignores a non-positive/garbage per-call value and uses the default', () => {
+    delete process.env[KEY];
+    expect(resolveEmbedTimeout({ timeoutMs: 0 })).toBe(15000);
+    expect(resolveEmbedTimeout({ timeoutMs: Number.NaN })).toBe(15000);
+    expect(resolveEmbedTimeout()).toBe(15000);
   });
 });

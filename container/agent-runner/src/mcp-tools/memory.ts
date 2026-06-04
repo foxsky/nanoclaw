@@ -31,6 +31,9 @@ import { err, log, nonEmptyString, ok, requireString } from './util.js';
 const NOT_A_BOARD = 'Memory is only available on TaskFlow boards (no board is bound to this group).';
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;
+// Interactive memory_search embed timeout (ms) — much shorter than the background
+// capture default so a slow/down Ollama degrades the search to FTS5 promptly (#394).
+const SEARCH_EMBED_TIMEOUT_MS = 4000;
 // How many recent memories to prime the session system prompt with (once-per-session auto-recall).
 const RECALL_ADDENDUM_LIMIT = 10;
 // Per-memory preview cap in the addendum so one large memory can't bloat every session prompt;
@@ -175,7 +178,9 @@ export async function recallMemory(db: Database, boardId: string, args: Record<s
     limit = Math.min(MAX_LIMIT, Math.max(1, Math.floor(args.limit)));
   }
   // Embed the query for hybrid recall; null (embeddings disabled / embed failed) → FTS5-only.
-  const queryVector = await embedText(query);
+  // Interactive search uses a short timeout so a slow/down Ollama degrades to FTS5
+  // promptly instead of stalling the reply up to the (longer) capture timeout.
+  const queryVector = await embedText(query, { timeoutMs: SEARCH_EMBED_TIMEOUT_MS });
   const hits = hybridSearchMemory(db, boardId, query, queryVector, limit);
   if (hits.length === 0) return ok('No stored memories match that query.');
   return ok(formatMemories(hits));
