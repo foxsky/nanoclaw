@@ -69,4 +69,45 @@ describe('dispatchNotificationEvents', () => {
       }),
     ).not.toThrow();
   });
+
+  it('emits an in_chat_notice in-chat and EXCLUDES it from the host dispatch row (#399)', () => {
+    const inChatCalls: string[] = [];
+    const sessionCalls: Array<{ id: string; kind: string; content: string }> = [];
+    dispatchNotificationEvents(
+      [
+        { kind: 'in_chat_notice', message: 'Convite pendente — encaminhe esta mensagem' },
+        { kind: 'direct_message', target_chat_jid: '551199@s.whatsapp.net', message: 'reassigned' },
+      ],
+      {
+        servicePath: undefined,
+        id: 'fixed',
+        emitInChat: (t) => inChatCalls.push(t),
+        writeSession: (m) => {
+          sessionCalls.push(m);
+          return 1;
+        },
+      },
+    );
+    expect(inChatCalls).toEqual(['Convite pendente — encaminhe esta mensagem']);
+    expect(sessionCalls).toHaveLength(1);
+    const payload = JSON.parse(sessionCalls[0].content);
+    expect(payload.events).toEqual([
+      { kind: 'direct_message', target_chat_jid: '551199@s.whatsapp.net', message: 'reassigned' },
+    ]);
+  });
+
+  it('an in_chat_notice-only batch emits in-chat and writes NO host row (#399)', () => {
+    let wrote = false;
+    const inChatCalls: string[] = [];
+    dispatchNotificationEvents([{ kind: 'in_chat_notice', message: 'pendente' }], {
+      servicePath: undefined,
+      emitInChat: (t) => inChatCalls.push(t),
+      writeSession: () => {
+        wrote = true;
+        return 1;
+      },
+    });
+    expect(inChatCalls).toEqual(['pendente']);
+    expect(wrote).toBe(false);
+  });
 });

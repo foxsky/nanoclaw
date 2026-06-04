@@ -47,11 +47,20 @@ export type DestinationMessageEvent = {
   message: string;
 };
 
+/** A group-targeted notification the engine produced with NO resolved JID
+ *  (e.g. the "Convite pendente" forwardable invite card). Not host-
+ *  dispatchable — the container shows it in the current chat. */
+export type InChatNoticeEvent = {
+  kind: 'in_chat_notice';
+  message: string;
+};
+
 export type NotificationEvent =
   | DeferredNotificationEvent
   | DirectMessageEvent
   | ParentNotificationEvent
-  | DestinationMessageEvent;
+  | DestinationMessageEvent
+  | InChatNoticeEvent;
 
 type RawEngineNotification = {
   target_kind?: 'group' | 'dm';
@@ -222,6 +231,12 @@ function parseNotificationEvent(raw: unknown, label: string): NotificationEvent 
       message: requireNonEmptyString(obj.message, `${label}.message`),
     };
   }
+  if (obj.kind === 'in_chat_notice') {
+    return {
+      kind: 'in_chat_notice',
+      message: requireNonEmptyString(obj.message, `${label}.message`),
+    };
+  }
   throw new Error(`${label}.kind: unknown value "${String(obj.kind)}"`);
 }
 
@@ -291,6 +306,15 @@ export function normalizeEngineNotificationEvents(raw: unknown): NotificationEve
           destination_name: notification.destination_name,
           message,
         });
+        continue;
+      }
+      if (notification.target_kind === 'group') {
+        // A group-targeted notification with NO resolved JID is an in-chat
+        // card (the "Convite pendente" forwardable invite) — show it in the
+        // current chat; it is NOT host-dispatchable. Pre-#399 this threw,
+        // which made finalizeMutationResult return success:false despite a
+        // committed DB write.
+        normalized.push({ kind: 'in_chat_notice', message });
         continue;
       }
       throw new Error(`mutation_result.notifications[${index}]: missing routing target`);

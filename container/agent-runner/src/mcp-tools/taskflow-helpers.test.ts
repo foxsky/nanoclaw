@@ -381,6 +381,21 @@ describe('normalizeEngineNotificationEvents', () => {
     ).toThrow(/missing routing target/);
   });
 
+  it('maps a group-targeted notification with NO jid to in_chat_notice, not a throw (#399 invite-pending)', () => {
+    // The engine pushes { target_kind:'group', message } (no notification_group_jid)
+    // for the "Convite pendente" forwardable invite card when an external
+    // participant has never messaged the bot. Pre-#399 this hit the
+    // missing-routing-target throw → finalizeMutationResult threw → the tool
+    // returned success:false despite a committed DB write. It is an in-chat
+    // card, not a host-dispatchable event.
+    const result = normalizeEngineNotificationEvents({
+      notifications: [{ target_kind: 'group', message: '📅 Convite pendente — encaminhe a mensagem' }],
+    });
+    expect(result).toEqual([
+      { kind: 'in_chat_notice', message: '📅 Convite pendente — encaminhe a mensagem' },
+    ]);
+  });
+
   it('normalizes engine destination_name into destination_message kind (A12 cross-board approval)', () => {
     // Engine emits { destination_name, message } in notifications when it
     // wants the receiving agent to resolve the destination by name via its

@@ -2739,3 +2739,42 @@ describe('maybeSemanticSearch (#385 — query embed + reader injection)', () => 
     expect(qp.query_vector).toBeUndefined();
   });
 });
+
+describe('#399 — add_external_participant for a never-contacted invitee', () => {
+  it('returns success:true (not a phantom failure) and surfaces the pending invite as an in_chat_notice', async () => {
+    const { apiCreateMeetingTaskTool, apiUpdateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const meeting = JSON.parse(
+      (
+        await apiCreateMeetingTaskTool.handler({
+          board_id: BOARD,
+          title: 'Reunião SECTI',
+          sender_name: 'alice',
+          scheduled_at: '2026-06-15T14:00:00Z',
+        })
+      ).content[0].text,
+    );
+    expect(meeting.success).toBe(true);
+
+    const res = JSON.parse(
+      (
+        await apiUpdateTaskTool.handler({
+          board_id: BOARD,
+          task_id: meeting.data.id,
+          sender_name: 'alice',
+          updates: { add_external_participant: { name: 'Katia', phone: '5585999990000' } },
+        })
+      ).content[0].text,
+    );
+
+    // Pre-#399 the engine's no-JID "Convite pendente" group notification hit
+    // the missing-routing-target throw inside finalizeMutationResult, so the
+    // tool returned success:false even though the participant WAS registered.
+    // Now it is an in_chat_notice (shown in-chat, not host-dispatched).
+    expect(res.success).toBe(true);
+    const notice = (res.notification_events as Array<{ kind: string; message: string }>).find(
+      (e) => e.kind === 'in_chat_notice',
+    );
+    expect(notice).toBeDefined();
+    expect(notice!.message).toContain('Convite pendente');
+  });
+});

@@ -14,6 +14,7 @@
  * unchanged.
  */
 import { writeMessageOut } from '../db/messages-out.js';
+import { emitDeterministicToolMessage } from './mutation-confirmation.js';
 import type { NotificationEvent } from './taskflow-helpers.js';
 import { getServiceOutboundDbPath } from './taskflow-helpers.js';
 import { generateId, log } from './util.js';
@@ -25,6 +26,8 @@ export interface DispatchDeps {
   servicePath?: string | undefined;
   /** Seam for the session outbound writer (tests). */
   writeSession?: (msg: { id: string; kind: string; content: string }) => unknown;
+  /** Seam for the in-chat emitter (tests). Defaults to emitDeterministicToolMessage. */
+  emitInChat?: (text: string) => void;
   /** Fixed id for deterministic assertions (tests). */
   id?: string;
 }
@@ -40,6 +43,20 @@ export function dispatchNotificationEvents(
   const servicePath = deps.servicePath !== undefined ? deps.servicePath : getServiceOutboundDbPath();
   if (servicePath) return;
 
+  // in_chat_notice entries are current-chat messages with NO JID (the
+  // "Convite pendente" forwardable invite card) — show them in the current
+  // chat (composing with the confirmation card); they are NOT
+  // host-dispatchable, so exclude them from the host row. (#399)
+  const dispatchable: NotificationEvent[] = [];
+  for (const ev of events) {
+    if (ev.kind === 'in_chat_notice') {
+      (deps.emitInChat ?? emitDeterministicToolMessage)(ev.message);
+    } else {
+      dispatchable.push(ev);
+    }
+  }
+  if (!dispatchable.length) return;
+
   // Best-effort, fire-and-forget: the mutation already succeeded. A failed
   // outbound write (no session DB in an engine-only / test context) must
   // NEVER fail the tool result — mirrors emitDeterministicToolMessage.
@@ -48,7 +65,7 @@ export function dispatchNotificationEvents(
     (deps.writeSession ?? writeMessageOut)({
       id,
       kind: 'system',
-      content: JSON.stringify({ action: DISPATCH_NOTIFICATIONS_ACTION, events }),
+      content: JSON.stringify({ action: DISPATCH_NOTIFICATIONS_ACTION, events: dispatchable }),
     });
   } catch (err) {
     log(`taskflow_dispatch_notifications emission failed: ${String(err)}`);
