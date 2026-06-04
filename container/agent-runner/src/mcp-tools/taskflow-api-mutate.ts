@@ -347,19 +347,18 @@ function finalizeCreatedTaskResult(
   // the v1-faithful scope (non-next_action, recurring/meeting).
   const createdCard = buildCreatedTaskCard(data);
   if (createdCard) setPendingCreateCard(result.task_id, createdCard);
-  // NOT dispatched deterministically here (#397): the create CARD is
-  // deferred + cleared-on-delete (create→delete in one turn shows nothing),
-  // so the assignee notification must be deferred/cleared the same way
-  // rather than fired eagerly. Until that mechanism exists, keep the v2
-  // shape (returned for inspection, undelivered) — same as today.
-  const notification_events = (result.notifications ?? [])
-    .filter((n) => n.target_person_id)
-    .map((n) => ({
-      kind: 'deferred_notification',
-      board_id: boardId,
-      target_person_id: n.target_person_id!,
-      message: n.message,
-    }));
+  // Assignee notification (#397): dispatch the engine's create-assignee
+  // notification exactly as move/admin/reassign do (finalizeMutationResult) —
+  // normalizeEngineNotificationEvents maps a resolved notification_group_jid to
+  // a host-deliverable 'direct_message' and a null one to a 'deferred_notification'
+  // (host-skipped until #396). V1 fired create notifications SYNCHRONOUSLY at
+  // create time (no pending-hold, no clear-on-cancel — confirmed against
+  // git main), so we dispatch eagerly here and do NOT defer/clear them. This is
+  // independent of the "Tarefa criada" CARD above, which is the in-chat
+  // confirmation that stays deferred-to-turn-end and cleared on a same-turn
+  // delete/reparent. in_chat_notice events (invite cards) render in-chat.
+  const notification_events = normalizeEngineNotificationEvents(result);
+  dispatchNotificationEvents(notification_events);
   return jsonResponse({
     success: true,
     data,

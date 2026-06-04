@@ -144,6 +144,94 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     expect(cardCount()).toBe(1);
   });
 
+  // #397: helper — the dispatched notification events, if any.
+  const dispatchedEvents = (): unknown[] | null => {
+    const row = (
+      getOutboundDb().prepare("SELECT content FROM messages_out WHERE kind = 'system'").all() as Array<{
+        content: string;
+      }>
+    )
+      .map((r) => JSON.parse(r.content))
+      .find((c) => c.action === 'taskflow_dispatch_notifications');
+    return row ? row.events : null;
+  };
+
+  it('#397: create with a RESOLVED-JID assignee dispatches a direct_message (parity with reassign), not a dropped deferred', async () => {
+    // V1 fired create-assignee notifications synchronously (dispatchNotifications).
+    // V2's create path force-mapped ALL assignee notifications to
+    // deferred_notification and never dispatched — so creating a task for a
+    // teammate whose board IS provisioned never notified them, while the
+    // identical reassign delivered. WHY this matters: at cutover, a normal
+    // "create task for Bob" must reach Bob exactly as a reassign would.
+    const db = setupEngineDb(BOARD, { withBoardAdmins: true });
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role, notification_group_jid) VALUES (?, 'bob', 'bob', 'member', '120363400000000111@g.us')`,
+    ).run(BOARD);
+
+    const result = JSON.parse(
+      (
+        await apiCreateTaskTool.handler({
+          board_id: BOARD, type: 'simple', title: 'Treinamento E-governe', sender_name: 'alice', assignee: 'bob',
+        })
+      ).content[0].text,
+    );
+    expect(result.success).toBe(true);
+
+    const events = dispatchedEvents();
+    expect(events).not.toBeNull();
+    expect(events!.length).toBe(1);
+    expect(events![0]).toMatchObject({ kind: 'direct_message', target_chat_jid: '120363400000000111@g.us' });
+    expect((events![0] as { message: string }).message).toContain('Nova tarefa atribuída a você');
+    // The JSON response still carries notification_events for the dashboard.
+    expect(result.notification_events?.[0]).toMatchObject({ kind: 'direct_message' });
+  });
+
+  it('#397/#396 boundary: create with a NULL-JID assignee dispatches a deferred_notification (host-skipped until #396), not a direct_message', async () => {
+    // The assignee is registered but their board is not yet provisioned
+    // (no notification_group_jid). The event must normalize to a
+    // deferred_notification (carrying target_person_id, no JID) — the host
+    // skips it with reason '#396' rather than delivering. This pins the
+    // boundary so the #396 work doesn't silently change create semantics.
+    const db = setupEngineDb(BOARD, { withBoardAdmins: true });
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+
+    const result = JSON.parse(
+      (
+        await apiCreateTaskTool.handler({
+          board_id: BOARD, type: 'simple', title: 'X', sender_name: 'alice', assignee: 'bob',
+        })
+      ).content[0].text,
+    );
+    expect(result.success).toBe(true);
+
+    const events = dispatchedEvents();
+    expect(events).not.toBeNull();
+    expect(events!.length).toBe(1);
+    expect(events![0]).toMatchObject({ kind: 'deferred_notification', target_person_id: 'bob' });
+    expect((events![0] as { target_chat_jid?: string }).target_chat_jid).toBeUndefined();
+  });
+
+  it('#397: create assigned to the SENDER themselves emits NO notification (no self-notify regression)', async () => {
+    // resolveNotifTarget returns null when assignee === modifier on create
+    // (no taskId), so no event is built and nothing is dispatched.
+    setupEngineDb(BOARD, { withBoardAdmins: true });
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    const result = JSON.parse(
+      (
+        await apiCreateTaskTool.handler({
+          board_id: BOARD, type: 'simple', title: 'Self task', sender_name: 'alice', assignee: 'alice',
+        })
+      ).content[0].text,
+    );
+    expect(result.success).toBe(true);
+    expect(dispatchedEvents()).toBeNull();
+    expect(result.notification_events?.length ?? 0).toBe(0);
+  });
+
   it('api_task_add_note on a duplicate note emits EXACTLY ONE byte-exact "Nota já existente..." row deterministically', async () => {
     // Invariant: when the engine detects a duplicate note (success:true,
     // changes: ['Nota já existente: <text>'], changed:false), v2 emits a
@@ -196,13 +284,17 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     );
   });
 
-  it('api_create_task + api_delete_simple_task in the same turn → flush emits NOTHING (no orphan card)', async () => {
+  it('api_create_task + api_delete_simple_task in the same turn → flush emits NO orphan CARD', async () => {
     // Invariant: when v2 creates and then immediately deletes a task (e.g.,
     // the cross-board forward flow: create locally → reparent failed → delete →
-    // forward via send_message), the deferred "Tarefa criada" card MUST NOT
+    // forward via send_message), the deferred "Tarefa criada" CARD MUST NOT
     // flush. Otherwise the user sees a confirmation for a task that no
     // longer exists. Mirrors how api_admin(reparent_task) already clears
     // the pending card to avoid double-emit.
+    // #397: the assignee NOTIFICATION is a separate channel — V1 fired it
+    // synchronously at create time, so v2 dispatches it eagerly too. bob's
+    // board is unprovisioned (no JID) → it is a host-skipped deferred_notification,
+    // asserted explicitly below; it is NOT cleared on delete (a #396-era concern).
     const db = setupEngineDb(BOARD, { withBoardAdmins: true });
     const { apiCreateTaskTool, apiDeleteSimpleTaskTool } = await import('./taskflow-api-mutate.ts');
     db.prepare(
@@ -235,7 +327,20 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     expect(deleted.success).toBe(true);
 
     flushPendingCreateCard();
-    expect((getOutboundDb().prepare('SELECT count(*) AS n FROM messages_out').get() as { n: number }).n).toBe(0);
+    const rows = getOutboundDb()
+      .prepare('SELECT kind, content FROM messages_out')
+      .all() as Array<{ kind: string; content: string }>;
+    // The invariant: NO orphan "Tarefa criada" CARD (chat row) for the deleted task.
+    expect(rows.filter((r) => r.kind === 'chat').length).toBe(0);
+    // #397: the create eagerly dispatched bob's assignee notification. bob has
+    // no JID → it is a host-skipped deferred_notification (no delivery), and it
+    // is NOT cleared by the delete (a #396-era concern). Document it explicitly.
+    const dispatched = rows
+      .filter((r) => r.kind === 'system')
+      .map((r) => JSON.parse(r.content))
+      .filter((c) => c.action === 'taskflow_dispatch_notifications');
+    expect(dispatched.length).toBe(1);
+    expect(dispatched[0].events[0]).toMatchObject({ kind: 'deferred_notification', target_person_id: 'bob' });
   });
 
   it('api_task_add_note emits EXACTLY ONE row with the byte-exact v1 "atualizada • Nota: <text>" card', async () => {
@@ -292,7 +397,10 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
       ).content[0].text,
     );
     expect(first.success).toBe(true);
-    expect((getOutboundDb().prepare('SELECT count(*) AS n FROM messages_out').get() as { n: number }).n).toBe(0);
+    // No CARD yet (the create card is deferred to turn-end). The first create
+    // DID dispatch bob's assignee notification as a system row (#397, host-skipped
+    // deferred since bob has no JID) — so assert on chat/card rows, not total.
+    expect(cardCount()).toBe(0);
 
     const second = JSON.parse(
       (
@@ -308,17 +416,21 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     expect(second.success).toBe(true);
     expect(second.data.duplicate_candidate).toBe(true);
 
-    const rows = getOutboundDb()
-      .prepare('SELECT kind, platform_id, channel_type, content FROM messages_out')
-      .all() as Array<{ kind: string; platform_id: string | null; channel_type: string | null; content: string }>;
-    expect(rows.length).toBe(1);
-    expect(rows[0]).toMatchObject({
+    const chatRows = (
+      getOutboundDb()
+        .prepare('SELECT kind, platform_id, channel_type, content FROM messages_out')
+        .all() as Array<{ kind: string; platform_id: string | null; channel_type: string | null; content: string }>
+    ).filter((r) => r.kind === 'chat');
+    // EXACTLY ONE dup-detect CHAT prompt (the first create's assignee notification
+    // is a separate system row, not counted here).
+    expect(chatRows.length).toBe(1);
+    expect(chatRows[0]).toMatchObject({
       kind: 'chat',
       platform_id: ROUTING.platform_id,
       channel_type: ROUTING.channel_type,
     });
     const id = first.data.id;
-    expect(JSON.parse(rows[0].content).text).toBe(
+    expect(JSON.parse(chatRows[0].content).text).toBe(
       `Já existe a **${id} — SEMEC/MEI/Prestação de Contas** atribuída ao bob (Próximas Ações). Parece ser o mesmo assunto.\n\nDeseja usar a ${id} existente ou criar uma tarefa separada mesmo assim?`,
     );
   });
