@@ -81,10 +81,12 @@ This brings in the TaskFlow engine, board provisioning, container runtime wiring
 
 Two container-side MCP tool groups beyond the TaskFlow surface, available on every board (gated only on the board id, so no extra setup):
 
-**Long-term memory** (`memory_note`, `memory_search`) — a per-board SQLite+FTS5 store at `/workspace/agent/memory/`, replacing the v1 Redis agent-memory-server:
+**Long-term memory** (`memory_note`, `memory_search`, `memory_list`, `memory_forget`) — a per-board SQLite+FTS5 store at `/workspace/agent/memory/`, replacing the v1 Redis agent-memory-server:
 - `memory_note({ text, kind? })` — save a durable fact (decision, preference, recurring context).
 - `memory_search({ query, limit? })` — recall stored facts; returns cited memories with their saved date.
-- The most recent memories are auto-recalled into the system prompt once per session (cache-safe); at context compaction a small model distils the session into durable facts (auto-capture).
+- `memory_list({ limit? })` — list saved memories (newest first) with their ids.
+- `memory_forget({ id })` — permanently delete a wrong/outdated memory by id.
+- The most recent memories are auto-recalled into the system prompt once per session (cache-safe), framed as untrusted factual context (not instructions); at context compaction a small model distils the session into durable facts (auto-capture).
 
 **Voice transcription** (`transcribe_audio`) — `transcribe_audio({ path })` transcribes a voice/audio attachment (OpenAI Whisper) when an inbound message includes one (`[audio: … saved to /workspace/media/…]`). Auth is handled by the OneCLI gateway; on a credential error an admin assigns an OpenAI secret to the agent (`onecli agents set-secret-mode`).
 

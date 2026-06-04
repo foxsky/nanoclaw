@@ -9,6 +9,7 @@ import { Database } from 'bun:sqlite';
 import {
   blobToVector,
   cosineSimilarity,
+  forgetMemory,
   fuseByRrf,
   hybridSearchMemory,
   insertMemory,
@@ -331,5 +332,38 @@ describe('pruneMemories (P4 forgetting — opt-in, board-scoped, FTS-consistent)
     expect(() => pruneMemories(db, 'b1', { keepTopN: 1 })).toThrow();
     db.exec('DROP TRIGGER block_del');
     expect(searchMemory(db, 'b1', 'report', 10)).toHaveLength(4);
+  });
+});
+
+describe('forgetMemory', () => {
+  it('deletes a memory by id from both the base table and the FTS index, board-scoped', () => {
+    db = openMemoryDb(':memory:');
+    const id = insertMemory(db, { board_id: 'b1', text: 'quarterly report is due friday' });
+    insertMemory(db, { board_id: 'b1', text: 'keep this one' });
+    expect(searchMemory(db, 'b1', 'report', 10)).toHaveLength(1);
+
+    expect(forgetMemory(db, 'b1', id)).toBe(true);
+
+    // base row gone
+    expect(recentMemories(db, 'b1', 10).map((m) => m.id)).not.toContain(id);
+    // FTS row gone too (no orphan — a search for the deleted text returns nothing)
+    expect(searchMemory(db, 'b1', 'report', 10)).toHaveLength(0);
+    // the other memory survives
+    expect(recentMemories(db, 'b1', 10)).toHaveLength(1);
+  });
+
+  it('returns false and deletes nothing for an unknown id', () => {
+    db = openMemoryDb(':memory:');
+    insertMemory(db, { board_id: 'b1', text: 'still here' });
+    expect(forgetMemory(db, 'b1', 'mem-does-not-exist')).toBe(false);
+    expect(recentMemories(db, 'b1', 10)).toHaveLength(1);
+  });
+
+  it('never deletes another board\'s memory (board-scoped guard)', () => {
+    db = openMemoryDb(':memory:');
+    const id = insertMemory(db, { board_id: 'b2', text: 'other board secret' });
+    // Caller for b1 cannot forget b2's memory even with the correct id.
+    expect(forgetMemory(db, 'b1', id)).toBe(false);
+    expect(recentMemories(db, 'b2', 10)).toHaveLength(1);
   });
 });

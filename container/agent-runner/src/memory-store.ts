@@ -156,6 +156,23 @@ export function insertMemory(db: Database, m: MemoryInput): string {
   return id;
 }
 
+/** Delete one memory by id, board-scoped, from BOTH the base table and the FTS index in one
+ *  transaction (mirrors insertMemory so a delete can never leave an orphaned FTS row). Returns
+ *  false if no memory with that id exists on this board — an unknown id, or another board's id,
+ *  is a no-op and NEVER touches a row outside `boardId`. Backs the memory_forget tool. */
+export function forgetMemory(db: Database, boardId: string, id: string): boolean {
+  const row = db
+    .query(`SELECT rowid FROM memories WHERE board_id = $b AND id = $id`)
+    .get({ $b: boardId, $id: id }) as { rowid: number } | null;
+  if (!row) return false;
+  const del = db.transaction(() => {
+    db.query(`DELETE FROM memories_fts WHERE rowid = $r`).run({ $r: row.rowid });
+    db.query(`DELETE FROM memories WHERE rowid = $r`).run({ $r: row.rowid });
+  });
+  del();
+  return true;
+}
+
 /** True if the board already has a memory with this exact text (case/space-insensitive).
  *  Used by auto-capture to avoid re-storing the same fact every compaction. */
 export function memoryExists(db: Database, boardId: string, text: string): boolean {
