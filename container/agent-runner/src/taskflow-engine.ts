@@ -305,7 +305,7 @@ export interface UndoResult extends TaskflowResult {
 
 export interface AdminParams {
   board_id: string;
-  action: 'register_person' | 'remove_person' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'set_cross_board_subtask_mode' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision' | 'accept_external_invite' | 'reparent_task' | 'detach_task' | 'merge_project' | 'handle_subtask_approval';
+  action: 'register_person' | 'remove_person' | 'remove_child_board' | 'add_manager' | 'add_delegate' | 'remove_admin' | 'set_wip_limit' | 'set_cross_board_subtask_mode' | 'cancel_task' | 'restore_task' | 'process_inbox' | 'manage_holidays' | 'process_minutes' | 'process_minutes_decision' | 'accept_external_invite' | 'reparent_task' | 'detach_task' | 'merge_project' | 'handle_subtask_approval';
   sender_name: string;
   person_name?: string;
   phone?: string;
@@ -9520,6 +9520,45 @@ export class TaskflowEngine {
           // resolved person. FastAPI's wrapper will resolve by exact id.
           const person = this.requirePerson(params.person_name, 'person_name');
           return this._removeBoardPersonCore(person, params.force);
+        }
+
+        /* ---- remove_child_board (#400: replaces the raw-SQL escape hatch) ---- */
+        case 'remove_child_board': {
+          const person = this.requirePerson(params.person_name, 'person_name');
+          const reg = this.getChildBoardRegistration(person.person_id);
+          if (!reg) {
+            return { success: false, error: `${person.name} não tem um quadro filho registrado neste quadro.` };
+          }
+          // Refuse while any task is still delegated (child_exec) to this person —
+          // detaching the board would orphan the delegation. Unlink those first.
+          const linked = this.db
+            .prepare(
+              `SELECT id FROM tasks WHERE board_id = ? AND child_exec_enabled = 1 AND child_exec_person_id = ?`,
+            )
+            .all(this.boardId, person.person_id) as Array<{ id: string }>;
+          if (linked.length > 0) {
+            return {
+              success: false,
+              error: `Não posso remover o quadro de ${person.name}: ainda há ${linked.length} tarefa(s) delegada(s) (${linked.map((t) => t.id).join(', ')}). Desvincule-as primeiro.`,
+            };
+          }
+          this.db
+            .prepare(`DELETE FROM child_board_registrations WHERE parent_board_id = ? AND person_id = ?`)
+            .run(this.boardId, person.person_id);
+          // Board-level audit (task_id='BOARD', matching the v1 raw-SQL path). The
+          // child board itself stays operational — only the hierarchy link is removed,
+          // and (as in v1) no cross-group notification is sent.
+          this.recordHistory(
+            'BOARD',
+            'child_board_removed',
+            params.sender_name,
+            JSON.stringify({ person_id: person.person_id, child_board_id: reg.child_board_id }),
+          );
+          return {
+            success: true,
+            person_id: person.person_id,
+            data: { name: person.name, child_board_id: reg.child_board_id, removed: true },
+          };
         }
 
         /* ---- add_manager ---- */

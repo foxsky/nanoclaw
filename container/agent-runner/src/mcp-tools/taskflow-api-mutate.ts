@@ -88,7 +88,7 @@ const RECURRENCES = ['daily', 'weekly', 'monthly', 'yearly'] as const;
 type Recurrence = (typeof RECURRENCES)[number];
 
 const ADMIN_ACTIONS = [
-  'register_person', 'remove_person', 'add_manager', 'add_delegate', 'remove_admin',
+  'register_person', 'remove_person', 'remove_child_board', 'add_manager', 'add_delegate', 'remove_admin',
   'set_wip_limit', 'set_cross_board_subtask_mode', 'cancel_task', 'restore_task', 'process_inbox', 'manage_holidays',
   'process_minutes', 'process_minutes_decision', 'accept_external_invite',
   'reparent_task', 'detach_task', 'merge_project', 'handle_subtask_approval',

@@ -8287,3 +8287,86 @@ describe('TaskflowEngine — board-local today (#387 Item 1)', () => {
     });
   });
 });
+
+describe('admin: remove_child_board (#400 — replaces the raw-SQL escape hatch)', () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    seedTestDb(db, BOARD_ID);
+    // Register a child board for Giovanni (person-2) under the parent board.
+    db.exec(
+      `INSERT INTO child_board_registrations (parent_board_id, person_id, child_board_id) VALUES ('${BOARD_ID}', 'person-2', 'board-child-gio')`,
+    );
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it("detaches a person's child board (deletes the registration) for a manager", () => {
+    // The person must have no delegated tasks. Clear Giovanni's seeded task so
+    // reconcileDelegationLinks() (constructor) doesn't auto-link it.
+    db.exec(`DELETE FROM tasks WHERE board_id = '${BOARD_ID}' AND assignee = 'person-2'`);
+    const engine = new TaskflowEngine(db, BOARD_ID);
+    const r = engine.admin({
+      board_id: BOARD_ID,
+      action: 'remove_child_board',
+      sender_name: 'Alexandre',
+      person_name: 'Giovanni',
+    });
+    expect(r.success).toBe(true);
+    const left = db
+      .prepare(`SELECT 1 FROM child_board_registrations WHERE parent_board_id = ? AND person_id = 'person-2'`)
+      .get(BOARD_ID);
+    expect(left).toBeNull();
+    // Board-level audit row written.
+    const hist = db
+      .prepare(`SELECT 1 FROM task_history WHERE board_id = ? AND task_id = 'BOARD' AND action = 'child_board_removed'`)
+      .get(BOARD_ID);
+    expect(hist).not.toBeNull();
+  });
+
+  it('REFUSES while tasks are still delegated to that person (must unlink first)', () => {
+    // Giovanni (person-2) is assigned the seeded T-002; reconcileDelegationLinks()
+    // auto-links it on construction, so detaching must refuse until it's unlinked.
+    const engine = new TaskflowEngine(db, BOARD_ID);
+    const r = engine.admin({
+      board_id: BOARD_ID,
+      action: 'remove_child_board',
+      sender_name: 'Alexandre',
+      person_name: 'Giovanni',
+    });
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/T-002|delegad/i);
+    // Registration untouched.
+    expect(
+      db.prepare(`SELECT 1 FROM child_board_registrations WHERE parent_board_id = ? AND person_id = 'person-2'`).get(BOARD_ID),
+    ).not.toBeNull();
+  });
+
+  it('errors when the person has no registered child board', () => {
+    const engine = new TaskflowEngine(db, BOARD_ID);
+    // Alexandre (person-1) is a real manager but has no child board registered —
+    // only Giovanni (person-2) does. This exercises the `if (!reg)` branch.
+    const r = engine.admin({
+      board_id: BOARD_ID,
+      action: 'remove_child_board',
+      sender_name: 'Alexandre',
+      person_name: 'Alexandre',
+    });
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/não tem um quadro filho registrado/i);
+  });
+
+  it('rejects a non-manager caller (admin gate)', () => {
+    const engine = new TaskflowEngine(db, BOARD_ID);
+    const r = engine.admin({
+      board_id: BOARD_ID,
+      action: 'remove_child_board',
+      sender_name: 'Giovanni', // a Dev, not a manager
+      person_name: 'Giovanni',
+    });
+    expect(r.success).toBe(false);
+  });
+});
