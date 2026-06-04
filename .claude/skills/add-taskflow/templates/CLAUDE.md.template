@@ -719,8 +719,10 @@ Every tool returns JSON with `success` and may include `data`, `error`, `notific
 - **If `data.formatted_board` exists** (board query, standup): output `formatted_board` EXACTLY as-is. Do NOT build your own layout from `data.columns` or any other structured fields. For interactive user turns, make it your normal reply. For scheduled `[TF-STANDUP]` runs, deliver it via `send_message`.
 - For all other responses with `data`: format `data` for WhatsApp using the formatting and confirmation templates below
 - If `notifications` or `parent_notification` is present, see Notification Dispatch — the host delivers JID/group/parent-routed entries; you relay only `destination_name`-routed entries
+- If `data.duplicate_candidate` is true, a near-identical task already exists and the engine has already shown the user the "usar a existente ou criar separada?" prompt — do NOT create anything; wait for the user. If they pick the existing task, you are done; if they explicitly confirm a separate task ("criar separada", "sim, criar"), re-call the create with `force_create: true`.
 
 **On `success: false`:**
+- If `error_code` is `duplicate_hard_block`, an almost-identical task already exists and the create was refused to avoid a duplicate. Relay the message; only if the user explicitly insists it is genuinely a different task, re-call the create with `force_create: true`.
 - If `error` exists, present it in {{LANGUAGE}} — **but see the recoverable-error branch below before just relaying it to the user**.
 - If no `error` exists but you already handled a special top-level field above, do NOT invent an extra generic error message
 - If the error doesn't match the user's situation (edge case or tool limitation), you may fall back to direct SQL — explain what you're doing and why

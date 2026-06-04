@@ -212,6 +212,108 @@ function duplicateCreateResponse(engine: TaskflowEngine, row: Record<string, unk
   });
 }
 
+// #392 — create-time duplicate thresholds (cosine). >= HARD refuses the create
+// (near-identical); [SOFT, HARD) returns a duplicate_candidate the agent asks the
+// user about. Mirrors V1's 0.85 soft / 0.95 hard dup-detection.
+const SEMANTIC_DUP_SOFT = 0.85;
+const SEMANTIC_DUP_HARD = 0.95;
+
+type EmbedFn = (text: string, o: { url?: string; model?: string }) => Promise<Float32Array | null>;
+type SearchFn = (
+  collection: string,
+  vector: Float32Array,
+) => Promise<Array<{ itemId: string; score: number }>>;
+
+// How many top semantic hits to revalidate against the live table. >1 so a stale
+// top vector (a just-deleted/done task, ~15s feeder window) can't mask a lower
+// LIVE duplicate (Codex #392 finding 1).
+const SEMANTIC_DUP_TOPN = 5;
+
+/**
+ * #392 — semantic (embeddings) duplicate detection on create. Embeds the new
+ * task's title and finds the most-similar EXISTING active SAME-TYPE task in the
+ * board's `tasks:<board>` collection. Returns the matched live task row + its
+ * cosine score, or null. NO-OP (→ pure lexical, no semantic check) when the
+ * embed env is absent — same gate as maybeSemanticSearch — so a board without
+ * Ollama is unaffected. Only `simple`/`project` tasks are checked, and the match
+ * must be the SAME type (mirrors the lexical findDuplicateCreateCandidate gate +
+ * its `t.type = ?` filter; inbox/recurring/meeting are skipped). The caller
+ * decides soft-vs-hard from the score.
+ */
+export async function maybeFindEmbedDuplicate(
+  db: Database,
+  boardId: string,
+  taskType: CreateTaskType,
+  title: string,
+  deps: { embed?: EmbedFn; search?: SearchFn; readerPath?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<{ row: Record<string, unknown>; score: number } | null> {
+  if (taskType !== 'simple' && taskType !== 'project') return null;
+  const env = deps.env ?? process.env;
+  const model = env.NANOCLAW_TASKFLOW_EMBED_MODEL;
+  const url = env.NANOCLAW_TASKFLOW_EMBED_URL;
+  if (!model || !url) return null;
+
+  const vector = await (deps.embed ?? embedText)(title, { url, model });
+  if (!vector) return null;
+
+  const search: SearchFn =
+    deps.search ??
+    (async (collection, vec) => {
+      const reader = new EmbeddingReader(deps.readerPath ?? EMBEDDINGS_DB_PATH);
+      try {
+        return reader.search(collection, vec, { limit: SEMANTIC_DUP_TOPN, threshold: SEMANTIC_DUP_SOFT });
+      } finally {
+        reader.close();
+      }
+    });
+  const hits = await search(`tasks:${boardId}`, vector);
+
+  // hits are score-desc. The collection can lag the live table (15s feeder
+  // cycle), so revalidate each against the live table IN SCORE ORDER and return
+  // the first match that is still an open, same-type task on THIS board — never
+  // a deleted/done/foreign/other-type task, and never letting a stale top hit
+  // hide a lower live duplicate.
+  const stmt = db.prepare(
+    `SELECT t.*, b.short_code AS board_code, bp.name AS assignee_name
+     FROM tasks t JOIN boards b ON b.id = t.board_id
+     LEFT JOIN board_people bp ON bp.board_id = t.board_id AND bp.person_id = t.assignee
+     WHERE t.board_id = ? AND t.id = ? AND t.type = ? AND t.column != 'done'`,
+  );
+  for (const hit of hits) {
+    const row = stmt.get(boardId, hit.itemId, taskType) as Record<string, unknown> | null;
+    if (row) return { row, score: hit.score };
+  }
+  return null;
+}
+
+/** #392 threshold policy: a semantic match >= SEMANTIC_DUP_HARD hard-blocks the
+ *  create; a weaker match [SOFT, HARD) returns the soft duplicate_candidate (the
+ *  same response the lexical path uses). The create handler delegates here. */
+export function resolveEmbedDuplicate(
+  engine: TaskflowEngine,
+  embedDup: { row: Record<string, unknown>; score: number },
+) {
+  return embedDup.score >= SEMANTIC_DUP_HARD
+    ? duplicateHardBlockResponse(engine, embedDup.row)
+    : duplicateCreateResponse(engine, embedDup.row);
+}
+
+/** #392 hard-block: a >= SEMANTIC_DUP_HARD match refuses the create (success:false)
+ *  and points at the existing task. Overridable by re-calling with force_create. */
+function duplicateHardBlockResponse(engine: TaskflowEngine, row: Record<string, unknown>) {
+  const data = engine.serializeApiTask(row);
+  const taskId = String(row.id ?? data.id ?? 'tarefa');
+  const title = String(row.title ?? data.title ?? taskId);
+  return jsonResponse({
+    success: false,
+    error_code: 'duplicate_hard_block',
+    error:
+      `Já existe **${taskId} — ${title}**, praticamente idêntica à que você pediu — não criei uma nova ` +
+      `para evitar duplicata. Se for mesmo uma tarefa diferente, repita o comando com \`force_create\`.`,
+    duplicate_task: data,
+  });
+}
+
 /**
  * Post-create result shaping shared by `api_create_simple_task` and
  * `api_create_meeting_task`: turn an engine `CreateResult` into the
@@ -1629,6 +1731,11 @@ export const apiCreateTaskTool: McpToolDefinition = {
         allow_non_business_day: { type: 'boolean' },
         intended_weekday: { type: 'string' },
         requires_close_approval: { type: 'boolean' },
+        force_create: {
+          type: 'boolean',
+          description:
+            'Set true to bypass duplicate detection (lexical + semantic) and create the task anyway. Use ONLY after the user has explicitly confirmed they want it despite a near-duplicate warning.',
+        },
       },
       required: ['title', 'sender_name', 'type'],
     },
@@ -1743,11 +1850,23 @@ export const apiCreateTaskTool: McpToolDefinition = {
       requiresCloseApproval = args.requires_close_approval;
     }
 
+    if (args.force_create !== undefined && typeof args.force_create !== 'boolean') {
+      return validationError('force_create: expected boolean');
+    }
+
     try {
       const db = getTaskflowDb();
       const engine = new TaskflowEngine(db, boardId);
-      const duplicate = findDuplicateCreateCandidate(db, engine, boardId, taskType, title, assignee);
-      if (duplicate) return duplicateCreateResponse(engine, duplicate);
+      // force_create (template L1270) bypasses BOTH dup checks — the user has
+      // explicitly confirmed they want the task despite a near-duplicate.
+      if (args.force_create !== true) {
+        const duplicate = findDuplicateCreateCandidate(db, engine, boardId, taskType, title, assignee);
+        if (duplicate) return duplicateCreateResponse(engine, duplicate);
+        // #392 semantic check (env-gated → no-op without Ollama). >= hard refuses;
+        // [soft, hard) asks the user — same duplicate_candidate as the lexical path.
+        const embedDup = await maybeFindEmbedDuplicate(db, boardId, taskType, title);
+        if (embedDup) return resolveEmbedDuplicate(engine, embedDup);
+      }
       const result = engine.create({
         board_id: boardId,
         type: taskType,

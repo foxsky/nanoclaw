@@ -2847,3 +2847,149 @@ describe('emitAutoProvisionIfRequested (#390 — restore V1 auto-provision-on-re
     ).not.toThrow();
   });
 });
+
+describe('maybeFindEmbedDuplicate (#392 — semantic create-time dup-detect)', () => {
+  const EMBED_ENV = {
+    NANOCLAW_TASKFLOW_EMBED_MODEL: 'bge-m3',
+    NANOCLAW_TASKFLOW_EMBED_URL: 'http://ollama:11434',
+  } as unknown as NodeJS.ProcessEnv;
+  const vec = Float32Array.from([1, 0, 0]);
+
+  it('no-ops (null) when the embed env is absent (→ lexical-only, no check)', async () => {
+    const { maybeFindEmbedDuplicate } = await import('./taskflow-api-mutate.ts');
+    const r = await maybeFindEmbedDuplicate(db, BOARD, 'simple', 'Comprar café', {
+      env: {} as NodeJS.ProcessEnv,
+      embed: async () => vec,
+      search: async () => [{ itemId: 'whatever', score: 0.99 }],
+    });
+    expect(r).toBeNull();
+  });
+
+  it('no-ops for non simple/project types (inbox/meeting are not dup-checked)', async () => {
+    const { maybeFindEmbedDuplicate } = await import('./taskflow-api-mutate.ts');
+    const r = await maybeFindEmbedDuplicate(db, BOARD, 'meeting', 'Reunião', {
+      env: EMBED_ENV,
+      embed: async () => vec,
+      search: async () => [{ itemId: 'x', score: 0.99 }],
+    });
+    expect(r).toBeNull();
+  });
+
+  it('returns { row, score } for a semantic match that is a live (non-done) task', async () => {
+    const { apiCreateTaskTool, maybeFindEmbedDuplicate } = await import('./taskflow-api-mutate.ts');
+    const created = JSON.parse(
+      (await apiCreateTaskTool.handler({ board_id: BOARD, type: 'simple', title: 'Migrar o servidor de e-mail', sender_name: 'alice' })).content[0].text,
+    );
+    const id = created.data.id;
+    const r = await maybeFindEmbedDuplicate(db, BOARD, 'simple', 'mover o servidor de email', {
+      env: EMBED_ENV,
+      embed: async () => vec,
+      search: async (collection) => {
+        expect(collection).toBe(`tasks:${BOARD}`);
+        return [{ itemId: id, score: 0.97 }];
+      },
+    });
+    expect(r).not.toBeNull();
+    expect(String(r!.row.id)).toBe(id);
+    expect(r!.score).toBeCloseTo(0.97);
+  });
+
+  it('ignores a match whose task no longer exists / is done', async () => {
+    const { maybeFindEmbedDuplicate } = await import('./taskflow-api-mutate.ts');
+    const r = await maybeFindEmbedDuplicate(db, BOARD, 'simple', 'gone', {
+      env: EMBED_ENV,
+      embed: async () => vec,
+      search: async () => [{ itemId: 'T-does-not-exist', score: 0.99 }],
+    });
+    expect(r).toBeNull();
+  });
+
+  it('skips a stale/deleted top hit and returns the lower-ranked LIVE duplicate (Codex-1)', async () => {
+    const { apiCreateTaskTool, maybeFindEmbedDuplicate } = await import('./taskflow-api-mutate.ts');
+    const live = JSON.parse(
+      (await apiCreateTaskTool.handler({ board_id: BOARD, type: 'simple', title: 'Configurar backup noturno', sender_name: 'alice' })).content[0].text,
+    );
+    const r = await maybeFindEmbedDuplicate(db, BOARD, 'simple', 'agendar o backup', {
+      env: EMBED_ENV,
+      embed: async () => vec,
+      // top hit is a stale vector with no live row; the live dup is ranked lower.
+      search: async () => [
+        { itemId: 'T-stale-deleted', score: 0.99 },
+        { itemId: live.data.id, score: 0.96 },
+      ],
+    });
+    expect(r).not.toBeNull();
+    expect(String(r!.row.id)).toBe(live.data.id);
+    expect(r!.score).toBeCloseTo(0.96);
+  });
+
+  it('ignores a nearest match of a DIFFERENT task type (mirrors the lexical t.type filter, Codex-2)', async () => {
+    const { apiCreateMeetingTaskTool, maybeFindEmbedDuplicate } = await import('./taskflow-api-mutate.ts');
+    const meeting = JSON.parse(
+      (await apiCreateMeetingTaskTool.handler({ board_id: BOARD, title: 'Planejamento trimestral', sender_name: 'alice', scheduled_at: '2026-06-15T14:00:00Z' })).content[0].text,
+    );
+    // A 'simple' create whose nearest vector is a MEETING must NOT be flagged.
+    const r = await maybeFindEmbedDuplicate(db, BOARD, 'simple', 'planejamento', {
+      env: EMBED_ENV,
+      embed: async () => vec,
+      search: async () => [{ itemId: meeting.data.id, score: 0.99 }],
+    });
+    expect(r).toBeNull();
+  });
+});
+
+describe('api_create_task dup-detection wiring (#392)', () => {
+  const EMBED_ENV = {
+    NANOCLAW_TASKFLOW_EMBED_MODEL: 'bge-m3',
+    NANOCLAW_TASKFLOW_EMBED_URL: 'http://ollama:11434',
+  } as unknown as NodeJS.ProcessEnv;
+  const vec = Float32Array.from([1, 0, 0]);
+
+  async function makeEmbedDup(score: number, title: string) {
+    const { apiCreateTaskTool, maybeFindEmbedDuplicate } = await import('./taskflow-api-mutate.ts');
+    const created = JSON.parse(
+      (await apiCreateTaskTool.handler({ board_id: BOARD, type: 'simple', title, sender_name: 'alice' })).content[0].text,
+    );
+    return maybeFindEmbedDuplicate(db, BOARD, 'simple', `${title} (variação)`, {
+      env: EMBED_ENV,
+      embed: async () => vec,
+      search: async () => [{ itemId: created.data.id, score }],
+    });
+  }
+
+  it('resolveEmbedDuplicate HARD-blocks a >= 0.95 match (success:false, duplicate_hard_block, mentions force_create)', async () => {
+    const { TaskflowEngine } = await import('../taskflow-engine.ts');
+    const { resolveEmbedDuplicate } = await import('./taskflow-api-mutate.ts');
+    const dup = await makeEmbedDup(0.97, 'Atualizar firmware dos roteadores');
+    const res = JSON.parse(resolveEmbedDuplicate(new TaskflowEngine(db, BOARD), dup!).content[0].text);
+    expect(res.success).toBe(false);
+    expect(res.error_code).toBe('duplicate_hard_block');
+    expect(res.error).toContain('force_create');
+  });
+
+  it('resolveEmbedDuplicate returns a SOFT duplicate_candidate for an [0.85, 0.95) match', async () => {
+    const { TaskflowEngine } = await import('../taskflow-engine.ts');
+    const { resolveEmbedDuplicate } = await import('./taskflow-api-mutate.ts');
+    const dup = await makeEmbedDup(0.88, 'Revisar contrato de locação');
+    const res = JSON.parse(resolveEmbedDuplicate(new TaskflowEngine(db, BOARD), dup!).content[0].text);
+    expect(res.success).toBe(true);
+    expect(res.data.duplicate_candidate).toBe(true);
+  });
+
+  it('force_create:true bypasses dup-detection and creates despite a duplicate', async () => {
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    await apiCreateTaskTool.handler({ board_id: BOARD, type: 'simple', title: 'Comprar cabos de rede', sender_name: 'alice' });
+    // Same title again, no force → soft duplicate_candidate (lexical, no create).
+    const dupRes = JSON.parse(
+      (await apiCreateTaskTool.handler({ board_id: BOARD, type: 'simple', title: 'Comprar cabos de rede', sender_name: 'alice' })).content[0].text,
+    );
+    expect(dupRes.data?.duplicate_candidate).toBe(true);
+    // With force_create → actually creates the second task.
+    const forced = JSON.parse(
+      (await apiCreateTaskTool.handler({ board_id: BOARD, type: 'simple', title: 'Comprar cabos de rede', sender_name: 'alice', force_create: true })).content[0].text,
+    );
+    expect(forced.success).toBe(true);
+    expect(forced.data.duplicate_candidate).toBeUndefined();
+    expect(forced.data.id).toBeTruthy();
+  });
+});
