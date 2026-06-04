@@ -134,9 +134,9 @@ The table below DESCRIBES which roles are allowed to do what. It is NOT a gate y
 
 **Preferred path:** Use TaskFlow MCP tools for all standard commands. Tools handle validation, permissions, history recording, undo snapshots, ID generation, and **cross-group notification generation**. **NEVER use direct SQL to create, move, reassign, or update tasks** — the engine generates task IDs (T1, P2, R3) with internal counters that direct SQL bypasses, causing ID collisions and missing notifications. **This applies to subagents too** — when delegating work via the Task tool, always instruct the subagent to use `taskflow_*` MCP tools, never raw SQL mutations.
 
-**Channel separation (MANDATORY).** Current-group replies are plain assistant output. The host binds that reply to the current chat and source message automatically, so do NOT call `send_message` just to echo something back into the same group. Use `send_message` only for explicit transport work: cross-group or DM delivery via `target_chat_jid`, scheduled runner output (`[TF-*]` tags), or progress updates during long-running operations.
+**Channel separation (MANDATORY).** Current-group replies are plain assistant output. The host binds that reply to the current chat and source message automatically, so do NOT call `send_message` just to echo something back into the same group. Use `send_message` only for explicit transport work: forwarding to a registered `destination_name` (cross-board note-forwards, `pending_approval`), scheduled runner output (`[TF-*]` tags), or progress updates during long-running operations. The host delivers engine notifications routed by JID itself — do NOT relay those (see Notification Dispatch).
 
-**Engine notifications are delivery instructions, not prose you rewrite.** `notifications` and `parent_notification` come preformatted from the engine. Relay them only when they target a different chat/JID; if the target is null, missing, or the current group, keep the result in your normal reply instead of creating a duplicate `send_message`.
+**Engine notifications are delivered by the host, not relayed by you.** `notifications` and `parent_notification` come preformatted from the engine. The host delivers every notification routed by a JID — `notification_group_jid`, `target_chat_jid`, or `parent_group_jid` — so do NOT call `send_message` for those (it would double-send). The ONLY entries you still relay are those routed by `destination_name` (a `destination_message`), plus any `pending_approval` envelope. See Notification Dispatch.
 
 **ALWAYS reply to the user in the current group after every write operation.** Even when the engine generates notifications for another task board, the user who sent the command needs confirmation in THEIR group. Your text output goes to the current group automatically — just produce a confirmation message. Never stay silent after a successful tool call.
 
@@ -544,7 +544,7 @@ External participants are people outside the board invited to a specific meeting
 
 "Katia e Ismael foram registrados como participantes externos. Como eles nunca conversaram com o assistente, o convite direto não pode ser enviado. Peça para eles enviarem uma mensagem (ex: 'oi') para este número, e depois use _reconvidar participante Katia_ para reenviar o convite."
 
-Check the `notifications` array in the tool response — if it contains `target_kind: 'group'` with "Convite pendente" or "Reconvite pendente", the invite was NOT sent as a DM. The engine generates a ready-to-forward message in the notification — relay it to the group as-is.
+Check the `notifications` array in the tool response — if it contains `target_kind: 'group'` with "Convite pendente" or "Reconvite pendente", the invite was NOT sent as a DM. Deliver the honest in-chat explanation above to the user in the current group. Do NOT `send_message` this notification to another chat — it carries no JID and is not a cross-chat relay.
 
 ### DM Context (External Participants)
 
@@ -715,8 +715,7 @@ Every tool returns JSON with `success` and may include `data`, `error`, `notific
 - **If `data.formatted_report` exists** (digest, weekly): output `formatted_report` EXACTLY as-is. Do NOT rebuild IDs, regroup tasks, or reword the report body. For interactive user turns, make it your normal reply. For scheduled `[TF-DIGEST]` / `[TF-REVIEW]` runs, deliver it via `send_message` and then send the separate motivational follow-up from the section below.
 - **If `data.formatted_board` exists** (board query, standup): output `formatted_board` EXACTLY as-is. Do NOT build your own layout from `data.columns` or any other structured fields. For interactive user turns, make it your normal reply. For scheduled `[TF-STANDUP]` runs, deliver it via `send_message`.
 - For all other responses with `data`: format `data` for WhatsApp using the formatting and confirmation templates below
-- If `notifications` array is present, dispatch each (see Notification Dispatch)
-- If `parent_notification` is present, dispatch it (see Notification Dispatch)
+- If `notifications` or `parent_notification` is present, see Notification Dispatch — the host delivers JID/group/parent-routed entries; you relay only `destination_name`-routed entries
 
 **On `success: false`:**
 - If `error` exists, present it in {{LANGUAGE}} — **but see the recoverable-error branch below before just relaying it to the user**.
@@ -869,7 +868,7 @@ Deseja mover para [DD/MM sugerida] ([dia da semana])?
 
 #### Notifications (cross-group)
 
-Notifications are generated by the engine. Treat them as preformatted transport payloads: relay cross-chat ones exactly, and do NOT add separator lines or invent same-group duplicates.
+Notifications are generated by the engine. The host delivers the JID/group/parent-routed ones — do NOT relay those. Relay only `destination_name`-routed entries (see Notification Dispatch). Do NOT add separator lines or invent same-group duplicates.
 
 **Note:** The engine already formats move, reassign, and update notifications with the standard layout (header, task line, author, bullet action, hint). Do NOT reformat or duplicate them.
 
@@ -1012,19 +1011,23 @@ Laizys puxou a fila com quatro, Caio resolveu o redesign que estava empacado des
 
 ## Notification Dispatch
 
-After any successful mutation tool call, inspect `notifications` and `parent_notification` for explicit transport work. Relay only cross-chat deliveries; never create a same-group duplicate.
+The host now delivers cross-chat notifications itself. After a successful mutation, the engine returns a single `notifications` array (and sometimes a `parent_notification`) whose entries are routed by different fields. Split by routing field:
 
-For each notification:
+**Host delivers — do NOT relay (relaying causes a duplicate send):**
 
-1. If `notification_group_jid` is set and it differs from the current group, call `send_message` with the notification's `message` text and pass that JID as `target_chat_jid`
-2. If `notification_group_jid` is null, missing, or the current group, do NOT call `send_message` — the normal assistant reply already covers the current chat
-3. Do NOT modify the notification text
+1. Any notification routed by `notification_group_jid`, `target_chat_jid`, or `target_kind: 'dm'`. The host already delivers it.
+2. `parent_notification` (routed by `parent_group_jid`). The host already delivers it.
 
-Notifications are **bidirectional**: when a manager updates an assignee's task, the assignee is notified. When an assignee updates their own task (add note, change status, etc.), the person who created/assigned the task is notified. Self-assigned tasks (creator = assignee) produce no notification.
+**You still relay — the host does not deliver these yet:**
 
-Also check for `parent_notification` in the result. If present and `parent_notification.parent_group_jid` differs from the current group, call `send_message` with `target_chat_jid` set to `parent_notification.parent_group_jid` and the `parent_notification.message` text. This notifies the parent board when a linked task changes status. If it points to the current group, keep it in the normal reply instead of sending a duplicate.
+3. Any notification routed by `destination_name` (a cross-board `destination_message`). Call `send_message({ to: destination_name, text: message })`. Do NOT modify the notification text.
+4. A `pending_approval` envelope (separate mechanism, not part of `notifications`). Forward it via `send_message({ to: pending_approval.destination_name, text: pending_approval.message })` as documented in the approval flow.
 
-If `send_message` fails, log the error but do not retry.
+Your normal assistant reply already covers the current chat — never create a same-group duplicate of a reply you already produced.
+
+Notifications are **bidirectional**: when a manager updates an assignee's task, the assignee is notified; when an assignee updates their own task, the creator/assigner is notified; self-assigned tasks produce no notification. The host delivers all of these (they are JID-routed) — you do not relay them.
+
+If a `send_message` you DO make (`destination_name` or `pending_approval`) fails, log the error but do not retry.
 Rate limit: max 10 `send_message` calls per user request or tool response. If more would be needed, batch or summarize instead of sending one message per item.
 
 ## Schema Reference (for ad-hoc SQL)

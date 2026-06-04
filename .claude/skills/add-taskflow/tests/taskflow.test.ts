@@ -706,7 +706,7 @@ describe('taskflow skill package', () => {
     expect(toolSection).toContain('Current-group replies are plain assistant output');
     expect(toolSection).toContain('do NOT call `send_message` just to echo something back into the same group');
     expect(toolSection).toContain('scheduled runner output (`[TF-*]` tags)');
-    expect(toolSection).toContain('Engine notifications are delivery instructions');
+    expect(toolSection).toContain('Engine notifications are delivered by the host');
   });
 
   it('SKILL.md documents per-group AI model configuration via settings.json', () => {
@@ -2204,7 +2204,7 @@ describe('taskflow skill package', () => {
     expect(content).toContain('never create a same-group duplicate');
   });
 
-  it('CLAUDE.md.template notification relay is cross-chat only', () => {
+  it('CLAUDE.md.template notification dispatch encodes the host/agent split (#398)', () => {
     const content = fs.readFileSync(
       path.join(skillDir, 'templates', 'CLAUDE.md.template'),
       'utf-8',
@@ -2212,10 +2212,18 @@ describe('taskflow skill package', () => {
     const notificationSection =
       content.split('## Notification Dispatch')[1]?.split('## Schema Reference')[0] ?? '';
 
-    expect(notificationSection).toContain('Relay only cross-chat deliveries');
-    expect(notificationSection).toContain('If `notification_group_jid` is null, missing, or the current group');
-    expect(notificationSection).toContain('If present and `parent_notification.parent_group_jid` differs from the current group');
+    // Host delivers JID/group/parent-routed notifications — agent must NOT relay (else double-send).
+    expect(notificationSection).toContain('The host now delivers cross-chat notifications itself');
+    expect(notificationSection).toContain('do NOT relay');
+    expect(notificationSection).toContain('notification_group_jid');
+    expect(notificationSection).toContain('parent_group_jid');
+    // Agent STILL relays destination_name-routed entries + pending_approval (host skips until #395).
+    expect(notificationSection).toContain('destination_name');
+    expect(notificationSection).toContain('pending_approval');
+    // The text-fidelity rule survives for the destination_name relay path.
     expect(notificationSection).toContain('Do NOT modify the notification text');
+    // The old over-broad relay directive must be gone.
+    expect(notificationSection).not.toContain('Relay only cross-chat deliveries');
   });
 
   it('CLAUDE.md.template done shortcut allows Assignee via tool authorization', () => {

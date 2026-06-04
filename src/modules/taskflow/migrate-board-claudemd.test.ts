@@ -505,11 +505,12 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     expect(result.output).toContain('Following text.');
   });
 
-  it('A5 follow-up — Notification Dispatch section collapses to 2-line v2 truth (engine auto-dispatches)', () => {
+  it('A5 follow-up (#398) — Notification Dispatch section rewrites to the host/agent split', () => {
     // v1 had a multi-paragraph rule telling the agent to relay
-    // notifications[*].target_chat_jid via send_message. v2's engine
-    // dispatches everything itself; the notification_events array is
-    // informational only.
+    // notifications[*].target_chat_jid via send_message. v2's host now
+    // delivers JID/group/parent-routed notifications itself — the agent must
+    // NOT relay those (double-send) — but STILL relays destination_name-
+    // routed entries + pending_approval (host skips those until #395).
     const input = [
       'Preceding section.',
       '',
@@ -531,9 +532,14 @@ describe('migrateBoardClaudeMd — A5 Phase 1 direct substitution', () => {
     ].join('\n');
     const result = migrateBoardClaudeMd(input);
     expect(result.output).toContain('## Notification Dispatch');
-    expect(result.output).toContain('engine dispatches');
-    expect(result.output).not.toContain('notification_group_jid');
-    expect(result.output).not.toContain('parent_notification');
+    // Host owns JID/group/parent delivery — agent must NOT relay those.
+    expect(result.output).toContain('host delivers cross-chat notifications routed by JID');
+    expect(result.output).toContain('Do NOT relay those');
+    // Agent STILL relays destination_name-routed entries + pending_approval.
+    expect(result.output).toContain('destination_name');
+    expect(result.output).toContain('pending_approval');
+    // The old blanket relay directive is gone.
+    expect(result.output).not.toContain('Relay only cross-chat deliveries');
     expect(result.output).toContain('Preceding section.');
     expect(result.output).toContain('## Schema Reference');
   });
