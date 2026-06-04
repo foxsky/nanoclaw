@@ -223,7 +223,7 @@ export function listMemories(db: Database, boardId: string, args: Record<string,
 
 export function forgetMemoryById(db: Database, boardId: string, args: Record<string, unknown>) {
   const id = nonEmptyString(args.id);
-  if (!id) return err('id is required — the memory id to forget (from memory_list or memory_search).');
+  if (!id) return err('id is required — the memory id to forget (run memory_list to see current ids).');
   if (!forgetMemory(db, boardId, id)) {
     return err(
       `No memory with id "${id}" on this board (already forgotten, or wrong id — run memory_list to see current ids).`,
@@ -261,7 +261,7 @@ export const memoryForgetTool: McpToolDefinition = {
   tool: {
     name: 'memory_forget',
     description:
-      "Delete one saved memory from this board's long-term store by its `id` (get ids from memory_list or memory_search). Use when a stored fact is wrong, outdated, or was saved by mistake. Permanent — there is no undo.",
+      "Delete one saved memory from this board's long-term store by its `id` (run memory_list to see the current ids). Use when a stored fact is wrong, outdated, or was saved by mistake. Permanent — there is no undo.",
     inputSchema: {
       type: 'object' as const,
       properties: {
