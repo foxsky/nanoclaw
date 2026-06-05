@@ -3,9 +3,12 @@
  * lives in this handler — there is no engine method for "update".
  */
 import { getTaskflowDb } from '../db/connection.js';
+import { enqueueDeferredNotificationsInSession } from './pending-notification-dispatch.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
+import type { NotificationEvent } from './taskflow-helpers.js';
 import { normalizeAgentIds } from './taskflow-helpers.js';
+import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import type { McpToolDefinition } from './types.js';
 import { err, jsonResponse, parseTaskActorArgs } from './util.js';
 
@@ -355,6 +358,20 @@ export const apiUpdateSimpleTaskTool: McpToolDefinition = {
         }
       }
 
+      // #396: this tool hand-builds deferred_notification events but historically
+      // returned them raw — never persisting/delivering them (the cross-board
+      // assignee-change + column-move notifications were silently lost; V1
+      // dispatched after every update). Enqueue (so a cross-board assignee's
+      // notification is re-delivered once their child board provisions — the drain
+      // resolves the JID), then dispatch — in-session only (the FastAPI subprocess
+      // no-ops, preserving the #401 dashboard contract), fail-soft.
+      const dispatchable: NotificationEvent[] = notification_events.map((e) => ({
+        kind: 'deferred_notification',
+        target_person_id: e.target_person_id,
+        message: e.message,
+      }));
+      enqueueDeferredNotificationsInSession(boardId, dispatchable, taskId, { db });
+      dispatchNotificationEvents(dispatchable);
       return jsonResponse({ success: true, data, notification_events });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

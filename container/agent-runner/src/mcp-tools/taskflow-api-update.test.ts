@@ -44,6 +44,25 @@ describe('api_update_simple_task MCP tool', () => {
     expect(apiUpdateSimpleTaskTool.tool.description).toContain('api_reassign');
   });
 
+  it('#396: a cross-board assignee change enqueues a pending_notification (was returned-but-never-dispatched)', async () => {
+    // gio is a cross-board delegate (registration) whose board is still
+    // provisioning (null JID). Changing a task's assignee to gio produces a
+    // deferred_notification that this tool used to return raw without
+    // enqueueing/dispatching — so it was silently lost. It must now persist.
+    db.prepare(`INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'gio', 'Gio', 'member')`).run(BOARD);
+    db.prepare(`INSERT INTO child_board_registrations (parent_board_id, person_id, child_board_id) VALUES (?, 'gio', 'child-gio')`).run(BOARD);
+
+    const resp = await update({ board_id: BOARD, task_id: taskId, sender_name: 'alice', assignee: 'gio' });
+    const result = JSON.parse(resp.content[0].text);
+    expect(result.success).toBe(true);
+
+    const pending = db
+      .query("SELECT target_person_id, task_id FROM pending_notifications WHERE target_person_id='gio'")
+      .all() as Array<{ target_person_id: string; task_id: string }>;
+    expect(pending.length).toBe(1);
+    expect(pending[0]).toMatchObject({ target_person_id: 'gio', task_id: taskId });
+  });
+
   it('updates present fields', async () => {
     const resp = await update({
       board_id: BOARD,
