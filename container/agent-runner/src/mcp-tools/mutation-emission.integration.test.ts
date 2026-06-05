@@ -261,14 +261,13 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
       expect(r.success).toBe(true);
 
       const pending = db
-        .query("SELECT target_person_id, message FROM pending_notifications WHERE target_person_id = 'bob'")
-        .all() as Array<{ target_person_id: string; message: string }>;
+        .query("SELECT target_person_id, task_id, message FROM pending_notifications WHERE target_person_id = 'bob'")
+        .all() as Array<{ target_person_id: string; task_id: string; message: string }>;
       expect(pending.length).toBe(1);
       expect(pending[0].message).toContain('reatribuída para você');
-      // (task_id is null on the reassign path — the result doesn't surface it to
-      // the finalizer; null task_id just skips liveness and still delivers. The
-      // create path does track task_id. taskId asserted live above via the flow.)
-      void taskId;
+      // #405: the reassign deferred now carries task_id (derived from
+      // tasks_affected[0]), so liveness drops it if the task is later deleted.
+      expect(pending[0].task_id).toBe(taskId);
     } finally {
       if (savedEnv === undefined) delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
       else process.env.NANOCLAW_TASKFLOW_BOARD_ID = savedEnv;

@@ -8308,6 +8308,8 @@ describe('admin: remove_child_board (#400 — replaces the raw-SQL escape hatch)
     // The person must have no delegated tasks. Clear Giovanni's seeded task so
     // reconcileDelegationLinks() (constructor) doesn't auto-link it.
     db.exec(`DELETE FROM tasks WHERE board_id = '${BOARD_ID}' AND assignee = 'person-2'`);
+    // Giovanni's parent-board row points at his (now-detached) child group.
+    db.exec(`UPDATE board_people SET notification_group_jid = 'gio-child@g.us' WHERE board_id = '${BOARD_ID}' AND person_id = 'person-2'`);
     const engine = new TaskflowEngine(db, BOARD_ID);
     const r = engine.admin({
       board_id: BOARD_ID,
@@ -8320,6 +8322,12 @@ describe('admin: remove_child_board (#400 — replaces the raw-SQL escape hatch)
       .prepare(`SELECT 1 FROM child_board_registrations WHERE parent_board_id = ? AND person_id = 'person-2'`)
       .get(BOARD_ID);
     expect(left).toBeNull();
+    // #405: the cached child-group JID is cleared, so future notifications won't
+    // direct-message the detached group.
+    const jid = db
+      .prepare(`SELECT notification_group_jid AS j FROM board_people WHERE board_id = ? AND person_id = 'person-2'`)
+      .get(BOARD_ID) as { j: string | null };
+    expect(jid.j).toBeNull();
     // Board-level audit row written.
     const hist = db
       .prepare(`SELECT 1 FROM task_history WHERE board_id = ? AND task_id = 'BOARD' AND action = 'child_board_removed'`)

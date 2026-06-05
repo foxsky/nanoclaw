@@ -9548,6 +9548,12 @@ export class TaskflowEngine {
           this.db
             .prepare(`DELETE FROM child_board_registrations WHERE parent_board_id = ? AND person_id = ?`)
             .run(this.boardId, person.person_id);
+          // Clear the cached child-group JID too (Codex xhigh #405): notification
+          // builders read board_people.notification_group_jid directly, so leaving
+          // it set would keep direct-messaging the now-detached child group.
+          this.db
+            .prepare(`UPDATE board_people SET notification_group_jid = NULL WHERE board_id = ? AND person_id = ?`)
+            .run(this.boardId, person.person_id);
           // Board-level audit (task_id='BOARD', matching the v1 raw-SQL path). The
           // child board itself stays operational — only the hierarchy link is removed,
           // and (as in v1) no cross-group notification is sent.

@@ -50,6 +50,9 @@ export function ensurePendingNotificationsTable(db: Database): void {
       created_at TEXT NOT NULL
     )
   `);
+  // The drain scans by board_id every poll (incl. the 1s idle path) — index it
+  // so an idle taskflow board's per-tick lookup stays cheap (Codex xhigh #405).
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_pending_notifications_board ON pending_notifications(board_id)`);
 }
 
 /** Minimal structural shape of a normalized notification event — avoids a

@@ -388,7 +388,12 @@ function finalizeCreatedTaskResult(
  *     contract), offer_register, etc. — without us picking winners on
  *     which engine fields to forward.
  */
-function finalizeMutationResult(result: { success: boolean; notifications?: unknown; task_id?: unknown }) {
+function finalizeMutationResult(result: {
+  success: boolean;
+  notifications?: unknown;
+  task_id?: unknown;
+  tasks_affected?: unknown;
+}) {
   const { notifications: _notifications, success, ...rest } = result;
   const notification_events = normalizeEngineNotificationEvents(result);
   if (!success) return jsonResponse({ success: false, ...rest, notification_events });
@@ -397,7 +402,17 @@ function finalizeMutationResult(result: { success: boolean; notifications?: unkn
   // reassign/move to a teammate whose child board is still provisioning) so the
   // turn-boundary drain delivers it once their board provisions. In-session
   // only, before dispatch, fail-soft. board = the container's env board.
-  const taskId = typeof result.task_id === 'string' ? result.task_id : null;
+  // Prefer the top-level task_id; fall back to a single-task tasks_affected[0]
+  // (reassign returns tasks_affected, no top-level task_id) so the deferred's
+  // liveness check still works for single-task reassigns (Codex xhigh #405).
+  const taskId =
+    typeof result.task_id === 'string'
+      ? result.task_id
+      : Array.isArray(result.tasks_affected) &&
+          result.tasks_affected.length === 1 &&
+          typeof (result.tasks_affected[0] as { task_id?: unknown })?.task_id === 'string'
+        ? (result.tasks_affected[0] as { task_id: string }).task_id
+        : null;
   enqueueDeferredNotificationsInSession(process.env.NANOCLAW_TASKFLOW_BOARD_ID, notification_events, taskId, {});
   // Deterministic cross-chat dispatch (#389): the engine's reassign /
   // parent-rollup / invite notifications are delivered by the host, not
