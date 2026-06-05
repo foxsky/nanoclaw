@@ -53,7 +53,7 @@ Beyond the core Kanban board and quick capture, the TaskFlow agent exposes the f
 
 **Semantic search & embeddings:**
 - `taskflow_query({ query: 'search' })` ranks tasks semantically (Ollama bge-m3 over a host-built `embeddings.db`, merged with lexical hits), operator-enabled via `OLLAMA_HOST`/`EMBEDDING_MODEL` host env; falls back to pure lexical when unconfigured
-- not yet ported from v1: duplicate-detection-on-create (0.85 threshold) and the embedding-ranked context preamble — see the `add-taskflow` embeddings coordination notes
+- duplicate-detection-on-create is ported (lexical 0.75 + semantic 0.85 soft / 0.95 hard-block + `force_create` override, #392); still not ported from v1: the embedding-ranked context preamble — see the `add-taskflow` embeddings coordination notes
 
 **Long-term memory:**
 - remember durable facts across sessions (`memory_note`) and recall them (`memory_search`), per-board, with once-per-session auto-recall of recent memories and auto-capture at context compaction
@@ -313,7 +313,7 @@ Do not derive the root or team board IDs implicitly from whichever group is bein
 
 Read the v2 template from `.claude/skills/add-taskflow/templates/CLAUDE.md.template` (~400 lines). The v1 template (~1200 lines) is preserved as `CLAUDE.md.template.v1` for rollback.
 
-The v2 template is authored in the v1 `taskflow_*` vocabulary as a single source of truth, but `renderBoardClaudeMd` (`src/modules/taskflow/provision-shared.ts`) deterministically rewrites every name to its **registered `api_*` tool** at provision time (`taskflow_move`→`api_move`, `taskflow_create`→`api_create_task`, `taskflow_update`→`api_update_simple_task`, `taskflow_query`→`api_query`, plus `api_admin` / `api_undo` / `api_reassign` / `api_report` / `api_hierarchy` / `api_dependency`). A provisioned board therefore calls only real, registered tools (verified by `provision-shared.test.ts` + `migrate-board-claudemd.test.ts`). The agent maps user commands to those tool calls and formats the structured JSON responses for WhatsApp.
+The v2 template is authored in the v1 `taskflow_*` vocabulary as a single source of truth, but `renderBoardClaudeMd` (`src/modules/taskflow/provision-shared.ts`) deterministically rewrites every name to its **registered `api_*` tool** at provision time (`taskflow_move`→`api_move`, `taskflow_create`→`api_create_task`, `taskflow_update`→`api_update_task`, `taskflow_query`→`api_query`, plus `api_admin` / `api_undo` / `api_reassign` / `api_report` / `api_hierarchy` / `api_dependency`). A provisioned board therefore calls only real, registered tools (verified by `provision-shared.test.ts` + `migrate-board-claudemd.test.ts`). The agent maps user commands to those tool calls and formats the structured JSON responses for WhatsApp.
 
 For hierarchy boards, the generated prompt must treat linked tasks as directly actionable on the receiving board. The `🔗` marker indicates cross-board routing only; it does not make the task read-only. On the receiving board, the assignee and board owner may move the linked task through the normal GTD phases. Auto-linked assignments include recurring tasks and project subtasks when the assignee has a child board. Manual `vincular TXXX ao quadro do [pessoa]` remains for non-recurring top-level tasks only. `atualizar status TXXX` / `sincronizar TXXX` is reserved for pulling rollup from an immediate child board only after this board delegates the same deliverable further down.
 
