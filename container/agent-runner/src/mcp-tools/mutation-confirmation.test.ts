@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 import { closeSessionDb, initTestSessionDb } from '../db/connection.ts';
-import { emitMutationConfirmation } from './mutation-confirmation.ts';
+import { emitDeterministicToolMessage, emitMutationConfirmation } from './mutation-confirmation.ts';
+import { setVerbatimIds } from './taskflow-helpers.ts';
 import {
   __resetDedupForTesting,
   consumeDeterministicMutationFlag,
@@ -28,6 +29,29 @@ afterEach(() => {
 
 const ROUTING = { channel_type: 'whatsapp', platform_id: '123@g.us', thread_id: null };
 const NO_ROUTING = { channel_type: null, platform_id: null, thread_id: null };
+
+describe('emitDeterministicToolMessage subprocess gate', () => {
+  it('is a NO-OP in the FastAPI subprocess (verbatim ids) even when routing IS present', () => {
+    // The tf-mcontrol FastAPI subprocess sets verbatim ids unconditionally. The
+    // routing-absent gate fails OPEN if that subprocess can see a session_routing
+    // row (shared /workspace) — it would emit a user-visible chat row. getVerbatimIds()
+    // is the reliable subprocess signal, so the gate must honor it too (matches the
+    // dispatchNotificationEvents + #396 enqueue/drain gates).
+    setVerbatimIds(true);
+    try {
+      let emitted = false;
+      emitDeterministicToolMessage('✅ card text', {
+        getRouting: () => ROUTING,
+        emit: () => {
+          emitted = true;
+        },
+      });
+      expect(emitted).toBe(false);
+    } finally {
+      setVerbatimIds(false);
+    }
+  });
+});
 
 describe('emitMutationConfirmation', () => {
   it('emits the engine formatted card to current-session routing on a successful mutation', () => {

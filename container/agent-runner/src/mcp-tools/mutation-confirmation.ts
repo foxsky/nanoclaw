@@ -23,6 +23,7 @@ import { randomUUID } from 'node:crypto';
 import { writeMessageOut } from '../db/messages-out.js';
 import { getSessionRouting, type SessionRouting } from '../db/session-routing.js';
 import { markDeterministicMutationEmitted, takePendingCreateCard } from './mutation-dedup.js';
+import { isTaskflowSubprocess } from './taskflow-helpers.js';
 import { log } from './util.js';
 
 interface MutationResultShape {
@@ -52,6 +53,12 @@ interface EmitDeps {
 export function emitDeterministicToolMessage(text: string, deps: EmitDeps = {}): void {
   const trimmed = text.trim();
   if (!trimmed) return;
+  // The routing-absent gate below relies on the FastAPI subprocess having NO
+  // session DB — a deployment assumption that fails open if it can see a
+  // /workspace session_routing row (→ emits a user-visible chat row). getVerbatimIds()
+  // is the reliable subprocess signal (set unconditionally only in the subprocess
+  // entry), so gate on it too. Mirrors dispatchNotificationEvents / the #396 gates.
+  if (isTaskflowSubprocess()) return;
 
   // Best-effort: the tool already succeeded. Reading session routing
   // throws when there is no inbound session DB (tf-mcontrol's standalone

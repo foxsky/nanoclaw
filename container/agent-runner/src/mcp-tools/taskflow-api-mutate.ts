@@ -17,7 +17,7 @@ import { emitDeterministicToolMessage, emitMutationConfirmation } from './mutati
 import { clearPendingCreateCard, setPendingCreateCard } from './mutation-dedup.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
-import { normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
+import { isTaskflowSubprocess, normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
 import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import { err, generateId, jsonResponse, log, parseTaskActorArgs, requireString } from './util.js';
 import { EmbeddingReader } from '../embedding-reader.js';
@@ -444,6 +444,11 @@ export function emitAutoProvisionIfRequested(
   deps: { emit?: (msg: { id: string; kind: string; content: string }) => unknown; id?: string } = {},
 ): boolean {
   if (!result.success || !result.auto_provision_request) return false;
+  // Defense-in-depth: never emit a session on-wake row from the FastAPI subprocess.
+  // api_admin is not FastAPI-allowlisted today, but gate on the reliable subprocess
+  // signal so an allowlist change can't turn this into a leak (writeMessageOut →
+  // /workspace/outbound.db). Mirrors dispatchNotificationEvents / mutation-dedup.
+  if (isTaskflowSubprocess()) return false;
   try {
     (deps.emit ?? writeMessageOut)({
       id: deps.id ?? generateId(),

@@ -2810,6 +2810,25 @@ describe('emitAutoProvisionIfRequested (#390 — restore V1 auto-provision-on-re
     expect(payload.group_folder).toBe('div-x');
   });
 
+  it('no-ops in the FastAPI subprocess (verbatim ids) — defense-in-depth; api_admin is not allowlisted today', async () => {
+    const { emitAutoProvisionIfRequested } = await import('./taskflow-api-mutate.ts');
+    const { setVerbatimIds } = await import('./taskflow-helpers.ts');
+    setVerbatimIds(true);
+    try {
+      let called = false;
+      const emitted = emitAutoProvisionIfRequested({ success: true, auto_provision_request: REQ } as any, {
+        emit: () => {
+          called = true;
+          return 1;
+        },
+      });
+      expect(emitted).toBe(false);
+      expect(called).toBe(false);
+    } finally {
+      setVerbatimIds(false);
+    }
+  });
+
   it('no-ops when there is no auto_provision_request (non-delegating board / no phone)', async () => {
     const { emitAutoProvisionIfRequested } = await import('./taskflow-api-mutate.ts');
     let called = false;

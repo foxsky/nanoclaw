@@ -22,6 +22,7 @@ import {
   setPendingCreateCard,
   takePendingCreateCard,
 } from './mutation-dedup.ts';
+import { setVerbatimIds } from './taskflow-helpers.ts';
 
 // Phase-3 unit-2-core / Codex gate P4 (cross-process). State lives in
 // `session_state` in outbound.db so the MCP subprocess (mark) and the
@@ -29,6 +30,31 @@ import {
 // tests below verify the contract via SQLite (initTestSessionDb sets up
 // in-memory outbound DB); the file-backed test proves cross-instance
 // (closest in-test analog to cross-process) correctness.
+
+describe('mutation-dedup — FastAPI subprocess gate', () => {
+  beforeEach(() => {
+    initTestSessionDb();
+    __resetDedupForTesting();
+  });
+  afterEach(() => {
+    setVerbatimIds(false);
+    closeSessionDb();
+  });
+
+  it('does NOT write session_state from the FastAPI subprocess (verbatim ids)', () => {
+    // The write-side (mark / setPendingCreateCard / clearPendingCreateCard) targets
+    // getOutboundDb() = /workspace/outbound.db. In the tf-mcontrol FastAPI subprocess
+    // (verbatim true) that would clobber the service session's outbound state. The
+    // in-session agent's MCP child NEVER sets verbatim, so the load-bearing
+    // cross-process dedup is unaffected — only the FastAPI subprocess is gated. Reads
+    // (take/consume) stay unguarded: they're poll-loop/session-side consumers.
+    setVerbatimIds(true);
+    setPendingCreateCard('T1', 'card');
+    markDeterministicMutationEmitted();
+    expect(takePendingCreateCard()).toBeNull();
+    expect(consumeDeterministicMutationFlag()).toBe(false);
+  });
+});
 
 describe('mutation-dedup — same-process SQLite contract', () => {
   beforeEach(() => {

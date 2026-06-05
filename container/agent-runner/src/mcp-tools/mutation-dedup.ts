@@ -58,10 +58,17 @@
  *     site, not the writer.
  */
 import { getOutboundDb } from '../db/connection.js';
+import { isTaskflowSubprocess } from './taskflow-helpers.js';
 
 const KEY = 'mutation_dedup_flag';
 
 export function markDeterministicMutationEmitted(): void {
+  // Write-side is in-session ONLY: the tf-mcontrol FastAPI subprocess (verbatim ids)
+  // must not write session_state to /workspace/outbound.db (it would clobber the
+  // service session's outbound state). The in-session agent's MCP child never sets
+  // verbatim, so the cross-process dedup it relies on is unaffected. Read-side
+  // (consume/take/drain) stays unguarded — those run only in the poll-loop/session.
+  if (isTaskflowSubprocess()) return;
   try {
     const db = getOutboundDb();
     db.prepare(
@@ -124,6 +131,7 @@ const PENDING_CREATE_CARD_KEY = 'pending_create_card';
  *  this turn wins; v1's combined "N tarefas criadas" multi-create card
  *  is a separate builder, out of scope). */
 export function setPendingCreateCard(taskId: string, card: string): void {
+  if (isTaskflowSubprocess()) return; // in-session only — see markDeterministicMutationEmitted
   try {
     getOutboundDb()
       .prepare(
@@ -143,6 +151,7 @@ export function setPendingCreateCard(taskId: string, card: string): void {
  *  Task-id-matched so a same-turn reparent of an UNRELATED task does not
  *  silently drop a sibling standalone create's confirmation. */
 export function clearPendingCreateCard(taskId: string): void {
+  if (isTaskflowSubprocess()) return; // in-session only — see markDeterministicMutationEmitted
   try {
     const db = getOutboundDb();
     const row = db
