@@ -359,13 +359,19 @@ function finalizeCreatedTaskResult(
   // confirmation that stays deferred-to-turn-end and cleared on a same-turn
   // delete/reparent. in_chat_notice events (invite cards) render in-chat.
   const notification_events = normalizeEngineNotificationEvents(result);
-  dispatchNotificationEvents(notification_events);
   // #396: a cross-board assignee whose child board is still provisioning has a
-  // null JID, so the dispatch above host-skips their deferred_notification.
-  // Persist it so it's delivered once their board provisions (unit 3 wakes the
-  // drain). Gated on a child-board registration — same-group assignees (null JID
-  // by design) are not queued.
-  enqueueDeferredCrossBoardNotifications(db, boardId, notification_events, result.task_id, new Date().toISOString());
+  // null JID, so dispatch host-skips their deferred_notification. PERSIST it
+  // FIRST (before dispatch) so a crash mid-dispatch can't lose it — the
+  // turn-boundary drain delivers it once their board provisions. Gated on a
+  // child-board registration (same-group assignees, null JID by design, are not
+  // queued). Fail-soft: an enqueue error must NEVER fail an already-committed
+  // create (mirrors the dispatchNotificationEvents best-effort contract).
+  try {
+    enqueueDeferredCrossBoardNotifications(db, boardId, notification_events, result.task_id, new Date().toISOString());
+  } catch (enqueueErr) {
+    log(`#396 deferred-notification enqueue failed: ${String(enqueueErr)}`);
+  }
+  dispatchNotificationEvents(notification_events);
   return jsonResponse({
     success: true,
     data,
