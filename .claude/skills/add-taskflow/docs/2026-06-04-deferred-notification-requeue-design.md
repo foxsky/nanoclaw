@@ -1,6 +1,21 @@
 # #396 — deferred_notification offline re-queue: grounded design spec
 
-**Status:** design locked, NOT built. Dedicated build session. Author: nanoclaw engine agent, 2026-06-04, all claims source-verified on branch `skill/taskflow-v2`.
+**Status:** FUNCTIONAL — units 1, 2, 4 shipped (TDD + Codex-reviewed); unit 3 deferred. Author: nanoclaw engine agent, 2026-06-04, all claims source-verified on branch `skill/taskflow-v2`.
+
+## BUILD STATUS (2026-06-04)
+
+| Unit | What | Status |
+|------|------|--------|
+| 1 | `pending_notifications` table + `drainDeliverablePendingNotifications` (at-most-once delete-in-tx, 5-min TTL, liveness) — `container/agent-runner/src/db/pending-notifications.ts` | ✅ shipped (904ae268) |
+| 2 | `enqueueDeferredCrossBoardNotifications` (child-board gate) wired into `finalizeCreatedTaskResult` (create path) | ✅ shipped + hardened (Codex: enqueue-before-dispatch, fail-soft) |
+| 4 | `drainAndDispatchPendingNotifications` at the poll-loop turn boundary — delivers once the assignee's board provisions | ✅ shipped |
+| 3 | host: wake the parent container the instant `provision-child-board` sets the JID | ⏳ DEFERRED |
+
+**Functional now** via opportunistic per-turn drain: the deferred delivers on the parent board's next activity after provisioning, within the 5-min TTL — matching V1's best-effort nature. **Known parity gap (unit 3 closes it):** if the parent container goes idle right after register+assign and provisioning completes during the idle, the deferred waits for the parent's next turn; if that's > 5 min it expires (dropped). V1's host-side 1s poll delivered even while the parent agent was idle. Reassign/move deferred-enqueue (only create is wired) is the other deferred slice. Build unit 3 + the reassign/move enqueue for full parity.
+
+---
+
+## Original design spec (units 3+ reference)
 
 ## Scope correction (read first — the task title oversells it)
 
