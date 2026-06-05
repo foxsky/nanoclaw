@@ -3932,6 +3932,13 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     }
 
     if (messages.length === 0) {
+      // #396 (unit 3): deliver deferred cross-board notifications even while the
+      // board is idle (no pending messages). The container polls every second, so
+      // this matches V1's 1s host-poll cadence for an idle-but-running parent —
+      // closing the register→assign→go-idle window the turn-boundary drain misses.
+      // (A torn-down idle container still needs a host respawn-wake; that narrower
+      // edge is noted in the #396 design doc.)
+      drainAndDispatchPendingNotifications();
       await sleep(POLL_INTERVAL_MS);
       continue;
     }
