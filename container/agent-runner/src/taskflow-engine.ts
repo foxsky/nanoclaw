@@ -7,6 +7,7 @@
  * for creating, updating, and managing tasks.
  */
 import { Database } from 'bun:sqlite';
+import { ensurePendingNotificationsTable } from './db/pending-notifications.js';
 import { parseIsoCalendarDate } from './iso-date.js';
 import { resolveTimezoneOrUtc } from './tz-util.js';
 
@@ -1460,6 +1461,8 @@ export class TaskflowEngine {
         created_subtask_ids TEXT
       )
     `);
+    // #396 — deferred-notification re-queue (cross-board provisioning-window race).
+    ensurePendingNotificationsTable(this.db);
     // No secondary index — the dominant query is the PK lookup on request_id,
     // and pending-request scans by board are not in the hot path. Add an index
     // later if a pending-request bulk query materializes.
