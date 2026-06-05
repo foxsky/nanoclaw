@@ -2,7 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 
 import { ensurePendingNotificationsTable, enqueuePendingNotification } from '../db/pending-notifications.js';
-import { drainAndDispatchPendingNotifications } from './pending-notification-dispatch.js';
+import type { NotificationEvent } from './taskflow-helpers.js';
+import { drainAndDispatchPendingNotifications, enqueueDeferredNotificationsInSession } from './pending-notification-dispatch.js';
 
 const BOARD = 'board-parent';
 
@@ -63,6 +64,39 @@ describe('drainAndDispatchPendingNotifications (#396 unit 4 — turn-boundary dr
     expect(n).toBe(0);
     expect(dispatchCalled).toBe(false);
     expect((db.query('SELECT count(*) AS n FROM pending_notifications').get() as { n: number }).n).toBe(1); // kept
+    db.close();
+  });
+});
+
+describe('enqueueDeferredNotificationsInSession (#396 — gated in-session enqueue)', () => {
+  const deferred: NotificationEvent[] = [{ kind: 'deferred_notification', target_person_id: 'person-A', message: 'reassigned to you' }];
+  function gateDb(): Database {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT, child_board_id TEXT)`);
+    ensurePendingNotificationsTable(db);
+    db.exec(`INSERT INTO child_board_registrations VALUES ('${BOARD}', 'person-A', 'child-A')`);
+    return db;
+  }
+  const count = (db: Database) => (db.query('SELECT count(*) AS n FROM pending_notifications').get() as { n: number }).n;
+
+  it('enqueues in-session (no servicePath)', () => {
+    const db = gateDb();
+    enqueueDeferredNotificationsInSession(BOARD, deferred, 'T9', { db, servicePath: undefined, nowIso: '2026-06-04T12:00:00.000Z' });
+    expect(count(db)).toBe(1);
+    db.close();
+  });
+
+  it('no-ops in the FastAPI subprocess (servicePath set) — dashboard deferreds are tf-mcontrol\'s (#401)', () => {
+    const db = gateDb();
+    enqueueDeferredNotificationsInSession(BOARD, deferred, 'T9', { db, servicePath: '/svc/outbound.db', nowIso: '2026-06-04T12:00:00.000Z' });
+    expect(count(db)).toBe(0);
+    db.close();
+  });
+
+  it('no-ops when board is undefined (non-taskflow board)', () => {
+    const db = gateDb();
+    enqueueDeferredNotificationsInSession(undefined, deferred, 'T9', { db, servicePath: undefined, nowIso: '2026-06-04T12:00:00.000Z' });
+    expect(count(db)).toBe(0);
     db.close();
   });
 });

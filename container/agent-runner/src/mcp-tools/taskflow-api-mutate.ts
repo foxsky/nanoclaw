@@ -12,7 +12,7 @@ import { parseIsoCalendarDate } from '../iso-date.js';
 import { getBoardTimezone, TaskflowEngine } from '../taskflow-engine.js';
 import type { AdminParams, AdminResult, DependencyParams, HierarchyParams, MoveResult, QueryParams, ReassignParams, ReassignResult, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
 import { writeMessageOut } from '../db/messages-out.js';
-import { enqueueDeferredCrossBoardNotifications } from '../db/pending-notifications.js';
+import { enqueueDeferredNotificationsInSession } from './pending-notification-dispatch.js';
 import { emitDeterministicToolMessage, emitMutationConfirmation } from './mutation-confirmation.js';
 import { clearPendingCreateCard, setPendingCreateCard } from './mutation-dedup.js';
 import { registerTools } from './server.js';
@@ -361,16 +361,10 @@ function finalizeCreatedTaskResult(
   const notification_events = normalizeEngineNotificationEvents(result);
   // #396: a cross-board assignee whose child board is still provisioning has a
   // null JID, so dispatch host-skips their deferred_notification. PERSIST it
-  // FIRST (before dispatch) so a crash mid-dispatch can't lose it — the
-  // turn-boundary drain delivers it once their board provisions. Gated on a
-  // child-board registration (same-group assignees, null JID by design, are not
-  // queued). Fail-soft: an enqueue error must NEVER fail an already-committed
-  // create (mirrors the dispatchNotificationEvents best-effort contract).
-  try {
-    enqueueDeferredCrossBoardNotifications(db, boardId, notification_events, result.task_id, new Date().toISOString());
-  } catch (enqueueErr) {
-    log(`#396 deferred-notification enqueue failed: ${String(enqueueErr)}`);
-  }
+  // FIRST (before dispatch, in-session only, fail-soft) so a crash mid-dispatch
+  // can't lose it — the turn-boundary drain delivers it once their board
+  // provisions.
+  enqueueDeferredNotificationsInSession(boardId, notification_events, result.task_id, { db });
   dispatchNotificationEvents(notification_events);
   return jsonResponse({
     success: true,
@@ -394,11 +388,17 @@ function finalizeCreatedTaskResult(
  *     contract), offer_register, etc. — without us picking winners on
  *     which engine fields to forward.
  */
-function finalizeMutationResult(result: { success: boolean; notifications?: unknown }) {
+function finalizeMutationResult(result: { success: boolean; notifications?: unknown; task_id?: unknown }) {
   const { notifications: _notifications, success, ...rest } = result;
   const notification_events = normalizeEngineNotificationEvents(result);
   if (!success) return jsonResponse({ success: false, ...rest, notification_events });
   emitMutationConfirmation(result);
+  // #396: persist any cross-board deferred (null-JID) notification (e.g. a
+  // reassign/move to a teammate whose child board is still provisioning) so the
+  // turn-boundary drain delivers it once their board provisions. In-session
+  // only, before dispatch, fail-soft. board = the container's env board.
+  const taskId = typeof result.task_id === 'string' ? result.task_id : null;
+  enqueueDeferredNotificationsInSession(process.env.NANOCLAW_TASKFLOW_BOARD_ID, notification_events, taskId, {});
   // Deterministic cross-chat dispatch (#389): the engine's reassign /
   // parent-rollup / invite notifications are delivered by the host, not
   // relayed by the agent. In-session only — the FastAPI subprocess no-ops.

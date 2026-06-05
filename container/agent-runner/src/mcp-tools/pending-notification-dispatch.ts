@@ -1,11 +1,52 @@
 import type { Database } from 'bun:sqlite';
 
 import { getTaskflowDb } from '../db/connection.js';
-import { drainDeliverablePendingNotifications } from '../db/pending-notifications.js';
+import {
+  drainDeliverablePendingNotifications,
+  enqueueDeferredCrossBoardNotifications,
+} from '../db/pending-notifications.js';
 import type { NotificationEvent } from './taskflow-helpers.js';
 import { getServiceOutboundDbPath } from './taskflow-helpers.js';
 import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import { log } from './util.js';
+
+/**
+ * #396 enqueue at a mutation finalizer — in-session ONLY. Persists cross-board
+ * deferred (null-JID) notifications so the turn-boundary drain can deliver them
+ * once the assignee's board provisions. Gated:
+ * - no board → not a taskflow board → no-op;
+ * - servicePath set → FastAPI subprocess → no-op (it may hold a DIFFERENT
+ *   taskflow.db (Codex#3), and per #401 dashboard-originated deferreds are
+ *   tf-mcontrol's to deliver — the in-session container owns the queue).
+ * Fail-soft: an enqueue error must NEVER fail an already-committed mutation.
+ */
+export interface EnqueueDeferredDeps {
+  db?: Database;
+  servicePath?: string | undefined;
+  nowIso?: string;
+}
+
+export function enqueueDeferredNotificationsInSession(
+  boardId: string | undefined,
+  events: NotificationEvent[],
+  taskId: string | null,
+  deps: EnqueueDeferredDeps = {},
+): void {
+  if (!boardId) return;
+  const servicePath = deps.servicePath !== undefined ? deps.servicePath : getServiceOutboundDbPath();
+  if (servicePath) return;
+  try {
+    enqueueDeferredCrossBoardNotifications(
+      deps.db ?? getTaskflowDb(),
+      boardId,
+      events,
+      taskId,
+      deps.nowIso ?? new Date().toISOString(),
+    );
+  } catch (err) {
+    log(`#396 deferred-notification enqueue failed: ${String(err)}`);
+  }
+}
 
 /**
  * #396 unit 4 — turn-boundary drain. Called once per turn from the poll-loop:

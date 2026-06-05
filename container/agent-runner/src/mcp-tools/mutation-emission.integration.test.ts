@@ -241,6 +241,40 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     expect(pending[0].message).toContain('Nova tarefa atribuída a você');
   });
 
+  it('#396: reassign to a cross-board (registered, unprovisioned) person enqueues a pending_notification', async () => {
+    // finalizeMutationResult resolves the board from NANOCLAW_TASKFLOW_BOARD_ID
+    // (set in-session in production); set it here so the reassign enqueue fires.
+    const savedEnv = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = BOARD;
+    try {
+      const db = setupEngineDb(BOARD, { withBoardAdmins: true });
+      const { apiCreateSimpleTaskTool, apiReassignTool } = await import('./taskflow-api-mutate.ts');
+      db.prepare(`INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`).run(BOARD);
+      db.prepare(`INSERT INTO child_board_registrations (parent_board_id, person_id, child_board_id) VALUES (?, 'bob', 'child-bob')`).run(BOARD);
+
+      const taskId = JSON.parse(
+        (await apiCreateSimpleTaskTool.handler({ board_id: BOARD, title: 'Solicitar acesso', sender_name: 'alice' })).content[0].text,
+      ).data.id;
+      const r = JSON.parse(
+        (await apiReassignTool.handler({ board_id: BOARD, task_id: taskId, target_person: 'bob', sender_name: 'alice', confirmed: true })).content[0].text,
+      );
+      expect(r.success).toBe(true);
+
+      const pending = db
+        .query("SELECT target_person_id, message FROM pending_notifications WHERE target_person_id = 'bob'")
+        .all() as Array<{ target_person_id: string; message: string }>;
+      expect(pending.length).toBe(1);
+      expect(pending[0].message).toContain('reatribuída para você');
+      // (task_id is null on the reassign path — the result doesn't surface it to
+      // the finalizer; null task_id just skips liveness and still delivers. The
+      // create path does track task_id. taskId asserted live above via the flow.)
+      void taskId;
+    } finally {
+      if (savedEnv === undefined) delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+      else process.env.NANOCLAW_TASKFLOW_BOARD_ID = savedEnv;
+    }
+  });
+
   it('#396: create for a SAME-GROUP (unregistered) assignee does NOT enqueue (avoid churn)', async () => {
     const db = setupEngineDb(BOARD, { withBoardAdmins: true });
     const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
