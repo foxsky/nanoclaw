@@ -136,6 +136,22 @@ export function getServiceOutboundDbPath(): string | undefined {
   return _serviceOutboundDbPath;
 }
 
+/**
+ * True iff this process is the FastAPI/dashboard taskflow subprocess (or one
+ * explicitly handed a service outbound DB) — a context that must NOT touch the
+ * in-session pending-notification queue (neither enqueue nor drain). The
+ * `--service-outbound-db` arg is OPTIONAL, so servicePath alone is unreliable;
+ * getVerbatimIds() is set UNCONDITIONALLY by taskflow-server-entry.ts, so it's
+ * the reliable subprocess signal (Codex xhigh 2026-06-05). Pass
+ * `servicePathOverride` to inject the dep (tests / deps.servicePath);
+ * omit/undefined reads the process-level value.
+ */
+export function isTaskflowSubprocess(servicePathOverride?: string | undefined): boolean {
+  const servicePath =
+    servicePathOverride !== undefined ? servicePathOverride : getServiceOutboundDbPath();
+  return !!servicePath || getVerbatimIds();
+}
+
 export function normalizeAgentIds(args: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...args };
   if (_verbatimIds) return out;

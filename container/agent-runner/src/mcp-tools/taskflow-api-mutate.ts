@@ -376,6 +376,23 @@ function finalizeCreatedTaskResult(
 }
 
 /**
+ * The single task id used for a deferred notification's liveness check: the
+ * engine's top-level `task_id`, or — for single-task mutations that only return
+ * `tasks_affected` (e.g. `reassign`) — that one task's id. Multi-task results
+ * have no single liveness id (null → dropped only on the board-level TTL).
+ * (Codex xhigh #405.)
+ */
+function singleDeferredTaskId(result: { task_id?: unknown; tasks_affected?: unknown }): string | null {
+  if (typeof result.task_id === 'string') return result.task_id;
+  const affected = result.tasks_affected;
+  if (Array.isArray(affected) && affected.length === 1) {
+    const id = (affected[0] as { task_id?: unknown })?.task_id;
+    if (typeof id === 'string') return id;
+  }
+  return null;
+}
+
+/**
  * Post-mutation result shaping shared by `api_move`, `api_admin`, and
  * `api_reassign`. Strips `notifications` (rewritten as `notification_events`
  * via the shared normalizer) and preserves every other engine field on
@@ -402,17 +419,7 @@ function finalizeMutationResult(result: {
   // reassign/move to a teammate whose child board is still provisioning) so the
   // turn-boundary drain delivers it once their board provisions. In-session
   // only, before dispatch, fail-soft. board = the container's env board.
-  // Prefer the top-level task_id; fall back to a single-task tasks_affected[0]
-  // (reassign returns tasks_affected, no top-level task_id) so the deferred's
-  // liveness check still works for single-task reassigns (Codex xhigh #405).
-  const taskId =
-    typeof result.task_id === 'string'
-      ? result.task_id
-      : Array.isArray(result.tasks_affected) &&
-          result.tasks_affected.length === 1 &&
-          typeof (result.tasks_affected[0] as { task_id?: unknown })?.task_id === 'string'
-        ? (result.tasks_affected[0] as { task_id: string }).task_id
-        : null;
+  const taskId = singleDeferredTaskId(result);
   enqueueDeferredNotificationsInSession(process.env.NANOCLAW_TASKFLOW_BOARD_ID, notification_events, taskId, {});
   // Deterministic cross-chat dispatch (#389): the engine's reassign /
   // parent-rollup / invite notifications are delivered by the host, not
@@ -1344,18 +1351,20 @@ export const apiMoveTool: McpToolDefinition = {
       // engine move:5070) survive — and so one task's notification can't
       // suppress another's via the normalizer's per-result jid-dedup.
       // (#389; Codex High-2)
-      const notification_events = successes.flatMap((r) => normalizeEngineNotificationEvents(r));
+      const eventsPerSuccess = successes.map((r) => normalizeEngineNotificationEvents(r));
+      const notification_events = eventsPerSuccess.flat();
       // #396: persist each sub-move's deferred cross-board notifications (keyed by
       // that sub-task's id) before dispatch — the bulk path doesn't go through
       // finalizeMutationResult, so it must enqueue here too. In-session, fail-soft.
-      for (const r of successes) {
+      // Reuse the already-normalized events (was normalized a second time here).
+      successes.forEach((r, i) => {
         enqueueDeferredNotificationsInSession(
           process.env.NANOCLAW_TASKFLOW_BOARD_ID,
-          normalizeEngineNotificationEvents(r),
+          eventsPerSuccess[i],
           typeof r.task_id === 'string' ? r.task_id : null,
           {},
         );
-      }
+      });
       dispatchNotificationEvents(notification_events);
       return jsonResponse({
         success: failures.length === 0,

@@ -7,7 +7,7 @@ import {
   enqueueDeferredCrossBoardNotifications,
 } from '../db/pending-notifications.js';
 import type { NotificationEvent } from './taskflow-helpers.js';
-import { getServiceOutboundDbPath, getVerbatimIds } from './taskflow-helpers.js';
+import { isTaskflowSubprocess } from './taskflow-helpers.js';
 import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import { log } from './util.js';
 
@@ -34,12 +34,8 @@ export function enqueueDeferredNotificationsInSession(
   deps: EnqueueDeferredDeps = {},
 ): void {
   if (!boardId) return;
-  // Subprocess gate: --service-outbound-db is OPTIONAL, so servicePath alone is
-  // unreliable (a FastAPI subprocess launched without it would wrongly enqueue
-  // dashboard deferreds). getVerbatimIds() is set UNCONDITIONALLY in the
-  // subprocess entry, so it's the reliable signal (Codex xhigh 2026-06-05).
-  const servicePath = deps.servicePath !== undefined ? deps.servicePath : getServiceOutboundDbPath();
-  if (servicePath || getVerbatimIds()) return;
+  // Subprocess gate (FastAPI/dashboard) — must NOT enqueue in-session deferreds.
+  if (isTaskflowSubprocess(deps.servicePath)) return;
   try {
     enqueueDeferredCrossBoardNotifications(
       deps.db ?? getTaskflowDb(),
@@ -77,8 +73,7 @@ export interface DrainDispatchDeps {
 export function drainAndDispatchPendingNotifications(deps: DrainDispatchDeps = {}): number {
   const boardId = deps.boardId ?? process.env.NANOCLAW_TASKFLOW_BOARD_ID;
   if (!boardId) return 0;
-  const servicePath = deps.servicePath !== undefined ? deps.servicePath : getServiceOutboundDbPath();
-  if (servicePath || getVerbatimIds()) return 0;
+  if (isTaskflowSubprocess(deps.servicePath)) return 0;
 
   let deliverable;
   try {

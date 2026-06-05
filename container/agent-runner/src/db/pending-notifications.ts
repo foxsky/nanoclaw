@@ -39,7 +39,14 @@ export interface DeliverablePendingNotification {
   message: string;
 }
 
+// Per-connection guard: the drain calls this every poll (incl. the ~1s idle
+// path), so once a given db has the table+index, skip the redundant DDL. CREATE
+// ... IF NOT EXISTS is idempotent — this just avoids re-parsing two DDL
+// statements every tick on an idle board (Codex xhigh efficiency).
+const ensuredDbs = new WeakSet<Database>();
+
 export function ensurePendingNotificationsTable(db: Database): void {
+  if (ensuredDbs.has(db)) return;
   db.exec(`
     CREATE TABLE IF NOT EXISTS pending_notifications (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,6 +60,7 @@ export function ensurePendingNotificationsTable(db: Database): void {
   // The drain scans by board_id every poll (incl. the 1s idle path) — index it
   // so an idle taskflow board's per-tick lookup stays cheap (Codex xhigh #405).
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pending_notifications_board ON pending_notifications(board_id)`);
+  ensuredDbs.add(db);
 }
 
 /** Minimal structural shape of a normalized notification event — avoids a
