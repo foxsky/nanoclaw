@@ -7,16 +7,17 @@
  * delivery action delivers — the agent does NOT relay them (the generated
  * board CLAUDE.md says "do NOT relay").
  *
- * In-session ONLY. The standalone FastAPI subprocess
- * (`getServiceOutboundDbPath()` is set) has no session outbound.db and
- * returns notification_events in its JSON response for its own client —
- * so this is a deliberate no-op there, leaving the dashboard path
- * unchanged.
+ * In-session ONLY. The standalone FastAPI subprocess (detected via
+ * `isTaskflowSubprocess()` — verbatim-ids OR a service-outbound path; the
+ * latter is OPTIONAL so verbatim is the reliable signal) has no session
+ * outbound.db and returns notification_events in its JSON response for its
+ * own client — so this is a deliberate no-op there, leaving the dashboard
+ * path unchanged.
  */
 import { writeMessageOut } from '../db/messages-out.js';
 import { emitDeterministicToolMessage } from './mutation-confirmation.js';
 import type { NotificationEvent } from './taskflow-helpers.js';
-import { getServiceOutboundDbPath } from './taskflow-helpers.js';
+import { isTaskflowSubprocess } from './taskflow-helpers.js';
 import { generateId, log } from './util.js';
 
 export const DISPATCH_NOTIFICATIONS_ACTION = 'taskflow_dispatch_notifications';
@@ -37,11 +38,14 @@ export function dispatchNotificationEvents(
   deps: DispatchDeps = {},
 ): void {
   if (!events.length) return;
-  // The FastAPI subprocess returns notification_events in its JSON
-  // response; only the in-container WhatsApp agent dispatches via the
-  // session outbound.db.
-  const servicePath = deps.servicePath !== undefined ? deps.servicePath : getServiceOutboundDbPath();
-  if (servicePath) return;
+  // The FastAPI subprocess returns notification_events in its JSON response;
+  // only the in-container WhatsApp agent dispatches via the session
+  // outbound.db. Gate on the reliable subprocess signal (verbatim ids OR a
+  // service-outbound path), NOT servicePath alone: --service-outbound-db is
+  // OPTIONAL, and a subprocess without it would otherwise fall through to
+  // writeMessageOut → DEFAULT_OUTBOUND_PATH (/workspace/outbound.db) →
+  // double-send. Mirrors the #396 enqueue/drain gates.
+  if (isTaskflowSubprocess(deps.servicePath)) return;
 
   // in_chat_notice entries are current-chat messages with NO JID (the
   // "Convite pendente" forwardable invite card) — show them in the current

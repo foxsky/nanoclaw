@@ -11,6 +11,7 @@ import { describe, expect, it } from 'bun:test';
 
 import { dispatchNotificationEvents } from './taskflow-notify-dispatch.ts';
 import type { NotificationEvent } from './taskflow-helpers.ts';
+import { setVerbatimIds } from './taskflow-helpers.ts';
 
 const EVENTS: NotificationEvent[] = [
   { kind: 'direct_message', target_chat_jid: '551199@s.whatsapp.net', message: 'reassigned to you' },
@@ -33,6 +34,29 @@ describe('dispatchNotificationEvents', () => {
     const payload = JSON.parse(calls[0].content);
     expect(payload.action).toBe('taskflow_dispatch_notifications');
     expect(payload.events).toEqual(EVENTS);
+  });
+
+  it('is a NO-OP in the FastAPI subprocess detected via verbatim ids even with NO service path (gate must not double-send)', () => {
+    // The subprocess sets verbatim ids UNCONDITIONALLY, but --service-outbound-db
+    // is OPTIONAL. With servicePath absent, a servicePath-only gate falls through
+    // and writeMessageOut lazily opens DEFAULT_OUTBOUND_PATH (/workspace/outbound.db)
+    // — writing a host-deliverable row the dashboard already returned to its own
+    // client (DOUBLE-SEND). getVerbatimIds() is the reliable subprocess signal, so
+    // the gate must honor it too (matches the #396 enqueue/drain gates).
+    setVerbatimIds(true);
+    try {
+      let emitted = false;
+      dispatchNotificationEvents(EVENTS, {
+        servicePath: undefined,
+        writeSession: () => {
+          emitted = true;
+          return 1;
+        },
+      });
+      expect(emitted).toBe(false);
+    } finally {
+      setVerbatimIds(false);
+    }
   });
 
   it('does NOT emit when the event list is empty (no empty system rows)', () => {
