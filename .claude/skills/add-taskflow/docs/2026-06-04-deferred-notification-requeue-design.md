@@ -7,11 +7,14 @@
 | Unit | What | Status |
 |------|------|--------|
 | 1 | `pending_notifications` table + `drainDeliverablePendingNotifications` (at-most-once delete-in-tx, 5-min TTL, liveness) — `container/agent-runner/src/db/pending-notifications.ts` | ✅ shipped (904ae268) |
-| 2 | `enqueueDeferredCrossBoardNotifications` (child-board gate) wired into `finalizeCreatedTaskResult` (create path) | ✅ shipped + hardened (Codex: enqueue-before-dispatch, fail-soft) |
+| 2 | enqueue (child-board gate) wired into `finalizeCreatedTaskResult` (create path) | ✅ shipped + hardened (Codex: enqueue-before-dispatch, fail-soft) |
 | 4 | `drainAndDispatchPendingNotifications` at the poll-loop turn boundary — delivers once the assignee's board provisions | ✅ shipped |
-| 3 | host: wake the parent container the instant `provision-child-board` sets the JID | ⏳ DEFERRED |
+| 5 | enqueue on the mutation path (`finalizeMutationResult` — reassign/move/admin/update/note) + shared `enqueueDeferredNotificationsInSession` (in-session-only gate, fail-soft) | ✅ shipped (dbae7f26) |
+| 3 | host: wake the parent container the instant `provision-child-board` sets the JID | ⏳ DEFERRED (fresh session) |
 
-**Functional now** via opportunistic per-turn drain: the deferred delivers on the parent board's next activity after provisioning, within the 5-min TTL — matching V1's best-effort nature. **Known parity gap (unit 3 closes it):** if the parent container goes idle right after register+assign and provisioning completes during the idle, the deferred waits for the parent's next turn; if that's > 5 min it expires (dropped). V1's host-side 1s poll delivered even while the parent agent was idle. Reassign/move deferred-enqueue (only create is wired) is the other deferred slice. Build unit 3 + the reassign/move enqueue for full parity.
+**Functional now** for the common case, on BOTH create and reassign/move, via opportunistic per-turn drain: the deferred delivers on the parent board's next activity after provisioning, within the 5-min TTL — matching V1's best-effort nature. Mutation-path enqueue stores `task_id = null` (the reassign result doesn't surface it to the finalizer → liveness skipped there; create tracks `task_id`).
+
+**Remaining — unit 3 (the idle edge).** If the parent container goes idle right after register+assign and provisioning completes during the idle, the deferred waits for the parent's next turn; past 5 min it expires. V1's host-side 1s poll delivered even while the parent agent was idle. Unit 3 closes it but is genuine HOST work: `provision-child-board` uses `deliverPlainText` (outbound to chat) — it does NOT write the parent's `messages_in`, so it doesn't wake the parent container. Unit 3 must resolve the parent board's session and write an `insertTask`-style **silent** wake to its `messages_in` (no spurious agent output — mirror the #387 runner-gating suppression), so a fresh turn drains. Grounding: `src/modules/taskflow/provision-child-board.ts:205,287` (JID set), the `insertTask`/messages_in scheduling primitive (#321), and the turn-boundary drain (`poll-loop.ts` next to `flushPendingCreateCard`) fires regardless of wake cause.
 
 ---
 
