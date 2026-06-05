@@ -89,7 +89,9 @@ describe('enqueueDeferredNotificationsInSession (#396 — gated in-session enque
   function gateDb(): Database {
     const db = new Database(':memory:');
     db.exec(`CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT, child_board_id TEXT)`);
+    db.exec(`CREATE TABLE boards (id TEXT PRIMARY KEY, hierarchy_level INTEGER, max_depth INTEGER)`);
     ensurePendingNotificationsTable(db);
+    db.exec(`INSERT INTO boards VALUES ('${BOARD}', 0, 0)`); // flat (enqueue gates on registration here)
     db.exec(`INSERT INTO child_board_registrations VALUES ('${BOARD}', 'person-A', 'child-A')`);
     return db;
   }

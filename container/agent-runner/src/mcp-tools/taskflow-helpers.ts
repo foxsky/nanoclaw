@@ -110,6 +110,12 @@ let _verbatimIds = false;
 export function setVerbatimIds(verbatim: boolean): void {
   _verbatimIds = verbatim;
 }
+/** True iff running as the FastAPI/dashboard subprocess. taskflow-server-entry.ts
+ *  sets verbatim ids UNCONDITIONALLY at startup, so this is a RELIABLE subprocess
+ *  signal — unlike the optional `--service-outbound-db` (getServiceOutboundDbPath). */
+export function getVerbatimIds(): boolean {
+  return _verbatimIds;
+}
 
 /**
  * 0h-v2 Option A — the TaskFlow service session's `outbound.db` absolute

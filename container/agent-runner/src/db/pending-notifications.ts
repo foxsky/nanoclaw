@@ -76,12 +76,38 @@ export function enqueueDeferredCrossBoardNotifications(
   taskId: string | null,
   nowIso: string,
 ): void {
+  // A null-JID assignee notification is worth queueing only if the JID can still
+  // resolve. Two cases qualify: (a) the person already has a child_board_registrations
+  // row (cross-board delegate — JID will be set), OR (b) this is a DELEGATING board
+  // (hierarchy_level < max_depth): a person registered here is getting an
+  // auto-provisioned child board, so a notification sent DURING the
+  // register→provision window — when NO registration row exists yet — will resolve
+  // once provisioning sets notification_group_jid. Gating only on (a), as before,
+  // false-excluded that window — the EXACT case #396 exists to deliver
+  // (Codex xhigh 2026-06-05). A flat board (can't delegate) leaves an assignee's
+  // JID permanently null (their own group), so those are correctly skipped.
+  let boardCanDelegate = false;
+  try {
+    const boardRow = db
+      .query(`SELECT hierarchy_level, max_depth FROM boards WHERE id = $board_id`)
+      .get({ $board_id: boardId }) as { hierarchy_level: number | null; max_depth: number | null } | null;
+    boardCanDelegate =
+      !!boardRow &&
+      boardRow.hierarchy_level != null &&
+      boardRow.max_depth != null &&
+      boardRow.hierarchy_level < boardRow.max_depth;
+  } catch {
+    // Older/partial schema without hierarchy columns → treat as flat (the safe,
+    // more-restrictive registered-only gate). Production's boards table always
+    // has these columns (canDelegateDown relies on them).
+    boardCanDelegate = false;
+  }
   const isRegistered = db.query(
     `SELECT 1 FROM child_board_registrations WHERE parent_board_id = $board_id AND person_id = $person_id LIMIT 1`,
   );
   for (const ev of events) {
     if (ev.kind !== 'deferred_notification' || !ev.target_person_id) continue;
-    if (!isRegistered.get({ $board_id: boardId, $person_id: ev.target_person_id })) continue;
+    if (!boardCanDelegate && !isRegistered.get({ $board_id: boardId, $person_id: ev.target_person_id })) continue;
     enqueuePendingNotification(db, {
       board_id: boardId,
       target_person_id: ev.target_person_id,

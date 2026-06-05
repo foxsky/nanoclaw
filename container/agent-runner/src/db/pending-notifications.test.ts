@@ -107,7 +107,12 @@ describe('enqueueDeferredCrossBoardNotifications (#396 unit 2 — the cross-boar
   function setupGate(): Database {
     const db = new Database(':memory:');
     db.exec(`CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT, child_board_id TEXT)`);
+    db.exec(`CREATE TABLE boards (id TEXT PRIMARY KEY, hierarchy_level INTEGER, max_depth INTEGER)`);
     ensurePendingNotificationsTable(db);
+    // FLAT board by default (hierarchy_level == max_depth → cannot delegate), so an
+    // unregistered person's null JID is permanent → not queued. A delegating board
+    // is exercised in its own test below.
+    db.exec(`INSERT INTO boards VALUES ('${BOARD}', 0, 0)`);
     // person-A is a cross-board delegate (has a child board); person-B is not.
     db.exec(`INSERT INTO child_board_registrations VALUES ('${BOARD}', 'person-A', 'child-A')`);
     return db;
@@ -146,6 +151,27 @@ describe('enqueueDeferredCrossBoardNotifications (#396 unit 2 — the cross-boar
       '2026-06-04T12:00:00.000Z',
     );
     expect((db.query('SELECT count(*) AS n FROM pending_notifications').get() as { n: number }).n).toBe(0);
+    db.close();
+  });
+
+  it('enqueues an UNREGISTERED target on a DELEGATING board — the register→provision window (Codex xhigh fix)', () => {
+    // This is the exact case #396 exists to deliver: a task assigned to a person
+    // mid-provisioning has NO child_board_registrations row yet (it's inserted only
+    // when provisioning completes), but the board can delegate, so their JID WILL
+    // resolve. The old registration-only gate wrongly dropped this.
+    const db = setupGate();
+    db.exec(`UPDATE boards SET hierarchy_level = 0, max_depth = 2 WHERE id = '${BOARD}'`); // delegating
+    enqueueDeferredCrossBoardNotifications(
+      db,
+      BOARD,
+      [{ kind: 'deferred_notification', target_person_id: 'person-Z-unregistered', message: 'assigned mid-provision' }],
+      'T7',
+      '2026-06-04T12:00:00.000Z',
+    );
+    const rows = db
+      .query('SELECT target_person_id, message FROM pending_notifications')
+      .all() as Array<{ target_person_id: string; message: string }>;
+    expect(rows).toEqual([{ target_person_id: 'person-Z-unregistered', message: 'assigned mid-provision' }]);
     db.close();
   });
 });

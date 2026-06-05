@@ -3952,6 +3952,11 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // the "store as context, don't engage" contract. Host-side countDueMessages
     // gates the same way for wake-from-cold (see src/db/session-db.ts).
     if (!hasWakeTrigger(messages)) {
+      // #396: this is also an idle branch (accumulate-only context messages, no
+      // agent turn) — drain deferred notifications here too, else a board that
+      // keeps receiving context-only messages never reaches the turn boundary and
+      // its pending notifications expire undelivered (Codex xhigh 2026-06-05).
+      drainAndDispatchPendingNotifications();
       await sleep(POLL_INTERVAL_MS);
       continue;
     }
