@@ -55,6 +55,22 @@ describe('drainAndDispatchPendingNotifications (#396 unit 4 — turn-boundary dr
     expect(dispatchCalled).toBe(false);
   });
 
+  it('ensures the pending_notifications table when absent — no throw / log-spam on a fresh taskflow DB', () => {
+    // The idle drain can run before any TaskflowEngine construction has created
+    // the table. It must create it and return 0, not throw + fail-soft-log every poll.
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE board_people (board_id TEXT, person_id TEXT, name TEXT, notification_group_jid TEXT)`);
+    db.exec(`CREATE TABLE tasks (id TEXT, board_id TEXT)`);
+    // pending_notifications deliberately NOT created here.
+    let dispatchCalled = false;
+    const n = drainAndDispatchPendingNotifications({ db, boardId: BOARD, nowIso: '2026-06-04T12:05:00.000Z', servicePath: undefined, dispatch: () => { dispatchCalled = true; } });
+    expect(n).toBe(0);
+    expect(dispatchCalled).toBe(false);
+    const exists = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='pending_notifications'").get();
+    expect(exists).not.toBeNull();
+    db.close();
+  });
+
   it('does not dispatch when nothing is deliverable yet (JID still null)', () => {
     const db = seed();
     db.exec(`INSERT INTO board_people (board_id, person_id, name, notification_group_jid) VALUES ('${BOARD}', 'person-B', 'Bob', NULL)`);

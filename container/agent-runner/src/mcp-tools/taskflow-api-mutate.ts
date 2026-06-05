@@ -1330,6 +1330,17 @@ export const apiMoveTool: McpToolDefinition = {
       // suppress another's via the normalizer's per-result jid-dedup.
       // (#389; Codex High-2)
       const notification_events = successes.flatMap((r) => normalizeEngineNotificationEvents(r));
+      // #396: persist each sub-move's deferred cross-board notifications (keyed by
+      // that sub-task's id) before dispatch — the bulk path doesn't go through
+      // finalizeMutationResult, so it must enqueue here too. In-session, fail-soft.
+      for (const r of successes) {
+        enqueueDeferredNotificationsInSession(
+          process.env.NANOCLAW_TASKFLOW_BOARD_ID,
+          normalizeEngineNotificationEvents(r),
+          typeof r.task_id === 'string' ? r.task_id : null,
+          {},
+        );
+      }
       dispatchNotificationEvents(notification_events);
       return jsonResponse({
         success: failures.length === 0,

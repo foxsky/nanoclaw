@@ -3,6 +3,7 @@ import type { Database } from 'bun:sqlite';
 import { getTaskflowDb } from '../db/connection.js';
 import {
   drainDeliverablePendingNotifications,
+  ensurePendingNotificationsTable,
   enqueueDeferredCrossBoardNotifications,
 } from '../db/pending-notifications.js';
 import type { NotificationEvent } from './taskflow-helpers.js';
@@ -78,6 +79,10 @@ export function drainAndDispatchPendingNotifications(deps: DrainDispatchDeps = {
   let deliverable;
   try {
     const db = deps.db ?? getTaskflowDb();
+    // The idle drain can run before any TaskflowEngine construction has created
+    // the table (a fresh taskflow container with no messages yet). Ensure it here
+    // so a missing table doesn't throw + log-spam every poll. Idempotent.
+    ensurePendingNotificationsTable(db);
     deliverable = drainDeliverablePendingNotifications(db, boardId, deps.nowIso ?? new Date().toISOString());
   } catch (err) {
     // Best-effort, like the rest of the notification path — a drain failure must

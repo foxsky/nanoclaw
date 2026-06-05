@@ -22,6 +22,7 @@ import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import { normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
+import { enqueueDeferredNotificationsInSession } from './pending-notification-dispatch.js';
 import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import type { McpToolDefinition } from './types.js';
 import { jsonResponse } from './util.js';
@@ -103,6 +104,10 @@ export const apiTaskAddCommentTool: McpToolDefinition = {
         });
       }
       const notification_events = normalizeEngineNotificationEvents(result);
+      // #396: a comment on a task assigned to a still-provisioning cross-board
+      // person produces a null-JID deferred_notification — persist it (in-session,
+      // fail-soft) so it's delivered once their board provisions, then dispatch.
+      enqueueDeferredNotificationsInSession(boardId, notification_events, taskId, {});
       dispatchNotificationEvents(notification_events);
       return jsonResponse({
         success: true,

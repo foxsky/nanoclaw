@@ -66,6 +66,24 @@ describe('api_task_add_comment MCP tool (engine-backed)', () => {
     expect(row).toEqual({ by: 'alice', details: 'looks broken' });
   });
 
+  it('#396: enqueues a deferred notification when commenting on a task assigned to a cross-board unprovisioned person', async () => {
+    // gio is a cross-board delegate (registration) whose board is still
+    // provisioning (null JID). A comment notifies the assignee → null-JID
+    // deferred → must be persisted for later delivery, not host-skipped + lost.
+    db.prepare(`INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'gio', 'Gio', 'member')`).run(SEED);
+    db.prepare(`INSERT INTO child_board_registrations (parent_board_id, person_id, child_board_id) VALUES (?, 'gio', 'child-gio')`).run(SEED);
+    db.prepare(`INSERT INTO tasks (id, board_id, title, assignee, created_at, updated_at) VALUES ('T9', ?, 'Cross task', 'gio', '2026-01-01', '2026-01-01')`).run(SEED);
+
+    const r = await call({ board_id: SEED, task_id: 'T9', author_id: 'alice', author_name: 'Alice', message: 'ping' });
+    expect(r.success).toBe(true);
+
+    const pending = db
+      .prepare(`SELECT target_person_id, task_id FROM pending_notifications WHERE target_person_id='gio'`)
+      .all() as Array<{ target_person_id: string; task_id: string }>;
+    expect(pending.length).toBe(1);
+    expect(pending[0]).toMatchObject({ target_person_id: 'gio', task_id: 'T9' });
+  });
+
   it('emits notification_events for the assignee (kept; past-tense observability)', async () => {
     const r = await call({
       board_id: SEED,
