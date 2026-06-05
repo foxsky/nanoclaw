@@ -31,6 +31,7 @@ import {
   shouldSuppressSameConvMessage,
 } from './mcp-tools/message-block-dedup.js';
 import { flushPendingCreateCard } from './mcp-tools/mutation-confirmation.js';
+import { drainAndDispatchPendingNotifications } from './mcp-tools/pending-notification-dispatch.js';
 import { appendToolEvents, type ToolEvent } from './providers/claude-tool-capture.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 import { TaskflowEngine, normalizePhone, type ReassignResult } from './taskflow-engine.js';
@@ -4420,6 +4421,10 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // (read-and-clear), so the boundary flush is a no-op there.
     flushPendingCreateCard();
     drainDeterministicMutationFlag();
+    // #396: deliver any deferred cross-board notifications whose assignee's child
+    // board has since provisioned (JID now resolves). Opportunistic per-turn drain
+    // — no-op for non-taskflow boards. Within the 5-min TTL, V1 best-effort parity.
+    drainAndDispatchPendingNotifications();
     log(`Completed ${ids.length} message(s)`);
   }
 }

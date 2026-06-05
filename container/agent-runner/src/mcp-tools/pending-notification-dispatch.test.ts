@@ -1,0 +1,68 @@
+import { describe, expect, it } from 'bun:test';
+import { Database } from 'bun:sqlite';
+
+import { ensurePendingNotificationsTable, enqueuePendingNotification } from '../db/pending-notifications.js';
+import { drainAndDispatchPendingNotifications } from './pending-notification-dispatch.js';
+
+const BOARD = 'board-parent';
+
+function seed(): Database {
+  const db = new Database(':memory:');
+  db.exec(`CREATE TABLE board_people (board_id TEXT, person_id TEXT, name TEXT, notification_group_jid TEXT)`);
+  db.exec(`CREATE TABLE tasks (id TEXT, board_id TEXT)`);
+  ensurePendingNotificationsTable(db);
+  db.exec(`INSERT INTO board_people (board_id, person_id, name, notification_group_jid) VALUES ('${BOARD}', 'person-A', 'Alice', 'childA@g.us')`);
+  db.exec(`INSERT INTO tasks (id, board_id) VALUES ('T1', '${BOARD}')`);
+  return db;
+}
+
+describe('drainAndDispatchPendingNotifications (#396 unit 4 — turn-boundary drain)', () => {
+  it('drains deliverable rows and dispatches them as direct_messages, removing them', () => {
+    const db = seed();
+    enqueuePendingNotification(db, { board_id: BOARD, target_person_id: 'person-A', task_id: 'T1', message: 'Nova tarefa atribuída a você', created_at: '2026-06-04T12:04:00.000Z' });
+    const dispatched: Array<{ kind: string; target_chat_jid?: string; message: string }> = [];
+    const n = drainAndDispatchPendingNotifications({
+      db,
+      boardId: BOARD,
+      nowIso: '2026-06-04T12:05:00.000Z',
+      servicePath: undefined,
+      dispatch: (events) => dispatched.push(...(events as typeof dispatched)),
+    });
+    expect(n).toBe(1);
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0]).toMatchObject({ kind: 'direct_message', target_chat_jid: 'childA@g.us', message: 'Nova tarefa atribuída a você' });
+    expect((db.query('SELECT count(*) AS n FROM pending_notifications').get() as { n: number }).n).toBe(0);
+    db.close();
+  });
+
+  it('is a no-op (no dispatch, no drain) in the FastAPI subprocess — servicePath set', () => {
+    const db = seed();
+    enqueuePendingNotification(db, { board_id: BOARD, target_person_id: 'person-A', task_id: 'T1', message: 'm', created_at: '2026-06-04T12:04:00.000Z' });
+    let dispatchCalled = false;
+    const n = drainAndDispatchPendingNotifications({ db, boardId: BOARD, nowIso: '2026-06-04T12:05:00.000Z', servicePath: '/svc/outbound.db', dispatch: () => { dispatchCalled = true; } });
+    expect(n).toBe(0);
+    expect(dispatchCalled).toBe(false);
+    // The row is NOT consumed — the in-session container will deliver it.
+    expect((db.query('SELECT count(*) AS n FROM pending_notifications').get() as { n: number }).n).toBe(1);
+    db.close();
+  });
+
+  it('is a no-op when no board id is configured (non-taskflow board)', () => {
+    let dispatchCalled = false;
+    const n = drainAndDispatchPendingNotifications({ boardId: undefined, servicePath: undefined, dispatch: () => { dispatchCalled = true; } });
+    expect(n).toBe(0);
+    expect(dispatchCalled).toBe(false);
+  });
+
+  it('does not dispatch when nothing is deliverable yet (JID still null)', () => {
+    const db = seed();
+    db.exec(`INSERT INTO board_people (board_id, person_id, name, notification_group_jid) VALUES ('${BOARD}', 'person-B', 'Bob', NULL)`);
+    enqueuePendingNotification(db, { board_id: BOARD, target_person_id: 'person-B', task_id: 'T1', message: 'waiting', created_at: '2026-06-04T12:04:00.000Z' });
+    let dispatchCalled = false;
+    const n = drainAndDispatchPendingNotifications({ db, boardId: BOARD, nowIso: '2026-06-04T12:05:00.000Z', servicePath: undefined, dispatch: () => { dispatchCalled = true; } });
+    expect(n).toBe(0);
+    expect(dispatchCalled).toBe(false);
+    expect((db.query('SELECT count(*) AS n FROM pending_notifications').get() as { n: number }).n).toBe(1); // kept
+    db.close();
+  });
+});
