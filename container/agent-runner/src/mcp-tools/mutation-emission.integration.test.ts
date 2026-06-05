@@ -215,6 +215,47 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     expect((events![0] as { target_chat_jid?: string }).target_chat_jid).toBeUndefined();
   });
 
+  it('#396: create for a cross-board (registered, unprovisioned) assignee enqueues a pending_notification', async () => {
+    // bob is a cross-board delegate (has a child board registration) whose board
+    // is still provisioning → no notification_group_jid yet. The create defers his
+    // notification AND persists it so unit 3 can deliver it once his board provisions.
+    const db = setupEngineDb(BOARD, { withBoardAdmins: true });
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(`INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`).run(BOARD);
+    db.prepare(`INSERT INTO child_board_registrations (parent_board_id, person_id, child_board_id) VALUES (?, 'bob', 'child-bob')`).run(BOARD);
+
+    const result = JSON.parse(
+      (
+        await apiCreateTaskTool.handler({
+          board_id: BOARD, type: 'simple', title: 'Cross-board task', sender_name: 'alice', assignee: 'bob',
+        })
+      ).content[0].text,
+    );
+    expect(result.success).toBe(true);
+
+    const pending = db
+      .query('SELECT target_person_id, task_id, message FROM pending_notifications')
+      .all() as Array<{ target_person_id: string; task_id: string; message: string }>;
+    expect(pending.length).toBe(1);
+    expect(pending[0]).toMatchObject({ target_person_id: 'bob', task_id: result.data.id });
+    expect(pending[0].message).toContain('Nova tarefa atribuída a você');
+  });
+
+  it('#396: create for a SAME-GROUP (unregistered) assignee does NOT enqueue (avoid churn)', async () => {
+    const db = setupEngineDb(BOARD, { withBoardAdmins: true });
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    db.prepare(`INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`).run(BOARD); // no child-board registration
+    const result = JSON.parse(
+      (
+        await apiCreateTaskTool.handler({
+          board_id: BOARD, type: 'simple', title: 'Same-group task', sender_name: 'alice', assignee: 'bob',
+        })
+      ).content[0].text,
+    );
+    expect(result.success).toBe(true);
+    expect((db.query('SELECT count(*) AS n FROM pending_notifications').get() as { n: number }).n).toBe(0);
+  });
+
   it('#397: create assigned to the SENDER themselves emits NO notification (no self-notify regression)', async () => {
     // resolveNotifTarget returns null when assignee === modifier on create
     // (no taskId), so no event is built and nothing is dispatched.

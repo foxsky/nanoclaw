@@ -52,6 +52,46 @@ export function ensurePendingNotificationsTable(db: Database): void {
   `);
 }
 
+/** Minimal structural shape of a normalized notification event — avoids a
+ *  dependency on the MCP-tool NotificationEvent union. */
+interface MaybeDeferredEvent {
+  kind: string;
+  target_person_id?: string;
+  message: string;
+}
+
+/**
+ * #396 enqueue gate. From a batch of normalized notification events, persist
+ * ONLY the `deferred_notification` ones whose target is a cross-board delegate
+ * (has a `child_board_registrations` row on this board) — those are the ones
+ * whose JID will resolve once their child board provisions. Same-group
+ * assignees have a null JID by design that never resolves, so they are skipped
+ * (queueing them would churn until the TTL). `direct_message` / other kinds are
+ * already deliverable and are ignored here.
+ */
+export function enqueueDeferredCrossBoardNotifications(
+  db: Database,
+  boardId: string,
+  events: ReadonlyArray<MaybeDeferredEvent>,
+  taskId: string | null,
+  nowIso: string,
+): void {
+  const isRegistered = db.query(
+    `SELECT 1 FROM child_board_registrations WHERE parent_board_id = $board_id AND person_id = $person_id LIMIT 1`,
+  );
+  for (const ev of events) {
+    if (ev.kind !== 'deferred_notification' || !ev.target_person_id) continue;
+    if (!isRegistered.get({ $board_id: boardId, $person_id: ev.target_person_id })) continue;
+    enqueuePendingNotification(db, {
+      board_id: boardId,
+      target_person_id: ev.target_person_id,
+      task_id: taskId,
+      message: ev.message,
+      created_at: nowIso,
+    });
+  }
+}
+
 export function enqueuePendingNotification(db: Database, n: PendingNotificationInput): void {
   db.query(
     `INSERT INTO pending_notifications (board_id, target_person_id, task_id, message, created_at)

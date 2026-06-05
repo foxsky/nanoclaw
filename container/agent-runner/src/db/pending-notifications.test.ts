@@ -4,6 +4,7 @@ import { Database } from 'bun:sqlite';
 import {
   DEFERRED_NOTIFICATION_TTL_MS,
   drainDeliverablePendingNotifications,
+  enqueueDeferredCrossBoardNotifications,
   enqueuePendingNotification,
   ensurePendingNotificationsTable,
 } from './pending-notifications.js';
@@ -98,6 +99,53 @@ describe('pending_notifications accessor (#396 unit 1)', () => {
     const delivered = drainDeliverablePendingNotifications(db, BOARD, '2026-06-04T12:05:00.000Z');
     expect(delivered.length).toBe(0);
     expect((db.query('SELECT count(*) AS n FROM pending_notifications').get() as { n: number }).n).toBe(1);
+    db.close();
+  });
+});
+
+describe('enqueueDeferredCrossBoardNotifications (#396 unit 2 — the cross-board gate)', () => {
+  function setupGate(): Database {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT, child_board_id TEXT)`);
+    ensurePendingNotificationsTable(db);
+    // person-A is a cross-board delegate (has a child board); person-B is not.
+    db.exec(`INSERT INTO child_board_registrations VALUES ('${BOARD}', 'person-A', 'child-A')`);
+    return db;
+  }
+
+  it('enqueues a deferred_notification ONLY for a child-board-registered target', () => {
+    // WHY: a same-group assignee's JID is null BY DESIGN and never resolves, so
+    // queueing them would just churn until the TTL. Only cross-board delegates
+    // (whose JID resolves once their child board provisions) belong in the queue.
+    const db = setupGate();
+    enqueueDeferredCrossBoardNotifications(
+      db,
+      BOARD,
+      [
+        { kind: 'deferred_notification', target_person_id: 'person-A', message: 'cross-board' }, // registered → enqueue
+        { kind: 'deferred_notification', target_person_id: 'person-B', message: 'same-group' }, // NOT registered → skip
+        { kind: 'direct_message', target_chat_jid: 'x@g.us', message: 'resolved' }, // not deferred → skip
+      ],
+      'T1',
+      '2026-06-04T12:00:00.000Z',
+    );
+    const rows = db
+      .query('SELECT target_person_id, task_id, message FROM pending_notifications')
+      .all() as Array<{ target_person_id: string; task_id: string; message: string }>;
+    expect(rows).toEqual([{ target_person_id: 'person-A', task_id: 'T1', message: 'cross-board' }]);
+    db.close();
+  });
+
+  it('is a no-op when there are no deferred events', () => {
+    const db = setupGate();
+    enqueueDeferredCrossBoardNotifications(
+      db,
+      BOARD,
+      [{ kind: 'direct_message', target_chat_jid: 'x@g.us', message: 'resolved' }],
+      'T1',
+      '2026-06-04T12:00:00.000Z',
+    );
+    expect((db.query('SELECT count(*) AS n FROM pending_notifications').get() as { n: number }).n).toBe(0);
     db.close();
   });
 });

@@ -12,6 +12,7 @@ import { parseIsoCalendarDate } from '../iso-date.js';
 import { getBoardTimezone, TaskflowEngine } from '../taskflow-engine.js';
 import type { AdminParams, AdminResult, DependencyParams, HierarchyParams, MoveResult, QueryParams, ReassignParams, ReassignResult, ReportParams, UndoParams, UpdateParams } from '../taskflow-engine.js';
 import { writeMessageOut } from '../db/messages-out.js';
+import { enqueueDeferredCrossBoardNotifications } from '../db/pending-notifications.js';
 import { emitDeterministicToolMessage, emitMutationConfirmation } from './mutation-confirmation.js';
 import { clearPendingCreateCard, setPendingCreateCard } from './mutation-dedup.js';
 import { registerTools } from './server.js';
@@ -359,6 +360,12 @@ function finalizeCreatedTaskResult(
   // delete/reparent. in_chat_notice events (invite cards) render in-chat.
   const notification_events = normalizeEngineNotificationEvents(result);
   dispatchNotificationEvents(notification_events);
+  // #396: a cross-board assignee whose child board is still provisioning has a
+  // null JID, so the dispatch above host-skips their deferred_notification.
+  // Persist it so it's delivered once their board provisions (unit 3 wakes the
+  // drain). Gated on a child-board registration — same-group assignees (null JID
+  // by design) are not queued.
+  enqueueDeferredCrossBoardNotifications(db, boardId, notification_events, result.task_id, new Date().toISOString());
   return jsonResponse({
     success: true,
     data,
