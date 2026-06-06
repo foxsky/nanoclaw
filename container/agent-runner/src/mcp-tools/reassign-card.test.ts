@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 
-import { addReassignFormattedResult } from './taskflow-api-mutate.ts';
+import { addReassignFormattedResult, buildReassignCard, buildReassignLookup } from './taskflow-api-mutate.ts';
+import { setVerbatimIds } from './taskflow-helpers.ts';
 import type { ReassignResult } from '../taskflow-engine.ts';
 
 // Phase-3 unit-2-core: the v2 MCP reassign confirmation must be
@@ -60,5 +61,141 @@ describe('addReassignFormattedResult — v1-faithful confirmation card', () => {
       'x',
     );
     expect(out.formatted).toBe('engine-set');
+  });
+});
+
+// Phase-3 follow-up (Turn-37 richness gap): v1's reassign confirmation was
+// LLM-composed (no deterministic source), so this is NOT a byte-port — it's a
+// v2-COHERENT enrichment reusing v2's own create/update card vocabulary (SEP,
+// 📁/📋 parent tree, ⏰ Prazo dd/mm/yyyy) + the canonical assignee name. Rich
+// form only when a single task has a resolvable parent; everything else keeps
+// the existing short/multi form (no fabrication for shapes without a parent).
+describe('buildReassignCard — v2-coherent rich card (pure fn)', () => {
+  it('single task with parent + due_date → rich card (v2 conventions)', () => {
+    expect(
+      buildReassignCard({
+        id: 'P22.1',
+        title: 'Agendar a coleta de dados',
+        parentId: 'P22',
+        parentTitle: 'Pesquisa TIC Governo 2025',
+        dueDate: '2026-04-30',
+        assignee: 'Mariany Borges',
+      }),
+    ).toBe(
+      [
+        '✅ *P22.1* reatribuída',
+        '━━━━━━━━━━━━━━',
+        '',
+        '📁 *P22* — Pesquisa TIC Governo 2025',
+        '   📋 *P22.1* — Agendar a coleta de dados',
+        '',
+        '👤 *Para:* Mariany Borges',
+        '⏰ Prazo: 30/04/2026',
+      ].join('\n'),
+    );
+  });
+
+  it('omits the Prazo line when there is no due_date', () => {
+    expect(
+      buildReassignCard({
+        id: 'P9.3',
+        title: 'Revisar minuta',
+        parentId: 'P9',
+        parentTitle: 'Operação',
+        assignee: 'Lucas',
+      }),
+    ).toBe('✅ *P9.3* reatribuída\n━━━━━━━━━━━━━━\n\n📁 *P9* — Operação\n   📋 *P9.3* — Revisar minuta\n\n👤 *Para:* Lucas');
+  });
+
+  it('returns null when there is no parent (caller falls back to the short form)', () => {
+    expect(
+      buildReassignCard({ id: 'T1', title: 'Top-level task', assignee: 'Ana' }),
+    ).toBeNull();
+  });
+
+  it('omits a malformed due_date rather than emitting garbage', () => {
+    expect(
+      buildReassignCard({
+        id: 'P1.1', title: 't', parentId: 'P1', parentTitle: 'Proj', dueDate: 'not-a-date', assignee: 'Bob',
+      }),
+    ).toBe('✅ *P1.1* reatribuída\n━━━━━━━━━━━━━━\n\n📁 *P1* — Proj\n   📋 *P1.1* — t\n\n👤 *Para:* Bob');
+  });
+});
+
+describe('addReassignFormattedResult — rich card via parent lookup', () => {
+  const lookup = (id: string) =>
+    id === 'P22.1'
+      ? { parent_task_id: 'P22', parent_task_title: 'Pesquisa TIC Governo 2025', due_date: '2026-04-30' }
+      : null;
+
+  it('single task with a resolvable parent → rich card', () => {
+    const out = addReassignFormattedResult(
+      { success: true, tasks_affected: [{ task_id: 'P22.1', title: 'Agendar a coleta de dados', was_linked: false }] } as ReassignResult,
+      'Mariany Borges',
+      lookup,
+    );
+    expect(out.formatted).toBe(
+      '✅ *P22.1* reatribuída\n━━━━━━━━━━━━━━\n\n📁 *P22* — Pesquisa TIC Governo 2025\n   📋 *P22.1* — Agendar a coleta de dados\n\n👤 *Para:* Mariany Borges\n⏰ Prazo: 30/04/2026',
+    );
+  });
+
+  it('single task with no resolvable parent → falls back to the short form', () => {
+    const out = addReassignFormattedResult(
+      { success: true, tasks_affected: [{ task_id: 'T9', title: 'Top task', was_linked: false }] } as ReassignResult,
+      'Ana',
+      lookup, // returns null for T9
+    );
+    expect(out.formatted).toBe('✅ *T9* — Top task\n\nReatribuída para Ana.');
+  });
+
+  it('multi-task reassign keeps the short multi form even with a lookup', () => {
+    const out = addReassignFormattedResult(
+      {
+        success: true,
+        tasks_affected: [
+          { task_id: 'P22.1', title: 'A', was_linked: false },
+          { task_id: 'P22.2', title: 'B', was_linked: false },
+        ],
+      } as ReassignResult,
+      'Mariany Borges',
+      lookup,
+    );
+    expect(out.formatted).toBe('✅ 2 tarefas reatribuídas para Mariany Borges:\n\n• *P22.1* — A\n• *P22.2* — B');
+  });
+});
+
+// Codex hot-path gate: api_reassign is allowlisted in the tf-mcontrol FastAPI
+// subprocess, so the rich-card lookup MUST be gated off there to keep the exact
+// prior short-form API response. buildReassignLookup encodes that gate.
+describe('buildReassignLookup — tf-mcontrol subprocess gate', () => {
+  const fakeEngine = {
+    getTask: (id: string) =>
+      id === 'P22.1'
+        ? { parent_task_id: 'P22', due_date: '2026-04-30' }
+        : id === 'P22'
+          ? { title: 'Pesquisa TIC Governo 2025' }
+          : null,
+  };
+  afterEach(() => setVerbatimIds(false));
+
+  it('returns undefined in the tf-mcontrol subprocess (→ caller keeps the short form)', () => {
+    setVerbatimIds(true);
+    expect(buildReassignLookup(fakeEngine)).toBeUndefined();
+  });
+
+  it('in-session: resolves parent_task_title + due_date for the rich card', () => {
+    setVerbatimIds(false);
+    const lookup = buildReassignLookup(fakeEngine);
+    expect(lookup).toBeDefined();
+    expect(lookup!('P22.1')).toEqual({
+      parent_task_id: 'P22',
+      parent_task_title: 'Pesquisa TIC Governo 2025',
+      due_date: '2026-04-30',
+    });
+  });
+
+  it('in-session: null when the task is gone (→ short-form fallback)', () => {
+    setVerbatimIds(false);
+    expect(buildReassignLookup(fakeEngine)!('GONE')).toBeNull();
   });
 });

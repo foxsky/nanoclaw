@@ -474,13 +474,39 @@ function addMoveFormattedResult(result: MoveResult, action: MoveAction): MoveRes
   };
 }
 
-export function addReassignFormattedResult(result: ReassignResult, targetPerson: string): ReassignResult {
+export interface ReassignTaskInfo {
+  parent_task_id?: string | null;
+  parent_task_title?: string | null;
+  due_date?: string | null;
+}
+
+export function addReassignFormattedResult(
+  result: ReassignResult,
+  targetPerson: string,
+  lookupTask?: (taskId: string) => ReassignTaskInfo | null,
+): ReassignResult {
   if (!result.success || result.formatted || result.requires_confirmation) return result;
   const tasks = result.tasks_affected ?? [];
   if (tasks.length === 0) return result;
-  // BYTE-FAITHFUL mirror of v1 `formatReassignReply` (poll-loop.ts:2281)
-  // reachable branches — KEEP IN SYNC. emitMutationConfirmation emits
-  // this `formatted`, so it is the user-facing card and must match v1.
+  // Single task with a resolvable parent → v2-coherent RICH card (Phase-3
+  // Turn-37 richness gap). v1's reassign confirmation was LLM-composed (no
+  // deterministic source to byte-port), so this reuses v2's OWN create/update
+  // card vocabulary. Falls through to the short form below when there's no
+  // parent / no lookup, and never for multi-task.
+  if (tasks.length === 1 && lookupTask) {
+    const info = lookupTask(tasks[0].task_id);
+    const rich = buildReassignCard({
+      id: tasks[0].task_id,
+      title: tasks[0].title,
+      parentId: info?.parent_task_id,
+      parentTitle: info?.parent_task_title,
+      dueDate: info?.due_date,
+      assignee: targetPerson,
+    });
+    if (rich) return { ...result, formatted: rich };
+  }
+  // Short single / multi form — prior behavior; kept for no-parent + multi-task
+  // + lookup-less callers (e.g. tf-mcontrol, which has no WhatsApp emission anyway).
   return {
     ...result,
     formatted: tasks.length === 1
@@ -490,6 +516,63 @@ export function addReassignFormattedResult(result: ReassignResult, targetPerson:
           '',
           ...tasks.map((task) => `• *${task.task_id}* — ${task.title}`),
         ].join('\n'),
+  };
+}
+
+// v2-COHERENT rich reassign card (Phase-3 Turn-37 richness gap). NOT a v1
+// byte-port — v1's reassign confirmation was LLM-composed, no deterministic
+// source. Reuses v2's own create/update card vocabulary (SEP, 📁/📋 parent
+// tree, ⏰ Prazo dd/mm/yyyy) + the canonical assignee name. Returns null
+// without a resolvable parent so the caller falls back to the short form (no
+// fabrication for shapes lacking ground truth — same discipline as buildCreateCard).
+export function buildReassignCard(data: {
+  id?: unknown;
+  title?: unknown;
+  parentId?: unknown;
+  parentTitle?: unknown;
+  dueDate?: unknown;
+  assignee?: unknown;
+}): string | null {
+  const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+  const id = str(data.id);
+  const title = str(data.title);
+  const parentId = str(data.parentId);
+  const parentTitle = str(data.parentTitle);
+  const assignee = str(data.assignee);
+  if (!id || !title || !parentId || !parentTitle || !assignee) return null;
+  const lines = [
+    `✅ *${id}* reatribuída`,
+    '━━━━━━━━━━━━━━',
+    '',
+    `📁 *${parentId}* — ${parentTitle}`,
+    `   📋 *${id}* — ${title}`,
+    '',
+    `👤 *Para:* ${assignee}`,
+  ];
+  const due = str(data.dueDate);
+  if (due) {
+    const iso = parseIsoCalendarDate(due);
+    if (iso) lines.push(`⏰ Prazo: ${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`);
+  }
+  return lines.join('\n');
+}
+
+// The per-task parent + due_date resolver for the rich reassign card, GATED to
+// the in-session agent (Codex hot-path gate). api_reassign is allowlisted in the
+// tf-mcontrol FastAPI subprocess; there we return undefined so
+// addReassignFormattedResult keeps the EXACT prior short form (API response
+// contract unchanged — and no WhatsApp card is emitted there anyway). Mirrors
+// the isTaskflowSubprocess() gating used across the notification path. Reads
+// post-commit state — reassign moves neither the task's parent nor its due_date.
+export function buildReassignLookup(
+  engine: { getTask: (id: string) => { parent_task_id?: string | null; due_date?: string | null; title?: string } | null },
+): ((taskId: string) => ReassignTaskInfo | null) | undefined {
+  if (isTaskflowSubprocess()) return undefined;
+  return (taskId: string): ReassignTaskInfo | null => {
+    const t = engine.getTask(taskId);
+    if (!t) return null;
+    const parent = t.parent_task_id ? engine.getTask(t.parent_task_id) : null;
+    return { parent_task_id: t.parent_task_id, parent_task_title: parent?.title, due_date: t.due_date };
   };
 }
 
@@ -1675,7 +1758,11 @@ export const apiReassignTool: McpToolDefinition = {
       // to the board_people display name before formatting the v1 card.
       // Codex hot-path gate P1: raw input drift (e.g. 'lucas' → 'Lucas').
       const canonicalTarget = engine.resolvePerson(targetPerson)?.name ?? targetPerson;
-      return finalizeMutationResult(addReassignFormattedResult(result, canonicalTarget));
+      // Rich single-task card (Phase-3 Turn-37) via a parent + due_date lookup,
+      // gated to the in-session agent — see buildReassignLookup.
+      return finalizeMutationResult(
+        addReassignFormattedResult(result, canonicalTarget, buildReassignLookup(engine)),
+      );
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });
