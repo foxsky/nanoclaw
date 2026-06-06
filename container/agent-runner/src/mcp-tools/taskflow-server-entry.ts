@@ -38,9 +38,9 @@ import { startMcpServer, type ToolArgGuard } from './server.js';
  * not pre-authorize unbuilt names, or a future same-named tool would
  * auto-expose). Each new board mutation adds its name here in the same
  * commit that lands the tool. The remaining tools `taskflow-api-mutate.ts`
- * registers but does NOT allowlist — `api_admin`, `api_move`, `api_undo`,
+ * registers but does NOT allowlist — `api_admin`, `api_undo`,
  * `api_report`, `api_dependency` — stay WhatsApp-agent orchestration,
- * deliberately excluded. (reassign/hierarchy/create_task/update_task/
+ * deliberately excluded. (move/reassign/hierarchy/create_task/update_task/
  * create_meeting_task/reschedule_meeting/note_meeting/query were added to
  * the allowlist below in #385 §6; api_query is additionally sub-mode-gated.)
  */

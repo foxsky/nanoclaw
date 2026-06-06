@@ -11397,7 +11397,9 @@ export class TaskflowEngine {
 
   /**
    * Build a compact board context summary ranked by semantic similarity
-   * to the user's message. Used to inject a preamble into the agent prompt.
+   * to the user's message. NOTE: defined but NOT yet wired into the agent
+   * prompt — no caller injects it (the "embedding-ranked context preamble"
+   * SKILL.md lists as not-ported from v1). Kept for the v2.x wiring.
    * @param queryVector — pre-embedded user message (Float32Array)
    * @param reader — EmbeddingReader instance (caller owns lifecycle)
    */

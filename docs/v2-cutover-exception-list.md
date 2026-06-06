@@ -367,6 +367,21 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 
 ---
 
+### EX-016: First-interaction Welcome Check re-homed (agent-prompt → host-eager provisioning)
+
+- **Category:** tool-surface-change
+- **Source:** V1→V2 conformity audit (workflow `wrjoa6gyg`, 2026-06-05) + Codex gpt-5.5/xhigh review. Prior `wudrar8os` audit (2026-06-03) already deemed it intentional ("Welcome Check re-homed host-eager, critic falsified as a gap").
+- **Surfaced:** 2026-06-05
+- **v1 behavior:** the per-board CLAUDE.md carried a `## Welcome Check` section instructing the agent, on the FIRST interaction in a new session, to `SELECT welcome_sent FROM board_runtime_config`, send a brief welcome if `0`, then `UPDATE welcome_sent = 1`.
+- **v2 behavior:** the migrator (`src/modules/taskflow/migrate-board-claudemd.ts:247`) STRIPS the `## Welcome Check` section from every board's CLAUDE.md (consistent with EX-010 — no agent raw SQL). Welcome is now sent HOST-EAGERLY by provisioning for NEW boards. Migrated boards (already welcomed in v1 → `welcome_sent = 1`) are intentionally not re-welcomed.
+- **Operator-visible impact:** identical for new boards (host sends the welcome) and for already-welcomed migrated boards (no double-welcome). NARROW edge: a board whose v1 welcome FAILED (`welcome_sent` still `0`) and then migrates is welcomed by neither the (stripped) agent prompt nor provisioning (which only welcomes new boards). Low frequency.
+- **Rationale for acceptance:** Accept. Removing the per-turn raw-SQL welcome check from the agent prompt is consistent with the typed-surface direction (EX-010); host-eager welcome is deterministic and not prompt-dependent.
+- **Mitigation / followup:** at cutover, scan the migrated DB — `SELECT board_id FROM board_runtime_config WHERE welcome_sent = 0` — and welcome any survivors manually (expected: none / a handful).
+- **Status:** documented 2026-06-05 (intentional change; previously only in the audit memory, now formalized here so "V2 conforms except documented exceptions" is precise).
+- **Signoff:** operator confirmation recommended for the failed-welcome-on-migration edge.
+
+---
+
 ## v2 code-quality findings (not v1 divergences — post-cutover follow-ups)
 
 Surfaced by the 2026-05-28 independent review of `0dec5540` (three reviewers + Codex authorship). These are NOT v1→v2 behavioral divergences — they don't fit the five categories — but recording them here keeps the signoff artifact honest. None blocks cutover on the current Fortaleza-TZ host; each needs a tracked follow-up.
