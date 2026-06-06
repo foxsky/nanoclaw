@@ -4388,10 +4388,14 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // Format messages: passthrough commands get raw text (only if the
     // provider natively handles slash commands), others get XML.
     const prompt = formatMessagesWithCommands(keep, config.provider.supportsNativeSlashCommands);
-    // Context preamble (v1 parity, index.ts:716): prepend an embedding-ranked
-    // board-context summary to this turn's prompt when embeddings are configured.
-    // No-op + fail-soft otherwise — never blocks or alters the turn on failure.
-    const promptWithContext = await maybePrependContextPreamble(prompt, keep);
+    // Context preamble (v1 parity, index.ts:702): prepend an embedding-ranked
+    // board-context summary to this turn's prompt when the taskflow embeddings
+    // feeder is configured. Fail-soft + no-op otherwise; the embed is capped at a
+    // short timeout so a slow Ollama can't stall the turn. Skip native slash-command
+    // turns — the command must stay the first input or the SDK won't dispatch it.
+    const promptWithContext = promptHasNativeSlashCommand(keep, config.provider.supportsNativeSlashCommands)
+      ? prompt
+      : await maybePrependContextPreamble(prompt);
 
     log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
 
@@ -4500,37 +4504,58 @@ function formatMessagesWithCommands(messages: MessageInRow[], nativeSlashCommand
   return parts.join('\n\n');
 }
 
-export interface ContextPreambleDeps {
-  embed?: (text: string) => Promise<Float32Array | null>;
-  buildSummary?: (vector: Float32Array) => string | null;
+/**
+ * True when this turn's prompt carries a native slash command (`/compact`, `/cost`,
+ * …) that `formatMessagesWithCommands` emitted as raw text. Such commands only
+ * dispatch as the FIRST input of a query (see the poll loop's pending-command
+ * guard); prepending a context preamble would turn them into plain text. Uses the
+ * same `isRunnerCommand` predicate the formatter does, so the two never diverge.
+ */
+export function promptHasNativeSlashCommand(
+  messages: MessageInRow[],
+  supportsNativeSlashCommands: boolean,
+): boolean {
+  return supportsNativeSlashCommands && messages.some(isRunnerCommand);
 }
 
-/**
- * v1-parity "embedding-ranked context preamble" (v1 index.ts:716). When embeddings
- * are configured (Ollama), embed this turn's user text, rank the board's tasks by
- * similarity, and PREPEND a compact `[Board context: …]` summary to the USER prompt
- * — NOT the system prompt, which holds the once-per-session recall addendum kept
- * cache-stable (index.ts). Gated + fail-soft: not a taskflow board, embeddings off
- * (embedText → null), no user text, no relevant tasks, or ANY error → the prompt is
- * returned unchanged. The `deps` seam keeps it unit-testable without Ollama/the db.
- */
-export async function maybePrependContextPreamble(
-  prompt: string,
-  messages: MessageInRow[],
-  deps: ContextPreambleDeps = {},
-): Promise<string> {
-  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
-  if (!boardId) return prompt;
-  try {
-    const userText = messages
-      .map(parseSingleChat)
-      .filter((m): m is { sender: string; text: string } => !!m && !!m.text)
-      .map((m) => m.text)
-      .join('\n')
-      .trim();
-    if (!userText) return prompt;
+export interface ContextPreambleDeps {
+  /** Query embedder seam — same signature as `embedText`, so a test can assert the
+   *  taskflow feeder model/url is what's passed (the bug class this guards against). */
+  embed?: (text: string, o: { url?: string; model?: string; timeoutMs?: number }) => Promise<Float32Array | null>;
+  buildSummary?: (vector: Float32Array) => string | null;
+  env?: NodeJS.ProcessEnv;
+}
 
-    const queryVector = await (deps.embed ?? embedText)(userText);
+// v1 capped its host-side query-vector embed at 2s (src/container-runner.ts). This
+// runs on every turn before the provider call, so the same short cap is load-bearing:
+// a slow/down Ollama must not stall the reply.
+const CONTEXT_PREAMBLE_EMBED_TIMEOUT_MS = 2000;
+
+/**
+ * v1-parity "embedding-ranked context preamble" (v1 index.ts:702). Embed the prompt
+ * that's about to be sent to the provider, rank the board's tasks by similarity, and
+ * PREPEND a compact `[Board context: …]` summary to the USER prompt — NOT the system
+ * prompt, which holds the cache-stable once-per-session recall addendum.
+ *
+ * The query is embedded with the TASKFLOW feeder config (`NANOCLAW_TASKFLOW_EMBED_*`,
+ * what the host feeder used to index the task vectors), NOT the memory-layer namespace
+ * — else the query and task vectors are incomparable. Mirrors `maybeSemanticSearch`.
+ *
+ * Gated + fail-soft, like v1: not a taskflow board, feeder config absent, embeddings
+ * down (embed → null), empty prompt, no relevant tasks, or ANY error → prompt returned
+ * unchanged. The engine is opened READ-ONLY (the constructor otherwise runs schema
+ * writes). `deps` keeps it unit-testable without Ollama/the db.
+ */
+export async function maybePrependContextPreamble(prompt: string, deps: ContextPreambleDeps = {}): Promise<string> {
+  const env = deps.env ?? process.env;
+  const boardId = env.NANOCLAW_TASKFLOW_BOARD_ID;
+  const model = env.NANOCLAW_TASKFLOW_EMBED_MODEL;
+  const url = env.NANOCLAW_TASKFLOW_EMBED_URL;
+  // Feeder off (no taskflow embed config) → no preamble, exactly like v1.
+  if (!boardId || !model || !url || !prompt.trim()) return prompt;
+  try {
+    const embed = deps.embed ?? embedText;
+    const queryVector = await embed(prompt, { url, model, timeoutMs: CONTEXT_PREAMBLE_EMBED_TIMEOUT_MS });
     if (!queryVector) return prompt; // embeddings disabled / failed → no preamble (v1 parity)
 
     let preamble: string | null;
@@ -4540,7 +4565,8 @@ export async function maybePrependContextPreamble(
       const { EmbeddingReader } = await import('./embedding-reader.js');
       const reader = new EmbeddingReader('/workspace/embeddings/embeddings.db');
       try {
-        preamble = new TaskflowEngine(getTaskflowDb(), boardId).buildContextSummary(queryVector, reader);
+        const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
+        preamble = engine.buildContextSummary(queryVector, reader);
       } finally {
         reader.close();
       }

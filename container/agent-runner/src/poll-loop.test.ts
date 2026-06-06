@@ -51,6 +51,7 @@ import {
   formatFortalezaDateTimePt,
   fortalezaNaiveToUtcIso,
   maybePrependContextPreamble,
+  promptHasNativeSlashCommand,
   taskflowProjectNoteUpdateCommand,
   taskflowOrgDirectoryQuestionCommand,
   taskflowOrgMeetingDraftPrompt,
@@ -510,64 +511,99 @@ describe('TaskFlow deterministic confirmation guards', () => {
     expect(formatFortalezaDateTimePt(fortalezaNaiveToUtcIso('2026-03-26T08:00:00'))).toBe('26/03/2026 às 08:00');
   });
 
-  // Context preamble (v1 parity, index.ts:716): embedding-ranked board-context
-  // prepended to the USER prompt. Gated + fail-soft. Deps seam avoids real Ollama/db.
-  const ctxMsg = [
-    { kind: 'chat', content: JSON.stringify({ sender: 'Thiago', text: 'qual o status do P11?' }) },
-  ] as Parameters<typeof maybePrependContextPreamble>[1];
+  // Context preamble (v1 parity, index.ts:702): embedding-ranked board-context
+  // prepended to the prompt. Must embed the query with the TASKFLOW feeder config
+  // (so the query vector is comparable to the indexed task vectors), cap the embed
+  // at v1's 2s, and fire only when that config is present. `env` is injected to
+  // avoid mutating process.env; `embed`/`buildSummary` avoid real Ollama/the db.
+  const tfEmbedEnv = {
+    NANOCLAW_TASKFLOW_BOARD_ID: 'board-ctx',
+    NANOCLAW_TASKFLOW_EMBED_MODEL: 'bge-m3',
+    NANOCLAW_TASKFLOW_EMBED_URL: 'http://h:11434',
+  } as NodeJS.ProcessEnv;
   const f32 = new Float32Array([0.1, 0.2, 0.3]);
 
   it('context preamble: unchanged when not a taskflow board', async () => {
-    const prev = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
-    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
-    try {
-      expect(
-        await maybePrependContextPreamble('PROMPT', ctxMsg, { embed: async () => f32, buildSummary: () => '[ctx]' }),
-      ).toBe('PROMPT');
-    } finally {
-      if (prev !== undefined) process.env.NANOCLAW_TASKFLOW_BOARD_ID = prev;
-    }
-  });
-
-  it('context preamble: unchanged when embeddings are disabled (embed → null) — v1 parity', async () => {
-    const prev = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
-    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-ctx';
-    try {
-      expect(
-        await maybePrependContextPreamble('PROMPT', ctxMsg, { embed: async () => null, buildSummary: () => '[ctx]' }),
-      ).toBe('PROMPT');
-    } finally {
-      if (prev === undefined) delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
-      else process.env.NANOCLAW_TASKFLOW_BOARD_ID = prev;
-    }
-  });
-
-  it('context preamble: prepends the board-context summary to the user prompt when embeddings yield one', async () => {
-    const prev = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
-    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-ctx';
-    try {
-      const out = await maybePrependContextPreamble('PROMPT', ctxMsg, {
+    expect(
+      await maybePrependContextPreamble('PROMPT', {
+        env: {} as NodeJS.ProcessEnv,
         embed: async () => f32,
-        buildSummary: (v) => `[Board context from ${v.length}d]`,
-      });
-      expect(out).toBe('[Board context from 3d]\n\nPROMPT');
-    } finally {
-      if (prev === undefined) delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
-      else process.env.NANOCLAW_TASKFLOW_BOARD_ID = prev;
-    }
+        buildSummary: () => '[ctx]',
+      }),
+    ).toBe('PROMPT');
+  });
+
+  it('context preamble: embeds with the TASKFLOW feeder model/url (not the memory namespace) at a 2s cap, and prepends', async () => {
+    let seen: { text: string; opts: { url?: string; model?: string; timeoutMs?: number } } | undefined;
+    const out = await maybePrependContextPreamble('what is the P11 status?', {
+      env: tfEmbedEnv,
+      embed: async (text, opts) => {
+        seen = { text, opts };
+        return f32;
+      },
+      buildSummary: (v) => `[Board context from ${v.length}d]`,
+    });
+    // The query MUST be embedded with the taskflow feeder's model/host — else the
+    // query vector and the indexed task vectors live in different spaces.
+    expect(seen?.opts.model).toBe('bge-m3');
+    expect(seen?.opts.url).toBe('http://h:11434');
+    expect(seen?.opts.timeoutMs).toBe(2000);
+    // v1 embedded the assembled prompt; embed exactly what goes to the provider.
+    expect(seen?.text).toBe('what is the P11 status?');
+    expect(out).toBe('[Board context from 3d]\n\nwhat is the P11 status?');
+  });
+
+  it('context preamble: no-op when the taskflow feeder config is absent, even if MEMORY embeddings are set', async () => {
+    let called = false;
+    const out = await maybePrependContextPreamble('PROMPT', {
+      env: {
+        NANOCLAW_TASKFLOW_BOARD_ID: 'board-ctx',
+        NANOCLAW_MEMORY_EMBED_MODEL: 'bge-m3',
+        NANOCLAW_MEMORY_EMBED_URL: 'http://h:11434',
+      } as NodeJS.ProcessEnv,
+      embed: async () => {
+        called = true;
+        return f32;
+      },
+      buildSummary: () => '[ctx]',
+    });
+    expect(called).toBe(false); // must NOT fall back to the memory namespace
+    expect(out).toBe('PROMPT');
+  });
+
+  it('context preamble: unchanged when embeddings are down (embed → null) — v1 parity', async () => {
+    expect(
+      await maybePrependContextPreamble('PROMPT', {
+        env: tfEmbedEnv,
+        embed: async () => null,
+        buildSummary: () => '[ctx]',
+      }),
+    ).toBe('PROMPT');
   });
 
   it('context preamble: unchanged when no relevant tasks (buildSummary → null)', async () => {
-    const prev = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
-    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-ctx';
-    try {
-      expect(
-        await maybePrependContextPreamble('PROMPT', ctxMsg, { embed: async () => f32, buildSummary: () => null }),
-      ).toBe('PROMPT');
-    } finally {
-      if (prev === undefined) delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
-      else process.env.NANOCLAW_TASKFLOW_BOARD_ID = prev;
-    }
+    expect(
+      await maybePrependContextPreamble('PROMPT', {
+        env: tfEmbedEnv,
+        embed: async () => f32,
+        buildSummary: () => null,
+      }),
+    ).toBe('PROMPT');
+  });
+
+  // A native slash command (/compact, /cost, …) only dispatches when it's the FIRST
+  // input of the query; prepending a context preamble turns it into plain text and
+  // the SDK never runs it. The preamble must be skipped for those turns.
+  it('context preamble: skipped for native slash-command turns so /compact still dispatches', () => {
+    const cmd = [
+      { kind: 'chat', content: JSON.stringify({ text: '/compact' }) },
+    ] as Parameters<typeof promptHasNativeSlashCommand>[0];
+    expect(promptHasNativeSlashCommand(cmd, true)).toBe(true); // native provider ⇒ skip preamble
+    expect(promptHasNativeSlashCommand(cmd, false)).toBe(false); // non-native XML-wraps it anyway
+    const normal = [
+      { kind: 'chat', content: JSON.stringify({ text: 'status do P11?' }) },
+    ] as Parameters<typeof promptHasNativeSlashCommand>[0];
+    expect(promptHasNativeSlashCommand(normal, true)).toBe(false); // ordinary turn ⇒ preamble allowed
   });
 
   it('detects project note updates without an explicit task id', () => {
