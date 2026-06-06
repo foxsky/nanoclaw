@@ -36,6 +36,7 @@ import { appendToolEvents, type ToolEvent } from './providers/claude-tool-captur
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 import { TaskflowEngine, normalizePhone, type ReassignResult } from './taskflow-engine.js';
 import { applyRunnerGate, isTfRunnerRow } from './runner-gate-apply.js';
+import { embedText } from './memory-embed.js';
 import { TIMEZONE } from './timezone.js';
 
 const POLL_INTERVAL_MS = 1000;
@@ -4387,11 +4388,15 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // Format messages: passthrough commands get raw text (only if the
     // provider natively handles slash commands), others get XML.
     const prompt = formatMessagesWithCommands(keep, config.provider.supportsNativeSlashCommands);
+    // Context preamble (v1 parity, index.ts:716): prepend an embedding-ranked
+    // board-context summary to this turn's prompt when embeddings are configured.
+    // No-op + fail-soft otherwise — never blocks or alters the turn on failure.
+    const promptWithContext = await maybePrependContextPreamble(prompt, keep);
 
     log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
 
     const query = config.provider.query({
-      prompt,
+      prompt: promptWithContext,
       continuation,
       cwd: config.cwd,
       systemContext: config.systemContext,
@@ -4493,6 +4498,61 @@ function formatMessagesWithCommands(messages: MessageInRow[], nativeSlashCommand
   }
 
   return parts.join('\n\n');
+}
+
+export interface ContextPreambleDeps {
+  embed?: (text: string) => Promise<Float32Array | null>;
+  buildSummary?: (vector: Float32Array) => string | null;
+}
+
+/**
+ * v1-parity "embedding-ranked context preamble" (v1 index.ts:716). When embeddings
+ * are configured (Ollama), embed this turn's user text, rank the board's tasks by
+ * similarity, and PREPEND a compact `[Board context: …]` summary to the USER prompt
+ * — NOT the system prompt, which holds the once-per-session recall addendum kept
+ * cache-stable (index.ts). Gated + fail-soft: not a taskflow board, embeddings off
+ * (embedText → null), no user text, no relevant tasks, or ANY error → the prompt is
+ * returned unchanged. The `deps` seam keeps it unit-testable without Ollama/the db.
+ */
+export async function maybePrependContextPreamble(
+  prompt: string,
+  messages: MessageInRow[],
+  deps: ContextPreambleDeps = {},
+): Promise<string> {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return prompt;
+  try {
+    const userText = messages
+      .map(parseSingleChat)
+      .filter((m): m is { sender: string; text: string } => !!m && !!m.text)
+      .map((m) => m.text)
+      .join('\n')
+      .trim();
+    if (!userText) return prompt;
+
+    const queryVector = await (deps.embed ?? embedText)(userText);
+    if (!queryVector) return prompt; // embeddings disabled / failed → no preamble (v1 parity)
+
+    let preamble: string | null;
+    if (deps.buildSummary) {
+      preamble = deps.buildSummary(queryVector);
+    } else {
+      const { EmbeddingReader } = await import('./embedding-reader.js');
+      const reader = new EmbeddingReader('/workspace/embeddings/embeddings.db');
+      try {
+        preamble = new TaskflowEngine(getTaskflowDb(), boardId).buildContextSummary(queryVector, reader);
+      } finally {
+        reader.close();
+      }
+    }
+    if (preamble) {
+      log(`Context preamble injected (${preamble.length} chars)`);
+      return `${preamble}\n\n${prompt}`;
+    }
+  } catch (err) {
+    log(`Context preamble skipped: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return prompt;
 }
 
 interface QueryResult {

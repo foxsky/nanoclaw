@@ -50,6 +50,7 @@ import {
   taskflowBoardPersonPlacementCommand,
   formatFortalezaDateTimePt,
   fortalezaNaiveToUtcIso,
+  maybePrependContextPreamble,
   taskflowProjectNoteUpdateCommand,
   taskflowOrgDirectoryQuestionCommand,
   taskflowOrgMeetingDraftPrompt,
@@ -507,6 +508,66 @@ describe('TaskFlow deterministic confirmation guards', () => {
     // routing it through fortalezaNaiveToUtcIso first makes the (UTC-input, host-independent)
     // formatter render 08:00 regardless of the host TZ — byte-identical on a Fortaleza host.
     expect(formatFortalezaDateTimePt(fortalezaNaiveToUtcIso('2026-03-26T08:00:00'))).toBe('26/03/2026 às 08:00');
+  });
+
+  // Context preamble (v1 parity, index.ts:716): embedding-ranked board-context
+  // prepended to the USER prompt. Gated + fail-soft. Deps seam avoids real Ollama/db.
+  const ctxMsg = [
+    { kind: 'chat', content: JSON.stringify({ sender: 'Thiago', text: 'qual o status do P11?' }) },
+  ] as Parameters<typeof maybePrependContextPreamble>[1];
+  const f32 = new Float32Array([0.1, 0.2, 0.3]);
+
+  it('context preamble: unchanged when not a taskflow board', async () => {
+    const prev = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    try {
+      expect(
+        await maybePrependContextPreamble('PROMPT', ctxMsg, { embed: async () => f32, buildSummary: () => '[ctx]' }),
+      ).toBe('PROMPT');
+    } finally {
+      if (prev !== undefined) process.env.NANOCLAW_TASKFLOW_BOARD_ID = prev;
+    }
+  });
+
+  it('context preamble: unchanged when embeddings are disabled (embed → null) — v1 parity', async () => {
+    const prev = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-ctx';
+    try {
+      expect(
+        await maybePrependContextPreamble('PROMPT', ctxMsg, { embed: async () => null, buildSummary: () => '[ctx]' }),
+      ).toBe('PROMPT');
+    } finally {
+      if (prev === undefined) delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+      else process.env.NANOCLAW_TASKFLOW_BOARD_ID = prev;
+    }
+  });
+
+  it('context preamble: prepends the board-context summary to the user prompt when embeddings yield one', async () => {
+    const prev = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-ctx';
+    try {
+      const out = await maybePrependContextPreamble('PROMPT', ctxMsg, {
+        embed: async () => f32,
+        buildSummary: (v) => `[Board context from ${v.length}d]`,
+      });
+      expect(out).toBe('[Board context from 3d]\n\nPROMPT');
+    } finally {
+      if (prev === undefined) delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+      else process.env.NANOCLAW_TASKFLOW_BOARD_ID = prev;
+    }
+  });
+
+  it('context preamble: unchanged when no relevant tasks (buildSummary → null)', async () => {
+    const prev = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-ctx';
+    try {
+      expect(
+        await maybePrependContextPreamble('PROMPT', ctxMsg, { embed: async () => f32, buildSummary: () => null }),
+      ).toBe('PROMPT');
+    } finally {
+      if (prev === undefined) delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+      else process.env.NANOCLAW_TASKFLOW_BOARD_ID = prev;
+    }
   });
 
   it('detects project note updates without an explicit task id', () => {
