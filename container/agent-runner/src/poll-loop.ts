@@ -2069,7 +2069,7 @@ function nextWeekdayUtcIso(contextDate: string, weekdayName: string, hour: numbe
   return target.toISOString();
 }
 
-function formatFortalezaDateTimePt(iso: string): string {
+export function formatFortalezaDateTimePt(iso: string): string {
   const date = new Date(iso);
   const local = new Date(date.getTime() - 3 * 60 * 60 * 1000);
   const day = String(local.getUTCDate()).padStart(2, '0');
@@ -2089,6 +2089,22 @@ function formatFortalezaMeetingWhen(iso: string): string {
   const hour = String(local.getUTCHours()).padStart(2, '0');
   const minute = String(local.getUTCMinutes()).padStart(2, '0');
   return `${weekday}, ${day}/${month} às ${hour}h${minute === '00' ? '' : minute}`;
+}
+
+/**
+ * FU-1: the org-meeting create/draft/forward flow carries a NAIVE Fortaleza-local
+ * scheduled time (`scheduledAtLocalIso`, no TZ designator). The two formatters above
+ * do `new Date(iso) - 3h`, which renders the correct Fortaleza wall-clock ONLY when
+ * `iso` is a UTC string (`new Date('…Z')` is host-independent) OR the host is in
+ * Fortaleza; for a naive string on a non-Fortaleza host, `new Date()` uses the host
+ * zone and the displayed hour is 3h off. The engine STORES the UTC value (so
+ * meetingTaskSummary + reschedule already pass UTC) — only the confirmation cards
+ * format the pre-engine naive value. Interpret it as Fortaleza (GMT-3, no DST) and
+ * emit a UTC iso so the formatters render the right wall-clock on any host
+ * (byte-identical on a Fortaleza host).
+ */
+export function fortalezaNaiveToUtcIso(naive: string): string {
+  return new Date(`${naive}-03:00`).toISOString();
 }
 
 function meetingTaskSummary(data: unknown, taskId: string): { title: string; scheduledAt: string | null; formatted: string } {
@@ -2222,7 +2238,7 @@ function handleTaskflowCreateMeeting(
   }
   writeReply(
     routing,
-    `✅ *Reunião criada*\n━━━━━━━━━━━━━━\n\n*${taskId}* — ${action.title}${parentLine}\n📅 *Data:* ${formatFortalezaDateTimePt(action.scheduledAt)}\n⏭️ *Coluna:* Próximas Ações`,
+    `✅ *Reunião criada*\n━━━━━━━━━━━━━━\n\n*${taskId}* — ${action.title}${parentLine}\n📅 *Data:* ${formatFortalezaDateTimePt(fortalezaNaiveToUtcIso(action.scheduledAt))}\n⏭️ *Coluna:* Próximas Ações`,
   );
   return true;
 }
@@ -2305,7 +2321,7 @@ function handleTaskflowProcessMinutes(
 }
 
 function formatTaskflowOrgMeetingDraftPrompt(action: TaskflowOrgMeetingDraftPrompt): string {
-  const when = formatFortalezaMeetingWhen(action.scheduledAt).replace(/(\d{2})h$/, '$1:00');
+  const when = formatFortalezaMeetingWhen(fortalezaNaiveToUtcIso(action.scheduledAt)).replace(/(\d{2})h$/, '$1:00');
   const location = action.location ? `\n• *Local/contexto:* ${action.location}` : '';
   return [
     `${action.participantName} está na organização e tem quadro próprio. Posso criar a reunião sem adicioná-la diretamente neste quadro e encaminhar os detalhes para o quadro dela?`,
@@ -2581,7 +2597,7 @@ function handleTaskflowOrgMeetingCreateForwardConfirmation(
       ? createResult.id
       : 'reunião';
   const participantName = destination.dest.displayName || action.participantName;
-  const when = formatFortalezaMeetingWhen(action.scheduledAt);
+  const when = formatFortalezaMeetingWhen(fortalezaNaiveToUtcIso(action.scheduledAt));
   const forwardText = `Olá, ${participantName}! ${sender} pediu para encaminhar os detalhes desta reunião:\n\n📅 *${action.title}*\n${when}`;
   sendToDestination(destination.dest, forwardText, routing);
   appendMcpEquivalentToolCapture('send_message', { to: destination.dest.name, text: forwardText }, { success: true });
@@ -2598,7 +2614,7 @@ function handleTaskflowOrgMeetingCreateForwardConfirmation(
   const phone = destination.phoneMasked ? ` (${destination.phoneMasked})` : '';
   writeReply(
     routing,
-    `✅ *Reunião criada*\n━━━━━━━━━━━━━━\n\n*${taskId}* — ${action.title}\n📅 ${formatFortalezaDateTimePt(action.scheduledAt)}\n\n${participantName} tem quadro próprio na organização, então não pude adicioná-la diretamente como participante aqui — enviei o convite para o quadro dela${phone}. Uma nota foi registrada na reunião.`,
+    `✅ *Reunião criada*\n━━━━━━━━━━━━━━\n\n*${taskId}* — ${action.title}\n📅 ${formatFortalezaDateTimePt(fortalezaNaiveToUtcIso(action.scheduledAt))}\n\n${participantName} tem quadro próprio na organização, então não pude adicioná-la diretamente como participante aqui — enviei o convite para o quadro dela${phone}. Uma nota foi registrada na reunião.`,
   );
   return true;
 }

@@ -48,6 +48,8 @@ import {
   taskflowPersonReviewCommand,
   taskflowPersonTasksCommand,
   taskflowBoardPersonPlacementCommand,
+  formatFortalezaDateTimePt,
+  fortalezaNaiveToUtcIso,
   taskflowProjectNoteUpdateCommand,
   taskflowOrgDirectoryQuestionCommand,
   taskflowOrgMeetingDraftPrompt,
@@ -490,6 +492,21 @@ describe('TaskFlow deterministic confirmation guards', () => {
         true,
       ),
     ).toEqual({ placements: [{ personName: 'Edilson', boardHint: 'SM-SETD-SECTI' }] });
+  });
+
+  it('FU-1: interprets a naive Fortaleza-local meeting time as GMT-3 → UTC iso (host-independent)', () => {
+    // scheduledAtLocalIso produces e.g. "2026-03-26T08:00:00" meaning 08:00 Fortaleza.
+    // Fortaleza is GMT-3 (no DST), so 08:00 local == 11:00 UTC — and the explicit -03:00
+    // offset makes this independent of the host's TZ (the bug was new Date(naive) using
+    // the host zone, so the org-meeting confirmation hour was 3h off under TZ=UTC).
+    expect(fortalezaNaiveToUtcIso('2026-03-26T08:00:00')).toBe('2026-03-26T11:00:00.000Z');
+  });
+
+  it('FU-1: org-meeting confirmation shows the right wall-clock on any host (naive → UTC → format)', () => {
+    // The create-confirmation cards format action.scheduledAt (the pre-engine naive value);
+    // routing it through fortalezaNaiveToUtcIso first makes the (UTC-input, host-independent)
+    // formatter render 08:00 regardless of the host TZ — byte-identical on a Fortaleza host.
+    expect(formatFortalezaDateTimePt(fortalezaNaiveToUtcIso('2026-03-26T08:00:00'))).toBe('26/03/2026 às 08:00');
   });
 
   it('detects project note updates without an explicit task id', () => {
