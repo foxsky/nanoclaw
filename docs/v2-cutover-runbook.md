@@ -162,6 +162,16 @@ pnpm exec tsx scripts/q.ts data/taskflow/taskflow.db "SELECT (SELECT count(*) FR
 
 **Pass criteria — the authoritative gate is the `--apply` run itself:** it prints `APPLIED mariany->mariany-borges: {...}` and does **not** throw `merge aborted (rolled back)`. The merge rewrites both plain (`"mariany"`) and escaped (`\"mariany\"`, JSON-serialized-as-string inside snapshots/archive — the live snapshot has 4) refs; its fail-loud residual scan is **depth-agnostic** (strips the keeper, then fails on any surviving `mariany` substring at any escaping depth) and covers **every** person-ref column (board_people, board_admins, boards.owner_person_id, tasks.*, archive.*, task_history.*, child_board_registrations, subtask_requests, attachment_audit_log, meeting_external_participants, people), rolling back rather than reporting a false success. The hand-written post-check above is a redundant spot-check on the four highest-volume columns only — convenient, not exhaustive; trust the script's scan, not it. The same run also DETECTS and flags 6b + 6c (it does not auto-fix them).
 
+### 6a.1. Welcome Check re-homing — scan migrated boards (EX-016)
+
+V2 sends the first-interaction welcome HOST-EAGERLY at provisioning for NEW boards and the migrator STRIPS the v1 agent-prompt `## Welcome Check` from migrated boards. Already-welcomed boards (`welcome_sent = 1`) need nothing; the only edge is a board whose v1 welcome FAILED (`welcome_sent` still `0`) and then migrated — it is welcomed by neither path. Scan + manually welcome any survivors (expected: none / a handful). Non-blocking for the canary.
+
+```bash
+pnpm exec tsx scripts/q.ts data/taskflow/taskflow.db "SELECT board_id FROM board_runtime_config WHERE welcome_sent = 0"   # expect empty
+```
+
+For each row returned, send a brief welcome from that board's chat (or set `welcome_sent = 1` if the board is intentionally silent).
+
 ### 6b. Sanunciel orphan re-provision — manual, live agent (EX-014)
 
 `person_id=sanunciel` ("Estagiário Computação") is registered on `board-seci-taskflow` but owns no child board; his 2 tasks (`P16.1`, `P16.2`) sit on the parent with `child_exec_enabled=0`. **SQL cannot create his board** (it needs a real WhatsApp group). Post-cutover, from the **SECI board chat**, ask the agent to provision his child board — you must supply his **division/sigla** (the board is named after the division, never the person). Once it exists, delegate `P16.1`/`P16.2` to it via the agent's reassign / child-exec flow. Verify:

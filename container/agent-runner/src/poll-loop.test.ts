@@ -474,6 +474,24 @@ describe('TaskFlow deterministic confirmation guards', () => {
     });
   });
 
+  it('stops the sector hint before a trailing shared-role word — no separator (FU-2)', () => {
+    // "<board> também" without a comma separator must capture the board hint WITHOUT
+    // swallowing "também": the i-flagged hint class previously ate the lowercase
+    // shared-role word (lazy quantifier ran to end-of-string), breaking board
+    // resolution. The comma-separated form already worked.
+    expect(
+      taskflowBoardPersonPlacementCommand(
+        [
+          {
+            kind: 'chat',
+            content: JSON.stringify({ sender: 'Thiago Carvalho', text: 'Coloca o Edilson no setor SM-SETD-SECTI também' }),
+          },
+        ],
+        true,
+      ),
+    ).toEqual({ placements: [{ personName: 'Edilson', boardHint: 'SM-SETD-SECTI' }] });
+  });
+
   it('detects project note updates without an explicit task id', () => {
     expect(taskflowProjectNoteUpdateCommand(
       [{ kind: 'chat', content: JSON.stringify({ sender: 'Thiago Carvalho', text: 'Na sexta, faremos a migração dos Novos Sites' }) }],

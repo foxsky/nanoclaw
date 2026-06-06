@@ -148,6 +148,12 @@ describe('api_update_simple_task MCP tool', () => {
       .prepare(`SELECT due_date FROM tasks WHERE board_id = ? AND id = 'P11.11'`)
       .get(parentBoardId) as { due_date: string } | null;
     expect(row?.due_date).toBe('2026-04-24');
+    // #403: the cross-parent field-only path must route engine.update()'s
+    // notifications through the dispatch finalizer (normalize → enqueue → dispatch)
+    // rather than dropping them. The finalizer surfaces normalized notification_events
+    // on the response; before the fix the raw engine result had no such field, so the
+    // parent-board assignee was silently not notified (unlike the same-board path + V1).
+    expect(Array.isArray(result.notification_events)).toBe(true);
   });
 
   it('returns conflict when moving to done with close_approval required', async () => {

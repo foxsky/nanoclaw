@@ -317,7 +317,11 @@ const ORG_DIRECTORY_RE = /^\s*quais\s+(?:s[aã]o\s+)?(?:os\s+|as\s+)?(setores|ca
 const ORG_PERSON_FOLLOWUP_RE = /^\s*e\s+([\p{L}\p{M}' -]{2,50})\s*[?!.]?\s*$/iu;
 const EXACT_TASK_NEXT_ACTION_RE = /^\s*((?:P|T|M|R)\d+(?:\.\d+)?)\s+(.+?)\s*[.!]?\s*$/iu;
 const NEXT_ACTION_START_RE = /^(?:pr[oó]xima\s+a[cç][aã]o\s*:\s*)?(?:enviar|mandar|preparar|providenciar|solicitar|acompanhar|verificar)\b/iu;
-const BOARD_PERSON_PLACEMENT_RE = /\b(?:coloca|colocar|adicione|adicionar)?\s*(?:o\s+|a\s+)?([\p{L}\p{M}' -]{2,60}?)\s+no\s+setor\s+([A-Z0-9ÁÉÍÓÚÇÃÕÂÊÔ -]{2,80}?)(?=\s+e\s+(?:o\s+|a\s+)?[\p{L}\p{M}]|\s*[.!,]|$)/giu;
+// FU-2: the lazy hint class is `i`-flagged, so it would otherwise eat a trailing
+// lowercase shared-role word ("SM-SETD-SECTI também") to satisfy the `$` terminator.
+// Add shared-role tokens (também/juntos/ambos/…) as lookahead terminators so the
+// hint stops at the board name (the comma-separated form already terminated on `,`).
+const BOARD_PERSON_PLACEMENT_RE = /\b(?:coloca|colocar|adicione|adicionar)?\s*(?:o\s+|a\s+)?([\p{L}\p{M}' -]{2,60}?)\s+no\s+setor\s+([A-Z0-9ÁÉÍÓÚÇÃÕÂÊÔ -]{2,80}?)(?=\s+e\s+(?:o\s+|a\s+)?[\p{L}\p{M}]|\s+(?:tamb[ée]m|juntos?|ambos|ambas|os\s+dois|continuam?)\b|\s*[.!,]|$)/giu;
 const ADD_PARTICIPANT_RE = /\badicionar\s+([\p{L}\p{M}' -]{2,60})\s+em\s+(M\d+)\b/iu;
 const ADD_PARTICIPANTS_ONLY_RE = /^\s*adicionar\s+([\p{L}\p{M}', -]+?)\s*[.!]?\s*$/iu;
 const EXTERNAL_PARTICIPANT_FOLLOWUP_RE = /^\s*([\p{L}\p{M}' -]{2,60}?)\s+(?:é|eh|e)\s+participante\s+extern[ao]\s*:?\s*([+\d][\d\s().-]{7,})\s*[.!]?\s*$/iu;
