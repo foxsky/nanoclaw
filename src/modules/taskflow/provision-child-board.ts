@@ -4,6 +4,7 @@ import type DatabaseType from 'better-sqlite3';
 
 import { DATA_DIR, GROUPS_DIR } from '../../config.js';
 import { getChannelAdapter } from '../../channels/channel-registry.js';
+import { wakeContainer } from '../../container-runner.js';
 import { getAgentGroup, getAgentGroupByFolder, getAllAgentGroups } from '../../db/agent-groups.js';
 import { getAllMessagingGroups, getMessagingGroup } from '../../db/messaging-groups.js';
 import { createDestination, getDestinationByName } from '../agent-to-agent/db/agent-destinations.js';
@@ -681,6 +682,16 @@ export async function handleProvisionChildBoard(
       parentBoardId: parent.parentBoard.id,
       personId: parsed.personId,
     });
+
+    // #402: the parent board may have torn down (idle) while this async
+    // provisioning ran. Now that the child board's notification_group_jid is
+    // committed, respawn the parent so its first-poll idle-drain (#396 unit 3)
+    // delivers any pending_notifications whose JID just resolved — closing the
+    // torn-down-idle-parent edge the in-session idle-drain cannot reach. The
+    // provision confirmation goes via the adapter (not the parent's session DB),
+    // so nothing else wakes the parent. Fire-and-forget; wakeContainer never
+    // throws and is a no-op when the parent is already running.
+    void wakeContainer(session);
   } finally {
     if (childInboundDb) {
       try {

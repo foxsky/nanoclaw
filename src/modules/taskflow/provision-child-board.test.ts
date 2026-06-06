@@ -16,6 +16,7 @@ import { closeDb, getDb, initTestDb } from '../../db/index.js';
 import { runMigrations } from '../../db/migrations/index.js';
 import { initTaskflowDb } from '../../taskflow-db.js';
 import type { ChannelAdapter } from '../../channels/adapter.js';
+import { wakeContainer } from '../../container-runner.js';
 import type { Session } from '../../types.js';
 
 const now = '2026-05-05T00:00:00Z';
@@ -43,6 +44,13 @@ vi.mock('../../channels/channel-registry.js', () => ({
     if (channelType === 'whatsapp') return mockWhatsAppAdapter;
     return undefined;
   }),
+}));
+
+// #402: the handler respawn-wakes the parent on success. container-runner is not
+// otherwise in this test's module graph, so stubbing it to just wakeContainer is
+// safe (and avoids a real Docker spawn).
+vi.mock('../../container-runner.js', () => ({
+  wakeContainer: vi.fn(() => Promise.resolve(true)),
 }));
 
 vi.mock('./provision-shared.js', async (orig) => {
@@ -146,6 +154,21 @@ describe('handleProvisionChildBoard', () => {
     const { handleProvisionChildBoard } = await import('./provision-child-board.js');
     await handleProvisionChildBoard(validInput, parentSession, {} as never);
     expect(mockWhatsAppAdapter!.createGroup).not.toHaveBeenCalled();
+    // #402: a dropped (non-success) provisioning must NOT respawn the parent.
+    expect(wakeContainer).not.toHaveBeenCalled();
+  });
+
+  it('respawn-wakes the parent container after successful provisioning so its idle-drain delivers deferred notifications (#402)', async () => {
+    seedParentBoard();
+    const { handleProvisionChildBoard } = await import('./provision-child-board.js');
+    await handleProvisionChildBoard(validInput, parentSession, {} as never);
+    // Full success: the child board was created and persisted...
+    expect(mockWhatsAppAdapter!.createGroup).toHaveBeenCalled();
+    expect(readChildBoard('board-ux-setd-secti-taskflow')).toBeDefined();
+    // ...so the parent (caller) session is respawned — its first-poll #396 idle-drain
+    // delivers any pending_notifications whose JID just resolved. The provision
+    // confirmation goes via the adapter, so nothing else would wake a torn-down parent.
+    expect(wakeContainer).toHaveBeenCalledWith(parentSession);
   });
 
   it('resolves parent board via board_groups fallback when agent_groups.folder drifted from boards.group_folder', async () => {
