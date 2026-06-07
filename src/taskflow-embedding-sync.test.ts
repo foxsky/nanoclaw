@@ -24,9 +24,9 @@ afterEach(() => {
 
 describe('buildSourceText', () => {
   it('joins title + description + next_action, trimmed', () => {
-    expect(
-      buildSourceText({ title: 'Ship the feeder', description: 'port it', next_action: 'write tests' }),
-    ).toBe('Ship the feeder port it write tests');
+    expect(buildSourceText({ title: 'Ship the feeder', description: 'port it', next_action: 'write tests' })).toBe(
+      'Ship the feeder port it write tests',
+    );
   });
 
   it('tolerates null description / next_action', () => {
