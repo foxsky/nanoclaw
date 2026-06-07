@@ -77,7 +77,7 @@ test -n "$V2_SERVICE"
 If the service-install log is unavailable, compute it from the checkout:
 
 ```bash
-V2_SERVICE=$(pnpm exec tsx -e "import{getSystemdUnit}from'./src/install-slug.js';console.log(getSystemdUnit())")
+V2_SERVICE=$(pnpm exec tsx -e "import{getSystemdUnit}from'./src/install-slug.ts';console.log(getSystemdUnit())")
 ```
 
 Systemd user-unit rollback:
@@ -119,14 +119,15 @@ Message/channel/session reconciliation:
 1. Keep the pre-cutover `store/messages.db` backup immutable.
 2. Before restarting v1, inspect v2 `store/messages.db` for inbound rows consumed after cutover and outbound rows already delivered.
 3. If rollback happens after any v2 reply was delivered, do not blindly copy v2 `store/messages.db` over v1. Export the cutover-window `messages_in`, `messages_out`, `sessions`, and delivery status rows for operator review.
+   - **v2 schema note:** in v2 those rows are NOT all in `store/messages.db` — `store/messages.db` holds only the WhatsApp/baileys `sessions` table. The per-session `messages_in` / `messages_out` rows live under `data/v2-sessions/<session_id>/inbound.db` and `outbound.db` respectively (two-DB session split), and routing/`session_state` are in `data/v2.db`. Export from there, not from `store/messages.db`.
 4. Clear or move aside v2-only container/session state before restarting v1 so v1 does not inherit v2 session assumptions.
 
 Minimum post-rollback checks:
 
 ```bash
 systemctl is-active nanoclaw
-sqlite3 data/taskflow/taskflow.db "PRAGMA integrity_check;"
-sqlite3 store/messages.db "PRAGMA integrity_check;"
+pnpm exec tsx scripts/q.ts data/taskflow/taskflow.db "PRAGMA integrity_check"
+pnpm exec tsx scripts/q.ts store/messages.db "PRAGMA integrity_check"
 ```
 
 Then send one operator-owned smoke message to the main control channel and one TaskFlow board message that only reads state.
