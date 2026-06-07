@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 
-import { addReassignFormattedResult, buildReassignCard, buildReassignLookup } from './taskflow-api-mutate.ts';
+import { addReassignFormattedResult } from './taskflow-api-mutate.ts';
+import { buildReassignCard, buildReassignLookup } from './reassign-card.ts';
 import { setVerbatimIds } from './taskflow-helpers.ts';
 import { formatReassignReply } from '../poll-loop.ts';
 import type { ReassignResult } from '../taskflow-engine.ts';
@@ -108,10 +109,35 @@ describe('buildReassignCard — v2-coherent rich card (pure fn)', () => {
     ).toBe('✅ *P9.3* reatribuída\n━━━━━━━━━━━━━━\n\n📁 *P9* — Operação\n   📋 *P9.3* — Revisar minuta\n\n👤 *Para:* Lucas');
   });
 
-  it('returns null when there is no parent (caller falls back to the short form)', () => {
+  it('returns null when there is no parent AND no from-assignee (→ short form)', () => {
+    expect(buildReassignCard({ id: 'T1', title: 'Top-level task', assignee: 'Ana' })).toBeNull();
+  });
+
+  it('no parent but a known from-assignee → De/Para format (corpus: laizys#2)', () => {
     expect(
-      buildReassignCard({ id: 'T1', title: 'Top-level task', assignee: 'Ana' }),
+      buildReassignCard({ id: 'T47', title: 'Top-level task', assignee: 'Maura', fromAssignee: 'Laizys' }),
+    ).toBe('✅ *T47* reatribuída\n━━━━━━━━━━━━━━\n\n👤 *De:* Laizys\n👤 *Para:* Maura');
+  });
+
+  it('parent present but title unresolvable + from → null, NOT De/Para (Codex gate)', () => {
+    expect(
+      buildReassignCard({ id: 'P1.2', title: 't', parentId: 'P1', parentTitle: null, assignee: 'A', fromAssignee: 'B' }),
     ).toBeNull();
+  });
+
+  it('parent + from-assignee → parent-tree format wins (De is for no-parent only)', () => {
+    expect(
+      buildReassignCard({
+        id: 'P22.1',
+        title: 'Agendar a coleta de dados',
+        parentId: 'P22',
+        parentTitle: 'Pesquisa TIC Governo 2025',
+        assignee: 'Mariany Borges',
+        fromAssignee: 'Rodrigo Lima',
+      }),
+    ).toBe(
+      '✅ *P22.1* reatribuída\n━━━━━━━━━━━━━━\n\n📁 *P22* — Pesquisa TIC Governo 2025\n   📋 *P22.1* — Agendar a coleta de dados\n\n👤 *Para:* Mariany Borges',
+    );
   });
 
   it('omits a malformed due_date rather than emitting garbage', () => {
@@ -234,6 +260,17 @@ describe('formatReassignReply — rich card via parent info (poll-loop determini
     expect(
       formatReassignReply(single, 'P22.1', 'Mariany Borges', { parent_task_id: null, parent_task_title: null, due_date: null }),
     ).toBe('✅ *P22.1* — Agendar a coleta de dados\n\nReatribuída para Mariany Borges.');
+  });
+
+  it('single task, no parent but a from-assignee → De/Para card', () => {
+    expect(
+      formatReassignReply(
+        { success: true, tasks_affected: [{ task_id: 'T47', title: 'Top task', was_linked: false }] } as ReassignResult,
+        'T47',
+        'Maura',
+        { parent_task_id: null, parent_task_title: null, due_date: null, from_assignee: 'Laizys' },
+      ),
+    ).toBe('✅ *T47* reatribuída\n━━━━━━━━━━━━━━\n\n👤 *De:* Laizys\n👤 *Para:* Maura');
   });
 
   it('engine-preset formatted → ✅-prefixed (unchanged)', () => {

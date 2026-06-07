@@ -32,7 +32,7 @@ import {
 } from './mcp-tools/message-block-dedup.js';
 import { flushPendingCreateCard } from './mcp-tools/mutation-confirmation.js';
 import { drainAndDispatchPendingNotifications } from './mcp-tools/pending-notification-dispatch.js';
-import { buildReassignCard, buildReassignLookup, type ReassignTaskInfo } from './mcp-tools/taskflow-api-mutate.js';
+import { buildReassignCard, buildReassignLookup, type ReassignTaskInfo } from './mcp-tools/reassign-card.js';
 import { appendToolEvents, type ToolEvent } from './providers/claude-tool-capture.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 import { TaskflowEngine, normalizePhone, type ReassignResult } from './taskflow-engine.js';
@@ -2742,6 +2742,7 @@ export function formatReassignReply(
       parentTitle: info?.parent_task_title,
       dueDate: info?.due_date,
       assignee: targetPerson,
+      fromAssignee: info?.from_assignee,
     });
     if (rich) return rich;
     return `✅ *${tasks[0].task_id ?? taskId}* — ${tasks[0].title}\n\nReatribuída para ${targetPerson}.`;
@@ -2780,6 +2781,15 @@ function handleTaskflowExplicitReassign(
   }
 
   const target = engine.resolvePerson(action.targetPerson)?.name ?? action.targetPerson;
+  // Capture the pre-reassign assignee NAME for the De/Para card variant — getTask
+  // post-commit returns the NEW assignee. resolvePerson resolves a person_id.
+  let fromAssignee: string | undefined;
+  try {
+    const pre = engine.getTask(action.taskId);
+    if (pre?.assignee) fromAssignee = engine.resolvePerson(pre.assignee)?.name ?? undefined;
+  } catch {
+    /* best-effort — fall back to short card if unavailable */
+  }
   const reassignInput = {
     task_id: action.taskId,
     target_person: action.targetPerson,
@@ -2807,7 +2817,7 @@ function handleTaskflowExplicitReassign(
   let info: ReassignTaskInfo | null = null;
   try {
     const lookup = affected.length === 1 ? buildReassignLookup(engine) : undefined;
-    info = lookup ? lookup(affected[0].task_id ?? action.taskId) : null;
+    if (lookup) info = { ...(lookup(affected[0].task_id ?? action.taskId) ?? {}), from_assignee: fromAssignee };
   } catch (err) {
     log(`Reassign rich-card lookup failed (short card): ${err instanceof Error ? err.message : String(err)}`);
   }
