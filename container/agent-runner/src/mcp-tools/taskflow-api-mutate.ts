@@ -1713,7 +1713,15 @@ export const apiReassignTool: McpToolDefinition = {
       // Mirror v1 (poll-loop.ts:2320,2339): canonicalize raw target_person
       // to the board_people display name before formatting the v1 card.
       // Codex hot-path gate P1: raw input drift (e.g. 'lucas' → 'Lucas').
-      const canonicalTarget = engine.resolvePerson(targetPerson)?.name ?? targetPerson;
+      // Fail-soft: this is a post-commit DB read inside the broad catch below, so
+      // a throw here must NOT turn the committed reassign into success:false —
+      // fall back to the raw target (same invariant as buildReassignInfo).
+      let canonicalTarget = targetPerson;
+      try {
+        canonicalTarget = engine.resolvePerson(targetPerson)?.name ?? targetPerson;
+      } catch {
+        /* keep raw targetPerson */
+      }
       // Rich single-task card (Phase-3 Turn-37 / De-Para). buildReassignInfo gates
       // the lookup off in the tf-mcontrol subprocess and is fail-soft — the
       // reassign has already committed, so a lookup throw must NOT escape into the

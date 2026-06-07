@@ -69,9 +69,10 @@ describe('addReassignFormattedResult — v1-faithful confirmation card', () => {
 // Phase-3 follow-up (Turn-37 richness gap): v1's reassign confirmation was
 // LLM-composed (no deterministic source), so this is NOT a byte-port — it's a
 // v2-COHERENT enrichment reusing v2's own create/update card vocabulary (SEP,
-// 📁/📋 parent tree, ⏰ Prazo dd/mm/yyyy) + the canonical assignee name. Rich
-// form only when a single task has a resolvable parent; everything else keeps
-// the existing short/multi form (no fabrication for shapes without a parent).
+// 📁/📋 parent tree, ⏰ Prazo dd/mm/yyyy) + the canonical assignee name. Two rich
+// shapes: the parent tree (resolvable parent) and De/Para (no parent but a known
+// previous assignee). Falls back to the short/multi form only when neither
+// applies — no fabrication for a bare top-level reassign with no prior assignee.
 describe('buildReassignCard — v2-coherent rich card (pure fn)', () => {
   it('single task with parent + due_date → rich card (v2 conventions)', () => {
     expect(
@@ -300,8 +301,9 @@ describe('buildReassignLookup — tf-mcontrol subprocess gate', () => {
 // Phase-3 Turn-37 ROOT-CAUSE fix: the card users actually see for "atribuir <id>
 // para <X>" is emitted by the DETERMINISTIC poll-loop handler via
 // formatReassignReply (poll-loop.ts), NOT the MCP addReassignFormattedResult.
-// So the rich card must be wired HERE too. Single-task + resolvable parent → rich
-// (buildReassignCard); everything else unchanged.
+// So the rich card must be wired HERE too. Single-task → rich (buildReassignCard:
+// parent tree, or De/Para when only the prior assignee is known); short/multi
+// otherwise. Now routed through the same buildReassignInfo as the MCP path.
 describe('formatReassignReply — rich card via parent info (poll-loop deterministic path)', () => {
   const single = {
     success: true,
