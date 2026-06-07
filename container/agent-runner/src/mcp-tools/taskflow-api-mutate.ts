@@ -18,7 +18,7 @@ import { clearPendingCreateCard, setPendingCreateCard } from './mutation-dedup.j
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { isTaskflowSubprocess, normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
-import { buildReassignCard, buildReassignLookup, type ReassignTaskInfo } from './reassign-card.js';
+import { buildReassignCard, buildReassignInfo, type ReassignTaskInfo } from './reassign-card.js';
 import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import { err, generateId, jsonResponse, log, parseTaskActorArgs, requireString } from './util.js';
 import { EmbeddingReader } from '../embedding-reader.js';
@@ -478,18 +478,20 @@ function addMoveFormattedResult(result: MoveResult, action: MoveAction): MoveRes
 export function addReassignFormattedResult(
   result: ReassignResult,
   targetPerson: string,
-  lookupTask?: (taskId: string) => ReassignTaskInfo | null,
+  info?: ReassignTaskInfo | null,
 ): ReassignResult {
   if (!result.success || result.formatted || result.requires_confirmation) return result;
   const tasks = result.tasks_affected ?? [];
   if (tasks.length === 0) return result;
-  // Single task with a resolvable parent → v2-coherent RICH card (Phase-3
-  // Turn-37 richness gap). v1's reassign confirmation was LLM-composed (no
-  // deterministic source to byte-port), so this reuses v2's OWN create/update
-  // card vocabulary. Falls through to the short form below when there's no
-  // parent / no lookup, and never for multi-task.
-  if (tasks.length === 1 && lookupTask) {
-    const info = lookupTask(tasks[0].task_id);
+  // Single task → v2-coherent RICH card (Phase-3 Turn-37 richness gap): the parent
+  // tree when there's a resolvable parent, else De/Para when the previous assignee
+  // is known. v1's reassign confirmation was LLM-composed (no source to byte-port),
+  // so this reuses v2's OWN create/update card vocabulary. The lookup lives in the
+  // CALLER (buildReassignInfo, fail-soft) — keeping it out of the formatter is what
+  // prevents a post-commit lookup throw from surfacing as a failed mutation. Falls
+  // through to the short form when the card is null (no parent + no from, or the
+  // tf-mcontrol subprocess where info is null), and never for multi-task.
+  if (tasks.length === 1) {
     const rich = buildReassignCard({
       id: tasks[0].task_id,
       title: tasks[0].title,
@@ -497,11 +499,12 @@ export function addReassignFormattedResult(
       parentTitle: info?.parent_task_title,
       dueDate: info?.due_date,
       assignee: targetPerson,
+      fromAssignee: info?.from_assignee,
     });
     if (rich) return { ...result, formatted: rich };
   }
   // Short single / multi form — prior behavior; kept for no-parent + multi-task
-  // + lookup-less callers (e.g. tf-mcontrol, which has no WhatsApp emission anyway).
+  // + info-less callers (e.g. tf-mcontrol, which has no WhatsApp emission anyway).
   return {
     ...result,
     formatted: tasks.length === 1
@@ -514,8 +517,8 @@ export function addReassignFormattedResult(
   };
 }
 
-// buildReassignCard / buildReassignLookup / ReassignTaskInfo moved to the
-// side-effect-free ./reassign-card.js (Codex NICE) and re-imported above.
+// buildReassignCard / buildReassignInfo / ReassignTaskInfo live in the
+// side-effect-free ./reassign-card.js (Codex NICE) and are re-imported above.
 
 // BYTE-FAITHFUL mirror of v1's generic "task created under a project"
 // card. No reusable v1 formatter exists; ground truth is the corpus
@@ -1686,6 +1689,18 @@ export const apiReassignTool: McpToolDefinition = {
 
     try {
       const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      // Capture the pre-reassign assignee NAME for the De/Para card — getTask
+      // post-commit returns the NEW assignee. Best-effort: never block the
+      // mutation on this (mirrors the poll-loop deterministic path).
+      let fromAssignee: string | undefined;
+      try {
+        if (taskId) {
+          const pre = engine.getTask(taskId);
+          if (pre?.assignee) fromAssignee = engine.resolvePerson(pre.assignee)?.name ?? undefined;
+        }
+      } catch {
+        /* best-effort — fall back to the short card */
+      }
       const reassignParams: ReassignParams = {
         board_id: boardId,
         target_person: targetPerson,
@@ -1699,11 +1714,13 @@ export const apiReassignTool: McpToolDefinition = {
       // to the board_people display name before formatting the v1 card.
       // Codex hot-path gate P1: raw input drift (e.g. 'lucas' → 'Lucas').
       const canonicalTarget = engine.resolvePerson(targetPerson)?.name ?? targetPerson;
-      // Rich single-task card (Phase-3 Turn-37) via a parent + due_date lookup,
-      // gated to the in-session agent — see buildReassignLookup.
-      return finalizeMutationResult(
-        addReassignFormattedResult(result, canonicalTarget, buildReassignLookup(engine)),
-      );
+      // Rich single-task card (Phase-3 Turn-37 / De-Para). buildReassignInfo gates
+      // the lookup off in the tf-mcontrol subprocess and is fail-soft — the
+      // reassign has already committed, so a lookup throw must NOT escape into the
+      // catch below and report success:false. Same resolver as the poll-loop path.
+      const affected = result.tasks_affected ?? [];
+      const info = affected.length === 1 ? buildReassignInfo(engine, affected[0].task_id, fromAssignee) : null;
+      return finalizeMutationResult(addReassignFormattedResult(result, canonicalTarget, info));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });

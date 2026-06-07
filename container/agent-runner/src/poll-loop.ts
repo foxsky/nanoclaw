@@ -32,7 +32,7 @@ import {
 } from './mcp-tools/message-block-dedup.js';
 import { flushPendingCreateCard } from './mcp-tools/mutation-confirmation.js';
 import { drainAndDispatchPendingNotifications } from './mcp-tools/pending-notification-dispatch.js';
-import { buildReassignCard, buildReassignLookup, type ReassignTaskInfo } from './mcp-tools/reassign-card.js';
+import { buildReassignCard, buildReassignInfo, type ReassignTaskInfo } from './mcp-tools/reassign-card.js';
 import { appendToolEvents, type ToolEvent } from './providers/claude-tool-capture.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 import { TaskflowEngine, normalizePhone, type ReassignResult } from './taskflow-engine.js';
@@ -2808,19 +2808,13 @@ function handleTaskflowExplicitReassign(
     return true;
   }
 
-  // Resolve the single task's parent + due_date so the reply can render the rich
-  // card (Phase-3 Turn-37). buildReassignLookup is gated off in the tf-mcontrol
-  // subprocess; here (in-session agent) it returns the resolver. Best-effort: the
-  // mutation has already committed, so a lookup throw must NOT lose the user's
-  // confirmation — fall back to the short card (Codex hot-path gate).
+  // Resolve the single task's parent + due_date (+ the pre-captured from_assignee)
+  // so the reply can render the rich card (Phase-3 Turn-37 / De-Para). The same
+  // buildReassignInfo the MCP path uses: gated off in the tf-mcontrol subprocess
+  // and fail-soft — the mutation has already committed, so a lookup throw degrades
+  // to the short card and never loses the user's confirmation.
   const affected = reassignResult.tasks_affected ?? [];
-  let info: ReassignTaskInfo | null = null;
-  try {
-    const lookup = affected.length === 1 ? buildReassignLookup(engine) : undefined;
-    if (lookup) info = { ...(lookup(affected[0].task_id ?? action.taskId) ?? {}), from_assignee: fromAssignee };
-  } catch (err) {
-    log(`Reassign rich-card lookup failed (short card): ${err instanceof Error ? err.message : String(err)}`);
-  }
+  const info = affected.length === 1 ? buildReassignInfo(engine, affected[0].task_id ?? action.taskId, fromAssignee) : null;
   writeReply(routing, formatReassignReply(reassignResult, action.taskId, target, info));
   return true;
 }

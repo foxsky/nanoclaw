@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 
 import { addReassignFormattedResult } from './taskflow-api-mutate.ts';
-import { buildReassignCard, buildReassignLookup } from './reassign-card.ts';
+import { buildReassignCard, buildReassignInfo, buildReassignLookup } from './reassign-card.ts';
 import { setVerbatimIds } from './taskflow-helpers.ts';
 import { formatReassignReply } from '../poll-loop.ts';
 import type { ReassignResult } from '../taskflow-engine.ts';
@@ -149,33 +149,45 @@ describe('buildReassignCard — v2-coherent rich card (pure fn)', () => {
   });
 });
 
-describe('addReassignFormattedResult — rich card via parent lookup', () => {
-  const lookup = (id: string) =>
-    id === 'P22.1'
-      ? { parent_task_id: 'P22', parent_task_title: 'Pesquisa TIC Governo 2025', due_date: '2026-04-30' }
-      : null;
-
+// addReassignFormattedResult now consumes a resolved `info` (the same
+// ReassignTaskInfo both emitters build via buildReassignInfo) — NOT a lazy
+// lookup fn. Moving the lookup OUT of the formatter is the BLOCKER fix: a
+// post-commit lookup throw can no longer escape into api_reassign's catch and
+// report success:false on an already-committed mutation.
+describe('addReassignFormattedResult — rich card via resolved info', () => {
   it('single task with a resolvable parent → rich card', () => {
     const out = addReassignFormattedResult(
       { success: true, tasks_affected: [{ task_id: 'P22.1', title: 'Agendar a coleta de dados', was_linked: false }] } as ReassignResult,
       'Mariany Borges',
-      lookup,
+      { parent_task_id: 'P22', parent_task_title: 'Pesquisa TIC Governo 2025', due_date: '2026-04-30' },
     );
     expect(out.formatted).toBe(
       '✅ *P22.1* reatribuída\n━━━━━━━━━━━━━━\n\n📁 *P22* — Pesquisa TIC Governo 2025\n   📋 *P22.1* — Agendar a coleta de dados\n\n👤 *Para:* Mariany Borges\n⏰ Prazo: 30/04/2026',
     );
   });
 
-  it('single task with no resolvable parent → falls back to the short form', () => {
+  it('single task with no resolvable parent and no from → falls back to the short form', () => {
     const out = addReassignFormattedResult(
       { success: true, tasks_affected: [{ task_id: 'T9', title: 'Top task', was_linked: false }] } as ReassignResult,
       'Ana',
-      lookup, // returns null for T9
+      null,
     );
     expect(out.formatted).toBe('✅ *T9* — Top task\n\nReatribuída para Ana.');
   });
 
-  it('multi-task reassign keeps the short multi form even with a lookup', () => {
+  // R2 parity: the MCP path (api_reassign) must render a no-parent reassign the
+  // SAME way the poll-loop deterministic path does — De/Para, not the short form
+  // — so the same logical event doesn't render two ways depending on the emitter.
+  it('single task, no parent but a known from-assignee → De/Para card (path parity with poll-loop)', () => {
+    const out = addReassignFormattedResult(
+      { success: true, tasks_affected: [{ task_id: 'T47', title: 'Top task', was_linked: false }] } as ReassignResult,
+      'Maura',
+      { parent_task_id: null, parent_task_title: null, due_date: null, from_assignee: 'Laizys' },
+    );
+    expect(out.formatted).toBe('✅ *T47* reatribuída\n━━━━━━━━━━━━━━\n\n👤 *De:* Laizys\n👤 *Para:* Maura');
+  });
+
+  it('multi-task reassign keeps the short multi form even with info', () => {
     const out = addReassignFormattedResult(
       {
         success: true,
@@ -185,9 +197,67 @@ describe('addReassignFormattedResult — rich card via parent lookup', () => {
         ],
       } as ReassignResult,
       'Mariany Borges',
-      lookup,
+      { parent_task_id: 'P22', parent_task_title: 'Proj', due_date: null },
     );
     expect(out.formatted).toBe('✅ 2 tarefas reatribuídas para Mariany Borges:\n\n• *P22.1* — A\n• *P22.2* — B');
+  });
+});
+
+// buildReassignInfo centralizes what BOTH emitters need after a committed
+// reassign: the subprocess gate, the post-commit parent/due lookup, and the
+// from_assignee merge — all fail-soft. The mutation has already committed, so a
+// lookup throw must degrade to the short/De-Para card, never bubble up.
+describe('buildReassignInfo — shared, fail-soft post-commit resolver', () => {
+  const fakeEngine = {
+    getTask: (id: string) =>
+      id === 'P22.1'
+        ? { parent_task_id: 'P22', due_date: '2026-04-30' }
+        : id === 'P22'
+          ? { title: 'Pesquisa TIC Governo 2025' }
+          : id === 'T1'
+            ? { parent_task_id: null, due_date: null }
+            : null,
+  };
+  afterEach(() => setVerbatimIds(false));
+
+  it('in-session: merges the resolved parent/due with the pre-captured from-assignee', () => {
+    setVerbatimIds(false);
+    expect(buildReassignInfo(fakeEngine, 'P22.1', 'Rodrigo Lima')).toEqual({
+      parent_task_id: 'P22',
+      parent_task_title: 'Pesquisa TIC Governo 2025',
+      due_date: '2026-04-30',
+      from_assignee: 'Rodrigo Lima',
+    });
+  });
+
+  it('in-session top-level task: carries from_assignee so the caller can render De/Para', () => {
+    setVerbatimIds(false);
+    expect(buildReassignInfo(fakeEngine, 'T1', 'Laizys')?.from_assignee).toBe('Laizys');
+  });
+
+  it('tf-mcontrol subprocess: returns null even with a from-assignee (exact prior short form)', () => {
+    setVerbatimIds(true);
+    expect(buildReassignInfo(fakeEngine, 'P22.1', 'Rodrigo Lima')).toBeNull();
+  });
+
+  it('lookup throws (post-commit) → fail-soft to the from-assignee, never throws (BLOCKER)', () => {
+    setVerbatimIds(false);
+    const throwingEngine = {
+      getTask: () => {
+        throw new Error('db gone');
+      },
+    };
+    expect(buildReassignInfo(throwingEngine, 'P1', 'Rodrigo')).toEqual({ from_assignee: 'Rodrigo' });
+  });
+
+  it('lookup throws with no from-assignee → null (short form), never throws', () => {
+    setVerbatimIds(false);
+    const throwingEngine = {
+      getTask: () => {
+        throw new Error('db gone');
+      },
+    };
+    expect(buildReassignInfo(throwingEngine, 'P1')).toBeNull();
   });
 });
 

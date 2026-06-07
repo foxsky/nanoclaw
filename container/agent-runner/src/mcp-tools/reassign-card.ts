@@ -92,3 +92,33 @@ export function buildReassignLookup(
     return { parent_task_id: t.parent_task_id, parent_task_title: parent?.title, due_date: t.due_date };
   };
 }
+
+/**
+ * Resolve the single-task rich-card info that BOTH reassign emitters need after
+ * a committed reassign — the deterministic poll-loop path and the api_reassign
+ * MCP tool. Centralizes three concerns so the two callers can't drift:
+ *   • subprocess gate — in the tf-mcontrol FastAPI subprocess buildReassignLookup
+ *     is undefined, so we return null and the caller keeps the EXACT prior short
+ *     form (API contract unchanged; no WhatsApp card emitted there anyway).
+ *   • the post-commit parent + due_date lookup (reassign moves neither).
+ *   • the pre-captured previous assignee (from_assignee) for the De/Para format.
+ * FAIL-SOFT: the mutation has ALREADY committed, so a lookup throw must never
+ * bubble up and turn a successful reassign into an error — it degrades to the
+ * from_assignee-only card (De/Para) or, lacking that, the short form.
+ */
+export function buildReassignInfo(
+  engine: { getTask: (id: string) => { parent_task_id?: string | null; due_date?: string | null; title?: string } | null },
+  taskId: string,
+  fromAssignee?: string | null,
+): ReassignTaskInfo | null {
+  const lookup = buildReassignLookup(engine);
+  if (!lookup) return null; // tf-mcontrol subprocess: keep the exact prior short form
+  const fallback = fromAssignee ? { from_assignee: fromAssignee } : null;
+  try {
+    const base = lookup(taskId);
+    if (!base) return fallback;
+    return { ...base, from_assignee: fromAssignee ?? null };
+  } catch {
+    return fallback;
+  }
+}

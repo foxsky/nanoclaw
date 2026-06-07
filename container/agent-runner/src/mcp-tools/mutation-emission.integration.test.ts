@@ -509,7 +509,7 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     );
   });
 
-  it('api_reassign emits EXACTLY ONE row with the v1-canonicalized "Reatribuída" card (P1 + P5 combined)', async () => {
+  it('api_reassign emits EXACTLY ONE row with the v1-canonicalized De/Para card (P1 + P5 combined)', async () => {
     const db = setupEngineDb(BOARD, { withBoardAdmins: true });
     const { apiCreateSimpleTaskTool, apiReassignTool } = await import('./taskflow-api-mutate.ts');
     db.prepare(
@@ -539,10 +539,13 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
       .all() as Array<{ kind: string; content: string }>;
 
     // P5: EXACTLY ONE confirmation CARD (no double-emit of the card).
+    // P1: the *Para:* line shows the canonical 'Lucas' (raw input was 'lucas').
+    // The card is the De/Para form — alice created the task so it carried her as
+    // the prior assignee — matching the poll-loop deterministic path.
     const chatRows = rows.filter((r) => r.kind === 'chat');
     expect(chatRows.length).toBe(1);
     expect(JSON.parse(chatRows[0].content).text).toBe(
-      `✅ *${taskId}* — Solicitar acesso\n\nReatribuída para Lucas.`,
+      `✅ *${taskId}* reatribuída\n━━━━━━━━━━━━━━\n\n👤 *De:* alice\n👤 *Para:* Lucas`,
     );
 
     // #389: the reassign notification is also dispatched deterministically

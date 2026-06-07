@@ -1054,7 +1054,10 @@ describe('api_reassign MCP tool (A11.3)', () => {
     expect(result.success).toBe(true);
     expect(Array.isArray(result.data.tasks_affected)).toBe(true);
     expect(result.data.tasks_affected.length).toBe(1);
-    expect(result.data.formatted).toContain(`✅ *${taskId}* — Reassign me\n\nReatribuída para bob.`);
+    // No-parent reassign with a known previous assignee → De/Para card, identical
+    // to the poll-loop deterministic path (path parity; the task was created by
+    // alice so it carried her as the prior assignee).
+    expect(result.data.formatted).toBe(`✅ *${taskId}* reatribuída\n━━━━━━━━━━━━━━\n\n👤 *De:* alice\n👤 *Para:* bob`);
     const row = db
       .prepare('SELECT assignee FROM tasks WHERE id = ?')
       .get(taskId) as { assignee: string };
@@ -1074,7 +1077,9 @@ describe('api_reassign MCP tool (A11.3)', () => {
     const taskId = JSON.parse(created.content[0].text).data.id;
     // Input is the LOWERCASE alias 'lucas'; v1 canonicalizes via
     // engine.resolvePerson(...)?.name → 'Lucas' (poll-loop.ts:2320 then
-    // formatReassignReply at 2339). The card must mirror that.
+    // formatReassignReply at 2339). The card must mirror that — the *Para:* line
+    // shows the canonical 'Lucas', not the raw 'lucas' input (the card is now the
+    // De/Para form since the task carried alice as its prior assignee).
     const response = await apiReassignTool.handler({
       board_id: BOARD,
       task_id: taskId,
@@ -1085,7 +1090,7 @@ describe('api_reassign MCP tool (A11.3)', () => {
     const result = JSON.parse(response.content[0].text);
     expect(result.success).toBe(true);
     expect(result.data.formatted).toBe(
-      `✅ *${taskId}* — Solicitar acesso\n\nReatribuída para Lucas.`,
+      `✅ *${taskId}* reatribuída\n━━━━━━━━━━━━━━\n\n👤 *De:* alice\n👤 *Para:* Lucas`,
     );
   });
 
