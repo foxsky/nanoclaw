@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 
 import { addReassignFormattedResult, buildReassignCard, buildReassignLookup } from './taskflow-api-mutate.ts';
 import { setVerbatimIds } from './taskflow-helpers.ts';
+import { formatReassignReply } from '../poll-loop.ts';
 import type { ReassignResult } from '../taskflow-engine.ts';
 
 // Phase-3 unit-2-core: the v2 MCP reassign confirmation must be
@@ -197,5 +198,75 @@ describe('buildReassignLookup — tf-mcontrol subprocess gate', () => {
   it('in-session: null when the task is gone (→ short-form fallback)', () => {
     setVerbatimIds(false);
     expect(buildReassignLookup(fakeEngine)!('GONE')).toBeNull();
+  });
+});
+
+// Phase-3 Turn-37 ROOT-CAUSE fix: the card users actually see for "atribuir <id>
+// para <X>" is emitted by the DETERMINISTIC poll-loop handler via
+// formatReassignReply (poll-loop.ts), NOT the MCP addReassignFormattedResult.
+// So the rich card must be wired HERE too. Single-task + resolvable parent → rich
+// (buildReassignCard); everything else unchanged.
+describe('formatReassignReply — rich card via parent info (poll-loop deterministic path)', () => {
+  const single = {
+    success: true,
+    tasks_affected: [{ task_id: 'P22.1', title: 'Agendar a coleta de dados', was_linked: false }],
+  } as ReassignResult;
+
+  it('single task WITH parent info → rich card', () => {
+    expect(
+      formatReassignReply(single, 'P22.1', 'Mariany Borges', {
+        parent_task_id: 'P22',
+        parent_task_title: 'Pesquisa TIC Governo 2025',
+        due_date: '2026-04-30',
+      }),
+    ).toBe(
+      '✅ *P22.1* reatribuída\n━━━━━━━━━━━━━━\n\n📁 *P22* — Pesquisa TIC Governo 2025\n   📋 *P22.1* — Agendar a coleta de dados\n\n👤 *Para:* Mariany Borges\n⏰ Prazo: 30/04/2026',
+    );
+  });
+
+  it('single task with NO parent info → short card (prior behavior)', () => {
+    expect(formatReassignReply(single, 'P22.1', 'Mariany Borges')).toBe(
+      '✅ *P22.1* — Agendar a coleta de dados\n\nReatribuída para Mariany Borges.',
+    );
+  });
+
+  it('single task with info but no resolvable parent → short card', () => {
+    expect(
+      formatReassignReply(single, 'P22.1', 'Mariany Borges', { parent_task_id: null, parent_task_title: null, due_date: null }),
+    ).toBe('✅ *P22.1* — Agendar a coleta de dados\n\nReatribuída para Mariany Borges.');
+  });
+
+  it('engine-preset formatted → ✅-prefixed (unchanged)', () => {
+    expect(
+      formatReassignReply(
+        { success: true, formatted: 'X', tasks_affected: [{ task_id: 'T', title: 't', was_linked: false }] } as ReassignResult,
+        'T',
+        'Ana',
+        { parent_task_id: 'P', parent_task_title: 'Proj', due_date: null },
+      ),
+    ).toBe('✅ X');
+  });
+
+  it('multi-task → multi short form (unchanged)', () => {
+    expect(
+      formatReassignReply(
+        {
+          success: true,
+          tasks_affected: [
+            { task_id: 'A', title: 'a', was_linked: false },
+            { task_id: 'B', title: 'b', was_linked: false },
+          ],
+        } as ReassignResult,
+        'A',
+        'Ana',
+        { parent_task_id: 'P', parent_task_title: 'Proj', due_date: null },
+      ),
+    ).toBe('✅ 2 tarefas reatribuídas para Ana:\n\n• *A* — a\n• *B* — b');
+  });
+
+  it('zero tasks_affected → simple fallback (unchanged)', () => {
+    expect(formatReassignReply({ success: true, tasks_affected: [] } as ReassignResult, 'P5', 'Ana')).toBe(
+      '✅ *P5* reatribuída para Ana.',
+    );
   });
 });

@@ -32,6 +32,7 @@ import {
 } from './mcp-tools/message-block-dedup.js';
 import { flushPendingCreateCard } from './mcp-tools/mutation-confirmation.js';
 import { drainAndDispatchPendingNotifications } from './mcp-tools/pending-notification-dispatch.js';
+import { buildReassignCard, buildReassignLookup, type ReassignTaskInfo } from './mcp-tools/taskflow-api-mutate.js';
 import { appendToolEvents, type ToolEvent } from './providers/claude-tool-capture.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 import { TaskflowEngine, normalizePhone, type ReassignResult } from './taskflow-engine.js';
@@ -2722,10 +2723,27 @@ function handleTaskflowExplicitCompletion(
   return true;
 }
 
-function formatReassignReply(result: ReassignResult, taskId: string, targetPerson: string): string {
+export function formatReassignReply(
+  result: ReassignResult,
+  taskId: string,
+  targetPerson: string,
+  info?: ReassignTaskInfo | null,
+): string {
   const tasks = result.tasks_affected ?? [];
   if (typeof result.formatted === 'string' && result.formatted.trim()) return `✅ ${result.formatted}`;
   if (tasks.length === 1) {
+    // Phase-3 Turn-37: a single task with a resolvable parent gets the v2-coherent
+    // RICH card (same as the MCP path's buildReassignCard). This is the emitter
+    // users actually hit for "atribuir <id> para <X>" — see handleTaskflowExplicitReassign.
+    const rich = buildReassignCard({
+      id: tasks[0].task_id ?? taskId,
+      title: tasks[0].title,
+      parentId: info?.parent_task_id,
+      parentTitle: info?.parent_task_title,
+      dueDate: info?.due_date,
+      assignee: targetPerson,
+    });
+    if (rich) return rich;
     return `✅ *${tasks[0].task_id ?? taskId}* — ${tasks[0].title}\n\nReatribuída para ${targetPerson}.`;
   }
   if (tasks.length > 1) {
@@ -2780,7 +2798,20 @@ function handleTaskflowExplicitReassign(
     return true;
   }
 
-  writeReply(routing, formatReassignReply(reassignResult, action.taskId, target));
+  // Resolve the single task's parent + due_date so the reply can render the rich
+  // card (Phase-3 Turn-37). buildReassignLookup is gated off in the tf-mcontrol
+  // subprocess; here (in-session agent) it returns the resolver. Best-effort: the
+  // mutation has already committed, so a lookup throw must NOT lose the user's
+  // confirmation — fall back to the short card (Codex hot-path gate).
+  const affected = reassignResult.tasks_affected ?? [];
+  let info: ReassignTaskInfo | null = null;
+  try {
+    const lookup = affected.length === 1 ? buildReassignLookup(engine) : undefined;
+    info = lookup ? lookup(affected[0].task_id ?? action.taskId) : null;
+  } catch (err) {
+    log(`Reassign rich-card lookup failed (short card): ${err instanceof Error ? err.message : String(err)}`);
+  }
+  writeReply(routing, formatReassignReply(reassignResult, action.taskId, target, info));
   return true;
 }
 
