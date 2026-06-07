@@ -35,7 +35,7 @@ Required operator choices:
 - Stop v1 when prompted before copying `taskflow.db`.
 - Do not proceed if the script reports uncheckpointed WAL frames.
 - Do not proceed if both user and system `nanoclaw` units are installed or active.
-- Confirm the `1c-groups` step reports migrated prompts. The migration writes v2 `CLAUDE.local.md` files through `scripts/migrate-board-claudemd.ts`; it must not copy raw v1 `CLAUDE.md` prose unchanged.
+- Confirm the `1c-groups` step reports migrated prompts. The migration writes v2 `CLAUDE.local.md` files through `src/modules/taskflow/migrate-board-claudemd.ts`; it must not copy raw v1 `CLAUDE.md` prose unchanged.
 - Accept the v2 switchover only after the script reports successful DB, group, session, scheduled task, TaskFlow DB, and container build steps.
 
 ## Canary Plan
