@@ -126,15 +126,19 @@ Minimum post-rollback checks:
 
 ```bash
 systemctl is-active nanoclaw
-# Guard with `test -f`: scripts/q.ts opens without fileMustExist, so a missing DB
-# would be silently CREATED empty and pass integrity_check — fail loud instead.
+# Real health gate (exits non-zero so it can't be skimmed past): scripts/q.ts opens
+# without fileMustExist, so a missing DB would be silently CREATED empty and report
+# "ok" — assert the file exists AND that integrity_check literally returns "ok".
+rollback_ok=1
 for db in data/taskflow/taskflow.db store/messages.db; do
-  if [ -f "$db" ]; then
-    pnpm exec tsx scripts/q.ts "$db" "PRAGMA integrity_check"
-  else
-    echo "MISSING (investigate before declaring rollback healthy): $db"
+  if [ ! -f "$db" ]; then
+    echo "MISSING (investigate before declaring rollback healthy): $db"; rollback_ok=0; continue
   fi
+  res=$(pnpm exec tsx scripts/q.ts "$db" "PRAGMA integrity_check")
+  echo "$db: $res"
+  [ "$res" = "ok" ] || { echo "INTEGRITY FAIL: $db"; rollback_ok=0; }
 done
+[ "$rollback_ok" = 1 ] || { echo "ROLLBACK HEALTH CHECK FAILED — do not declare healthy"; exit 1; }
 ```
 
 Then send one operator-owned smoke message to the main control channel and one TaskFlow board message that only reads state.
