@@ -116,18 +116,25 @@ TaskFlow DB reconciliation:
 
 Message/channel/session reconciliation:
 
-1. Keep the pre-cutover `store/messages.db` backup immutable.
-2. Before restarting v1, inspect v2 `store/messages.db` for inbound rows consumed after cutover and outbound rows already delivered.
-3. If rollback happens after any v2 reply was delivered, do not blindly copy v2 `store/messages.db` over v1. Export the cutover-window `messages_in`, `messages_out`, `sessions`, and delivery status rows for operator review.
-   - **v2 schema note:** in v2 those rows are NOT all in `store/messages.db` — `store/messages.db` holds only the WhatsApp/baileys `sessions` table. The per-session `messages_in` / `messages_out` rows live under `data/v2-sessions/<session_id>/inbound.db` and `outbound.db` respectively (two-DB session split), and routing/`session_state` are in `data/v2.db`. Export from there, not from `store/messages.db`.
-4. Clear or move aside v2-only container/session state before restarting v1 so v1 does not inherit v2 session assumptions.
+1. Keep the pre-cutover v1 `store/messages.db` backup immutable (in v1 this file IS the message log — v1 reads it after the rollback).
+2. Before restarting v1, inspect the **v2** message state for inbound rows consumed after cutover and outbound rows already delivered — see the schema note below for where those rows actually live in v2 (it is NOT `store/messages.db`).
+3. If rollback happens after any v2 reply was delivered, do not blindly copy v2 message state over v1. Export the cutover-window `messages_in` / `messages_out` rows and their delivery status from the v2 per-session DBs for operator review.
+   - **v2 schema note:** v2 does NOT keep messages in `store/messages.db`. On a v2 box `store/messages.db` is only a setup-time group-name cache (a single `chats` table written by the group-sync step, `setup/groups.ts`), and WhatsApp/baileys auth lives in `store/auth/` — neither holds message rows. The real per-session rows are: `messages_in` under `data/v2-sessions/<agent_group_id>/<session_id>/inbound.db`, `messages_out` under the sibling `outbound.db` (two-DB session split), with routing + `session_state` in the central `data/v2.db` (and the session `outbound.db`). Export from those, not from `store/messages.db`.
+4. Clear or move aside v2-only container/session state (`data/v2-sessions/`, `data/v2.db`) before restarting v1 so v1 does not inherit v2 session assumptions.
 
 Minimum post-rollback checks:
 
 ```bash
 systemctl is-active nanoclaw
-pnpm exec tsx scripts/q.ts data/taskflow/taskflow.db "PRAGMA integrity_check"
-pnpm exec tsx scripts/q.ts store/messages.db "PRAGMA integrity_check"
+# Guard with `test -f`: scripts/q.ts opens without fileMustExist, so a missing DB
+# would be silently CREATED empty and pass integrity_check — fail loud instead.
+for db in data/taskflow/taskflow.db store/messages.db; do
+  if [ -f "$db" ]; then
+    pnpm exec tsx scripts/q.ts "$db" "PRAGMA integrity_check"
+  else
+    echo "MISSING (investigate before declaring rollback healthy): $db"
+  fi
+done
 ```
 
 Then send one operator-owned smoke message to the main control channel and one TaskFlow board message that only reads state.
