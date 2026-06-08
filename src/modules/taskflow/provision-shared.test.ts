@@ -7,20 +7,84 @@ import { INBOUND_SCHEMA } from '../../db/schema.js';
 import { initTaskflowDb } from '../../taskflow-db.js';
 import {
   createBoardFilesystem,
+  DIGEST_PROMPT,
   findBoardByFolder,
   generateClaudeMd,
   renderBoardClaudeMd,
   MCP_JSON_CONTENT,
   nextCronRun,
   ONBOARDING_FILES,
+  REVIEW_PROMPT,
   sanitizeFolder,
   scheduleOnboarding,
   scheduleRunners,
   seedBoardCore,
+  STANDUP_PROMPT,
   uniqueFolder,
 } from './provision-shared.js';
 
 const TMPROOT = path.join(os.tmpdir(), `nanoclaw-provision-shared-test-${process.pid}`);
+
+describe('runner prompts are motivational-only (V1 parity)', () => {
+  // WHY: a scheduled [TF-STANDUP]/[TF-DIGEST]/[TF-REVIEW] post must send ONLY a
+  // warm motivational narrative written FROM the report data — never the rendered
+  // formatted_board / formatted_report task list. The rendered board/report is
+  // reserved for explicit on-demand human requests ("mostrar o quadro"). These are
+  // the prompts baked into every board's recurring runner at provision; if they
+  // instruct the agent to send the rendered field, every provisioned board
+  // regresses to the high-volume list-dump the motivational-only rule exists to
+  // kill. The host runner gate decides WHETHER a runner fires (cadence) — these
+  // tests pin the CONTENT contract, which is orthogonal to the gate.
+  const cases: Array<{ name: string; prompt: string; tag: string }> = [
+    { name: 'STANDUP_PROMPT', prompt: STANDUP_PROMPT, tag: '[TF-STANDUP]' },
+    { name: 'DIGEST_PROMPT', prompt: DIGEST_PROMPT, tag: '[TF-DIGEST]' },
+    { name: 'REVIEW_PROMPT', prompt: REVIEW_PROMPT, tag: '[TF-REVIEW]' },
+  ];
+
+  for (const { name, prompt, tag } of cases) {
+    describe(name, () => {
+      it(`is anchored at the ${tag} tag so the gate/parser classifies it as a scheduled post`, () => {
+        expect(prompt.startsWith(tag)).toBe(true);
+      });
+
+      it('explicitly forbids sending the rendered formatted_board / formatted_report', () => {
+        // The prompt may (and should) NAME the rendered field — but only inside a
+        // prohibition. Every mention of formatted_board/formatted_report must sit
+        // in a sentence whose verb is negated ("do NOT send", "never send"); there
+        // must be no affirmative "send the formatted_*" directive. Split on
+        // sentence boundaries and require each field-naming sentence to be a
+        // negation.
+        const sentences = prompt.split(/(?<=[.])\s+/);
+        const fieldSentences = sentences.filter((s) => /formatted_(?:board|report)/i.test(s));
+        expect(fieldSentences.length).toBeGreaterThan(0); // it does address the rendered field
+        for (const s of fieldSentences) {
+          expect(s).toMatch(/\b(?:do not|don't|never|not)\b/i);
+        }
+      });
+
+      it('NEVER instructs sending the full Kanban board / list / column breakdown', () => {
+        // Guard against the pre-motivational prompts: "Send the Kanban board",
+        // "send the digest", "send the full review", "consolidate ... columns".
+        expect(prompt).not.toMatch(/Kanban|grouped by column|every column|full board breakdown|full review/i);
+      });
+
+      it('instructs READING the report data and sending ONE motivational message', () => {
+        // Reads from the report tool (api_report / taskflow_report) ...
+        expect(prompt).toMatch(/report/i);
+        // ... then sends a single motivational narrative.
+        expect(prompt).toMatch(/motivational/i);
+      });
+
+      it('keeps the skip-if-empty rule', () => {
+        expect(prompt).toMatch(/skip|do NOT send|exit silently|no message/i);
+      });
+    });
+  }
+
+  it('the Friday digest/review prompts carry the close-the-week intent', () => {
+    expect(`${DIGEST_PROMPT} ${REVIEW_PROMPT}`).toMatch(/Friday|close the week|week/i);
+  });
+});
 
 describe('findBoardByFolder', () => {
   // v1-level folder drift (registered_groups.folder ≠ boards.group_folder) is

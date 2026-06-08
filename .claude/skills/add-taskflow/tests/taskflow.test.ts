@@ -884,8 +884,9 @@ describe('taskflow skill package', () => {
     expect(digestSection).toContain('taskflow_report');
     expect(digestSection).toContain('Skip if empty');
     expect(digestSection).toContain('formatted_report');
-    expect(digestSection).toContain('Interactive user requests reply with it normally');
-    expect(digestSection).toContain('Scheduled `[TF-DIGEST]` runs send it via `send_message`');
+    // Motivational-only: scheduled [TF-DIGEST] sends only the narrative, never the rendered report.
+    expect(digestSection).toContain('Do NOT send `formatted_report`');
+    expect(digestSection).toContain('Send only the motivational message');
     expect(digestSection).not.toContain('TASKS.json');
   });
 
@@ -901,9 +902,9 @@ describe('taskflow skill package', () => {
     expect(reviewSection).toContain('taskflow_report');
     expect(reviewSection).toContain('Skip if empty');
     expect(reviewSection).toContain('formatted_report');
-    expect(reviewSection).toContain('per-person');
-    expect(reviewSection).toContain('Interactive user requests reply with it normally');
-    expect(reviewSection).toContain('Scheduled `[TF-REVIEW]` runs send it via `send_message`');
+    // Motivational-only: scheduled [TF-REVIEW] sends only the narrative, never the rendered report.
+    expect(reviewSection).toContain('Do NOT send `formatted_report`');
+    expect(reviewSection).toContain('Send only the motivational message');
     expect(reviewSection).not.toContain('TASKS.json');
   });
 
@@ -917,11 +918,11 @@ describe('taskflow skill package', () => {
       content.split('## Rendered Output Format')[1]?.split('### Meeting Display')[0] ?? '';
 
     expect(renderedSection).toContain('formatted_board');
-    expect(renderedSection).toContain('board queries and standup reports');
     expect(renderedSection).toContain('formatted_report');
-    expect(renderedSection).toContain('digest and weekly reports');
-    expect(renderedSection).toContain('Interactive current-group turns use the normal assistant reply path');
-    expect(renderedSection).toContain('scheduled `[TF-DIGEST]` / `[TF-REVIEW]` runs send the same body via `send_message`');
+    // Rendered fields are for explicit on-demand human requests only.
+    expect(renderedSection).toContain('on-demand');
+    // Scheduled [TF-*] runs are the exception — motivational message only, never the rendered field.
+    expect(renderedSection).toContain('they send only the motivational message, NEVER `formatted_board` or `formatted_report`');
   });
 
   it('TaskFlow scheduler docs do not hardcode UTC and match runtime timezone behavior', () => {
