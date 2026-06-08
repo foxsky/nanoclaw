@@ -21,6 +21,7 @@ import { isTaskflowSubprocess, normalizeAgentIds, normalizeEngineNotificationEve
 import { buildReassignCard, buildReassignInfo, type ReassignTaskInfo } from './reassign-card.js';
 import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import { err, generateId, jsonResponse, log, parseTaskActorArgs, requireString } from './util.js';
+import { isValidTimezone } from '../timezone.js';
 import { EmbeddingReader } from '../embedding-reader.js';
 import { embedText } from '../memory-embed.js';
 
@@ -439,9 +440,7 @@ export function safeNotificationEvents(
 export function safeBoardTimeZone(db: Database, boardId: string): string {
   try {
     const tz = getBoardTimezone(db, boardId);
-    // toLocaleDateString throws a RangeError on an unknown/invalid zone.
-    new Date().toLocaleDateString('en-CA', { timeZone: tz });
-    return tz;
+    return isValidTimezone(tz) ? tz : 'America/Fortaleza';
   } catch {
     return 'America/Fortaleza';
   }

@@ -7,10 +7,11 @@ import { enqueueDeferredNotificationsInSession } from './pending-notification-di
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
 import type { NotificationEvent } from './taskflow-helpers.js';
-import { normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
+import { normalizeAgentIds } from './taskflow-helpers.js';
+import { safeNotificationEvents } from './taskflow-api-mutate.js';
 import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import type { McpToolDefinition } from './types.js';
-import { err, jsonResponse, log, parseTaskActorArgs } from './util.js';
+import { err, jsonResponse, parseTaskActorArgs } from './util.js';
 
 export const apiUpdateSimpleTaskTool: McpToolDefinition = {
   tool: {
@@ -159,17 +160,15 @@ export const apiUpdateSimpleTaskTool: McpToolDefinition = {
           // which builds notifications (incl. the parent-board linked-task notice)
           // — but the result was returned RAW, so the parent-board assignee was
           // silently not notified, unlike the same-board path + V1. Route through
-          // the same reshape→enqueue→dispatch finalizer; fail-soft so a dispatch
-          // error never fails the already-committed update.
+          // the same reshape→enqueue→dispatch finalizer. Each step is individually
+          // fail-soft (safeNotificationEvents drops a malformed notification;
+          // enqueue + dispatch swallow their own errors), so a secondary-work
+          // failure never flips the already-committed update to success:false.
           let crossParentEvents: NotificationEvent[] = [];
           if (result.success) {
-            try {
-              crossParentEvents = normalizeEngineNotificationEvents(result);
-              enqueueDeferredNotificationsInSession(boardId, crossParentEvents, taskId, { db });
-              dispatchNotificationEvents(crossParentEvents);
-            } catch (e) {
-              log(`#403 cross-parent update dispatch failed: ${String(e)}`);
-            }
+            crossParentEvents = safeNotificationEvents(result);
+            enqueueDeferredNotificationsInSession(boardId, crossParentEvents, taskId, { db });
+            dispatchNotificationEvents(crossParentEvents);
           }
           return jsonResponse(
             result.success ? { ...result, notification_events: crossParentEvents } : result,

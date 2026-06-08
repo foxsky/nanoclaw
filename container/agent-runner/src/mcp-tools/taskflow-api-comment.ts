@@ -21,7 +21,8 @@
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
-import { normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
+import { normalizeAgentIds } from './taskflow-helpers.js';
+import { safeNotificationEvents } from './taskflow-api-mutate.js';
 import { enqueueDeferredNotificationsInSession } from './pending-notification-dispatch.js';
 import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import type { McpToolDefinition } from './types.js';
@@ -103,7 +104,9 @@ export const apiTaskAddCommentTool: McpToolDefinition = {
           error: result.error,
         });
       }
-      const notification_events = normalizeEngineNotificationEvents(result);
+      // Fail-soft: the comment has already committed, so a malformed engine
+      // notification must not flip it to success:false via the catch below.
+      const notification_events = safeNotificationEvents(result);
       // #396: a comment on a task assigned to a still-provisioning cross-board
       // person produces a null-JID deferred_notification — persist it (in-session,
       // fail-soft) so it's delivered once their board provisions, then dispatch.
