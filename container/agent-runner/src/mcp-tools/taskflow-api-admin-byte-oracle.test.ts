@@ -3,6 +3,7 @@ import type { Database } from 'bun:sqlite';
 import { closeTaskflowDb } from '../db/connection.js';
 import { setupEngineDb } from './taskflow-test-fixtures.js';
 import { apiAdminTool } from './taskflow-api-mutate.js';
+import { setVerbatimIds } from './taskflow-helpers.js';
 
 /**
  * R2.6 byte-oracle safety net for the single-engine board-config rework
@@ -109,6 +110,13 @@ describe('api_admin byte-oracle — set_wip_limit', () => {
 });
 
 describe('api_admin byte-oracle — remove_person', () => {
+  // remove_person is a STRUCTURE action → held for admin approval on the CHAT path by the #406
+  // destructive-gate. These byte-oracle cases pin the underlying ENGINE output, so they run via
+  // the non-gated verbatim path (the FastAPI/dashboard surface). The chat-gate contract itself
+  // is covered separately by taskflow-api-mutate-gate.test.ts + the explicit case below.
+  beforeEach(() => setVerbatimIds(true));
+  afterEach(() => setVerbatimIds(false));
+
   it('not-found: requirePerson throws → outer catch → {success:false,error}', async () => {
     const text = await adminText({
       board_id: BOARD,
@@ -165,6 +173,19 @@ describe('api_admin byte-oracle — remove_person', () => {
       force: true,
     });
     expect(text).toBe('{"success":true,"data":{"data":{"removed":"bob","tasks_unassigned":1}},"notification_events":[]}');
+  });
+
+  it('chat path (non-verbatim) is REFUSED with requires_approval/structure and removes NOTHING (#406)', async () => {
+    db.prepare(`INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`).run(BOARD);
+    setVerbatimIds(false); // exercise the chat path explicitly (overrides this block's verbatim setup)
+    const r = JSON.parse(
+      await adminText({ board_id: BOARD, action: 'remove_person', sender_name: 'alice', person_name: 'bob' }),
+    );
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('requires_approval');
+    expect(r.gate.category).toBe('structure');
+    // Fail-closed refusal is a clean no-op: bob is still on the board.
+    expect(db.prepare(`SELECT 1 FROM board_people WHERE board_id = ? AND person_id = 'bob'`).get(BOARD)).toBeTruthy();
   });
 });
 

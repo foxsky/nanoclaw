@@ -17,7 +17,8 @@ import { emitDeterministicToolMessage, emitMutationConfirmation } from './mutati
 import { clearPendingCreateCard, setPendingCreateCard } from './mutation-dedup.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
-import { isTaskflowSubprocess, normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
+import { getVerbatimIds, isTaskflowSubprocess, normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
+import { evaluateDestructiveAction, isStructureAdminAction, type GateDecision } from './destructive-gate.js';
 import { buildReassignCard, buildReassignInfo, type ReassignTaskInfo } from './reassign-card.js';
 import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import { err, generateId, jsonResponse, log, parseTaskActorArgs, requireString } from './util.js';
@@ -30,6 +31,19 @@ import { embedText } from '../memory-embed.js';
 // Mirrors the helper in taskflow-api-chat.ts / taskflow-api-comment.ts.
 function validationError(error: string) {
   return jsonResponse({ success: false, error_code: 'validation_error', error });
+}
+
+// #406 fail-closed refusal for a gated destructive action. The gate runs BEFORE
+// the engine commit, so a refusal is a clean no-op (nothing to roll back). This
+// is the intermediate state pre-#407 (host approval round-trip): chat-only,
+// skipped under verbatim ids (the FastAPI/dashboard surface is never gated).
+function refusal(d: GateDecision) {
+  return jsonResponse({
+    success: false,
+    error_code: 'requires_approval',
+    error: d.reason,
+    gate: { category: d.category },
+  });
 }
 
 const EMBEDDINGS_DB_PATH = '/workspace/embeddings/embeddings.db';
@@ -1321,6 +1335,15 @@ export const apiDeleteSimpleTaskTool: McpToolDefinition = {
     const parsed = parseTaskActorArgs(args);
     if (!parsed.ok) return parsed.error;
 
+    // #406 delete-gate SEAT. The only delete tool ARCHIVES one recoverable task
+    // (affected=1, touchesHistory=false) → never gates under defaults. The call is
+    // seated here so #407 and any future bulk/purge delete have the gate point in
+    // place; do NOT fabricate a touchesHistory=true path. Chat-only.
+    if (!getVerbatimIds()) {
+      const d = evaluateDestructiveAction({ kind: 'delete', affected: 1, touchesHistory: false });
+      if (d.gated) return refusal(d);
+    }
+
     const engine = new TaskflowEngine(getTaskflowDb(), parsed.boardId);
     const result = engine.apiDeleteSimpleTask({
       board_id: parsed.boardId,
@@ -1410,6 +1433,15 @@ export const apiMoveTool: McpToolDefinition = {
           confirmed_task_id: confirmedTaskId,
         });
         return finalizeMutationResult(addMoveFormattedResult(result, action));
+      }
+
+      // #406 mass-mutation gate (bulk branch only; single task_id is affected=1 →
+      // never gated). Count is the REQUESTED task_ids length (conservative — a 6-id
+      // move where some are invalid still gates as mass). Chat-only; verbatim/FastAPI
+      // bypasses. Runs BEFORE the per-task loop that commits.
+      if (!getVerbatimIds()) {
+        const d = evaluateDestructiveAction({ kind: 'mutation', affected: taskIds.length });
+        if (d.gated) return refusal(d);
       }
 
       const results: MoveResult[] = [];
@@ -1681,6 +1713,14 @@ export const apiAdminTool: McpToolDefinition = {
       adminParams.create = args.create as AdminParams['create'];
     }
 
+    // #406 structure gate (chat-only; verbatim/FastAPI bypasses). remove_person /
+    // remove_child_board / remove_admin change board/people structure → held for
+    // admin approval. Runs BEFORE engine.admin (the commit) so a refusal is a no-op.
+    if (!getVerbatimIds() && isStructureAdminAction(action)) {
+      const d = evaluateDestructiveAction({ kind: 'structure', adminAction: action });
+      if (d.gated) return refusal(d);
+    }
+
     try {
       const engine = new TaskflowEngine(getTaskflowDb(), boardId);
       const result = engine.admin(adminParams);
@@ -1744,6 +1784,24 @@ export const apiReassignTool: McpToolDefinition = {
 
     try {
       const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      // #406 mass-mutation gate. Only the bulk (source_person) confirmed path can
+      // exceed 1 task. Strategy (i): a dry-run (confirmed=false) commits nothing
+      // (engine returns before any write, taskflow-engine.ts:5239) but yields
+      // tasks_affected — exactly the set that would mutate. Chat-only; verbatim/
+      // FastAPI bypasses. Single task_id is affected=1 → never gated, no dry-run.
+      if (!getVerbatimIds() && confirmed && sourcePerson) {
+        const dryRun = engine.reassign({
+          board_id: boardId,
+          target_person: targetPerson,
+          sender_name: senderName,
+          confirmed: false,
+          source_person: sourcePerson,
+        });
+        if (dryRun.success && dryRun.tasks_affected) {
+          const d = evaluateDestructiveAction({ kind: 'mutation', affected: dryRun.tasks_affected.length });
+          if (d.gated) return refusal(d);
+        }
+      }
       // Capture the pre-reassign assignee NAME for the De/Para card — getTask
       // post-commit returns the NEW assignee. Best-effort: never block the
       // mutation on this (mirrors the poll-loop deterministic path).
