@@ -3117,3 +3117,20 @@ describe('post-commit finalizers — fail-soft against secondary-work throws', (
     expect(parsed.notification_events).toEqual([]);
   });
 });
+
+// Bulk api_move does NOT route through finalizeMutationResult — it normalizes
+// each committed sub-move's notifications directly. That per-success normalize
+// must be fail-soft too: a malformed notification from ONE committed move must
+// not throw and flip the whole bulk result (multiple committed moves) to
+// success:false. Per-success isolation also matters — one bad result drops only
+// its own events, not the others'.
+describe('bulkMoveNotificationEvents — per-success fail-soft (bulk move has no finalizer)', () => {
+  it('drops a malformed sub-move notification without throwing, keeping the others', async () => {
+    const { bulkMoveNotificationEvents } = await import('./taskflow-api-mutate.ts');
+    const out = bulkMoveNotificationEvents([
+      { notifications: 'not-an-array' }, // committed move, engine handed back garbage
+      { notifications: [{ target_kind: 'dm', target_chat_jid: '55@s', message: 'oi' }] },
+    ]);
+    expect(out).toEqual([[], [{ kind: 'direct_message', target_chat_jid: '55@s', message: 'oi' }]]);
+  });
+});

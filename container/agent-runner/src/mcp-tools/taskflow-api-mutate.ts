@@ -447,6 +447,20 @@ export function safeBoardTimeZone(db: Database, boardId: string): string {
   }
 }
 
+/**
+ * Per-success notification events for the bulk api_move path, which does NOT go
+ * through finalizeMutationResult (it normalizes each committed sub-move directly,
+ * keeping per-task parent_notification rollups separate). Fail-soft PER result:
+ * the sub-moves have already committed, so a malformed notification from one must
+ * not throw and flip the whole bulk result to success:false — it drops only its
+ * own events. Returns one event array per input, index-aligned for enqueue.
+ */
+export function bulkMoveNotificationEvents(
+  successes: { notifications?: unknown }[],
+): ReturnType<typeof normalizeEngineNotificationEvents>[] {
+  return successes.map((r) => safeNotificationEvents(r));
+}
+
 export function finalizeMutationResult(result: {
   success: boolean;
   notifications?: unknown;
@@ -1423,8 +1437,9 @@ export const apiMoveTool: McpToolDefinition = {
       // parent_notification rollups (returned separately from notifications,
       // engine move:5070) survive — and so one task's notification can't
       // suppress another's via the normalizer's per-result jid-dedup.
-      // (#389; Codex High-2)
-      const eventsPerSuccess = successes.map((r) => normalizeEngineNotificationEvents(r));
+      // (#389; Codex High-2). Fail-soft per result (these moves have committed,
+      // so a malformed notification must not throw and fail the bulk result).
+      const eventsPerSuccess = bulkMoveNotificationEvents(successes);
       const notification_events = eventsPerSuccess.flat();
       // #396: persist each sub-move's deferred cross-board notifications (keyed by
       // that sub-task's id) before dispatch — the bulk path doesn't go through
