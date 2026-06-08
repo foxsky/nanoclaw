@@ -48,6 +48,10 @@ jobs:
       - name: Host tests
         run: pnpm exec vitest run
 
+      - name: Security boundary (fast red-team gate)
+        working-directory: container/agent-runner
+        run: bun test src/providers/security-boundary.test.ts src/providers/factory.test.ts src/mcp-tools/destructive-gate.test.ts src/mcp-tools/subprocess-gate-invariant.test.ts src/mcp-tools/taskflow-helpers.test.ts
+
       - name: Container tests
         working-directory: container/agent-runner
         run: bun test

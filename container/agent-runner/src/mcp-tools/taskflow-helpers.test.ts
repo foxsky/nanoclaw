@@ -174,6 +174,45 @@ describe('normalizeAgentIds', () => {
     expect(out.sender_name).toBe('Carlos');
     expect(out.query).toBe('task_details');
   });
+
+  // SECURITY BOUNDARY (cross-board spoof). The env-overwrite mechanism is the
+  // sole thing standing between a board-scoped agent and another team's board.
+  // The 'wrong-board' test above proves the mechanism fires; these frame it as
+  // a red-team case — a WELL-FORMED, DIFFERENT, REAL board id — so the test
+  // would fail if normalize ever honored a cross-board id the agent supplied.
+  it('SECURITY: an agent-supplied board_id pointing at ANOTHER real board is overwritten by the env board (cross-board spoof defeated)', () => {
+    // WHY (intent): the spoof target is a DIFFERENT real board id, not a
+    // malformed sentinel. The assertion is that the result equals the ENV board
+    // (the agent's own), NOT the agent-supplied target — so a regression that
+    // passed through any well-formed board_id would fail here.
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-seci-taskflow';
+    try {
+      const out = normalizeAgentIds({ board_id: 'board-thiago-taskflow', task_id: 'P1' });
+      expect(out.board_id).toBe('board-seci-taskflow');
+    } finally {
+      delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    }
+  });
+
+  it('SECURITY: in-session (verbatim OFF) the env board ALWAYS wins — the only escape hatch is _verbatimIds, which the in-session barrel never sets', () => {
+    // WHY (intent): normalizeAgentIds returns the args verbatim ONLY when
+    // _verbatimIds is true. setVerbatimIds(true) is proven subprocess-entry-only
+    // by subprocess-gate-invariant.test.ts. With verbatim OFF (the in-session
+    // default) the env board MUST win regardless of what the agent passes — this
+    // is the structural guarantee that an in-session agent cannot reach another
+    // board even with a perfectly-formed cross-board id.
+    setVerbatimIds(false);
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-seci-taskflow';
+    try {
+      expect(normalizeAgentIds({ board_id: 'board-attacker' }).board_id).toBe('board-seci-taskflow');
+    } finally {
+      delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+      // Reset locally: the describe-level afterEach (line 49) only clears the env
+      // var; the setVerbatimIds afterEach lives in a sibling describe block, so
+      // reset here to avoid leaking verbatim state into other tests in this file.
+      setVerbatimIds(false);
+    }
+  });
 });
 
 describe('parseActorArg', () => {
