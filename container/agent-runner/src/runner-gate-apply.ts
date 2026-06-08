@@ -143,8 +143,16 @@ export function gateRunnerMessages(messages: MessageInRow[], opts: ContainerGate
     if (!cron || !isTfRunnerRow(msg)) continue;
     const job = jobFromContent(msg.content);
     if (!job) continue; // matched [TF- loosely but no known job tag — leave it alone
-    if (holidayToday && !isHolidayExempt(opts.agentGroupFolder, job)) {
-      outcomes.push({ id: msg.id, job, fired: false });
+    if (holidayToday) {
+      if (!isHolidayExempt(opts.agentGroupFolder, job)) {
+        outcomes.push({ id: msg.id, job, fired: false });
+        continue;
+      }
+      // Exempt board/kind on a holiday: force the post through, PAST the activity gate
+      // too (the docstring contract + host mirror). Holidays correlate with Idle/Stale
+      // boards, so still running decideRunnerGate would suppress the very post the operator
+      // marked exempt — useless on the one day the exemption exists for.
+      outcomes.push({ id: msg.id, job, fired: true });
       continue;
     }
     const state = computeRunnerState({

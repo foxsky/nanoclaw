@@ -222,6 +222,26 @@ describe('gateScheduledRunners — holiday skip (V1 parity)', () => {
     }
   });
 
+  it('TASKFLOW_HOLIDAY_EXEMPT fires an IDLE exempt board PAST the activity gate too (not just the holiday skip)', () => {
+    const prev = process.env.TASKFLOW_HOLIDAY_EXEMPT;
+    process.env.TASKFLOW_HOLIDAY_EXEMPT = 'board-x:standup';
+    try {
+      const { ib, tf } = dbs();
+      // No makeActive: the board is IDLE (no pending tasks, no interactions) — decideRunnerGate
+      // would suppress an idle board's standup. But holidays correlate with idle boards (no work
+      // that day), so an exempt board must post ANYWAY; bypassing only the holiday skip while still
+      // running the activity gate would make the exemption useless on the one day it exists for.
+      addHoliday(tf, 'b1', '2026-06-01', 'Feriado');
+      addRunner(ib, 's', 'TF-STANDUP', STANDUP);
+      const out = gateScheduledRunners(ib, tf, { ...opts, agentGroupFolder: 'board-x' });
+      expect(status(ib, 's')).toBe('pending'); // fired past BOTH the holiday skip AND the activity gate
+      expect(out.find((o) => o.id === 's')?.fired).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.TASKFLOW_HOLIDAY_EXEMPT;
+      else process.env.TASKFLOW_HOLIDAY_EXEMPT = prev;
+    }
+  });
+
   it('isBoardHolidayToday: holiday+label on the day, false off the day, fail-open on a missing table', () => {
     const { tf } = dbs();
     addHoliday(tf, 'b1', '2026-06-01', 'Corpus Christi');
