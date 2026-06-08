@@ -141,9 +141,6 @@ describe('holidayExemptEnvArgs', () => {
     // An empty `-e TASKFLOW_HOLIDAY_EXEMPT=` would make the container read '' (falsy, fine) but
     // pollutes the arg list; more importantly the contract is "only when set". Folder still goes.
     expect(holidayExemptEnvArgs('acme', {})).toEqual(['-e', 'NANOCLAW_GROUP_FOLDER=acme']);
-    expect(holidayExemptEnvArgs('acme', { TASKFLOW_HOLIDAY_EXEMPT: '' })).toEqual([
-      '-e',
-      'NANOCLAW_GROUP_FOLDER=acme',
-    ]);
+    expect(holidayExemptEnvArgs('acme', { TASKFLOW_HOLIDAY_EXEMPT: '' })).toEqual(['-e', 'NANOCLAW_GROUP_FOLDER=acme']);
   });
 });
