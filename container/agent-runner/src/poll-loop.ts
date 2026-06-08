@@ -3929,7 +3929,16 @@ export function gateScheduledRunners(messages: MessageInRow[]): MessageInRow[] {
   try {
     return applyRunnerGate(
       messages,
-      { taskflowDb: getTaskflowDb(), inboundDb: inbound, boardId, now: new Date(), timeZone: TIMEZONE },
+      {
+        taskflowDb: getTaskflowDb(),
+        inboundDb: inbound,
+        boardId,
+        now: new Date(),
+        timeZone: TIMEZONE,
+        // Host forwards the group folder so isHolidayExempt can match 'folder'/'folder:kind'
+        // against TASKFLOW_HOLIDAY_EXEMPT. Undefined when unset → exempt stays false (unchanged).
+        agentGroupFolder: process.env.NANOCLAW_GROUP_FOLDER,
+      },
       markCompleted,
     );
   } catch (err) {

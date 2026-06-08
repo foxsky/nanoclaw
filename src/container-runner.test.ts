@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  holidayExemptEnvArgs,
   memoryEnvArgs,
   replayContainerEnvArgs,
   resolveProviderName,
@@ -113,6 +114,36 @@ describe('taskflowEmbedEnvArgs', () => {
       'NANOCLAW_TASKFLOW_EMBED_URL=http://h:11434',
       '-e',
       'NANOCLAW_TASKFLOW_EMBED_MODEL=bge-m3',
+    ]);
+  });
+});
+
+describe('holidayExemptEnvArgs', () => {
+  it('ALWAYS forwards the group folder so the container gate can match the exempt key', () => {
+    // NANOCLAW_GROUP_FOLDER is the exempt key the container's isHolidayExempt matches
+    // ('folder' or 'folder:kind'). Without it forwarded, every holiday-exempt entry is dead
+    // in the warm gate. Must be present even with no operator exempt list set.
+    expect(holidayExemptEnvArgs('thiago-taskflow', {})).toEqual(['-e', 'NANOCLAW_GROUP_FOLDER=thiago-taskflow']);
+  });
+
+  it('forwards TASKFLOW_HOLIDAY_EXEMPT verbatim under the SAME name the container reads', () => {
+    // The container's isHolidayExempt reads process.env.TASKFLOW_HOLIDAY_EXEMPT directly, so
+    // the host must inject it under that exact name and value — no rename, no reformat.
+    expect(holidayExemptEnvArgs('acme', { TASKFLOW_HOLIDAY_EXEMPT: 'acme:standup,beta' })).toEqual([
+      '-e',
+      'NANOCLAW_GROUP_FOLDER=acme',
+      '-e',
+      'TASKFLOW_HOLIDAY_EXEMPT=acme:standup,beta',
+    ]);
+  });
+
+  it('does NOT emit a TASKFLOW_HOLIDAY_EXEMPT entry when unset (no empty -e)', () => {
+    // An empty `-e TASKFLOW_HOLIDAY_EXEMPT=` would make the container read '' (falsy, fine) but
+    // pollutes the arg list; more importantly the contract is "only when set". Folder still goes.
+    expect(holidayExemptEnvArgs('acme', {})).toEqual(['-e', 'NANOCLAW_GROUP_FOLDER=acme']);
+    expect(holidayExemptEnvArgs('acme', { TASKFLOW_HOLIDAY_EXEMPT: '' })).toEqual([
+      '-e',
+      'NANOCLAW_GROUP_FOLDER=acme',
     ]);
   });
 });

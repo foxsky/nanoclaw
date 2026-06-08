@@ -69,6 +69,8 @@ import {
   taskflowStandaloneActivityContextHints,
   taskflowStandaloneActivityPrompt,
 } from './poll-loop.js';
+import { TIMEZONE } from './timezone.js';
+import { localDateString } from './runner-state.js';
 
 beforeEach(() => {
   initTestSessionDb();
@@ -79,6 +81,8 @@ afterEach(() => {
   closeSessionDb();
   closeTaskflowDb();
   delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  delete process.env.NANOCLAW_GROUP_FOLDER;
+  delete process.env.TASKFLOW_HOLIDAY_EXEMPT;
 });
 
 function insertMessage(
@@ -319,6 +323,41 @@ describe('gateScheduledRunners (warm-container runner gate)', () => {
     const kept = batch();
     expect(kept.find((m) => m.id === 's')).toBeDefined(); // still fires (not dropped)
     expect(ackStatus('s')).toBeUndefined(); // never marked completed → host won't advance/suppress it
+  });
+
+  // The host forwards NANOCLAW_GROUP_FOLDER into the container so the warm gate's TASKFLOW_HOLIDAY_EXEMPT
+  // override can fire. These two tests pin that gateScheduledRunners actually THREADS that env into the
+  // gate opts (agentGroupFolder) — without the wiring, a holiday-exempt board would still be silenced.
+  function addTodayHoliday() {
+    getTaskflowDb().exec('CREATE TABLE IF NOT EXISTS board_holidays (board_id TEXT, holiday_date TEXT, label TEXT)');
+    const today = localDateString(new Date(), TIMEZONE); // gate keys the holiday on the board's local date
+    getTaskflowDb()
+      .prepare('INSERT INTO board_holidays (board_id, holiday_date, label) VALUES (?, ?, ?)')
+      .run('b1', today, 'Feriado');
+  }
+
+  it('threads NANOCLAW_GROUP_FOLDER so an exempt board fires through the holiday skip', () => {
+    addTodayHoliday();
+    // Active board (interaction since last run) so the ONLY thing that could suppress the runner is
+    // the holiday skip — proving the exemption (which only bypasses the holiday) is what lets it fire.
+    insertMessage('chat-1', 'chat', { sender: 'A', text: 'morning' }, { trigger: 1 });
+    process.env.NANOCLAW_GROUP_FOLDER = 'acme';
+    process.env.TASKFLOW_HOLIDAY_EXEMPT = 'acme'; // matches the forwarded folder → exempt
+    insertRunner('s', 'TF-STANDUP', STANDUP);
+    const kept = batch();
+    expect(kept.find((m) => m.id === 's')).toBeDefined(); // exempt → past the holiday → active board fires
+    expect(ackStatus('s')).toBeUndefined();
+  });
+
+  it('suppresses on a holiday when the forwarded folder is NOT exempt (even on an active board)', () => {
+    addTodayHoliday();
+    insertMessage('chat-1', 'chat', { sender: 'A', text: 'morning' }, { trigger: 1 }); // active, would fire if not holiday
+    process.env.NANOCLAW_GROUP_FOLDER = 'acme';
+    process.env.TASKFLOW_HOLIDAY_EXEMPT = 'other-board'; // does not match → no exemption
+    insertRunner('s', 'TF-STANDUP', STANDUP);
+    const kept = batch();
+    expect(kept.find((m) => m.id === 's')).toBeUndefined(); // holiday skip drops it
+    expect(ackStatus('s')).toBe('completed');
   });
 });
 

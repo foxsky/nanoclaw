@@ -269,6 +269,22 @@ export function memoryEnvArgs(env: NodeJS.ProcessEnv = process.env): string[] {
   return args;
 }
 
+// TaskFlow holiday-skip wiring for the CONTAINER warm-gate. The host sweep gate reads
+// agentGroup.folder + TASKFLOW_HOLIDAY_EXEMPT in-process, but the warm container's gate
+// (container/agent-runner/src/runner-gate-apply.ts isHolidayExempt) needs both forwarded:
+//   - NANOCLAW_GROUP_FOLDER  — always; the exempt key matches 'folder' or 'folder:kind'.
+//                              Read by poll-loop.ts and passed as agentGroupFolder into the gate.
+//   - TASKFLOW_HOLIDAY_EXEMPT — verbatim, ONLY when set (no empty -e), so an unset operator list
+//                              leaves the container's exempt at its default-false (unchanged).
+// Folder is a spawn parameter (not env); the exempt list is host env. Pure for unit testing.
+export function holidayExemptEnvArgs(folder: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  const args = ['-e', `NANOCLAW_GROUP_FOLDER=${folder}`];
+  if (env.TASKFLOW_HOLIDAY_EXEMPT) {
+    args.push('-e', `TASKFLOW_HOLIDAY_EXEMPT=${env.TASKFLOW_HOLIDAY_EXEMPT}`);
+  }
+  return args;
+}
+
 // TaskFlow semantic-search embed config (#385). The in-container api_query
 // 'search' handler embeds the search text itself, and MUST use the same model
 // the host EmbeddingService indexed tasks with (else query/task vectors are
@@ -525,6 +541,10 @@ async function buildContainerArgs(
   if (taskflowBoardId) {
     args.push('-e', `NANOCLAW_TASKFLOW_BOARD_ID=${taskflowBoardId}`);
   }
+
+  // TaskFlow holiday-skip: forward the group folder (always) + operator exempt list (only when
+  // set) so the container warm-gate's isHolidayExempt can match. See holidayExemptEnvArgs.
+  args.push(...holidayExemptEnvArgs(agentGroup.folder));
 
   // Provider-contributed env vars (e.g. XDG_DATA_HOME, OPENCODE_*, NO_PROXY).
   if (providerContribution.env) {
