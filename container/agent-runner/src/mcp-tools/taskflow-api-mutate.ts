@@ -324,7 +324,7 @@ function duplicateHardBlockResponse(engine: TaskflowEngine, row: Record<string, 
  * full denormalized shape; engine.create's post-commit verification
  * only selects `id`, not the joined columns.
  */
-function finalizeCreatedTaskResult(
+export function finalizeCreatedTaskResult(
   db: Database,
   engine: TaskflowEngine,
   boardId: string,
@@ -359,7 +359,10 @@ function finalizeCreatedTaskResult(
   // independent of the "Tarefa criada" CARD above, which is the in-chat
   // confirmation that stays deferred-to-turn-end and cleared on a same-turn
   // delete/reparent. in_chat_notice events (invite cards) render in-chat.
-  const notification_events = normalizeEngineNotificationEvents(result);
+  // Fail-soft (shared with finalizeMutationResult): the create has already
+  // committed, so a malformed engine notification must not flip it to
+  // success:false (→ agent retries → duplicate task).
+  const notification_events = safeNotificationEvents(result);
   // #396: a cross-board assignee whose child board is still provisioning has a
   // null JID, so dispatch host-skips their deferred_notification. PERSIST it
   // FIRST (before dispatch, in-session only, fail-soft) so a crash mid-dispatch
@@ -406,6 +409,44 @@ function singleDeferredTaskId(result: { task_id?: unknown; tasks_affected?: unkn
  *     contract), offer_register, etc. — without us picking winners on
  *     which engine fields to forward.
  */
+/**
+ * normalizeEngineNotificationEvents, fail-soft for the POST-commit finalizers.
+ * The normalizer validates the engine's notification shape and THROWS on
+ * anything malformed; in a finalizer that runs AFTER the mutation committed, a
+ * throw would flip a committed write to success:false (the agent then retries →
+ * double-apply). #399 fixed one shape (invite-pending group/no-JID); this guards
+ * the rest — drop the notifications (logged loudly), never the success. Shared
+ * by finalizeMutationResult and finalizeCreatedTaskResult.
+ */
+export function safeNotificationEvents(
+  result: unknown,
+): ReturnType<typeof normalizeEngineNotificationEvents> {
+  try {
+    return normalizeEngineNotificationEvents(result);
+  } catch (err) {
+    log(`mutation notification normalization failed (notifications dropped): ${String(err)}`);
+    return [];
+  }
+}
+
+/**
+ * The board timezone for POST-commit card formatting, guaranteed Intl-usable.
+ * getBoardTimezone returns the raw board_runtime_config value with no
+ * validation, so a garbage tz (or a read error) would make the downstream
+ * `toLocaleDateString(..., { timeZone })` throw and flip a committed update to
+ * success:false. Validate it against Intl and fall back to the default zone.
+ */
+export function safeBoardTimeZone(db: Database, boardId: string): string {
+  try {
+    const tz = getBoardTimezone(db, boardId);
+    // toLocaleDateString throws a RangeError on an unknown/invalid zone.
+    new Date().toLocaleDateString('en-CA', { timeZone: tz });
+    return tz;
+  } catch {
+    return 'America/Fortaleza';
+  }
+}
+
 export function finalizeMutationResult(result: {
   success: boolean;
   notifications?: unknown;
@@ -413,20 +454,7 @@ export function finalizeMutationResult(result: {
   tasks_affected?: unknown;
 }) {
   const { notifications: _notifications, success, ...rest } = result;
-  // normalizeEngineNotificationEvents validates the engine's notification shape
-  // and THROWS on anything malformed. It runs post-commit, so on a successful
-  // mutation a throw here would flip a committed write to success:false (the
-  // agent then retries → double-apply). #399 fixed one shape (invite-pending
-  // group/no-JID); guard the rest fail-soft — drop the notifications (logged),
-  // never the success. The emit/dispatch side-effects below are already each
-  // individually fail-soft, so this is the last post-commit throw in finalize.
-  let notification_events: ReturnType<typeof normalizeEngineNotificationEvents>;
-  try {
-    notification_events = normalizeEngineNotificationEvents(result);
-  } catch (err) {
-    log(`mutation notification normalization failed (notifications dropped): ${String(err)}`);
-    notification_events = [];
-  }
+  const notification_events = safeNotificationEvents(result);
   if (!success) return jsonResponse({ success: false, ...rest, notification_events });
   emitMutationConfirmation(result);
   // #396: persist any cross-board deferred (null-JID) notification (e.g. a
@@ -2069,7 +2097,7 @@ export const apiUpdateTaskTool: McpToolDefinition = {
       let today: string | undefined;
       let timeZone = 'America/Fortaleza';
       if (updates.add_subtask !== undefined || updates.scheduled_at !== undefined) {
-        timeZone = getBoardTimezone(getTaskflowDb(), boardId);
+        timeZone = safeBoardTimeZone(getTaskflowDb(), boardId);
         if (updates.add_subtask !== undefined) {
           today = new Date().toLocaleDateString('en-CA', { timeZone });
         }
@@ -2387,7 +2415,7 @@ export const apiRescheduleMeetingTool: McpToolDefinition = {
         confirmed_task_id: confirmedTaskId,
       };
       const result = engine.update(updateParams);
-      const timeZone = getBoardTimezone(getTaskflowDb(), boardId);
+      const timeZone = safeBoardTimeZone(getTaskflowDb(), boardId);
       return finalizeMutationResult(addUpdateFormattedResult(result, { scheduled_at: scheduledAt }, undefined, timeZone));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

@@ -3061,3 +3061,59 @@ describe('finalizeMutationResult — notification normalization is fail-soft', (
     ]);
   });
 });
+
+// Codex re-verify: the post-commit-throw class is NOT just finalizeMutationResult.
+// Two more post-commit, pre-response operations could throw and flip a COMMITTED
+// mutation to success:false (→ agent retries → double create/update):
+//   • finalizeCreatedTaskResult re-normalizes notifications post-create (line ~362)
+//   • the update + meeting-reschedule paths read getBoardTimezone and format with
+//     toLocaleDateString, which throws on a garbage tz in board_runtime_config.
+// Both are closed via shared fail-soft helpers; pin the intent.
+describe('post-commit finalizers — fail-soft against secondary-work throws', () => {
+  it('safeNotificationEvents: malformed notifications → [] (never throws)', async () => {
+    const { safeNotificationEvents } = await import('./taskflow-api-mutate.ts');
+    expect(safeNotificationEvents({ notifications: 'not-an-array' })).toEqual([]);
+  });
+
+  it('safeNotificationEvents: well-formed notifications normalize unchanged', async () => {
+    const { safeNotificationEvents } = await import('./taskflow-api-mutate.ts');
+    expect(
+      safeNotificationEvents({ notifications: [{ target_kind: 'dm', target_chat_jid: '55@s', message: 'oi' }] }),
+    ).toEqual([{ kind: 'direct_message', target_chat_jid: '55@s', message: 'oi' }]);
+  });
+
+  it('safeBoardTimeZone: a garbage tz in board_runtime_config → default, never throws', async () => {
+    const { safeBoardTimeZone } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_runtime_config (board_id, timezone) VALUES (?, 'Not/AZone')
+       ON CONFLICT(board_id) DO UPDATE SET timezone = excluded.timezone`,
+    ).run(BOARD);
+    expect(safeBoardTimeZone(db, BOARD)).toBe('America/Fortaleza');
+  });
+
+  it('safeBoardTimeZone: a valid tz is returned as-is', async () => {
+    const { safeBoardTimeZone } = await import('./taskflow-api-mutate.ts');
+    db.prepare(
+      `INSERT INTO board_runtime_config (board_id, timezone) VALUES (?, 'America/Sao_Paulo')
+       ON CONFLICT(board_id) DO UPDATE SET timezone = excluded.timezone`,
+    ).run(BOARD);
+    expect(safeBoardTimeZone(db, BOARD)).toBe('America/Sao_Paulo');
+  });
+
+  it('finalizeCreatedTaskResult: a committed create survives a malformed notification (success:true)', async () => {
+    const { apiCreateSimpleTaskTool, finalizeCreatedTaskResult } = await import('./taskflow-api-mutate.ts');
+    const { TaskflowEngine } = await import('../taskflow-engine.ts');
+    const created = JSON.parse(
+      (await apiCreateSimpleTaskTool.handler({ board_id: BOARD, title: 'Keep me', sender_name: 'alice' })).content[0].text,
+    );
+    const engine = new TaskflowEngine(db, BOARD);
+    const res = finalizeCreatedTaskResult(db, engine, BOARD, {
+      success: true,
+      task_id: created.data.id,
+      notifications: 'not-an-array', // engine handed back a malformed notification
+    });
+    const parsed = JSON.parse(res.content[0].text);
+    expect(parsed.success).toBe(true);
+    expect(parsed.notification_events).toEqual([]);
+  });
+});
