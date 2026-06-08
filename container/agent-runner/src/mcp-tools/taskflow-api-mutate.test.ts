@@ -3017,3 +3017,47 @@ describe('api_create_task dup-detection wiring (#392)', () => {
     expect(forced.data.id).toBeTruthy();
   });
 });
+
+// finalizeMutationResult runs normalizeEngineNotificationEvents POST-commit and
+// before the success check. normalize THROWS on a malformed engine notification
+// (#399 fixed one case — invite-pending group/no-JID — but the other validation
+// throws remain). A committed mutation (success:true) must NEVER be flipped to
+// success:false because the engine handed back a malformed notification: the bad
+// notifications are dropped (logged), the mutation still reports success. This is
+// the only post-commit throw left in finalize — the emit/dispatch side-effects
+// are already individually fail-soft.
+describe('finalizeMutationResult — notification normalization is fail-soft', () => {
+  it('keeps success:true when normalization throws on a committed mutation', async () => {
+    const { finalizeMutationResult } = await import('./taskflow-api-mutate.ts');
+    const res = finalizeMutationResult({
+      success: true,
+      task_id: 'T1',
+      notifications: 'not-an-array', // → normalize throws "expected array"
+    });
+    const parsed = JSON.parse(res.content[0].text);
+    expect(parsed.success).toBe(true);
+    expect(parsed.notification_events).toEqual([]);
+  });
+
+  it('still reports failure (and does not throw) when normalization throws on a failed result', async () => {
+    const { finalizeMutationResult } = await import('./taskflow-api-mutate.ts');
+    const res = finalizeMutationResult({ success: false, notifications: 'not-an-array' });
+    const parsed = JSON.parse(res.content[0].text);
+    expect(parsed.success).toBe(false);
+    expect(parsed.notification_events).toEqual([]);
+  });
+
+  it('normalizes well-formed notifications unchanged (guard does not swallow valid events)', async () => {
+    const { finalizeMutationResult } = await import('./taskflow-api-mutate.ts');
+    const res = finalizeMutationResult({
+      success: true,
+      task_id: 'T2',
+      notifications: [{ target_kind: 'dm', target_chat_jid: '55@s', message: 'oi' }],
+    });
+    const parsed = JSON.parse(res.content[0].text);
+    expect(parsed.success).toBe(true);
+    expect(parsed.notification_events).toEqual([
+      { kind: 'direct_message', target_chat_jid: '55@s', message: 'oi' },
+    ]);
+  });
+});

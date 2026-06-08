@@ -406,14 +406,27 @@ function singleDeferredTaskId(result: { task_id?: unknown; tasks_affected?: unkn
  *     contract), offer_register, etc. — without us picking winners on
  *     which engine fields to forward.
  */
-function finalizeMutationResult(result: {
+export function finalizeMutationResult(result: {
   success: boolean;
   notifications?: unknown;
   task_id?: unknown;
   tasks_affected?: unknown;
 }) {
   const { notifications: _notifications, success, ...rest } = result;
-  const notification_events = normalizeEngineNotificationEvents(result);
+  // normalizeEngineNotificationEvents validates the engine's notification shape
+  // and THROWS on anything malformed. It runs post-commit, so on a successful
+  // mutation a throw here would flip a committed write to success:false (the
+  // agent then retries → double-apply). #399 fixed one shape (invite-pending
+  // group/no-JID); guard the rest fail-soft — drop the notifications (logged),
+  // never the success. The emit/dispatch side-effects below are already each
+  // individually fail-soft, so this is the last post-commit throw in finalize.
+  let notification_events: ReturnType<typeof normalizeEngineNotificationEvents>;
+  try {
+    notification_events = normalizeEngineNotificationEvents(result);
+  } catch (err) {
+    log(`mutation notification normalization failed (notifications dropped): ${String(err)}`);
+    notification_events = [];
+  }
   if (!success) return jsonResponse({ success: false, ...rest, notification_events });
   emitMutationConfirmation(result);
   // #396: persist any cross-board deferred (null-JID) notification (e.g. a
