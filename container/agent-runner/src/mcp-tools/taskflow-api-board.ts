@@ -17,6 +17,7 @@
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
+import { getVerbatimIds } from './taskflow-helpers.js';
 import type { McpToolDefinition } from './types.js';
 import { jsonResponse, requireString } from './util.js';
 
@@ -614,13 +615,40 @@ export const apiUpdateBoardPersonTool: McpToolDefinition = {
   },
 };
 
-registerTools([
-  apiCreateBoardTool,
-  apiDeleteBoardTool,
-  apiAddHolidayTool,
-  apiRemoveHolidayTool,
-  apiUpdateBoardTool,
-  apiAddBoardPersonTool,
-  apiRemoveBoardPersonTool,
-  apiUpdateBoardPersonTool,
-]);
+/**
+ * SECURITY: every tool in this file reads `board_id` VERBATIM (no normalizeAgentIds) and relies
+ * on FastAPI-side owner auth that runs BEFORE the tool. They must therefore NEVER be callable
+ * from the chat agent — a chat call could target ANY board (cross-board create/delete/person
+ * mutation on the single global taskflow.db). Defense in depth: they are no longer imported into
+ * the chat barrel (index.ts), AND every handler fail-closes here when not running under the
+ * verbatim (FastAPI subprocess) flag. getVerbatimIds() is process-level, set only by
+ * taskflow-server-entry.ts — never reachable from MCP input — so the chat agent can't flip it.
+ */
+export function fastApiOnly(def: McpToolDefinition): McpToolDefinition {
+  return {
+    ...def,
+    handler: async (args) => {
+      if (!getVerbatimIds()) {
+        return jsonResponse({
+          success: false,
+          error_code: 'not_available',
+          error: `${def.tool.name} is a board-administration tool available only via the dashboard/API, not from chat.`,
+        });
+      }
+      return def.handler(args);
+    },
+  };
+}
+
+registerTools(
+  [
+    apiCreateBoardTool,
+    apiDeleteBoardTool,
+    apiAddHolidayTool,
+    apiRemoveHolidayTool,
+    apiUpdateBoardTool,
+    apiAddBoardPersonTool,
+    apiRemoveBoardPersonTool,
+    apiUpdateBoardPersonTool,
+  ].map(fastApiOnly),
+);
