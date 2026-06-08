@@ -18,7 +18,7 @@ import { DATA_DIR, TIMEZONE } from '../../config.js';
 import { log } from '../../log.js';
 import { isValidTimezone } from '../../timezone.js';
 import { resolveTaskflowBoardId } from '../../taskflow-db.js';
-import { computeRunnerState } from './runner-state.js';
+import { computeRunnerState, localDateString } from './runner-state.js';
 import { decideRunnerGate, type RunnerJob } from './runner-gate.js';
 
 const JOB_TAGS: ReadonlyArray<[string, RunnerJob]> = [
@@ -43,12 +43,71 @@ export interface GateRunnersOpts {
   boardId: string;
   now: Date;
   timeZone: string;
+  /** The board's group folder, used only for the TASKFLOW_HOLIDAY_EXEMPT override. */
+  agentGroupFolder?: string;
 }
 
 export interface GateOutcome {
   id: string;
   job: RunnerJob;
   fired: boolean;
+  /** Why a runner was suppressed: 'holiday' for the holiday skip, omitted for the activity gate. */
+  reason?: 'holiday';
+}
+
+const HOLIDAY_EXEMPT_LABEL: Record<RunnerJob, string> = {
+  standup: 'standup',
+  digest: 'digest',
+  review: 'weekly', // V1 postKindLabel renders [TF-REVIEW] as 'weekly' for the exemption key
+};
+
+/**
+ * Boards/kinds exempt from the holiday skip (force the post on a holiday, past the activity gate
+ * too). TASKFLOW_HOLIDAY_EXEMPT is a comma-separated list of `folder` or `folder:kind`
+ * (kind = standup|digest|weekly). Parsed per-call so a systemd-set env is honored without a
+ * rebuild and tests can toggle it; empty by default. (V1 parity: task-scheduler HOLIDAY_EXEMPT.)
+ */
+function isHolidayExempt(folder: string | undefined, job: RunnerJob): boolean {
+  if (!folder) return false;
+  const raw = process.env.TASKFLOW_HOLIDAY_EXEMPT;
+  if (!raw) return false;
+  const exempt = new Set(
+    raw
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const f = folder.toLowerCase();
+  return exempt.has(f) || exempt.has(`${f}:${HOLIDAY_EXEMPT_LABEL[job]}`);
+}
+
+export interface BoardHolidayToday {
+  holiday: boolean;
+  label?: string | null;
+  date: string;
+}
+
+/**
+ * Is TODAY (the board's local date) a registered board holiday? Scheduled standup/digest/review
+ * skip on registered holidays (V1 isBoardHolidayToday). FAILS OPEN: any error (e.g. no
+ * board_holidays table) returns holiday:false — a skip control that failed closed could silence a
+ * board forever on a transient error.
+ */
+export function isBoardHolidayToday(
+  taskflowDb: Database.Database,
+  boardId: string,
+  now: Date,
+  tz: string,
+): BoardHolidayToday {
+  const date = localDateString(now, tz);
+  try {
+    const row = taskflowDb
+      .prepare('SELECT label FROM board_holidays WHERE board_id = ? AND holiday_date = ? LIMIT 1')
+      .get(boardId, date) as { label: string | null } | undefined;
+    return row ? { holiday: true, label: row.label ?? null, date } : { holiday: false, date };
+  } catch {
+    return { holiday: false, date };
+  }
 }
 
 interface DueRunnerRow {
@@ -97,10 +156,18 @@ export function gateScheduledRunners(
 
   const complete = inDb.prepare("UPDATE messages_in SET status = 'completed' WHERE id = ?");
   const outcomes: GateOutcome[] = [];
+  // Holiday skip (V1 parity) runs BEFORE the activity gate: standup/digest/review do not fire on a
+  // registered board holiday. Same board/day for every due row, so it's evaluated once per sweep.
+  const holidayToday = isBoardHolidayToday(taskflowDb, opts.boardId, opts.now, tz).holiday;
 
   for (const row of due) {
     const job = jobFromContent(row.content);
     if (!job) continue; // matched [TF- loosely but no known job tag — leave it alone
+    if (holidayToday && !isHolidayExempt(opts.agentGroupFolder, job)) {
+      complete.run(row.id);
+      outcomes.push({ id: row.id, job, fired: false, reason: 'holiday' });
+      continue;
+    }
     const state = computeRunnerState({
       taskflowDb,
       inboundDb: inDb,
@@ -143,9 +210,18 @@ export function gateDueRunnersForSession(inDb: Database.Database, agentGroupFold
     });
     tfDb.pragma('busy_timeout = 5000');
     try {
-      const outcomes = gateScheduledRunners(inDb, tfDb, { boardId, now: new Date(), timeZone: TIMEZONE });
-      const suppressed = outcomes.filter((o) => !o.fired).map((o) => o.job);
-      if (suppressed.length) log.info('Gated scheduled runners (suppressed)', { boardId, jobs: suppressed });
+      const outcomes = gateScheduledRunners(inDb, tfDb, {
+        boardId,
+        now: new Date(),
+        timeZone: TIMEZONE,
+        agentGroupFolder,
+      });
+      const suppressed = outcomes.filter((o) => !o.fired);
+      if (suppressed.length)
+        log.info('Gated scheduled runners (suppressed)', {
+          boardId,
+          jobs: suppressed.map((o) => (o.reason === 'holiday' ? `${o.job}(holiday)` : o.job)),
+        });
     } finally {
       tfDb.close();
     }
