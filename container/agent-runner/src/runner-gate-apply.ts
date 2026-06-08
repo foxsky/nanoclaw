@@ -68,8 +68,6 @@ export interface GateOutcome {
   id: string;
   job: RunnerJob;
   fired: boolean;
-  /** Why a runner was suppressed: 'holiday' for the holiday skip, omitted for the activity gate. */
-  reason?: 'holiday';
 }
 
 const HOLIDAY_EXEMPT_LABEL: Record<RunnerJob, string> = {
@@ -146,7 +144,7 @@ export function gateRunnerMessages(messages: MessageInRow[], opts: ContainerGate
     const job = jobFromContent(msg.content);
     if (!job) continue; // matched [TF- loosely but no known job tag — leave it alone
     if (holidayToday && !isHolidayExempt(opts.agentGroupFolder, job)) {
-      outcomes.push({ id: msg.id, job, fired: false, reason: 'holiday' });
+      outcomes.push({ id: msg.id, job, fired: false });
       continue;
     }
     const state = computeRunnerState({

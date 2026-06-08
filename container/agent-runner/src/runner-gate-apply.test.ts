@@ -194,9 +194,9 @@ describe('gateRunnerMessages — holiday skip (V1 parity)', () => {
     const msgs = [runner('s', 'TF-STANDUP', STANDUP), runner('d', 'TF-DIGEST', DIGEST), runner('r', 'TF-REVIEW', REVIEW)];
     const out = gateRunnerMessages(msgs, opts(tf, ib));
     expect(out).toEqual([
-      { id: 's', job: 'standup', fired: false, reason: 'holiday' },
-      { id: 'd', job: 'digest', fired: false, reason: 'holiday' },
-      { id: 'r', job: 'review', fired: false, reason: 'holiday' },
+      { id: 's', job: 'standup', fired: false },
+      { id: 'd', job: 'digest', fired: false },
+      { id: 'r', job: 'review', fired: false },
     ]);
   });
 
@@ -228,7 +228,7 @@ describe('gateRunnerMessages — holiday skip (V1 parity)', () => {
       });
       // standup exempt → past the holiday skip → active board fires it; digest not exempt → suppressed
       expect(out.find((o) => o.id === 's')).toEqual({ id: 's', job: 'standup', fired: true });
-      expect(out.find((o) => o.id === 'd')).toEqual({ id: 'd', job: 'digest', fired: false, reason: 'holiday' });
+      expect(out.find((o) => o.id === 'd')).toEqual({ id: 'd', job: 'digest', fired: false });
     } finally {
       if (prev === undefined) delete process.env.TASKFLOW_HOLIDAY_EXEMPT;
       else process.env.TASKFLOW_HOLIDAY_EXEMPT = prev;
