@@ -204,3 +204,21 @@ Hudson owns THREE boards under `board-thiago-taskflow`:
 
 The registered + populated board is the `…-2`. **Recommended:** keep `…-2`; archive/remove the two empty boards and abandon their WhatsApp groups. If you want the clean name, after removing the empty `po-setd-secti-taskflow` you can rename `…-2`'s folder/group (a separate per-board rename). Three real WhatsApp groups exist, so do this **via the agent / `ncl`, not raw SQL**, so the groups are handled — this is a judgment call, not a scripted fix.
 - Scope: this was a step-level dry run against disposable paths. It did not stop the active host service, install/start the v2 service, or execute a live answer smoke; those checks happen during the cutover switchover and canary.
+
+### 6d. Motivational-only scheduled-post refresh for DEPLOYED boards — DECISION needed
+
+The scheduled-post import (commits `06a268ac`/`774f0cef`/`03076f59`/`6b971d09`) has two halves with different rollout properties:
+
+- **Holiday-skip** — *no per-board action.* It lives entirely in the host sweep + container warm-gate (`runner-gate-apply.ts`), reads `board_holidays` (which travels with `taskflow.db` in the migration copy), and honors `TASKFLOW_HOLIDAY_EXEMPT` (host env, forwarded into the container). Nothing to repatch; it's live for every board the moment v2 runs.
+- **Motivational-only content** — *new boards: automatic; deployed boards: a real gap.* The behavior ("scheduled `[TF-*]` runs send only the motivational narrative, never the rendered board/report") is in `templates/CLAUDE.md.template` → `renderBoardClaudeMd`, which only writes `groups/<folder>/CLAUDE.local.md` at **new provision**. Boards provisioned before this change keep the old metrics-form digest until refreshed.
+
+**Why you can't just re-render the deployed boards:** a full `migrate-board-claudemd` re-render would clobber the agent's free-text memory appended to the same `CLAUDE.local.md` — this is exactly why `repatch-deployed-claudemd.ts` applies *only* the surgical `patchRelayProse` (#404), never the full patcher (Codex reverted the full-patcher runner for this). So the motivational refresh needs a **surgical, idempotent span insert** of the motivational sections — V1 did this with `scripts/motivational-only-provisioned.mjs` (an idempotent two-span rewrite). **V2 has no equivalent surgical patcher yet.**
+
+**Decision (pick one before cutover):**
+1. **Build the V2 surgical patcher** — mirror `patchRelayProse`'s idempotent-span approach against the new template's "Motivational Message" / "Scheduled Task Tags" / per-job sections; dry-run (`write:false`) across `groups/*/CLAUDE.local.md`, review, then `write:true`. Preferred for true parity. (Net-new code, not in this branch.)
+2. **Accept gradual rollout** — deployed boards keep the metrics-form digest until they're naturally re-provisioned; only new boards get motivational-only at cutover. Zero risk to board memory, but a visible behavior split across boards until then.
+
+Verify whichever path: a refreshed board's file contains the motivational markers —
+```bash
+grep -l "Motivational Message\|motivational message\|TF-SUMMARY-ONLY" groups/*/CLAUDE.local.md   # boards already on the new template
+```
