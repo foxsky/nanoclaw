@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { afterEach, describe, expect, it } from 'bun:test';
 
 import type { MessageInRow } from './db/messages-in.js';
-import { applyRunnerGate, gateRunnerMessages } from './runner-gate-apply.js';
+import { applyRunnerGate, gateRunnerMessages, isBoardHolidayToday } from './runner-gate-apply.js';
 
 // Container-side gate over the pending-message batch (mirror of the host sweep gate, which works on
 // messages_in rows). gateRunnerMessages returns per-runner outcomes; applyRunnerGate marks the
@@ -167,6 +167,86 @@ describe('gateRunnerMessages', () => {
       timeZone: TZ,
     });
     expect(out).toEqual([{ id: 's', job: 'standup', fired: false }]);
+  });
+});
+
+// V1 parity (mirror of the host gateScheduledRunners holiday skip in
+// src/modules/taskflow/runner-gate-apply.ts): scheduled standup/digest/review do NOT fire on a
+// registered board holiday. The skip runs BEFORE the activity gate (so it suppresses even an active
+// board), keys the holiday on the board's local date, fails OPEN (a check error must never silence a
+// board forever), and honors a TASKFLOW_HOLIDAY_EXEMPT folder/folder:kind override that forces the
+// post through. A warm container must apply the same skip so it can't beat the host sweep onto a
+// holiday post.
+function addHoliday(db: Database, boardId: string, date: string, label: string | null = null) {
+  db.exec('CREATE TABLE IF NOT EXISTS board_holidays (board_id TEXT, holiday_date TEXT, label TEXT)');
+  db.prepare('INSERT INTO board_holidays (board_id, holiday_date, label) VALUES (?, ?, ?)').run(boardId, date, label);
+}
+function makeActive(tf: Database) {
+  tf.prepare("INSERT INTO tasks (id, board_id, column) VALUES ('T1','b1','in_progress')").run();
+  tf.prepare("INSERT INTO task_history (board_id, at) VALUES ('b1','2026-06-01T11:30:00Z')").run(); // interaction
+}
+
+describe('gateRunnerMessages — holiday skip (V1 parity)', () => {
+  it('suppresses all three runners on a registered board holiday, even when the board is active', () => {
+    const { tf, ib } = dbs();
+    makeActive(tf); // would otherwise fire all three
+    addHoliday(tf, 'b1', '2026-06-01', 'Corpus Christi'); // MON local date in Fortaleza
+    const msgs = [runner('s', 'TF-STANDUP', STANDUP), runner('d', 'TF-DIGEST', DIGEST), runner('r', 'TF-REVIEW', REVIEW)];
+    const out = gateRunnerMessages(msgs, opts(tf, ib));
+    expect(out).toEqual([
+      { id: 's', job: 'standup', fired: false, reason: 'holiday' },
+      { id: 'd', job: 'digest', fired: false, reason: 'holiday' },
+      { id: 'r', job: 'review', fired: false, reason: 'holiday' },
+    ]);
+  });
+
+  it('does NOT suppress when today is not a holiday (active board still fires)', () => {
+    const { tf, ib } = dbs();
+    makeActive(tf);
+    addHoliday(tf, 'b1', '2025-12-25', 'Natal'); // a different day
+    const out = gateRunnerMessages([runner('s', 'TF-STANDUP', STANDUP)], opts(tf, ib));
+    expect(out).toEqual([{ id: 's', job: 'standup', fired: true }]); // active board fires, no holiday reason
+  });
+
+  it('fails OPEN when board_holidays is missing/unreadable (active board fires, never silenced)', () => {
+    const { tf, ib } = dbs(); // taskflowDb() has no board_holidays table → query throws
+    makeActive(tf);
+    const out = gateRunnerMessages([runner('s', 'TF-STANDUP', STANDUP)], opts(tf, ib));
+    expect(out).toEqual([{ id: 's', job: 'standup', fired: true }]);
+  });
+
+  it('TASKFLOW_HOLIDAY_EXEMPT forces the post past the holiday skip (folder + folder:kind)', () => {
+    const prev = process.env.TASKFLOW_HOLIDAY_EXEMPT;
+    process.env.TASKFLOW_HOLIDAY_EXEMPT = 'board-x:standup';
+    try {
+      const { tf, ib } = dbs();
+      makeActive(tf);
+      addHoliday(tf, 'b1', '2026-06-01', 'Feriado');
+      const out = gateRunnerMessages([runner('s', 'TF-STANDUP', STANDUP), runner('d', 'TF-DIGEST', DIGEST)], {
+        ...opts(tf, ib),
+        agentGroupFolder: 'board-x',
+      });
+      // standup exempt → past the holiday skip → active board fires it; digest not exempt → suppressed
+      expect(out.find((o) => o.id === 's')).toEqual({ id: 's', job: 'standup', fired: true });
+      expect(out.find((o) => o.id === 'd')).toEqual({ id: 'd', job: 'digest', fired: false, reason: 'holiday' });
+    } finally {
+      if (prev === undefined) delete process.env.TASKFLOW_HOLIDAY_EXEMPT;
+      else process.env.TASKFLOW_HOLIDAY_EXEMPT = prev;
+    }
+  });
+
+  it('isBoardHolidayToday: holiday+label on the day, false off the day, fail-open on a missing table', () => {
+    const { tf } = dbs();
+    addHoliday(tf, 'b1', '2026-06-01', 'Corpus Christi');
+    expect(isBoardHolidayToday(tf, 'b1', MON, TZ)).toMatchObject({
+      holiday: true,
+      label: 'Corpus Christi',
+      date: '2026-06-01',
+    });
+    expect(isBoardHolidayToday(tf, 'b1', new Date('2026-06-02T12:00:00Z'), TZ)).toMatchObject({ holiday: false });
+    const empty = taskflowDb();
+    open.push(empty);
+    expect(isBoardHolidayToday(empty, 'b1', MON, TZ)).toMatchObject({ holiday: false });
   });
 });
 
