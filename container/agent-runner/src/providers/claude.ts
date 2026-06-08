@@ -8,6 +8,7 @@ import { captureSessionMemories, precompactHookTimeoutSec } from '../memory-capt
 import { openMemoryDbEnsuringDir } from '../memory-store.js';
 import { appendToolEvents, extractToolEvents } from './claude-tool-capture.js';
 import { registerProvider } from './provider-registry.js';
+import { SECURITY_DENYLIST, PARITY_DENYLIST } from './security-denylist.js';
 import type {
   AgentProvider,
   AgentQuery,
@@ -21,62 +22,16 @@ function log(msg: string): void {
   console.error(`[claude-provider] ${msg}`);
 }
 
-// Deferred SDK builtins that either sidestep nanoclaw's own scheduling or
-// don't fit our async message-passing model (they're designed for Claude
-// Code's interactive UI and would hang here).
-//
-// - CronCreate / CronDelete / CronList / ScheduleWakeup: we have durable
-//   scheduling via mcp__nanoclaw__schedule_task.
-// - AskUserQuestion: SDK returns a placeholder instead of blocking on a
-//   real answer — we have mcp__nanoclaw__ask_user_question that persists
-//   the question and blocks on the real reply.
-// - EnterPlanMode / ExitPlanMode / EnterWorktree / ExitWorktree: Claude
-//   Code UI affordances; in a headless container they'd appear stuck.
-// - ToolSearch: introduced by newer Claude Code/SDK builds. v1's recorded
-//   TaskFlow behavior did not expose it, and Phase 2 replay shows it adds
-//   selection-only tool calls before every routine MCP operation.
-// - Bash/Read/Write/Edit/MultiEdit/Glob/Grep/LS/Agent/TodoWrite/Skill/
-//   NotebookEdit: general Claude Code workspace tools. The TaskFlow v1 replay
-//   surface is MCP-tool driven; exposing these in v2 caused routine greetings
-//   to spawn shell/file/subagent exploration instead of the recorded no-tool
-//   behavior.
-// - mcp__nanoclaw__ask_user_question: newer interactive card flow. v1 TaskFlow
-//   asked ambiguity questions in plain text, so exposing this changes the
-//   observable reply shape and adds extra tool calls in Phase 2 replay.
-// - mcp__sqlite__*: raw database access bypasses the TaskFlow API surface and
-//   is exposed by per-board project .mcp.json files for legacy v1 behavior.
-//   v2 parity validation routes board reads/writes through api_* tools instead.
-export const SDK_DISALLOWED_TOOLS = [
-  'Bash',
-  'Read',
-  'Write',
-  'Edit',
-  'MultiEdit',
-  'Glob',
-  'Grep',
-  'LS',
-  'Agent',
-  'TodoWrite',
-  'Skill',
-  'NotebookEdit',
-  'CronCreate',
-  'CronDelete',
-  'CronList',
-  'ScheduleWakeup',
-  'AskUserQuestion',
-  'EnterPlanMode',
-  'ExitPlanMode',
-  'EnterWorktree',
-  'ExitWorktree',
-  'ToolSearch',
-  'WebSearch',
-  'WebFetch',
-  'mcp__nanoclaw__ask_user_question',
-  'mcp__sqlite__read_query',
-  'mcp__sqlite__write_query',
-  'mcp__sqlite__list_tables',
-  'mcp__sqlite__describe_table',
-];
+// The tool denylist lives in ./security-denylist.ts as the single source of
+// truth: SECURITY_DENYLIST (the security boundary — every provider must enforce
+// it) plus PARITY_DENYLIST (v1-replay-shape / deferred-builtin preferences).
+// The union here is byte-identical (as a set) to the prior inline literal; the
+// preToolUseHook and query() disallowedTools wiring below keep checking it.
+export const SDK_DISALLOWED_TOOLS = [...SECURITY_DENYLIST, ...PARITY_DENYLIST];
+
+// Re-export the security subset so providers-branch code (opencode/codex) can
+// import the boundary from the same module it already imports claude constants.
+export { SECURITY_DENYLIST } from './security-denylist.js';
 
 // Tool allowlist for NanoClaw agent containers. MCP-tool entries are derived
 // at the call site from the registered `mcpServers` map so that any server
@@ -217,7 +172,7 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
  * script. Defense-in-depth: if SDK_DISALLOWED_TOOLS slips through somehow,
  * block the call here instead of letting the agent hang.
  */
-const preToolUseHook: HookCallback = async (input) => {
+export const preToolUseHook: HookCallback = async (input) => {
   const i = input as { tool_name?: string; tool_input?: Record<string, unknown> };
   const toolName = i.tool_name ?? '';
   if (SDK_DISALLOWED_TOOLS.includes(toolName)) {

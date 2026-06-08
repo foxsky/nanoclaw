@@ -51,4 +51,37 @@ describe('ClaudeProvider tool surface', () => {
   it('does not load project/user MCP settings that can reintroduce raw sqlite tools', () => {
     expect(SDK_SETTING_SOURCES).toEqual([]);
   });
+
+  it('keeps the full dangerous tool set disallowed — guards against an accidental denylist regression', () => {
+    // The tests above check tools one cluster at a time; this asserts the WHOLE
+    // dangerous set in one place so a partial deletion (one tool slipping out of
+    // the denylist) is caught even if the cluster tests are edited. The DENYLIST
+    // is the enforcement wall — the SDK applies disallowedTools on top of
+    // allowedTools, and disallowedTools wins. Some of these (Bash/Read/Write/
+    // Edit/Glob/Grep) are deliberately ALSO in TOOL_ALLOWLIST, so we do NOT
+    // assert allowlist-absence here for the whole set (that would encode a false
+    // invariant). The allowlist-absence wall for the genuinely-not-allowlisted
+    // subset lives in security-boundary.test.ts.
+    const MUST_STAY_DISALLOWED = [
+      'Bash',
+      'Read',
+      'Write',
+      'Edit',
+      'MultiEdit',
+      'Glob',
+      'Grep',
+      'LS',
+      'Agent',
+      'WebSearch',
+      'WebFetch',
+      'mcp__sqlite__read_query',
+      'mcp__sqlite__write_query',
+      'mcp__sqlite__list_tables',
+      'mcp__sqlite__describe_table',
+      'mcp__nanoclaw__ask_user_question',
+    ];
+    for (const t of MUST_STAY_DISALLOWED) {
+      expect(SDK_DISALLOWED_TOOLS).toContain(t);
+    }
+  });
 });
