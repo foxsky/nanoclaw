@@ -11,7 +11,7 @@ import { normalizeAgentIds } from './taskflow-helpers.js';
 import { safeNotificationEvents } from './taskflow-api-mutate.js';
 import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import type { McpToolDefinition } from './types.js';
-import { err, jsonResponse, parseTaskActorArgs } from './util.js';
+import { err, jsonResponse, log, parseTaskActorArgs } from './util.js';
 
 export const apiUpdateSimpleTaskTool: McpToolDefinition = {
   tool: {
@@ -315,80 +315,94 @@ export const apiUpdateSimpleTaskTool: McpToolDefinition = {
         target_person_id: string;
         message: string;
       }> = [];
-      if (newAssigneePersonId) {
-        if (!senderPerson || senderPerson.person_id !== newAssigneePersonId) {
-          notification_events.push({
-            kind: 'deferred_notification',
-            board_id: boardId,
-            target_person_id: newAssigneePersonId,
-            message: `${senderName} assigned you: ${(row['title'] as string) ?? taskId}`,
-          });
-        }
-      }
-      if (hasColumn && args.column !== (existing['column'] as string)) {
-        const existingAssigneeName = existing['assignee'] as string | null;
-        if (existingAssigneeName) {
-          const assigneePerson = db
-            .prepare(`SELECT person_id FROM board_people WHERE board_id = ? AND name = ?`)
-            .get(boardId, existingAssigneeName) as { person_id: string } | null;
-          if (
-            assigneePerson &&
-            assigneePerson.person_id !== newAssigneePersonId &&
-            (!senderPerson || senderPerson.person_id !== assigneePerson.person_id)
-          ) {
-            const fromColumn = existing['column'] as string;
-            const toColumn = args.column as string;
-            const title = (row['title'] as string) ?? taskId;
-            const base = { taskId, title, assigneeName: existingAssigneeName };
-            let message: string;
-            if (toColumn === 'done') {
-              const taskRow = {
-                recurrence: (existing['recurrence'] as string | null) ?? null,
-                requires_close_approval: existing['requires_close_approval'],
-                created_at: (existing['created_at'] as string | null) ?? null,
-              };
-              const variant = TaskflowEngine.completionVariant(taskRow);
-              const renderParams =
-                variant === 'quiet'
-                  ? { variant, ...base }
-                  : variant === 'loud'
-                    ? {
-                        variant,
-                        ...base,
-                        createdAt: taskRow.created_at,
-                        flow: TaskflowEngine.computeTaskFlow(db, boardId, taskId),
-                      }
-                    : { variant, ...base, fromColumn };
-              message = TaskflowEngine.renderCompletionMessage(renderParams);
-            } else {
-              const oldLabel = TaskflowEngine.columnLabelPlain(fromColumn);
-              const newLabel = TaskflowEngine.columnLabelPlain(toColumn);
-              message = `\u{1F514} *Tarefa movida*\n\n*${taskId}* — ${title}\n*${oldLabel}* → *${newLabel}*\n\nDigite \`${taskId}\` para ver detalhes.`;
-            }
+      // Post-commit: the UPDATE + recordHistory above already committed (autocommit,
+      // no wrapping txn). Building these hand-rolled assignee/column-move notifications
+      // does post-commit DB reads (the board_people lookup; computeTaskFlow for the loud
+      // completion flow) — a throw here must NEVER flip the committed move to
+      // success:false (→ the agent believes it failed → retries → duplicate move).
+      // Mirrors safeNotificationEvents / the post-commit-throw class; enqueue + dispatch
+      // are already individually fail-soft, this guard covers the build itself.
+      try {
+        if (newAssigneePersonId) {
+          if (!senderPerson || senderPerson.person_id !== newAssigneePersonId) {
             notification_events.push({
               kind: 'deferred_notification',
               board_id: boardId,
-              target_person_id: assigneePerson.person_id,
-              message,
+              target_person_id: newAssigneePersonId,
+              message: `${senderName} assigned you: ${(row['title'] as string) ?? taskId}`,
             });
           }
         }
-      }
+        if (hasColumn && args.column !== (existing['column'] as string)) {
+          const existingAssigneeName = existing['assignee'] as string | null;
+          if (existingAssigneeName) {
+            const assigneePerson = db
+              .prepare(`SELECT person_id FROM board_people WHERE board_id = ? AND name = ?`)
+              .get(boardId, existingAssigneeName) as { person_id: string } | null;
+            if (
+              assigneePerson &&
+              assigneePerson.person_id !== newAssigneePersonId &&
+              (!senderPerson || senderPerson.person_id !== assigneePerson.person_id)
+            ) {
+              const fromColumn = existing['column'] as string;
+              const toColumn = args.column as string;
+              const title = (row['title'] as string) ?? taskId;
+              const base = { taskId, title, assigneeName: existingAssigneeName };
+              let message: string;
+              if (toColumn === 'done') {
+                const taskRow = {
+                  recurrence: (existing['recurrence'] as string | null) ?? null,
+                  requires_close_approval: existing['requires_close_approval'],
+                  created_at: (existing['created_at'] as string | null) ?? null,
+                };
+                const variant = TaskflowEngine.completionVariant(taskRow);
+                const renderParams =
+                  variant === 'quiet'
+                    ? { variant, ...base }
+                    : variant === 'loud'
+                      ? {
+                          variant,
+                          ...base,
+                          createdAt: taskRow.created_at,
+                          flow: TaskflowEngine.computeTaskFlow(db, boardId, taskId),
+                        }
+                      : { variant, ...base, fromColumn };
+                message = TaskflowEngine.renderCompletionMessage(renderParams);
+              } else {
+                const oldLabel = TaskflowEngine.columnLabelPlain(fromColumn);
+                const newLabel = TaskflowEngine.columnLabelPlain(toColumn);
+                message = `\u{1F514} *Tarefa movida*\n\n*${taskId}* — ${title}\n*${oldLabel}* → *${newLabel}*\n\nDigite \`${taskId}\` para ver detalhes.`;
+              }
+              notification_events.push({
+                kind: 'deferred_notification',
+                board_id: boardId,
+                target_person_id: assigneePerson.person_id,
+                message,
+              });
+            }
+          }
+        }
 
-      // #396: this tool hand-builds deferred_notification events but historically
-      // returned them raw — never persisting/delivering them (the cross-board
-      // assignee-change + column-move notifications were silently lost; V1
-      // dispatched after every update). Enqueue (so a cross-board assignee's
-      // notification is re-delivered once their child board provisions — the drain
-      // resolves the JID), then dispatch — in-session only (the FastAPI subprocess
-      // no-ops, preserving the #401 dashboard contract), fail-soft.
-      const dispatchable: NotificationEvent[] = notification_events.map((e) => ({
-        kind: 'deferred_notification',
-        target_person_id: e.target_person_id,
-        message: e.message,
-      }));
-      enqueueDeferredNotificationsInSession(boardId, dispatchable, taskId, { db });
-      dispatchNotificationEvents(dispatchable);
+        // #396: this tool hand-builds deferred_notification events but historically
+        // returned them raw — never persisting/delivering them (the cross-board
+        // assignee-change + column-move notifications were silently lost; V1
+        // dispatched after every update). Enqueue (so a cross-board assignee's
+        // notification is re-delivered once their child board provisions — the drain
+        // resolves the JID), then dispatch — in-session only (the FastAPI subprocess
+        // no-ops, preserving the #401 dashboard contract), fail-soft.
+        const dispatchable: NotificationEvent[] = notification_events.map((e) => ({
+          kind: 'deferred_notification',
+          target_person_id: e.target_person_id,
+          message: e.message,
+        }));
+        enqueueDeferredNotificationsInSession(boardId, dispatchable, taskId, { db });
+        dispatchNotificationEvents(dispatchable);
+      } catch (notifyErr) {
+        notification_events.length = 0;
+        log(
+          `api_update_simple_task post-commit notification build/send failed (notifications dropped): ${String(notifyErr)}`,
+        );
+      }
       return jsonResponse({ success: true, data, notification_events });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

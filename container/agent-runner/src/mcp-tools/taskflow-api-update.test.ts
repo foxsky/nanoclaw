@@ -182,6 +182,33 @@ describe('api_update_simple_task MCP tool', () => {
     expect(result.data.column).toBe('done');
   });
 
+  it('post-commit notification-build throw does NOT flip the committed move to success:false', async () => {
+    // The column-move notification block runs AFTER the UPDATE + recordHistory have
+    // committed (autocommit, no wrapping txn). Its loud-completion branch calls
+    // TaskflowEngine.computeTaskFlow — a post-commit DB read. If THAT throws, the tool
+    // must still report success:true (the task already moved); a thrown notification
+    // build must never make the agent believe the move failed (→ retry/duplicate).
+    // Force the loud variant via task age (approval=0 so the done-move isn't a conflict),
+    // assign to charlie so the cross-actor column-move notification fires, then make the
+    // post-commit computeTaskFlow throw.
+    db.prepare(`UPDATE tasks SET assignee = 'charlie', requires_close_approval = 0, created_at = '2020-01-01T00:00:00.000Z' WHERE id = ?`).run(taskId);
+    const { TaskflowEngine } = await import('../taskflow-engine.ts');
+    const orig = TaskflowEngine.computeTaskFlow;
+    TaskflowEngine.computeTaskFlow = () => {
+      throw new Error('simulated post-commit flow read failure');
+    };
+    try {
+      const resp = await update({ board_id: BOARD, task_id: taskId, sender_name: 'alice', column: 'done' });
+      const result = JSON.parse(resp.content[0].text);
+      expect(result.success).toBe(true);
+      // The mutation must have actually landed despite the notification build throwing.
+      const row = db.prepare(`SELECT "column" FROM tasks WHERE id = ?`).get(taskId) as { column: string } | null;
+      expect(row?.column).toBe('done');
+    } finally {
+      TaskflowEngine.computeTaskFlow = orig;
+    }
+  });
+
   it('returns actor_type_not_allowed for unrelated board member', async () => {
     const resp = await update({
       board_id: BOARD,
