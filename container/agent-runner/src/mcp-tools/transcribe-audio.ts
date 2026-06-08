@@ -10,7 +10,7 @@
  * skill, which was wrongly batch-deleted as "covered by native attachments": attachments
  * deliver the file, not the transcription.)
  */
-import { basename } from 'node:path';
+import { basename, resolve } from 'node:path';
 
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
@@ -27,6 +27,17 @@ const OPENAI_TRANSCRIBE_URL = 'https://api.openai.com/v1/audio/transcriptions';
 
 async function defaultReadFile(path: string): Promise<Uint8Array> {
   return new Uint8Array(await Bun.file(path).arrayBuffer());
+}
+
+// The only directories the host writes inbound attachments into (mounted under /workspace):
+// `inbox/<messageId>/...` (session-manager.ts) and `attachments/...` (whatsapp adapter). Anything
+// else — taskflow.db, agent memory, /etc, the session DBs — is off-limits to transcription.
+const ALLOWED_ATTACHMENT_PREFIXES = ['/workspace/inbox/', '/workspace/attachments/'];
+
+/** True iff `p` resolves (after collapsing `..`) to a file under a host-written attachment dir. */
+export function isAllowedAttachmentPath(p: string): boolean {
+  const abs = resolve(p);
+  return ALLOWED_ATTACHMENT_PREFIXES.some((prefix) => abs.startsWith(prefix));
 }
 
 export async function transcribeAudio(filePath: string, opts: TranscribeOptions = {}): Promise<string> {
@@ -85,7 +96,18 @@ export const transcribeAudioTool: McpToolDefinition = {
   },
   async handler(args) {
     const path = nonEmptyString(args.path);
-    if (!path) return err("path is required — pass the audio attachment's saved path (e.g. /workspace/media/voice.ogg)");
+    if (!path) return err("path is required — pass the audio attachment's saved path (e.g. /workspace/inbox/<id>/voice.ogg)");
+    // SECURITY: this tool opens the path and ships the bytes to an external transcription API,
+    // re-creating an arbitrary-file-read + exfiltration primitive that the disallowed Read/Bash
+    // tools exist to remove. Confine reads to the directories the HOST actually writes inbound
+    // attachments into (session-manager `inbox/<msg>/...`, whatsapp adapter `attachments/...`),
+    // which the host mounts under /workspace. resolve() collapses any `..`, so a traversal like
+    // /workspace/inbox/../taskflow/taskflow.db or an absolute /etc/passwd is rejected before any read.
+    if (!isAllowedAttachmentPath(path)) {
+      return err(
+        `transcription is restricted to delivered attachments under /workspace/inbox/ or /workspace/attachments/ — refusing '${path}'`,
+      );
+    }
     try {
       const transcript = await transcribeAudio(path);
       if (!transcript) return err(`transcription returned empty text for ${path}`);

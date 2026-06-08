@@ -84,7 +84,9 @@ describe('transcribe_audio tool handler', () => {
   });
 
   it('wraps a read failure as a tool error (real fs, nonexistent path — no network)', async () => {
-    const r = await transcribeAudioTool.handler({ path: '/workspace/does-not-exist-xyz-9f2a.ogg' });
+    // Use an ALLOWED-but-nonexistent attachment path so it passes the /workspace/inbox confinement
+    // and exercises the read-failure wrapping (a path outside the allowed dirs is refused earlier).
+    const r = await transcribeAudioTool.handler({ path: '/workspace/inbox/does-not-exist-xyz-9f2a.ogg' });
     expect(r.isError).toBe(true);
     expect(text(r)).toMatch(/transcription failed/);
   });
