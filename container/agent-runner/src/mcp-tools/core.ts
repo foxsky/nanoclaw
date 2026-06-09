@@ -13,8 +13,11 @@ import { getCurrentInReplyTo } from '../current-batch.js';
 import { findByName, getAllDestinations } from '../destinations.js';
 import { getMessageIdBySeq, getRoutingBySeq, writeMessageOut } from '../db/messages-out.js';
 import { getSessionRouting } from '../db/session-routing.js';
+import { evaluateDestructiveAction } from './destructive-gate.js';
 import { markDeterministicMutationEmitted } from './mutation-dedup.js';
 import { registerTools } from './server.js';
+import { isApprovedReplay, parkForApproval, registerApprovedExecutor } from './taskflow-approval.js';
+import { getVerbatimIds } from './taskflow-helpers.js';
 import type { McpToolDefinition } from './types.js';
 
 /**
@@ -40,6 +43,39 @@ function markIfSameConv(routing: { channel_type: string; platform_id: string }):
   ) {
     markDeterministicMutationEmitted();
   }
+}
+
+/**
+ * #410 broadcast/forward gate. A send to a destination that is NOT the current conversation
+ * (external) is an intra-org forward/exfil primitive — on a TaskFlow board it must be held for admin
+ * approval, the same park round-trip as the destructive mutate gates. Returns a park response (the
+ * caller must `return` it) or null to proceed. Scoped to board agents (NANOCLAW_TASKFLOW_BOARD_ID
+ * set) so core non-board agents' send_message is untouched; the FastAPI/verbatim surface and the
+ * approved replay both bypass. send_message is single-destination, so the count never trips — the
+ * `external` flag (cross-conversation) is the live signal.
+ *
+ * SCOPE (honest): this gates the AGENT's injection surface (the send_message/send_file MCP tools).
+ * The deterministic poll-loop forward handlers (sendToDestination) forward board data cross-board from
+ * PARSED USER COMMANDS — a separate, user-authorized path the agent cannot reach — and are NOT gated
+ * here; closing that for full parity is tracked separately (SEC#7).
+ */
+function maybeParkBroadcast(
+  toolName: string,
+  args: Record<string, unknown>,
+  routing: { channel_type: string; platform_id: string; resolvedName: string },
+) {
+  if (!process.env.NANOCLAW_TASKFLOW_BOARD_ID) return null; // board agents only
+  if (getVerbatimIds() || isApprovedReplay()) return null;
+  const session = getSessionRouting();
+  // External = the session has a known conversation AND this send leaves it. A reply-in-place
+  // (`to` omitted) or a send back to the same channel+platform resolves equal → not external.
+  const external =
+    !!session.channel_type &&
+    !!session.platform_id &&
+    (routing.channel_type !== session.channel_type || routing.platform_id !== session.platform_id);
+  const d = evaluateDestructiveAction({ kind: 'broadcast', destinations: 1, external });
+  if (!d.gated) return null;
+  return parkForApproval({ tool: toolName, args, decision: d, summary: `${toolName} to ${routing.resolvedName}` });
 }
 
 function log(msg: string): void {
@@ -141,6 +177,9 @@ export const sendMessage: McpToolDefinition = {
     const routing = resolveRouting(args.to as string | undefined);
     if ('error' in routing) return err(routing.error);
 
+    const parked = maybeParkBroadcast('send_message', args, routing);
+    if (parked) return parked;
+
     const id = generateId();
     const seq = writeMessageOut({
       id,
@@ -179,6 +218,9 @@ export const sendFile: McpToolDefinition = {
 
     const routing = resolveRouting(args.to as string | undefined);
     if ('error' in routing) return err(routing.error);
+
+    const parked = maybeParkBroadcast('send_file', args, routing);
+    if (parked) return parked;
 
     const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve('/workspace/agent', filePath);
     if (!fs.existsSync(resolvedPath)) return err(`File not found: ${filePath}`);
@@ -289,3 +331,8 @@ export const addReaction: McpToolDefinition = {
 };
 
 registerTools([sendMessage, sendFile, editMessage, addReaction]);
+
+// #410: register the gated send tools so the host can replay an APPROVED forward deterministically
+// (executeApprovedAction → handler under isApprovedReplay(), which bypasses the broadcast gate).
+registerApprovedExecutor('send_message', (a) => sendMessage.handler(a));
+registerApprovedExecutor('send_file', (a) => sendFile.handler(a));

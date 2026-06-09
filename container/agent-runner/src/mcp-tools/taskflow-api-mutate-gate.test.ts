@@ -6,14 +6,13 @@
  * *calling* a legitimate tool ("remove the board", "reassign everything to X"). The
  * gate must REFUSE the high-impact call BEFORE any DB write — so each test asserts
  * the DB state is UNCHANGED after a gated call (a true no-op refusal), not merely
- * that the return shape differs. The fail-closed contract is: gated → success:false,
- * error_code:'requires_approval', and ZERO rows mutated.
- *
- * This is the pre-#407 intermediate: refusal, not a host approval round-trip.
+ * that the return shape differs. The contract (post-#407) is: gated → success:false,
+ * error_code:'pending_approval', ZERO rows mutated, AND a taskflow_request_approval system row
+ * written to outbound.db so the host can route it to a human approver.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
-import { closeTaskflowDb } from '../db/connection.js';
+import { closeSessionDb, closeTaskflowDb, getOutboundDb, initTestSessionDb } from '../db/connection.js';
 import { setVerbatimIds } from './taskflow-helpers.js';
 import { setupEngineDb } from './taskflow-test-fixtures.js';
 
@@ -23,13 +22,25 @@ const BOARD = 'board-b1';
 
 beforeEach(() => {
   db = setupEngineDb(BOARD, { withBoardAdmins: true });
+  initTestSessionDb(); // parkForApproval writes a taskflow_request_approval system row to outbound.db
 });
 
 afterEach(() => {
   closeTaskflowDb();
+  closeSessionDb();
   setVerbatimIds(false);
   delete process.env.TASKFLOW_GATE_MASS;
 });
+
+/** Assert a gated call actually PARKED (wrote the request row) — proves the round-trip is initiated,
+ *  not merely refused. Returns the parsed taskflow_request_approval content. */
+function parkRow(): { action: string; tool: string; category: string; summary: string } {
+  const row = getOutboundDb()
+    .query("SELECT content FROM messages_out WHERE kind = 'system'")
+    .get() as { content: string } | undefined;
+  if (!row) throw new Error('expected a parked taskflow_request_approval row in outbound.db');
+  return JSON.parse(row.content);
+}
 
 /** Directly seed an active task assigned to `assignee` (skips the create-default
  *  assignee semantics so the bulk-reassign source-person query is deterministic). */
@@ -61,13 +72,19 @@ describe('api_admin structure gate (#406)', () => {
     });
     const result = JSON.parse(response.content[0].text);
     expect(result.success).toBe(false);
-    expect(result.error_code).toBe('requires_approval');
+    expect(result.error_code).toBe('pending_approval');
     expect(result.gate.category).toBe('structure');
     // No mutation: bob is still on the board.
     const row = db
       .prepare('SELECT person_id FROM board_people WHERE board_id = ? AND person_id = ?')
       .get(BOARD, 'bob');
     expect(row).not.toBeNull();
+    // Round-trip initiated: a request row was parked for the host with the original tool + a summary.
+    const parked = parkRow();
+    expect(parked.action).toBe('taskflow_request_approval');
+    expect(parked.tool).toBe('api_admin');
+    expect(parked.category).toBe('structure');
+    expect(parked.summary).toContain('remove_person');
   });
 
   it('remove_child_board is REFUSED before mutating — the registration row survives', async () => {
@@ -84,7 +101,7 @@ describe('api_admin structure gate (#406)', () => {
     });
     const result = JSON.parse(response.content[0].text);
     expect(result.success).toBe(false);
-    expect(result.error_code).toBe('requires_approval');
+    expect(result.error_code).toBe('pending_approval');
     expect(result.gate.category).toBe('structure');
     const reg = db
       .prepare('SELECT child_board_id FROM child_board_registrations WHERE parent_board_id = ? AND person_id = ?')
@@ -92,7 +109,7 @@ describe('api_admin structure gate (#406)', () => {
     expect(reg).not.toBeNull();
   });
 
-  it('remove_admin is REFUSED with requires_approval/structure', async () => {
+  it('remove_admin is REFUSED with pending_approval/structure', async () => {
     const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
     addPerson('bob', 'bob', 'manager');
     db.prepare(
@@ -106,7 +123,7 @@ describe('api_admin structure gate (#406)', () => {
     });
     const result = JSON.parse(response.content[0].text);
     expect(result.success).toBe(false);
-    expect(result.error_code).toBe('requires_approval');
+    expect(result.error_code).toBe('pending_approval');
     expect(result.gate.category).toBe('structure');
     const adminRow = db
       .prepare('SELECT person_id FROM board_admins WHERE board_id = ? AND person_id = ?')
@@ -148,7 +165,7 @@ describe('api_admin structure gate (#406)', () => {
     });
     const result = JSON.parse(response.content[0].text);
     // Not gated: the engine ran (success or an engine-level error, but NOT a gate refusal).
-    expect(result.error_code).not.toBe('requires_approval');
+    expect(result.error_code).not.toBe('pending_approval');
   });
 });
 
@@ -167,7 +184,7 @@ describe('api_move bulk mass_mutation gate (#406)', () => {
     });
     const result = JSON.parse(response.content[0].text);
     expect(result.success).toBe(false);
-    expect(result.error_code).toBe('requires_approval');
+    expect(result.error_code).toBe('pending_approval');
     expect(result.gate.category).toBe('mass_mutation');
     // No mutation: every task is still in next_action.
     const moved = db
@@ -187,7 +204,7 @@ describe('api_move bulk mass_mutation gate (#406)', () => {
       sender_name: 'alice',
     });
     const result = JSON.parse(response.content[0].text);
-    expect(result.error_code).not.toBe('requires_approval');
+    expect(result.error_code).not.toBe('pending_approval');
     // At least one task actually moved out of next_action.
     const moved = db
       .prepare(`SELECT COUNT(*) AS n FROM tasks WHERE board_id = ? AND column = 'in_progress'`)
@@ -205,7 +222,7 @@ describe('api_move bulk mass_mutation gate (#406)', () => {
       sender_name: 'alice',
     });
     const result = JSON.parse(response.content[0].text);
-    expect(result.error_code).not.toBe('requires_approval');
+    expect(result.error_code).not.toBe('pending_approval');
   });
 
   it('verbatim path: a 5-task bulk move is NOT gated (dashboard contract)', async () => {
@@ -220,7 +237,7 @@ describe('api_move bulk mass_mutation gate (#406)', () => {
       sender_name: 'alice',
     });
     const result = JSON.parse(response.content[0].text);
-    expect(result.error_code).not.toBe('requires_approval');
+    expect(result.error_code).not.toBe('pending_approval');
   });
 
   it('env override TASKFLOW_GATE_MASS=2 gates a 2-task bulk move (no rebuild)', async () => {
@@ -237,7 +254,7 @@ describe('api_move bulk mass_mutation gate (#406)', () => {
     });
     const result = JSON.parse(response.content[0].text);
     expect(result.success).toBe(false);
-    expect(result.error_code).toBe('requires_approval');
+    expect(result.error_code).toBe('pending_approval');
     const moved = db
       .prepare(`SELECT COUNT(*) AS n FROM tasks WHERE board_id = ? AND column != 'next_action'`)
       .get(BOARD) as { n: number };
@@ -263,7 +280,7 @@ describe('api_reassign bulk mass_mutation gate (#406)', () => {
     });
     const result = JSON.parse(response.content[0].text);
     expect(result.success).toBe(false);
-    expect(result.error_code).toBe('requires_approval');
+    expect(result.error_code).toBe('pending_approval');
     expect(result.gate.category).toBe('mass_mutation');
     // No mutation: all 5 tasks still assigned to bob, none to carol.
     const stillBob = db
@@ -289,7 +306,7 @@ describe('api_reassign bulk mass_mutation gate (#406)', () => {
       confirmed: true,
     });
     const result = JSON.parse(response.content[0].text);
-    expect(result.error_code).not.toBe('requires_approval');
+    expect(result.error_code).not.toBe('pending_approval');
     expect(result.success).toBe(true);
     const toCarol = db
       .prepare(`SELECT COUNT(*) AS n FROM tasks WHERE board_id = ? AND assignee = 'carol'`)
@@ -309,7 +326,7 @@ describe('api_reassign bulk mass_mutation gate (#406)', () => {
       confirmed: true,
     });
     const result = JSON.parse(response.content[0].text);
-    expect(result.error_code).not.toBe('requires_approval');
+    expect(result.error_code).not.toBe('pending_approval');
     expect(result.success).toBe(true);
     const row = db.prepare('SELECT assignee FROM tasks WHERE id = ?').get('T1') as { assignee: string };
     expect(row.assignee).toBe('bob');
@@ -317,7 +334,7 @@ describe('api_reassign bulk mass_mutation gate (#406)', () => {
 
   it('dry-run (confirmed=false) is NOT refused — the agent needs the summary to decide', async () => {
     // requires_confirmation is a DIFFERENT mechanism; don't conflate it with the
-    // requires_approval gate. The gate fires ONLY on the confirmed=true path.
+    // pending_approval gate. The gate fires ONLY on the confirmed=true path.
     const { apiReassignTool } = await import('./taskflow-api-mutate.ts');
     addPerson('bob');
     addPerson('carol');
@@ -330,7 +347,7 @@ describe('api_reassign bulk mass_mutation gate (#406)', () => {
       confirmed: false,
     });
     const result = JSON.parse(response.content[0].text);
-    expect(result.error_code).not.toBe('requires_approval');
+    expect(result.error_code).not.toBe('pending_approval');
     expect(result.success).toBe(true);
     expect(result.data.requires_confirmation).toBeDefined();
   });
@@ -349,7 +366,7 @@ describe('api_reassign bulk mass_mutation gate (#406)', () => {
       confirmed: true,
     });
     const result = JSON.parse(response.content[0].text);
-    expect(result.error_code).not.toBe('requires_approval');
+    expect(result.error_code).not.toBe('pending_approval');
   });
 });
 
@@ -373,11 +390,38 @@ describe('api_delete_simple_task gate seat (#406)', () => {
     });
     const result = JSON.parse(response.content[0].text);
     expect(result.success).toBe(true);
-    expect(result.error_code).not.toBe('requires_approval');
+    expect(result.error_code).not.toBe('pending_approval');
     // Archived (recoverable), live row gone.
     const live = db.prepare('SELECT id FROM tasks WHERE id = ?').get(taskId);
     expect(live).toBeNull();
     const archived = db.prepare('SELECT task_id FROM archive WHERE task_id = ?').get(taskId);
     expect(archived).not.toBeNull();
+  });
+});
+
+// #407 — the approved re-run. When the host approves a parked action it triggers a deterministic
+// replay (isApprovedReplay) that must BYPASS the gate (else the approved action would re-park forever)
+// while still pinning the board. These verify the bypass and the executor wiring the replay depends on.
+describe('approved-replay bypass + executor registry (#407)', () => {
+  it('isApprovedReplay() bypasses the structure gate — the approved re-run is not re-parked', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const { runAsApprovedReplay } = await import('./taskflow-approval.ts');
+    addPerson('bob');
+    // alice is a board admin (withBoardAdmins), so under the bypass the engine actually runs.
+    const response = await runAsApprovedReplay(() =>
+      apiAdminTool.handler({ board_id: BOARD, action: 'remove_person', sender_name: 'alice', person_name: 'bob' }),
+    );
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).not.toBe('pending_approval'); // gate skipped on the approved re-run
+    // And it actually executed: bob is gone (the whole point of approving).
+    expect(db.prepare('SELECT 1 FROM board_people WHERE board_id = ? AND person_id = ?').get(BOARD, 'bob')).toBeFalsy();
+  });
+
+  it('registers an approved executor for every gated tool the host can replay', async () => {
+    await import('./taskflow-api-mutate.ts'); // registration side-effect
+    const { getApprovedExecutor } = await import('./taskflow-approval.ts');
+    for (const tool of ['api_admin', 'api_move', 'api_reassign', 'api_delete_simple_task']) {
+      expect(getApprovedExecutor(tool)).toBeDefined();
+    }
   });
 });

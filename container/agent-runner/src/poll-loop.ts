@@ -1,7 +1,11 @@
 import fs from 'fs';
 
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
-import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
+import { getPendingMessages, markProcessing, markCompleted, markFailed, type MessageInRow } from './db/messages-in.js';
+import { EXECUTE_APPROVED_ACTION, executeApprovedAction } from './mcp-tools/taskflow-approval.js';
+// Side-effect import: registers the approved-action executors IN THIS (main) process. The MCP tool
+// modules run in a separate subprocess, so their registrations don't reach the replay path here.
+import './mcp-tools/approved-executors.js';
 import { writeMessageOut } from './db/messages-out.js';
 import { getInboundDb, openInboundDb, getOutboundDb, getTaskflowDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
@@ -3959,6 +3963,39 @@ export function gateScheduledRunners(messages: MessageInRow[]): MessageInRow[] {
  * 5. Mark messages completed
  * 6. Loop
  */
+
+/**
+ * #407: execute admin-approved gated actions queued by the host as `taskflow_execute_approved`
+ * system rows. Runs at the top of the poll loop, BEFORE the LLM filter — the mutation re-runs
+ * deterministically in code (executeApprovedAction → the original tool handler under the gate
+ * bypass), never as a model turn. Only rows whose parsed action matches are consumed; other system
+ * rows (e.g. ask_user_question responses) pass through untouched for their own pollers.
+ */
+async function runApprovedActions(rows: MessageInRow[]): Promise<void> {
+  for (const row of rows) {
+    if (row.kind !== 'system') continue;
+    let content: Record<string, unknown>;
+    try {
+      content = JSON.parse(row.content) as Record<string, unknown>;
+    } catch {
+      continue; // not our row; leave it for whoever owns it
+    }
+    if (content.action !== EXECUTE_APPROVED_ACTION) continue;
+    // Mark completed BEFORE executing — at-most-once. A 'completed' ack is NOT cleared by
+    // clearStaleProcessingAcks (only 'processing' is), so if the process crashes mid-mutation the
+    // row is never replayed. For non-idempotent bulk move/reassign, a lost action (admin re-approves)
+    // is strictly safer than a double mutation. executeApprovedAction is itself fail-loud on handler
+    // error, so a handler-level failure still notifies the user.
+    markCompleted([row.id]);
+    try {
+      await executeApprovedAction(content);
+      log(`runApprovedActions: completed approved action ${row.id} (${String(content.tool)})`);
+    } catch (e) {
+      markFailed(row.id);
+      log(`runApprovedActions: dispatch failed for ${row.id}: ${String(e)}`);
+    }
+  }
+}
 export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   // Resume the agent's prior session from a previous container run if one
   // was persisted. The continuation is opaque to the poll-loop — the
@@ -3983,9 +4020,14 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // before `extractRouting` can never carry a stale ctx into the next
     // batch's `writeMessageOut` (Codex#4 stale-cross-batch finding).
     clearCurrentWebOrigin();
-    // Skip system messages — they're responses for MCP tools (e.g., ask_user_question)
-    let messages = getPendingMessages(isFirstPoll).filter((m) => m.kind !== 'system');
+    const allPending = getPendingMessages(isFirstPoll);
     isFirstPoll = false;
+    // #407: deterministically run any admin-APPROVED gated actions the host queued, BEFORE the LLM
+    // filter below ever sees them. The mutation re-executes in code (no model in the loop) under the
+    // gate-bypass flag, then the row is markCompleted so it can never re-fire.
+    await runApprovedActions(allPending);
+    // Skip system messages — they're responses for MCP tools (e.g., ask_user_question)
+    let messages = allPending.filter((m) => m.kind !== 'system');
     // Warm-container mirror of the host runner gate: drop due [TF-*] runners the board's state says
     // should stay silent before we can post them (see gateScheduledRunners above / runner-gate.ts).
     messages = gateScheduledRunners(messages);

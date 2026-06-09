@@ -18,7 +18,8 @@ import { clearPendingCreateCard, setPendingCreateCard } from './mutation-dedup.j
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 import { getVerbatimIds, isTaskflowSubprocess, normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
-import { evaluateDestructiveAction, isStructureAdminAction, type GateDecision } from './destructive-gate.js';
+import { evaluateDestructiveAction, isStructureAdminAction } from './destructive-gate.js';
+import { isApprovedReplay, parkForApproval, registerApprovedExecutor } from './taskflow-approval.js';
 import { buildReassignCard, buildReassignInfo, type ReassignTaskInfo } from './reassign-card.js';
 import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import { err, generateId, jsonResponse, log, parseTaskActorArgs, requireString } from './util.js';
@@ -33,18 +34,11 @@ function validationError(error: string) {
   return jsonResponse({ success: false, error_code: 'validation_error', error });
 }
 
-// #406 fail-closed refusal for a gated destructive action. The gate runs BEFORE
-// the engine commit, so a refusal is a clean no-op (nothing to roll back). This
-// is the intermediate state pre-#407 (host approval round-trip): chat-only,
-// skipped under verbatim ids (the FastAPI/dashboard surface is never gated).
-function refusal(d: GateDecision) {
-  return jsonResponse({
-    success: false,
-    error_code: 'requires_approval',
-    error: d.reason,
-    gate: { category: d.category },
-  });
-}
+// #407: a gated destructive action is no longer a dead-end refusal — it is PARKED for admin
+// approval (parkForApproval writes a host-visible request row and returns a non-retry
+// `pending_approval` to the agent). The gate still runs BEFORE the engine commit, so a park is a
+// clean no-op. Chat-only: skipped under verbatim ids (FastAPI/dashboard) AND under isApprovedReplay()
+// (the deterministic re-run the host triggers once an admin approves — see taskflow-approval.ts).
 
 const EMBEDDINGS_DB_PATH = '/workspace/embeddings/embeddings.db';
 
@@ -1339,9 +1333,9 @@ export const apiDeleteSimpleTaskTool: McpToolDefinition = {
     // (affected=1, touchesHistory=false) → never gates under defaults. The call is
     // seated here so #407 and any future bulk/purge delete have the gate point in
     // place; do NOT fabricate a touchesHistory=true path. Chat-only.
-    if (!getVerbatimIds()) {
+    if (!getVerbatimIds() && !isApprovedReplay()) {
       const d = evaluateDestructiveAction({ kind: 'delete', affected: 1, touchesHistory: false });
-      if (d.gated) return refusal(d);
+      if (d.gated) return parkForApproval({ tool: 'api_delete_simple_task', args, decision: d, summary: `delete task ${parsed.taskId}` });
     }
 
     const engine = new TaskflowEngine(getTaskflowDb(), parsed.boardId);
@@ -1439,9 +1433,9 @@ export const apiMoveTool: McpToolDefinition = {
       // never gated). Count is the REQUESTED task_ids length (conservative — a 6-id
       // move where some are invalid still gates as mass). Chat-only; verbatim/FastAPI
       // bypasses. Runs BEFORE the per-task loop that commits.
-      if (!getVerbatimIds()) {
+      if (!getVerbatimIds() && !isApprovedReplay()) {
         const d = evaluateDestructiveAction({ kind: 'mutation', affected: taskIds.length });
-        if (d.gated) return refusal(d);
+        if (d.gated) return parkForApproval({ tool: 'api_move', args, decision: d, summary: `bulk ${action} of ${taskIds.length} tasks` });
       }
 
       const results: MoveResult[] = [];
@@ -1716,9 +1710,12 @@ export const apiAdminTool: McpToolDefinition = {
     // #406 structure gate (chat-only; verbatim/FastAPI bypasses). remove_person /
     // remove_child_board / remove_admin change board/people structure → held for
     // admin approval. Runs BEFORE engine.admin (the commit) so a refusal is a no-op.
-    if (!getVerbatimIds() && isStructureAdminAction(action)) {
+    if (!getVerbatimIds() && !isApprovedReplay() && isStructureAdminAction(action)) {
       const d = evaluateDestructiveAction({ kind: 'structure', adminAction: action });
-      if (d.gated) return refusal(d);
+      if (d.gated) {
+        const who = typeof args.person_name === 'string' ? ` (${args.person_name})` : '';
+        return parkForApproval({ tool: 'api_admin', args, decision: d, summary: `${action}${who}` });
+      }
     }
 
     try {
@@ -1789,7 +1786,7 @@ export const apiReassignTool: McpToolDefinition = {
       // (engine returns before any write, taskflow-engine.ts:5239) but yields
       // tasks_affected — exactly the set that would mutate. Chat-only; verbatim/
       // FastAPI bypasses. Single task_id is affected=1 → never gated, no dry-run.
-      if (!getVerbatimIds() && confirmed && sourcePerson) {
+      if (!getVerbatimIds() && !isApprovedReplay() && confirmed && sourcePerson) {
         const dryRun = engine.reassign({
           board_id: boardId,
           target_person: targetPerson,
@@ -1799,7 +1796,14 @@ export const apiReassignTool: McpToolDefinition = {
         });
         if (dryRun.success && dryRun.tasks_affected) {
           const d = evaluateDestructiveAction({ kind: 'mutation', affected: dryRun.tasks_affected.length });
-          if (d.gated) return refusal(d);
+          if (d.gated) {
+            return parkForApproval({
+              tool: 'api_reassign',
+              args,
+              decision: d,
+              summary: `reassign ${dryRun.tasks_affected.length} tasks from ${sourcePerson} to ${targetPerson}`,
+            });
+          }
         }
       }
       // Capture the pre-reassign assignee NAME for the De/Para card — getTask
@@ -2564,3 +2568,11 @@ registerTools([
   apiUpdateTaskTool, apiQueryTool, apiHierarchyTool, apiDependencyTool,
   apiDeleteSimpleTaskTool, apiRescheduleMeetingTool, apiNoteMeetingTool,
 ]);
+
+// #407: register the gated tools' handlers so the host can re-run an APPROVED action
+// deterministically (executeApprovedAction → handler under isApprovedReplay(), which bypasses ONLY
+// the gate; normalizeAgentIds still force-pins board_id, so a replay can never escape this board).
+registerApprovedExecutor('api_delete_simple_task', (a) => apiDeleteSimpleTaskTool.handler(a));
+registerApprovedExecutor('api_move', (a) => apiMoveTool.handler(a));
+registerApprovedExecutor('api_admin', (a) => apiAdminTool.handler(a));
+registerApprovedExecutor('api_reassign', (a) => apiReassignTool.handler(a));
