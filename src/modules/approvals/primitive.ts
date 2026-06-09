@@ -46,8 +46,12 @@ const APPROVAL_OPTIONS: RawOption[] = [
 export interface ApprovalHandlerContext {
   session: Session;
   payload: Record<string, unknown>;
-  /** User ID of the admin who approved. Empty string if unknown. */
+  /** Raw platform user ID of the clicker (e.g. "6037840640"), NOT namespaced. Empty string if unknown. */
   userId: string;
+  /** Channel the click came from (e.g. "whatsapp"). Namespace `${channelType}:${userId}` to match the
+   *  users(id) format before any privilege check — pickApprover/user_roles store namespaced ids. Empty
+   *  string if unknown. */
+  channelType: string;
   /** Send a system chat message to the requesting agent's session. */
   notify: (text: string) => void;
 }

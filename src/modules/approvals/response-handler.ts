@@ -38,7 +38,7 @@ export async function handleApprovalsResponse(payload: ResponsePayload): Promise
     return true;
   }
 
-  await handleRegisteredApproval(approval, payload.value, payload.userId ?? '');
+  await handleRegisteredApproval(approval, payload.value, payload.userId ?? '', payload.channelType ?? '');
   return true;
 }
 
@@ -46,6 +46,7 @@ async function handleRegisteredApproval(
   approval: PendingApproval,
   selectedOption: string,
   userId: string,
+  channelType: string,
 ): Promise<void> {
   if (!approval.session_id) {
     deletePendingApproval(approval.approval_id);
@@ -92,7 +93,7 @@ async function handleRegisteredApproval(
 
   const payload = JSON.parse(approval.payload);
   try {
-    await handler({ session, payload, userId, notify });
+    await handler({ session, payload, userId, channelType, notify });
     log.info('Approval handled', { approvalId: approval.approval_id, action: approval.action, userId });
   } catch (err) {
     log.error('Approval handler threw', { approvalId: approval.approval_id, action: approval.action, err });

@@ -3970,6 +3970,11 @@ export function gateScheduledRunners(messages: MessageInRow[]): MessageInRow[] {
  * deterministically in code (executeApprovedAction → the original tool handler under the gate
  * bypass), never as a model turn. Only rows whose parsed action matches are consumed; other system
  * rows (e.g. ask_user_question responses) pass through untouched for their own pollers.
+ *
+ * KNOWN GAP (SEC#9): this runs BEFORE detectWebOrigin/setCurrentWebOrigin, so a replayed mutation's
+ * confirmation routes via live session routing, not board_chat. WhatsApp boards are unaffected (session
+ * routing IS the board chat); a web-dashboard-origin board's confirmation would misroute. The mutation
+ * itself still runs correctly + board-pinned — this is a confirmation-routing gap, tracked in SEC#9.
  */
 async function runApprovedActions(rows: MessageInRow[]): Promise<void> {
   for (const row of rows) {

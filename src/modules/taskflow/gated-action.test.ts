@@ -30,7 +30,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getAgentGroup).mockReturnValue({ id: 'ag1', name: 'Board A' } as ReturnType<typeof getAgentGroup>);
   vi.mocked(getSession).mockReturnValue(session);
-  vi.mocked(pickApprover).mockReturnValue(['u-admin']); // u-admin is an eligible approver by default
+  // pickApprover returns NAMESPACED ids ("<channel>:<handle>"), as user_roles stores them.
+  vi.mocked(pickApprover).mockReturnValue(['whatsapp:u-admin']);
 });
 
 describe('handleTaskflowRequestApproval', () => {
@@ -69,6 +70,23 @@ describe('handleTaskflowRequestApproval', () => {
     await handleTaskflowRequestApproval({ action: 'taskflow_request_approval', tool: 'api_reassign' }, session);
     expect(requestApproval).not.toHaveBeenCalled();
   });
+
+  it('renders a sanitized concrete args preview on the card so the approver can decide informedly', async () => {
+    await handleTaskflowRequestApproval(
+      {
+        action: 'taskflow_request_approval',
+        request_id: 'r1',
+        tool: 'api_reassign',
+        args: { source_person: 'Alice', target_person: 'Bob', confirmed: true },
+        summary: 'reassign 8 tasks',
+        category: 'mass_mutation',
+      },
+      session,
+    );
+    const question = vi.mocked(requestApproval).mock.calls[0][0].question;
+    expect(question).toContain('from: Alice');
+    expect(question).toContain('→: Bob'); // concrete people, not just "a mass_mutation"
+  });
 });
 
 describe('applyTaskflowGatedAction (on approve)', () => {
@@ -76,6 +94,7 @@ describe('applyTaskflowGatedAction (on approve)', () => {
     await applyTaskflowGatedAction({
       session,
       userId: 'u-admin',
+      channelType: 'whatsapp',
       notify: vi.fn(),
       payload: {
         request_id: 'r1',
@@ -91,6 +110,7 @@ describe('applyTaskflowGatedAction (on approve)', () => {
     expect(agentGroupId).toBe('ag1');
     expect(sessionId).toBe('s1');
     expect(message.kind).toBe('system');
+    expect(message.id).toBe('tf-appr-r1'); // DETERMINISTIC on request_id → PK-dedup makes execution at-most-once
     expect(message.trigger).toBe(1); // counts in countDueMessages → wakes a cold container
     expect(message.onWake).toBe(0); // a WARM container must still pick it up on its next poll
     const content = JSON.parse(message.content) as Record<string, unknown>;
@@ -103,17 +123,49 @@ describe('applyTaskflowGatedAction (on approve)', () => {
     expect(wakeContainer).toHaveBeenCalledWith(session);
   });
 
+  it('namespaces the RAW clicker id with channelType before the approver check (Codex BLOCKER)', async () => {
+    // The response carries a raw handle ("6037840640"); pickApprover stores "whatsapp:6037840640".
+    // Without namespacing this refused EVERY approval. Verify the raw+channel pair is authorized.
+    vi.mocked(pickApprover).mockReturnValue(['whatsapp:6037840640']);
+    await applyTaskflowGatedAction({
+      session,
+      userId: '6037840640',
+      channelType: 'whatsapp',
+      notify: vi.fn(),
+      payload: { request_id: 'r2', tool: 'api_admin', args: {}, summary: 'remove_person' },
+    });
+    expect(writeSessionMessage).toHaveBeenCalledTimes(1); // authorized → queued
+    expect(wakeContainer).toHaveBeenCalledWith(session);
+  });
+
   it('REFUSES an approve click from someone who is not an eligible approver — nothing queued', async () => {
-    vi.mocked(pickApprover).mockReturnValue(['someone-else']); // u-admin is NOT an approver here
+    vi.mocked(pickApprover).mockReturnValue(['whatsapp:someone-else']); // u-admin is NOT an approver
     const notify = vi.fn();
     await applyTaskflowGatedAction({
       session,
       userId: 'u-admin',
+      channelType: 'whatsapp',
       notify,
       payload: { request_id: 'r1', tool: 'api_reassign', args: {}, summary: 's' },
     });
     expect(writeSessionMessage).not.toHaveBeenCalled(); // no execute row written
     expect(wakeContainer).not.toHaveBeenCalled();
     expect(notify).toHaveBeenCalledWith(expect.stringContaining('not an authorized approver'));
+  });
+
+  it('is idempotent: a duplicate approval (same request_id, PK clash) queues nothing extra + no re-wake', async () => {
+    vi.mocked(writeSessionMessage).mockImplementation(() => {
+      throw new Error('UNIQUE constraint failed: messages_in.id');
+    });
+    const notify = vi.fn();
+    await applyTaskflowGatedAction({
+      session,
+      userId: 'u-admin',
+      channelType: 'whatsapp',
+      notify,
+      payload: { request_id: 'r1', tool: 'api_reassign', args: {}, summary: 's' },
+    });
+    // The dup write threw (PK clash) — handler swallows it and does NOT wake again (action already in flight).
+    expect(wakeContainer).not.toHaveBeenCalled();
   });
 });
