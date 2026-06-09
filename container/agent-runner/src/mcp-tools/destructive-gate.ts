@@ -75,13 +75,24 @@ export interface GateDecision {
 
 const OPEN: GateDecision = { gated: false };
 
-/** api_admin actions that change board / people structure (vs purely additive ones). Gated. */
+/** api_admin actions that change board / people structure or PRIVILEGE. Gated (held for admin approval). */
 export const STRUCTURE_ADMIN_ACTIONS: ReadonlySet<string> = new Set([
   'remove_child_board',
   'remove_person',
   'remove_admin',
   'remove_manager',
   'remove_delegate',
+  // #411: merge_project archives an entire source project and re-IDs ALL its subtasks into the target
+  // (irreversible renumbering) — an uncounted mass structural change reachable from chat via api_admin.
+  'merge_project',
+  // #411 (Codex xhigh): PRIVILEGE GRANTS. The old "additive = safe" heuristic predates the injection
+  // threat model — granting manager/delegate is a privilege-escalation step (a prompt-injected agent
+  // could self-grant the role that unlocks the OTHER gated manager-only actions). Held for approval.
+  'add_manager',
+  'add_delegate',
+  // #411: changes the board-wide cross-board subtask WRITE policy — a structural/policy change that
+  // can open cross-board writes for the whole board.
+  'set_cross_board_subtask_mode',
 ]);
 
 /** True iff an api_admin action mutates board/people structure (→ should be gated as 'structure'). */

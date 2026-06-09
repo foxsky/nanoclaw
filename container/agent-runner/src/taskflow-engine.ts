@@ -11682,8 +11682,13 @@ export class TaskflowEngine {
 
     const oldDone = this.db
       .prepare(
+        // #411: NEVER auto-archive a project. archiveTask() cascades a project snapshot+delete to ALL
+        // its subtasks regardless of each child's column/updated_at — so a stale-done project with a
+        // still-active or recently-touched child would drag live work into the archive. The housekeeping
+        // is meant only for self-contained simple done tasks; projects need explicit close/merge.
         `SELECT * FROM tasks
          WHERE board_id = ? AND column = 'done' AND updated_at < ?
+           AND type != 'project'
            AND (parent_task_id IS NULL OR parent_task_id = '')`,
       )
       .all(this.boardId, cutoffIso) as any[];

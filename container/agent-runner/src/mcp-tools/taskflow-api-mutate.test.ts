@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { closeTaskflowDb } from '../db/connection.js';
 import { setupEngineDb } from './taskflow-test-fixtures.js';
+import { setVerbatimIds } from './taskflow-helpers.js';
 
 let db: Database;
 
@@ -17,6 +18,7 @@ beforeEach(() => {
 
 afterEach(() => {
   closeTaskflowDb();
+  setVerbatimIds(false); // a test may flip this to exercise an engine-output (non-gated) path
 });
 
 describe('api_create_simple_task MCP tool', () => {
@@ -772,6 +774,11 @@ describe('api_admin MCP tool (A11.2)', () => {
 
   it('set_cross_board_subtask_mode persists runtime config and records history', async () => {
     const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    // #411: this is now a gated (structure/policy) action on the chat surface — held for approval.
+    // This test exercises the ENGINE-OUTPUT persistence path, so run it as the FastAPI/verbatim surface
+    // (gate bypassed), exactly as the dashboard/approved-replay would. The chat-parks contract is
+    // covered separately in taskflow-api-mutate-gate.test.ts.
+    setVerbatimIds(true);
     const response = await apiAdminTool.handler({
       board_id: BOARD,
       action: 'set_cross_board_subtask_mode',

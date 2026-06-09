@@ -5984,6 +5984,41 @@ ALTER TABLE boards ADD COLUMN owner_person_id TEXT;
   /* ---------------------------------------------------------------- */
 
   describe('report', () => {
+    it('#411: standup auto-archive blast radius — ONLY stale (>30d) DONE tasks, recoverable, never active/recent', () => {
+      // engine.report(type:'standup') runs archiveOldDoneTasks() (bundled v1 housekeeping). This is
+      // chat-reachable via api_report, so an injected agent could trigger it — but its blast radius is
+      // tightly bounded and RECOVERABLE (archive table), so gating standups would be disproportionate.
+      // This test pins that radius: it can touch ONLY column='done' tasks untouched for >30 days; an
+      // active task or a recently-done task can never be archived.
+      const old = new Date(Date.now() - 60 * 86_400_000).toISOString();
+      const now = new Date().toISOString();
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, column, created_at, updated_at) VALUES
+           ('AZ-OLD',    '${BOARD_ID}', 'simple', 'old done',     'done',        '${old}', '${old}'),
+           ('AZ-RECENT', '${BOARD_ID}', 'simple', 'recent done',  'done',        '${now}', '${now}'),
+           ('AZ-ACTIVE', '${BOARD_ID}', 'simple', 'active stale', 'next_action', '${old}', '${old}'),
+           ('AZ-PROJ',   '${BOARD_ID}', 'project','old done proj', 'done',       '${old}', '${old}')`,
+      );
+      // A still-ACTIVE subtask of the stale-done project — archiving the project would cascade and
+      // drag this live work into the archive. The type!='project' filter must prevent that.
+      db.exec(
+        `INSERT INTO tasks (id, board_id, type, title, column, created_at, updated_at, parent_task_id)
+           VALUES ('AZ-PROJ.1', '${BOARD_ID}', 'simple', 'live child', 'in_progress', '${old}', '${old}', 'AZ-PROJ')`,
+      );
+      const r = engine.report({ board_id: BOARD_ID, type: 'standup' });
+      expect(r.success).toBe(true);
+      // Stale-done SIMPLE task archived (RECOVERABLE — archive row exists) and removed from the board.
+      expect(db.prepare(`SELECT 1 FROM archive WHERE task_id = 'AZ-OLD'`).get()).toBeTruthy();
+      expect(db.prepare(`SELECT 1 FROM tasks WHERE id = 'AZ-OLD'`).get()).toBeFalsy();
+      // Recent-done and active-stale are UNTOUCHED — the housekeeping can never reach them.
+      expect(db.prepare(`SELECT column FROM tasks WHERE id = 'AZ-RECENT'`).get()).toEqual({ column: 'done' });
+      expect(db.prepare(`SELECT column FROM tasks WHERE id = 'AZ-ACTIVE'`).get()).toEqual({ column: 'next_action' });
+      // #411 (Codex): a stale-done PROJECT is NOT auto-archived (would cascade to its live child).
+      expect(db.prepare(`SELECT 1 FROM tasks WHERE id = 'AZ-PROJ'`).get()).toBeTruthy();
+      expect(db.prepare(`SELECT 1 FROM archive WHERE task_id = 'AZ-PROJ'`).get()).toBeFalsy();
+      expect(db.prepare(`SELECT column FROM tasks WHERE id = 'AZ-PROJ.1'`).get()).toEqual({ column: 'in_progress' });
+    });
+
     it('standup returns correct sections', () => {
       const todayStr = boardLocalDate(0);
       const yStr = boardLocalDate(-1);

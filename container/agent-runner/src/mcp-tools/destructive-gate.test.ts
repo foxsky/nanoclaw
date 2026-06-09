@@ -71,11 +71,25 @@ describe('resolveThresholds', () => {
 });
 
 describe('isStructureAdminAction', () => {
-  it('flags removals/revocations as structure changes, not additive ones', () => {
+  it('flags removals/revocations as structure changes; truly-additive task ops are not', () => {
     expect(isStructureAdminAction('remove_child_board')).toBe(true);
     expect(isStructureAdminAction('remove_person')).toBe(true);
     expect(isStructureAdminAction('remove_admin')).toBe(true);
-    expect(isStructureAdminAction('register_person')).toBe(false); // additive
-    expect(isStructureAdminAction('add_manager')).toBe(false); // additive
+    // register_person auto-provisions a child board (a deterministic, system-driven additive flow);
+    // set_wip_limit is a per-person cap — neither is a privilege/structure escalation.
+    expect(isStructureAdminAction('register_person')).toBe(false);
+    expect(isStructureAdminAction('set_wip_limit')).toBe(false);
+  });
+
+  it('#411: gates merge_project + privilege grants + cross-board policy as structure changes', () => {
+    // merge_project archives + re-IDs a whole project; add_manager/add_delegate are PRIVILEGE grants
+    // (escalation under injection — the "additive = safe" heuristic predates the threat model);
+    // set_cross_board_subtask_mode flips a board-wide write policy.
+    for (const action of ['merge_project', 'add_manager', 'add_delegate', 'set_cross_board_subtask_mode']) {
+      expect(isStructureAdminAction(action)).toBe(true);
+      const d = evaluateDestructiveAction({ kind: 'structure', adminAction: action });
+      expect(d.gated).toBe(true);
+      expect(d.category).toBe('structure');
+    }
   });
 });

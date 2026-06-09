@@ -131,6 +131,44 @@ describe('api_admin structure gate (#406)', () => {
     expect(adminRow).not.toBeNull();
   });
 
+  it('#411: merge_project is HELD for approval before the engine runs (parks, structure)', async () => {
+    // merge_project archives a whole source project and re-IDs all its subtasks into the target — an
+    // uncounted mass structural change reachable from chat via api_admin. The gate runs BEFORE the
+    // engine, so a chat call parks with no merge (no valid projects needed to prove the no-op).
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'merge_project',
+      sender_name: 'alice',
+      source_project_id: 'P1',
+      target_project_id: 'P2',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error_code).toBe('pending_approval');
+    expect(result.gate.category).toBe('structure');
+    const parked = parkRow();
+    expect(parked.tool).toBe('api_admin');
+    expect(parked.summary).toContain('merge_project');
+  });
+
+  it('#411: add_manager (privilege grant) is HELD for approval from chat — no escalation without a human', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    addPerson('bob');
+    const response = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'add_manager',
+      sender_name: 'alice',
+      person_name: 'bob',
+    });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error_code).toBe('pending_approval');
+    expect(result.gate.category).toBe('structure');
+    // No escalation: bob did NOT become an admin/manager.
+    expect(db.prepare(`SELECT 1 FROM board_admins WHERE board_id = ? AND person_id = 'bob'`).get(BOARD)).toBeFalsy();
+  });
+
   it('additive admin actions (set_wip_limit) are NOT gated — they commit normally', async () => {
     // Guards against over-gating that would block legitimate admin work.
     const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
