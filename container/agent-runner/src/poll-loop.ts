@@ -60,6 +60,18 @@ export function hasWakeTrigger(messages: Pick<MessageInRow, 'trigger'>[]): boole
   return messages.some((m) => m.trigger === 1);
 }
 
+/**
+ * #413: the rows a deterministic TaskFlow command parser is allowed to read a COMMAND from — the
+ * wake-eligible (trigger=1) user rows only. A batch's `keep` can also include accumulated trigger=0
+ * CONTEXT rows (the ignored-message accumulate policy); those may inform the agent but must NEVER
+ * constitute a command, or an injected/forwarded context message could drive a forwarding/mutating
+ * parser ("encaminhar X para Y") with no human in the loop. Used at every deterministic dispatch site;
+ * the agent prompt + markCompleted still operate on the full `keep`.
+ */
+export function selectCommandRows<T extends Pick<MessageInRow, 'trigger'>>(rows: T[]): T[] {
+  return rows.filter((m) => m.trigger === 1);
+}
+
 export function taskflowPureGreetingReply(
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
   taskflowEnabled = Boolean(process.env.NANOCLAW_TASKFLOW_BOARD_ID),
@@ -1586,11 +1598,19 @@ function recentOutboundContents(limit = 10): string[] {
   }
 }
 
-function recentInboundContents(limit = 10): string[] {
+export function recentInboundContents(limit = 10): string[] {
   try {
     const rows = getInboundDb().prepare(
+      // #413 (Codex xhigh): trigger = 1 ONLY. This is fed exclusively to the deterministic TaskFlow
+      // command parsers (recentIn/recentContext), which use it to pick mutation/forward targets (latest
+      // meeting id, cross-board note payload, etc.). Accumulated trigger=0 CONTEXT rows — including an
+      // injected/forwarded one in the current batch — must NEVER supply a deterministic command target,
+      // else the keep-side wake-row scoping (selectCommandRows) would be re-opened through this channel.
+      // Prior ENGAGED (trigger=1) user messages remain legitimate context; the agent prompt builds its
+      // own context separately, so this does not narrow what the model sees.
       `SELECT content FROM messages_in
        WHERE kind IN ('chat', 'chat-sdk')
+         AND trigger = 1
        ORDER BY COALESCE(seq, rowid) DESC
        LIMIT ?`,
     ).all(limit) as Array<{ content: string }>;
@@ -4180,7 +4200,15 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       continue;
     }
 
-    const taskflowGreeting = taskflowPureGreetingReply(keep);
+    // #413: deterministic TaskFlow command parsers must read commands ONLY from wake-eligible
+    // (trigger=1) user rows. `keep` can also carry accumulated trigger=0 CONTEXT rows (the
+    // ignored-message accumulate policy); without this filter an injected/forwarded context message
+    // could drive a forwarding/mutating parser (e.g. "encaminhar X para Y") with no human in the
+    // loop. The agent prompt + markCompleted below still use the FULL `keep`, so context is
+    // preserved and drained exactly as before — only command DETECTION is wake-row-scoped.
+    const commandRows = selectCommandRows(keep);
+
+    const taskflowGreeting = taskflowPureGreetingReply(commandRows);
     if (taskflowGreeting) {
       writeMessageOut({
         id: generateId(),
@@ -4199,269 +4227,269 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     const recentOut = recentOutboundContents();
     const recentIn = recentInboundContents();
     const recentContext = [...recentOut, ...recentIn];
-    const explicitCompletion = taskflowExplicitCompletionCommand(keep);
-    if (explicitCompletion && handleTaskflowExplicitCompletion(explicitCompletion, keep, routing)) {
+    const explicitCompletion = taskflowExplicitCompletionCommand(commandRows);
+    if (explicitCompletion && handleTaskflowExplicitCompletion(explicitCompletion, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled explicit TaskFlow completion without provider query');
       continue;
     }
 
-    const explicitReassign = taskflowExplicitReassignCommand(keep);
-    if (explicitReassign && handleTaskflowExplicitReassign(explicitReassign, keep, routing)) {
+    const explicitReassign = taskflowExplicitReassignCommand(commandRows);
+    if (explicitReassign && handleTaskflowExplicitReassign(explicitReassign, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled explicit TaskFlow reassignment without provider query');
       continue;
     }
 
-    const pendingChildBoardRegistration = taskflowPendingChildBoardRegistrationCommand(keep, recentContext);
-    if (pendingChildBoardRegistration && handleTaskflowPendingChildBoardRegistration(pendingChildBoardRegistration, keep, routing)) {
+    const pendingChildBoardRegistration = taskflowPendingChildBoardRegistrationCommand(commandRows, recentContext);
+    if (pendingChildBoardRegistration && handleTaskflowPendingChildBoardRegistration(pendingChildBoardRegistration, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow child-board registration follow-up without provider query');
       continue;
     }
 
-    const childBoardCreationPrompt = taskflowChildBoardCreationPrompt(keep);
+    const childBoardCreationPrompt = taskflowChildBoardCreationPrompt(commandRows);
     if (childBoardCreationPrompt && handleTaskflowChildBoardCreationPrompt(childBoardCreationPrompt, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow child-board creation prompt without provider query');
       continue;
     }
 
-    const readyForReviewUpdate = taskflowReadyForReviewUpdateCommand(keep);
-    if (readyForReviewUpdate && handleTaskflowReadyForReviewUpdate(readyForReviewUpdate, keep, routing)) {
+    const readyForReviewUpdate = taskflowReadyForReviewUpdateCommand(commandRows);
+    if (readyForReviewUpdate && handleTaskflowReadyForReviewUpdate(readyForReviewUpdate, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow ready-for-review update without provider query');
       continue;
     }
 
-    const orgMeetingDraft = taskflowOrgMeetingDraftPrompt(keep, recentContext);
+    const orgMeetingDraft = taskflowOrgMeetingDraftPrompt(commandRows, recentContext);
     if (orgMeetingDraft && handleTaskflowOrgMeetingDraftPrompt(orgMeetingDraft, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow org meeting draft prompt without provider query');
       continue;
     }
 
-    const createMeeting = taskflowCreateMeetingCommand(keep);
-    if (createMeeting && handleTaskflowCreateMeeting(createMeeting, keep, routing)) {
+    const createMeeting = taskflowCreateMeetingCommand(commandRows);
+    if (createMeeting && handleTaskflowCreateMeeting(createMeeting, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow meeting creation without provider query');
       continue;
     }
 
-    const processMinutes = taskflowProcessMinutesCommand(keep);
-    if (processMinutes && handleTaskflowProcessMinutes(processMinutes, keep, routing)) {
+    const processMinutes = taskflowProcessMinutesCommand(commandRows);
+    if (processMinutes && handleTaskflowProcessMinutes(processMinutes, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow process-minutes request without provider query');
       continue;
     }
 
-    const bareTaskDetails = taskflowBareTaskDetailsCommand(keep);
-    if (bareTaskDetails && handleTaskflowBareTaskDetails(bareTaskDetails, keep, routing)) {
+    const bareTaskDetails = taskflowBareTaskDetailsCommand(commandRows);
+    if (bareTaskDetails && handleTaskflowBareTaskDetails(bareTaskDetails, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled bare TaskFlow task-details request without provider query');
       continue;
     }
 
-    const recentInbox = taskflowRecentInboxCommand(keep);
+    const recentInbox = taskflowRecentInboxCommand(commandRows);
     if (recentInbox && handleTaskflowRecentInbox(recentInbox, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled recent TaskFlow inbox request without provider query');
       continue;
     }
 
-    const bulkApproval = taskflowBulkApprovalCommand(keep);
-    if (bulkApproval && handleTaskflowBulkApproval(bulkApproval, keep, routing)) {
+    const bulkApproval = taskflowBulkApprovalCommand(commandRows);
+    if (bulkApproval && handleTaskflowBulkApproval(bulkApproval, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow bulk approval without provider query');
       continue;
     }
 
-    const personReview = taskflowPersonReviewCommand(keep);
-    if (personReview && handleTaskflowPersonReview(personReview, keep, routing)) {
+    const personReview = taskflowPersonReviewCommand(commandRows);
+    if (personReview && handleTaskflowPersonReview(personReview, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow person-review request without provider query');
       continue;
     }
 
-    const personTasks = taskflowPersonTasksCommand(keep);
-    if (personTasks && handleTaskflowPersonTasks(personTasks, keep, routing)) {
+    const personTasks = taskflowPersonTasksCommand(commandRows);
+    if (personTasks && handleTaskflowPersonTasks(personTasks, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow person-tasks request without provider query');
       continue;
     }
 
-    const missingTaskFollowup = taskflowMissingTaskFollowupCommand(keep, recentOut);
-    if (missingTaskFollowup && handleTaskflowMissingTaskFollowup(missingTaskFollowup, keep, routing)) {
+    const missingTaskFollowup = taskflowMissingTaskFollowupCommand(commandRows, recentOut);
+    if (missingTaskFollowup && handleTaskflowMissingTaskFollowup(missingTaskFollowup, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow missing-task follow-up without provider query');
       continue;
     }
 
-    const incompleteNoteRequest = taskflowIncompleteNoteRequestCommand(keep);
+    const incompleteNoteRequest = taskflowIncompleteNoteRequestCommand(commandRows);
     if (incompleteNoteRequest && handleTaskflowIncompleteNoteRequest(incompleteNoteRequest, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled incomplete TaskFlow note request without provider query');
       continue;
     }
 
-    const exactIdNote = taskflowExactIdNoteCandidate(keep);
-    if (exactIdNote && handleTaskflowMissingExactIdNote(exactIdNote, keep, routing)) {
+    const exactIdNote = taskflowExactIdNoteCandidate(commandRows);
+    if (exactIdNote && handleTaskflowMissingExactIdNote(exactIdNote, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled missing exact-ID TaskFlow note without provider query');
       continue;
     }
 
-    const bareResolved = taskflowBareResolvedPrompt(keep);
+    const bareResolved = taskflowBareResolvedPrompt(commandRows);
     if (bareResolved && handleTaskflowBareResolvedPrompt(bareResolved, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled bare TaskFlow resolved/completed prompt without provider query');
       continue;
     }
 
-    const standaloneActivity = taskflowStandaloneActivityPrompt(keep);
+    const standaloneActivity = taskflowStandaloneActivityPrompt(commandRows);
     if (standaloneActivity && handleTaskflowStandaloneActivityPrompt(standaloneActivity, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled standalone TaskFlow activity prompt without provider query');
       continue;
     }
 
-    const notifyTaskPriority = taskflowNotifyTaskPriorityCommand(keep);
-    if (notifyTaskPriority && handleTaskflowNotifyTaskPriority(notifyTaskPriority, keep, routing)) {
+    const notifyTaskPriority = taskflowNotifyTaskPriorityCommand(commandRows);
+    if (notifyTaskPriority && handleTaskflowNotifyTaskPriority(notifyTaskPriority, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow priority notification without provider query');
       continue;
     }
 
-    const addParticipantsToLatestMeeting = taskflowAddParticipantsToLatestMeetingCommand(keep, recentContext);
-    if (addParticipantsToLatestMeeting && handleTaskflowAddParticipantsToLatestMeeting(addParticipantsToLatestMeeting, keep, routing)) {
+    const addParticipantsToLatestMeeting = taskflowAddParticipantsToLatestMeetingCommand(commandRows, recentContext);
+    if (addParticipantsToLatestMeeting && handleTaskflowAddParticipantsToLatestMeeting(addParticipantsToLatestMeeting, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow participant add to latest meeting without provider query');
       continue;
     }
 
-    const addExternalParticipantToLatestMeeting = taskflowAddExternalParticipantToLatestMeetingCommand(keep, recentContext);
+    const addExternalParticipantToLatestMeeting = taskflowAddExternalParticipantToLatestMeetingCommand(commandRows, recentContext);
     if (
       addExternalParticipantToLatestMeeting &&
-      handleTaskflowAddExternalParticipantToLatestMeeting(addExternalParticipantToLatestMeeting, keep, routing)
+      handleTaskflowAddExternalParticipantToLatestMeeting(addExternalParticipantToLatestMeeting, commandRows, routing)
     ) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow external participant add to latest meeting without provider query');
       continue;
     }
 
-    const notifyMeetingAbove = taskflowNotifyMeetingAboveCommand(keep, recentContext);
-    if (notifyMeetingAbove && handleTaskflowNotifyMeetingAbove(notifyMeetingAbove, keep, routing)) {
+    const notifyMeetingAbove = taskflowNotifyMeetingAboveCommand(commandRows, recentContext);
+    if (notifyMeetingAbove && handleTaskflowNotifyMeetingAbove(notifyMeetingAbove, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow meeting notification without provider query');
       continue;
     }
 
-    const autoForwardMeetingConfirmation = taskflowAutoForwardMeetingConfirmation(keep, recentContext);
-    if (autoForwardMeetingConfirmation && handleTaskflowAutoForwardMeetingConfirmation(autoForwardMeetingConfirmation, keep, routing)) {
+    const autoForwardMeetingConfirmation = taskflowAutoForwardMeetingConfirmation(commandRows, recentContext);
+    if (autoForwardMeetingConfirmation && handleTaskflowAutoForwardMeetingConfirmation(autoForwardMeetingConfirmation, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow meeting auto-forward confirmation without provider query');
       continue;
     }
 
-    const orgMeetingCreateForward = taskflowOrgMeetingCreateForwardConfirmation(keep, recentContext);
-    if (orgMeetingCreateForward && handleTaskflowOrgMeetingCreateForwardConfirmation(orgMeetingCreateForward, keep, routing)) {
+    const orgMeetingCreateForward = taskflowOrgMeetingCreateForwardConfirmation(commandRows, recentContext);
+    if (orgMeetingCreateForward && handleTaskflowOrgMeetingCreateForwardConfirmation(orgMeetingCreateForward, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow org meeting create/forward confirmation without provider query');
       continue;
     }
 
-    const forwardDetails = taskflowForwardDetailsCommand(keep);
-    if (forwardDetails && handleTaskflowForwardDetails(forwardDetails, keep, routing)) {
+    const forwardDetails = taskflowForwardDetailsCommand(commandRows);
+    if (forwardDetails && handleTaskflowForwardDetails(forwardDetails, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow details forwarding without provider query');
       continue;
     }
 
-    const meetingBatchUpdate = taskflowMeetingBatchUpdateCommand(keep);
-    if (meetingBatchUpdate && handleTaskflowMeetingBatchUpdate(meetingBatchUpdate, keep, routing)) {
+    const meetingBatchUpdate = taskflowMeetingBatchUpdateCommand(commandRows);
+    if (meetingBatchUpdate && handleTaskflowMeetingBatchUpdate(meetingBatchUpdate, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow meeting batch update without provider query');
       continue;
     }
 
-    const dueDateNeedsTask = taskflowDueDateNeedsTaskPrompt(keep);
+    const dueDateNeedsTask = taskflowDueDateNeedsTaskPrompt(commandRows);
     if (dueDateNeedsTask && handleTaskflowDueDateNeedsTaskPrompt(dueDateNeedsTask, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow due-date clarification without provider query');
       continue;
     }
 
-    const exactTaskNextAction = taskflowExactTaskNextActionUpdateCommand(keep);
-    if (exactTaskNextAction && handleTaskflowExactTaskNextActionUpdate(exactTaskNextAction, keep, routing)) {
+    const exactTaskNextAction = taskflowExactTaskNextActionUpdateCommand(commandRows);
+    if (exactTaskNextAction && handleTaskflowExactTaskNextActionUpdate(exactTaskNextAction, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow exact task next-action update without provider query');
       continue;
     }
 
-    const projectNoteUpdate = taskflowProjectNoteUpdateCommand(keep);
-    if (projectNoteUpdate && handleTaskflowProjectNoteUpdate(projectNoteUpdate, keep, routing)) {
+    const projectNoteUpdate = taskflowProjectNoteUpdateCommand(commandRows);
+    if (projectNoteUpdate && handleTaskflowProjectNoteUpdate(projectNoteUpdate, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow project note update without provider query');
       continue;
     }
 
-    const boardPersonPlacement = taskflowBoardPersonPlacementCommand(keep);
-    if (boardPersonPlacement && handleTaskflowBoardPersonPlacement(boardPersonPlacement, keep, routing)) {
+    const boardPersonPlacement = taskflowBoardPersonPlacementCommand(commandRows);
+    if (boardPersonPlacement && handleTaskflowBoardPersonPlacement(boardPersonPlacement, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow board-person placement without provider query');
       continue;
     }
 
-    const orgDirectoryQuestion = taskflowOrgDirectoryQuestionCommand(keep);
-    if (orgDirectoryQuestion && handleTaskflowOrgDirectoryQuestion(orgDirectoryQuestion, keep, routing)) {
+    const orgDirectoryQuestion = taskflowOrgDirectoryQuestionCommand(commandRows);
+    if (orgDirectoryQuestion && handleTaskflowOrgDirectoryQuestion(orgDirectoryQuestion, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow org-directory question without provider query');
       continue;
     }
 
-    const projectReport = taskflowProjectReportCommand(keep);
-    if (projectReport && handleTaskflowProjectReport(projectReport, keep, routing)) {
+    const projectReport = taskflowProjectReportCommand(commandRows);
+    if (projectReport && handleTaskflowProjectReport(projectReport, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow project report without provider query');
       continue;
     }
 
-    const projectTitleLookup = taskflowProjectTitleLookupCommand(keep);
-    if (projectTitleLookup && handleTaskflowProjectTitleLookup(projectTitleLookup, keep, routing)) {
+    const projectTitleLookup = taskflowProjectTitleLookupCommand(commandRows);
+    if (projectTitleLookup && handleTaskflowProjectTitleLookup(projectTitleLookup, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow project title lookup without provider query');
       continue;
     }
 
-    const projectExistenceLookup = taskflowProjectExistenceLookupCommand(keep);
-    if (projectExistenceLookup && handleTaskflowProjectExistenceLookup(projectExistenceLookup, keep, routing)) {
+    const projectExistenceLookup = taskflowProjectExistenceLookupCommand(commandRows);
+    if (projectExistenceLookup && handleTaskflowProjectExistenceLookup(projectExistenceLookup, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow project existence lookup without provider query');
       continue;
     }
 
-    const crossBoardNoteConfirmation = taskflowCrossBoardNoteConfirmation(keep, recentOut);
-    if (crossBoardNoteConfirmation && handleTaskflowCrossBoardNoteConfirmation(crossBoardNoteConfirmation, keep, routing)) {
+    const crossBoardNoteConfirmation = taskflowCrossBoardNoteConfirmation(commandRows, recentOut);
+    if (crossBoardNoteConfirmation && handleTaskflowCrossBoardNoteConfirmation(crossBoardNoteConfirmation, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow cross-board note confirmation without provider query');
       continue;
     }
 
-    const reviewBypassConfirmation = taskflowReviewBypassConfirmation(keep, recentOut);
-    if (reviewBypassConfirmation && handleTaskflowReviewBypassConfirmation(reviewBypassConfirmation, keep, routing)) {
+    const reviewBypassConfirmation = taskflowReviewBypassConfirmation(commandRows, recentOut);
+    if (reviewBypassConfirmation && handleTaskflowReviewBypassConfirmation(reviewBypassConfirmation, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow review-bypass confirmation without provider query');
       continue;
     }
 
-    const reviewBypassRepair = taskflowReviewBypassRepairPrompt(keep, [...recentOut, ...recentIn]);
-    if (reviewBypassRepair && handleTaskflowReviewBypassRepair(reviewBypassRepair, keep, routing)) {
+    const reviewBypassRepair = taskflowReviewBypassRepairPrompt(commandRows, [...recentOut, ...recentIn]);
+    if (reviewBypassRepair && handleTaskflowReviewBypassRepair(reviewBypassRepair, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow review-bypass repair without provider query');
       continue;
     }
 
-    const crossBoardNotePrompt = taskflowCrossBoardNotePrompt(keep, recentIn);
+    const crossBoardNotePrompt = taskflowCrossBoardNotePrompt(commandRows, recentIn);
     if (crossBoardNotePrompt) {
       writeReply(routing, crossBoardNotePrompt.text);
       markCompleted(keep.map((m) => m.id));
@@ -4469,8 +4497,8 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       continue;
     }
 
-    const reviewBypassPrompt = taskflowReviewBypassDiagnosticPrompt(keep);
-    if (reviewBypassPrompt && handleTaskflowReviewBypassDiagnosticPrompt(reviewBypassPrompt, keep, routing)) {
+    const reviewBypassPrompt = taskflowReviewBypassDiagnosticPrompt(commandRows);
+    if (reviewBypassPrompt && handleTaskflowReviewBypassDiagnosticPrompt(reviewBypassPrompt, commandRows, routing)) {
       markCompleted(keep.map((m) => m.id));
       log('Handled TaskFlow review-bypass diagnostic prompt without provider query');
       continue;
@@ -4776,16 +4804,18 @@ async function processQuery(
         if (done) return;
 
         const keptIds = keep.map((m) => m.id);
+        // #413: command detection on follow-up polls is wake-row-scoped too (see main loop).
+        const commandRows = selectCommandRows(keep);
         const recentContext = [...recentOutboundContents(), ...recentInboundContents()];
-        const orgMeetingCreateForward = taskflowOrgMeetingCreateForwardConfirmation(keep, recentContext);
-        if (orgMeetingCreateForward && handleTaskflowOrgMeetingCreateForwardConfirmation(orgMeetingCreateForward, keep, routing)) {
+        const orgMeetingCreateForward = taskflowOrgMeetingCreateForwardConfirmation(commandRows, recentContext);
+        if (orgMeetingCreateForward && handleTaskflowOrgMeetingCreateForwardConfirmation(orgMeetingCreateForward, commandRows, routing)) {
           markCompleted(keptIds);
           log('Handled TaskFlow org meeting create/forward follow-up without provider push');
           return;
         }
 
-        const processMinutes = taskflowProcessMinutesCommand(keep);
-        if (processMinutes && handleTaskflowProcessMinutes(processMinutes, keep, routing)) {
+        const processMinutes = taskflowProcessMinutesCommand(commandRows);
+        if (processMinutes && handleTaskflowProcessMinutes(processMinutes, commandRows, routing)) {
           markCompleted(keptIds);
           log('Handled TaskFlow process-minutes follow-up without provider push');
           return;
