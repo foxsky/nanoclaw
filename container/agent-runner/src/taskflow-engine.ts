@@ -2330,6 +2330,54 @@ export class TaskflowEngine {
       .all(boardId, parentTaskId);
   }
 
+  /**
+   * SEC#10 (#416): read-only count of the rows a cancel_task / restore_task admin action WOULD touch,
+   * computed BEFORE mutating so the api_admin gate can hold a large project-cascade for admin approval.
+   * Pure read — no writes. Returns the affected-row count (target + cascaded children), or null when the
+   * target can't be resolved (then the gate skips and the real admin() handler surfaces the proper error).
+   *
+   *  - cancel_task: archiveTask snapshots + DELETEs the project AND its DIRECT subtasks only — the cascade
+   *    is `DELETE FROM tasks WHERE parent_task_id = ?`, ONE level by SQL, so the direct-child count ALWAYS
+   *    equals what's deleted (it can't diverge even if a reparent_task built a deeper parent chain — those
+   *    grandchildren are not in the cascade). affected = 1 + direct-subtask count; a non-project target is
+   *    exactly 1 (it only deletes itself), so it never trips the threshold.
+   *  - restore_task: re-inserts the archived task PLUS each entry in its snapshot.archived_subtasks that
+   *    carries a snapshot.id — the filter mirrors the restore loop's own skip guard, so the count equals
+   *    the number of INSERTs. affected = 1 + that count.
+   *
+   * The count uses the SAME id resolution + board key + child predicate as the real mutation, so the two
+   * can never diverge (no over/under-count).
+   */
+  countAdminCascade(action: 'cancel_task' | 'restore_task', taskId: string): number | null {
+    if (action === 'cancel_task') {
+      let task: any;
+      try {
+        task = this.requireTask(taskId);
+      } catch {
+        return null;
+      }
+      if (task.type !== 'project') return 1;
+      return 1 + this.getSubtaskRows(task.id, this.taskBoardId(task)).length;
+    }
+    // restore_task — count off the frozen archive snapshot (subtasks were deleted at cancel time, so the
+    // live tasks table has 0 children; the snapshot is the only correct source).
+    const { boardId: rb, rawId } = this.resolveInputTaskId(taskId);
+    if (rb && rb !== this.boardId) return null;
+    const archived = this.db
+      .prepare(`SELECT task_snapshot FROM archive WHERE board_id = ? AND task_id = ?`)
+      .get(this.boardId, rawId) as { task_snapshot?: string } | undefined;
+    if (!archived?.task_snapshot) return null;
+    try {
+      const snap = JSON.parse(archived.task_snapshot);
+      const kids = Array.isArray(snap.archived_subtasks)
+        ? snap.archived_subtasks.filter((c: any) => c?.snapshot?.id).length
+        : 0;
+      return 1 + kids;
+    } catch {
+      return null;
+    }
+  }
+
   private getCurrentBoardProjectRelatedTasks(parentBoardId: string, parentTaskId: string): any[] {
     const delegatedParentSubtasks = this.db
       .prepare(

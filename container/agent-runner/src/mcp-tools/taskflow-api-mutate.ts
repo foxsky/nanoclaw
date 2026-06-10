@@ -1735,6 +1735,38 @@ export const apiAdminTool: McpToolDefinition = {
 
     try {
       const engine = new TaskflowEngine(getTaskflowDb(), boardId);
+      // SEC#10 (#416): cancel_task / restore_task on a PROJECT cascade to ALL its subtasks (archiveTask
+      // snapshots+DELETEs the children; restore re-inserts them) — an UNCOUNTED mass mutation the name-only
+      // structure gate above does NOT cover (neither is a STRUCTURE_ADMIN_ACTION). Count the affected rows
+      // READ-ONLY on the engine BEFORE the mutating admin() call and park when the cascade meets the
+      // destructive threshold. A single non-project / childless target = affected 1 → never gates (the
+      // recoverable-single-cancel carve-out, matching api_move/api_reassign). cancel uses the 'delete'
+      // kind (it removes rows; massDelete>=3); restore uses 'mutation' (it re-creates rows; massMutation>=5,
+      // the less-dangerous recovery direction). Chat-only; verbatim/FastAPI + approved-replay bypass; the
+      // existing registerApprovedExecutor('api_admin', ...) re-runs the approved action unchanged (board_id
+      // stays pinned by normalizeAgentIds, so a parked cancel can never escape this board).
+      if (
+        !getVerbatimIds() &&
+        !isApprovedReplay() &&
+        (action === 'cancel_task' || action === 'restore_task') &&
+        typeof adminParams.task_id === 'string'
+      ) {
+        const affected = engine.countAdminCascade(action, adminParams.task_id);
+        if (affected !== null) {
+          const d =
+            action === 'cancel_task'
+              ? evaluateDestructiveAction({ kind: 'delete', affected })
+              : evaluateDestructiveAction({ kind: 'mutation', affected });
+          if (d.gated) {
+            return parkForApproval({
+              tool: 'api_admin',
+              args,
+              decision: d,
+              summary: `${action === 'cancel_task' ? 'cancel' : 'restore'} ${adminParams.task_id} (${affected} tasks)`,
+            });
+          }
+        }
+      }
       const result = engine.admin(adminParams);
       // #390: register_person on a delegating hierarchy board returns an
       // auto_provision_request — emit provision_child_board deterministically

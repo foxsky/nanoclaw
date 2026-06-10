@@ -3152,6 +3152,17 @@ function handleTaskflowBulkApproval(
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
   routing: RoutingContext,
 ): boolean {
+  // SEC#10 (#416) part (b) — VERIFIED-NEGATIVE: this per-task engine.move('approve') loop is INTENTIONALLY
+  // not behind the api_move bulk count-gate. It is NOT injection-reachable: it only fires from the parsed
+  // `aprovar todas as tarefas de <Nome>` command, and #413's selectCommandRows(keep)=trigger===1 scoping
+  // means a command can only come from a wake-eligible row the HOST set trigger=1 on (a genuine inbound
+  // platform message that passed engage + access + sender-scope) — a forwarded/injected/system context row
+  // is trigger=0 and excluded. The blast radius is further bounded: one named person's tasks in the
+  // `review` column of THIS board only, the engine's approve transition is strictly review→done, and each
+  // looped move re-enforces isManagerOrDelegate + no-self-approval. Gating the OWNER's own explicit bulk
+  // approve behind a second admin would be a UX regression with no security gain (no model is in this path).
+  // INVARIANT TO PRESERVE: if this is ever made reachable from the agent/MCP tool surface, add the same
+  // evaluateDestructiveAction({kind:'mutation', affected: taskIds.length}) preflight the api_move tool uses.
   const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
   if (!boardId) return false;
 

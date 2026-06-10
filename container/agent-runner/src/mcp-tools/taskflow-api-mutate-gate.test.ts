@@ -207,6 +207,82 @@ describe('api_admin structure gate (#406)', () => {
   });
 });
 
+describe('api_admin cancel/restore project-cascade count gate (SEC#10 / #416)', () => {
+  function seedProject(projectId: string, subtaskCount: number): void {
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO tasks (id, board_id, type, title, column, requires_close_approval, created_at, updated_at)
+       VALUES (?, ?, 'project', ?, 'next_action', 1, ?, ?)`,
+    ).run(projectId, BOARD, `Project ${projectId}`, now, now);
+    for (let i = 1; i <= subtaskCount; i++) {
+      db.prepare(
+        `INSERT INTO tasks (id, board_id, type, title, column, requires_close_approval, created_at, updated_at, parent_task_id)
+         VALUES (?, ?, 'simple', ?, 'next_action', 1, ?, ?, ?)`,
+      ).run(`${projectId}.${i}`, BOARD, `Sub ${i}`, now, now, projectId);
+    }
+  }
+
+  it('cancel_task on a PROJECT whose cascade meets the delete threshold PARKS — no rows deleted', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    seedProject('P1', 3); // affected = 1 + 3 = 4 >= massDelete(3)
+    const response = await apiAdminTool.handler({ board_id: BOARD, action: 'cancel_task', sender_name: 'alice', task_id: 'P1' });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error_code).toBe('pending_approval');
+    expect(result.gate.category).toBe('destructive_delete');
+    // Fail-closed: the project AND all subtasks are still live (nothing archived/deleted).
+    expect(db.prepare(`SELECT COUNT(*) AS c FROM tasks WHERE board_id = ?`).get(BOARD)).toMatchObject({ c: 4 });
+    expect(db.prepare(`SELECT COUNT(*) AS c FROM archive WHERE board_id = ?`).get(BOARD)).toMatchObject({ c: 0 });
+    const parked = parkRow();
+    expect(parked.tool).toBe('api_admin');
+    expect(parked.summary).toContain('cancel P1');
+  });
+
+  it('cancel_task on a single (non-project) task is NOT gated (affected 1) — it executes', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    seedTask('T1', 'alice', 'next_action'); // 'alice' already seeded as a board admin by setupEngineDb
+    const response = await apiAdminTool.handler({ board_id: BOARD, action: 'cancel_task', sender_name: 'alice', task_id: 'T1' });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).not.toBe('pending_approval'); // not a gate refusal
+    expect(db.prepare(`SELECT 1 FROM tasks WHERE board_id = ? AND id = 'T1'`).get(BOARD)).toBeFalsy(); // actually cancelled
+  });
+
+  it('restore_task whose cascade meets the mutation threshold PARKS — the archive row survives', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const now = new Date().toISOString();
+    const snapshot = JSON.stringify({
+      id: 'PA',
+      type: 'project',
+      title: 'PA',
+      archived_subtasks: [1, 2, 3, 4].map((n) => ({ snapshot: { id: `PA.${n}` } })),
+    });
+    db.prepare(
+      `INSERT INTO archive (board_id, task_id, type, title, assignee, archive_reason, archived_at, task_snapshot, history)
+       VALUES (?, 'PA', 'project', 'PA', NULL, 'cancelled', ?, ?, '[]')`,
+    ).run(BOARD, now, snapshot); // affected = 1 + 4 = 5 >= massMutation(5)
+    const response = await apiAdminTool.handler({ board_id: BOARD, action: 'restore_task', sender_name: 'alice', task_id: 'PA' });
+    const result = JSON.parse(response.content[0].text);
+    expect(result.success).toBe(false);
+    expect(result.error_code).toBe('pending_approval');
+    expect(result.gate.category).toBe('mass_mutation');
+    expect(db.prepare(`SELECT 1 FROM archive WHERE board_id = ? AND task_id = 'PA'`).get(BOARD)).not.toBeNull(); // not restored
+    expect(parkRow().summary).toContain('restore PA');
+  });
+
+  it('an APPROVED replay bypasses the gate and actually cancels the project (cascade runs)', async () => {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const { runAsApprovedReplay } = await import('./taskflow-approval.ts');
+    seedProject('P9', 3);
+    const response = await runAsApprovedReplay(() =>
+      apiAdminTool.handler({ board_id: BOARD, action: 'cancel_task', sender_name: 'alice', task_id: 'P9' }),
+    );
+    const result = JSON.parse(response.content[0].text);
+    expect(result.error_code).not.toBe('pending_approval'); // gate bypassed under replay
+    expect(db.prepare(`SELECT COUNT(*) AS c FROM tasks WHERE board_id = ?`).get(BOARD)).toMatchObject({ c: 0 }); // project + subtasks gone
+    expect(db.prepare(`SELECT 1 FROM archive WHERE board_id = ? AND task_id = 'P9'`).get(BOARD)).not.toBeNull(); // archived
+  });
+});
+
 describe('api_move bulk mass_mutation gate (#406)', () => {
   it('task_ids of length >= massMutation(5) is REFUSED and NO task moves', async () => {
     // Encodes the threshold boundary + the fail-closed (no mutation) contract:
