@@ -35,6 +35,7 @@ import {
   shouldSuppressSameConvMessage,
 } from './mcp-tools/message-block-dedup.js';
 import { flushPendingCreateCard } from './mcp-tools/mutation-confirmation.js';
+import { addTurnActorSenders, clearTurnActor, setTurnActor } from './mcp-tools/turn-actor.js';
 import { drainAndDispatchPendingNotifications } from './mcp-tools/pending-notification-dispatch.js';
 import { buildReassignCard, buildReassignInfo, type ReassignTaskInfo } from './mcp-tools/reassign-card.js';
 import { appendToolEvents, type ToolEvent } from './providers/claude-tool-capture.js';
@@ -1438,6 +1439,28 @@ function parseSingleChat(message: Pick<MessageInRow, 'kind' | 'content'>): { sen
   if (!text) return null;
   const sender = typeof content.sender === 'string' ? content.sender.trim() : '';
   return { sender, text };
+}
+
+/**
+ * #419 (SEC#13): derive the authenticated per-turn chat actor from a batch.
+ * Returns the trimmed `content.sender` of each trigger=1 (#413) chat row, plus a
+ * `poison` flag set when ANY trigger=1 row is NOT an authenticated chat message
+ * (a non-chat/system/scheduled row, or a chat row with an empty sender). The
+ * turn-actor channel resolves ONLY when poison is false AND there is exactly one
+ * distinct sender — so a scheduled task co-batched with a manager's chat, or any
+ * unauthenticated row, makes the turn unresolved and denies mutations (Codex
+ * #419: non-chat content must not ride a co-batched chat actor). This is the ONE
+ * derivation of the per-turn sender — the MCP child only READS the result.
+ */
+function turnActorSenders(rows: MessageInRow[]): { senders: string[]; poison: boolean } {
+  const senders: string[] = [];
+  let poison = false;
+  for (const row of selectCommandRows(rows)) {
+    const parsed = parseSingleChat(row);
+    if (parsed && parsed.sender) senders.push(parsed.sender);
+    else poison = true;
+  }
+  return { senders, poison };
 }
 
 function extractTaskId(text: string): string | null {
@@ -4533,6 +4556,14 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
 
+    // #419: pin the authenticated per-turn actor BEFORE the model can call any
+    // MCP tool. The chat mutate tools are gated by requiresChatActor (deny when
+    // unresolved) and normalizeAgentIds binds sender_name to it, so a prompt-
+    // injected agent cannot name a manager it is not. Single distinct trigger=1
+    // chat sender → bound; mixed / system / poisoned batch → unresolved → deny.
+    const initialActor = turnActorSenders(keep);
+    setTurnActor(initialActor.senders, initialActor.poison);
+
     const query = config.provider.query({
       prompt: promptWithContext,
       continuation,
@@ -4596,6 +4627,11 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // (read-and-clear), so the boundary flush is a no-op there.
     flushPendingCreateCard();
     drainDeterministicMutationFlag();
+    // #419: clear the per-turn actor at the unconditional turn boundary so it can
+    // never leak into a later turn (a fast-path turn that never reaches this point
+    // does not read the actor, and the next model turn overwrites it before
+    // querying — so a stale value is harmless, but clearing keeps the channel honest).
+    clearTurnActor();
     // #396: deliver any deferred cross-board notifications whose assignee's child
     // board has since provisioned (JID now resolves). Opportunistic per-turn drain
     // — no-op for non-taskflow boards. Within the 5-min TTL, V1 best-effort parity.
@@ -4836,7 +4872,17 @@ async function processQuery(
           return;
         }
 
+        // #419: ACCUMULATE this follow-up push's senders into the active stream's
+        // actor BEFORE pushing it (markCompleted fires at the first result while the
+        // stream stays open, so a processing_ack-keyed binding would be fail-open
+        // here — this durable channel is not). addTurnActorSenders unions with the
+        // senders already seen this turn, so a follow-up from a DIFFERENT sender (or
+        // any poisoned row) makes the turn unresolved — sender A's in-flight tool can
+        // no longer ride a sender B that pushed mid-turn (Codex #419). Derived from
+        // the final `keep` (post pre-task-script narrowing), not newIds.
         const prompt = formatMessages(keep);
+        const followupActor = turnActorSenders(keep);
+        addTurnActorSenders(followupActor.senders, followupActor.poison);
         log(`Pushing ${keep.length} follow-up message(s) into active query`);
         query.push(prompt);
         markCompleted(keptIds);

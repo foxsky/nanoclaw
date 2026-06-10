@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
-import { closeTaskflowDb } from '../db/connection.js';
+import { closeSessionDb, closeTaskflowDb, initTestSessionDb } from '../db/connection.js';
 import { setupEngineDb } from './taskflow-test-fixtures.js';
 import { setVerbatimIds } from './taskflow-helpers.js';
+import { __resetTurnActorForTesting, clearTurnActor, setTurnActor } from './turn-actor.js';
 
 let db: Database;
 
@@ -3143,5 +3144,73 @@ describe('bulkMoveNotificationEvents — per-success fail-soft (bulk move has no
       { notifications: [{ target_kind: 'dm', target_chat_jid: '55@s', message: 'oi' }] },
     ]);
     expect(out).toEqual([[], [{ kind: 'direct_message', target_chat_jid: '55@s', message: 'oi' }]]);
+  });
+});
+
+// SEC#13 (#419) — END-TO-END: the per-turn actor binding makes the ENGINE deny a
+// spoofed manager. This is the real proof that (a) overwriting sender_name with a
+// non-manager real sender defeats isManager spoofing, and (b) the UNRESOLVED_SENDER
+// sentinel resolves to a hard permission_denied at the engine layer.
+describe('SEC#13 (#419) — engine denies a spoofed/unresolved manager on the chat surface', () => {
+  beforeEach(() => {
+    initTestSessionDb();
+    __resetTurnActorForTesting();
+    // 'alice' is seeded as a manager by setupEngineDb(withBoardAdmins). Add 'bob' as a
+    // plain member (NOT a manager) to stand in for the authenticated, non-privileged sender.
+    db.prepare(`INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`).run(BOARD);
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = BOARD;
+  });
+  afterEach(() => {
+    clearTurnActor();
+    closeSessionDb();
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  });
+
+  async function setWip(senderName: string) {
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const r = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'set_wip_limit',
+      sender_name: senderName, // what the MODEL asserts — must be overwritten by the turn actor
+      person_name: 'bob',
+      wip_limit: 3,
+    });
+    return JSON.parse(r.content[0].text);
+  }
+
+  it('SPOOF DEFEATED: the real sender is a non-manager (bob); naming the manager (alice) is overwritten → permission_denied', async () => {
+    setTurnActor(['bob']); // the authenticated inbound sender of this turn
+    const r = await setWip('alice'); // model claims to be the manager
+    expect(r.success).toBe(false);
+    expect(String(r.error)).toMatch(/not a manager/i);
+  });
+
+  it('UNRESOLVED → denied: a mixed-sender batch deletes sender_name (backstop) so the raw handler refuses, never running as the model manager', async () => {
+    // The requiresChatActor WRAPPER denies an unresolved turn with permission_denied
+    // (locked in chat-actor-guard.test.ts). This exercises the RAW handler's
+    // belt-and-suspenders backstop: normalizeAgentIds deletes the spoofed sender_name →
+    // the tool's own required-field check refuses (err() → isError text). Either way it
+    // never runs as 'alice'.
+    setTurnActor(['bob', 'mallory']); // two distinct senders → unresolved
+    const { apiAdminTool } = await import('./taskflow-api-mutate.ts');
+    const r = await apiAdminTool.handler({
+      board_id: BOARD,
+      action: 'set_wip_limit',
+      sender_name: 'alice',
+      person_name: 'bob',
+      wip_limit: 3,
+    });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/sender_name/i);
+  });
+
+  it('LEGIT manager still works: when the authenticated sender IS the manager, the action succeeds', async () => {
+    setTurnActor(['alice']); // alice really sent this turn
+    const r = await setWip('bob'); // even with a wrong model sender_name, it binds to alice
+    expect(r.success).toBe(true);
+    const row = db
+      .prepare('SELECT wip_limit FROM board_people WHERE board_id = ? AND person_id = ?')
+      .get(BOARD, 'bob') as { wip_limit: number };
+    expect(row.wip_limit).toBe(3);
   });
 });

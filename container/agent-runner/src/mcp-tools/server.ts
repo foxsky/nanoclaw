@@ -32,6 +32,13 @@ export function registerTools(tools: McpToolDefinition[]): void {
   }
 }
 
+/** Test-only: fetch the REGISTERED (post-wrap) tool definition by name. Used by
+ *  chat-actor-guard.test.ts to assert every board-mutating tool's registered
+ *  handler is gated by requiresChatActor (#419). */
+export function getRegisteredToolForTesting(name: string): McpToolDefinition | undefined {
+  return toolMap.get(name);
+}
+
 /**
  * Per-tool argument guard for the restricted (FastAPI) surface: keyed by
  * tool name, returns a rejection reason string to deny the call, or null

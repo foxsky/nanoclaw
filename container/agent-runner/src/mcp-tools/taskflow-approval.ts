@@ -24,6 +24,7 @@
 import { writeMessageOut, type WriteMessageOut } from '../db/messages-out.js';
 import type { GateDecision } from './destructive-gate.js';
 import { emitDeterministicToolMessage } from './mutation-confirmation.js';
+import { isApprovedReplay, runAsApprovedReplay } from './replay-flag.js';
 import { generateId, jsonResponse, log } from './util.js';
 
 /** outbound system action: container → host, "an admin must approve this gated action". */
@@ -32,25 +33,11 @@ export const REQUEST_APPROVAL_ACTION = 'taskflow_request_approval';
 export const EXECUTE_APPROVED_ACTION = 'taskflow_execute_approved';
 
 // --- gate-bypass flag for the approved re-run -------------------------------------------------
-// Single process-global, like _verbatimIds in taskflow-helpers. The replay runs OUTSIDE an agent
-// turn (in the poll-loop, before the LLM filter), so no concurrent MCP tool call can observe it.
-let _approvedReplay = false;
-
-/** True only while executeApprovedAction is re-invoking a handler. Gate sites skip the gate when set. */
-export function isApprovedReplay(): boolean {
-  return _approvedReplay;
-}
-
-/** Run `fn` with the gate-bypass flag set; always restore it, even if `fn` throws. */
-export async function runAsApprovedReplay<T>(fn: () => Promise<T> | T): Promise<T> {
-  const prev = _approvedReplay;
-  _approvedReplay = true;
-  try {
-    return await fn();
-  } finally {
-    _approvedReplay = prev;
-  }
-}
+// The flag + its two accessors moved to replay-flag.ts (a dependency-free leaf) so taskflow-helpers
+// can consult isApprovedReplay() inside normalizeAgentIds (#419 actor binding) without closing an
+// import cycle through this module. Imported above for internal use (executeApprovedAction) and
+// re-exported here so every existing `from './taskflow-approval.js'` importer is unchanged.
+export { isApprovedReplay, runAsApprovedReplay };
 
 // --- executor registry ------------------------------------------------------------------------
 // The gated tools register their own handler here at import time (no import cycle: the tool modules

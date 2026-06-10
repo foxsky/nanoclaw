@@ -6,6 +6,7 @@ import { getTaskflowDb } from '../db/connection.js';
 import { enqueueDeferredNotificationsInSession } from './pending-notification-dispatch.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { registerTools } from './server.js';
+import { requiresChatActor } from './chat-actor-guard.js';
 import type { NotificationEvent } from './taskflow-helpers.js';
 import { normalizeAgentIds } from './taskflow-helpers.js';
 import { safeNotificationEvents } from './taskflow-api-mutate.js';
@@ -411,4 +412,5 @@ export const apiUpdateSimpleTaskTool: McpToolDefinition = {
   },
 };
 
-registerTools([apiUpdateSimpleTaskTool]);
+// #419: task updates require an authenticated chat actor (see chat-actor-guard.ts).
+registerTools([requiresChatActor(apiUpdateSimpleTaskTool)]);

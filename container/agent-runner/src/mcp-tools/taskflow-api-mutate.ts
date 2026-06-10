@@ -20,6 +20,7 @@ import type { McpToolDefinition } from './types.js';
 import { getVerbatimIds, isTaskflowSubprocess, normalizeAgentIds, normalizeEngineNotificationEvents } from './taskflow-helpers.js';
 import { evaluateDestructiveAction, isStructureAdminAction } from './destructive-gate.js';
 import { isApprovedReplay, parkForApproval, registerApprovedExecutor } from './taskflow-approval.js';
+import { requiresChatActor } from './chat-actor-guard.js';
 import { buildReassignCard, buildReassignInfo, type ReassignTaskInfo } from './reassign-card.js';
 import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import { err, generateId, jsonResponse, log, parseTaskActorArgs, requireString } from './util.js';
@@ -2609,11 +2610,17 @@ export const apiNoteMeetingTool: McpToolDefinition = {
   },
 };
 
+// #419: every BOARD-MUTATING tool is wrapped with requiresChatActor so it denies when the in-session
+// turn has no single authenticated chat sender (chat-actor-guard.ts). The read tools (apiReportTool,
+// apiQueryTool) are intentionally NOT wrapped — an unresolved turn must still be able to read. The
+// approved-replay executors below call the RAW handlers (replay is pre-authenticated), so the gate
+// only fronts the live MCP-exposed handlers. chat-actor-guard.test.ts asserts this coverage.
 registerTools([
-  apiCreateSimpleTaskTool, apiCreateMeetingTaskTool, apiCreateTaskTool,
-  apiMoveTool, apiMoveToColumnTool, apiAdminTool, apiReassignTool, apiUndoTool, apiReportTool,
-  apiUpdateTaskTool, apiQueryTool, apiHierarchyTool, apiDependencyTool,
-  apiDeleteSimpleTaskTool, apiRescheduleMeetingTool, apiNoteMeetingTool,
+  requiresChatActor(apiCreateSimpleTaskTool), requiresChatActor(apiCreateMeetingTaskTool), requiresChatActor(apiCreateTaskTool),
+  requiresChatActor(apiMoveTool), requiresChatActor(apiMoveToColumnTool), requiresChatActor(apiAdminTool),
+  requiresChatActor(apiReassignTool), requiresChatActor(apiUndoTool), apiReportTool,
+  requiresChatActor(apiUpdateTaskTool), apiQueryTool, requiresChatActor(apiHierarchyTool), requiresChatActor(apiDependencyTool),
+  requiresChatActor(apiDeleteSimpleTaskTool), requiresChatActor(apiRescheduleMeetingTool), requiresChatActor(apiNoteMeetingTool),
 ]);
 
 // #407: register the gated tools' handlers so the host can re-run an APPROVED action

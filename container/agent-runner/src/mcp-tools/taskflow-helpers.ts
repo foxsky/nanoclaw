@@ -1,6 +1,15 @@
-/** Pure-function helpers for TaskFlow actor + notification-event parsing.
+/** Helpers for TaskFlow actor + notification-event parsing.
  *  Exported for cross-repo consumers (Python REST roundtrip validators).
- *  No DB access; no I/O. */
+ *
+ *  Mostly pure (parseActorArg, parseNotificationEvents,
+ *  normalizeEngineNotificationEvents do no I/O). The ONE exception is the
+ *  actor-binding branch at the END of `normalizeAgentIds` (#419): on the
+ *  in-session chat surface it reads the per-turn authenticated actor from the
+ *  outbound DB via `getTurnActor`. That branch is reached only AFTER the
+ *  verbatim early-return, so FastAPI/cross-repo verbatim consumers never touch
+ *  the DB. */
+import { getTurnActor } from './turn-actor.js';
+import { isApprovedReplay } from './replay-flag.js';
 
 export type TaskflowPersonActor = {
   actor_type: 'taskflow_person';
@@ -177,9 +186,31 @@ export function normalizeAgentIds(args: Record<string, unknown>): Record<string,
   // and the api_update tool), so a prompt-injected sender_is_service:true is a direct privilege bypass.
   // No legitimate chat caller sets it (only the FastAPI/verbatim entry, which returned above, and the
   // engine-internal scheduled paths). Force it off unconditionally — idempotent on the #407 replay path
-  // (the parked args were already normalized at park time). Binding sender_name / sender_external_id to
-  // the authenticated inbound sender needs a durable per-turn actor channel and is tracked in #419.
+  // (the parked args were already normalized at park time).
   if ('sender_is_service' in out) out.sender_is_service = false;
+
+  // SEC#13 (#419): BIND the actor to the authenticated inbound sender. The engine authorizes every
+  // admin/mutate action on sender_name (isManager / isAssignee / no-self-approval / audit attribution),
+  // but on the chat surface sender_name is a MODEL arg — a prompt-injected agent could name any manager.
+  // The poll-loop pins the single authenticated trigger=1 chat sender of this turn into the turn-actor
+  // channel; bind sender_name to it (OVERWRITE the model value, like board_id). The REAL fail-closed
+  // enforcement for an UNRESOLVED actor is `requiresChatActor` (chat-actor-guard.ts), which denies the
+  // mutate tool BEFORE this runs — relying on a sentinel string is not enough (Codex #419 BLOCKER:
+  // unprivileged mutations don't hit a person check). Here we DELETE sender_name when unresolved as a
+  // belt-and-suspenders backstop (an unguarded mutate tool then gets no actor → engine person checks
+  // fail; an unresolved READ of "my tasks" correctly can't resolve a person). sender_external_id is
+  // STRIPPED: no authenticated external-id reaches the container today (resolveExternalDm is unwired),
+  // so any model-supplied value is a spoof; the FastAPI/verbatim external-accept path returned above and
+  // is untouched. Gated to the in-session chat surface (env board, not #407 replay — the parked args were
+  // authenticated at park time and re-binding to a now-empty channel would wrongly DENY them).
+  if (process.env.NANOCLAW_TASKFLOW_BOARD_ID && !isApprovedReplay()) {
+    if ('sender_name' in out) {
+      const actor = getTurnActor();
+      if (actor.resolved) out.sender_name = actor.sender;
+      else delete out.sender_name;
+    }
+    if ('sender_external_id' in out) delete out.sender_external_id;
+  }
   return out;
 }
 

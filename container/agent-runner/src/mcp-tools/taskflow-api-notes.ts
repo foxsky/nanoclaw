@@ -4,6 +4,7 @@ import { TaskflowEngine } from '../taskflow-engine.js';
 import { emitMutationConfirmation } from './mutation-confirmation.js';
 import { registerTools } from './server.js';
 import { addEditNoteFormattedResult, addNoteFormattedResult } from './taskflow-api-mutate.js';
+import { requiresChatActor } from './chat-actor-guard.js';
 import { normalizeAgentIds } from './taskflow-helpers.js';
 import type { McpToolDefinition } from './types.js';
 import { err, jsonResponse, parseTaskActorArgs } from './util.js';
@@ -153,4 +154,9 @@ export const apiTaskRemoveNoteTool: McpToolDefinition = {
   },
 };
 
-registerTools([apiTaskAddNoteTool, apiTaskEditNoteTool, apiTaskRemoveNoteTool]);
+// #419: note mutations require an authenticated chat actor (see chat-actor-guard.ts).
+registerTools([
+  requiresChatActor(apiTaskAddNoteTool),
+  requiresChatActor(apiTaskEditNoteTool),
+  requiresChatActor(apiTaskRemoveNoteTool),
+]);

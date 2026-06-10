@@ -10,6 +10,7 @@ import {
 import { flushPendingCreateCard } from './mutation-confirmation.ts';
 import { __resetDedupForTesting } from './mutation-dedup.ts';
 import { applyBoardConfigColumns, setupEngineDb } from './taskflow-test-fixtures.ts';
+import { setTurnActor } from './turn-actor.ts';
 
 // Phase-3 unit-2-core / Codex gate P5: session-DB-backed end-to-end
 // integration asserting that a mutation tool writes EXACTLY ONE
@@ -246,6 +247,11 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     // (set in-session in production); set it here so the reassign enqueue fires.
     const savedEnv = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
     process.env.NANOCLAW_TASKFLOW_BOARD_ID = BOARD;
+    // #419: with the env board set this is the in-session chat surface, where
+    // normalizeAgentIds binds sender_name to the authenticated per-turn actor.
+    // Pin it to 'alice' (the manager who really sent this turn) so the reassign
+    // is authorized — exactly what the poll-loop does before the model runs.
+    setTurnActor(['alice']);
     try {
       const db = setupEngineDb(BOARD, { withBoardAdmins: true });
       const { apiCreateSimpleTaskTool, apiReassignTool } = await import('./taskflow-api-mutate.ts');

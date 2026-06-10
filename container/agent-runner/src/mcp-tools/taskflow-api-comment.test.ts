@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
-import { closeTaskflowDb } from '../db/connection.js';
+import { closeSessionDb, closeTaskflowDb, initTestSessionDb } from '../db/connection.js';
 import { setVerbatimIds } from './taskflow-helpers.js';
 import { setupEngineDb } from './taskflow-test-fixtures.js';
+import { __resetTurnActorForTesting, clearTurnActor, setTurnActor } from './turn-actor.js';
 
 /**
  * `api_task_add_comment` MCP tool — flat FastAPI contract (mirrors
@@ -253,5 +254,80 @@ describe('api_task_add_comment MCP tool (engine-backed)', () => {
     });
     expect(r.success).toBe(false);
     expect(r.error_code).toBe('not_found');
+  });
+});
+
+// SEC#13 (#419): the comment author is a model-controlled arg on the chat surface
+// (author_id/author_name are NOT touched by normalizeAgentIds). On the chat surface
+// the handler OVERWRITES them with the authenticated per-turn actor — author_id to
+// the canonical person_id (so the engine's person_id-keyed self-comment suppression
+// matches), author_name to the display name. The unresolved-actor DENY is enforced
+// by the requiresChatActor WRAPPER (locked in chat-actor-guard.test.ts's registry
+// coverage), not here — these tests exercise the raw handler's resolved binding. The
+// FastAPI subprocess (verbatim) keeps its server-resolved author.
+describe('SEC#13 (#419) — comment author bound to the authenticated turn actor', () => {
+  beforeEach(() => {
+    initTestSessionDb();
+    __resetTurnActorForTesting();
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = SEED;
+  });
+  afterEach(() => {
+    clearTurnActor();
+    closeSessionDb();
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  });
+
+  it('OVERWRITES the model author with the resolved actor — author_id is the canonical person_id, author_name the display name', () => {
+    // 'Bob' is seeded as person_id='bob', name='Bob' (beforeEach). The sender display
+    // name resolves to person_id 'bob' so notification suppression keys correctly.
+    setTurnActor(['Bob']);
+    return call({
+      board_id: SEED,
+      task_id: 'T1',
+      author_id: 'mallory-spoof',
+      author_name: 'Mallory',
+      message: 'attributed to me, not Mallory',
+    }).then((r) => {
+      expect(r.success).toBe(true);
+      expect(r.data.author_id).toBe('bob'); // canonical person_id (IMPORTANT #419)
+      expect(r.data.author_name).toBe('Bob'); // display name
+      const row = db
+        .prepare(`SELECT "by" FROM task_history WHERE board_id=? AND task_id='T1' AND action='comment'`)
+        .get(SEED) as { by: string };
+      expect(row.by).toBe('bob');
+    });
+  });
+
+  it('falls back to the display name when the resolved sender is not a registered board person', async () => {
+    setTurnActor(['Ext-Visitor']); // not in board_people
+    const r = await call({
+      board_id: SEED,
+      task_id: 'T1',
+      author_id: 'mallory-spoof',
+      author_name: 'Mallory',
+      message: 'still bound, not the model value',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data.author_id).toBe('Ext-Visitor');
+    expect(r.data.author_id).not.toBe('mallory-spoof');
+  });
+
+  it('VERBATIM (FastAPI): the server-resolved author is kept (bind skipped)', async () => {
+    setTurnActor(['Ana']);
+    setVerbatimIds(true);
+    try {
+      const r = await call({
+        board_id: SEED,
+        task_id: 'T1',
+        author_id: 'alice',
+        author_name: 'Alice',
+        message: 'fastapi authored',
+      });
+      expect(r.success).toBe(true);
+      expect(r.data.author_id).toBe('alice');
+      expect(r.data.author_name).toBe('Alice');
+    } finally {
+      setVerbatimIds(false);
+    }
   });
 });

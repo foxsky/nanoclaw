@@ -2,7 +2,7 @@
  * Pure-function helpers shared across TaskFlow MCP tools and exposed for
  * cross-repo Python consumers (actor resolution roundtrip tests).
  */
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import {
   normalizeAgentIds,
   normalizeEngineNotificationEvents,
@@ -12,6 +12,9 @@ import {
   setServiceOutboundDbPath,
   setVerbatimIds,
 } from './taskflow-helpers.ts';
+import { closeSessionDb, initTestSessionDb } from '../db/connection.ts';
+import { __resetTurnActorForTesting, clearTurnActor, setTurnActor } from './turn-actor.ts';
+import { runAsApprovedReplay } from './replay-flag.ts';
 
 // SEC#12 (#418): the chat surface must not let the model assert service authority. The engine treats
 // sender_is_service=true as manager-equivalent, so a prompt-injected sender_is_service:true is a direct
@@ -36,6 +39,98 @@ describe('SEC#12 — sender_is_service stripped on the chat surface', () => {
     setVerbatimIds(false);
     const out = normalizeAgentIds({ board_id: 'b1', sender_name: 'x' });
     expect('sender_is_service' in out).toBe(false);
+  });
+});
+
+// SEC#13 (#419): on the chat surface, normalizeAgentIds BINDS sender_name to the
+// authenticated per-turn actor (turn-actor channel) and STRIPS model-supplied
+// sender_external_id — the model can no longer name an arbitrary manager or assert
+// an external-grant identity. When the actor is UNRESOLVED, sender_name is DELETED
+// (a backstop — the real deny is requiresChatActor in chat-actor-guard.ts; an
+// unguarded tool then gets no actor → engine person checks fail). Verbatim (FastAPI)
+// and #407 replay keep their server-/park-authenticated values (bind skipped).
+describe('SEC#13 (#419) — sender_name bound to the authenticated turn actor on the chat surface', () => {
+  beforeEach(() => {
+    initTestSessionDb();
+    __resetTurnActorForTesting();
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-seci-taskflow';
+  });
+  afterEach(() => {
+    clearTurnActor();
+    closeSessionDb();
+    setVerbatimIds(false);
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  });
+
+  it('OVERWRITES a model-supplied sender_name with the resolved actor — a spoofed manager name is replaced by the real sender', () => {
+    // WHY: this is the #419 core. The engine keys isManager/no-self-approval/audit on
+    // sender_name; on chat it was a model arg. Binding to the authenticated sender means
+    // naming a manager you are not no longer passes isManager.
+    setTurnActor(['Ana']); // the authenticated inbound sender of this turn
+    const out = normalizeAgentIds({ board_id: 'b', task_id: 'P1', sender_name: 'BossManager' });
+    expect(out.sender_name).toBe('Ana');
+  });
+
+  it('DELETES sender_name (NOT the model value) when the turn actor is UNRESOLVED', () => {
+    setTurnActor(['Ana', 'Mallory']); // mixed-sender batch → unresolved
+    const out = normalizeAgentIds({ board_id: 'b', sender_name: 'BossManager' });
+    expect('sender_name' in out).toBe(false); // backstop — never the spoofed value
+  });
+
+  it('DELETES sender_name when the turn_actor channel was never written (fail-closed, not fail-open)', () => {
+    // A never-written channel must DENY, proving no fail-open binding was reintroduced.
+    const out = normalizeAgentIds({ board_id: 'b', sender_name: 'BossManager' });
+    expect('sender_name' in out).toBe(false);
+  });
+
+  it('does NOT inject sender_name when the tool did not pass one (read/system tools untouched)', () => {
+    setTurnActor(['Ana']);
+    const out = normalizeAgentIds({ board_id: 'b', query: 'task_details', task_id: 'P1' });
+    expect('sender_name' in out).toBe(false);
+  });
+
+  it('STRIPS a model-supplied sender_external_id on the chat surface (no authenticated external channel exists; defeats external-grant spoof)', () => {
+    setTurnActor(['Ana']);
+    const out = normalizeAgentIds({
+      board_id: 'b',
+      action: 'accept_external_invite',
+      task_id: 'M1',
+      sender_name: 'Ana',
+      sender_external_id: 'ext-someone-else',
+    });
+    expect('sender_external_id' in out).toBe(false);
+    expect(out.sender_name).toBe('Ana');
+  });
+
+  it('SKIPS binding under verbatim (FastAPI server-resolved actor kept)', () => {
+    setTurnActor(['Ana']);
+    setVerbatimIds(true);
+    const out = normalizeAgentIds({
+      board_id: 'uuid-x',
+      sender_name: 'fastapi-resolved-manager',
+      sender_external_id: 'ext-legit',
+    });
+    expect(out.sender_name).toBe('fastapi-resolved-manager');
+    expect(out.sender_external_id).toBe('ext-legit');
+  });
+
+  it('SKIPS binding under #407 approved-replay (parked, already-authenticated args survive unchanged)', async () => {
+    // The parked sender_name was bound at park time and the replay runs before any new
+    // turn_actor write — re-binding to a stale/empty channel would wrongly DENY an
+    // admin-approved action.
+    setTurnActor([]); // unresolved channel during replay
+    await runAsApprovedReplay(() => {
+      const out = normalizeAgentIds({ board_id: 'b', sender_name: 'Ana', sender_external_id: 'ext-parked' });
+      expect(out.sender_name).toBe('Ana');
+      expect(out.sender_external_id).toBe('ext-parked');
+    });
+  });
+
+  it('does NOT bind for a non-taskflow agent (no env board) — sender_name passes through', () => {
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    setTurnActor(['Ana']);
+    const out = normalizeAgentIds({ board_id: 'b', sender_name: 'Carlos' });
+    expect(out.sender_name).toBe('Carlos');
   });
 });
 

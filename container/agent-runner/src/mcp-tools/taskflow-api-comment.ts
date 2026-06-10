@@ -18,10 +18,32 @@
  * WhatsApp host path delivers them; FastAPI ignores them post-0j-a;
  * FastAPI-originated push delivery is the tracked 0h-v2 / Phase-3 item).
  */
+import type { Database } from 'bun:sqlite';
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
+import { requiresChatActor } from './chat-actor-guard.js';
+import { isApprovedReplay } from './replay-flag.js';
 import { registerTools } from './server.js';
-import { normalizeAgentIds } from './taskflow-helpers.js';
+import { getVerbatimIds, normalizeAgentIds } from './taskflow-helpers.js';
+import { getTurnActor } from './turn-actor.js';
+
+/** Resolve a sender display name to its canonical board person_id (mirrors the
+ *  engine's assignee resolution at taskflow-engine.ts:3094) so the comment's
+ *  author_id is person_id-keyed — otherwise the engine's "don't notify the
+ *  author of their own comment" suppression (which compares person_id) misfires.
+ *  Returns null when the sender is not a registered board person. */
+function resolveAuthorPersonId(db: Database, boardId: string, sender: string): string | null {
+  try {
+    const row = db
+      .prepare(
+        `SELECT person_id FROM board_people WHERE board_id = ? AND (person_id = ? OR name = ?) ORDER BY (person_id = ?) DESC, person_id ASC LIMIT 1`,
+      )
+      .get(boardId, sender, sender, sender) as { person_id: string } | undefined;
+    return row?.person_id ?? null;
+  } catch {
+    return null;
+  }
+}
 import { safeNotificationEvents } from './taskflow-api-mutate.js';
 import { enqueueDeferredNotificationsInSession } from './pending-notification-dispatch.js';
 import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
@@ -64,6 +86,22 @@ export const apiTaskAddCommentTool: McpToolDefinition = {
     }
     if (typeof norm.task_id !== 'string' || norm.task_id.trim() === '') {
       return validationError('task_id: required non-empty string');
+    }
+    // SEC#13 (#419): the comment author is a model arg (author_id/author_name are
+    // resolved OUTSIDE parseTaskActorArgs, so normalizeAgentIds' sender_name bind never
+    // reaches them). On the in-session chat surface OVERWRITE both with the authenticated
+    // per-turn actor so an injected agent cannot attribute a comment to any board member.
+    // requiresChatActor (this tool's wrapper) already denied an unresolved turn, so the
+    // actor resolves here; author_id is bound to the canonical person_id and author_name
+    // to the display name. The FastAPI subprocess (verbatim) keeps its server-resolved
+    // author. Replay is excluded for symmetry (comments are never parked, but the guard
+    // would have proceeded). Bind BEFORE the non-empty author validation below.
+    if (process.env.NANOCLAW_TASKFLOW_BOARD_ID && !getVerbatimIds() && !isApprovedReplay()) {
+      const actor = getTurnActor();
+      if (actor.resolved) {
+        norm.author_name = actor.sender;
+        norm.author_id = resolveAuthorPersonId(getTaskflowDb(), norm.board_id, actor.sender) ?? actor.sender;
+      }
     }
     // CreateCommentPayload.validate_author / validate_message (main.py:151):
     // strip, then reject empty — surfaced as the same messages.
@@ -124,4 +162,5 @@ export const apiTaskAddCommentTool: McpToolDefinition = {
   },
 };
 
-registerTools([apiTaskAddCommentTool]);
+// #419: commenting requires an authenticated chat actor (see chat-actor-guard.ts).
+registerTools([requiresChatActor(apiTaskAddCommentTool)]);
