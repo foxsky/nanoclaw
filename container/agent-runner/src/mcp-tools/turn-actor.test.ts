@@ -15,6 +15,7 @@ import {
   addTurnActorSenders,
   clearTurnActor,
   getTurnActor,
+  mayRunChatBundledMutation,
   setTurnActor,
 } from './turn-actor.ts';
 
@@ -109,6 +110,56 @@ describe('turn-actor — fail-closed resolution rule', () => {
     expect(() => addTurnActorSenders(['Bob'])).not.toThrow();
     expect(() => clearTurnActor()).not.toThrow();
     initTestSessionDb(); // restore for afterEach
+  });
+});
+
+describe('turn-actor — mayRunChatBundledMutation (api_report standup housekeeping gate)', () => {
+  beforeEach(() => {
+    initTestSessionDb();
+    __resetTurnActorForTesting();
+  });
+  afterEach(() => {
+    closeSessionDb();
+  });
+
+  it('ALLOWS when the actor resolves (a real manager standup)', () => {
+    setTurnActor(['Ana']);
+    expect(mayRunChatBundledMutation()).toBe(true);
+  });
+
+  it('ALLOWS on a pure SYSTEM/scheduled turn (the model-driven scheduled standup)', () => {
+    // poll-loop derives this for a kind="task" standup runner: no chat senders, poison, system.
+    setTurnActor([], true, true);
+    expect(getTurnActor()).toEqual({ resolved: false }); // still not a privileged actor
+    expect(mayRunChatBundledMutation()).toBe(true); // but housekeeping may run
+  });
+
+  it('DENIES an ambiguous multi-sender chat turn', () => {
+    setTurnActor(['Ana', 'Mallory']);
+    expect(mayRunChatBundledMutation()).toBe(false);
+  });
+
+  it('DENIES a poisoned-but-not-system chat turn (one chat sender + a co-batched non-chat row)', () => {
+    setTurnActor(['Ana'], true, false);
+    expect(mayRunChatBundledMutation()).toBe(false);
+  });
+
+  it('DENIES when the channel was never written', () => {
+    expect(mayRunChatBundledMutation()).toBe(false);
+  });
+
+  it('a follow-up chat push drops the system flag (scheduled turn that then gets a chat row)', () => {
+    setTurnActor([], true, true); // scheduled system turn
+    expect(mayRunChatBundledMutation()).toBe(true);
+    addTurnActorSenders(['Ana'], false, false); // a chat row arrives
+    expect(mayRunChatBundledMutation()).toBe(false); // no longer a pure system turn
+  });
+
+  it('FAILS CLOSED (denies housekeeping) when the outbound DB is unavailable', () => {
+    setTurnActor([], true, true);
+    __setOutboundDbUnavailableForTesting();
+    expect(mayRunChatBundledMutation()).toBe(false); // read error must NOT look like a system turn
+    initTestSessionDb();
   });
 });
 

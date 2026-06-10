@@ -3214,3 +3214,55 @@ describe('SEC#13 (#419) — engine denies a spoofed/unresolved manager on the ch
     expect(row.wip_limit).toBe(3);
   });
 });
+
+// SEC#13 (#419) — api_report stays a READ, but type='standup' bundles a board MUTATION
+// (auto-archive of old done tasks). An UNAUTHENTICATED chat turn must not trigger it; a
+// resolved manager standup and the pure scheduled/system standup still archive (Codex #419
+// re-review BLOCKER: api_report(standup) archived via an unresolved turn).
+describe('SEC#13 (#419) — api_report(standup) housekeeping is gated by the per-turn actor', () => {
+  const OLD = '2020-01-01T00:00:00.000Z'; // > 30 days ago → eligible for auto-archive
+
+  beforeEach(() => {
+    initTestSessionDb();
+    __resetTurnActorForTesting();
+    db.prepare(
+      `INSERT INTO tasks (id, board_id, title, type, column, parent_task_id, created_at, updated_at)
+       VALUES ('OLD1', ?, 'ancient done task', 'simple', 'done', NULL, ?, ?)`,
+    ).run(BOARD, OLD, OLD);
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = BOARD;
+  });
+  afterEach(() => {
+    clearTurnActor();
+    closeSessionDb();
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  });
+
+  async function standup() {
+    const { apiReportTool } = await import('./taskflow-api-mutate.ts');
+    return JSON.parse((await apiReportTool.handler({ board_id: BOARD, type: 'standup' })).content[0].text);
+  }
+  function oldTaskStillLive(): boolean {
+    return !!db.prepare(`SELECT 1 FROM tasks WHERE board_id = ? AND id = 'OLD1'`).get(BOARD);
+  }
+
+  it('UNRESOLVED chat turn: the report still returns, but the bundled auto-archive does NOT run', async () => {
+    setTurnActor(['ana', 'mallory']); // mixed → unresolved, not system
+    const r = await standup();
+    expect(r.success).toBe(true); // the READ still works
+    expect(oldTaskStillLive()).toBe(true); // the MUTATION was gated
+  });
+
+  it('RESOLVED manager standup: the auto-archive runs', async () => {
+    setTurnActor(['alice']);
+    const r = await standup();
+    expect(r.success).toBe(true);
+    expect(oldTaskStillLive()).toBe(false); // archived
+  });
+
+  it('PURE SYSTEM/scheduled standup turn: the auto-archive runs', async () => {
+    setTurnActor([], true, true); // a kind="task" scheduled standup runner
+    const r = await standup();
+    expect(r.success).toBe(true);
+    expect(oldTaskStillLive()).toBe(false); // archived
+  });
+});

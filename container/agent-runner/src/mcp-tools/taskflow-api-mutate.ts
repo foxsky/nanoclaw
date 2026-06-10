@@ -21,6 +21,7 @@ import { getVerbatimIds, isTaskflowSubprocess, normalizeAgentIds, normalizeEngin
 import { evaluateDestructiveAction, isStructureAdminAction } from './destructive-gate.js';
 import { isApprovedReplay, parkForApproval, registerApprovedExecutor } from './taskflow-approval.js';
 import { requiresChatActor } from './chat-actor-guard.js';
+import { mayRunChatBundledMutation } from './turn-actor.js';
 import { buildReassignCard, buildReassignInfo, type ReassignTaskInfo } from './reassign-card.js';
 import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import { err, generateId, jsonResponse, log, parseTaskActorArgs, requireString } from './util.js';
@@ -1969,6 +1970,15 @@ export const apiReportTool: McpToolDefinition = {
     try {
       const engine = new TaskflowEngine(getTaskflowDb(), boardId);
       const reportParams: ReportParams = { board_id: boardId, type: reportType };
+      // #419: api_report stays a READ (unwrapped) so a scheduled/system standup turn can
+      // still read the board — but type='standup' bundles a board MUTATION (auto-archive).
+      // On the in-session chat surface, gate that housekeeping: run it only when the actor
+      // resolves (a real manager standup) OR it's a pure system/scheduled standup turn, NOT
+      // when an injected/ambiguous chat turn calls it. FastAPI/verbatim and #407 replay leave
+      // it undefined → runs (server-/park-authenticated).
+      if (process.env.NANOCLAW_TASKFLOW_BOARD_ID && !getVerbatimIds() && !isApprovedReplay()) {
+        reportParams.run_housekeeping = mayRunChatBundledMutation();
+      }
       const result = engine.report(reportParams);
       return jsonResponse(result);
     } catch (e: unknown) {

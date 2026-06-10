@@ -361,6 +361,11 @@ export interface AdminResult extends TaskflowResult {
 export interface ReportParams {
   board_id: string;
   type: 'standup' | 'digest' | 'weekly';
+  /** #419: gate the standup-bundled auto-archive HOUSEKEEPING (a board mutation).
+   *  Undefined/true → run it (FastAPI/verbatim, internal, scheduled-standup, and a
+   *  resolved manager standup). The chat tool sets false on an unauthenticated turn so
+   *  an injected agent can't archive via this "read". The report itself always runs. */
+  run_housekeeping?: boolean;
 }
 
 export interface ReportResult extends TaskflowResult {
@@ -11065,7 +11070,11 @@ export class TaskflowEngine {
       }
 
       /* --- Auto-archive old done tasks (standup housekeeping) --- */
-      if (params.type === 'standup') {
+      // #419: this is a board MUTATION (archiveTask deletes from `tasks`). Skip it when the
+      // caller (the chat api_report tool) marks the turn unauthenticated — an injected agent
+      // must not archive via a "read". Undefined/true preserves every legit path (FastAPI,
+      // scheduled standup, resolved-manager standup).
+      if (params.type === 'standup' && params.run_housekeeping !== false) {
         try { this.archiveOldDoneTasks(); } catch { /* cleanup failure must not break standup */ }
       }
 

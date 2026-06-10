@@ -1452,15 +1452,28 @@ function parseSingleChat(message: Pick<MessageInRow, 'kind' | 'content'>): { sen
  * #419: non-chat content must not ride a co-batched chat actor). This is the ONE
  * derivation of the per-turn sender — the MCP child only READS the result.
  */
-function turnActorSenders(rows: MessageInRow[]): { senders: string[]; poison: boolean } {
+function turnActorSenders(rows: MessageInRow[]): { senders: string[]; poison: boolean; system: boolean } {
+  const cmd = selectCommandRows(rows);
   const senders: string[] = [];
   let poison = false;
-  for (const row of selectCommandRows(rows)) {
-    const parsed = parseSingleChat(row);
-    if (parsed && parsed.sender) senders.push(parsed.sender);
-    else poison = true;
+  let anyChat = false;
+  for (const row of cmd) {
+    const isChat = row.kind === 'chat' || row.kind === 'chat-sdk';
+    if (isChat) {
+      anyChat = true;
+      const parsed = parseSingleChat(row);
+      if (parsed && parsed.sender) senders.push(parsed.sender);
+      else poison = true; // a chat row with no authenticated sender
+    } else {
+      poison = true; // a non-chat/system/scheduled trigger row
+    }
   }
-  return { senders, poison };
+  // A pure SYSTEM turn = there were trigger=1 rows and NONE was a chat message
+  // (e.g. the model-driven scheduled standup). Distinct from poison so a bundled
+  // mutation (standup auto-archive) can run for the scheduled standup but NOT for
+  // an ambiguous chat turn — and a read-failure can never look like a system turn.
+  const system = cmd.length > 0 && !anyChat;
+  return { senders, poison, system };
 }
 
 function extractTaskId(text: string): string | null {
@@ -4562,7 +4575,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // injected agent cannot name a manager it is not. Single distinct trigger=1
     // chat sender → bound; mixed / system / poisoned batch → unresolved → deny.
     const initialActor = turnActorSenders(keep);
-    setTurnActor(initialActor.senders, initialActor.poison);
+    setTurnActor(initialActor.senders, initialActor.poison, initialActor.system);
 
     const query = config.provider.query({
       prompt: promptWithContext,
@@ -4882,7 +4895,7 @@ async function processQuery(
         // the final `keep` (post pre-task-script narrowing), not newIds.
         const prompt = formatMessages(keep);
         const followupActor = turnActorSenders(keep);
-        addTurnActorSenders(followupActor.senders, followupActor.poison);
+        addTurnActorSenders(followupActor.senders, followupActor.poison, followupActor.system);
         log(`Pushing ${keep.length} follow-up message(s) into active query`);
         query.push(prompt);
         markCompleted(keptIds);

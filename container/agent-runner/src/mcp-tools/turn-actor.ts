@@ -8,45 +8,34 @@
  * any manager's name in `sender_name`. This channel pins the AUTHENTICATED
  * inbound sender of the current batch; `normalizeAgentIds` binds `sender_name`
  * to it, and `requiresChatActor` (chat-actor-guard.ts) DENIES every chat mutate
- * tool when the actor is unresolvable (the real enforcement — never rely on a
- * sentinel string, Codex #419 review).
+ * tool when the actor is unresolvable (the real enforcement — never a sentinel).
  *
- * WHY a durable session_state channel and not a module global or a
- * processing_ack read:
- *   - The MCP tools run as a SEPARATE `bun` subprocess; a poll-loop module
- *     global does not reach them (the mutation-dedup lesson).
- *   - markCompleted fires at the FIRST `result` event while the stream stays
- *     open for follow-ups, so a processing_ack-keyed binding is FAIL-OPEN on
- *     follow-up tool calls. This channel is poll-loop-written and not keyed on
- *     processing_ack.
+ * WHY a durable session_state channel and not a module global / processing_ack
+ * read: the MCP tools run as a SEPARATE `bun` subprocess (a poll-loop module
+ * global never reaches them — the mutation-dedup lesson); and markCompleted
+ * fires at the FIRST `result` event while the stream stays open for follow-ups,
+ * so a processing_ack-keyed binding is FAIL-OPEN on follow-up tool calls. The
+ * poll-loop WRITES this channel before the initial provider query, ACCUMULATES
+ * follow-up pushes, and CLEARS at the turn boundary; the MCP child READS it.
+ * Both open the same `/workspace/outbound.db` (journal_mode=DELETE).
  *
- * The poll-loop (main process) WRITES the authenticated sender(s) of the
- * current trigger=1 batch via `setTurnActor` before the initial provider query,
- * ACCUMULATES follow-up pushes via `addTurnActorSenders`, and `clearTurnActor`s
- * at the turn boundary. The MCP child READS it via `getTurnActor`. Both open the
- * same `/workspace/outbound.db`, so a committed write is visible cross-process
- * (journal_mode=DELETE).
+ * Stored shape `{senders, poison, system}`:
+ *   - `senders`: distinct, trimmed, non-empty chat senders seen this turn.
+ *   - `poison`: a trigger=1 row was NOT an authenticated chat message (a
+ *     non-chat/system/scheduled row, or a chat row with an empty sender) — such
+ *     content must not ride a co-batched chat actor.
+ *   - `system`: the batch was a PURE non-chat turn (a scheduled/system wake with
+ *     no chat row at all). Distinct from poison so a read-failure (which also
+ *     yields no senders) can never masquerade as a trusted system turn.
  *
- * FAIL-CLOSED resolution. The actor is RESOLVED iff the turn is NOT poisoned AND
- * there is exactly ONE distinct, trimmed, non-empty sender. It is UNRESOLVED
- * (`{resolved:false}`) when:
- *   - ZERO senders (system/scheduled wake with no chat sender),
- *   - TWO-OR-MORE distinct senders accumulated across the whole stream — this is
- *     BOTH the mixed-batch defeat AND the cross-push defeat (sender A's in-flight
- *     tool can no longer ride a sender B that pushed mid-turn; once two senders
- *     appear the turn is unresolved),
- *   - POISONED — any trigger=1 row in the batch is NOT an authenticated chat
- *     message (a non-chat/system/scheduled row, or a chat row with an empty
- *     sender); such content must not ride a co-batched chat actor,
- *   - the key is MISSING, a write FAILED (see setTurnActor — it clears so a
- *     failed write fails closed, never leaves a stale resolved actor), or any
- *     parse/visibility failure occurs.
+ * RESOLUTION (getTurnActor): resolved iff NOT poison AND exactly one distinct
+ * sender. Everything else — zero senders, ≥2 distinct senders (mixed-batch AND
+ * cross-push over-auth defeat: addTurnActorSenders unions across the stream so a
+ * second sender anywhere makes the turn permanently unresolved), poison, a
+ * MISSING key, or any read/parse FAILURE (→ fail-closed) — is unresolved.
  *
- * No write-side FastAPI/verbatim guard: `setTurnActor`/`addTurnActorSenders`/
- * `clearTurnActor` are called ONLY from the poll-loop main process, which never
- * runs as the FastAPI verbatim subprocess (verbatim is set solely by
- * taskflow-server-entry.ts). Keeping this module free of taskflow-helpers also
- * avoids an import cycle (taskflow-helpers imports getTurnActor).
+ * No write-side FastAPI/verbatim guard: the writers are called ONLY from the
+ * poll-loop main process, which never runs as the verbatim subprocess.
  */
 import { getOutboundDb } from '../db/connection.js';
 
@@ -54,7 +43,7 @@ const KEY = 'turn_actor';
 
 export type TurnActor = { resolved: true; sender: string } | { resolved: false };
 
-type StoredActor = { senders: string[]; poison: boolean };
+type StoredActor = { senders: string[]; poison: boolean; system: boolean };
 
 /** Trim, drop empties, de-dup preserving order. */
 function distinctNonEmpty(senders: string[]): string[] {
@@ -70,12 +59,18 @@ function distinctNonEmpty(senders: string[]): string[] {
   return out;
 }
 
+function deleteKey(): void {
+  try {
+    getOutboundDb().prepare(`DELETE FROM session_state WHERE key = ?`).run(KEY);
+  } catch {
+    // Best-effort.
+  }
+}
+
 function writeStored(stored: StoredActor): void {
   // Clear FIRST so a subsequent write failure fails CLOSED (missing key →
   // unresolved) instead of leaving a stale single sender that could authorize
-  // the next turn (Codex #419 review). If the insert throws, the catch clears
-  // again — the only way a stale resolved actor survives is if BOTH writes to a
-  // healthy-enough-to-have-written-before DB fail, which also breaks the turn.
+  // the next turn. If the insert throws, the catch clears again.
   try {
     deleteKey();
     getOutboundDb()
@@ -90,50 +85,40 @@ function writeStored(stored: StoredActor): void {
   }
 }
 
-function deleteKey(): void {
-  try {
-    getOutboundDb().prepare(`DELETE FROM session_state WHERE key = ?`).run(KEY);
-  } catch {
-    // Best-effort.
-  }
-}
-
 function readStored(): StoredActor {
   try {
     const row = getOutboundDb()
       .prepare(`SELECT value FROM session_state WHERE key = ?`)
       .get(KEY) as { value: string } | undefined;
-    if (!row) return { senders: [], poison: false };
+    if (!row) return { senders: [], poison: false, system: false }; // genuinely absent
     const parsed = JSON.parse(row.value) as Partial<StoredActor>;
     return {
       senders: Array.isArray(parsed.senders) ? distinctNonEmpty(parsed.senders) : [],
       poison: parsed.poison === true,
+      system: parsed.system === true,
     };
   } catch {
-    return { senders: [], poison: false };
+    // Read/parse FAILURE — fail closed: poison (→ unresolved, and sticky under
+    // accumulate) but NOT system (so a bundled mutation is never allowed).
+    return { senders: [], poison: true, system: false };
   }
 }
 
-/**
- * Poll-loop ONLY — fresh set for the INITIAL batch (overwrites any prior turn).
- * `poison` marks that the batch contained a trigger=1 row that is not an
- * authenticated chat message → the turn cannot be attributed to a chat actor.
- */
-export function setTurnActor(senders: string[], poison = false): void {
-  writeStored({ senders: distinctNonEmpty(senders), poison });
+/** Poll-loop ONLY — fresh set for the INITIAL batch (overwrites any prior turn). */
+export function setTurnActor(senders: string[], poison = false, system = false): void {
+  writeStored({ senders: distinctNonEmpty(senders), poison, system });
 }
 
-/**
- * Poll-loop ONLY — ACCUMULATE a follow-up push into the active stream's actor.
- * Unions the new senders with those already seen this turn and OR-s the poison
- * flag, so the actor becomes (and stays) unresolved as soon as a second distinct
- * sender or any non-chat row appears anywhere in the turn.
- */
-export function addTurnActorSenders(senders: string[], poison = false): void {
+/** Poll-loop ONLY — ACCUMULATE a follow-up push into the active stream's actor.
+ *  Unions senders, OR-s poison (sticky), and drops `system` once any push is
+ *  non-system, so a second distinct sender or any poisoned/chat follow-up makes
+ *  (and keeps) the turn unresolved. */
+export function addTurnActorSenders(senders: string[], poison = false, system = false): void {
   const prev = readStored();
   writeStored({
     senders: distinctNonEmpty([...prev.senders, ...senders]),
     poison: prev.poison || poison,
+    system: prev.system && system,
   });
 }
 
@@ -142,6 +127,19 @@ export function getTurnActor(): TurnActor {
   const { senders, poison } = readStored();
   if (!poison && senders.length === 1) return { resolved: true, sender: senders[0] };
   return { resolved: false };
+}
+
+/**
+ * #419: may a board MUTATION bundled into an otherwise-read tool run this turn?
+ * (Today: only `api_report(type='standup')`'s auto-archive housekeeping.) TRUE
+ * iff the actor RESOLVES (a real user/manager standup) OR the turn is a pure
+ * SYSTEM/scheduled wake (the model-driven scheduled standup, which has no chat
+ * sender). An ambiguous multi-sender / poisoned chat turn — and any read
+ * failure — returns FALSE so an unauthenticated chat turn cannot trigger it.
+ */
+export function mayRunChatBundledMutation(): boolean {
+  const { senders, poison, system } = readStored();
+  return (!poison && senders.length === 1) || system;
 }
 
 /** Turn-boundary clear (poll-loop). */
