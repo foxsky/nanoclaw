@@ -73,9 +73,13 @@ export async function handleTaskflowRequestApproval(content: Record<string, unkn
     log.warn('taskflow_request_approval missing request_id/tool — dropping', { sessionId: session.id });
     return;
   }
-  const summary = typeof content.summary === 'string' ? content.summary : tool;
-  const category = typeof content.category === 'string' ? content.category : 'restricted';
-  const reason = typeof content.reason === 'string' ? content.reason : '';
+  // SEC#11: summary/category/reason originate in the container row and are partly agent-influenced —
+  // an injected agent could craft a misleading headline to socially-engineer the approver. They render
+  // verbatim into the approval card below, so sanitize them the same way previewArgs sanitizes its
+  // fields: collapse whitespace + clip. (The concrete, trusted preview is appended separately.)
+  const summary = clip(content.summary) ?? tool;
+  const category = clip(content.category) ?? 'restricted';
+  const reason = clip(content.reason) ?? '';
   const args = (content.args as Record<string, unknown>) ?? {};
 
   const agentGroup = getAgentGroup(session.agent_group_id);

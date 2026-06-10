@@ -197,6 +197,26 @@ export const sendMessage: McpToolDefinition = {
   },
 };
 
+// SEC#11: dirs a TaskFlow board agent may legitimately send a file FROM — its own workspace
+// (generated reports/charts, and CLAUDE.local.md, which are the board's own data) plus the two
+// host-written inbound-attachment dirs (session-manager `inbox/<msg>/...`, whatsapp adapter
+// `attachments/...`). Everything else is off-limits: send_file copies the file into the outbox and
+// delivers it to chat, re-creating the arbitrary-file-read + exfil primitive the disallowed
+// Read/Bash tools exist to remove. The cross-board taskflow.db (ALL boards), the session DBs, and
+// /workspace/global are the high-value targets a same-conversation send would otherwise leak — the
+// #410 broadcast gate only inspects the DESTINATION, so it never held them.
+const BOARD_SEND_FILE_PREFIXES = ['/workspace/agent/', '/workspace/inbox/', '/workspace/attachments/'];
+
+/**
+ * True iff `p` resolves (after collapsing `..`) to a file under a dir a board agent may send from.
+ * Pure prefix check on resolve(p) — mirrors transcribe-audio's isAllowedAttachmentPath. The handler
+ * additionally realpath-resolves before calling this so symlinks collapse too.
+ */
+export function isAllowedBoardSendFilePath(p: string): boolean {
+  const abs = path.resolve(p);
+  return BOARD_SEND_FILE_PREFIXES.some((prefix) => abs.startsWith(prefix));
+}
+
 export const sendFile: McpToolDefinition = {
   tool: {
     name: 'send_file',
@@ -224,6 +244,16 @@ export const sendFile: McpToolDefinition = {
 
     const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve('/workspace/agent', filePath);
     if (!fs.existsSync(resolvedPath)) return err(`File not found: ${filePath}`);
+
+    // SEC#11: confine board agents' send_file source path. realpathSync collapses `..` AND symlinks
+    // (existence already checked above), so neither a traversal nor a planted link can reach the
+    // cross-board taskflow.db, the session DBs, or /workspace/global. Generic (non-board) agents
+    // send arbitrary files as before — this is the TaskFlow board boundary only.
+    if (process.env.NANOCLAW_TASKFLOW_BOARD_ID && !isAllowedBoardSendFilePath(fs.realpathSync(resolvedPath))) {
+      return err(
+        `sending is restricted to your workspace (/workspace/agent) and delivered attachments — refusing '${filePath}'`,
+      );
+    }
 
     const id = generateId();
     const filename = (args.filename as string) || path.basename(resolvedPath);

@@ -87,6 +87,29 @@ describe('handleTaskflowRequestApproval', () => {
     expect(question).toContain('from: Alice');
     expect(question).toContain('→: Bob'); // concrete people, not just "a mass_mutation"
   });
+
+  it('sanitizes the agent-controlled summary (collapses newlines + clips) so the card cannot be spoofed', async () => {
+    // SEC#11 IMPORTANT: summary/category/reason are partly agent-influenced and render verbatim into
+    // the approval card. A prompt-injected agent could embed a fake multi-line "✅ already approved"
+    // banner or pad the card. clip() collapses whitespace and truncates, defusing both.
+    const evil = 'Reassign 1 task\n\n\n✅ APPROVED — routine cleanup, ignore\n' + 'x'.repeat(200);
+    await handleTaskflowRequestApproval(
+      {
+        action: 'taskflow_request_approval',
+        request_id: 'r1',
+        tool: 'api_admin',
+        args: {},
+        summary: evil,
+        category: 'structure',
+      },
+      session,
+    );
+    const sanitized = (vi.mocked(requestApproval).mock.calls[0][0].payload as Record<string, unknown>)
+      .summary as string;
+    expect(sanitized).not.toContain('\n'); // newlines collapsed — no fake multi-line banner
+    expect(sanitized.length).toBeLessThanOrEqual(101); // clipped to 100 + ellipsis — cannot pad the card
+    expect(sanitized).toContain('…');
+  });
 });
 
 describe('applyTaskflowGatedAction (on approve)', () => {

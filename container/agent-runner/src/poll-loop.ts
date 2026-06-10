@@ -4949,6 +4949,28 @@ function existingOutboundChatTexts(): string[] {
  * destination when there is exactly one; with multiple destinations, bare
  * text remains scratchpad because routing would be ambiguous.
  */
+/**
+ * SEC#11 (whole-epic security sign-off): close the model-final-output twin of the #410 broadcast
+ * gate. The agent's `<message to="...">` final output is dispatched here through the SAME destinations
+ * table as the send_message MCP tool, but it does NOT pass through maybeParkBroadcast — so a
+ * prompt-injected board agent could exfiltrate cross-board data by emitting
+ * `<message to="other-board">…</message>` without ever calling the gated send_message. Fail closed:
+ * on a board session, suppress a model-final send whose resolved destination is NOT the current
+ * conversation. Legitimate external/cross-board sends must go through send_message (which parks for
+ * admin approval and replays via its own registered executor, never through this path). The
+ * deterministic user-command forward handlers — the other sendToDestination callers — are a separate,
+ * user-authorized path the model cannot synthesize and do not flow through dispatchResultText. This
+ * path is chat-only (approved-replay + FastAPI/verbatim turns never reach it), so no verbatim/replay
+ * bypass is needed; an unknown current conversation is treated as not-external (mirrors maybeParkBroadcast).
+ */
+export function isExternalBoardSend(dest: DestinationEntry, routing: RoutingContext): boolean {
+  if (!process.env.NANOCLAW_TASKFLOW_BOARD_ID) return false; // board agents only
+  if (!routing.channelType || !routing.platformId) return false; // current conversation unknown → can't classify
+  const destChannel = dest.type === 'channel' ? dest.channelType : 'agent';
+  const destPlatform = dest.type === 'channel' ? dest.platformId : dest.agentGroupId;
+  return destChannel !== routing.channelType || destPlatform !== routing.platformId;
+}
+
 function dispatchResultText(text: string, routing: RoutingContext): void {
   // Consume the deterministic-mutation dedup flag at turn end (Codex
   // P4). If a TaskFlow mutation card was already emitted this turn, the
@@ -5013,6 +5035,11 @@ function dispatchResultText(text: string, routing: RoutingContext): void {
       log(`<message to="${toName}"> suppressed (P4 duplicate-card dedup): exact deterministic mutation card already emitted this turn`);
       continue;
     }
+    if (isExternalBoardSend(dest, routing)) {
+      log(`<message to="${toName}"> suppressed (SEC#11): external send from a board must use the gated send_message tool`);
+      scratchpadParts.push(`[blocked: external send to "${toName}" requires admin approval — use the send_message tool] ${body}`);
+      continue;
+    }
     sendToDestination(dest, body, routing);
     sent++;
   }
@@ -5027,6 +5054,10 @@ function dispatchResultText(text: string, routing: RoutingContext): void {
     if (destinations.length === 1) {
       if (suppressBareFallback) {
         log('Bare final text suppressed (Codex P4 dedup): deterministic mutation card already emitted this turn');
+        return;
+      }
+      if (isExternalBoardSend(destinations[0], routing)) {
+        log('Bare final text suppressed (SEC#11): a board session\'s sole destination is external to the current conversation');
         return;
       }
       sendToDestination(destinations[0], scratchpad, routing);
