@@ -36,6 +36,19 @@ export const SECURITY_DENYLIST: readonly string[] = [
   'mcp__sqlite__write_query',
   'mcp__sqlite__list_tables',
   'mcp__sqlite__describe_table',
+  // #412 (audit MEDIUM + Codex): these SDK builtins are in TOOL_ALLOWLIST (advertised) but were denied
+  // by NEITHER list — so the agent could actually call them. They are capability-ESCAPES, not parity:
+  //  - Task/TaskOutput/TaskStop spawn + drive SUBAGENTS, which do NOT inherit this denylist/PreToolUse
+  //    hook — a subagent with Bash reaches the RW-mounted taskflow.db, defeating the whole boundary.
+  //  - TeamCreate/TeamDelete manage agent teams (another spawn/escape surface).
+  //  - SendMessage is the SDK's built-in send — it bypasses the curated send_message MCP tool and its
+  //    #410 broadcast/forward gate. (Confirmed present in @anthropic-ai/claude-agent-sdk sdk-tools.d.ts.)
+  'Task',
+  'TaskOutput',
+  'TaskStop',
+  'TeamCreate',
+  'TeamDelete',
+  'SendMessage',
 ];
 
 // PARITY / UX ONLY — not a security boundary. These are deferred SDK builtins

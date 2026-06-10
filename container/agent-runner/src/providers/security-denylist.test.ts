@@ -62,7 +62,20 @@ const SECURITY_CRITICAL = [
   'mcp__sqlite__write_query',
   'mcp__sqlite__list_tables',
   'mcp__sqlite__describe_table',
+  // #412: subagent-spawn (Task*) + teams (Team*) + the SDK's built-in SendMessage are capability
+  // escapes — a subagent doesn't inherit this denylist, and SendMessage bypasses the curated/gated
+  // send_message. They were in TOOL_ALLOWLIST but denied by neither list before #412.
+  'Task',
+  'TaskOutput',
+  'TaskStop',
+  'TeamCreate',
+  'TeamDelete',
+  'SendMessage',
 ];
+
+// #412 additions to the disallowed set — capability escapes that were advertised in TOOL_ALLOWLIST
+// but previously denied by neither list. The union/SDK assertions below expect PRE_REFACTOR + these.
+const SEC412_ADDITIONS = ['Task', 'TaskOutput', 'TaskStop', 'TeamCreate', 'TeamDelete', 'SendMessage'];
 
 // Parity/UX-only entries — deferred SDK builtins or v1-replay-shape
 // preservation. Denying these is about observable reply shape, not a security
@@ -121,16 +134,24 @@ describe('SECURITY_DENYLIST + PARITY_DENYLIST', () => {
     expect(overlap).toEqual([]);
   });
 
-  it('reconstruct the pre-refactor SDK_DISALLOWED_TOOLS exactly (inert refactor)', () => {
+  it('equal the pre-refactor set plus the #412 capability-escape additions', () => {
+    const expected = [...PRE_REFACTOR_DISALLOWED, ...SEC412_ADDITIONS];
     const union = [...SECURITY_DENYLIST, ...PARITY_DENYLIST];
-    expect(union.length).toBe(PRE_REFACTOR_DISALLOWED.length);
-    expect([...union].sort()).toEqual([...PRE_REFACTOR_DISALLOWED].sort());
+    expect(union.length).toBe(expected.length);
+    expect([...union].sort()).toEqual([...expected].sort());
   });
 });
 
 describe('SDK_DISALLOWED_TOOLS (claude.ts public export)', () => {
-  it('remains byte-equivalent (set + length) to the pre-refactor list', () => {
-    expect(SDK_DISALLOWED_TOOLS.length).toBe(PRE_REFACTOR_DISALLOWED.length);
-    expect([...SDK_DISALLOWED_TOOLS].sort()).toEqual([...PRE_REFACTOR_DISALLOWED].sort());
+  it('equals the pre-refactor set plus the #412 capability-escape additions', () => {
+    const expected = [...PRE_REFACTOR_DISALLOWED, ...SEC412_ADDITIONS];
+    expect(SDK_DISALLOWED_TOOLS.length).toBe(expected.length);
+    expect([...SDK_DISALLOWED_TOOLS].sort()).toEqual([...expected].sort());
+  });
+
+  it('#412: actually denies the subagent-spawn / teams / SDK-send escape tools', () => {
+    for (const tool of SEC412_ADDITIONS) {
+      expect(SDK_DISALLOWED_TOOLS).toContain(tool);
+    }
   });
 });
