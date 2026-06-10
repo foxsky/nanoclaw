@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { closeTaskflowDb } from '../db/connection.js';
+import { setVerbatimIds } from './taskflow-helpers.js';
 import { setupEngineDb } from './taskflow-test-fixtures.js';
 
 let db: Database;
@@ -25,6 +26,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   closeTaskflowDb();
+  setVerbatimIds(false);
 });
 
 async function update(args: Record<string, unknown>) {
@@ -234,7 +236,11 @@ describe('api_update_simple_task MCP tool', () => {
     expect(JSON.parse(resp.content[0].text).success).toBe(true);
   });
 
-  it('service account bypasses auth check', async () => {
+  it('service account bypasses auth check (FastAPI/verbatim surface; chat cannot assert service — SEC#12)', async () => {
+    // The legit service actor reaches this tool via the FastAPI/verbatim entry (server-resolved actor),
+    // where #418's chat actor-binding is bypassed and sender_is_service is honored. A raw CHAT call can
+    // no longer claim service (forced false in normalizeAgentIds) — see taskflow-helpers.test.ts.
+    setVerbatimIds(true);
     const resp = await update({
       board_id: BOARD,
       task_id: taskId,

@@ -13,6 +13,32 @@ import {
   setVerbatimIds,
 } from './taskflow-helpers.ts';
 
+// SEC#12 (#418): the chat surface must not let the model assert service authority. The engine treats
+// sender_is_service=true as manager-equivalent, so a prompt-injected sender_is_service:true is a direct
+// privilege bypass. normalizeAgentIds forces it off on the chat path; the FastAPI/verbatim entry (which
+// short-circuits earlier with a server-resolved actor) keeps it.
+describe('SEC#12 — sender_is_service stripped on the chat surface', () => {
+  afterEach(() => setVerbatimIds(false));
+
+  it('forces sender_is_service=false for a chat (non-verbatim) tool call', () => {
+    setVerbatimIds(false);
+    const out = normalizeAgentIds({ board_id: 'b1', sender_name: 'x', sender_is_service: true });
+    expect(out.sender_is_service).toBe(false);
+  });
+
+  it('leaves sender_is_service untouched under verbatim (FastAPI server-resolved actor)', () => {
+    setVerbatimIds(true);
+    const out = normalizeAgentIds({ board_id: 'b1', sender_name: 'taskflow-api', sender_is_service: true });
+    expect(out.sender_is_service).toBe(true);
+  });
+
+  it('does not invent sender_is_service when absent', () => {
+    setVerbatimIds(false);
+    const out = normalizeAgentIds({ board_id: 'b1', sender_name: 'x' });
+    expect('sender_is_service' in out).toBe(false);
+  });
+});
+
 /**
  * 0h-v2 Option A — Unit 4: the service-session outbound.db path the
  * FastAPI subprocess is handed via `--service-outbound-db`. Process-

@@ -199,7 +199,11 @@ describe('api_delete_simple_task MCP tool', () => {
     expect(result.error_code).toBe('actor_type_not_allowed');
   });
 
-  it('service actor bypasses auth and deletes', async () => {
+  it('service actor bypasses auth and deletes (FastAPI/verbatim; chat cannot assert service — SEC#12)', async () => {
+    // Service authority is honored on the FastAPI/verbatim entry (server-resolved actor), where #418's
+    // chat actor-binding is bypassed. A raw chat call can no longer claim sender_is_service (forced
+    // false in normalizeAgentIds) — the chat-surface strip is covered in taskflow-helpers.test.ts.
+    setVerbatimIds(true);
     const { apiCreateSimpleTaskTool, apiDeleteSimpleTaskTool } = await import('./taskflow-api-mutate.ts');
     const create = await apiCreateSimpleTaskTool.handler({
       board_id: BOARD,

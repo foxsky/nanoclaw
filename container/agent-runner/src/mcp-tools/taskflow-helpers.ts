@@ -172,6 +172,14 @@ export function normalizeAgentIds(args: Record<string, unknown>): Record<string,
       out[key] = (out[key] as string[]).map((value) => value.toUpperCase());
     }
   }
+  // SEC#12 (#418): the chat surface must never let the model assert SERVICE authority. The engine treats
+  // sender_is_service=true as manager-equivalent (taskflow-engine.ts apiAddNote/apiEditNote/apiRemoveNote
+  // and the api_update tool), so a prompt-injected sender_is_service:true is a direct privilege bypass.
+  // No legitimate chat caller sets it (only the FastAPI/verbatim entry, which returned above, and the
+  // engine-internal scheduled paths). Force it off unconditionally — idempotent on the #407 replay path
+  // (the parked args were already normalized at park time). Binding sender_name / sender_external_id to
+  // the authenticated inbound sender needs a durable per-turn actor channel and is tracked in #419.
+  if ('sender_is_service' in out) out.sender_is_service = false;
   return out;
 }
 
