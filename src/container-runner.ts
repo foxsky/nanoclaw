@@ -350,6 +350,21 @@ function buildMounts(
   // Session folder at /workspace (contains inbound.db, outbound.db, outbox/, .claude/)
   mounts.push({ hostPath: sessDir, containerPath: '/workspace', readonly: false });
 
+  // #414 (defense-in-depth): inbound.db is host-written, container-read — the container must NEVER
+  // write it (a forged messages_in row could self-approve a gated action; see taskflow-approval.ts).
+  // The container already opens it read-only at the app level (db/connection.ts), but a full container
+  // ESCAPE (arbitrary code exec — which the SEC#2 denylist otherwise prevents) could re-open it RW
+  // through the RW /workspace mount. Pin it read-only at the FILESYSTEM level with a nested RO mount
+  // ON TOP of the RW session dir (mirrors the container.json pattern below). CRITICAL: this is a
+  // file-on-top-of-dir overlay, NOT a file-only mount — the `inbound.db-journal` sidecar still lives in
+  // the parent RW /workspace mount, so SQLite's journal_mode=DELETE crash-recovery/visibility across the
+  // host↔container boundary is preserved (the load-bearing message-delivery invariant). inbound.db is
+  // created (by the waking writeSessionMessage) before this runs; guard anyway, matching container.json.
+  const inboundDbPath = path.join(sessDir, 'inbound.db');
+  if (fs.existsSync(inboundDbPath)) {
+    mounts.push({ hostPath: inboundDbPath, containerPath: '/workspace/inbound.db', readonly: true });
+  }
+
   // Single host-owned TaskFlow DB shared by every container. The DIRECTORY
   // (not just the file) is mounted so SQLite's `-journal` sidecar can live
   // beside the main DB on either side of the mount — file-only mounts
