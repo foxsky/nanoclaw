@@ -100,6 +100,19 @@ export async function applyPreTaskScripts(messages: MessageInRow[]): Promise<Tas
       continue;
     }
 
+    // SEC#11 (Codex whole-epic sign-off): a pre-agent script is a shell-exec primitive (bash on /tmp).
+    // On a TaskFlow board it must NEVER run — board scheduled tasks are prompt-only (the standup/digest
+    // runners are host-scheduled with script=null), so a task carrying a script is anomalous
+    // (legacy/injection). The schedule_task/update_task tools already refuse NEW scripts; this is the
+    // authoritative EXECUTION chokepoint that also neutralises a pre-existing scripted task a board agent
+    // re-times (update_task prompt/processAfter/recurrence) or resumes. Skip it — neither the script nor
+    // the prompt runs.
+    if (process.env.NANOCLAW_TASKFLOW_BOARD_ID) {
+      log(`task ${msg.id} skipped: pre-task scripts are not allowed on TaskFlow boards`);
+      skipped.push(msg.id);
+      continue;
+    }
+
     log(`running script for task ${msg.id}`);
     touchHeartbeat();
     const result = await runScript(script, msg.id);
