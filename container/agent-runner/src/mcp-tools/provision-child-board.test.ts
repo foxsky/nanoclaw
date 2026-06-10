@@ -91,3 +91,38 @@ describe('provision_child_board MCP tool (container side)', () => {
     expect(content.short_code).toBe('UXSETD');
   });
 });
+
+// SEC#11 (Codex whole-epic sign-off): provisioning a child board is structure + network + agent-spawn
+// with a cross-board task-exfil sub-path. A board-chat call must be HELD for admin approval, not run
+// unilaterally; only the approved replay (or FastAPI/verbatim) emits the real provision row.
+describe('provision_child_board SEC#11 approval gate', () => {
+  const SAVED = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  afterEach(() => {
+    if (SAVED === undefined) delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    else process.env.NANOCLAW_TASKFLOW_BOARD_ID = SAVED;
+  });
+
+  const fullInput = { ...validInput, group_folder: 'ux-setd-secti-taskflow', group_name: 'UX-SETD-SECTI - TaskFlow' };
+
+  it('PARKS a board-chat call for admin approval instead of provisioning', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-parent';
+    const { provisionChildBoardTool } = await import('./provision-child-board.ts');
+    const result = await provisionChildBoardTool.handler(fullInput);
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.error_code).toBe('pending_approval'); // agent told it is pending, NOT done
+    // the outbound row is the approval REQUEST, never the real provision action
+    const row = getOutboundDb().query('SELECT content FROM messages_out').get() as { content: string };
+    const content = JSON.parse(row.content);
+    expect(content.action).toBe('taskflow_request_approval');
+    expect(content.tool).toBe('provision_child_board');
+  });
+
+  it('on approved replay emits the REAL provision_child_board row (gate bypassed)', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-parent';
+    const { provisionChildBoardTool } = await import('./provision-child-board.ts');
+    const { runAsApprovedReplay } = await import('./taskflow-approval.ts');
+    await runAsApprovedReplay(() => provisionChildBoardTool.handler(fullInput));
+    const row = getOutboundDb().query('SELECT content FROM messages_out').get() as { content: string };
+    expect(JSON.parse(row.content).action).toBe('provision_child_board');
+  });
+});

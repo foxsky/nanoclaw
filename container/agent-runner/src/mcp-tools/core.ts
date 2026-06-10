@@ -217,6 +217,18 @@ export function isAllowedBoardSendFilePath(p: string): boolean {
   return BOARD_SEND_FILE_PREFIXES.some((prefix) => abs.startsWith(prefix));
 }
 
+/**
+ * SEC#11: the outbox display filename is a NAME, never a path. `copyFileSync(src, join(outboxDir,
+ * filename))` with a crafted `filename` ("../../taskflow/taskflow.db") would direct the WRITE outside
+ * the per-message outbox dir — overwriting the shared cross-board DB or poisoning agent memory. Force
+ * basename (strips every path component) and reject the degenerate `.`/`..`/empty, falling back to the
+ * source file's basename. Applies to ALL agents — a display name has no legitimate path separators.
+ */
+export function safeOutboxFilename(requested: string | undefined, sourcePath: string): string {
+  const base = path.basename((requested ?? '').trim());
+  return base && base !== '.' && base !== '..' ? base : path.basename(sourcePath);
+}
+
 export const sendFile: McpToolDefinition = {
   tool: {
     name: 'send_file',
@@ -256,7 +268,7 @@ export const sendFile: McpToolDefinition = {
     }
 
     const id = generateId();
-    const filename = (args.filename as string) || path.basename(resolvedPath);
+    const filename = safeOutboxFilename(args.filename as string | undefined, resolvedPath);
 
     const outboxDir = path.join('/workspace/outbox', id);
     fs.mkdirSync(outboxDir, { recursive: true });

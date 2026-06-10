@@ -20,3 +20,5 @@
  */
 import './core.js'; // registers send_message / send_file executors (#410)
 import './taskflow-api-mutate.js'; // registers api_admin / api_move / api_reassign / api_delete executors (#407)
+import './provision-child-board.js'; // registers provision_child_board executor (SEC#11)
+import './create-group.js'; // registers create_group executor (SEC#11)

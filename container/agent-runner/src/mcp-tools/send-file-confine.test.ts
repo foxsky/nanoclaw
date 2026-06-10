@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { isAllowedBoardSendFilePath } from './core.js';
+import { isAllowedBoardSendFilePath, safeOutboxFilename } from './core.js';
 
 // SEC#11 BLOCKER (whole-epic Codex xhigh): send_file copies a caller-supplied path into the
 // outbox and delivers it to chat — an arbitrary-file-read + exfiltration primitive that the
@@ -30,5 +30,27 @@ describe('send_file board path confinement', () => {
     expect(isAllowedBoardSendFilePath('/workspace/agent/../taskflow/taskflow.db')).toBe(false);
     expect(isAllowedBoardSendFilePath('/workspace/inbox/../../etc/passwd')).toBe(false);
     expect(isAllowedBoardSendFilePath('/workspace/agent/sub/../ok.txt')).toBe(true);
+  });
+});
+
+// SEC#11 BLOCKER (Codex re-review): the outbox DISPLAY filename was also a write primitive —
+// copyFileSync(src, join(outboxDir, filename)) with filename="../../taskflow/taskflow.db" would
+// overwrite the shared cross-board DB. safeOutboxFilename forces a single basename segment.
+describe('safeOutboxFilename', () => {
+  it('keeps a plain display filename', () => {
+    expect(safeOutboxFilename('report.pdf', '/workspace/agent/report.pdf')).toBe('report.pdf');
+  });
+
+  it('strips path components so the copy cannot escape the outbox dir', () => {
+    expect(safeOutboxFilename('../../taskflow/taskflow.db', '/workspace/agent/x.png')).toBe('taskflow.db');
+    expect(safeOutboxFilename('a/b/c.txt', '/workspace/agent/x.png')).toBe('c.txt');
+    expect(safeOutboxFilename('/etc/passwd', '/workspace/agent/x.png')).toBe('passwd');
+  });
+
+  it('falls back to the source basename for degenerate names', () => {
+    expect(safeOutboxFilename('..', '/workspace/agent/src.png')).toBe('src.png');
+    expect(safeOutboxFilename('.', '/workspace/agent/src.png')).toBe('src.png');
+    expect(safeOutboxFilename('', '/workspace/agent/src.png')).toBe('src.png');
+    expect(safeOutboxFilename(undefined, '/workspace/agent/src.png')).toBe('src.png');
   });
 });

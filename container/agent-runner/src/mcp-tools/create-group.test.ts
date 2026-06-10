@@ -58,3 +58,35 @@ describe('create_group MCP tool (container side)', () => {
     expect(content.participants).toEqual(validInput.participants);
   });
 });
+
+// SEC#11 (Codex whole-epic sign-off): create_group opens a new WhatsApp group with an attacker-choosable
+// subject + participant list — a board-chat call must be HELD for admin approval. Main-control (no board
+// env) and approved replay still emit the real row.
+describe('create_group SEC#11 approval gate', () => {
+  const SAVED = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  afterEach(() => {
+    if (SAVED === undefined) delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    else process.env.NANOCLAW_TASKFLOW_BOARD_ID = SAVED;
+  });
+
+  it('PARKS a board-chat call for admin approval instead of creating the group', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-1';
+    const { createGroupTool } = await import('./create-group.ts');
+    const result = await createGroupTool.handler(validInput);
+    const body = JSON.parse((result.content[0] as { text: string }).text);
+    expect(body.error_code).toBe('pending_approval');
+    const row = getOutboundDb().query('SELECT content FROM messages_out').get() as { content: string };
+    const content = JSON.parse(row.content);
+    expect(content.action).toBe('taskflow_request_approval');
+    expect(content.tool).toBe('create_group');
+  });
+
+  it('on approved replay emits the REAL create_group row (gate bypassed)', async () => {
+    process.env.NANOCLAW_TASKFLOW_BOARD_ID = 'board-1';
+    const { createGroupTool } = await import('./create-group.ts');
+    const { runAsApprovedReplay } = await import('./taskflow-approval.ts');
+    await runAsApprovedReplay(() => createGroupTool.handler(validInput));
+    const row = getOutboundDb().query('SELECT content FROM messages_out').get() as { content: string };
+    expect(JSON.parse(row.content).action).toBe('create_group');
+  });
+});

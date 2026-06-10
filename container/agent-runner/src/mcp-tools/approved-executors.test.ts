@@ -19,6 +19,8 @@ describe('approved-executors wiring (#407)', () => {
       'api_delete_simple_task',
       'send_message',
       'send_file',
+      'provision_child_board', // SEC#11
+      'create_group', // SEC#11
     ]) {
       expect(getApprovedExecutor(tool)).toBeDefined();
     }

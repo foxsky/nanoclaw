@@ -1,5 +1,8 @@
 import { writeMessageOut } from '../db/messages-out.js';
+import { evaluateDestructiveAction } from './destructive-gate.js';
 import { registerTools } from './server.js';
+import { isApprovedReplay, parkForApproval, registerApprovedExecutor } from './taskflow-approval.js';
+import { getVerbatimIds } from './taskflow-helpers.js';
 import type { McpToolDefinition } from './types.js';
 import { err, generateId, log, nonEmptyString, ok } from './util.js';
 
@@ -27,6 +30,19 @@ export const createGroupTool: McpToolDefinition = {
       return err('participants is required and must be a non-empty array');
     }
 
+    // SEC#11 (Codex whole-epic sign-off): create_group opens a NEW WhatsApp group with an
+    // attacker-choosable subject + participant list — an injection-reachable network side effect (spam
+    // groups, adding an attacker's number). Hold board-chat calls for admin approval; main-control (no
+    // NANOCLAW_TASKFLOW_BOARD_ID) and FastAPI/verbatim bypass, and the approved replay re-emits the row.
+    if (process.env.NANOCLAW_TASKFLOW_BOARD_ID && !getVerbatimIds() && !isApprovedReplay()) {
+      return parkForApproval({
+        tool: 'create_group',
+        args,
+        decision: evaluateDestructiveAction({ kind: 'structure', adminAction: 'create_group' }),
+        summary: `create WhatsApp group "${String(args.subject)}" (${(args.participants as unknown[]).length} participants)`,
+      });
+    }
+
     const requestId = generateId();
     writeMessageOut({
       id: requestId,
@@ -42,3 +58,6 @@ export const createGroupTool: McpToolDefinition = {
 };
 
 registerTools([createGroupTool]);
+// #407/#411 wiring (see approved-executors.ts for the main-process registration): approved replay
+// re-invokes this handler under isApprovedReplay(), bypassing the gate to emit the real create row.
+registerApprovedExecutor('create_group', (args) => createGroupTool.handler(args));
