@@ -21,6 +21,7 @@ describe('approved-executors wiring (#407)', () => {
       'send_file',
       'provision_child_board', // SEC#11
       'create_group', // SEC#11
+      'provision_child_board_auto', // SEC#11 round 3 (register_person auto-provision park)
     ]) {
       expect(getApprovedExecutor(tool)).toBeDefined();
     }

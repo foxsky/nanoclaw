@@ -512,6 +512,21 @@ export function emitAutoProvisionIfRequested(
   // signal so an allowlist change can't turn this into a leak (writeMessageOut →
   // /workspace/outbound.db). Mirrors dispatchNotificationEvents / mutation-dedup.
   if (isTaskflowSubprocess()) return false;
+  // SEC#11 (Codex whole-epic sign-off): register_person's auto-provision emits a provision_child_board
+  // system row — the SAME structure + network + spawn escalation the provision_child_board TOOL now
+  // gates. Route it through the SAME approval park on a board chat so register_person can't be a side
+  // door around that gate. On approval the provision_child_board_auto executor re-emits the IDENTICAL
+  // row (only the approval step is added). FastAPI/verbatim + approved-replay bypass.
+  if (process.env.NANOCLAW_TASKFLOW_BOARD_ID && !getVerbatimIds() && !isApprovedReplay()) {
+    const req = result.auto_provision_request as Record<string, unknown>;
+    parkForApproval({
+      tool: 'provision_child_board_auto',
+      args: req,
+      decision: evaluateDestructiveAction({ kind: 'structure', adminAction: 'register_person auto-provision' }),
+      summary: `auto-provision child board for ${String(req.person_name ?? 'a teammate')}`,
+    });
+    return true;
+  }
   try {
     (deps.emit ?? writeMessageOut)({
       id: deps.id ?? generateId(),
@@ -2576,3 +2591,16 @@ registerApprovedExecutor('api_delete_simple_task', (a) => apiDeleteSimpleTaskToo
 registerApprovedExecutor('api_move', (a) => apiMoveTool.handler(a));
 registerApprovedExecutor('api_admin', (a) => apiAdminTool.handler(a));
 registerApprovedExecutor('api_reassign', (a) => apiReassignTool.handler(a));
+// SEC#11: register_person's auto-provision parks under tool 'provision_child_board_auto'. On approval
+// this executor re-emits the EXACT provision_child_board system row emitAutoProvisionIfRequested would
+// have written ungated — identical behavior, only the approval step is added. Registered here (not via
+// the provision_child_board tool handler) so the raw auto_provision_request never has to round-trip
+// through that tool's own field validation. Reaches the MAIN process via approved-executors.ts.
+registerApprovedExecutor('provision_child_board_auto', (a) => {
+  writeMessageOut({
+    id: generateId(),
+    kind: 'system',
+    content: JSON.stringify({ action: 'provision_child_board', ...(a as Record<string, unknown>) }),
+  });
+  return jsonResponse({ success: true });
+});

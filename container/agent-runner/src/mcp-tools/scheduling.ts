@@ -75,6 +75,15 @@ export const scheduleTask: McpToolDefinition = {
     const recurrence = (args.recurrence as string) || null;
     const script = (args.script as string) || null;
 
+    // SEC#11 (Codex whole-epic sign-off): `script` is a pre-agent BASH script the runner writes to /tmp
+    // and executes (scheduling/task-script.ts) — a DELAYED shell-exec primitive that bypasses the
+    // Bash/Write/Read denylist entirely. Board agents schedule prompt-only reminders/runners (the
+    // standup/digest runners are host-scheduled, not via this tool), so a non-empty script from a board
+    // session is always injection. Refuse it — fail closed.
+    if (process.env.NANOCLAW_TASKFLOW_BOARD_ID && script) {
+      return err('scheduling a pre-agent script is not allowed on TaskFlow boards');
+    }
+
     // Write as a system action — host will insert into inbound.db
     writeMessageOut({
       id,
@@ -285,6 +294,12 @@ export const updateTask: McpToolDefinition = {
     // Empty string clears recurrence/script; undefined leaves them as-is.
     if (typeof args.recurrence === 'string') update.recurrence = args.recurrence === '' ? null : args.recurrence;
     if (typeof args.script === 'string') update.script = args.script === '' ? null : args.script;
+
+    // SEC#11: same denylist-bypass as schedule_task — refuse a non-empty script on a board session
+    // (clearing it with '' is fine, that leaves update.script null).
+    if (process.env.NANOCLAW_TASKFLOW_BOARD_ID && update.script) {
+      return err('scheduling a pre-agent script is not allowed on TaskFlow boards');
+    }
 
     if (Object.keys(update).length === 1) return err('at least one field to update is required');
 

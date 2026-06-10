@@ -78,6 +78,20 @@ function maybeParkBroadcast(
   return parkForApproval({ tool: toolName, args, decision: d, summary: `${toolName} to ${routing.resolvedName}` });
 }
 
+/**
+ * SEC#11 (Codex whole-epic sign-off): edit_message/add_reaction route by HISTORICAL message seq
+ * (getRoutingBySeq), so without this an injected board agent could target a prior message that was sent
+ * to an EXTERNAL destination — posting arbitrary new text into another conversation (edit_message, an
+ * exfil bypass of the #410 broadcast gate) or pinging it (add_reaction). Refuse when the resolved target
+ * routing is not the current conversation. Board sessions only; mirrors maybeParkBroadcast's external check.
+ */
+export function isExternalBoardTarget(routing: { channel_type: string | null; platform_id: string | null }): boolean {
+  if (!process.env.NANOCLAW_TASKFLOW_BOARD_ID) return false;
+  const session = getSessionRouting();
+  if (!session.channel_type || !session.platform_id) return false;
+  return routing.channel_type !== session.channel_type || routing.platform_id !== session.platform_id;
+}
+
 function log(msg: string): void {
   console.error(`[mcp-tools] ${msg}`);
 }
@@ -316,6 +330,12 @@ export const editMessage: McpToolDefinition = {
       return err(`Cannot determine destination for message #${seq}`);
     }
 
+    // SEC#11: editing a message that went to another conversation posts arbitrary new text there,
+    // bypassing the #410 broadcast gate. Refuse external edits on a board session.
+    if (isExternalBoardTarget(routing)) {
+      return err('editing a message in another conversation is not allowed on TaskFlow boards');
+    }
+
     const id = generateId();
     writeMessageOut({
       id,
@@ -355,6 +375,12 @@ export const addReaction: McpToolDefinition = {
     const routing = getRoutingBySeq(seq);
     if (!routing || !routing.channel_type || !routing.platform_id) {
       return err(`Cannot determine destination for message #${seq}`);
+    }
+
+    // SEC#11: a reaction on a message in another conversation is a cross-conversation ping. Refuse it on
+    // a board session (consistent with edit_message above).
+    if (isExternalBoardTarget(routing)) {
+      return err('reacting to a message in another conversation is not allowed on TaskFlow boards');
     }
 
     const id = generateId();
