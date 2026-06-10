@@ -3991,10 +3991,14 @@ export function gateScheduledRunners(messages: MessageInRow[]): MessageInRow[] {
  * bypass), never as a model turn. Only rows whose parsed action matches are consumed; other system
  * rows (e.g. ask_user_question responses) pass through untouched for their own pollers.
  *
- * KNOWN GAP (SEC#9): this runs BEFORE detectWebOrigin/setCurrentWebOrigin, so a replayed mutation's
- * confirmation routes via live session routing, not board_chat. WhatsApp boards are unaffected (session
- * routing IS the board chat); a web-dashboard-origin board's confirmation would misroute. The mutation
- * itself still runs correctly + board-pinned — this is a confirmation-routing gap, tracked in SEC#9.
+ * WEB-ORIGIN (SEC#9 — verified NON-divergence, Codex xhigh): this runs before setCurrentWebOrigin, so a
+ * replayed mutation confirmation sees web-origin = null and routes via session routing. That is IDENTICAL
+ * to a NORMAL move/reassign/admin/delete confirmation, which emits in the MCP subprocess where web-origin
+ * is ALSO always null (current-batch.ts state is per-process; the subprocess never sets it) — so the
+ * web-chat-reply rewrite already never fires for those. The replay therefore matches normal behavior; it
+ * is not a regression. (The only main-process web-rewrite is the deferred CREATE card, and create is not
+ * a gated/replayed action — if it ever becomes one, carry a web-origin snapshot through park→replay. See
+ * SEC#10.)
  */
 async function runApprovedActions(rows: MessageInRow[]): Promise<void> {
   for (const row of rows) {
