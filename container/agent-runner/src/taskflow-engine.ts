@@ -4346,6 +4346,17 @@ export class TaskflowEngine {
           this.db
             .prepare(`UPDATE tasks SET parent_task_id = ? WHERE board_id = ? AND id = ?`)
             .run(canonicalParentId, this.boardId, r.task_id);
+          // Reparent parity (delta-parity audit R4): the parent's activity feed
+          // must show the subtask arriving, exactly as api_admin(reparent_task)
+          // records — otherwise an atomically-parented task is invisible to
+          // api_board_activity / the parent history readers.
+          this.recordHistory(
+            canonicalParentId,
+            'subtask_added',
+            params.sender_name,
+            JSON.stringify({ subtask_id: r.task_id, subtask_title: params.title }),
+            this.boardId,
+          );
         }
         return r;
       })();

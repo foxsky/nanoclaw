@@ -93,3 +93,17 @@ An independent Codex gpt-5.5/xhigh review of R1–R5 ran (verdict FIX-FIRST; 0 B
 3. **`api_list_comments`** returns the spec shape `{id, author, message, created_at}` with `author` = resolved display **NAME** (your current endpoint echoes the raw `by`). **`api_runner_status`** is board-scoped `{board_id, standup_cron_local, digest_cron_local, review_cron_local}` (not the cross-board `/runners/status` list with `*_cron` aliases). **`assignee` in the task reads is now the display NAME** (the spec's drift-kill), not the raw person_id.
 
 **Engine-side R4 hardening (done, no action):** `api_create_task` now (a) stores the **canonical raw parent id** even when given a self-prefixed display id (`TF-P1` → stored `P1`, so subtask joins resolve), and (b) validates the parent **before** duplicate detection (a bad parent fails fast with `not_found`/`validation_error`/`conflict` instead of a duplicate-confirm prompt). The R4 actor/manager gate (open follow-up #1) is unchanged — still gate FastAPI-side.
+
+---
+
+## Addendum 2 (2026-06-11, later)
+
+**Push status: EVERYTHING ABOVE IS NOW ON `origin/skill/taskflow-v2`** (the "not pushed" lines earlier in this doc are stale). You can forward against the shipped contracts.
+
+**R4 card/history divergence (open follow-up #2) — FIXED engine-side:**
+- The atomic `api_create_task(parent_task_id)` now records **`subtask_added` on the parent's history** (same payload as `reparent_task`), so the subtask is visible to `api_board_activity`/parent-feed readers. If your dashboard derives the parent activity feed, atomic creates now appear in it.
+- On the chat surface the atomic create emits the v1-faithful "✅ `id` adicionada … 📁 parent" card instead of the standalone "Tarefa criada" card. FastAPI path unaffected (cards never reach the dashboard).
+
+**Service-bus traceability:** mutation tools now thread the real `board_id` onto the R3 service-bus rows (was `''` on reassign/move/admin/update from the subprocess — delivery was unaffected, but host `taskflow_notify` logs and any board-scoped bus queries now see the correct board).
+
+**Note notifications restored (EX-019, engine commits `61786040`+`a1b2b0c5`):** `api_task_add_note` now returns `notification_events` (owner/parent pings, same contract as `api_task_add_comment`) and the raw engine `notifications`/`parent_notification` fields are stripped from its response. If your note endpoint forwards the tool response verbatim, the response shape gained `notification_events`; nothing else changed.

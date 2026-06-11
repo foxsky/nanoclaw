@@ -280,6 +280,59 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
     }
   });
 
+  it('R4 card/history: atomic api_create_task(parent_task_id) emits the v1 "adicionada … 📁 parent" card and records parent subtask_added (delta-parity audit)', async () => {
+    // The two-step flow (create → api_admin reparent_task) emits the v1-byte-faithful
+    // "✅ id adicionada … 📁 parent" card and records subtask_added on the parent's
+    // history. The R4 atomic path emitted the standalone "Tarefa criada" card and
+    // wrote only 'created' — the subtask was invisible in the parent's activity feed.
+    const db = setupEngineDb(BOARD, { withBoardAdmins: true });
+    const { apiCreateTaskTool, apiCreateSimpleTaskTool } = await import('./taskflow-api-mutate.ts');
+    const proj = JSON.parse(
+      (
+        await apiCreateTaskTool.handler({
+          board_id: BOARD, type: 'project', title: 'Operação da SECTI', sender_name: 'alice',
+        })
+      ).content[0].text,
+    );
+    expect(proj.success).toBe(true);
+    flushPendingCreateCard(); // drain the project's own card — not under test
+
+    const child = JSON.parse(
+      (
+        await apiCreateTaskTool.handler({
+          board_id: BOARD, type: 'simple', title: 'Treinamento E-governe', sender_name: 'alice',
+          parent_task_id: proj.data.id,
+        })
+      ).content[0].text,
+    );
+    expect(child.success).toBe(true);
+
+    // History: the parent's activity feed shows the subtask arriving (reparent parity).
+    const hist = db
+      .prepare(`SELECT details FROM task_history WHERE board_id = ? AND task_id = ? AND action = 'subtask_added'`)
+      .all(BOARD, proj.data.id) as Array<{ details: string }>;
+    expect(hist.length).toBe(1);
+    expect(JSON.parse(hist[0].details)).toMatchObject({ subtask_id: child.data.id, subtask_title: 'Treinamento E-governe' });
+
+    // Card: the v1-faithful "adicionada" variant, not the standalone "Tarefa criada".
+    flushPendingCreateCard();
+    const cards = (
+      getOutboundDb().prepare("SELECT content FROM messages_out WHERE kind = 'chat'").all() as Array<{ content: string }>
+    ).map((r) => String(JSON.parse(r.content).text ?? ''));
+    const childCard = cards.find((t) => t.includes(child.data.id));
+    expect(childCard).toBeTruthy();
+    expect(childCard).toBe(
+      [
+        `✅ *${child.data.id} adicionada*`,
+        '━━━━━━━━━━━━━━',
+        '',
+        `📁 *${proj.data.id}* — Operação da SECTI`,
+        `   📋 *${child.data.id}* — Treinamento E-governe`,
+      ].join('\n'),
+    );
+    expect(childCard).not.toContain('Tarefa criada');
+  });
+
   it('#396: create for a SAME-GROUP (unregistered) assignee does NOT enqueue (avoid churn)', async () => {
     const db = setupEngineDb(BOARD, { withBoardAdmins: true });
     const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');

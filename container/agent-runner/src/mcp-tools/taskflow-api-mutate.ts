@@ -357,7 +357,10 @@ export function finalizeCreatedTaskResult(
   }
   const row = db
     .prepare(
-      `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ? AND t.board_id = ?`,
+      `SELECT t.*, b.short_code AS board_code, pt.title AS parent_task_title
+       FROM tasks t JOIN boards b ON b.id = t.board_id
+       LEFT JOIN tasks pt ON pt.board_id = t.board_id AND pt.id = t.parent_task_id
+       WHERE t.id = ? AND t.board_id = ?`,
     )
     .get(result.task_id, boardId) as Record<string, unknown>;
   const data = engine.serializeApiTask(row);
@@ -368,7 +371,12 @@ export function finalizeCreatedTaskResult(
   // flushes it, or a following reparent clears it (emitting its own
   // superseding "adicionada" card). buildCreatedTaskCard → null outside
   // the v1-faithful scope (non-next_action, recurring/meeting).
-  const createdCard = buildCreatedTaskCard(data);
+  // R4 atomic parent_task_id (delta-parity audit): a create that ARRIVES with a
+  // parent gets the reparent-equivalent v1 card ("✅ id adicionada … 📁 parent")
+  // — there is no following reparent to supersede the standalone card, and the
+  // standalone card would hide the project linkage. buildCreateCard → null when
+  // no parent (falls through to the standalone variant).
+  const createdCard = buildCreateCard(data) ?? buildCreatedTaskCard(data);
   if (createdCard) setPendingCreateCard(result.task_id, createdCard);
   // Assignee notification (#397): dispatch the engine's create-assignee
   // notification exactly as move/admin/reassign do (finalizeMutationResult) —
@@ -483,12 +491,19 @@ export function bulkMoveNotificationEvents(
   return successes.map((r) => safeNotificationEvents(r));
 }
 
-export function finalizeMutationResult(result: {
-  success: boolean;
-  notifications?: unknown;
-  task_id?: unknown;
-  tasks_affected?: unknown;
-}) {
+export function finalizeMutationResult(
+  result: {
+    success: boolean;
+    notifications?: unknown;
+    task_id?: unknown;
+    tasks_affected?: unknown;
+  },
+  // The mutated board, threaded by the tool handler so the service-bus row
+  // carries a real board_id on the FastAPI subprocess (the env var is only set
+  // in-session, and the subprocess serves multiple boards). Traceability only —
+  // host delivery routes by JID.
+  boardId?: string,
+) {
   const { notifications: _notifications, success, ...rest } = result;
   const notification_events = safeNotificationEvents(result);
   if (!success) return jsonResponse({ success: false, ...rest, notification_events });
@@ -501,8 +516,9 @@ export function finalizeMutationResult(result: {
   enqueueDeferredNotificationsInSession(process.env.NANOCLAW_TASKFLOW_BOARD_ID, notification_events, taskId, {});
   // Deterministic cross-chat dispatch (#389): the engine's reassign /
   // parent-rollup / invite notifications are delivered by the host, not
-  // relayed by the agent. In-session only — the FastAPI subprocess no-ops.
-  dispatchNotificationEvents(notification_events);
+  // relayed by the agent. In-session only — the FastAPI subprocess routes
+  // resolved-JID events to the service bus (R3).
+  dispatchNotificationEvents(notification_events, boardId ? { boardId } : {});
   return jsonResponse({ success: true, data: rest, notification_events });
 }
 
@@ -1456,7 +1472,7 @@ export const apiMoveTool: McpToolDefinition = {
           subtask_id: subtaskId,
           confirmed_task_id: confirmedTaskId,
         });
-        return finalizeMutationResult(addMoveFormattedResult(result, action));
+        return finalizeMutationResult(addMoveFormattedResult(result, action), boardId);
       }
 
       // #406 mass-mutation gate (bulk branch only; single task_id is affected=1 →
@@ -1508,7 +1524,7 @@ export const apiMoveTool: McpToolDefinition = {
           {},
         );
       });
-      dispatchNotificationEvents(notification_events);
+      dispatchNotificationEvents(notification_events, boardId ? { boardId } : {});
       return jsonResponse({
         success: failures.length === 0,
         data: {
@@ -1572,7 +1588,7 @@ export const apiMoveToColumnTool: McpToolDefinition = {
       const engine = new TaskflowEngine(db, boardId);
       const result = engine.moveToColumn({ board_id: boardId, task_id: taskId, to_column: toColumn, sender_name: senderName, reason });
       // Reuse the move formatter when an action actually ran (success path).
-      return finalizeMutationResult(result);
+      return finalizeMutationResult(result, boardId);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });
@@ -1794,7 +1810,7 @@ export const apiAdminTool: McpToolDefinition = {
       if (adminParams.action === 'reparent_task' && result.success && adminParams.task_id) {
         clearPendingCreateCard(adminParams.task_id);
       }
-      return finalizeMutationResult(addReparentFormattedResult(result, adminParams.action));
+      return finalizeMutationResult(addReparentFormattedResult(result, adminParams.action), boardId);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });
@@ -1907,7 +1923,7 @@ export const apiReassignTool: McpToolDefinition = {
       // catch below and report success:false. Same resolver as the poll-loop path.
       const affected = result.tasks_affected ?? [];
       const info = affected.length === 1 ? buildReassignInfo(engine, affected[0].task_id, fromAssignee) : null;
-      return finalizeMutationResult(addReassignFormattedResult(result, canonicalTarget, info));
+      return finalizeMutationResult(addReassignFormattedResult(result, canonicalTarget, info), boardId);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });
@@ -1953,7 +1969,7 @@ export const apiUndoTool: McpToolDefinition = {
         force,
       };
       const result = engine.undo(undoParams);
-      return finalizeMutationResult(result);
+      return finalizeMutationResult(result, boardId);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });
@@ -2274,7 +2290,7 @@ export const apiUpdateTaskTool: McpToolDefinition = {
           today = new Date().toLocaleDateString('en-CA', { timeZone });
         }
       }
-      return finalizeMutationResult(addUpdateFormattedResult(result, updates, today, timeZone));
+      return finalizeMutationResult(addUpdateFormattedResult(result, updates, today, timeZone), boardId);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });
@@ -2416,7 +2432,7 @@ export const apiHierarchyTool: McpToolDefinition = {
         parent_task_id: parentTaskId,
       };
       const result = engine.hierarchy(params);
-      return finalizeMutationResult(addHierarchyFormattedResult(result, action));
+      return finalizeMutationResult(addHierarchyFormattedResult(result, action), boardId);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });
@@ -2478,7 +2494,7 @@ export const apiDependencyTool: McpToolDefinition = {
         reminder_days: reminderDays,
       };
       const result = engine.dependency(params);
-      return finalizeMutationResult(result);
+      return finalizeMutationResult(result, boardId);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });
@@ -2588,7 +2604,7 @@ export const apiRescheduleMeetingTool: McpToolDefinition = {
       };
       const result = engine.update(updateParams);
       const timeZone = safeBoardTimeZone(getTaskflowDb(), boardId);
-      return finalizeMutationResult(addUpdateFormattedResult(result, { scheduled_at: scheduledAt }, undefined, timeZone));
+      return finalizeMutationResult(addUpdateFormattedResult(result, { scheduled_at: scheduledAt }, undefined, timeZone), boardId);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });
@@ -2650,7 +2666,7 @@ export const apiNoteMeetingTool: McpToolDefinition = {
         confirmed_task_id: confirmedTaskId,
       };
       const result = engine.update(updateParams);
-      return finalizeMutationResult(addUpdateFormattedResult(result, { add_note: text }));
+      return finalizeMutationResult(addUpdateFormattedResult(result, { add_note: text }), boardId);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return jsonResponse({ success: false, error: msg });
