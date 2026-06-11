@@ -4050,7 +4050,10 @@ function handleTaskflowCrossBoardNoteConfirmation(
   if (!dest) return false;
 
   const sender = senderName(messages);
-  const senderLabel = sender.split(/\s+/).filter(Boolean).at(-1) || sender;
+  // Display label = last name token; resolve to the human name first so a
+  // JID-resolved person_id (#419) renders readably, not as a slug.
+  const senderDisplay = displaySenderName(sender);
+  const senderLabel = senderDisplay.split(/\s+/).filter(Boolean).at(-1) || senderDisplay;
   const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: true });
   const queryInput = { query: 'find_task_in_organization', task_id: action.taskId, sender_name: sender };
   const queryResult = engine.query(queryInput);
