@@ -122,6 +122,7 @@ describe('taskflow-server-entry (tf-mcontrol runtime contract)', () => {
       expect(names).toContain('api_hierarchy');
       expect(names).toContain('api_create_task');
       expect(names).toContain('api_update_task');
+      expect(names).toContain('api_undo'); // R2: dashboard UndoSnackbar routes through engine.undo
 
       // ...AND uncallable (server.ts resolves tools/call from toolMap
       // directly — the allowlist must gate the call path too).

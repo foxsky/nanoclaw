@@ -1395,6 +1395,15 @@ describe('api_undo MCP tool (A11.4)', () => {
     const result = JSON.parse(response.content[0].text);
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/Nothing to undo/);
+    expect(result.error_code).toBe('not_found'); // R2: mapped code (was codeless)
+  });
+
+  it('R2: rejects a non-boolean force with validation_error (FastAPI arg-shape)', async () => {
+    const { apiUndoTool } = await import('./taskflow-api-mutate.ts');
+    const r = JSON.parse((await apiUndoTool.handler({ board_id: BOARD, sender_name: 'alice', force: 'yes' })).content[0].text);
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('validation_error');
+    expect(String(r.error)).toMatch(/force/i);
   });
 
   it('engine rejects undo of creation (only "created" mutation exists)', async () => {
@@ -1412,6 +1421,7 @@ describe('api_undo MCP tool (A11.4)', () => {
     const result = JSON.parse(response.content[0].text);
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/Cannot undo creation/);
+    expect(result.error_code).toBe('conflict'); // R2: mapped code
   });
 
   it('engine rejects permission: non-author non-manager cannot undo', async () => {
@@ -1440,27 +1450,32 @@ describe('api_undo MCP tool (A11.4)', () => {
     const result = JSON.parse(response.content[0].text);
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/Permission denied/);
+    expect(result.error_code).toBe('permission_denied'); // R2: mapped code
   });
 
-  it('rejects non-string board_id', async () => {
+  it('rejects non-string board_id with validation_error (R2: structured, not codeless)', async () => {
     const { apiUndoTool } = await import('./taskflow-api-mutate.ts');
     const response = await apiUndoTool.handler({
       board_id: 42 as unknown as string,
       sender_name: 'alice',
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/board_id/);
+    const r = JSON.parse(response.content[0].text);
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('validation_error');
+    expect(String(r.error)).toMatch(/board_id/);
   });
 
-  it('rejects non-boolean force', async () => {
+  it('rejects non-boolean force with validation_error (R2)', async () => {
     const { apiUndoTool } = await import('./taskflow-api-mutate.ts');
     const response = await apiUndoTool.handler({
       board_id: BOARD,
       sender_name: 'alice',
       force: 'yes' as unknown as boolean,
     });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.content)).toMatch(/force/);
+    const r = JSON.parse(response.content[0].text);
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('validation_error');
+    expect(String(r.error)).toMatch(/force/);
   });
 
   it('WIP guard: force=false hits WIP error; force=true (manager) bypasses', async () => {

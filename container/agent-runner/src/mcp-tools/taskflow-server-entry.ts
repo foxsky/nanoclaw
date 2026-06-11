@@ -101,6 +101,11 @@ const FASTAPI_ALLOWLIST: ReadonlySet<string> = new Set([
   'api_hierarchy',
   'api_create_task',
   'api_update_task',
+  // R2 (INBOUND tf-mcontrol 2026-06-10): the dashboard UndoSnackbar routes through the
+  // transactional engine.undo (60s window + WIP + author/manager gate) instead of a raw column
+  // re-PATCH. Arg-shape rejections → validation_error; engine refusals → conflict /
+  // permission_denied (engine.undo error codes). FastAPI resolves the actor (sender_name).
+  'api_undo',
 ]);
 
 /**

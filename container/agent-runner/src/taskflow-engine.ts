@@ -8747,14 +8747,14 @@ export class TaskflowEngine {
         | undefined;
 
       if (!latestRow) {
-        return { success: false, error: 'Nothing to undo: no recent mutations found.' };
+        return { success: false, error_code: 'not_found', error: 'Nothing to undo: no recent mutations found.' };
       }
 
       let latestTask: { id: string; mutation: any };
       try {
         latestTask = { id: latestRow.id, mutation: JSON.parse(latestRow._last_mutation) };
       } catch {
-        return { success: false, error: 'Nothing to undo: no valid mutations found.' };
+        return { success: false, error_code: 'not_found', error: 'Nothing to undo: no valid mutations found.' };
       }
 
       const { id: taskId, mutation } = latestTask;
@@ -8765,7 +8765,7 @@ export class TaskflowEngine {
       const mutationTime = new Date(at).getTime();
       const nowTime = new Date(now).getTime();
       if (nowTime - mutationTime > 60_000) {
-        return { success: false, error: 'Undo expired: mutation was more than 60 seconds ago.' };
+        return { success: false, error_code: 'conflict', error: 'Undo expired: mutation was more than 60 seconds ago.' };
       }
 
       /* --- 3. Permission: only the mutation author or a manager --- */
@@ -8773,6 +8773,7 @@ export class TaskflowEngine {
       if (by !== params.sender_name && !isMgr) {
         return {
           success: false,
+          error_code: 'permission_denied',
           error: `Permission denied: only "${by}" (mutation author) or a manager can undo.`,
         };
       }
@@ -8781,6 +8782,7 @@ export class TaskflowEngine {
       if (action === 'created') {
         return {
           success: false,
+          error_code: 'conflict',
           error: 'Cannot undo creation. Use cancelar (admin cancel_task) instead.',
         };
       }
@@ -8803,12 +8805,14 @@ export class TaskflowEngine {
             if (!params.force) {
               return {
                 success: false,
+                error_code: 'conflict',
                 error: `WIP limit exceeded for ${wip.person_name}: ${wip.current} in progress (limit: ${wip.limit}). Use force (forcar) to override.`,
               };
             }
             if (!isMgr) {
               return {
                 success: false,
+                error_code: 'permission_denied',
                 error: 'Permission denied: only managers can force undo past WIP limit.',
               };
             }

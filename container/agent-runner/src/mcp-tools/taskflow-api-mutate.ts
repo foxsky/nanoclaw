@@ -1918,14 +1918,17 @@ export const apiUndoTool: McpToolDefinition = {
   },
   async handler(args) {
     args = normalizeAgentIds(args);
+    // R2 (INBOUND tf-mcontrol): api_undo is FastAPI-allowlisted, so arg-shape rejections must be
+    // structured validation_error (not codeless err() text) for clean HTTP mapping. Its engine
+    // refusals (window-expired / WIP / role) carry conflict / permission_denied codes (engine.undo).
     const boardId = requireString(args, 'board_id');
-    if (boardId === null) return err('board_id: required string');
+    if (boardId === null) return validationError('board_id: required string');
     const senderName = requireString(args, 'sender_name');
-    if (senderName === null) return err('sender_name: required string');
+    if (senderName === null) return validationError('sender_name: required string');
 
     let force: boolean | undefined;
     if (args.force !== undefined) {
-      if (typeof args.force !== 'boolean') return err('force: expected boolean');
+      if (typeof args.force !== 'boolean') return validationError('force: expected boolean');
       force = args.force;
     }
 
