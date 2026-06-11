@@ -12,14 +12,26 @@ import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import { log } from './util.js';
 
 /**
- * #396 enqueue at a mutation finalizer — in-session ONLY. Persists cross-board
- * deferred (null-JID) notifications so the turn-boundary drain can deliver them
- * once the assignee's board provisions. Gated:
- * - no board → not a taskflow board → no-op;
- * - servicePath set → FastAPI subprocess → no-op (it may hold a DIFFERENT
- *   taskflow.db (Codex#3), and per #401 dashboard-originated deferreds are
- *   tf-mcontrol's to deliver — the in-session container owns the queue).
- * Fail-soft: an enqueue error must NEVER fail an already-committed mutation.
+ * #396 enqueue at a mutation finalizer. Persists cross-board deferred (null-JID)
+ * notifications so the container drain (turn-boundary + idle-poll, + the #402
+ * provisioning-wake) delivers them once the assignee's board provisions. Runs on
+ * BOTH the in-session WhatsApp-agent path AND the FastAPI/dashboard subprocess —
+ * they open the SAME global taskflow.db (the container mounts `<DATA_DIR>/taskflow/`;
+ * the subprocess opens it via `--db`/`TASKFLOW_DB_PATH`, which MUST be that file
+ * for dashboard mutations to hit real tasks), so a deferred enqueued by the
+ * subprocess is drained+delivered by the board's container. This SUPERSEDES the
+ * earlier #401 "tf-mcontrol owns dashboard deferred delivery" decision: tf's
+ * tasks-IPC deferred path has no v2 host consumer (it delivered nothing), so
+ * routing through the shared queue closes the offline-assignee gap with no new
+ * surface and no double-send (the drain is at-most-once, delete-in-tx). Codex#3
+ * still holds — this is the ENGINE writing taskflow.db, not the host re-resolving.
+ * Same-group (never-resolving) assignees are excluded by
+ * `enqueueDeferredCrossBoardNotifications`'s own delegate/registration gate.
+ * Gated only on: no board → not a taskflow board → no-op. Fail-soft: an enqueue
+ * error must NEVER fail an already-committed mutation.
+ *
+ * (The `…InSession` name is historical — kept to avoid churning the ~7 call sites
+ * while a parallel session is active in those files.)
  */
 export interface EnqueueDeferredDeps {
   db?: Database;
@@ -34,8 +46,6 @@ export function enqueueDeferredNotificationsInSession(
   deps: EnqueueDeferredDeps = {},
 ): void {
   if (!boardId) return;
-  // Subprocess gate (FastAPI/dashboard) — must NOT enqueue in-session deferreds.
-  if (isTaskflowSubprocess(deps.servicePath)) return;
   try {
     enqueueDeferredCrossBoardNotifications(
       deps.db ?? getTaskflowDb(),

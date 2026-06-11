@@ -104,8 +104,24 @@ describe('enqueueDeferredNotificationsInSession (#396 — gated in-session enque
     db.close();
   });
 
-  it('no-ops in the FastAPI subprocess (servicePath set) — dashboard deferreds are tf-mcontrol\'s (#401)', () => {
+  it('ALSO enqueues in the FastAPI subprocess (servicePath set) — the dashboard db IS the shared taskflow.db the container drains (#396; supersedes #401)', () => {
+    // The FastAPI subprocess opens the SAME global taskflow.db (--db) the board's
+    // container mounts, so a deferred enqueued here is drained+delivered by the
+    // container's existing #396 drain (+ the #402 provisioning-wake). Reverses the
+    // earlier no-op: dashboard-originated offline-assignee notifications were
+    // undelivered (tf's IPC-file path has no host consumer).
     const db = gateDb();
+    enqueueDeferredNotificationsInSession(BOARD, deferred, 'T9', { db, servicePath: '/svc/outbound.db', nowIso: '2026-06-04T12:00:00.000Z' });
+    expect(count(db)).toBe(1);
+    db.close();
+  });
+
+  it('STILL excludes a same-group/unregistered assignee on the subprocess (the queue must not fill with never-resolving rows)', () => {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT, child_board_id TEXT)`);
+    db.exec(`CREATE TABLE boards (id TEXT PRIMARY KEY, hierarchy_level INTEGER, max_depth INTEGER)`);
+    ensurePendingNotificationsTable(db);
+    db.exec(`INSERT INTO boards VALUES ('${BOARD}', 0, 0)`); // flat (can't delegate), and NO registration row
     enqueueDeferredNotificationsInSession(BOARD, deferred, 'T9', { db, servicePath: '/svc/outbound.db', nowIso: '2026-06-04T12:00:00.000Z' });
     expect(count(db)).toBe(0);
     db.close();
