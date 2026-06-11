@@ -91,7 +91,7 @@ describe('register_person auto-provision parks under the provision gate (side-do
     const { emitAutoProvisionIfRequested } = await import('./taskflow-api-mutate.ts');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const emitted = emitAutoProvisionIfRequested({ success: true, auto_provision_request: REQ } as any);
-    expect(emitted).toBe(true);
+    expect(emitted).toBe('parked');
     const row = getOutboundDb().query('SELECT content FROM messages_out').get() as { content: string };
     const content = JSON.parse(row.content);
     expect(content.action).toBe('taskflow_request_approval'); // parked, NOT the real provision row

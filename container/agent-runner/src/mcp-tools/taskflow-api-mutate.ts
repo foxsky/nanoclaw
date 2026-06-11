@@ -515,12 +515,25 @@ export function finalizeMutationResult(result: {
  * depending on the agent relaying it (the template says no agent action
  * needed). Mirrors the CONTACT_CARD_RE fast-path emit (poll-loop.ts:2813).
  * Fail-soft: the registration already committed, so a failed emit must NOT
- * turn into success:false. Returns whether a row was emitted.
+ * turn into success:false. Returns the disposition: 'parked' (held for admin
+ * approval on a board session — SEC#11), 'emitted' (direct provision row:
+ * approved replay / no board env), or false (nothing to do / emit failed).
+ * The deterministic register path (poll-loop handleTaskflowPendingChildBoardRegistration)
+ * shares this gate and uses the disposition to word its user ack.
  */
 export function emitAutoProvisionIfRequested(
   result: AdminResult,
-  deps: { emit?: (msg: { id: string; kind: string; content: string }) => unknown; id?: string } = {},
-): boolean {
+  deps: {
+    emit?: (msg: { id: string; kind: string; content: string }) => unknown;
+    id?: string;
+    /** Resolved board id from the caller, for callers that resolve the board
+     *  OUTSIDE the env (the deterministic poll-loop path falls back to message
+     *  content / CLAUDE.local.md when NANOCLAW_TASKFLOW_BOARD_ID is unwired).
+     *  A resolved board session must park even without the env — otherwise the
+     *  SEC#11 side door survives exactly on env-less boards. */
+    boardId?: string | null;
+  } = {},
+): 'parked' | 'emitted' | false {
   if (!result.success || !result.auto_provision_request) return false;
   // Defense-in-depth: never emit a session on-wake row from the FastAPI subprocess.
   // api_admin is not FastAPI-allowlisted today, but gate on the reliable subprocess
@@ -532,7 +545,7 @@ export function emitAutoProvisionIfRequested(
   // gates. Route it through the SAME approval park on a board chat so register_person can't be a side
   // door around that gate. On approval the provision_child_board_auto executor re-emits the IDENTICAL
   // row (only the approval step is added). FastAPI/verbatim + approved-replay bypass.
-  if (process.env.NANOCLAW_TASKFLOW_BOARD_ID && !getVerbatimIds() && !isApprovedReplay()) {
+  if ((deps.boardId || process.env.NANOCLAW_TASKFLOW_BOARD_ID) && !getVerbatimIds() && !isApprovedReplay()) {
     const req = result.auto_provision_request as Record<string, unknown>;
     parkForApproval({
       tool: 'provision_child_board_auto',
@@ -540,7 +553,7 @@ export function emitAutoProvisionIfRequested(
       decision: evaluateDestructiveAction({ kind: 'structure', adminAction: 'register_person auto-provision' }),
       summary: `auto-provision child board for ${String(req.person_name ?? 'a teammate')}`,
     });
-    return true;
+    return 'parked';
   }
   try {
     (deps.emit ?? writeMessageOut)({
@@ -548,7 +561,7 @@ export function emitAutoProvisionIfRequested(
       kind: 'system',
       content: JSON.stringify({ action: 'provision_child_board', ...result.auto_provision_request }),
     });
-    return true;
+    return 'emitted';
   } catch (e) {
     log(`provision_child_board auto-emit failed: ${String(e)}`);
     return false;
