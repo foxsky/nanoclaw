@@ -213,8 +213,10 @@ describe('R5 api_board_detail — composite config read', () => {
     const r = await call(apiBoardDetailTool, {});
     expect(r.success).toBe(true);
     const d = r.data as Record<string, unknown>;
-    expect((d.board as Record<string, unknown>).id).toBe(BOARD);
-    expect((d.board as Record<string, unknown>).short_code).toBe('TF');
+    // Flat shape (Codex HIGH): board columns spread at top level to match the Python
+    // consumer's fetch_board_detail `dict(board_row)` — so FastAPI does zero re-mapping.
+    expect(d.id).toBe(BOARD);
+    expect(d.short_code).toBe('TF');
     expect(d.language).toBe('pt-BR');
     expect(d.timezone).toBe('America/Sao_Paulo');
     expect(d.wip_limit).toBe(7);

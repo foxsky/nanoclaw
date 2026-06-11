@@ -2833,7 +2833,11 @@ export class TaskflowEngine {
     return {
       success: true,
       data: {
-        board,
+        // FLAT shape (Codex HIGH): spread the board columns at the top level — mirrors the
+        // Python consumer's fetch_board_detail `dict(board_row)` so FastAPI does zero re-mapping.
+        // No board column name collides with the composite keys below, so the explicit keys win
+        // only where intended.
+        ...board,
         language: runtime?.language ?? null,
         timezone: runtime?.timezone ?? null,
         wip_limit: config?.wip_limit ?? null,
@@ -4298,16 +4302,20 @@ export class TaskflowEngine {
       result = this.db.transaction(() => {
         // R4: validate the parent BEFORE creating so a bad parent NEVER produces an orphan task
         // (validation failure returns here = nothing was inserted; no rollback needed). Mirrors the
-        // reparent_task checks: parent exists on this board AND is a project. Then set parent_task_id.
+        // reparent_task checks: parent exists on this board AND is a project. Then set parent_task_id
+        // to the CANONICAL raw id (Codex MEDIUM: getTask resolves a self-prefixed display id like
+        // 'TF-P1', but the stored parent_task_id must be the raw 'P1' that subtask joins key on).
+        let canonicalParentId: string | undefined;
         if (params.parent_task_id) {
-          const parentErr = this.validateCreateParent(params.parent_task_id);
-          if (parentErr) return parentErr;
+          const pv = this.validateCreateParent(params.parent_task_id);
+          if (!pv.ok) return pv.result;
+          canonicalParentId = String(pv.parent.id);
         }
         const r = this.createTaskInternal(params);
-        if (r.success && r.task_id && params.parent_task_id) {
+        if (r.success && r.task_id && canonicalParentId) {
           this.db
             .prepare(`UPDATE tasks SET parent_task_id = ? WHERE board_id = ? AND id = ?`)
-            .run(params.parent_task_id, this.boardId, r.task_id);
+            .run(canonicalParentId, this.boardId, r.task_id);
         }
         return r;
       })();
@@ -4326,24 +4334,28 @@ export class TaskflowEngine {
     return result;
   }
 
-  /** R4: validate a parent for create-with-parent (mirrors reparent_task's checks). Returns an
-   *  error result to abort, or null to proceed. `getTask` is board-scoped, so a parent on another
-   *  board (or a delegated-in task owned elsewhere) is rejected — a local task can only be parented
-   *  under a project this board owns. */
-  private validateCreateParent(
+  /** R4: validate a parent for create-with-parent (mirrors reparent_task's checks). Returns the
+   *  resolved parent row on success (so the caller stores the CANONICAL raw id), or a structured
+   *  error result to abort. `getTask` is board-scoped, so a parent on another board (or a
+   *  delegated-in task owned elsewhere) is rejected — a local task can only be parented under a
+   *  project this board owns. PUBLIC so the api_create_task handler can fail-fast on a bad parent
+   *  BEFORE its duplicate-detection pre-check (Codex MEDIUM). */
+  validateCreateParent(
     parentId: string,
-  ): { success: false; error_code: string; error: string } | null {
+  ):
+    | { ok: true; parent: any }
+    | { ok: false; result: { success: false; error_code: string; error: string } } {
     const parent = this.getTask(parentId);
     if (!parent) {
-      return { success: false, error_code: 'not_found', error: `Parent project ${parentId} not found on this board.` };
+      return { ok: false, result: { success: false, error_code: 'not_found', error: `Parent project ${parentId} not found on this board.` } };
     }
     if (parent.type !== 'project') {
-      return { success: false, error_code: 'validation_error', error: `Target ${parentId} is not a project (type: ${parent.type}).` };
+      return { ok: false, result: { success: false, error_code: 'validation_error', error: `Target ${parentId} is not a project (type: ${parent.type}).` } };
     }
     if (this.taskBoardId(parent) !== this.boardId) {
-      return { success: false, error_code: 'conflict', error: `The new task and project ${parentId} are on different boards.` };
+      return { ok: false, result: { success: false, error_code: 'conflict', error: `The new task and project ${parentId} are on different boards.` } };
     }
-    return null;
+    return { ok: true, parent };
   }
 
   private createTaskInternal(params: CreateParams): CreateResult {

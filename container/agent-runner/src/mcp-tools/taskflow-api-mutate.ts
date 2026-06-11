@@ -2161,6 +2161,19 @@ export const apiCreateTaskTool: McpToolDefinition = {
     try {
       const db = getTaskflowDb();
       const engine = new TaskflowEngine(db, boardId);
+      // R4: optional parent_task_id — create the task already parented under a project (atomic).
+      // normalizeAgentIds already uppercased it. Parse + validate the parent BEFORE the duplicate
+      // pre-checks (Codex MEDIUM): a structural parent error (not_found / not-a-project / off-board
+      // conflict) must fail-fast, not be masked by the soft near-duplicate-confirm prompt.
+      let parentTaskId: string | undefined;
+      if (args.parent_task_id !== undefined && args.parent_task_id !== null) {
+        if (typeof args.parent_task_id !== 'string' || args.parent_task_id.trim() === '') {
+          return validationError('parent_task_id: expected non-empty string');
+        }
+        parentTaskId = args.parent_task_id;
+        const pv = engine.validateCreateParent(parentTaskId);
+        if (!pv.ok) return jsonResponse(pv.result);
+      }
       // force_create (template L1270) bypasses BOTH dup checks — the user has
       // explicitly confirmed they want the task despite a near-duplicate.
       if (args.force_create !== true) {
@@ -2170,15 +2183,6 @@ export const apiCreateTaskTool: McpToolDefinition = {
         // [soft, hard) asks the user — same duplicate_candidate as the lexical path.
         const embedDup = await maybeFindEmbedDuplicate(db, boardId, taskType, title);
         if (embedDup) return resolveEmbedDuplicate(engine, embedDup);
-      }
-      // R4: optional parent_task_id — create the task already parented under a project (atomic).
-      // normalizeAgentIds already uppercased it; the engine validates parent existence/type/board.
-      let parentTaskId: string | undefined;
-      if (args.parent_task_id !== undefined && args.parent_task_id !== null) {
-        if (typeof args.parent_task_id !== 'string' || args.parent_task_id.trim() === '') {
-          return validationError('parent_task_id: expected non-empty string');
-        }
-        parentTaskId = args.parent_task_id;
       }
       const result = engine.create({
         board_id: boardId,

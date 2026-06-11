@@ -3378,6 +3378,33 @@ describe('R4 — api_create_task parent_task_id (atomic subtask creation)', () =
     expect(row.parent_task_id == null).toBe(true);
   });
 
+  it('stores the CANONICAL raw parent id when given a self-prefixed display id (Codex MEDIUM)', async () => {
+    // getTask resolves a self-prefixed display id ('TF-P1' → board TF, raw 'P1') via
+    // resolveInputTaskId, so validateCreateParent passes — but the stored parent_task_id
+    // MUST be the canonical raw id 'P1' (subtask joins / parent_task_title key on the raw
+    // id), NOT the verbatim 'TF-P1'. Otherwise the subtask shows as orphaned on the board.
+    const proj = await create({ type: 'project', title: 'Projeto' });
+    const projId = proj.data.id; // e.g. 'P1'
+    const sub = await create({ type: 'simple', title: 'Sub', parent_task_id: `TF-${projId}` });
+    expect(sub.success).toBe(true);
+    const row = db.prepare('SELECT parent_task_id FROM tasks WHERE id = ?').get(sub.data.id) as { parent_task_id: string };
+    expect(row.parent_task_id).toBe(projId); // 'P1', not 'TF-P1'
+  });
+
+  it('a bad parent fails with its structured code even when the title would trigger duplicate detection (Codex MEDIUM — validate parent before dup)', async () => {
+    // findDuplicateCreateCandidate fires at titleSimilarity >= 0.75 (identical = 1.0), and
+    // titleSimilarity needs >= 3 tokens on each side. Seed an exact 3-token-title match, then
+    // create the SAME title with a non-existent parent: the structural parent error
+    // (not_found) must fail-fast, NOT be masked by the soft duplicate-confirm prompt.
+    await create({ type: 'simple', title: 'Sincronizar relatorio semanal' });
+    // sanity: without a parent, the same title DOES trip the duplicate path (not_found-free)
+    const dup = await create({ type: 'simple', title: 'Sincronizar relatorio semanal' });
+    expect(dup.error_code).not.toBe('not_found');
+    const r = await create({ type: 'simple', title: 'Sincronizar relatorio semanal', parent_task_id: 'P999' });
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('not_found');
+  });
+
   it('rejects a parent project owned by ANOTHER board (delegated-in) with conflict — no cross-board parenting', async () => {
     // The one branch proving cross-board parenting is refused: a project that is
     // VISIBLE to this board via delegation (getTask returns own + delegated-in) but
