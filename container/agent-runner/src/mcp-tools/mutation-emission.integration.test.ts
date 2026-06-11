@@ -11,6 +11,7 @@ import { flushPendingCreateCard } from './mutation-confirmation.ts';
 import { __resetDedupForTesting } from './mutation-dedup.ts';
 import { applyBoardConfigColumns, setupEngineDb } from './taskflow-test-fixtures.ts';
 import { setTurnActor } from './turn-actor.ts';
+import { setVerbatimIds } from './taskflow-helpers.ts';
 
 // Phase-3 unit-2-core / Codex gate P5: session-DB-backed end-to-end
 // integration asserting that a mutation tool writes EXACTLY ONE
@@ -331,6 +332,38 @@ describe('mutation emission integration (Codex gate P5 — exactly-one messages_
       ].join('\n'),
     );
     expect(childCard).not.toContain('Tarefa criada');
+  });
+
+  it('#396: a DASHBOARD/verbatim reassign to a cross-board unprovisioned person ALSO enqueues (shared queue; supersedes #401)', async () => {
+    // The FastAPI subprocess (verbatim) has NO NANOCLAW_TASKFLOW_BOARD_ID env — it's
+    // stripped. finalizeMutationResult must enqueue via the THREADED board_id, not
+    // the (absent) env, or the dashboard offline-assignee deferred is silently
+    // dropped. Proves the deferred lands in the shared queue the container drains.
+    const savedEnv = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+    setVerbatimIds(true);
+    try {
+      const db = setupEngineDb(BOARD, { withBoardAdmins: true });
+      const { apiCreateSimpleTaskTool, apiReassignTool } = await import('./taskflow-api-mutate.ts');
+      db.prepare(`INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`).run(BOARD);
+      db.prepare(`INSERT INTO child_board_registrations (parent_board_id, person_id, child_board_id) VALUES (?, 'bob', 'child-bob')`).run(BOARD);
+      const taskId = JSON.parse(
+        (await apiCreateSimpleTaskTool.handler({ board_id: BOARD, title: 'Acesso dashboard', sender_name: 'alice' })).content[0].text,
+      ).data.id;
+      const r = JSON.parse(
+        (await apiReassignTool.handler({ board_id: BOARD, task_id: taskId, target_person: 'bob', sender_name: 'alice', confirmed: true })).content[0].text,
+      );
+      expect(r.success).toBe(true);
+      const pending = db
+        .query("SELECT target_person_id, message FROM pending_notifications WHERE target_person_id = 'bob'")
+        .all() as Array<{ target_person_id: string; message: string }>;
+      expect(pending.length).toBe(1);
+      expect(pending[0].message).toContain('reatribuída para você');
+    } finally {
+      setVerbatimIds(false);
+      if (savedEnv === undefined) delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+      else process.env.NANOCLAW_TASKFLOW_BOARD_ID = savedEnv;
+    }
   });
 
   it('#396: create for a SAME-GROUP (unregistered) assignee does NOT enqueue (avoid churn)', async () => {

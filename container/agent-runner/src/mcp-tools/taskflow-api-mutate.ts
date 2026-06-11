@@ -510,10 +510,11 @@ export function finalizeMutationResult(
   emitMutationConfirmation(result);
   // #396: persist any cross-board deferred (null-JID) notification (e.g. a
   // reassign/move to a teammate whose child board is still provisioning) so the
-  // turn-boundary drain delivers it once their board provisions. In-session
-  // only, before dispatch, fail-soft. board = the container's env board.
+  // container drain delivers it once their board provisions. Use the THREADED
+  // boardId (the env var is stripped on the FastAPI subprocess — the dashboard
+  // path would otherwise drop deferreds); fail-soft, before dispatch.
   const taskId = singleDeferredTaskId(result);
-  enqueueDeferredNotificationsInSession(process.env.NANOCLAW_TASKFLOW_BOARD_ID, notification_events, taskId, {});
+  enqueueDeferredNotificationsInSession(boardId ?? process.env.NANOCLAW_TASKFLOW_BOARD_ID, notification_events, taskId, {});
   // Deterministic cross-chat dispatch (#389): the engine's reassign /
   // parent-rollup / invite notifications are delivered by the host, not
   // relayed by the agent. In-session only — the FastAPI subprocess routes
@@ -1527,11 +1528,11 @@ export const apiMoveTool: McpToolDefinition = {
       const notification_events = eventsPerSuccess.flat();
       // #396: persist each sub-move's deferred cross-board notifications (keyed by
       // that sub-task's id) before dispatch — the bulk path doesn't go through
-      // finalizeMutationResult, so it must enqueue here too. In-session, fail-soft.
-      // Reuse the already-normalized events (was normalized a second time here).
+      // finalizeMutationResult, so it must enqueue here too. Threaded boardId (env
+      // is stripped on the subprocess). Fail-soft. Reuse the already-normalized events.
       successes.forEach((r, i) => {
         enqueueDeferredNotificationsInSession(
-          process.env.NANOCLAW_TASKFLOW_BOARD_ID,
+          boardId ?? process.env.NANOCLAW_TASKFLOW_BOARD_ID,
           eventsPerSuccess[i],
           typeof r.task_id === 'string' ? r.task_id : null,
           {},

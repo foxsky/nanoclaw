@@ -148,8 +148,11 @@ export function getServiceOutboundDbPath(): string | undefined {
 
 /**
  * True iff this process is the FastAPI/dashboard taskflow subprocess (or one
- * explicitly handed a service outbound DB) — a context that must NOT touch the
- * in-session pending-notification queue (neither enqueue nor drain). The
+ * explicitly handed a service outbound DB). It must NOT DRAIN the pending-
+ * notification queue or DELIVER in-chat (the board's container owns delivery).
+ * It MAY enqueue deferred notifications — the subprocess and the container share
+ * one taskflow.db, so the container drains what the subprocess enqueues (#396,
+ * supersedes the older "subprocess touches neither" rule). The
  * `--service-outbound-db` arg is OPTIONAL, so servicePath alone is unreliable;
  * getVerbatimIds() is set UNCONDITIONALLY by taskflow-server-entry.ts, so it's
  * the reliable subprocess signal (Codex xhigh 2026-06-05). Pass
