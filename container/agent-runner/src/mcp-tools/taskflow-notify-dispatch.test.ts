@@ -102,6 +102,10 @@ describe('dispatchNotificationEvents', () => {
     expect(bus[0].params.text).toBe('reassigned to you');
     expect(bus[1].params.target).toEqual({ kind: 'group', group_jid: '120363@g.us' });
     expect(bus[1].params.text).toBe('rollup');
+    // Per-event id MUST be unique — the service bus is idempotent on id (ON CONFLICT(id)
+    // DO NOTHING, taskflow-outbound.ts), so hoisting generateId() out of the loop would
+    // silently drop the 2nd event in prod while still passing every other assertion.
+    expect(bus[0].params.id).not.toBe(bus[1].params.id);
   });
 
   it('R3: skips no-JID events (deferred_notification / in_chat_notice / destination_message) on the bus path', () => {

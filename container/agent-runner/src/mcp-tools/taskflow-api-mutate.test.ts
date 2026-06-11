@@ -1519,6 +1519,10 @@ describe('api_undo MCP tool (A11.4)', () => {
     const noForceResult = JSON.parse(noForce.content[0].text);
     expect(noForceResult.success).toBe(false);
     expect(noForceResult.error).toMatch(/WIP limit/);
+    // R2 Rule-9: the WIP refusal MUST carry error_code 'conflict' — tf maps it to
+    // 409 (MCP_MUTATION_ERROR_STATUS), the signal the dashboard uses to offer the
+    // force-retry. A regression dropping/changing the code would otherwise ship green.
+    expect(noForceResult.error_code).toBe('conflict');
 
     // Undo with force=true (alice is manager) → succeeds, restoring t3 to in_progress.
     const withForce = await apiUndoTool.handler({
@@ -1532,6 +1536,44 @@ describe('api_undo MCP tool (A11.4)', () => {
     expect(
       (db.prepare('SELECT column FROM tasks WHERE id = ?').get(t3) as { column: string }).column,
     ).toBe('in_progress');
+  });
+
+  it('R2 Rule-9: a NON-manager who force-undoes past WIP is refused permission_denied (no privilege escalation)', async () => {
+    const { apiCreateSimpleTaskTool, apiMoveTool, apiUndoTool } = await import('./taskflow-api-mutate.ts');
+    // bob is a registered person but NOT a manager (no board_admins row), wip_limit=1.
+    // The engine's force path (engine.undo) lets a MANAGER override a WIP-exceeded undo
+    // but must refuse a non-manager with permission_denied (engine ~9069) — tf maps it
+    // to 403. Without this test, dropping the !isManager check ships green = a non-manager
+    // silently forcing past WIP, and a dropped code = 502 instead of 403.
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+    db.prepare(`UPDATE board_people SET wip_limit = 1 WHERE board_id = ? AND person_id = 'bob'`).run(BOARD);
+
+    // alice (manager) creates two tasks assigned to bob; start T1 (fills bob's 1 slot),
+    // force_start T2 (manager bypass), then bob waits T2 → snapshot.column='in_progress',
+    // by=bob, the latest mutation. Undoing it would restore T2 to in_progress while T1
+    // already occupies bob's slot → WIP exceeded.
+    const c1 = await apiCreateSimpleTaskTool.handler({ board_id: BOARD, title: 'B1', sender_name: 'alice', assignee: 'bob' });
+    const t1 = JSON.parse(c1.content[0].text).data.id;
+    const c2 = await apiCreateSimpleTaskTool.handler({ board_id: BOARD, title: 'B2', sender_name: 'alice', assignee: 'bob' });
+    const t2 = JSON.parse(c2.content[0].text).data.id;
+    await apiMoveTool.handler({ board_id: BOARD, task_id: t1, action: 'start', sender_name: 'alice' });
+    const fs = await apiMoveTool.handler({ board_id: BOARD, task_id: t2, action: 'force_start', sender_name: 'alice' });
+    expect(JSON.parse(fs.content[0].text).success).toBe(true);
+    const wait = await apiMoveTool.handler({ board_id: BOARD, task_id: t2, action: 'wait', sender_name: 'bob' });
+    expect(JSON.parse(wait.content[0].text).success).toBe(true);
+
+    // bob (non-manager, the mutation author) force-undoes → refused.
+    const forced = await apiUndoTool.handler({ board_id: BOARD, sender_name: 'bob', force: true });
+    const r = JSON.parse(forced.content[0].text);
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('permission_denied');
+    expect(String(r.error)).toMatch(/manager/i);
+    // T2 stayed in waiting (the refused undo did not restore it).
+    expect(
+      (db.prepare('SELECT column FROM tasks WHERE id = ?').get(t2) as { column: string }).column,
+    ).toBe('waiting');
   });
 });
 
@@ -3334,5 +3376,23 @@ describe('R4 — api_create_task parent_task_id (atomic subtask creation)', () =
     expect(r.success).toBe(true);
     const row = db.prepare('SELECT parent_task_id FROM tasks WHERE id = ?').get(r.data.id) as { parent_task_id: string | null };
     expect(row.parent_task_id == null).toBe(true);
+  });
+
+  it('rejects a parent project owned by ANOTHER board (delegated-in) with conflict — no cross-board parenting', async () => {
+    // The one branch proving cross-board parenting is refused: a project that is
+    // VISIBLE to this board via delegation (getTask returns own + delegated-in) but
+    // OWNED elsewhere (taskBoardId != this.boardId → conflict, engine.validateCreateParent).
+    // A local task must never be parented under a foreign-owned project.
+    db.prepare(`INSERT INTO boards (id, short_code, name) VALUES ('other-board', 'OB', 'Other')`).run();
+    db.prepare(
+      `INSERT INTO tasks (board_id, id, type, title, "column", child_exec_board_id, child_exec_enabled, created_at, updated_at)
+       VALUES ('other-board', 'P1', 'project', 'Foreign project', 'next_action', ?, 1, '2026-06-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z')`,
+    ).run(BOARD);
+    const before = (db.prepare('SELECT COUNT(*) c FROM tasks').get() as { c: number }).c;
+    const r = await create({ type: 'simple', title: 'Cross-board child', parent_task_id: 'P1' });
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('conflict');
+    const after = (db.prepare('SELECT COUNT(*) c FROM tasks').get() as { c: number }).c;
+    expect(after).toBe(before); // atomic: no orphan created on the refused parent
   });
 });

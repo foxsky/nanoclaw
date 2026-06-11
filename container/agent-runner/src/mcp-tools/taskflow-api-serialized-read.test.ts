@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { closeTaskflowDb } from '../db/connection.js';
 import { setVerbatimIds } from './taskflow-helpers.js';
 import {
@@ -285,5 +287,18 @@ describe('R5 api_runner_status', () => {
       digest_cron_local: '0 18 * * 1-5',
       review_cron_local: '0 8 * * 1',
     });
+  });
+});
+
+describe('R5 FastAPI-only registration invariant', () => {
+  it('the chat barrel (mcp-tools/index.ts) does NOT import the serialized-read tools', () => {
+    // These five reads are registered ONLY by taskflow-server-entry.ts (FastAPI) and
+    // allowlisted there — keeping them off the in-container WhatsApp agent's tool list
+    // (tool-selection hygiene). An accidental chat-barrel import would expose 5 redundant
+    // own-board reads (board-pinned by normalizeAgentIds, so not a cross-board leak, but
+    // still a contract regression). A source-string assertion pins the invariant — no test
+    // would otherwise fail on a stray import (precedent: subprocess-gate invariant).
+    const barrel = readFileSync(join(import.meta.dir, 'index.ts'), 'utf8');
+    expect(barrel).not.toContain('taskflow-api-serialized-read');
   });
 });
