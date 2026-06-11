@@ -4477,6 +4477,10 @@ export class TaskflowEngine {
       const now = new Date().toISOString();
 
       /* --- Permission check --- */
+      // DELIBERATELY no sender_is_service bypass here (unlike the parent-create /
+      // note / delete gates): tf-mcontrol confirmed (2026-06-11, OUTBOUND Addendum 10)
+      // that every assigned create arrives on a JWT user token — the API-token path
+      // only creates unassigned. Do NOT "extend the convention" to this gate.
       if (params.type !== 'inbox' && params.assignee) {
         if (!this.isManager(params.sender_name)) {
           return {

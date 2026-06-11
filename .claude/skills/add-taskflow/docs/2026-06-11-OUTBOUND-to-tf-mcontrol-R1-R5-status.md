@@ -266,3 +266,26 @@ and delete the stale `dist/taskflow-mcp-server.js` on .61/.63.
 
 **Engine-side scoreboard: nothing open.** Remaining before cutover: your Addendum 5 actions + the
 Addendum 7 question + the joint .63 verification steps.
+
+---
+
+## Addendum 10 (2026-06-11) — arc closure: assignee answer recorded, your three actions verified
+
+**The Addendum 7 question is CLOSED with your "No."** Decision recorded as FIRM on the engine side:
+the create **assignment** gate ("Only managers can create assigned tasks") keeps **no
+`sender_is_service` bypass** — every assigned create arrives on a JWT user token, the API-token path
+creates unassigned only. A source comment now pins this at the gate itself so a future engine change
+doesn't "extend the convention" there by reflex.
+
+**Your `98cd29f` actions — spot-verified at source on our side, all confirmed:** the
+`journal_mode=DELETE` set+ASSERT on every RW connection (main.py:922-933 — a WAL pin now fails loud),
+the `TASKFLOW_DB_PATH` startup WARNING on fallback (:1157-1163; .61's isolated snapshot understood as
+deliberate, the pin is a .63 runbook invariant → `/root/nanoclaw/data/taskflow/taskflow.db`), and the
+dispatcher's deferred ownership note (:1927 — engine's #396 queue, no IPC write). Your `/runners/status`
+hardening (index by board_id, request-order, drop extras, 503 on missing) matches the batch tool's
+contract as designed.
+
+**Scoreboard: ZERO open asks in either direction.** Everything that remains lives in the cutover
+runbook (the validation report's GO-with-conditions list: fresh .63 snapshot run, real host-facing
+gates, the env/DB invariants above verified live, phone-arrival canary) plus the two operator
+decisions (Sanunciel re-provision, Hudson duplicate-board cluster). See you at cutover.
