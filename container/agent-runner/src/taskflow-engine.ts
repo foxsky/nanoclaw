@@ -9085,7 +9085,15 @@ export class TaskflowEngine {
    */
   updateBoard(
     boardId: string,
-    fields: { name?: string; description?: string | null },
+    fields: {
+      name?: string;
+      description?: string | null;
+      // R1 board-workflow settings (booleans for the done-gate flags; stored 0/1).
+      objective?: string | null;
+      max_agents?: number | null;
+      require_approval_for_done?: boolean;
+      require_review_before_done?: boolean;
+    },
   ):
     | { success: true; data: Record<string, unknown> }
     | { success: false; error_code: 'not_found'; error: string } {
@@ -9097,7 +9105,7 @@ export class TaskflowEngine {
     }
 
     const sets: string[] = [];
-    const values: (string | null)[] = [];
+    const values: (string | number | null)[] = [];
     if (fields.name !== undefined) {
       sets.push('name = ?');
       values.push(fields.name);
@@ -9105,6 +9113,24 @@ export class TaskflowEngine {
     if ('description' in fields) {
       sets.push('description = ?');
       values.push(fields.description ?? null);
+    }
+    // R1: arg-shape validation (incl. max_agents >= 1) is owned by the api_update_board handler;
+    // here we just persist. Booleans → 0/1.
+    if ('objective' in fields) {
+      sets.push('objective = ?');
+      values.push(fields.objective ?? null);
+    }
+    if ('max_agents' in fields) {
+      sets.push('max_agents = ?');
+      values.push(fields.max_agents ?? null);
+    }
+    if (fields.require_approval_for_done !== undefined) {
+      sets.push('require_approval_for_done = ?');
+      values.push(fields.require_approval_for_done ? 1 : 0);
+    }
+    if (fields.require_review_before_done !== undefined) {
+      sets.push('require_review_before_done = ?');
+      values.push(fields.require_review_before_done ? 1 : 0);
     }
     if (sets.length === 0) {
       return { success: true, data: existing };

@@ -288,13 +288,18 @@ export const apiUpdateBoardTool: McpToolDefinition = {
   tool: {
     name: 'api_update_board',
     description:
-      "Update a board's name and/or description. Owner authorization is enforced by the API layer before this tool runs.",
+      "Update a board's name, description, and board-workflow settings (objective, max_agents, require_approval_for_done, require_review_before_done). Owner authorization is enforced by the API layer before this tool runs.",
     inputSchema: {
       type: 'object' as const,
       properties: {
         board_id: { type: 'string' },
         name: { type: ['string', 'null'] },
         description: { type: ['string', 'null'] },
+        // R1: board-workflow settings (each optional; omit = no change).
+        objective: { type: ['string', 'null'] },
+        max_agents: { type: ['integer', 'null'] },
+        require_approval_for_done: { type: 'boolean' },
+        require_review_before_done: { type: 'boolean' },
       },
       required: ['board_id'],
     },
@@ -314,7 +319,14 @@ export const apiUpdateBoardTool: McpToolDefinition = {
     // Handler owns arg-shape validation + normalization (validation_error);
     // the engine does the DB mutation (R2.8 step 4b-i — single-source the
     // PATCH /boards logic via engine.updateBoard).
-    const fields: { name?: string; description?: string | null } = {};
+    const fields: {
+      name?: string;
+      description?: string | null;
+      objective?: string | null;
+      max_agents?: number | null;
+      require_approval_for_done?: boolean;
+      require_review_before_done?: boolean;
+    } = {};
 
     // name: None/absent skips; a string is trimmed and must be non-empty.
     if ('name' in args && args.name !== undefined && args.name !== null) {
@@ -348,6 +360,47 @@ export const apiUpdateBoardTool: McpToolDefinition = {
       }
       fields.description =
         args.description === null ? null : (args.description as string).trim() || null;
+    }
+
+    // R1: board-workflow settings. objective mirrors description (trim, empty→null, explicit
+    // null clears). max_agents: positive integer or null. The done-gate flags: strict boolean.
+    if ('objective' in args && args.objective !== undefined) {
+      if (args.objective !== null && typeof args.objective !== 'string') {
+        return jsonResponse({
+          success: false,
+          error_code: 'validation_error',
+          error: 'objective: expected string or null',
+        });
+      }
+      fields.objective = args.objective === null ? null : (args.objective as string).trim() || null;
+    }
+    if ('max_agents' in args && args.max_agents !== undefined) {
+      if (args.max_agents !== null) {
+        if (
+          typeof args.max_agents !== 'number' ||
+          !Number.isInteger(args.max_agents) ||
+          args.max_agents < 1
+        ) {
+          return jsonResponse({
+            success: false,
+            error_code: 'validation_error',
+            error: 'max_agents must be a positive integer or null',
+          });
+        }
+      }
+      fields.max_agents = (args.max_agents as number | null) ?? null;
+    }
+    for (const flag of ['require_approval_for_done', 'require_review_before_done'] as const) {
+      if (flag in args && args[flag] !== undefined) {
+        if (typeof args[flag] !== 'boolean') {
+          return jsonResponse({
+            success: false,
+            error_code: 'validation_error',
+            error: `${flag}: expected boolean`,
+          });
+        }
+        fields[flag] = args[flag] as boolean;
+      }
     }
 
     try {

@@ -129,6 +129,15 @@ export function applyBoardConfigColumns(d: Database): void {
     `ALTER TABLE boards ADD COLUMN updated_at TEXT`,
     `ALTER TABLE boards ADD COLUMN hierarchy_level INTEGER`,
     `ALTER TABLE boards ADD COLUMN max_depth INTEGER`,
+    // R1 (INBOUND tf-mcontrol 2026-06-10): board-workflow settings the dashboard collects and
+    // api_update_board persists. Like description/org_id above, these are part of the FastAPI
+    // board-config union OWNED by tf-mcontrol's Python migrations in prod (NOT engine.ensureTaskSchema
+    // — adding them there breaks the ~48 positional `INSERT INTO boards VALUES` test inserts). The
+    // engine only WRITES them (engine.updateBoard); this fixture provides them for the engine tests.
+    `ALTER TABLE boards ADD COLUMN objective TEXT`,
+    `ALTER TABLE boards ADD COLUMN max_agents INTEGER`,
+    `ALTER TABLE boards ADD COLUMN require_approval_for_done INTEGER`,
+    `ALTER TABLE boards ADD COLUMN require_review_before_done INTEGER`,
     `ALTER TABLE board_people ADD COLUMN phone TEXT`,
   ];
   for (const sql of alters) {
