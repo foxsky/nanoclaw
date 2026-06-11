@@ -26,8 +26,16 @@ import type { Database } from 'bun:sqlite';
 import { getTaskflowDb } from '../db/connection.js';
 import { normalizePhone } from '../taskflow-engine.js';
 
-/** A host-authenticated WhatsApp sender: bare digits, or digits(:device)@host. */
-const JID_OR_PHONE_RE = /^\d{8,}(?::\d+)?(?:@[a-z0-9.]+)?$/i;
+/**
+ * A host-authenticated WhatsApp PHONE JID: `<digits>(:device)@s.whatsapp.net`.
+ * Phone matching is restricted to this exact shape ON PURPOSE — it is the only
+ * sender the native WhatsApp adapter both authenticates AND populates with a
+ * real phone number. Bare digits, `@lid` (LID is not a phone), `@g.us`, and any
+ * display-name sender (chat-SDK bridge, web chat) are NOT phone-matched, so a
+ * user on a non-WhatsApp channel cannot impersonate a board member by setting a
+ * phone-shaped display name (Codex #419 review).
+ */
+const WHATSAPP_PHONE_JID_RE = /^\d{8,}(?::\d+)?@s\.whatsapp\.net$/i;
 
 export interface ResolvedSenderPerson {
   personId: string;
@@ -52,7 +60,7 @@ export function resolveAuthenticatedSenderPerson(
       .get(boardId, sender, sender, sender) as { person_id: string; name: string } | null;
     if (exact) return { personId: exact.person_id, name: exact.name };
 
-    if (!JID_OR_PHONE_RE.test(sender)) return null;
+    if (!WHATSAPP_PHONE_JID_RE.test(sender)) return null;
     const digits = sender.split('@')[0].split(':')[0];
     const want = normalizePhone(digits);
     if (!want) return null;

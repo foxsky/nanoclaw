@@ -40,10 +40,17 @@ describe('resolveAuthenticatedSenderPerson', () => {
     });
   });
 
-  it('resolves a device-suffixed participant JID and bare digits', () => {
+  it('resolves a device-suffixed WhatsApp phone JID', () => {
     const db = seed([{ id: 'bob', name: 'Roberto Lima', phone: '5586981234567' }]);
     expect(resolveAuthenticatedSenderPerson(BOARD, '5586981234567:12@s.whatsapp.net', db)?.personId).toBe('bob');
-    expect(resolveAuthenticatedSenderPerson(BOARD, '5586981234567', db)?.personId).toBe('bob');
+  });
+
+  it('does NOT phone-match bare digits or @lid (only authenticated @s.whatsapp.net — anti-spoof)', () => {
+    // Bare digits and LIDs are not authenticated phone JIDs; phone-matching them
+    // would let a non-WhatsApp sender impersonate a board member by phone.
+    const db = seed([{ id: 'bob', name: 'Roberto Lima', phone: '5586981234567' }]);
+    expect(resolveAuthenticatedSenderPerson(BOARD, '5586981234567', db)).toBeNull();
+    expect(resolveAuthenticatedSenderPerson(BOARD, '5586981234567@lid', db)).toBeNull();
   });
 
   it('matches normalized phone variants (stored local format vs JID country format)', () => {

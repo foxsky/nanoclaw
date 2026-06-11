@@ -7,7 +7,7 @@ import {
   getOutboundDb,
   initTestSessionDb,
 } from './db/connection.ts';
-import { setupEngineDb } from './mcp-tools/taskflow-test-fixtures.ts';
+import { applyBoardConfigColumns, setupEngineDb } from './mcp-tools/taskflow-test-fixtures.ts';
 import {
   handleTaskflowAddExternalParticipantToLatestMeeting,
   handleTaskflowExplicitReassign,
@@ -149,5 +149,38 @@ describe('deterministic poll-loop mutation handlers dispatch engine notification
     const inviteInChat = chatTexts.some((t) => /convite/i.test(t));
     const inviteDispatched = dispatchedEvents().length > 0;
     expect(inviteInChat || inviteDispatched).toBe(true);
+  });
+
+  it('resolves a manager authenticated by WhatsApp JID so a deterministic mutation is not denied (live-adapter parity)', () => {
+    // On the native WhatsApp adapter the sender is the participant JID. Without
+    // resolving it to the board person, engine.reassign's isManager check fails
+    // and a legitimate manager reassignment is "Permission denied". senderName
+    // must map alice's JID → 'alice' (manager) via board_people.phone.
+    const db = setupEngineDb(BOARD, { withBoardAdmins: true });
+    applyBoardConfigColumns(db); // board_people.phone is host schema
+    db.prepare(`UPDATE board_people SET phone = '5586981111111' WHERE board_id = ? AND person_id = 'alice'`).run(BOARD);
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+    const engine = new TaskflowEngine(db, BOARD);
+    const created = engine.create({ board_id: BOARD, type: 'simple', title: 'Tarefa X', sender_name: 'alice' });
+    const taskId = String(created.task_id ?? created.id);
+
+    const handled = handleTaskflowExplicitReassign(
+      { taskId, targetPerson: 'bob' },
+      // chat sender is alice's authenticated WhatsApp phone JID, not her name
+      chatMsg(`atribuir ${taskId} para bob`, '5586981111111@s.whatsapp.net'),
+      ROUTING,
+    );
+    expect(handled).toBe(true);
+    // Reassign succeeded → the card confirms it (no "Permission denied" reply).
+    const reply = JSON.parse(outboundRows().filter((r) => r.kind === 'chat')[0].content).text as string;
+    expect(reply).not.toMatch(/Permission denied|Não consegui/);
+    expect(reply).toContain(taskId);
+    // And the task is now bob's.
+    const row = db.prepare(`SELECT assignee FROM tasks WHERE board_id = ? AND id = ?`).get(BOARD, taskId) as {
+      assignee: string;
+    };
+    expect(row.assignee).toBe('bob');
   });
 });

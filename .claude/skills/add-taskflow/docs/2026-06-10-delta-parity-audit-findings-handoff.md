@@ -22,6 +22,13 @@
 
 - The 4 board-workflow columns (objective/max_agents/require_approval_for_done/require_review_before_done) are owned by tf-mcontrol Python migrations; `ensureTaskSchema` deliberately does not create them. On a cutover-migrated `taskflow.db` without the Python migration, a dashboard board-settings save touching them → `{success:false, error_code:'internal_error', error:'no such column: …'}` (structured, no crash — verified). But the ordering requirement lives ONLY in the commit message + a fixture comment. Add it to the coordination doc and/or the cutover runbook.
 
+## 3b. SEC#11 gap — the DETERMINISTIC register_person fast-path bypasses the auto-provision approval (MAJOR, security, pre-existing — YOUR gate to extend)
+
+- The MCP `api_admin register_person` auto-provision is correctly PARKED for NanoClaw-admin approval: `emitAutoProvisionIfRequested` (taskflow-api-mutate.ts:~535) calls `parkForApproval({tool:'provision_child_board_auto', …})` on a board chat.
+- But the DETERMINISTIC poll-loop handler `handleTaskflowPendingChildBoardRegistration` (poll-loop.ts:~2990) writes the **real** `{action:'provision_child_board', …}` system row directly — no park. The host `handleProvisionChildBoard` is registered with NO approval gate (taskflow/index.ts:15), so this provisions a child board (creates a WhatsApp group, seeds a DB) on a board member's command without admin approval.
+- Reachability: it fires from `taskflowPendingChildBoardRegistrationCommand` over trigger=1 wake-eligible rows (#413-scoped), so it needs a genuine inbound message, but the whole point of SEC#11 is that provisioning needs NanoClaw-ADMIN approval, not just a board action. This is a side door around that gate.
+- The delta-parity session left the deterministic ack as "está sendo provisionado" (accurate for the current no-park behavior). When you route this emit through the same `parkForApproval`, also flip `buildPersonRegisteredAck` (poll-loop.ts) to the "aguarda aprovação" wording.
+
 ## 4. R2 (`ea37203f`) — stale header comment (LOW, trivial)
 
 - `taskflow-server-entry.ts` header (~lines 38-44) still says `api_undo` is "deliberately excluded" from the allowlist; R2 added it ~60 lines below. Update the comment.

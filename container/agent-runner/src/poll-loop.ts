@@ -42,6 +42,7 @@ import {
 } from './mcp-tools/pending-notification-dispatch.js';
 import { safeNotificationEvents } from './mcp-tools/taskflow-api-mutate.js';
 import { dispatchNotificationEvents } from './mcp-tools/taskflow-notify-dispatch.js';
+import { resolveAuthenticatedSenderPerson } from './mcp-tools/actor-person-resolution.js';
 import { buildReassignCard, buildReassignInfo, type ReassignTaskInfo } from './mcp-tools/reassign-card.js';
 import { appendToolEvents, type ToolEvent } from './providers/claude-tool-capture.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
@@ -1677,7 +1678,21 @@ function appendMcpEquivalentToolCapture(name: string, input: unknown, output: un
 
 function senderName(messages: Pick<MessageInRow, 'kind' | 'content'>[]): string {
   const first = messages.map(parseSingleChat).find((msg): msg is { sender: string; text: string } => !!msg);
-  return first?.sender || 'usuário';
+  const raw = first?.sender || 'usuário';
+  // Live-adapter parity (Codex #419 review): the native WhatsApp adapter
+  // authenticates the sender as a phone JID, which the engine's resolvePerson
+  // cannot map to a person — so every deterministic person-gated mutation
+  // (isManager / isAssignee / no-self-approval) would fail on a live board.
+  // Resolve a WhatsApp phone JID to the board person's NAME (not person_id, so
+  // display strings like "${sender} pediu…" stay human-readable AND the engine
+  // resolves it). Non-JID display-name senders (chat-SDK, web, tests) pass
+  // through untouched — no DB access. Same shared resolver + fail-closed rules
+  // as the MCP actor bind (board_people.phone, @s.whatsapp.net only).
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (boardId && raw.endsWith('@s.whatsapp.net')) {
+    return resolveAuthenticatedSenderPerson(boardId, raw)?.name ?? raw;
+  }
+  return raw;
 }
 
 function normalizeReadyForReviewNote(raw: string): string {
@@ -2576,7 +2591,11 @@ function handleTaskflowNotifyMeetingAbove(
       };
       const updateResult = engine.update({ ...updateInput, board_id: boardId });
       appendMcpEquivalentToolCapture('api_update_task', updateInput, updateResult, !updateResult.success);
-      if (updateResult.success) dispatchDeterministicMutationNotifications(updateResult, action.taskId);
+      // NOTE: do NOT dispatch the engine's add_participant notification here —
+      // this handler manually sends the recipient a custom "pediu para te
+      // avisar" message below (the V1-faithful notice). Dispatching the engine's
+      // generic "Você foi adicionado a uma reunião" too would double-notify the
+      // same person for one `avisar X sobre a reunião` command (Codex #419 review).
     }
     const text = `Olá, ${recipient}! ${sender} pediu para te avisar sobre a seguinte reunião:\n\n📅 *${title}*\n${when}`;
     sendToDestination(dest, text, routing);
@@ -2941,11 +2960,14 @@ export function buildPersonRegisteredAck(personName: string, role: string, group
   return (
     `✅ *${personName} cadastrado(a)*\n━━━━━━━━━━━━━━\n\n` +
     `👤 *${personName}*\n💼 ${role}\n\n` +
-    // SEC#11 honesty (delta-parity audit 2026-06-10): provisioning is PARKED
-    // for NanoClaw-admin approval — say "solicitado/aguarda aprovação", never
-    // "está sendo provisionado" (the old text promised an in-progress board an
-    // admin might still deny).
-    `O quadro da divisão *${groupName}* foi solicitado e aguarda aprovação de um administrador. Depois de aprovado, ${firstName} receberá o convite pelo WhatsApp, e a confirmação com o quadro chega aqui assim que estiver pronto.`
+    // NOTE: this DETERMINISTIC register path emits provision_child_board
+    // DIRECTLY (no approval park) — unlike the MCP api_admin path, which parks
+    // for NanoClaw-admin approval (taskflow-api-mutate.ts emitAutoProvisionIfRequested,
+    // SEC#11). So "está sendo provisionado" is accurate here. The deterministic
+    // bypass of the SEC#11 gate is flagged to the security epic
+    // (docs/.../2026-06-10-delta-parity-audit-findings-handoff.md); if/when that
+    // path is gated too, change this to "aguarda aprovação".
+    `O quadro da divisão *${groupName}* está sendo provisionado. ${firstName} receberá o convite pelo WhatsApp, e a confirmação com o quadro chega aqui assim que estiver pronto.`
   );
 }
 
@@ -2979,8 +3001,6 @@ function handleTaskflowPendingChildBoardRegistration(
     writeReply(routing, `Não consegui cadastrar ${action.personName}: ${result.error ?? 'erro desconhecido'}`);
     return true;
   }
-
-  dispatchDeterministicMutationNotifications(result, null);
 
   const autoProvision = result.auto_provision_request;
   if (autoProvision) {
