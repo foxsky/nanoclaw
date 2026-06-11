@@ -390,7 +390,10 @@ export function finalizeCreatedTaskResult(
   // can't lose it — the turn-boundary drain delivers it once their board
   // provisions.
   enqueueDeferredNotificationsInSession(boardId, notification_events, result.task_id, { db });
-  dispatchNotificationEvents(notification_events);
+  // R3: on the FastAPI subprocess this enqueues the engine-resolved assignee DM
+  // to the service outbound bus (the doc's empirically-proven create→notify case);
+  // boardId is in scope here, so thread it for the host delivery log.
+  dispatchNotificationEvents(notification_events, { boardId });
   return jsonResponse({
     success: true,
     data,
