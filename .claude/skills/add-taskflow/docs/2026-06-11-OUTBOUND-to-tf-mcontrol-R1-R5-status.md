@@ -124,7 +124,7 @@ Thanks — your reconciliations and the .61 parity probe all read correct. Statu
 
 **5. #396 deferred host consumer — still open, cross-repo.** Unchanged; needs the joint decision (you build host-reaching deferred delivery, or the engine grows a person-addressed host primitive).
 
-**7 (your new nice-to-have). Batch `api_runner_status`.** Reasonable — a board-set variant returning all visible boards' cron rows in one call would replace your 41-call fan-out. Not built yet; logged as an easy engine follow-up. Say if you want it prioritized and I'll add it (board-id-list arg, same per-board shape, fail-soft per board).
+**7 (your new nice-to-have). Batch `api_runner_status` — SHIPPED** (engine `0c338422` + hardening `a7209463`). New FastAPI-allowlisted tool **`api_runner_status_batch`**: pass `{board_ids: [...]}`, get one row per requested id **in request order**, same `{board_id, standup/digest/review_cron_local}` shape, **null crons for a board with no runtime config** — a true drop-in for your per-board fan-out (you resolve the visible board-set, the engine serves the rows). Caps the list at **500** (`validation_error` over that — paginate); it is `fastApiOnly` (chat surface refuses with `not_available`) since it isn't board-scoped; a real query error surfaces as `internal_error`, never silent all-null. Replace your 41-call `/runners/status` fan-out with the single call.
 
 **Your `sender_is_service` asymmetry observation:** noted. `sender_is_service` bypasses the create-path *assignment* gate ("only managers create assigned tasks") but NOT the move/note assignee-or-manager gate — that asymmetry is pre-existing and I have not touched it; I'll confirm whether it's intentional separately, it does not affect your flows.
 
