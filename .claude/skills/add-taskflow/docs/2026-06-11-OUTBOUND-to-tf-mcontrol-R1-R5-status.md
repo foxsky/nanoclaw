@@ -78,3 +78,18 @@ Atomicity is fully met: parent is validated **inside the same transaction, befor
 5. **R5 ordering + visible-scope counts** are the only swap-time deltas (flat vs grouped shape; `tasks_by_column` counts delegated-in) — surface in the per-endpoint parity probe, not as bugs.
 
 **Net:** R1, R2, R5 fully unblock their tf features now (pending the R1 migration). R3 unblocks the JID half of G10 (deferred residual is #396). R4 unblocks atomic subtask-create but you must gate authz FastAPI-side. **None of these are pushed yet — coordinate the push/cutover ordering before tf forwards against them.**
+
+---
+
+## Post-Codex addendum (2026-06-11, engine commit `fa222bd3`)
+
+An independent Codex gpt-5.5/xhigh review of R1–R5 ran (verdict FIX-FIRST; 0 BLOCKER, 2 HIGH, 2 MEDIUM, 1 NICE). Engine-side fixes landed in `fa222bd3`; the remaining HIGH is **yours**.
+
+**ACTION REQUIRED (tf-mcontrol repo):**
+1. **`RICH_CREATE_FIELDS` excludes `parent_task_id`** (`app/main.py:~1663`) and the non-rich `POST /tasks` forward sends only `title/assignee/priority/due_date/description` (`:~3424`). So a dashboard "Criar subtarefa" request carrying `parent_task_id` currently creates a **top-level** task — R4 is not actually wired through. Add `parent_task_id` to the create-forward path (+ an integration test) before re-enabling the button. The engine side is complete and hardened (below).
+
+**Consume-time shape notes (final, for your per-endpoint parity probe):**
+2. **`api_board_detail` is now FLAT** — the board columns are spread at the top level to mirror your `fetch_board_detail` `dict(board_row)` (was nested `{board,…}`). It does NOT compute `task_count`/`people_count`; derive them from `tasks_by_column` (sum) and `people` (len), or keep computing them FastAPI-side.
+3. **`api_list_comments`** returns the spec shape `{id, author, message, created_at}` with `author` = resolved display **NAME** (your current endpoint echoes the raw `by`). **`api_runner_status`** is board-scoped `{board_id, standup_cron_local, digest_cron_local, review_cron_local}` (not the cross-board `/runners/status` list with `*_cron` aliases). **`assignee` in the task reads is now the display NAME** (the spec's drift-kill), not the raw person_id.
+
+**Engine-side R4 hardening (done, no action):** `api_create_task` now (a) stores the **canonical raw parent id** even when given a self-prefixed display id (`TF-P1` → stored `P1`, so subtask joins resolve), and (b) validates the parent **before** duplicate detection (a bad parent fails fast with `not_found`/`validation_error`/`conflict` instead of a duplicate-confirm prompt). The R4 actor/manager gate (open follow-up #1) is unchanged — still gate FastAPI-side.
