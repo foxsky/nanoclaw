@@ -4337,7 +4337,7 @@ export class TaskflowEngine {
         // 'TF-P1', but the stored parent_task_id must be the raw 'P1' that subtask joins key on).
         let canonicalParentId: string | undefined;
         if (params.parent_task_id) {
-          const pv = this.validateCreateParent(params.parent_task_id);
+          const pv = this.validateCreateParent(params.parent_task_id, params.sender_name);
           if (!pv.ok) return pv.result;
           canonicalParentId = String(pv.parent.id);
         }
@@ -4380,9 +4380,16 @@ export class TaskflowEngine {
    *  error result to abort. `getTask` is board-scoped, so a parent on another board (or a
    *  delegated-in task owned elsewhere) is rejected — a local task can only be parented under a
    *  project this board owns. PUBLIC so the api_create_task handler can fail-fast on a bad parent
-   *  BEFORE its duplicate-detection pre-check (Codex MEDIUM). */
+   *  BEFORE its duplicate-detection pre-check (Codex MEDIUM).
+   *
+   *  Actor gate (delta-parity audit item 1): adding a task INTO a project is the
+   *  SAME authority as engine.update(add_subtask) — manager OR the parent
+   *  project's assignee. Without it any resolved sender could parent a task
+   *  under any project, and api_create_task is the only add-to-project route on
+   *  the FastAPI surface (api_admin/reparent_task is not allowlisted). */
   validateCreateParent(
     parentId: string,
+    senderName: string,
   ):
     | { ok: true; parent: any }
     | { ok: false; result: { success: false; error_code: string; error: string } } {
@@ -4395,6 +4402,18 @@ export class TaskflowEngine {
     }
     if (this.taskBoardId(parent) !== this.boardId) {
       return { ok: false, result: { success: false, error_code: 'conflict', error: `The new task and project ${parentId} are on different boards.` } };
+    }
+    const senderPersonId = this.resolvePerson(senderName)?.person_id ?? null;
+    const isAssignee = senderPersonId != null && parent.assignee === senderPersonId;
+    if (!this.isManager(senderName) && !isAssignee) {
+      return {
+        ok: false,
+        result: {
+          success: false,
+          error_code: 'permission_denied',
+          error: `Permission denied: only a manager or the assignee of ${parentId} can add a task to it.`,
+        },
+      };
     }
     return { ok: true, parent };
   }

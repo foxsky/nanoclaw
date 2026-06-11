@@ -2200,7 +2200,8 @@ export const apiCreateTaskTool: McpToolDefinition = {
           return validationError('parent_task_id: expected non-empty string');
         }
         parentTaskId = args.parent_task_id;
-        const pv = engine.validateCreateParent(parentTaskId);
+        // Same sender the engine.create() path will gate on (manager-or-parent-assignee).
+        const pv = engine.validateCreateParent(parentTaskId, senderName);
         if (!pv.ok) return jsonResponse(pv.result);
       }
       // force_create (template L1270) bypasses BOTH dup checks — the user has

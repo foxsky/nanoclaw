@@ -3371,6 +3371,36 @@ describe('R4 — api_create_task parent_task_id (atomic subtask creation)', () =
     expect(String(r.error)).toMatch(/not a project/i);
   });
 
+  // Delta-parity audit item 1: parenting a task INTO a project must carry the
+  // SAME authority as engine.update(add_subtask) — manager OR the parent
+  // project's assignee. Without this gate any resolved sender could parent a
+  // task under any project (api_create_task is FastAPI-allowlisted, api_admin
+  // is not — so this is the only add-to-project route on that surface).
+  it('R4 gate: a non-manager, non-assignee CANNOT parent a task under a project — permission_denied, nothing created', async () => {
+    db.prepare(`INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'carol', 'carol', 'member')`).run(BOARD);
+    const proj = await create({ type: 'project', title: 'Projeto da Alice' }); // created by alice (manager)
+    const r = await create({ type: 'simple', title: 'Intruso', parent_task_id: proj.data.id, sender_name: 'carol' });
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('permission_denied');
+    expect((db.prepare("SELECT COUNT(*) c FROM tasks WHERE title = 'Intruso'").get() as { c: number }).c).toBe(0);
+  });
+
+  it('R4 gate: the parent project ASSIGNEE (non-manager) CAN add a subtask — add_subtask parity', async () => {
+    db.prepare(`INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`).run(BOARD);
+    const proj = await create({ type: 'project', title: 'Projeto do Bob', assignee: 'bob' }); // alice assigns bob
+    expect(proj.success).toBe(true);
+    const sub = await create({ type: 'simple', title: 'Subtarefa do Bob', parent_task_id: proj.data.id, sender_name: 'bob' });
+    expect(sub.success).toBe(true);
+    const row = db.prepare('SELECT parent_task_id FROM tasks WHERE id = ?').get(sub.data.id) as { parent_task_id: string };
+    expect(row.parent_task_id).toBe(proj.data.id);
+  });
+
+  it('R4 gate: a MANAGER can parent a task under any project', async () => {
+    const proj = await create({ type: 'project', title: 'Projeto Geral' });
+    const sub = await create({ type: 'simple', title: 'Sub gerenciada', parent_task_id: proj.data.id }); // sender alice = manager
+    expect(sub.success).toBe(true);
+  });
+
   it('omitting parent_task_id creates a normal top-level task (no regression)', async () => {
     const r = await create({ type: 'simple', title: 'Top level' });
     expect(r.success).toBe(true);
