@@ -82,13 +82,13 @@ export const transcribeAudioTool: McpToolDefinition = {
   tool: {
     name: 'transcribe_audio',
     description:
-      "Transcribe a voice note / audio file to text (OpenAI Whisper). Use this whenever an inbound message includes an audio or voice attachment — the message shows its saved path, e.g. '[audio: voice.ogg — saved to /workspace/media/voice.ogg]'; pass that path. Returns the transcript text. Auth is handled by the OneCLI gateway (no key needed); if it errors with a credential message, an admin must assign an OpenAI secret to this agent.",
+      "Transcribe a voice note / audio file to text (OpenAI Whisper). Use this whenever an inbound message includes an audio or voice attachment — the message shows its saved path, e.g. '[audio: voice.ogg — saved to /workspace/attachments/voice.ogg]'; pass that path (only host-written attachment paths under /workspace/inbox/ or /workspace/attachments/ are accepted). Returns the transcript text. Auth is handled by the OneCLI gateway (no key needed); if it errors with a credential message, an admin must assign an OpenAI secret to this agent.",
     inputSchema: {
       type: 'object' as const,
       properties: {
         path: {
           type: 'string',
-          description: "Absolute path to the audio file as shown in the attachment line, e.g. '/workspace/media/voice.ogg'.",
+          description: "Absolute path to the audio file as shown in the attachment line, e.g. '/workspace/attachments/voice.ogg' (must be under /workspace/inbox/ or /workspace/attachments/).",
         },
       },
       required: ['path'],

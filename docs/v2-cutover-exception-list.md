@@ -382,6 +382,35 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 
 ---
 
+### EX-017: Security-epic chat-surface gates (SEC#1–13) — consolidated behavioral divergences from V1
+
+- **Category:** accepted-tool-surface-change (one sub-item `v1-bug-corrected`, flagged below)
+- **Source:** security epic 2026-06-08..10 (commits `a93e608d..a3271328` + `d4b58ba0`), each unit Codex gpt-5.5/high-or-xhigh-reviewed with whole-epic sign-off; formalized here by the delta-parity audit (workflow `w8cegb8gt`, 2026-06-10) whose policy-lens verdict was consistently "signed-off in commits, but the exception list is the authoritative cutover artifact."
+- **Surfaced:** 2026-06-10
+- **v1 behavior:** every documented flow executed IMMEDIATELY on the agent's tool call: destructive admin actions (cancel/restore project cascades), structure/privilege actions (`merge_project`, manager/delegate grants, `create_group`, `provision_child_board`), cross-conversation `send_message`/`send_file` forwards, bulk move/reassign of any size. The agent could spawn SDK subagents; scheduled tasks could carry pre-task scripts; `sender_name` was the agent-resolved identity, trusted by the engine; stale-done PROJECTS were auto-archived by standup (cascading their live children off the board).
+- **v2 behavior:** deterministic gates now intercept on the chat surface: (a) destructive/structure/privilege admin actions and `provision_child_board`/`create_group` PARK for NanoClaw-admin approval (#407 round-trip); (b) `api_admin` cancel/restore of a project with ≥2 subtasks and bulk move/reassign ≥5 require the count-preflight confirm (#416); (c) EVERY cross-conversation `send_message`/`send_file` parks (broadcast gate #410) — including the documented cross-board forward flows; deterministic notification dispatch and runner posts are NOT affected (they bypass the gate by design); (d) `sender_name` is BOUND to the host-authenticated turn actor (#419; JID actors resolve via `board_people.phone` — `d4b58ba0`), `sender_is_service` (#418) and `sender_external_id` (#419) are stripped; (e) SDK subagent/teams/SendMessage tools are denied (#412); (f) `schedule_task.script` is refused — pre-task scripts never run on boards (#417): legacy V1-created scripted scheduled tasks migrate over and silently stop running their script half; (g) standup auto-archive excludes projects (`type != 'project'`, #411).
+- **Operator-visible impact:** flows that were immediate in V1 now wait for an admin approval DM (a–c); board members lose nothing else. (f) any V1 scripted scheduled task keeps firing but without its script. (g) stale done projects persist on the board until explicitly closed/merged — **this one is `v1-bug-corrected`**: V1's auto-archive of a >30d-done project unconditionally `DELETE`d ALL its children (including in-progress ones) during a routine standup; V2's exclusion is the correct behavior (do not port the V1 cascade).
+- **Rationale for acceptance:** Accept. The gates close prompt-injection privilege escalation, exfiltration, and RCE holes (zero remaining Codex BLOCKERs across the epic). The approval latency on rare destructive/structural actions is the designed cost.
+- **Mitigation / followup:** template/SKILL.md still describes some V1-immediate flows without mentioning the approval step (tracked template cleanup); at cutover, scan migrated `scheduled_tasks` for non-empty `script` columns and tell the owning operators (f).
+- **Status:** accepted (epic sign-off 2026-06-10).
+- **Signoff (v1-bug-corrected sub-item g):** pending operator initials at cutover (checklist #3).
+
+---
+
+### EX-018: Task-id magnetism guard wiring dropped (V1 shadow telemetry + enforce knob inert in V2)
+
+- **Category:** accepted-tool-surface-change (V1 feature loss, telemetry-only on current settings)
+- **Source:** delta-parity audit (workflow `w8cegb8gt`, 2026-06-10), v1-defect-import lens; answers the 2026-06-03 audit's LOW note ("magnetism guard shadow-off in BOTH v1+v2") — that note was WRONG about V1: V1 wired the guard (commit `7c12b2c3`, `main:ipc-mcp-stdio.ts` constructed the engine with `{triggerTurnId, chatJid, messagesDb, guardMode: NANOCLAW_MAGNETISM_GUARD}`), V2 did not.
+- **Surfaced:** 2026-06-10
+- **v1 behavior:** the engine's `checkTaskIdMagnetism` ran in SHADOW mode by default (documented staged rollout, CHANGELOG 2026-04-25), writing `magnetism_shadow_flag` telemetry to `task_history` and supporting `NANOCLAW_MAGNETISM_GUARD=enforce` to refuse ambiguous-task-context mutations.
+- **v2 behavior:** the guard code survives in the engine, but NO construction site passes `messagesDb`/`chatJid`/`triggerTurnId` and nothing reads `NANOCLAW_MAGNETISM_GUARD` — `checkTaskIdMagnetism` bails `{shape:'clear'}` unconditionally. Only the `confirmed_task_id === task_id` contract check (which precedes the bail) still works.
+- **Operator-visible impact:** none today (V1 prod also ran shadow = no enforcement); what is lost is the TELEMETRY that was meant to gate a future enforce flip.
+- **Rationale for acceptance:** accept for cutover — zero behavioral delta vs the V1 prod configuration; the #419 turn-actor work covers the actor-identity half of the threat, and the magnetism (task-id selection) half never enforced in prod.
+- **Mitigation / followup:** post-cutover follow-up to re-wire the construction options at the chat mutation sites (or formally retire the guard and delete the dead engine code — decide, don't leave it half-dead). The 2026-06-02 engine-allowlist coordination doc presupposes the guard can fire — update it whichever way the decision goes.
+- **Status:** accepted (documented 2026-06-10), follow-up open.
+
+---
+
 ## v2 code-quality findings (not v1 divergences — post-cutover follow-ups)
 
 Surfaced by the 2026-05-28 independent review of `0dec5540` (three reviewers + Codex authorship). These are NOT v1→v2 behavioral divergences — they don't fit the five categories — but recording them here keeps the signoff artifact honest. None blocks cutover on the current Fortaleza-TZ host; each needs a tracked follow-up.
@@ -403,6 +432,8 @@ Before flipping the service:
 4. **Rollback runbook smoke-tested within 7 days.**
 5. **Canary plan agreed: first N messages, success criteria, who watches, what triggers rollback.**
 6. **Run the creation-defect remediation** — `pnpm exec tsx setup/migrate-v2/fix-creation-defects.ts <migrated taskflow.db> --apply` (STANDALONE — NOT auto-wired into `migrate-v2.sh`). This is now EX-015's **sole** prevention (the engine reconcile was removed), so it MUST run; capture the `APPLIED mariany->mariany-borges` + residual-scan output in the cutover log (verify all `mariany` refs → 0). Then action the flagged manual items: re-provision Sanunciel's child board via the live agent (SQL can't create the WhatsApp group); resolve the Hudson `board-po-setd-secti-taskflow-2` duplicate-board cluster (operator picks the canonical group). **Turnkey step-by-step (6a/6b/6c) in `docs/v2-cutover-runbook.md` → "Creation-Defect Remediation".**
-7. **Operator (user) does a final pass-through of the entire file and confirms.**
+7. **Holiday-exempt env mapping** — the V1 `.63` service env may set `HOLIDAY_EXEMPT` (the v1 task-scheduler override); V2 reads `TASKFLOW_HOLIDAY_EXEMPT` and nothing in `migrate-v2.sh` maps the old name. Check the v1 `.env`/unit file: if `HOLIDAY_EXEMPT` is set, carry the value over as `TASKFLOW_HOLIDAY_EXEMPT` — otherwise the exempted boards' standup/digest/review silently become holiday-suppressed.
+8. **Scheduled-task scripts (EX-017f)** — scan migrated `scheduled_tasks` for non-empty `script` columns; V2 never runs pre-task scripts on boards, so tell the owning operator which tasks keep firing without their script half.
+9. **Operator (user) does a final pass-through of the entire file and confirms.**
 
 If any of these fails, the cutover is not approved.

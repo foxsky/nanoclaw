@@ -2941,7 +2941,11 @@ export function buildPersonRegisteredAck(personName: string, role: string, group
   return (
     `✅ *${personName} cadastrado(a)*\n━━━━━━━━━━━━━━\n\n` +
     `👤 *${personName}*\n💼 ${role}\n\n` +
-    `O quadro da divisão *${groupName}* está sendo provisionado. ${firstName} receberá o convite pelo WhatsApp, e a confirmação com o quadro chega aqui assim que estiver pronto.`
+    // SEC#11 honesty (delta-parity audit 2026-06-10): provisioning is PARKED
+    // for NanoClaw-admin approval — say "solicitado/aguarda aprovação", never
+    // "está sendo provisionado" (the old text promised an in-progress board an
+    // admin might still deny).
+    `O quadro da divisão *${groupName}* foi solicitado e aguarda aprovação de um administrador. Depois de aprovado, ${firstName} receberá o convite pelo WhatsApp, e a confirmação com o quadro chega aqui assim que estiver pronto.`
   );
 }
 

@@ -1644,12 +1644,15 @@ describe('end-to-end with mock provider', () => {
 });
 
 describe('buildPersonRegisteredAck (EX-014/FU-4: no optimistic board success, no synthetic id)', () => {
-  it('confirms the person but reports the board as in-progress, with no board id and no false success', () => {
+  it('confirms the person but reports the board as awaiting approval, with no board id and no false success', () => {
     const ack = buildPersonRegisteredAck('Sanunciel Estagiário', 'Estagiário', 'EST - TaskFlow');
     expect(ack).toContain('Sanunciel');
     expect(ack).toContain('Estagiário');
-    // says the board is being provisioned, not done
-    expect(ack).toContain('sendo provisionado');
+    // SEC#11 honesty (delta-parity audit 2026-06-10): provisioning is PARKED
+    // for admin approval — the ack must say requested/awaiting approval, not
+    // claim it is already running (an admin might deny it).
+    expect(ack).toContain('aguarda aprovação');
+    expect(ack).not.toContain('sendo provisionado');
     // must NOT claim the board completed, nor print any board id, nor promise availability
     expect(ack).not.toMatch(/provisionado automaticamente|com sucesso/);
     expect(ack).not.toMatch(/board-/);
