@@ -1644,17 +1644,33 @@ describe('end-to-end with mock provider', () => {
 });
 
 describe('buildPersonRegisteredAck (EX-014/FU-4: no optimistic board success, no synthetic id)', () => {
-  it('confirms the person but reports the board as in-progress, with no board id and no false success', () => {
+  it('PARKED default (SEC#11): confirms the person but says the board AWAITS ADMIN APPROVAL', () => {
     const ack = buildPersonRegisteredAck('Sanunciel Estagiário', 'Estagiário', 'EST - TaskFlow');
     expect(ack).toContain('Sanunciel');
     expect(ack).toContain('Estagiário');
-    // says the board is being provisioned, not done (this deterministic path
-    // emits provision_child_board directly — no approval park — so "está sendo
-    // provisionado" is accurate)
-    expect(ack).toContain('sendo provisionado');
+    // the deterministic register path now parks the provisioning behind the SEC#11
+    // admin-approval gate — the ack must NOT promise provisioning is underway
+    expect(ack).toContain('aguarda aprovação');
+    expect(ack).not.toContain('sendo provisionado');
     // must NOT claim the board completed, nor print any board id, nor promise availability
     expect(ack).not.toMatch(/provisionado automaticamente|com sucesso/);
     expect(ack).not.toMatch(/board-/);
     expect(ack).not.toContain('disponível na próxima');
+  });
+
+  it('EMITTED (post-approval replay / no board env): reports the board as in-progress, no false success', () => {
+    const ack = buildPersonRegisteredAck('Sanunciel Estagiário', 'Estagiário', 'EST - TaskFlow', 'emitted');
+    expect(ack).toContain('Sanunciel');
+    expect(ack).toContain('sendo provisionado');
+    expect(ack).not.toMatch(/provisionado automaticamente|com sucesso/);
+    expect(ack).not.toMatch(/board-/);
+  });
+
+  it('FAILED (emit threw): fail-loud — registration confirmed but provisioning NOT promised (Codex MEDIUM)', () => {
+    const ack = buildPersonRegisteredAck('Sanunciel Estagiário', 'Estagiário', 'EST - TaskFlow', 'failed');
+    expect(ack).toContain('Sanunciel'); // the registration DID commit
+    expect(ack).toContain('NÃO consegui encaminhar'); // the enqueue did NOT
+    expect(ack).not.toContain('sendo provisionado');
+    expect(ack).not.toContain('aguarda aprovação');
   });
 });

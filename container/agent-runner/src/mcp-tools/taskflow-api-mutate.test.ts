@@ -2874,7 +2874,7 @@ describe('emitAutoProvisionIfRequested (#390 — restore V1 auto-provision-on-re
         return 1;
       },
     });
-    expect(emitted).toBe(true);
+    expect(emitted).toBe('emitted');
     expect(calls).toHaveLength(1);
     expect(calls[0].kind).toBe('system');
     const payload = JSON.parse(calls[0].content);

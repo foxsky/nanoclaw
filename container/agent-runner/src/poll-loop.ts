@@ -40,7 +40,7 @@ import {
   drainAndDispatchPendingNotifications,
   enqueueDeferredNotificationsInSession,
 } from './mcp-tools/pending-notification-dispatch.js';
-import { safeNotificationEvents } from './mcp-tools/taskflow-api-mutate.js';
+import { emitAutoProvisionIfRequested, safeNotificationEvents } from './mcp-tools/taskflow-api-mutate.js';
 import { dispatchNotificationEvents } from './mcp-tools/taskflow-notify-dispatch.js';
 import { resolveAuthenticatedSenderPerson } from './mcp-tools/actor-person-resolution.js';
 import { buildReassignCard, buildReassignInfo, type ReassignTaskInfo } from './mcp-tools/reassign-card.js';
@@ -2974,30 +2974,43 @@ export function handleTaskflowExplicitReassign(
 }
 
 /**
- * Ack for a successful person registration whose child board is being provisioned
- * asynchronously by the host. Intentionally confirms only the PERSON (which did
- * succeed) and says the board is in progress — it must NOT claim board completion
- * or print a board id, because the board may not exist yet and its final id can
- * differ on a folder collision. The host emits the authoritative confirmation
- * (real id, on success) or a fail-loud alert (on failure).
+ * Ack for a successful person registration whose child board provisioning was
+ * routed onward. Intentionally confirms only the PERSON (which did succeed) and
+ * must NOT claim board completion or print a board id, because the board may not
+ * exist yet and its final id can differ on a folder collision. The host emits the
+ * authoritative confirmation (real id, on success) or a fail-loud alert (on failure).
+ *
+ * `disposition` (SEC#11): the deterministic register path routes the provisioning
+ * through the SAME admin-approval park as the MCP api_admin path
+ * (emitAutoProvisionIfRequested → parkForApproval('provision_child_board_auto')).
+ * 'parked' (default) says the board AWAITS APPROVAL; 'emitted' is the
+ * post-approval replay fallback where the provision row was written directly and
+ * "está sendo provisionado" is accurate; 'failed' (emit threw) must NEVER promise
+ * provisioning — it tells the operator the request was not queued (Codex MEDIUM).
  */
-export function buildPersonRegisteredAck(personName: string, role: string, groupName: string): string {
+export function buildPersonRegisteredAck(
+  personName: string,
+  role: string,
+  groupName: string,
+  disposition: 'parked' | 'emitted' | 'failed' = 'parked',
+): string {
   const firstName = personName.split(/\s+/)[0] || personName;
+  const boardLine =
+    disposition === 'parked'
+      ? `O quadro da divisão *${groupName}* aguarda aprovação de um administrador para ser provisionado. Assim que aprovado, ${firstName} receberá o convite pelo WhatsApp e a confirmação com o quadro chega aqui.`
+      : disposition === 'emitted'
+        ? `O quadro da divisão *${groupName}* está sendo provisionado. ${firstName} receberá o convite pelo WhatsApp, e a confirmação com o quadro chega aqui assim que estiver pronto.`
+        // 'failed' (Codex MEDIUM): the provision request could NOT be queued — never
+        // promise provisioning that is not coming; tell the operator to act.
+        : `⚠️ Porém NÃO consegui encaminhar o provisionamento do quadro da divisão *${groupName}*. Peça a um administrador para provisionar manualmente (provision_child_board) ou tente o cadastro novamente.`;
   return (
     `✅ *${personName} cadastrado(a)*\n━━━━━━━━━━━━━━\n\n` +
     `👤 *${personName}*\n💼 ${role}\n\n` +
-    // NOTE: this DETERMINISTIC register path emits provision_child_board
-    // DIRECTLY (no approval park) — unlike the MCP api_admin path, which parks
-    // for NanoClaw-admin approval (taskflow-api-mutate.ts emitAutoProvisionIfRequested,
-    // SEC#11). So "está sendo provisionado" is accurate here. The deterministic
-    // bypass of the SEC#11 gate is flagged to the security epic
-    // (docs/.../2026-06-10-delta-parity-audit-findings-handoff.md); if/when that
-    // path is gated too, change this to "aguarda aprovação".
-    `O quadro da divisão *${groupName}* está sendo provisionado. ${firstName} receberá o convite pelo WhatsApp, e a confirmação com o quadro chega aqui assim que estiver pronto.`
+    boardLine
   );
 }
 
-function handleTaskflowPendingChildBoardRegistration(
+export function handleTaskflowPendingChildBoardRegistration(
   action: TaskflowPendingChildBoardRegistration,
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
   routing: RoutingContext,
@@ -3030,22 +3043,44 @@ function handleTaskflowPendingChildBoardRegistration(
 
   const autoProvision = result.auto_provision_request;
   if (autoProvision) {
-    writeMessageOut({
-      id: generateId(),
-      in_reply_to: routing.inReplyTo,
-      kind: 'system',
-      platform_id: routing.platformId,
-      channel_type: routing.channelType,
-      thread_id: routing.threadId,
-      content: JSON.stringify({ action: 'provision_child_board', ...autoProvision }),
+    // SEC#11 (delta-parity handoff item #3 — side-door close): route the provisioning
+    // escalation through the SAME shared gate the MCP api_admin path uses
+    // (emitAutoProvisionIfRequested → parkForApproval('provision_child_board_auto')).
+    // On a board session this PARKS for admin approval instead of emitting the
+    // structure+network+spawn escalation directly; the approved executor re-emits the
+    // identical provision row, and the approved-replay / no-board-env paths fall through
+    // to the direct emit (deps.emit preserves this handler's routing correlation there).
+    const disposition = emitAutoProvisionIfRequested(result, {
+      // The gate must see the RESOLVED board id (env OR message-content OR
+      // CLAUDE.local.md fallback) — keying on the env alone would leave the
+      // side door open exactly on boards whose folder-env isn't wired.
+      boardId,
+      emit: (msg) =>
+        writeMessageOut({
+          ...msg,
+          in_reply_to: routing.inReplyTo,
+          platform_id: routing.platformId,
+          channel_type: routing.channelType,
+          thread_id: routing.threadId,
+        }),
     });
-    appendMcpEquivalentToolCapture('provision_child_board', autoProvision, { success: true });
-    // The child board is provisioned ASYNCHRONOUSLY by the host. Do NOT claim
-    // completion or print a board id here — the host sends the authoritative
-    // confirmation (real id) on success, or a fail-loud alert on failure
+    if (disposition === 'emitted') {
+      appendMcpEquivalentToolCapture('provision_child_board', autoProvision, { success: true });
+    }
+    // The child board is provisioned ASYNCHRONOUSLY by the host (after approval, when
+    // parked). Do NOT claim completion or print a board id here — the host sends the
+    // authoritative confirmation (real id) on success, or a fail-loud alert on failure
     // (provision-child-board.ts). An optimistic ack was the Reginaldo
     // announce≠persist + Sanunciel silent-success defect.
-    writeReply(routing, buildPersonRegisteredAck(action.personName, action.role, action.groupName));
+    writeReply(
+      routing,
+      buildPersonRegisteredAck(
+        action.personName,
+        action.role,
+        action.groupName,
+        disposition === false ? 'failed' : disposition,
+      ),
+    );
   } else {
     // Registered, but no child board is being provisioned (e.g. a non-delegating
     // board) — so do NOT promise a board that isn't coming.
