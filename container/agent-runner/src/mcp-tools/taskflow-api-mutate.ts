@@ -1968,17 +1968,20 @@ export const apiReportTool: McpToolDefinition = {
     const reportType = args.type as ReportType;
 
     try {
-      const engine = new TaskflowEngine(getTaskflowDb(), boardId);
-      const reportParams: ReportParams = { board_id: boardId, type: reportType };
-      // #419: api_report stays a READ (unwrapped) so a scheduled/system standup turn can
-      // still read the board — but type='standup' bundles a board MUTATION (auto-archive).
-      // On the in-session chat surface, gate that housekeeping: run it only when the actor
-      // resolves (a real manager standup) OR it's a pure system/scheduled standup turn, NOT
-      // when an injected/ambiguous chat turn calls it. FastAPI/verbatim and #407 replay leave
-      // it undefined → runs (server-/park-authenticated).
-      if (process.env.NANOCLAW_TASKFLOW_BOARD_ID && !getVerbatimIds() && !isApprovedReplay()) {
-        reportParams.run_housekeeping = mayRunChatBundledMutation();
-      }
+      // #419: api_report stays a READ (unwrapped) so a scheduled/system standup turn can still
+      // read the board — but TWO things on this path are board MUTATIONS: type='standup's bundled
+      // auto-archive, AND the TaskflowEngine constructor's schema/migration/reconciliation writes
+      // (it runs migrateLegacyProjectSubtasks + reconcileDelegationLinks unless `readonly`). An
+      // UNAUTHENTICATED chat report (any type) must do NEITHER (Codex #419 re-review BLOCKER). So
+      // compute the authorization FIRST and tie both the constructor's readonly flag AND
+      // run_housekeeping to it: authorized only when the actor resolves (a real manager standup) OR
+      // it's a pure system/scheduled turn. FastAPI/verbatim and #407 replay → authorized (server-/
+      // park-authenticated), preserving the prior read-write construction + archive.
+      const chatSurface =
+        !!process.env.NANOCLAW_TASKFLOW_BOARD_ID && !getVerbatimIds() && !isApprovedReplay();
+      const runHousekeeping = chatSurface ? mayRunChatBundledMutation() : true;
+      const engine = new TaskflowEngine(getTaskflowDb(), boardId, { readonly: !runHousekeeping });
+      const reportParams: ReportParams = { board_id: boardId, type: reportType, run_housekeeping: runHousekeeping };
       const result = engine.report(reportParams);
       return jsonResponse(result);
     } catch (e: unknown) {

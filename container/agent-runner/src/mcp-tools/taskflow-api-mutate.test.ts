@@ -3265,4 +3265,15 @@ describe('SEC#13 (#419) — api_report(standup) housekeeping is gated by the per
     expect(r.success).toBe(true);
     expect(oldTaskStillLive()).toBe(false); // archived
   });
+
+  it('UNRESOLVED chat api_report(any type): the read works but the engine is constructed READ-ONLY — no constructor/archive task mutation', async () => {
+    // Codex #419 re-review BLOCKER: a non-readonly TaskflowEngine constructor runs
+    // migrateLegacyProjectSubtasks + reconcileDelegationLinks (task writes). An unauthenticated
+    // chat report must construct read-only — the report still returns, but NOTHING is mutated.
+    setTurnActor(['ana', 'mallory']); // unresolved
+    const { apiReportTool } = await import('./taskflow-api-mutate.ts');
+    const r = JSON.parse((await apiReportTool.handler({ board_id: BOARD, type: 'digest' })).content[0].text);
+    expect(r.success).toBe(true); // the READ works under readonly construction
+    expect(oldTaskStillLive()).toBe(true); // no archive AND no constructor-side mutation
+  });
 });
