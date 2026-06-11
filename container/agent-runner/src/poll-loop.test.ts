@@ -563,6 +563,15 @@ describe('TaskFlow deterministic confirmation guards', () => {
     expect(formatFortalezaDateTimePt(fortalezaNaiveToUtcIso('2026-03-26T08:00:00'))).toBe('26/03/2026 às 08:00');
   });
 
+  it('renders minutes — a half-hour meeting card must not claim the :00 slot (delta-parity audit, V1 incident class M1)', () => {
+    // CREATE_MEETING_DATE_RE accepts "14h30"/"14:30" and the engine stores 14:30;
+    // the card formatter hardcoded "às ${hour}:00", telling the user 14:00 for a
+    // meeting stored at 14:30 — the exact wrong-time confirmation class V1 built
+    // the semantic auditor for. Whole hours stay byte-identical (":00").
+    expect(formatFortalezaDateTimePt('2026-06-12T17:30:00.000Z')).toBe('12/06/2026 às 14:30');
+    expect(formatFortalezaDateTimePt(fortalezaNaiveToUtcIso('2026-06-12T14:30:00'))).toBe('12/06/2026 às 14:30');
+  });
+
   // Context preamble (v1 parity, index.ts:702): embedding-ranked board-context
   // prepended to the prompt. Must embed the query with the TASKFLOW feeder config
   // (so the query vector is comparable to the indexed task vectors), cap the embed

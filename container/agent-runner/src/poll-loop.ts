@@ -36,7 +36,12 @@ import {
 } from './mcp-tools/message-block-dedup.js';
 import { flushPendingCreateCard } from './mcp-tools/mutation-confirmation.js';
 import { addTurnActorSenders, clearTurnActor, setTurnActor } from './mcp-tools/turn-actor.js';
-import { drainAndDispatchPendingNotifications } from './mcp-tools/pending-notification-dispatch.js';
+import {
+  drainAndDispatchPendingNotifications,
+  enqueueDeferredNotificationsInSession,
+} from './mcp-tools/pending-notification-dispatch.js';
+import { safeNotificationEvents } from './mcp-tools/taskflow-api-mutate.js';
+import { dispatchNotificationEvents } from './mcp-tools/taskflow-notify-dispatch.js';
 import { buildReassignCard, buildReassignInfo, type ReassignTaskInfo } from './mcp-tools/reassign-card.js';
 import { appendToolEvents, type ToolEvent } from './providers/claude-tool-capture.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
@@ -1711,6 +1716,26 @@ function writeReply(routing: RoutingContext, text: string): void {
   });
 }
 
+/**
+ * V1-parity notification dispatch for the DETERMINISTIC poll-loop mutation
+ * handlers. V1 had no deterministic fast-paths — every mutation ran through
+ * the MCP tool layer, which always called dispatchNotifications() after a
+ * committed mutation. The v2 MCP path restored that contract (#389/#396/#397:
+ * normalize → enqueue-deferred-first → dispatch), but the deterministic
+ * handlers committed mutations and emitted only the in-chat card, silently
+ * discarding the engine's assignee/parent/invite notifications (delta-parity
+ * audit 2026-06-10, HIGH). Same order and fail-soft rules as
+ * finalizeMutationResult: the mutation already committed, so nothing here may
+ * change the user-visible outcome of the handler. Call once per SUCCESSFUL
+ * engine mutation, with that mutation's task id (for the #396 liveness check).
+ */
+function dispatchDeterministicMutationNotifications(result: unknown, taskId: string | null): void {
+  const events = safeNotificationEvents(result);
+  if (!events.length) return;
+  enqueueDeferredNotificationsInSession(process.env.NANOCLAW_TASKFLOW_BOARD_ID, events, taskId, {});
+  dispatchNotificationEvents(events);
+}
+
 function handleTaskflowReviewBypassConfirmation(
   action: TaskflowReviewBypassConfirmation,
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
@@ -1733,6 +1758,7 @@ function handleTaskflowReviewBypassConfirmation(
     writeReply(routing, `Não consegui reabrir ${action.taskId}: ${moveResult.error ?? 'erro desconhecido'}`);
     return true;
   }
+  dispatchDeterministicMutationNotifications(moveResult, action.taskId);
 
   const updateInput = {
     task_id: action.taskId,
@@ -1746,6 +1772,7 @@ function handleTaskflowReviewBypassConfirmation(
     writeReply(routing, `Reabri ${action.taskId}, mas não consegui exigir aprovação: ${updateResult.error ?? 'erro desconhecido'}`);
     return true;
   }
+  dispatchDeterministicMutationNotifications(updateResult, action.taskId);
 
   const title = typeof updateResult.title === 'string' ? ` — ${updateResult.title}` : '';
   writeReply(routing, `✅ *${action.taskId}*${title}\n\nReabri a tarefa e ativei a aprovação obrigatória.`);
@@ -1779,6 +1806,7 @@ function handleTaskflowMissingExactIdNote(
     appendMcpEquivalentToolCapture('api_task_add_note', noteInput, noteResult, !noteResult.success);
 
     if (noteResult.success) {
+      dispatchDeterministicMutationNotifications(noteResult, action.taskId);
       let reassignResult: ReassignResult | null = null;
       if (action.reassignTarget) {
         const reassignInput = {
@@ -1790,6 +1818,7 @@ function handleTaskflowMissingExactIdNote(
         reassignResult = engine.reassign({ ...reassignInput, board_id: boardId });
         const alreadyAssigned = !reassignResult.success && /already assigned/i.test(reassignResult.error ?? '');
         appendMcpEquivalentToolCapture('api_reassign', reassignInput, reassignResult, !reassignResult.success && !alreadyAssigned);
+        if (reassignResult.success) dispatchDeterministicMutationNotifications(reassignResult, action.taskId);
       }
 
       const data = (noteResult as any).data as Record<string, any> | undefined;
@@ -1866,6 +1895,7 @@ function handleTaskflowReviewBypassRepair(
     writeReply(routing, `Não consegui ativar a aprovação obrigatória para ${action.taskId}: ${updateResult.error ?? 'erro desconhecido'}`);
     return true;
   }
+  dispatchDeterministicMutationNotifications(updateResult, action.taskId);
 
   const moveInput = {
     task_id: action.taskId,
@@ -1879,6 +1909,7 @@ function handleTaskflowReviewBypassRepair(
     writeReply(routing, `Ativei a aprovação obrigatória para ${action.taskId}, mas não consegui reabrir: ${moveResult.error ?? 'erro desconhecido'}`);
     return true;
   }
+  dispatchDeterministicMutationNotifications(moveResult, action.taskId);
 
   const title = typeof task.title === 'string' ? ` — ${task.title}` : '';
   writeReply(
@@ -2138,7 +2169,8 @@ export function formatFortalezaDateTimePt(iso: string): string {
   const month = String(local.getUTCMonth() + 1).padStart(2, '0');
   const year = local.getUTCFullYear();
   const hour = String(local.getUTCHours()).padStart(2, '0');
-  return `${day}/${month}/${year} às ${hour}:00`;
+  const minute = String(local.getUTCMinutes()).padStart(2, '0');
+  return `${day}/${month}/${year} às ${hour}:${minute}`;
 }
 
 function formatFortalezaMeetingWhen(iso: string): string {
@@ -2283,6 +2315,7 @@ function handleTaskflowCreateMeeting(
     return true;
   }
   const taskId = typeof result.task_id === 'string' ? result.task_id : typeof result.id === 'string' ? result.id : 'reunião';
+  dispatchDeterministicMutationNotifications(result, taskId !== 'reunião' ? taskId : null);
   let parentLine = '';
   if (action.parentProjectTitle && taskId !== 'reunião') {
     const parentId = findProjectIdByTitle(boardId, action.parentProjectTitle);
@@ -2295,7 +2328,10 @@ function handleTaskflowCreateMeeting(
       };
       const adminResult = engine.admin({ ...adminInput, board_id: boardId });
       appendMcpEquivalentToolCapture('api_admin', adminInput, adminResult, !adminResult.success);
-      if (adminResult.success) parentLine = `\n📁 *Projeto:* ${parentId} — ${action.parentProjectTitle}`;
+      if (adminResult.success) {
+        parentLine = `\n📁 *Projeto:* ${parentId} — ${action.parentProjectTitle}`;
+        dispatchDeterministicMutationNotifications(adminResult, taskId);
+      }
     }
   }
   writeReply(
@@ -2434,8 +2470,10 @@ function handleTaskflowAddParticipantsToLatestMeeting(
     };
     const result = engine.update({ ...input, board_id: boardId });
     appendMcpEquivalentToolCapture('api_update_task', input, result, !result.success);
-    if (result.success) successes.push(participantName);
-    else failures.push(`${participantName}: ${result.error ?? 'erro desconhecido'}`);
+    if (result.success) {
+      successes.push(participantName);
+      dispatchDeterministicMutationNotifications(result, action.taskId);
+    } else failures.push(`${participantName}: ${result.error ?? 'erro desconhecido'}`);
   }
   if (successes.length > 0) {
     writeReply(routing, `✅ ${successes.join(' e ')} adicionados em *${action.taskId}*.`);
@@ -2445,7 +2483,7 @@ function handleTaskflowAddParticipantsToLatestMeeting(
   return true;
 }
 
-function handleTaskflowAddExternalParticipantToLatestMeeting(
+export function handleTaskflowAddExternalParticipantToLatestMeeting(
   action: TaskflowAddExternalParticipantToLatestMeeting,
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
   routing: RoutingContext,
@@ -2474,6 +2512,10 @@ function handleTaskflowAddExternalParticipantToLatestMeeting(
     );
     return true;
   }
+  // The engine builds the external-invite notification (V1: an actual invite
+  // DM / pending-invite card). Dropping it here meant a deterministic
+  // "adicionar participante externo" never invited the person.
+  dispatchDeterministicMutationNotifications(result, action.taskId);
   writeReply(
     routing,
     `✅ *${action.taskId}* atualizada\n\n• ${action.participantName} adicionado(a) como participante externo (${phone})`,
@@ -2534,6 +2576,7 @@ function handleTaskflowNotifyMeetingAbove(
       };
       const updateResult = engine.update({ ...updateInput, board_id: boardId });
       appendMcpEquivalentToolCapture('api_update_task', updateInput, updateResult, !updateResult.success);
+      if (updateResult.success) dispatchDeterministicMutationNotifications(updateResult, action.taskId);
     }
     const text = `Olá, ${recipient}! ${sender} pediu para te avisar sobre a seguinte reunião:\n\n📅 *${title}*\n${when}`;
     sendToDestination(dest, text, routing);
@@ -2658,6 +2701,7 @@ function handleTaskflowOrgMeetingCreateForwardConfirmation(
     : typeof createResult.id === 'string'
       ? createResult.id
       : 'reunião';
+  dispatchDeterministicMutationNotifications(createResult, taskId !== 'reunião' ? taskId : null);
   const participantName = destination.dest.displayName || action.participantName;
   const when = formatFortalezaMeetingWhen(fortalezaNaiveToUtcIso(action.scheduledAt));
   const forwardText = `Olá, ${participantName}! ${sender} pediu para encaminhar os detalhes desta reunião:\n\n📅 *${action.title}*\n${when}`;
@@ -2672,6 +2716,7 @@ function handleTaskflowOrgMeetingCreateForwardConfirmation(
   };
   const noteResult = engine.update({ ...noteInput, board_id: boardId });
   appendMcpEquivalentToolCapture('api_update_task', noteInput, noteResult, !noteResult.success);
+  if (noteResult.success) dispatchDeterministicMutationNotifications(noteResult, taskId !== 'reunião' ? taskId : null);
 
   const phone = destination.phoneMasked ? ` (${destination.phoneMasked})` : '';
   writeReply(
@@ -2700,6 +2745,7 @@ function handleTaskflowMeetingBatchUpdate(
   };
   const participantResult = engine.update({ ...participantInput, board_id: boardId });
   appendMcpEquivalentToolCapture('api_update_task', participantInput, participantResult, !participantResult.success);
+  if (participantResult.success) dispatchDeterministicMutationNotifications(participantResult, action.participantTaskId);
 
   const scheduleInput = {
     task_id: action.meetingTaskId,
@@ -2708,6 +2754,7 @@ function handleTaskflowMeetingBatchUpdate(
   };
   const scheduleResult = engine.update({ ...scheduleInput, board_id: boardId });
   appendMcpEquivalentToolCapture('api_update_task', scheduleInput, scheduleResult, !scheduleResult.success);
+  if (scheduleResult.success) dispatchDeterministicMutationNotifications(scheduleResult, action.meetingTaskId);
 
   const queryInput = { query: 'task_details', task_id: action.meetingTaskId, sender_name: sender };
   const queryResult = engine.query(queryInput);
@@ -2765,6 +2812,7 @@ function handleTaskflowExplicitCompletion(
     writeReply(routing, `Não consegui concluir ${action.taskId}: ${moveResult.error ?? 'erro desconhecido'}`);
     return true;
   }
+  dispatchDeterministicMutationNotifications(moveResult, action.taskId);
 
   const title = typeof moveResult.title === 'string' ? ` — ${moveResult.title}` : '';
   const lines = [
@@ -2824,7 +2872,7 @@ export function formatTaskflowReassignFailureReply(taskId: string, targetPerson:
   return `Não consegui reatribuir ${taskId}: ${error ?? 'erro desconhecido'}`;
 }
 
-function handleTaskflowExplicitReassign(
+export function handleTaskflowExplicitReassign(
   action: TaskflowExplicitReassign,
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
   routing: RoutingContext,
@@ -2867,6 +2915,7 @@ function handleTaskflowExplicitReassign(
     writeReply(routing, formatTaskflowReassignFailureReply(action.taskId, target, reassignResult.error));
     return true;
   }
+  dispatchDeterministicMutationNotifications(reassignResult, action.taskId);
 
   // Resolve the single task's parent + due_date (+ the pre-captured from_assignee)
   // so the reply can render the rich card (Phase-3 Turn-37 / De-Para). The same
@@ -2926,6 +2975,8 @@ function handleTaskflowPendingChildBoardRegistration(
     writeReply(routing, `Não consegui cadastrar ${action.personName}: ${result.error ?? 'erro desconhecido'}`);
     return true;
   }
+
+  dispatchDeterministicMutationNotifications(result, null);
 
   const autoProvision = result.auto_provision_request;
   if (autoProvision) {
@@ -2997,6 +3048,7 @@ function handleTaskflowReadyForReviewUpdate(
     writeReply(routing, `Não consegui registrar a nota em ${action.taskId}: ${updateResult.error ?? 'erro desconhecido'}`);
     return true;
   }
+  dispatchDeterministicMutationNotifications(updateResult, action.taskId);
 
   const moveInput = {
     task_id: action.taskId,
@@ -3010,6 +3062,7 @@ function handleTaskflowReadyForReviewUpdate(
     writeReply(routing, `Nota registrada em ${action.taskId}, mas não consegui mover para revisão: ${moveResult.error ?? 'erro desconhecido'}`);
     return true;
   }
+  dispatchDeterministicMutationNotifications(moveResult, action.taskId);
 
   const title = typeof moveResult.title === 'string' ? moveResult.title : action.taskId;
   writeReply(
@@ -3226,13 +3279,18 @@ function handleTaskflowBulkApproval(
   const taskIds = tasks
     .map((task) => typeof task['id'] === 'string' ? task['id'] : '')
     .filter(Boolean);
-  const results = taskIds.map((taskId) => engine.move({
-    board_id: boardId,
-    task_id: taskId,
-    action: 'approve',
-    sender_name: sender,
-    confirmed_task_id: taskId,
-  }));
+  const results = taskIds.map((taskId) => {
+    const result = engine.move({
+      board_id: boardId,
+      task_id: taskId,
+      action: 'approve',
+      sender_name: sender,
+      confirmed_task_id: taskId,
+    });
+    // Per committed sub-move, like the bulk api_move path (#389).
+    if (result.success) dispatchDeterministicMutationNotifications(result, taskId);
+    return result;
+  });
   const successes = results.filter((result) => result.success);
   const failures = results.filter((result) => !result.success);
   const moveInput = { task_ids: taskIds, action: 'approve', sender_name: sender };
@@ -3583,6 +3641,7 @@ function handleTaskflowExactTaskNextActionUpdate(
     writeReply(routing, `Não consegui atualizar ${action.taskId}: ${updateResult.error ?? 'erro desconhecido'}`);
     return true;
   }
+  dispatchDeterministicMutationNotifications(updateResult, action.taskId);
   const title = typeof updateResult.title === 'string' ? ` — ${updateResult.title}` : '';
   writeReply(routing, `✅ *${action.taskId}*${title}\n━━━━━━━━━━━━━━\n\n• Próxima ação: ${action.nextAction}`);
   return true;
@@ -3643,6 +3702,7 @@ function handleTaskflowProjectNoteUpdate(
     writeReply(routing, `Não consegui registrar a nota em ${project.id}: ${noteResult.error ?? 'erro desconhecido'}`);
     return true;
   }
+  dispatchDeterministicMutationNotifications(noteResult, project.id);
 
   writeReply(routing, `✅ *${project.id}* atualizado\n━━━━━━━━━━━━━━\n\n• Nota: ${noteText}`);
   return true;

@@ -451,12 +451,19 @@ describe('poll loop integration', () => {
     const controller = new AbortController();
     const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
 
-    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
+    await waitFor(() => getUndeliveredMessages().some((m) => m.kind === 'chat'), 2000);
     controller.abort();
 
     const out = getUndeliveredMessages();
-    expect(out).toHaveLength(1);
-    const text = JSON.parse(out[0].content).text;
+    // Deterministic mutations also dispatch the engine's notifications as
+    // system rows (V1 parity, delta-parity audit 2026-06-10); the user-facing
+    // reply is the single chat row.
+    const chats = out.filter((m) => m.kind === 'chat');
+    expect(chats).toHaveLength(1);
+    for (const m of out.filter((r) => r.kind !== 'chat')) {
+      expect(JSON.parse(m.content).action).toBe('taskflow_dispatch_notifications');
+    }
+    const text = JSON.parse(chats[0].content).text;
     expect(text).toContain('16/04/2026 às 11:00');
     expect(text).not.toContain('17/04');
     expect(text).not.toContain('14/05');
@@ -965,12 +972,18 @@ Crio assim?`,
     const controller = new AbortController();
     const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
 
-    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
+    await waitFor(() => getUndeliveredMessages().some((m) => m.kind === 'chat'), 2000);
     controller.abort();
 
     const out = getUndeliveredMessages();
-    expect(out).toHaveLength(1);
-    const text = JSON.parse(out[0].content).text;
+    // Each committed approve also dispatches its engine notifications as a
+    // system row (V1 parity); the user-facing reply stays a single chat row.
+    const chats = out.filter((m) => m.kind === 'chat');
+    expect(chats).toHaveLength(1);
+    for (const m of out.filter((r) => r.kind !== 'chat')) {
+      expect(JSON.parse(m.content).action).toBe('taskflow_dispatch_notifications');
+    }
+    const text = JSON.parse(chats[0].content).text;
     expect(text).toContain('2 de 2 tarefa(s) de Mauro aprovada(s)');
     expect(text).toContain('P1.11');
     expect(text).toContain('P1.12');
@@ -1154,12 +1167,17 @@ Crio assim?`,
     const controller = new AbortController();
     const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
 
-    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
+    await waitFor(() => getUndeliveredMessages().some((m) => m.kind === 'chat'), 2000);
     controller.abort();
 
     const out = getUndeliveredMessages();
-    expect(out).toHaveLength(1);
-    const text = JSON.parse(out[0].content).text;
+    // V1-parity dispatch rows (kind:'system') may accompany the single reply.
+    const chats = out.filter((m) => m.kind === 'chat');
+    expect(chats).toHaveLength(1);
+    for (const m of out.filter((r) => r.kind !== 'chat')) {
+      expect(JSON.parse(m.content).action).toBe('taskflow_dispatch_notifications');
+    }
+    const text = JSON.parse(chats[0].content).text;
     expect(text).toContain('*T18*');
     expect(text).toContain('Nota registrada');
     expect(text).toContain('Revisão');
