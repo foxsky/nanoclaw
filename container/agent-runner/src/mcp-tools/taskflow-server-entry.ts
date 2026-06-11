@@ -119,6 +119,7 @@ const FASTAPI_ALLOWLIST: ReadonlySet<string> = new Set([
   'api_list_holidays',
   'api_list_comments',
   'api_runner_status',
+  'api_runner_status_batch', // all-boards variant (tf-mcontrol 2026-06-11) — replaces the per-board fan-out
 ]);
 
 /**

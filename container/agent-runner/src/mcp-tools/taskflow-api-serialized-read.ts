@@ -149,10 +149,34 @@ export const apiRunnerStatusTool: McpToolDefinition = {
   },
 };
 
+export const apiRunnerStatusBatchTool: McpToolDefinition = {
+  tool: {
+    name: 'api_runner_status_batch',
+    description:
+      'Runner cron config (standup/digest/review_cron_local) for a SET of boards in ONE call — replaces the per-board api_runner_status fan-out. Returns one row per requested board id (request order; null crons for a board with no runtime config). FastAPI resolves which boards the caller may see.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { board_ids: { type: 'array', items: { type: 'string' } } },
+      required: ['board_ids'],
+    },
+  },
+  async handler(args) {
+    args = normalizeAgentIds(args);
+    const raw = args.board_ids;
+    const ids = Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string' && x.trim() !== '') : [];
+    if (ids.length === 0) {
+      return jsonResponse({ success: false, error_code: 'validation_error', error: 'board_ids: required non-empty string array' });
+    }
+    // The engine handle's board is irrelevant — apiRunnerStatusBatch keys on the id list.
+    return serializedResult(readonlyEngine(ids[0]).apiRunnerStatusBatch(ids));
+  },
+};
+
 registerTools([
   apiBoardTasksTool,
   apiBoardDetailTool,
   apiListHolidaysTool,
   apiListCommentsTool,
   apiRunnerStatusTool,
+  apiRunnerStatusBatchTool,
 ]);

@@ -14,6 +14,7 @@ import {
   apiBoardTasksTool,
   apiListCommentsTool,
   apiListHolidaysTool,
+  apiRunnerStatusBatchTool,
   apiRunnerStatusTool,
 } from './taskflow-api-serialized-read.js';
 
@@ -289,6 +290,32 @@ describe('R5 api_runner_status', () => {
       digest_cron_local: '0 18 * * 1-5',
       review_cron_local: '0 8 * * 1',
     });
+  });
+});
+
+describe('api_runner_status_batch (all-boards variant)', () => {
+  it('returns one row per requested board (config crons or nulls), in request order, in a single call', async () => {
+    // BOARD has a runtime config (beforeEach). Add a second board with NO config row.
+    db.prepare(`INSERT INTO boards (id, short_code, name) VALUES ('board-r5b', 'R5B', 'Second')`).run();
+    const r = await call(apiRunnerStatusBatchTool, { board_ids: ['board-r5b', BOARD] });
+    expect(r.success).toBe(true);
+    // Request order preserved; the no-config board returns null crons (drop-in for the fan-out).
+    expect(r.data).toEqual([
+      { board_id: 'board-r5b', standup_cron_local: null, digest_cron_local: null, review_cron_local: null },
+      { board_id: BOARD, standup_cron_local: '0 9 * * 1-5', digest_cron_local: '0 18 * * 1-5', review_cron_local: '0 8 * * 1' },
+    ]);
+  });
+
+  it('validation_error on an empty board_ids', async () => {
+    const r = await call(apiRunnerStatusBatchTool, { board_ids: [] });
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('validation_error');
+  });
+
+  it('ignores non-string entries and rejects when nothing valid remains', async () => {
+    const r = await call(apiRunnerStatusBatchTool, { board_ids: [123, '', null] });
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('validation_error');
   });
 });
 

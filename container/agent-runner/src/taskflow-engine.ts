@@ -2931,6 +2931,49 @@ export class TaskflowEngine {
     } as any;
   }
 
+  /** Batch variant of apiRunnerStatus: the runner cron config for a SET of boards
+   *  in ONE query, so the dashboard replaces its per-board fan-out (tf-mcontrol
+   *  2026-06-11 nice-to-have). Returns exactly one row per REQUESTED board id, in
+   *  request order, with null crons for a board that has no board_runtime_config
+   *  row — a drop-in for the single-board call repeated N times. `this.boardId` is
+   *  irrelevant here (the query keys on the id list); a readonly engine on any id
+   *  serves it. FastAPI owns which boards the caller may see (R2.3); the engine
+   *  just serves the rows for the provided ids. */
+  apiRunnerStatusBatch(boardIds: string[]): TaskflowResult {
+    type CronRow = {
+      board_id: string;
+      standup_cron_local?: unknown;
+      digest_cron_local?: unknown;
+      review_cron_local?: unknown;
+    };
+    if (!boardIds.length) return { success: true, data: [] } as any;
+    let rows: CronRow[] = [];
+    try {
+      const placeholders = boardIds.map(() => '?').join(',');
+      rows = this.db
+        .prepare(
+          `SELECT board_id, standup_cron_local, digest_cron_local, review_cron_local
+           FROM board_runtime_config WHERE board_id IN (${placeholders})`,
+        )
+        .all(...boardIds) as CronRow[];
+    } catch {
+      rows = [];
+    }
+    const byId = new Map(rows.map((r) => [r.board_id, r]));
+    return {
+      success: true,
+      data: boardIds.map((id) => {
+        const r = byId.get(id);
+        return {
+          board_id: id,
+          standup_cron_local: r?.standup_cron_local ?? null,
+          digest_cron_local: r?.digest_cron_local ?? null,
+          review_cron_local: r?.review_cron_local ?? null,
+        };
+      }),
+    } as any;
+  }
+
   apiDeleteSimpleTask(params: {
     board_id: string;
     task_id: string;
