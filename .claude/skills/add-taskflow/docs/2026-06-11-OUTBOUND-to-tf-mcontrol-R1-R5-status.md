@@ -160,3 +160,17 @@ ADDITIVE to Addendum 3's manager-or-assignee decision (which stands unchanged).
 3. **Use `journal_mode=DELETE` on the shared `taskflow.db`, never WAL.** Your Python RW connections set WAL (`app/main.py:928`); nanoclaw requires DELETE for cross-mount visibility (WAL's `-shm` mmap isn't coherent across the host/container boundary). Empirically: if a Python WAL connection pins the shared file, the engine subprocess's `PRAGMA journal_mode = DELETE` **throws `SQLITE_BUSY` and the subprocess can't open the db** — so a WAL pin fails LOUD (all dashboard mutations error), it won't silently lose only deferreds. Your .61 smoke tests pass, so WAL isn't currently pinning the shared file — but make the DELETE-on-the-shared-db rule explicit so a future change doesn't reintroduce it. (If you need WAL for a *separate* tf-only db, that's fine — just not the shared taskflow.db.)
 
 **Net:** #396 is delivered on the engine side; once you retire the dead IPC emit and confirm the two DB-config invariants on .63, the offline-assignee case is fully closed (phone-arrival still only verifiable on a WhatsApp-linked env post-cutover).
+
+---
+
+## Addendum 6 (2026-06-11) — status correction: the three "engine follow-ups" are DONE
+
+Your latest summary lists **R4 actor gate · #396 deferred delivery · SEC#11** as still engine-owned/pending. **All three are closed and pushed** (engine `origin/skill/taskflow-v2` @ `51af98ef`). Source-confirmed in HEAD:
+
+1. **R4 actor gate — DONE** (`50fbcb25`, + service-token `6e94907e`). `validateCreateParent` now requires **manager OR the parent project's assignee** (`taskflow-engine.ts:4463`), `permission_denied` otherwise; `sender_is_service` (verbatim) bypasses the actor gate. **ACTION FOR YOU: I chose manager-OR-assignee, not manager-only — WIDEN your `require_board_manager` on the parented-create route to manager-or-assignee-of-parent, or you'll 403 a legit project assignee the engine accepts.** (Detail: Addendum 3.)
+
+2. **#396 dashboard deferred delivery — DONE** (`e10abf25` + `eb6ae4bd`). The subprocess now enqueues offline-assignee deferreds to the shared `pending_notifications` queue; the board's container drains+delivers (supersedes #401). **ACTION FOR YOU: retire your dead deferred tasks-IPC emit, and confirm the two db-config invariants — `TASKFLOW_DB_PATH` = the shared nanoclaw global `taskflow.db`, and `journal_mode=DELETE` (not WAL) on it.** (Detail: Addendum 5.)
+
+3. **SEC#11 deterministic-provision side door — DONE** (SEC#14, merged `1d39d336`). The deterministic `register_person` fast-path now routes provisioning through `parkForApproval`; the ack says "aguarda aprovação de um administrador." No engine open item.
+
+**The rest of your summary is accurate and correctly yours:** the authenticated-UI pass (subtask button, undo snackbar, the four settings fields), and the .63 cutover ordering — **engine first with a rebuilt `dist/taskflow-mcp-server.js`, then tf, then verify `TASKFLOW_SERVICE_OUTBOUND_DB`** (and, from Addendum 5, the `TASKFLOW_DB_PATH`/DELETE invariants). Net: there is **no remaining engine-owned work** on the R1–R5 + parity + #396 + SEC surface — only your tf-side actions above and the cutover.
