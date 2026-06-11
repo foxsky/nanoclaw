@@ -341,7 +341,17 @@ export function finalizeCreatedTaskResult(
   boardId: string,
   result: CreateLikeResult,
 ) {
-  if (!result.success) return jsonResponse({ success: false, error: result.error });
+  if (!result.success) {
+    // R4: surface the engine's structured error_code (validateCreateParent →
+    // not_found / validation_error / conflict) so the FastAPI/dashboard surface
+    // can map it to the right HTTP status instead of a bare 500.
+    const code = (result as { error_code?: unknown }).error_code;
+    return jsonResponse({
+      success: false,
+      error: result.error,
+      ...(typeof code === 'string' ? { error_code: code } : {}),
+    });
+  }
   if (!result.task_id) {
     return jsonResponse({ success: false, error: 'engine returned success without task_id' });
   }
@@ -2017,6 +2027,11 @@ export const apiCreateTaskTool: McpToolDefinition = {
         allow_non_business_day: { type: 'boolean' },
         intended_weekday: { type: 'string' },
         requires_close_approval: { type: 'boolean' },
+        parent_task_id: {
+          type: 'string',
+          description:
+            'Optional project id (P-prefix) to create this task already parented under, atomically. The parent must exist, be a project, and be on the same board. Avoids the create-then-reparent two-step.',
+        },
         force_create: {
           type: 'boolean',
           description:
@@ -2153,6 +2168,15 @@ export const apiCreateTaskTool: McpToolDefinition = {
         const embedDup = await maybeFindEmbedDuplicate(db, boardId, taskType, title);
         if (embedDup) return resolveEmbedDuplicate(engine, embedDup);
       }
+      // R4: optional parent_task_id — create the task already parented under a project (atomic).
+      // normalizeAgentIds already uppercased it; the engine validates parent existence/type/board.
+      let parentTaskId: string | undefined;
+      if (args.parent_task_id !== undefined && args.parent_task_id !== null) {
+        if (typeof args.parent_task_id !== 'string' || args.parent_task_id.trim() === '') {
+          return validationError('parent_task_id: expected non-empty string');
+        }
+        parentTaskId = args.parent_task_id;
+      }
       const result = engine.create({
         board_id: boardId,
         type: taskType,
@@ -2170,6 +2194,7 @@ export const apiCreateTaskTool: McpToolDefinition = {
         intended_weekday: intendedWeekday,
         allow_non_business_day: allowNonBusinessDay,
         requires_close_approval: requiresCloseApproval,
+        parent_task_id: parentTaskId,
       });
       return finalizeCreatedTaskResult(db, engine, boardId, result);
     } catch (e: unknown) {

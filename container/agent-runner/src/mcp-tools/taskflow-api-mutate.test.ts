@@ -3292,3 +3292,47 @@ describe('SEC#13 (#419) — api_report(standup) housekeeping is gated by the per
     expect(oldTaskStillLive()).toBe(true); // no archive AND no constructor-side mutation
   });
 });
+
+// R4 (INBOUND tf-mcontrol 2026-06-10): api_create_task accepts an optional parent_task_id so the
+// dashboard can create a subtask under an existing project in ONE atomic call (no orphan window) —
+// validated with the same checks reparent_task runs (parent exists, is a project, same board).
+describe('R4 — api_create_task parent_task_id (atomic subtask creation)', () => {
+  async function create(args: Record<string, unknown>) {
+    const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+    return JSON.parse((await apiCreateTaskTool.handler({ board_id: BOARD, sender_name: 'alice', ...args })).content[0].text);
+  }
+
+  it('creates a task already parented under an existing project', async () => {
+    const proj = await create({ type: 'project', title: 'Operação' });
+    expect(proj.success).toBe(true);
+    const projId = proj.data.id;
+    const sub = await create({ type: 'simple', title: 'Subtarefa', parent_task_id: projId });
+    expect(sub.success).toBe(true);
+    const row = db.prepare('SELECT parent_task_id FROM tasks WHERE id = ?').get(sub.data.id) as { parent_task_id: string };
+    expect(row.parent_task_id).toBe(projId);
+  });
+
+  it('rejects a non-existent parent with not_found AND creates nothing (atomic)', async () => {
+    const before = (db.prepare('SELECT COUNT(*) c FROM tasks').get() as { c: number }).c;
+    const r = await create({ type: 'simple', title: 'Orphan?', parent_task_id: 'P999' });
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('not_found');
+    const after = (db.prepare('SELECT COUNT(*) c FROM tasks').get() as { c: number }).c;
+    expect(after).toBe(before); // no orphan task was created
+  });
+
+  it('rejects a parent that is not a project with validation_error', async () => {
+    const simple = await create({ type: 'simple', title: 'Not a project' });
+    const r = await create({ type: 'simple', title: 'Child', parent_task_id: simple.data.id });
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('validation_error');
+    expect(String(r.error)).toMatch(/not a project/i);
+  });
+
+  it('omitting parent_task_id creates a normal top-level task (no regression)', async () => {
+    const r = await create({ type: 'simple', title: 'Top level' });
+    expect(r.success).toBe(true);
+    const row = db.prepare('SELECT parent_task_id FROM tasks WHERE id = ?').get(r.data.id) as { parent_task_id: string | null };
+    expect(row.parent_task_id == null).toBe(true);
+  });
+});
