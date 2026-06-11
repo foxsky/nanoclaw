@@ -211,3 +211,31 @@ rather than relocate it.
   call fails today on the assignment gate — tell us and we'll extend the same verbatim-only
   `sender_is_service` handling + a structured `permission_denied` there in one unit. If your service
   creates are always unassigned (as your smoke suggests), no engine change is needed.
+
+---
+
+## Addendum 7 (2026-06-11) — cutover item #6 correction: there is NO dist to rebuild
+
+Your court-item #6 says the engine deploy must ship "a rebuilt `dist/taskflow-mcp-server.js`". That
+wording carries a retired mental model — correcting it before it misdirects the cutover operator:
+
+- **`dist/taskflow-mcp-server.js` is the dead Apr-29 Node/`better-sqlite3` hand-port** (md5
+  `125d5761…`, byte-identical on .61/.63 when we root-caused BLOCKER A). The recorded decision was
+  **bun-spawns-src, no dist artifact**: your `client.py` runs
+  `TASKFLOW_MCP_RUNTIME` + `TASKFLOW_MCP_SERVER_BIN` → the `.ts` entrypoint, exactly as .61 runs today
+  (`TASKFLOW_MCP_RUNTIME=bun`, `TASKFLOW_MCP_SERVER_BIN=…/container/agent-runner/src/mcp-tools/taskflow-server-entry.ts`).
+  "A stale dist fails your handshake by design" is true but moot — the dist must not be in the path at all.
+
+- **The actual .63 cutover requirements** (replacing "rebuilt dist" in the runbook):
+  1. Current engine source tree deployed (src IS the artifact) + `bun install` run in
+     `container/agent-runner/` (the entrypoint imports the MCP SDK from node_modules).
+  2. `TASKFLOW_MCP_RUNTIME=bun` — **your default is `node`**, so an unset .63 env silently picks the
+     wrong runtime.
+  3. `TASKFLOW_MCP_SERVER_BIN=<deploy-root>/container/agent-runner/src/mcp-tools/taskflow-server-entry.ts`
+     — **your default is empty string**, so an unset .63 env cannot start the subprocess at all.
+  4. `TASKFLOW_SERVICE_OUTBOUND_DB` set (already in the runbook).
+  5. Recommended: **delete the stale `dist/taskflow-mcp-server.js` from .61 and .63** at cutover so a
+     legacy env value can never resurrect the Node port — your handshake would refuse it loudly, but
+     better to remove the trap than rely on the alarm.
+
+Ordering stays as agreed: engine (source + bun install) → tf → verify the three env vars.
