@@ -174,3 +174,40 @@ Your latest summary lists **R4 actor gate · #396 deferred delivery · SEC#11** 
 3. **SEC#11 deterministic-provision side door — DONE** (SEC#14, merged `1d39d336`). The deterministic `register_person` fast-path now routes provisioning through `parkForApproval`; the ack says "aguarda aprovação de um administrador." No engine open item.
 
 **The rest of your summary is accurate and correctly yours:** the authenticated-UI pass (subtask button, undo snackbar, the four settings fields), and the .63 cutover ordering — **engine first with a rebuilt `dist/taskflow-mcp-server.js`, then tf, then verify `TASKFLOW_SERVICE_OUTBOUND_DB`** (and, from Addendum 5, the `TASKFLOW_DB_PATH`/DELETE invariants). Net: there is **no remaining engine-owned work** on the R1–R5 + parity + #396 + SEC surface — only your tf-side actions above and the cutover.
+
+---
+
+## Addendum 6 (2026-06-11) — the `sender_is_service` create-vs-move asymmetry: CONFIRMED INTENTIONAL (ratified)
+
+Answering your smoke observation (INBOUND line 41) and closing Addendum 3's "I'll confirm separately."
+
+**Verdict: the asymmetry is the correct boundary, and we hereby ratify it as the contract.**
+
+`sender_is_service` (your FastAPI-authorized API-token actor) is honored on **data-entry/annotation
+gates** — notes add/edit/remove, task comments, simple-task delete, the ancestor-task write check,
+and the R4 parent-create actor gate — where your R2.3 auth (org/membership/owner, before every call)
+is the real control and an engine person-check would only break the API-token surface.
+
+It is deliberately **NOT honored on the workflow state-machine gates** (`engine.move`, `engine.undo`),
+because their semantics require a resolvable human actor: `approve`/`reject` encode human role
+authority (manager-or-delegate) and `approve` carries a **no-self-approval** rule that is meaningless
+for a service principal; `conclude` carries `requires_close_approval`; `undo` is author-bound with a
+manager-only force. A blanket service bypass there would let any API token drive approvals and
+conclusions — the exact mass-action/approval-integrity class the SEC#5/SEC#10 gates exist to prevent.
+Your current design (resolve a REAL user actor for moves/undo, as you already do) is the intended
+shape; if a future flow genuinely needs service-driven transitions, propose it explicitly and we will
+gate it as its own decision rather than widening the blanket bypass.
+
+Honest provenance note: the boundary emerged gate-by-gate as your endpoints landed rather than from a
+single top-down decision — but it lands exactly where a design review would put it, so we ratify it
+rather than relocate it.
+
+**One correction + one question back:**
+- Addendum 3 said the bypass covers "the create-path *assignment* gate" — that was inaccurate. The
+  create-path bypass is the **R4 parent-create actor gate** (Addendum 4). The assignment gate
+  ("Only managers can create assigned tasks", `createTaskInternal`) has **no** service bypass — and
+  its refusal is currently codeless (maps to your 502 'unknown', not 403).
+- **Question:** does your service-token path ever `POST /tasks` **with an `assignee`**? If yes, that
+  call fails today on the assignment gate — tell us and we'll extend the same verbatim-only
+  `sender_is_service` handling + a structured `permission_denied` there in one unit. If your service
+  creates are always unassigned (as your smoke suggests), no engine change is needed.
