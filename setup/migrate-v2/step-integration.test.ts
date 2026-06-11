@@ -236,3 +236,67 @@ describe('migration steps: SKIPPED on missing input exits non-zero (run_step con
     expect(r.status).not.toBe(0);
   });
 });
+
+describe('Guard C: tasks.ts legacy prompt shapes', () => {
+  it('decodes legacy BLOB scheduled-task prompts to text before JSON insertion', () => {
+    const v1 = v1WithMessagesDb((d) => {
+      d.exec(`
+        CREATE TABLE registered_groups (
+          jid TEXT,
+          name TEXT,
+          folder TEXT,
+          trigger_pattern TEXT,
+          requires_trigger INTEGER,
+          is_main INTEGER
+        );
+        CREATE TABLE scheduled_tasks (
+          id TEXT,
+          group_folder TEXT,
+          chat_jid TEXT,
+          prompt BLOB,
+          schedule_type TEXT,
+          schedule_value TEXT,
+          next_run TEXT,
+          status TEXT,
+          context_mode TEXT,
+          script TEXT
+        );
+        INSERT INTO registered_groups VALUES ('tg:123', 'Chat', 'main', NULL, 0, 1);
+      `);
+      d.prepare(`INSERT INTO scheduled_tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        'auditor-daily',
+        'main',
+        'tg:123',
+        Buffer.from('daily auditor prompt', 'utf8'),
+        'cron',
+        '0 8 * * *',
+        '2026-06-12T11:00:00.000Z',
+        'active',
+        'recent',
+        null,
+      );
+    });
+    const cwd = tmp();
+    const dbStep = runStep('db.ts', [v1], { cwd });
+    expect(dbStep.status).toBe(0);
+
+    const r = runStep('tasks.ts', [v1], { cwd });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/OK:active=1,migrated=1,skipped=0,failed=0/);
+
+    const central = new Database(path.join(cwd, 'data', 'v2.db'));
+    const ag = central.prepare("SELECT id FROM agent_groups WHERE folder = 'main'").get() as { id: string };
+    central.close();
+    const sessionRoot = path.join(cwd, 'data', 'v2-sessions');
+    const inbound = fs
+      .readdirSync(path.join(sessionRoot, ag.id), { recursive: true })
+      .map((p) => path.join(sessionRoot, ag.id, String(p)))
+      .find((p) => p.endsWith('inbound.db'));
+    expect(inbound).toBeDefined();
+    const db = new Database(inbound!);
+    const row = db.prepare("SELECT content FROM messages_in WHERE id = 'auditor-daily'").get() as { content: string };
+    db.close();
+    const content = JSON.parse(row.content) as { prompt: unknown };
+    expect(content.prompt).toBe('daily auditor prompt');
+  });
+});

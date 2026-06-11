@@ -30,13 +30,19 @@ interface V1Task {
   id: string;
   group_folder: string;
   chat_jid: string;
-  prompt: string;
+  prompt: string | Buffer;
   schedule_type: string;
   schedule_value: string;
   next_run: string | null;
   status: string;
   context_mode: string | null;
   script: string | null;
+}
+
+function normalizePrompt(prompt: V1Task['prompt']): string {
+  if (typeof prompt === 'string') return prompt;
+  if (Buffer.isBuffer(prompt)) return prompt.toString('utf8');
+  return String(prompt);
 }
 
 function toCron(t: V1Task): { processAfter: string; recurrence: string | null } | null {
@@ -155,7 +161,7 @@ async function main(): Promise<void> {
           channelType: parsed.channel_type,
           threadId: null,
           content: JSON.stringify({
-            prompt: t.prompt,
+            prompt: normalizePrompt(t.prompt),
             script: t.script ?? null,
             migrated_from_v1: { original_id: t.id, context_mode: t.context_mode ?? null },
           }),
