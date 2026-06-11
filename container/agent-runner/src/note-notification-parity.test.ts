@@ -8,6 +8,7 @@ import {
 } from './db/connection.ts';
 import { setupEngineDb } from './mcp-tools/taskflow-test-fixtures.ts';
 import { __resetTurnActorForTesting, setTurnActor } from './mcp-tools/turn-actor.ts';
+import { handleTaskflowProjectNoteUpdate } from './poll-loop.ts';
 import { TaskflowEngine } from './taskflow-engine.ts';
 
 // EX-019 restore (Codex full-review 2026-06-11): V1 routed an added note through
@@ -104,6 +105,64 @@ describe('api_task_add_note MCP tool dispatches the owner notification (V1 parit
       (await apiTaskAddNoteTool.handler({ board_id: BOARD, task_id: taskId, sender_name: 'alice', text: 'revisar' })).content[0].text,
     );
     expect(out.success).toBe(true);
+
+    const dispatched = (
+      getOutboundDb().prepare("SELECT content FROM messages_out WHERE kind = 'system'").all() as Array<{ content: string }>
+    )
+      .map((r) => JSON.parse(r.content))
+      .filter((c) => c.action === 'taskflow_dispatch_notifications')
+      .flatMap((c) => c.events as Array<Record<string, unknown>>);
+    expect(dispatched).toContainEqual(
+      expect.objectContaining({ kind: 'direct_message', target_chat_jid: '120363400000000111@g.us' }),
+    );
+  });
+});
+
+describe('apiAddNote builds the parent-board notification for a delegated task (V1 parity)', () => {
+  it('sets parent_notification when noting a child_exec delegated parent-board task', () => {
+    // Mirrors the update(add_note) delegated-parent test: a note on a parent-board
+    // task that this board executes must notify the parent board, same as V1.
+    const db = setupEngineDb(BOARD, { withBoardAdmins: true });
+    const now = new Date().toISOString();
+    const parentBoardId = 'board-parent-note';
+    db.exec(`ALTER TABLE boards ADD COLUMN parent_board_id TEXT`);
+    db.exec(
+      `INSERT INTO boards (id, short_code, name, board_role, group_folder, group_jid)
+       VALUES ('${parentBoardId}', 'SECI', 'Parent', 'standard', 'seci-tf', 'parent@g.us');
+       UPDATE boards SET parent_board_id = '${parentBoardId}' WHERE id = '${BOARD}';
+       INSERT INTO board_people (board_id, person_id, name, role) VALUES ('${parentBoardId}', 'alice', 'alice', 'member');
+       INSERT INTO tasks (id, board_id, type, title, assignee, column, child_exec_enabled, child_exec_board_id, child_exec_person_id, created_at, updated_at)
+       VALUES ('P11.11', '${parentBoardId}', 'simple', 'Delegated', 'alice', 'waiting', 1, '${BOARD}', 'alice', '${now}', '${now}')`,
+    );
+    const engine = new TaskflowEngine(db, BOARD);
+    const res = engine.apiAddNote({ board_id: BOARD, task_id: 'P11.11', sender_name: 'alice', text: 'nota cross-board' }) as {
+      success: boolean;
+      parent_notification?: { parent_group_jid?: string; message?: string };
+    };
+    expect(res.success).toBe(true);
+    expect(res.parent_notification).toBeTruthy();
+    expect(res.parent_notification!.parent_group_jid).toBe('parent@g.us');
+    expect(res.parent_notification!.message).toContain('Atualização na sua tarefa');
+  });
+});
+
+describe('deterministic note handler dispatches the notification (V1 parity)', () => {
+  it('handleTaskflowProjectNoteUpdate dispatches the owner notification for a note on a project assigned to someone else', () => {
+    const db = setupEngineDb(BOARD, { withBoardAdmins: true });
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role, notification_group_jid)
+       VALUES (?, 'bob', 'bob', 'member', '120363400000000111@g.us')`,
+    ).run(BOARD);
+    const engine = new TaskflowEngine(db, BOARD);
+    const created = engine.create({ board_id: BOARD, type: 'project', title: 'Operacao Especial', sender_name: 'alice', assignee: 'bob' });
+    expect(created.success).toBe(true);
+
+    const handled = handleTaskflowProjectNoteUpdate(
+      { text: 'Operacao Especial precisa de atencao' },
+      [{ kind: 'chat', content: JSON.stringify({ sender: 'alice', text: 'Operacao Especial precisa de atencao' }) }],
+      { inReplyTo: null, platformId: '120363400000000000@g.us', channelType: 'whatsapp', threadId: null },
+    );
+    expect(handled).toBe(true);
 
     const dispatched = (
       getOutboundDb().prepare("SELECT content FROM messages_out WHERE kind = 'system'").all() as Array<{ content: string }>

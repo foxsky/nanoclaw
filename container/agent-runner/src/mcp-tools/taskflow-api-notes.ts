@@ -58,15 +58,21 @@ export const apiTaskAddNoteTool: McpToolDefinition = {
       parent_note_id: parentNoteId,
     });
     emitMutationConfirmation(finalResult);
+    if (!result.success) return jsonResponse(finalResult);
     // V1 parity (EX-019): apiAddNote now builds the owner/parent notification
     // (it was silent). Deliver it deterministically like every other mutation —
-    // normalize → enqueue-deferred-first → dispatch, in-session-gated + fail-soft.
-    if (result.success) {
-      const notification_events = safeNotificationEvents(result);
-      enqueueDeferredNotificationsInSession(parsed.boardId, notification_events, parsed.taskId, {});
-      dispatchNotificationEvents(notification_events);
-    }
-    return jsonResponse(finalResult);
+    // normalize → enqueue-deferred-first → dispatch, in-session-gated + fail-soft —
+    // AND surface it as `notification_events` while stripping the raw engine
+    // notification fields, exactly as api_task_add_comment / finalizeMutationResult
+    // do. This keeps the FastAPI/no-service-bus path working (the dashboard reads
+    // notification_events from the response when the bus no-ops) and avoids leaking
+    // dispatch-only fields. (Codex review 2026-06-11.)
+    const notification_events = safeNotificationEvents(result);
+    enqueueDeferredNotificationsInSession(parsed.boardId, notification_events, parsed.taskId, {});
+    dispatchNotificationEvents(notification_events);
+    const { notifications: _rawNotifs, parent_notification: _rawParent, ...responseBody } =
+      finalResult as Record<string, unknown>;
+    return jsonResponse({ ...responseBody, notification_events });
   },
 };
 

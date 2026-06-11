@@ -3716,7 +3716,7 @@ function projectNoteTextForMessage(text: string, projectTitle: string, messages:
   return text.trim().replace(/[.!?]*$/u, '.');
 }
 
-function handleTaskflowProjectNoteUpdate(
+export function handleTaskflowProjectNoteUpdate(
   action: TaskflowProjectNoteUpdate,
   messages: Pick<MessageInRow, 'kind' | 'content'>[],
   routing: RoutingContext,
