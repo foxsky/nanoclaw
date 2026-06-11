@@ -1683,16 +1683,39 @@ function senderName(messages: Pick<MessageInRow, 'kind' | 'content'>[]): string 
   // authenticates the sender as a phone JID, which the engine's resolvePerson
   // cannot map to a person — so every deterministic person-gated mutation
   // (isManager / isAssignee / no-self-approval) would fail on a live board.
-  // Resolve a WhatsApp phone JID to the board person's NAME (not person_id, so
-  // display strings like "${sender} pediu…" stay human-readable AND the engine
-  // resolves it). Non-JID display-name senders (chat-SDK, web, tests) pass
-  // through untouched — no DB access. Same shared resolver + fail-closed rules
-  // as the MCP actor bind (board_people.phone, @s.whatsapp.net only).
+  // Resolve a WhatsApp phone JID to the CANONICAL person_id (NOT the name): the
+  // phone match is unambiguous, but board_people.name is not unique, so binding
+  // the name and letting the engine RE-resolve it could land on a different,
+  // higher-privileged person of the same name (Codex #419 BLOCKER). person_id
+  // is the engine's exact-match key. Non-JID display-name senders (chat-SDK,
+  // web, tests) pass through untouched — no DB access. For human-readable
+  // outbound text, render via displaySenderName(), not this value.
   const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
   if (boardId && raw.endsWith('@s.whatsapp.net')) {
-    return resolveAuthenticatedSenderPerson(boardId, raw)?.name ?? raw;
+    return resolveAuthenticatedSenderPerson(boardId, raw)?.personId ?? raw;
   }
   return raw;
+}
+
+/**
+ * Human-readable label for a sender value produced by senderName(). When
+ * senderName resolved a WhatsApp JID it returns the canonical person_id (for
+ * engine safety); for OUTBOUND text we want the display name. Look it up by
+ * person_id on the env board; fall back to the value itself (already a name on
+ * non-WhatsApp surfaces, or an unresolved id). Before #419 these sites showed
+ * the raw JID, so this is strictly an improvement.
+ */
+function displaySenderName(sender: string): string {
+  const boardId = process.env.NANOCLAW_TASKFLOW_BOARD_ID;
+  if (!boardId) return sender;
+  try {
+    const row = getTaskflowDb()
+      .prepare(`SELECT name FROM board_people WHERE board_id = ? AND person_id = ? LIMIT 1`)
+      .get(boardId, sender) as { name: string } | null;
+    return row?.name || sender;
+  } catch {
+    return sender;
+  }
 }
 
 function normalizeReadyForReviewNote(raw: string): string {
@@ -2597,7 +2620,7 @@ function handleTaskflowNotifyMeetingAbove(
       // generic "Você foi adicionado a uma reunião" too would double-notify the
       // same person for one `avisar X sobre a reunião` command (Codex #419 review).
     }
-    const text = `Olá, ${recipient}! ${sender} pediu para te avisar sobre a seguinte reunião:\n\n📅 *${title}*\n${when}`;
+    const text = `Olá, ${recipient}! ${displaySenderName(sender)} pediu para te avisar sobre a seguinte reunião:\n\n📅 *${title}*\n${when}`;
     sendToDestination(dest, text, routing);
     appendMcpEquivalentToolCapture('send_message', { to: dest.name, text }, { success: true });
     sent.push(recipient);
@@ -2636,7 +2659,7 @@ function handleTaskflowAutoForwardMeetingConfirmation(
   }
 
   const { formatted } = meetingTaskSummary(queryResult.data, action.taskId);
-  const forwardText = `Olá, ${action.destinationName}! ${sender} pediu para encaminhar os detalhes desta reunião:\n\n${formatted}`;
+  const forwardText = `Olá, ${action.destinationName}! ${displaySenderName(sender)} pediu para encaminhar os detalhes desta reunião:\n\n${formatted}`;
   sendToDestination(dest, forwardText, routing);
   appendMcpEquivalentToolCapture('send_message', { to: dest.name, text: forwardText }, { success: true });
 
@@ -2723,7 +2746,7 @@ function handleTaskflowOrgMeetingCreateForwardConfirmation(
   dispatchDeterministicMutationNotifications(createResult, taskId !== 'reunião' ? taskId : null);
   const participantName = destination.dest.displayName || action.participantName;
   const when = formatFortalezaMeetingWhen(fortalezaNaiveToUtcIso(action.scheduledAt));
-  const forwardText = `Olá, ${participantName}! ${sender} pediu para encaminhar os detalhes desta reunião:\n\n📅 *${action.title}*\n${when}`;
+  const forwardText = `Olá, ${participantName}! ${displaySenderName(sender)} pediu para encaminhar os detalhes desta reunião:\n\n📅 *${action.title}*\n${when}`;
   sendToDestination(destination.dest, forwardText, routing);
   appendMcpEquivalentToolCapture('send_message', { to: destination.dest.name, text: forwardText }, { success: true });
 
@@ -3482,7 +3505,7 @@ function handleTaskflowForwardDetails(
     details.push(formatted);
   }
 
-  const forwardText = `Olá, ${action.destinationName}! ${sender} pediu para encaminhar os detalhes abaixo:\n\n${details.join('\n\n---\n\n')}`;
+  const forwardText = `Olá, ${action.destinationName}! ${displaySenderName(sender)} pediu para encaminhar os detalhes abaixo:\n\n${details.join('\n\n---\n\n')}`;
   sendToDestination(dest, forwardText, routing);
   appendMcpEquivalentToolCapture('send_message', { to: dest.name, text: forwardText }, { success: true });
   writeReply(routing, `Detalhes de ${action.taskIds.join(' e ')} encaminhados para ${action.destinationName}.`);
@@ -3525,7 +3548,7 @@ function handleTaskflowNotifyTaskPriority(
       : action.taskId;
   const column = typeof data?.column === 'string' ? data.column : typeof task?.column === 'string' ? task.column : '';
   const status = column ? `\nStatus atual: ${columnLabelForReply(column)}` : '';
-  const forwardText = `${action.destinationName}, ${sender} pede para você priorizar a tarefa *${action.taskId}* — ${title}.${status}`;
+  const forwardText = `${action.destinationName}, ${displaySenderName(sender)} pede para você priorizar a tarefa *${action.taskId}* — ${title}.${status}`;
 
   sendToDestination(dest, forwardText, routing);
   appendMcpEquivalentToolCapture('send_message', { to: dest.name, text: forwardText }, { success: true });
