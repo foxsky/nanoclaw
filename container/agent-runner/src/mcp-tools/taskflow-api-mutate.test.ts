@@ -4,6 +4,7 @@ import { closeSessionDb, closeTaskflowDb, initTestSessionDb } from '../db/connec
 import { setupEngineDb } from './taskflow-test-fixtures.js';
 import { setVerbatimIds } from './taskflow-helpers.js';
 import { __resetTurnActorForTesting, clearTurnActor, setTurnActor } from './turn-actor.js';
+import { TaskflowEngine } from '../taskflow-engine.js';
 
 let db: Database;
 
@@ -3399,6 +3400,21 @@ describe('R4 — api_create_task parent_task_id (atomic subtask creation)', () =
     const proj = await create({ type: 'project', title: 'Projeto Geral' });
     const sub = await create({ type: 'simple', title: 'Sub gerenciada', parent_task_id: proj.data.id }); // sender alice = manager
     expect(sub.success).toBe(true);
+  });
+
+  it('R4 gate (engine-level): engine.create() itself denies a non-manager non-assignee parent — defense even if the MCP fast-fail is bypassed', () => {
+    // The MCP handler fast-fails at validateCreateParent before engine.create(), so
+    // this pins the SECOND enforcement point: engine.create() must also gate, or a
+    // direct/non-MCP caller could parent unauthorized (Codex Rule-9).
+    db.prepare(`INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'carol', 'carol', 'member')`).run(BOARD);
+    const engine = new TaskflowEngine(db, BOARD);
+    const proj = engine.create({ board_id: BOARD, type: 'project', title: 'Projeto direto', sender_name: 'alice' });
+    const parentId = String(proj.task_id ?? proj.id);
+    const before = (db.prepare('SELECT COUNT(*) c FROM tasks').get() as { c: number }).c;
+    const r = engine.create({ board_id: BOARD, type: 'simple', title: 'Intruso direto', sender_name: 'carol', parent_task_id: parentId });
+    expect(r.success).toBe(false);
+    expect((r as { error_code?: string }).error_code).toBe('permission_denied');
+    expect((db.prepare('SELECT COUNT(*) c FROM tasks').get() as { c: number }).c).toBe(before);
   });
 
   it('omitting parent_task_id creates a normal top-level task (no regression)', async () => {
