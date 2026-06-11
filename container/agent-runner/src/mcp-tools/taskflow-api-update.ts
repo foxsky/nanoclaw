@@ -389,8 +389,10 @@ export const apiUpdateSimpleTaskTool: McpToolDefinition = {
         // assignee-change + column-move notifications were silently lost; V1
         // dispatched after every update). Enqueue (so a cross-board assignee's
         // notification is re-delivered once their child board provisions — the drain
-        // resolves the JID), then dispatch — in-session only (the FastAPI subprocess
-        // no-ops, preserving the #401 dashboard contract), fail-soft.
+        // resolves the JID; this enqueue ALSO fires on the FastAPI subprocess now,
+        // landing in the shared queue the container drains — #396 supersedes #401),
+        // then dispatch (the subprocess routes resolved-JID events to the service
+        // bus, skips deferreds), fail-soft.
         const dispatchable: NotificationEvent[] = notification_events.map((e) => ({
           kind: 'deferred_notification',
           target_person_id: e.target_person_id,
