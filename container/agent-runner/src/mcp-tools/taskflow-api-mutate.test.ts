@@ -3402,6 +3402,49 @@ describe('R4 — api_create_task parent_task_id (atomic subtask creation)', () =
     expect(sub.success).toBe(true);
   });
 
+  it('R4 gate: a VERBATIM (FastAPI) service actor bypasses the actor gate (sender_is_service)', async () => {
+    // tf-mcontrol's API-token path authorizes service actors FastAPI-side (claims.is_agent)
+    // and sends sender_name 'taskflow-api' — not a board person, so neither manager nor
+    // assignee. The engine honors the established sender_is_service convention (verbatim-
+    // only, like the note/delete/ancestor-write gates) so that path keeps working.
+    const proj = await create({ type: 'project', title: 'Projeto Service' });
+    setVerbatimIds(true);
+    try {
+      const { apiCreateTaskTool } = await import('./taskflow-api-mutate.ts');
+      const r = JSON.parse((await apiCreateTaskTool.handler({
+        board_id: BOARD,
+        type: 'simple',
+        title: 'Sub via service token',
+        sender_name: 'taskflow-api',
+        sender_is_service: true,
+        parent_task_id: proj.data.id,
+      })).content[0].text);
+      expect(r.success).toBe(true);
+      const row = db.prepare('SELECT parent_task_id FROM tasks WHERE id = ?').get(r.data.id) as { parent_task_id: string };
+      expect(row.parent_task_id).toBe(proj.data.id);
+    } finally {
+      setVerbatimIds(false);
+    }
+  });
+
+  it('R4 gate: the CHAT surface cannot use the service bypass — sender_is_service is force-stripped (SEC#12)', async () => {
+    // Red-team: a prompt-injected agent passing sender_is_service:true on the non-verbatim
+    // surface must NOT bypass the actor gate (normalizeAgentIds forces it false).
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role) VALUES (?, 'bob', 'bob', 'member')`,
+    ).run(BOARD);
+    const proj = await create({ type: 'project', title: 'Projeto Inject' });
+    const r = await create({
+      type: 'simple',
+      title: 'Sub injetada',
+      sender_name: 'bob',
+      sender_is_service: true,
+      parent_task_id: proj.data.id,
+    });
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('permission_denied');
+  });
+
   it('R4 gate (engine-level): engine.create() itself denies a non-manager non-assignee parent — defense even if the MCP fast-fail is bypassed', () => {
     // The MCP handler fast-fails at validateCreateParent before engine.create(), so
     // this pins the SECOND enforcement point: engine.create() must also gate, or a

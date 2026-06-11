@@ -131,3 +131,16 @@ Thanks — your reconciliations and the .61 parity probe all read correct. Statu
 **Cutover ordering (your #6):** agreed and important — the engine deploy must ship a **rebuilt `dist/taskflow-mcp-server.js`** (a stale dist fails your hard handshake by design). Captured for the cutover runbook: engine (with rebuilt dist) → tf → verify `TASKFLOW_SERVICE_OUTBOUND_DB`.
 
 **Doc-versioning suggestion accepted:** future OUTBOUND docs will carry a `Contract-Version:` header line so a mid-build addendum race is visible immediately.
+
+
+---
+
+## Addendum 4 (2026-06-11, engine commit on top of `50fbcb25`) — service-token actors on the parented create
+
+**ACTION (tf-mcontrol): pass `sender_is_service` on the rich-create forward.** Your API-token path
+(`claims.is_agent`, `sender_name: "taskflow-api"`) bypasses your own gate but would be 403'd by the
+engine's new R4 actor gate — "taskflow-api" is neither a board manager nor the parent's assignee.
+The engine now honors the same `sender_is_service` manager-equivalent convention as the
+simple/note/delete tools (send `_resolve_sender`'s second tuple element), verbatim-only. The chat
+surface force-strips it (SEC#12, red-team-tested), so this cannot be abused from WhatsApp. This is
+ADDITIVE to Addendum 3's manager-or-assignee decision (which stands unchanged).

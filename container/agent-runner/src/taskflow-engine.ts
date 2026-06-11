@@ -158,6 +158,9 @@ export interface CreateParams {
   /** R4: create the task ALREADY parented under this project (same atomic call). Validated like
    *  reparent_task — the parent must exist, be a project, and be on this board. */
   parent_task_id?: string;
+  /** Verbatim/FastAPI service actor (API token) — authorized FastAPI-side; honored by the
+   *  parent-create actor gate like the note/delete tools. Chat surface force-strips it (SEC#12). */
+  sender_is_service?: boolean;
 }
 
 export interface CreateResult extends TaskflowResult {
@@ -4337,7 +4340,7 @@ export class TaskflowEngine {
         // 'TF-P1', but the stored parent_task_id must be the raw 'P1' that subtask joins key on).
         let canonicalParentId: string | undefined;
         if (params.parent_task_id) {
-          const pv = this.validateCreateParent(params.parent_task_id, params.sender_name);
+          const pv = this.validateCreateParent(params.parent_task_id, params.sender_name, params.sender_is_service);
           if (!pv.ok) return pv.result;
           canonicalParentId = String(pv.parent.id);
         }
@@ -4390,6 +4393,7 @@ export class TaskflowEngine {
   validateCreateParent(
     parentId: string,
     senderName: string,
+    senderIsService?: boolean,
   ):
     | { ok: true; parent: any }
     | { ok: false; result: { success: false; error_code: string; error: string } } {
@@ -4403,9 +4407,13 @@ export class TaskflowEngine {
     if (this.taskBoardId(parent) !== this.boardId) {
       return { ok: false, result: { success: false, error_code: 'conflict', error: `The new task and project ${parentId} are on different boards.` } };
     }
+    // sender_is_service = the verbatim/FastAPI API-token actor, authorized FastAPI-side
+    // (same manager-equivalent convention as the note/delete/ancestor-write gates). It
+    // bypasses only the ACTOR gate — the structural checks above still apply. The chat
+    // surface can never set it: normalizeAgentIds forces it false outside verbatim (SEC#12).
     const senderPersonId = this.resolvePerson(senderName)?.person_id ?? null;
     const isAssignee = senderPersonId != null && parent.assignee === senderPersonId;
-    if (!this.isManager(senderName) && !isAssignee) {
+    if (!senderIsService && !this.isManager(senderName) && !isAssignee) {
       return {
         ok: false,
         result: {

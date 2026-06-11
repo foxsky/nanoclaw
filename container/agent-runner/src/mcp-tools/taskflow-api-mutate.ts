@@ -2059,6 +2059,7 @@ export const apiCreateTaskTool: McpToolDefinition = {
         allow_non_business_day: { type: 'boolean' },
         intended_weekday: { type: 'string' },
         requires_close_approval: { type: 'boolean' },
+        sender_is_service: { type: 'boolean' },
         parent_task_id: {
           type: 'string',
           description:
@@ -2194,6 +2195,9 @@ export const apiCreateTaskTool: McpToolDefinition = {
       // normalizeAgentIds already uppercased it. Parse + validate the parent BEFORE the duplicate
       // pre-checks (Codex MEDIUM): a structural parent error (not_found / not-a-project / off-board
       // conflict) must fail-fast, not be masked by the soft near-duplicate-confirm prompt.
+      // sender_is_service: verbatim/FastAPI API-token actor (authorized FastAPI-side).
+      // Safe to read post-normalizeAgentIds — the chat surface force-strips it (SEC#12).
+      const senderIsService = args.sender_is_service === true;
       let parentTaskId: string | undefined;
       if (args.parent_task_id !== undefined && args.parent_task_id !== null) {
         if (typeof args.parent_task_id !== 'string' || args.parent_task_id.trim() === '') {
@@ -2201,7 +2205,7 @@ export const apiCreateTaskTool: McpToolDefinition = {
         }
         parentTaskId = args.parent_task_id;
         // Same sender the engine.create() path will gate on (manager-or-parent-assignee).
-        const pv = engine.validateCreateParent(parentTaskId, senderName);
+        const pv = engine.validateCreateParent(parentTaskId, senderName, senderIsService);
         if (!pv.ok) return jsonResponse(pv.result);
       }
       // force_create (template L1270) bypasses BOTH dup checks — the user has
@@ -2232,6 +2236,7 @@ export const apiCreateTaskTool: McpToolDefinition = {
         allow_non_business_day: allowNonBusinessDay,
         requires_close_approval: requiresCloseApproval,
         parent_task_id: parentTaskId,
+        sender_is_service: senderIsService,
       });
       return finalizeCreatedTaskResult(db, engine, boardId, result);
     } catch (e: unknown) {
