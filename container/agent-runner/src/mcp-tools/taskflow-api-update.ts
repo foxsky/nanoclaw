@@ -169,7 +169,7 @@ export const apiUpdateSimpleTaskTool: McpToolDefinition = {
           if (result.success) {
             crossParentEvents = safeNotificationEvents(result);
             enqueueDeferredNotificationsInSession(boardId, crossParentEvents, taskId, { db });
-            dispatchNotificationEvents(crossParentEvents);
+            dispatchNotificationEvents(crossParentEvents, boardId ? { boardId } : {});
           }
           return jsonResponse(
             result.success ? { ...result, notification_events: crossParentEvents } : result,
@@ -397,7 +397,7 @@ export const apiUpdateSimpleTaskTool: McpToolDefinition = {
           message: e.message,
         }));
         enqueueDeferredNotificationsInSession(boardId, dispatchable, taskId, { db });
-        dispatchNotificationEvents(dispatchable);
+        dispatchNotificationEvents(dispatchable, boardId ? { boardId } : {});
       } catch (notifyErr) {
         notification_events.length = 0;
         log(

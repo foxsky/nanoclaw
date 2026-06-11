@@ -69,7 +69,7 @@ export const apiTaskAddNoteTool: McpToolDefinition = {
     // dispatch-only fields. (Codex review 2026-06-11.)
     const notification_events = safeNotificationEvents(result);
     enqueueDeferredNotificationsInSession(parsed.boardId, notification_events, parsed.taskId, {});
-    dispatchNotificationEvents(notification_events);
+    dispatchNotificationEvents(notification_events, parsed.boardId ? { boardId: parsed.boardId } : {});
     const { notifications: _rawNotifs, parent_notification: _rawParent, ...responseBody } =
       finalResult as Record<string, unknown>;
     return jsonResponse({ ...responseBody, notification_events });

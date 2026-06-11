@@ -138,7 +138,7 @@ export const apiTaskAddCommentTool: McpToolDefinition = {
       // person produces a null-JID deferred_notification — persist it (in-session,
       // fail-soft) so it's delivered once their board provisions, then dispatch.
       enqueueDeferredNotificationsInSession(boardId, notification_events, taskId, {});
-      dispatchNotificationEvents(notification_events);
+      dispatchNotificationEvents(notification_events, boardId ? { boardId } : {});
       return jsonResponse({
         success: true,
         data: result.data,
