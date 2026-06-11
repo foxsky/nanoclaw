@@ -38,6 +38,23 @@ Required operator choices:
 - Confirm the `1c-groups` step reports migrated prompts. The migration writes v2 `CLAUDE.local.md` files through `src/modules/taskflow/migrate-board-claudemd.ts`; it must not copy raw v1 `CLAUDE.md` prose unchanged.
 - Accept the v2 switchover only after the script reports successful DB, group, session, scheduled task, TaskFlow DB, and container build steps.
 
+## TaskFlow Dashboard (tf-mcontrol) — coexistence invariants
+
+Only relevant if the tf-mcontrol dashboard is deployed against this v2 install (it runs the engine as an MCP subprocess against the **same** `taskflow.db` the containers use). Skip this section if no dashboard is deployed. These requirements come from the R1–R5 + #396 + SEC engine work (coordination: `.claude/skills/add-taskflow/docs/2026-06-11-OUTBOUND-to-tf-mcontrol-R1-R5-status.md`).
+
+**Deploy ORDER — engine first, then tf, then verify env:**
+
+1. **Deploy the engine WITH a rebuilt `dist/taskflow-mcp-server.js`.** tf-mcontrol's subprocess handshake hard-requires the R5 read tools (`api_board_tasks`/`api_board_detail`/`api_list_holidays`/`api_list_comments`/`api_runner_status`[`_batch`]) + `api_undo`; a **stale `dist`** fails the handshake by design (the API's subprocess refuses to start), so rebuild it before tf comes up. Rebuild from the agent-runner tree, not just the host `dist/`.
+2. **Deploy/restart tf-mcontrol** (it spawns the freshly-built engine subprocess).
+3. **Verify the three DB/env invariants** (each is a silent or loud failure if wrong):
+   - `TASKFLOW_SERVICE_OUTBOUND_DB` set on the tf subprocess — without it, dashboard-originated resolved-JID notifications (reassign/create DMs, parent rollups) stay in the JSON response and are **not** delivered (R3 fail-mode-b, no double-send).
+   - `TASKFLOW_DB_PATH` = the shared nanoclaw global `taskflow.db` (`<DATA_DIR>/taskflow/taskflow.db`, the file containers mount at `/workspace/taskflow/`). If it points elsewhere, dashboard mutations hit a phantom DB (immediately obvious) **and** offline-assignee deferreds (#396) are stranded.
+   - The shared `taskflow.db` is `journal_mode=DELETE`, **never WAL** (WAL's `-shm` mmap isn't coherent across the host/container mount). A Python WAL connection that pins the shared file makes the engine subprocess `PRAGMA journal_mode=DELETE` throw `SQLITE_BUSY` → the subprocess can't open the DB → all dashboard mutations fail loud (so this can't silently corrupt only deferreds).
+
+**Cross-repo behavior to confirm with the dashboard build before cutover** (see the OUTBOUND addendums): the dashboard's parented-create route gates **manager-or-assignee-of-parent** (matches the engine R4 gate, addendum 6); it has **retired** its dead `deferred_notification` tasks-IPC emit now that the engine delivers dashboard deferreds via the shared queue (#396, addendum 5); and it does **not** also deliver `direct_message`/`parent_notification` (the engine owns those via the service bus, R3).
+
+**Post-cutover, dashboard-specific:** actual WhatsApp phone-arrival of dashboard-originated notifications is only verifiable on the WhatsApp-linked prod env — confirm a dashboard reassign DM and an offline-assignee (provisioning-window) deferred each arrive on a real phone during the canary.
+
 ## Canary Plan
 
 Canary window: first 50 real production messages after v2 switchover, or the first 24 hours, whichever comes first.

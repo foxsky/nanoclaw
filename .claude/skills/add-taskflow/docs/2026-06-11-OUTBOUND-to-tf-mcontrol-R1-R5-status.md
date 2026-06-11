@@ -177,7 +177,7 @@ Your latest summary lists **R4 actor gate · #396 deferred delivery · SEC#11** 
 
 ---
 
-## Addendum 6 (2026-06-11) — the `sender_is_service` create-vs-move asymmetry: CONFIRMED INTENTIONAL (ratified)
+## Addendum 7 (2026-06-11) — the `sender_is_service` create-vs-move asymmetry: CONFIRMED INTENTIONAL (ratified)
 
 Answering your smoke observation (INBOUND line 41) and closing Addendum 3's "I'll confirm separately."
 
