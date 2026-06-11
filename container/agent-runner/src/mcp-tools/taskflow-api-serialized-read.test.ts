@@ -4,6 +4,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { closeTaskflowDb } from '../db/connection.js';
 import { setVerbatimIds } from './taskflow-helpers.js';
+import { fastApiOnly } from './taskflow-api-board.js';
 import {
   applyBoardConfigColumns,
   applyServedReadSchema,
@@ -316,6 +317,38 @@ describe('api_runner_status_batch (all-boards variant)', () => {
     const r = await call(apiRunnerStatusBatchTool, { board_ids: [123, '', null] });
     expect(r.success).toBe(false);
     expect(r.error_code).toBe('validation_error');
+  });
+
+  it('rejects an over-cap board_ids list with validation_error (SQLite bind-limit guard)', async () => {
+    const tooMany = Array.from({ length: 501 }, (_, i) => `b-${i}`);
+    const r = await call(apiRunnerStatusBatchTool, { board_ids: tooMany });
+    expect(r.success).toBe(false);
+    expect(r.error_code).toBe('validation_error');
+    expect(String(r.error)).toMatch(/too many/i);
+  });
+
+  it('repeats duplicate requested ids (drop-in for a fan-out that asked twice)', async () => {
+    const r = await call(apiRunnerStatusBatchTool, { board_ids: [BOARD, BOARD] });
+    expect(r.success).toBe(true);
+    expect(r.data).toHaveLength(2);
+    expect(r.data[0].board_id).toBe(BOARD);
+    expect(r.data[1].board_id).toBe(BOARD);
+  });
+
+  it('fail-closed off the verbatim/FastAPI surface — the wrapped tool refuses on the chat surface', async () => {
+    // The batch tool is NOT board-scoped (arbitrary board_ids), so it is registered
+    // wrapped with fastApiOnly. Exercise the wrapper: non-verbatim → not_available,
+    // so the chat agent can't read cross-board crons through it.
+    const wrapped = fastApiOnly(apiRunnerStatusBatchTool);
+    setVerbatimIds(false);
+    try {
+      const res = (await wrapped.handler({ board_id: BOARD, board_ids: [BOARD] })) as { content: Array<{ text: string }> };
+      const r = JSON.parse(res.content[0].text);
+      expect(r.success).toBe(false);
+      expect(r.error_code).toBe('not_available');
+    } finally {
+      setVerbatimIds(true); // restore the suite default (afterEach also resets)
+    }
   });
 });
 

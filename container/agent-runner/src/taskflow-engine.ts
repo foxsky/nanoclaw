@@ -2947,7 +2947,7 @@ export class TaskflowEngine {
       review_cron_local?: unknown;
     };
     if (!boardIds.length) return { success: true, data: [] } as any;
-    let rows: CronRow[] = [];
+    let rows: CronRow[];
     try {
       const placeholders = boardIds.map(() => '?').join(',');
       rows = this.db
@@ -2956,8 +2956,12 @@ export class TaskflowEngine {
            FROM board_runtime_config WHERE board_id IN (${placeholders})`,
         )
         .all(...boardIds) as CronRow[];
-    } catch {
-      rows = [];
+    } catch (err: any) {
+      // A genuine query failure must NOT silently degrade to all-null crons
+      // (which would look like "these boards have no runner config") — surface it.
+      // The caller (tool) caps the id-list well under SQLite's bind limit, so the
+      // bind-shape error this guards is not the expected path.
+      return { success: false, error_code: 'internal_error', error: err?.message ?? String(err) } as any;
     }
     const byId = new Map(rows.map((r) => [r.board_id, r]));
     return {

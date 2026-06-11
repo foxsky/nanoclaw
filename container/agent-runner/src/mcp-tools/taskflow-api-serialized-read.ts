@@ -8,9 +8,11 @@
  * FastAPI-only: registered solely by `taskflow-server-entry.ts` (not the chat
  * barrel `index.ts`) and allowlisted there — the WhatsApp agent keeps its own
  * richer `api_query` surface, and adding five dashboard-shaped reads to its tool
- * list would only muddy tool selection. They are board-scoped reads (board_id is
- * pinned by `normalizeAgentIds` when not verbatim), so unlike the verbatim
- * board-config tools they need no fastApiOnly fail-closed guard.
+ * list would only muddy tool selection. The five single-board reads are board-
+ * scoped (board_id is pinned by `normalizeAgentIds` when not verbatim), so they
+ * need no fastApiOnly fail-closed guard. EXCEPTION: `api_runner_status_batch`
+ * takes an arbitrary `board_ids` list (NOT board-scoped), so it IS wrapped with
+ * `fastApiOnly` — only the verbatim/FastAPI surface may read cross-board crons.
  *
  * Envelope: `{success:true, data}` / `{success:false, error_code, error}` —
  * consistent with the R1/R2/R4 structured tools so FastAPI maps not_found/
@@ -18,10 +20,16 @@
  */
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine, type TaskflowResult } from '../taskflow-engine.js';
+import { fastApiOnly } from './taskflow-api-board.js';
 import { registerTools } from './server.js';
 import { normalizeAgentIds } from './taskflow-helpers.js';
 import type { McpToolDefinition } from './types.js';
 import { jsonResponse, requireString } from './util.js';
+
+// Cap the batch id-list well under SQLite's bound-parameter limit (≥999 on the
+// oldest builds) so a huge list can't blow the IN clause. 500 boards is far
+// beyond any real dashboard board-set; over that, the caller paginates.
+const RUNNER_STATUS_BATCH_MAX = 500;
 
 function serializedResult(result: TaskflowResult) {
   if (!result.success) {
@@ -167,6 +175,13 @@ export const apiRunnerStatusBatchTool: McpToolDefinition = {
     if (ids.length === 0) {
       return jsonResponse({ success: false, error_code: 'validation_error', error: 'board_ids: required non-empty string array' });
     }
+    if (ids.length > RUNNER_STATUS_BATCH_MAX) {
+      return jsonResponse({
+        success: false,
+        error_code: 'validation_error',
+        error: `board_ids: too many (max ${RUNNER_STATUS_BATCH_MAX}); paginate the board-set.`,
+      });
+    }
     // The engine handle's board is irrelevant — apiRunnerStatusBatch keys on the id list.
     return serializedResult(readonlyEngine(ids[0]).apiRunnerStatusBatch(ids));
   },
@@ -178,5 +193,9 @@ registerTools([
   apiListHolidaysTool,
   apiListCommentsTool,
   apiRunnerStatusTool,
-  apiRunnerStatusBatchTool,
+  // Unlike the single board-scoped reads above, the batch tool takes an arbitrary
+  // board_ids list (NOT board-scoped by normalizeAgentIds), so gate it fail-closed
+  // to the verbatim/FastAPI surface — the chat agent can't read cross-board cron
+  // config through it (Codex review 2026-06-11). It is also not on the chat barrel.
+  fastApiOnly(apiRunnerStatusBatchTool),
 ]);
