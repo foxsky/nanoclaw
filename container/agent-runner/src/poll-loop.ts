@@ -1844,7 +1844,12 @@ function handleTaskflowMissingExactIdNote(
     appendMcpEquivalentToolCapture('api_task_add_note', noteInput, noteResult, !noteResult.success);
 
     if (noteResult.success) {
-      dispatchDeterministicMutationNotifications(noteResult, action.taskId);
+      // No dispatch for the note itself: engine.apiAddNote produces no
+      // notification_events (v2 notes are silent metadata; the notify channel
+      // is api_task_add_comment). This mirrors the MCP api_task_add_note tool,
+      // which is also silent. The reassign half below DOES notify. (V1 routed
+      // notes through update() which pinged the owner — a deliberate v2 split,
+      // not restored by dispatch here; Codex full-review 2026-06-11.)
       let reassignResult: ReassignResult | null = null;
       if (action.reassignTarget) {
         const reassignInput = {
@@ -3749,7 +3754,9 @@ function handleTaskflowProjectNoteUpdate(
     writeReply(routing, `Não consegui registrar a nota em ${project.id}: ${noteResult.error ?? 'erro desconhecido'}`);
     return true;
   }
-  dispatchDeterministicMutationNotifications(noteResult, project.id);
+  // No dispatch: engine.apiAddNote is silent (v2 notes carry no notification_events;
+  // the notify channel is api_task_add_comment) — same as the MCP api_task_add_note tool.
+  // (Codex full-review 2026-06-11.)
 
   writeReply(routing, `✅ *${project.id}* atualizado\n━━━━━━━━━━━━━━\n\n• Nota: ${noteText}`);
   return true;

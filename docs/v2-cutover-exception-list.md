@@ -411,6 +411,20 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 
 ---
 
+### EX-019: Adding a note no longer notifies the task owner/parent (V1 `update(add_note)` → silent v2 `apiAddNote`)
+
+- **Category:** accepted-tool-surface-change (behavior difference; **needs owner confirmation that it is intentional**)
+- **Source:** Codex gpt-5.5/xhigh full-review of the delta-parity work (2026-06-11). NOT introduced by the delta-parity fixes — a pre-existing engine-level v2 behavior the prior conformity audit did not separately flag.
+- **Surfaced:** 2026-06-11
+- **v1 behavior:** a note was added via the `taskflow_update` tool → `engine.update({updates:{add_note}})`, which pushed an entry to `changes` and therefore built an owner notification (`buildUpdateNotification`, `main:taskflow-engine.ts:5530`) + the parent-board linked-task notification, then `dispatchNotifications()` (`main:ipc-mcp-stdio.ts:1215`). So adding a note pinged the assignee "🔔 your task was updated".
+- **v2 behavior:** notes go through `engine.apiAddNote` (`container/agent-runner/src/taskflow-engine.ts:2998`), which records history but returns **no `notifications` field** — silent. This is consistent across BOTH surfaces: the MCP `api_task_add_note` tool (`taskflow-api-notes.ts:43`) and the deterministic poll-loop note handlers (`handleTaskflowMissingExactIdNote`, `handleTaskflowProjectNoteUpdate`) both use `apiAddNote`. The notify channel in v2 is the SEPARATE `api_task_add_comment` (`apiAddTaskComment`), which does notify. `engine.update({add_note})` still notifies (line 6910) but only the meeting/review handlers reach it. So the v2 model appears to be: **notes = silent metadata, comments = the notify channel.**
+- **Operator-visible impact:** a plain "registrar nota em P11: …" that pinged the assignee in V1 is silent in V2 (unless phrased/routed as a comment). No DB-state difference.
+- **Rationale for acceptance (provisional):** likely the intentional note-vs-comment split (v2 added `api_task_add_comment` as the explicit notify path), and the prior MCP-parity audit accepted `apiAddNote` as-is. The delta-parity fix correctly did NOT wire dispatch here (the no-op calls were removed) — making `apiAddNote` notify would be an ENGINE change affecting the MCP tool too, not a poll-loop fix.
+- **Mitigation / followup:** **owner to confirm** silent-notes is intended. If notes SHOULD notify (V1 parity), the fix is engine-side (`apiAddNote` builds the owner/parent notification like `update`), shared by both surfaces — and must not double-notify with comments. If silent is intended, no action; this entry records the accepted difference.
+- **Status:** documented 2026-06-11; **provisional — needs owner sign-off on intent.**
+
+---
+
 ## v2 code-quality findings (not v1 divergences — post-cutover follow-ups)
 
 Surfaced by the 2026-05-28 independent review of `0dec5540` (three reviewers + Codex authorship). These are NOT v1→v2 behavioral divergences — they don't fit the five categories — but recording them here keeps the signoff artifact honest. None blocks cutover on the current Fortaleza-TZ host; each needs a tracked follow-up.
