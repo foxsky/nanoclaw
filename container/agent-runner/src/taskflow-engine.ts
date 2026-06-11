@@ -3043,17 +3043,47 @@ export class TaskflowEngine {
           return { success: false, error_code: 'validation_error', error: out.error } as any;
         }
 
+        const notifications: NotificationEntry[] = [];
+        let parentNotification: ParentNotification | undefined;
         if (out.changed) {
           this.db.prepare('UPDATE tasks SET updated_at = ? WHERE id = ? AND board_id = ?').run(now, task.id, taskBoardId);
           this.recordHistory(task.id, 'updated', params.sender_name, JSON.stringify({ note_added: true }), taskBoardId);
+
+          // V1 parity (EX-019): adding a note pings the task owner + parent board,
+          // exactly as engine.update(add_note) does. apiAddNote was silent, so a
+          // note added to a teammate's task no longer notified them. buildUpdateNotification
+          // skips self (modifier == assignee). The notify channel matches comments.
+          if (senderPersonId) {
+            const notif = this.buildUpdateNotification(
+              { id: task.id, title: task.title, assignee: task.assignee, board_id: task.board_id },
+              [out.change],
+              senderPersonId,
+              taskBoardId,
+            );
+            if (notif) notifications.push(notif);
+          }
+          const modName = sender?.name ?? params.sender_name;
+          parentNotification = this.buildParentNotification(
+            task as { child_exec_enabled: number; board_id: string },
+            `🔔 *Atualização na sua tarefa*\n\n*${task.id}* — ${task.title}\n*Modificado por:* ${modName}\n\n• ${out.change}\n\nDigite \`${task.id}\` para ver detalhes.`,
+          );
+          if (parentNotification) {
+            this.deduplicateNotificationsForParent(notifications, parentNotification.parent_group_jid);
+          }
         }
-        return { success: true, change: out.change, task_id: task.id, task_board_id: taskBoardId } as any;
+        return { success: true, change: out.change, task_id: task.id, task_board_id: taskBoardId, notifications, parentNotification } as any;
       })();
       if (!txResult.success) return txResult;
       const row = this.db.prepare(
         `SELECT t.*, b.short_code AS board_code FROM tasks t JOIN boards b ON b.id = t.board_id WHERE t.id = ? AND t.board_id = ?`
       ).get(txResult.task_id, txResult.task_board_id) as Record<string, unknown>;
-      return { success: true, data: this.serializeApiTask(row), changes: [txResult.change] } as any;
+      return {
+        success: true,
+        data: this.serializeApiTask(row),
+        changes: [txResult.change],
+        ...(txResult.notifications?.length ? { notifications: txResult.notifications } : {}),
+        ...(txResult.parentNotification ? { parent_notification: txResult.parentNotification } : {}),
+      } as any;
     } catch (err: any) {
       return { success: false, error: err.message ?? String(err) };
     }

@@ -3,7 +3,9 @@ import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
 import { emitMutationConfirmation } from './mutation-confirmation.js';
 import { registerTools } from './server.js';
-import { addEditNoteFormattedResult, addNoteFormattedResult } from './taskflow-api-mutate.js';
+import { addEditNoteFormattedResult, addNoteFormattedResult, safeNotificationEvents } from './taskflow-api-mutate.js';
+import { enqueueDeferredNotificationsInSession } from './pending-notification-dispatch.js';
+import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
 import { requiresChatActor } from './chat-actor-guard.js';
 import { normalizeAgentIds } from './taskflow-helpers.js';
 import type { McpToolDefinition } from './types.js';
@@ -56,6 +58,14 @@ export const apiTaskAddNoteTool: McpToolDefinition = {
       parent_note_id: parentNoteId,
     });
     emitMutationConfirmation(finalResult);
+    // V1 parity (EX-019): apiAddNote now builds the owner/parent notification
+    // (it was silent). Deliver it deterministically like every other mutation —
+    // normalize → enqueue-deferred-first → dispatch, in-session-gated + fail-soft.
+    if (result.success) {
+      const notification_events = safeNotificationEvents(result);
+      enqueueDeferredNotificationsInSession(parsed.boardId, notification_events, parsed.taskId, {});
+      dispatchNotificationEvents(notification_events);
+    }
     return jsonResponse(finalResult);
   },
 };

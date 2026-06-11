@@ -411,10 +411,11 @@ Each exception is a section. Stable IDs (don't renumber on insert).
 
 ---
 
-### EX-019: Adding a note no longer notifies the task owner/parent (V1 `update(add_note)` → silent v2 `apiAddNote`)
+### EX-019: Adding a note no longer notified the task owner/parent — V1 `update(add_note)` → silent v2 `apiAddNote` — ✅ FIXED (restored to V1 parity)
 
-- **Category:** accepted-tool-surface-change (behavior difference; **needs owner confirmation that it is intentional**)
-- **Source:** Codex gpt-5.5/xhigh full-review of the delta-parity work (2026-06-11). NOT introduced by the delta-parity fixes — a pre-existing engine-level v2 behavior the prior conformity audit did not separately flag.
+- **Category:** v1-bug-corrected → resolved (note notification restored). Was: accepted-tool-surface-change pending owner sign-off.
+- **Source:** Codex gpt-5.5/xhigh full-review of the delta-parity work (2026-06-11). The owner chose to RESTORE V1 note notifications rather than accept silent-notes.
+- **Resolution (2026-06-11):** `engine.apiAddNote` now builds the owner notification (`buildUpdateNotification`, skips self → notifies the creator/delegator on a self-note) + the parent-board notification, identical to `engine.update(add_note)`. Both consumers deliver it: the MCP `api_task_add_note` tool (normalize→enqueue-deferred→dispatch) and the deterministic poll-loop note handlers (`handleTaskflowMissingExactIdNote`, `handleTaskflowProjectNoteUpdate`). No double-notify: notes and comments are distinct operations; no path runs both for one note. TDD (`note-notification-parity.test.ts`, 4 cases incl. self-note→creator + creator-self → no ping); container 1720/0. The `api_task_add_comment` path is unchanged.
 - **Surfaced:** 2026-06-11
 - **v1 behavior:** a note was added via the `taskflow_update` tool → `engine.update({updates:{add_note}})`, which pushed an entry to `changes` and therefore built an owner notification (`buildUpdateNotification`, `main:taskflow-engine.ts:5530`) + the parent-board linked-task notification, then `dispatchNotifications()` (`main:ipc-mcp-stdio.ts:1215`). So adding a note pinged the assignee "🔔 your task was updated".
 - **v2 behavior:** notes go through `engine.apiAddNote` (`container/agent-runner/src/taskflow-engine.ts:2998`), which records history but returns **no `notifications` field** — silent. This is consistent across BOTH surfaces: the MCP `api_task_add_note` tool (`taskflow-api-notes.ts:43`) and the deterministic poll-loop note handlers (`handleTaskflowMissingExactIdNote`, `handleTaskflowProjectNoteUpdate`) both use `apiAddNote`. The notify channel in v2 is the SEPARATE `api_task_add_comment` (`apiAddTaskComment`), which does notify. `engine.update({add_note})` still notifies (line 6910) but only the meeting/review handlers reach it. So the v2 model appears to be: **notes = silent metadata, comments = the notify channel.**
