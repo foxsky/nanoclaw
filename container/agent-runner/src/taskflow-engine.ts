@@ -2705,6 +2705,225 @@ export class TaskflowEngine {
     return { success: true, data: rows.map((row) => this.serializeApiTask(row)) };
   }
 
+  /* -------------------------------------------------------------------------
+   * R5 (INBOUND tf-mcontrol 2026-06-10): serialized, board-scoped READ methods.
+   * The dashboard's direct-SQL reads replicate visibleTaskScope + enrichment
+   * (board_code / board_timezone / assignee-name) in Python and can drift. These
+   * return the SAME serialized shape the engine already produces so FastAPI does
+   * ZERO enrichment and the single engine is the one source of read truth.
+   * ----------------------------------------------------------------------- */
+
+  /** True if a board row exists for this.boardId. */
+  private boardExists(): boolean {
+    return !!(this.db.prepare(`SELECT 1 FROM boards WHERE id = ? LIMIT 1`).get(this.boardId));
+  }
+
+  /** Active task counts grouped by column over the VISIBLE scope (own + delegated-in).
+   *  Mirrors the dashboard's fetch_tasks_by_column_counts (engine parity). */
+  private tasksByColumnCounts(): Record<string, number> {
+    const rows = this.db
+      .prepare(
+        `SELECT "column" AS col, COUNT(*) AS count
+         FROM tasks t
+         WHERE ${this.visibleTaskScope('t')}
+         GROUP BY "column"`,
+      )
+      .all(...this.visibleTaskParams()) as Array<{ col: string | null; count: number }>;
+    const out: Record<string, number> = {};
+    for (const r of rows) out[r.col ?? 'inbox'] = Number(r.count);
+    return out;
+  }
+
+  /** R5.1 — full visible-scope board read in serialized shape. Each task carries
+   *  the OWNING board's `board_timezone` (LEFT JOIN board_runtime_config on
+   *  t.board_id) so the dashboard renders due/overdue board-local. Optional
+   *  `column` filters; an invalid column is a validation_error. Mirrors the
+   *  dashboard fetch_tasks scope + ordering exactly. */
+  apiBoardTasks(params: { column?: string } = {}): TaskflowResult {
+    if (!this.boardExists()) {
+      return { success: false, error_code: 'not_found', error: `Board not found: ${this.boardId}` } as any;
+    }
+    if (params.column !== undefined && !TaskflowEngine.VALID_BOARD_COLUMNS.has(params.column)) {
+      return {
+        success: false,
+        error_code: 'validation_error',
+        error: `Invalid column: ${params.column}`,
+      } as any;
+    }
+    const columnFilter = params.column ? 'AND t."column" = ?' : '';
+    const extraParams = params.column ? [params.column] : [];
+    const rows = this.db
+      .prepare(
+        `SELECT t.*, b.short_code AS board_code, brc.timezone AS board_timezone,
+                pt.title AS parent_task_title
+         FROM tasks t
+         JOIN boards b ON b.id = t.board_id
+         LEFT JOIN board_runtime_config brc ON brc.board_id = t.board_id
+         LEFT JOIN tasks pt ON pt.board_id = t.board_id AND pt.id = t.parent_task_id
+         WHERE ${this.visibleTaskScope('t')} ${columnFilter}
+         ORDER BY COALESCE(t.updated_at, t.created_at) DESC, t.id ASC`,
+      )
+      .all(...this.visibleTaskParams(), ...extraParams) as Record<string, unknown>[];
+    const data = rows.map((row) => ({
+      ...this.serializeApiTask(row),
+      board_timezone: row['board_timezone'] ?? null,
+    }));
+    return { success: true, data };
+  }
+
+  private static readonly VALID_BOARD_COLUMNS: ReadonlySet<string> = new Set([
+    'inbox',
+    'next_action',
+    'in_progress',
+    'waiting',
+    'review',
+    'done',
+    'cancelled',
+  ]);
+
+  /** R5.2 — composite config read: board meta + board_config (columns/wip) +
+   *  board_runtime_config (language/timezone/cron) + people + per-column counts.
+   *  `board_config` / runner-cron columns are host-owned (src/taskflow-db.ts);
+   *  guard their reads so a minimal in-container schema degrades to defaults
+   *  rather than throwing. */
+  apiBoardDetail(): TaskflowResult {
+    const board = this.db
+      .prepare(`SELECT * FROM boards WHERE id = ? LIMIT 1`)
+      .get(this.boardId) as Record<string, unknown> | null;
+    if (!board) {
+      return { success: false, error_code: 'not_found', error: `Board not found: ${this.boardId}` } as any;
+    }
+    let config: { columns?: unknown; wip_limit?: unknown } | null = null;
+    try {
+      config = this.db
+        .prepare(`SELECT columns, wip_limit FROM board_config WHERE board_id = ? LIMIT 1`)
+        .get(this.boardId) as { columns?: unknown; wip_limit?: unknown } | null;
+    } catch {
+      config = null;
+    }
+    type RuntimeRow = {
+      language?: unknown;
+      timezone?: unknown;
+      standup_cron_local?: unknown;
+      digest_cron_local?: unknown;
+      review_cron_local?: unknown;
+    };
+    let runtime: RuntimeRow | null = null;
+    try {
+      runtime = this.db
+        .prepare(
+          `SELECT language, timezone, standup_cron_local, digest_cron_local, review_cron_local
+           FROM board_runtime_config WHERE board_id = ? LIMIT 1`,
+        )
+        .get(this.boardId) as RuntimeRow | null;
+    } catch {
+      runtime = null;
+    }
+    const people = this.db
+      .prepare(
+        `SELECT person_id, board_id, name, phone, role, wip_limit
+         FROM board_people WHERE board_id = ? ORDER BY name ASC`,
+      )
+      .all(this.boardId) as Record<string, unknown>[];
+    const parsedColumns = safeParseJsonArray(config?.columns);
+    const columns =
+      parsedColumns.length > 0
+        ? parsedColumns
+        : ['inbox', 'next_action', 'in_progress', 'waiting', 'review', 'done'];
+    return {
+      success: true,
+      data: {
+        board,
+        language: runtime?.language ?? null,
+        timezone: runtime?.timezone ?? null,
+        wip_limit: config?.wip_limit ?? null,
+        columns,
+        standup_cron_local: runtime?.standup_cron_local ?? null,
+        digest_cron_local: runtime?.digest_cron_local ?? null,
+        review_cron_local: runtime?.review_cron_local ?? null,
+        people,
+        tasks_by_column: this.tasksByColumnCounts(),
+      },
+    } as any;
+  }
+
+  /** R5.3 — board holidays as `[{date,label}]`, sorted by date. */
+  apiListHolidays(): TaskflowResult {
+    const rows = this.db
+      .prepare(
+        `SELECT holiday_date, label FROM board_holidays WHERE board_id = ? ORDER BY holiday_date ASC`,
+      )
+      .all(this.boardId) as Array<{ holiday_date: string; label: string | null }>;
+    return { success: true, data: rows.map((r) => ({ date: r.holiday_date, label: r.label ?? null })) };
+  }
+
+  /** R5.4 — task comments (task_history action='comment'), serialized to
+   *  {id,author,message,created_at}. `author` resolves the stored person_id to
+   *  the board display NAME (drift kill — the dashboard currently echoes the raw
+   *  id). Board-scoped via getTask: a task not on/delegated-to this board is
+   *  not_found. Oldest-first, optional limit/offset (faithful to the paginated
+   *  endpoint it replaces). */
+  apiListComments(params: { task_id: string; limit?: number; offset?: number }): TaskflowResult {
+    const task = this.getTask(params.task_id) as Record<string, any> | null;
+    if (!task) {
+      return { success: false, error_code: 'not_found', error: `Task not found: ${params.task_id}` } as any;
+    }
+    const taskBoardId = this.taskBoardId(task);
+    const limit = Math.min(Math.max(params.limit ?? 50, 1), 200);
+    const offset = Math.max(params.offset ?? 0, 0);
+    const rows = this.db
+      .prepare(
+        `SELECT id, "by" AS by, "at" AS at, details FROM task_history
+         WHERE board_id = ? AND task_id = ? AND action = 'comment'
+         ORDER BY "at" ASC, id ASC
+         LIMIT ? OFFSET ?`,
+      )
+      .all(taskBoardId, task.id, limit, offset) as Array<{
+      id: number;
+      by: string | null;
+      at: string;
+      details: string | null;
+    }>;
+    return {
+      success: true,
+      data: rows.map((r) => ({
+        id: r.id,
+        author: this.apiAssignee(taskBoardId, r.by),
+        message: r.details ?? '',
+        created_at: r.at,
+      })),
+    };
+  }
+
+  /** R5.5 — this board's runner cron config (standup/digest/review_cron_local). */
+  apiRunnerStatus(): TaskflowResult {
+    type CronRow = {
+      standup_cron_local?: unknown;
+      digest_cron_local?: unknown;
+      review_cron_local?: unknown;
+    };
+    let row: CronRow | null = null;
+    try {
+      row = this.db
+        .prepare(
+          `SELECT standup_cron_local, digest_cron_local, review_cron_local
+           FROM board_runtime_config WHERE board_id = ? LIMIT 1`,
+        )
+        .get(this.boardId) as CronRow | null;
+    } catch {
+      row = null;
+    }
+    return {
+      success: true,
+      data: {
+        board_id: this.boardId,
+        standup_cron_local: row?.standup_cron_local ?? null,
+        digest_cron_local: row?.digest_cron_local ?? null,
+        review_cron_local: row?.review_cron_local ?? null,
+      },
+    } as any;
+  }
+
   apiDeleteSimpleTask(params: {
     board_id: string;
     task_id: string;

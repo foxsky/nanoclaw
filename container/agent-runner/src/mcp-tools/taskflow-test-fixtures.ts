@@ -148,3 +148,36 @@ export function applyBoardConfigColumns(d: Database): void {
     }
   }
 }
+
+/**
+ * R5 (INBOUND tf-mcontrol 2026-06-10): the serialized board-scoped READ tools
+ * (api_board_detail / api_runner_status) read `board_config` (columns/wip) and
+ * the runner-cron columns of `board_runtime_config`. Like applyBoardConfigColumns
+ * these are part of the prod schema OWNED by `src/taskflow-db.ts` (host) — NOT
+ * `ensureTaskSchema` — so the engine only READS them; this fixture provides them
+ * for the engine tests. Idempotent (CREATE IF NOT EXISTS + ALTER-in-try).
+ */
+export function applyServedReadSchema(d: Database): void {
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS board_config (
+      board_id TEXT PRIMARY KEY,
+      columns TEXT DEFAULT '["inbox","next_action","in_progress","waiting","review","done"]',
+      wip_limit INTEGER DEFAULT 5,
+      next_task_number INTEGER DEFAULT 1,
+      next_project_number INTEGER DEFAULT 1,
+      next_recurring_number INTEGER DEFAULT 1,
+      next_note_id INTEGER DEFAULT 1
+    )
+  `);
+  for (const sql of [
+    `ALTER TABLE board_runtime_config ADD COLUMN standup_cron_local TEXT`,
+    `ALTER TABLE board_runtime_config ADD COLUMN digest_cron_local TEXT`,
+    `ALTER TABLE board_runtime_config ADD COLUMN review_cron_local TEXT`,
+  ]) {
+    try {
+      d.exec(sql);
+    } catch {
+      /* column already present — idempotent */
+    }
+  }
+}

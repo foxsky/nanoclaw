@@ -123,6 +123,13 @@ describe('taskflow-server-entry (tf-mcontrol runtime contract)', () => {
       expect(names).toContain('api_create_task');
       expect(names).toContain('api_update_task');
       expect(names).toContain('api_undo'); // R2: dashboard UndoSnackbar routes through engine.undo
+      // R5: serialized board-scoped read tools (FastAPI-only — NOT in the chat
+      // barrel — allowlisted here so the dashboard routes reads through the engine).
+      expect(names).toContain('api_board_tasks');
+      expect(names).toContain('api_board_detail');
+      expect(names).toContain('api_list_holidays');
+      expect(names).toContain('api_list_comments');
+      expect(names).toContain('api_runner_status');
 
       // ...AND uncallable (server.ts resolves tools/call from toolMap
       // directly — the allowlist must gate the call path too).

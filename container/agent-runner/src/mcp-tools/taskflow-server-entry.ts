@@ -29,6 +29,9 @@ import './taskflow-api-notes.js';
 import './taskflow-api-board.js';
 import './taskflow-api-comment.js';
 import './taskflow-api-chat.js';
+// R5: serialized board-scoped READ tools — FastAPI-only (NOT in the chat barrel
+// index.ts), allowlisted below so the dashboard routes reads through the engine.
+import './taskflow-api-serialized-read.js';
 import { startMcpServer, type ToolArgGuard } from './server.js';
 
 /**
@@ -106,6 +109,15 @@ const FASTAPI_ALLOWLIST: ReadonlySet<string> = new Set([
   // re-PATCH. Arg-shape rejections → validation_error; engine refusals → conflict /
   // permission_denied (engine.undo error codes). FastAPI resolves the actor (sender_name).
   'api_undo',
+  // R5 (INBOUND tf-mcontrol 2026-06-10): serialized board-scoped READ tools so the dashboard
+  // routes taskflow-domain reads through the engine (kills visibleTaskScope + enrichment drift).
+  // Each returns the canonical serialized shape; FastAPI does ZERO enrichment. Board-scoped reads
+  // (normalizeAgentIds pins board_id), so no fastApiOnly fail-closed guard is needed.
+  'api_board_tasks',
+  'api_board_detail',
+  'api_list_holidays',
+  'api_list_comments',
+  'api_runner_status',
 ]);
 
 /**
