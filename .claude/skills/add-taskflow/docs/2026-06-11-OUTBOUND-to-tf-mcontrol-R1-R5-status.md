@@ -144,3 +144,19 @@ The engine now honors the same `sender_is_service` manager-equivalent convention
 simple/note/delete tools (send `_resolve_sender`'s second tuple element), verbatim-only. The chat
 surface force-strips it (SEC#12, red-team-tested), so this cannot be abused from WhatsApp. This is
 ADDITIVE to Addendum 3's manager-or-assignee decision (which stands unchanged).
+
+---
+
+## Addendum 5 (2026-06-11) — #396 deferred delivery: the engine now owns it (supersedes #401)
+
+**The offline-assignee deferred residual (G10 tail) is closed engine-side** — commits `e10abf25` + `eb6ae4bd`. A dashboard reassign/create/move for a person whose JID isn't resolved yet (registered-but-unprovisioned) now lands in the **shared `pending_notifications` queue**, and the board's container drains+delivers it (existing #396 drain + the #402 provisioning-wake). The FastAPI subprocess opens the SAME global `taskflow.db` you pass via `--db`, so a row it enqueues is exactly the row the container drains — no new IPC, no host re-resolution, at-most-once (delete-in-tx).
+
+**ACTION FOR YOU (2 cutover-critical config invariants + 1 cleanup):**
+
+1. **RETIRE your deferred tasks-IPC emit.** `dispatch_notification_events` should STOP writing `deferred_notification` to `<ipc>/<group>/tasks/*.json` (`app/main.py:~1910`) — that file has no v2 host consumer (it delivered nothing), and the engine now handles deferred via the shared queue. Keep it only if you confirm a live consumer exists; otherwise it's dead today and a **double-send risk** if a consumer is ever added. (jid-kinds via the service bus and `notify_task_commented` are unchanged.)
+
+2. **`TASKFLOW_DB_PATH` MUST be the shared nanoclaw global `taskflow.db`** — i.e. `<nanoclaw DATA_DIR>/taskflow/taskflow.db`, the file the containers mount at `/workspace/taskflow/`. Your `get_db_path()` falls back to tf's app-local `taskflow.db` when the env is unset (`app/main.py:583-585`); if that ever happens, the subprocess enqueues to a file the container never drains and the deferred is stranded. (It also means dashboard mutations would hit a phantom db — so a wrong path breaks everything, not just deferreds. Pin it explicitly in `start.sh` and verify on .63.)
+
+3. **Use `journal_mode=DELETE` on the shared `taskflow.db`, never WAL.** Your Python RW connections set WAL (`app/main.py:928`); nanoclaw requires DELETE for cross-mount visibility (WAL's `-shm` mmap isn't coherent across the host/container boundary). Empirically: if a Python WAL connection pins the shared file, the engine subprocess's `PRAGMA journal_mode = DELETE` **throws `SQLITE_BUSY` and the subprocess can't open the db** — so a WAL pin fails LOUD (all dashboard mutations error), it won't silently lose only deferreds. Your .61 smoke tests pass, so WAL isn't currently pinning the shared file — but make the DELETE-on-the-shared-db rule explicit so a future change doesn't reintroduce it. (If you need WAL for a *separate* tf-only db, that's fine — just not the shared taskflow.db.)
+
+**Net:** #396 is delivered on the engine side; once you retire the dead IPC emit and confirm the two DB-config invariants on .63, the offline-assignee case is fully closed (phone-arrival still only verifiable on a WhatsApp-linked env post-cutover).
