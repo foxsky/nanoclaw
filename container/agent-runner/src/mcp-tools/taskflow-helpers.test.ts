@@ -12,8 +12,9 @@ import {
   setServiceOutboundDbPath,
   setVerbatimIds,
 } from './taskflow-helpers.ts';
-import { closeSessionDb, initTestSessionDb } from '../db/connection.ts';
+import { closeSessionDb, closeTaskflowDb, initTestSessionDb } from '../db/connection.ts';
 import { __resetTurnActorForTesting, clearTurnActor, setTurnActor } from './turn-actor.ts';
+import { applyBoardConfigColumns, setupEngineDb } from './taskflow-test-fixtures.ts';
 import { runAsApprovedReplay } from './replay-flag.ts';
 
 // SEC#12 (#418): the chat surface must not let the model assert service authority. The engine treats
@@ -58,6 +59,7 @@ describe('SEC#13 (#419) — sender_name bound to the authenticated turn actor on
   afterEach(() => {
     clearTurnActor();
     closeSessionDb();
+    closeTaskflowDb();
     setVerbatimIds(false);
     delete process.env.NANOCLAW_TASKFLOW_BOARD_ID;
   });
@@ -100,6 +102,31 @@ describe('SEC#13 (#419) — sender_name bound to the authenticated turn actor on
     });
     expect('sender_external_id' in out).toBe(false);
     expect(out.sender_name).toBe('Ana');
+  });
+
+  it('resolves a native-WhatsApp JID actor to the board person_id (live-adapter parity — phone match)', () => {
+    // The native WhatsApp adapter authenticates the sender as a JID
+    // ('5586…@s.whatsapp.net'), not a display name. Binding the raw JID made
+    // every person-gated operation fail on a live board (engine resolvePerson
+    // has no phone path). The binding must resolve it via board_people.phone —
+    // V1's template phone-match rule, now deterministic.
+    const db = setupEngineDb('board-seci-taskflow', { withBoardAdmins: true });
+    applyBoardConfigColumns(db);
+    db.prepare(
+      `INSERT INTO board_people (board_id, person_id, name, role, phone) VALUES (?, 'giovanni', 'Carlos Giovanni', 'manager', '5586981234567')`,
+    ).run('board-seci-taskflow');
+    setTurnActor(['5586981234567@s.whatsapp.net']);
+    // Even a spoofed manager name binds to the JID's REAL board person.
+    const out = normalizeAgentIds({ board_id: 'b', task_id: 'P1', sender_name: 'BossManager' });
+    expect(out.sender_name).toBe('giovanni');
+  });
+
+  it('keeps the raw JID when no board person matches (fail-closed — engine denies person-gated ops)', () => {
+    const db = setupEngineDb('board-seci-taskflow', { withBoardAdmins: true });
+    applyBoardConfigColumns(db);
+    setTurnActor(['5599999999999@s.whatsapp.net']);
+    const out = normalizeAgentIds({ board_id: 'b', sender_name: 'BossManager' });
+    expect(out.sender_name).toBe('5599999999999@s.whatsapp.net');
   });
 
   it('SKIPS binding under verbatim (FastAPI server-resolved actor kept)', () => {

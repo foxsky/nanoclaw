@@ -298,6 +298,29 @@ describe('SEC#13 (#419) — comment author bound to the authenticated turn actor
     });
   });
 
+  it('resolves a native-WhatsApp JID actor to the board person (live-adapter parity — phone match)', async () => {
+    // On the native WhatsApp adapter the authenticated sender is a JID, not a
+    // display name; the comment must attribute to the real board person, not a
+    // raw JID string (delta-parity audit 2026-06-10).
+    try {
+      db.exec(`ALTER TABLE board_people ADD COLUMN phone TEXT`);
+    } catch {
+      /* already present */
+    }
+    db.prepare(`UPDATE board_people SET phone = '5586981234567' WHERE board_id = ? AND person_id = 'bob'`).run(SEED);
+    setTurnActor(['5586981234567@s.whatsapp.net']);
+    const r = await call({
+      board_id: SEED,
+      task_id: 'T1',
+      author_id: 'mallory-spoof',
+      author_name: 'Mallory',
+      message: 'sent from a live WhatsApp group',
+    });
+    expect(r.success).toBe(true);
+    expect(r.data.author_id).toBe('bob');
+    expect(r.data.author_name).toBe('Bob');
+  });
+
   it('falls back to the display name when the resolved sender is not a registered board person', async () => {
     setTurnActor(['Ext-Visitor']); // not in board_people
     const r = await call({

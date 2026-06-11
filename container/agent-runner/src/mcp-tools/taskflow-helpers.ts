@@ -10,6 +10,7 @@
  *  the DB. */
 import { getTurnActor } from './turn-actor.js';
 import { isApprovedReplay } from './replay-flag.js';
+import { resolveAuthenticatedSenderPerson } from './actor-person-resolution.js';
 
 export type TaskflowPersonActor = {
   actor_type: 'taskflow_person';
@@ -206,8 +207,17 @@ export function normalizeAgentIds(args: Record<string, unknown>): Record<string,
   if (process.env.NANOCLAW_TASKFLOW_BOARD_ID && !isApprovedReplay()) {
     if ('sender_name' in out) {
       const actor = getTurnActor();
-      if (actor.resolved) out.sender_name = actor.sender;
-      else delete out.sender_name;
+      if (actor.resolved) {
+        // Live-adapter parity (delta-parity audit 2026-06-10): the native
+        // WhatsApp adapter authenticates the sender as a JID, which the engine
+        // cannot resolve to a person — bind the JID's board person (phone
+        // match, V1's deterministic equivalent of the template's sender-
+        // resolution rule 3). No/ambiguous match keeps the raw sender, which
+        // the engine fail-closed-denies on person-gated operations.
+        out.sender_name =
+          resolveAuthenticatedSenderPerson(process.env.NANOCLAW_TASKFLOW_BOARD_ID, actor.sender)?.personId ??
+          actor.sender;
+      } else delete out.sender_name;
     }
     if ('sender_external_id' in out) delete out.sender_external_id;
   }

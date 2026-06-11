@@ -18,32 +18,17 @@
  * WhatsApp host path delivers them; FastAPI ignores them post-0j-a;
  * FastAPI-originated push delivery is the tracked 0h-v2 / Phase-3 item).
  */
-import type { Database } from 'bun:sqlite';
 import { getTaskflowDb } from '../db/connection.js';
 import { TaskflowEngine } from '../taskflow-engine.js';
+// Author resolution (person_id-keying for the engine's self-comment notification
+// suppression, plus the live-adapter JID phone match) lives in the shared
+// resolveAuthenticatedSenderPerson — same rules as normalizeAgentIds' actor bind.
+import { resolveAuthenticatedSenderPerson } from './actor-person-resolution.js';
 import { requiresChatActor } from './chat-actor-guard.js';
 import { isApprovedReplay } from './replay-flag.js';
 import { registerTools } from './server.js';
 import { getVerbatimIds, normalizeAgentIds } from './taskflow-helpers.js';
 import { getTurnActor } from './turn-actor.js';
-
-/** Resolve a sender display name to its canonical board person_id (mirrors the
- *  engine's assignee resolution at taskflow-engine.ts:3094) so the comment's
- *  author_id is person_id-keyed — otherwise the engine's "don't notify the
- *  author of their own comment" suppression (which compares person_id) misfires.
- *  Returns null when the sender is not a registered board person. */
-function resolveAuthorPersonId(db: Database, boardId: string, sender: string): string | null {
-  try {
-    const row = db
-      .prepare(
-        `SELECT person_id FROM board_people WHERE board_id = ? AND (person_id = ? OR name = ?) ORDER BY (person_id = ?) DESC, person_id ASC LIMIT 1`,
-      )
-      .get(boardId, sender, sender, sender) as { person_id: string } | undefined;
-    return row?.person_id ?? null;
-  } catch {
-    return null;
-  }
-}
 import { safeNotificationEvents } from './taskflow-api-mutate.js';
 import { enqueueDeferredNotificationsInSession } from './pending-notification-dispatch.js';
 import { dispatchNotificationEvents } from './taskflow-notify-dispatch.js';
@@ -99,8 +84,12 @@ export const apiTaskAddCommentTool: McpToolDefinition = {
     if (process.env.NANOCLAW_TASKFLOW_BOARD_ID && !getVerbatimIds() && !isApprovedReplay()) {
       const actor = getTurnActor();
       if (actor.resolved) {
-        norm.author_name = actor.sender;
-        norm.author_id = resolveAuthorPersonId(getTaskflowDb(), norm.board_id, actor.sender) ?? actor.sender;
+        // Shared resolver (delta-parity audit 2026-06-10): also resolves a
+        // native-WhatsApp JID sender via board_people.phone, so live-adapter
+        // comments attribute to the real person instead of a raw JID.
+        const person = resolveAuthenticatedSenderPerson(norm.board_id as string, actor.sender, getTaskflowDb());
+        norm.author_name = person?.name ?? actor.sender;
+        norm.author_id = person?.personId ?? actor.sender;
       }
     }
     // CreateCommentPayload.validate_author / validate_message (main.py:151):

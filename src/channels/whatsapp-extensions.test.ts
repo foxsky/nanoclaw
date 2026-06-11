@@ -107,8 +107,56 @@ vi.mock('@whiskeysockets/baileys', () => ({
 
 // --- SUT import (side-effect: registers 'whatsapp' adapter) ---
 import './whatsapp.js';
+import { resolveParticipantSender } from './whatsapp.js';
 import { initChannelAdapters, getChannelAdapter } from './channel-registry.js';
 import type { ChannelAdapter } from './adapter.js';
+
+// V1 parity (delta-parity audit 2026-06-10): in LID-mode groups the
+// authenticated sender must be the PHONE JID, not the @lid JID — V1 translated
+// the participant (participantAlt || LID→phone map); V2 had dropped it, so
+// content.sender carried an identity the TaskFlow actor binding (#419,
+// board_people.phone match) could never resolve.
+describe('resolveParticipantSender (LID participant → phone JID, V1 parity)', () => {
+  const translate = vi.fn(async (jid: string) => (jid === '111222333@lid' ? '5586981234567@s.whatsapp.net' : jid));
+
+  beforeEach(() => translate.mockClear());
+
+  it('prefers participantAlt when Baileys provides it', async () => {
+    const sender = await resolveParticipantSender(
+      {
+        participant: '111222333@lid',
+        remoteJid: '120363400000000000@g.us',
+        participantAlt: '5586981234567@s.whatsapp.net',
+      },
+      translate,
+    );
+    expect(sender).toBe('5586981234567@s.whatsapp.net');
+    expect(translate).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the LID→phone translation when participantAlt is absent', async () => {
+    const sender = await resolveParticipantSender(
+      { participant: '111222333@lid', remoteJid: '120363400000000000@g.us' },
+      translate,
+    );
+    expect(sender).toBe('5586981234567@s.whatsapp.net');
+    expect(translate).toHaveBeenCalledWith('111222333@lid');
+  });
+
+  it('passes a phone-JID participant through untouched (no translation)', async () => {
+    const sender = await resolveParticipantSender(
+      { participant: '5586981234567@s.whatsapp.net', remoteJid: '120363400000000000@g.us' },
+      translate,
+    );
+    expect(sender).toBe('5586981234567@s.whatsapp.net');
+    expect(translate).not.toHaveBeenCalled();
+  });
+
+  it('uses remoteJid for DMs (no participant)', async () => {
+    const sender = await resolveParticipantSender({ remoteJid: '5586981234567@s.whatsapp.net' }, translate);
+    expect(sender).toBe('5586981234567@s.whatsapp.net');
+  });
+});
 
 // Pre-create a fake creds.json so the factory's null-short-circuit (whatsapp.ts:157)
 // passes via WHATSAPP_ENABLED=true. Either of (creds.json, phone, WHATSAPP_ENABLED)

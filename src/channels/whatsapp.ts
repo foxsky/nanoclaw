@@ -126,6 +126,24 @@ function formatWhatsApp(text: string): string {
   return segments.map(({ content, isProtected }) => (isProtected ? content : transformForWhatsApp(content))).join('');
 }
 
+/**
+ * V1 parity (delta-parity audit 2026-06-10): in LID-mode groups
+ * `msg.key.participant` is an `@lid` JID. V1 translated it to the phone JID
+ * (`participantAlt` when Baileys provides it, else the LID→phone map) before
+ * using it as the authenticated sender; V2 only translated the chat JID, so
+ * `content.sender` carried an untranslatable LID — and the TaskFlow #419 actor
+ * binding (which resolves the sender against `board_people.phone`) could never
+ * match it. Exported for tests.
+ */
+export async function resolveParticipantSender(
+  key: { participant?: string | null; remoteJid?: string | null; participantAlt?: string },
+  translate: (jid: string) => Promise<string>,
+): Promise<string> {
+  const raw = key.participant || key.remoteJid || '';
+  if (!raw.endsWith('@lid')) return raw;
+  return key.participantAlt || (await translate(raw));
+}
+
 /** Map file extension to Baileys media message type. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function buildMediaMessage(data: Buffer, filename: string, ext: string, caption?: string): any {
@@ -539,7 +557,10 @@ registerChannelAdapter('whatsapp', {
             // Skip empty protocol messages (no text and no attachments)
             if (!content && attachments.length === 0) continue;
 
-            const sender = msg.key.participant || msg.key.remoteJid || '';
+            const sender = await resolveParticipantSender(
+              msg.key as { participant?: string | null; remoteJid?: string | null; participantAlt?: string },
+              translateJid,
+            );
             const senderName = msg.pushName || sender.split('@')[0];
             const fromMe = msg.key.fromMe || false;
             // Filter bot's own messages to prevent echo loops.
