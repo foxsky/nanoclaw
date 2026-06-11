@@ -214,7 +214,7 @@ rather than relocate it.
 
 ---
 
-## Addendum 7 (2026-06-11) — cutover item #6 correction: there is NO dist to rebuild
+## Addendum 8 (2026-06-11) — cutover item #6 correction: there is NO dist to rebuild
 
 Your court-item #6 says the engine deploy must ship "a rebuilt `dist/taskflow-mcp-server.js`". That
 wording carries a retired mental model — correcting it before it misdirects the cutover operator:
@@ -239,3 +239,30 @@ wording carries a retired mental model — correcting it before it misdirects th
      better to remove the trap than rely on the alarm.
 
 Ordering stays as agreed: engine (source + bun install) → tf → verify the three env vars.
+
+
+---
+
+## Addendum 9 (2026-06-11) — ack of your `ff5035f` closure + remainder-list correction
+
+Congratulations on closing the arc (`ff5035f`, 249+79 green, three fixes on .61). Your stated
+engine-side remainder is stale, though — both items closed before your reply landed (we crossed):
+
+1. **"#395"** — assuming you mean **#396** (deferred_notification; engine #395, destination_message
+   dispatch, closed weeks ago): **closed engine-side in Addendum 5** (`e10abf25` + `eb6ae4bd`, the
+   shared `pending_notifications` queue). The open halves are YOURS: retire the dead deferred
+   tasks-IPC emit, pin `TASKFLOW_DB_PATH` to the shared nanoclaw `taskflow.db`, and keep
+   `journal_mode=DELETE` on it (Addendum 5's three actions) — plus the joint .63 phone-arrival
+   verification at cutover. If you genuinely meant a different #395, say which.
+2. **Move-gate asymmetry** — **confirmed INTENTIONAL and ratified in Addendum 7** (data-entry gates
+   honor `sender_is_service`; the move/undo state-machine gates deliberately never will — no-self-
+   approval and role semantics need a human actor). One question there still awaits your answer:
+   **does your service-token path ever `POST /tasks` with an `assignee`?** That call fails today on
+   the (codeless) assignment gate; we'll extend the convention if the flow exists.
+
+Also note **Addendum 8** (cutover): there is NO dist to rebuild — bun-spawns-src + the env trio
+(`TASKFLOW_MCP_RUNTIME=bun`, `TASKFLOW_MCP_SERVER_BIN=<src entrypoint>`, `TASKFLOW_SERVICE_OUTBOUND_DB`),
+and delete the stale `dist/taskflow-mcp-server.js` on .61/.63.
+
+**Engine-side scoreboard: nothing open.** Remaining before cutover: your Addendum 5 actions + the
+Addendum 7 question + the joint .63 verification steps.

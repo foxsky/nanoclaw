@@ -42,11 +42,13 @@ Required operator choices:
 
 Only relevant if the tf-mcontrol dashboard is deployed against this v2 install (it runs the engine as an MCP subprocess against the **same** `taskflow.db` the containers use). Skip this section if no dashboard is deployed. These requirements come from the R1–R5 + #396 + SEC engine work (coordination: `.claude/skills/add-taskflow/docs/2026-06-11-OUTBOUND-to-tf-mcontrol-R1-R5-status.md`).
 
-**Deploy ORDER — engine first, then tf, then verify env:**
+**Deploy ORDER — engine source first, then tf, then verify env:**
 
-1. **Deploy the engine WITH a rebuilt `dist/taskflow-mcp-server.js`.** tf-mcontrol's subprocess handshake hard-requires the R5 read tools (`api_board_tasks`/`api_board_detail`/`api_list_holidays`/`api_list_comments`/`api_runner_status`[`_batch`]) + `api_undo`; a **stale `dist`** fails the handshake by design (the API's subprocess refuses to start), so rebuild it before tf comes up. Rebuild from the agent-runner tree, not just the host `dist/`.
-2. **Deploy/restart tf-mcontrol** (it spawns the freshly-built engine subprocess).
-3. **Verify the three DB/env invariants** (each is a silent or loud failure if wrong):
+1. **Deploy the current engine source tree and run `bun install` in `container/agent-runner/`.** tf-mcontrol runs the MCP subprocess from source, not from `dist/taskflow-mcp-server.js`: the live contract is `TASKFLOW_MCP_RUNTIME` + `TASKFLOW_MCP_SERVER_BIN` pointing at `container/agent-runner/src/mcp-tools/taskflow-server-entry.ts`. The old Node/`better-sqlite3` dist hand-port is retired; delete stale `dist/taskflow-mcp-server.js` copies from `.61`/`.63` during cutover so a legacy env value cannot resurrect it.
+2. **Deploy/restart tf-mcontrol** (it spawns the engine subprocess from the freshly deployed source).
+3. **Verify the subprocess/env/DB invariants** (each is a silent or loud failure if wrong):
+   - `TASKFLOW_MCP_RUNTIME=bun` — the tf default is `node`, which is the wrong runtime for the source entrypoint.
+   - `TASKFLOW_MCP_SERVER_BIN=<deploy-root>/container/agent-runner/src/mcp-tools/taskflow-server-entry.ts` — the tf default is empty, so an unset value cannot start the subprocess.
    - `TASKFLOW_SERVICE_OUTBOUND_DB` set on the tf subprocess — without it, dashboard-originated resolved-JID notifications (reassign/create DMs, parent rollups) stay in the JSON response and are **not** delivered (R3 fail-mode-b, no double-send).
    - `TASKFLOW_DB_PATH` = the shared nanoclaw global `taskflow.db` (`<DATA_DIR>/taskflow/taskflow.db`, the file containers mount at `/workspace/taskflow/`). If it points elsewhere, dashboard mutations hit a phantom DB (immediately obvious) **and** offline-assignee deferreds (#396) are stranded.
    - The shared `taskflow.db` is `journal_mode=DELETE`, **never WAL** (WAL's `-shm` mmap isn't coherent across the host/container mount). A Python WAL connection that pins the shared file makes the engine subprocess `PRAGMA journal_mode=DELETE` throw `SQLITE_BUSY` → the subprocess can't open the DB → all dashboard mutations fail loud (so this can't silently corrupt only deferreds).
