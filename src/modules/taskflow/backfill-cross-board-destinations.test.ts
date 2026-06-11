@@ -4,13 +4,10 @@ import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { closeDb, getDb, initTestDb } from '../src/db/index.js';
-import { runMigrations } from '../src/db/migrations/index.js';
-import { initTaskflowDb } from '../src/taskflow-db.js';
-import {
-  backfillCrossBoardDestinations,
-  type BackfillReport,
-} from './backfill-cross-board-destinations.js';
+import { closeDb, getDb, initTestDb } from '../../db/index.js';
+import { runMigrations } from '../../db/migrations/index.js';
+import { initTaskflowDb } from '../../taskflow-db.js';
+import { backfillCrossBoardDestinations, type BackfillReport } from './backfill-cross-board-destinations.js';
 
 const TMPROOT = path.join(os.tmpdir(), `nanoclaw-backfill-test-${process.pid}`);
 const now = '2026-05-11T00:00:00Z';
@@ -136,9 +133,7 @@ describe('backfillCrossBoardDestinations — A12-part-2 one-shot migration', () 
     expect(report.child_inserted).toBe(1);
     expect(report.parent_inserted).toBe(1);
 
-    const rowCount = getDb()
-      .prepare(`SELECT COUNT(*) AS n FROM agent_destinations`)
-      .get() as { n: number };
+    const rowCount = getDb().prepare(`SELECT COUNT(*) AS n FROM agent_destinations`).get() as { n: number };
     expect(rowCount.n).toBe(0); // no actual writes during dry-run
   });
 

@@ -4,9 +4,9 @@ import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { closeDb, getDb, initTestDb } from '../src/db/index.js';
-import { runMigrations } from '../src/db/migrations/index.js';
-import { initTaskflowDb } from '../src/taskflow-db.js';
+import { closeDb, getDb, initTestDb } from '../../db/index.js';
+import { runMigrations } from '../../db/migrations/index.js';
+import { initTaskflowDb } from '../../taskflow-db.js';
 import {
   backfillTaskflowPersonDestinations,
   readPersonNotificationRows,
@@ -117,5 +117,37 @@ describe('backfillTaskflowPersonDestinations', () => {
       .prepare(`SELECT target_id FROM agent_destinations WHERE agent_group_id = ? AND local_name = ?`)
       .get('ag-seci', 'Mauro Cesar') as { target_id: string } | undefined;
     expect(dest?.target_id).toBe('mg-existing');
+  });
+
+  it('DETECTS a display-name collision (two people, same name, different JIDs) instead of silently mis-routing', () => {
+    const tfDb = initTaskflowDb(tfPath);
+    seedBoard(tfDb); // Mauro Cesar → 120363407206502707@g.us
+    // A SECOND distinct person with the SAME display name but a DIFFERENT JID.
+    tfDb
+      .prepare(
+        `INSERT INTO board_people (board_id, person_id, name, role, notification_group_jid)
+         VALUES (?, ?, ?, 'member', ?)`,
+      )
+      .run('board-seci-taskflow', 'mauro2', 'Mauro Cesar', '120363999999999@g.us');
+    tfDb.close();
+    seedAgentGroup();
+
+    const ro = new Database(tfPath, { readonly: true });
+    const report = backfillTaskflowPersonDestinations(ro, { boardId: 'board-seci-taskflow', dryRun: false });
+    ro.close();
+
+    // First person wired; second is a collision (name already maps elsewhere) —
+    // counted + surfaced, NOT silently overwritten or mis-routed.
+    expect(report.destinations_inserted).toBe(1);
+    expect(report.destinations_skipped).toBe(1);
+    expect(report.name_collisions).toBe(1);
+    // The single destination still points at the FIRST person's group (unchanged).
+    const dest = getDb()
+      .prepare(`SELECT target_id FROM agent_destinations WHERE agent_group_id = ? AND local_name = ?`)
+      .get('ag-seci', 'Mauro Cesar') as { target_id: string } | undefined;
+    const mg1 = getDb()
+      .prepare(`SELECT id FROM messaging_groups WHERE platform_id = ?`)
+      .get('120363407206502707@g.us') as { id: string };
+    expect(dest?.target_id).toBe(mg1.id);
   });
 });

@@ -7,6 +7,7 @@
 import path from 'path';
 
 import { backfillContainerConfigs } from './backfill-container-configs.js';
+import { backfillTaskflowDestinations } from './backfill-taskflow-destinations.js';
 import { DATA_DIR } from './config.js';
 import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js';
 import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
@@ -103,6 +104,9 @@ async function main(): Promise<void> {
       // Drop the legacy table once every row has migrated. Re-runs are
       // safe on already-dropped DBs.
       dropScheduledTasksIfDrained(tfDb);
+      // Self-heal the agent_destinations rows for MIGRATED boards (the migration
+      // pipeline never ran the two backfill translators). Idempotent + fail-soft.
+      backfillTaskflowDestinations(tfDb);
     } finally {
       closeAll();
       tfDb.close();
