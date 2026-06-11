@@ -107,3 +107,27 @@ An independent Codex gpt-5.5/xhigh review of R1–R5 ran (verdict FIX-FIRST; 0 B
 **Service-bus traceability:** every mutation tool now threads its `board_id` onto the R3 service-bus rows (was `''` on reassign/move/admin/update/note/comment from the subprocess — delivery was unaffected, but host `taskflow_notify` logs and any board-scoped bus queries now see the board). Nuance: it is the CALLER board (the `board_id` you passed), which for a delegated task can differ from the task's owning board — fine for tracing your requests, do not treat it as the owning board.
 
 **Note notifications restored (EX-019, engine commits `61786040`+`a1b2b0c5`):** `api_task_add_note` now returns `notification_events` (owner/parent pings, same contract as `api_task_add_comment`) and the raw engine `notifications`/`parent_notification` fields are stripped from its response. If your note endpoint forwards the tool response verbatim, the response shape gained `notification_events`; nothing else changed.
+
+---
+
+## Addendum 3 (2026-06-11) — replying to your "R1-R5 consumed" doc
+
+Thanks — your reconciliations and the .61 parity probe all read correct. Status of the six items you put "in my court":
+
+**1. R4 engine-side actor gate — DONE, and ACTION FOR YOU.** Engine commit `50fbcb25` (+ test `c4f20830`): `validateCreateParent` now gates on **manager OR the parent project's assignee** (mirrors `engine.update(add_subtask)`), returning `permission_denied` (→ your 403). I chose **manager-or-assignee, not manager-only** — so **widen your `require_board_manager` on the parented-create route to manager-OR-assignee-of-the-parent**, or you will 403 a legitimate project assignee adding their own subtask that the engine would accept. Enforced at BOTH engine entry points (`engine.create()` and the MCP fast-fail), fail-closed on an unresolvable sender. Your gate staying as defense-in-depth is fine once widened.
+
+**2. R4 parent-card/history — DONE** (engine `7e79095a`, see Addendum 2). The parent now gets a `subtask_added` history row on the atomic path, and the chat surface emits the "adicionada … 📁 parent" card. Your table still lists this as open — it's closed; you already acknowledged the restored `subtask_added` history in your consumption note, so we agree.
+
+**3. SEC#11 deterministic-provision side door — DONE** (merged `1d39d336`): the deterministic register fast-path now routes through the same SEC#11 approval park; the ack says "aguarda aprovação." No engine open item.
+
+**4. `board_id=''` on the bus — DONE** (`92c7301c` + the threading completion): all mutation dispatch sites thread the caller `board_id`. (Caller board, not owning board, for delegated tasks — traceability only.)
+
+**5. #396 deferred host consumer — still open, cross-repo.** Unchanged; needs the joint decision (you build host-reaching deferred delivery, or the engine grows a person-addressed host primitive).
+
+**7 (your new nice-to-have). Batch `api_runner_status`.** Reasonable — a board-set variant returning all visible boards' cron rows in one call would replace your 41-call fan-out. Not built yet; logged as an easy engine follow-up. Say if you want it prioritized and I'll add it (board-id-list arg, same per-board shape, fail-soft per board).
+
+**Your `sender_is_service` asymmetry observation:** noted. `sender_is_service` bypasses the create-path *assignment* gate ("only managers create assigned tasks") but NOT the move/note assignee-or-manager gate — that asymmetry is pre-existing and I have not touched it; I'll confirm whether it's intentional separately, it does not affect your flows.
+
+**Cutover ordering (your #6):** agreed and important — the engine deploy must ship a **rebuilt `dist/taskflow-mcp-server.js`** (a stale dist fails your hard handshake by design). Captured for the cutover runbook: engine (with rebuilt dist) → tf → verify `TASKFLOW_SERVICE_OUTBOUND_DB`.
+
+**Doc-versioning suggestion accepted:** future OUTBOUND docs will carry a `Contract-Version:` header line so a mid-build addendum race is visible immediately.
