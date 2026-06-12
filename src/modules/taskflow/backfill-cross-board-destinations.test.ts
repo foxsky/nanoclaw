@@ -9,45 +9,11 @@ import { runMigrations } from '../../db/migrations/index.js';
 import { createDestination } from '../../modules/agent-to-agent/db/agent-destinations.js';
 import { initTaskflowDb } from '../../taskflow-db.js';
 import { backfillCrossBoardDestinations, type BackfillReport } from './backfill-cross-board-destinations.js';
+import { seedBoard, seedV2Wiring } from './backfill-test-helpers.js';
 
 const TMPROOT = path.join(os.tmpdir(), `nanoclaw-backfill-test-${process.pid}`);
 const now = '2026-05-11T00:00:00Z';
 let tfPath = '';
-
-function seedBoard(
-  tfDb: Database.Database,
-  id: string,
-  folder: string,
-  groupJid: string,
-  parentId: string | null,
-  level: number,
-): void {
-  tfDb
-    .prepare(
-      `INSERT INTO boards (id, group_jid, group_folder, board_role, hierarchy_level, max_depth, parent_board_id, short_code)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(id, groupJid, folder, 'hierarchy', level, 3, parentId, null);
-  tfDb.prepare('INSERT INTO board_config (board_id, wip_limit) VALUES (?, ?)').run(id, 7);
-}
-
-function seedV2Wiring(agentId: string, folder: string, mgId: string, platformId: string): void {
-  getDb()
-    .prepare(`INSERT INTO agent_groups (id, name, folder, agent_provider, created_at) VALUES (?, ?, ?, ?, ?)`)
-    .run(agentId, 'Case', folder, 'claude', now);
-  getDb()
-    .prepare(
-      `INSERT INTO messaging_groups (id, channel_type, platform_id, name, is_group, unknown_sender_policy, is_main_control, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(mgId, 'whatsapp', platformId, folder, 1, 'strict', 0, now);
-  getDb()
-    .prepare(
-      `INSERT INTO messaging_group_agents (id, messaging_group_id, agent_group_id, engage_mode, engage_pattern, sender_scope, ignored_message_policy, session_mode, priority, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(`mga-${agentId}`, mgId, agentId, 'pattern', '.', 'all', 'drop', 'shared', 0, now);
-}
 
 beforeEach(() => {
   fs.mkdirSync(TMPROOT, { recursive: true });

@@ -19,8 +19,9 @@
 
 import type Database from 'better-sqlite3';
 import { getDb, hasTable } from '../../db/connection.js';
-import { createDestination, getDestinationByName } from '../../modules/agent-to-agent/db/agent-destinations.js';
 import { getAgentGroupByFolder } from '../../db/agent-groups.js';
+import { getMessagingGroupsByAgentGroup } from '../../db/messaging-groups.js';
+import { createDestinationEnsurer, type EnsureResult } from './backfill-destinations-common.js';
 
 interface BoardLink {
   parent_board_id: string;
@@ -69,22 +70,29 @@ export function readBoardLinks(tfDb: Database.Database): BoardLink[] {
     .all() as BoardLink[];
 }
 
-function resolveAgentAndMessagingGroup(
-  groupFolder: string,
-  groupJid: string,
-): { agent_group_id: string; messaging_group_id: string } | null {
-  const ag = getAgentGroupByFolder(groupFolder);
-  if (!ag) return null;
-  const mg = getDb()
-    .prepare(
-      `SELECT mg.id AS messaging_group_id
-         FROM messaging_groups mg
-         JOIN messaging_group_agents mga ON mga.messaging_group_id = mg.id
-        WHERE mga.agent_group_id = ? AND mg.platform_id = ?`,
-    )
-    .get(ag.id, groupJid) as { messaging_group_id: string } | undefined;
-  if (!mg) return null;
-  return { agent_group_id: ag.id, messaging_group_id: mg.messaging_group_id };
+interface ResolvedBoard {
+  agent_group_id: string;
+  messaging_group_id: string;
+}
+
+/**
+ * Resolve a board's (folder, jid) to its v2 agent + messaging group, reusing
+ * the db layer (getAgentGroupByFolder + getMessagingGroupsByAgentGroup) instead
+ * of a hand-rolled join. Memoized by (folder, jid): a parent board is the
+ * resolve target of every one of its children, so the same lookup recurs.
+ */
+function makeBoardResolver(): (groupFolder: string, groupJid: string) => ResolvedBoard | null {
+  const memo = new Map<string, ResolvedBoard | null>();
+  return (groupFolder, groupJid) => {
+    const key = `${groupFolder}\0${groupJid}`;
+    const cached = memo.get(key);
+    if (cached !== undefined) return cached;
+    const ag = getAgentGroupByFolder(groupFolder);
+    const mg = ag ? getMessagingGroupsByAgentGroup(ag.id).find((m) => m.platform_id === groupJid) : undefined;
+    const result = ag && mg ? { agent_group_id: ag.id, messaging_group_id: mg.id } : null;
+    memo.set(key, result);
+    return result;
+  };
 }
 
 /**
@@ -112,68 +120,62 @@ export function backfillCrossBoardDestinations(
     dry_run: options.dryRun,
   };
   const now = new Date().toISOString();
+  const ensure = createDestinationEnsurer({ dryRun: options.dryRun, now }).ensure;
+  const resolve = makeBoardResolver();
 
-  for (const link of links) {
-    const parent = resolveAgentAndMessagingGroup(link.parent_folder, link.parent_group_jid);
-    const child = resolveAgentAndMessagingGroup(link.child_folder, link.child_group_jid);
-    if (!parent || !child) {
-      log(`  unresolved: parent_folder=${link.parent_folder} child_folder=${link.child_folder}`);
-      report.unresolved++;
-      continue;
-    }
-
-    const parentDestName = `parent-${link.parent_folder}`;
-    const sourceDestName = `source-${link.child_folder}`;
-
-    const existingChild = getDestinationByName(child.agent_group_id, parentDestName);
-    if (existingChild) {
-      report.child_skipped++;
-      // Already present, but does it point where THIS link needs? A mismatch
-      // means the reserved name was wired to a different group (stale/partial
-      // prior migration) → forwarding silently miswired. Surface, don't
-      // overwrite (the operator resolves it).
-      if (existingChild.target_id !== parent.messaging_group_id) {
-        report.name_collisions++;
-        log(
-          `  COLLISION: child ${child.agent_group_id} '${parentDestName}' already → ${existingChild.target_id}, not ${parent.messaging_group_id}`,
-        );
-      }
-    } else if (options.dryRun) {
-      log(`  DRY: child ${child.agent_group_id} += '${parentDestName}' → ${parent.messaging_group_id}`);
-      report.child_inserted++;
+  // Map one ensure() outcome to the leg's inserted/skipped counters (+ the
+  // shared name_collisions), keeping the two legs' bookkeeping identical.
+  const recordLeg = (
+    result: EnsureResult,
+    inserted: 'child_inserted' | 'parent_inserted',
+    skipped: 'child_skipped' | 'parent_skipped',
+    desc: string,
+    want: string,
+  ): void => {
+    if (result.status === 'inserted') {
+      report[inserted]++;
+      log(`  ${options.dryRun ? 'DRY: ' : ''}${desc} → ${want}`);
     } else {
-      createDestination({
-        agent_group_id: child.agent_group_id,
-        local_name: parentDestName,
-        target_type: 'channel',
-        target_id: parent.messaging_group_id,
-        created_at: now,
-      });
-      report.child_inserted++;
-    }
-
-    const existingParent = getDestinationByName(parent.agent_group_id, sourceDestName);
-    if (existingParent) {
-      report.parent_skipped++;
-      if (existingParent.target_id !== child.messaging_group_id) {
+      report[skipped]++;
+      // Already present pointing at a DIFFERENT group → stale/partial prior
+      // migration left forwarding miswired. Surface; do NOT overwrite.
+      if (result.status === 'collision') {
         report.name_collisions++;
-        log(
-          `  COLLISION: parent ${parent.agent_group_id} '${sourceDestName}' already → ${existingParent.target_id}, not ${child.messaging_group_id}`,
-        );
+        log(`  COLLISION: ${desc} already → ${result.existingTarget}, not ${want}`);
       }
-    } else if (options.dryRun) {
-      log(`  DRY: parent ${parent.agent_group_id} += '${sourceDestName}' → ${child.messaging_group_id}`);
-      report.parent_inserted++;
-    } else {
-      createDestination({
-        agent_group_id: parent.agent_group_id,
-        local_name: sourceDestName,
-        target_type: 'channel',
-        target_id: child.messaging_group_id,
-        created_at: now,
-      });
-      report.parent_inserted++;
     }
-  }
+  };
+
+  const process = (): void => {
+    for (const link of links) {
+      const parent = resolve(link.parent_folder, link.parent_group_jid);
+      const child = resolve(link.child_folder, link.child_group_jid);
+      if (!parent || !child) {
+        log(`  unresolved: parent_folder=${link.parent_folder} child_folder=${link.child_folder}`);
+        report.unresolved++;
+        continue;
+      }
+      const parentDestName = `parent-${link.parent_folder}`;
+      const sourceDestName = `source-${link.child_folder}`;
+      recordLeg(
+        ensure(child.agent_group_id, parentDestName, parent.messaging_group_id),
+        'child_inserted',
+        'child_skipped',
+        `child ${child.agent_group_id} '${parentDestName}'`,
+        parent.messaging_group_id,
+      );
+      recordLeg(
+        ensure(parent.agent_group_id, sourceDestName, child.messaging_group_id),
+        'parent_inserted',
+        'parent_skipped',
+        `parent ${parent.agent_group_id} '${sourceDestName}'`,
+        child.messaging_group_id,
+      );
+    }
+  };
+
+  // One transaction around the writes: atomic + a single fsync instead of one
+  // per insert. Dry-run writes nothing, so it just reads.
+  getDb().transaction(process)();
   return report;
 }

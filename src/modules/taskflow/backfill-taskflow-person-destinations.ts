@@ -15,7 +15,8 @@ import type Database from 'better-sqlite3';
 
 import { getDb, hasTable } from '../../db/connection.js';
 import { getAgentGroupByFolder } from '../../db/agent-groups.js';
-import { createDestination, getDestinationByName } from '../../modules/agent-to-agent/db/agent-destinations.js';
+import { createMessagingGroup, getMessagingGroupByPlatform } from '../../db/messaging-groups.js';
+import { createDestinationEnsurer } from './backfill-destinations-common.js';
 
 interface PersonNotificationRow {
   board_id: string;
@@ -59,24 +60,6 @@ export function readPersonNotificationRows(tfDb: Database.Database, boardId?: st
     .all(...(boardId ? [boardId] : [])) as PersonNotificationRow[];
 }
 
-function findMessagingGroupId(channelType: string, platformId: string): string | null {
-  const row = getDb()
-    .prepare('SELECT id FROM messaging_groups WHERE channel_type = ? AND platform_id = ?')
-    .get(channelType, platformId) as { id: string } | undefined;
-  return row?.id ?? null;
-}
-
-function insertMessagingGroup(id: string, platformId: string, name: string, now: string, dryRun: boolean): void {
-  if (dryRun) return;
-  getDb()
-    .prepare(
-      `INSERT INTO messaging_groups
-         (id, channel_type, platform_id, name, is_group, unknown_sender_policy, created_at)
-       VALUES (?, 'whatsapp', ?, ?, 1, 'strict', ?)`,
-    )
-    .run(id, platformId, name, now);
-}
-
 /**
  * Derive the messaging_groups.id from the JID — the row's REAL identity
  * (messaging_groups dedupes on UNIQUE(channel_type, platform_id)). Deriving it
@@ -109,68 +92,68 @@ export function backfillTaskflowPersonDestinations(
     dry_run: options.dryRun,
   };
   const now = new Date().toISOString();
-  // Tracks (agent_group_id, name) → messagingGroupId for destinations created
-  // (or, in dry-run, WOULD be created) earlier in THIS pass. Real runs also
-  // see prior inserts via getDestinationByName; dry-run writes nothing, so
-  // without this an in-run duplicate-name pair would be missed by the preview.
-  const planned = new Map<string, string>();
-  // Same idea for messaging groups, keyed by JID: dry-run never writes, so two
-  // people sharing one JID would otherwise each "insert" it and the second
-  // would be a false duplicate. Keyed by the JID (the real dedup key).
+  const ensure = createDestinationEnsurer({ dryRun: options.dryRun, now }).ensure;
+  // Messaging groups created (or, in dry-run, WOULD be created) earlier in THIS
+  // pass, keyed by JID (the real dedup key — messaging_groups is UNIQUE on
+  // (channel_type, platform_id)). Dry-run writes nothing, so without this two
+  // people sharing one JID would each "insert" it and the 2nd be a false dup.
   const plannedMgByJid = new Map<string, string>();
 
-  for (const row of rows) {
-    const agentGroup = getAgentGroupByFolder(row.group_folder);
-    if (!agentGroup) {
-      report.unresolved_boards++;
-      log(`  unresolved board folder=${row.group_folder} board_id=${row.board_id}`);
-      continue;
-    }
-
-    let messagingGroupId =
-      findMessagingGroupId('whatsapp', row.notification_group_jid) ?? plannedMgByJid.get(row.notification_group_jid);
-    if (messagingGroupId) {
-      report.messaging_groups_reused++;
-    } else {
-      messagingGroupId = personMessagingGroupId(row.notification_group_jid);
-      log(`  ${options.dryRun ? 'DRY: ' : ''}messaging_group ${messagingGroupId} → ${row.notification_group_jid}`);
-      insertMessagingGroup(messagingGroupId, row.notification_group_jid, row.name, now, options.dryRun);
-      plannedMgByJid.set(row.notification_group_jid, messagingGroupId);
-      report.messaging_groups_inserted++;
-    }
-
-    const destKey = `${agentGroup.id}\0${row.name}`;
-    const existing = getDestinationByName(agentGroup.id, row.name);
-    const priorTarget = existing ? existing.target_id : planned.get(destKey);
-    if (priorTarget !== undefined) {
-      report.destinations_skipped++;
-      // Collision: the name already maps to a DIFFERENT group → a distinct
-      // person with the same display name. The 2nd person's send_message({to})
-      // would mis-route to the 1st. Surface it (the migrate step reports it as
-      // degraded); do NOT overwrite — the operator resolves the duplicate.
-      if (priorTarget !== messagingGroupId) {
-        report.name_collisions++;
-        log(
-          `  COLLISION: ${agentGroup.id} '${row.name}' already → ${priorTarget}, not ${messagingGroupId} (person_id=${row.person_id})`,
-        );
+  const process = (): void => {
+    for (const row of rows) {
+      const agentGroup = getAgentGroupByFolder(row.group_folder);
+      if (!agentGroup) {
+        report.unresolved_boards++;
+        log(`  unresolved board folder=${row.group_folder} board_id=${row.board_id}`);
+        continue;
       }
-      continue;
-    }
-    planned.set(destKey, messagingGroupId);
-    if (options.dryRun) {
-      report.destinations_inserted++;
-      log(`  DRY: destination ${agentGroup.id} '${row.name}' → ${messagingGroupId}`);
-      continue;
-    }
-    createDestination({
-      agent_group_id: agentGroup.id,
-      local_name: row.name,
-      target_type: 'channel',
-      target_id: messagingGroupId,
-      created_at: now,
-    });
-    report.destinations_inserted++;
-  }
 
+      let messagingGroupId =
+        getMessagingGroupByPlatform('whatsapp', row.notification_group_jid)?.id ??
+        plannedMgByJid.get(row.notification_group_jid);
+      if (messagingGroupId) {
+        report.messaging_groups_reused++;
+      } else {
+        messagingGroupId = personMessagingGroupId(row.notification_group_jid);
+        log(`  ${options.dryRun ? 'DRY: ' : ''}messaging_group ${messagingGroupId} → ${row.notification_group_jid}`);
+        if (!options.dryRun) {
+          createMessagingGroup({
+            id: messagingGroupId,
+            channel_type: 'whatsapp',
+            platform_id: row.notification_group_jid,
+            name: row.name,
+            is_group: 1,
+            unknown_sender_policy: 'strict',
+            created_at: now,
+          });
+        }
+        plannedMgByJid.set(row.notification_group_jid, messagingGroupId);
+        report.messaging_groups_inserted++;
+      }
+
+      const outcome = ensure(agentGroup.id, row.name, messagingGroupId);
+      if (outcome.status === 'inserted') {
+        report.destinations_inserted++;
+        log(`  ${options.dryRun ? 'DRY: ' : ''}destination ${agentGroup.id} '${row.name}' → ${messagingGroupId}`);
+      } else {
+        report.destinations_skipped++;
+        // Collision: the name already maps to a DIFFERENT group → a distinct
+        // person with the same display name. The 2nd person's send_message({to})
+        // would mis-route to the 1st. Surface it (the migrate step reports it as
+        // degraded); do NOT overwrite — the operator resolves the duplicate.
+        if (outcome.status === 'collision') {
+          report.name_collisions++;
+          log(
+            `  COLLISION: ${agentGroup.id} '${row.name}' already → ${outcome.existingTarget}, not ${messagingGroupId} (person_id=${row.person_id})`,
+          );
+        }
+      }
+    }
+  };
+
+  // One transaction around the writes: atomic + a single fsync at cutover scale
+  // (hundreds of board_people rows) instead of one per insert. Dry-run writes
+  // nothing, so it just reads.
+  getDb().transaction(process)();
   return report;
 }

@@ -1,9 +1,12 @@
 #!/usr/bin/env tsx
 /**
- * CLI wrapper for the cross-board approval-destination backfill. The reusable
- * function lives in src/modules/taskflow/backfill-cross-board-destinations.ts
- * (so the host startup self-heal can import it); this is the standalone
- * operator/migration CLI.
+ * Standalone OPERATOR CLI for the cross-board approval-destination backfill
+ * (dry-run preview, or a manual re-run after fixing wiring). The reusable
+ * function lives in src/modules/taskflow/backfill-cross-board-destinations.ts;
+ * the host startup self-heal imports it directly, and the cutover migration
+ * runs it via the setup/migrate-v2/destinations.ts step — neither goes through
+ * this CLI. As an operator tool it exits non-zero when something needs human
+ * attention (unresolved links / collisions) so a script/CI can gate on it.
  *
  * Usage:
  *   pnpm exec tsx scripts/backfill-cross-board-destinations.ts \
@@ -27,7 +30,10 @@ function parseArgs(argv: string[]): Args {
   const args: Record<string, string | true> = {};
   for (let i = 2; i < argv.length; i++) {
     const k = argv[i];
-    if (k === '--dry-run') { args['dry-run'] = true; continue; }
+    if (k === '--dry-run') {
+      args['dry-run'] = true;
+      continue;
+    }
     if (!k.startsWith('--')) throw new Error(`Unexpected arg: ${k}`);
     args[k.slice(2)] = argv[++i] ?? '';
   }
@@ -51,27 +57,23 @@ function main(): void {
   tfDb.close();
 
   console.log(`\n${args.dryRun ? '=== DRY RUN ===' : '=== BACKFILL COMPLETE ==='}`);
+  console.log(`Links processed: ${report.links_processed}`);
   console.log(`Unresolved (skipped): ${report.unresolved}`);
   console.log(`Child 'parent-*' destinations: ${report.child_inserted} new, ${report.child_skipped} already present`);
-  console.log(`Parent 'source-*' destinations: ${report.parent_inserted} new, ${report.parent_skipped} already present`);
-  console.log(`Name collisions (wrong target): ${report.name_collisions}`);
-  // Surface unresolved links + name collisions as `ERROR:` lines but do NOT
-  // exit(1): the migrate-v2.sh run_step promotes the step to "degraded/partial"
-  // on any `^ERROR:` line, so the gap is reported in the summary + handoff.json
-  // without aborting a cutover that has already copied all core + taskflow
-  // state. The host startup self-heal re-runs this backfill idempotently on
-  // every boot, so an unresolved/miswired pair is recoverable (fix wiring,
-  // reboot) — a hard abort here would strand the operator instead.
-  if (report.unresolved > 0) {
-    console.error(`ERROR: ${report.unresolved} cross-board link(s) unresolved — no matching v2 agent group; approval forwarding stays unwired for them.`);
-  }
-  if (report.name_collisions > 0) {
-    console.error(`ERROR: ${report.name_collisions} cross-board name collision(s) — a reserved 'parent-'/'source-' destination already points at a different group; approval forwarding is miswired until resolved.`);
-  }
   console.log(
-    `OK:links=${report.links_processed},child_new=${report.child_inserted},child_skip=${report.child_skipped},parent_new=${report.parent_inserted},parent_skip=${report.parent_skipped},collisions=${report.name_collisions},unresolved=${report.unresolved}`,
+    `Parent 'source-*' destinations: ${report.parent_inserted} new, ${report.parent_skipped} already present`,
   );
+  console.log(`Name collisions (wrong target): ${report.name_collisions}`);
   closeDb();
+  // Operator/CI gate: non-zero exit when something needs human attention. (The
+  // migration path does NOT use this CLI — destinations.ts surfaces the same
+  // conditions as a non-fatal "degraded" step.)
+  if (report.unresolved > 0 || report.name_collisions > 0) {
+    console.error(
+      `\n${report.unresolved} unresolved link(s), ${report.name_collisions} name collision(s) — resolve before relying on cross-board forwarding.`,
+    );
+    process.exit(1);
+  }
 }
 
 const isCli = process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/'));

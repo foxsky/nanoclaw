@@ -136,7 +136,11 @@ describe('Guard B: taskflow.ts main() gates + exit-code contract', () => {
   // controlled active-unit response (the real systemctl here serves /root/nanoclaw, not v1).
   function fakeSystemctl(workingDir: string): NodeJS.ProcessEnv {
     const bin = tmp();
-    fs.writeFileSync(path.join(bin, 'systemctl'), `#!/usr/bin/env bash\nprintf 'ActiveState=active\\nWorkingDirectory=${workingDir}\\n'\n`, { mode: 0o755 });
+    fs.writeFileSync(
+      path.join(bin, 'systemctl'),
+      `#!/usr/bin/env bash\nprintf 'ActiveState=active\\nWorkingDirectory=${workingDir}\\n'\n`,
+      { mode: 0o755 },
+    );
     return { ...process.env, PATH: `${bin}:${process.env.PATH}` };
   }
   // Reports an inactive unit so the gate falls through to the WAL/journal/SKIPPED/copy
@@ -144,7 +148,9 @@ describe('Guard B: taskflow.ts main() gates + exit-code contract', () => {
   // `nanoclaw` unit serving a confirmable non-/tmp path (fragile on CI).
   function fakeSystemctlInactive(): NodeJS.ProcessEnv {
     const bin = tmp();
-    fs.writeFileSync(path.join(bin, 'systemctl'), `#!/usr/bin/env bash\nprintf 'ActiveState=inactive\\n'\n`, { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'systemctl'), `#!/usr/bin/env bash\nprintf 'ActiveState=inactive\\n'\n`, {
+      mode: 0o755,
+    });
     return { ...process.env, PATH: `${bin}:${process.env.PATH}` };
   }
 
@@ -216,7 +222,9 @@ describe('migration steps: SKIPPED on missing input exits non-zero (run_step con
 
   it('db.ts (v1 has no registered groups)', () => {
     const v1 = v1WithMessagesDb((d) =>
-      d.exec(`CREATE TABLE registered_groups (jid TEXT, name TEXT, folder TEXT, trigger_pattern TEXT, requires_trigger INTEGER, is_main INTEGER)`),
+      d.exec(
+        `CREATE TABLE registered_groups (jid TEXT, name TEXT, folder TEXT, trigger_pattern TEXT, requires_trigger INTEGER, is_main INTEGER)`,
+      ),
     );
     const r = runStep('db.ts', [v1], { cwd: tmp() });
     expect(r.stdout).toMatch(/SKIPPED:no registered groups in v1/);
@@ -229,10 +237,68 @@ describe('migration steps: SKIPPED on missing input exits non-zero (run_step con
     expect(r.status).not.toBe(0);
   });
 
+  it('destinations.ts (no taskflow.db to back-fill from)', () => {
+    const r = runStep('destinations.ts', [tmp()], { cwd: tmp() });
+    expect(r.stdout).toMatch(/SKIPPED:no taskflow\.db/);
+    expect(r.status).not.toBe(0);
+  });
+
   it('tasks.ts (v1 DB present but no active scheduled tasks)', () => {
     const v1 = v1WithMessagesDb((d) => d.exec(`CREATE TABLE scheduled_tasks (id TEXT, status TEXT)`));
     const r = runStep('tasks.ts', [v1], { cwd: tmp() });
     expect(r.stdout).toMatch(/SKIPPED:no active tasks/);
+    expect(r.status).not.toBe(0);
+  });
+});
+
+describe('Guard D: destinations.ts main() backfills + OK contract', () => {
+  it('seeds a per-person destination from board_people.notification_group_jid (OK + exit 0)', () => {
+    // db.ts first to materialize the v2 agent_group (folder 'main') + messaging
+    // group the backfill resolves against; then a taskflow.db with a person who
+    // has a notification group jid; then the step wires the named destination.
+    const v1 = v1WithMessagesDb((d) => {
+      d.exec(
+        `CREATE TABLE registered_groups (jid TEXT, name TEXT, folder TEXT, trigger_pattern TEXT, requires_trigger INTEGER, is_main INTEGER);`,
+      );
+      d.exec(`INSERT INTO registered_groups VALUES ('tg:123', 'Chat', 'main', NULL, 0, 1);`);
+    });
+    const cwd = tmp();
+    expect(runStep('db.ts', [v1], { cwd }).status).toBe(0);
+
+    const tfDir = path.join(cwd, 'data', 'taskflow');
+    fs.mkdirSync(tfDir, { recursive: true });
+    const tf = new Database(path.join(tfDir, 'taskflow.db'));
+    tf.exec(`
+      CREATE TABLE boards (id TEXT PRIMARY KEY, group_jid TEXT, group_folder TEXT, board_role TEXT, hierarchy_level INT, max_depth INT, parent_board_id TEXT, short_code TEXT);
+      CREATE TABLE board_config (board_id TEXT, wip_limit INT);
+      CREATE TABLE board_people (board_id TEXT, person_id TEXT, name TEXT, role TEXT, notification_group_jid TEXT);
+      CREATE TABLE child_board_registrations (parent_board_id TEXT, person_id TEXT, child_board_id TEXT);
+      INSERT INTO boards VALUES ('b', 'tg:123', 'main', 'hierarchy', 0, 3, NULL, NULL);
+      INSERT INTO board_people VALUES ('b', 'ana', 'Ana Souza', 'member', '5599@g.us');
+    `);
+    tf.close();
+
+    const r = runStep('destinations.ts', [v1], { cwd });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/OK:.*person_dest=1/);
+
+    const central = new Database(path.join(cwd, 'data', 'v2.db'), { readonly: true });
+    const dest = central.prepare(`SELECT local_name FROM agent_destinations WHERE local_name = 'Ana Souza'`).get();
+    central.close();
+    expect(dest).toBeTruthy();
+  });
+
+  it('SKIPPED:no taskflow.db exits non-zero even when v2.db exists', () => {
+    const v1 = v1WithMessagesDb((d) => {
+      d.exec(
+        `CREATE TABLE registered_groups (jid TEXT, name TEXT, folder TEXT, trigger_pattern TEXT, requires_trigger INTEGER, is_main INTEGER);`,
+      );
+      d.exec(`INSERT INTO registered_groups VALUES ('tg:123', 'Chat', 'main', NULL, 0, 1);`);
+    });
+    const cwd = tmp();
+    expect(runStep('db.ts', [v1], { cwd }).status).toBe(0); // v2.db exists, but no taskflow.db
+    const r = runStep('destinations.ts', [v1], { cwd });
+    expect(r.stdout).toMatch(/SKIPPED:no taskflow\.db/);
     expect(r.status).not.toBe(0);
   });
 });

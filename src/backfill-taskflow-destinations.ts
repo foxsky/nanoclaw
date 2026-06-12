@@ -25,43 +25,58 @@ import { log } from './log.js';
  * re-runs them every boot, so the gap is recoverable once the wiring is fixed).
  * No-op when the agent-to-agent module isn't installed (no `agent_destinations`).
  */
-export function backfillTaskflowDestinations(tfDb: Database.Database): void {
-  if (!hasTable(getDb(), 'agent_destinations')) return;
-
+/**
+ * Run one backfill fail-soft: an error must NEVER crash boot. Surface inserts
+ * (info) and the recoverable data-quality conditions (warn) using the counts the
+ * caller distills from its differently-shaped report.
+ */
+function heal(
+  label: string,
+  run: () => { inserted: number; unresolved: number; collisions: number; report: object },
+): void {
   try {
-    const r = backfillCrossBoardDestinations(tfDb, { dryRun: false, logger: (l) => log.debug(l.trim()) });
-    if (r.child_inserted + r.parent_inserted > 0 || r.unresolved > 0 || r.name_collisions > 0) {
-      log.info('Cross-board destinations backfilled', { ...r });
+    const { inserted, unresolved, collisions, report } = run();
+    if (inserted > 0 || unresolved > 0 || collisions > 0) {
+      log.info(`${label} backfilled`, { ...report });
     }
-    if (r.name_collisions > 0) {
+    if (collisions > 0) {
+      // Metadata key kept as `name_collisions` (not `collisions`) so existing
+      // log alerts that key on it keep firing.
       log.warn(
-        'Cross-board destination backfill: name collisions — a reserved parent-/source- name points at the wrong group',
+        `${label} backfill: ${collisions} name collision(s) — a reserved/duplicate name points at the wrong group`,
         {
-          name_collisions: r.name_collisions,
+          name_collisions: collisions,
         },
       );
     }
-    if (r.unresolved > 0) {
-      log.warn('Cross-board destination backfill left unresolved board links', { unresolved: r.unresolved });
+    if (unresolved > 0) {
+      log.warn(`${label} backfill: ${unresolved} unresolved`, { unresolved });
     }
   } catch (err) {
-    log.error('Cross-board destination backfill failed (continuing boot)', { err: String(err) });
+    log.error(`${label} backfill failed (continuing boot)`, { err: String(err) });
   }
+}
 
-  try {
-    const r = backfillTaskflowPersonDestinations(tfDb, { dryRun: false, logger: (l) => log.debug(l.trim()) });
-    if (r.destinations_inserted > 0 || r.unresolved_boards > 0 || r.name_collisions > 0) {
-      log.info('Person destinations backfilled', { ...r });
-    }
-    if (r.name_collisions > 0) {
-      log.warn('Person destination backfill: display-name collisions — duplicate names route to one person', {
-        name_collisions: r.name_collisions,
-      });
-    }
-    if (r.unresolved_boards > 0) {
-      log.warn('Person destination backfill left unresolved boards', { unresolved: r.unresolved_boards });
-    }
-  } catch (err) {
-    log.error('Person destination backfill failed (continuing boot)', { err: String(err) });
-  }
+export function backfillTaskflowDestinations(tfDb: Database.Database): void {
+  if (!hasTable(getDb(), 'agent_destinations')) return;
+  const logger = (l: string): void => log.debug(l.trim());
+
+  heal('Cross-board destinations', () => {
+    const r = backfillCrossBoardDestinations(tfDb, { dryRun: false, logger });
+    return {
+      inserted: r.child_inserted + r.parent_inserted,
+      unresolved: r.unresolved,
+      collisions: r.name_collisions,
+      report: r,
+    };
+  });
+  heal('Person destinations', () => {
+    const r = backfillTaskflowPersonDestinations(tfDb, { dryRun: false, logger });
+    return {
+      inserted: r.destinations_inserted,
+      unresolved: r.unresolved_boards,
+      collisions: r.name_collisions,
+      report: r,
+    };
+  });
 }

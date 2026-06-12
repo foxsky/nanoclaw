@@ -7,7 +7,7 @@ import { getChannelAdapter } from '../../channels/channel-registry.js';
 import { wakeContainer } from '../../container-runner.js';
 import { getAgentGroup, getAgentGroupByFolder, getAllAgentGroups } from '../../db/agent-groups.js';
 import { getAllMessagingGroups, getMessagingGroup } from '../../db/messaging-groups.js';
-import { createDestination, getDestinationByName } from '../agent-to-agent/db/agent-destinations.js';
+import { createDestinationIfAbsent } from '../agent-to-agent/db/agent-destinations.js';
 import { writeDestinations } from '../agent-to-agent/write-destinations.js';
 import { getDb as getCentralDb } from '../../db/connection.js';
 import { hasTable } from '../../db/connection.js';
@@ -421,24 +421,17 @@ export async function handleProvisionChildBoard(
           if (existingChildAg && existingChildMg) {
             const destTs = new Date().toISOString();
             const parentName = `parent-${parent.parentBoard.group_folder}`;
-            if (!getDestinationByName(existingChildAg.id, parentName)) {
-              createDestination({
-                agent_group_id: existingChildAg.id,
-                local_name: parentName,
-                target_type: 'channel',
-                target_id: parentMgId,
-                created_at: destTs,
-              });
-            }
+            createDestinationIfAbsent(existingChildAg.id, parentName, 'channel', parentMgId, destTs);
             const sourceName = `source-${existingElsewhere.group_folder}`;
-            if (!getDestinationByName(session.agent_group_id, sourceName)) {
-              createDestination({
-                agent_group_id: session.agent_group_id,
-                local_name: sourceName,
-                target_type: 'channel',
-                target_id: existingChildMg.messaging_group_id,
-                created_at: destTs,
-              });
+            if (
+              createDestinationIfAbsent(
+                session.agent_group_id,
+                sourceName,
+                'channel',
+                existingChildMg.messaging_group_id,
+                destTs,
+              )
+            ) {
               writeDestinations(session.agent_group_id, session.id);
             }
           }
@@ -540,33 +533,17 @@ export async function handleProvisionChildBoard(
       // multiple 'source-<folder>' rows.
       // Guard: skip when the agent-to-agent module isn't installed (same
       // pattern as messaging-groups.ts:213) or session is DM-only.
-      // Idempotency: getDestinationByName precondition mirrors
-      // messaging-groups.ts:222-227 / create-agent.ts:99-103.
+      // Idempotency + selective projection handled by createDestinationIfAbsent.
       const parentMgId = session.messaging_group_id;
       if (parentMgId && hasTable(getCentralDb(), 'agent_destinations')) {
         const destTs = new Date().toISOString();
         const parentName = `parent-${parent.parentBoard.group_folder}`;
-        if (!getDestinationByName(childAgentGroupId, parentName)) {
-          createDestination({
-            agent_group_id: childAgentGroupId,
-            local_name: parentName,
-            target_type: 'channel',
-            target_id: parentMgId,
-            created_at: destTs,
-          });
-        }
+        createDestinationIfAbsent(childAgentGroupId, parentName, 'channel', parentMgId, destTs);
         const sourceName = `source-${folder}`;
-        if (!getDestinationByName(session.agent_group_id, sourceName)) {
-          createDestination({
-            agent_group_id: session.agent_group_id,
-            local_name: sourceName,
-            target_type: 'channel',
-            target_id: childMessagingGroupId,
-            created_at: destTs,
-          });
-          // Propagate to the running parent container's inbound.db
-          // (top-of-file invariant in agent-destinations.ts). Only when
-          // actually inserted — an existing row is already projected.
+        // Propagate to the running parent container's inbound.db (top-of-file
+        // invariant in agent-destinations.ts) ONLY when actually inserted — an
+        // existing row is already projected.
+        if (createDestinationIfAbsent(session.agent_group_id, sourceName, 'channel', childMessagingGroupId, destTs)) {
           writeDestinations(session.agent_group_id, session.id);
         }
       }
